@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 is implemented and merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged. The complete Round 9 gate passed; its fresh review found a scaled ONB normal sibling gap. A committed native witness reproduces the gap and the normalization/derivative repair passes focused checks. Coating controls, a replacement gate and fresh review remain required. Phases 3–4 remain pending. Earlier audit sections record historical checkpoints.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 is implemented and merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged. The scaled-ONB sibling repair and complete replacement gate pass at `7838405b68d69eb83d09055f5c2e826a18440ce6`. Fresh independent Round 10 review remains required. Phases 3–4 remain pending. Earlier audit sections record historical checkpoints.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -827,3 +827,5 @@ Fresh Round 9 gate at 4495ae81be81107fd604bfad0faedfd46a6fe846: all 21 native/fo
 ### Round 9 scaled ONB sibling repair
 
 Fresh material review found native Optics normalizes a nonunit ONB W, while the extended constraint retained its magnitude. A corrected committed witness reproduces 4145/1040, including actual native root-position and price failures; focused repair passes 5185/0. Estimator/evidence reviews reported no P1/P2 and no lens found a DESIGN defect. Reproduce native event normalization and its derivative branch while retaining raw coating/material query fields. Replacement gate and fresh review remain required; no ledger closure is claimed. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+Fresh Round 10 gate: 43 make modes / 424086/0, 32 actual Xcode-linked controls / 425132/0, 18 all-374-unit sanitizer modes / 248322/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent scaled-ONB proof and full n = 4 interleaved cost/memory evidence. All 21 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.

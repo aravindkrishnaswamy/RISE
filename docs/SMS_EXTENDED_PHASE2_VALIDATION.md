@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed gate freezes checkpoint `4495ae81be81107fd604bfad0faedfd46a6fe846`: 42 make modes / 416,773 checks / 0 failures, 30 actual Xcode-linked controls and 17 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. All three Round 8 implementation findings have native committed-source proofs and replacement gates. Fresh independent Round 9 review remains required. Earlier sections are historical checkpoint evidence.
+The current completed replacement gate freezes checkpoint `7838405b68d69eb83d09055f5c2e826a18440ce6`: 43 make modes / 424086 checks / 0 failures, 32 actual Xcode-linked controls and 18 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The scaled-ONB sibling repair has native committed-source proof and a complete replacement gate. Fresh independent Round 10 review remains required. Earlier sections are historical checkpoint evidence.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1421,3 +1421,34 @@ Cost uses actual alternating committed-source builds, n = 4 salts, one worker, r
 Fresh independent reviewers on `c82889fc4` returned clean estimator and evidence verdicts and one material P2 concerning scaled ONB W. The native witness verifies that this affects root position and price; it is repaired rather than deferred. No DESIGN finding. Evidence: `.claude/logs/sms-phase2-round9-final/fresh-reviews/`. The initial fixture used an invalid dielectric descriptor and failed to parse; that crash is retained as a failed test attempt, not a numerical red. The corrected, strengthened committed witness at `e528ca43f` gives **4145 passed / 1040 failed** on pre-repair native code: 400 native root-position failures and 640 replay/solved-price failures. Repair `80afa29b9` gives **5185/0** on that witness. Added coated-dielectric controls pass **7233/0**; the complete replacement gate remains pending. Evidence: `.claude/logs/sms-phase2-round10/frame-coating-green.log`.
 
 The repair reproduces the existing native Optics normalization condition, including its derivative chain rule, for consumed geometric event normals and ordinary vector-Fresnel incidence. It retains raw ONB/material records and raw coating cosine convention. This is a sibling correction under the adopted native-event contract, not a new normalization policy for the native walker. The Round 9 gate remains historical evidence for its frozen checkpoint; it is not claimed as the replacement gate for this repair. Phase 2 remains unmerged and target rows remain OPEN.
+
+
+### Fresh Round 10 replacement gate (2026-10-05)
+
+Native/test checkpoint `7838405b68d69eb83d09055f5c2e826a18440ce6`; master `08552560b54b517b7a8a0696eb9d317953b26bbe`. Evidence: `.claude/logs/sms-phase2-round10-final/source.json` and `final-gate/completed-summary.json`. All 21 native and four test hashes verify. The scaled-ONB fix has one fresh coherent committed-source rollback scenario across all native paths: 5913 passed, 1320 failed; restored frame controls pass 7233/0. Earlier nine rollback scenarios remain explicitly historical evidence. The current gate reruns clean make and both Xcode builds, every required regression, full-project sanitizers, eight interleaved A/B source builds and sixteen salted mode-off comparisons, weld-range sanitizer proof and process memory.
+
+| Gate | Result |
+|---|---|
+| Clean make | 376 compilation actions; zero owned diagnostics |
+| Actual Xcode Deployment/Opto | 393/393 compilation actions; zero owned diagnostics |
+| Make regressions | 20 executables / 43 modes / 424086 checks / 0 failures; CST separately |
+| Actual Xcode-linked controls | 32 modes / 425132 checks / 0 failures |
+| ASan/UBSan/float-cast-overflow | all 374 linked project units / 18 modes / 248322 checks / 0 failures; third-party libraries uninstrumented |
+| Weld-range sanitizer proof | committed-source fatal float-cast overflow; restored weld and composed-UV controls pass |
+| Storage-output invariant | 40 original salted production means; maximum 0.0 double ULP vs pre-storage checkpoint |
+| Mode-off parity | 16 salted image comparisons; every RGBA component within adopted one float32 ULP |
+
+The Xcode logs retain only the disclosed pre-existing optional OIDN search-path linker warning and AppIntents metadata notice; no source compiler warnings are suppressed. Native nonunit-normal warnings in the scaled-frame witness are expected Optics diagnostics demonstrating its normalization path.
+
+The current frame witness covers PerfectReflector, PerfectRefractor, Dielectric and coated Dielectric actual RGB/NM events, actual root positions and prices, independent constraint/endpoint Jacobians, both indexed windings/incidences, constant/varying direction and magnitude, and nonuniform transformed instances. Ordinary vector-Fresnel uses the consumed normal while coating queries retain raw incidence. Polished vNormal normalization, configured-max LU reservation and opaque SSS reference-radiance provenance remain covered by restored make/Xcode/sanitizer controls. No new contract or native-walker normalization change is claimed.
+
+| Mode-off fixture | Paired cost change mean (%) | Sample SD (%) |
+|---|---:|---:|
+| RGB k=1 | 1.145760 | 0.635085 |
+| RGB k=2 | 0.950089 | 0.341971 |
+| NM | 2.152881 | 0.348166 |
+| HWSS | 2.046038 | 0.727164 |
+
+Actual alternating builds use n = 4 independent salts, one worker and reserve 0. Current production witness retained worker-scratch capacity peaks at 204192 bytes; auxiliary topology/results and preparation allocations are outside that documented counter scope. Process memory and all timing/counter records are retained under the evidence directory. No multicore memory bound or general speed guarantee is claimed. Narrow-cone comparisons retain their original channelwise three-combined-SD bands and matching reference SD. The user-accepted wide-cone discrepancy remains measurement-only and supplies no DL-420 closure.
+
+Fresh independent Round 10 review remains required. Phase 2 remains unmerged; target rows stay OPEN and no new row is opened.
