@@ -218,11 +218,11 @@ namespace {
         return law;
     }
     // These native SPFs read the modified ONB, whereas PolishedBRDF
-    // resolves its coat from vNormal. Preserve both records in the context.
+    // resolves its coat from normalized vNormal. Preserve both raw records\n    // in the context and normalize only the native consumed event field.
     RISE::Vector3 SMSNativeEventNormal(const RISE::IMaterial& material,
         const RISE::RayIntersectionGeometric& hit) {
         return dynamic_cast<const RISE::Implementation::PolishedMaterial*>(&material)
-            ? hit.vNormal : hit.onb.w();
+            ? RISE::Vector3Ops::Normalize(hit.vNormal) : hit.onb.w();
     }
     bool SMSNeedsNativeFrame(const RISE::Implementation::ManifoldVertex& v) {
         return v.pObject && (v.pObject->GetModifier()
@@ -341,7 +341,11 @@ namespace {
                 } else input.uv=Point2(0,0);
                 if(!provider->SMSFrameDifferential(raw.geometric,input,normal,frameW)) return false;
             }
-            dn=dynamic_cast<const Implementation::PolishedMaterial*>(center.pMaterial)?normal:frameW;
+            if(dynamic_cast<const Implementation::PolishedMaterial*>(center.pMaterial)) {
+                auto modified=raw.geometric;
+                if(raw.pModifier) raw.pModifier->Modify(modified);
+                dn=SMSNormalizedDifferential(modified.vNormal,normal);
+            } else dn=frameW;
             dg=input.geometricNormal;
         }
         const bool fallback=center.isReflection?(branch&1):(branch&2);
