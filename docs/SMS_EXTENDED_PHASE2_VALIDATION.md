@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed replacement gate freezes checkpoint `1187f276ce66a65052b4bc0b5f01aa043c8ea2bd`: 45 make modes / 483402 checks / 0 failures, 36 actual Xcode-linked controls and 20 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The Fresnel-dependent fallback, raw-film price and wavelength-bound native-event repairs have coherent committed-source proof and a complete replacement gate. Fresh Round 12 review completed: estimator and material reviewers found two P2s in uncoated fallback replay; evidence review found no P1/P2. The repairs require a fresh Round 13 gate and review. Earlier sections are historical checkpoint evidence.
+The current completed replacement gate freezes checkpoint `13222fd7258da6c543657f40fae6b2bc0f09d8ee`: 46 make modes / 500509 checks / 0 failures, 38 actual Xcode-linked controls and 21 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The Fresnel-dependent fallback, raw-film price and wavelength-bound native-event repairs have coherent committed-source proof and a complete replacement gate. Fresh independent Round 13 review remains required. Earlier sections are historical checkpoint evidence.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1547,3 +1547,36 @@ Three fresh independent reviewers examined committed checkpoint `755e48f2d`. Est
 The `--r12-uncoated-fallback-only` witness uses actual RGB/NM SPFs on both indexed windings and incidences, open and closed geometry, plane and sphere geometry, nonuniform transforms, start-inside media, neighboring fallback contexts and actual seed proposals. The initially committed 0.01 start segment straddled the unchanged legacy minimum reliable segment and is discarded as test setup. Its corrected 0.1-segment committed red had 12887 passes / 1340 failures before the family repair. That result predates the final point-price oracle correction and is historical, not the current final-test red proof.
 
 The independent native full/half root-band probes determine whether a context has a resolved optical price. Exact transmission-horizon discontinuities require an invalid root (ordinary zero); independently regular contexts require matching native event and root prices, including the constant unity-Fresnel grazing controls. Twenty transformed-sphere point-price assertions at an independently unresolved discontinuity were removed from the exact-price oracle, while their zero-root assertions remain. No uncertainty band, native walker or attenuation-painter quantization rule changed. The current focused uncoated witness passes 17107/0. A coherent committed native rollback with this final test, full replacement gates and fresh review remain required before integration.
+
+
+### Fresh Round 13 replacement gate (2026-10-06)
+
+Native/test checkpoint `13222fd7258da6c543657f40fae6b2bc0f09d8ee`; master `08552560b54b517b7a8a0696eb9d317953b26bbe`. Evidence: `.claude/logs/sms-phase2-round13-final/source.json` and `final-gate/completed-summary.json`. All 23 native and four test hashes verify. The uncoated fallback family has one fresh coherent committed-source rollback scenario across all 23 native paths: 15947 passed, 1160 failed; restored uncoated controls pass 17107/0. Fourteen earlier rollback scenarios remain explicitly historical evidence. The current gate reruns clean make and both Xcode builds, every required regression, full-project sanitizers, eight interleaved A/B source builds and sixteen salted mode-off comparisons, weld-range sanitizer proof and process memory.
+
+| Gate | Result |
+|---|---|
+| Clean make | 376 compilation actions; zero owned diagnostics |
+| Actual Xcode Deployment/Opto | 393/393 compilation actions; zero owned diagnostics |
+| Make regressions | 20 executables / 46 modes / 500509 checks / 0 failures; CST separately |
+| Actual Xcode-linked controls | 38 modes / 577988 checks / 0 failures |
+| ASan/UBSan/float-cast-overflow | all 374 linked project units / 21 modes / 324755 checks / 0 failures; third-party libraries uninstrumented |
+| Weld-range sanitizer proof | committed-source fatal float-cast overflow; restored weld and composed-UV controls pass |
+| Storage-output invariant | 40 original salted production means; maximum 0.0 double ULP vs pre-storage checkpoint |
+| Mode-off parity | 16 salted image comparisons; every RGBA component within adopted one float32 ULP |
+
+The Xcode logs retain only the disclosed pre-existing optional OIDN search-path linker warning and AppIntents metadata notice; no source compiler warnings are suppressed. Native nonunit-normal warnings in the scaled-frame witness are expected Optics diagnostics demonstrating its normalization path.
+
+The fresh uncoated fallback witness uses actual PerfectRefractor and Dielectric RGB/NM SPFs, both indexed windings/incidences, open/closed objects, plane/sphere controls, transforms and start-inside states. Independently regular native full/half probe contexts require matching native point/root prices within 1e-9. Unresolved transmission horizons require ordinary-zero roots, including the twenty exact-boundary transformed-sphere contexts whose point-price assertions were outside that resolved oracle. Constant unity-Fresnel controls require native crossing rejection and reflection seed selection without a TIR relabel. The coherent rollback has 960 unresolved-root failures, 160 invented transmitted crossings and 40 seed-event failures; no band widening or native-walker change is claimed.
+
+The current native-event witness covers PerfectReflector, PerfectRefractor, Dielectric and coated Dielectric actual RGB/NM events, actual root positions and prices, independent constraint/endpoint Jacobians, both indexed windings/incidences, constant/varying direction and magnitude, nonuniform transforms, magnitudes inside/outside both Optics normalization boundaries, and a narrow indexed patch containing the native root while excluding the spurious solution. Coated TIR is tested on an open plane, closed indexed solids, nested exits and actual non-top overlapping solids. The actual PT production control uses four salts at N=2048, channel-separated RGB/NM means, a single open-sheet reflection and analytic geometry with native BSDF/emitter values and zero reference SD. Earlier box production attempt was not a matched single-root oracle and is retained only as a discarded test attempt. Mandatory native TIR stays unity before any coating query. The half vector includes the native outgoing vector length with its analytic derivative and a unit projection basis; normalization branch changes reject unresolved derivatives. Ordinary vector-Fresnel uses the consumed normal while non-TIR coating queries retain raw incidence. Polished vNormal normalization, configured-max LU reservation and opaque SSS reference-radiance provenance remain covered by restored make/Xcode/sanitizer controls. No new contract or native-walker normalization change is claimed.
+
+| Mode-off fixture | Paired cost change mean (%) | Sample SD (%) |
+|---|---:|---:|
+| RGB k=1 | 1.405382 | 0.653343 |
+| RGB k=2 | 1.095389 | 1.034112 |
+| NM | 2.458093 | 0.682427 |
+| HWSS | 2.188404 | 0.973587 |
+
+Actual alternating builds use n = 4 independent salts, one worker and reserve 0. The original flat delta-light production witness retained worker-scratch capacity peaks at 204192 bytes; the modified coated-TIR production witness peaks at 372432 bytes across its two retained scratch frames, including warm-up growth. Current modified-witness counters: `coated TIR counters proposals=32770 zeros=202 newton=243966 retries=16386 tails=0 roulette=0 owned=16284 rejected=202 sceneQueries=392836 objectQueries=49789955 domainMaterialQueries=261560 scratchGrowths=32 scratchFrames=2 scratchPeakBytes=372432`. These are separate measured fixture scopes; auxiliary topology/results and preparation allocations are outside that documented counter scope. Process memory and all timing/counter records are retained under the evidence directory. No multicore memory bound or general speed guarantee is claimed. Narrow-cone comparisons retain their original channelwise three-combined-SD bands and matching reference SD. The user-accepted wide-cone discrepancy remains measurement-only and supplies no DL-420 closure.
+
+Fresh independent Round 13 review remains required. Phase 2 remains unmerged; target rows stay OPEN and no new row is opened.
