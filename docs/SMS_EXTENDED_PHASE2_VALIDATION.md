@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed replacement gate freezes checkpoint `7838405b68d69eb83d09055f5c2e826a18440ce6`: 43 make modes / 424086 checks / 0 failures, 32 actual Xcode-linked controls and 18 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The scaled-ONB sibling repair has native committed-source proof and a complete replacement gate. Round 10 review subsequently found a coated-TIR P1 and near-unit-native-event P2. Focused repairs pass; the current coherent proof, replacement gate and fresh Round 11 review remain required. Earlier sections are historical checkpoint evidence.
+The current completed replacement gate freezes checkpoint `ba8cac0dc3d470a90df8a62bb1aa41a4374a9482`: 44 make modes / 468767 checks / 0 failures, 34 actual Xcode-linked controls and 19 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The coated-TIR and near-unit native-event repairs have coherent committed-source proof and a complete replacement gate. Fresh independent Round 11 review remains required. Earlier sections are historical checkpoint evidence.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1463,3 +1463,34 @@ Mandatory native TIR is now preserved before any raw-cosine film query. The audi
 The combined focused witness passes **44681/0** in `.claude/logs/sms-phase2-round10/native-events-final-green.log`. It combines the native event/geometry matrix, a bounded indexed patch, **1185/0** open-plane/closed-indexed/nested/overlap coated-TIR controls and actual PT RGB/NM production. The final production oracle is one open sheet, with four salts at N=2048, channel-separated metrics and analytic geometry priced using actual native BSDF/emitter values (reference SD=0). Evidence: `tir-production-matched-green.log`. The earlier box production attempt included other reflective walls and is not a matched single-root reference. Earlier incomplete TIR fixture attempts are retained as failed test development and are not final numerical proofs. Added production counter reporting changes diagnostics only and will be compiled by the replacement gate.
 
 The full 21-path committed-source rollback, replacement clean builds/regressions/Xcode controls/sanitizers/parity/cost/memory and fresh Round 11 review remain required. Historical Round 10 gate greens do not establish correctness of this new native source. Phase 2 remains unmerged and all target ledger rows remain OPEN.
+
+
+### Fresh Round 11 replacement gate (2026-10-06)
+
+Native/test checkpoint `ba8cac0dc3d470a90df8a62bb1aa41a4374a9482`; master `08552560b54b517b7a8a0696eb9d317953b26bbe`. Evidence: `.claude/logs/sms-phase2-round11-final/source.json` and `final-gate/completed-summary.json`. All 21 native and four test hashes verify. The coated-TIR/near-unit-event fix has one fresh coherent committed-source rollback scenario across all native paths: 40365 passed, 4316 failed; restored native-event controls pass 44681/0. Ten earlier rollback scenarios remain explicitly historical evidence. The current gate reruns clean make and both Xcode builds, every required regression, full-project sanitizers, eight interleaved A/B source builds and sixteen salted mode-off comparisons, weld-range sanitizer proof and process memory.
+
+| Gate | Result |
+|---|---|
+| Clean make | 376 compilation actions; zero owned diagnostics |
+| Actual Xcode Deployment/Opto | 393/393 compilation actions; zero owned diagnostics |
+| Make regressions | 20 executables / 44 modes / 468767 checks / 0 failures; CST separately |
+| Actual Xcode-linked controls | 34 modes / 514494 checks / 0 failures |
+| ASan/UBSan/float-cast-overflow | all 374 linked project units / 19 modes / 293003 checks / 0 failures; third-party libraries uninstrumented |
+| Weld-range sanitizer proof | committed-source fatal float-cast overflow; restored weld and composed-UV controls pass |
+| Storage-output invariant | 40 original salted production means; maximum 0.0 double ULP vs pre-storage checkpoint |
+| Mode-off parity | 16 salted image comparisons; every RGBA component within adopted one float32 ULP |
+
+The Xcode logs retain only the disclosed pre-existing optional OIDN search-path linker warning and AppIntents metadata notice; no source compiler warnings are suppressed. Native nonunit-normal warnings in the scaled-frame witness are expected Optics diagnostics demonstrating its normalization path.
+
+The current native-event witness covers PerfectReflector, PerfectRefractor, Dielectric and coated Dielectric actual RGB/NM events, actual root positions and prices, independent constraint/endpoint Jacobians, both indexed windings/incidences, constant/varying direction and magnitude, nonuniform transforms, magnitudes inside/outside both Optics normalization boundaries, and a narrow indexed patch containing the native root while excluding the spurious solution. Coated TIR is tested on an open plane, closed indexed solids, nested exits and actual non-top overlapping solids. The actual PT production control uses four salts at N=2048, channel-separated RGB/NM means, a single open-sheet reflection and analytic geometry with native BSDF/emitter values and zero reference SD. Earlier box production attempt was not a matched single-root oracle and is retained only as a discarded test attempt. Mandatory native TIR stays unity before any coating query. The half vector includes the native outgoing vector length with its analytic derivative and a unit projection basis; normalization branch changes reject unresolved derivatives. Ordinary vector-Fresnel uses the consumed normal while non-TIR coating queries retain raw incidence. Polished vNormal normalization, configured-max LU reservation and opaque SSS reference-radiance provenance remain covered by restored make/Xcode/sanitizer controls. No new contract or native-walker normalization change is claimed.
+
+| Mode-off fixture | Paired cost change mean (%) | Sample SD (%) |
+|---|---:|---:|
+| RGB k=1 | 0.445559 | 0.523223 |
+| RGB k=2 | 1.111597 | 0.734787 |
+| NM | 1.409409 | 1.168709 |
+| HWSS | 1.818822 | 0.939373 |
+
+Actual alternating builds use n = 4 independent salts, one worker and reserve 0. The original flat delta-light production witness retained worker-scratch capacity peaks at 204192 bytes; the modified coated-TIR production witness peaks at 372432 bytes across its two retained scratch frames, including warm-up growth. Current modified-witness counters: `coated TIR counters proposals=32770 zeros=202 newton=243966 retries=16386 tails=0 roulette=0 owned=16284 rejected=202 sceneQueries=392836 objectQueries=49795139 domainMaterialQueries=261560 scratchGrowths=32 scratchFrames=2 scratchPeakBytes=372432`. These are separate measured fixture scopes; auxiliary topology/results and preparation allocations are outside that documented counter scope. Process memory and all timing/counter records are retained under the evidence directory. No multicore memory bound or general speed guarantee is claimed. Narrow-cone comparisons retain their original channelwise three-combined-SD bands and matching reference SD. The user-accepted wide-cone discrepancy remains measurement-only and supplies no DL-420 closure.
+
+Fresh independent Round 11 review remains required. Phase 2 remains unmerged; target rows stay OPEN and no new row is opened.
