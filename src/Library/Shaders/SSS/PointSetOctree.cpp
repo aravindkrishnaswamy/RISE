@@ -41,7 +41,7 @@ PointSetOctree::PointSetOctreeNode::~PointSetOctreeNode()
 		}
 
 		GlobalLog()->PrintDelete( pChildren, __FILE__, __LINE__ );
-		delete pChildren;
+		delete[] pChildren;
 		pChildren = 0;
 	}
 
@@ -153,7 +153,8 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 	const unsigned int maxElements,
 	const BoundingBox& bbox,
 	const char which_child,
-	const unsigned char max_recursion_level
+	const unsigned char max_recursion_level,
+    unsigned tree_level
 	)
 {
 	// We add the given elements to our section, 
@@ -163,7 +164,6 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 
 	// If children must be created we subdivide evenly into 8 children passing
 	// the element list
-	static unsigned int tree_level = 0;
 	tree_level++;
 
 	BoundingBox my_bb;
@@ -178,7 +178,6 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 	}
 
 	if( elements_list.size() < 1 ) {
-		tree_level--;
 		return false;
 	}
 
@@ -194,10 +193,10 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 		PointSet::const_iterator i, e;
 		for( i=pElements->begin(), e=pElements->end(); i!=e; i++ ) {
 			irrad = irrad + i->irrad;
+            smsReferenceRadiance = smsReferenceRadiance || i->smsReferenceRadiance;
 		}
 		irrad = irrad * (1.0/Scalar(pElements->size()) );
 
-		tree_level--;
 		return true;
 	}
 	else
@@ -215,13 +214,14 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 		{
 			pChildren[x] = new PointSetOctreeNode( );
 			GlobalLog()->PrintNew( pChildren[x], __FILE__, __LINE__, "ChildNode" );
-			if( !pChildren[x]->AddElements( elements_list, maxElements, my_bb, x, max_recursion_level ) ) {
+			if( !pChildren[x]->AddElements( elements_list, maxElements, my_bb, x, max_recursion_level, tree_level ) ) {
 				GlobalLog()->PrintDelete( pChildren[x], __FILE__, __LINE__ );
 				delete pChildren[x];
 				pChildren[x] = 0;
 				numRejects++;
 			} else {
 				irrad = irrad + pChildren[x]->AverageIrradiance();
+                smsReferenceRadiance = smsReferenceRadiance || pChildren[x]->smsReferenceRadiance;
 			}
 		}
 
@@ -230,16 +230,14 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 		if( numRejects == 8 ) {
 			GlobalLog()->Print( eLog_Error, "PointSetOctreeNode: I have elements but none of my children do!  Should never happen" );
 			GlobalLog()->PrintDelete( pChildren, __FILE__, __LINE__ );
-			delete pChildren;
+			delete[] pChildren;
 			pChildren = 0;
-			tree_level--;
-			return false;
+				return false;
 		}
 
 		irrad = irrad * (1.0/Scalar(8-numRejects) );
 	}
 
-	tree_level--;
 	return true;
 }
 
@@ -253,9 +251,17 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 	const IBSDF* pBSDF,
 	const RayIntersectionGeometric& rig,
 	const IORStack* pIorStack,
-	const Scalar exteriorIOR
+	const Scalar exteriorIOR,
+    bool* referenceRadiance
 	) const
 {
+    // A cached sample/node is an opaque mixed return. Propagate its tag
+    // only when its weighted value actually contributes to this evaluation.
+    const auto accumulate=[&](const RISEPel& term,bool tagged) {
+        c=c+term;
+        if(referenceRadiance && tagged && (term[0]!=0 || term[1]!=0 || term[2]!=0)) *referenceRadiance=true;
+    };
+
 	if( pChildren ) {
 		BoundingBox my_bb;
 		MyBBFromParent( bbox, which_child, my_bb );
@@ -269,7 +275,7 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 					// DL-291: forward the live IOR stack (DL-223 dropped it here, so
 					// every node below the root priced a stateful BSDF stacklessly)
 					// and the exterior index to every depth.
-					pChildren[i]->Evaluate( c, my_bb, i, point, pFunc, maxDistance, pBSDF, rig, pIorStack, exteriorIOR );
+					pChildren[i]->Evaluate( c, my_bb, i, point, pFunc, maxDistance, pBSDF, rig, pIorStack, exteriorIOR, referenceRadiance );
 				} else {
 					// Use the node's average irradiance as an estimate.
 					// DL-291: air (every shipped scene) keeps the original
@@ -277,16 +283,16 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 					// profile against it.
 					if( exteriorIOR == 1.0 ) {
 						if( pBSDF ) {
-							c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+							accumulate( pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ), pChildren[i]->smsReferenceRadiance );
 						} else {
-							c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance();
+							accumulate( pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance(), pChildren[i]->smsReferenceRadiance );
 						}
 					} else {
 						const RISEPel ext = pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR );
 						if( pBSDF ) {
-							c = c + ext * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+							accumulate( ext * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ), pChildren[i]->smsReferenceRadiance );
 						} else {
-							c = c + ext * pChildren[i]->AverageIrradiance();
+							accumulate( ext * pChildren[i]->AverageIrradiance(), pChildren[i]->smsReferenceRadiance );
 						}
 					}
 				}
@@ -303,9 +309,9 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 				const Vector3& vdir = Vector3Ops::mkVector3( i->ptPosition, point );
 				const Scalar dist = Vector3Ops::Magnitude( vdir );
 				if( pBSDF ) {
-					c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+					accumulate( pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ), i->smsReferenceRadiance );
 				} else {
-					c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad;
+					accumulate( pFunc.ComputeTotalExtinction( dist ) * i->irrad, i->smsReferenceRadiance );
 				}
 			}
 		} else {
@@ -314,9 +320,9 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 				const Scalar dist = Vector3Ops::Magnitude( vdir );
 				const RISEPel ext = pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR );
 				if( pBSDF ) {
-					c = c + ext * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+					accumulate( ext * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ), i->smsReferenceRadiance );
 				} else {
-					c = c + ext * i->irrad;
+					accumulate( ext * i->irrad, i->smsReferenceRadiance );
 				}
 			}
 		}

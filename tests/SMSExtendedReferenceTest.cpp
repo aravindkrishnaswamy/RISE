@@ -23,6 +23,8 @@
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Shaders/PathTracingShaderOp.h"
+#include "../src/Library/Shaders/SSS/SubSurfaceScatteringShaderOp.h"
+#include "../src/Library/Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Rendering/PathTracingPelRasterizer.h"
@@ -2558,6 +2560,96 @@ struct SSSTestShaderOp : PathTracingShaderOp {
         SetMaxPathDepth(5);if(pIntegrator->GetSolver()) pIntegrator->GetSolver()->SetSpecularCasters(objects);
     }
 };
+
+class R16UnitExtinction final : public ISubSurfaceExtinctionFunction, public Reference {
+public:
+    Scalar GetMaximumDistanceForError(Scalar error) const override {return error>0?1e9:0;}
+    RISEPel ComputeTotalExtinction(Scalar) const override {return RISEPel(1);}
+};
+static void NativeOctreeConcurrentBuilds() {
+    PointSetOctree::PointSet points;
+    for(unsigned i=0;i<512;++i) {
+        PointSetOctree::SamplePoint point;
+        const auto coord=[i](unsigned lane) {return (Scalar(SobolSequence::HashCombine(i+17,lane+43)&65535)+.5)/65536;};
+        point.ptPosition=Point3(coord(0),coord(1),coord(2));point.irrad=RISEPel(1);points.push_back(point);
+    }
+    const BoundingBox box(Point3(0,0,0),Point3(1,1,1));
+    R16UnitExtinction extinction;
+    RayIntersectionGeometric hit(Ray(Point3(3,2,1),Vector3(0,0,-1)),nullRasterizerState);
+    {PointSetOctree prime(box,2);Check(prime.AddElements(points,8),"octree concurrency fixture primes shared logger before workers");}
+    std::array<Scalar,8> results{};std::vector<std::thread> workers;
+    for(unsigned lane=0;lane<8;++lane) workers.emplace_back([&,lane] {
+        for(unsigned repeat=0;repeat<32;++repeat) {
+            PointSetOctree tree(box,2);auto local=points;
+            if(!tree.AddElements(local,8)) {results[lane]=-1;return;}
+            RISEPel value(0.0);tree.Evaluate(value,Point3(3,2,1),extinction,1,nullptr,hit);
+            if(value[0]!=512 || value[1]!=512 || value[2]!=512) {results[lane]=-2;return;}
+        }
+        results[lane]=512;
+    });
+    for(auto& worker:workers) worker.join();
+    for(Scalar result:results) Check(result==512,"concurrent independent octrees retain the exact full leaf sum");
+}
+static void NativeCachedSSSProvenance() {
+    for(bool skin:{false,true}) for(bool winding:{false,true}) for(unsigned mode=0;mode<4;++mode)
+    for(char blend:{'=', '+'}) for(bool reference:{false,true}) for(bool initiallyLegacy:{false,true}) for(unsigned salt=0;salt<4;++salt) {
+        const Scalar side=winding?-1:1;
+        Fixture f(Materials()+"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+            +QuadMesh("body_geo",0,-.5,.5,winding)+SceneObject("body","body_geo","diffuse")
+            +QuadMesh("mirror_geo",4*side,-20,20,winding)+SceneObject("mirror","mirror_geo","mirror")
+            +"omni_light\n{\n name source\n position 3 0 "+std::to_string(side)+"\n color 1 1 1\n power 1000000\n}\n");
+        std::vector<const IObject*> objects;ManifoldSolver::EnumerateSpecularCasters(f.Scene(),objects);
+        SMSReferenceCounters counters;ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=reference;
+        cfg.targetBounces=1;cfg.biased=true;cfg.multiTrials=1;cfg.seedingMode=ManifoldSolverConfig::eSeedingUniform;cfg.referenceCounters=&counters;
+        StabilityConfig stability;stability.rrMinDepth=20;
+        auto* captureOp=new SSSTestShaderOp(cfg,stability,objects);IShader* capture=nullptr;
+        Check(RISE_API_CreateStandardShader(&capture,{captureOp}),"cached SSS native PT capture shader created");
+        auto* extinction=new R16UnitExtinction;
+        IShaderOp* cached=skin?static_cast<IShaderOp*>(new DonnerJensenSkinSSSShaderOp(16,.001,2,8,1,*capture,true,
+                .05,.5,.002,.0002,.01,.1,1.4,1.4,.7))
+            :static_cast<IShaderOp*>(new SubSurfaceScatteringShaderOp(16,1,2,8,1,false,true,*capture,*extinction,true,true));
+        IShaderOp* direct=nullptr;
+        Check(RISE_API_CreateDirectLightingShaderOp(&direct,nullptr),"cached SSS ordinary direct operation created");
+        IShader* output=nullptr;const char operations[3]={'=',blend,0};
+        Check(RISE_API_CreateAdvancedShader(&output,{direct,cached},{0,0},{16,16},operations),"cached SSS native composition shader created");
+        auto* caster=new SSSObservedCaster(*output);caster->AttachScene(&f.Scene());
+        const unsigned seed=SobolSequence::HashCombine(19711+salt,0x53535316);SobolSamplerTestHooks::ValueSalt().store(seed);
+        RandomNumberGenerator random(seed);RuntimeContext rc(random,RuntimeContext::PASS_NORMAL,false);
+        rc.pStabilityConfig=&stability;IORStack air(1);IRayCaster::RAY_STATE rs;
+        const Ray ray(Point3(0,0,side),Vector3(0,0,-side));
+        const auto call=[&](bool legacy) {
+            rc.smsReferenceRadiance=false;SMSLegacyModeScope force(rc,legacy);
+            Scalar value=0;
+            if(mode==0) {RISEPel c(0.0);caster->CastRay(rc,nullRasterizerState,ray,c,rs,nullptr,nullptr,air);value=c[0];}
+            else if(mode<3) caster->CastRayNM(rc,nullRasterizerState,ray,value,rs,mode==1?450:650,nullptr,nullptr,air);
+            else {auto swl=SampledWavelengths::SampleEquidistant(.175,380,780);Scalar values[SampledWavelengths::N]{};
+                caster->CastRayHWSS(rc,nullRasterizerState,ray,values,rs,swl,nullptr,nullptr,air);value=values[0];}
+            Check(value>0,"cached SSS native return has positive radiance");
+            const bool expected=reference && !legacy && mode<3;
+            Check(rc.smsReferenceRadiance==expected,"cached SSS assignment/addition returns the matching reference provenance");
+            return value;
+        };
+        const Scalar first=call(initiallyLegacy);const auto firstCount=counters.proposalTrials.load();
+        const Scalar reused=call(initiallyLegacy);
+        Check(first==reused,"cached SSS raster-value reuse is bit-identical");
+        Check(counters.proposalTrials.load()==firstCount,"cached SSS value reuse does not rebuild irradiance");
+        if(reference && !initiallyLegacy && mode<3) Check(firstCount>0,"cached SSS capture contains actual reference proposals");
+        else Check(firstCount==0,"legacy/HWSS cached SSS capture cannot run reference proposals");
+        const Scalar switched=call(!initiallyLegacy);const auto switchedCount=counters.proposalTrials.load();
+        if(reference && initiallyLegacy && mode<3) Check(switchedCount>firstCount,"legacy-to-extended SSS cache transition rebuilds matching capture");
+        else if(reference && mode<3) Check(switchedCount==firstCount,"extended-to-legacy SSS cache transition does not run reference proposals");
+        const Scalar returned=call(initiallyLegacy);
+        Check(returned==first,"cached SSS mode transition retains the original irradiance cache");
+        std::cout<<"R16 cached skin="<<skin<<" winding="<<winding<<" mode="<<mode<<" reference="<<reference
+            <<" blend="<<blend<<" initialLegacy="<<initiallyLegacy<<" salt="<<salt<<" value="<<first<<" switched="<<switched<<" proposals="<<switchedCount<<'\n';
+        {RuntimeContext fresh(random,RuntimeContext::PASS_NORMAL,false);RISEPel state(0.0);
+            fresh.StateCache_SetState(cached,RISEPel(3),f.Object("body"),nullRasterizerState);
+            Check(!fresh.StateCache_HasStateChanged(cached,state,f.Object("body"),nullRasterizerState)&&state[0]==3,
+                "state cache owns a value inserted before any lookup");}
+        caster->release();output->release();direct->release();cached->release();extinction->release();capture->release();captureOp->release();
+    }
+    SobolSamplerTestHooks::ValueSalt().store(0);
+}
 static void NativeSSSReferenceClamps(bool replacement=false,char blend='=') {
     const bool replacing=replacement&&blend=='=';
     for(bool randomWalk:{false,true}) for(bool winding:{false,true}) for(bool reference:{true,false}) {
@@ -3195,6 +3287,18 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--r6-weld-range-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeWeldCoordinateRange();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r16-cached-sss-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCachedSSSProvenance();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r16-octree-concurrency-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeOctreeConcurrentBuilds();
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }

@@ -256,25 +256,28 @@ namespace RISE
 			const IReference* pObj,
 			const RISEPel& c, 
 			const IObject* pObject,
-			const RasterizerState& rast
+			const RasterizerState& rast,
+            bool referenceRadiance = false, unsigned mode = 0
 			) const
 		{
 			RasterizerStateCache* pCache = 0;
 			StateCacheMapType::iterator it = stateCaches.find( pObj );
 			if( it == stateCaches.end() ) {
 				pCache = new RasterizerStateCache();
+                stateCaches[pObj] = pCache;
 			} else {
 				pCache = it->second;
 			}
 
-			pCache->SetState( c, pObject, rast );
+			pCache->SetState( c, pObject, rast, referenceRadiance, mode );
 		}
 
 		bool StateCache_HasStateChanged(
 			const IReference* pObj,
 			RISEPel& c,
 			const IObject* pObject,
-			const RasterizerState& rast
+			const RasterizerState& rast,
+            bool* referenceRadiance = nullptr, unsigned mode = 0
 			) const
 		{
 			RasterizerStateCache* pCache = 0;
@@ -287,7 +290,7 @@ namespace RISE
 				pCache = it->second;
 			}
 
-			return pCache->HasStateChanged( c, pObject, rast );
+			return pCache->HasStateChanged( c, pObject, rast, referenceRadiance, mode );
 		}
 	};
 	// RuntimeContext is worker-local. Restore the caller's mode on every exit,

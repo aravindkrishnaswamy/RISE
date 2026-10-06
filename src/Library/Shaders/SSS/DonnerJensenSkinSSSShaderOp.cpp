@@ -774,6 +774,8 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	) const
 {
 	c = RISEPel( 0.0 );
+    SMSReferenceRadianceScope returnRadiance(rc);
+    const auto cacheKey=std::make_pair(ri.pObject,rc.smsForceLegacy);
 
 	const IScene* pScene = caster.GetAttachedScene();
 	if( !pScene ) return;
@@ -799,7 +801,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	// State cache check
 	if( cache )
 	{
-		if( !rc.StateCache_HasStateChanged( this, c, ri.pObject, ri.geometric.rast ) )
+		if( !rc.StateCache_HasStateChanged( this, c, ri.pObject, ri.geometric.rast, &rc.smsReferenceRadiance, unsigned(rc.smsForceLegacy) ) )
 			return;
 	}
 
@@ -822,7 +824,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	PointSetOctree* ps = 0;
 	{
 		std::lock_guard<RMutex> guard( create_mutex );
-		PointSetMap::iterator it = pointsets.find( ri.pObject );
+		PointSetMap::iterator it = pointsets.find( cacheKey );
 		if( it == pointsets.end() )
 		{
 			// SSS point-set generation uniformly samples the object's SURFACE via
@@ -841,7 +843,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 			const IGeometry* pSSSGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
 			if( !pSSSGeom || !pSSSGeom->CanBeAreaLight() ) {
 				GlobalLog()->PrintEasyWarning( "DonnerJensenSkinSSSShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false, or no directly-owned geometry, e.g. a csg_object); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
-				pointsets[ri.pObject] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
+				pointsets[cacheKey] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
 				c = RISEPel( 0.0 );
 				return;
 			}
@@ -877,13 +879,14 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 			// find-or-build race above, so consuming that thread's rc.random STATE made
 			// the captured irradiance vary run-to-run.  buildRc leaves pSampler null so
 			// the irradiance shade falls back to buildRng, not the (also
-			// scheduling-dependent) QMC sampler; the shade reads only {random,
-			// pSampler, pass} from the CONTEXT, so the 3-arg ctor carries all it needs.
+			// scheduling-dependent) QMC sampler; the capture keeps fresh owning caches and copies the
+            // anchor legacy-mode bit below; its sampling uses {random, pSampler, pass}.
 			// (The OTHER half of the fix is the sample-point geometric frame set on
 			// newri below -- without it the build still craters: for a delta light the
 			// RNG here does not even affect the value, but the frame does.)
 			RandomNumberGenerator buildRng( 0x9E3779B9u );	// fixed seed (golden ratio)
 			RuntimeContext buildRc( buildRng, rc.pass, rc.bThreaded );
+            buildRc.smsForceLegacy=rc.smsForceLegacy;
 
 			for( unsigned int i = 0; i < numPoints; i++ )
 			{
@@ -940,7 +943,11 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 				newri.geometric.bHasTangent = false;
 				newri.geometric.ray.Advance( 1e-8 );
 
-				shader.Shade( buildRc, newri, caster, rs, sp.irrad, ior_stack );
+				{
+                    SMSReferenceRadianceScope sampleRadiance(buildRc);
+                    shader.Shade( buildRc, newri, caster, rs, sp.irrad, ior_stack );
+                    sp.smsReferenceRadiance=sampleRadiance.HasReferenceRadiance();
+                }
 
 				if( ColorMath::MaxValue(sp.irrad) > 0 )
 				{
@@ -958,7 +965,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 			}
 
 			// Store even if null — prevents repeated generation attempts
-			pointsets[ri.pObject] = ps;
+			pointsets[cacheKey] = ps;
 		}
 		else
 		{
@@ -1008,26 +1015,28 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 			const Scalar lut_r2_step = lut_r2_max / TABLE_SIZE;
 			LocalProfile profile( local_table, lut_r2_max, lut_r2_step, m_max_distance_lut );
 
-			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric );
+			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric, nullptr, 1.0, &rc.smsReferenceRadiance );
 		}
 		else if( exteriorIOR == 1.0 )
 		{
 			// Uniform skin: use base table via *this, zero overhead
-			ps->Evaluate( c, ri.geometric.ptIntersection, *this, error, 0, ri.geometric );
+			ps->Evaluate( c, ri.geometric.ptIntersection, *this, error, 0, ri.geometric, nullptr, 1.0, &rc.smsReferenceRadiance );
 		}
 		else
 		{
 			// Uniform skin in a non-air exterior: that exterior's table (DL-291)
 			LocalProfile profile( TablesForExterior( exteriorIOR ).Rd, m_table_r2_max, m_table_r2_step, m_max_distance );
-			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric );
+			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric, nullptr, 1.0, &rc.smsReferenceRadiance );
 		}
 
 		// Normalize by sample count (each sample's irradiance * dA already applied)
 		c = c * (1.0 / Scalar(numPoints));
 	}
 
+    if(c[0]==0 && c[1]==0 && c[2]==0) rc.smsReferenceRadiance=false;
+
 	if( cache )
-		rc.StateCache_SetState( this, c, ri.pObject, ri.geometric.rast );
+		rc.StateCache_SetState( this, c, ri.pObject, ri.geometric.rast, rc.smsReferenceRadiance, unsigned(rc.smsForceLegacy) );
 }
 
 Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
@@ -1066,10 +1075,13 @@ Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
 	// EnsurePositve first, also per that twin (and FinalGatherShaderOp):
 	// FromRGB scales by the MAX CHANNEL, so a single negative component
 	// flips the scale's sign and corrupts every wavelength.
+	SMSReferenceRadianceScope returnRadiance(rc);
 	RISEPel c;
 	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
 	ColorMath::EnsurePositve( c );
-	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
+	const Scalar result=RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
+    if(result==0) rc.smsReferenceRadiance=false;
+    return result;
 }
 
 void DonnerJensenSkinSSSShaderOp::ResetRuntimeData() const
