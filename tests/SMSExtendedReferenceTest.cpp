@@ -1894,6 +1894,115 @@ static void NativeAuthoredOpticalPrices() {
         Check(unresolved[kind]>0&&regular[kind]>0,"each authored native provider covers unresolved and neighboring regular controls");}
 }
 
+class NativeNormalizationBoundary final : public AuditedIdentityFrameModifier {
+    Scalar magnitude, origin, slope;
+public:
+    NativeNormalizationBoundary(Scalar m,Scalar x,Scalar s):magnitude(m),origin(x),slope(s) {}
+    void Modify(RayIntersectionGeometric& hit) const override {
+        hit.onb=OrthonormalBasis3D(hit.onb.u(),hit.onb.v(),hit.onb.w()*(magnitude+slope*(hit.ptIntersection.x-origin)));
+    }
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
+        Vector3& normal,Vector3& frameW) const override {
+        normal=d.normal;frameW=d.frameW*(magnitude+slope*(raw.ptIntersection.x-origin))+raw.onb.w()*(slope*d.worldPoint.x);return true;
+    }
+};
+static void NativeFinalNormalizationBranches() {
+    unsigned unresolved=0,regular=0;
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true})
+    for(Scalar boundary:{Scalar(1)-1e-6,Scalar(1)+1e-6}) for(Scalar offset:{Scalar(-1e-4),Scalar(-5e-10),Scalar(5e-10),Scalar(1e-4)}) {
+        Fixture f(Materials()+QuadMesh("patch",0,-8,8,reverse)+SceneObject("caster","patch","mirror",transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":""));
+        const auto* object=f.Object("caster");const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(.1,.2,0));
+        const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalInverseTransformMatrix()),Vector3(0,0,side)));
+        const Vector3 u=Vector3Ops::Normalize(Vector3Ops::Transform(object->GetFinalTransformMatrix(),Vector3(1,0,0)));
+        const Vector3 incoming=Vector3Ops::Normalize(u*.5-n);
+        const Point3 start=Point3Ops::mkPoint3(center,-incoming);
+        RayIntersection hit(Ray(start,incoming),nullRasterizerState);f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+        Check(hit.geometric.bHit,"normalization boundary traces native indexed mesh");if(!hit.geometric.bHit) continue;
+        auto* modifier=new NativeNormalizationBoundary(boundary+offset,hit.geometric.ptIntersection.x,1);
+        f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->Modify(hit.geometric);
+        IORStack air(1);air.SetCurrentObject(object);RandomNumberGenerator random(414);IndependentSampler sampler(random);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            const auto native=NativeReflectionEvent(hit.geometric,*hit.pMaterial,air,domain,sampler);
+            const Point3 end=Point3Ops::mkPoint3(center,native.second);
+            const Scalar displacement=std::sqrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(start,end)/8;
+            bool certain=true;const bool branch=std::fabs(Vector3Ops::Magnitude(hit.geometric.onb.w())-1)>1e-6;
+            for(int sign:{-1,1}) for(Scalar fraction:{Scalar(1),Scalar(.5)}) {
+                const Point3 point=Point3Ops::mkPoint3(center,u*(sign*fraction*displacement));
+                RayIntersection probe(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(point,start))),nullRasterizerState);
+                object->IntersectRay(probe,RISE_INFINITY,true,true,false);Check(probe.geometric.bHit,"native normalization full/half probe hits");
+                if(!probe.geometric.bHit) {certain=false;continue;}
+                modifier->Modify(probe.geometric);
+                certain=certain&&(branch==(std::fabs(Vector3Ops::Magnitude(probe.geometric.onb.w())-1)>1e-6));
+                const auto event=NativeReflectionEvent(probe.geometric,*hit.pMaterial,air,domain,sampler);
+                Check(event.first>0&&Vector3Ops::Magnitude(event.second)>0,"actual native normalization probe has reflected support");
+            }
+            SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.normal=hit.geometric.onb.w();
+            record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;
+            std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+            auto* solver=new ManifoldSolver(cfg);const auto result=solver->SolveDomain(start,n,end,-native.second,f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
+            if(certain) {++regular;Check(result.valid,"neighboring resolved native normalization root remains eligible");}
+            else {++unresolved;Check(!result.valid,"native normalization branch crossing inside final root band is an ordinary zero");}
+            std::cout<<"R14 normalization winding="<<reverse<<" side="<<side<<" transformed="<<transformed<<" boundary="<<std::setprecision(17)<<boundary
+                <<" offset="<<offset<<" certain="<<certain<<" accepted="<<result.valid<<'\n';solver->release();
+        }
+        modifier->release();
+    }
+    Check(unresolved>0&&regular>0,"both unresolved native normalization branches and regular controls execute");
+    std::cout<<"R14 normalization unresolved="<<unresolved<<" regular="<<regular<<'\n';
+}
+static void NativePrimitiveLocalNormals() {
+    for(bool indexed:{false,true}) for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true}) for(Scalar width:{Scalar(1e-7),Scalar(1e-3)}) {
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+SceneObject("caster","patch","mirror",transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":""));
+        ITriangleMeshGeometryIndexed* mesh=nullptr;ITriangleMeshGeometry* plain=nullptr;
+        if(indexed) Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,false),"native strip indexed mesh created");
+        else Check(RISE_API_CreateTriangleMeshGeometry(&plain,true),"native strip nonindexed mesh created");
+        if(mesh) mesh->BeginIndexedTriangles();if(plain) plain->BeginTriangles();
+        const std::array<Scalar,6> columns{-2,-2*width,-width,width,2*width,2};
+        for(unsigned j=0;j<5;++j) for(unsigned half=0;half<2;++half) {
+            const Point3 a(columns[j],-2,0),b(columns[j+1],-2,0),c(columns[j+1],2,0),d(columns[j],2,0);
+            Triangle t;t.vertices[0]=a;t.vertices[1]=half?c:b;t.vertices[2]=half?d:c;
+            if(reverse) std::swap(t.vertices[1],t.vertices[2]);
+            for(unsigned k=0;k<3;++k) {
+                const Scalar x=t.vertices[k].x,theta=.1+(x==-width?-.2*width:x==width?.2*width:0);
+                t.normals[k]=Vector3(std::sin(theta),0,std::cos(theta))*(reverse?-1:1);t.coords[k]=Point2((x+2)/4,(t.vertices[k].y+2)/4);
+            }
+            if(plain) plain->AddTriangle(t);
+            if(mesh) {IndexedTriangle out;for(unsigned k=0;k<3;++k) {out.iVertices[k]=mesh->numPoints();out.iNormals[k]=mesh->numNormals();out.iCoords[k]=mesh->numCoords();mesh->AddVertex(t.vertices[k]);mesh->AddNormal(t.normals[k]);mesh->AddTexCoord(t.coords[k]);}mesh->AddIndexedTriangle(out);}
+        }
+        if(mesh) {mesh->DoneIndexedTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*mesh);safe_release(mesh);}
+        if(plain) {plain->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*plain);safe_release(plain);}
+        dynamic_cast<const ObjectManager*>(f.Scene().GetObjects())->InvalidateSpatialStructure();f.job->GetObjects()->PrepareForRendering();
+        const auto* object=f.Object("caster");const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(0,.3,0));
+        const Point3 start=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(-.5,.3,3*side));
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+        Check(hit.geometric.bHit&&hit.pObject==object&&!hit.pModifier,"native strip root hits interior authored geometry");if(!hit.geometric.bHit) continue;
+        IORStack air(1);air.SetCurrentObject(object);RandomNumberGenerator random(415);IndependentSampler sampler(random);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            const auto native=NativeReflectionEvent(hit.geometric,*hit.pMaterial,air,domain,sampler);const Point3 end=Point3Ops::mkPoint3(center,native.second*3);
+            SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.normal=hit.geometric.onb.w();record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;
+            std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+            auto* solver=new ManifoldSolver(cfg);const auto result=solver->SolveDomain(start,hit.geometric.vNormal,end,-native.second,f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
+            Check(result.valid,"locally regular native authored strip root stays eligible");
+            if(result.valid) {
+                NativeConstraintOracle oracle(cfg,&vertices,domain);std::vector<Scalar> diag,upper,lower;oracle.BuildJacobian(result.specularChain,start,end,diag,upper,lower,true);
+                std::array<Scalar,4> reference{};
+                for(unsigned column=0;column<2;++column) {
+                    auto plus=result.specularChain,minus=plus;const Scalar step=width/64;
+                    Check(oracle.ProjectIndependent(plus[0],column?0:step,column?step:0)&&oracle.ProjectIndependent(minus[0],column?0:-step,column?-step:0),"independent native strip probes stay inside local triangles");
+                    std::vector<Scalar> a,b;oracle.EvaluateConstraint(plus,start,end,a);oracle.EvaluateConstraint(minus,start,end,b);
+                    for(unsigned row=0;row<2;++row) reference[2*row+column]=(a[row]-b[row])/(2*step);
+                }
+                Scalar error=0;for(unsigned i=0;i<4;++i) error=std::max(error,std::fabs(diag[i]-reference[i]));
+                const Scalar determinant=std::fabs(reference[0]*reference[3]-reference[1]*reference[2]);
+                Check(error<1e-5,"native authored-normal Jacobian matches primitive-local residual probes");
+                Check(std::fabs(result.jacobianDet-determinant)<1e-5,"native root geometry price uses primitive-local derivative determinant");
+                std::cout<<"R14 strip indexed="<<indexed<<" winding="<<reverse<<" side="<<side<<" transformed="<<transformed<<" width="<<width<<" jacobian_error="<<error<<" determinant="<<result.jacobianDet<<" reference="<<determinant<<'\n';
+            }
+            solver->release();
+        }
+    }
+}
+
 static void NativeCoatedSaturatedFallback() {
     for(unsigned film=0;film<4;++film) for(bool reverse:{false,true}) for(int side:{-1,1})
     for(bool transformed:{false,true}) for(unsigned shape=0;shape<4;++shape) {
@@ -3073,6 +3182,18 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--r6-weld-range-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeWeldCoordinateRange();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r14-normalization-branch-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeFinalNormalizationBranches();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r14-primitive-local-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativePrimitiveLocalNormals();
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
