@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed gate freezes native/test checkpoint `f5f04b1f5601dc9ff856e065ad9ae4cba559fb57`: 35 make modes /412084 reported checks /0 failures, sixteen actual Xcode-linked controls, eight rebuilt native controls, and ten sanitizer modes with all374 linked project units instrumented. Both updated Xcode configurations pass clean builds with zero owned diagnostics. Round6 findings are repaired under the user-adopted composed-input correction. Fresh Round7 completed on `01fcb931e` with two P1 implementation findings and one P2 coverage gap. Native witnesses and repairs have resumed; this changed tree requires replacement gates and review before integration. The recorded gate explicitly composes unchanged-source evidence across the toolchain interruption; its provenance and limits appear in the final section below. Earlier sections are historical checkpoint records; their pending-review statements describe those checkpoints and do not supersede this status.
+The current completed gate freezes native/test checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853`:39 make modes /414590 reported checks /0 failures,24 actual Xcode-linked controls and14 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. Both Round7 P1 repairs and the curved-UV P2 coverage repair have fresh committed-source proofs and replacement gates. Fresh independent Round8 review remains required before integration. Earlier sections are historical checkpoint records; the final section records the current gate.
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
 
@@ -1335,3 +1335,29 @@ The UV repair passes23/0; curved generated-UV control passes425/0 in both incide
 ### Round 7 focused repair greens (2026-10-05)
 
 Checked warning-free focused builds pass UV-root23/0, scene-signal1665/0, curved-UV425/0 and signal point/spot production393/0. The final signal test starts from a different traced seed context and solves back to the independently priced native root; it checks current final world coordinates and scene/self provenance. Modifier/differential inputs use the same completion routine. Point/spot fixtures use an off-diagonal real indexed-mesh root: the first varying-price fixture landed on a conservatively rejected chart seam and its333/60 log is preserved, not counted as a pass. The analytic reference and original n4/3SD bands are unchanged. Corrected committed-source reds, full replacement gates and a fresh review are pending.
+
+## Fresh Round 8 replacement gate (2026-10-05)
+
+Native/test checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853`; master `08552560b54b517b7a8a0696eb9d317953b26bbe`. Evidence: .claude/logs/sms-phase2-round8-final/, including source.json, proofs/results.json, final-gate/completed-summary.json, phase2-interleaved-cost.json and production-memory.log. All20 native and four test hashes verify. This gate reruns all six coherent committed rollback scenarios with current tests, all eight alternating A/B library/test builds and16 salted render comparisons, clean make and both actual Xcode configurations, the complete regression gate and full-project sanitizers. No Round7 result substitutes for this Round8 gate.
+
+| Gate | Result |
+|---|---|
+| Clean make |376 compilation units /0 diagnostics |
+| Actual Xcode Deployment / Opto |393 /393 units /0 owned diagnostics |
+| Make regressions |20 executables /39 modes /414590 reported checks /0 failures; CST reported separately |
+| Actual Xcode-linked controls |24 runs /406140 checks /0 failures |
+| Full ASan/UBSan including float-cast-overflow |all374 linked project units,14 modes /238826 checks /0 failures; third-party libraries uninstrumented |
+| Committed weld conversion proof |native float-cast UB reproduced, diagnostic-qualified exit1 or SIGABRT; restored weld37/0 and UV321/0 |
+| Process memory |production393/0; maximum RSS102334464 bytes; peak footprint82100752 bytes |
+| Scratch output invariant |40 salted production means; maximum0.0 double ULP vs pre-storage-refactor |
+| Mode-off pixels |all16 salted comparisons within adopted one-float32-ULP bound |
+
+Fresh committed-source reds: pre-r7-numerical-red: 3 passed, 20 failed; pre-r7-r7-signals-only-red: 945 passed, 400 failed; pre-r7-r7-signal-production-only-red: 353 passed, 40 failed; pre-transform-numerical-red: 281 passed, 60 failed; pre-composed-numerical-red: 321 passed, 30 failed; pre-composed-unsupported-red: 1005 passed, 76 failed; pre-composed-hygiene-red: (scanned 456 test files) 170 passed, 2 failed.; pre-differential-numerical-red: 36067 passed, 10 failed; pre-differential-r5-preparation-only-red: 23 passed, 8 failed; pre-differential-r5-provenance-only-red: 33 passed, 8 failed; pre-scratch-numerical-red: 177 passed, 24 failed; native-master-numerical-red: 127 passed, 50 failed. The first Round8 attempt stopped on a baseline test compilation error after completing five rollback scenarios; its logs are preserved under proofs-attempt1/. The unchanged quad-mesh helper was moved outside the optional-interface guard in7c7248a4b, then the entire pipeline was rerun. The failed build is not a numerical proof.
+
+The native repair shares ObjectManager::CompleteShadingSignals with direct SMS final refresh, enclosing capture, modifier and differential inputs. It stamps current scene/self/world provenance while retaining native primitive payload. Irrelevant UV/frame comparisons follow the audited material and modifier input dependency; geometry/normal equivalence and finite contexts remain required. Curved generated-UV coverage exercises nonzero normal input derivatives and a deliberate omitted-term control.
+
+Paired render-time changes, percent mean ± sample SD, n4, one worker, reserve_count0: RGBk1 +0.945183 ±1.511301; RGBk2 +0.739550 ±1.531106; NM +1.593759 ±1.061928; HWSS +1.901903 ±1.238740. Separate A/B times, SDs and pixel precision records remain in phase2-interleaved-cost.json. No zero-overhead claim. Original narrow-cone channelwise three-combined-SD bands and the previously accepted wide-cone measure-only treatment remain unchanged; no DL420 closure.
+
+All12 narrow-cone channel comparisons pass the original three-combined-SD band;5 of6 wide-cone measurements fall within it. Outside-band measurement: winding0, component0, extended0.62896691331016064 ±0.00019614427847928844, BDPT0.63006257853459957 ±8.3591266312714821e-05, -0.17389784% /-5.13881272 combined SD. This is the user-accepted measure-only discrepancy; no band is widened. All16 mode-off comparisons pass;15 images are float32-identical, and one NM image has one component differing by one ULP.
+
+Fresh independent Round8 review is next. Phase2 remains unmerged; no ledger closure, new row or push is claimed.
