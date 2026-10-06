@@ -1495,30 +1495,31 @@ static void NativeHorizonFallbacks(unsigned fields=0) {
 }
 
 class AuditedScaledNormal final : public AuditedIdentityFrameModifier {
-    bool varying, frame;
+    bool varying, frame; Scalar magnitude, tilt;
 public:
-    explicit AuditedScaledNormal(bool varying_,bool frame_=false) : varying(varying_),frame(frame_) {}
+    explicit AuditedScaledNormal(bool varying_,bool frame_=false,Scalar magnitude_=2,Scalar tilt_=.1)
+        : varying(varying_),frame(frame_),magnitude(magnitude_),tilt(tilt_) {}
     static Vector3 Rotate(const Vector3& n,Scalar a) {
         return Vector3(std::cos(a)*n.x+std::sin(a)*n.z,n.y,-std::sin(a)*n.x+std::cos(a)*n.z);
     }
     void Modify(RayIntersectionGeometric& hit) const override {
-        const Vector3 value=Rotate(frame?hit.onb.w():hit.vNormal,(frame?.1:0)+(varying?.025*hit.ptIntersection.x:0))
-            *(2+(varying?.2*hit.ptIntersection.x:0));
+        const Vector3 value=Rotate(frame?hit.onb.w():hit.vNormal,(frame?tilt:0)+(varying?.025*hit.ptIntersection.x:0))
+            *(magnitude+(varying?(magnitude==2?.2:1e-8)*hit.ptIntersection.x:0));
         if(frame) hit.onb=OrthonormalBasis3D(hit.onb.u(),hit.onb.v(),value);
         else hit.vNormal=value;
     }
     bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
         Vector3& normal,Vector3& frameW) const override {
-        const Scalar angle=(frame?.1:0)+(varying?.025*raw.ptIntersection.x:0);
+        const Scalar angle=(frame?tilt:0)+(varying?.025*raw.ptIntersection.x:0);
         const Vector3 base=Rotate(frame?raw.onb.w():raw.vNormal,angle);
         const Vector3 derivative=Rotate(frame?d.frameW:d.normal,angle)
             +Vector3(base.z,0,-base.x)*(varying?.025*d.worldPoint.x:0);
-        const Vector3 result=derivative*(2+(varying?.2*raw.ptIntersection.x:0))
-            +base*(varying?.2*d.worldPoint.x:0);
+        const Vector3 result=derivative*(magnitude+(varying?(magnitude==2?.2:1e-8)*raw.ptIntersection.x:0))
+            +base*(varying?(magnitude==2?.2:1e-8)*d.worldPoint.x:0);
         normal=frame?d.normal:result;frameW=frame?result:d.frameW;return true;
     }
 };
-static void NativeScaledPolishedNormals(bool frame=false) {
+static void NativeScaledPolishedNormals(bool frame=false,Scalar magnitude=2) {
     for(const char* material: frame?std::vector<const char*>{"mirror","glass","dielectric","coated"}:std::vector<const char*>{"polished"})
     for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true}) for(bool varying:{false,true}) {
         const std::string transform=transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"";
@@ -1527,7 +1528,7 @@ static void NativeScaledPolishedNormals(bool frame=false) {
             +"dielectric_material\n{\n name dielectric\n tau 1\n ior triple\n scattering 1e30\n}\n"
             +"dielectric_material\n{\n name coated\n tau 1\n ior triple\n scattering 1e30\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
             +QuadMesh("patch",0,-8,8,reverse)+SceneObject("caster","patch",material,transform));
-        auto* modifier=new AuditedScaledNormal(varying,frame);
+        auto* modifier=new AuditedScaledNormal(varying,frame,magnitude);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const auto* object=f.Object("caster");
         const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(.3,.2,0));
@@ -1541,7 +1542,7 @@ static void NativeScaledPolishedNormals(bool frame=false) {
         Check(hit.geometric.bHit && hit.pObject==object,"scaled native normal fixture traces its actual indexed surface");
         if(!hit.geometric.bHit) continue;
         modifier->Modify(hit.geometric);
-        Check(Vector3Ops::Magnitude(frame?hit.geometric.onb.w():hit.geometric.vNormal)>1.5,"audited provider genuinely supplies a nonunit shading normal");
+        Check(std::fabs(Vector3Ops::Magnitude(frame?hit.geometric.onb.w():hit.geometric.vNormal)-1)>0,"audited provider genuinely supplies a nonunit shading normal");
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
         auto* solver=new ManifoldSolver(cfg);RandomNumberGenerator random(893);IndependentSampler sampler(random);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
@@ -1582,6 +1583,59 @@ static void NativeScaledPolishedNormals(bool frame=false) {
             Check(reflected>=1,"both indexed windings/incidences provide one native reflected delta lobe");
         }
         solver->release();
+    }
+}
+
+static void NativeCoatedScaledTIR() {
+    for(bool reverse:{false,true}) for(bool transformed:{false,true}) for(int medium=0;medium<4;++medium) {
+        const bool open=medium==0;
+        const std::string transform=transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"";
+        Fixture f(Materials()+"dielectric_material\n{\n name coated_tir\n tau 1\n ior 1.5\n scattering 1e30\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
+            +Mesh(!open,reverse)+SceneObject("caster","shape","coated_tir",transform)
+            +(medium>=2?"perfectrefractor_material\n{\n name outer_mat\n refractance white\n ior 1.1\n}\n"
+                "sphere_geometry\n{\n name outer_shape\n radius 20\n}\n"+SceneObject("outer","outer_shape","outer_mat"):""));
+        auto* modifier=new AuditedScaledNormal(false,true,2,0);
+        f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        const auto* object=f.Object("caster");
+        const Scalar z=open?-1:1;
+        const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(.2,.3,z));
+        const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalInverseTransformMatrix()),Vector3(0,0,open?(reverse?1:-1):1)));
+        const Vector3 u=Vector3Ops::Normalize(Vector3Ops::Transform(object->GetFinalTransformMatrix(),Vector3(1,0,0)));
+        const Point3 start=Point3Ops::mkPoint3(center,-n*.2-u*(.2*std::tan(61*DEG_TO_RAD)));
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+        f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+        Check(hit.geometric.bHit&&hit.pObject==object,"coated scaled TIR traces actual open/closed indexed boundary");
+        if(!hit.geometric.bHit||hit.pObject!=object) continue;
+        modifier->Modify(hit.geometric);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(550),SMSQueryDomain::NM(650)}) {
+            IORStack stack(1);
+            if(medium==2) {stack.SetCurrentObject(f.Object("outer"));stack.push(1.1);}
+            stack.SetCurrentObject(object);if(!open) stack.push(1.5);
+            if(medium==3) {stack.SetCurrentObject(f.Object("outer"));stack.push(1.3);stack.SetCurrentObject(object);}
+            RandomNumberGenerator random(893);IndependentSampler sampler(random);ScatteredRayContainer rays;
+            if(domain.kind==SMSQueryDomain::Wavelength) hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,domain.nm,rays,stack);
+            else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,stack);
+            unsigned reflections=0,transmissions=0;
+            for(unsigned j=0;j<rays.Count();++j) {
+                const auto& ray=rays[j];const Scalar native=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
+                if(native==0||!ray.isDelta) continue;
+                if(ray.type!=ScatteredRay::eRayReflection) {++transmissions;continue;} ++reflections;
+                Check(std::fabs(native-1)<1e-12,"native coated TIR has mandatory unit reflection");
+                IORStack replay(stack);Scalar etaI=0,etaT=0,price=0;bool exiting=false;
+                Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,true,replay,etaI,etaT,exiting)
+                    &&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,domain,true,exiting,etaI,etaT,0,price)
+                    &&std::fabs(price-native)<1e-12,"coated replay cannot overwrite actual TIR with raw-cosine film reflectance");
+                SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.pObject=object;
+                record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;
+                std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+                auto* solver=new ManifoldSolver(cfg);const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*.4);
+                const auto result=solver->SolveDomain(start,n,end,-ray.ray.Dir(),f.Scene(),stack,domain,vertices,sampler,1e-7,1e-10);
+                Check(result.valid&&std::fabs(result.contributionNM-native)<1e-12,"coated scaled TIR solved-root price matches native SPF");
+                if(result.valid) CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),stack,domain,sampler);
+                solver->release();
+            }
+            Check(reflections>0&&transmissions==0,"coated TIR produces reflection and no transmission");
+        }
     }
 }
 
@@ -2591,6 +2645,15 @@ int main(int argc,char** argv) {
         NativeFactorizationReservation();
 #else
         Check(false,"factorization reservation regression requires native scratch diagnostics");
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r10-native-events-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCoatedScaledTIR();
+        for(Scalar magnitude:{.9999989,.9999991,.9999995,1.0000005,1.0000009,1.0000011}) NativeScaledPolishedNormals(true,magnitude);
+#else
+        Check(false,"native event regression requires native domain support");
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
