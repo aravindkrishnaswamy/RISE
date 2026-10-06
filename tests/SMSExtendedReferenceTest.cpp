@@ -22,6 +22,7 @@
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Shaders/PathTracingShaderOp.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Rendering/PathTracingPelRasterizer.h"
@@ -1924,6 +1925,77 @@ static void Geometry() {
         solver->release();
     }
 }
+
+struct SSSTestShaderOp : PathTracingShaderOp {
+    SSSTestShaderOp(const ManifoldSolverConfig& cfg,const StabilityConfig& stability,
+        const std::vector<const IObject*>& objects) : PathTracingShaderOp(cfg,stability) {
+        SetMaxPathDepth(5);if(pIntegrator->GetSolver()) pIntegrator->GetSolver()->SetSpecularCasters(objects);
+    }
+};
+static void NativeSSSReferenceClamps() {
+    for(bool randomWalk:{false,true}) for(bool winding:{false,true}) for(bool reference:{true,false}) {
+        std::string text=Materials()+"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+            +(randomWalk?"randomwalk_sss_material\n":"subsurfacescattering_material\n")
+            +"{\n name sss\n ior 1.3\n absorption .1\n scattering "
+            +(randomWalk?"10":"1")+"\n g 0\n roughness .3\n}\n"
+            +"sphere_geometry\n{\n name ball\n radius .5\n}\n"+SceneObject("sss","ball","sss")
+            +QuadMesh("floor_geo",-2,-20,20,winding)+SceneObject("floor","floor_geo","diffuse")
+            +QuadMesh("mirror_geo",4,-20,20,winding)+SceneObject("mirror","mirror_geo","mirror")
+            +(reference?"spot_light\n{\n name source\n position 3 0 1\n target 3 0 3\n color 1 1 1\n power 1000000\n inner 80\n outer 85\n}\n":
+                "omni_light\n{\n name source\n position 3 0 1\n color 1 1 1\n power 1000000\n}\n");
+        Fixture fixture(text);if(!fixture.job) {Check(false,"SSS clamp scene prepared");continue;}
+        std::vector<const IObject*> objects;ManifoldSolver::EnumerateSpecularCasters(fixture.Scene(),objects);
+        for(unsigned mode=0;mode<3;++mode) {
+            std::array<std::vector<double>,2> means;
+            for(unsigned salt=0;salt<4;++salt) {
+                const unsigned seed=SobolSequence::HashCombine(8731+salt,0x535353);
+                SobolSamplerTestHooks::ValueSalt().store(seed);
+                for(unsigned clamped=0;clamped<2;++clamped) {
+                    ManifoldSolverConfig cfg;cfg.enabled=reference;cfg.extendedMode=true;cfg.targetBounces=1;
+                    cfg.biased=true;cfg.multiTrials=1;cfg.seedingMode=ManifoldSolverConfig::eSeedingUniform;
+                    SMSReferenceCounters counters;cfg.referenceCounters=&counters;
+                    StabilityConfig stability;stability.rrMinDepth=20;stability.indirectClamp=clamped?1e-9:0;
+                    auto* op=new SSSTestShaderOp(cfg,stability,objects);
+                    std::vector<IShaderOp*> ops{op};IShader* shader=nullptr;
+                    Check(RISE_API_CreateStandardShader(&shader,ops),"SSS native PT shader created");op->release();
+                    if(!shader) continue;
+                    auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&fixture.Scene());
+                    auto* integrator=new PathTracingIntegrator(cfg,stability);integrator->SetMaxPathDepth(5);
+                    if(integrator->GetSolver()) integrator->GetSolver()->SetSpecularCasters(objects);
+                    double sum=0;
+                    for(unsigned sample=0;sample<128;++sample) {
+                        SobolSampler sampler(sample,47);RandomNumberGenerator random(seed+sample);
+                        RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);
+                        context.pSampler=&sampler;context.pStabilityConfig=&stability;
+                        RayIntersection hit(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);
+                        fixture.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+                        IORStack air(1);
+                        if(mode==0) {
+                            auto v=integrator->IntegrateFromHit(context,nullRasterizerState,hit,fixture.Scene(),*caster,
+                                sampler,nullptr,1,air,1,RISEPel(1),true,1,IRayCaster::RAY_STATE::eRayDiffuse,
+                                0,0,0,0,0,0,false,false);sum+=v[0];
+                        } else sum+=integrator->IntegrateFromHitNM(context,nullRasterizerState,hit,mode==1?450:650,
+                            fixture.Scene(),*caster,sampler,nullptr,1,air,1,1,true,1,
+                            IRayCaster::RAY_STATE::eRayDiffuse,0,0,0,0,0,0);
+                    }
+                    means[clamped].push_back(sum/128);
+                    std::cout<<"SSS clamp rw="<<randomWalk<<" winding="<<winding<<" reference="<<reference
+                        <<" mode="<<mode<<" salt="<<salt<<" clamped="<<clamped<<" mean="<<sum/128
+                        <<" trials="<<counters.proposalTrials.load()<<std::endl;
+                    if(reference) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
+                    integrator->release();caster->release();shader->release();
+                }
+            }
+            for(unsigned salt=0;salt<means[0].size();++salt) {
+                Check(means[0][salt]>0,"SSS clamp witness has positive native radiance");
+                if(reference) Check(means[0][salt]==means[1][salt],"SSS reference radiance survives caller indirect clamp");
+                else Check(means[1][salt]<means[0][salt],"ordinary SSS continuation retains indirect clamp");
+            }
+        }
+    }
+    SobolSamplerTestHooks::ValueSalt().store(0);
+}
+
 #endif
 // Native analytic virtual-image reference for an upward spot reflected by
 // one plane: f * F * Le / (anchor-to-plane + light-to-plane)^2.
@@ -2470,6 +2542,12 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--r6-weld-range-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeWeldCoordinateRange();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r8-sss-clamp-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeSSSReferenceClamps();
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
