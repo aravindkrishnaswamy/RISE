@@ -2423,17 +2423,19 @@ static void Geometry() {
 }
 
 struct SSSObservedCaster : RayCaster {
-    mutable unsigned positiveReturns=0;
+    mutable unsigned positiveReturns=0,referenceReturns=0;
     explicit SSSObservedCaster(const IShader& shader) : RayCaster(false,16,shader,true) {}
     bool CastRay(const RuntimeContext& rc,const RasterizerState& rast,const Ray& ray,RISEPel& c,
         const RAY_STATE& rs,Scalar* distance,const IRadianceMap* map,const IORStack& stack) const override {
+        const bool prior=rc.smsReferenceRadiance;
         const bool hit=RayCaster::CastRay(rc,rast,ray,c,rs,distance,map,stack);
-        if(c[0]>0) ++positiveReturns;return hit;
+        if(c[0]>0) {++positiveReturns;if(!prior&&rc.smsReferenceRadiance) ++referenceReturns;}return hit;
     }
     bool CastRayNM(const RuntimeContext& rc,const RasterizerState& rast,const Ray& ray,Scalar& c,
         const RAY_STATE& rs,Scalar nm,Scalar* distance,const IRadianceMap* map,const IORStack& stack) const override {
+        const bool prior=rc.smsReferenceRadiance;
         const bool hit=RayCaster::CastRayNM(rc,rast,ray,c,rs,nm,distance,map,stack);
-        if(c>0) ++positiveReturns;return hit;
+        if(c>0) {++positiveReturns;if(!prior&&rc.smsReferenceRadiance) ++referenceReturns;}return hit;
     }
 };
 struct SSSTestShaderOp : PathTracingShaderOp {
@@ -2504,8 +2506,9 @@ static void NativeSSSReferenceClamps(bool replacement=false) {
                     means[clamped].push_back(sum/512);
                     std::cout<<"SSS clamp rw="<<randomWalk<<" winding="<<winding<<" reference="<<reference
                         <<" mode="<<mode<<" salt="<<salt<<" clamped="<<clamped<<" mean="<<sum/512
-                        <<" returns="<<caster->positiveReturns<<" trials="<<counters.proposalTrials.load()<<std::endl;
+                        <<" returns="<<caster->positiveReturns<<" referenceReturns="<<caster->referenceReturns<<" trials="<<counters.proposalTrials.load()<<std::endl;
                     Check(caster->positiveReturns>0,"SSS witness has positive actual recursive shader returns");
+                    if(replacement) Check(caster->referenceReturns==0,"ordinary replacement of reference PT cannot retain recursive reference provenance");
                     if(reference&&mode<3) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
                     integrator->release();caster->release();shader->release();safe_release(direct);op->release();
                 }
