@@ -683,6 +683,12 @@ static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const Man
             Check(oracle.ProjectIndependent(plus[j],column%2?0:h,column%2?h:0)
                 &&oracle.ProjectIndependent(minus[j],column%2?0:-h,column%2?-h:0),
                 "curved constraint oracle projects independent native displacements");
+            if(probeScale!=1) for(auto* vertex:{&plus[j],&minus[j]}) {
+                // Projection may choose the equivalent opposite chart basis.
+                // Differentiate in the center's continuous chart orientation.
+                if(Vector3Ops::Dot(vertex->dpdu,chain[j].dpdu)<0) vertex->dpdu=-vertex->dpdu;
+                if(Vector3Ops::Dot(vertex->dpdv,chain[j].dpdv)<0) vertex->dpdv=-vertex->dpdv;
+            }
         } else {
             plus[j].position=Point3Ops::mkPoint3(plus[j].position,tangent*h);
             minus[j].position=Point3Ops::mkPoint3(minus[j].position,-tangent*h);
@@ -693,6 +699,8 @@ static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const Man
             const std::size_t i=row/2,index=4*i+2*(row%2)+column%2;
             const Scalar expected=i==j?diagonal[index]:j==i+1?upper[index]:i==j+1?lower[4*(i-1)+2*(row%2)+column%2]:0;
             const Scalar observed=(a[row]-b[row])/(2*h);
+            if(probeScale!=1&&std::fabs(observed-expected)>=1e-5*std::max(Scalar(1),std::fabs(expected)))
+                std::cout<<"grazing derivative column="<<column<<" row="<<row<<" expected="<<expected<<" observed="<<observed<<" h="<<h<<" a="<<a[row]<<" b="<<b[row]<<'\n';
             Check(std::fabs(observed-expected)<1e-5*std::max(Scalar(1),std::fabs(expected)),
                 "every native shading/fallback Jacobian block agrees at an independent displacement scale");
         }
