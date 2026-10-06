@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The latest completed full gate is the Round 14 historical checkpoint `a8a711815b82aa447aa9091153a0231b91ad296f`. Fresh review at `18b958137` found three P2 defects: stale AdvancedShader assignment return provenance, missing final-root native normalization branch identity, and primitive-crossing native differential probes. The fixes are undergoing a new Round 15 gate; Phase 2 remains unmerged. Earlier sections are historical checkpoint evidence.
+The current completed replacement gate freezes checkpoint `f24c5c517f1cab6a10dbe5f80fe6bc56aa877496`: 50 make modes / 515121/0, 46 actual Xcode-linked controls / 607202/0 and 25 full-project sanitizer modes / 339362/0. Clean make, Deployment and Opto pass with zero owned diagnostics. The three Round 14 review repairs have fresh coherent committed-source proof. Fresh Round 15 review remains required; Phase 2 is unmerged. Earlier sections are historical checkpoint evidence.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1633,3 +1633,39 @@ The three independent reviews at `18b958137` reported no P1 or DESIGN finding an
 * Narrow native mesh strips made distant differential probes agree while skipping the root's local normal gradient. The correctly initialized committed witness at `c1574b243` fails 160 Jacobian/determinant checks (737/160). Probes now require primitive/provider continuity, except for exactly identical flat frames with zero native normal derivatives. UV-dependent modifiers using native UV charts require primitive continuity even for flat normals; audited generated UV mappings supply their separate analytic differential. Indexed/non-indexed normal and UV strip controls now pass 1793/0 against independent primitive-local residual probes.
 
 The original borrowed-op fixture lifetime failure, the first mean-only false-green SSS observable, the incomplete seed geometry initialization, and the overly strong additive-total-mean assertion were discarded test attempts, not defect proofs. Final-source coherent rollback, clean builds, full regression/Xcode/sanitizer gates, cost and a fresh three-reviewer round remain required. The cost gate adds an actual AdvancedShader mode-off RGB fixture to the four existing fixtures, with four salts for each. No target ledger row is closed or opened by these repairs.
+
+
+### Fresh Round 15 replacement gate (2026-10-06)
+
+Native/test checkpoint `f24c5c517f1cab6a10dbe5f80fe6bc56aa877496`; master `08552560b54b517b7a8a0696eb9d317953b26bbe`. Evidence: `.claude/logs/sms-phase2-round15-final/source.json`, `final-gate/completed-summary.json`, and the driver logs. All 24 native and four test hashes verify. One fresh coherent all-24-native-path rollback to `c1574b243` proves the three Round 14 defects against the final tests, followed by restored green runs. Sixteen earlier rollback scenarios remain historical evidence.
+
+| Committed-source proof | Red pass/fail | Restored pass/fail |
+|---|---:|---:|
+| `r14-normalization-branch-only` | 2850/160 | 3010/0 |
+| `r14-primitive-local-only` | 1473/320 | 1793/0 |
+| `r14-sss-replacement-only` | 1641/96 | 1737/0 |
+
+| Gate | Result |
+|---|---|
+| Clean make | 376 compilation actions; zero owned diagnostics |
+| Actual Xcode Deployment/Opto | 393/393 compilation actions; zero owned diagnostics |
+| Make regressions | 20 executables / 50 modes / 515121 checks / 0 failures; CST separately |
+| Actual Xcode-linked controls | 46 modes / 607202 checks / 0 failures |
+| ASan/UBSan/float-cast-overflow | all 374 linked project units / 25 modes / 339362 checks / 0 failures; third-party libraries uninstrumented |
+| Weld-range proof | committed-source fatal float-cast overflow; restored weld and composed-UV controls pass |
+| Storage-output invariant | 40 original salted production means; maximum 0.0 double ULP vs pre-storage checkpoint |
+| Mode-off parity | 20 salted image comparisons; 19 bit-identical float32 images, maximum 1 float32 ULP |
+
+The normalization witness retains neighboring regular roots and rejects unresolved native branch transitions. The narrow-strip witness covers indexed/non-indexed normals and native UV-dependent modifier transport against independent local residual derivatives and determinants. The actual SSS return witness checks assignment removes discarded reference provenance and addition retains reference provenance; its ordinary-only subpaths remain clampable. HWSS remains legacy. Native SPF arithmetic, native normalization thresholds and acceptance bands are unchanged. The native operation audit uses exact concrete types; unknown/custom and input-dependent operations retain inherited provenance. Default-path cost now includes an actual native AdvancedShader composition.
+
+| Mode-off fixture | Paired cost change mean (%) | Sample SD (%) |
+|---|---:|---:|
+| RGB k=1 | 2.119177 | 1.750510 |
+| RGB k=2 | 1.854845 | 2.421701 |
+| NM | 2.753955 | 1.964432 |
+| HWSS | 2.334513 | 0.959381 |
+| AdvancedShader RGB | 1.302122 | 1.908301 |
+
+Eight alternating committed-source A/B library/test builds use n=4 independent salts, one worker and reserve 0, with five fixtures per trial. Measured production maximum RSS is 103235584 bytes. The flat production scratch capacity peak is 204192 bytes. Modified native-event counters: `coated TIR counters proposals=32770 zeros=202 newton=243966 retries=16386 tails=0 roulette=0 owned=16284 rejected=202 sceneQueries=392836 objectQueries=49789955 domainMaterialQueries=261560 scratchGrowths=32 scratchFrames=2 scratchPeakBytes=372432`. Process memory and proposal/Newton/retry/tail/owned/rejected/query/scratch counters retain their separate measured scopes in `production-memory.log` and restored production/native-event logs. These logical counters do not bound multicore or auxiliary allocation costs. The Xcode logs disclose only the pre-existing optional OIDN search-path linker warning and AppIntents metadata notice; no owned compiler warnings are suppressed. Optics nonunit-normal messages are expected runtime diagnostics in the scaled-frame witness.
+
+Narrow-cone comparisons retain original channelwise three-combined-SD bands and matching reference SD. The user-accepted wide-cone discrepancy remains measurement-only and does not close DL-420. Fresh independent Round 15 review and Phase 2 integration remain pending. Target rows remain OPEN; no new row is opened.

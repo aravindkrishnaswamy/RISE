@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 is implemented and merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged. Round 14 review found three P2 implementation defects; the repairs are undergoing the fresh Round 15 gate. Phases 3–4 remain pending. Earlier audit sections record historical checkpoints.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 is implemented and merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged. The three Round 14 review repairs and full Round 15 gate pass at `f24c5c517f1cab6a10dbe5f80fe6bc56aa877496`. Fresh independent Round 15 review remains required. Phases 3–4 remain pending. Earlier audit sections record historical checkpoints.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
