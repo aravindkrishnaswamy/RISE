@@ -1519,12 +1519,13 @@ public:
     }
 };
 static void NativeScaledPolishedNormals(bool frame=false) {
-    for(const char* material: frame?std::vector<const char*>{"mirror","glass","dielectric"}:std::vector<const char*>{"polished"})
+    for(const char* material: frame?std::vector<const char*>{"mirror","glass","dielectric","coated"}:std::vector<const char*>{"polished"})
     for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true}) for(bool varying:{false,true}) {
         const std::string transform=transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"";
         Fixture f(Materials()+"uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
             "polished_material\n{\n name polished\n reflectance black\n tau 1\n ior triple\n scattering 1000000\n}\n"
             +"dielectric_material\n{\n name dielectric\n tau 1\n ior triple\n scattering 1e30\n}\n"
+            +"dielectric_material\n{\n name coated\n tau 1\n ior triple\n scattering 1e30\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
             +QuadMesh("patch",0,-8,8,reverse)+SceneObject("caster","patch",material,transform));
         auto* modifier=new AuditedScaledNormal(varying,frame);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
@@ -1537,7 +1538,7 @@ static void NativeScaledPolishedNormals(bool frame=false) {
         IORStack air(1);air.SetCurrentObject(object);
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
         f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
-        Check(hit.geometric.bHit && hit.pObject==object,"scaled polished normal fixture traces its actual indexed surface");
+        Check(hit.geometric.bHit && hit.pObject==object,"scaled native normal fixture traces its actual indexed surface");
         if(!hit.geometric.bHit) continue;
         modifier->Modify(hit.geometric);
         Check(Vector3Ops::Magnitude(frame?hit.geometric.onb.w():hit.geometric.vNormal)>1.5,"audited provider genuinely supplies a nonunit shading normal");
@@ -1559,10 +1560,10 @@ static void NativeScaledPolishedNormals(bool frame=false) {
                 const bool priced=SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,reflection,
                     replay,etaI,etaT,exiting)
                     &&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,air,domain,reflection,exiting,etaI,etaT,0,price);
-                std::cout<<"R8 scaled polished winding="<<reverse<<" side="<<side<<" transformed="<<transformed
+                std::cout<<"scaled normal material="<<material<<" frame="<<frame<<" winding="<<reverse<<" side="<<side<<" transformed="<<transformed
                     <<" varying="<<varying<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
                     <<" native="<<std::setprecision(17)<<nativeWeight<<" replay="<<price<<'\n';
-                Check(priced&&std::fabs(price-nativeWeight*(reflection?1:RadianceEtaScale(air,ray.ior_stack)))<1e-9,"replay matches native polished normalization and Fresnel");
+                Check(priced&&std::fabs(price-nativeWeight*(reflection?1:RadianceEtaScale(air,ray.ior_stack)))<1e-9,"replay matches native normalization and Fresnel");
                 const Scalar expected=nativeWeight*(reflection?1:RadianceEtaScale(air,ray.ior_stack));
                 const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*4);
                 SMSDomainVertex record(hit.geometric);
@@ -1571,14 +1572,14 @@ static void NativeScaledPolishedNormals(bool frame=false) {
                 record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=reflection;
                 std::vector<SMSDomainVertex> vertices{record};
                 const auto result=solver->SolveDomain(start,n,end,-ray.ray.Dir(),f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
-                Check(result.valid,"scaled-normal polished replay retains the actual native reflected root");
+                Check(result.valid,"scaled-normal replay retains the actual native reflected root");
                 if(result.valid) {
                     Check(Point3Ops::Distance(result.specularChain[0].position,center)<1e-7,"scaled native frame solve retains actual SPF root position");
-                    Check(std::fabs(result.contributionNM-expected)<1e-9,"solved polished root matches native nonunit-normal price");
+                    Check(std::fabs(result.contributionNM-expected)<1e-9,"solved native root matches native nonunit-normal price");
                     CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),air,domain,sampler);
                 }
             }
-            Check(reflected>=1,"both indexed windings/incidences provide one native polished delta lobe");
+            Check(reflected>=1,"both indexed windings/incidences provide one native reflected delta lobe");
         }
         solver->release();
     }
