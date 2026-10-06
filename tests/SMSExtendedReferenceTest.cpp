@@ -23,6 +23,7 @@
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Shaders/PathTracingShaderOp.h"
+#include "../src/Library/Shaders/DistributionTracingShaderOp.h"
 #include "../src/Library/Shaders/SSS/SubSurfaceScatteringShaderOp.h"
 #include "../src/Library/Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -2590,11 +2591,70 @@ static void NativeOctreeConcurrentBuilds() {
     for(auto& worker:workers) worker.join();
     for(Scalar result:results) Check(result==512,"concurrent independent octrees retain the exact full leaf sum");
 }
-static void NativeCachedSSSProvenance() {
+struct R17ObservedCapture final : IShader, Reference {
+    const IShader& native;
+    const IObject* secondary;
+    bool negate = false;
+    mutable std::atomic<unsigned> secondaryCalls{0},referenceCaptures{0};
+    R17ObservedCapture(const IShader& shader,const IObject* object) : native(shader),secondary(object) {native.addref();}
+    ~R17ObservedCapture() override {native.release();}
+    void Shade(const RuntimeContext& rc,const RayIntersection& ri,const IRayCaster& caster,
+        const IRayCaster::RAY_STATE& rs,RISEPel& c,const IORStack& stack) const override {
+        if(ri.pObject==secondary) secondaryCalls.fetch_add(1,std::memory_order_relaxed);
+        native.Shade(rc,ri,caster,rs,c,stack);
+        if(rc.smsReferenceRadiance && (c[0]!=0 || c[1]!=0 || c[2]!=0)) referenceCaptures.fetch_add(1,std::memory_order_relaxed);
+        if(negate) c=c*Scalar(-1);
+    }
+    Scalar ShadeNM(const RuntimeContext& rc,const RayIntersection& ri,const IRayCaster& caster,
+        const IRayCaster::RAY_STATE& rs,Scalar nm,const IORStack& stack) const override {
+        if(ri.pObject==secondary) secondaryCalls.fetch_add(1,std::memory_order_relaxed);
+        const Scalar value=native.ShadeNM(rc,ri,caster,rs,nm,stack);
+        return negate?-value:value;
+    }
+    void ResetRuntimeData() const override {native.ResetRuntimeData();}
+};
+static void NativeCachedSSSRecursiveCapture(int onlySkin=-1) {
+    for(bool skin:{false,true}) for(unsigned mode=0;mode<4;++mode) {
+        if(onlySkin>=0 && int(skin)!=onlySkin) continue;
+        std::cout<<"R17 RECURSIVE-BEGIN skin="<<skin<<" mode="<<mode<<std::endl;
+        Fixture f(Materials()+"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+            +"sphere_geometry\n{\n name inner_geo\n radius 1\n}\nsphere_geometry\n{\n name outer_geo\n radius 2\n}\n"
+            +SceneObject("inner","inner_geo","diffuse")+SceneObject("outer","outer_geo","diffuse")
+            +"omni_light\n{\n name source\n position 0 0 1.5\n color 1 1 1\n power 100\n}\n");
+        IShaderOp* direct=nullptr;Check(RISE_API_CreateDirectLightingShaderOp(&direct,nullptr),"recursive SSS direct capture created");
+        auto* distribution=new DistributionTracingShaderOp(1,false,false,false,false,true,false);
+        IShader* nativeCapture=nullptr;
+        Check(RISE_API_CreateStandardShader(&nativeCapture,{direct,distribution}),"recursive SSS uses native distribution capture");
+        auto* capture=new R17ObservedCapture(*nativeCapture,f.Object("outer"));
+        auto* extinction=new R16UnitExtinction;
+        IShaderOp* cached=skin?static_cast<IShaderOp*>(new DonnerJensenSkinSSSShaderOp(4,.001,2,4,1,*capture,true,
+            .05,.5,.002,.0002,.01,.1,1.4,1.4,.7)):
+            static_cast<IShaderOp*>(new SubSurfaceScatteringShaderOp(4,.001,2,4,1,false,false,*capture,*extinction,true,true));
+        IShader* output=nullptr;Check(RISE_API_CreateStandardShader(&output,{cached}),"shared cached operation shader created");
+        auto* caster=new RayCaster(false,4,*output,true);caster->AttachScene(&f.Scene());
+        std::array<Scalar,4> values{};std::vector<std::thread> workers;
+        for(unsigned lane=0;lane<4;++lane) workers.emplace_back([&,lane] {
+            RandomNumberGenerator random(0x53535317+lane);RuntimeContext rc(random,RuntimeContext::PASS_NORMAL,true);
+            const Ray ray(Point3(.17,.29,1.5),Vector3(0,0,-1));IRayCaster::RAY_STATE rs;IORStack air(1);
+            if(mode==0) {RISEPel c(0.0);caster->CastRay(rc,nullRasterizerState,ray,c,rs,nullptr,nullptr,air);values[lane]=c[0];}
+            else if(mode<3) caster->CastRayNM(rc,nullRasterizerState,ray,values[lane],rs,mode==1?450:650,nullptr,nullptr,air);
+            else {auto swl=SampledWavelengths::SampleEquidistant(.175,380,780);Scalar c[SampledWavelengths::N]{};
+                caster->CastRayHWSS(rc,nullRasterizerState,ray,c,rs,swl,nullptr,nullptr,air);values[lane]=c[0];}
+        });
+        for(auto& worker:workers) worker.join();
+        Check(capture->secondaryCalls.load()>0,"native distribution capture recursively reaches the second shared SSS object");
+        for(Scalar value:values) Check(std::isfinite(value)&&value>=0,"recursive and concurrent cached SSS capture terminates with finite ordinary radiance");
+        std::cout<<"R17 recursive skin="<<skin<<" mode="<<mode<<" secondary="<<capture->secondaryCalls.load()<<" value="<<values[0]<<'\n';
+        caster->release();output->release();cached->release();extinction->release();capture->release();nativeCapture->release();distribution->release();direct->release();
+    }
+}
+static void NativeCachedSSSProvenance(bool signedCapture=false) {
     for(bool skin:{false,true}) for(bool winding:{false,true}) for(unsigned mode=0;mode<4;++mode)
     for(char blend:{'=', '+'}) for(bool reference:{false,true}) for(bool initiallyLegacy:{false,true}) for(unsigned salt=0;salt<4;++salt) {
+        if(signedCapture && (!reference || initiallyLegacy || mode==3 || blend!='=')) continue;
         const Scalar side=winding?-1:1;
-        Fixture f(Materials()+"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+        const std::string body="lambertian_material\n{\n name diffuse\n reflectance white\n}\n";
+        Fixture f(Materials()+body
             +QuadMesh("body_geo",0,-.5,.5,winding)+SceneObject("body","body_geo","diffuse")
             +QuadMesh("mirror_geo",4*side,-20,20,winding)+SceneObject("mirror","mirror_geo","mirror")
             +"omni_light\n{\n name source\n position 3 0 "+std::to_string(side)+"\n color 1 1 1\n power 1000000\n}\n");
@@ -2604,10 +2664,13 @@ static void NativeCachedSSSProvenance() {
         StabilityConfig stability;stability.rrMinDepth=20;
         auto* captureOp=new SSSTestShaderOp(cfg,stability,objects);IShader* capture=nullptr;
         Check(RISE_API_CreateStandardShader(&capture,{captureOp}),"cached SSS native PT capture shader created");
+        R17ObservedCapture* signedShader=nullptr;
+        if(signedCapture) {signedShader=new R17ObservedCapture(*capture,nullptr);signedShader->negate=true;capture->release();capture=signedShader;}
         auto* extinction=new R16UnitExtinction;
-        IShaderOp* cached=skin?static_cast<IShaderOp*>(new DonnerJensenSkinSSSShaderOp(16,.001,2,8,1,*capture,true,
+        const auto makeCached=[&]() -> IShaderOp* {return skin?static_cast<IShaderOp*>(new DonnerJensenSkinSSSShaderOp(16,.001,2,8,1,*capture,true,
                 .05,.5,.002,.0002,.01,.1,1.4,1.4,.7))
-            :static_cast<IShaderOp*>(new SubSurfaceScatteringShaderOp(16,1,2,8,1,false,true,*capture,*extinction,true,true));
+            :static_cast<IShaderOp*>(new SubSurfaceScatteringShaderOp(16,1,2,8,1,false,true,*capture,*extinction,true,true));};
+        IShaderOp* cached=makeCached();
         IShaderOp* direct=nullptr;
         Check(RISE_API_CreateDirectLightingShaderOp(&direct,nullptr),"cached SSS ordinary direct operation created");
         IShader* output=nullptr;const char operations[3]={'=',blend,0};
@@ -2624,12 +2687,25 @@ static void NativeCachedSSSProvenance() {
             else if(mode<3) caster->CastRayNM(rc,nullRasterizerState,ray,value,rs,mode==1?450:650,nullptr,nullptr,air);
             else {auto swl=SampledWavelengths::SampleEquidistant(.175,380,780);Scalar values[SampledWavelengths::N]{};
                 caster->CastRayHWSS(rc,nullRasterizerState,ray,values,rs,swl,nullptr,nullptr,air);value=values[0];}
-            Check(value>0,"cached SSS native return has positive radiance");
+            Check(signedCapture ? (legacy ? value==0 : value<0) : value>0,"cached SSS native return retains signed reference radiance and legacy projection");
             const bool expected=reference && !legacy && mode<3;
             Check(rc.smsReferenceRadiance==expected,"cached SSS assignment/addition returns the matching reference provenance");
             return value;
         };
-        const Scalar first=call(initiallyLegacy);const auto firstCount=counters.proposalTrials.load();
+        const Scalar first=call(initiallyLegacy);auto firstCount=counters.proposalTrials.load();
+        if(signedCapture) Check(signedShader->referenceCaptures.load()>0,"signed capture contains actual nonzero native reference returns");
+        if(signedCapture) {
+            signedShader->negate=false;
+            IShaderOp* positiveCached=makeCached();IShader* positiveOutput=nullptr;
+            Check(RISE_API_CreateAdvancedShader(&positiveOutput,{direct,positiveCached},{0,0},{16,16},operations),"signed SSS independent positive control created");
+            auto* positiveCaster=new SSSObservedCaster(*positiveOutput);positiveCaster->AttachScene(&f.Scene());
+            RandomNumberGenerator positiveRandom(seed);RuntimeContext positiveRc(positiveRandom,RuntimeContext::PASS_NORMAL,false);
+            positiveRc.pStabilityConfig=&stability;Scalar positiveValue=0;
+            if(mode==0) {RISEPel c(0.0);positiveCaster->CastRay(positiveRc,nullRasterizerState,ray,c,rs,nullptr,nullptr,air);positiveValue=c[0];}
+            else positiveCaster->CastRayNM(positiveRc,nullRasterizerState,ray,positiveValue,rs,mode==1?450:650,nullptr,nullptr,air);
+            Check(positiveValue>0 && first==-positiveValue,"signed RGB/NM cached return is the exact negative of independent positive native capture");
+            positiveCaster->release();positiveOutput->release();positiveCached->release();signedShader->negate=true;firstCount=counters.proposalTrials.load();
+        }
         const Scalar reused=call(initiallyLegacy);
         Check(first==reused,"cached SSS raster-value reuse is bit-identical");
         Check(counters.proposalTrials.load()==firstCount,"cached SSS value reuse does not rebuild irradiance");
@@ -3293,6 +3369,24 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--r16-cached-sss-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeCachedSSSProvenance();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2 && (std::string(argv[1])=="--r17-cached-sss-recursion-simple-only" || std::string(argv[1])=="--r17-cached-sss-recursion-skin-only")) {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCachedSSSRecursiveCapture(std::string(argv[1])=="--r17-cached-sss-recursion-skin-only"?1:0);
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r17-cached-sss-recursion-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCachedSSSRecursiveCapture();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r17-cached-sss-signed-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCachedSSSProvenance(true);
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
