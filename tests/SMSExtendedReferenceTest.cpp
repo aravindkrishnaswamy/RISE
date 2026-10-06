@@ -1685,6 +1685,120 @@ static void NativeCoatedScaledTIR() {
     }
 }
 
+class NativeFallbackFrame final : public AuditedIdentityFrameModifier {
+    Vector3 basis,tangent;Point3 anchor;Scalar angle,rate;
+public:
+    NativeFallbackFrame(Vector3 basis_,Vector3 tangent_,Point3 anchor_,Scalar angle_,Scalar rate_)
+        :basis(basis_),tangent(tangent_),anchor(anchor_),angle(angle_),rate(rate_) {}
+    Vector3 Value(const RayIntersectionGeometric& hit) const {
+        return AuditedScaledNormal::Rotate(basis,angle+rate*Vector3Ops::Dot(Vector3Ops::mkVector3(hit.ptIntersection,anchor),tangent));
+    }
+    void Modify(RayIntersectionGeometric& hit) const override {
+        hit.onb=OrthonormalBasis3D(hit.onb.u(),hit.onb.v(),Value(hit));
+    }
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
+        Vector3& normal,Vector3& w) const override {
+        const Vector3 value=Value(raw);normal=d.normal;
+        w=Vector3(value.z,0,-value.x)*(rate*Vector3Ops::Dot(d.worldPoint,tangent));return true;
+    }
+};
+static std::pair<Scalar,Vector3> NativeReflectionEvent(const RayIntersectionGeometric& hit,
+    const IMaterial& material,const IORStack& stack,SMSQueryDomain domain,ISampler& sampler) {
+    ScatteredRayContainer rays;
+    if(domain.kind==SMSQueryDomain::Wavelength) material.GetSPF()->ScatterNM(hit,sampler,domain.nm,rays,stack);
+    else material.GetSPF()->Scatter(hit,sampler,rays,stack);
+    Scalar price=0;Vector3 direction(0,0,0);
+    for(unsigned i=0;i<rays.Count();++i) if(rays[i].type==ScatteredRay::eRayReflection&&rays[i].isDelta) {
+        const Scalar value=domain.kind==SMSQueryDomain::Wavelength?rays[i].krayNM:rays[i].kray[domain.component];
+        price+=value;if(value!=0) direction=rays[i].ray.Dir();
+    }
+    return {price,direction};
+}
+static void NativeUncoatedFallbacks() {
+    unsigned uncertain[2]={0,0},saturated[2]={0,0};
+    for(unsigned kind=0;kind<2;++kind) for(bool grazing:{false,true})
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true})
+    for(unsigned shape=0;shape<4;++shape) for(unsigned medium=0;medium<2;++medium) for(int offset:{-1,0,1}) {
+        const bool closed=shape==1||shape==3;
+        const Scalar index=medium?1:1.5,environment=medium?1.5:1;
+        const std::string geometry=shape==0?QuadMesh("shape",0,-8,8,reverse):shape==1?Mesh(true,reverse)
+            :shape==2?PlaneScene("shape",0):"sphere_geometry\n{\n name shape\n radius 100\n}\n";
+        const std::string transform=grazing?(transformed?" scale 2 0.8 1.5\n orientation 0 -5.710593137499643 0\n":" orientation 0 -5.710593137499643 0\n")
+            :(transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"");
+        std::ostringstream material;material<<"scalar_painter\n{\n name fallback_ior\n values "<<index<<' '<<index<<' '<<index<<"\n}\n";
+        material<<(kind?"dielectric_material\n{\n name fallback\n tau 1\n scattering 1e30\n":"perfectrefractor_material\n{\n name fallback\n refractance white\n")
+            <<" ior fallback_ior\n}\n";
+        Fixture f(Materials()+material.str()+geometry+SceneObject("caster","shape","fallback",transform));
+        const auto* object=f.Object("caster");
+        const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(shape==3?0:.1,shape==3?0:.2,shape==3?100:closed?1:0));
+        const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalInverseTransformMatrix()),Vector3(0,0,side)));
+        const Vector3 u=Vector3Ops::Normalize(Vector3Ops::Transform(object->GetFinalTransformMatrix(),Vector3(side,0,0)));
+        const Vector3 incoming=grazing?Vector3(side,0,0):u*std::sin(52*DEG_TO_RAD)-n*std::cos(52*DEG_TO_RAD);
+        const Point3 start=Point3Ops::mkPoint3(center,-incoming*.01);
+        RayIntersection hit(Ray(start,incoming),nullRasterizerState);f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+        Check(hit.geometric.bHit&&hit.pObject==object,"uncoated fallback traces real indexed/open/closed/plane/sphere geometry");
+        if(!hit.geometric.bHit||hit.pObject!=object) continue;
+        IORStack stack(environment);stack.SetCurrentObject(object);if(closed&&side<0) stack.push(index);
+        IORStack initial(stack);Scalar etaI,etaT;bool exiting;
+        Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,SMSQueryDomain::RGB(0),true,initial,etaI,etaT,exiting),"uncoated setup resolves actual native crossing indices");
+        const Scalar phi=std::atan2(etaT-etaI*std::sin(52*DEG_TO_RAD),etaI*std::cos(52*DEG_TO_RAD));
+        const Scalar delta=offset?offset*Scalar(1e-4):Scalar(1e-18);
+        auto* modifier=new NativeFallbackFrame(grazing?Vector3Ops::Normalize(Vector3(delta,0,1))*side:n,u,
+            hit.geometric.ptIntersection,grazing?0:phi+offset*Scalar(1e-4),grazing?0:1);
+        f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->Modify(hit.geometric);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            RandomNumberGenerator random(121);IndependentSampler sampler(random);
+            const auto native=NativeReflectionEvent(hit.geometric,*hit.pMaterial,stack,domain,sampler);
+            Check(native.first>0,"uncoated fallback retains an actual native reflection");if(!(native.first>0)) continue;
+            IORStack replay(stack);Scalar from,to,price=0;bool exit;
+            const bool priced=SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,true,replay,from,to,exit)
+                &&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,domain,true,exit,from,to,0,price);
+            Check(priced&&std::fabs(price-native.first)<1e-9,"uncoated Fresnel gate preserves native reflection price");
+            SMSDomainVertex record(hit.geometric);auto& v=record.geometry;
+            v.position=center;v.pObject=object;v.pMaterial=hit.pMaterial;v.normal=hit.geometric.onb.w();
+            v.geomNormal=hit.geometric.UnflippedGeomNormal();v.isReflection=true;v.valid=true;v.dpdu=u;v.dpdv=Vector3(0,1,0);
+            v.etaI=from;v.etaT=to;v.isExiting=exit;v.uv=hit.geometric.ptCoord;v.objectPosition=hit.geometric.ptObjIntersec;
+            const Point3 end=Point3Ops::mkPoint3(center,native.second);const Scalar band=std::sqrt(std::numeric_limits<Scalar>::epsilon());
+            const Scalar displacement=band*Point3Ops::Distance(start,end)/8;bool certain=true;
+            for(const auto& tangent:{u,Vector3(0,1,0)}) for(int sign:{-1,1}) {
+                Scalar weights[2]{};
+                for(unsigned k=0;k<2;++k) {
+                    const auto target=Point3Ops::mkPoint3(center,tangent*(sign*displacement*(k?.5:1)));
+                    RayIntersection probe(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(target,start))),nullRasterizerState);
+                    object->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                    if(!probe.geometric.bHit) {certain=false;continue;}
+                    modifier->Modify(probe.geometric);weights[k]=NativeReflectionEvent(probe.geometric,*hit.pMaterial,stack,domain,sampler).first;
+                }
+                const Scalar scale=std::max({Scalar(1),std::fabs(native.first),std::fabs(weights[0]),std::fabs(weights[1])});
+                certain=certain&&std::fabs(2*weights[1]-weights[0]-native.first)<=band*scale/8;
+            }
+            std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+            auto* solver=new ManifoldSolver(cfg);const auto root=solver->SolveDomain(start,n,end,-native.second,f.Scene(),stack,domain,vertices,sampler,1e-7,1e-10);
+            if(!certain) {++uncertain[kind];Check(!root.valid,"uncoated reflection price jump inside root band remains an ordinary zero trial");}
+            else Check(root.valid&&std::fabs(root.contributionNM-native.first)<1e-9,"regular uncoated fallback root retains its native price");
+            Vector3 refracted=hit.geometric.ray.Dir();const bool shadingSnell=Optics::CalculateRefractedRay(hit.geometric.onb.w(),from,to,refracted);
+            if(grazing&&native.first==1&&shadingSnell&&from<to) {
+                ++saturated[kind];IORStack transmission(stack);Scalar a,b;bool out;
+                Check(!SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,false,transmission,a,b,out),"uncoated unity Fresnel cannot invent a transmitted crossing");
+                if(shape==0) {
+                    Point3 point;Vector3 normal;Point2 uv;object->UniformRandomPoint(&point,&normal,&uv,Point3(.37,.61,.43));
+                    const auto seedStart=Point3Ops::mkPoint3(point,-incoming*.01);std::vector<SMSDomainVertex> walk;
+                    ScriptSampler draws({.01,.37,.61,.43,.75});
+                    Check(solver->BuildExtendedSeed(seedStart,end,f.Scene(),stack,domain,draws,walk)&&walk.size()==1&&walk[0].geometry.isReflection,
+                        "native unity Fresnel seed retains reflection exploration probability without TIR relabeling");
+                }
+            }
+            std::cout<<std::setprecision(17)<<"R12 uncoated material="<<kind<<" grazing="<<grazing<<" winding="<<reverse<<" side="<<side
+                <<" transformed="<<transformed<<" shape="<<shape<<" medium="<<medium<<" offset="<<offset<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
+                <<" eta="<<from<<":"<<to<<" native="<<native.first<<" replay="<<price<<" certain="<<certain<<" root="<<root.valid<<'\n';
+            solver->release();
+        }
+        modifier->release();
+    }
+    for(unsigned kind=0;kind<2;++kind) {std::cout<<"R12 counters material="<<kind<<" unresolved="<<uncertain[kind]<<" saturated="<<saturated[kind]<<'\n';
+        Check(uncertain[kind]>0&&saturated[kind]>0,"each native provider exercises unresolved optical prices and non-TIR unity Fresnel");}
+}
+
 static void NativeCoatedSaturatedFallback() {
     for(unsigned film=0;film<4;++film) for(bool reverse:{false,true}) for(int side:{-1,1})
     for(bool transformed:{false,true}) for(unsigned shape=0;shape<4;++shape) {
@@ -2869,6 +2983,12 @@ int main(int argc,char** argv) {
         NativeFactorizationReservation();
 #else
         Check(false,"factorization reservation regression requires native scratch diagnostics");
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r12-uncoated-fallback-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeUncoatedFallbacks();
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
