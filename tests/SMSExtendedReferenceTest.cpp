@@ -2072,7 +2072,9 @@ static void ModifiedWalkJacobians() {
                 const Point3 end=Point3Ops::mkPoint3(last.position,outgoing*(.3*scale));
                 ScriptSampler rootSampler(draws(),.99);
                 const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,side),end,f.Scene(),air,domain,rootSampler);
-                Check(root.accepted,"native mixed-event root passes full ordered scene visibility");
+                if(!root.accepted) std::cout<<"mixed walk modified winding="<<reverse<<" side="<<side<<" transform="<<transformed<<" count="<<count
+                    <<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" valid="<<root.result.valid<<" uncertainty="<<root.uncertainty<<'\n';
+                Check(root.accepted,"native modified mixed-event root passes full ordered scene visibility");
                 if(root.accepted) CheckNativeHorizonJacobian(cfg,root.result,root.vertices,start,end,f.Scene(),air,domain,rootSampler);
             }
             solver->release();
@@ -2107,7 +2109,9 @@ static void WalkEvents() {
                 const Point3 end=Point3Ops::mkPoint3(last.position,outgoing*(.3*scale));
                 ScriptSampler rootSampler(draws(),.99);
                 const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,side),end,f.Scene(),air,domain,rootSampler);
-                Check(root.accepted,"native mixed-event root passes full ordered scene visibility");
+                if(!root.accepted) std::cout<<"mixed walk unmodified winding="<<reverse<<" side="<<side<<" transform="<<transformed<<" count="<<count
+                    <<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" valid="<<root.result.valid<<" uncertainty="<<root.uncertainty<<'\n';
+                Check(root.accepted,"native unmodified mixed-event root passes full ordered scene visibility");
                 if(root.accepted) CheckJacobian(*solver,root,start,end);
             }
             solver->release();

@@ -269,6 +269,10 @@ namespace {
         const RISE::IObjectManager* objects=nullptr,RISE::Scalar wavelength=550) {
         using namespace RISE;
         auto v=original;
+        // This local flag describes native event/context validity, not the
+        // seed's derivative readiness (derivatives are computed after the
+        // initial constraint check). Unmodified seeds already carry the frame.
+        v.valid=true;
         if(SMSNeedsNativeFrame(v)) {
             RayIntersection hit(Ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous))),raster);
             v.pObject->IntersectRay(hit,RISE_INFINITY,true,true,false);
