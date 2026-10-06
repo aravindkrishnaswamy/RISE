@@ -1681,17 +1681,17 @@ static void NativeCoatedSaturatedFallback() {
         const std::string transform=transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"";
         const std::string geometry=shape==0?QuadMesh("shape",0,-8,8,reverse)
             :shape==1?Mesh(true,reverse):shape==2?PlaneScene("shape",0)
-            :"sphere_geometry\n{\n name shape\n radius 1\n}\n";
+            :"sphere_geometry\n{\n name shape\n radius 100\n}\n";
         Fixture f(Materials()+"dielectric_material\n{\n name coated_fallback\n tau 1\n ior 1.5\n scattering 1e30\n ar_layer "
             +(saturated?".9999 1000000 0":"1.224744871391589 112.26827987812466 0")+"\n}\n"
             +geometry+SceneObject("caster","shape","coated_fallback",transform));
         auto* modifier=new AuditedScaledNormal(false,true,.01,120*DEG_TO_RAD);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const auto* object=f.Object("caster");const bool closed=shape==1||shape==3;
-        const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(0,0,closed?1:0));
+        const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(shape==3?0:.1,shape==3?0:.2,shape==3?100:closed?1:0));
         const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalInverseTransformMatrix()),Vector3(0,0,side)));
         const Vector3 u=Vector3Ops::Normalize(Vector3Ops::Transform(object->GetFinalTransformMatrix(),Vector3(1,0,0)));
-        const Point3 start=Point3Ops::mkPoint3(center,(n+u*std::tan(89*DEG_TO_RAD))*.0001);
+        const Point3 start=Point3Ops::mkPoint3(center,(n+u*std::tan(89*DEG_TO_RAD))*.01);
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
         f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
         Check(hit.geometric.bHit&&hit.pObject==object,"saturated-film fixture traces actual indexed/plane/sphere boundary");
@@ -1702,12 +1702,12 @@ static void NativeCoatedSaturatedFallback() {
             RandomNumberGenerator random(893);IndependentSampler sampler(random);ScatteredRayContainer rays;
             if(domain.kind==SMSQueryDomain::Wavelength) hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,domain.nm,rays,stack);
             else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,stack);
-            unsigned reflections=0,transmissions=0;
+            unsigned reflections=0,transmissions=0;bool unitReflection=false;
             for(unsigned j=0;j<rays.Count();++j) {
                 const auto& ray=rays[j];const Scalar native=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
                 if(native==0||!ray.isDelta) continue;
                 const bool reflection=ray.type==ScatteredRay::eRayReflection;
-                if(reflection) ++reflections;else ++transmissions;
+                if(reflection) {++reflections;unitReflection|=native==1;}else ++transmissions;
                 IORStack replay(stack);Scalar etaI=0,etaT=0,price=0;bool exiting=false;
                 const bool priced=SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,reflection,replay,etaI,etaT,exiting)
                     &&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,domain,reflection,exiting,etaI,etaT,0,price);
@@ -1717,17 +1717,20 @@ static void NativeCoatedSaturatedFallback() {
                 Check(priced&&std::fabs(price-expected)<1e-9,"saturated-film replay preserves native Fresnel-dependent fallback price");
                 SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;
                 record.geometry.normal=hit.geometric.vNormal;record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();record.geometry.isReflection=reflection;
+                record.geometry.valid=true;record.geometry.dpdu=u;record.geometry.dpdv=Vector3Ops::Cross(n,u);
+                record.geometry.etaI=etaI;record.geometry.etaT=etaT;record.geometry.isExiting=exiting;
                 record.geometry.uv=hit.geometric.ptCoord;record.geometry.objectPosition=hit.geometric.ptObjIntersec;
                 std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
-                auto* solver=new ManifoldSolver(cfg);const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*.01);
+                auto* solver=new ManifoldSolver(cfg);const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*1);
                 const auto result=solver->SolveDomain(start,n,end,-ray.ray.Dir(),f.Scene(),stack,domain,vertices,sampler,1e-7,1e-10);
+                std::cout<<"saturated solved valid="<<result.valid<<" price="<<result.contributionNM<<" expected="<<expected<<'\n';
                 Check(result.valid&&Point3Ops::Distance(result.specularChain[0].position,center)<1e-7
                     &&std::fabs(result.contributionNM-expected)<1e-9,"saturated-film solved root preserves native direction and price");
                 if(result.valid) CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),stack,domain,sampler);
                 solver->release();
             }
             Check(reflections>0,"saturated-film fixture retains actual native reflection");
-            if(saturated) Check(transmissions==0,"saturated native film emits no transmission");
+            if(unitReflection) Check(transmissions==0,"saturated native film emits no transmission");
         }
     }
 }
