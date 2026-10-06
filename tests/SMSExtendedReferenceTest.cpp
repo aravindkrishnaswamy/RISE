@@ -2442,8 +2442,9 @@ struct SSSTestShaderOp : PathTracingShaderOp {
         SetMaxPathDepth(5);if(pIntegrator->GetSolver()) pIntegrator->GetSolver()->SetSpecularCasters(objects);
     }
 };
-static void NativeSSSReferenceClamps() {
+static void NativeSSSReferenceClamps(bool replacement=false) {
     for(bool randomWalk:{false,true}) for(bool winding:{false,true}) for(bool reference:{true,false}) {
+        if(replacement&&!reference) continue;
         std::string text=Materials()+"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
             +(randomWalk?"randomwalk_sss_material\n":"subsurfacescattering_material\n")
             +"{\n name sss\n ior 1.3\n absorption .1\n scattering "
@@ -2451,7 +2452,7 @@ static void NativeSSSReferenceClamps() {
             +"sphere_geometry\n{\n name ball\n radius .5\n}\n"+SceneObject("sss","ball","sss")
             +QuadMesh("floor_geo",-2,-20,20,winding)+SceneObject("floor","floor_geo","diffuse")
             +QuadMesh("mirror_geo",4,-20,20,winding)+SceneObject("mirror","mirror_geo","mirror")
-            +(reference?"spot_light\n{\n name source\n position 3 0 1\n target 3 0 3\n color 1 1 1\n power 1000000\n inner 80\n outer 85\n}\n":
+            +(reference&&!replacement?"spot_light\n{\n name source\n position 3 0 1\n target 3 0 3\n color 1 1 1\n power 1000000\n inner 80\n outer 85\n}\n":
                 "omni_light\n{\n name source\n position 3 0 1\n color 1 1 1\n power 1000000\n}\n");
         Fixture fixture(text);if(!fixture.job) {Check(false,"SSS clamp scene prepared");continue;}
         std::vector<const IObject*> objects;ManifoldSolver::EnumerateSpecularCasters(fixture.Scene(),objects);
@@ -2467,7 +2468,13 @@ static void NativeSSSReferenceClamps() {
                     StabilityConfig stability;stability.rrMinDepth=20;stability.indirectClamp=(clamped%2)?1e-9:0;
                     auto* op=new SSSTestShaderOp(cfg,stability,objects);
                     std::vector<IShaderOp*> ops{op};IShader* shader=nullptr;
-                    Check(RISE_API_CreateStandardShader(&shader,ops),"SSS native PT shader created");
+                    IShaderOp* direct=nullptr;
+                    if(replacement) {
+                        Check(RISE_API_CreateDirectLightingShaderOp(&direct,nullptr),"SSS replacement direct op created");
+                        ops.push_back(direct);
+                        Check(RISE_API_CreateAdvancedShader(&shader,ops,{0,0},{16,16},"=="),"SSS native replacing shader created");
+                    } else Check(RISE_API_CreateStandardShader(&shader,ops),"SSS native PT shader created");
+                    safe_release(direct);
                     if(!shader) continue;
                     auto* caster=new SSSObservedCaster(*shader);caster->AttachScene(&fixture.Scene());
                     auto* integrator=new PathTracingIntegrator(cfg,stability);integrator->SetMaxPathDepth(5);
@@ -2506,7 +2513,7 @@ static void NativeSSSReferenceClamps() {
             }
             for(unsigned salt=0;salt<means[0].size();++salt) {
                 Check(means[0][salt]>0,"SSS clamp witness has positive native radiance");
-                if(reference&&mode<3) Check(means[0][salt]==means[1][salt],"SSS reference radiance survives caller indirect clamp");
+                if(reference&&mode<3&&!replacement) Check(means[0][salt]==means[1][salt],"SSS reference radiance survives caller indirect clamp");
                 else Check(means[1][salt]<means[0][salt],"ordinary or HWSS legacy SSS continuation retains indirect clamp");
                 if(mode==3) {
                     Check(means[0][salt]==means[2][salt],"HWSS SSS extended on/off identity without clamps");
@@ -3064,6 +3071,12 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--r6-weld-range-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeWeldCoordinateRange();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r14-sss-replacement-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeSSSReferenceClamps(true);
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
