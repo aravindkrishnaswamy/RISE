@@ -214,8 +214,9 @@ namespace {
             law.hasTransmission=Optics::CalculateRefractedRay(shading,etaI,etaT,law.transmitted);
             law.totalInternalReflection=!law.hasTransmission;
             bool fallbackAllowed=true;
-            if(law.hasTransmission && dynamic_cast<const Implementation::DielectricMaterial*>(material)) {
-                // Native DielectricSPF gates its DL-111 fallback on ref < 1,
+            if(law.hasTransmission && (dynamic_cast<const Implementation::DielectricMaterial*>(material)
+                    || dynamic_cast<const Implementation::PerfectRefractorMaterial*>(material))) {
+                // Native dielectric/refractor SPFs gate their DL-111 fallback on ref < 1,
                 // before changing the incidence. Film saturation is not TIR:
                 // retain proposal exploration mass, but reject this zero lobe.
                 Scalar reflectance=Optics::CalculateDielectricReflectanceCosine(
@@ -234,7 +235,8 @@ namespace {
                 law.transmitted=incoming;
                 law.hasTransmission=Optics::CalculateRefractedRay(geom,etaI,etaT,law.transmitted);
                 law.totalInternalReflection=!law.hasTransmission;
-                if(law.hasTransmission && dynamic_cast<const Implementation::DielectricMaterial*>(material)) {
+                if(law.hasTransmission && (dynamic_cast<const Implementation::DielectricMaterial*>(material)
+                    || dynamic_cast<const Implementation::PerfectRefractorMaterial*>(material))) {
                     Scalar reflectance=Optics::CalculateDielectricReflectanceCosine(law.fresnelCosine,etaI,etaT);
                     if(const auto* dielectric=dynamic_cast<const Implementation::DielectricSPF*>(material->GetSPF()))
                         dielectric->EvaluateSpecularFresnelAfterRefraction(law.fresnelCosine,etaI,etaT,exiting,wavelength,reflectance);
@@ -880,12 +882,14 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                 // in Fresnel support. Their input contexts are checked below.
                 const auto opticalWeight=[&](const RayIntersectionGeometric& context,Scalar& weight) {
                     const auto* dielectric=dynamic_cast<const DielectricSPF*>(vertex.pMaterial->GetSPF());
-                    if(!dielectric || !dielectric->GetARLayerCount()) {weight=1;return true;}
+                    if(!dielectric && !dynamic_cast<const PerfectRefractorMaterial*>(vertex.pMaterial)) {weight=1;return true;}
+                    const bool custom=dielectric && dielectric->GetARLayerCount();
                     const auto law=SMSNativeDirections(context.ray.Dir(),SMSNativeEventNormal(*vertex.pMaterial,context),
-                        context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract,true,
+                        context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract,custom,
                         vertex.pMaterial,vertex.isExiting,SMSDomainWavelength(domain));
-                    Scalar fresnel=1;
-                    if(law.hasTransmission && !dielectric->EvaluateSpecularFresnelAfterRefraction(law.fresnelCosine,
+                    Scalar fresnel=law.hasTransmission?Optics::CalculateDielectricReflectanceCosine(
+                        law.fresnelCosine,vertex.etaI,vertex.etaT):1;
+                    if(custom && law.hasTransmission && !dielectric->EvaluateSpecularFresnelAfterRefraction(law.fresnelCosine,
                         vertex.etaI,vertex.etaT,vertex.isExiting,SMSDomainWavelength(domain),fresnel)) return false;
                     weight=vertex.isReflection?fresnel:1-fresnel;return std::isfinite(weight);
                 };

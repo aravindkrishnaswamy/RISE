@@ -1753,7 +1753,7 @@ static void NativeUncoatedFallbacks() {
             IORStack replay(stack);Scalar from,to,price=0;bool exit;
             const bool priced=SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,true,replay,from,to,exit)
                 &&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,domain,true,exit,from,to,0,price);
-            Check(priced&&std::fabs(price-native.first)<1e-9,"uncoated Fresnel gate preserves native reflection price");
+            Check(priced,"uncoated reflection replay resolves the native material domain");
             SMSDomainVertex record(hit.geometric);auto& v=record.geometry;
             v.position=center;v.pObject=object;v.pMaterial=hit.pMaterial;v.normal=hit.geometric.onb.w();
             v.geomNormal=hit.geometric.UnflippedGeomNormal();v.isReflection=true;v.valid=true;v.dpdu=u;v.dpdv=Vector3(0,1,0);
@@ -1772,6 +1772,12 @@ static void NativeUncoatedFallbacks() {
                 const Scalar scale=std::max({Scalar(1),std::fabs(native.first),std::fabs(weights[0]),std::fabs(weights[1])});
                 certain=certain&&std::fabs(2*weights[1]-weights[0]-native.first)<=band*scale/8;
             }
+            // At a transmission-horizon discontinuity the native full/half
+            // probes cannot resolve a price inside the adopted root band.
+            // Require an ordinary zero there; compare point prices only on
+            // independently regular contexts (including constant unity F).
+            if(certain) Check(std::fabs(price-native.first)<1e-9,
+                "regular uncoated Fresnel gate preserves native reflection price");
             std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
             auto* solver=new ManifoldSolver(cfg);const auto root=solver->SolveDomain(start,n,end,-native.second,f.Scene(),stack,domain,vertices,sampler,1e-7,1e-10);
             if(!certain) {++uncertain[kind];Check(!root.valid,"uncoated reflection price jump inside root band remains an ordinary zero trial");}
