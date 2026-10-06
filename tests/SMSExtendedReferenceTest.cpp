@@ -1524,7 +1524,7 @@ static void NativeScaledPolishedNormals(bool frame=false) {
         const std::string transform=transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"";
         Fixture f(Materials()+"uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
             "polished_material\n{\n name polished\n reflectance black\n tau 1\n ior triple\n scattering 1000000\n}\n"
-            +"dielectric_material\n{\n name dielectric\n transmittance white\n ior triple\n scattering 1000000000000\n}\n"
+            +"dielectric_material\n{\n name dielectric\n tau 1\n ior triple\n scattering 1e30\n}\n"
             +QuadMesh("patch",0,-8,8,reverse)+SceneObject("caster","patch",material,transform));
         auto* modifier=new AuditedScaledNormal(varying,frame);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
