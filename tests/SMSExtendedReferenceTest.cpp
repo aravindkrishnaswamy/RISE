@@ -29,6 +29,7 @@
 #include <array>
 #include <sstream>
 #include <iomanip>
+#include <thread>
 
 struct Moments {
     double mean=0, sd=0;
@@ -584,6 +585,8 @@ public:
     using ManifoldSolver::EvaluateConstraint;
     using ManifoldSolver::BuildJacobian;
     using ManifoldSolver::ComputeLightToFirstVertexJacobianDet;
+    using ManifoldSolver::ComputeBlockTridiagonalDeterminant;
+    using ManifoldSolver::SolveBlockTridiagonal;
     using ManifoldSolver::UpdateVertexOnSurface;
     template<class T> static auto Project(const T& oracle,ManifoldVertex& v,Scalar du,Scalar dv,int)
         ->decltype(oracle.UpdateVertexOnSurface(v,du,dv,0,true)) {
@@ -595,6 +598,75 @@ public:
     }
     bool ProjectIndependent(ManifoldVertex& v,Scalar du,Scalar dv) const {return Project(*this,v,du,dv,0);}
 };
+
+#ifdef RISE_SMS_SCRATCH_COUNTERS
+class AuditedFactorizationProbe final : public AuditedIdentityFrameModifier {
+    const NativeConstraintOracle& oracle;
+    SMSReferenceCounters& counters;
+    unsigned maximum;
+    mutable bool tested=false;
+    void Exercise(unsigned k) const {
+        std::vector<Scalar> diagonal(4*k,0),upper(4*(k-1),0),lower(4*(k-1),0),rhs(2*k),delta;
+        for(unsigned i=0;i<k;++i) {diagonal[4*i]=1;diagonal[4*i+3]=1;}
+        for(unsigned i=0;i<2*k;++i) rhs[i]=i+1;
+        Check(oracle.ComputeBlockTridiagonalDeterminant(diagonal,upper,lower,k)==1,
+            "growing block systems retain the independently known determinant");
+        Check(oracle.SolveBlockTridiagonal(diagonal,upper,lower,rhs,k,delta)&&delta==rhs,
+            "growing block systems retain the independently known solution");
+    }
+public:
+    AuditedFactorizationProbe(const NativeConstraintOracle& o,SMSReferenceCounters& c,unsigned depth)
+        : oracle(o),counters(c),maximum(depth) {}
+    void Modify(RayIntersectionGeometric&) const override {
+        if(tested||counters.scratchFrames.load()==0) return;
+        tested=true;
+        Exercise(1);
+        const auto warm=counters.scratchBufferGrowths.load();
+        for(unsigned k=2;k<=maximum;++k) {
+            Exercise(k);
+            std::cout<<"R8 factorization k="<<k<<" max="<<maximum
+                <<" warmedGrowths="<<warm<<" currentGrowths="<<counters.scratchBufferGrowths.load()<<'\n';
+            Check(counters.scratchBufferGrowths.load()==warm,
+                "both factorization helpers reserve configured maximum on their first native trial");
+        }
+    }
+    bool Ran() const {return tested;}
+};
+static void NativeFactorizationReservation() {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) {
+        // A new native worker prevents preceding modes from warming the TLS pool.
+        std::thread worker([=] {
+            Fixture f(Materials()+QuadMesh("patch",0,-2,3,reverse)+SceneObject("caster","patch","mirror"));
+            SMSReferenceCounters counters;
+            ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.maxChainDepth=8;
+            cfg.referenceCounters=&counters;
+            NativeConstraintOracle oracle(cfg,nullptr);
+            auto* modifier=new AuditedFactorizationProbe(oracle,counters,cfg.maxChainDepth);
+            f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);
+            const Point3 start(-.1,.2,side),center(.3,.2,0),end(.7,.2,side);IORStack air(1);
+            RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+            f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+            Check(hit.geometric.bHit,"cold-worker factorization probe uses an actual indexed hit");
+            if(hit.geometric.bHit) {
+                SMSDomainVertex vertex(hit.geometric);
+                vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
+                vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
+                vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
+                std::vector<SMSDomainVertex> records{vertex};RandomNumberGenerator random(798);IndependentSampler sampler(random);
+                auto* solver=new ManifoldSolver(cfg);
+                const auto result=solver->SolveDomain(start,Vector3(0,0,-side),end,Vector3(0,0,-side),
+                    f.Scene(),air,SMSQueryDomain::RGB(0),records,sampler,1e-7,1e-10);
+                Check(result.valid,"native trial retains its mirror root around factorization probes");
+                Check(modifier->Ran(),"factorization probes execute inside native worker scratch nesting");
+                solver->release();
+            }
+            modifier->release();
+        });
+        worker.join();
+    }
+}
+#endif
+
 static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const ManifoldResult& result,
     const std::vector<SMSDomainVertex>& vertices,const Point3& start,const Point3& end,
     const IScene& scene,const IORStack& stack,SMSQueryDomain domain,ISampler& sampler,bool curved=false) {
@@ -2398,6 +2470,14 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--r6-weld-range-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeWeldCoordinateRange();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r8-scratch-depth-only") {
+#if defined(RISE_SMS_REFERENCE_A) && defined(RISE_SMS_SCRATCH_COUNTERS)
+        NativeFactorizationReservation();
+#else
+        Check(false,"factorization reservation regression requires native scratch diagnostics");
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
