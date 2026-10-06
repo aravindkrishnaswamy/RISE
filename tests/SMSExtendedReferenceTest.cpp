@@ -2474,8 +2474,7 @@ static void NativeSSSReferenceClamps(bool replacement=false) {
                         ops.push_back(direct);
                         Check(RISE_API_CreateAdvancedShader(&shader,ops,{0,0},{16,16},"=="),"SSS native replacing shader created");
                     } else Check(RISE_API_CreateStandardShader(&shader,ops),"SSS native PT shader created");
-                    safe_release(direct);
-                    if(!shader) continue;
+                    if(!shader) {safe_release(direct);op->release();continue;}
                     auto* caster=new SSSObservedCaster(*shader);caster->AttachScene(&fixture.Scene());
                     auto* integrator=new PathTracingIntegrator(cfg,stability);integrator->SetMaxPathDepth(5);
                     if(integrator->GetSolver()) integrator->GetSolver()->SetSpecularCasters(objects);
@@ -2508,7 +2507,7 @@ static void NativeSSSReferenceClamps(bool replacement=false) {
                         <<" returns="<<caster->positiveReturns<<" trials="<<counters.proposalTrials.load()<<std::endl;
                     Check(caster->positiveReturns>0,"SSS witness has positive actual recursive shader returns");
                     if(reference&&mode<3) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
-                    integrator->release();caster->release();shader->release();op->release();
+                    integrator->release();caster->release();shader->release();safe_release(direct);op->release();
                 }
             }
             for(unsigned salt=0;salt<means[0].size();++salt) {
