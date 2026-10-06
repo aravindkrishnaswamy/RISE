@@ -3343,8 +3343,9 @@ Scalar ManifoldSolver::ComputeBlockTridiagonalDeterminant(
 	if( k == 0 ) return 1.0;
 
     SMSWorkerScratchLease scratch(smsScratchDepth!=0,smsActiveDiagnostics);
+    const auto capacity=std::max<unsigned>(config.maxChainDepth,k);
     std::vector<Scalar> localDp;
-    auto& Dp=scratch.Enabled()?scratch.Scalars(0,4*k):localDp;Dp.resize(4*k);
+    auto& Dp=scratch.Enabled()?scratch.Scalars(0,4*capacity):localDp;Dp.resize(4*k);
 	Scalar detProduct = 1.0;
 
 	for( unsigned int i = 0; i < k; i++ )
@@ -3397,10 +3398,11 @@ bool ManifoldSolver::SolveBlockTridiagonal(
 	// Modified diagonal blocks and modified rhs
 	// We'll work with arrays of 2x2 blocks (4 scalars each) and 2-vectors
     SMSWorkerScratchLease scratch(smsScratchDepth!=0,smsActiveDiagnostics);
+    const auto capacity=std::max<unsigned>(config.maxChainDepth,k);
     std::vector<Scalar> localDp;
-    auto& Dp=scratch.Enabled()?scratch.Scalars(0,4*k):localDp;Dp.resize(4*k);
+    auto& Dp=scratch.Enabled()?scratch.Scalars(0,4*capacity):localDp;Dp.resize(4*k);
     std::vector<Scalar> localRp;
-    auto& rp=scratch.Enabled()?scratch.Scalars(1,2*k):localRp;rp.resize(2*k);
+    auto& rp=scratch.Enabled()?scratch.Scalars(1,2*capacity):localRp;rp.resize(2*k);
 
 	// Forward sweep
 	for( unsigned int i = 0; i < k; i++ )
