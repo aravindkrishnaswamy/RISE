@@ -1425,13 +1425,21 @@ class AuditedScaledNormal final : public AuditedIdentityFrameModifier {
     bool varying;
 public:
     explicit AuditedScaledNormal(bool varying_) : varying(varying_) {}
+    static Vector3 Rotate(const Vector3& n,Scalar a) {
+        return Vector3(std::cos(a)*n.x+std::sin(a)*n.z,n.y,-std::sin(a)*n.x+std::cos(a)*n.z);
+    }
     void Modify(RayIntersectionGeometric& hit) const override {
-        hit.vNormal=hit.vNormal*(2+(varying?.2*hit.ptIntersection.x:0));
+        hit.vNormal=Rotate(hit.vNormal,varying?.025*hit.ptIntersection.x:0)
+            *(2+(varying?.2*hit.ptIntersection.x:0));
     }
     bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
         Vector3& normal,Vector3& frameW) const override {
-        normal=d.normal*(2+(varying?.2*raw.ptIntersection.x:0))
-            +raw.vNormal*(varying?.2*d.worldPoint.x:0);
+        const Scalar angle=varying?.025*raw.ptIntersection.x:0;
+        const Vector3 base=Rotate(raw.vNormal,angle);
+        const Vector3 derivative=Rotate(d.normal,angle)
+            +Vector3(base.z,0,-base.x)*(varying?.025*d.worldPoint.x:0);
+        normal=derivative*(2+(varying?.2*raw.ptIntersection.x:0))
+            +base*(varying?.2*d.worldPoint.x:0);
         frameW=d.frameW;return true;
     }
 };
