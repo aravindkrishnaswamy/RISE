@@ -1726,7 +1726,7 @@ static void NativeCoatedSaturatedFallback() {
                 std::cout<<"saturated solved valid="<<result.valid<<" price="<<result.contributionNM<<" expected="<<expected<<'\n';
                 Check(result.valid&&Point3Ops::Distance(result.specularChain[0].position,center)<1e-7
                     &&std::fabs(result.contributionNM-expected)<1e-9,"saturated-film solved root preserves native direction and price");
-                if(result.valid) CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),stack,domain,sampler,shape==3,
+                if(result.valid) CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),stack,domain,sampler,true,
                     std::fabs(Vector3Ops::Dot(n,Vector3Ops::mkVector3(start,center)))/Point3Ops::Distance(start,end));
                 solver->release();
             }
