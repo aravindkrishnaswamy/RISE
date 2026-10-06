@@ -670,12 +670,12 @@ static void NativeFactorizationReservation() {
 
 static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const ManifoldResult& result,
     const std::vector<SMSDomainVertex>& vertices,const Point3& start,const Point3& end,
-    const IScene& scene,const IORStack& stack,SMSQueryDomain domain,ISampler& sampler,bool curved=false) {
+    const IScene& scene,const IORStack& stack,SMSQueryDomain domain,ISampler& sampler,bool curved=false,Scalar probeScale=1) {
     NativeConstraintOracle oracle(cfg,&vertices);
     const auto& chain=result.specularChain;
     std::vector<Scalar> diagonal,upper,lower;
     oracle.BuildJacobian(chain,start,end,diagonal,upper,lower,true);
-    const Scalar h=1e-4*Point3Ops::Distance(start,end);
+    const Scalar h=1e-4*Point3Ops::Distance(start,end)*probeScale;
     for(std::size_t column=0;column<2*chain.size();++column) {
         auto plus=chain,minus=chain;const std::size_t j=column/2;
         const Vector3 tangent=column%2?chain[j].dpdv:chain[j].dpdu;
@@ -1726,7 +1726,8 @@ static void NativeCoatedSaturatedFallback() {
                 std::cout<<"saturated solved valid="<<result.valid<<" price="<<result.contributionNM<<" expected="<<expected<<'\n';
                 Check(result.valid&&Point3Ops::Distance(result.specularChain[0].position,center)<1e-7
                     &&std::fabs(result.contributionNM-expected)<1e-9,"saturated-film solved root preserves native direction and price");
-                if(result.valid) CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),stack,domain,sampler);
+                if(result.valid) CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),stack,domain,sampler,shape==3,
+                    std::fabs(Vector3Ops::Dot(n,Vector3Ops::mkVector3(start,center)))/Point3Ops::Distance(start,end));
                 solver->release();
             }
             Check(reflections>0,"saturated-film fixture retains actual native reflection");
