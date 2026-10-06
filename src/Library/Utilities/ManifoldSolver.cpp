@@ -856,10 +856,13 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                 || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
             const bool uvIndependent=SMSContextIgnoresUV(*vertex.pObject,*vertex.pMaterial);
             if(seam && !uvIndependent) return;
-            if(meshEdge || hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
+            const bool nativeOpticalPrice=dynamic_cast<const DielectricSPF*>(vertex.pMaterial->GetSPF())
+                || dynamic_cast<const PerfectRefractorMaterial*>(vertex.pMaterial);
+            if(nativeOpticalPrice || meshEdge || hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
                 && !SMSConstantSeamMaterial(*vertex.pMaterial))) {
-                // Generated charts and modifier-written matching contexts can jump
-                // inside a native chart.
+                // Authored normals can switch transmission fallback and its
+                // reflection price even inside an unmodified native triangle.
+                // Generated charts and modifier-written contexts can also jump.
                 // Probe their actual contexts within the physical matching
                 // band, instead of assuming the geometry's chart describes
                 // the generator. This is a local numerical ambiguity check,
