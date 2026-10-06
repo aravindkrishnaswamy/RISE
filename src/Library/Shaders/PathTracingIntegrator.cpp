@@ -3219,11 +3219,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
 											PTBssrdfTrainedBsdfTimesCos( sssThroughput, bssrdf.cosinePdf ) );
 
+										SMSReferenceRadianceScope referenceReturn(rc);
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
 
 										Value indirect = sssThroughput * cthis;
-										if( depth > 0 ) {
+										// Shader dispatch returns combined radiance. Protect the whole
+										// return if it includes unclamped reference A; ordinary-only
+										// and HWSS legacy returns retain the historical clamp.
+										if( depth > 0 && !referenceReturn.HasReferenceRadiance() ) {
 											indirect = ClampContribution( indirect,
 												stabilityConfig.indirectClamp );
 										}
@@ -3505,11 +3509,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
 											PTBssrdfTrainedBsdfTimesCos( sssThroughput, bssrdf.cosinePdf ) );
 
+										SMSReferenceRadianceScope referenceReturn(rc);
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
 
 										Value indirect = sssThroughput * cthis;
-										if( depth > 0 ) {
+										// Shader dispatch returns combined radiance. Protect the whole
+										// return if it includes unclamped reference A; ordinary-only
+										// and HWSS legacy returns retain the historical clamp.
+										if( depth > 0 && !referenceReturn.HasReferenceRadiance() ) {
 											indirect = ClampContribution( indirect,
 												stabilityConfig.indirectClamp );
 										}
@@ -3944,6 +3952,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// (compiled out for NM, which had no SMS trace).
 				[[maybe_unused]] const Value smsContribPreClamp = smsContrib;
 				if(!sms.referenceA) smsContrib = ClampContribution( smsContrib, stabilityConfig.directClamp );
+				if(sms.referenceA) {
+                    const Value added = throughput * smsContrib;
+                    if constexpr (Traits::is_pel) {
+                        if(added[0]!=0 || added[1]!=0 || added[2]!=0) rc.smsReferenceRadiance = true;
+                    } else if(added!=0) rc.smsReferenceRadiance = true;
+                }
 				result = result + throughput * smsContrib;
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {

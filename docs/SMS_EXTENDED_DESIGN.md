@@ -818,3 +818,6 @@ Checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853` has fresh six-scenario com
 ### Phase 2 fresh Round 8 disposition (2026-10-05)
 
 Fresh review on 1a1eaeedd found two implementation P1s (Polished native normal normalization/derivatives, and SSS return-boundary clamping of downstream reference A) plus a P2 factorization-capacity reservation/coverage gap. No DESIGN finding. These require native witnesses, repairs and another fresh gate/review before integration. The contract remains unchanged and Phase2 is unmerged. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+
+Round 8 implementation repair: reference-A radiance provenance survives opaque SSS shader returns. A return containing an actual nonzero reference contribution remains unclamped as a whole at its SSS caller; ordinary-only and HWSS legacy returns retain existing clamps. This implements the adopted unclamped reference contract without introducing the deferred path-level membership provenance. Replacement gate and fresh review are required before Phase 2 integration.

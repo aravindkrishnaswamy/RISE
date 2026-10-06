@@ -1400,3 +1400,5 @@ Design and limits:
 [DL435_SPECTRAL_SMS_ATTENUATION.md](../docs/DL435_SPECTRAL_SMS_ATTENUATION.md).
 
 DL-439 photon output reuse is covered by the unconditional ManifoldSolverTest attenuation gate; `--photon-context-only` isolates the NDEBUG-safe UV/Po and spectral IOR query control. OIDNAutoDeterminismTest `--const-aux-only` isolates DL-440 unchanged auxiliary inputs, fresh-output equality and cache/mode/dimension transitions on CPU. The default and `--policy-only` runs include these controls.
+
+The extended reference regression mode --r8-sss-clamp-only exercises actual diffusion/random-walk SSS shader-dispatch returns, indexed geometry with both windings, RGB/NM and HWSS legacy handoffs. Four salted 512-sample paired paths require exact reference clamp-on/off equality, positive recursive radiance, ordinary clamp retention and HWSS extended on/off equality.

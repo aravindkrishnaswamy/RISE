@@ -104,6 +104,10 @@ namespace RISE
 		// fallbacks must keep legacy SMS until lane ownership is implemented.
 		mutable bool smsForceLegacy = false;
 
+		// Radiance provenance for opaque recursive shader returns. A return
+		// containing reference SMS must remain unclamped at its SSS caller.
+		mutable bool smsReferenceRadiance = false;
+
 		/// Optional per-render transport settings supplied by an ephemeral
 		/// PathTracingPelRasterizer.  Unlike mutating a scene-owned default
 		/// shader, these values travel with each worker context, so an SSS
@@ -288,6 +292,18 @@ namespace RISE
 	};
 	// RuntimeContext is worker-local. Restore the caller's mode on every exit,
 	// including nested casts and exceptions; do not copy its owning caches.
+	class SMSReferenceRadianceScope
+	{
+		const RuntimeContext& context;
+		const bool previous;
+	public:
+		explicit SMSReferenceRadianceScope(const RuntimeContext& rc) :
+			context(rc), previous(rc.smsReferenceRadiance) { context.smsReferenceRadiance = false; }
+		bool HasReferenceRadiance() const { return context.smsReferenceRadiance; }
+		~SMSReferenceRadianceScope() { context.smsReferenceRadiance = previous || context.smsReferenceRadiance; }
+		SMSReferenceRadianceScope(const SMSReferenceRadianceScope&) = delete;
+		SMSReferenceRadianceScope& operator=(const SMSReferenceRadianceScope&) = delete;
+	};
 	class SMSLegacyModeScope
 	{
 		const RuntimeContext& context;

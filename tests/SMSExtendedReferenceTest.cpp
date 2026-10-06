@@ -1926,6 +1926,20 @@ static void Geometry() {
     }
 }
 
+struct SSSObservedCaster : RayCaster {
+    mutable unsigned positiveReturns=0;
+    explicit SSSObservedCaster(const IShader& shader) : RayCaster(false,16,shader,true) {}
+    bool CastRay(const RuntimeContext& rc,const RasterizerState& rast,const Ray& ray,RISEPel& c,
+        const RAY_STATE& rs,Scalar* distance,const IRadianceMap* map,const IORStack& stack) const override {
+        const bool hit=RayCaster::CastRay(rc,rast,ray,c,rs,distance,map,stack);
+        if(c[0]>0) ++positiveReturns;return hit;
+    }
+    bool CastRayNM(const RuntimeContext& rc,const RasterizerState& rast,const Ray& ray,Scalar& c,
+        const RAY_STATE& rs,Scalar nm,Scalar* distance,const IRadianceMap* map,const IORStack& stack) const override {
+        const bool hit=RayCaster::CastRayNM(rc,rast,ray,c,rs,nm,distance,map,stack);
+        if(c>0) ++positiveReturns;return hit;
+    }
+};
 struct SSSTestShaderOp : PathTracingShaderOp {
     SSSTestShaderOp(const ManifoldSolverConfig& cfg,const StabilityConfig& stability,
         const std::vector<const IObject*>& objects) : PathTracingShaderOp(cfg,stability) {
@@ -1945,25 +1959,25 @@ static void NativeSSSReferenceClamps() {
                 "omni_light\n{\n name source\n position 3 0 1\n color 1 1 1\n power 1000000\n}\n");
         Fixture fixture(text);if(!fixture.job) {Check(false,"SSS clamp scene prepared");continue;}
         std::vector<const IObject*> objects;ManifoldSolver::EnumerateSpecularCasters(fixture.Scene(),objects);
-        for(unsigned mode=0;mode<3;++mode) {
-            std::array<std::vector<double>,2> means;
+        for(unsigned mode=0;mode<4;++mode) {
+            std::array<std::vector<double>,4> means;
             for(unsigned salt=0;salt<4;++salt) {
                 const unsigned seed=SobolSequence::HashCombine(8731+salt,0x535353);
                 SobolSamplerTestHooks::ValueSalt().store(seed);
-                for(unsigned clamped=0;clamped<2;++clamped) {
-                    ManifoldSolverConfig cfg;cfg.enabled=reference;cfg.extendedMode=true;cfg.targetBounces=1;
+                for(unsigned clamped=0;clamped<(mode==3?4u:2u);++clamped) {
+                    ManifoldSolverConfig cfg;cfg.enabled=reference;cfg.extendedMode=clamped<2;cfg.targetBounces=1;
                     cfg.biased=true;cfg.multiTrials=1;cfg.seedingMode=ManifoldSolverConfig::eSeedingUniform;
                     SMSReferenceCounters counters;cfg.referenceCounters=&counters;
-                    StabilityConfig stability;stability.rrMinDepth=20;stability.indirectClamp=clamped?1e-9:0;
+                    StabilityConfig stability;stability.rrMinDepth=20;stability.indirectClamp=(clamped%2)?1e-9:0;
                     auto* op=new SSSTestShaderOp(cfg,stability,objects);
                     std::vector<IShaderOp*> ops{op};IShader* shader=nullptr;
                     Check(RISE_API_CreateStandardShader(&shader,ops),"SSS native PT shader created");
                     if(!shader) continue;
-                    auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&fixture.Scene());
+                    auto* caster=new SSSObservedCaster(*shader);caster->AttachScene(&fixture.Scene());
                     auto* integrator=new PathTracingIntegrator(cfg,stability);integrator->SetMaxPathDepth(5);
                     if(integrator->GetSolver()) integrator->GetSolver()->SetSpecularCasters(objects);
                     double sum=0;
-                    for(unsigned sample=0;sample<128;++sample) {
+                    for(unsigned sample=0;sample<512;++sample) {
                         SobolSampler sampler(sample,47);RandomNumberGenerator random(seed+sample);
                         RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);
                         context.pSampler=&sampler;context.pStabilityConfig=&stability;
@@ -1974,22 +1988,34 @@ static void NativeSSSReferenceClamps() {
                             auto v=integrator->IntegrateFromHit(context,nullRasterizerState,hit,fixture.Scene(),*caster,
                                 sampler,nullptr,1,air,1,RISEPel(1),true,1,IRayCaster::RAY_STATE::eRayDiffuse,
                                 0,0,0,0,0,0,false,false);sum+=v[0];
-                        } else sum+=integrator->IntegrateFromHitNM(context,nullRasterizerState,hit,mode==1?450:650,
+                        } else if(mode<3) sum+=integrator->IntegrateFromHitNM(context,nullRasterizerState,hit,mode==1?450:650,
                             fixture.Scene(),*caster,sampler,nullptr,1,air,1,1,true,1,
                             IRayCaster::RAY_STATE::eRayDiffuse,0,0,0,0,0,0);
+                        else {
+                            auto swl=SampledWavelengths::SampleEquidistant(.175,380,780);
+                            Scalar values[SampledWavelengths::N]{};
+                            integrator->IntegrateFromHitHWSS(context,nullRasterizerState,hit,swl,fixture.Scene(),*caster,
+                                sampler,nullptr,1,air,1,true,1,IRayCaster::RAY_STATE::eRayDiffuse,
+                                0,0,0,0,0,0,values);sum+=values[0];
+                        }
                     }
-                    means[clamped].push_back(sum/128);
+                    means[clamped].push_back(sum/512);
                     std::cout<<"SSS clamp rw="<<randomWalk<<" winding="<<winding<<" reference="<<reference
-                        <<" mode="<<mode<<" salt="<<salt<<" clamped="<<clamped<<" mean="<<sum/128
-                        <<" trials="<<counters.proposalTrials.load()<<std::endl;
-                    if(reference) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
+                        <<" mode="<<mode<<" salt="<<salt<<" clamped="<<clamped<<" mean="<<sum/512
+                        <<" returns="<<caster->positiveReturns<<" trials="<<counters.proposalTrials.load()<<std::endl;
+                    Check(caster->positiveReturns>0,"SSS witness has positive actual recursive shader returns");
+                    if(reference&&mode<3) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
                     integrator->release();caster->release();shader->release();op->release();
                 }
             }
             for(unsigned salt=0;salt<means[0].size();++salt) {
                 Check(means[0][salt]>0,"SSS clamp witness has positive native radiance");
-                if(reference) Check(means[0][salt]==means[1][salt],"SSS reference radiance survives caller indirect clamp");
-                else Check(means[1][salt]<means[0][salt],"ordinary SSS continuation retains indirect clamp");
+                if(reference&&mode<3) Check(means[0][salt]==means[1][salt],"SSS reference radiance survives caller indirect clamp");
+                else Check(means[1][salt]<means[0][salt],"ordinary or HWSS legacy SSS continuation retains indirect clamp");
+                if(mode==3) {
+                    Check(means[0][salt]==means[2][salt],"HWSS SSS extended on/off identity without clamps");
+                    Check(means[1][salt]==means[3][salt],"HWSS SSS extended on/off identity with clamps");
+                }
             }
         }
     }
