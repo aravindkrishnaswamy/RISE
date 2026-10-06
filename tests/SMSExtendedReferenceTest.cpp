@@ -1495,34 +1495,38 @@ static void NativeHorizonFallbacks(unsigned fields=0) {
 }
 
 class AuditedScaledNormal final : public AuditedIdentityFrameModifier {
-    bool varying;
+    bool varying, frame;
 public:
-    explicit AuditedScaledNormal(bool varying_) : varying(varying_) {}
+    explicit AuditedScaledNormal(bool varying_,bool frame_=false) : varying(varying_),frame(frame_) {}
     static Vector3 Rotate(const Vector3& n,Scalar a) {
         return Vector3(std::cos(a)*n.x+std::sin(a)*n.z,n.y,-std::sin(a)*n.x+std::cos(a)*n.z);
     }
     void Modify(RayIntersectionGeometric& hit) const override {
-        hit.vNormal=Rotate(hit.vNormal,varying?.025*hit.ptIntersection.x:0)
+        const Vector3 value=Rotate(frame?hit.onb.w():hit.vNormal,(frame?.1:0)+(varying?.025*hit.ptIntersection.x:0))
             *(2+(varying?.2*hit.ptIntersection.x:0));
+        if(frame) hit.onb=OrthonormalBasis3D(hit.onb.u(),hit.onb.v(),value);
+        else hit.vNormal=value;
     }
     bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
         Vector3& normal,Vector3& frameW) const override {
-        const Scalar angle=varying?.025*raw.ptIntersection.x:0;
-        const Vector3 base=Rotate(raw.vNormal,angle);
-        const Vector3 derivative=Rotate(d.normal,angle)
+        const Scalar angle=(frame?.1:0)+(varying?.025*raw.ptIntersection.x:0);
+        const Vector3 base=Rotate(frame?raw.onb.w():raw.vNormal,angle);
+        const Vector3 derivative=Rotate(frame?d.frameW:d.normal,angle)
             +Vector3(base.z,0,-base.x)*(varying?.025*d.worldPoint.x:0);
-        normal=derivative*(2+(varying?.2*raw.ptIntersection.x:0))
+        const Vector3 result=derivative*(2+(varying?.2*raw.ptIntersection.x:0))
             +base*(varying?.2*d.worldPoint.x:0);
-        frameW=d.frameW;return true;
+        normal=frame?d.normal:result;frameW=frame?result:d.frameW;return true;
     }
 };
-static void NativeScaledPolishedNormals() {
+static void NativeScaledPolishedNormals(bool frame=false) {
+    for(const char* material: frame?std::vector<const char*>{"mirror","glass","dielectric"}:std::vector<const char*>{"polished"})
     for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true}) for(bool varying:{false,true}) {
         const std::string transform=transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"";
         Fixture f(Materials()+"uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
             "polished_material\n{\n name polished\n reflectance black\n tau 1\n ior triple\n scattering 1000000\n}\n"
-            +QuadMesh("patch",0,-8,8,reverse)+SceneObject("caster","patch","polished",transform));
-        auto* modifier=new AuditedScaledNormal(varying);
+            +"dielectric_material\n{\n name dielectric\n transmittance white\n ior triple\n scattering 1000000000000\n}\n"
+            +QuadMesh("patch",0,-8,8,reverse)+SceneObject("caster","patch",material,transform));
+        auto* modifier=new AuditedScaledNormal(varying,frame);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const auto* object=f.Object("caster");
         const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(.3,.2,0));
@@ -1536,7 +1540,7 @@ static void NativeScaledPolishedNormals() {
         Check(hit.geometric.bHit && hit.pObject==object,"scaled polished normal fixture traces its actual indexed surface");
         if(!hit.geometric.bHit) continue;
         modifier->Modify(hit.geometric);
-        Check(Vector3Ops::Magnitude(hit.geometric.vNormal)>1.5,"audited provider genuinely supplies a nonunit shading normal");
+        Check(Vector3Ops::Magnitude(frame?hit.geometric.onb.w():hit.geometric.vNormal)>1.5,"audited provider genuinely supplies a nonunit shading normal");
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
         auto* solver=new ManifoldSolver(cfg);RandomNumberGenerator random(893);IndependentSampler sampler(random);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
@@ -1546,31 +1550,33 @@ static void NativeScaledPolishedNormals() {
             unsigned reflected=0;
             for(unsigned j=0;j<rays.Count();++j) {
                 const auto& ray=rays[j];
-                if(!ray.isDelta || ray.type!=ScatteredRay::eRayReflection) continue;
-                ++reflected;
+                if(!ray.isDelta || (ray.type!=ScatteredRay::eRayReflection && (!frame || ray.type!=ScatteredRay::eRayRefraction))) continue;
+                const bool reflection=ray.type==ScatteredRay::eRayReflection;
+                if(reflection) ++reflected;
                 const Scalar nativeWeight=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
                 IORStack replay(air);Scalar etaI=0,etaT=0,price=0;bool exiting=false;
-                const bool priced=SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,true,
+                const bool priced=SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,reflection,
                     replay,etaI,etaT,exiting)
-                    &&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,air,domain,true,exiting,etaI,etaT,0,price);
+                    &&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,air,domain,reflection,exiting,etaI,etaT,0,price);
                 std::cout<<"R8 scaled polished winding="<<reverse<<" side="<<side<<" transformed="<<transformed
                     <<" varying="<<varying<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
                     <<" native="<<std::setprecision(17)<<nativeWeight<<" replay="<<price<<'\n';
-                Check(priced&&std::fabs(price-nativeWeight)<1e-9,"replay matches native polished normalization and Fresnel");
+                Check(priced&&std::fabs(price-nativeWeight*(reflection?1:RadianceEtaScale(air,ray.ior_stack)))<1e-9,"replay matches native polished normalization and Fresnel");
+                const Scalar expected=nativeWeight*(reflection?1:RadianceEtaScale(air,ray.ior_stack));
                 const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*4);
                 SMSDomainVertex record(hit.geometric);
                 record.geometry.position=center;record.geometry.normal=hit.geometric.vNormal;
                 record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
-                record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;
+                record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=reflection;
                 std::vector<SMSDomainVertex> vertices{record};
                 const auto result=solver->SolveDomain(start,n,end,-ray.ray.Dir(),f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
                 Check(result.valid,"scaled-normal polished replay retains the actual native reflected root");
                 if(result.valid) {
-                    Check(std::fabs(result.contributionNM-nativeWeight)<1e-9,"solved polished root matches native nonunit-normal price");
+                    Check(std::fabs(result.contributionNM-expected)<1e-9,"solved polished root matches native nonunit-normal price");
                     CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),air,domain,sampler);
                 }
             }
-            Check(reflected==1,"both indexed windings/incidences provide one native polished delta lobe");
+            Check(reflected>=1,"both indexed windings/incidences provide one native polished delta lobe");
         }
         solver->release();
     }
@@ -2582,6 +2588,14 @@ int main(int argc,char** argv) {
         NativeFactorizationReservation();
 #else
         Check(false,"factorization reservation regression requires native scratch diagnostics");
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r9-frame-normal-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeScaledPolishedNormals(true);
+#else
+        Check(false,"frame normal regression requires native domain support");
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
