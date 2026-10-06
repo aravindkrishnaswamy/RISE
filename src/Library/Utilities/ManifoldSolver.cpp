@@ -191,13 +191,17 @@ namespace {
     // determine its Fresnel incidence.
     SMSDeltaDirections SMSNativeDirections(const RISE::Vector3& incoming,
         const RISE::Vector3& shading, const RISE::Vector3& geometric,
-        RISE::Scalar etaI, RISE::Scalar etaT, bool transmission) {
+        RISE::Scalar etaI, RISE::Scalar etaT, bool transmission, bool rawFresnel=false) {
         using namespace RISE;
         SMSDeltaDirections law;
         const Vector3 raw=Vector3Ops::SquaredModulus(geometric)>Scalar(1e-12)?geometric:shading;
         const Vector3 geom=Vector3Ops::Dot(raw,incoming)<0?raw:-raw;
-        law.reflectionNormal=shading;law.transmissionNormal=shading;
-        law.fresnelCosine=std::fabs(Vector3Ops::Dot(incoming,shading));
+        // Match Optics' native input normalization branch. Raw contexts remain
+        // available to coating providers, whose native cosine uses raw W.
+        const Vector3 eventNormal=std::fabs(Vector3Ops::Magnitude(shading)-1)>Scalar(1e-6)
+            ? Vector3Ops::Normalize(shading):shading;
+        law.reflectionNormal=eventNormal;law.transmissionNormal=eventNormal;
+        law.fresnelCosine=std::fabs(Vector3Ops::Dot(incoming,rawFresnel?shading:eventNormal));
         law.reflected=Optics::CalculateReflectedRay(incoming,shading);
         if(Vector3Ops::Dot(law.reflected,geom)<=0) {
             law.reflectionFallback=true;
@@ -218,7 +222,8 @@ namespace {
         return law;
     }
     // These native SPFs read the modified ONB, whereas PolishedBRDF
-    // resolves its coat from normalized vNormal. Preserve both raw records\n    // in the context and normalize only the native consumed event field.
+    // resolves its coat from normalized vNormal. Preserve both raw records
+    // in the context and normalize only the native consumed event field.
     RISE::Vector3 SMSNativeEventNormal(const RISE::IMaterial& material,
         const RISE::RayIntersectionGeometric& hit) {
         return dynamic_cast<const RISE::Implementation::PolishedMaterial*>(&material)
@@ -341,11 +346,14 @@ namespace {
                 } else input.uv=Point2(0,0);
                 if(!provider->SMSFrameDifferential(raw.geometric,input,normal,frameW)) return false;
             }
+            auto modified=raw.geometric;
+            if(raw.pModifier) raw.pModifier->Modify(modified);
             if(dynamic_cast<const Implementation::PolishedMaterial*>(center.pMaterial)) {
-                auto modified=raw.geometric;
-                if(raw.pModifier) raw.pModifier->Modify(modified);
                 dn=SMSNormalizedDifferential(modified.vNormal,normal);
-            } else dn=frameW;
+            } else {
+                dn=std::fabs(Vector3Ops::Magnitude(modified.onb.w())-1)>Scalar(1e-6)
+                    ? SMSNormalizedDifferential(modified.onb.w(),frameW):frameW;
+            }
             dg=input.geometricNormal;
         }
         const bool fallback=center.isReflection?(branch&1):(branch&2);
@@ -617,7 +625,7 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
     if(!Query(material, hit, stack, domain, query) || !std::isfinite(distance) || distance < 0
         || !std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0
         || (reflection ? !query.reflection : !query.transmission)) return false;
-    const auto law=SMSNativeDirections(hit.ray.Dir(),SMSNativeEventNormal(material,hit),hit.UnflippedGeomNormal(),etaI,etaT,query.transmission);
+    const auto law=SMSNativeDirections(hit.ray.Dir(),SMSNativeEventNormal(material,hit),hit.UnflippedGeomNormal(),etaI,etaT,query.transmission,query.customFresnel);
     const Scalar cosine=law.fresnelCosine;
     Scalar fresnel = 1;
     if(query.dielectricInterface) {
@@ -7425,7 +7433,7 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
         Scalar etaI, etaT; bool exiting;
         if(!SMSDomainReplay::Cross(*hit.pMaterial, hit.pObject, hit.geometric, domain,
             true, reflected, etaI, etaT, exiting)) return false;
-        const auto law=SMSNativeDirections(direction,SMSNativeEventNormal(*hit.pMaterial,hit.geometric),hit.geometric.UnflippedGeomNormal(),etaI,etaT,query.transmission);
+        const auto law=SMSNativeDirections(direction,SMSNativeEventNormal(*hit.pMaterial,hit.geometric),hit.geometric.UnflippedGeomNormal(),etaI,etaT,query.transmission,query.customFresnel);
         const Scalar cosine=law.fresnelCosine;
         const bool tir=query.transmission && !law.hasTransmission;
         Scalar fresnel = query.dielectricInterface
