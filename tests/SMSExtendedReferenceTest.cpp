@@ -1734,7 +1734,7 @@ static void NativeUncoatedFallbacks() {
         const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalInverseTransformMatrix()),Vector3(0,0,side)));
         const Vector3 u=Vector3Ops::Normalize(Vector3Ops::Transform(object->GetFinalTransformMatrix(),Vector3(side,0,0)));
         const Vector3 incoming=grazing?Vector3(side,0,0):u*std::sin(52*DEG_TO_RAD)-n*std::cos(52*DEG_TO_RAD);
-        const Point3 start=Point3Ops::mkPoint3(center,-incoming*.01);
+        const Point3 start=Point3Ops::mkPoint3(center,-incoming*.1);
         RayIntersection hit(Ray(start,incoming),nullRasterizerState);f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
         Check(hit.geometric.bHit&&hit.pObject==object,"uncoated fallback traces real indexed/open/closed/plane/sphere geometry");
         if(!hit.geometric.bHit||hit.pObject!=object) continue;
@@ -1782,7 +1782,7 @@ static void NativeUncoatedFallbacks() {
                 Check(!SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,false,transmission,a,b,out),"uncoated unity Fresnel cannot invent a transmitted crossing");
                 if(shape==0) {
                     Point3 point;Vector3 normal;Point2 uv;object->UniformRandomPoint(&point,&normal,&uv,Point3(.37,.61,.43));
-                    const auto seedStart=Point3Ops::mkPoint3(point,-incoming*.01);std::vector<SMSDomainVertex> walk;
+                    const auto seedStart=Point3Ops::mkPoint3(point,-incoming*.1);std::vector<SMSDomainVertex> walk;
                     ScriptSampler draws({.01,.37,.61,.43,.75});
                     Check(solver->BuildExtendedSeed(seedStart,end,f.Scene(),stack,domain,draws,walk)&&walk.size()==1&&walk[0].geometry.isReflection,
                         "native unity Fresnel seed retains reflection exploration probability without TIR relabeling");
