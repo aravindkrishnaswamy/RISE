@@ -1936,7 +1936,8 @@ static void NativeFinalNormalizationBranches() {
                 const auto event=NativeReflectionEvent(probe.geometric,*hit.pMaterial,air,domain,sampler);
                 Check(event.first>0&&Vector3Ops::Magnitude(event.second)>0,"actual native normalization probe has reflected support");
             }
-            SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.normal=hit.geometric.onb.w();
+            SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.normal=hit.geometric.onb.w();record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
+            record.geometry.objectPosition=hit.geometric.ptObjIntersec;record.geometry.uv=hit.geometric.ptCoord;
             record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;
             std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
             auto* solver=new ManifoldSolver(cfg);const auto result=solver->SolveDomain(start,n,end,-native.second,f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
@@ -1979,7 +1980,8 @@ static void NativePrimitiveLocalNormals() {
         IORStack air(1);air.SetCurrentObject(object);RandomNumberGenerator random(415);IndependentSampler sampler(random);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             const auto native=NativeReflectionEvent(hit.geometric,*hit.pMaterial,air,domain,sampler);const Point3 end=Point3Ops::mkPoint3(center,native.second*3);
-            SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.normal=hit.geometric.onb.w();record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;
+            SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.normal=hit.geometric.onb.w();record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
+            record.geometry.objectPosition=hit.geometric.ptObjIntersec;record.geometry.uv=hit.geometric.ptCoord;record.geometry.pObject=object;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;
             std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
             auto* solver=new ManifoldSolver(cfg);const auto result=solver->SolveDomain(start,hit.geometric.vNormal,end,-native.second,f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
             Check(result.valid,"locally regular native authored strip root stays eligible");
