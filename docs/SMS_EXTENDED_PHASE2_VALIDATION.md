@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed replacement gate freezes checkpoint `7838405b68d69eb83d09055f5c2e826a18440ce6`: 43 make modes / 424086 checks / 0 failures, 32 actual Xcode-linked controls and 18 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The scaled-ONB sibling repair has native committed-source proof and a complete replacement gate. Fresh independent Round 10 review remains required. Earlier sections are historical checkpoint evidence.
+The current completed replacement gate freezes checkpoint `7838405b68d69eb83d09055f5c2e826a18440ce6`: 43 make modes / 424086 checks / 0 failures, 32 actual Xcode-linked controls and 18 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The scaled-ONB sibling repair has native committed-source proof and a complete replacement gate. Round 10 review subsequently found a coated-TIR P1 and near-unit-native-event P2. Focused repairs pass; the current coherent proof, replacement gate and fresh Round 11 review remain required. Earlier sections are historical checkpoint evidence.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1452,3 +1452,14 @@ The current frame witness covers PerfectReflector, PerfectRefractor, Dielectric 
 Actual alternating builds use n = 4 independent salts, one worker and reserve 0. Current production witness retained worker-scratch capacity peaks at 204192 bytes; auxiliary topology/results and preparation allocations are outside that documented counter scope. Process memory and all timing/counter records are retained under the evidence directory. No multicore memory bound or general speed guarantee is claimed. Narrow-cone comparisons retain their original channelwise three-combined-SD bands and matching reference SD. The user-accepted wide-cone discrepancy remains measurement-only and supplies no DL-420 closure.
 
 Fresh independent Round 10 review remains required. Phase 2 remains unmerged; target rows stay OPEN and no new row is opened.
+
+
+### Fresh Round 10 disposition and focused repairs (2026-10-06)
+
+Reviewed head `30a7ef45f`: estimator P2 near-unit event law; material P1 coated TIR and the same P2; evidence no P1/P2. No DESIGN finding. Logs: `.claude/logs/sms-phase2-round10-final/fresh-reviews/`.
+
+Mandatory native TIR is now preserved before any raw-cosine film query. The audited-frame half vector uses the native outgoing-vector length, its analytic derivative and a normalized projection basis; normalization-branch transitions invalidate unresolved derivatives. This reproduces the existing event law without changing native walkers, public interfaces or solver tolerances.
+
+The combined focused witness passes **44681/0** in `.claude/logs/sms-phase2-round10/native-events-final-green.log`. It combines the native event/geometry matrix, a bounded indexed patch, **1185/0** open-plane/closed-indexed/nested/overlap coated-TIR controls and actual PT RGB/NM production. The final production oracle is one open sheet, with four salts at N=2048, channel-separated metrics and analytic geometry priced using actual native BSDF/emitter values (reference SD=0). Evidence: `tir-production-matched-green.log`. The earlier box production attempt included other reflective walls and is not a matched single-root reference. Earlier incomplete TIR fixture attempts are retained as failed test development and are not final numerical proofs. Added production counter reporting changes diagnostics only and will be compiled by the replacement gate.
+
+The full 21-path committed-source rollback, replacement clean builds/regressions/Xcode controls/sanitizers/parity/cost/memory and fresh Round 11 review remain required. Historical Round 10 gate greens do not establish correctness of this new native source. Phase 2 remains unmerged and all target ledger rows remain OPEN.

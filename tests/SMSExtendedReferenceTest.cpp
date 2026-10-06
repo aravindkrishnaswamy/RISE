@@ -1623,8 +1623,10 @@ static void NativeCoatedScaledTIR() {
         const std::string transform=transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"";
         Fixture f(Materials()+"dielectric_material\n{\n name coated_tir\n tau 1\n ior 1.5\n scattering 1e30\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
             +(open?PlaneScene("shape",-1):Mesh(true,reverse))+SceneObject("caster","shape","coated_tir",transform)
-            +(medium>=2?"perfectrefractor_material\n{\n name outer_mat\n refractance white\n ior 1.1\n}\n"
-                "sphere_geometry\n{\n name outer_shape\n radius 20\n}\n"+SceneObject("outer","outer_shape","outer_mat"):""));
+            +(medium==2?"perfectrefractor_material\n{\n name outer_mat\n refractance white\n ior 1.1\n}\n"
+                "sphere_geometry\n{\n name outer_shape\n radius 20\n}\n"+SceneObject("outer","outer_shape","outer_mat"):"" )
+            +(medium==3?"perfectrefractor_material\n{\n name outer_mat\n refractance white\n ior 1.3\n}\n"
+                +SceneObject("outer","shape","outer_mat",transform+(transformed?" position 0.6363961030678927 0 0.6363961030678927\n":" position 0 0 0.6\n")):""));
         auto* modifier=new AuditedScaledNormal(false,true,2,0);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const auto* object=f.Object("caster");
@@ -1659,6 +1661,8 @@ static void NativeCoatedScaledTIR() {
                     &&std::fabs(price-native)<1e-12,"coated replay cannot overwrite actual TIR with raw-cosine film reflectance");
                 SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.pObject=object;
                 record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;
+                record.geometry.normal=hit.geometric.vNormal;record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
+                record.geometry.uv=hit.geometric.ptCoord;record.geometry.objectPosition=hit.geometric.ptObjIntersec;
                 std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
                 auto* solver=new ManifoldSolver(cfg);const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*.4);
                 const auto result=solver->SolveDomain(start,n,end,-ray.ray.Dir(),f.Scene(),stack,domain,vertices,sampler,1e-7,1e-10);
@@ -1669,6 +1673,76 @@ static void NativeCoatedScaledTIR() {
             Check(reflections>0&&transmissions==0,"coated TIR produces reflection and no transmission");
         }
     }
+}
+
+static void NativeCoatedTIRProduction() {
+    const Point3 receiver(-.2*std::tan(61*DEG_TO_RAD),.1,.8),root(0,.1,1);
+    const Vector3 incoming=Vector3Ops::Normalize(Vector3Ops::mkVector3(root,receiver));
+    const Vector3 reflected(incoming.x,incoming.y,-incoming.z);
+    const Point3 lightPoint=Point3Ops::mkPoint3(root,reflected*.4);
+    OrthonormalBasis3D frame;frame.CreateFromW(incoming);std::ostringstream scene;scene<<std::setprecision(17);
+    scene<<Materials()<<"dielectric_material\n{\n name coated_tir\n tau 1\n ior 1.5\n scattering 1e30\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
+        <<"clippedplane_geometry\n{\n name shape\n doublesided TRUE\n pta -2 -2 1\n ptb 2 -2 1\n ptc 2 2 1\n ptd -2 2 1\n}\n"<<SceneObject("caster","shape","coated_tir")
+        <<"lambertian_material\n{\n name diffuse\n reflectance white\n}\nclippedplane_geometry\n{\n name receiver_geo\n doublesided TRUE\n";
+    unsigned corner=0;
+    for(const Point2& uv:{Point2(-1,-1),Point2(-1,1),Point2(1,1),Point2(1,-1)}) {
+        const auto point=Point3Ops::mkPoint3(receiver,(frame.u()*uv.x+frame.v()*uv.y)*.01);
+        scene<<" pt"<<char('a'+corner++)<<' '<<point.x<<' '<<point.y<<' '<<point.z<<'\n';
+    }
+    scene<<"}\n"<<SceneObject("receiver","receiver_geo","diffuse")
+        <<"omni_light\n{\n name source\n position "<<lightPoint.x<<' '<<lightPoint.y<<' '<<lightPoint.z<<"\n color 1 1 1\n power 40\n}\n";
+    Fixture f(scene.str());auto* modifier=new AuditedScaledNormal(false,true,2,0);
+    f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+    std::vector<IShaderOp*> ops;IShader* shader=nullptr;
+    Check(RISE_API_CreateStandardShader(&shader,ops),"coated TIR production shader created");if(!shader) return;
+    auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&f.Scene());
+    ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;cfg.targetBounces=1;cfg.biased=true;cfg.maxBernoulliTrials=64;
+    SMSReferenceCounters counters;SMSDomainCounters domainCounters;cfg.referenceCounters=&counters;cfg.domainCounters=&domainCounters;StabilityConfig stability;stability.rrMinDepth=20;
+    auto* active=new PathTracingIntegrator(cfg,stability);active->SetMaxPathDepth(1);
+    cfg.enabled=false;auto* baseline=new PathTracingIntegrator(cfg,stability);baseline->SetMaxPathDepth(1);
+    const Ray camera(Point3Ops::mkPoint3(receiver,incoming*.01),-incoming);
+    RayIntersection hit(camera,nullRasterizerState);f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+    Check(hit.geometric.bHit&&hit.pObject==f.Object("receiver"),"coated TIR production camera traces actual receiver on virtual inside side of open sheet");
+    const Scalar pathLength=Point3Ops::Distance(receiver,root)+.4;
+    const auto* light=f.Scene().GetLights()->GetItem("source");
+    std::array<std::vector<double>,4> samples;constexpr unsigned N=2048;
+    for(unsigned salt=0;salt<4;++salt) {
+        const unsigned valueSalt=SobolSequence::HashCombine(12041+salt,0x54495241);SobolSamplerTestHooks::ValueSalt().store(valueSalt);
+        Scalar sums[4]{};
+        for(unsigned sample=0;sample<N;++sample) {
+            for(unsigned mode=0;mode<2;++mode) {
+                SobolSampler a(sample,29),b(sample,29);RandomNumberGenerator ra(valueSalt+sample),rb(valueSalt+sample);
+                RuntimeContext ca(ra,RuntimeContext::PASS_NORMAL,false),cb(rb,RuntimeContext::PASS_NORMAL,false);ca.pSampler=&a;cb.pSampler=&b;
+                if(mode==0) {
+                    const auto on=active->IntegrateRay(ca,nullRasterizerState,camera,f.Scene(),*caster,a,nullptr,nullptr);
+                    const auto off=baseline->IntegrateRay(cb,nullRasterizerState,camera,f.Scene(),*caster,b,nullptr,nullptr);
+                    for(unsigned c=0;c<3;++c) sums[c]+=on[c]-off[c];
+                } else sums[3]+=active->IntegrateRayNM(ca,nullRasterizerState,camera,550,f.Scene(),*caster,a,nullptr,nullptr)
+                    -baseline->IntegrateRayNM(cb,nullRasterizerState,camera,550,f.Scene(),*caster,b,nullptr,nullptr);
+            }
+        }
+        for(unsigned c=0;c<4;++c) samples[c].push_back(sums[c]/N);
+    }
+    SobolSamplerTestHooks::ValueSalt().store(0);
+    for(unsigned c=0;c<4;++c) {
+        Moments observed(samples[c]);const Scalar le=c<3?light->emittedRadiance(-reflected)[c]:light->emittedRadianceNM(-reflected,550);
+        IORStack stack(1);
+        const auto* bsdf=hit.pMaterial->GetBSDF();
+        const Scalar fNative=c<3?bsdf->valueStateful(incoming,hit.geometric,&stack)[c]
+            :bsdf->valueStatefulNM(incoming,hit.geometric,550,&stack);
+        const Scalar expected=le*fNative*std::fabs(Vector3Ops::Dot(hit.geometric.vNormal,incoming))/(pathLength*pathLength);
+        std::cout<<std::setprecision(17)<<"coated TIR production c="<<c<<" mean="<<observed.mean<<" sd="<<observed.sd<<" analytic="<<expected<<" reference sd=0 n=4 N="<<N<<'\n';
+        Check(std::fabs(observed.mean-expected)<=3*observed.sd,"actual production coated TIR contribution matches analytic mandatory reflection within salted three-SD band");
+    }
+    std::cout<<"coated TIR counters proposals="<<counters.proposalTrials<<" zeros="<<counters.zeroTrials
+        <<" newton="<<domainCounters.newtonIterations<<" retries="<<counters.retryTrials
+        <<" tails="<<counters.tailTrials<<" roulette="<<counters.rouletteStops
+        <<" owned="<<counters.ownedRoots<<" rejected="<<counters.rejectedRoots
+        <<" sceneQueries="<<counters.sceneIntersectionQueries<<" objectQueries="<<counters.objectIntersectionQueries
+        <<" domainMaterialQueries="<<counters.materialQueries<<" scratchGrowths="<<counters.scratchBufferGrowths
+        <<" scratchFrames="<<counters.scratchFrames<<" scratchPeakBytes="<<counters.scratchPeakBytes<<'\n';
+    Check(counters.ownedRoots.load()>0,"actual production coated TIR reference deposits accepted roots");
+    baseline->release();active->release();caster->release();shader->release();
 }
 
 static void NativeClosedHorizonFallbacks() {
@@ -2680,6 +2754,12 @@ int main(int argc,char** argv) {
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
+    if(argc==2&&std::string(argv[1])=="--r10-tir-production-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCoatedTIRProduction();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--r10-coated-tir-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeCoatedScaledTIR();
@@ -2688,7 +2768,7 @@ int main(int argc,char** argv) {
     }
     if(argc==2&&std::string(argv[1])=="--r10-native-events-only") {
 #ifdef RISE_SMS_REFERENCE_A
-        NativeCoatedScaledTIR();NativeBoundedNearUnitMirror();
+        NativeCoatedScaledTIR();NativeBoundedNearUnitMirror();NativeCoatedTIRProduction();
         for(Scalar magnitude:{.9999989,.9999991,.9999995,1.0000005,1.0000009,1.0000011}) NativeScaledPolishedNormals(true,magnitude);
 #else
         Check(false,"native event regression requires native domain support");

@@ -256,9 +256,51 @@ namespace {
         const auto law=SMSNativeDirections(Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous)),
             v.normal,v.geomNormal,v.etaI,v.etaT,v.canRefract && v.pMaterial
                 && typeid(*v.pMaterial)!=typeid(Implementation::PolishedMaterial));
-        if(branch) *branch=unsigned(law.reflectionFallback) | (unsigned(law.transmissionFallback)<<1) | (unsigned(law.hasTransmission)<<2);
+        if(branch) *branch=unsigned(law.reflectionFallback) | (unsigned(law.transmissionFallback)<<1)
+            | (unsigned(law.hasTransmission)<<2)
+            | (unsigned(std::fabs(Vector3Ops::Magnitude(v.normal)-1)>Scalar(1e-6))<<3);
         v.normal=v.isReflection?law.reflectionNormal:law.transmissionNormal;
         return v;
+    }
+
+    // Native Optics tolerates slightly nonunit event normals. Its outgoing
+    // vector then need not have unit length. Matching a unit outgoing ray
+    // requires this length in the generalized half vector, including its
+    // derivative; normalizing the normal would change the native event.
+    bool SMSNativeHalfVector(const RISE::Vector3& wi,const RISE::Vector3& wo,
+        const RISE::Vector3& normal,RISE::Scalar etaI,RISE::Scalar etaT,bool reflection,
+        const RISE::Vector3& dwi,const RISE::Vector3& dwo,const RISE::Vector3& dn,
+        RISE::Vector3& half,RISE::Vector3& derivative) {
+        using namespace RISE;
+        Vector3 direction,delta;
+        if(reflection) {
+            const Scalar cosine=Vector3Ops::Dot(normal,wi);
+            const Scalar dc=Vector3Ops::Dot(dn,wi)+Vector3Ops::Dot(normal,dwi);
+            direction=Optics::CalculateReflectedRay(-wi,normal);
+            delta=-dwi+(normal*dc+dn*cosine)*2;
+        } else {
+            direction=-wi;
+            if(!Optics::CalculateRefractedRay(normal,etaI,etaT,direction)) return false;
+            if(etaI==etaT) delta=-dwi;
+            else {
+                const bool flip=Vector3Ops::Dot(normal,wi)<0;
+                const Vector3 n=flip?-normal:normal,dnOriented=flip?-dn:dn;
+                const Scalar cosine=Vector3Ops::Dot(n,wi);
+                const Scalar dc=Vector3Ops::Dot(dnOriented,wi)+Vector3Ops::Dot(n,dwi);
+                Scalar cosT;
+                if(!Optics::CalculateRefractedCosine(cosine,etaI,etaT,cosT) || !(cosT>0)) return false;
+                const Scalar ratio=etaI/etaT;
+                const Scalar dcosT=cosine<1?ratio*ratio*cosine*dc/cosT:0;
+                delta=-dwi*ratio+n*(ratio*dc-dcosT)+dnOriented*(ratio*cosine-cosT);
+            }
+        }
+        const Scalar length=Vector3Ops::Magnitude(direction);
+        if(!(length>0) || !std::isfinite(length)) return false;
+        const Scalar dlength=Vector3Ops::Dot(direction,delta)/length;
+        half=reflection?wi+wo*length:-(wi*etaI+wo*(etaT*length));
+        derivative=reflection?dwi+dwo*length+wo*dlength
+            :-(dwi*etaI+(dwo*length+wo*dlength)*etaT);
+        return std::isfinite(dlength);
     }
 
     bool SMSAuditedModifier(const RISE::IObject& object) {
@@ -375,8 +417,13 @@ namespace {
             // convention uses unnormalized half vectors for refraction.
             rawHalf=true;
         }
+        if(!SMSNativeHalfVector(wi,wo,effective.normal,center.etaI,center.etaT,
+            center.isReflection,dwi,dwo,dn,h,dh)) return false;
         if(!rawHalf) {dh=SMSNormalizedDifferential(h,dh);h=Vector3Ops::Normalize(h);}
-        const Vector3 n=effective.normal,u=center.dpdu,du=difference(plus.dpdu,minus.dpdu);
+        // Projection bases are unit directions; the unnormalized native
+        // normal remains in the event equation above.
+        dn=SMSNormalizedDifferential(effective.normal,dn);
+        const Vector3 n=Vector3Ops::Normalize(effective.normal),u=center.dpdu,du=difference(plus.dpdu,minus.dpdu);
         const Scalar dot=Vector3Ops::Dot(u,n);
         const Vector3 tangent=u-n*dot;
         if(Vector3Ops::Magnitude(tangent)<=NEARZERO) return false;
@@ -633,7 +680,7 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
             : Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT);
         const Scalar wavelength = domain.kind == SMSQueryDomain::Wavelength ? domain.nm
             : ScalarPainterRGB::kChannelNM[domain.component];
-        if(query.customFresnel && (!material.GetSPF()
+        if(query.customFresnel && !(query.transmission && !law.hasTransmission) && (!material.GetSPF()
             || !material.GetSPF()->EvaluateSpecularFresnel(cosine, etaI, etaT, exiting, wavelength, fresnel)))
             return false;
     }
@@ -1994,6 +2041,9 @@ Point2 ManifoldSolver::DirectionToSpherical(
 //     C[2i]   = dot(dpdu, h)
 //     C[2i+1] = dot(dpdv, h)
 //
+//   Audited native-frame constraints additionally retain the native outgoing
+//   vector length in wo, since Optics tolerates nearly unit normals whose
+//   scattered vectors are not exactly unit. Their projection basis is unit.
 //   This avoids the angular wrapping issues of the spherical-coordinate
 //   formulation and yields a well-conditioned Jacobian.
 //////////////////////////////////////////////////////////////////////
@@ -2073,6 +2123,14 @@ void ManifoldSolver::EvaluateConstraint(
 			);
 		}
 
+        if(nativeEventConstraints && SMSNeedsNativeFrame(chain[i])) {
+            Vector3 unusedDerivative;
+            if(!SMSNativeHalfVector(wi,wo,v.normal,v.etaI,v.etaT,v.isReflection,
+                Vector3(0,0,0),Vector3(0,0,0),Vector3(0,0,0),h,unusedDerivative)) {
+                C[2*i]=C[2*i+1]=1;continue;
+            }
+        }
+
 		// Normalize h -- reflection vertices only; a refraction vertex's
 		// constraint is the UNNORMALIZED h (see UseUnnormalizedHalfVector).
 		// The hLen < NEARZERO bail therefore guards reflections only.
@@ -2101,15 +2159,17 @@ void ManifoldSolver::EvaluateConstraint(
 		// EvaluateConstraint used plain Normalize(dpdu) instead, the
 		// Jacobian wouldn't match dC/dx and Newton would fail to
 		// converge on non-flat surfaces.
-		const Scalar dpdu_dot_n = Vector3Ops::Dot( v.dpdu, v.normal );
+		const Vector3 projectionNormal=nativeEventConstraints && SMSNeedsNativeFrame(chain[i])
+            ? Vector3Ops::Normalize(v.normal):v.normal;
+        const Scalar dpdu_dot_n = Vector3Ops::Dot( v.dpdu, projectionNormal );
 		Vector3 s_unnorm(
-			v.dpdu.x - dpdu_dot_n * v.normal.x,
-			v.dpdu.y - dpdu_dot_n * v.normal.y,
-			v.dpdu.z - dpdu_dot_n * v.normal.z );
+			v.dpdu.x - dpdu_dot_n * projectionNormal.x,
+			v.dpdu.y - dpdu_dot_n * projectionNormal.y,
+			v.dpdu.z - dpdu_dot_n * projectionNormal.z );
 		const Scalar s_len = Vector3Ops::Magnitude( s_unnorm );
 		Vector3 s = (s_len > NEARZERO) ? (s_unnorm * (1.0 / s_len)) :
 			Vector3Ops::Normalize( v.dpdu );
-		Vector3 t = Vector3Ops::Cross( v.normal, s );
+		Vector3 t = Vector3Ops::Cross( projectionNormal, s );
 
 		C[2*i]   = Vector3Ops::Dot( s, h );
 		C[2*i+1] = Vector3Ops::Dot( t, h );
@@ -7438,7 +7498,7 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
         const bool tir=query.transmission && !law.hasTransmission;
         Scalar fresnel = query.dielectricInterface
             ? Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT) : Scalar(1);
-        if(query.customFresnel) {
+        if(query.customFresnel && !tir) {
             const Scalar wavelength = domain.kind == SMSQueryDomain::Wavelength ? domain.nm
                 : ScalarPainterRGB::kChannelNM[domain.component];
             if(!hit.pMaterial->GetSPF() || !hit.pMaterial->GetSPF()->EvaluateSpecularFresnel(
