@@ -1957,7 +1957,7 @@ static void NativeSSSReferenceClamps() {
                     StabilityConfig stability;stability.rrMinDepth=20;stability.indirectClamp=clamped?1e-9:0;
                     auto* op=new SSSTestShaderOp(cfg,stability,objects);
                     std::vector<IShaderOp*> ops{op};IShader* shader=nullptr;
-                    Check(RISE_API_CreateStandardShader(&shader,ops),"SSS native PT shader created");op->release();
+                    Check(RISE_API_CreateStandardShader(&shader,ops),"SSS native PT shader created");
                     if(!shader) continue;
                     auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&fixture.Scene());
                     auto* integrator=new PathTracingIntegrator(cfg,stability);integrator->SetMaxPathDepth(5);
@@ -1983,7 +1983,7 @@ static void NativeSSSReferenceClamps() {
                         <<" mode="<<mode<<" salt="<<salt<<" clamped="<<clamped<<" mean="<<sum/128
                         <<" trials="<<counters.proposalTrials.load()<<std::endl;
                     if(reference) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
-                    integrator->release();caster->release();shader->release();
+                    integrator->release();caster->release();shader->release();op->release();
                 }
             }
             for(unsigned salt=0;salt<means[0].size();++salt) {
