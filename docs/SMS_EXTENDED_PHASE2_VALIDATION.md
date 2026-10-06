@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed gate freezes checkpoint 4495ae81be81107fd604bfad0faedfd46a6fe846:42 make modes /416773/0,30 actual Xcode-linked controls and17 full-project sanitizer modes. Clean make, Deployment and Opto pass with0 owned diagnostics. All three Round8 implementation findings have native committed-source proofs and replacement gates. Fresh independent Round9 review remains required. Earlier sections are historical checkpoint evidence.
+The current completed gate freezes checkpoint `4495ae81be81107fd604bfad0faedfd46a6fe846`: 42 make modes / 416,773 checks / 0 failures, 30 actual Xcode-linked controls and 17 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. All three Round 8 implementation findings have native committed-source proofs and replacement gates. Fresh independent Round 9 review remains required. Earlier sections are historical checkpoint evidence.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
