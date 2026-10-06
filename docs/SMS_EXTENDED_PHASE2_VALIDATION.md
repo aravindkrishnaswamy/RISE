@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed gate freezes native/test checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853`:39 make modes /414590 reported checks /0 failures,24 actual Xcode-linked controls and14 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. Both Round7 P1 repairs and the curved-UV P2 coverage repair have fresh committed-source proofs and replacement gates. Fresh independent Round8 review remains required before integration. Earlier sections are historical checkpoint records; the final section records the current gate.
+The current completed gate freezes native/test checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853`:39 make modes /414590 reported checks /0 failures,24 actual Xcode-linked controls and14 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. Both Round7 P1 repairs and the curved-UV P2 coverage repair have fresh committed-source proofs and replacement gates. Fresh independent Round8 completed on 1a1eaeedd with two P1 implementation findings and one P2 cost-coverage gap; repairs and committed native witnesses are required before integration. Earlier sections are historical checkpoint records; the final section records the current gate.
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
 
@@ -1361,3 +1361,7 @@ Paired render-time changes, percent mean ± sample SD, n4, one worker, reserve_c
 All12 narrow-cone channel comparisons pass the original three-combined-SD band;5 of6 wide-cone measurements fall within it. Outside-band measurement: winding0, component0, extended0.62896691331016064 ±0.00019614427847928844, BDPT0.63006257853459957 ±8.3591266312714821e-05, -0.17389784% /-5.13881272 combined SD. This is the user-accepted measure-only discrepancy; no band is widened. All16 mode-off comparisons pass;15 images are float32-identical, and one NM image has one component differing by one ULP.
 
 Fresh independent Round8 review is next. Phase2 remains unmerged; no ledger closure, new row or push is claimed.
+
+## Fresh Round 8 review disposition (2026-10-05)
+
+All three fresh reviewers exited successfully on 1a1eaeedd. Material P1: Polished replay omits native vNormal normalization and its derivative chain rule. Estimator P1: both diffusion and random-walk SSS caller clamps can clip downstream reference A across shader dispatch. Evidence P2: factorization helper scratch buffers reserve current chain length rather than the documented configured maximum; the one-vertex warm-up control misses later longer systems. No DESIGN finding and no clean round. Evidence: .claude/logs/sms-phase2-round8-final/fresh-reviews/. The completed 7c7248a4b gate remains valid for that checkpoint; it is not a gate for subsequent repairs. Native witnesses, repairs, replacement gates and fresh review are in progress; Phase2 remains unmerged with no ledger closure or new row.

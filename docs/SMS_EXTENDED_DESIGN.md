@@ -814,3 +814,7 @@ Three independent reviewers completed on `01fcb931e`. The estimator lens found i
 ### Phase 2 fresh Round 8 replacement gate (2026-10-05)
 
 Checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853` has fresh six-scenario committed rollback proofs,39 make modes /414590/0,24 actual Xcode-linked controls /406140/0,14 all374-unit sanitizer modes /238826/0, clean make/Deployment/Opto with zero owned diagnostics, full interleaved n4 A/B costs and process-memory evidence. Round7 irrelevant-UV, native signal provenance and curved-normal UV coverage findings are repaired. All20 native/four test hashes verify; no retained Round7 gate substitution. Fresh independent review is pending; Phase2 remains unmerged and all target ledger rows remain open. See SMS_EXTENDED_PHASE2_VALIDATION.md for actual counts, historical failed attempts and cost scope.
+
+### Phase 2 fresh Round 8 disposition (2026-10-05)
+
+Fresh review on 1a1eaeedd found two implementation P1s (Polished native normal normalization/derivatives, and SSS return-boundary clamping of downstream reference A) plus a P2 factorization-capacity reservation/coverage gap. No DESIGN finding. These require native witnesses, repairs and another fresh gate/review before integration. The contract remains unchanged and Phase2 is unmerged. See SMS_EXTENDED_PHASE2_VALIDATION.md.
