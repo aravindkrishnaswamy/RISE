@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed replacement gate freezes checkpoint `ba8cac0dc3d470a90df8a62bb1aa41a4374a9482`: 44 make modes / 468767 checks / 0 failures, 34 actual Xcode-linked controls and 19 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The coated-TIR and near-unit native-event repairs have coherent committed-source proof and a complete replacement gate. Fresh independent Round 11 review remains required. Earlier sections are historical checkpoint evidence.
+The current completed replacement gate freezes checkpoint `1187f276ce66a65052b4bc0b5f01aa043c8ea2bd`: 45 make modes / 483402 checks / 0 failures, 36 actual Xcode-linked controls and 20 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. The Fresnel-dependent fallback, raw-film price and wavelength-bound native-event repairs have coherent committed-source proof and a complete replacement gate. Fresh independent Round 12 review remains required. Earlier sections are historical checkpoint evidence.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1505,3 +1505,36 @@ The first Round 12 proof run stopped at the geometry regression (2817/40): the n
 The second Round 12 proof run stopped on four transformed NM signal-painter roots (1645/4). The newly added optical-discontinuity probe had tested full attenuation weight, including native float-precision spectral reconstruction, against a double-precision optical band. The probe now checks only the coating Fresnel price that gates native fallback; painter input contexts retain the existing geometric/UV/normal checks. This narrows the implementation to its intended native optical support check without changing bands or attenuation evaluation. Both interrupted gate attempts remain historical; the final complete gate must restart on the corrected source.
 
 The corrected optical-price scope passes the focused sequence: signal prices 1665/0, mixed geometry 4297/0, four-film fallback 14635/0, signal production 393/0, curved UV 425/0, polished normals 1089/0, scratch depth 109/0, SSS clamps 1065/0, scaled frames 7233/0 and native events 44681/0. Checked library/test builds have zero compiler diagnostics. These are focused results, not substitutes for the final complete gate or fresh review.
+
+
+### Fresh Round 12 replacement gate (2026-10-06)
+
+Native/test checkpoint `1187f276ce66a65052b4bc0b5f01aa043c8ea2bd`; master `08552560b54b517b7a8a0696eb9d317953b26bbe`. Evidence: `.claude/logs/sms-phase2-round12-final/source.json` and `final-gate/completed-summary.json`. All 23 native and four test hashes verify. The Fresnel-dependent fallback fix has three fresh coherent committed-source rollback scenarios across all native paths: Fresnel fallback 14203 passed, 432 failed; seed-event validity 2817 passed, 40 failed; optical-price scope 1645 passed, 4 failed; restored native-event controls pass 14635/0. Eleven earlier rollback scenarios remain explicitly historical evidence. The current gate reruns clean make and both Xcode builds, every required regression, full-project sanitizers, eight interleaved A/B source builds and sixteen salted mode-off comparisons, weld-range sanitizer proof and process memory.
+
+| Gate | Result |
+|---|---|
+| Clean make | 376 compilation actions; zero owned diagnostics |
+| Actual Xcode Deployment/Opto | 393/393 compilation actions; zero owned diagnostics |
+| Make regressions | 20 executables / 45 modes / 483402 checks / 0 failures; CST separately |
+| Actual Xcode-linked controls | 36 modes / 543774 checks / 0 failures |
+| ASan/UBSan/float-cast-overflow | all 374 linked project units / 20 modes / 307648 checks / 0 failures; third-party libraries uninstrumented |
+| Weld-range sanitizer proof | committed-source fatal float-cast overflow; restored weld and composed-UV controls pass |
+| Storage-output invariant | 40 original salted production means; maximum 0.0 double ULP vs pre-storage checkpoint |
+| Mode-off parity | 16 salted image comparisons; every RGBA component within adopted one float32 ULP |
+
+The Xcode logs retain only the disclosed pre-existing optional OIDN search-path linker warning and AppIntents metadata notice; no source compiler warnings are suppressed. Native nonunit-normal warnings in the scaled-frame witness are expected Optics diagnostics demonstrating its normalization path.
+
+The current native-event witness covers PerfectReflector, PerfectRefractor, Dielectric and coated Dielectric actual RGB/NM events, actual root positions and prices, independent constraint/endpoint Jacobians, both indexed windings/incidences, constant/varying direction and magnitude, nonuniform transforms, magnitudes inside/outside both Optics normalization boundaries, and a narrow indexed patch containing the native root while excluding the spurious solution. Coated TIR is tested on an open plane, closed indexed solids, nested exits and actual non-top overlapping solids. The actual PT production control uses four salts at N=2048, channel-separated RGB/NM means, a single open-sheet reflection and analytic geometry with native BSDF/emitter values and zero reference SD. Earlier box production attempt was not a matched single-root oracle and is retained only as a discarded test attempt. Mandatory native TIR stays unity before any coating query. The half vector includes the native outgoing vector length with its analytic derivative and a unit projection basis; normalization branch changes reject unresolved derivatives. Ordinary vector-Fresnel uses the consumed normal while non-TIR coating queries retain raw incidence. Polished vNormal normalization, configured-max LU reservation and opaque SSS reference-radiance provenance remain covered by restored make/Xcode/sanitizer controls. No new contract or native-walker normalization change is claimed.
+
+| Mode-off fixture | Paired cost change mean (%) | Sample SD (%) |
+|---|---:|---:|
+| RGB k=1 | 2.874100 | 4.434951 |
+| RGB k=2 | 2.542661 | 2.424490 |
+| NM | 2.843019 | 1.180798 |
+| HWSS | 2.197942 | 0.240475 |
+
+Actual alternating builds use n = 4 independent salts, one worker and reserve 0. The original flat delta-light production witness retained worker-scratch capacity peaks at 204192 bytes; the modified coated-TIR production witness peaks at 372432 bytes across its two retained scratch frames, including warm-up growth. Current modified-witness counters: `coated TIR counters proposals=32770 zeros=202 newton=243966 retries=16386 tails=0 roulette=0 owned=16284 rejected=202 sceneQueries=392836 objectQueries=49789955 domainMaterialQueries=261560 scratchGrowths=32 scratchFrames=2 scratchPeakBytes=372432`. These are separate measured fixture scopes; auxiliary topology/results and preparation allocations are outside that documented counter scope. Process memory and all timing/counter records are retained under the evidence directory. No multicore memory bound or general speed guarantee is claimed. Narrow-cone comparisons retain their original channelwise three-combined-SD bands and matching reference SD. The user-accepted wide-cone discrepancy remains measurement-only and supplies no DL-420 closure.
+
+Fresh independent Round 12 review remains required. Phase 2 remains unmerged; target rows stay OPEN and no new row is opened.
+
+Round 12 process-memory measurement: maximum RSS 103153664 bytes; peak footprint 82903592 bytes (`production-memory.log`). The eight-build n=4 cost figures above are observed overheads, not speedups. The new four-film optical-price witness retains the stated regular-Jacobian/critical-film uncertainty scopes; no attenuation quantization, solver band or native scattering law is changed.
