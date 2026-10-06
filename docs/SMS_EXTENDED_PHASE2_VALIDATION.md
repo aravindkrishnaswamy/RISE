@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed replacement gate freezes checkpoint `f24c5c517f1cab6a10dbe5f80fe6bc56aa877496`: 50 make modes / 515121/0, 46 actual Xcode-linked controls / 607202/0 and 25 full-project sanitizer modes / 339362/0. Clean make, Deployment and Opto pass with zero owned diagnostics. The three Round 14 review repairs have fresh coherent committed-source proof. Round 15 review completed with no P1 findings and two confirmed P2 cached-SSS provenance findings. Their repairs and the Round 16 replacement gate are in progress; Phase 2 is unmerged. Earlier sections are historical checkpoint evidence.
+The current completed replacement gate freezes checkpoint `d449c0742c0cda9c31fc623504855be7a553f655`: 52 make modes / 524038/0, 50 actual Xcode-linked controls / 625016/0 and 27 full-project sanitizer modes / 348269/0. Clean make, Deployment and Opto pass with zero owned diagnostics. The cached-SSS repairs have fresh coherent committed-source proof. Fresh Round 16 review remains required; Phase 2 is unmerged. Earlier sections are historical checkpoint evidence.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1676,3 +1676,40 @@ Narrow-cone comparisons retain original channelwise three-combined-SD bands and 
 Round 15 reviewed `cf629842450c3d68dbf15466e352e8873f16df13`. Estimator and evidence reviewers found no P1/P2 or design blockers; the material reviewer identified two P2 findings in both native cached SSS operations: capture contexts lost the anchor mode, and cached irradiance lost reference-radiance provenance. The current repair copies the mode into fresh owning capture contexts, keys irradiance caches by object and mode, and preserves provenance through sample points, octree evaluation, and raster-value reuse. RGB uplift into NM preserves the returned provenance; zero contributions do not claim it.
 
 The touched octree also had a shared static recursion-depth counter and mismatched array deletion. Recursion depth is now local to each build and child arrays use `delete[]`. The RuntimeContext set-before-lookup cache allocation now inserts into its owning map. Focused native assignment/addition, RGB/NM/HWSS, both-winding, four-salt first-build/reuse/mode-transition checks pass 8897/0; independent concurrent octree checks pass 10/0. These are preliminary make results, not a completed replacement gate. Two additional ordinary cached-SSS render fixtures have positive output. Fresh committed rollback proof, sanitizers, clean make, actual Deployment/Opto, and review remain required.
+
+
+### Fresh Round 16 replacement gate (2026-10-06)
+
+Native/test checkpoint `d449c0742c0cda9c31fc623504855be7a553f655`; master `08552560b54b517b7a8a0696eb9d317953b26bbe`. Evidence: `.claude/logs/sms-phase2-round16-final/source.json`, `final-gate/completed-summary.json`, and the driver logs. All 31 native and four test hashes verify. One fresh coherent all-31-native-path rollback to `cf629842450c3d68dbf15466e352e8873f16df13` proves the two cached-SSS provenance defects and set-before-lookup cache defect against the final tests, followed by restored green runs. Seventeen earlier rollback scenarios remain historical evidence.
+
+| Committed-source proof | Red pass/fail | Restored pass/fail |
+|---|---:|---:|
+| `r16-cached-sss-only` | 7745/1152 | 8897/0 |
+
+| Gate | Result |
+|---|---|
+| Clean make | 376 compilation actions; zero owned diagnostics |
+| Actual Xcode Deployment/Opto | 393/393 compilation actions; zero owned diagnostics |
+| Make regressions | 20 executables / 52 modes / 524038 checks / 0 failures; CST separately |
+| CST derive corpus | 458 MATCH / 0 DRIFT; 465 corpus scenes, 0 UNCOVERED / 0 STALE |
+| Actual Xcode-linked controls | 50 modes / 625016 checks / 0 failures |
+| ASan/UBSan/float-cast-overflow | all 374 linked project units / 27 modes / 348269 checks / 0 failures; third-party libraries uninstrumented |
+| Weld-range proof | committed-source fatal float-cast overflow; restored weld and composed-UV controls pass |
+| Storage-output invariant | 40 original salted production means; maximum 0.0 double ULP vs pre-storage checkpoint |
+| Mode-off parity | 28 salted image comparisons; 27 bit-identical float32 images, maximum 1 float32 ULP |
+
+The cached-SSS witnesses cover both native operations, both windings, RGB, NM450/NM650, actual HWSS, assignment/addition, four salts, positive actual captures, first-build/raster reuse and legacy/extended transitions. The committed baseline fails 512 set-before-lookup checks, 384 returned-provenance checks, 160 legacy/HWSS capture checks and 96 cache-transition checks. Existing native SSS continuation clamp tests remain in the gate. A separate coherent committed-source TSan/ASan proof instruments the test and octree translation units; all remaining project and third-party units there are native uninstrumented. It requires a fatal old depth-counter race and fatal old array-deallocation mismatch, then restored 10/0 for each. This limited proof is separate from the all-374-unit fixed-source sanitizer gate. Its first driver attempt rejected the expected fatal TSan SIGABRT because the harness allowed only exit 66; the corrected harness also permits SIGABRT while requiring the exact race report. That failed driver is preserved as `octree-tsan-first-driver-failure.log`; no native code changed for this harness correction. Default-path cost now includes both actual cached SSS operations in addition to the previous five fixtures. No optics thresholds or acceptance bands changed.
+
+| Mode-off fixture | Paired cost change mean (%) | Sample SD (%) |
+|---|---:|---:|
+| RGB k=1 | -0.008328 | 0.587952 |
+| RGB k=2 | -0.465532 | 1.218700 |
+| NM | 1.645205 | 1.241772 |
+| HWSS | 1.492074 | 0.689115 |
+| AdvancedShader RGB | -1.196708 | 3.262796 |
+| Cached SSS RGB | 0.128560 | 0.757596 |
+| Donner-Jensen cached SSS RGB | 0.706966 | 0.298534 |
+
+Eight alternating committed-source A/B library/test builds use n=4 independent salts, one worker and reserve 0, with seven fixtures per trial. Measured production maximum RSS is 103038976 bytes. The flat production scratch capacity peak is 204192 bytes. Modified native-event counters: `coated TIR counters proposals=32770 zeros=202 newton=243966 retries=16386 tails=0 roulette=0 owned=16284 rejected=202 sceneQueries=392836 objectQueries=49789955 domainMaterialQueries=261560 scratchGrowths=32 scratchFrames=2 scratchPeakBytes=372432`. Process memory and proposal/Newton/retry/tail/owned/rejected/query/scratch counters retain their separate measured scopes in `production-memory.log` and restored production/native-event logs. These logical counters do not bound multicore or auxiliary allocation costs. The Xcode logs disclose only the pre-existing optional OIDN search-path linker warning and AppIntents metadata notice; no owned compiler warnings are suppressed. Optics nonunit-normal messages are expected runtime diagnostics in the scaled-frame witness.
+
+Narrow-cone comparisons retain original channelwise three-combined-SD bands and matching reference SD. The user-accepted wide-cone discrepancy remains measurement-only and does not close DL-420. Fresh independent Round 16 review and Phase 2 integration remain pending. Target rows remain OPEN; no new row is opened.
