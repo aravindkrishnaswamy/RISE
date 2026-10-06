@@ -2,7 +2,8 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The current completed gate freezes native/test checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853`:39 make modes /414590 reported checks /0 failures,24 actual Xcode-linked controls and14 full-project sanitizer modes. Clean make, Deployment and Opto pass with zero owned diagnostics. Both Round7 P1 repairs and the curved-UV P2 coverage repair have fresh committed-source proofs and replacement gates. Fresh independent Round8 completed on 1a1eaeedd with two P1 implementation findings and one P2 cost-coverage gap; repairs and committed native witnesses are required before integration. Earlier sections are historical checkpoint records; the final section records the current gate.
+The current completed gate freezes checkpoint 4495ae81be81107fd604bfad0faedfd46a6fe846:42 make modes /416773/0,30 actual Xcode-linked controls and17 full-project sanitizer modes. Clean make, Deployment and Opto pass with0 owned diagnostics. All three Round8 implementation findings have native committed-source proofs and replacement gates. Fresh independent Round9 review remains required. Earlier sections are historical checkpoint evidence.
+
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
 
@@ -1382,3 +1383,34 @@ The committed native witness (899a36d51) dispatches diffusion and random-walk SS
 RuntimeContext now carries scoped radiance provenance, set only when the PT integrator actually adds a nonzero reference-A contribution. Each SSS recursive cast starts a fresh provenance scope and propagates it outward on return. The opaque shader return combines ordinary and reference radiance: when it contains reference A, the whole combined SSS return is exempt from the caller's indirect clamp. This deliberately preserves the unclamped reference contract; it does not claim to selectively clamp an ordinary subterm inside that opaque return. Ordinary-only returns still clamp. This is contribution provenance, not the deferred medium-membership seed-certain design. The shared Pel/NM implementation covers both SSS models. HWSS's legacy mode scope prevents reference A in its nested NM returns. Standalone SMSShaderOp already forces legacy, so it needs no provenance change.
 
 Logs: .claude/logs/sms-phase2-round9/sss-witness-red2.log, sss-repair-green2.log. The focused run precedes the final nonzero-provenance guard rebuild; fresh full-gate evidence must replace it before integration. Round 8's completed gate remains historical evidence for its own frozen source, not evidence for these new repairs. No ledger row is closed.
+
+
+### Fresh Round 9 replacement gate (2026-10-05)
+
+Native/test checkpoint 4495ae81be81107fd604bfad0faedfd46a6fe846; master 08552560b54b517b7a8a0696eb9d317953b26bbe. Evidence: .claude/logs/sms-phase2-round9-final/source.json and final-gate/completed-summary.json. All 21 native and four test hashes verify. This complete replacement gate reruns nine coherent committed-source rollback scenarios, eight alternating A/B library/test builds and 16 salted mode-off comparisons, clean make and both actual Xcode builds, all required regressions, full-project sanitizer checks and process memory. No earlier gate substitutes for this frozen source.
+
+| Gate | Result |
+|---|---|
+| Clean make | 376 compilation actions; 0 owned diagnostics |
+| Actual Xcode Deployment/Opto | 393/393 compilation actions; 0 owned diagnostics |
+| Make regressions | 20 executables / 42 modes / 416773 reported checks / 0 failures; CST separately |
+| Actual Xcode-linked controls | 30 modes / 410506 checks / 0 failures |
+| Full ASan/UBSan/float-cast-overflow |all 374 linked project units / 17 modes / 241009 checks / 0 failures; third-party libraries uninstrumented |
+| Weld-range sanitizer red/green |diagnostic-qualified committed-source fatal float-cast overflow; restored native weld and composed-UV controls green |
+| Storage-output invariant |40 original salted production means; maximum 0.0 double ULP vs pre-storage source |
+| Mode-off image parity |16 salted comparisons; every RGBA component within adopted 1 float32 ULP |
+
+Xcode logs retain the pre-existing optional OIDN search-path linker warning and the AppIntents metadata notice. These are disclosed environment/tool notices, not owned source compiler diagnostics; they are not suppressed by compiler flags.
+
+Fresh reds: pre-normalization-numerical-red: 849 passed, 160 failed; pre-factorization-numerical-red: 81 passed, 28 failed; pre-sss-clamp-numerical-red: 1017 passed, 48 failed; pre-r7-numerical-red: 3 passed, 20 failed; pre-r7-r7-signals-only-red: 945 passed, 400 failed; pre-r7-r7-signal-production-only-red: 353 passed, 40 failed; pre-transform-numerical-red: 281 passed, 60 failed; pre-composed-numerical-red: 321 passed, 30 failed; pre-composed-unsupported-red: 1005 passed, 76 failed; pre-composed-hygiene-red: (scanned 456 test files) 170 passed, 2 failed.; pre-differential-numerical-red: 36067 passed, 10 failed; pre-differential-r5-preparation-only-red: 23 passed, 8 failed; pre-differential-r5-provenance-only-red: 33 passed, 8 failed; pre-scratch-numerical-red: 177 passed, 24 failed; native-master-numerical-red: 127 passed, 50 failed. The pre-scratch failure is missing diagnostic capabilities, with its radiance checks positive; it is not a numerical estimator failure. Native-master production failures are the separate analytic-price proof.
+
+The current SSS witness checks actual positive recursive shader returns for four salted 512-sample paths, diffusion/random-walk, indexed both windings, RGB/NM and actual HWSS. Reference clamp-on/off means are exact, ordinary-only and HWSS legacy clamp controls remain positive, and HWSS extended on/off means are exact. The polished-normal witness compares native SPF, replay/root prices and independent constraint/endpoint Jacobians, including variable direction/magnitude and transforms/both incidence sides. Fresh-thread factorization witnesses verify both helpers reserve configured maximum at fixed nesting depth and stop growing after first warm-up. Focused repairs plus full-gate replacements cover all three Round 8 findings; fresh Round 9 independent review remains required.
+
+| Mode-off fixture | Paired cost change mean (%) | Sample SD (%) |
+|---|---:|---:|
+| 0 | 0.607050 | 0.717423 |
+| 1 | 0.410710 | 0.549869 |
+| 2 | 1.742170 | 0.607656 |
+| 3 | 1.734842 | 0.415270 |
+
+Cost uses actual alternating committed-source builds, n = 4 salts, one worker, reserve 0. Current production witness maximum retained worker-scratch capacity is 204192 bytes; this replaces earlier checkpoint capacities. Full timing/memory/counter records are retained in phase2-interleaved-cost.json, production-memory.log and fixture logs. Scratch accounting measures the documented worker-local buffers; caller-owned topology/results and preparation allocations are excluded. The accepted wide-cone slab discrepancy remains measured, with original channelwise 3-combined-SD bands and independent reference SD; no DL-420 closure. All target rows remain OPEN and Phase 2 remains unmerged.

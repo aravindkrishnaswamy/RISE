@@ -821,3 +821,5 @@ Fresh review on 1a1eaeedd found two implementation P1s (Polished native normal n
 
 
 Round 8 implementation repair: reference-A radiance provenance survives opaque SSS shader returns. A return containing an actual nonzero reference contribution remains unclamped as a whole at its SSS caller; ordinary-only and HWSS legacy returns retain existing clamps. This implements the adopted unclamped reference contract without introducing the deferred path-level membership provenance. Replacement gate and fresh review are required before Phase 2 integration.
+
+Fresh Round 9 gate at 4495ae81be81107fd604bfad0faedfd46a6fe846: all 21 native/four test hashes verify;42 make modes/ 416773/ 0,30 actual Xcode-linked controls/ 410506/ 0,17 all 374-unit sanitizer modes/ 241009/ 0, clean make/Deployment/Opto 0 owned diagnostics, nine committed rollback scenarios and full interleaved n4 cost/memory evidence. All three Round 8 findings are repaired. Fresh independent review is pending; Phase 2 remains unmerged. See SMS_EXTENDED_PHASE2_VALIDATION.md.
