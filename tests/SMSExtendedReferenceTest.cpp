@@ -1805,6 +1805,95 @@ static void NativeUncoatedFallbacks() {
         Check(uncertain[kind]>0&&saturated[kind]>0,"each native provider exercises unresolved optical prices and non-TIR unity Fresnel");}
 }
 
+// Authored native normals exercise optical fallback prices without a modifier,
+// generated chart or triangle edge to enable the final context probe.
+static void NativeAuthoredOpticalPrices() {
+    unsigned unresolved[2]{},regular[2]{};
+    for(unsigned kind=0;kind<2;++kind) for(bool indexed:{false,true}) for(bool closed:{false,true})
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true})
+    for(unsigned medium=0;medium<2;++medium) for(int offset:{-1,0,1}) {
+        const Scalar index=medium?1:1.5,environment=medium?1.5:1;
+        std::ostringstream material;material<<"scalar_painter\n{\n name authored_ior\n values "<<index<<' '<<index<<' '<<index<<"\n}\n";
+        material<<(kind?"dielectric_material\n{\n name authored\n tau 1\n scattering 1e30\n":"perfectrefractor_material\n{\n name authored\n refractance white\n")<<" ior authored_ior\n}\n";
+        Fixture f(Materials()+material.str()+(closed?Mesh(true,reverse):QuadMesh("shape",0,-8,8,reverse))
+            +SceneObject("caster","shape","authored",transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":""));
+        const auto* object=f.Object("caster");
+        const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(.1,.2,closed?1:0));
+        const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalInverseTransformMatrix()),Vector3(0,0,side)));
+        const Vector3 u=Vector3Ops::Normalize(Vector3Ops::Transform(object->GetFinalTransformMatrix(),Vector3(side,0,0)));
+        const Vector3 incoming=u*std::sin(52*DEG_TO_RAD)-n*std::cos(52*DEG_TO_RAD);
+        const Point3 start=Point3Ops::mkPoint3(center,-incoming);
+        RayIntersection initial(Ray(start,incoming),nullRasterizerState);object->IntersectRay(initial,RISE_INFINITY,true,true,false);
+        Check(initial.geometric.bHit,"authored optical setup traces real native geometry");if(!initial.geometric.bHit) continue;
+        IORStack stack(environment);stack.SetCurrentObject(object);if(closed&&side<0) stack.push(index);
+        IORStack setup(stack);Scalar etaI=0,etaT=0;bool exiting=false;
+        const bool seeded=SMSDomainReplay::Cross(*initial.pMaterial,object,initial.geometric,SMSQueryDomain::RGB(0),true,setup,etaI,etaT,exiting);
+        Check(seeded,"authored optical setup resolves native membership");if(!seeded) continue;
+        const Scalar phi=std::atan2(etaT-etaI*std::sin(52*DEG_TO_RAD),etaI*std::cos(52*DEG_TO_RAD))+offset*Scalar(1e-4);
+        const Vector3 worldNormal=n*std::cos(phi)+u*std::sin(phi);
+        const Vector3 authoredNormal=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalTransformMatrix()),worldNormal));
+        IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
+        Check(object->GetGeometry()->TessellateToMesh(indices,positions,normals,coords,1),"authored optical mesh tessellates");
+        ITriangleMeshGeometryIndexed* mesh=nullptr;ITriangleMeshGeometry* plain=nullptr;
+        if(indexed) Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,false),"authored indexed smooth mesh created");
+        else Check(RISE_API_CreateTriangleMeshGeometry(&plain,true),"authored non-indexed smooth mesh created");
+        if(mesh) {mesh->BeginIndexedTriangles();mesh->AddVertices(positions);}if(plain) plain->BeginTriangles();
+        for(const auto& indexRecord:indices) {
+            Triangle triangle;
+            for(unsigned k=0;k<3;++k) {triangle.vertices[k]=positions[indexRecord.iVertices[k]];triangle.coords[k]=coords[indexRecord.iCoords[k]];}
+            const Vector3 face=Vector3Ops::Normalize(Vector3Ops::Cross(Vector3Ops::mkVector3(triangle.vertices[1],triangle.vertices[0]),Vector3Ops::mkVector3(triangle.vertices[2],triangle.vertices[0])));
+            const Vector3 tilted=Vector3Ops::Dot(face,authoredNormal)>0?authoredNormal:-authoredNormal;
+            for(unsigned k=0;k<3;++k) triangle.normals[k]=face.z?tilted:face;
+            if(plain) plain->AddTriangle(triangle);
+            if(mesh) {
+                IndexedTriangle out=indexRecord;
+                for(unsigned k=0;k<3;++k) {out.iNormals[k]=mesh->numNormals();mesh->AddNormal(triangle.normals[k]);out.iCoords[k]=mesh->numCoords();mesh->AddTexCoord(triangle.coords[k]);}
+                mesh->AddIndexedTriangle(out);
+            }
+        }
+        if(mesh) {mesh->DoneIndexedTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*mesh);safe_release(mesh);}
+        if(plain) {plain->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*plain);safe_release(plain);}
+        dynamic_cast<const ObjectManager*>(f.Scene().GetObjects())->InvalidateSpatialStructure();f.job->GetObjects()->PrepareForRendering();
+        RayIntersection hit(Ray(start,incoming),nullRasterizerState);f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+        Check(hit.geometric.bHit&&hit.pObject==object&&!hit.pModifier&&!object->GetModifier()&&dynamic_cast<const Object*>(object)->UsesNativeTextureChart(),"authored optical hit has no modifier or generated chart");if(!hit.geometric.bHit) continue;
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            RandomNumberGenerator random(131);IndependentSampler sampler(random);
+            const auto native=NativeReflectionEvent(hit.geometric,*hit.pMaterial,stack,domain,sampler);
+            Check(native.first>0,"authored optical control retains native reflection");if(!(native.first>0)) continue;
+            IORStack replay(stack);Scalar from=0,to=0,price=0;bool exit=false;
+            const bool priced=SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,true,replay,from,to,exit)
+                &&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,domain,true,exit,from,to,0,price);
+            Check(priced,"authored optical event resolves native prices");if(!priced) continue;
+            SMSDomainVertex record(hit.geometric);auto& v=record.geometry;v.position=center;v.pObject=object;v.pMaterial=hit.pMaterial;
+            v.normal=hit.geometric.onb.w();v.geomNormal=hit.geometric.UnflippedGeomNormal();v.isReflection=true;v.valid=true;v.dpdu=u;v.dpdv=Vector3(0,1,0);
+            v.etaI=from;v.etaT=to;v.isExiting=exit;v.uv=hit.geometric.ptCoord;v.objectPosition=hit.geometric.ptObjIntersec;
+            const Point3 end=Point3Ops::mkPoint3(center,native.second);const Scalar band=std::sqrt(std::numeric_limits<Scalar>::epsilon());
+            const Scalar displacement=band*Point3Ops::Distance(start,end)/8;bool certain=true;
+            for(const auto& tangent:{u,Vector3(0,1,0)}) for(int sign:{-1,1}) {
+                Scalar weights[2]{};
+                for(unsigned k=0;k<2;++k) {
+                    const auto target=Point3Ops::mkPoint3(center,tangent*(sign*displacement*(k?.5:1)));
+                    RayIntersection probe(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(target,start))),nullRasterizerState);
+                    object->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                    if(!probe.geometric.bHit) {certain=false;continue;}
+                    weights[k]=NativeReflectionEvent(probe.geometric,*hit.pMaterial,stack,domain,sampler).first;
+                }
+                const Scalar scale=std::max({Scalar(1),std::fabs(native.first),std::fabs(weights[0]),std::fabs(weights[1])});
+                certain=certain&&std::fabs(2*weights[1]-weights[0]-native.first)<=band*scale/8;
+            }
+            std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+            auto* solver=new ManifoldSolver(cfg);const auto root=solver->SolveDomain(start,n,end,-native.second,f.Scene(),stack,domain,vertices,sampler,1e-7,1e-10);
+            if(!certain) {++unresolved[kind];Check(!root.valid,"authored native-normal optical price jump remains an ordinary zero trial");}
+            else {++regular[kind];Check(root.valid&&std::fabs(price-native.first)<1e-9&&std::fabs(root.contributionNM-native.first)<1e-9,"regular authored native-normal point/root prices match actual SPF");}
+            std::cout<<std::setprecision(17)<<"R13 authored material="<<kind<<" indexed="<<indexed<<" closed="<<closed<<" winding="<<reverse<<" side="<<side
+                <<" transformed="<<transformed<<" medium="<<medium<<" offset="<<offset<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
+                <<" native="<<native.first<<" replay="<<price<<" certain="<<certain<<" root="<<root.valid<<'\n';solver->release();
+        }
+    }
+    for(unsigned kind=0;kind<2;++kind) {std::cout<<"R13 authored counters material="<<kind<<" unresolved="<<unresolved[kind]<<" regular="<<regular[kind]<<'\n';
+        Check(unresolved[kind]>0&&regular[kind]>0,"each authored native provider covers unresolved and neighboring regular controls");}
+}
+
 static void NativeCoatedSaturatedFallback() {
     for(unsigned film=0;film<4;++film) for(bool reverse:{false,true}) for(int side:{-1,1})
     for(bool transformed:{false,true}) for(unsigned shape=0;shape<4;++shape) {
@@ -2989,6 +3078,12 @@ int main(int argc,char** argv) {
         NativeFactorizationReservation();
 #else
         Check(false,"factorization reservation regression requires native scratch diagnostics");
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r13-authored-optical-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeAuthoredOpticalPrices();
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
