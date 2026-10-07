@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 reviewed (2 rounds, zero P1), pending master gate/merge, on branch `sms-ext-phase3` (see the Phase 3 records at the end); Phase 4 remains pending; earlier audit sections are historical.**
+**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 merged at `fbd421bd1` after three independent review rounds with zero P1, clean make/Xcode Deployment/Opto builds and a green targeted master gate (see the Phase 3 records at the end); Phase 4 (HWSS) is in progress on `sms-ext-phase4`; earlier audit sections are historical.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -1098,3 +1098,30 @@ diagnostics; `ManifoldSolverTest` 388/0, `SMSExtendedReferenceTest`
 default 6522/0, `SMSExtendedPartitionTest` 545/0. Only
 `ExtendedLuminaryPoint` and comments/tests changed after the full
 round-1 gate (`gate-r1`), so the rest of the targeted list was not rerun.
+
+### Phase 3 integration and master gate (2026-10-07)
+
+Round 3 (a fresh focused review of `62fbf62d3..3fc381842`, the
+two-sided `ExtendedLuminaryPoint` fallback and docs) found zero P1.
+Clean Xcode `RISE-GUI` Deployment and `RISE-GUI-Opto` Opto builds of
+`3fc381842` exit 0 with no owned diagnostics; the only warning is the
+allowed OIDN search-path notice. Merged to master at `fbd421bd1`.
+
+Targeted master gate at `fbd421bd1` (each test built and run
+individually, exit 0): ManifoldSolverTest 388/0; SMSUniformDispersionTest
+300/0 and `--shipped` 10/0; ExteriorIndexInvarianceTest 299/0;
+SMSEmitterDirectionTest 344/0; SMSMediumAnchorTest 27/0;
+TransparentShadowPartitionTest 42/0; AlphaSMSGeometry 216/0,
+AlphaSMSTransport 20/0, AlphaSMSReciprocal 27/0;
+PTGuidingMISPartitionTest 185/0; SourceHygieneTest 172/0;
+CstDeriveGoldenTest 458 MATCH / 0 DRIFT; SMSExtendedReferenceTest
+6522/0, production 393/0, signed 641/0, review 193401/0;
+SMSDomainReplayTest 8200/0; SMSLegacyModeTest 41/0;
+SMSExtendedPartitionTest 545/0; WeaveGapShadowTransmittanceTest 244/0;
+OpenSheetIndexConventionTest 24/0; ManifoldNormalDerivativeTest 141/0;
+GradedIndexInteriorFactorTest and DoubleSidedEmitterTest exit 0 with
+zero failures. The master
+checkout's build logs contain only `ld` "SDK Version" module-flag
+mismatches between stale objects compiled with an older SDK and fresh
+ones; there are no compiler warnings. No ledger row was closed.
+
