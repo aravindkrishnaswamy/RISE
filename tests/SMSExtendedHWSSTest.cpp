@@ -577,6 +577,13 @@ static void BodySection()
             std::cout<<std::setprecision(8)<<"DL-378 legacy (extended off) "<<spec.label<<" lane="<<w<<" nm="<<o.lambdas[w]
                 <<" legacyHWSS="<<a.mean<<"+-"<<a.se<<" SMS-off="<<b.mean<<"+-"<<b.se<<" ratio="<<a.mean/b.mean<<" (reported)\n";
         }
+        // The same at NM (legacy split suppression, no HWSS body rule).
+        const auto nmLegacy=Render(spec,Mode::Legacy,l,0), nmRef=Render(spec,Mode::Ref,l,0);
+        if(nmLegacy.ok&&nmRef.ok) {
+            const Moments a(nmLegacy.lane[0]),b(nmRef.lane[0]);
+            std::cout<<std::setprecision(8)<<"DL-378 legacy (extended off) NM nm="<<o.lambdas[0]<<" legacyNM="<<a.mean<<"+-"<<a.se
+                <<" SMS-off="<<b.mean<<"+-"<<b.se<<" ratio="<<a.mean/b.mean<<" (reported)\n";
+        }
     }
 }
 
