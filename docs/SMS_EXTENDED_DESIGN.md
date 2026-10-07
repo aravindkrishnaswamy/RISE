@@ -1021,3 +1021,16 @@ Three lenses, zero P1; the five decisions above were accepted. Changes
   snell `multi_trials 2` ~1.06x), DL-446 (slab side-face TRT coverage),
   DL-447 (1/1000 scale), DL-448 (non-uniformly scaled mesh luminary,
   found by the thin-luminary fixture) opened.
+- Round-1 red proofs. Committed master sources (`f3737d927`, partition-API
+  checks compiled out, 0 build diagnostics): render 122/9, fixtures 88/3;
+  restored HEAD green; mode-off `SMSLegacyModeTest` 28 images at 0 float32
+  ULP. In-tree mutations: B deposit x1.25 -> render 190/48 (every
+  SMS-owned = PT-owned row and every closed form); PT keeps component 2
+  regardless of ownership -> the per-component RGB prism row fails
+  (236/2); the old 1e-3 projection -> predicate 132/626 (thin-luminary,
+  x1000 and push-band unit checks). Three-switch coupling at a delta
+  light: transparent shadows on/off bit-identical at an extended anchor
+  with estimator A delivering the light; at an ineligible anchor no SMS
+  work and the transparent shadow delivers it (0.956 vs 0).
+- Round-1 gate at `dbcab0c9a`: every targeted suite passes with 0 build
+  diagnostics; `SMSExtendedPartitionTest` 542/0.
