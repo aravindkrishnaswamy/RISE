@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 reviewed (2 rounds, zero P1) and merged at `fbd421bd1`. Phase 4 (HWSS lane geometry and ownership) implemented on branch `sms-ext-phase4`, pending independent review (see the Phase 4 record at the end); earlier audit sections are historical.**
+**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 reviewed (2 rounds, zero P1) and merged at `fbd421bd1`. Phase 4 (HWSS lane geometry and ownership) reviewed (2 rounds, zero P1; Xcode Deployment and Opto clean at `1f7426825`) on branch `sms-ext-phase4`, pending master gate/merge (see the Phase 4 records at the end); earlier audit sections are historical.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -1361,6 +1361,8 @@ Three fresh lenses, zero P1. P2s and their dispositions:
    before. Estimator-B sections (`lanes`, `body`, `mask`) moved from 16
    to 32 salts: of the 100 gated lane means 17 have relative se > 3 %, 3
    > 5 % (max 5.6 %), none > 10 % (was 49 / 16 / 2 of 108 at 16 salts).
+   Definition: the larger of the HWSS-full and NM-full relative se per
+   lane; on the HWSS full alone it is 15 / 3 / 0 (round-2 recount).
    First full run with no retries: **1106/0** at `b97b85fec` (36.9 min
    single-threaded, run `r1_hwss_full_b97b85fec.log`).
 3. **DL-450.** The n = 1.9 ball stays in `lanes` as a REPORTED band
@@ -1427,3 +1429,94 @@ Round-1 red proofs and gate.
   22/0 each (`r1_ssshwss_rerun*.log`), and the earlier gate read 0.9924.
   Recorded as a non-reproducing outlier of that suite, not a Phase 4
   result.
+
+### Phase 4 review round 2 (2026-10-07)
+
+Three fresh lenses, zero P1; Xcode Deployment and Opto builds of
+`1f7426825` clean (only the allowed OIDN search-path notice). Changes:
+
+1. **DL-450 discriminator.** The estimator reviewer's analysis: at 450 nm
+   the relative index 1.9/1.4 makes the ball a lens (focal length ~0.285
+   from its centre) whose conjugate of points inside the emitter lies
+   within ~2 % of the receiver -- inside the spherical-aberration
+   caustic, where the light-side Jacobian diverges and estimator B's
+   per-root contribution has (log-)infinite second moment. Test (`--
+   section nmprobe --probe-ball-z`, 256 salts x 4096 spp, NM and HWSS
+   lane at 450 nm, runs `r2_dl450_z045.log`, `r2_dl450_z075.log`):
+
+   | ball z | NM full/SMS-off | HWSS lane full/SMS-off | NM per-salt skew, max/median | HWSS skew, max/median |
+   |---|---|---|---|---|
+   | 0.55 (original, `r1_dl450_256`) | 0.963 (z -3.41) | 1.014 (z +0.30) | 1.29, 1.66 | 13.8, 13.3 |
+   | 0.45 (image moved off the receiver) | 0.994 (z -0.68) | 1.000 (z +0.04) | 0.84, 1.50 | 0.56, 1.39 |
+   | 0.75 (SMS owns ~10 %) | 1.013 (z +1.07) | 0.985 (z -1.31) | 2.60, 2.19 | 1.63, 1.94 |
+
+   Moving the image off the receiver removes the deficit and the
+   outliers with the estimator unchanged, so DL-450 is recorded as an
+   **infinite-variance focal caustic of estimator B, not a bias**; the
+   row stays OPEN as a variance / known-limitation row (remedy class: a
+   bounded-variance treatment near folds and foci, e.g. a Jacobian
+   regularization or a mixture with PT's own strategy there). The
+   readings at z = 0.55, 450 nm, each against its own SMS-off render:
+
+   | reading | salts (salt base) | ratio |
+   |---|---|---|
+   | HWSS lane, `lanes` case | 16 (83000) | 0.902 |
+   | same case, extended | 32 (83000, overlaps the 16) | 0.922 |
+   | HWSS lane, `lanes` case, gate-r1 | 32 (105000) | 0.948 (d/se -0.87 at t critical 4.26) |
+   | HWSS lane, probe | 64 (171500) | 1.076 |
+   | HWSS lane, probe | 256 (400500) | 1.014 |
+   | NM, probe | 32 (171000) | 0.991 |
+   | NM, probe | 64 (171000, overlaps the 32) | 0.948 |
+   | NM, probe | 256 (400000) | 0.963 |
+   | NM in the `lanes` case (vs the HWSS SMS-off) | 16 / 32 (83000) / 32 (105000) | 0.925 / 0.954 / 0.927 |
+
+   Independent HWSS readings (one per salt set): 0.902 (z -3.6), 0.948
+   (d/se -0.87), 1.076 (z +0.98), 1.014 (z +0.30): two below 1, one
+   beyond 2 sigma. NM: 0.991 / 0.948 (one salt set, 32 / 64 salts),
+   0.963 (z -3.41), and the lane-case NM renders 0.925 / 0.954 / 0.927
+   (two salt sets): low in every independent set. Every sample mean is
+   dominated by rare large salts. The earlier "low in 4 of 5" phrasing
+   counted overlapping salt sets and is withdrawn.
+2. **Gate characterization (detection floors).** With the round-1
+   gating, a check fails only beyond ~4.0-4.3 combined se. Estimated
+   floor (critical value x combined se / reference, run
+   `r1_hwss_full_b97b85fec.log`): `lanes` median 11 %, p90 23 %, max 28 %;
+   `mask` median 18 %, max 26 %; `body` median 10.5 %, max 12 %;
+   `tir` median 4.3 %, max 7.1 %; `delta` median 4.7 %, max 7.6 %.
+   The estimator-B lane equalities therefore cannot see a per-lane
+   defect below roughly 10-25 %; the fine discrimination is carried by
+   the estimator-A (`tir`, `delta`) equalities, the exact checks
+   (termination, an exactly zero owned share, bit identities) and the
+   closed-form mirror rows. The four in-tree mutations are gross (a lane
+   owning nothing, a doubled lane, hero-domain TIR weights) and do not
+   probe the floor. Known redundancy: `full` and `kept` share their
+   salts, so SMS-owned - PT-owned = (full - kept) - (ref - kept) = full -
+   ref exactly; the owned equality repeats full == ref with a different
+   se. Salt robustness (binary at `dedc223bb`'s library, test unchanged
+   since): default salt base 1106/0 (`r2_hwss_default.log`, 37.6 min),
+   `--salt-base 900000` 1106/0, `--salt-base 1700000` 1106/0 (36.4 min)
+   -- three independent salt sets, zero false reds, so no suite-level
+   remedy was needed (with the b97b85fec run, four of four).
+3. **P3s.** PT logs once when HWSS extended SMS reaches depth >= 1024
+   (its lane streams then repeat depth - 1024's; no behaviour change);
+   `SobolSampler.h`'s stream map lists `PTExtendedSMSStream`; Test I's
+   comment states that fork draws are invisible to the in-render audit
+   and bounded by construction (measured directly at depth 0);
+   `SMSLegacyModeTest`'s header states that fixtures 7-9 are verified only
+   by the two-build dump comparison, and a negative control renders
+   fixtures 7 and 9 through a directly built HWSS rasterizer with
+   extended mode on vs off (off repeats bit-identically; on differs in
+   3381 and 12288 of 16384 float32 components). Committed `dedc223bb`.
+4. A low-priority ledger row (DL-454) records the SSSHWSSCompanionTest VCM
+   random-walk red-ratio flake.
+
+Round-2 verification (library and tests at `dedc223bb`; library `make
+all` and every test build 0 diagnostics): SobolDimensionBudgetTest
+passed (Test I extended HWSS highest slot 20 / 13 / 22, 0 overruns;
+`r2_budget.log`); SMSLegacyModeTest cross-build (`modeoff_xbuild.sh`, run
+`modeoff-xbuild-r2`): Phase-3 sources vs HEAD, 40 images at 0 float32
+ULP, HEAD 137/0; on the Phase-3 build the negative control is red (2
+failures: extended on == off there, as HWSS ignored extended mode) and
+green at HEAD; SMSExtendedHWSSTest 1106/0 at three salt bases (above).
+The rest of the targeted gate is `gate-r1` (round 1); only comments, a
+log line on an unreachable-by-default depth and tests changed since.
