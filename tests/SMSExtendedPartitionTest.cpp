@@ -14,8 +14,9 @@
 //              real double-sided indexed meshes, plane/sphere controls,
 //              transformed instance, start-inside, RGB per-component
 //              ownership, NM, emitter sidedness, trial budget, scale
-//   switches   HWSS ignores extended mode; dropping SMS's deposit leaves
-//              PT's kept paths untouched
+//   switches   legacy determinism, the three switches at a delta light;
+//              dropping SMS's deposit leaves PT's kept paths untouched
+//              (HWSS lanes: SMSExtendedHWSSTest)
 //   fixtures   DL-372/DL-379 ball lens images vs PT and VCM, DL-336
 //              immersed ball, DL-376/DL-421 seeding-mode independence
 //
@@ -855,16 +856,9 @@ static void RenderSection()
 //////////////////////////////////////////////////////////////////////
 static void SwitchSection()
 {
-    // HWSS ignores extended mode: bit-identical to the legacy solver.
-    {
-        RenderOptions h;h.nm=550;h.hwss=true;h.N=1024;h.salts=2;h.saltBase=90000;
-        const auto spec=SlabScene(false,"glass",false);
-        const auto ext=RenderPoint(spec,Mode::Full,h);
-        const auto leg=RenderPoint(spec,Mode::Legacy,h);
-        bool identical=ext.ok&&leg.ok;
-        for(unsigned s=0;identical&&s<ext.c[0].size();++s) identical=ext.c[0][s]==leg.c[0][s];
-        Check(identical,"HWSS render is bit-identical with extended mode on and off");
-    }
+    // Phase 4: HWSS no longer ignores extended mode. Its per-lane
+    // partition, and the forced-legacy scope's identity with extended mode
+    // off, are gated by SMSExtendedHWSSTest.
     // A forced-legacy loop (the HWSS NM hand-off's flag) is legacy too:
     // the RGB extended-mode-off render equals the legacy solver's.
     {

@@ -731,6 +731,14 @@ namespace RISE
             // existing contribution/suppression/shadow switches together.
             bool ExtendedAnchorEligible(const IScene&, const IRayCaster&, const Point3&,
                                         const IORStack&, Scalar nm = 0) const;
+            // HWSS (Phase 4): eligible[i] == ExtendedAnchorEligible(..., nm[i])
+            // for every i with evaluate[i] (false otherwise). Only the inputs
+            // that do not depend on the wavelength (global checks, modifier
+            // audit, starting-media capture) are evaluated once; the HG
+            // scattering test and the domain stack build run per lane.
+            void ExtendedAnchorEligibleNM(const IScene&, const IRayCaster&, const Point3&,
+                const IORStack&, const Scalar* nm, const bool* evaluate, unsigned int count,
+                bool* eligible) const;
 
 			/// Attach a photon-aided seed map.  Must be called AFTER the
 			/// map's Build() has completed (the map is read-only from
