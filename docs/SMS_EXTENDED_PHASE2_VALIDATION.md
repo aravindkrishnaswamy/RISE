@@ -1,8 +1,8 @@
 # Extended SMS Phase 2 validation
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
-`08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The latest completed replacement gate at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778` passes 54 make modes/525120/0, 54 actual Xcode controls/627180/0, and 29 all-project sanitizer modes/349351/0, with clean make/Deployment/Opto zero owned diagnostics. Cached recursion and signed-return repairs have coherent committed proof. Fresh Round 17 review of `c388ea6a3` converged: three independent lenses, zero P1, one common P2 measured and filed as DL-443. Phase 2 is ready for its clean no-ff merge. Earlier sections are historical.
+`08552560b54b517b7a8a0696eb9d317953b26bbe`, and merged at `818004785c4b14a831b2f60828a935f1e897e56a`.
+The latest completed replacement gate at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778` passes 54 make modes/525120/0, 54 actual Xcode controls/627180/0, and 29 all-project sanitizer modes/349351/0, with clean make/Deployment/Opto zero owned diagnostics. Cached recursion and signed-return repairs have coherent committed proof. Fresh Round 17 review of `c388ea6a3` converged: three independent lenses, zero P1, one common P2 measured and filed as DL-443. Phase 2 merged at `818004785c4b14a831b2f60828a935f1e897e56a`; its targeted master gate passed. Earlier sections are historical.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1778,3 +1778,15 @@ flags because it is absent from the Xcode project. It is not a reused make-built
 object. All 372 project objects come from actual Xcode products.
 Evidence: `.claude/logs/sms-phase2-round17-final/fresh-reviews/`,
 `review-driver.log`, and `allocation-probe/results.json`.
+
+### Phase 2 integration (2026-10-06)
+
+Branch `sms-ext-phase2`, reviewed tree `c388ea6a3`, final disposition
+`8cc5beb7a`, native/test checkpoint `97d2e2ff6`, clean no-ff master merge
+`818004785c4b14a831b2f60828a935f1e897e56a`. All 25 targeted test invocations pass: 123094 checks,
+zero failures; three individually built executables and the library rebuild
+have zero warnings. Evidence: `.claude/logs/sms-phase2-master-targeted/results.json`
+and `.claude/logs/sms-phase2-round17-final/master-targeted-driver.log`.
+Main checkout was clean before and after merge. No push. DL-312/437/420 remain
+OPEN; DL-441–443 are measured P2 filings. Ledger totals: 292 rows, 49 OPEN,
+243 CLOSED; next free ID DL-444. Phase 3 follows on a new branch from master.
