@@ -967,7 +967,9 @@ int main(int argc,char** argv)
         const Moments m(avg);double mx=0,mn=1e30;for(double v:avg){mx=std::max(mx,v);mn=std::min(mn,v);}
         std::cout<<"focus full mean="<<m.mean<<" se="<<m.se<<" sd="<<m.sd<<" min="<<mn<<" max="<<mx<<" n=64\n";
     }
+#ifdef RISE_SMS_EXTENDED_PARTITION
     if(section=="tiny") PredicateOn(MirrorScene(true,false,EmitterFacing::TowardCaster,0.001),100);
+#endif
     if(section=="all"||section=="render") RenderSection();
     if(section=="all"||section=="switches") SwitchSection();
     if(section=="all"||section=="fixtures") FixtureSection();
