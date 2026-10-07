@@ -176,10 +176,12 @@ namespace RISE
                 Scalar channelProbability, Scalar emitterProbability, unsigned int originalTrials);
         };
 
-        // Test-only process hook (never set by a parser, API or production
-        // code): zero estimator B's area deposit after its fixed parent
-        // draws while PT keeps applying ownership, so a render isolates the
-        // PT-kept set and shares every PT path with the full render.
+        // TEST-ONLY. Never set by production code, a parser or the public
+        // API (no production source references it; tests set and restore it
+        // around a render). When set, estimator B's area deposit is zeroed
+        // after its fixed parent draws while PT keeps applying ownership,
+        // so a render isolates the PT-kept set and shares every PT path
+        // with the full render. Left set, it would drop owned caustics.
         struct SMSExtendedTestHooks {
             static std::atomic<bool>& DropAreaContributions();
         };

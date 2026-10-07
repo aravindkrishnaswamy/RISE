@@ -654,6 +654,21 @@ static void PredicateFilters()
         Check(ok2&&std::fabs(r.z-0.99975)<1e-9,"thin closed luminary: bottom face with an inward normal stays on the bottom face");
     }
     {
+        // A luminary THINNER than the reach (2.4e-5 thick, unit transform:
+        // push bound 1.73e-5, reach 3.46e-5): the first approach along an
+        // inward normal meets the far face beyond the push band; the other
+        // approach must still recover the queried face.
+        const std::string text=Header()+MeshBox("sliver_geo",false,0.5,0.5,1.2e-5)+Obj("emitter","sliver_geo","lum"," position 1.5 0 1\n");
+        Fixture sliver(text);
+        const IObject* box=sliver.Object("emitter");
+        Point3 q;
+        const bool ok=box&&ManifoldSolver::ExtendedLuminaryPoint(*box,Point3(1.5,0.1,1.000012),Vector3(0,0,-1),q);
+        Check(ok&&std::fabs(q.z-1.000012)<1e-12,"luminary thinner than the reach: far-face first hit falls back to the queried face");
+        Point3 r;
+        const bool ok2=box&&ManifoldSolver::ExtendedLuminaryPoint(*box,Point3(1.5,0.1,0.999988),Vector3(0,0,1),r);
+        Check(ok2&&std::fabs(r.z-0.999988)<1e-12,"luminary thinner than the reach: bottom face likewise");
+    }
+    {
         Fixture shifted(MirrorSceneOffset(1000).text);
         const IObject* plane=shifted.Object("emitter");
         Point3 q;

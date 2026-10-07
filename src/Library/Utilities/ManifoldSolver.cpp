@@ -7863,14 +7863,17 @@ bool ManifoldSolver::ExtendedLuminaryPoint(const IObject& luminary,const Point3&
     const Scalar push=Scalar(1e-5)*std::sqrt(Scalar(3))*stretch;
     const Scalar reach=2*push+roundoff;
     // Approach from the given side first, then from the other: a
-    // single-sided surface is not hit from behind, and the caller's normal
-    // may name either face.
+    // single-sided surface is not hit from behind, the caller's normal may
+    // name either face (B passes the sampled face normal, PT the hit's
+    // ray-facing geometric normal), and on a luminary thinner than the
+    // reach, or at a crease, the first approach can meet ANOTHER part
+    // beyond the push band. Only a hit within the band is accepted.
     for(const Scalar side:{Scalar(1),Scalar(-1)}) {
         RayIntersection hit(Ray(Point3Ops::mkPoint3(p,axis*(side*reach)),axis*(-side)),nullRasterizerState);
         luminary.IntersectRay(hit,2*reach,true,true,false);
         if(!hit.geometric.bHit) continue;
         const Point3 q=SMSReferenceSurfacePoint(luminary,hit.geometric);
-        if(!(Point3Ops::Distance(q,p)<=push+roundoff)) return false;
+        if(!(Point3Ops::Distance(q,p)<=push+roundoff)) continue;
         out=q;
         return true;
     }
