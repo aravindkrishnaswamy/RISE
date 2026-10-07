@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 remains unmerged on `sms-ext-phase2`: cached recursion/signed-return repairs and the full Round 17 gate pass at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778`. Fresh Round 17 review remains required. Pre-existing octree-accounting P2s are measured in DL-441/DL-442. Phases 3–4 remain pending; earlier audit sections are historical.**
+**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 remains unmerged on `sms-ext-phase2`: cached recursion/signed-return repairs and the full Round 17 gate pass at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778`. Fresh Round 17 review converged at `c388ea6a3`: all three lenses report zero P1; the allocation-failure P2 is measured and filed as DL-443. Octree-accounting P2s remain measured in DL-441/DL-442. Phases 3–4 remain pending; earlier audit sections are historical.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 

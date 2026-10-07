@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The latest completed replacement gate at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778` passes 54 make modes/525120/0, 54 actual Xcode controls/627180/0, and 29 all-project sanitizer modes/349351/0, with clean make/Deployment/Opto zero owned diagnostics. Cached recursion and signed-return repairs have coherent committed proof. Fresh Round 17 review remains required; Phase 2 is unmerged. Earlier sections are historical.
+The latest completed replacement gate at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778` passes 54 make modes/525120/0, 54 actual Xcode controls/627180/0, and 29 all-project sanitizer modes/349351/0, with clean make/Deployment/Opto zero owned diagnostics. Cached recursion and signed-return repairs have coherent committed proof. Fresh Round 17 review of `c388ea6a3` converged: three independent lenses, zero P1, one common P2 measured and filed as DL-443. Phase 2 is ready for its clean no-ff merge. Earlier sections are historical.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1736,7 +1736,7 @@ Native/test checkpoint `97d2e2ff68c25d8dc22feea2e4f83b3d74139778`; master `08552
 | Actual Xcode Deployment/Opto | 393/393 compilation actions; zero owned diagnostics |
 | Make regressions | 20 executables / 54 modes / 525120 checks / 0 failures |
 | CST derive corpus | 458 MATCH / 0 DRIFT; 465 corpus scenes, 0 UNCOVERED / 0 STALE |
-| Actual Xcode-linked controls | 54 modes / 627180 checks / 0 failures; actual Xcode project objects with the recorded make-built `Profiling.o` utility exception |
+| Actual Xcode-linked controls | 54 modes / 627180 checks / 0 failures; actual Xcode project objects with the recorded `Profiling.cpp` utility exception, separately compiled with the matching Xcode response flags |
 | ASan/UBSan/float-cast-overflow | all 374 linked project units / 29 modes / 349351 checks / 0 failures; external dependency libraries uninstrumented; bundled stb/cgltf units included |
 | Limited cached SSS TSan | test, both cached operations and octree instrumented; other project/third-party units native; recursive, signed and concurrent-octree modes pass |
 | Mode-off parity | 28 salted comparisons; 27 float32 bit-identical images, maximum 1 float32 ULP |
@@ -1756,3 +1756,25 @@ Native/test checkpoint `97d2e2ff68c25d8dc22feea2e4f83b3d74139778`; master `08552
 Eight alternating committed-source A/B builds use seven fixtures, four independent salts, one worker and reserve 0. Negative noisy timing means do not establish a speedup. Multiple cold cached-SSS builders can duplicate capture work; one-worker timings and logical scratch/query counters provide no multicore cold-construction bound. Caller depth remains part of the native capture context; this repair does not claim a depth-independent cache estimator. Published trees are immutable during rendering, and losing builders retain local RAII ownership. Signed native RGB/NM capture/return controls require exact negation of independent positive captures; ordinary/HWSS legacy projection remains unchanged. The signed spectral extension subtracts existing positive/negative RGB illuminant uplifts and remains an RGB-valued cached-SSS approximation.
 
 DL-441/DL-442 retain measured pre-existing octree duplication/lost-mass P2s under the user's authorized filing option; no brightness arithmetic is changed for them. Target DL-312/DL-420/DL-437 remain OPEN. Narrow-cone bands retain their original channelwise three-combined-SD tests and matching reference SD; the accepted wide-cone discrepancy remains measurement-only. Fresh independent Round 17 review and integration remain required. No composite/future-provenance ledger row is opened.
+
+### Final Round 17 review disposition (2026-10-06)
+
+Three fresh independent parallel read-only reviewer contexts examined frozen
+`c388ea6a3`: estimator/partition, material/medium/API, and cost/tests/doc fidelity.
+Every lens reports zero P1 and no design finding. All three identify the same
+P2 allocation-failure cleanup defect, filed as DL-443 under the authorized
+measured-ledger option. One healthy native common-octree-kernel control passes;
+seven deterministic injected allocation positions all reach `bad_alloc` and
+then UBSan's invalid poisoned child-pointer diagnostic during destruction.
+This is common-kernel injection, not an execution through either cached caller;
+both caller paths are source-confirmed. Those seven expected fatal probes are
+failure evidence, not passing sanitizer workloads or zero render trials.
+The future repair must test both actual cached callers, clean propagation,
+no partial publication, and successful retry. No source change followed review.
+
+The evidence reviewer corrected the Xcode control utility description:
+`Profiling.cpp` is separately compiled with the actual configuration response
+flags because it is absent from the Xcode project. It is not a reused make-built
+object. All 372 project objects come from actual Xcode products.
+Evidence: `.claude/logs/sms-phase2-round17-final/fresh-reviews/`,
+`review-driver.log`, and `allocation-probe/results.json`.
