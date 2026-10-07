@@ -63,6 +63,7 @@
 namespace
 {
     bool g_quick=false;
+    std::string g_caseFilter;   // `--case <substring>`: run matching LaneCase labels only
     const unsigned kLanes=SampledWavelengths::N;
     using Lanes=std::array<Scalar,SampledWavelengths::N>;
 
@@ -409,6 +410,7 @@ namespace
     // The full per-lane partition case (area emitters).
     void LaneCase(const SceneSpec& spec,RenderOptions o,const LaneExpect& e=LaneExpect())
     {
+        if(!g_caseFilter.empty() && spec.label.find(g_caseFilter)==std::string::npos) {g_saltBase+=1000;return;}
         o.saltBase=g_saltBase;g_saltBase+=1000;
         SMSReferenceCounters counters;
         const auto ref=Render(spec,Mode::Ref,o);
@@ -498,7 +500,13 @@ static void LanesSection()
     // enclosure (the HWSS body's anchor stack holds the enclosure, replayed
     // per lane); a constant ball inside a DISPERSIVE enclosure (the camera
     // is inside it: per-lane NM from the camera).
-    LaneCase(ImmersedBallScene("medium14","prism"),o);
+    // The ball is `gentleprism` (1.6/1.5/1.45 at 450/550/650 nm).  With
+    // `prism` (n = 1.9 at 450 nm, relative index 1.36) estimator B's
+    // reciprocal tail at the 450-nm lane is too heavy for a 3-se gate at
+    // affordable n -- Phase 3's own NM estimator reads 0.948 +- 0.020 of
+    // SMS-off NM there at 64 salts, HWSS 1.076 +- 0.077 (one outlier);
+    // `--section nmprobe` reproduces it (DL-450).
+    {RenderOptions p=o;p.salts=g_quick?4:32;LaneCase(ImmersedBallScene("medium14","gentleprism"),p);}
     LaneCase(ImmersedBallScene("dispersivemedium","glass"),o);
     // SSS receiver (a camera-entry NM delegation per lane).  The receiver's
     // owned share is small (Phase 3: ~4 %); gated for agreement only.
@@ -512,7 +520,8 @@ static void LanesSection()
 //////////////////////////////////////////////////////////////////////
 static void BodySection()
 {
-    RenderOptions o;o.N=g_quick?512:2048;o.salts=g_quick?4:8;
+    // Estimator B (heavy reciprocal tail): 16 salts x 4096, as `lanes`.
+    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:16;
     for(const char* lum:{"lum","lumbsdf"}) {
         for(bool reverse:{false,true}) LaneCase(CeilingScene("polished",true,reverse,lum),o);
         LaneCase(CeilingScene("polished",false,false,lum),o);
@@ -564,7 +573,8 @@ static void TIRSection()
 //////////////////////////////////////////////////////////////////////
 static void MaskSection()
 {
-    RenderOptions o;o.N=g_quick?512:2048;o.salts=g_quick?4:8;
+    // Estimator B (heavy reciprocal tail): 16 salts x 4096, as `lanes`.
+    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:16;
     // s(450)=2, s(550)=2, s(600)=1.25, s(640)=0.8: lane 3 is ineligible.
     o.lambdas={{450,550,600,640}};
     LaneExpect m;m.owned[3]=Owned::Forbidden;
@@ -680,17 +690,21 @@ static void CostSection()
 //////////////////////////////////////////////////////////////////////
 static void NMProbeSection()
 {
-    RenderOptions o;o.N=4096;o.salts=32;
+    RenderOptions o;o.N=4096;o.salts=64;o.saltBase=171000;
     const auto spec=ImmersedBallScene("medium14","prism");
-    for(unsigned w:{0u,1u}) {
-        o.saltBase=g_saltBase;g_saltBase+=1000;
+    for(unsigned w:{0u}) {
         const auto ref=Render(spec,Mode::Ref,o,int(w));
         RenderOptions f=o;f.saltBase=o.saltBase+100;
         const auto full=Render(spec,Mode::Full,f,int(w)), kept=Render(spec,Mode::Kept,f,int(w));
+        RenderOptions h=o;h.saltBase=o.saltBase+500;
+        const auto hwss=Render(spec,Mode::Full,h), hwssRef=Render(spec,Mode::Ref,h);
+        const Moments hf(hwss.lane[w]),hr(hwssRef.lane[w]);
+        std::cout<<std::setprecision(8)<<"NMPROBE HWSS lane="<<w<<" full="<<hf.mean<<"+-"<<hf.se<<" ref="<<hr.mean<<"+-"<<hr.se
+            <<" full/ref="<<hf.mean/hr.mean<<" z="<<(hf.mean-hr.mean)/std::hypot(hf.se,hr.se)<<" n="<<o.salts<<"\n";
         const Moments r(ref.lane[w]),fu(full.lane[w]),k(kept.lane[w]),owned(Diff(full.lane[w],kept.lane[w]));
         std::cout<<std::setprecision(8)<<"NMPROBE "<<spec.label<<" nm="<<o.lambdas[w]<<" ref="<<r.mean<<"+-"<<r.se
             <<" full="<<fu.mean<<"+-"<<fu.se<<" full/ref="<<fu.mean/r.mean<<" z="<<(fu.mean-r.mean)/std::hypot(fu.se,r.se)
-            <<" smsOwned="<<owned.mean<<"+-"<<owned.se<<" ptOwned="<<r.mean-k.mean<<"+-"<<std::hypot(r.se,k.se)<<" n=32\n";
+            <<" smsOwned="<<owned.mean<<"+-"<<owned.se<<" ptOwned="<<r.mean-k.mean<<"+-"<<std::hypot(r.se,k.se)<<" n="<<o.salts<<"\n";
     }
 }
 
@@ -702,6 +716,7 @@ int main(int argc,char** argv)
         const std::string a=argv[i];
         if(a=="--quick") g_quick=true;
         else if(a=="--section" && i+1<argc) section=argv[++i];
+        else if(a=="--case" && i+1<argc) g_caseFilter=argv[++i];
     }
     const auto run=[&](const char* name,void(*f)()) {
         if(section.empty()||section==name) {std::cout<<"=== "<<name<<" ===\n";f();}
