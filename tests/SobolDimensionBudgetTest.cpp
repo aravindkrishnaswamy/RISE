@@ -31,6 +31,10 @@
 //       enumerated from the real functions, wrap counts asserted,
 //       collision-freedom asserted with NO known exceptions (DL-286
 //       closed the light/eye/select/NEE overlaps it used to pin).
+//    I. PT vertex streams with SMS: the highest slot any vertex stream
+//       reaches under legacy / extended NM, RGB and HWSS (extended gated
+//       at <= 32; legacy HWSS reported, DL-453); one extended SMS
+//       evaluation's draws fit its own stream (PTExtendedSMSStream, G2).
 //    H. BDPT's real generators on a heterogeneous and a homogeneous
 //       medium: no vertex stream overruns, no dimension drawn twice
 //       within a walk (DL-283), and no dimension (Sobol') or primary
@@ -101,6 +105,11 @@
 #include "../src/Library/Interfaces/IRayCaster.h"
 #include "../src/Library/Shaders/BDPTIntegrator.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
+#include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Utilities/ManifoldSolver.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/RISE_API.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1322,6 +1331,47 @@ static void TestStreamMap()
 		}
 	}
 
+	// --- PT extended SMS evaluations (sms-ext Phase 4 review) -----------
+	// One stream per (PT depth mod 1024, lane); PT draws them from a
+	// SobolSampler::ForkStream copy, so they must be distinct from each
+	// other and from every other family on any sampler.
+	{
+		std::vector<unsigned int> streams;
+		unsigned int wrapLo = ~0u, wrapHi = 0u;
+		for( unsigned int d = 0; d < PathTransportUtilities::kPTExtendedSMSDepthCap; d++ ) {
+			for( unsigned int lane = 0; lane < PathTransportUtilities::kPTExtendedSMSLanes; lane++ ) {
+				const unsigned int st = (unsigned int)PathTransportUtilities::PTExtendedSMSStream( d, lane );
+				streams.push_back( st );
+				const unsigned int w0 = st * stride / table, w1 = ( st * stride + stride - 1u ) / table;
+				if( w0 < wrapLo ) wrapLo = w0;
+				if( w1 > wrapHi ) wrapHi = w1;
+				const Range r = { "PT extended SMS", st, st + 1u, PT };
+				for( unsigned int i = 0; i < nFixed; i++ ) {
+					if( Overlap( r, fixedRanges[i] ) ) {
+						std::cerr << "  FAIL: PT extended SMS stream " << st << " overlaps " << fixedRanges[i].name << "\n";
+						ok = false;
+					}
+				}
+			}
+		}
+		std::sort( streams.begin(), streams.end() );
+		const bool unique = std::adjacent_find( streams.begin(), streams.end() ) == streams.end();
+		std::cout << "  PT extended SMS: " << streams.size() << " streams [" << streams.front() << ", "
+			<< streams.back() << "], wrap counts " << wrapLo << ".." << wrapHi
+			<< ( unique ? ", all distinct" : ", DUPLICATES" ) << "\n";
+		if( !unique || streams.front() != (unsigned int)PathTransportUtilities::kPTExtendedSMSStreamBase ||
+			streams.back() + 1u != (unsigned int)PathTransportUtilities::kPTExtendedSMSStreamEnd ||
+			streams.front() < deepHi[1][1] || streams.front() < deepHi[1][0] ||
+			streams.front() < (unsigned int)BDPTUtilities::kMediumDistanceStreamEnd ||
+			wrapLo != 552u || wrapHi != 567u ||
+			(unsigned long long)PathTransportUtilities::kPTExtendedSMSStreamEnd * stride >= ( 1ull << 29 ) ||
+			PathTransportUtilities::PTExtendedSMSStream( 1024u, 0u ) != PathTransportUtilities::PTExtendedSMSStream( 0u, 0u ) ) {
+			std::cerr << "  FAIL: PT extended SMS streams are not the documented distinct set past "
+				<< "every BDPT/VCM block, on wraps 552..567, below the alpha region, depth mod 1024.\n";
+			ok = false;
+		}
+	}
+
 	// --- BDPT/VCM medium-distance blocks (fixed-budget samplers only) ---
 	{
 		const unsigned int per = BDPTUtilities::kMediumDistanceStreamsPerEvent;
@@ -1778,6 +1828,179 @@ static void TestMediumDistanceStreamAudit()
 	std::cout << "  Passed!\n";
 }
 
+
+// ================================================================
+// Test I: PT vertex streams with SMS (sms-ext Phase 4 review)
+//
+// PT gives every vertex one stream (`StartStream( 16 + depth )`); NEE,
+// SMS and the PART 3 scatter draw from it in order, so a vertex that
+// draws more than kStreamStride values spills into the NEXT vertex's
+// stream (the DL-283 / DL-286 bias class).  An HWSS vertex runs NEE and
+// SMS once per wavelength lane.  This test drives the real integrator
+// (point renders, a SobolSampler subclass recording every draw's stream)
+// and reports, per configuration, the highest slot (draw offset + 1 from
+// the stream's first dimension) any vertex stream reached and the fraction
+// of (sample, vertex stream) pairs past 32.
+//
+// Gate: no EXTENDED configuration overruns a vertex stream (the Phase 4
+// fix moves extended per-lane SMS onto `PTExtendedSMSStream`).  Legacy
+// configurations are reported only (mode-off must not change; a legacy
+// overrun is a ledger row, DL-453).
+// ================================================================
+namespace PTSMSBudget
+{
+	const char* kHeader =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\n name white\n color 1 1 1\n}\n"
+		"uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
+		"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+		"perfectrefractor_material\n{\n name glass\n refractance white\n ior 1.5\n}\n"
+		"polished_material\n{\n name polished\n reflectance black\n tau 1.0\n ior 1.5\n scattering 1000000\n}\n"
+		"lambertian_luminaire_material\n{\n name lum\n exitance white\n scale 10\n material none\n}\n"
+		"clippedplane_geometry\n{\n name receiver_geo\n pta -0.5 -0.5 0\n ptb -0.5 0.5 0\n ptc 0.5 0.5 0\n ptd 0.5 -0.5 0\n doublesided TRUE\n}\n"
+		"standard_object\n{\n name receiver\n geometry receiver_geo\n material diffuse\n}\n";
+	std::string Slab( bool area )
+	{
+		std::string s = kHeader;
+		s += "box_geometry\n{\n name slab_geo\n width 3\n height 3\n depth 0.5\n}\n"
+			"standard_object\n{\n name caster\n geometry slab_geo\n material glass\n position 0 0 2\n}\n";
+		if( area ) s += "clippedplane_geometry\n{\n name emitter_geo\n pta -0.6 -0.6 3.5\n ptb -0.6 0.6 3.5\n ptc 0.6 0.6 3.5\n ptd 0.6 -0.6 3.5\n doublesided TRUE\n}\n"
+			"standard_object\n{\n name emitter\n geometry emitter_geo\n material lum\n}\n";
+		else s += "omni_light\n{\n name source\n position 0.2 0 3.5\n color 1 1 1\n power 40\n}\n";
+		return s;
+	}
+	std::string Polished()
+	{
+		std::string s = kHeader;
+		s += "clippedplane_geometry\n{\n name caster_geo\n pta 0.4 -2 2\n ptb 0.4 2 2\n ptc 4 2 2\n ptd 4 -2 2\n doublesided TRUE\n}\n"
+			"standard_object\n{\n name caster\n geometry caster_geo\n material polished\n}\n"
+			"clippedplane_geometry\n{\n name emitter_geo\n pta 2 0.5 1\n ptb 2 -0.5 1\n ptc 1 -0.5 1\n ptd 1 0.5 1\n doublesided FALSE\n}\n"
+			"standard_object\n{\n name emitter\n geometry emitter_geo\n material lum\n}\n";
+		return s;
+	}
+	enum Kind { eLegacyNM, eLegacyHWSS, eExtNM, eExtRGB, eExtHWSS };
+	const char* Name( Kind k )
+	{
+		switch( k ) {
+		case eLegacyNM: return "legacy NM";
+		case eLegacyHWSS: return "legacy HWSS";
+		case eExtNM: return "extended NM";
+		case eExtRGB: return "extended RGB";
+		default: return "extended HWSS";
+		}
+	}
+	struct Result { unsigned int maxVertex = 0, maxSMS = 0; unsigned long long pairs = 0, overruns = 0, smsStreams = 0; bool ok = false; };
+	Result Run( const std::string& text, Kind kind, unsigned int N )
+	{
+		Result out;
+		const auto path = std::filesystem::temp_directory_path() / ( "sobol_pt_sms_" + std::to_string( getpid() ) + ".RISEscene" );
+		{ std::ofstream f( path ); f << text; }
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job || !job->LoadAsciiSceneViaCst( path.string().c_str() ) ) {
+			std::remove( path.string().c_str() ); if( job ) job->release(); return out;
+		}
+		std::remove( path.string().c_str() );
+		const IScene& scene = *job->GetScene();
+		scene.GetObjects()->PrepareForRendering();
+		ManifoldSolverConfig cfg; cfg.enabled = true; cfg.extendedMode = kind >= eExtNM; cfg.biased = true; cfg.multiTrials = 2;
+		StabilityConfig stability; stability.rrMinDepth = 4;
+		std::vector<IShaderOp*> ops; IShader* shader = nullptr;
+		RISE_API_CreateStandardShader( &shader, ops );
+		RayCaster* caster = new RayCaster( false, 16, *shader, true ); caster->AttachScene( &scene );
+		PathTracingIntegrator* pt = new PathTracingIntegrator( cfg, stability ); pt->SetMaxPathDepth( 16 );
+		std::vector<const IObject*> casters; ManifoldSolver::EnumerateSpecularCasters( scene, casters );
+		pt->GetSolver()->SetSpecularCasters( casters );
+		const Ray camera( Point3( 0, 0, 0.3 ), Vector3( 0, 0, -1 ) );
+		// The fork PT hands one extended SMS evaluation draws from a stream
+		// of its own (a SobolSampler copy, invisible to the audit below):
+		// measure one evaluation's draws directly at the receiver point.
+		if( kind >= eExtNM ) {
+			RayIntersection hit( camera, nullRasterizerState );
+			scene.GetObjects()->IntersectRay( hit, true, true, false );
+			IORStack air( 1.0 );
+			for( unsigned int i = 0; i < N && hit.geometric.bHit; i++ ) {
+				StreamAuditSobol sampler( i, 41 );
+				sampler.StartStream( PathTransportUtilities::PTExtendedSMSStream( 0, i % 4 ) );
+				pt->GetSolver()->EvaluateAtShadingPointNM( hit.geometric.ptIntersection, hit.geometric.vGeomNormal,
+					hit.geometric.vNormal, hit.geometric.onb, hit.pMaterial, Vector3( 0, 0, 1 ), scene, *caster,
+					sampler, 450 + 50 * ( i % 4 ), &air, &hit.geometric, false );
+				out.smsStreams++;
+				if( sampler.draws.size() > out.maxSMS ) out.maxSMS = (unsigned int)sampler.draws.size();
+			}
+		}
+		for( unsigned int i = 0; i < N; i++ ) {
+			StreamAuditSobol sampler( i, 37 );
+			RandomNumberGenerator random( 991 + i );
+			RuntimeContext rc( random, RuntimeContext::PASS_NORMAL, false ); rc.pSampler = &sampler;
+			if( kind == eLegacyHWSS || kind == eExtHWSS ) {
+				SampledWavelengths swl;
+				const Scalar lanes[4] = { 450, 530, 600, 650 };
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) { swl.lambda[w] = lanes[w]; swl.pdf[w] = 1.0/400; swl.terminated[w] = false; }
+				Scalar v[SampledWavelengths::N];
+				pt->IntegrateRayHWSS( rc, nullRasterizerState, camera, swl, scene, *caster, sampler, nullptr, v );
+			} else if( kind == eExtRGB ) {
+				pt->IntegrateRay( rc, nullRasterizerState, camera, scene, *caster, sampler, nullptr, nullptr );
+			} else {
+				pt->IntegrateRayNM( rc, nullRasterizerState, camera, 550, scene, *caster, sampler, nullptr, nullptr );
+			}
+			// Draws past a stream's own slots: the raw dimension minus the
+			// stream's first one (an NM delegation re-OPENS a vertex stream
+			// once per lane; re-opening reuses slots, it does not overrun).
+			std::map<int, unsigned int> per;
+			for( const auto& d : sampler.draws ) {
+				const unsigned int slot = d.second - (unsigned int)d.first * SobolSampler::kStreamStride + 1u;
+				unsigned int& m = per[d.first];
+				if( slot > m ) m = slot;
+			}
+			for( const auto& ps : per ) {
+				if( ps.first >= 16 && ps.first < PathTransportUtilities::kPTVolumeWalkStreamBase ) {
+					out.pairs++;
+					if( ps.second > out.maxVertex ) out.maxVertex = ps.second;
+					if( ps.second > SobolSampler::kStreamStride ) out.overruns++;
+				}
+			}
+		}
+		pt->release(); caster->release(); shader->release(); job->release();
+		out.ok = true;
+		return out;
+	}
+}
+
+static void TestPTSMSVertexBudget()
+{
+	using namespace PTSMSBudget;
+	std::cout << "\nTest I: PT vertex streams with SMS (legacy / extended, NM / RGB / HWSS)\n";
+	bool ok = true;
+	const unsigned int N = 512;
+	struct Fixture { const char* name; std::string text; } fixtures[] = {
+		{ "slab + area emitter (estimator B)", Slab( true ) },
+		{ "slab + omni light (estimator A)", Slab( false ) },
+		{ "polished ceiling + area emitter", Polished() },
+	};
+	for( const auto& f : fixtures ) {
+		for( Kind k : { eLegacyNM, eLegacyHWSS, eExtNM, eExtRGB, eExtHWSS } ) {
+			const Result r = Run( f.text, k, N );
+			std::cout << "  " << f.name << ", " << Name( k ) << ": highest slot drawn on one vertex stream "
+				<< r.maxVertex << ", (sample, vertex) pairs past " << SobolSampler::kStreamStride << ": "
+				<< r.overruns << " of " << r.pairs << " (" << std::setprecision( 4 )
+				<< ( r.pairs ? 100.0 * double( r.overruns ) / double( r.pairs ) : 0.0 ) << std::defaultfloat
+				<< " %); one extended SMS evaluation (" << r.smsStreams << " probed): max draws " << r.maxSMS
+				<< ( k <= eLegacyHWSS ? "  (reported)" : "" ) << "\n";
+			if( !r.ok || r.pairs == 0 ) { std::cerr << "  FAIL: render did not run\n"; ok = false; }
+			if( k >= eExtNM && r.overruns ) {
+				std::cerr << "  FAIL: an extended configuration overruns a PT vertex stream.\n";
+				ok = false;
+			}
+			if( r.maxSMS > SobolSampler::kStreamStride ) {
+				std::cerr << "  FAIL: one extended SMS evaluation draws more than its stream holds.\n";
+				ok = false;
+			}
+		}
+	}
+	if( !ok ) exit( 1 );
+	std::cout << "  Passed!\n";
+}
+
 int main( int /*argc*/, char** /*argv*/ )
 {
 	std::cout << "=== Sobol Dimension Budget Tests ===\n";
@@ -1791,6 +2014,7 @@ int main( int /*argc*/, char** /*argv*/ )
 	TestShippedSceneStreamBudget();
 	TestStreamMap();
 	TestMediumDistanceStreamAudit();
+	TestPTSMSVertexBudget();
 
 	std::cout << "\nAll Sobol dimension budget tests passed!\n";
 	return 0;

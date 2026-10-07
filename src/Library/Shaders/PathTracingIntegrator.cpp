@@ -17,6 +17,7 @@
 
 #include "pch.h"
 #include "PathTracingIntegrator.h"
+#include "../Utilities/SobolSampler.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/IndependentSampler.h"
@@ -6923,6 +6924,21 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				if( swl.terminated[w] || !smsLaneAnchorNow[w] ) continue;
 
 				// Pass both geometric and shading — see other SMS sites.
+				// Phase 4 review: an extended lane's SMS draws (light
+				// sample, estimator loop seeds) come from a stream of its
+				// own (PathTransportUtilities::PTExtendedSMSStream): four
+				// lanes of NEE + SMS overran this vertex's stream into the
+				// next vertex's (SobolDimensionBudgetTest Test I).  Legacy
+				// lanes keep drawing from the vertex stream (mode-off
+				// arithmetic unchanged; DL-453).
+				std::optional<SobolSampler> smsLaneStream;
+				if( bSMSExtendedLoopHW ) {
+					if( const SobolSampler* sobol = dynamic_cast<const SobolSampler*>( &smsSampler ) ) {
+						smsLaneStream.emplace( sobol->ForkStream(
+							PathTransportUtilities::PTExtendedSMSStream( depth, w ) ) );
+					}
+				}
+				ISampler& smsLaneSampler = smsLaneStream ? static_cast<ISampler&>( *smsLaneStream ) : smsSampler;
 				ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
 					ri.geometric.ptIntersection,
 					ri.geometric.vGeomNormal,
@@ -6932,7 +6948,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					woOutgoing,
 					scene,
 					caster,
-					smsSampler,
+					smsLaneSampler,
 					// Phase 4: lane w's own NM domain (estimator A for a
 					// delta light, B for an area emitter) in an extended
 					// bundle; the legacy solver otherwise.

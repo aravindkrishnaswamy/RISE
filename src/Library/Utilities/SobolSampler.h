@@ -238,6 +238,24 @@ namespace RISE
 			{
 				dimension = static_cast<unsigned int>(streamIndex) * kStreamStride;
 			}
+
+			//! A sampler on the SAME sequence and scramble (sample index,
+			//! seed) positioned at `streamIndex`, with its own dimension
+			//! counter: draws from it never move this sampler's position.
+			//! For a consumer that must draw from a stream of its own in
+			//! the middle of another stream's draws (PT's extended SMS,
+			//! PathTransportUtilities::PTExtendedSMSStream).  In the
+			//! independent test mode the fork's generator is re-keyed by
+			//! the stream so its draws are fresh, not a replay of this
+			//! sampler's.  The alpha region is not forked (callers have
+			//! no alpha coverage: extended SMS is ineligible with it).
+			SobolSampler ForkStream( int streamIndex ) const
+			{
+				SobolSampler fork( *this );
+				fork.StartStream( streamIndex );
+				fork.rngState ^= ( uint64_t( static_cast<uint32_t>( streamIndex ) ) + 1ull ) * 0x9E3779B97F4A7C15ull;
+				return fork;
+			}
 		};
 	}
 }
