@@ -639,6 +639,29 @@ static void PredicateFilters()
     Point3 far;
     Check(!ManifoldSolver::ExtendedLuminaryPoint(*luminary,Point3(1.5,0,1.001),Vector3(0,0,1),far),
         "a point beyond the sampler-push band is uncertain, not projected");
+    // A thin closed double-sided luminary (5e-4 thick): a point on its top
+    // face queried with the INWARD normal must stay on the top face (a
+    // 1e-3 reach crossed the box and returned the bottom face), and with a
+    // translation of 1000 the projection still lands at the input point.
+    for(bool reverse:{false,true}) {
+        Fixture thin(ThinLuminaryMirrorScene(reverse).text);
+        const IObject* box=thin.Object("emitter");
+        Point3 q;
+        const bool ok=box&&ManifoldSolver::ExtendedLuminaryPoint(*box,Point3(1.5,0.1,1.00025),Vector3(0,0,-1),q);
+        Check(ok&&std::fabs(q.z-1.00025)<1e-9,"thin closed luminary: inward-normal projection stays on the queried face");
+        Point3 r;
+        const bool ok2=box&&ManifoldSolver::ExtendedLuminaryPoint(*box,Point3(1.5,0.1,0.99975),Vector3(0,0,1),r);
+        Check(ok2&&std::fabs(r.z-0.99975)<1e-9,"thin closed luminary: bottom face with an inward normal stays on the bottom face");
+    }
+    {
+        Fixture shifted(MirrorSceneOffset(1000).text);
+        const IObject* plane=shifted.Object("emitter");
+        Point3 q;
+        Check(plane&&ManifoldSolver::ExtendedLuminaryPoint(*plane,Point3(1001.5,0.2,1.00001),Vector3(0,0,1),q)
+            &&std::fabs(q.z-1)<1e-9&&std::fabs(q.x-1001.5)<1e-9,"x1000 translation: the sampler push is removed exactly");
+        Check(plane&&!ManifoldSolver::ExtendedLuminaryPoint(*plane,Point3(1001.5,0.2,1.01),Vector3(0,0,1),q),
+            "x1000 translation: a point 1e-2 off the luminary is uncertain (no coordinate-scaled reach)");
+    }
     ManifoldSolverConfig off=cfg;off.extendedMode=false;auto* legacy=new ManifoldSolver(off);
     Check(!legacy->ExtendedEmitterHitOwned(rec,*luminary,y,Vector3(0,0,1),f.Scene(),*caster,domain),
         "extended mode off owns nothing");

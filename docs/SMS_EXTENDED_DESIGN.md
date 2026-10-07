@@ -962,13 +962,62 @@ Evidence (`tests/SMSExtendedPartitionTest.cpp`; raw logs under
   (double-sided emitter owns nothing).
 - Mode-off cross-build: `SMSLegacyModeTest` against a master-source dump,
   28 images, maximum float32 distance 0 ULP.
-- Cost (one worker, ball-lens image): extended 13.5 s vs extended-off
-  0.56 s per image (24x); the PT-side per-component predicate and the
-  six-seed canonical solves dominate (2.7 M canonical solves for 0.15 M
-  camera samples). Not optimized in this phase.
+- Cost (one worker, ball-lens image, n = 8 images of 24x24x64 =
+  36864 camera samples each): extended 13.5 s vs extended-off 0.56 s per
+  image (24x); 2.68 M canonical solve attempts over the 294912 camera
+  samples of the eight images (about 9 per camera sample, counting both
+  B's seeds and PT's per-component membership queries). Superseded by
+  the round-1 numbers below.
 
 Observations outside this phase: with `multi_trials 2` the legacy snell
 estimator reads 1.057-1.061 of PT on the DL-372 image (extended mode
 off); the start-inside fixture's SMS-off PT itself reads 0.457 vs 0.171
 between the two windings of one double-sided closed mesh (extended agrees
 with PT in each winding).
+
+### Phase 3 review round 1 (2026-10-07)
+
+Three lenses, zero P1; the five decisions above were accepted. Changes
+(commit `0ffcf8564`) and evidence:
+
+- **Emitter point.** `ExtendedLuminaryPoint` now reaches only twice the
+  world-space bound of the single-sided sampler's object-space 1e-5 push
+  (from the transform's column lengths, plus roundoff), approaches from
+  both faces, and returns uncertain unless the luminary is met within the
+  push bound. A thin closed double-sided luminary (5e-4 thick, both
+  windings) now reads full/ref 1.009 +- 0.009 and 1.002 +- 0.009 with
+  SMS-owned = PT-owned; the old 1e-3 reach crossed the box (red, below).
+  A x1000 translation reads full/ref 1.018 +- 0.031 against the closed form.
+- **Uncertain classifications** (`ClassifyExtendedChain`). Exact-delta
+  DL-372 ball lens: 27 PT chains uncertain of 180045 queries; DL-379
+  (`scattering 1e5`): 27939 of 358662, of which 9295 Newton failures and
+  9371 with a nonempty owned set for their topology. Attribution
+  experiment (n = 8): treating an uncertain warped chain as owned when
+  its topology owns roots moves DL-379 ext/VCM from 1.053 +- 0.023 to
+  0.977 +- 0.023 and PT-kept energy from 4.76 to 3.02; the +5.5 % bias is
+  this. That experimental rule is NOT adopted: it changes the adopted
+  DL-379 delta-limit rule ("the root Newton reaches from PT's vertices")
+  and needs a decision. A deterministic damped retry of the projection
+  rescues 951 of them and does not move the bias.
+- **Symmetric rule.** B deposits a canonical root only if PT's record of
+  that very root classifies owned. On the exact-delta DL-372 fixture it
+  declined 36 of 267215 owned roots whose own record is uncertain (each
+  with a canonical root at 1e-8 of the scale): the rare double-count
+  candidates the review asked about; DL-379 declined 60.
+- **DL-379 known-bias pin.** ext/VCM = 1.0556 +- 0.0122 (n = 16, 64 spp,
+  24x24); the test fails outside 3 combined se of the pin in either
+  direction. DL-379 stays open.
+- **Cost.** Membership queries stop at the first matching canonical root;
+  identical component replays share one classification (120030 reuses on
+  DL-372); B caches canonical sets per topology within one evaluation
+  (27499 hits). Ball-lens image, same protocol (n = 8, one worker):
+  DL-372 9.407 +- 0.016 s (was 13.515 +- 0.016), DL-379 8.155 +- 0.041 s
+  (n = 16; was 11.169 +- 0.019), against 0.55-0.59 s extended-off. Canonical
+  solve attempts on DL-372: 1.60 M (was 2.68 M).
+- The drop-area diagnostic is now the test-only
+  `SMSExtendedTestHooks::DropAreaContributions()`, outside
+  `ManifoldSolverConfig`.
+- Ledger: DL-444 (PT start-inside winding discrepancy), DL-445 (legacy
+  snell `multi_trials 2` ~1.06x), DL-446 (slab side-face TRT coverage),
+  DL-447 (1/1000 scale), DL-448 (non-uniformly scaled mesh luminary,
+  found by the thin-luminary fixture) opened.
