@@ -48,6 +48,7 @@
 #define RISE_SMS_SCRATCH_COUNTERS 1
 #define RISE_SMS_NATIVE_EVENT_NORMALS 1
 #define RISE_SMS_FRESNEL_FALLBACK_DOMAIN 1
+#define RISE_SMS_EXTENDED_PARTITION 1
 
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IGeometry.h"
@@ -108,6 +109,15 @@ namespace RISE
             std::atomic<unsigned long long> sceneIntersectionQueries{0}, objectIntersectionQueries{0}, materialQueries{0};
             std::atomic<unsigned long long> scratchBufferGrowths{0}, scratchFrames{0}, scratchPeakBytes{0};
             std::atomic<unsigned long long> retryHistogram[32]{}; // powers of two, last bucket saturates
+            // Estimator B (area-emitter partition). `retryTrials` counts every
+            // reciprocal trial of both estimators; `topologyRetryTrials` is the
+            // walk-only subset estimator B spends, so estimator A's root-level
+            // K is retryTrials - topologyRetryTrials.
+            std::atomic<unsigned long long> topologyRetryTrials{0}, canonicalSolves{0}, canonicalRoots{0};
+            // Draws requested from the canonical predicate's guard sampler.
+            // Any draw makes that answer uncertain (unowned); tests assert 0.
+            std::atomic<unsigned long long> canonicalSamplerDraws{0};
+            std::atomic<unsigned long long> partitionQueries{0}, partitionOwned{0}, partitionUncertain{0};
         };
 
         // Counts logical scene queries in the active extended diagnostic scope.
@@ -333,6 +343,11 @@ namespace RISE
             SMSDomainCounters* domainCounters; ///< Optional diagnostics; caller owns lifetime.
             SMSReferenceCounters* referenceCounters; ///< Optional estimator A diagnostics; caller owns lifetime.
             Scalar extendedEventFloor;     ///< Positive exploration mass for both supported R/T events.
+            /// Internal test diagnostic, never set by a parser or API: zero
+            /// estimator B's area-emitter contribution while PT keeps applying
+            /// the canonical ownership predicate, so a render isolates the
+            /// PT-kept set. Leaves delta lights (estimator A) unchanged.
+            bool extendedDropAreaContributions;
 			unsigned int	maxIterations;			///< Newton iteration limit
 			Scalar			solverThreshold;		///< Convergence threshold on ||C||
 			Scalar			uniquenessThreshold;	///< Threshold to distinguish solutions
@@ -466,6 +481,7 @@ namespace RISE
             domainCounters( nullptr ),
             referenceCounters( nullptr ),
             extendedEventFloor( 0.05 ),
+            extendedDropAreaContributions( false ),
 			maxIterations( 15 ),
 			solverThreshold( 1e-4 ),
 			uniquenessThreshold( 1e-2 ),
@@ -538,6 +554,11 @@ namespace RISE
 			};
 
 			bool			anchorValid;		///< the anchor's SMS inputs are recorded below
+			/// The anchor evaluated EXTENDED SMS (estimator B for area
+			/// emitters), so an emitter hit is owned only through
+			/// ManifoldSolver::ExtendedEmitterHitOwned.  False: a legacy
+			/// anchor, which keeps the split rule or suppress-all.
+			bool			extendedAnchor;
 			bool			broken;				///< the path left the specular-chain model (a medium scatter) -- no exact answer
 			Point3			anchorPos;
 			Vector3			anchorGeomNormal;
@@ -546,17 +567,18 @@ namespace RISE
 			unsigned int	count;				///< delta vertices since the anchor (may exceed kMaxVertices)
 			Vertex			v[kMaxVertices];
 
-			SMSChainRecord() : anchorValid( false ), broken( false ), anchorStack( 1.0 ), count( 0 ) {}
+			SMSChainRecord() : anchorValid( false ), extendedAnchor( false ), broken( false ), anchorStack( 1.0 ), count( 0 ) {}
 
 			//! A non-delta vertex that is NOT an SMS anchor (SPF-only,
 			//! BSSRDF): no SMS estimate covers what follows.
-			void Invalidate() { anchorValid = false; broken = false; count = 0; }
+			void Invalidate() { anchorValid = false; extendedAnchor = false; broken = false; count = 0; }
 
 			//! A new anchor: the vertex whose SMS evaluation recorded
 			//! these inputs scattered non-delta.
-			void SetAnchor( const Point3& p, const Vector3& gN, const Vector3& sN, const IORStack& s )
+			void SetAnchor( const Point3& p, const Vector3& gN, const Vector3& sN, const IORStack& s,
+				bool extended = false )
 			{
-				anchorValid = true; broken = false; count = 0;
+				anchorValid = true; extendedAnchor = extended; broken = false; count = 0;
 				anchorPos = p; anchorGeomNormal = gN; anchorShadingNormal = sN; anchorStack = s;
 			}
 
@@ -626,8 +648,19 @@ namespace RISE
             bool BuildExtendedWalk(const Point3&,const Point3&,const IScene&,const IORStack&,
                 SMSQueryDomain,ISampler&,std::vector<SMSDomainVertex>&,const RasterizerState&,
                 const IObject*,const std::vector<SMSDomainVertex>*,const Vector3*) const;
+            // emitterObject null: a delta endpoint (any farther hit is unoccluded);
+            // otherwise the final segment must reach that luminary at `end`.
             void FinalizeExtendedRootInto(const Point3&,const Vector3&,const Point3&,const Vector3&,
-                const IScene&,ISampler&,const RasterizerState&,SMSDomainRoot&,const LightSample*) const;
+                const IScene&,ISampler&,const RasterizerState&,SMSDomainRoot&,const IObject* emitterObject,
+                bool countRejection=true) const;
+            // Rebuild the domain topology of an actual PT delta chain by
+            // replaying its recorded vertices (objects, events, positions)
+            // from the anchor. Applies the walk's acceptance filters.
+            bool ReplayExtendedChain(const SMSChainRecord&,const IObject& luminary,const IScene&,
+                SMSQueryDomain,const RasterizerState&,SMSDomainRoot&) const;
+            // Static/scene inputs both sides of the area partition share.
+            bool ExtendedAreaPartitionApplies(const IScene&,const IRayCaster&,const IObject* luminary,
+                Scalar* pdfSelect) const;
             void ProposeExtendedRootInto(const Point3&,const Vector3&,const Point3&,const IScene&,
                 const IORStack&,SMSQueryDomain,ISampler&,const RasterizerState&,SMSDomainRoot&) const;
             RISEPel EvaluateExtendedDelta(const Point3&, const Vector3&, const Vector3&,
@@ -735,15 +768,32 @@ namespace RISE
                 ISampler&, const RasterizerState& = nullRasterizerState) const;
             // Shared bounded ownership policy. Seeds depend only on endpoints,
             // topology and domain; no sampled vertex positions or retry history.
-            std::vector<SMSDomainRoot> CanonicalExtendedRoots(const Point3&,const Vector3&,
-                const LightSample&,const IScene&,const SMSDomainRoot& topology,
-                const RasterizerState& = nullRasterizerState) const;
+            // Fixed first-caster surface seeds of the canonical predicate.
+            static const unsigned int kExtendedCanonicalSurfaceSeeds = 5;
+            // The returned roots are the OWNED set O(T,y) of estimator B and
+            // PT's suppression alike; an uncertain solve contributes nothing.
+            void CanonicalExtendedRoots(const Point3& anchor,const Vector3& anchorShadingNormal,
+                const IObject& luminary,const Point3& y,const Vector3& yNormal,const IScene&,
+                const SMSDomainRoot& topology,const RasterizerState&,std::vector<SMSDomainRoot>& owned) const;
+            // The partition's emitter point: `p` projected onto the luminary
+            // along `n` (removes a sampler's off-surface push).
+            static Point3 ExtendedLuminaryPoint(const IObject& luminary,const Point3& p,const Vector3& n);
+            // PT side of the area partition: does the canonical predicate own
+            // the actual chain recorded in `rec`, ending on `luminary` at `y`,
+            // in `domain`? False whenever the answer is uncertain.
+            bool ExtendedEmitterHitOwned(const SMSChainRecord& rec,const IObject& luminary,
+                const Point3& y,const Vector3& yNormal,const IScene&,const IRayCaster&,
+                SMSQueryDomain domain,const RasterizerState& = nullRasterizerState) const;
             RISEPel EvaluateExtendedAreaReference(const Point3&,const Vector3&,const Vector3&,
                 const OrthonormalBasis3D&,const IMaterial&,const Vector3&,const IScene&,
                 const IRayCaster&,ISampler&,const LightSample&,const IORStack&,
                 const RayIntersectionGeometric* = nullptr,Scalar nm = 0,int rgbComponent = -1) const;
             static bool SameExtendedTopology(const SMSDomainRoot&,const SMSDomainRoot&);
-            static bool SameExtendedRoot(const SMSDomainRoot&, const SMSDomainRoot&, Scalar tolerance);
+            // partitionBand: the area partition's identity (full tolerance band
+            // for two converged solves of one canonical topology); false: the
+            // reference estimators' resolution-limited identity.
+            static bool SameExtendedRoot(const SMSDomainRoot&, const SMSDomainRoot&, Scalar tolerance,
+                bool partitionBand = false);
             static Scalar ExtendedReflectionProbability(bool reflection, bool transmission,
                 Scalar fresnel, bool tir, Scalar explorationFloor);
 
@@ -895,7 +945,7 @@ namespace RISE
 				RISEPel		contribution;	///< Total SMS contribution (BSDF * G * throughput * Le / pdf)
 				Scalar		misWeight;		///< MIS weight for this contribution
 				bool		valid;			///< True if a valid specular path was found
-                bool referenceA;    ///< Standalone delta estimator; its radiance is not clamped.
+                bool referenceA;    ///< Extended reference estimator (A: delta lights, B: area partition); unclamped.
 
 				SMSContribution() : contribution( RISEPel(0,0,0) ), misWeight( 1.0 ), valid( false ), referenceA( false ) {}
 			};

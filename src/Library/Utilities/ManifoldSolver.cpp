@@ -7717,7 +7717,7 @@ void ManifoldSolver::ProposeExtendedRootInto(const Point3& start, const Vector3&
 
 void ManifoldSolver::FinalizeExtendedRootInto(const Point3& start,const Vector3& startNormal,
     const Point3& end,const Vector3& endNormal,const IScene& scene,ISampler& sampler,
-    const RasterizerState& raster,SMSDomainRoot& root,const LightSample* emitter) const
+    const RasterizerState& raster,SMSDomainRoot& root,const IObject* emitter,bool countRejection) const
 {
     SMSWorkerScratchLease scratch(true,config.referenceCounters);
     auto* counters=config.referenceCounters;
@@ -7789,14 +7789,14 @@ void ManifoldSolver::FinalizeExtendedRootInto(const Point3& start,const Vector3&
         RayIntersection hit(ray,raster);
         scene.GetObjects()->IntersectRay(hit,true,true,false);
         if(emitter) {
-            visible=hit.geometric.bHit && hit.pObject==emitter->pLuminary
-                && hit.pMaterial==emitter->pLuminary->GetMaterial()
+            visible=hit.geometric.bHit && hit.pObject==emitter
+                && hit.pMaterial==emitter->GetMaterial()
                 && Point3Ops::Distance(SMSReferenceSurfacePoint(*hit.pObject,hit.geometric),end)<=tolerance;
         } else if(hit.geometric.bHit && hit.geometric.range < Point3Ops::Distance(ray.origin,end)-tolerance)
             visible = false;
     }
     root.accepted = visible;
-    if(!visible && counters) {
+    if(!visible && counters && countRejection) {
         counters->zeroTrials.fetch_add(1, std::memory_order_relaxed);
         counters->rejectedRoots.fetch_add(1, std::memory_order_relaxed);
     }
@@ -7818,40 +7818,238 @@ bool ManifoldSolver::SameExtendedTopology(const SMSDomainRoot& a,const SMSDomain
     return true;
 }
 
-std::vector<SMSDomainRoot> ManifoldSolver::CanonicalExtendedRoots(const Point3& start,
-    const Vector3& startNormal,const LightSample& emitter,const IScene& scene,
-    const SMSDomainRoot& topology,const RasterizerState& raster) const
+namespace
 {
-    std::vector<SMSDomainRoot> roots;
-    if(emitter.isDelta || !emitter.pLuminary || !(emitter.pdfSelect>0)
-        || !(emitter.pdfPosition>0) || topology.vertices.empty()
-        || topology.vertices.size()>SMSChainRecord::kMaxVertices) return roots;
-    // This fixed sampler is never used to choose canonical coordinates or
-    // events. Native Newton is deterministic; reference PDF estimation is off.
-    RandomNumberGenerator rng(0x42304341u);IndependentSampler sampler(rng);
-    Vector3 directions[2];directions[0]=Vector3Ops::mkVector3(emitter.position,start);
-    Point3 point;Vector3 normal;Point2 uv;
-    topology.vertices.front().geometry.pObject->UniformRandomPoint(&point,&normal,&uv,Point3(.5,.5,.5));
-    directions[1]=Vector3Ops::mkVector3(point,start);
+    // The canonical predicate must not depend on any random number. Native
+    // Newton with reference PDF estimation off and a topology-constrained
+    // walk draw nothing; this guard records a draw if that ever changes, and
+    // the caller then treats the answer as uncertain (unowned) instead of
+    // letting a fixed stream decide ownership.
+    struct SMSCanonicalGuardSampler final : public ISampler {
+        unsigned long long draws = 0;
+        Scalar Get1D() override { ++draws; return Scalar(0.5); }
+        Point2 Get2D() override { draws += 2; return Point2(0.5,0.5); }
+    };
+}
+
+// The area partition's emitter point. SampleLight may return a point
+// pushed off the surface (a single-sided clipped plane offsets 1e-5 along
+// its normal) while PT's hit lies on it. Both sides map their point
+// through this one projection onto the luminary, so the predicate's y is
+// the same function of the surface point.
+Point3 ManifoldSolver::ExtendedLuminaryPoint(const IObject& luminary,const Point3& p,const Vector3& n)
+{
+    Vector3 axis=n;
+    if(Vector3Ops::NormalizeMag(axis)<=0) return p;
+    const Scalar reach=Scalar(1e-3)*std::max<Scalar>(1,std::max({std::fabs(p.x),std::fabs(p.y),std::fabs(p.z)}));
+    RayIntersection hit(Ray(Point3Ops::mkPoint3(p,axis*reach),-axis),nullRasterizerState);
+    luminary.IntersectRay(hit,2*reach,true,true,false);
+    if(!hit.geometric.bHit) return p;
+    return SMSReferenceSurfacePoint(luminary,hit.geometric);
+}
+
+bool ManifoldSolver::ExtendedAreaPartitionApplies(const IScene& scene,const IRayCaster& caster,
+    const IObject* luminary,Scalar* pdfSelect) const
+{
+    if(pdfSelect) *pdfSelect=0;
+    const LightSampler* ls=caster.GetLightSampler();
+    if(!ls || ls->IsSoloActive() || !luminary || !luminary->GetGeometry()
+        || !luminary->GetGeometry()->CanBeAreaLight() || !luminary->GetMaterial()
+        || !luminary->GetMaterial()->GetEmitter()) return false;
+    if(!pdfSelect) return true;
+    const ILuminaryManager* manager=caster.GetLuminaries();
+    const auto* luminaryManager=dynamic_cast<const LuminaryManager*>(manager);
+    if(!luminaryManager) return false;
+    const Scalar pmf=ls->PdfSelectLuminary(scene,
+        const_cast<LuminaryManager*>(luminaryManager)->getLuminaries(),*luminary,Point3(0,0,0),Vector3(0,0,1));
+    if(!(pmf>0) || !std::isfinite(pmf)) return false;
+    *pdfSelect=pmf;
+    return true;
+}
+
+void ManifoldSolver::CanonicalExtendedRoots(const Point3& start,const Vector3& startNormal,
+    const IObject& luminary,const Point3& y,const Vector3& yNormal,const IScene& scene,
+    const SMSDomainRoot& topology,const RasterizerState& raster,std::vector<SMSDomainRoot>& roots) const
+{
+    roots.clear();
+    auto* counters=config.referenceCounters;
+    const std::size_t k=topology.vertices.size();
+    // Every walk acceptance filter: depth cap, chain-record bound and exact
+    // bounce target. Emitter-stop and the first-caster rule are applied by
+    // the constrained walk itself.
+    if(!k || k>SMSChainRecord::kMaxVertices || k>config.maxChainDepth
+        || (config.targetBounces && k!=config.targetBounces)
+        || !topology.vertices.front().geometry.pObject) return;
+    const Scalar scale=Point3Ops::Distance(start,y);
+    if(!(scale>0) || !std::isfinite(scale)) return;
+    // A fixed, bounded seed set keyed only by (anchor, emitter point,
+    // topology, domain): an endpoint-aware trace toward y, then fixed
+    // surface coordinates of the first caster (the trace toward y cannot
+    // seed a reflection, and any one surface point can be occluded from
+    // the anchor). A static policy: never sampled positions, salts,
+    // caches, retry history or which paths PT happened to trace.
+    static const Point3 kSurfaceSeeds[kExtendedCanonicalSurfaceSeeds]={
+        Point3(.5,.5,.5),Point3(.25,.25,.25),Point3(.75,.25,.5),Point3(.25,.75,.5),Point3(.75,.75,.75)};
+    Vector3 directions[1+kExtendedCanonicalSurfaceSeeds];
+    directions[0]=Vector3Ops::mkVector3(y,start);
+    for(unsigned int i=0;i<kExtendedCanonicalSurfaceSeeds;++i) {
+        Point3 point;Vector3 normal;Point2 uv;
+        topology.vertices.front().geometry.pObject->UniformRandomPoint(&point,&normal,&uv,kSurfaceSeeds[i]);
+        directions[1+i]=Vector3Ops::mkVector3(point,start);
+    }
     for(const Vector3& direction:directions) {
+        SMSCanonicalGuardSampler guard;
         SMSDomainRoot root(topology.domain,topology.startingStack);
-        root.scale=Point3Ops::Distance(start,emitter.position);
-        if(!(root.scale>0) || !std::isfinite(root.scale)
-            || !BuildExtendedWalk(start,emitter.position,scene,root.startingStack,root.domain,
-                sampler,root.vertices,raster,emitter.pLuminary,&topology.vertices,&direction)) continue;
-        if(!SameExtendedTopology(root,topology)) continue;
-        FinalizeExtendedRootInto(start,startNormal,emitter.position,emitter.normal,scene,
-            sampler,raster,root,&emitter);
+        root.scale=scale;
+        if(!BuildExtendedWalk(start,y,scene,root.startingStack,root.domain,guard,root.vertices,
+                raster,&luminary,&topology.vertices,&direction)
+            || !SameExtendedTopology(root,topology)) continue;
+        if(counters) counters->canonicalSolves.fetch_add(1,std::memory_order_relaxed);
+        FinalizeExtendedRootInto(start,startNormal,y,yNormal,scene,guard,raster,root,&luminary,false);
+        if(guard.draws) {
+            if(counters) counters->canonicalSamplerDraws.fetch_add(guard.draws,std::memory_order_relaxed);
+            continue; // uncertain: never owned
+        }
         if(!root.accepted) continue;
         const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*root.scale;
         bool duplicate=false;
-        for(const auto& prior:roots) if(SameExtendedRoot(prior,root,tolerance)) {duplicate=true;break;}
+        for(const auto& prior:roots) if(SameExtendedRoot(prior,root,tolerance,true)) {duplicate=true;break;}
         if(!duplicate) roots.push_back(std::move(root));
     }
-    return roots;
+    if(counters) counters->canonicalRoots.fetch_add(roots.size(),std::memory_order_relaxed);
 }
 
-bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance)
+bool ManifoldSolver::ReplayExtendedChain(const SMSChainRecord& rec,const IObject& luminary,
+    const IScene& scene,SMSQueryDomain domain,const RasterizerState& raster,SMSDomainRoot& root) const
+{
+    root.vertices.clear();root.domain=domain;root.accepted=false;root.uncertainty=0;
+    SMSResetResult(root.result);
+    const unsigned int k=rec.count;
+    if(!rec.anchorValid || rec.broken || !k || k>SMSChainRecord::kMaxVertices
+        || k>config.maxChainDepth || (config.targetBounces && k!=config.targetBounces)
+        || !domain.Valid() || !std::isfinite(config.extendedEventFloor)
+        || config.extendedEventFloor<=0 || config.extendedEventFloor>0.5) return false;
+    const auto* objects=dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    if(!objects || !objects->ExtendedSMSAllowed()) return false;
+    const auto& casters=objects->ExtendedSMSCasters();
+    if(casters.empty()) return false;
+    for(const auto* caster:casters) if(!SMSAuditedModifier(*caster)) return false;
+    // The wrong-first-caster rule: the proposal can only start on a caster.
+    if(std::find(casters.begin(),casters.end(),rec.v[0].pObject)==casters.end()) return false;
+    // Same two-step start as estimator B: the receiver stack evaluated in
+    // the domain, then the walk's own capture from that stack.
+    SMSStartingMedia anchorMedia;IORStack domainStack(rec.anchorStack.EnvironmentIOR());
+    if(!SMSDomainReplay::Capture(scene,rec.anchorPos,rec.anchorStack,anchorMedia)
+        || !SMSDomainReplay::BuildStack(anchorMedia,domain,domainStack)) return false;
+    root.startingStack=domainStack;
+    SMSStartingMedia media;IORStack stack(domainStack.EnvironmentIOR());
+    if(!SMSDomainReplay::Capture(scene,rec.anchorPos,domainStack,media)
+        || !SMSDomainReplay::BuildStack(media,domain,stack)) return false;
+    const Scalar scale=Point3Ops::Distance(rec.anchorPos,rec.v[k-1].position);
+    Point3 previous=rec.anchorPos;
+    for(unsigned int i=0;i<k;++i) {
+        const SMSChainRecord::Vertex& recorded=rec.v[i];
+        Vector3 direction=Vector3Ops::mkVector3(recorded.position,previous);
+        if(Vector3Ops::NormalizeMag(direction)<=0) return false;
+        Ray ray(previous,direction);
+        ray.Advance(1e-8); // the walk's self-hit offset
+        RayIntersection hit(ray,raster);
+        objects->IntersectRay(hit,true,true,false);
+        // The replayed ray must meet PT's own vertex; a closer hit or the
+        // luminary means the chain is not one the walk can produce.
+        if(!hit.geometric.bHit || !hit.pObject || !hit.pMaterial || hit.pObject!=recorded.pObject
+            || hit.pObject==&luminary
+            || Point3Ops::Distance(hit.geometric.ptIntersection,recorded.position)
+                > Scalar(1e-6)*std::max(scale,Scalar(1))) return false;
+        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+        SMSNativeMaterialQuery query;
+        if(!SMSDomainReplay::Query(*hit.pMaterial,hit.geometric,stack,domain,query)) return false;
+        IORStack reflected(stack);
+        Scalar etaI,etaT;bool exiting;
+        if(!SMSDomainReplay::Cross(*hit.pMaterial,hit.pObject,hit.geometric,domain,
+            true,reflected,etaI,etaT,exiting)) return false;
+        const auto law=SMSNativeDirections(direction,SMSNativeEventNormal(*hit.pMaterial,hit.geometric),
+            hit.geometric.UnflippedGeomNormal(),etaI,etaT,query.transmission,query.customFresnel,
+            hit.pMaterial,exiting,SMSDomainWavelength(domain));
+        const bool tir=query.transmission && law.totalInternalReflection;
+        Scalar fresnel=query.dielectricInterface
+            ? Optics::CalculateDielectricReflectanceCosine(law.fresnelCosine,etaI,etaT) : Scalar(1);
+        if(query.customFresnel && !tir) {
+            const Scalar wavelength=domain.kind==SMSQueryDomain::Wavelength ? domain.nm
+                : ScalarPainterRGB::kChannelNM[domain.component];
+            const auto* dielectric=dynamic_cast<const DielectricSPF*>(hit.pMaterial->GetSPF());
+            if(!dielectric || !dielectric->EvaluateSpecularFresnelAfterRefraction(
+                law.fresnelCosine,etaI,etaT,exiting,wavelength,fresnel)) return false;
+        }
+        const Scalar probabilityR=ExtendedReflectionProbability(query.reflection,query.transmission,
+            fresnel,tir,config.extendedEventFloor);
+        if(!std::isfinite(probabilityR)) return false;
+        const bool reflection=recorded.isReflection;
+        // An event the proposal could not sample here has zero walk mass.
+        if((reflection && probabilityR<=0) || (!reflection && probabilityR>=1)) return false;
+        if(!reflection && !law.hasTransmission) return false;
+        if(!SMSDomainReplay::Cross(*hit.pMaterial,hit.pObject,hit.geometric,domain,
+            reflection,stack,etaI,etaT,exiting)) return false;
+        root.vertices.emplace_back(hit.geometric);
+        auto& vertex=root.vertices.back().geometry;
+        vertex.position=SMSReferenceSurfacePoint(*hit.pObject,hit.geometric);
+        vertex.normal=SMSNativeEventNormal(*hit.pMaterial,hit.geometric);
+        vertex.geomNormal=hit.geometric.UnflippedGeomNormal();
+        vertex.objectPosition=hit.geometric.ptObjIntersec;
+        vertex.uv=hit.geometric.ptCoord;
+        vertex.pObject=hit.pObject;vertex.pMaterial=hit.pMaterial;
+        vertex.isReflection=reflection;vertex.isExiting=exiting;
+        vertex.eta=query.index;vertex.etaI=etaI;vertex.etaT=etaT;
+        vertex.canRefract=query.dielectricInterface;
+        previous=vertex.position;
+    }
+    return true;
+}
+
+bool ManifoldSolver::ExtendedEmitterHitOwned(const SMSChainRecord& rec,const IObject& luminary,
+    const Point3& hitPoint,const Vector3& yNormal,const IScene& scene,const IRayCaster& caster,
+    SMSQueryDomain domain,const RasterizerState& raster) const
+{
+    auto* counters=config.referenceCounters;
+    if(counters) counters->partitionQueries.fetch_add(1,std::memory_order_relaxed);
+    const auto uncertain=[counters]() {
+        if(counters) counters->partitionUncertain.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    };
+    if(!ExtendedModeActive(scene) || !rec.anchorValid || !rec.extendedAnchor || rec.broken
+        || !domain.Valid()) return uncertain();
+    Scalar pdfSelect=0;
+    if(!ExtendedAreaPartitionApplies(scene,caster,&luminary,&pdfSelect)) return false;
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    const Point3 y=ExtendedLuminaryPoint(luminary,hitPoint,yNormal);
+    // PT's chain as a topology T in this domain.
+    SMSDomainRoot topology(domain,IORStack(rec.anchorStack.EnvironmentIOR()));
+    if(!ReplayExtendedChain(rec,luminary,scene,domain,raster,topology)) return false;
+    // PT's chain projected onto the manifold by Newton from its own
+    // vertices: itself for an exact delta chain; for a finite-scattering
+    // warp, the root it is near (the adopted delta-limit treatment, DL-379).
+    SMSDomainRoot actual(topology);
+    actual.scale=Point3Ops::Distance(rec.anchorPos,y);
+    if(!(actual.scale>0) || !std::isfinite(actual.scale)) return uncertain();
+    SMSCanonicalGuardSampler guard;
+    FinalizeExtendedRootInto(rec.anchorPos,rec.anchorShadingNormal,y,yNormal,scene,guard,raster,actual,&luminary,false);
+    if(guard.draws) {
+        if(counters) counters->canonicalSamplerDraws.fetch_add(guard.draws,std::memory_order_relaxed);
+        return uncertain();
+    }
+    if(!actual.accepted) return uncertain();
+    std::vector<SMSDomainRoot> owned;
+    CanonicalExtendedRoots(rec.anchorPos,rec.anchorShadingNormal,luminary,y,yNormal,scene,topology,raster,owned);
+    const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*actual.scale;
+    for(const auto& root:owned) if(SameExtendedRoot(root,actual,tolerance,true)) {
+        if(counters) counters->partitionOwned.fetch_add(1,std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
+bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance,
+    bool partitionBand)
 {
     if(!a.accepted || !b.accepted || !a.domain.Valid() || !b.domain.Valid()
         || !std::isfinite(a.scale) || !std::isfinite(b.scale) || a.scale <= 0 || b.scale <= 0
@@ -7870,7 +8068,15 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
     // The endpoint-scale band is a ceiling, not evidence that nearby
     // regular roots coincide. Compare positions at the resolution actually
     // established by both final corrections and coordinate roundoff.
-    const Scalar positionTolerance=std::min(tolerance,a.uncertainty+b.uncertainty);
+    //
+    // The area partition (partitionBand) instead compares two converged
+    // solves of ONE canonical topology at the full band: two Newton runs
+    // from different seeds end anywhere within their roundoff of the root,
+    // which the last-correction band does not bound (measured: canonical
+    // vs proposal solves of one ball-lens root 3e-15..3e-12 apart against
+    // a 2e-15 band). Distinct regular roots closer than the band are a
+    // fold, outside the supported regular-root domain.
+    const Scalar positionTolerance=partitionBand?tolerance:std::min(tolerance,a.uncertainty+b.uncertainty);
     const Scalar normalTolerance = tolerance / scale;
     for(std::size_t i=0; i<a.vertices.size(); ++i) {
         const auto& x = a.vertices[i].geometry; const auto& y = b.vertices[i].geometry;
@@ -7926,73 +8132,87 @@ RISEPel ManifoldSolver::EvaluateExtendedAreaReference(const Point3& pos,const Ve
     const LightSample& light,const IORStack& stack,const RayIntersectionGeometric* context,
     Scalar nm,int rgbComponent) const
 {
+    // Estimator B: one proposal walk yields a topology T; its owned roots
+    // O(T,y) are the canonical solves (the same predicate PT suppresses
+    // with); K counts independent walks until T recurs. The deposit
+    // [sum_{r in O(T)} C(r,c)] * K / (q(c) pL) has expectation
+    // sum_T C(O(T)) / pL with pL = selection pmf * area density, the
+    // measure the light-to-chain Jacobian below converts from.
     RISEPel total(0,0,0);
     const IBSDF* bsdf=material.GetBSDF();
-    const auto* ls=caster.GetLightSampler();
-    if(!bsdf || !ls || ls->IsSoloActive() || light.isDelta || !light.pLuminary
-        || !light.pLuminary->GetGeometry() || !light.pLuminary->GetGeometry()->CanBeAreaLight()
+    if(!bsdf || light.isDelta || light.pEnvLight || !light.pLuminary
         || !(light.pdfSelect>0) || !(light.pdfPosition>0)
         || !std::isfinite(light.pdfSelect) || !std::isfinite(light.pdfPosition)
+        || rgbComponent>2
+        || !ExtendedAreaPartitionApplies(scene,caster,light.pLuminary,nullptr)
         || !ExtendedAnchorEligible(scene,caster,pos,stack,nm)) return total;
     SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    // Independently seeded discovery and retry streams; each consumes a
+    // fixed two parent dimensions whatever N, K or the outcome.
     SMSLoopSampler discovery(parent,0x42304449u),retry(parent,0x42305254u);
+    if(config.extendedDropAreaContributions) return total; // diagnostic: PT-kept set only
     const unsigned int trials=config.multiTrials?config.multiTrials:1;
     const RasterizerState& raster=context?context->rast:nullRasterizerState;
+    RayIntersectionGeometric receiver(Ray(pos,-outgoing),raster);
+    if(context) receiver=*context;
+    receiver.bHit=true;receiver.ptIntersection=pos;receiver.vNormal=shadingNormal;
+    receiver.vGeomNormal=geomNormal;receiver.onb=onb;
+    std::vector<SMSDomainRoot> roots;
+    // The predicate's emitter point (on the luminary); the sampled point
+    // keeps its area density: the projection only removes a sub-1e-4 push.
+    const Point3 y=ExtendedLuminaryPoint(*light.pLuminary,light.position,light.normal);
     for(unsigned int trial=0;trial<trials;++trial) {
         const unsigned int component=nm>0?0:rgbComponent>=0?static_cast<unsigned>(rgbComponent)
             :std::min(2u,static_cast<unsigned>(discovery.sampler.Get1D()*3));
-        if(component>2) continue;
         const SMSQueryDomain domain=nm>0?SMSQueryDomain::NM(nm):SMSQueryDomain::RGB(component);
-        SMSStartingMedia media;IORStack domainStack(stack.EnvironmentIOR());
-        if(!SMSDomainReplay::Capture(scene,pos,stack,media)
-            || !SMSDomainReplay::BuildStack(media,domain,domainStack)) continue;
-        SMSDomainRoot topology(domain,domainStack);
         if(config.referenceCounters) config.referenceCounters->proposalTrials.fetch_add(1,std::memory_order_relaxed);
-        if(!BuildExtendedSeed(pos,light.position,scene,domainStack,domain,discovery.sampler,
-            topology.vertices,raster,light.pLuminary)) {
+        SMSStartingMedia media;IORStack domainStack(stack.EnvironmentIOR());
+        bool proposed=SMSDomainReplay::Capture(scene,pos,stack,media)
+            && SMSDomainReplay::BuildStack(media,domain,domainStack);
+        SMSDomainRoot topology(domain,domainStack);
+        proposed=proposed && BuildExtendedSeed(pos,light.position,scene,domainStack,domain,
+            discovery.sampler,topology.vertices,raster,light.pLuminary);
+        if(!proposed) {
             if(config.referenceCounters) config.referenceCounters->zeroTrials.fetch_add(1,std::memory_order_relaxed);
             continue;
         }
-        const auto roots=CanonicalExtendedRoots(pos,shadingNormal,light,scene,topology,raster);
+        // Ownership is decided here, before and independently of the K loop.
+        CanonicalExtendedRoots(pos,shadingNormal,*light.pLuminary,y,light.normal,
+            scene,topology,raster,roots);
         if(roots.empty()) {
             if(config.referenceCounters) config.referenceCounters->zeroTrials.fetch_add(1,std::memory_order_relaxed);
-            continue; // no reciprocal loop for an empty owned set
+            continue; // an empty owned set enters no reciprocal loop
         }
         Scalar physical=0;
         for(const auto& root:roots) {
             const auto& chain=root.result.specularChain;
+            if(chain.empty()) continue;
             Vector3 incoming=Vector3Ops::mkVector3(chain.front().position,pos);
             const Scalar distance=Vector3Ops::NormalizeMag(incoming);
             if(!(distance>0)) continue;
-            RayIntersectionGeometric hit(Ray(pos,-outgoing),raster);
-            if(context) hit=*context;
-            hit.bHit=true;hit.ptIntersection=pos;hit.vNormal=shadingNormal;
-            hit.vGeomNormal=geomNormal;hit.onb=onb;hit.ambientIOR=root.startingStack.top();
-            const Scalar f=nm>0?bsdf->valueStatefulNM(incoming,hit,nm,&root.startingStack)
-                :bsdf->valueStateful(incoming,hit,&root.startingStack)[component];
-            const Vector3 lightToChain=Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,light.position));
+            receiver.ambientIOR=root.startingStack.top();
+            const Scalar f=nm>0?bsdf->valueStatefulNM(incoming,receiver,nm,&root.startingStack)
+                :bsdf->valueStateful(incoming,receiver,&root.startingStack)[component];
+            const Vector3 lightToChain=Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,y));
             const Scalar le=nm>0?SMSAreaLeNM(light,lightToChain,nm):SMSAreaLe(light,lightToChain)[component];
             ManifoldSolver native(config,true,&root.vertices,SMSDomainWavelength(root.domain));
             const Scalar geometry=std::fabs(Vector3Ops::Dot(chain.front().geomNormal,incoming))/(distance*distance)
-                *native.ComputeLightToFirstVertexJacobianDet(chain,pos,light.position,light.normal);
+                *native.ComputeLightToFirstVertexJacobianDet(chain,pos,y,light.normal);
             const Scalar value=f*std::fabs(Vector3Ops::Dot(shadingNormal,incoming))
                 *root.result.contributionNM*le*geometry;
             if(std::isfinite(value)) physical+=value;
         }
+        if(config.referenceCounters) config.referenceCounters->ownedRoots.fetch_add(roots.size(),std::memory_order_relaxed);
         if(physical==0 || !std::isfinite(physical)) continue;
-        if(config.referenceCounters) {
-            config.referenceCounters->acceptedDiscoveries.fetch_add(1,std::memory_order_relaxed);
-            config.referenceCounters->ownedRoots.fetch_add(roots.size(),std::memory_order_relaxed);
-        }
+        if(config.referenceCounters) config.referenceCounters->acceptedDiscoveries.fetch_add(1,std::memory_order_relaxed);
         SMSDomainRoot retryTopology(domain,domainStack);
         const auto walk=[&](ISampler& sampler)->const SMSDomainRoot& {
-            retryTopology.vertices.clear();
+            if(config.referenceCounters) config.referenceCounters->topologyRetryTrials.fetch_add(1,std::memory_order_relaxed);
+            // The exact discovery walk law, failures included; no Newton.
             if(!BuildExtendedSeed(pos,light.position,scene,domainStack,domain,sampler,
                 retryTopology.vertices,raster,light.pLuminary)) retryTopology.vertices.clear();
             return retryTopology;
         };
-        // Every retry uses the exact discovery walk, including failed walks;
-        // canonical solves are outside this loop and never consume retry RNG.
         const Scalar reciprocal=SMSRootReference::Reciprocal(topology,retry.sampler,walk,
             [](const SMSDomainRoot& a,const SMSDomainRoot& b){return SameExtendedTopology(a,b);},
             config.maxBernoulliTrials,true,config.referenceCounters);
@@ -8128,6 +8348,19 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( lightSample.pEnvLight ) {
 		return result;
 	}
+    // Phase 3: a non-delta area emitter at an extended anchor is estimator
+    // B's, under the canonical ownership predicate PT suppresses with.
+    if(!forceLegacy && ExtendedModeActive(scene) && !lightSample.isDelta && lightSample.pLuminary) {
+        const IORStack air(1);
+        const IORStack& stack = pIorStack ? *pIorStack : air;
+        const RISEPel value = EvaluateExtendedAreaReference(pos,geomNormal,shadingNormal,onb,*pMaterial,
+            woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext);
+        result.contribution = value;
+        result.valid = std::isfinite(value[0]) && std::isfinite(value[1]) && std::isfinite(value[2])
+            && (value[0] != 0 || value[1] != 0 || value[2] != 0);
+        result.referenceA = true; // reference estimator: unclamped
+        return result;
+    }
     if(!forceLegacy && ExtendedModeActive(scene) && lightSample.isDelta && lightSample.pLight
         && (lightSample.pLight->lightType() == ILight::LightType::Point
             || lightSample.pLight->lightType() == ILight::LightType::Spot)) {
@@ -9116,6 +9349,19 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	if( lightSample.pEnvLight ) {
 		return result;
 	}
+    // Phase 3: a non-delta area emitter at an extended anchor is estimator
+    // B's, under the canonical ownership predicate PT suppresses with.
+    if(!forceLegacy && ExtendedModeActive(scene) && !lightSample.isDelta && lightSample.pLuminary) {
+        const IORStack air(1);
+        const IORStack& stack = pIorStack ? *pIorStack : air;
+        const RISEPel value = EvaluateExtendedAreaReference(pos,geomNormal,shadingNormal,onb,*pMaterial,
+            woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext);
+        result.contribution = value;
+        result.valid = std::isfinite(value[0]) && std::isfinite(value[1]) && std::isfinite(value[2])
+            && (value[0] != 0 || value[1] != 0 || value[2] != 0);
+        result.referenceA = true; // reference estimator: unclamped
+        return result;
+    }
     if(!forceLegacy && ExtendedModeActive(scene) && lightSample.isDelta && lightSample.pLight
         && (lightSample.pLight->lightType() == ILight::LightType::Point
             || lightSample.pLight->lightType() == ILight::LightType::Spot)) {
@@ -9576,6 +9822,18 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	if( lightSample.pEnvLight ) {
 		return result;
 	}
+    // Phase 3: a non-delta area emitter at an extended anchor is estimator
+    // B's, under the canonical ownership predicate PT suppresses with.
+    if(!forceLegacy && ExtendedModeActive(scene) && !lightSample.isDelta && lightSample.pLuminary) {
+        const IORStack air(1);
+        const IORStack& stack = pIorStack ? *pIorStack : air;
+        const RISEPel value = EvaluateExtendedAreaReference(pos,geomNormal,shadingNormal,onb,*pMaterial,
+            woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext,nm);
+        result.contribution = value[0];
+        result.valid = std::isfinite(value[0]) && value[0] != 0;
+        result.referenceA = true; // reference estimator: unclamped
+        return result;
+    }
     if(!forceLegacy && ExtendedModeActive(scene) && lightSample.isDelta && lightSample.pLight
         && (lightSample.pLight->lightType() == ILight::LightType::Point
             || lightSample.pLight->lightType() == ILight::LightType::Spot)) {
@@ -9997,6 +10255,18 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( lightSample.pEnvLight ) {
 		return result;
 	}
+    // Phase 3: a non-delta area emitter at an extended anchor is estimator
+    // B's, under the canonical ownership predicate PT suppresses with.
+    if(!forceLegacy && ExtendedModeActive(scene) && !lightSample.isDelta && lightSample.pLuminary) {
+        const IORStack air(1);
+        const IORStack& stack = pIorStack ? *pIorStack : air;
+        const RISEPel value = EvaluateExtendedAreaReference(pos,geomNormal,shadingNormal,onb,*pMaterial,
+            woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext,nm);
+        result.contribution = value[0];
+        result.valid = std::isfinite(value[0]) && value[0] != 0;
+        result.referenceA = true; // reference estimator: unclamped
+        return result;
+    }
     if(!forceLegacy && ExtendedModeActive(scene) && lightSample.isDelta && lightSample.pLight
         && (lightSample.pLight->lightType() == ILight::LightType::Point
             || lightSample.pLight->lightType() == ILight::LightType::Spot)) {
