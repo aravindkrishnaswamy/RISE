@@ -16,6 +16,15 @@
 #include "pch.h"
 #include "ManifoldSolver.h"
 #include "../Managers/ObjectManager.h"
+#include "../Geometry/SphereGeometry.h"
+#include "../Geometry/EllipsoidGeometry.h"
+#include "../Geometry/TorusGeometry.h"
+#include "../Geometry/CylinderGeometry.h"
+#include "../Geometry/TriangleMeshGeometryIndexed.h"
+#include "../Geometry/TriangleMeshGeometry.h"
+#include "../Painters/UniformColorPainter.h"
+#include "../Interfaces/IRayIntersectionModifier.h"
+#include "../Interfaces/IUVGenerator.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SMS surface seeding shares the sampling contract
 #include "SMSPhotonMap.h"
 #include "Optics.h"
@@ -28,7 +37,491 @@
 #include "../Materials/PolishedMaterial.h"
 #include "../Materials/CompositeMaterial.h"
 #include "../Objects/CSGObject.h"
+#include "../Objects/Object.h"
 #include "IORStackSeeding.h"
+#include <typeinfo>
+#include <optional>
+#include <array>
+
+namespace {
+    using RISE::Implementation::SMSReferenceCounters;
+    thread_local SMSReferenceCounters* smsActiveDiagnostics=nullptr;
+    thread_local unsigned smsScratchDepth=0;
+
+    void SMSResetResult(RISE::Implementation::ManifoldResult& result) {
+        std::vector<RISE::Implementation::ManifoldVertex> buffer;
+        buffer.swap(result.specularChain);result=RISE::Implementation::ManifoldResult();
+        buffer.clear();result.specularChain.swap(buffer);
+    }
+    struct SMSWorkerScratchFrame {
+        std::array<std::vector<RISE::Implementation::ManifoldVertex>,4> vertices;
+        std::array<std::vector<RISE::Implementation::SMSDomainVertex>,2> records;
+        std::array<std::vector<RISE::Scalar>,16> scalars;
+        std::array<std::vector<RISE::Scalar>,4> derivatives;
+        std::array<std::unique_ptr<RISE::Implementation::SMSDomainRoot>,2> roots;
+        void Clear() {
+            for(auto& v:vertices) v.clear();for(auto& v:records) v.clear();
+            for(auto& v:scalars) v.clear();for(auto& v:derivatives) v.clear();
+            for(auto& root:roots) if(root) {
+                root->vertices.clear();SMSResetResult(root->result);
+                root->startingStack=RISE::IORStack(1);root->accepted=false;
+            }
+        }
+    };
+    struct SMSWorkerScratchPool {
+        std::vector<std::unique_ptr<SMSWorkerScratchFrame>> frames;
+        std::size_t depth=0,bytes=0;
+    };
+    thread_local SMSWorkerScratchPool smsWorkerScratch;
+    class SMSWorkerScratchLease {
+        SMSWorkerScratchFrame* frame=nullptr;
+        SMSReferenceCounters* previous=nullptr;
+        void Peak() {
+            if(!smsActiveDiagnostics) return;
+            auto& peak=smsActiveDiagnostics->scratchPeakBytes;
+            auto old=peak.load(std::memory_order_relaxed);
+            while(old<smsWorkerScratch.bytes && !peak.compare_exchange_weak(old,smsWorkerScratch.bytes,std::memory_order_relaxed)) {}
+        }
+        template<class T> std::vector<T>& Reserve(std::vector<T>& vector,std::size_t count) {
+            const auto before=vector.capacity();
+            if(before<count) {
+                vector.reserve(count);
+                smsWorkerScratch.bytes+=(vector.capacity()-before)*sizeof(T);
+                if(smsActiveDiagnostics) smsActiveDiagnostics->scratchBufferGrowths.fetch_add(1,std::memory_order_relaxed);
+            }
+            Peak();return vector;
+        }
+    public:
+        SMSWorkerScratchLease(bool enabled,SMSReferenceCounters* counters) {
+            if(!enabled) return;
+            auto& pool=smsWorkerScratch;
+            if(pool.depth==pool.frames.size()) {
+                const auto before=pool.frames.capacity();
+                pool.frames.emplace_back(std::make_unique<SMSWorkerScratchFrame>());
+                pool.bytes+=sizeof(SMSWorkerScratchFrame)+(pool.frames.capacity()-before)*sizeof(pool.frames[0]);
+                if(counters) counters->scratchFrames.fetch_add(1,std::memory_order_relaxed);
+            }
+            frame=pool.frames[pool.depth++].get();++smsScratchDepth;previous=smsActiveDiagnostics;
+            if(counters) smsActiveDiagnostics=counters;
+            Peak();
+        }
+        ~SMSWorkerScratchLease() {
+            if(frame) {frame->Clear();--smsWorkerScratch.depth;--smsScratchDepth;smsActiveDiagnostics=previous;}
+        }
+        SMSWorkerScratchLease(const SMSWorkerScratchLease&)=delete;
+        SMSWorkerScratchLease& operator=(const SMSWorkerScratchLease&)=delete;
+        bool Enabled() const {return frame!=nullptr;}
+        auto& Vertices(unsigned slot,std::size_t count) {return Reserve(frame->vertices[slot],count);}
+        auto& Records(unsigned slot,std::size_t count) {return Reserve(frame->records[slot],count);}
+        auto& Scalars(unsigned slot,std::size_t count) {return Reserve(frame->scalars[slot],count);}
+        auto& Derivatives(std::size_t count) {
+            for(auto& vector:frame->derivatives) Reserve(vector,count);
+            return frame->derivatives;
+        }
+        auto& Root(unsigned slot,RISE::Implementation::SMSQueryDomain domain,const RISE::IORStack& stack,std::size_t count) {
+            auto& root=frame->roots[slot];
+            if(!root) {root=std::make_unique<RISE::Implementation::SMSDomainRoot>(domain,stack);smsWorkerScratch.bytes+=sizeof(*root);}
+            Reserve(root->vertices,count);Reserve(root->result.specularChain,count);Peak();return *root;
+        }
+    };
+}
+void RISE::Implementation::SMSRecordSceneIntersection() {
+    if(smsActiveDiagnostics) smsActiveDiagnostics->sceneIntersectionQueries.fetch_add(1,std::memory_order_relaxed);
+}
+void RISE::Implementation::SMSRecordObjectIntersection() {
+    if(smsActiveDiagnostics) smsActiveDiagnostics->objectIntersectionQueries.fetch_add(1,std::memory_order_relaxed);
+}
+
+
+namespace {
+    // Only audited native charts establish periodic equivalence. Authored
+    // mesh UVs and Object UV generators retain ordinary context equality.
+    RISE::Point2 SMSPeriodicTextureAxes(const RISE::IObject& object, const RISE::Vector3& normal) {
+        using namespace RISE;
+        using namespace RISE::Implementation;
+        const auto* native = dynamic_cast<const Object*>(&object);
+        const IGeometry* geometry = object.GetGeometry();
+        if(!native || typeid(object) != typeid(Object) || !native->UsesNativeTextureChart() || !geometry) return Point2(0,0);
+        const auto& type = typeid(*geometry);
+        if(type == typeid(SphereGeometry) || type == typeid(EllipsoidGeometry)) return Point2(1,0);
+        if(type == typeid(TorusGeometry)) return Point2(1,1);
+        if(type == typeid(CylinderGeometry)) {
+            const Vector3 localNormal = Vector3Ops::Normalize(Vector3Ops::Transform(
+                Matrix4Ops::Transpose(object.GetFinalTransformMatrix()),normal));
+            return Point2(dynamic_cast<const CylinderGeometry*>(geometry)->TextureLongitudeIsPeriodic(localNormal) ? 1 : 0,0);
+        }
+        return Point2(0,0);
+    }
+    bool SMSConstantSeamMaterial(const RISE::IMaterial& material) {
+        using namespace RISE;
+        using namespace RISE::Implementation;
+        if(const auto* m = dynamic_cast<const PerfectReflectorMaterial*>(&material)) {
+            const IPainter& tint=m->GetReflectance();
+            return typeid(tint) == typeid(UniformColorPainter);
+        }
+        if(const auto* m = dynamic_cast<const PerfectRefractorMaterial*>(&material)) {
+            const IPainter& tint=m->GetRefractivity();
+            return typeid(tint) == typeid(UniformColorPainter);
+        }
+        if(const auto* m = dynamic_cast<const DielectricMaterial*>(&material))
+            return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
+        if(const auto* m = dynamic_cast<const PolishedMaterial*>(&material))
+            return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
+        return false;
+    }
+    bool SMSContextIgnoresUV(const RISE::IObject& object,const RISE::IMaterial& material) {
+        if(!SMSConstantSeamMaterial(material)) return false;
+        const auto* modifier=object.GetModifier();
+        if(!modifier) return true;
+        const auto* audited=dynamic_cast<const RISE::ISMSModifierDifferential*>(modifier);
+        return audited && audited->HasSMSDifferentialContract() && !audited->SMSFrameDependsOnUV();
+    }
+    void SMSCompleteNativeHit(RISE::RayIntersection& hit,const RISE::IObjectManager* objects) {
+        if(const auto* native=dynamic_cast<const RISE::Implementation::ObjectManager*>(objects))
+            native->CompleteShadingSignals(hit.geometric,hit.pObject);
+    }
+    struct SMSDeltaDirections {
+        RISE::Vector3 reflected, transmitted, reflectionNormal, transmissionNormal;
+        RISE::Scalar fresnelCosine=0;
+        bool hasTransmission=false,totalInternalReflection=false,reflectionFallback=false,transmissionFallback=false;
+    };
+    // Native DL-111 event directions. Reflection changes its direction at
+    // the geometric horizon; transmission fallback (only when ref < 1) changes BOTH lobe
+    // prices to the geometric incidence. Reflection's normal alone does not
+    // determine its Fresnel incidence.
+    SMSDeltaDirections SMSNativeDirections(const RISE::Vector3& incoming,
+        const RISE::Vector3& shading, const RISE::Vector3& geometric,
+        RISE::Scalar etaI, RISE::Scalar etaT, bool transmission, bool rawFresnel=false,
+        const RISE::IMaterial* material=nullptr,bool exiting=false,RISE::Scalar wavelength=550) {
+        using namespace RISE;
+        SMSDeltaDirections law;
+        const Vector3 raw=Vector3Ops::SquaredModulus(geometric)>Scalar(1e-12)?geometric:shading;
+        const Vector3 geom=Vector3Ops::Dot(raw,incoming)<0?raw:-raw;
+        // Match Optics' native input normalization branch. Raw contexts remain
+        // available to coating providers, whose native cosine uses raw W.
+        const Vector3 eventNormal=std::fabs(Vector3Ops::Magnitude(shading)-1)>Scalar(1e-6)
+            ? Vector3Ops::Normalize(shading):shading;
+        law.reflectionNormal=eventNormal;law.transmissionNormal=eventNormal;
+        law.fresnelCosine=std::fabs(Vector3Ops::Dot(incoming,rawFresnel?shading:eventNormal));
+        law.reflected=Optics::CalculateReflectedRay(incoming,shading);
+        if(Vector3Ops::Dot(law.reflected,geom)<=0) {
+            law.reflectionFallback=true;
+            law.reflectionNormal=geom;
+            law.reflected=Optics::CalculateReflectedRay(incoming,geom);
+        }
+        law.transmitted=incoming;
+        if(transmission) {
+            law.hasTransmission=Optics::CalculateRefractedRay(shading,etaI,etaT,law.transmitted);
+            law.totalInternalReflection=!law.hasTransmission;
+            bool fallbackAllowed=true;
+            if(law.hasTransmission && (dynamic_cast<const Implementation::DielectricMaterial*>(material)
+                    || dynamic_cast<const Implementation::PerfectRefractorMaterial*>(material))) {
+                // Native dielectric/refractor SPFs gate their DL-111 fallback on ref < 1,
+                // before changing the incidence. Film saturation is not TIR:
+                // retain proposal exploration mass, but reject this zero lobe.
+                Scalar reflectance=Optics::CalculateDielectricReflectanceCosine(
+                    std::fabs(Vector3Ops::Dot(incoming,eventNormal)),etaI,etaT);
+                const auto* dielectric=dynamic_cast<const Implementation::DielectricSPF*>(material->GetSPF());
+                if(dielectric && dielectric->EvaluateSpecularFresnelAfterRefraction(
+                    std::fabs(Vector3Ops::Dot(incoming,shading)),etaI,etaT,exiting,wavelength,reflectance))
+                    law.fresnelCosine=std::fabs(Vector3Ops::Dot(incoming,shading));
+                fallbackAllowed=reflectance<1;
+                if(reflectance>=1) law.hasTransmission=false;
+            }
+            if(law.hasTransmission && fallbackAllowed && Vector3Ops::Dot(law.transmitted,-geom)<=0) {
+                law.transmissionFallback=true;
+                law.transmissionNormal=geom;
+                law.fresnelCosine=std::fabs(Vector3Ops::Dot(incoming,geom));
+                law.transmitted=incoming;
+                law.hasTransmission=Optics::CalculateRefractedRay(geom,etaI,etaT,law.transmitted);
+                law.totalInternalReflection=!law.hasTransmission;
+                if(law.hasTransmission && (dynamic_cast<const Implementation::DielectricMaterial*>(material)
+                    || dynamic_cast<const Implementation::PerfectRefractorMaterial*>(material))) {
+                    Scalar reflectance=Optics::CalculateDielectricReflectanceCosine(law.fresnelCosine,etaI,etaT);
+                    if(const auto* dielectric=dynamic_cast<const Implementation::DielectricSPF*>(material->GetSPF()))
+                        dielectric->EvaluateSpecularFresnelAfterRefraction(law.fresnelCosine,etaI,etaT,exiting,wavelength,reflectance);
+                    if(reflectance>=1) law.hasTransmission=false;
+                }
+            }
+        }
+        return law;
+    }
+    RISE::Scalar SMSDomainWavelength(RISE::Implementation::SMSQueryDomain domain) {
+        if(!domain.Valid()) return 550; // The subsequent replay declines invalid domains.
+        return domain.kind==RISE::Implementation::SMSQueryDomain::Wavelength?domain.nm
+            :RISE::ScalarPainterRGB::kChannelNM[domain.component];
+    }
+    // These native SPFs read the modified ONB, whereas PolishedBRDF
+    // resolves its coat from normalized vNormal. Preserve both raw records
+    // in the context and normalize only the native consumed event field.
+    RISE::Vector3 SMSNativeEventNormal(const RISE::IMaterial& material,
+        const RISE::RayIntersectionGeometric& hit) {
+        return dynamic_cast<const RISE::Implementation::PolishedMaterial*>(&material)
+            ? RISE::Vector3Ops::Normalize(hit.vNormal) : hit.onb.w();
+    }
+    bool SMSNeedsNativeFrame(const RISE::Implementation::ManifoldVertex& v) {
+        return v.pObject && (v.pObject->GetModifier()
+            || RISE::Vector3Ops::SquaredModulus(RISE::Vector3Ops::Cross(v.normal,v.geomNormal))
+                > std::numeric_limits<RISE::Scalar>::epsilon());
+    }
+    RISE::Point3 SMSReferenceSurfacePoint(const RISE::IObject&,const RISE::RayIntersectionGeometric&);
+    RISE::Implementation::ManifoldVertex SMSNativeConstraintVertex(
+        const RISE::Implementation::ManifoldVertex& original,const RISE::Point3& previous,
+        const RISE::RasterizerState& raster=RISE::nullRasterizerState,unsigned* branch=nullptr,
+        const RISE::IObjectManager* objects=nullptr,RISE::Scalar wavelength=550) {
+        using namespace RISE;
+        auto v=original;
+        // This local flag describes native event/context validity, not the
+        // seed's derivative readiness (derivatives are computed after the
+        // initial constraint check). Unmodified seeds already carry the frame.
+        v.valid=true;
+        if(SMSNeedsNativeFrame(v)) {
+            RayIntersection hit(Ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous))),raster);
+            v.pObject->IntersectRay(hit,RISE_INFINITY,true,true,false);
+            SMSCompleteNativeHit(hit,objects);
+            const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(previous,v.position);
+            if(!hit.geometric.bHit || hit.pMaterial!=v.pMaterial
+                || Point3Ops::Distance(SMSReferenceSurfacePoint(*v.pObject,hit.geometric),v.position)>tolerance) {
+                v.valid=false;return v;
+            }
+            if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+            v.normal=SMSNativeEventNormal(*v.pMaterial,hit.geometric);v.geomNormal=hit.geometric.UnflippedGeomNormal();v.valid=true;
+        }
+        const auto law=SMSNativeDirections(Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous)),
+            v.normal,v.geomNormal,v.etaI,v.etaT,v.canRefract && v.pMaterial
+                && typeid(*v.pMaterial)!=typeid(Implementation::PolishedMaterial),false,v.pMaterial,v.isExiting,wavelength);
+        if(!v.isReflection && !law.hasTransmission) v.valid=false;
+        if(branch) *branch=(v.isReflection?unsigned(law.reflectionFallback)
+            :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2)
+                |(unsigned(law.totalInternalReflection)<<4))
+            |(unsigned(std::fabs(Vector3Ops::Magnitude(v.normal)-1)>Scalar(1e-6))<<3);
+        v.normal=v.isReflection?law.reflectionNormal:law.transmissionNormal;
+        return v;
+    }
+
+    // Native Optics tolerates slightly nonunit event normals. Its outgoing
+    // vector then need not have unit length. Matching a unit outgoing ray
+    // requires this length in the generalized half vector, including its
+    // derivative; normalizing the normal would change the native event.
+    bool SMSNativeHalfVector(const RISE::Vector3& wi,const RISE::Vector3& wo,
+        const RISE::Vector3& normal,RISE::Scalar etaI,RISE::Scalar etaT,bool reflection,
+        const RISE::Vector3& dwi,const RISE::Vector3& dwo,const RISE::Vector3& dn,
+        RISE::Vector3& half,RISE::Vector3& derivative) {
+        using namespace RISE;
+        Vector3 direction,delta;
+        if(reflection) {
+            const Scalar cosine=Vector3Ops::Dot(normal,wi);
+            const Scalar dc=Vector3Ops::Dot(dn,wi)+Vector3Ops::Dot(normal,dwi);
+            direction=Optics::CalculateReflectedRay(-wi,normal);
+            delta=-dwi+(normal*dc+dn*cosine)*2;
+        } else {
+            direction=-wi;
+            if(!Optics::CalculateRefractedRay(normal,etaI,etaT,direction)) return false;
+            if(etaI==etaT) delta=-dwi;
+            else {
+                const bool flip=Vector3Ops::Dot(normal,wi)<0;
+                const Vector3 n=flip?-normal:normal,dnOriented=flip?-dn:dn;
+                const Scalar cosine=Vector3Ops::Dot(n,wi);
+                const Scalar dc=Vector3Ops::Dot(dnOriented,wi)+Vector3Ops::Dot(n,dwi);
+                Scalar cosT;
+                if(!Optics::CalculateRefractedCosine(cosine,etaI,etaT,cosT) || !(cosT>0)) return false;
+                const Scalar ratio=etaI/etaT;
+                const Scalar dcosT=cosine<1?ratio*ratio*cosine*dc/cosT:0;
+                delta=-dwi*ratio+n*(ratio*dc-dcosT)+dnOriented*(ratio*cosine-cosT);
+            }
+        }
+        const Scalar length=Vector3Ops::Magnitude(direction);
+        if(!(length>0) || !std::isfinite(length)) return false;
+        const Scalar dlength=Vector3Ops::Dot(direction,delta)/length;
+        half=reflection?wi+wo*length:-(wi*etaI+wo*(etaT*length));
+        derivative=reflection?dwi+dwo*length+wo*dlength
+            :-(dwi*etaI+(dwo*length+wo*dlength)*etaT);
+        return std::isfinite(dlength);
+    }
+
+    bool SMSAuditedModifier(const RISE::IObject& object) {
+        const auto* modifier=object.GetModifier();
+        const auto* differential=dynamic_cast<const RISE::ISMSModifierDifferential*>(modifier);
+        if(!modifier) return true;
+        if(!differential || !differential->HasSMSDifferentialContract()) return false;
+        if(!differential->SMSFrameDependsOnUV()) return true;
+        const auto* native=dynamic_cast<const RISE::Implementation::Object*>(&object);
+        if(!native) return false;
+        const auto* generator=native->SMSUVGenerator();
+        if(!generator) return true; // Audited native geometry chart.
+        const auto* uv=dynamic_cast<const RISE::ISMSUVDifferential*>(generator);
+        return uv && uv->HasSMSUVDifferentialContract();
+    }
+    RISE::Vector3 SMSNormalizedDifferential(const RISE::Vector3& value,
+        const RISE::Vector3& derivative) {
+        const RISE::Scalar length=RISE::Vector3Ops::Magnitude(value);
+        if(!(length>0)) return RISE::Vector3(std::numeric_limits<RISE::Scalar>::quiet_NaN(),0,0);
+        const auto unit=value*(1/length);
+        return (derivative-unit*RISE::Vector3Ops::Dot(unit,derivative))*(1/length);
+    }
+    // Differentiate the residual using the audited modifier differential.
+    // Probe differences describe only the native geometry/input transport;
+    // no difference of post-modifier values prices the Jacobian.
+    bool SMSNativeConstraintDifferential(const RISE::Implementation::ManifoldVertex& center,
+        const RISE::Implementation::ManifoldVertex& plus,
+        const RISE::Implementation::ManifoldVertex& minus,
+        const RISE::Point3& previous,const RISE::Point3& previousPlus,const RISE::Point3& previousMinus,
+        const RISE::Point3& next,const RISE::Point3& nextPlus,const RISE::Point3& nextMinus,
+        RISE::Scalar step,const RISE::RasterizerState& raster,RISE::Scalar& c0,RISE::Scalar& c1,
+        const RISE::IObjectManager* objects=nullptr,RISE::Scalar wavelength=550) {
+        using namespace RISE;
+        if(!(step>0) || !center.pObject || !SMSAuditedModifier(*center.pObject)) return false;
+        const auto difference=[&](const auto& a,const auto& b) {return Vector3(a.x-b.x,a.y-b.y,a.z-b.z)*(1/(2*step));};
+        unsigned branch=0,plusBranch=0,minusBranch=0;
+        const auto effective=SMSNativeConstraintVertex(center,previous,raster,&branch,objects,wavelength);
+        const auto ep=SMSNativeConstraintVertex(plus,previousPlus,raster,&plusBranch,objects,wavelength);
+        const auto em=SMSNativeConstraintVertex(minus,previousMinus,raster,&minusBranch,objects,wavelength);
+        if(!effective.valid || !ep.valid || !em.valid || branch!=plusBranch || branch!=minusBranch) return false;
+        Vector3 dn=difference(plus.normal,minus.normal);
+        Vector3 dg=difference(plus.geomNormal,minus.geomNormal);
+        if(SMSNeedsNativeFrame(center)) {
+            RayIntersection raw(Ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(center.position,previous))),raster);
+            RayIntersection rp(Ray(previousPlus,Vector3Ops::Normalize(Vector3Ops::mkVector3(plus.position,previousPlus))),raster);
+            RayIntersection rm(Ray(previousMinus,Vector3Ops::Normalize(Vector3Ops::mkVector3(minus.position,previousMinus))),raster);
+            center.pObject->IntersectRay(raw,RISE_INFINITY,true,true,false);
+            center.pObject->IntersectRay(rp,RISE_INFINITY,true,true,false);
+            center.pObject->IntersectRay(rm,RISE_INFINITY,true,true,false);
+            SMSCompleteNativeHit(raw,objects);SMSCompleteNativeHit(rp,objects);SMSCompleteNativeHit(rm,objects);
+            if(!raw.geometric.bHit || !rp.geometric.bHit || !rm.geometric.bHit) return false;
+            const auto* geometry=center.pObject->GetGeometry();
+            const bool nativeMesh=dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>(raw.geometric.signals.pProvider)
+                || (geometry && (typeid(*geometry)==typeid(Implementation::TriangleMeshGeometryIndexed)
+                    || typeid(*geometry)==typeid(Implementation::TriangleMeshGeometry)));
+            if(nativeMesh) {
+                const auto& a=raw.geometric.signals;const auto& b=rp.geometric.signals;const auto& c=rm.geometric.signals;
+                const bool samePrimitive=a.primId>=0 && a.primId==b.primId && a.primId==c.primId
+                    && a.pProvider==b.pProvider && a.pProvider==c.pProvider;
+                if(!samePrimitive) {
+                    // Crossing triangles cannot establish a local derivative by
+                    // agreement of distant probes. A constant native frame is
+                    // the exception: zero primitive derivatives and identical
+                    // sampled frames establish the same flat input transport.
+                    // Native UV charts can change independently of a flat
+                    // normal. Only an audited generated mapping supplies its
+                    // own derivative across a primitive boundary.
+                    const auto* modifier=dynamic_cast<const ISMSModifierDifferential*>(raw.pModifier);
+                    const auto* native=dynamic_cast<const Implementation::Object*>(center.pObject);
+                    if(modifier && modifier->SMSFrameDependsOnUV()
+                        && (!native || !native->SMSUVGenerator())) return false;
+                    const auto flat=[](const RayIntersectionGeometric& hit) {
+                        return hit.derivatives.valid && Vector3Ops::SquaredModulus(hit.derivatives.dndu)==0
+                            && Vector3Ops::SquaredModulus(hit.derivatives.dndv)==0;
+                    };
+                    const auto same=[](const Vector3& x,const Vector3& y) {
+                        return x.x==y.x && x.y==y.y && x.z==y.z;
+                    };
+                    const auto sameFrame=[&](const RayIntersectionGeometric& hit) {
+                        return same(hit.vNormal,raw.geometric.vNormal)
+                            && same(hit.UnflippedGeomNormal(),raw.geometric.UnflippedGeomNormal())
+                            && same(hit.onb.u(),raw.geometric.onb.u()) && same(hit.onb.v(),raw.geometric.onb.v())
+                            && same(hit.onb.w(),raw.geometric.onb.w());
+                    };
+                    if(!flat(raw.geometric) || !flat(rp.geometric) || !flat(rm.geometric)
+                        || !sameFrame(rp.geometric) || !sameFrame(rm.geometric)) return false;
+                }
+            }
+            SMSIntersectionDifferential input;
+            input.worldPoint=difference(rp.geometric.ptIntersection,rm.geometric.ptIntersection);
+            input.objectPoint=difference(rp.geometric.ptObjIntersec,rm.geometric.ptObjIntersec);
+            input.normal=difference(rp.geometric.vNormal,rm.geometric.vNormal);
+            input.geometricNormal=difference(rp.geometric.UnflippedGeomNormal(),rm.geometric.UnflippedGeomNormal());
+            input.frameU=difference(rp.geometric.onb.u(),rm.geometric.onb.u());
+            input.frameV=difference(rp.geometric.onb.v(),rm.geometric.onb.v());
+            input.frameW=difference(rp.geometric.onb.w(),rm.geometric.onb.w());
+            input.rayOrigin=difference(previousPlus,previousMinus);
+            input.rayDirection=difference(rp.geometric.ray.Dir(),rm.geometric.ray.Dir());
+            input.uv=Point2((rp.geometric.ptCoord.x-rm.geometric.ptCoord.x)/(2*step),
+                (rp.geometric.ptCoord.y-rm.geometric.ptCoord.y)/(2*step));
+            Vector3 normal=input.normal,frameW=input.frameW;
+            if(raw.pModifier) {
+                const auto* provider=dynamic_cast<const ISMSModifierDifferential*>(raw.pModifier);
+                if(!provider) return false;
+                if(provider->SMSFrameDependsOnUV()) {
+                    const auto* native=dynamic_cast<const Implementation::Object*>(center.pObject);
+                    if(!native) return false;
+                    if(const auto* generator=native->SMSUVGenerator()) {
+                        const auto* uv=dynamic_cast<const ISMSUVDifferential*>(generator);
+                        // Object::IntersectRay generates UVs before promoting
+                        // normals to world space. Reconstruct that exact input
+                        // convention, including the normalization chain rule.
+                        const Matrix4 normalToObject=Matrix4Ops::Transpose(native->GetFinalTransformMatrix());
+                        const Vector3 localNormalValue=Vector3Ops::Transform(normalToObject,raw.geometric.UnflippedGeomNormal());
+                        const Vector3 localNormalDerivative=SMSNormalizedDifferential(localNormalValue,
+                            Vector3Ops::Transform(normalToObject,input.geometricNormal));
+                        if(!uv || !uv->HasSMSUVDifferentialContract()
+                            || !uv->SMSUVDifferential(raw.geometric.ptObjIntersec,
+                                Vector3Ops::Normalize(localNormalValue),input.objectPoint,
+                                localNormalDerivative,input.uv)) return false;
+                    }
+                } else input.uv=Point2(0,0);
+                if(!provider->SMSFrameDifferential(raw.geometric,input,normal,frameW)) return false;
+            }
+            auto modified=raw.geometric;
+            if(raw.pModifier) raw.pModifier->Modify(modified);
+            if(dynamic_cast<const Implementation::PolishedMaterial*>(center.pMaterial)) {
+                dn=SMSNormalizedDifferential(modified.vNormal,normal);
+            } else {
+                dn=std::fabs(Vector3Ops::Magnitude(modified.onb.w())-1)>Scalar(1e-6)
+                    ? SMSNormalizedDifferential(modified.onb.w(),frameW):frameW;
+            }
+            dg=input.geometricNormal;
+        }
+        const bool fallback=center.isReflection?(branch&1):(branch&2);
+        if(fallback) {
+            const Vector3 incoming=Vector3Ops::Normalize(Vector3Ops::mkVector3(center.position,previous));
+            dn=Vector3Ops::Dot(center.geomNormal,incoming)<0?dg:-dg;
+        }
+        const Vector3 dx=difference(plus.position,minus.position);
+        const Vector3 dp=difference(previousPlus,previousMinus),dy=difference(nextPlus,nextMinus);
+        const Vector3 vi=Vector3Ops::mkVector3(previous,center.position),vo=Vector3Ops::mkVector3(next,center.position);
+        const Vector3 wi=Vector3Ops::Normalize(vi),wo=Vector3Ops::Normalize(vo);
+        const Vector3 dwi=SMSNormalizedDifferential(vi,dp-dx),dwo=SMSNormalizedDifferential(vo,dy-dx);
+        Vector3 h=wi+wo,dh=dwi+dwo;
+        bool rawHalf=false;
+        if(!center.isReflection) {
+            const Scalar ei=center.etaI,et=center.etaT;
+            h=-(wi*ei+wo*et);dh=-(dwi*ei+dwo*et);
+            // Native replay populated both physical etas. The same residual
+            // convention uses unnormalized half vectors for refraction.
+            rawHalf=true;
+        }
+        if(!SMSNativeHalfVector(wi,wo,effective.normal,center.etaI,center.etaT,
+            center.isReflection,dwi,dwo,dn,h,dh)) return false;
+        if(!rawHalf) {dh=SMSNormalizedDifferential(h,dh);h=Vector3Ops::Normalize(h);}
+        // Projection bases are unit directions; the unnormalized native
+        // normal remains in the event equation above.
+        dn=SMSNormalizedDifferential(effective.normal,dn);
+        const Vector3 n=Vector3Ops::Normalize(effective.normal),u=center.dpdu,du=difference(plus.dpdu,minus.dpdu);
+        const Scalar dot=Vector3Ops::Dot(u,n);
+        const Vector3 tangent=u-n*dot;
+        if(Vector3Ops::Magnitude(tangent)<=NEARZERO) return false;
+        const Vector3 dtangent=du-dn*dot-n*(Vector3Ops::Dot(du,n)+Vector3Ops::Dot(u,dn));
+        const Vector3 a=Vector3Ops::Normalize(tangent),da=SMSNormalizedDifferential(tangent,dtangent);
+        const Vector3 b=Vector3Ops::Cross(n,a),db=Vector3Ops::Cross(dn,a)+Vector3Ops::Cross(n,da);
+        c0=Vector3Ops::Dot(da,h)+Vector3Ops::Dot(a,dh);
+        c1=Vector3Ops::Dot(db,h)+Vector3Ops::Dot(b,dh);
+        return std::isfinite(c0)&&std::isfinite(c1);
+    }
+    // Object stores a launch point backed off in object space. Newton and
+    // Jacobian pricing use the actual surface; material contexts retain the
+    // native hit record. Undo the KNOWN native convention only in reference
+    // solves, rather than widening their residual or matching tolerances.
+    RISE::Point3 SMSReferenceSurfacePoint(const RISE::IObject& object,
+        const RISE::RayIntersectionGeometric& hit) {
+        using namespace RISE;
+        const auto* native = dynamic_cast<const Implementation::Object*>(&object);
+        if(!native) return hit.ptIntersection;
+        const Vector3 localDirection = Vector3Ops::Normalize(Vector3Ops::Transform(
+            object.GetFinalInverseTransformMatrix(),hit.ray.Dir()));
+        return Point3Ops::Transform(object.GetFinalTransformMatrix(),
+            Point3Ops::mkPoint3(hit.ptObjIntersec,localDirection*native->GetSurfaceIntersecError()));
+    }
+}
 
 bool RISE::Implementation::SMSQueryDomain::Valid() const
 {
@@ -36,12 +529,36 @@ bool RISE::Implementation::SMSQueryDomain::Valid() const
         : kind == Wavelength && std::isfinite(nm) && nm > 0;
 }
 
+bool RISE::Implementation::SMSDomainReplay::PotentialCaster(const IMaterial& material)
+{
+    const auto& type=typeid(material);
+    if(type!=typeid(DielectricMaterial) && type!=typeid(PerfectRefractorMaterial)
+        && type!=typeid(PolishedMaterial) && type!=typeid(PerfectReflectorMaterial)) return false;
+    const IScalarPainter* index = nullptr;
+    if(const auto* m = dynamic_cast<const DielectricMaterial*>(&material)) index = &m->GetIOR();
+    else if(const auto* m = dynamic_cast<const PerfectRefractorMaterial*>(&material)) index = &m->GetIOR();
+    else if(const auto* m = dynamic_cast<const PolishedMaterial*>(&material)) index = &m->GetIOR();
+    else return dynamic_cast<const PerfectReflectorMaterial*>(&material) != nullptr;
+    return index->IsPositionIndependent();
+}
+
+RISE::Scalar RISE::Implementation::SMSRootReference::Deposit(Scalar physicalContribution,
+    Scalar reciprocal, Scalar channelProbability, Scalar emitterProbability, unsigned int originalTrials)
+{
+    if(!std::isfinite(physicalContribution) || !std::isfinite(reciprocal)
+        || reciprocal < 1 || !originalTrials
+        || !std::isfinite(channelProbability) || channelProbability <= 0
+        || !std::isfinite(emitterProbability) || emitterProbability <= 0) return 0;
+    return physicalContribution * reciprocal / (channelProbability * emitterProbability * originalTrials);
+}
+
 bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
     const RayIntersectionGeometric& hit, const IORStack& stack,
     SMSQueryDomain domain, SMSNativeMaterialQuery& result)
 {
+    if(smsActiveDiagnostics) smsActiveDiagnostics->materialQueries.fetch_add(1,std::memory_order_relaxed);
     result = SMSNativeMaterialQuery();
-    if(!domain.Valid()) return false;
+    if(!domain.Valid() || !PotentialCaster(material)) return false;
     const IScalarPainter* index = nullptr;
     const IScalarPainter* scattering = nullptr;
     const IScalarPainter* coatTint = nullptr;
@@ -83,6 +600,14 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
         ? info.attenuation[domain.component] : info.attenuationNM;
     if(coatTint) result.attenuation = domain.kind == SMSQueryDomain::RGBComponent
         ? coatTint->GetValuesAt(hit)[domain.component] : coatTint->GetValueAtNM(hit, domain.nm);
+    if(polishedReflectionOnly) {
+        // Match PolishedBRDF::Resolve before advertising the delta coat.
+        // Its side convention uses the reported geometric normal, while
+        // its incident support uses the corresponding shading normal.
+        const bool backface=Vector3Ops::Dot(hit.vGeomNormal,hit.ray.Dir())>0;
+        const Vector3 normal=Vector3Ops::Normalize(backface?-hit.vNormal:hit.vNormal);
+        if(!(Vector3Ops::Dot(Vector3Ops::Normalize(-hit.ray.Dir()),normal)>0)) return false;
+    }
     result.reflection = true;
     result.transmission = info.canRefract && !polishedReflectionOnly;
     result.dielectricInterface = index != nullptr;
@@ -102,7 +627,8 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     if(!std::isfinite(result.environmentIndex) || result.environmentIndex <= 0
         || !scene.GetObjects() || scene.GetGlobalMedium()) return false;
     const auto* preparedObjects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
-    if(!preparedObjects || !preparedObjects->ExtendedSMSAllowed()) return false;
+    if(!preparedObjects || !preparedObjects->ExtendedSMSAllowed()
+        || preparedObjects->HasUncertainSMSNormalOrientation()) return false;
     struct Objects : IEnumCallback<IObject> {
         std::vector<const IObject*> items;
         bool operator()(const IObject& object) override { items.push_back(&object); return true; }
@@ -139,6 +665,7 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
         for(const Vector3& direction : directions) {
             RayIntersection hit(Ray(anchor, direction), nullRasterizerState);
             key->IntersectRay(hit, RISE_INFINITY, true, true, false);
+            SMSCompleteNativeHit(hit,scene.GetObjects());
             if(!hit.geometric.bHit) continue;
             if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
             result.enclosing.emplace_back(key, hit.pMaterial, hit.geometric);
@@ -182,22 +709,28 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
     if(!Query(material, hit, next, domain, query)
         || (reflection ? !query.reflection : !query.transmission)) return false;
     if(!std::isfinite(next.top()) || next.top() <= 0) return false;
-    if(hit.bProvablyNoInterior) {
+    if(dynamic_cast<const PolishedMaterial*>(&material)) {
+        // The coat is a reflection on the incident ambient side, not a
+        // transmissive open-sheet crossing. Native polished never pops
+        // membership or reverses ambient/coat indices on a back face.
+        exiting=false;etaI=next.top();etaT=query.index;
+    } else if(hit.bProvablyNoInterior) {
         const auto crossing = IORStackSeeding::ResolveOpenSheetCrossing(hit, query.index, next);
         etaI = crossing.etaFrom;
         etaT = crossing.etaTo;
         exiting = !crossing.bEntering;
     } else {
         exiting = next.containsCurrent();
-        etaI = next.top();
+        // Native closed-solid SPFs use the exiting object index even
+        // when pop removes a non-top identity in overlapping volumes.
+        etaI = exiting ? query.index : next.top();
         if(exiting) next.pop();
         etaT = exiting ? next.top() : query.index;
         if(!reflection && !exiting) next.push(query.index);
     }
     if(!std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0) return false;
-    Scalar cosT;
-    if(!reflection && !Optics::CalculateRefractedCosine(
-        std::fabs(Vector3Ops::Dot(hit.ray.Dir(), hit.vNormal)), etaI, etaT, cosT))
+    if(!reflection && !SMSNativeDirections(hit.ray.Dir(),SMSNativeEventNormal(material,hit),hit.UnflippedGeomNormal(),
+        etaI,etaT,true,query.customFresnel,&material,exiting,SMSDomainWavelength(domain)).hasTransmission)
         return false; // impossible transmission is a zero trial, never relabeled
     if(!reflection) stack = next;
     return true;
@@ -212,21 +745,29 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
     if(!Query(material, hit, stack, domain, query) || !std::isfinite(distance) || distance < 0
         || !std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0
         || (reflection ? !query.reflection : !query.transmission)) return false;
-    const Scalar cosine = std::fabs(Vector3Ops::Dot(hit.ray.Dir(), hit.vNormal));
+    const auto law=SMSNativeDirections(hit.ray.Dir(),SMSNativeEventNormal(material,hit),hit.UnflippedGeomNormal(),etaI,etaT,query.transmission,query.customFresnel,&material,exiting,SMSDomainWavelength(domain));
+    const Scalar cosine=law.fresnelCosine;
     Scalar fresnel = 1;
     if(query.dielectricInterface) {
-        fresnel = Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT);
+        fresnel = query.transmission && !law.hasTransmission ? Scalar(1)
+            : Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT);
         const Scalar wavelength = domain.kind == SMSQueryDomain::Wavelength ? domain.nm
             : ScalarPainterRGB::kChannelNM[domain.component];
-        if(query.customFresnel && (!material.GetSPF()
-            || !material.GetSPF()->EvaluateSpecularFresnel(cosine, etaI, etaT, exiting, wavelength, fresnel)))
-            return false;
+        if(query.customFresnel && !(query.transmission && !law.hasTransmission)) {
+            const auto* dielectric=dynamic_cast<const DielectricSPF*>(material.GetSPF());
+            if(!dielectric || !dielectric->EvaluateSpecularFresnelAfterRefraction(cosine,etaI,etaT,exiting,wavelength,fresnel))
+                return false;
+        }
     }
     Scalar attenuation = query.attenuation;
     if(reflection && !query.reflectionTint) attenuation = 1;
     if(query.interiorTransmittance)
         attenuation = exiting && !reflection ? std::pow(attenuation, distance) : Scalar(1);
-    const Scalar etaRatio = etaI/etaT;
+    // SPF direction/Fresnel endpoints and the native consumer radiance
+    // scale differ at a non-top closed exit. Reproduce both conventions;
+    // do not alter the shared native walker to hide the distinction.
+    const Scalar radianceEtaI = hit.bProvablyNoInterior ? etaI : stack.top();
+    const Scalar etaRatio = radianceEtaI/etaT;
     weight = attenuation * (reflection ? fresnel : (1-fresnel)*etaRatio*etaRatio);
     return std::isfinite(weight) && weight >= 0;
 }
@@ -234,92 +775,267 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
 RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::SolveDomain(
     const Point3& start, const Vector3& startNormal, const Point3& end, const Vector3& endNormal,
     const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
-    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance) const
+    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance, Scalar convergenceThreshold) const
 {
+    ManifoldSolver native(config,true,&vertices,SMSDomainWavelength(domain));
+    return native.SolveDomainCore(start,startNormal,end,endNormal,scene,startingStack,domain,
+        vertices,sampler,positionTolerance,convergenceThreshold);
+}
+
+RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::SolveDomainCore(
+    const Point3& start, const Vector3& startNormal, const Point3& end, const Vector3& endNormal,
+    const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
+    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance, Scalar convergenceThreshold) const
+{
+    ManifoldResult result;
+    SolveDomainCoreInto(start,startNormal,end,endNormal,scene,startingStack,domain,vertices,
+        sampler,positionTolerance,convergenceThreshold,result);
+    return result;
+}
+
+void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
+    const Point3& start, const Vector3& startNormal, const Point3& end, const Vector3& endNormal,
+    const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
+    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance, Scalar convergenceThreshold, ManifoldResult& result) const
+{
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    SMSResetResult(result);
     struct Attempt {
         SMSDomainCounters* counters;
+        ManifoldResult& result;
         bool accepted = false;
         ~Attempt() {
+            if(!accepted) SMSResetResult(result);
             if(counters) (accepted ? counters->acceptedRoots : counters->rejectedRoots)
                 .fetch_add(1, std::memory_order_relaxed);
         }
-    } attempt{config.domainCounters};
+    } attempt{config.domainCounters,result};
     if(attempt.counters) attempt.counters->attempts.fetch_add(1, std::memory_order_relaxed);
-    ManifoldResult failed;
     if(vertices.empty() || vertices.size() > config.maxChainDepth
-        || !std::isfinite(positionTolerance) || positionTolerance < 0) return failed;
+        || !std::isfinite(positionTolerance) || positionTolerance < 0) { return; }
     SMSStartingMedia media;
     IORStack replay(startingStack.EnvironmentIOR());
     if(!SMSDomainReplay::Capture(scene, start, startingStack, media)
-        || !SMSDomainReplay::BuildStack(media, domain, replay)) return failed;
-    std::vector<ManifoldVertex> chain;
+        || !SMSDomainReplay::BuildStack(media, domain, replay)) { return; }
+    auto& chain=scratch.Vertices(0,config.maxChainDepth);
     chain.reserve(vertices.size());
-    for(const SMSDomainVertex& record : vertices) {
+    for(SMSDomainVertex& record : vertices) {
+        if(const auto* objects=dynamic_cast<const ObjectManager*>(scene.GetObjects()))
+            objects->CompleteShadingSignals(record.context,record.geometry.pObject);
         ManifoldVertex vertex = record.geometry;
-        if(!vertex.pMaterial || !vertex.pObject) return failed;
+        if(!vertex.pMaterial || !vertex.pObject || !SMSAuditedModifier(*vertex.pObject)) { return; }
         SMSNativeMaterialQuery query;
         if(!SMSDomainReplay::Query(*vertex.pMaterial, record.context, replay, domain, query)
             || !SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, record.context,
-                domain, vertex.isReflection, replay, vertex.etaI, vertex.etaT, vertex.isExiting)) return failed;
+                domain, vertex.isReflection, replay, vertex.etaI, vertex.etaT, vertex.isExiting)) { return; }
         vertex.eta = query.index;
         vertex.canRefract = query.dielectricInterface;
+        vertex.normal = SMSNativeEventNormal(*vertex.pMaterial,record.context);
         chain.push_back(vertex);
     }
-    ManifoldResult result = Solve(start, startNormal, end, endNormal, chain, sampler);
-    if(!result.valid || chain.size() != vertices.size()) return failed;
-    if(!SMSDomainReplay::BuildStack(media, domain, replay)) return failed;
+    SolveCoreInto(start,startNormal,end,endNormal,chain,sampler,false,convergenceThreshold,result);
+    if(!result.valid || chain.size() != vertices.size()) { return; }
+    if(!SMSDomainReplay::BuildStack(media, domain, replay)) { return; }
     Scalar throughput = 1;
-    std::vector<SMSDomainVertex> refreshed;
+    auto& refreshed=scratch.Records(0,config.maxChainDepth);
     refreshed.reserve(vertices.size());
     Point3 previous = start;
     for(std::size_t i=0; i<chain.size(); ++i) {
         ManifoldVertex& vertex = chain[i];
-        if(vertex.isReflection != vertices[i].geometry.isReflection) return failed;
+        if(vertex.isReflection != vertices[i].geometry.isReflection) { return; }
         const Vector3 direction = Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position, previous));
         RayIntersection hit(Ray(previous, direction), vertices[i].context.rast);
         if(i != 0) hit.geometric.ray.Advance(1e-8); // native surface-walk self-hit offset
         vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
+        SMSCompleteNativeHit(hit,scene.GetObjects());
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
-            || Point3Ops::Distance(hit.geometric.ptIntersection, vertex.position) > positionTolerance) return failed;
+            || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return; }
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+        const auto finite3=[](const auto& value) {
+            return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+        };
+        if(!finite3(hit.geometric.ptIntersection) || !finite3(hit.geometric.ptObjIntersec)
+            || !finite3(hit.geometric.vNormal) || !finite3(hit.geometric.UnflippedGeomNormal())
+            || !finite3(hit.geometric.onb.u()) || !finite3(hit.geometric.onb.v()) || !finite3(hit.geometric.onb.w())
+            || !std::isfinite(hit.geometric.ptCoord.x) || !std::isfinite(hit.geometric.ptCoord.y)) return;
+        // A periodic chart seam is one physical root for an audited
+        // UV-independent event/frame law. A varying or unaudited UV-dependent
+        // seam context cannot establish a unique limiting value: it is
+        // an uncertain zero trial. Never invent a UV for a material query.
+        Scalar contextSlope=0;
+        if(convergenceThreshold > 0) {
+            Point2 axes = SMSPeriodicTextureAxes(*vertex.pObject,hit.geometric.UnflippedGeomNormal());
+            const auto* nativeObject=dynamic_cast<const Object*>(vertex.pObject);
+            const IGeometry* geometry=vertex.pObject->GetGeometry();
+            // Authored mesh chart boundaries are NOT periodic aliases. A
+            // varying boundary context remains uncertain, while a certified
+            // constant event law does not depend on its UV representation.
+            if(nativeObject && nativeObject->UsesNativeTextureChart() && geometry
+                && (typeid(*geometry)==typeid(TriangleMeshGeometryIndexed) || typeid(*geometry)==typeid(TriangleMeshGeometry))) axes=Point2(1,1);
+            const Scalar band = std::sqrt(std::numeric_limits<Scalar>::epsilon());
+            bool meshEdge=false;
+            if(nativeObject && nativeObject->UsesNativeTextureChart() && geometry) {
+                const auto& signal=hit.geometric.signals;
+                // DisplacedGeometry forwards its realized indexed mesh's
+                // actual hit payload. The provider, not the outer recipe,
+                // identifies the triangle whose chart boundary was hit.
+                const auto* indexed=dynamic_cast<const TriangleMeshGeometryIndexed*>(signal.pProvider);
+                if(indexed && typeid(*indexed)==typeid(TriangleMeshGeometryIndexed)) {
+                    meshEdge=signal.primId<0
+                        || std::min({signal.baryA,signal.baryB,1-signal.baryA-signal.baryB})<=band;
+                } else if(typeid(*geometry)==typeid(TriangleMeshGeometryIndexed)) {
+                    meshEdge=true; // missing native triangle provenance is uncertain
+                } else if(typeid(*geometry)==typeid(TriangleMeshGeometry)) {
+                    meshEdge=dynamic_cast<const TriangleMeshGeometry*>(geometry)->NativeTriangleEdgeDistance(hit.geometric)<=band;
+                }
+            }
+            const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
+                || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
+            const bool uvIndependent=SMSContextIgnoresUV(*vertex.pObject,*vertex.pMaterial);
+            if(seam && !uvIndependent) return;
+            const bool nativeOpticalPrice=dynamic_cast<const DielectricSPF*>(vertex.pMaterial->GetSPF())
+                || dynamic_cast<const PerfectRefractorMaterial*>(vertex.pMaterial);
+            if(nativeOpticalPrice || meshEdge || hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
+                && !SMSConstantSeamMaterial(*vertex.pMaterial))) {
+                // Authored normals can switch transmission fallback and its
+                // reflection price even inside an unmodified native triangle.
+                // Generated charts and modifier-written contexts can also jump.
+                // Probe their actual contexts within the physical matching
+                // band, instead of assuming the geometry's chart describes
+                // the generator. This is a local numerical ambiguity check,
+                // not a global continuity certificate. Continuous fixed UVs
+                // remain supported and material coordinates are never edited.
+                const Scalar displacement=band*Point3Ops::Distance(start,end)/8;
+                if(!(displacement>0) || !std::isfinite(displacement)) return;
+                const auto eventBranch=[&](const RayIntersectionGeometric& context) {
+                    const auto law=SMSNativeDirections(context.ray.Dir(),SMSNativeEventNormal(*vertex.pMaterial,context),
+                        context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract
+                            &&typeid(*vertex.pMaterial)!=typeid(PolishedMaterial),false,vertex.pMaterial,
+                        vertex.isExiting,SMSDomainWavelength(domain));
+                    return (vertex.isReflection?unsigned(law.reflectionFallback)
+                        :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2))
+                        |(unsigned(std::fabs(Vector3Ops::Magnitude(SMSNativeEventNormal(*vertex.pMaterial,context))-1)>Scalar(1e-6))<<3);
+                };
+                const unsigned matchedBranch=eventBranch(hit.geometric);
+                // Test the optical discontinuity that selects the native
+                // fallback. Attenuation painters may use float spectral
+                // reconstruction; their numeric quantization is not a change
+                // in Fresnel support. Their input contexts are checked below.
+                const auto opticalWeight=[&](const RayIntersectionGeometric& context,Scalar& weight) {
+                    const auto* dielectric=dynamic_cast<const DielectricSPF*>(vertex.pMaterial->GetSPF());
+                    if(!dielectric && !dynamic_cast<const PerfectRefractorMaterial*>(vertex.pMaterial)) {weight=1;return true;}
+                    const bool custom=dielectric && dielectric->GetARLayerCount();
+                    const auto law=SMSNativeDirections(context.ray.Dir(),SMSNativeEventNormal(*vertex.pMaterial,context),
+                        context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract,custom,
+                        vertex.pMaterial,vertex.isExiting,SMSDomainWavelength(domain));
+                    Scalar fresnel=law.hasTransmission?Optics::CalculateDielectricReflectanceCosine(
+                        law.fresnelCosine,vertex.etaI,vertex.etaT):1;
+                    if(custom && law.hasTransmission && !dielectric->EvaluateSpecularFresnelAfterRefraction(law.fresnelCosine,
+                        vertex.etaI,vertex.etaT,vertex.isExiting,SMSDomainWavelength(domain),fresnel)) return false;
+                    weight=vertex.isReflection?fresnel:1-fresnel;return std::isfinite(weight);
+                };
+                Scalar matchedWeight;
+                if(!opticalWeight(hit.geometric,matchedWeight)) return;
+                for(const Vector3& tangent : {vertex.dpdu,vertex.dpdv}) for(int sign : {-1,1}) {
+                    Point2 coords[2];Point3 positions[2];Vector3 normals[2],geomNormals[2];
+                    OrthonormalBasis3D frames[2];Scalar weights[2];
+                    for(unsigned probeIndex=0;probeIndex<2;++probeIndex) {
+                        const Scalar fraction=probeIndex?.5:1;
+                        const Point3 target=Point3Ops::mkPoint3(vertex.position,tangent*(sign*displacement*fraction));
+                        Ray ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(target,previous)));
+                        if(i) ray.Advance(1e-8);
+                        RayIntersection probe(ray,vertices[i].context.rast);
+                        vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                        SMSCompleteNativeHit(probe,scene.GetObjects());
+                        if(probe.geometric.bHit && probe.pModifier) probe.pModifier->Modify(probe.geometric);
+                        if(probe.geometric.bHit && eventBranch(probe.geometric)!=matchedBranch) return;
+                        if(!probe.geometric.bHit || probe.pObject!=vertex.pObject
+                            || probe.pMaterial!=vertex.pMaterial
+                            || Point3Ops::Distance(SMSReferenceSurfacePoint(*vertex.pObject,probe.geometric),target)>displacement
+                            || !finite3(probe.geometric.ptIntersection) || !finite3(probe.geometric.ptObjIntersec)
+                            || !finite3(probe.geometric.vNormal) || !finite3(probe.geometric.UnflippedGeomNormal())
+                            || !std::isfinite(probe.geometric.ptCoord.x) || !std::isfinite(probe.geometric.ptCoord.y)) return;
+                        if(!opticalWeight(probe.geometric,weights[probeIndex])) return;
+                        coords[probeIndex]=probe.geometric.ptCoord;
+                        positions[probeIndex]=probe.geometric.ptObjIntersec;
+                        normals[probeIndex]=probe.geometric.vNormal;
+                        geomNormals[probeIndex]=probe.geometric.UnflippedGeomNormal();
+                        frames[probeIndex]=probe.geometric.onb;
+                    }
+                    const Scalar uvChange=uvIndependent?0:std::hypot(coords[0].x-hit.geometric.ptCoord.x,coords[0].y-hit.geometric.ptCoord.y);
+                    const Scalar normalChange=std::max(Vector3Ops::Magnitude(normals[0]-hit.geometric.vNormal),
+                        Vector3Ops::Magnitude(geomNormals[0]-hit.geometric.UnflippedGeomNormal()));
+                    contextSlope=std::max(contextSlope,std::max(uvChange,normalChange)/displacement);
+                    // Audited isotropic events consume W, not the UV-driven
+                    // U/V orientation, which can change across a mesh diagonal.
+                    for(unsigned axis=uvIndependent?2u:0u;axis<3;++axis) {
+                        const Vector3 a=axis==0?frames[0].u():axis==1?frames[0].v():frames[0].w();
+                        const Vector3 b=axis==0?frames[1].u():axis==1?frames[1].v():frames[1].w();
+                        const Vector3 center=axis==0?hit.geometric.onb.u():axis==1?hit.geometric.onb.v():hit.geometric.onb.w();
+                        if(!finite3(a)||!finite3(b)||Vector3Ops::Magnitude(b*2-a-center)>band/8) return;
+                        contextSlope=std::max(contextSlope,Vector3Ops::Magnitude(a-center)/displacement);
+                    }
+                    // A smooth context's first-order change cancels at the
+                    // midpoint, independently of its UV scale. A finite
+                    // context jump does not. Reserve the corresponding root-matching
+                    // bands; do not bound the context's first derivative.
+                    if((!uvIndependent && std::hypot(2*coords[1].x-coords[0].x-hit.geometric.ptCoord.x,
+                        2*coords[1].y-coords[0].y-hit.geometric.ptCoord.y)>band/8)
+                        || Vector3Ops::Magnitude(normals[1]*2-normals[0]-hit.geometric.vNormal)>band/8
+                        || Vector3Ops::Magnitude(geomNormals[1]*2-geomNormals[0]-hit.geometric.UnflippedGeomNormal())>band/8) return;
+                    const Scalar priceScale=std::max({Scalar(1),std::fabs(matchedWeight),std::fabs(weights[0]),std::fabs(weights[1])});
+                    if(std::fabs(2*weights[1]-weights[0]-matchedWeight)>band*priceScale/8) return;
+                    contextSlope=std::max(contextSlope,std::fabs(weights[0]-matchedWeight)/(displacement*priceScale));
+                    const Point3& center=hit.geometric.ptObjIntersec;
+                    const Scalar objectScale=std::max({Scalar(1),std::fabs(center.x),std::fabs(center.y),std::fabs(center.z),
+                        std::fabs(positions[0].x),std::fabs(positions[0].y),std::fabs(positions[0].z),
+                        std::fabs(positions[1].x),std::fabs(positions[1].y),std::fabs(positions[1].z)});
+                    const Vector3 positionDifference(2*positions[1].x-positions[0].x-center.x,
+                        2*positions[1].y-positions[0].y-center.y,2*positions[1].z-positions[0].z-center.z);
+                    if(Vector3Ops::Magnitude(positionDifference)>band*objectScale/8) return;
+                    contextSlope=std::max(contextSlope,Point3Ops::Distance(positions[0],center)/(displacement*objectScale));
+                }
+            }
+        }
         const IORStack before(replay);
         Scalar etaI, etaT; bool exiting;
         if(!SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, hit.geometric, domain,
             vertex.isReflection, replay, etaI, etaT, exiting)
-            || exiting != vertex.isExiting || etaI != vertex.etaI || etaT != vertex.etaT) return failed;
+            || exiting != vertex.isExiting || etaI != vertex.etaI || etaT != vertex.etaT) { return; }
         Scalar eventWeight;
         if(!SMSDomainReplay::EventWeight(*vertex.pMaterial, hit.geometric, before, domain,
-            vertex.isReflection, exiting, etaI, etaT, Point3Ops::Distance(previous, vertex.position), eventWeight)) return failed;
+            vertex.isReflection, exiting, etaI, etaT, Point3Ops::Distance(previous, vertex.position), eventWeight)) { return; }
         throughput *= eventWeight;
-        if(!std::isfinite(throughput)) return failed;
+        if(!std::isfinite(throughput)) { return; }
         SMSNativeMaterialQuery query;
-        if(!SMSDomainReplay::Query(*vertex.pMaterial, hit.geometric, before, domain, query)) return failed;
+        if(!SMSDomainReplay::Query(*vertex.pMaterial, hit.geometric, before, domain, query)) { return; }
         vertex.attenuation = RISEPel(query.attenuation);
         vertex.attenuationNM = query.attenuation;
         vertex.attenuationAppliesToReflection = query.reflectionTint;
         vertex.attenuationIsInteriorTransmittance = query.interiorTransmittance;
         vertex.hasCustomSpecularFresnel = query.customFresnel;
-        vertex.normal = hit.geometric.vNormal;
+        vertex.normal = SMSNativeEventNormal(*vertex.pMaterial,hit.geometric);
         vertex.geomNormal = hit.geometric.UnflippedGeomNormal();
         vertex.uv = hit.geometric.ptCoord;
         vertex.objectPosition = hit.geometric.ptObjIntersec;
         refreshed.emplace_back(hit.geometric);
         refreshed.back().geometry = vertex;
+        refreshed.back().contextSlope = contextSlope;
         previous = vertex.position;
     }
-    std::vector<Scalar> refreshedResidual;
+    auto& refreshedResidual=scratch.Scalars(0,2*config.maxChainDepth);
     EvaluateConstraint(chain, start, end, refreshedResidual);
     Scalar residualSquared = 0;
     for(Scalar component : refreshedResidual) residualSquared += component*component;
-    if(!std::isfinite(residualSquared) || std::sqrt(residualSquared) > config.solverThreshold
-        || !ValidateChainPhysics(chain, start, end)) return failed;
+    if(!std::isfinite(residualSquared) || std::sqrt(residualSquared) > (convergenceThreshold > 0 ? convergenceThreshold : config.solverThreshold)
+        || !ValidateChainPhysics(chain, start, end)) { return; }
     result.specularChain = chain;
     result.contribution = RISEPel(0,0,0);
     result.contributionNM = throughput;
     if(domain.kind == SMSQueryDomain::RGBComponent) result.contribution[domain.component] = throughput;
-    vertices = std::move(refreshed);
+    vertices.assign(std::make_move_iterator(refreshed.begin()),std::make_move_iterator(refreshed.end()));
     attempt.accepted = true;
-    return result;
+    return;
 }
 
 // File-scope diagnostic gate.  Set to 1 to enable targeted per-pixel
@@ -1072,13 +1788,18 @@ namespace
 // Construction / Destruction
 //////////////////////////////////////////////////////////////////////
 
-ManifoldSolver::ManifoldSolver( const ManifoldSolverConfig& cfg ) :
+ManifoldSolver::ManifoldSolver(const ManifoldSolverConfig& cfg) : ManifoldSolver(cfg,false) {}
+
+ManifoldSolver::ManifoldSolver( const ManifoldSolverConfig& cfg, bool nativeEvents, const std::vector<SMSDomainVertex>* contexts, Scalar wavelength ) :
 config( cfg ),
+    nativeEventConstraints(nativeEvents),
+    nativeContexts(contexts),
+    nativeWavelength(wavelength),
 pLightSampler( 0 ),
 pPhotonMap( 0 ),
 mHasPureMirrorCaster( false )
 {
-	pLightSampler = new LightSampler();
+    if(!nativeEvents) pLightSampler = new LightSampler();
 }
 
 namespace
@@ -1433,6 +2154,9 @@ Point2 ManifoldSolver::DirectionToSpherical(
 //     C[2i]   = dot(dpdu, h)
 //     C[2i+1] = dot(dpdv, h)
 //
+//   Audited native-frame constraints additionally retain the native outgoing
+//   vector length in wo, since Optics tolerates nearly unit normals whose
+//   scattered vectors are not exactly unit. Their projection basis is unit.
 //   This avoids the angular wrapping issues of the spherical-coordinate
 //   formulation and yields a well-conditioned Jacobian.
 //////////////////////////////////////////////////////////////////////
@@ -1449,7 +2173,13 @@ void ManifoldSolver::EvaluateConstraint(
 
 	for( unsigned int i = 0; i < k; i++ )
 	{
-		const ManifoldVertex& v = chain[i];
+        // Legacy evaluations retain the original reference, with no copy
+        // or allocation of a vertex or its optional endpoint record.
+        std::optional<ManifoldVertex> nativeVertex;
+        if(nativeEventConstraints) nativeVertex.emplace(SMSNativeConstraintVertex(
+            chain[i],i?chain[i-1].position:fixedStart,NativeRaster(i),nullptr,NativeSceneObjects(i),nativeWavelength));
+        const ManifoldVertex& v=nativeVertex?*nativeVertex:chain[i];
+        if(nativeEventConstraints && !v.valid) { C[2*i]=C[2*i+1]=1;continue; }
 
 		// Previous and next positions
 		Point3 prevPos = (i == 0) ? fixedStart : chain[i-1].position;
@@ -1506,6 +2236,14 @@ void ManifoldSolver::EvaluateConstraint(
 			);
 		}
 
+        if(nativeEventConstraints && SMSNeedsNativeFrame(chain[i])) {
+            Vector3 unusedDerivative;
+            if(!SMSNativeHalfVector(wi,wo,v.normal,v.etaI,v.etaT,v.isReflection,
+                Vector3(0,0,0),Vector3(0,0,0),Vector3(0,0,0),h,unusedDerivative)) {
+                C[2*i]=C[2*i+1]=1;continue;
+            }
+        }
+
 		// Normalize h -- reflection vertices only; a refraction vertex's
 		// constraint is the UNNORMALIZED h (see UseUnnormalizedHalfVector).
 		// The hLen < NEARZERO bail therefore guards reflections only.
@@ -1534,15 +2272,17 @@ void ManifoldSolver::EvaluateConstraint(
 		// EvaluateConstraint used plain Normalize(dpdu) instead, the
 		// Jacobian wouldn't match dC/dx and Newton would fail to
 		// converge on non-flat surfaces.
-		const Scalar dpdu_dot_n = Vector3Ops::Dot( v.dpdu, v.normal );
+		const Vector3 projectionNormal=nativeEventConstraints && SMSNeedsNativeFrame(chain[i])
+            ? Vector3Ops::Normalize(v.normal):v.normal;
+        const Scalar dpdu_dot_n = Vector3Ops::Dot( v.dpdu, projectionNormal );
 		Vector3 s_unnorm(
-			v.dpdu.x - dpdu_dot_n * v.normal.x,
-			v.dpdu.y - dpdu_dot_n * v.normal.y,
-			v.dpdu.z - dpdu_dot_n * v.normal.z );
+			v.dpdu.x - dpdu_dot_n * projectionNormal.x,
+			v.dpdu.y - dpdu_dot_n * projectionNormal.y,
+			v.dpdu.z - dpdu_dot_n * projectionNormal.z );
 		const Scalar s_len = Vector3Ops::Magnitude( s_unnorm );
 		Vector3 s = (s_len > NEARZERO) ? (s_unnorm * (1.0 / s_len)) :
 			Vector3Ops::Normalize( v.dpdu );
-		Vector3 t = Vector3Ops::Cross( v.normal, s );
+		Vector3 t = Vector3Ops::Cross( projectionNormal, s );
 
 		C[2*i]   = Vector3Ops::Dot( s, h );
 		C[2*i+1] = Vector3Ops::Dot( t, h );
@@ -1783,6 +2523,61 @@ void ManifoldSolver::BuildJacobian(
 	bool includeCurvature
 	) const
 {
+    if(nativeEventConstraints && std::any_of(chain.begin(),chain.end(),SMSNeedsNativeFrame)) {
+        const std::size_t k=chain.size();
+        SMSWorkerScratchLease scratch(true,config.referenceCounters);
+        const auto capacity=std::max<std::size_t>(config.maxChainDepth,k);
+        auto& plus=scratch.Vertices(0,capacity);auto& minus=scratch.Vertices(1,capacity);
+        auto& derivatives=scratch.Derivatives(2*capacity);
+        diag.assign(4*k,0);upper.assign(k>1?4*(k-1):0,0);lower=upper;
+        const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(fixedStart,fixedEnd);
+        for(std::size_t j=0;j<k;++j) for(unsigned column=0;column<2;++column) {
+            bool regular=false;
+            Scalar finestStep=h;
+
+            // Three halved scales plus a noncommensurate scale detect
+            // truncation and harmonic aliasing. Unresolved derivatives invalidate the solve;
+            // reference pricing cannot silently use the coarse aliased value.
+            for(unsigned base=0;base<16 && !regular;++base) {
+                regular=h>0 && std::isfinite(h);
+            for(unsigned refinement=0;refinement<4 && regular;++refinement) {
+                const Scalar step=h/(std::pow(Scalar(2),base+std::min(refinement,2u))
+                    *(refinement==3?std::sqrt(Scalar(2)):Scalar(1)));
+                finestStep=step;
+                plus=chain;minus=chain;
+                regular=UpdateVertexOnSurface(plus[j],column?0:step,column?step:0,0,true)
+                    && UpdateVertexOnSurface(minus[j],column?0:-step,column?-step:0,0,true);
+                if(regular) {
+                    derivatives[refinement].resize(2*k);
+                    for(std::size_t i=0;i<k && regular;++i) {
+                        regular=SMSNativeConstraintDifferential(chain[i],plus[i],minus[i],
+                            i?chain[i-1].position:fixedStart,i?plus[i-1].position:fixedStart,i?minus[i-1].position:fixedStart,
+                            i+1<k?chain[i+1].position:fixedEnd,i+1<k?plus[i+1].position:fixedEnd,i+1<k?minus[i+1].position:fixedEnd,
+                            step,NativeRaster(i),derivatives[refinement][2*i],derivatives[refinement][2*i+1],NativeSceneObjects(i),nativeWavelength);
+                    }
+                }
+            }
+            if(regular) for(std::size_t i=0;i<2*k;++i) {
+                const Scalar a=derivatives[0][i],b=derivatives[1][i],c=derivatives[2][i],d=derivatives[3][i];
+                const Scalar coordinateScale=std::max({Scalar(1),std::fabs(chain[j].position.x),
+                    std::fabs(chain[j].position.y),std::fabs(chain[j].position.z)});
+                const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*std::max({Scalar(1),std::fabs(a),std::fabs(b),std::fabs(c),std::fabs(d)})
+                    +std::numeric_limits<Scalar>::epsilon()*coordinateScale/finestStep;
+                if(!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c)
+                    || !std::isfinite(d) || std::fabs(a-b)>tolerance || std::fabs(b-c)>tolerance
+                    || std::fabs(c-d)>tolerance) regular=false;
+            }
+            }
+            for(std::size_t i=0;i<k;++i) for(unsigned row=0;row<2;++row) {
+                const Scalar value=regular?derivatives[3][2*i+row]:std::numeric_limits<Scalar>::quiet_NaN();
+                if(i==j) diag[4*i+2*row+column]=value;
+                else if(j==i+1) upper[4*i+2*row+column]=value;
+                else if(i==j+1) lower[4*j+2*row+column]=value;
+            }
+        }
+        return;
+    }
+
 	const unsigned int k = static_cast<unsigned int>( chain.size() );
 
 	diag.resize( k * 4, 0.0 );
@@ -2728,7 +3523,10 @@ Scalar ManifoldSolver::ComputeBlockTridiagonalDeterminant(
 {
 	if( k == 0 ) return 1.0;
 
-	std::vector<Scalar> Dp( k * 4 );
+    SMSWorkerScratchLease scratch(smsScratchDepth!=0,smsActiveDiagnostics);
+    const auto capacity=std::max<unsigned>(config.maxChainDepth,k);
+    std::vector<Scalar> localDp;
+    auto& Dp=scratch.Enabled()?scratch.Scalars(0,4*capacity):localDp;Dp.resize(4*k);
 	Scalar detProduct = 1.0;
 
 	for( unsigned int i = 0; i < k; i++ )
@@ -2780,8 +3578,12 @@ bool ManifoldSolver::SolveBlockTridiagonal(
 
 	// Modified diagonal blocks and modified rhs
 	// We'll work with arrays of 2x2 blocks (4 scalars each) and 2-vectors
-	std::vector<Scalar> Dp( k * 4 );   // modified diagonal
-	std::vector<Scalar> rp( k * 2 );   // modified rhs
+    SMSWorkerScratchLease scratch(smsScratchDepth!=0,smsActiveDiagnostics);
+    const auto capacity=std::max<unsigned>(config.maxChainDepth,k);
+    std::vector<Scalar> localDp;
+    auto& Dp=scratch.Enabled()?scratch.Scalars(0,4*capacity):localDp;Dp.resize(4*k);
+    std::vector<Scalar> localRp;
+    auto& rp=scratch.Enabled()?scratch.Scalars(1,2*capacity):localRp;rp.resize(2*k);
 
 	// Forward sweep
 	for( unsigned int i = 0; i < k; i++ )
@@ -2860,7 +3662,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	ManifoldVertex& vertex,
 	Scalar du,
 	Scalar dv,
-	Scalar smoothing
+	Scalar smoothing, bool referenceRefinement
 	) const
 {
 	if( !vertex.pObject )
@@ -2924,6 +3726,13 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 		vertex.dpdu * du + vertex.dpdv * dv
 		);
 
+    if(nativeEventConstraints && SMSNeedsNativeFrame(vertex) && smoothing==0) {
+        ManifoldVertex projected=vertex;projected.position=newPos;
+        const Scalar distance=Point3Ops::Distance(newPos,vertex.position);
+        if(!ComputeNativeVertexFrame(projected,distance)) return false;
+        vertex=std::move(projected);return true;
+    }
+
 	// Also update normal using normal derivatives (first-order)
 	Vector3 newNormal = Vector3(
 		vertex.normal.x + vertex.dndu.x * du + vertex.dndv.x * dv,
@@ -2936,7 +3745,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	// but always re-snap to the actual surface via intersection so
 	// we get accurate derivatives for the next Newton step.
 	const Scalar stepSize = sqrt( du * du + dv * dv );
-	if( stepSize < 1e-8 && (!vertex.retainAlphaEndpoint || vertex.HasAlphaEndpoint()) )
+	if( !referenceRefinement && stepSize < 1e-8 && (!vertex.retainAlphaEndpoint || vertex.HasAlphaEndpoint()) )
 	{
 		// Negligible step — no change needed
 		vertex.valid = true;
@@ -2969,7 +3778,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			if( ri.pModifier ) {
 				ri.pModifier->Modify( ri.geometric );
 			}
-			vertex.position = ri.geometric.ptIntersection;
+			vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri.geometric) : ri.geometric.ptIntersection;
 			vertex.normal = ri.geometric.vNormal;
 			vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri.geometric.ptCoord;
@@ -2998,7 +3807,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			if( ri2.pModifier ) {
 				ri2.pModifier->Modify( ri2.geometric );
 			}
-			vertex.position = ri2.geometric.ptIntersection;
+			vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri2.geometric) : ri2.geometric.ptIntersection;
 			vertex.normal = ri2.geometric.vNormal;
 			vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri2.geometric.ptCoord;
@@ -3027,7 +3836,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	}
 
 	// Recompute surface derivatives at the new position
-	vertex.valid = ComputeVertexDerivatives( vertex );
+	vertex.valid = ComputeVertexDerivatives( vertex, 0, referenceRefinement );
 	return vertex.valid;
 }
 
@@ -3127,11 +3936,50 @@ void ManifoldSolver::OrthonormalizeTangentFrame(
 	}
 }
 
+bool ManifoldSolver::ComputeNativeVertexFrame(ManifoldVertex& vertex, Scalar projectionDistance) const
+{
+    const Vector3 n=Vector3Ops::Normalize(vertex.geomNormal);
+    const Scalar roundoff=8*std::numeric_limits<Scalar>::epsilon()*std::max({Scalar(1),
+        std::fabs(vertex.position.x),std::fabs(vertex.position.y),std::fabs(vertex.position.z)});
+    const Scalar allowance=std::max(roundoff,projectionDistance);
+    // Compare both projections before choosing a surface. A first acceptable
+    // hit can be an occluding sheet even when the other ray reaches the
+    // requested point exactly. Shorten occluded probes without moving it.
+    Scalar offset=std::max(Scalar(.05),allowance*2);
+    for(unsigned refinement=0;refinement<64 && offset>=roundoff;++refinement,offset*=.5) {
+        ManifoldVertex closest=vertex;
+        Scalar closestDistance=RISE_INFINITY;
+        for(int side:{1,-1}) {
+            RayIntersection hit(Ray(Point3Ops::mkPoint3(vertex.position,n*(side*offset)),n*(-side)),nullRasterizerState);
+            vertex.pObject->IntersectRay(hit,offset*2,true,true,false);
+            if(!hit.geometric.bHit) continue;
+            const Point3 surface=SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric);
+            const Scalar distance=Point3Ops::Distance(surface,vertex.position);
+            if(distance>allowance || distance>=closestDistance) continue;
+            closestDistance=distance;
+            closest.position=surface;
+            closest.normal=SMSNativeEventNormal(*vertex.pMaterial,hit.geometric);
+            closest.geomNormal=hit.geometric.UnflippedGeomNormal();
+            closest.uv=hit.geometric.ptCoord;closest.objectPosition=hit.geometric.ptObjIntersec;
+            OrthonormalBasis3D frame;frame.CreateFromW(closest.geomNormal);
+            closest.dpdu=frame.u();closest.dpdv=frame.v();
+            closest.dndu=Vector3(0,0,0);closest.dndv=Vector3(0,0,0);closest.valid=true;
+        }
+        if(closestDistance<=allowance) {vertex=std::move(closest);return true;}
+    }
+    return false;
+}
+
 bool ManifoldSolver::ComputeVertexDerivatives(
 	ManifoldVertex& vertex,
-	Scalar smoothing
+	Scalar smoothing, bool referenceRefinement
 	) const
 {
+	if(nativeEventConstraints && SMSNeedsNativeFrame(vertex) && smoothing==0)
+	{
+		return ComputeNativeVertexFrame(vertex,0);
+	}
+
 	if( !vertex.pObject )
 	{
 		return false;
@@ -3212,7 +4060,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		    // Publish this actual hit BEFORE Newton uses the vertex; never
 		    // associate a neighbouring FD hit with an unchanged endpoint.
 		    if (initializeEndpoint) {
-		        vertex.position = ri.geometric.ptIntersection;
+		        vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri.geometric) : ri.geometric.ptIntersection;
 		        vertex.normal = ri.geometric.vNormal;
 		        vertex.geomNormal = ri.geometric.UnflippedGeomNormal();
 		        vertex.uv = ri.geometric.ptCoord;
@@ -3221,7 +4069,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		        vertex.alphaEndpointPosition = vertex.position;
 		    }
 			if( ri.geometric.derivatives.valid ) {
-				vertex.position = ri.geometric.ptIntersection;
+				vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri.geometric) : ri.geometric.ptIntersection;
 		        vertex.alphaEndpoint = endpoint;
 		        vertex.alphaEndpointPosition = vertex.position;
 				vertex.normal = ri.geometric.vNormal;
@@ -3274,7 +4122,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			    // Publish this actual hit BEFORE Newton uses the vertex; never
 			    // associate a neighbouring FD hit with an unchanged endpoint.
 			    if (initializeEndpoint) {
-			        vertex.position = ri2.geometric.ptIntersection;
+			        vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri2.geometric) : ri2.geometric.ptIntersection;
 			        vertex.normal = ri2.geometric.vNormal;
 			        vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();
 			        vertex.uv = ri2.geometric.ptCoord;
@@ -3283,7 +4131,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			        vertex.alphaEndpointPosition = vertex.position;
 			    }
 				if( ri2.geometric.derivatives.valid ) {
-					vertex.position = ri2.geometric.ptIntersection;
+					vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri2.geometric) : ri2.geometric.ptIntersection;
 			        vertex.alphaEndpoint = endpoint;
 			        vertex.alphaEndpointPosition = vertex.position;
 					vertex.normal = ri2.geometric.vNormal;
@@ -3547,9 +4395,10 @@ bool ManifoldSolver::NewtonSolve(
 	std::vector<ManifoldVertex>& chain,
 	const Point3& fixedStart,
 	const Point3& fixedEnd,
-	Scalar smoothing
+	Scalar smoothing, Scalar convergenceThreshold
 	) const
 {
+    const Scalar threshold = convergenceThreshold > 0 ? convergenceThreshold : config.solverThreshold;
 #if SMS_TRACE_DIAGNOSTIC
 	// Per-failure-mode counters.  Each return-false (or accepted-soft) path
 	// in this routine increments exactly one counter.  Periodic dump every
@@ -3621,6 +4470,8 @@ bool ManifoldSolver::NewtonSolve(
 
 	for( unsigned int iter = 0; iter < config.maxIterations; iter++ )
 	{
+        SMSWorkerScratchLease scratch(nativeEventConstraints,config.referenceCounters);
+        const auto capacity=std::max<unsigned>(config.maxChainDepth,k);
         if(config.domainCounters) config.domainCounters->newtonIterations.fetch_add(1, std::memory_order_relaxed);
 #if SMS_SOLVE_DIAG
 		if( config.useLevenbergMarquardt ) {
@@ -3631,7 +4482,8 @@ bool ManifoldSolver::NewtonSolve(
 		}
 #endif
 		// Evaluate constraint
-		std::vector<Scalar> C;
+		std::vector<Scalar> localC;
+        auto& C=scratch.Enabled()?scratch.Scalars(0,2*capacity):localC;
 		EvaluateConstraint( chain, fixedStart, fixedEnd, C );
 
 		// Compute norm of constraint
@@ -3642,7 +4494,7 @@ bool ManifoldSolver::NewtonSolve(
 		}
 		const Scalar norm = sqrt( norm2 );
 
-		if( norm < config.solverThreshold )
+		if( norm < threshold )
 		{
 #if SMS_TRACE_DIAGNOSTIC
 			g_newton_strict_converged.fetch_add( 1, std::memory_order_relaxed );
@@ -3661,7 +4513,10 @@ bool ManifoldSolver::NewtonSolve(
 		// without them.  Original rationale for excluding curvature
 		// (tri-mesh per-triangle discontinuity) is handled by the
 		// mesh Jacobian returning zero dndu/dndv in those cases.
-		std::vector<Scalar> diag, upper_blocks, lower_blocks;
+		std::vector<Scalar> localDiag,localUpper,localLower;
+        auto& diag=scratch.Enabled()?scratch.Scalars(1,4*capacity):localDiag;
+        auto& upper_blocks=scratch.Enabled()?scratch.Scalars(2,4*capacity):localUpper;
+        auto& lower_blocks=scratch.Enabled()?scratch.Scalars(3,4*capacity):localLower;
 		BuildJacobian( chain, fixedStart, fixedEnd, diag, upper_blocks, lower_blocks,
 			/*includeCurvature=*/true );
 
@@ -3691,7 +4546,8 @@ bool ManifoldSolver::NewtonSolve(
 		}
 
 		// Solve for Newton step: J * delta = C  (we solve J * delta = C, then subtract)
-		std::vector<Scalar> delta;
+		std::vector<Scalar> localDelta;
+        auto& delta=scratch.Enabled()?scratch.Scalars(4,2*capacity):localDelta;
 		if( !SolveBlockTridiagonal( diag, upper_blocks, lower_blocks, C, k, delta ) )
 		{
 #if SMS_TRACE_DIAGNOSTIC
@@ -3770,7 +4626,9 @@ bool ManifoldSolver::NewtonSolve(
 		bool improved = false;
 
 		// Save chain state
-		std::vector<ManifoldVertex> savedChain( chain );
+		std::vector<ManifoldVertex> localSaved;
+        auto& savedChain=scratch.Enabled()?scratch.Vertices(0,capacity):localSaved;
+        savedChain=chain;
 
 		for( unsigned int attempt = 0; attempt < 10; attempt++ )
 		{
@@ -3784,7 +4642,7 @@ bool ManifoldSolver::NewtonSolve(
 				const Scalar du = -beta * delta[2*i];
 				const Scalar dv = -beta * delta[2*i+1];
 
-				if( !UpdateVertexOnSurface( chain[i], du, dv, smoothing ) )
+				if( !UpdateVertexOnSurface( chain[i], du, dv, smoothing, convergenceThreshold > 0 ) )
 				{
 					allValid = false;
 					break;
@@ -3858,7 +4716,8 @@ bool ManifoldSolver::NewtonSolve(
 			if( allValid )
 			{
 				// Check if the norm actually decreased
-				std::vector<Scalar> C_test;
+				std::vector<Scalar> localTest;
+                auto& C_test=scratch.Enabled()?scratch.Scalars(5,2*capacity):localTest;
 				EvaluateConstraint( chain, fixedStart, fixedEnd, C_test );
 				Scalar testNorm2 = 0.0;
 				for( unsigned int i = 0; i < 2*k; i++ )
@@ -3890,7 +4749,7 @@ bool ManifoldSolver::NewtonSolve(
 			// check at the bottom of NewtonSolve — same threshold, applied
 			// at the earlier exit too.
 			chain = savedChain;
-			if( norm < config.solverThreshold * 10.0 )
+			if( norm < threshold * 10.0 )
 			{
 #if SMS_TRACE_DIAGNOSTIC
 				g_newton_soft_converged.fetch_add( 1, std::memory_order_relaxed );
@@ -3936,7 +4795,7 @@ bool ManifoldSolver::NewtonSolve(
 			// solverThreshold), so we can see if the failure happened
 			// near-converged or far from any solution.
 			{
-				const Scalar thr = config.solverThreshold;
+				const Scalar thr = threshold;
 				int b = 0;
 				if( norm < 10.0   * thr ) b = 0;
 				else if( norm < 100.0  * thr ) b = 1;
@@ -3976,12 +4835,14 @@ bool ManifoldSolver::NewtonSolve(
 	// near the solution without reaching the strict threshold.  A
 	// relaxed threshold of 10× catches these near-solutions.
 	{
-		std::vector<Scalar> C_final;
+		SMSWorkerScratchLease finalScratch(nativeEventConstraints,config.referenceCounters);
+        std::vector<Scalar> localFinal;
+        auto& C_final=finalScratch.Enabled()?finalScratch.Scalars(0,2*std::max<unsigned>(config.maxChainDepth,k)):localFinal;
 		EvaluateConstraint( chain, fixedStart, fixedEnd, C_final );
 		Scalar norm2 = 0.0;
 		for( unsigned int i = 0; i < 2 * k; i++ )
 			norm2 += C_final[i] * C_final[i];
-		if( sqrt(norm2) < config.solverThreshold * 10.0 )
+		if( sqrt(norm2) < threshold * 10.0 )
 		{
 #if SMS_TRACE_DIAGNOSTIC
 			g_newton_soft_converged.fetch_add( 1, std::memory_order_relaxed );
@@ -4023,8 +4884,8 @@ namespace {
 		RandomNumberGenerator rng;
 		IndependentSampler    sampler;
 
-		explicit SMSLoopSampler( ISampler& parent )
-			: rng( deriveSeed( parent ) ), sampler( rng ) {}
+		explicit SMSLoopSampler( ISampler& parent, unsigned int stream = 0 )
+			: rng( deriveSeed( parent ) ^ stream ), sampler( rng ) {}
 
 	private:
 		static unsigned int deriveSeed( ISampler& parent ) {
@@ -4995,8 +5856,30 @@ bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaste
     const Point3& point, const IORStack& stack, Scalar nm) const
 {
     if(!ExtendedModeActive(scene)) return true;
-    if(config.photonCount || scene.GetGlobalMedium()
+    if(!config.maxChainDepth || config.targetBounces > config.maxChainDepth
+        || !std::isfinite(config.solverThreshold) || config.solverThreshold <= 0
+        || !std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
+        || config.extendedEventFloor > 0.5 || config.photonCount || scene.GetGlobalMedium()
         || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) return false;
+    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    if(!objects || objects->HasRejectedTransmissiveCaster()) return false;
+    // HG eligibility is domain-dependent, unlike position independence.
+    // Finite-Phong dielectric warps retain the adopted delta-limit policy.
+    RayIntersectionGeometric context(Ray(point, Vector3(0,0,1)), nullRasterizerState);
+    for(const IObject* object : objects->ExtendedSMSCasters()) {
+        if(!SMSAuditedModifier(*object)) return false;
+        const auto* dielectric = dynamic_cast<const DielectricMaterial*>(object->GetMaterial());
+        if(!dielectric || !dielectric->GetHG()) continue;
+        const IScalarPainter& scattering = dielectric->GetScattering();
+        if(nm > 0) {
+            const Scalar value = scattering.GetValueAtNM(context, nm);
+            if(!std::isfinite(value) || value < 1) return false;
+        } else {
+            const auto values = scattering.GetValuesAt(context);
+            for(unsigned c=0; c<3; ++c)
+                if(!std::isfinite(values[c]) || values[c] < 1) return false;
+        }
+    }
     SMSStartingMedia media;
     if(!SMSDomainReplay::Capture(scene, point, stack, media)) return false;
     const unsigned int components = nm > 0 ? 1 : 3;
@@ -5479,7 +6362,12 @@ Scalar ManifoldSolver::ComputeLightToFirstVertexJacobianDet(
 	if( k == 0 ) return 0;
 
 	// Build full chain Jacobian J_v (block-tridiagonal).
-	std::vector<Scalar> diag, upper, lower;
+    SMSWorkerScratchLease scratch(nativeEventConstraints,config.referenceCounters);
+    const auto capacity=std::max<unsigned>(config.maxChainDepth,k);
+    std::vector<Scalar> localDiag,localUpper,localLower;
+    auto& diag=scratch.Enabled()?scratch.Scalars(0,4*capacity):localDiag;
+    auto& upper=scratch.Enabled()?scratch.Scalars(1,4*capacity):localUpper;
+    auto& lower=scratch.Enabled()?scratch.Scalars(2,4*capacity):localLower;
 	BuildJacobian( chain, shadingPoint, lightPos, diag, upper, lower );
 
 	// Build the light-side Jacobian block at v_k.
@@ -5487,19 +6375,33 @@ Scalar ManifoldSolver::ComputeLightToFirstVertexJacobianDet(
 		? shadingPoint
 		: chain[k-2].position;
 	Scalar Jy[4];
-	ComputeLastBlockLightJacobian( chain[k-1], prevPos, lightPos, lightNormal, Jy );
+    if(nativeEventConstraints && std::any_of(chain.begin(),chain.end(),SMSNeedsNativeFrame)) {
+        OrthonormalBasis3D frame;frame.CreateFromW(lightNormal);
+        const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(shadingPoint,lightPos);
+        for(unsigned column=0;column<2;++column) {
+            const Vector3 tangent=column?frame.v():frame.u();
+            if(!SMSNativeConstraintDifferential(chain[k-1],chain[k-1],chain[k-1],
+                prevPos,prevPos,prevPos,lightPos,Point3Ops::mkPoint3(lightPos,tangent*h),
+                Point3Ops::mkPoint3(lightPos,-tangent*h),h,NativeRaster(k-1),Jy[column],Jy[2+column],NativeSceneObjects(k-1),nativeWavelength)) return 0;
+        }
+    } else {
+        ComputeLastBlockLightJacobian(chain[k-1],prevPos,lightPos,lightNormal,Jy);
+    }
 
 	// Solve J_v * δv = -RHS for each of two y-tangent directions.
 	// RHS is zero except for the last 2 entries = Jy column j.
 	Scalar dv1[4];  // row-major: [δv1_s for δy_s, δv1_s for δy_t; δv1_t for δy_s, δv1_t for δy_t]
 
 	for( unsigned int j = 0; j < 2; j++ ) {
-		std::vector<Scalar> rhs( 2 * k, 0.0 );
+        std::vector<Scalar> localRhs;
+        auto& rhs=scratch.Enabled()?scratch.Scalars(3,2*capacity):localRhs;rhs.assign(2*k,0);
 		rhs[ 2 * (k - 1) + 0 ] = -Jy[ 0 * 2 + j ];
 		rhs[ 2 * (k - 1) + 1 ] = -Jy[ 1 * 2 + j ];
 
-		std::vector<Scalar> delta;
-		std::vector<Scalar> diag_copy = diag;  // SolveBlockTridiagonal takes non-const ref
+        std::vector<Scalar> localDelta;
+        auto& delta=scratch.Enabled()?scratch.Scalars(4,2*capacity):localDelta;
+        std::vector<Scalar> localCopy;
+        auto& diag_copy=scratch.Enabled()?scratch.Scalars(5,4*capacity):localCopy;diag_copy=diag;  // SolveBlockTridiagonal takes non-const ref
 		if( !SolveBlockTridiagonal( diag_copy, upper, lower, rhs, k, delta ) ) {
 			return 0;
 		}
@@ -5605,7 +6507,25 @@ ManifoldResult ManifoldSolver::Solve(
 	ISampler& sampler
 	) const
 {
-	ManifoldResult result;
+    return SolveCore(shadingPoint, shadingNormal, emitterPoint, emitterNormal, specularChain, sampler, true);
+}
+
+ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vector3& shadingNormal,
+    const Point3& emitterPoint, const Vector3& emitterNormal, std::vector<ManifoldVertex>& specularChain,
+    ISampler& sampler, bool estimateLegacyPDF, Scalar convergenceThreshold) const
+{
+    ManifoldResult result;
+    SolveCoreInto(shadingPoint,shadingNormal,emitterPoint,emitterNormal,specularChain,
+        sampler,estimateLegacyPDF,convergenceThreshold,result);
+    return result;
+}
+
+void ManifoldSolver::SolveCoreInto(const Point3& shadingPoint, const Vector3& shadingNormal,
+    const Point3& emitterPoint, const Vector3& emitterNormal, std::vector<ManifoldVertex>& specularChain,
+    ISampler& sampler, bool estimateLegacyPDF, Scalar convergenceThreshold,ManifoldResult& result) const
+{
+    SMSResetResult(result);
+    SMSWorkerScratchLease scratch(nativeEventConstraints,config.referenceCounters);
 
 #if SMS_TRACE_DIAGNOSTIC
 	// Ungated global counters: every Solve call increments one of these
@@ -5655,7 +6575,7 @@ ManifoldResult ManifoldSolver::Solve(
 #if SMS_TRACE_DIAGNOSTIC
 		g_solveEmpty.fetch_add( 1, std::memory_order_relaxed );
 #endif
-		return result;
+		return;
 	}
 
 	// Quick early-out: build minimal tangent frames from normals
@@ -5680,7 +6600,8 @@ ManifoldResult ManifoldSolver::Solve(
 	// from the solution than refraction seeds because the straight-line
 	// seed direction doesn't follow the reflected path.
 	{
-		std::vector<Scalar> C0;
+		std::vector<Scalar> localC0;
+        auto& C0=scratch.Enabled()?scratch.Scalars(3,2*std::max<std::size_t>(config.maxChainDepth,specularChain.size())):localC0;
 		EvaluateConstraint( specularChain, shadingPoint, emitterPoint, C0 );
 		Scalar norm2 = 0.0;
 		for( unsigned int i = 0; i < C0.size(); i++ )
@@ -5703,7 +6624,7 @@ ManifoldResult ManifoldSolver::Solve(
 #if SMS_SOLVE_DIAG
 			g_solveDiag_seedTooFar.fetch_add( 1, std::memory_order_relaxed );
 #endif
-			return result;  // Seed too far from valid path
+			return;  // Seed too far from valid path
 		}
 	}
 
@@ -5713,7 +6634,7 @@ ManifoldResult ManifoldSolver::Solve(
 		ManifoldVertex& v = specularChain[i];
 		if( !v.valid || (v.retainAlphaEndpoint && !v.HasAlphaEndpoint()) )
 		{
-			if( !ComputeVertexDerivatives( v ) )
+			if( !ComputeVertexDerivatives( v, 0, convergenceThreshold > 0 ) )
 			{
 #if SMS_TRACE_DIAGNOSTIC
 				g_solveDerivFail.fetch_add( 1, std::memory_order_relaxed );
@@ -5726,7 +6647,7 @@ ManifoldResult ManifoldSolver::Solve(
 #if SMS_SOLVE_DIAG
 				g_solveDiag_derivFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
-				return result;
+				return;
 			}
 		}
 
@@ -5761,7 +6682,7 @@ ManifoldResult ManifoldSolver::Solve(
 			// phys-fail — we're betting most preserve).
 			g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
-			return result;
+			return;
 		}
 	}
 #endif
@@ -5910,12 +6831,13 @@ ManifoldResult ManifoldSolver::Solve(
 
 	// Run Newton solver — Stage 2 of the two-stage solver, or the single
 	// stage when two-stage is disabled / inapplicable.
-	const bool converged = NewtonSolve( specularChain, shadingPoint, emitterPoint );
+	const bool converged = NewtonSolve( specularChain, shadingPoint, emitterPoint, 0, convergenceThreshold );
 
 #if SMS_TRACE_DIAGNOSTIC
 	if( traceSolve ) {
 		// Evaluate ||C|| after Newton to see how close it got
-		std::vector<Scalar> Cfinal;
+		std::vector<Scalar> localCfinal;
+        auto& Cfinal=scratch.Enabled()?scratch.Scalars(4,2*std::max<std::size_t>(config.maxChainDepth,specularChain.size())):localCfinal;
 		EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Cfinal );
 		Scalar fn2 = 0;
 		for( std::size_t i = 0; i < Cfinal.size(); i++ ) fn2 += Cfinal[i] * Cfinal[i];
@@ -5944,7 +6866,8 @@ ManifoldResult ManifoldSolver::Solve(
 		// Bucket the post-Newton ||C|| so we know whether Newton was stuck
 		// near the answer or diverged far.
 		{
-			std::vector<Scalar> Cend;
+			std::vector<Scalar> localCend;
+        auto& Cend=scratch.Enabled()?scratch.Scalars(5,2*std::max<std::size_t>(config.maxChainDepth,specularChain.size())):localCend;
 			EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Cend );
 			Scalar n2 = 0;
 			for( std::size_t ii = 0; ii < Cend.size(); ii++ ) n2 += Cend[ii] * Cend[ii];
@@ -5979,7 +6902,8 @@ ManifoldResult ManifoldSolver::Solve(
 
 			// PUSHBACK: post-Newton ‖C‖ at the rejected chain.
 			{
-				std::vector<Scalar> Crej;
+				std::vector<Scalar> localCrej;
+        auto& Crej=scratch.Enabled()?scratch.Scalars(6,2*std::max<std::size_t>(config.maxChainDepth,specularChain.size())):localCrej;
 				EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Crej );
 				Scalar n2 = 0;
 				for( std::size_t ii = 0; ii < Crej.size(); ii++ ) n2 += Crej[ii] * Crej[ii];
@@ -6115,7 +7039,7 @@ ManifoldResult ManifoldSolver::Solve(
 #if SMS_SOLVE_DIAG
 				g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
-				return result;
+				return;
 			}
 			// Fall through with the rescued chain.
 		}
@@ -6204,7 +7128,7 @@ ManifoldResult ManifoldSolver::Solve(
 #if SMS_SOLVE_DIAG
 				g_solveDiag_shortSeg.fetch_add( 1, std::memory_order_relaxed );
 #endif
-				return result;
+				return;
 			}
 		}
 
@@ -6233,7 +7157,10 @@ ManifoldResult ManifoldSolver::Solve(
 		{
 			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
 
-			std::vector<Scalar> diag, upper_blocks, lower_blocks;
+			std::vector<Scalar> localDiag,localUpper,localLower;
+            auto& diag=scratch.Enabled()?scratch.Scalars(0,4*std::max<unsigned>(config.maxChainDepth,k)):localDiag;
+            auto& upper_blocks=scratch.Enabled()?scratch.Scalars(1,4*std::max<unsigned>(config.maxChainDepth,k)):localUpper;
+            auto& lower_blocks=scratch.Enabled()?scratch.Scalars(2,4*std::max<unsigned>(config.maxChainDepth,k)):localLower;
 			BuildJacobian( specularChain, shadingPoint, emitterPoint,
 				diag, upper_blocks, lower_blocks );
 
@@ -6258,7 +7185,7 @@ ManifoldResult ManifoldSolver::Solve(
 		}
 
 		// PDF estimation
-		if( !config.biased )
+		if( !config.biased && estimateLegacyPDF )
 		{
 			result.pdf = EstimatePDF( result, shadingPoint, emitterPoint, seedTemplate, sampler );
 		}
@@ -6267,7 +7194,7 @@ ManifoldResult ManifoldSolver::Solve(
 			result.pdf = 1.0;
 		}
 	}
-	return result;
+	return;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -6620,6 +7547,342 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	return true;
 }
 
+Scalar ManifoldSolver::ExtendedReflectionProbability(bool reflection, bool transmission,
+    Scalar fresnel, bool tir, Scalar floor)
+{
+    if(!std::isfinite(floor) || floor <= 0 || floor > 0.5 || (!reflection && !transmission)
+        || !std::isfinite(fresnel) || fresnel < 0 || fresnel > 1)
+        return std::numeric_limits<Scalar>::quiet_NaN();
+    if(tir) return reflection ? 1 : std::numeric_limits<Scalar>::quiet_NaN();
+    if(!reflection) return 0;
+    if(!transmission) return 1;
+    // Even a zero at this seed retains exploration mass; it does not prove
+    // that a spatial tint or a solved incidence makes the root's lobe zero.
+    return std::max(floor, std::min(1-floor, fresnel));
+}
+
+bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
+    const IScene& scene, const IORStack& live, SMSQueryDomain domain, ISampler& sampler,
+    std::vector<SMSDomainVertex>& vertices, const RasterizerState& raster) const
+{
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    vertices.clear();
+    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    if(!objects || !objects->ExtendedSMSAllowed() || !domain.Valid() || !config.maxChainDepth
+        || !std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
+        || config.extendedEventFloor > 0.5) return false;
+    const auto& casters = objects->ExtendedSMSCasters();
+    if(casters.empty()) return false;
+    for(const auto* caster:casters) if(!SMSAuditedModifier(*caster)) return false;
+    SMSStartingMedia media; IORStack stack(live.EnvironmentIOR());
+    if(!SMSDomainReplay::Capture(scene, start, live, media)
+        || !SMSDomainReplay::BuildStack(media, domain, stack)) return false;
+    const std::size_t chosen = std::min(casters.size()-1,
+        static_cast<std::size_t>(sampler.Get1D()*casters.size()));
+    const IObject* firstCaster = casters[chosen];
+    const Scalar u = sampler.Get1D(), v = sampler.Get1D(), w = sampler.Get1D();
+    Point3 point; Vector3 normal; Point2 uv;
+    firstCaster->UniformRandomPoint(&point, &normal, &uv, Point3(u,v,w));
+    Vector3 direction = Vector3Ops::mkVector3(point, start);
+    if(Vector3Ops::NormalizeMag(direction) <= 0) return false;
+    Point3 previous = start;
+    for(unsigned int depth=0; depth<config.maxChainDepth; ++depth) {
+        Ray ray(previous, direction);
+        ray.Advance(1e-8); // shared native walk self-hit offset; not a root tolerance
+        RayIntersection hit(ray, raster);
+        objects->IntersectRay(hit, true, true, false);
+        // With no exact bounce target, the emitter projection is the finite
+        // walk boundary after the first caster. It is only a proposal filter;
+        // a solved root must still pass complete ordered scene visibility.
+        const Scalar emitterProjection = Vector3Ops::Dot(Vector3Ops::mkVector3(end, ray.origin), direction);
+        if(!config.targetBounces && !vertices.empty() && emitterProjection > 0
+            && (!hit.geometric.bHit || hit.geometric.range > emitterProjection)) break;
+        if(!hit.geometric.bHit || !hit.pObject || !hit.pMaterial
+            || (vertices.empty() && hit.pObject != firstCaster)) return false;
+        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+        SMSNativeMaterialQuery query;
+        if(!SMSDomainReplay::Query(*hit.pMaterial, hit.geometric, stack, domain, query)) return false;
+        IORStack reflected(stack);
+        Scalar etaI, etaT; bool exiting;
+        if(!SMSDomainReplay::Cross(*hit.pMaterial, hit.pObject, hit.geometric, domain,
+            true, reflected, etaI, etaT, exiting)) return false;
+        const auto law=SMSNativeDirections(direction,SMSNativeEventNormal(*hit.pMaterial,hit.geometric),hit.geometric.UnflippedGeomNormal(),etaI,etaT,query.transmission,query.customFresnel,hit.pMaterial,exiting,SMSDomainWavelength(domain));
+        const Scalar cosine=law.fresnelCosine;
+        const bool tir=query.transmission && law.totalInternalReflection;
+        Scalar fresnel = query.dielectricInterface
+            ? Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT) : Scalar(1);
+        if(query.customFresnel && !tir) {
+            const Scalar wavelength = domain.kind == SMSQueryDomain::Wavelength ? domain.nm
+                : ScalarPainterRGB::kChannelNM[domain.component];
+            const auto* dielectric=dynamic_cast<const DielectricSPF*>(hit.pMaterial->GetSPF());
+            if(!dielectric || !dielectric->EvaluateSpecularFresnelAfterRefraction(
+                cosine,etaI,etaT,exiting,wavelength,fresnel)) return false;
+        }
+        const Scalar probabilityR = ExtendedReflectionProbability(query.reflection, query.transmission,
+            fresnel, tir, config.extendedEventFloor);
+        if(!std::isfinite(probabilityR)) return false;
+        const bool reflection = probabilityR == 1 || (probabilityR > 0 && sampler.Get1D() < probabilityR);
+        if(!SMSDomainReplay::Cross(*hit.pMaterial, hit.pObject, hit.geometric, domain,
+            reflection, stack, etaI, etaT, exiting)) return false;
+        vertices.emplace_back(hit.geometric);
+        auto& vertex = vertices.back().geometry;
+        vertex.position = SMSReferenceSurfacePoint(*hit.pObject,hit.geometric);
+        vertex.normal = SMSNativeEventNormal(*hit.pMaterial,hit.geometric);
+        vertex.geomNormal = hit.geometric.UnflippedGeomNormal();
+        vertex.objectPosition = hit.geometric.ptObjIntersec;
+        vertex.uv = hit.geometric.ptCoord;
+        vertex.pObject = hit.pObject; vertex.pMaterial = hit.pMaterial;
+        vertex.isReflection = reflection; vertex.isExiting = exiting;
+        vertex.eta = query.index; vertex.etaI = etaI; vertex.etaT = etaT;
+        vertex.canRefract = query.dielectricInterface;
+        previous = vertex.position;
+        direction=reflection?law.reflected:law.transmitted;
+        if(!reflection && !law.hasTransmission) return false;
+        if(Vector3Ops::NormalizeMag(direction) <= 0) return false;
+        if(config.targetBounces && vertices.size() == config.targetBounces) break;
+    }
+    return !vertices.empty() && (!config.targetBounces || vertices.size() == config.targetBounces);
+}
+
+SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vector3& startNormal,
+    const Point3& end, const IScene& scene, const IORStack& stack, SMSQueryDomain domain,
+    ISampler& sampler, const RasterizerState& raster) const
+{
+    SMSDomainRoot root(domain,stack);
+    ProposeExtendedRootInto(start,startNormal,end,scene,stack,domain,sampler,raster,root);
+    return root;
+}
+
+void ManifoldSolver::ProposeExtendedRootInto(const Point3& start, const Vector3& startNormal,
+    const Point3& end, const IScene& scene, const IORStack& stack, SMSQueryDomain domain,
+    ISampler& sampler, const RasterizerState& raster,SMSDomainRoot& root) const
+{
+    if(!nativeEventConstraints) {
+        ManifoldSolver native(config,true,nullptr,SMSDomainWavelength(domain));
+        native.ProposeExtendedRootInto(start,startNormal,end,scene,stack,domain,sampler,raster,root);
+        return;
+    }
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    root.domain=domain;root.startingStack=stack;root.vertices.clear();
+    SMSResetResult(root.result);root.accepted=false;root.uncertainty=0;
+    auto* counters = config.referenceCounters;
+    if(counters) counters->proposalTrials.fetch_add(1, std::memory_order_relaxed);
+    root.scale = Point3Ops::Distance(start,end);
+    SMSStartingMedia startingMedia;
+    if(!(root.scale > 0) || !std::isfinite(root.scale)
+        || !SMSDomainReplay::Capture(scene,start,stack,startingMedia)
+        || !SMSDomainReplay::BuildStack(startingMedia,domain,root.startingStack)
+        || !BuildExtendedSeed(start, end, scene, root.startingStack, domain, sampler, root.vertices, raster)) {
+        if(counters) counters->zeroTrials.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    // Root matching resolves geometry at sqrt(machine epsilon) relative to
+    // the endpoint scale. Polish the angular constraints more tightly, then
+    // reject roots whose inverse-Jacobian correction cannot resolve that band.
+    const Scalar tolerance = std::sqrt(std::numeric_limits<Scalar>::epsilon()) * root.scale;
+    const Scalar polish = std::min(config.solverThreshold, std::sqrt(std::numeric_limits<Scalar>::epsilon())/64);
+    ManifoldSolver replay(config,true,&root.vertices,SMSDomainWavelength(domain));
+    replay.SolveDomainCoreInto(start,startNormal,end,Vector3(0,0,1),scene,root.startingStack,
+        domain,root.vertices,sampler,tolerance,polish,root.result);
+    if(root.result.valid) {
+        Scalar contextGain=1;
+        for(const auto& vertex:root.vertices) contextGain=std::max(contextGain,vertex.contextSlope*root.scale);
+        if(contextGain>1 && std::isfinite(contextGain)) {
+            // Resolve a smooth but steep context in its own matching band.
+            // This deterministic refinement is part of every proposal and
+            // retry, not an extra discovery or a changed event topology.
+            const Scalar contextPolish=std::max(std::numeric_limits<Scalar>::epsilon(),polish/contextGain);
+            replay.SolveDomainCoreInto(start,startNormal,end,Vector3(0,0,1),scene,root.startingStack,
+                domain,root.vertices,sampler,tolerance,contextPolish,root.result);
+        }
+    }
+    bool visible = root.result.valid;
+    if(visible) {
+        const auto& chain = root.result.specularChain;
+        auto& residual=scratch.Scalars(0,2*config.maxChainDepth);
+        auto& diagonal=scratch.Scalars(1,4*config.maxChainDepth);
+        auto& upper=scratch.Scalars(2,4*config.maxChainDepth);
+        auto& lower=scratch.Scalars(3,4*config.maxChainDepth);
+        auto& correction=scratch.Scalars(4,2*config.maxChainDepth);
+        ManifoldSolver native(config,true,&root.vertices,SMSDomainWavelength(root.domain));
+        native.EvaluateConstraint(chain,start,end,residual);
+        native.BuildJacobian(chain,start,end,diagonal,upper,lower,true);
+        visible = SolveBlockTridiagonal(diagonal,upper,lower,residual,
+            static_cast<unsigned int>(chain.size()),correction);
+        if(visible) for(std::size_t i=0; i<chain.size(); ++i) {
+            const auto& vertex = chain[i];
+            const Scalar lastStep = Vector3Ops::Magnitude(vertex.dpdu*correction[2*i]+vertex.dpdv*correction[2*i+1]);
+            const Scalar roundoff = std::numeric_limits<Scalar>::epsilon()
+                * std::max({std::fabs(vertex.position.x),std::fabs(vertex.position.y),std::fabs(vertex.position.z),root.scale});
+            root.uncertainty = std::max(root.uncertainty,lastStep+roundoff);
+            // Geometry alone cannot resolve root equality on a steep native
+            // context chart. Apply the same matching reserve to measured UV,
+            // normal and object-position variation at this correction scale.
+            const Scalar contextUncertainty=(lastStep+roundoff)*root.vertices[i].contextSlope;
+            if(!std::isfinite(lastStep) || root.uncertainty > tolerance/8
+                || !std::isfinite(contextUncertainty) || contextUncertainty > tolerance/(8*root.scale)) {
+                visible=false;break;
+            }
+        }
+    }
+    Point3 previous = start;
+    if(visible) for(const auto& record : root.vertices) {
+        const auto& vertex = record.geometry;
+        const Vector3 direction = Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position,previous));
+        Ray ray(previous,direction); ray.Advance(1e-8);
+        RayIntersection hit(ray,raster);
+        scene.GetObjects()->IntersectRay(hit,true,true,false);
+        if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
+            || Point3Ops::Distance(SMSReferenceSurfacePoint(*hit.pObject,hit.geometric),vertex.position) > tolerance) {
+            visible = false; break;
+        }
+        previous = vertex.position;
+    }
+    if(visible) {
+        const Vector3 direction = Vector3Ops::Normalize(Vector3Ops::mkVector3(end,previous));
+        Ray ray(previous,direction); ray.Advance(1e-8);
+        RayIntersection hit(ray,raster);
+        scene.GetObjects()->IntersectRay(hit,true,true,false);
+        if(hit.geometric.bHit && hit.geometric.range < Point3Ops::Distance(ray.origin,end)-tolerance)
+            visible = false;
+    }
+    root.accepted = visible;
+    if(!visible && counters) {
+        counters->zeroTrials.fetch_add(1, std::memory_order_relaxed);
+        counters->rejectedRoots.fetch_add(1, std::memory_order_relaxed);
+    }
+    return;
+}
+
+bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance)
+{
+    if(!a.accepted || !b.accepted || !a.domain.Valid() || !b.domain.Valid()
+        || !std::isfinite(a.scale) || !std::isfinite(b.scale) || a.scale <= 0 || b.scale <= 0
+        || !std::isfinite(tolerance) || tolerance <= 0
+        || a.domain.kind != b.domain.kind || a.domain.component != b.domain.component
+        || a.domain.nm != b.domain.nm || !a.startingStack.SameInterfaces(b.startingStack)
+        || a.vertices.size() != b.vertices.size() || a.vertices.empty()) return false;
+    const Scalar scale = std::max(a.scale,b.scale);
+    if(!std::isfinite(scale) || scale <= 0) return false;
+    // A caller cannot widen reference equality to the legacy deduplication
+    // band. Unresolved roots are zero trials in both discovery and retries.
+    tolerance = std::min(tolerance,std::sqrt(std::numeric_limits<Scalar>::epsilon())*scale);
+    if(!std::isfinite(a.uncertainty) || !std::isfinite(b.uncertainty)
+        || a.uncertainty < 0 || b.uncertainty < 0
+        || a.uncertainty > tolerance/8 || b.uncertainty > tolerance/8) return false;
+    // The endpoint-scale band is a ceiling, not evidence that nearby
+    // regular roots coincide. Compare positions at the resolution actually
+    // established by both final corrections and coordinate roundoff.
+    const Scalar positionTolerance=std::min(tolerance,a.uncertainty+b.uncertainty);
+    const Scalar normalTolerance = tolerance / scale;
+    for(std::size_t i=0; i<a.vertices.size(); ++i) {
+        const auto& x = a.vertices[i].geometry; const auto& y = b.vertices[i].geometry;
+        const auto finiteGeometry=[](const ManifoldVertex& v) {
+            return std::isfinite(v.position.x)&&std::isfinite(v.position.y)&&std::isfinite(v.position.z)
+                &&std::isfinite(v.normal.x)&&std::isfinite(v.normal.y)&&std::isfinite(v.normal.z)
+                &&std::isfinite(v.geomNormal.x)&&std::isfinite(v.geomNormal.y)&&std::isfinite(v.geomNormal.z)
+                &&std::isfinite(v.objectPosition.x)&&std::isfinite(v.objectPosition.y)&&std::isfinite(v.objectPosition.z)
+                &&std::isfinite(v.uv.x)&&std::isfinite(v.uv.y);
+        };
+        const bool uvIndependent=x.pMaterial && x.pObject
+            && SMSContextIgnoresUV(*x.pObject,*x.pMaterial);
+        const auto& xc=a.vertices[i].context;const auto& yc=b.vertices[i].context;
+        const auto finiteFrame=[](const Vector3& value) {return std::isfinite(value.x)&&std::isfinite(value.y)&&std::isfinite(value.z);};
+        for(unsigned axis=0;axis<3;++axis) {
+            const Vector3 xv=axis==0?xc.onb.u():axis==1?xc.onb.v():xc.onb.w();
+            const Vector3 yv=axis==0?yc.onb.u():axis==1?yc.onb.v():yc.onb.w();
+            if(!finiteFrame(xv)||!finiteFrame(yv)
+                ||((!uvIndependent || axis==2) && Vector3Ops::Magnitude(xv-yv)>normalTolerance)) return false;
+        }
+        if(!finiteFrame(xc.vNormal)||!finiteFrame(yc.vNormal)
+            ||Vector3Ops::Magnitude(xc.vNormal-yc.vNormal)>normalTolerance) return false;
+        const Point2 axes = x.pObject ? SMSPeriodicTextureAxes(*x.pObject,x.geomNormal) : Point2(0,0);
+        const auto coordinateDistance = [](Scalar u, Scalar v, bool periodic) {
+            const Scalar distance = std::fabs(u-v);
+            return periodic ? std::min(distance,std::fabs(1-distance)) : distance;
+        };
+        // Keep the actual UV records. Under this audited material/modifier
+        // dependency law, UV cannot alter any event/index/price
+        // input. Different mesh charts then do not create physical roots.
+        const Scalar uvDistance = uvIndependent ? 0 : std::hypot(coordinateDistance(x.uv.x,y.uv.x,axes.x != 0),
+            coordinateDistance(x.uv.y,y.uv.y,axes.y != 0));
+        if(!finiteGeometry(x) || !finiteGeometry(y) || !x.pObject || !x.pMaterial
+            || x.uv.x != a.vertices[i].context.ptCoord.x || x.uv.y != a.vertices[i].context.ptCoord.y
+            || y.uv.x != b.vertices[i].context.ptCoord.x || y.uv.y != b.vertices[i].context.ptCoord.y
+            || x.pObject != y.pObject || x.pMaterial != y.pMaterial || x.isReflection != y.isReflection
+            || x.isExiting != y.isExiting || x.etaI != y.etaI || x.etaT != y.etaT
+            || Point3Ops::Distance(x.position,y.position) > positionTolerance
+            || Vector3Ops::Magnitude(x.normal-y.normal) > normalTolerance
+            || Vector3Ops::Magnitude(x.geomNormal-y.geomNormal) > normalTolerance
+            || uvDistance > normalTolerance
+            || Point3Ops::Distance(x.objectPosition,y.objectPosition)
+                > normalTolerance*std::max({Scalar(1),std::fabs(x.objectPosition.x),std::fabs(x.objectPosition.y),
+                    std::fabs(x.objectPosition.z),std::fabs(y.objectPosition.x),std::fabs(y.objectPosition.y),
+                    std::fabs(y.objectPosition.z)})) return false;
+    }
+    return true;
+}
+
+RISEPel ManifoldSolver::EvaluateExtendedDelta(const Point3& pos, const Vector3& geomNormal,
+    const Vector3& shadingNormal, const OrthonormalBasis3D& onb, const IMaterial& material,
+    const Vector3& outgoing, const IScene& scene, const IRayCaster& caster, ISampler& parent,
+    const LightSample& light, const IORStack& stack, const RayIntersectionGeometric* context, Scalar nm) const
+{
+    RISEPel total(0,0,0);
+    const IBSDF* bsdf = material.GetBSDF();
+    if(!bsdf || !light.isDelta || !light.pLight || light.pdfSelect <= 0
+        || (light.pLight->lightType() != ILight::LightType::Point && light.pLight->lightType() != ILight::LightType::Spot)
+        || !ExtendedAnchorEligible(scene,caster,pos,stack,nm)) return total;
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    auto& live=scratch.Root(0,SMSQueryDomain::RGB(0),stack,config.maxChainDepth);
+    auto& retryRoot=scratch.Root(1,SMSQueryDomain::RGB(0),stack,config.maxChainDepth);
+    SMSLoopSampler discovery(parent,0x41304449u), retry(parent,0x41305254u);
+    const unsigned int trials = config.multiTrials ? config.multiTrials : 1;
+    for(unsigned int trial=0; trial<trials; ++trial) {
+        const unsigned int component = nm > 0 ? 0 : std::min(2u,static_cast<unsigned int>(discovery.sampler.Get1D()*3));
+        const auto domain = nm > 0 ? SMSQueryDomain::NM(nm) : SMSQueryDomain::RGB(component);
+        const auto propose = [&](ISampler& sampler) -> const SMSDomainRoot& {
+            ProposeExtendedRootInto(pos,shadingNormal,light.position,scene,stack,domain,sampler,
+                context ? context->rast : nullRasterizerState,retryRoot);
+            return retryRoot;
+        };
+        ProposeExtendedRootInto(pos,shadingNormal,light.position,scene,stack,domain,discovery.sampler,
+            context ? context->rast : nullRasterizerState,live);
+        const SMSDomainRoot& root=live;
+        if(!root.accepted) continue;
+        const auto& chain = root.result.specularChain;
+        Vector3 incoming = Vector3Ops::mkVector3(chain.front().position,pos);
+        const Scalar distance = Vector3Ops::NormalizeMag(incoming);
+        if(!(distance > 0)) continue;
+        RayIntersectionGeometric hit(Ray(pos,-outgoing),context ? context->rast : nullRasterizerState);
+        if(context) hit = *context;
+        hit.bHit = true; hit.ptIntersection = pos; hit.vNormal = shadingNormal;
+        hit.vGeomNormal = geomNormal; hit.onb = onb; hit.ambientIOR = root.startingStack.top();
+        const Scalar f = nm > 0 ? bsdf->valueStatefulNM(incoming,hit,nm,&root.startingStack)
+            : bsdf->valueStateful(incoming,hit,&root.startingStack)[component];
+        const Vector3 lightToChain = Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,light.position));
+        const Scalar le = nm > 0 ? light.pLight->emittedRadianceNM(lightToChain,nm)
+            : light.pLight->emittedRadiance(lightToChain)[component];
+        ManifoldSolver native(config,true,&root.vertices,SMSDomainWavelength(root.domain));
+        const Scalar geometry = std::fabs(Vector3Ops::Dot(chain.front().geomNormal,incoming)) / (distance*distance)
+            * native.ComputeLightToFirstVertexJacobianDet(chain,pos,light.position,JacobianLightNormal(light,chain));
+        const Scalar physical = f * std::fabs(Vector3Ops::Dot(shadingNormal,incoming))
+            * root.result.contributionNM * le * geometry;
+        if(!std::isfinite(physical) || physical == 0) continue;
+        if(config.referenceCounters) {
+            config.referenceCounters->acceptedDiscoveries.fetch_add(1,std::memory_order_relaxed);
+            config.referenceCounters->ownedRoots.fetch_add(1,std::memory_order_relaxed);
+        }
+        const Scalar tolerance = std::sqrt(std::numeric_limits<Scalar>::epsilon()) * root.scale;
+        const Scalar reciprocal = SMSRootReference::Reciprocal(root,retry.sampler,propose,
+            [tolerance](const SMSDomainRoot& a, const SMSDomainRoot& b) { return SameExtendedRoot(a,b,tolerance); },
+            config.maxBernoulliTrials,true,config.referenceCounters);
+        total[component] += SMSRootReference::Deposit(physical,reciprocal,nm > 0 ? Scalar(1) : Scalar(1)/3,
+            light.pdfSelect,trials);
+    }
+    return total;
+}
+
 ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	const Point3& pos,
 	const Vector3& geomNormal,
@@ -6630,7 +7893,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	const IScene& scene,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	const IORStack* pIorStack
+	const IORStack* pIorStack, const RayIntersectionGeometric* anchorContext, bool forceLegacy
 	) const
 {
 	// Mitsuba-faithful uniform-on-shape seeding (opt-in via
@@ -6646,7 +7909,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		// `valueStateful` never saw the stack DL-157 plumbed for it).
 		return EvaluateAtShadingPointUniform(
 			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing,
-			scene, caster, sampler, pIorStack );
+			scene, caster, sampler, pIorStack, anchorContext, forceLegacy );
 	}
 
 	SMSContribution result;
@@ -6685,6 +7948,20 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( lightSample.pEnvLight ) {
 		return result;
 	}
+    if(!forceLegacy && ExtendedModeActive(scene) && lightSample.isDelta && lightSample.pLight
+        && (lightSample.pLight->lightType() == ILight::LightType::Point
+            || lightSample.pLight->lightType() == ILight::LightType::Spot)) {
+        const IORStack air(1);
+        const IORStack& stack = pIorStack ? *pIorStack : air;
+        const RISEPel value = EvaluateExtendedDelta(pos,geomNormal,shadingNormal,onb,*pMaterial,
+            woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext);
+        result.contribution = value;
+        result.valid = std::isfinite(value[0]) && std::isfinite(value[1]) && std::isfinite(value[2])
+            && (value[0] != 0 || value[1] != 0 || value[2] != 0);
+        result.referenceA = true;
+        return result;
+    }
+
 
 	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform
 	// for the full rationale.  Variable-count internal work (multi-trial
@@ -7615,7 +8892,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	const IScene& scene,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	const IORStack* pIorStack
+	const IORStack* pIorStack, const RayIntersectionGeometric* anchorContext, bool forceLegacy
 	) const
 {
     // Alpha changes seed-discovery probability. Bernoulli trials repeat that
@@ -7629,7 +8906,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	const IBSDF* pBSDF = pMaterial->GetBSDF();
 	if( !pBSDF ) return result;
 
-	if( mSpecularCasters.empty() ) {
+	if( mSpecularCasters.empty() && (forceLegacy || !ExtendedModeActive(scene)) ) {
 		// Mitsuba-style uniform mode requires a caster list; without
 		// it we have no surfaces to sample on.  Caller already enabled
 		// `sms_seeding "uniform"` so silent return-zero is the right
@@ -7659,6 +8936,20 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	if( lightSample.pEnvLight ) {
 		return result;
 	}
+    if(!forceLegacy && ExtendedModeActive(scene) && lightSample.isDelta && lightSample.pLight
+        && (lightSample.pLight->lightType() == ILight::LightType::Point
+            || lightSample.pLight->lightType() == ILight::LightType::Spot)) {
+        const IORStack air(1);
+        const IORStack& stack = pIorStack ? *pIorStack : air;
+        const RISEPel value = EvaluateExtendedDelta(pos,geomNormal,shadingNormal,onb,*pMaterial,
+            woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext);
+        result.contribution = value;
+        result.valid = std::isfinite(value[0]) && std::isfinite(value[1]) && std::isfinite(value[2])
+            && (value[0] != 0 || value[1] != 0 || value[2] != 0);
+        result.referenceA = true;
+        return result;
+    }
+
 
 	// Sampler-dimension-drift firewall: variable-count internal work
 	// (M-trial loop, Bernoulli K-loop, Solve→EstimatePDF) below uses
@@ -8068,7 +9359,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	const IRayCaster& caster,
 	ISampler& sampler,
 	const Scalar nm,
-	const IORStack* pIorStack
+	const IORStack* pIorStack, const RayIntersectionGeometric* anchorContext, bool forceLegacy
 	) const
 {
     // Alpha changes seed-discovery probability. Bernoulli trials repeat that
@@ -8082,7 +9373,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	const IBSDF* pBSDF = pMaterial->GetBSDF();
 	if( !pBSDF ) return result;
 
-	if( mSpecularCasters.empty() ) return result;
+	if( mSpecularCasters.empty() && (forceLegacy || !ExtendedModeActive(scene)) ) return result;
 
 	const LightSampler* pLS = caster.GetLightSampler();
 	if( !pLS ) return result;
@@ -8105,6 +9396,19 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	if( lightSample.pEnvLight ) {
 		return result;
 	}
+    if(!forceLegacy && ExtendedModeActive(scene) && lightSample.isDelta && lightSample.pLight
+        && (lightSample.pLight->lightType() == ILight::LightType::Point
+            || lightSample.pLight->lightType() == ILight::LightType::Spot)) {
+        const IORStack air(1);
+        const IORStack& stack = pIorStack ? *pIorStack : air;
+        const RISEPel value = EvaluateExtendedDelta(pos,geomNormal,shadingNormal,onb,*pMaterial,
+            woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext,nm);
+        result.contribution = value[0];
+        result.valid = std::isfinite(value[0]) && value[0] != 0;
+        result.referenceA = true;
+        return result;
+    }
+
 
 	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform
 	// for the full rationale.
@@ -8470,7 +9774,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	const Scalar nm,
-	const IORStack* pIorStack
+	const IORStack* pIorStack, const RayIntersectionGeometric* anchorContext, bool forceLegacy
 	) const
 {
 	// Mitsuba-faithful uniform-on-shape seeding (opt-in via
@@ -8482,7 +9786,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		// DL-290: forward the live stack (see the RGB dispatch above).
 		return EvaluateAtShadingPointNMUniform(
 			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing,
-			scene, caster, sampler, nm, pIorStack );
+			scene, caster, sampler, nm, pIorStack, anchorContext, forceLegacy );
 	}
 
 	SMSContributionNM result;
@@ -8513,6 +9817,19 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( lightSample.pEnvLight ) {
 		return result;
 	}
+    if(!forceLegacy && ExtendedModeActive(scene) && lightSample.isDelta && lightSample.pLight
+        && (lightSample.pLight->lightType() == ILight::LightType::Point
+            || lightSample.pLight->lightType() == ILight::LightType::Spot)) {
+        const IORStack air(1);
+        const IORStack& stack = pIorStack ? *pIorStack : air;
+        const RISEPel value = EvaluateExtendedDelta(pos,geomNormal,shadingNormal,onb,*pMaterial,
+            woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext,nm);
+        result.contribution = value[0];
+        result.valid = std::isfinite(value[0]) && value[0] != 0;
+        result.referenceA = true;
+        return result;
+    }
+
 
 	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform.
 	SMSLoopSampler loopScope( sampler );

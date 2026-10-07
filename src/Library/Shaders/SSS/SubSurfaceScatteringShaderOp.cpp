@@ -21,6 +21,7 @@
 #include "../../Utilities/stl_utils.h"
 #include "../../Sampling/HaltonPoints.h"
 #include "../../Utilities/Color/RGBSpectra.h"	// RGBUnboundedSpectrum (RGB->spectral uplift for PerformOperationNM)
+#include <memory>
 #include <mutex>									// std::lock_guard (exception-safe create_mutex)
 
 using namespace RISE;
@@ -80,6 +81,8 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 	) const
 {
 	c = RISEPel(0.0);
+    SMSReferenceRadianceScope returnRadiance(rc);
+    const auto cacheKey=std::make_pair(ri.pObject,rc.smsForceLegacy);
 
 	const IScene* pScene = caster.GetAttachedScene();
 
@@ -100,7 +103,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 	// sample, each shade casts shadow rays to all lights) and then
 	// evaluates a hierarchical octree per pixel.  At numPoints =
 	// 200K (typical for production-quality SSS) the build alone is
-	// many seconds while holding `create_mutex`, blocking the
+	// many seconds in recursive capture, blocking the
 	// rasterizer's cancel-restart loop entirely — the user sees a
 	// frozen viewport with no preview rendering.
 	//
@@ -125,35 +128,25 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 
 	// Lets check our rasterizer state to see if we even need to do work!
 	if( cache ) {
-		if( !rc.StateCache_HasStateChanged( this, c, ri.pObject, ri.geometric.rast ) ) {
+		if( !rc.StateCache_HasStateChanged( this, c, ri.pObject, ri.geometric.rast, &rc.smsReferenceRadiance, unsigned(rc.smsForceLegacy) ) ) {
 			// State hasn't changed, use the value already there
 			return;
 		}
 	}
 
-	// Find-or-build this object's irradiance point set.  ALL access to
-	// `pointsets` (a std::map, NOT thread-safe) is serialized by a std::lock_guard
-	// on create_mutex spanning the whole find-or-build; the guard unlocks on EVERY
-	// exit -- normal return, the CanBeAreaLight sentinel, AND a bad_alloc thrown by
-	// the large build -- so a build OOM can never leave the mutex held and deadlock
-	// the render.
-	// A prior double-checked-locking variant did an UNLOCKED find() that raced
-	// with the locked insert below: the unlocked read could observe a torn /
-	// half-inserted node -- a data race on std::map, i.e. undefined behavior.
-	// This is the latent-UB / exception-safety fix for the find-or-build itself.
-	// The build's run-to-run NON-DETERMINISM (the one-time build runs on whichever
-	// thread wins the race, so it used to capture that thread's RNG state and the
-	// trigger pixel's frame) is fixed SEPARATELY below -- by the dedicated build
-	// RNG and the sample-point geometric frame; see the REPRODUCIBILITY comments
-	// in the build loop and the SSSBuildDeterminismTest regression.  The one-time
-	// build runs inside the lock; the expensive octree Evaluate (Pass 2) runs
-	// OUTSIDE the lock on the now-immutable octree, so render threads still
-	// evaluate in parallel.
-	PointSetOctree* ps = 0;
-	{
-		std::lock_guard<RMutex> guard( create_mutex );
-		PointSetMap::iterator it = pointsets.find( ri.pObject );
-		if( it == pointsets.end() ) {
+    // Map lookup and publication are serialized. Irradiance capture runs
+    // outside the mutex because native continuation can recursively shade
+    // another object sharing this operation. Published octrees are immutable
+    // until ResetRuntimeData, which belongs to the stopped-render lifecycle.
+	PointSetOctree* ps = nullptr;
+    bool needsBuild = false;
+    {
+        std::lock_guard<RMutex> guard(create_mutex);
+        const auto it = pointsets.find(cacheKey);
+        needsBuild = it == pointsets.end();
+        if(!needsBuild) ps = it->second;
+    }
+    if(needsBuild) {
 			// SSS point-set generation uniformly samples the object's SURFACE via
 			// UniformRandomPoint/GetArea.  A geometry that cannot honour that contract
 			// (CanBeAreaLight() false -- e.g. a degenerate zero-area field) would
@@ -169,13 +162,16 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 			// which null-derefs (Object::UniformRandomPoint -> pGeometry->...).
 			const IGeometry* pSSSGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
 			if( !pSSSGeom || !pSSSGeom->CanBeAreaLight() ) {
-				GlobalLog()->PrintEasyWarning( "SubSurfaceScatteringShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false, or no directly-owned geometry, e.g. a csg_object); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
-				pointsets[ri.pObject] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
+				{
+                    std::lock_guard<RMutex> guard(create_mutex);
+                    if(pointsets.emplace(cacheKey,nullptr).second) GlobalLog()->PrintEasyWarning( "SubSurfaceScatteringShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false, or no directly-owned geometry, e.g. a csg_object); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
+                }
 				c = RISEPel( 0.0 );
+
 				return;
 			}
 			// Pass 1: Generate the irradiance point set for this object.
-			// This happens once per object, lazily on first hit.
+			// Concurrent local builders can run; only the first completed tree is retained.
 			GlobalLog()->PrintEasyInfo( "SubSurfaceScatteringShaderOp:: Generating point sample set for object" );
 		
 			PointSetOctree::PointSet points;
@@ -189,17 +185,18 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 
 			// REPRODUCIBILITY (1 of 2): a dedicated fixed-seed RNG for the irradiance
 			// capture, independent of the render thread's scheduling-dependent
-			// rc.random.  The build runs once, on whichever thread first wins the
-			// find-or-build race above, so consuming that thread's rc.random STATE made
+			// rc.random.  Concurrent local builds each use the same fixed capture
+			// sampling. Previously consuming the triggering thread's rc.random STATE made
 			// the captured irradiance vary run-to-run.  buildRc leaves pSampler null so
 			// the irradiance shade falls back to buildRng, not the (also
-			// scheduling-dependent) QMC sampler; the shade reads only {random,
-			// pSampler, pass} from the CONTEXT, so the 3-arg ctor carries all it needs.
+			// scheduling-dependent) QMC sampler; the capture keeps fresh owning caches and copies the
+            // anchor legacy-mode bit below; its sampling uses {random, pSampler, pass}.
 			// (The OTHER half of the fix is the sample-point geometric frame set on
 			// newri below -- without it the build still craters: for a delta light the
 			// RNG here does not even affect the value, but the frame does.)
 			RandomNumberGenerator buildRng( 0x9E3779B9u );	// fixed seed (golden ratio)
 			RuntimeContext buildRc( buildRng, rc.pass, rc.bThreaded );
+            buildRc.smsForceLegacy=rc.smsForceLegacy;
 
 			for( unsigned int i=0; i<numPoints; i++ ) {
 				// Ask the object for a uniform random point
@@ -264,10 +261,17 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 				// Advance the ray for the purpose of shading, this should help reduce errors
 				newri.geometric.ray.Advance( 1e-8 );
 
-				shader.Shade( buildRc, newri, caster, rs, sp.irrad, ior_stack );
+				{
+                    SMSReferenceRadianceScope sampleRadiance(buildRc);
+                    shader.Shade( buildRc, newri, caster, rs, sp.irrad, ior_stack );
+                    sp.smsReferenceRadiance=sampleRadiance.HasReferenceRadiance();
+                }
 
-				// Discard points that have no illumination
-				if( ColorMath::MaxValue(sp.irrad) > 0 ) {
+				// Keep finite nonzero reference samples, including signed transport.
+                // Ordinary-only samples retain the native positive-illumination filter.
+				if( ColorMath::MaxValue(sp.irrad) > 0 ||
+                    (sp.smsReferenceRadiance && std::isfinite(sp.irrad[0]) && std::isfinite(sp.irrad[1]) && std::isfinite(sp.irrad[2]) &&
+                     (sp.irrad[0]!=0 || sp.irrad[1]!=0 || sp.irrad[2]!=0)) ) {
 					sp.irrad = sp.irrad * irrad_scale;
 					points.push_back( sp );
 					bbox.Include( sp.ptPosition );
@@ -276,21 +280,24 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 
 	//		bbox.Grow( NEARZERO );		// Grow for error tolerance
 			bbox.EnsureBoxHasVolume();
-			ps = new PointSetOctree( bbox, maxPointsPerNode );
+			std::unique_ptr<PointSetOctree> built(new PointSetOctree(bbox,maxPointsPerNode));
 
 			if( points.size() < 1 ) {
 				GlobalLog()->PrintEasyError( "SubSurfaceScatteringShaderOp:: Not a single sample point could be generated" );
 			}
 
-			if( !ps->AddElements( points, maxDepth ) ) {
+			if( !built->AddElements( points, maxDepth ) ) {
 				GlobalLog()->PrintEasyError( "SubSurfaceScatteringShaderOp:: Fatal error while creating irradiance sample set" );
 			}
-			pointsets[ri.pObject] = ps;
-		} else {
-			// There is already a point set, so we can just do our approximation now
-			ps = it->second;
-		}
-	}
+        // Capture can recursively reach this operation or another one. Never
+        // hold a cache mutex while calling a shader. Concurrent/reentrant
+        // builders keep local ownership; the first completed immutable tree
+        // is published, and every later builder safely discards its copy.
+        std::lock_guard<RMutex> guard(create_mutex);
+        const auto published = pointsets.emplace(cacheKey,built.get());
+        if(published.second) built.release();
+        ps = published.first->second;
+    }
 
 	// Unsupported geometry was cached as a null sentinel above -> no SSS contribution
 	// (c is already 0 from the top of the function).
@@ -306,7 +313,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 	// stack top the ray caster stamped on this hit (`ambientIOR`; 1.0 = air,
 	// which reproduces the pre-DL-291 value exactly).
 	ps->Evaluate( c, ri.geometric.ptIntersection, extinction, error, multiplyBSDF?ri.pMaterial->GetBSDF():0, ri.geometric, &ior_stack,
-		BSSRDFSampling::ExteriorIOR( ri.geometric ) );
+		BSSRDFSampling::ExteriorIOR( ri.geometric ), &rc.smsReferenceRadiance );
 
 	// Monte Carlo normalization: divide by N (the number of sample points).
 	// Each sample's irradiance was pre-multiplied by irrad_scale, which
@@ -321,9 +328,11 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 		c = c*PI;
 	}
 
+    if(c[0]==0 && c[1]==0 && c[2]==0) rc.smsReferenceRadiance=false;
+
 	if( cache ) {
 		// Add the result to the rasterizer state cache
-		rc.StateCache_SetState( this, c, ri.pObject, ri.geometric.rast );
+		rc.StateCache_SetState( this, c, ri.pObject, ri.geometric.rast, rc.smsReferenceRadiance, unsigned(rc.smsForceLegacy) );
 	}
 }
 
@@ -370,12 +379,23 @@ Scalar SubSurfaceScatteringShaderOp::PerformOperationNM(
 	// the MAX CHANNEL as its scale, so a single negative component (a
 	// stray subtraction in the diffusion profile, an octree lerp
 	// undershoot) can flip the scale's sign and corrupt EVERY wavelength
-	// -- far worse than the RGB path, where a stray negative is merely
-	// clamped at film resolve.  Clamp at the projection boundary.
+	// -- ordinary-only returns therefore retain their native projection.
+	SMSReferenceRadianceScope returnRadiance(rc);
 	RISEPel c;
 	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
-	ColorMath::EnsurePositve( c );
-	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
+    Scalar result;
+    if(returnRadiance.HasReferenceRadiance() && (c[0]<0 || c[1]<0 || c[2]<0)) {
+        // Extend the native positive-radiance uplift to signed reference
+        // returns by subtraction. Do not project away a negative component.
+        RISEPel positive(0.0),negative(0.0);
+        for(unsigned i=0;i<3;++i) {positive[i]=std::max(Scalar(0),c[i]);negative[i]=std::max(Scalar(0),-c[i]);}
+        result=RGBIlluminantSpectrum::FromRGB(positive).Eval(nm)-RGBIlluminantSpectrum::FromRGB(negative).Eval(nm);
+    } else {
+        ColorMath::EnsurePositve(c);
+        result=RGBIlluminantSpectrum::FromRGB(c).Eval(nm);
+    }
+    if(result==0) rc.smsReferenceRadiance=false;
+    return result;
 }
 
 void SubSurfaceScatteringShaderOp::ResetRuntimeData() const

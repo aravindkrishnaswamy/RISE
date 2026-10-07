@@ -241,9 +241,13 @@ Point3                ptWorld;   // the hit in world space (== ri.ptIntersection
 Scalar                time;      // the painter's m_time, see §5.4
 ```
 
-The first three are stamped in one place, `ObjectManager::IntersectRay(
-RayIntersection&, … )`, after traversal, on the winning record, with `pSelf`
-copied from `ri.pObject` so the two identities can never disagree
+The first three are stamped by `ObjectManager::CompleteShadingSignals`.
+`ObjectManager::IntersectRay(RayIntersection&, …)` calls it after traversal
+on the winning record, with `pSelf` copied from `ri.pObject`. Extended SMS
+also calls the same completion routine for current direct-object root,
+modifier and differential hits, using each new hit point rather than seed
+signals. The completion preserves geometry-local primitive payloads. The
+object and self identities therefore cannot disagree
 (`Object::IntersectRay` and `CSGObject::IntersectRay` both set `pObject` to
 themselves; a CSG hit therefore names the composite, and operands — never reached
 by the manager — can never be `pSelf`). All three branches of that function
@@ -259,8 +263,13 @@ copy constructor and `operator=` copy `signals` as a whole struct and
 `AdoptCsgSurfacePayload` assigns it wholesale, so the new fields ride along
 without edits; **the invariant that makes the stamp survive to the painter is
 that nothing assigns `signals` after `ObjectManager::IntersectRay` returns** —
-true today — the write sites are the two geometry intersectors
-(`SDFGeometry.cpp`, `TriangleMeshGeometryIndexedSpecializations.h`),
+true for the sanctioned forwarding/stamping operations — geometry-local
+write sites are `SDFGeometry.cpp`,
+`TriangleMeshGeometryIndexedSpecializations.h` and
+`TriangleMeshGeometrySpecializations.h`. The nonindexed mesh writes only
+`pProvider` (null), `primId`, `baryA` and `baryB` during intersection, before
+the manager stamps the winning record; it does not supply a shading provider
+or overwrite `pScene`, `pSelf` or `ptWorld`. Other write sites include
 `CSGObject.cpp` (adoption plus three `nObject`/`bComplementedField` flips inside
 `CSGObject::IntersectRay`), the record's own `operator=`, `BuildContext`'s
 by-value copy, `ExpressionEval.h`'s `k.signals = ctx.signals.MemoHitKey()` (an
@@ -280,9 +289,14 @@ payload.channel` on a record no manager produced — a sampled emission point,
 not a traversal result — using a channel obtained by `ProbeEmitterSurface`
 firing one real closest-hit at the luminary and keeping the record only if it
 landed on the sampled point; never fabricated, and a no-op unless a signal
-consumer is live. Ten files in all — pinned by `SourceHygieneTest`
+consumer is live. The original census had ten files. The current census has
+fifteen, also including DL-22 BSSRDF/SSS forwarding, the final-root alpha
+query in `ManifoldSolver.cpp`, and nonindexed primitive provenance above —
+pinned by `SourceHygieneTest`
 at FILE granularity (its guards are substring finds over flattened bodies
-against an exact filename set), which is the granularity it can express. `PropagateCastInputs` (inputs only) does not carry it.
+against an exact filename set). The nonindexed mesh additionally has a
+field-level allowlist for its four primitive-provenance fields, rejecting
+whole-channel and cross-object stamp writes. `PropagateCastInputs` (inputs only) does not carry it.
 
 **CLOSED 2026-09-11 (slice S1):** BDPT/VCM/MLT records rebuilt by
 `PathVertexEval::PopulateRIGFromVertex` used to carry the defaults and read the

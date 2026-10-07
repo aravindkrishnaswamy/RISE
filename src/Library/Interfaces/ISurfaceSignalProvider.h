@@ -284,7 +284,8 @@ namespace RISE
 	struct SurfaceSignalInfo
 	{
 		//! Non-owning, non-refcounted back-pointer to the geometry that can
-		//! answer for this hit; 0 = this surface publishes no signals.
+		//! answer for this hit; 0 = this surface publishes no shading signals.
+        //! Native primitive provenance may still be present (non-indexed mesh).
 		const ISurfaceSignalProvider*	pProvider;
 		//! Hit point in the PROVIDER's object space.
 		Point3							ptObject;

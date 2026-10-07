@@ -43,6 +43,9 @@ namespace RISE
 			mutable bool smsPolicyPrepared = false;
 			mutable bool smsHasComposite = false;
 			mutable std::string smsFirstCompositeObject;
+            mutable std::vector<const IObject*> smsExtendedCasters;
+            mutable bool smsRejectedTransmissiveCaster = false;
+            mutable bool smsUncertainNormalOrientation = false;
 			virtual ~ObjectManager();
 
 			// Top-level acceleration: SAH BVH (BVH4-collapsed, SIMD AABB
@@ -367,6 +370,10 @@ namespace RISE
 				const bool bComputeExitInfo
 				) const;
 
+            // Complete a current direct-object hit with the same scene signal
+            // provenance as traversal. Does not replace primitive payloads.
+            void CompleteShadingSignals(RayIntersectionGeometric&, const IObject*) const;
+
 			bool IntersectShadowRay(
 				const Ray& ray,
 				const Scalar dHowFar,
@@ -524,6 +531,9 @@ namespace RISE
 			// Prepared static-scene policy; read-only during worker execution.
 			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && !smsHasComposite; }
 			const std::string& FirstCompositeObject() const { return smsFirstCompositeObject; }
+            const std::vector<const IObject*>& ExtendedSMSCasters() const { return smsExtendedCasters; }
+            bool HasUncertainSMSNormalOrientation() const { return smsUncertainNormalOrientation; }
+            bool HasRejectedTransmissiveCaster() const { return smsRejectedTransmissiveCaster || smsUncertainNormalOrientation; }
 
 			void InvalidateSpatialStructure() const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }

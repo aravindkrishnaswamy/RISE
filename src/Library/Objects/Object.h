@@ -363,6 +363,10 @@ namespace RISE
 			virtual bool DoesReceiveShadows() const override { return bReceivesShadows; }
 
 			virtual void SetSurfaceIntersecError( Scalar d ) override { SURFACE_INTERSEC_ERROR = d; }
+            // Internal geometry replay reads the authored launch-point backoff.
+            Scalar GetSurfaceIntersecError() const { return SURFACE_INTERSEC_ERROR; }
+            bool UsesNativeTextureChart() const { return pUVGenerator == nullptr; }
+            const IUVGenerator* SMSUVGenerator() const { return pUVGenerator; }
 			virtual bool SetUVGenerator( const IUVGenerator& pUVG ) override;
 			virtual void SetShadowParams( const bool bCasts, const bool bReceives ) override;
 

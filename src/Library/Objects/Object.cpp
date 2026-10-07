@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/ManifoldSolver.h"
 #include "../Modifiers/ModifierFrame.h"
 #include "Object.h"
 #include "SnapshotLeafClone.h"
@@ -852,6 +853,7 @@ const BoundingBox Object::getBoundingBox() const
 
 void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+    SMSRecordObjectIntersection();
     ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
     ri.geometric.bHasShaderDirection=ri.geometric.bHasNormalMapFrame=false;
 	// NULL-GEOMETRY GUARD: see getBoundingBox()'s comment above.  Reachable as

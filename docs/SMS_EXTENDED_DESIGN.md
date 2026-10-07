@@ -1,8 +1,8 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phases 2–4 remain pending.**
+**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 remains unmerged on `sms-ext-phase2`: cached recursion/signed-return repairs and the full Round 17 gate pass at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778`. Fresh Round 17 review converged at `c388ea6a3`: all three lenses report zero P1; the allocation-failure P2 is measured and filed as DL-443. Octree-accounting P2s remain measured in DL-441/DL-442. Phases 3–4 remain pending; earlier audit sections are historical.**
 
-Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
+Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
 ## Recommended scope
 
@@ -99,7 +99,7 @@ Medium membership and evaluated index are distinct.
 - A medium whose `ior` is a world-position field (DL-09 `GradedIndexMedium`) is spatial IOR and is ineligible in the first phases.
 
 Sides, TIR and refresh:
-- Use true unflipped geometric normals for side classification; shading normals remain constraint inputs under the existing validated convention.
+- Use true unflipped geometric normals for side classification. The original shading-normal-only constraint convention is disputed by the Phase 2 round 2 native-SPF counterexample below; modified-interface support follows the adopted native fallback correction below.
 - A chosen R event must not change `isExiting` to force a usable normal.
 - Rebuild ordered `etaI/etaT` in each requested domain, including HWSS companion replay, and validate native TIR decisions.
 - At TIR, choose only R, with probability one. Never sample an impossible T and silently relabel it R while keeping T's proposal probability.
@@ -392,7 +392,10 @@ Synthetic vertices alone are insufficient.
 - `SourceHygieneTest` and `CstDeriveGoldenTest`;
 - plus every test the increment adds.
 
-Shipped SMS scenes must stay bit-identical while the extended mode is off.
+Shipped mode-off RGBA pixels must differ by at most one float32 ULP across builds
+(user ruling 2026-10-04).
+Deterministic rejection on/off comparisons within one build retain strict
+internal-double identity (adopted precision contract below).
 
 **Proof per fix:**
 1. Commit.
@@ -415,7 +418,7 @@ After each coherent production increment, apply [the independent review loop](sk
 
 ## Integration evidence
 
-The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". The design import introduced no source changes. Current Phase 1 primitive and rejection evidence is recorded in [SMS_EXTENDED_PHASE1_VALIDATION.md](SMS_EXTENDED_PHASE1_VALIDATION.md); production activation and acceptance remain pending. No ledger row closes on the contract statement.
+The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". The design import introduced no source changes. Current Phase 1 primitive and rejection evidence is recorded in [SMS_EXTENDED_PHASE1_VALIDATION.md](SMS_EXTENDED_PHASE1_VALIDATION.md); production activation and acceptance remain pending. Phase 2 implementation and current isolated/production evidence are recorded in [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md); The user accepted the four-salt wide-spot slab/BDPT discrepancy as variance and authorized continuation. Cone 80/85 remains a reported measurement with the original three-SD band; it supplies no DL-420 closure. The historical `13a31c7d7` replacement gate passes 28 make modes (17665 reported checks/0 failures), twelve actual Xcode-linked controls and the disclosed partial ASan/UBSan suite, with zero compiler diagnostics and verified source hashes. Fresh final review and Phase 2 integration remain pending. No ledger row closes on the contract statement.
 
 ## Adopted interim composite policy (2026-10-03)
 
@@ -457,3 +460,400 @@ ledger row is opened for this note.
 
 Setup branch `sms-ext` imported the contract at `e37b8e288` from master
 `ffc70c1c2`. The adopted policy and Phase 1 primitives merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`; the decision itself provides no estimator or production debt closure.
+
+## Adopted native normal fallback correction (2026-10-04)
+
+Fresh round 2 reviewed committed `8f9a63f692b7d042264d989ea3d6f0c5da9441fb`.
+The material reviewer identified a conflict in the adopted constraint convention:
+`PerfectRefractorSPF::DoSingleRGBComponent` and `ScatterNM` rederive a
+wrong-side reflection about the ray-opposing geometric normal. Wrong-side
+transmission likewise uses geometric-normal refraction and recomputes Fresnel,
+including geometric-interface TIR. At the reviewed checkpoint, extended proposals and constraints used only
+the shading normal, although modified casters were eligible. The earlier claim
+that this convention covers those native events is therefore withdrawn.
+
+A static counterexample uses a horizontal narrow patch at `(5,0,0)`, receiver
+`(0,0,1)`, light `(10,0,1)`, geometric normal `(0,0,1)` and shading normal
+`(sqrt(3)/2,0,1/2)`. The unit incident direction is
+`(0.9805806757,0,-0.1961161351)`. Shading-normal reflection is
+`(-0.3204487827,0,-0.9472658432)`, on the wrong geometric side; native
+geometric-normal reflection is `(0.9805806757,0,0.1961161351)` and reaches
+the light. The patch can exclude other shading-constraint solutions. This
+was initially established by source inspection and direction arithmetic.
+The implementation regression now includes actual native RGB/NM reflection
+and transmission, both windings and incidence sides, spatial/ray/raster normal
+fields, coated dielectric and polished siblings, transformed instances, closed
+start-inside and nested exits, and independently shifted endpoint Jacobians.
+Committed-source red/green proofs and the replacement gate now pass; fresh
+review remains required before integration.
+
+**Adopted correction, user ruling 2026-10-04:** reproduce each native
+material's geometric-horizon fallback in the extended event direction,
+constraint/Jacobian and final price, preserving shading-normal behavior where
+the native event accepts it. Branch changes must be validated consistently by
+proposal, retries and later ownership. Alternatively, conservative exclusion
+of affected modified casters would require a separate scope ruling. Conservative
+exclusion is not adopted. The user authorized reproducing the native fallback
+consistently. The native fallback and indexed/non-indexed atlas repair has committed numerical
+red/green proof at `b61844191`; the displaced-wrapper sibling repair at
+`761c71b51` and complete replacement gate at `15c9c2710` now pass;
+Phase 2 remains unmerged until its fixes, gate and fresh review converge.
+
+Round 2 also found a separate implementation P1: mesh atlas boundaries authored
+at interior UV coordinates such as `.25` and `.75` evade the current 0/1 seam
+check. Smooth world-position tint can then make raw-UV root matching split one
+regular, uniquely priced physical root into two reciprocal-accounting families.
+The native mesh-boundary fix has committed numerical red/green proof. A
+subsequent self-audit reproduced the same gap through displaced indexed-mesh
+wrappers (**19985/20** at committed `1b924f194`); the guard must follow the
+actual native triangle provider rather than the outer geometry recipe. This
+is not an approved deferral or a reason to drop UV context globally. The
+third reviewer found no P1/P2 in cost, tests or document evidence. No Phase 2
+ledger closure follows from the passing pre-review gate.
+
+## Adopted mode-off precision contract (2026-10-04)
+
+The latest native repair `761c71b51` has coherent committed proofs (review
+20005/0, production177/0, geometry4297/0), but its replacement pipeline
+stops at the strict shipped mode-off comparison. Eight alternating source
+builds and four salts complete; all sixteen master/candidate hashes differ.
+Reported radiance means differ by no more than 1.7763568394002505e-15.
+Pixel diagnostics measure maximum absolute RGBA difference
+2.4579116519873878e-11 and maximum per-image RMSE2.0080155837659702e-13.
+All sixteen images match bit-identically after float32 conversion, alpha
+matches in doubles, and all twelve channel means pass their original
+three-SD comparison (n4). This suggests arithmetic rounding but does not
+prove its cause or satisfy internal-double bit identity. The original internal-double cross-build gate failed; that failed run remains
+recorded as failed. The subsequent complete replacement gate passes **36373/0**
+across 28 modes, twelve actual Xcode-linked controls and five partial-sanitizer
+modes, with zero compiler diagnostics. No Phase 2 merge or fresh review
+verdict is claimed. See `SMS_EXTENDED_PHASE2_VALIDATION.md`.
+
+**Original ruling, superseded by the one-ULP ruling below:** cross-build shipped
+mode-off image pixels must match bit-identically after float32 conversion.
+Deterministic rejection on/off comparisons within one build remain strict
+in internal doubles. Stochastic comparisons retain n>=4 and their original
+channel-separated three-SD bands. This changes only the cross-build
+acceptance precision; it does not change rendering arithmetic or relax
+within-build composite rejection. The new complete gate passes all sixteen
+float32 comparisons after eight actual source builds, with four salts per
+fixture. NM mode-off cost rises 1.492751 ± 0.465066% in paired measurements;
+no zero-overhead claim is made. Round 3 subsequently found further defects,
+recorded below; current replacement gates and Round 4 review are required
+before integration.
+
+
+### Phase 2 Round 3 implementation audit (2026-10-04)
+
+Two further implementation inconsistencies were found: generated charts
+bypassed seam ambiguity checks, and non-top exits in overlapping closed solids
+used the stack-top index for the native direction and Fresnel law. The existing
+native-law contract covers both repairs. Generated chart contexts now undergo
+local physical-band probes, retaining continuous override controls and actual
+UV records. This numerical diagnostic does not certify arbitrary generator
+continuity. Overlapping exits now use the queried exiting-object index for
+native direction/Fresnel/TIR while independently retaining the native consumer
+radiance scaling from stack tops; native walkers are unchanged. Expanded
+modified multi-vertex Jacobian tests address the evidence reviewer's coverage
+gap. The earlier focused tests pass28933/0 at native d2508b4dc/tests5d9776ce8;
+replacement committed proofs, complete gates and fresh Round 4 review remain
+required. The earlier complete gate is historical and no merge is claimed.
+
+The post-modifier UV sibling self-audit reproduces forty uncertain native
+interior-mesh cases, with both actual UV families at one physical root. The
+repair atc5f66dd80 probes actual post-modifier contexts at full and half
+displacement, cancelling continuous UV scale in its midpoint check. Continuous
+modifier controls remain required. This is within the adopted uncertain-root
+contract, not a new regularity certificate or ledger closure. The earlier
+Round 4 preparation was stopped before clean builds; its partial evidence is
+retained. The earlier focused validation passes90485/0; complete replacement gates now pass at44645f25e, with fresh Round 4 pending.
+
+The matched-normal sibling is also reproduced natively: shading normals on
+opposite sides of a modifier discontinuity both use the same native
+geometric-horizon mirror fallback, but raw-normal matching splits one root.
+Test32241b5eb againstc5f66dd80 reports246025/40. Repair5d7b6ff38 extends the
+same post-modifier midpoint probes to every matched geometric context field,
+retaining continuous modifier controls and native price/direction oracles.
+Focused validation passes193037/0; v2 preparation completed coherent proofs
+but stopped before full gates. Complete v3 gates pass373510/0 across29 make modes, twelve actual Xcode controls and five partial-sanitizer modes, with zero owned compiler diagnostics; fresh Round 4 is pending.
+No design change, closure or new ledger row follows from this repair.
+
+
+### Phase 2 fresh Round 4 implementation audit (2026-10-04)
+
+Three independent reviewers of936952503 found seven implementation P1s and
+no design defect. The v3 passing gate is historical. Native witnesses and
+repairs address root-family merging/splitting, continuous-normal derivative
+aliasing, Polished sheet indices and native support, authored mesh seams,
+and uncertain start-inside orientation. The original thin close-patch example
+was not reachable through native acceleration; a corrected wide disjoint
+native mesh demonstrates the accepted-root alias numerically. Current fixes
+and their limits are recorded in
+[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+Complete replacement gates and fresh Round 5 convergence are required before
+Phase 2 integration. Round 5 has not begun; no ledger closure is claimed.
+
+
+Before launching Round 5, an internal native harmonic audit found ten remaining
+normal-Jacobian failures at the finest halved probe period. A fourth
+noncommensurate probe repairs that numerical alias without widening acceptance
+bands. Focused283/0 and review193319/0 are current partial evidence; complete
+replacement gates and fresh review remain required. Round 5 has not begun.
+
+
+### Phase 2 current composed gate (2026-10-04)
+
+Native71c080bd3 and corrected testsa6b4aa37a pass374075/0 across thirty
+make modes, twelve actual Xcode controls and five partial-sanitizer modes.
+The prior v2 pipeline failed ten Deployment positive close-root checks;
+that failure is preserved. Test-only patch-edge clearance fixes the fixture
+without changing separation, thresholds or native production code. Current
+hash-checked evidence composes unchanged native clean builds and eight source
+A/B builds with fresh committed proofs, all changed-test modes, actual Xcode
+controls, partial sanitizers and memory. Details and limits are in
+[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+Fresh Round 5 is still required before merge; it is the final allowed round.
+No design decision, ledger closure or new row follows from this gate.
+
+
+### Phase 2 Round 5 stop (2026-10-04)
+
+Three fresh reviewers of f3ebf3b92 report five implementation P1s and two P2s,
+with no separate design defect. Required worker-local scratch/work counters
+are missing, and preparation-audit cost was understated. Further reports
+concern near-commensurate Jacobian aliasing, fixed-offset surface-frame
+reconstruction and modified ONB replay. Numerical/source-traced findings and
+verification limits are recorded in
+[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+The initial five-round stop was reported. The user subsequently authorized
+continuation beyond Round 5 and asked for explicit checks against local
+maxima. Phase 2 remains unmerged; no ledger closure or new row is claimed.
+
+
+### Modifier differential contract: adopted decision (2026-10-04)
+
+The Round 5 interior normal witness on committed native sources reports
+35 passing checks and 10 failing checks: all five RGB/NM domains and both
+windings accept a root whose Jacobian entry is approximately -0.291667,
+while an independent period/1024 refinement gives -0.491665. The fixture
+uses a smooth sinusoidal normal field; its root is inside a triangle,
+away from the diagonal seam. The raw evidence is
+`.claude/logs/sms-phase2-round6/interior-normal-red.log`, at `36de2c28c`.
+This isolates derivative aliasing from surface projection and frame replay.
+
+The current modifier interface exposes only `Modify(hit)`, with no derivative
+or feature-size bound. Any finite collection of black-box probes can miss a
+smooth field that agrees at the sampled positions but has a different
+root derivative. Adding another step size does not establish the Jacobian
+required by the estimator's change of variables. For example, for any finite
+set of nonzero one-dimensional probe displacements `s_i`, the smooth field
+`f(x) = a*x*product(x*x-s_i*s_i)/product(-s_i*s_i)` vanishes at the root
+and every `+/-s_i`, yet `f'(0)=a`. Thus matching values at every stencil
+point cannot bound the unobserved derivative, even for a continuous field.
+
+**Adopted by user ruling:** accept modified interfaces
+only through an audited differential contract. A provider must expose either
+the actual local differential of the material-consumed frame, or a feature
+bound and error bound sufficient for a resolved numerical differential.
+The contract must cover incoming-ray dependencies and all modified context
+used by the native event, including the distinction between `onb.w()` and
+Polished's `vNormal`. Uncertified contexts are ineligible, with all three
+switches off together and PT retaining their paths. Audited continuous
+modifiers remain positive controls; this is not a blanket modifier ban.
+Existing legacy/off behavior is preserved. Provider API details, lifetime,
+boundary handling and cost require design and review before implementation.
+
+The user adopted this supported-domain contract and authorized implementation.
+The initial implementation uses an optional capability in the existing
+modifier header, preserving the original modifier interface and legacy
+behavior. Audited providers supply directional derivatives of vNormal and
+onb.w from the raw native hit differential (world/object points, UV,
+normal/frame and incoming ray); raster state is held fixed. Providers may
+modify these frame/UV fields but must preserve the physical surface and
+geometric normal. Unsupported dependencies or boundaries return uncertified.
+Native constraint and emitter-endpoint derivatives use the chain rule;
+finite differences validate native geometry reconstruction, not a black-box
+modified field. A caster with no audited capability makes the anchor
+ineligible for all three switches; every isolated proposal also checks it.
+No ledger row is opened or closed by this decision.
+
+
+### Phase 2 fresh Round 6 precision stop (2026-10-04)
+
+The adopted analytic modifier contract and scratch/provenance/preparation
+repairs pass their coherent committed-source controls on `cf76d5d0a`.
+The new full gate stops at mode-off precision: all eight alternating source
+builds and sixteen salted renders complete, but one NM image fails the
+existing float32 bit-identity contract. Exact-binary native pixel captures
+reproduce the hashes and locate one R component at `(38,59)` differing by
+one float32 ULP (5.684341886080802e-14), from underlying double values only
+4.642574878406611e-16 apart. All other fifteen float32 image hashes match.
+The measured candidate cost changes range from +0.069% to +1.185% (n4;
+SD0.595%–1.003%). See SMS_EXTENDED_PHASE2_VALIDATION.md for complete raw
+provenance, counts, timing SDs and limitations.
+
+This run is **failed**, not a passing gate or a review convergence. No
+Phase2 merge, new ledger row, closure or fresh Round6 review occurred.
+The precision policy above remains adopted and unchanged. A proposed
+cross-build bound of one float32 ULP needs an explicit user ruling before
+code can enforce it; deterministic within-build identity and original
+stochastic bands remain unchanged. Alternatively, continue investigation
+and repair under exact float32 identity. No cause is guessed from the
+small measured difference, and no exception is silently granted.
+
+
+### Adopted cross-build one-ULP bound (2026-10-04)
+
+The user approved the proposed bound (“approved, go!”) after the exact-binary
+pixel evidence above. This replaces strict float32 bit identity for
+cross-build shipped mode-off comparisons with a maximum of **one float32
+ULP per RGBA component**. Nonfinite pixels fail; opposite signed zeros have
+zero numeric distance. Exact hashes remain diagnostics, not the acceptance
+predicate. Full per-pixel comparisons, not image means or hashes alone,
+enforce the bound. Deterministic on/off rejection within one build remains
+bit-identical in internal doubles. All stochastic comparisons retain their
+original salted n>=4, channel-separated three-SD bands. The earlier strict
+gate remains recorded as failed; this approval does not retroactively pass
+it or establish the source of the rounding difference. Fresh gates and
+reviews remain required, with no ledger changes implied by this ruling.
+
+
+### One-ULP gate and defined hash arithmetic (2026-10-04)
+
+The approved one-ULP A/B comparison passes all sixteen mode-off renders;
+mean paired overhead is +1.098% to +2.045% (n4, SD0.534%–1.144%). The
+subsequent source-hygiene census repair has committed-master-test168/1 to
+restored170/0 proof, including a primitive-only field guard. The composed
+regression stage passes33 make modes /411404 reported checks and twelve
+actual Xcode-linked controls, with zero failures and owned diagnostics.
+This is not full-gate completion: mixed sanitizer instrumentation first
+reports a vector container overflow; a fully instrumented project build
+resolves that report but reveals real signed overflow in the vertex-weld
+cell hash. The repair uses defined unsigned wrapping, preserving the weld
+coordinates/tolerance and distance acceptance. Rebuilt pre-fix UBSan fails;
+restored full-instrumentation review passes193401/0. A complete fresh gate
+and fresh reviews remain required. Evidence and limits are recorded in
+SMS_EXTENDED_PHASE2_VALIDATION.md. No contract change, ledger row, closure,
+merge or push follows from this implementation repair.
+
+
+### Fresh Phase 2 replacement gate (2026-10-04)
+
+The repaired native/test tree at `746fa42c2` passes the fresh complete gate:
+33 make modes /411404 reported checks, twelve actual Xcode-linked controls,
+eight fully instrumented sanitizer modes, process-memory measurement and
+all sixteen shipped one-ULP comparisons. Clean make and both actual Xcode
+configurations have zero owned diagnostics. The coherent19-path committed
+proofs reproduce their intended reds and restore all focused controls green.
+The40 salted production means are unchanged by scratch storage (0 double
+ULP). Default paired costs are RGBk1 +0.061% ±0.577%, RGBk2 +0.051% ±0.977%,
+NM +1.759% ±0.919% and HWSS +1.616% ±1.028% (n4). All12 narrow-cone slab
+channels pass; the previously accepted wide-cone red −0.174% /−5.139 combined
+SD measurement remains disclosed under the original band, with no DL-420
+closure. Full provenance, counts, memory and scope limits are in
+SMS_EXTENDED_PHASE2_VALIDATION.md. Fresh Round6 review remains required;
+Phase2 is unmerged and no ledger row is opened or closed.
+
+### Fresh Round 6: composed input differential stop (2026-10-04)
+
+Three fresh independent reviewers completed on `eca4f2eccb3309bba655cbf49b6b602955894be4`.
+They verified the recorded gate provenance but did not return a clean round.
+The estimator reviewer identified a DESIGN gap: the analytic modifier receives
+numerically differentiated generated UVs, although `IUVGenerator` has no
+audited derivative or feature-bound contract. An analytic modifier therefore
+cannot establish the derivative of its composed input transport.
+
+The committed native witness `3e497f4b5` reproduces this gap in
+`SMSExtendedReferenceTest --r6-generated-uv-only`: **35 passing /10 failing
+checks**, with a successful checked test build and no compiler diagnostics.
+All three RGB domains and NM450/NM650, in both real double-sided indexed-mesh
+windings, accept the root. Its Jacobian entry is approximately **-0.291667**;
+an independent period/1024 residual oracle gives **-0.491665**. A custom UV
+generator supplies `u=A*sin(2*pi*x/P)`, with
+`P=cbrt(epsilon)/(4*114243)` and `A=.2*P/(2*pi)`. The modifier differentiates
+`normalize((u,0,1))` analytically with respect to its supplied UV input.
+Moving the harmonic field upstream of the modifier bypasses the previous
+analytic-normal repair. Raw evidence is
+`.claude/logs/sms-phase2-round6-findings/generated-uv-build.log` and
+`generated-uv-red.log`. This is an executed native Jacobian counterexample;
+no new production radiance/bias measurement is claimed.
+
+**Adopted correction, user ruling 2026-10-05:** certification must cover the
+composed input transport as well as the modifier. A modifier that consumes
+generated UVs requires an audited UV differential (analytic, or a sufficient
+feature/error bound); otherwise that caster makes the extended anchor
+ineligible, with all three switches off and PT keeping its paths. Providers
+must declare relevant input dependencies conservatively. Audited modifiers
+independent of generated UVs remain eligible. Existing legacy/off behavior
+and the scene-wide composite rule remain unchanged. More black-box stencil
+probes cannot certify an arbitrary generator. The user approved this correction ("approved, proceed"). Implementation uses
+a separate optional UV differential capability and a conservative modifier
+UV-dependency declaration; the legacy interfaces remain unchanged. No ledger
+row is opened for this contract decision. Repairs and fresh gates/review are
+required before integration.
+
+Other Round 6 implementation findings at that checkpoint required repair: `Object.cpp` and
+`CSGObject.cpp` include the SMS header before the Windows `/Yu` precompiled
+header; the weld-coordinate conversion can exceed `int64_t` before the
+unsigned hash; and the unsupported-caster loop never executes kind4, so its
+claimed after-final-preparation uncertified-modifier coverage is withdrawn.
+The passing full gate remains valid for its recorded workload and checkpoint;
+it neither covers these missing cases nor establishes review convergence.
+Phase2 remains unmerged. No rows are opened/closed and no changes are pushed.
+
+### Round 6 repairs and completed replacement gate (2026-10-05)
+
+The composed-input correction is implemented through optional `ISMSUVDifferential` and conservative `SMSFrameDependsOnUV`. Generated-UV differentials receive the native object-space point/normal and their transported derivatives. Transformed real-mesh controls cover both windings and incidence sides, all RGB components and NM450/NM650, with independently shifted constraint and emitter endpoint Jacobians. PCH order, safe weld-cell conversion and the actually executed post-preparation rejection cases are repaired. The committed pre-transform proof is281/60; pre-composed UV321/30, unsupported1005/76 and hygiene170/2; restored UV321/0, unsupported1081/0 and hygiene172/0. The fully instrumented committed weld proof reproduces native float-cast overflow, then restores weld37/0 and UV321/0.
+
+The current checkpoint `f5f04b1f5` passes35 make modes /412084 reported checks /0 failures, sixteen actual Xcode-linked controls, eight rebuilt native controls, ten full-project sanitizer modes /236320 checks /0 failures, and clean make/Deployment/Opto with zero owned diagnostics. The gate retains29 completed make modes and resumes six on the same checked binary with unchanged20-native/4-test hashes; the interrupted slab is rerun in full. Four earlier committed rollback scenarios and eight interleaved A/B builds are retained on identical native hashes; current native-master/restored proofs and updated toolchain builds/controls are rerun. The initial rejected Xcode setup retry and sanitizer harness termination mismatch are preserved separately. Full provenance, cost and scope are in [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md). All12 narrow-cone comparisons retain and pass their original3SD bands; the accepted wide-cone discrepancy supplies no DL-420 closure. Fresh independent Round7 review and integration remain pending. No ledger row is opened or closed.
+
+### Fresh Round 7 implementation audit (2026-10-05)
+
+Three independent reviewers completed on `01fcb931e`. The estimator lens found irrelevant oscillatory UVs could split one regular physical mirror root into separate reciprocal families. The material lens found direct-object final refresh and modifier/differential hits omitted scene signals needed by cross-object painters. The evidence lens found the flat generated-UV control did not exercise a nonzero normal derivative. No DESIGN finding was reported. Committed native witnesses reproduce the UV defect at3/20 and the initial signal-context defect at353/240; the initial signal witness transmission oracle lacked `SetCurrentObject` and its corrected committed-source proof is required before final recording. UV dependency matching and shared scene-signal completion are implemented; curved off-axis controls pass425/0 and detect an intentionally omitted normal derivative. Repairs, coherent proofs, full replacement gates and fresh review remain required. Phase2 is unmerged; no new ledger row or closure is claimed.
+
+### Phase 2 fresh Round 8 replacement gate (2026-10-05)
+
+Checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853` has fresh six-scenario committed rollback proofs,39 make modes /414590/0,24 actual Xcode-linked controls /406140/0,14 all374-unit sanitizer modes /238826/0, clean make/Deployment/Opto with zero owned diagnostics, full interleaved n4 A/B costs and process-memory evidence. Round7 irrelevant-UV, native signal provenance and curved-normal UV coverage findings are repaired. All20 native/four test hashes verify; no retained Round7 gate substitution. Fresh independent review is pending; Phase2 remains unmerged and all target ledger rows remain open. See SMS_EXTENDED_PHASE2_VALIDATION.md for actual counts, historical failed attempts and cost scope.
+
+### Phase 2 fresh Round 8 disposition (2026-10-05)
+
+Fresh review on 1a1eaeedd found two implementation P1s (Polished native normal normalization/derivatives, and SSS return-boundary clamping of downstream reference A) plus a P2 factorization-capacity reservation/coverage gap. No DESIGN finding. These require native witnesses, repairs and another fresh gate/review before integration. The contract remains unchanged and Phase2 is unmerged. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+
+Round 8 implementation repair: reference-A radiance provenance survives opaque SSS shader returns. A return containing an actual nonzero reference contribution remains unclamped as a whole at its SSS caller; ordinary-only and HWSS legacy returns retain existing clamps. This implements the adopted unclamped reference contract without introducing the deferred path-level membership provenance. Replacement gate and fresh review are required before Phase 2 integration.
+
+Fresh Round 9 gate at 4495ae81be81107fd604bfad0faedfd46a6fe846: all 21 native/four test hashes verify;42 make modes/ 416773/ 0,30 actual Xcode-linked controls/ 410506/ 0,17 all 374-unit sanitizer modes/ 241009/ 0, clean make/Deployment/Opto 0 owned diagnostics, nine committed rollback scenarios and full interleaved n4 cost/memory evidence. All three Round 8 findings are repaired. Fresh independent review is pending; Phase 2 remains unmerged. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+### Round 9 scaled ONB sibling repair
+
+Fresh material review found native Optics normalizes a nonunit ONB W, while the extended constraint retained its magnitude. A corrected committed witness reproduces 4145/1040, including actual native root-position and price failures; focused repair passes 5185/0. Estimator/evidence reviews reported no P1/P2 and no lens found a DESIGN defect. Reproduce native event normalization and its derivative branch while retaining raw coating/material query fields. Replacement gate and fresh review remain required; no ledger closure is claimed. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+Fresh Round 10 gate: 43 make modes / 424086/0, 32 actual Xcode-linked controls / 425132/0, 18 all-374-unit sanitizer modes / 248322/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent scaled-ONB proof and full n = 4 interleaved cost/memory evidence. All 21 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+
+### Fresh Round 10 disposition and native-event repairs (2026-10-06)
+
+Review of `30a7ef45f` found one material P1: a raw-incidence coating query could overwrite mandatory native TIR. Both estimator/material reviewers also found a P2: Optics tolerates normals within its normalization boundary, producing a nonunit outgoing vector, while the previous half vector assumed a unit result. Evidence: `.claude/logs/sms-phase2-round10-final/fresh-reviews/`. Evidence review found no P1/P2; no DESIGN finding.
+
+Replay now retains mandatory TIR before coating evaluation, including the proposal sibling. Audited-frame constraints retain native outgoing-vector length in the generalized half vector and differentiate that length; the projection basis is normalized separately. Native normalization-branch changes participate in differential regularity checks. The native SPF and Optics implementations, legacy constraint path and tolerances remain unchanged.
+
+The focused combined witness passes 44681/0: RGB/NM native events, both indexed windings/incidences, transformed/variable modifiers, scales on both sides of both normalization boundaries, a bounded indexed patch excluding the spurious root, coated TIR on open-plane/closed-indexed/nested/actual non-top overlap exits, and actual PT production with four salts at N=2048 against a single-open-sheet analytic reflection using native BSDF/emitter values. The original box production attempt admitted other walls and is discarded as an unmatched single-root oracle. Early TIR fixture attempts had incomplete vertex fields and an unaudited open-mesh assumption; they are not claimed as final coherent numerical proofs. The current 21-path committed rollback and full replacement gate remain pending; this focused result does not authorize integration. No ledger row is closed or opened.
+
+Fresh Round 11 gate: 44 make modes / 468767/0, 34 actual Xcode-linked controls / 514494/0, 19 all-374-unit sanitizer modes / 293003/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 21 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+
+Phase 2 Round 11 review and repair checkpoint (2026-10-06): estimator and evidence reviewers reported no P1/P2 or design finding. The material reviewer found a P2: native DielectricSPF only attempts the geometric transmission fallback when the initial reflectance is below one. Extended replay had attempted it after every successful shading Snell calculation. The repair binds native constraints to the RGB component or NM wavelength, distinguishes true TIR from film saturation, preserves the native raw-film query after successful refraction, and sweeps crossing, pricing and proposal consumers. No native scattering algorithm or virtual SPF interface changes.
+
+`SMSExtendedReferenceTest --r11-saturated-film-only` passes 14635/0 on the repaired source. It exercises four film variants (unsaturated, critical/saturating, opaque after fallback, absorptive), actual RGB/NM SPF events, both indexed windings/incidences, transformed open and closed geometry, start-inside, plane and sphere controls, and invalid RGB domain rejection. Active-event branch and full/half coating-Fresnel price probes enforce ordinary-zero rejection when the final root cannot resolve native support or price continuity. Independent Jacobian checks cover regular unsaturated controls; critical-film discontinuities are tested for native event pricing and uncertainty rejection, not claimed as differentiable. Earlier fixture experiments and partial working-tree red counts are historical; a new coherent committed-source rollback and full replacement gate are required before integration. No ledger row opens or closes.
+
+The first Round 12 proof run stopped at the geometry regression (2817/40): the new native-event check had reused a seed flag that also means derivatives are not computed yet. Unmodified three-event seeds therefore failed the initial constraint check before derivative construction. The local native constraint copy now initializes event/context validity independently, retaining false for failed native frame reconstruction or impossible transmission. Existing mixed-event geometry controls pass 4297/0 and the four-film witness remains 14635/0. The failed gate is retained as an interrupted historical attempt; the final replacement gate must restart on the corrected committed source and include this committed regression checkpoint as a second coherent rollback proof.
+
+The second Round 12 proof run stopped on four transformed NM signal-painter roots (1645/4). The newly added optical-discontinuity probe had tested full attenuation weight, including native float-precision spectral reconstruction, against a double-precision optical band. The probe now checks only the coating Fresnel price that gates native fallback; painter input contexts retain the existing geometric/UV/normal checks. This narrows the implementation to its intended native optical support check without changing bands or attenuation evaluation. Both interrupted gate attempts remain historical; the final complete gate must restart on the corrected source.
+
+The corrected optical-price scope passes the focused sequence: signal prices 1665/0, mixed geometry 4297/0, four-film fallback 14635/0, signal production 393/0, curved UV 425/0, polished normals 1089/0, scratch depth 109/0, SSS clamps 1065/0, scaled frames 7233/0 and native events 44681/0. Checked library/test builds have zero compiler diagnostics. These are focused results, not substitutes for the final complete gate or fresh review.
+
+Fresh Round 12 gate: 45 make modes / 483402/0, 36 actual Xcode-linked controls / 543774/0, 20 all-374-unit sanitizer modes / 307648/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+Fresh Round 13 gate: 46 make modes / 500509/0, 38 actual Xcode-linked controls / 577988/0, 21 all-374-unit sanitizer modes / 324755/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+Fresh Round 14 gate: 47 make modes / 508576/0, 40 actual Xcode-linked controls / 594122/0, 22 all-374-unit sanitizer modes / 332822/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
