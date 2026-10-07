@@ -526,6 +526,18 @@ static void BodySection()
         for(bool reverse:{false,true}) LaneCase(CeilingScene("polished",true,reverse,lum),o);
         LaneCase(CeilingScene("polished",false,false,lum),o);
     }
+    // DL-378 itself (extended OFF, the shipped legacy rule; reported, not
+    // gated): legacy HWSS vs SMS-off HWSS on the delegated-emitter scene.
+    if(g_caseFilter.empty()) {
+        const auto spec=CeilingScene("polished",true,false,"lum");
+        RenderOptions l=o;l.saltBase=g_saltBase;g_saltBase+=1000;
+        const auto legacy=Render(spec,Mode::Legacy,l), ref=Render(spec,Mode::Ref,l);
+        for(unsigned w=0;w<kLanes&&legacy.ok&&ref.ok;++w) {
+            const Moments a(legacy.lane[w]),b(ref.lane[w]);
+            std::cout<<std::setprecision(8)<<"DL-378 legacy (extended off) "<<spec.label<<" lane="<<w<<" nm="<<o.lambdas[w]
+                <<" legacyHWSS="<<a.mean<<"+-"<<a.se<<" SMS-off="<<b.mean<<"+-"<<b.se<<" ratio="<<a.mean/b.mean<<" (reported)\n";
+        }
+    }
 }
 
 //////////////////////////////////////////////////////////////////////
