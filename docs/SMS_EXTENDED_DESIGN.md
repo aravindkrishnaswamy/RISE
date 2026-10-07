@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 is implemented on branch `sms-ext-phase3` and awaits independent review (see the Phase 3 implementation record at the end); Phase 4 remains pending; earlier audit sections are historical.**
+**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 reviewed (2 rounds, zero P1), pending master gate/merge, on branch `sms-ext-phase3` (see the Phase 3 records at the end); Phase 4 remains pending; earlier audit sections are historical.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -932,7 +932,10 @@ component RGB ownership costs up to three predicate evaluations per
 candidate emitter hit.
 
 Evidence (`tests/SMSExtendedPartitionTest.cpp`; raw logs under
-`.claude/logs/sms-phase3/`, not committed):
+`.claude/logs/sms-phase3/`, not committed). The numbers in this list are
+from the FIRST gate run (`gate-f3a5dbdc1/`, library `f3a5dbdc1`), the
+first red proof (`redproof/`) and the ablations (`ablation/`); the
+round-1 section below supersedes them where they differ.
 
 - Point renders through production `IntegrateRay{,NM}`, 16 salts, 3
   combined-se bands: extended full = SMS-off PT and SMS-owned
@@ -985,11 +988,13 @@ Three lenses, zero P1; the five decisions above were accepted. Changes
   (from the transform's column lengths, plus roundoff), approaches from
   both faces, and returns uncertain unless the luminary is met within the
   push bound. A thin closed double-sided luminary (5e-4 thick, both
-  windings) now reads full/ref 1.009 +- 0.009 and 1.002 +- 0.009 with
+  windings) now reads full/ref 1.000 and 0.995 (run `gate-r1`) with
   SMS-owned = PT-owned; the old 1e-3 reach crossed the box (red, below).
-  A x1000 translation reads full/ref 1.018 +- 0.031 against the closed form.
-- **Uncertain classifications** (`ClassifyExtendedChain`). Exact-delta
-  DL-372 ball lens: 27 PT chains uncertain of 180045 queries; DL-379
+  A x1000 translation reads full/ref 1.019 (run `gate-r1`) against the
+  closed form.
+- **Uncertain classifications** (`ClassifyExtendedChain`; development
+  runs `r1_dl372.log`, `r1_dl379_n16.log`, `r1_dl379_base/exp.log`).
+  Exact-delta DL-372 ball lens: 27 PT chains uncertain of 180045 queries; DL-379
   (`scattering 1e5`): 27939 of 358662, of which 9295 Newton failures and
   9371 with a nonempty owned set for their topology. Attribution
   experiment (n = 8): treating an uncertain warped chain as owned when
@@ -1005,15 +1010,17 @@ Three lenses, zero P1; the five decisions above were accepted. Changes
   with a canonical root at 1e-8 of the scale): the rare double-count
   candidates the review asked about; DL-379 declined 60.
 - **DL-379 known-bias pin.** ext/VCM = 1.0556 +- 0.0122 (n = 16, 64 spp,
-  24x24); the test fails outside 3 combined se of the pin in either
-  direction. DL-379 stays open.
+  24x24; pinned from `r1_dl379_n16.log`; run `gate-r1` re-measures
+  1.0545 +- 0.0121); the test fails outside 3 combined se of the pin in
+  either direction. DL-379 stays open.
 - **Cost.** Membership queries stop at the first matching canonical root;
   identical component replays share one classification (120030 reuses on
   DL-372); B caches canonical sets per topology within one evaluation
-  (27499 hits). Ball-lens image, same protocol (n = 8, one worker):
-  DL-372 9.407 +- 0.016 s (was 13.515 +- 0.016), DL-379 8.155 +- 0.041 s
-  (n = 16; was 11.169 +- 0.019), against 0.55-0.59 s extended-off. Canonical
-  solve attempts on DL-372: 1.60 M (was 2.68 M).
+  (27499 hits). Ball-lens image, same protocol (one worker), run
+  `gate-r1`: DL-372 9.321 +- 0.015 s (n = 8; was 13.515 +- 0.016 in
+  `gate-f3a5dbdc1`), DL-379 8.107 +- 0.008 s (n = 16; was 11.169 +- 0.019,
+  n = 8), against 0.553 / 0.582 s extended-off. Canonical solve attempts
+  on DL-372: 1.60 M (was 2.68 M; development run `r1_dl372.log`).
 - The drop-area diagnostic is now the test-only
   `SMSExtendedTestHooks::DropAreaContributions()`, outside
   `ManifoldSolverConfig`.
@@ -1034,3 +1041,60 @@ Three lenses, zero P1; the five decisions above were accepted. Changes
   work and the transparent shadow delivers it (0.956 vs 0).
 - Round-1 gate at `dbcab0c9a`: every targeted suite passes with 0 build
   diagnostics; `SMSExtendedPartitionTest` 542/0.
+
+### Phase 3 review round 2 and user rulings (2026-10-07)
+
+Three fresh lenses, zero P1. User rulings:
+
+1. **DL-379:** keep the adopted ownership rule (a warped PT chain is
+   assigned to the root Newton reaches from its own vertices; an
+   unaccepted projection stays with PT). Ship with the two-sided
+   known-bias pin above; DL-379 stays open. The experimental
+   "uncertain-with-owned-set counts as owned" rule (ext/VCM 0.977 +-
+   0.023) is NOT adopted.
+2. **Cost:** accepted for this opt-in, internal mode; filed as **DL-449**
+   (the seed-policy levers), to revisit after Phase 4.
+
+Round-2 change (commit `69730e6ba`): `ExtendedLuminaryPoint` now tries the
+opposite approach when the first one meets the luminary beyond the push
+band (a luminary thinner than the reach, a crease), instead of returning
+uncertain, so B (sampled face normal) and PT (ray-facing geometric
+normal) agree there. Unit check: a 2.4e-5-thick closed luminary, both
+faces; red with the old early return (predicate 139/2). Otherwise
+unchanged. `SMSExtendedTestHooks` is documented as test-only.
+
+What the evidence does and does not establish:
+
+- The SSS re-entry rows (`SSSReceiverScene`, RGB and NM) and the
+  wrapped-caster row are **delegation smoke tests, not ownership-agreement
+  proofs**: SMS owns ~4 % of the SSS receiver's value (0.00120 of 0.0307,
+  run `gate-r1`) and the PT-owned estimate there has ~70 % relative se
+  (0.00107 +- 0.00086); the wrapped caster is never a caster, so SMS-owned
+  is structurally 0. They show the delegations run and full == SMS-off PT
+  within an 8-9 % band.
+
+Remaining Phase 3 gate gaps (stated explicitly):
+
+- Discovery-order independence is tested only through N = 1/2/4 trials
+  and the determinism checks (repeat, emitter-normal sign, budget); no
+  test permutes seed order.
+- DL-379 is a known-bias pin, not a red-proved correctness claim.
+- DL-339(a) (refractive-caster reflection residuals) is untouched by this
+  phase's tests.
+- Per-row detectability is limited where the se is wide: e.g. `inside`
+  (outward winding, SMS-owned se 0.035 on 0.49, run `gate-r1`) and the
+  per-component prism slab c0 (full/ref 1.10 within its 3-se band). The
+  mutation red proofs show which rows catch which defect.
+- Not run: Xcode, Deployment and Opto builds.
+
+Round-2 review P3 recorded as a note (no ledger row): under the GUI
+`clay_lights` preview override, PT's NEE and continuation use the clay
+BRDF at an anchor while SMS (and estimator B) price the authored
+material, so the partition there mixes two materials. Preview-only and
+pre-existing in kind for legacy SMS; not addressed.
+
+Round-2 verification at `69730e6ba` (run `r2/`): library build zero
+diagnostics; `ManifoldSolverTest` 388/0, `SMSExtendedReferenceTest`
+default 6522/0, `SMSExtendedPartitionTest` 545/0. Only
+`ExtendedLuminaryPoint` and comments/tests changed after the full
+round-1 gate (`gate-r1`), so the rest of the targeted list was not rerun.
