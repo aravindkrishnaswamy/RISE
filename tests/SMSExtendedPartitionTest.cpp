@@ -37,6 +37,7 @@
 #include "../src/Library/Interfaces/IEmitter.h"
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Shaders/PathTracingShaderOp.h"
 #include "../src/Library/Rendering/PathTracingPelRasterizer.h"
 #include "../src/Library/Utilities/PathGuidingField.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
@@ -191,6 +192,30 @@ namespace
             +ClippedQuad("emitter_geo",2.5,-0.7,0.7,-0.7,0.7,false,true)+Obj("emitter","emitter_geo","lum");
         return s;
     }
+    // Delegations. A random-walk SSS receiver (closed box, top face at the
+    // origin) under the slab: its BSDF vertex is an anchor and its BSSRDF
+    // continuation re-enters PT through the shader-op boundary. A wrapped
+    // caster (a zero-exitance luminaire over glass) crosses PT's SPF-only
+    // delta branch, which the extended domain cannot replay.
+    SceneSpec SSSReceiverScene() {
+        SceneSpec s;s.label="SSS receiver under slab";
+        s.text=Header()
+            +"randomwalk_sss_material\n{\n name rw\n ior 1.3\n absorption 0.8 0.4 0.04\n scattering 3 3.5 4\n g 0\n roughness 0.1\n max_bounces 64\n}\n"
+            +MeshBox("receiver_geo",false)+Obj("receiver","receiver_geo","rw"," position 0 0 -0.1\n scale 0.5 0.5 0.1\n")
+            +MeshBox("slab_geo",false)+Obj("caster","slab_geo","glass"," position 0 0 2\n scale 1.5 1.5 0.25\n")
+            +ClippedQuad("emitter_geo",3.5,-0.6,0.6,-0.6,0.6,false,true)+Obj("emitter","emitter_geo","lum");
+        return s;
+    }
+    SceneSpec WrappedCasterScene() {
+        SceneSpec s;s.label="wrapped caster (SPF-only delta)";
+        s.text=Header()
+            +"uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
+            +"lambertian_luminaire_material\n{\n name glasswrap\n exitance black\n scale 1\n material glass\n}\n"
+            +ClippedQuad("receiver_geo",0,-0.5,0.5,-0.5,0.5,false,true)+Obj("receiver","receiver_geo","diffuse")
+            +MeshBox("slab_geo",false)+Obj("caster","slab_geo","glasswrap"," position 0 0 2\n scale 1.5 1.5 0.25\n")
+            +ClippedQuad("emitter_geo",3.5,-0.6,0.6,-0.6,0.6,false,true)+Obj("emitter","emitter_geo","lum");
+        return s;
+    }
     // DL-336: a glass ball immersed in a constant ior-1.4 enclosure (camera,
     // receiver, ball and emitter all inside it): a weak lens with two
     // images of a receiver point. `air` swaps the enclosure out.
@@ -215,6 +240,9 @@ namespace
         Scalar nm=0; unsigned N=16384, salts=4, saltBase=61000, trials=2;
         bool hwss=false; ManifoldSolverConfig::SeedingMode seeding=ManifoldSolverConfig::eSeedingSnell;
         unsigned targetBounces=0; bool biased=true; SMSReferenceCounters* counters=nullptr;
+        // Shade CastRay re-entries (BSSRDF continuations) with a
+        // PathTracingShaderOp carrying the same SMS configuration.
+        bool reentryShaderOp=false;
     };
     struct PointResult {
         std::array<std::vector<double>,3> c; // per-salt means
@@ -224,9 +252,6 @@ namespace
         PointResult out;
         Fixture fixture(spec.text);
         if(!fixture.Ok()) return out;
-        std::vector<IShaderOp*> ops;IShader* shader=nullptr;
-        if(!RISE_API_CreateStandardShader(&shader,ops)||!shader) return out;
-        auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&fixture.Scene());
         ManifoldSolverConfig cfg;cfg.enabled=mode!=Mode::Ref;cfg.extendedMode=mode!=Mode::Legacy;
         cfg.biased=o.biased;cfg.multiTrials=o.trials;cfg.maxBernoulliTrials=64;
         cfg.seedingMode=o.seeding;cfg.targetBounces=o.targetBounces;
@@ -235,6 +260,12 @@ namespace
 #endif
         cfg.referenceCounters=o.counters;
         StabilityConfig stability;stability.rrMinDepth=4;
+        std::vector<IShaderOp*> ops;IShader* shader=nullptr;
+        PathTracingShaderOp* reentry=nullptr;
+        if(o.reentryShaderOp) {reentry=new PathTracingShaderOp(cfg,stability);ops.push_back(reentry);}
+        const bool shaderOk=RISE_API_CreateStandardShader(&shader,ops)&&shader;
+        if(!shaderOk) {if(reentry) reentry->release();return out;}
+        auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&fixture.Scene());
         auto* integrator=new PathTracingIntegrator(cfg,stability);integrator->SetMaxPathDepth(spec.maxDepth);
         if(integrator->GetSolver()) {
             std::vector<const IObject*> casters;ManifoldSolver::EnumerateSpecularCasters(fixture.Scene(),casters);
@@ -266,6 +297,7 @@ namespace
         }
         SobolSamplerTestHooks::ValueSalt().store(0);
         integrator->release();caster->release();shader->release();
+        if(reentry) reentry->release();
         out.ok=true;
         return out;
     }
@@ -685,6 +717,14 @@ static void RenderSection()
     // Sphere control; start inside a closed glass box, both windings.
     PartitionCase(SphereScene(),o,Owned::Required,true);
     for(bool reverse:{false,true}) PartitionCase(InsideScene(reverse),o);
+    // Delegations: SSS receiver (BSDF anchor + BSSRDF re-entry), RGB and
+    // NM; an SPF-only wrapped caster SMS can never own.
+    {
+        RenderOptions r=o;r.reentryShaderOp=true;
+        PartitionCase(SSSReceiverScene(),r,Owned::Reported);
+        RenderOptions nm=r;nm.nm=600;PartitionCase(SSSReceiverScene(),nm,Owned::Reported);
+    }
+    PartitionCase(WrappedCasterScene(),o,Owned::Forbidden);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -911,6 +951,13 @@ int main(int argc,char** argv)
         RenderOptions o;o.salts=16;o.N=g_quick?1024:4096;
         for(const auto& p:{std::array<double,2>{0,0},std::array<double,2>{0.3,0.2},std::array<double,2>{0.8,0}})
             PartitionCase(BallLensPoint(false,p[0],p[1]),o,Owned::Reported,false);
+    }
+    if(section=="delegation") {
+        RenderOptions o;o.salts=16;o.N=g_quick?1024:4096;
+        RenderOptions r=o;r.reentryShaderOp=true;
+        PartitionCase(SSSReceiverScene(),r,Owned::Reported);
+        {RenderOptions nm=r;nm.nm=600;PartitionCase(SSSReceiverScene(),nm,Owned::Reported);}
+        PartitionCase(WrappedCasterScene(),o,Owned::Forbidden);
     }
     if(section=="focus") {
         RenderOptions o;o.salts=64;o.N=4096;o.saltBase=777000;
