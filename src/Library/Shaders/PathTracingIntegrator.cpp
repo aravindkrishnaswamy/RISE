@@ -1912,8 +1912,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// leaves `anchorValid` false: today's rule again.
 	const bool bSMSSplit = bSMSEnabled &&
 		pSolver->SplitSuppressionExact( caster, !Traits::is_pel );
+	// Extended SMS (Phase 3): every anchor this loop evaluates is an
+	// extended anchor (eligibility already gates `smsCurrentAnchor`), so
+	// its area-emitter hits are partitioned by the canonical ownership
+	// predicate, which needs the recorded chain in EVERY seeding mode.
+	// Forced-legacy loops (HWSS hand-offs, SSS caches) keep today's rules.
+	const bool bSMSExtendedLoop = bSMSEnabled && !rc.smsForceLegacy &&
+		!smsIgnoreExtended_ && pSolver->ExtendedModeActive( scene );
 	std::optional<SMSChainRecord> smsChain;
-	if( bSMSSplit ) {
+	if( bSMSSplit || bSMSExtendedLoop ) {
 		if( pSMSChain_initial ) {
 			smsChain.emplace( *pSMSChain_initial );
 		} else {
@@ -2705,9 +2712,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// diffuse receiver) would be killed.  bSMSEnabled == (pSolver
 			// != 0); the Pel original spelled this `pSolver && ...` inline,
 			// the NM original as the `smsSuppressEmission` flag used here.
+			// Phase 3: an extended anchor's chain is classified by the
+			// canonical predicate alone.  It owns nothing SMS cannot
+			// represent, so DL-295's `uncovered` latch is implied, and
+			// applying it as well could only keep a chain SMS also owns.
+			const bool smsExtendedRecord = bSMSExtendedLoop && smsChain &&
+				smsChain->anchorValid && smsChain->extendedAnchor;
 			const bool smsSuppressEmission = bSMSEnabled
 				&& bPassedThroughSpecular && bHadNonSpecularShading
-				&& !bSMSChainUncovered;		// DL-295
+				&& ( smsExtendedRecord || !bSMSChainUncovered );		// DL-295
 			// GUI render modes P2b `light solo` (docs/gui/RENDER_MODES.md
 			// §3): under solo, a BSDF-sampled hit contributes emission
 			// ONLY when the hit object IS the soloed mesh luminary --
@@ -2735,10 +2748,50 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// toward this hit point converges to this chain; otherwise
 				// keep the hit (at full weight: the last vertex was delta).
 				// An emitter SMS's light sampler cannot draw (not an area
-				// light) is never estimated by SMS.  `smsChain` is engaged
-				// only where SMS is deterministic (SplitSuppressionExact).
+				// light) is never estimated by SMS.  In a legacy loop
+				// `smsChain` is engaged only where SMS is deterministic
+				// (SplitSuppressionExact); an extended loop engages it
+				// always and classifies with the canonical predicate.
 				bool smsSuppressThisHit = smsSuppressEmission;
-				if( smsSuppressThisHit && smsChain )
+				// Phase 3: per-component (RGB) / per-wavelength (NM) keep
+				// mask; 1 where PT keeps the component, 0 where SMS's
+				// canonical predicate owns this chain in that domain.
+				Value smsKeepMask = PTValueOne<Tag>();
+				bool smsApplyKeepMask = false;
+				if( smsSuppressThisHit && bSMSExtendedLoop )
+				{
+					smsSuppressThisHit = false;
+					if( smsExtendedRecord && ri.pObject ) {
+						bool anyOwned = false, anyKept = false;
+						if constexpr ( Traits::is_pel ) {
+							// A zero-throughput component carries nothing
+							// either way; skip its solves.  Identical
+							// component replays share one classification.
+							bool evaluate[3], owned[3];
+							for( unsigned int c = 0; c < 3; c++ ) {
+								evaluate[c] = throughput[c] != 0;
+							}
+							pSolver->ExtendedEmitterHitOwnedRGB( *smsChain, *ri.pObject,
+								ri.geometric.ptIntersection, ri.geometric.vGeomNormal,
+								scene, caster, evaluate, owned, ri.geometric.rast );
+							for( unsigned int c = 0; c < 3; c++ ) {
+								const bool componentOwned = evaluate[c] && owned[c];
+								smsKeepMask[c] = componentOwned ? Scalar( 0 ) : Scalar( 1 );
+								anyOwned = anyOwned || componentOwned;
+								anyKept = anyKept || !componentOwned;
+							}
+						} else {
+							anyOwned = pSolver->ExtendedEmitterHitOwned( *smsChain, *ri.pObject,
+								ri.geometric.ptIntersection, ri.geometric.vGeomNormal,
+								scene, caster, SMSQueryDomain::NM( tag.nm ), ri.geometric.rast );
+							anyKept = !anyOwned;
+						}
+						smsSuppressThisHit = anyOwned && !anyKept;
+						smsApplyKeepMask = anyOwned && anyKept;
+					}
+					// Uncertain or no extended record: PT keeps the hit.
+				}
+				else if( smsSuppressThisHit && smsChain )
 				{
 					const IGeometry* pHitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
 					SMSChainCoverage coverage = eSMSChainNotCovered;
@@ -2783,6 +2836,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				{
 				Value emission = PTEvalEmittedRadiance<Tag>(
 					pEmitter, ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal, tag );
+				if( smsApplyKeepMask ) {
+					emission = emission * smsKeepMask;
+				}
 				const Value rawEmission = emission;
 				Scalar emissionMiWeight = 1.0;
 
@@ -4664,7 +4720,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						ri.geometric.ray.Dir(), traceRay.Dir() );
 				} else if( smsPendingValid ) {
 					smsChain->SetAnchor( smsPendingPos, smsPendingGN,
-						smsPendingSN, *smsPendingStack );
+						smsPendingSN, *smsPendingStack, bSMSExtendedLoop );
 				} else {
 					smsChain->Invalidate();
 				}
