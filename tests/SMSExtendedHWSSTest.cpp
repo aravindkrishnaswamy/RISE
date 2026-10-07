@@ -826,24 +826,62 @@ static void CostSection()
 // lane wavelength, to attribute an HWSS lane disagreement: extended NM
 // full vs SMS-off NM, and NM SMS-owned vs PT-owned.  32 salts.
 //////////////////////////////////////////////////////////////////////
+static void PrintKDistribution(const std::string& label,const SMSReferenceCounters& c)
+{
+    // retryHistogram: one entry per reciprocal loop, bucket b = floor(log2 K).
+    unsigned long long loops=0;for(unsigned b=0;b<32;++b) loops+=c.retryHistogram[b];
+    const auto quantile=[&](double q)->unsigned long long {
+        unsigned long long acc=0;
+        for(unsigned b=0;b<32;++b) { acc+=c.retryHistogram[b]; if(double(acc)>=q*double(loops)) return 1ull<<b; }
+        return 1ull<<31;
+    };
+    std::cout<<"NMPROBE K "<<label<<" loops="<<loops<<" retryTrials="<<c.retryTrials<<" topologyRetryTrials="<<c.topologyRetryTrials
+        <<" meanK(=1/p(T) estimate)="<<(loops?double(c.topologyRetryTrials)/double(loops):0)
+        <<" K-bucket quantiles p50/p90/p99/p99.9/max >= "<<quantile(.5)<<"/"<<quantile(.9)<<"/"<<quantile(.99)<<"/"<<quantile(.999)<<"/"<<quantile(1.0)
+        <<" tailTrials="<<c.tailTrials<<" rouletteStops="<<c.rouletteStops
+        <<" proposals="<<c.proposalTrials<<" zeroTrials="<<c.zeroTrials<<" ownedRoots="<<c.ownedRoots<<" histogram=";
+    for(unsigned b=0;b<32;++b) if(c.retryHistogram[b]) std::cout<<"[2^"<<b<<"]"<<c.retryHistogram[b]<<" ";
+    std::cout<<"\n";
+}
+static void PrintSaltQuantiles(const std::string& label,std::vector<double> v)
+{
+    std::sort(v.begin(),v.end());
+    const auto q=[&](double p){return v[std::min<std::size_t>(v.size()-1,std::size_t(p*double(v.size())))];};
+    const Moments m(v);
+    double m3=0;for(double x:v) m3+=std::pow(x-m.mean,3);m3/=double(v.size());
+    std::cout<<std::setprecision(8)<<"NMPROBE per-salt "<<label<<" mean="<<m.mean<<" median="<<q(.5)
+        <<" p10/p90="<<q(.1)<<"/"<<q(.9)<<" min/max="<<v.front()<<"/"<<v.back()
+        <<" skewness="<<(m.sd>0?m3/std::pow(m.sd,3):0)<<" n="<<v.size()<<"\n";
+}
 static void NMProbeSection()
 {
-    RenderOptions o;o.N=4096;o.salts=64;o.saltBase=171000;
+    RenderOptions o;o.N=4096;o.salts=g_quick?8:g_biasSalts;o.saltBase=g_saltBase;
     const auto spec=ImmersedBallScene("medium14","prism");
-    for(unsigned w:{0u}) {
-        const auto ref=Render(spec,Mode::Ref,o,int(w));
-        RenderOptions f=o;f.saltBase=o.saltBase+100;
-        const auto full=Render(spec,Mode::Full,f,int(w)), kept=Render(spec,Mode::Kept,f,int(w));
-        RenderOptions h=o;h.saltBase=o.saltBase+500;
-        const auto hwss=Render(spec,Mode::Full,h), hwssRef=Render(spec,Mode::Ref,h);
-        const Moments hf(hwss.lane[w]),hr(hwssRef.lane[w]);
-        std::cout<<std::setprecision(8)<<"NMPROBE HWSS lane="<<w<<" full="<<hf.mean<<"+-"<<hf.se<<" ref="<<hr.mean<<"+-"<<hr.se
-            <<" full/ref="<<hf.mean/hr.mean<<" z="<<(hf.mean-hr.mean)/std::hypot(hf.se,hr.se)<<" n="<<o.salts<<"\n";
-        const Moments r(ref.lane[w]),fu(full.lane[w]),k(kept.lane[w]),owned(Diff(full.lane[w],kept.lane[w]));
-        std::cout<<std::setprecision(8)<<"NMPROBE "<<spec.label<<" nm="<<o.lambdas[w]<<" ref="<<r.mean<<"+-"<<r.se
-            <<" full="<<fu.mean<<"+-"<<fu.se<<" full/ref="<<fu.mean/r.mean<<" z="<<(fu.mean-r.mean)/std::hypot(fu.se,r.se)
-            <<" smsOwned="<<owned.mean<<"+-"<<owned.se<<" ptOwned="<<r.mean-k.mean<<"+-"<<std::hypot(r.se,k.se)<<" n="<<o.salts<<"\n";
-    }
+    const unsigned w=0;
+    const auto ref=Render(spec,Mode::Ref,o,int(w));
+    SMSReferenceCounters nmCounters;
+    RenderOptions f=o;f.saltBase=o.saltBase+100;f.counters=&nmCounters;
+    const auto full=Render(spec,Mode::Full,f,int(w));
+    f.counters=nullptr;
+    const auto kept=Render(spec,Mode::Kept,f,int(w));
+    SMSReferenceCounters hwssCounters;
+    RenderOptions h=o;h.saltBase=o.saltBase+500;h.counters=&hwssCounters;
+    const auto hwss=Render(spec,Mode::Full,h);
+    h.counters=nullptr;
+    const auto hwssRef=Render(spec,Mode::Ref,h);
+    const Moments hf(hwss.lane[w]),hr(hwssRef.lane[w]);
+    std::cout<<std::setprecision(8)<<"NMPROBE HWSS lane="<<w<<" full="<<hf.mean<<"+-"<<hf.se<<" ref="<<hr.mean<<"+-"<<hr.se
+        <<" full/ref="<<hf.mean/hr.mean<<" z="<<(hf.mean-hr.mean)/std::hypot(hf.se,hr.se)<<" n="<<o.salts<<"\n";
+    const Moments r(ref.lane[w]),fu(full.lane[w]),k(kept.lane[w]),owned(Diff(full.lane[w],kept.lane[w]));
+    std::cout<<std::setprecision(8)<<"NMPROBE "<<spec.label<<" nm="<<o.lambdas[w]<<" ref="<<r.mean<<"+-"<<r.se
+        <<" full="<<fu.mean<<"+-"<<fu.se<<" full/ref="<<fu.mean/r.mean<<" z="<<(fu.mean-r.mean)/std::hypot(fu.se,r.se)
+        <<" smsOwned="<<owned.mean<<"+-"<<owned.se<<" ptOwned="<<r.mean-k.mean<<"+-"<<std::hypot(r.se,k.se)<<" n="<<o.salts<<"\n";
+    PrintSaltQuantiles("NM full",full.lane[w]);
+    PrintSaltQuantiles("NM SMS-off",ref.lane[w]);
+    PrintSaltQuantiles("HWSS lane-0 full",hwss.lane[w]);
+    PrintSaltQuantiles("HWSS lane-0 SMS-off",hwssRef.lane[w]);
+    PrintKDistribution("NM 450 nm",nmCounters);
+    PrintKDistribution("HWSS (all lanes)",hwssCounters);
 }
 
 //////////////////////////////////////////////////////////////////////
