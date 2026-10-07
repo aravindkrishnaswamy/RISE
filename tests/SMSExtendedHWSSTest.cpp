@@ -63,7 +63,8 @@
 namespace
 {
     bool g_quick=false;
-    std::string g_caseFilter;   // `--case <substring>`: run matching LaneCase labels only
+    std::string g_caseFilter;
+    unsigned g_biasSalts=64;    // `--bias-salts N`: samplerbias render count per sampler   // `--case <substring>`: run matching LaneCase labels only
     const unsigned kLanes=SampledWavelengths::N;
     using Lanes=std::array<Scalar,SampledWavelengths::N>;
 
@@ -78,9 +79,6 @@ namespace
             se=n>0?sd/std::sqrt(double(n)):0;
         }
     };
-    bool Agree(const Moments& a,const Moments& b,double k=3) {
-        return std::fabs(a.mean-b.mean)<=k*std::hypot(a.se,b.se);
-    }
     std::vector<double> Diff(const std::vector<double>& a,const std::vector<double>& b) {
         std::vector<double> d;for(std::size_t i=0;i<a.size()&&i<b.size();++i) d.push_back(a[i]-b[i]);return d;
     }
@@ -337,6 +335,7 @@ namespace
         bool transparentShadows=false;
         bool forceLegacyScope=false;     // run inside a forced-legacy scope
         bool reentryShaderOp=false;      // CastRay re-entries shaded by PT
+        bool independent=false;          // SobolSamplerTestHooks::Independent (i.i.d. draws)
         SMSReferenceCounters* counters=nullptr;
     };
     struct LaneResult {
@@ -366,6 +365,7 @@ namespace
             std::vector<const IObject*> casters;ManifoldSolver::EnumerateSpecularCasters(fixture.Scene(),casters);
             integrator->GetSolver()->SetSpecularCasters(casters);
         }
+        const bool previousIndependent=SobolSamplerTestHooks::Independent().exchange(o.independent);
         for(unsigned salt=0;salt<o.salts;++salt) {
             const unsigned value=SobolSequence::HashCombine(o.saltBase+salt,0x48575353u);
             SobolSamplerTestHooks::ValueSalt().store(value);
@@ -390,6 +390,7 @@ namespace
             for(unsigned w=0;w<kLanes;++w) if(nmLane<0||int(w)==nmLane) out.lane[w].push_back(sum[w]/o.N);
         }
         SobolSamplerTestHooks::ValueSalt().store(0);
+        SobolSamplerTestHooks::Independent().store(previousIndependent);
         integrator->release();caster->release();shader->release();
         if(reentry) reentry->release();
         out.ok=true;
@@ -397,41 +398,98 @@ namespace
     }
     unsigned g_saltBase=71000;
 
-    // Two-stage statistical gating.  A case makes ~16-20 comparisons at 3
-    // combined se from n = 8-16 salt means of a heavy-tailed estimator (B's
-    // reciprocal), and the whole file ~400: at that multiplicity a correct
-    // implementation trips a few 3-se bands per run (measured: 5 of 1060 in
-    // one gate run, none of them reproduced with fresh salts).  So a case
-    // whose STATISTICAL checks fail is re-rendered once with independent
-    // salts and gated on that second stage; its first-stage failures are
-    // printed (never silently dropped) and counted.  Exact checks (no
-    // termination, an exactly zero owned share, no predicate draws, finite,
-    // completed renders) are never retried: any exact failure commits the
-    // first stage as-is.  A real defect must fail both stages.
+    // Statistical gating (round-1 review): NO retries.  Per-salt means of
+    // estimator B's heavy-tailed reciprocal give se estimates from only
+    // n salts, so a "3 combined se" band treated as exact over-fails
+    // (measured lane z sd 1.10-1.17, mean ~0).  Each case therefore gates:
+    //  - EQUALITY checks (true for a correct build: HWSS = SMS-off,
+    //    SMS-owned = PT-owned, HWSS = NM, owned = NM owned, closed form)
+    //    with Student-t critical values at the Welch-Satterthwaite df and a
+    //    Bonferroni split of a two-sided 0.0027 (the Gaussian 3-sigma
+    //    level) over the case's m equality checks;
+    //  - DETECTION checks (an effect must be resolved: SMS owns a share,
+    //    estimator A delivers light, lanes differ) at the one-sided t
+    //    quantile of the Gaussian 3-sigma level, no Bonferroni (a family
+    //    split would only make a correct build fail more often).
+    //  - EXACT checks (no termination, exactly zero owned share, no
+    //    predicate draws, finite, completed renders) as they are.
+    double RegularizedBetaCF(double a,double b,double x) {
+        const int maxIt=400;const double eps=1e-15,fpmin=1e-300;
+        double qab=a+b,qap=a+1,qam=a-1,c=1,d=1-qab*x/qap;
+        if(std::fabs(d)<fpmin) d=fpmin;
+        d=1/d;double h=d;
+        for(int m=1;m<=maxIt;++m) {
+            const int m2=2*m;
+            double aa=m*(b-m)*x/((qam+m2)*(a+m2));
+            d=1+aa*d;if(std::fabs(d)<fpmin) d=fpmin;c=1+aa/c;if(std::fabs(c)<fpmin) c=fpmin;d=1/d;h*=d*c;
+            aa=-(a+m)*(qab+m)*x/((a+m2)*(qap+m2));
+            d=1+aa*d;if(std::fabs(d)<fpmin) d=fpmin;c=1+aa/c;if(std::fabs(c)<fpmin) c=fpmin;d=1/d;
+            const double del=d*c;h*=del;
+            if(std::fabs(del-1)<eps) break;
+        }
+        return h;
+    }
+    double RegularizedBeta(double a,double b,double x) {
+        if(x<=0) return 0; if(x>=1) return 1;
+        const double bt=std::exp(std::lgamma(a+b)-std::lgamma(a)-std::lgamma(b)+a*std::log(x)+b*std::log(1-x));
+        return x<(a+1)/(a+b+2) ? bt*RegularizedBetaCF(a,b,x)/a : 1-bt*RegularizedBetaCF(b,a,1-x)/b;
+    }
+    // Upper tail P(T > t) of Student t with df degrees of freedom, t >= 0.
+    double StudentUpperTail(double t,double df) { return 0.5*RegularizedBeta(df/2,0.5,df/(df+t*t)); }
+    // The t with P(T > t) = p.
+    double StudentQuantileUpper(double p,double df) {
+        double lo=0,hi=1;
+        while(StudentUpperTail(hi,df)>p && hi<1e6) hi*=2;
+        for(int i=0;i<200;++i) { const double mid=0.5*(lo+hi); (StudentUpperTail(mid,df)>p?lo:hi)=mid; }
+        return 0.5*(lo+hi);
+    }
+    const double kThreeSigmaTwoSided=0.0026997960632601866;   // 2 * (1 - Phi(3))
+
     struct Stage {
-        struct Entry { bool ok; bool statistical; std::string label; };
-        std::vector<Entry> entries;
-        void Stat(bool ok,const std::string& label) { entries.push_back({ok,true,label}); }
-        void Exact(bool ok,const std::string& label) { entries.push_back({ok,false,label}); }
-        bool StatFailed() const { for(const auto& e:entries) if(!e.ok&&e.statistical) return true; return false; }
-        bool ExactFailed() const { for(const auto& e:entries) if(!e.ok&&!e.statistical) return true; return false; }
-        void Commit() const { for(const auto& e:entries) Check(e.ok,e.label); }
-        void PrintFailures(const std::string& why) const {
-            for(const auto& e:entries) if(!e.ok) std::cout<<"  FIRST-STAGE ("<<why<<"): "<<e.label<<"\n";
+        struct Equality { double diff, se, df, tolerance; std::string label; };
+        struct Detection { double mean, se, df; std::string label; };
+        std::vector<Equality> equalities;
+        std::vector<Detection> detections;
+        std::vector<std::pair<bool,std::string>> exact;
+        static double WelchDf(const Moments& a,const Moments& b) {
+            const double va=a.se*a.se, vb=b.se*b.se;
+            const double num=(va+vb)*(va+vb), den=(a.n>1?va*va/double(a.n-1):0)+(b.n>1?vb*vb/double(b.n-1):0);
+            return den>0 ? num/den : double(std::max<std::size_t>(1,std::min(a.n,b.n)-1));
+        }
+        void Equal(const Moments& a,const Moments& b,const std::string& label) {
+            equalities.push_back({a.mean-b.mean,std::hypot(a.se,b.se),WelchDf(a,b),0,label});
+        }
+        // a vs a value with its own (se, n) (e.g. ref - kept)
+        void Equal(double diff,double se,double df,const std::string& label,double tolerance=0) {
+            equalities.push_back({diff,se,df,tolerance,label});
+        }
+        void Detect(const Moments& m,const std::string& label) {
+            detections.push_back({m.mean,m.se,double(m.n>1?m.n-1:1),label});
+        }
+        void Exact(bool ok,const std::string& label) { exact.push_back({ok,label}); }
+        bool reportOnly=false;   // a known-residual band: equalities printed, not gated
+        void Commit() const {
+            const double perCheck=kThreeSigmaTwoSided/double(std::max<std::size_t>(1,equalities.size()));
+            for(const auto& e:equalities) {
+                const double t=StudentQuantileUpper(perCheck/2,std::max(1.0,e.df));
+                const bool ok=std::isfinite(e.diff)&&std::fabs(e.diff)<=t*e.se+e.tolerance;
+                if(reportOnly) {
+                    std::cout<<"  REPORTED (known residual, not gated) "<<e.label<<": d/se="<<e.diff/e.se
+                        <<" critical "<<t<<(ok?" inside":" OUTSIDE")<<"\n";
+                    continue;
+                }
+                if(!ok) std::cout<<"  equality |d|="<<std::fabs(e.diff)<<" > t("<<e.df<<")="<<t<<" x se="<<e.se<<"\n";
+                Check(ok,e.label+" [Welch t, Bonferroni over "+std::to_string(equalities.size())+"]");
+            }
+            for(const auto& d:detections) {
+                const double t=StudentQuantileUpper(kThreeSigmaTwoSided/2,std::max(1.0,d.df));
+                Check(d.mean>0 && d.mean>t*d.se,d.label+" [t one-sided 3-sigma level]");
+            }
+            for(const auto& e:exact) Check(e.first,e.second);
         }
     };
-    unsigned g_confirmations=0;
-    const unsigned kConfirmSaltOffset=500000;
-    // Runs body(stage, saltOffset) once, and once more with independent
-    // salts when only statistical checks failed.
-    template<class Body> void Gated(const std::string& label,Body body) {
-        Stage first;body(first,0u);
-        if(first.StatFailed() && !first.ExactFailed()) {
-            ++g_confirmations;
-            first.PrintFailures("confirmation re-render with independent salts");
-            std::cout<<label<<": first stage failed statistically; second stage gates\n";
-            Stage second;body(second,kConfirmSaltOffset);second.Commit();
-        } else first.Commit();
+    template<class Body> void Gated(const std::string&,Body body,bool reportOnly=false) {
+        Stage stage;stage.reportOnly=reportOnly;body(stage,0u);stage.Commit();
     }
 
     enum class Owned { Required, Forbidden, Reported };
@@ -442,6 +500,8 @@ namespace
         // Gate: some pair of lanes' SMS-owned values differ by > 3 combined
         // se (lanes genuinely land on different roots / weights).
         bool expectLanesDiffer=false;
+        // DL-450: a known-residual band, printed with its critical values.
+        bool reportOnly=false;
     };
 
     // The full per-lane partition case (area emitters).
@@ -477,17 +537,21 @@ namespace
                 <<" ptOwned="<<ptOwned<<"+-"<<ptOwnedSe<<" NMfull="<<nf_.mean<<"+-"<<nf_.se
                 <<" NMowned="<<nmOwned.mean<<"+-"<<nmOwned.se;
             stage.Exact(std::isfinite(f.mean)&&std::isfinite(r.mean),tag.str()+": finite");
-            stage.Stat(Agree(f,r),tag.str()+": extended HWSS lane = SMS-off HWSS lane within 3 combined se");
-            stage.Stat(std::fabs(smsOwned.mean-ptOwned)<=3*std::hypot(smsOwned.se,ptOwnedSe),
-                tag.str()+": lane SMS-owned (full-kept) = PT-owned (ref-kept) within 3 combined se");
-            stage.Stat(Agree(f,nf_),tag.str()+": HWSS lane = extended NM at the lane wavelength within 3 combined se");
-            stage.Stat(Agree(smsOwned,nmOwned),tag.str()+": lane SMS-owned = NM SMS-owned at the lane wavelength within 3 combined se");
-            if(e.owned[w]==Owned::Required) stage.Stat(smsOwned.mean>3*smsOwned.se&&smsOwned.mean>0,tag.str()+": SMS owns a resolvable share");
+            stage.Equal(f,r,tag.str()+": extended HWSS lane = SMS-off HWSS lane");
+            {
+                // PT-owned = ref - kept (independent salt sets).
+                const double df=Stage::WelchDf(smsOwned,r);
+                stage.Equal(smsOwned.mean-ptOwned,std::hypot(smsOwned.se,ptOwnedSe),df,
+                    tag.str()+": lane SMS-owned (full-kept) = PT-owned (ref-kept)");
+            }
+            stage.Equal(f,nf_,tag.str()+": HWSS lane = extended NM at the lane wavelength");
+            stage.Equal(smsOwned,nmOwned,tag.str()+": lane SMS-owned = NM SMS-owned at the lane wavelength");
+            if(e.owned[w]==Owned::Required) stage.Detect(smsOwned,tag.str()+": SMS owns a resolvable share");
             if(e.owned[w]==Owned::Forbidden) stage.Exact(smsOwned.mean==0&&nmOwned.mean==0,tag.str()+": SMS owns nothing in this lane");
             if(e.closedForm) {
                 const double cf=MirrorClosedForm(spec,o.lambdas[w]);
                 std::cout<<" closedForm="<<cf;
-                stage.Stat(std::fabs(f.mean-cf)<=3*f.se+1e-3*cf,tag.str()+": HWSS lane = closed form within 3 se");
+                stage.Equal(f.mean-cf,f.se,double(f.n-1),tag.str()+": HWSS lane = closed form",1e-3*cf);
             }
             std::cout<<" n="<<o.salts<<" spp="<<o.N<<"\n";
         }
@@ -501,13 +565,14 @@ namespace
                 best=std::max(best,std::fabs(x.mean-y.mean)/std::hypot(x.se,y.se));
             }
             std::cout<<spec.label<<" largest lane-pair SMS-off separation z="<<best<<"\n";
-            stage.Stat(best>3,spec.label+": lanes' transport differs (distinct per-lane geometry)");
+            stage.Exact(best>StudentQuantileUpper(kThreeSigmaTwoSided/2,double(o.salts-1)),
+                spec.label+": lanes' transport differs (distinct per-lane geometry, t 3-sigma level)");
         }
         std::cout<<spec.label<<" counters partitionQueries="<<counters.partitionQueries
             <<" owned="<<counters.partitionOwned<<" uncertain="<<counters.partitionUncertain
             <<" canonicalSolves="<<counters.canonicalSolves<<" samplerDraws="<<counters.canonicalSamplerDraws<<"\n";
         stage.Exact(counters.canonicalSamplerDraws==0,spec.label+": the canonical predicate drew no random number");
-        });
+        },e.reportOnly);
     }
 }
 
@@ -516,9 +581,9 @@ namespace
 //////////////////////////////////////////////////////////////////////
 static void LanesSection()
 {
-    // Estimator B's reciprocal has a heavy tail: 16 salts (Phase 3's
-    // render-section protocol), never fewer for the recorded gate.
-    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:16;
+    // Estimator B's reciprocal has a heavy tail: 32 salts x 4096 (review
+    // round 1: bring the lane means toward <= 5 % relative se).
+    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:32;
     LaneExpect cf;cf.closedForm=true;
     // Planar mirror (no BSDF: every lane is handed to its own NM walk with
     // the HWSS anchor bit and record): indexed mesh both windings, plane.
@@ -546,7 +611,10 @@ static void LanesSection()
     // affordable n -- Phase 3's own NM estimator reads 0.948 +- 0.020 of
     // SMS-off NM there at 64 salts, HWSS 1.076 +- 0.077 (one outlier);
     // `--section nmprobe` reproduces it (DL-450).
-    {RenderOptions p=o;p.salts=g_quick?4:32;LaneCase(ImmersedBallScene("medium14","gentleprism"),p);}
+    LaneCase(ImmersedBallScene("medium14","gentleprism"),o);
+    // DL-450 known residual, REPORTED (not gated): the n = 1.9 ball keeps
+    // the relative-index ~1.36 regime visible.
+    {LaneExpect r;r.reportOnly=true;r.owned.fill(Owned::Reported);LaneCase(ImmersedBallScene("medium14","prism"),o,r);}
     LaneCase(ImmersedBallScene("dispersivemedium","glass"),o);
     // SSS receiver (a camera-entry NM delegation per lane).  The receiver's
     // owned share is small (Phase 3: ~4 %); gated for agreement only.
@@ -560,8 +628,8 @@ static void LanesSection()
 //////////////////////////////////////////////////////////////////////
 static void BodySection()
 {
-    // Estimator B (heavy reciprocal tail): 16 salts x 4096, as `lanes`.
-    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:16;
+    // Estimator B (heavy reciprocal tail): 32 salts x 4096, as `lanes`.
+    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:32;
     for(const char* lum:{"lum","lumbsdf"}) {
         for(bool reverse:{false,true}) LaneCase(CeilingScene("polished",true,reverse,lum),o);
         LaneCase(CeilingScene("polished",false,false,lum),o);
@@ -617,8 +685,8 @@ static void TIRSection()
                 std::cout<<std::setprecision(8)<<tag.str()<<" HWSS="<<h.mean<<"+-"<<h.se<<" NM="<<r.mean<<"+-"<<r.se
                     <<" ratio="<<h.mean/r.mean<<" saltBase="<<p.saltBase<<"\n";
                 stage.Exact(nm.ok,tag.str()+": NM render completes");
-                stage.Stat(h.mean>3*h.se,tag.str()+": estimator A delivers the light through the prism");
-                stage.Stat(Agree(h,r),tag.str()+": HWSS lane = extended NM at the lane wavelength within 3 combined se");
+                stage.Detect(h,tag.str()+": estimator A delivers the light through the prism");
+                stage.Equal(h,r,tag.str()+": HWSS lane = extended NM at the lane wavelength");
             }
             // The two TIR lanes (450, 500) carry the total-reflection weight
             // (1); the two below the critical angle (620, 650) a dielectric
@@ -627,7 +695,7 @@ static void TIRSection()
             for(unsigned w=0;w<kLanes;++w) (lambdas[w]<550?tir:plain)+=mean[w];
             std::cout<<label.str()<<" TIR/non-TIR lane ratio="<<tir/plain
                 <<" acceptedDiscoveries="<<counters.acceptedDiscoveries<<"\n";
-            stage.Stat(tir>3*plain,spec.label+": lanes past the critical angle carry the TIR weight, the others Fresnel");
+            stage.Exact(tir>3*plain,spec.label+": lanes past the critical angle carry the TIR weight, the others Fresnel");
         });
     }
 }
@@ -637,8 +705,8 @@ static void TIRSection()
 //////////////////////////////////////////////////////////////////////
 static void MaskSection()
 {
-    // Estimator B (heavy reciprocal tail): 16 salts x 4096, as `lanes`.
-    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:16;
+    // Estimator B (heavy reciprocal tail): 32 salts x 4096, as `lanes`.
+    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:32;
     // s(450)=2, s(550)=2, s(600)=1.25, s(640)=0.8: lane 3 is ineligible.
     o.lambdas={{450,550,600,640}};
     LaneExpect m;m.owned[3]=Owned::Forbidden;
@@ -678,8 +746,8 @@ static void DeltaSection()
                 std::cout<<std::setprecision(8)<<tag.str()<<" HWSS="<<h.mean<<"+-"<<h.se<<" NM="<<r.mean<<"+-"<<r.se
                     <<" saltBase="<<hb.saltBase<<"\n";
                 stage.Exact(nm.ok&&hw.ok,tag.str()+": renders complete");
-                stage.Stat(h.mean>3*h.se,tag.str()+": estimator A delivers the light");
-                stage.Stat(Agree(h,r),tag.str()+": HWSS lane = extended NM at the lane wavelength within 3 combined se");
+                stage.Detect(h,tag.str()+": estimator A delivers the light");
+                stage.Equal(h,r,tag.str()+": HWSS lane = extended NM at the lane wavelength");
             }
         });
     }
@@ -778,9 +846,43 @@ static void NMProbeSection()
     }
 }
 
+//////////////////////////////////////////////////////////////////////
+// samplerbias (opt-in): the DL-283 methodology for the Phase 4 review's
+// Sobol' budget finding.  Extended HWSS rendered with salted Sobol'
+// draws (every render salted) vs the independent sampler (every
+// SobolSampler draw i.i.d.; an unbiased reference no stream overrun can
+// reach), n renders each; per lane and the 4-lane mean, z of the
+// difference.  `--salt-base` moves both sets.
+//////////////////////////////////////////////////////////////////////
+static void SamplerBiasSection()
+{
+    RenderOptions o;o.N=1024;o.salts=g_quick?8:g_biasSalts;
+    for(const auto& spec:{CeilingScene("polished",true,false,"lum"),SlabScene(false,"glass",false)}) {
+        RenderOptions sob=o;sob.saltBase=g_saltBase;
+        RenderOptions ind=o;ind.saltBase=g_saltBase+5000;ind.independent=true;
+        g_saltBase+=10000;
+        const auto a=Render(spec,Mode::Full,sob), b=Render(spec,Mode::Full,ind);
+        std::vector<double> ma, mb;
+        for(unsigned s2=0;s2<o.salts;++s2) {
+            double x=0,y=0;for(unsigned w=0;w<kLanes;++w){x+=a.lane[w][s2];y+=b.lane[w][s2];}
+            ma.push_back(x/kLanes);mb.push_back(y/kLanes);
+        }
+        for(unsigned w=0;w<=kLanes;++w) {
+            const Moments x(w<kLanes?a.lane[w]:ma), y(w<kLanes?b.lane[w]:mb);
+            std::cout<<std::setprecision(8)<<"SAMPLERBIAS "<<spec.label<<(w<kLanes?" lane="+std::to_string(w):std::string(" lane-mean"))
+                <<" sobol="<<x.mean<<"+-"<<x.se<<" independent="<<y.mean<<"+-"<<y.se
+                <<" rel="<<(x.mean/y.mean-1)*100<<"% z="<<(x.mean-y.mean)/std::hypot(x.se,y.se)<<" n="<<o.salts<<" spp="<<o.N<<"\n";
+        }
+    }
+}
+
 int main(int argc,char** argv)
 {
     Check(ConfigureTestWorker(),"single-worker options configured");
+    // The gating's Student-t quantile against tabulated values.
+    Check(std::fabs(StudentQuantileUpper(0.025,10)-2.228138852)<1e-6,"t(10) 0.975 quantile = 2.228139");
+    Check(std::fabs(StudentQuantileUpper(0.005,31)-2.744041)<1e-5,"t(31) 0.995 quantile = 2.744041");
+    Check(std::fabs(StudentQuantileUpper(kThreeSigmaTwoSided/2,1e7)-3.0)<1e-4,"t(inf) at the 3-sigma level = 3");
     std::string section;
     for(int i=1;i<argc;++i) {
         const std::string a=argv[i];
@@ -788,6 +890,7 @@ int main(int argc,char** argv)
         else if(a=="--section" && i+1<argc) section=argv[++i];
         else if(a=="--case" && i+1<argc) g_caseFilter=argv[++i];
         else if(a=="--salt-base" && i+1<argc) g_saltBase=unsigned(std::stoul(argv[++i]));
+        else if(a=="--bias-salts" && i+1<argc) g_biasSalts=unsigned(std::stoul(argv[++i]));
     }
     const auto run=[&](const char* name,void(*f)()) {
         if(section.empty()||section==name) {std::cout<<"=== "<<name<<" ===\n";f();}
@@ -800,7 +903,7 @@ int main(int argc,char** argv)
     run("lanes",LanesSection);
     if(section=="cost") {std::cout<<"=== cost ===\n";CostSection();}
     if(section=="nmprobe") {std::cout<<"=== nmprobe ===\n";NMProbeSection();}
-    std::cout<<"confirmation re-renders (first stage failed statistically): "<<g_confirmations<<"\n";
+    if(section=="samplerbias") {std::cout<<"=== samplerbias ===\n";SamplerBiasSection();}
     std::cout<<passCount<<" passed, "<<failCount<<" failed"<<std::endl;
     return failCount?1:0;
 }
