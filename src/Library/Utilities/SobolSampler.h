@@ -159,6 +159,10 @@ namespace RISE
 			// bounce 0's, and so on) -- one dimension driving a
 			// light-vertex and an eye-vertex decision of one path, a
 			// -12 % bias in dense fog.
+			//   PT extended SMS (sms-ext Phase 4): per (PT depth mod 1024,
+			//   lane) one stream at 141312 + 4 * depth + lane, [141312,
+			//   145408), drawn through ForkStream so it never moves the
+			//   vertex stream -- PathTransportUtilities::PTExtendedSMSStream.
 			// The full map, including the wrap-region families past
 			// the dimension table, is SobolDimensionBudgetTest G2.
 			//
@@ -237,6 +241,24 @@ namespace RISE
 			void StartStream( int streamIndex )
 			{
 				dimension = static_cast<unsigned int>(streamIndex) * kStreamStride;
+			}
+
+			//! A sampler on the SAME sequence and scramble (sample index,
+			//! seed) positioned at `streamIndex`, with its own dimension
+			//! counter: draws from it never move this sampler's position.
+			//! For a consumer that must draw from a stream of its own in
+			//! the middle of another stream's draws (PT's extended SMS,
+			//! PathTransportUtilities::PTExtendedSMSStream).  In the
+			//! independent test mode the fork's generator is re-keyed by
+			//! the stream so its draws are fresh, not a replay of this
+			//! sampler's.  The alpha region is not forked (callers have
+			//! no alpha coverage: extended SMS is ineligible with it).
+			SobolSampler ForkStream( int streamIndex ) const
+			{
+				SobolSampler fork( *this );
+				fork.StartStream( streamIndex );
+				fork.rngState ^= ( uint64_t( static_cast<uint32_t>( streamIndex ) ) + 1ull ) * 0x9E3779B97F4A7C15ull;
+				return fork;
 			}
 		};
 	}

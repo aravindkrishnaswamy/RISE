@@ -17,6 +17,8 @@
 
 #include "pch.h"
 #include "PathTracingIntegrator.h"
+#include "../Utilities/SobolSampler.h"
+#include <atomic>
 #include "../Rendering/LuminaryManager.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/IndependentSampler.h"
@@ -5736,8 +5738,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	Scalar castRRCompensation_
 	) const
 {
-    const SMSLegacyModeScope smsMode(rc, true);
-    if(pSolver && pSolver->ExtendedModeActive(scene)) pSolver->WarnHWSSLegacyMode();
+    // Phase 4 (docs/SMS_EXTENDED_DESIGN.md, "Phase 4 implementation
+    // record"): with extended mode active every lane evaluates SMS in its
+    // OWN NM query domain -- anchor eligibility, estimators A/B, DL-344's
+    // shadow switch -- and owns or keeps a BSDF-sampled emitter hit by the
+    // shared predicate in that domain, here and in every NM delegation.
+    // A caller's forced-legacy scope (RayCaster::CastRayHWSS) or an
+    // inactive extended mode keeps today's legacy HWSS exactly.
+    const bool bSMSExtendedLoopHW = pSolver && !rc.smsForceLegacy && pSolver->ExtendedModeActive( scene );
+    const SMSLegacyModeScope smsMode(rc, !bSMSExtendedLoopHW);
+    if(!bSMSExtendedLoopHW && pSolver && pSolver->ExtendedModeActive(scene)) pSolver->WarnHWSSLegacyMode();
+    // The `smsIgnoreExtended_` value every NM delegation below receives.
+    const bool smsLegacyHandOff = !bSMSExtendedLoopHW;
 	// Initialize results
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 		hwssResult[i] = 0;
@@ -5804,7 +5816,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// `startDepth` -- forward the cast-level RR
 						// compensation (see this function's own trailing
 						// parameter doc).
-						castRRCompensation_ , false, nullptr, true);
+						castRRCompensation_ , false, nullptr, smsLegacyHandOff);
 			}
 		}
 		return;
@@ -5857,7 +5869,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						false, false, pAOV, bsdfMisPdf,
 						// DL-196: this delegation IS `firstHit` at
 						// `startDepth` too (see the Fallback 1 site above).
-						castRRCompensation_ , false, nullptr, true);
+						castRRCompensation_ , false, nullptr, smsLegacyHandOff);
 				}
 			}
 			return;
@@ -5935,14 +5947,36 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// delta lobe at a BSDF vertex) keeps today's rule: SMS ran per lane,
 	// so a split would be a per-lane decision on one shared hero path
 	// (DL-378).
+	//
+	// Phase 4: an extended bundle records the chain in every seeding mode
+	// (the canonical predicate needs it, as in the Pel/NM extended loop)
+	// and closes DL-378 there: the body's own emitter hits and the NM
+	// delegations are classified per lane.
 	std::optional<SMSChainRecord> smsChainHWSS;
-	if( pSolver && pSolver->SplitSuppressionExact( caster, true ) ) {
+	if( pSolver && ( bSMSExtendedLoopHW || pSolver->SplitSuppressionExact( caster, true ) ) ) {
 		smsChainHWSS.emplace();
 	}
 	bool smsPendingValidHWSS = false;
 	Point3 smsPendingPosHWSS;
 	Vector3 smsPendingGNHWSS, smsPendingSNHWSS;
 	std::optional<IORStack> smsPendingStackHWSS;
+	// Phase 4 lane state (read only by an extended bundle).
+	//   smsLaneAnchorNow[w]: lane w's PART 2 at THIS vertex was an SMS
+	//     anchor -- `ExtendedAnchorEligible` at swl.lambda[w], the Pel/NM
+	//     loop's `smsCurrentAnchor` per lane.  It gates all three switches
+	//     of that lane (SMS contribution, DL-344 shadow, suppression).
+	//   smsLaneAnchor[w]: the same bit at the recorded anchor (the last
+	//     non-delta vertex), i.e. the lane's `bHadNonSpecularShading`.
+	//   smsGuardedEmissionHW: PART 3's SMS guard turned `considerEmission`
+	//     off (the Pel/NM loop's `smsGuardedEmission`), so PART 1 and the
+	//     delegations can still keep a hit a lane does not own.
+	bool smsLaneAnchorNow[SampledWavelengths::N];
+	bool smsLaneAnchor[SampledWavelengths::N];
+	for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+		smsLaneAnchorNow[w] = false;
+		smsLaneAnchor[w] = false;
+	}
+	bool smsGuardedEmissionHW = false;
 
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
@@ -6267,7 +6301,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 									// HWSS geometry is hero-driven.  Let only the hero
 									// continuation populate the shared, wavelength-independent
 									// Accurate guide so companion paths cannot race to define it.
-									w == 0 ? pAOV : 0 , -1, 1, false, nullptr, true);
+									w == 0 ? pAOV : 0 , -1, 1, false, nullptr, smsLegacyHandOff);
 								break;
 							}
 
@@ -6534,10 +6568,20 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// `IntegrateFromHitNM` call is dedicated to wavelength
 				// `swl.lambda[w]` and its own emitter-hit/env-escape sites
 				// read this as their MIS partner at that same wavelength.
+				//
+				// Phase 4 (DL-378's delegated path): an extended bundle hands
+				// lane w ITS OWN anchor bit and record, and reopens the
+				// emission gate PART 3's SMS guard closed while saying so
+				// (`bPassedThroughSpecular`), so the delegated PART 1 asks the
+				// predicate in this lane's domain instead of dropping the hit
+				// -- the Pel/NM loop's `smsGuardedEmission` rule.  A legacy
+				// bundle passes today's arguments.
+				const bool laneAnchor = bSMSExtendedLoopHW ? smsLaneAnchor[w] : bSMSAnchor;
 				hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 					rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 					pRadianceMap, depth, iorStack, bsdfPdf, 0,
-					considerEmission, importance, rayType,
+					bSMSExtendedLoopHW ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
+					importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
 					// DL-295: hand the delegated body this chain's SMS
@@ -6549,9 +6593,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// cannot represent (`bSMSChainUncovered`, forwarded as its
 					// own parameter so the delegated body's PART 1 latch AND
 					// PART 3 both see it through the next SMS caster).
-					false, bSMSAnchor, pAOV, misBsdfPdfComp[w],
+					bSMSExtendedLoopHW && bPassedThroughSpecular, laneAnchor, pAOV, misBsdfPdfComp[w],
 					1, bSMSChainUncovered,
-					smsChainHWSS ? &*smsChainHWSS : nullptr , true);
+					( smsChainHWSS && ( !bSMSExtendedLoopHW || laneAnchor ) ) ? &*smsChainHWSS : nullptr,
+					smsLegacyHandOff);
 			}
 			break;
 		}
@@ -6586,10 +6631,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     // (its factor is in throughputComp), so the delegated walk's
                     // Advance here must be a no-op, not a midpoint-to-hit factor.
                     GradedIndexMedium::AdoptTrackedTop( laneStack, iorStack );
+                    // Phase 4: lane w's own anchor bit, record and emission
+                    // gate, exactly as the no-BSDF delegation above.
+                    const bool laneAnchor = bSMSExtendedLoopHW ? smsLaneAnchor[w] : bSMSAnchor;
                     hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 						rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 						pRadianceMap, depth, laneStack, bsdfPdf, 0,
-						considerEmission, importance, rayType,
+						bSMSExtendedLoopHW ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
+						importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
 						// SMS double-count guard — identical reasoning to the no-BSDF
@@ -6611,9 +6660,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// DL-170: what they forward is now THIS LANE's own
 						// `misBsdfPdfComp[w]`, not the hero's -- see the
 						// no-BSDF delegation above.
-						false, bSMSAnchor, pAOV, misBsdfPdfComp[w],
+						bSMSExtendedLoopHW && bPassedThroughSpecular, laneAnchor, pAOV, misBsdfPdfComp[w],
 						1, bSMSChainUncovered,
-						smsChainHWSS ? &*smsChainHWSS : nullptr , true);
+						( smsChainHWSS && ( !bSMSExtendedLoopHW || laneAnchor ) ) ? &*smsChainHWSS : nullptr,
+						smsLegacyHandOff);
 				}
 				break;
 			}
@@ -6648,11 +6698,44 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			// soloed mesh luminary.
 			const bool soloSuppressEmissionHW = pLS && pLS->IsSoloActive() &&
 				!( ri.pObject && pLS->IsSoloTargetLuminary( ri.pObject ) );
-			if( pEmitter && considerEmission && !soloSuppressEmissionHW )
+			// Phase 4 (DL-378's body): an extended bundle classifies an
+			// anchored delta chain's emitter hit PER LANE with the shared
+			// canonical predicate in that lane's NM domain, as the Pel/NM
+			// loop does per component / wavelength.  A lane whose anchor
+			// was not an SMS anchor (ineligible there), an uncertain
+			// answer, or a missing extended record keeps the hit.  A
+			// legacy bundle keeps today's rule (`considerEmission` alone).
+			bool smsLaneKeep[SampledWavelengths::N];
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				smsLaneKeep[w] = true;
+			}
+			bool emissionGateHW = considerEmission;
+			if( bSMSExtendedLoopHW && pEmitter && !soloSuppressEmissionHW )
+			{
+				const bool smsExtendedRecordHW = smsChainHWSS &&
+					smsChainHWSS->anchorValid && smsChainHWSS->extendedAnchor;
+				// DL-295's latch is implied by an extended record (see the
+				// Pel/NM PART 1).
+				const bool smsSuppressEmissionHW = bSMSEnabled && bPassedThroughSpecular &&
+					bSMSAnchor && ( smsExtendedRecordHW || !bSMSChainUncovered );
+				emissionGateHW = considerEmission || ( smsGuardedEmissionHW && smsSuppressEmissionHW );
+				if( emissionGateHW && smsSuppressEmissionHW && smsExtendedRecordHW && ri.pObject )
+				{
+					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
+					{
+						// A zero-throughput lane carries nothing either way.
+						if( swl.terminated[w] || !smsLaneAnchor[w] || throughputComp[w] == 0 ) continue;
+						smsLaneKeep[w] = !pSolver->ExtendedEmitterHitOwned( *smsChainHWSS, *ri.pObject,
+							ri.geometric.ptIntersection, ri.geometric.vGeomNormal,
+							scene, caster, SMSQueryDomain::NM( swl.lambda[w] ), ri.geometric.rast );
+					}
+				}
+			}
+			if( pEmitter && emissionGateHW && !soloSuppressEmissionHW )
 			{
 				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 				{
-					if( swl.terminated[w] ) continue;
+					if( swl.terminated[w] || !smsLaneKeep[w] ) continue;
 
 					Scalar emission = pEmitter->emittedRadianceNM(
 						ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal,
@@ -6744,6 +6827,23 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			}
 		}
 
+		// Phase 4: lane w is an SMS anchor here when the extended anchor
+		// predicate holds at swl.lambda[w] (the Pel/NM loop's
+		// `smsCurrentAnchor`, per lane); a legacy bundle evaluates SMS at
+		// every vertex with a solver, as today.
+		if( bSMSExtendedLoopHW ) {
+			bool evaluateLane[SampledWavelengths::N];
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				evaluateLane[w] = !swl.terminated[w];
+			}
+			pSolver->ExtendedAnchorEligibleNM( scene, caster, ri.geometric.ptIntersection,
+				iorStack, swl.lambda, evaluateLane, SampledWavelengths::N, smsLaneAnchorNow );
+		} else {
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				smsLaneAnchorNow[w] = pSolver != 0;
+			}
+		}
+
 		// ============================================================
 		// PART 2: NEE (HWSS — per wavelength)
 		// ============================================================
@@ -6778,7 +6878,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ),
 					/*bBsdfSamplingPartnerExists*/ true,
 					/*pGradedIndexStack (DL-09: this walk Advances)*/ &iorStack,
-					/*bSMSCoversDeltaLights (DL-344: SMS runs below)*/ pSolver != 0 );
+					// DL-344: SMS runs below for exactly the lanes that are
+					// anchors here (every lane with a solver, in legacy).
+					/*bSMSCoversDeltaLights*/ smsLaneAnchorNow[w] );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
 				// NEE's direct-lighting contribution at the camera-visible
@@ -6803,8 +6905,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			IndependentSampler fallbackSampler( rc.random );
 			ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
-			// DL-372: what every lane's SMS evaluation below is given.
-			if( smsChainHWSS ) {
+			// DL-372: what every lane's SMS evaluation below is given --
+			// recorded when at least one lane is an anchor here (always, in
+			// a legacy bundle).
+			bool anyLaneAnchor = false;
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				anyLaneAnchor = anyLaneAnchor || ( !swl.terminated[w] && smsLaneAnchorNow[w] );
+			}
+			if( smsChainHWSS && ( !bSMSExtendedLoopHW || anyLaneAnchor ) ) {
 				smsPendingValidHWSS = true;
 				smsPendingPosHWSS = ri.geometric.ptIntersection;
 				smsPendingGNHWSS = ri.geometric.vGeomNormal;
@@ -6814,9 +6922,32 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
-				if( swl.terminated[w] ) continue;
+				if( swl.terminated[w] || !smsLaneAnchorNow[w] ) continue;
 
 				// Pass both geometric and shading — see other SMS sites.
+				// Phase 4 review: an extended lane's SMS draws (light
+				// sample, estimator loop seeds) come from a stream of its
+				// own (PathTransportUtilities::PTExtendedSMSStream): four
+				// lanes of NEE + SMS overran this vertex's stream into the
+				// next vertex's (SobolDimensionBudgetTest Test I).  Legacy
+				// lanes keep drawing from the vertex stream (mode-off
+				// arithmetic unchanged; DL-453).
+				std::optional<SobolSampler> smsLaneStream;
+				if( bSMSExtendedLoopHW ) {
+					if( const SobolSampler* sobol = dynamic_cast<const SobolSampler*>( &smsSampler ) ) {
+						// Depths past the cap reuse depth - 1024's streams
+						// (documented ceiling); say so once.  No behaviour change.
+						if( depth >= PathTransportUtilities::kPTExtendedSMSDepthCap ) {
+							static std::atomic<bool> warned{ false };
+							if( !warned.exchange( true, std::memory_order_relaxed ) ) {
+								GlobalLog()->PrintEasyWarning( "PathTracingIntegrator:: HWSS extended SMS at path depth >= 1024: its per-lane Sobol' streams (PTExtendedSMSStream) repeat those of depth - 1024." );
+							}
+						}
+						smsLaneStream.emplace( sobol->ForkStream(
+							PathTransportUtilities::PTExtendedSMSStream( depth, w ) ) );
+					}
+				}
+				ISampler& smsLaneSampler = smsLaneStream ? static_cast<ISampler&>( *smsLaneStream ) : smsSampler;
 				ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
 					ri.geometric.ptIntersection,
 					ri.geometric.vGeomNormal,
@@ -6826,14 +6957,27 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					woOutgoing,
 					scene,
 					caster,
-					smsSampler,
-					swl.lambda[w], &iorStack, &ri.geometric, true );
+					smsLaneSampler,
+					// Phase 4: lane w's own NM domain (estimator A for a
+					// delta light, B for an area emitter) in an extended
+					// bundle; the legacy solver otherwise.
+					swl.lambda[w], &iorStack, &ri.geometric, smsLegacyHandOff );
 
 				if( sms.valid )
 				{
 					Scalar smsContribNM = sms.contribution * sms.misWeight;
-					smsContribNM = ClampContribution( smsContribNM, stabilityConfig.directClamp );
-					hwssResult[w] += throughputComp[w] * smsContribNM;
+					if( sms.referenceA ) {
+						// Reference estimators are unclamped, and a nonzero
+						// one marks the radiance (the Pel/NM twin).
+						const Scalar added = throughputComp[w] * smsContribNM;
+						if( added != 0 ) {
+							rc.smsReferenceRadiance = true;
+						}
+						hwssResult[w] += added;
+					} else {
+						smsContribNM = ClampContribution( smsContribNM, stabilityConfig.directClamp );
+						hwssResult[w] += throughputComp[w] * smsContribNM;
+					}
 				}
 			}
 		}
@@ -7180,8 +7324,23 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// read at the top of the NEXT iteration's emission/env-miss gate.
 		bPassedThroughSpecular = pS->isDelta;
 		bSMSChainUncovered = nextSMSChainUncovered;
+		// Phase 4: PART 3's SMS guard is the only rule that turns
+		// `considerEmission` off here (the Pel/NM `smsGuardedEmission`).
+		smsGuardedEmissionHW = !nextConsiderEmission;
 		if( !pS->isDelta ) {
-			bSMSAnchor = true;
+			if( bSMSExtendedLoopHW ) {
+				// Phase 4: the anchor is this vertex for the lanes that
+				// evaluated SMS here; the bundle-level bit (PART 3's guard)
+				// is their union.
+				bool anyLaneAnchor = false;
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+					smsLaneAnchor[w] = !swl.terminated[w] && smsLaneAnchorNow[w];
+					anyLaneAnchor = anyLaneAnchor || smsLaneAnchor[w];
+				}
+				bSMSAnchor = anyLaneAnchor;
+			} else {
+				bSMSAnchor = true;
+			}
 		}
 		// DL-372: the record handed to the NM delegations (Pel/NM PART 3).
 		if( smsChainHWSS ) {
@@ -7190,7 +7349,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					ri.geometric.ray.Dir(), traceRay.Dir() );
 			} else if( smsPendingValidHWSS ) {
 				smsChainHWSS->SetAnchor( smsPendingPosHWSS, smsPendingGNHWSS,
-					smsPendingSNHWSS, *smsPendingStackHWSS );
+					smsPendingSNHWSS, *smsPendingStackHWSS, bSMSExtendedLoopHW );
 			} else {
 				smsChainHWSS->Invalidate();
 			}
@@ -7253,8 +7412,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	PixelAOV* pAOV
 	) const
 {
-    const SMSLegacyModeScope smsMode(rc, true);
-    if(pSolver && pSolver->ExtendedModeActive(scene)) pSolver->WarnHWSSLegacyMode();
+    // Phase 4: HWSS evaluates extended SMS per lane (see
+    // IntegrateFromHitHWSS).  A caller's forced-legacy scope (the HWSS
+    // shader-op path) and an inactive extended mode keep today's legacy
+    // scope exactly; every NM delegation below then inherits it.
+    const bool smsExtendedHWSS = pSolver && !rc.smsForceLegacy && pSolver->ExtendedModeActive( scene );
+    const SMSLegacyModeScope smsMode(rc, !smsExtendedHWSS);
+    if(!smsExtendedHWSS && pSolver && pSolver->ExtendedModeActive(scene)) pSolver->WarnHWSSLegacyMode();
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 		result[i] = 0;
 	}
@@ -7562,7 +7726,9 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 							// HWSS geometry is hero-driven. Let only the hero
 							// continuation populate the shared, wavelength-independent
 							// Accurate guide so companion paths cannot race to define it.
-							w == 0 ? pAOV : 0 , -1, 1, false, nullptr, true);
+							// Phase 4: a medium hand-off is no SMS anchor (DL-340);
+							// it is extended exactly when this bundle is.
+							w == 0 ? pAOV : 0 , -1, 1, false, nullptr, !smsExtendedHWSS);
 						break;
 					}
 

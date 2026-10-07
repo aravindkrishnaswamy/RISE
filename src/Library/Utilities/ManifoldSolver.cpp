@@ -5842,7 +5842,7 @@ Scalar ManifoldSolver::EvaluateChainCosineProduct(
 void ManifoldSolver::WarnHWSSLegacyMode()
 {
     if(!hwssExtendedWarningEmitted.exchange(true, std::memory_order_relaxed))
-        GlobalLog()->PrintEasyWarning("Extended SMS is ignored for HWSS until lane geometry and ownership are implemented; using legacy SMS.");
+        GlobalLog()->PrintEasyWarning("Extended SMS is ignored for HWSS inside a forced-legacy scope (the HWSS shader-op path, RayCaster::CastRayHWSS); legacy SMS is used there.");
 }
 
 bool ManifoldSolver::ExtendedModeActive(const IScene& scene) const
@@ -5889,6 +5889,52 @@ bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaste
         if(!SMSDomainReplay::BuildStack(media, domain, evaluated)) return false;
     }
     return true;
+}
+
+void ManifoldSolver::ExtendedAnchorEligibleNM(const IScene& scene, const IRayCaster& caster,
+    const Point3& point, const IORStack& stack, const Scalar* nm, const bool* evaluate,
+    unsigned int count, bool* eligible) const
+{
+    // Same predicate as ExtendedAnchorEligible per lane: the early returns
+    // below are wavelength-independent, so they decide every lane alike.
+    for(unsigned int i=0; i<count; ++i) eligible[i] = false;
+    if(!ExtendedModeActive(scene)) {
+        for(unsigned int i=0; i<count; ++i) eligible[i] = evaluate[i];
+        return;
+    }
+    bool any = false;
+    for(unsigned int i=0; i<count; ++i) {
+        eligible[i] = evaluate[i] && std::isfinite(nm[i]) && nm[i] > 0;
+        any = any || eligible[i];
+    }
+    const auto none = [&]() { for(unsigned int i=0; i<count; ++i) eligible[i] = false; };
+    if(!any) return;
+    if(!config.maxChainDepth || config.targetBounces > config.maxChainDepth
+        || !std::isfinite(config.solverThreshold) || config.solverThreshold <= 0
+        || !std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
+        || config.extendedEventFloor > 0.5 || config.photonCount || scene.GetGlobalMedium()
+        || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) { none(); return; }
+    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    if(!objects || objects->HasRejectedTransmissiveCaster()) { none(); return; }
+    RayIntersectionGeometric context(Ray(point, Vector3(0,0,1)), nullRasterizerState);
+    for(const IObject* object : objects->ExtendedSMSCasters()) {
+        if(!SMSAuditedModifier(*object)) { none(); return; }
+        const auto* dielectric = dynamic_cast<const DielectricMaterial*>(object->GetMaterial());
+        if(!dielectric || !dielectric->GetHG()) continue;
+        const IScalarPainter& scattering = dielectric->GetScattering();
+        for(unsigned int i=0; i<count; ++i) {
+            if(!eligible[i]) continue;
+            const Scalar value = scattering.GetValueAtNM(context, nm[i]);
+            if(!std::isfinite(value) || value < 1) eligible[i] = false;
+        }
+    }
+    SMSStartingMedia media;
+    if(!SMSDomainReplay::Capture(scene, point, stack, media)) { none(); return; }
+    for(unsigned int i=0; i<count; ++i) {
+        if(!eligible[i]) continue;
+        IORStack evaluated(stack.EnvironmentIOR());
+        if(!SMSDomainReplay::BuildStack(media, SMSQueryDomain::NM(nm[i]), evaluated)) eligible[i] = false;
+    }
 }
 
 //////////////////////////////////////////////////////////////////////

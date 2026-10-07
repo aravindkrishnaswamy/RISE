@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 merged at `fbd421bd1` after three independent review rounds with zero P1, clean make/Xcode Deployment/Opto builds and a green targeted master gate (see the Phase 3 records at the end); Phase 4 (HWSS) is in progress on `sms-ext-phase4`; earlier audit sections are historical.**
+**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 merged at `fbd421bd1` after three independent review rounds with zero P1, clean make/Xcode Deployment/Opto builds and a green targeted master gate. Phase 4 (HWSS lane geometry and ownership) merged to master after three independent review rounds with zero P1 and clean Xcode Deployment and Opto builds (see the Phase 4 records at the end; master gate recorded there). All four phases of this design are implemented; DL-378, DL-379, DL-312, DL-437, DL-420 and DL-450 remain open. Earlier audit sections are historical.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -276,7 +276,7 @@ The predicate must apply **every acceptance filter the proposal applies**; other
 
 - For RGB PT, ownership can differ per component; emission weighting must mask components separately.
 - HWSS must carry lane-specific ownership through its own loop and every NM delegation; one hero decision cannot suppress all companions.
-- Until phase 4 passes, an HWSS render **ignores** the extended mode, logs one warning, and keeps today's solver and today's suppression unchanged.
+- Until phase 4 passes, an HWSS render **ignores** the extended mode, logs one warning, and keeps today's solver and today's suppression unchanged. (Phase 4, pending review: the PT HWSS entries now evaluate per lane; only the HWSS shader-op path keeps this fallback, DL-451.)
 
 ### Scope of the partition
 
@@ -862,7 +862,7 @@ Fresh Round 14 gate: 47 make modes / 508576/0, 40 actual Xcode-linked controls /
 
 Branch `sms-ext-phase3`, implementation commit `f3a5dbdc1` on master
 `f3737d927`. Estimator B and the area-emitter partition are implemented
-for RGB and NM PT. HWSS still ignores extended mode (Phase 4). Nothing is
+for RGB and NM PT. HWSS still ignored extended mode at this point (historical; see the Phase 4 record). Nothing is
 exposed to the parser or API; tests enable it through
 `ManifoldSolverConfig::extendedMode`. No ledger row is closed by this
 record.
@@ -1125,3 +1125,424 @@ checkout's build logs contain only `ld` "SDK Version" module-flag
 mismatches between stale objects compiled with an older SDK and fresh
 ones; there are no compiler warnings. No ledger row was closed.
 
+## Phase 4 implementation record (2026-10-07, pending independent review)
+
+Branch `sms-ext-phase4` from master `fbd421bd1` (the Phase 3 merge).
+HWSS lane geometry and ownership for the PT HWSS entries
+(`PathTracingIntegrator::IntegrateRayHWSS` / `IntegrateFromHitHWSS`).
+Still internal: tests enable it through `ManifoldSolverConfig::extendedMode`;
+no parser/API exposure. No ledger row is closed by this record.
+
+What runs where:
+
+- **Mode.** An HWSS bundle is *extended* when extended mode is active for
+  the prepared scene and the caller is not inside a forced-legacy scope.
+  Otherwise both HWSS entries keep today's `SMSLegacyModeScope(rc, true)`,
+  so extended-off HWSS executes the pre-Phase-4 code (see mode-off below).
+  The one remaining forced-legacy caller is the HWSS shader-op path
+  (`RayCaster::CastRayHWSS` -> `PathTracingShaderOp::PerformOperationHWSS`),
+  which still opens its own forced scope and warns once
+  (`ManifoldSolver::WarnHWSSLegacyMode`, reworded); recorded as DL-451.
+- **Per-lane anchor.** At each BSDF vertex lane w is an SMS anchor iff the
+  extended anchor predicate holds at `swl.lambda[w]`
+  (`ManifoldSolver::ExtendedAnchorEligibleNM`, which equals
+  `ExtendedAnchorEligible(..., lambda[w])` per lane: the global checks,
+  modifier audit and starting-media capture do not depend on the
+  wavelength and are evaluated once; the HG-scattering test and the domain
+  stack build run per lane). That one bit drives all three switches of the
+  lane: its SMS contribution (`EvaluateAtShadingPointNM` at the lane
+  wavelength with `forceLegacy = false`: estimator A for point/spot lights,
+  B for area emitters, both unclamped, `smsReferenceRadiance` set as in
+  the Pel/NM loop), DL-344's `bSMSCoversDeltaLights` in that lane's NEE,
+  and whether a later emitter hit may be suppressed in that lane.
+- **Per-lane ownership in the body (DL-378's body).** The bundle records
+  the chain in every seeding mode (`SetAnchor(..., extended = true)` when
+  at least one lane is an anchor), tracks the PART 3 SMS guard
+  (`smsGuardedEmissionHW`, the Pel/NM `smsGuardedEmission`) and, at an
+  emitter hit with a BSDF, asks `ExtendedEmitterHitOwned(...,
+  SMSQueryDomain::NM(lambda[w]))` for every active, nonzero-throughput lane
+  whose anchor bit is set; the hit is kept in every other lane (ineligible
+  anchor, uncertain answer, no extended record).
+- **Delegations.** Every HWSS->NM hand-off (camera-entry no-BSDF and SSS
+  fallbacks, the dispersive-containment camera fallback, the mid-path
+  no-BSDF and SSS hand-offs, both volume-walk surface hand-offs) passes
+  `smsIgnoreExtended_ = !extended`. The mid-path hand-offs pass lane w's
+  own anchor bit as `smsHadNonSpecularShading`, the record only to an
+  anchor lane, `bPassedThroughSpecular`, and reopen the emission gate the
+  SMS guard closed (`considerEmission || smsGuardedEmissionHW`), so the
+  delegated NM PART 1 classifies the hit in the lane's domain instead of
+  dropping it. A legacy bundle passes exactly today's arguments.
+- **Lane weighting** is untouched: lane results accumulate exactly as
+  before and the rasterizer's active-lane normalization is unchanged; no
+  1/N or wavelength pdf is added. Companion termination at a dispersive
+  delta vertex of a BSDF material is the existing rule; after it only the
+  hero is classified.
+
+Decisions inside the contract, recorded for review:
+
+1. **No hero reuse.** Every lane runs its own eligibility, estimator and
+   classification. The only shared work is the wavelength-independent part
+   of eligibility (identical inputs by construction). The RGB component-
+   sharing optimization was not ported to lanes: its equivalence argument
+   (identical replays, no coating) has not been re-proved for NM domains,
+   where the native fallback decisions read the domain wavelength.
+2. **Geometry of a lane's chain.** Inside the HWSS body a recorded delta
+   vertex is either a BSDF material that did not terminate the companions
+   (its index equals the hero's in every lane, e.g. a constant-index
+   polished coat) or the hero alone continues; every BSDF-less caster
+   (dielectric, refractor, mirror) is handed to per-lane NM walks, which
+   trace and record each lane's own refracted geometry. So no lane is
+   classified on a chain it could not have traced; replay re-derives every
+   index, TIR decision and the nested exterior from object identities in
+   the lane's domain (`SMSDomainReplay::Capture/BuildStack`).
+3. **Delegated emission gate.** Reopening the gate is the Pel/NM rule: a
+   lane that is not an anchor keeps the hit at full weight (MIS partner 0
+   after a delta lobe), a lane that is classifies it.
+4. **Two-stage statistical gating (SUPERSEDED in review round 1, see
+   below).** The first complete gate run (`gate-87871209f`) failed 5 of
+   1060 checks: HWSS-vs-NM and lane-owned-vs-NM-owned comparisons in
+   three cases (TIR prism lane 620 nm, mirror mesh lane 600 nm, clipped-
+   plane polished lane 450 nm), HWSS above NM in all three; every one
+   passed with fresh salts (`rerun_*` logs). The round-1 replacement
+   gates without retries.
+
+Evidence (`tests/SMSExtendedHWSSTest.cpp`; raw logs under
+`.claude/logs/sms-phase4/`, not committed). Fixed wavelength bundles, one
+camera ray, production entries; per lane: extended HWSS == SMS-off HWSS,
+SMS-owned (full - kept, paired) == PT-owned (ref - kept), HWSS lane ==
+independent extended NM at that wavelength, lane SMS-owned == NM
+SMS-owned, 3 combined se; termination counts are zero in every gated case.
+
+- `tir` (estimator A per lane; dispersive right-angle prism, T-R-T,
+  n = 1.9/1.7/1.36/1.3 at 450/500/620/650 nm, the first two past the
+  hypotenuse's critical angle): every lane equals extended NM at its
+  wavelength (ratios 0.982-1.030 at 8 salts x 2048 in `full_tir.log`;
+  the gate now uses 16 salts), both windings, TIR hero and non-TIR hero;
+  TIR-lane / non-TIR-lane ratio 8.95-9.19 (> 3 gated).
+- `delta`: estimator A per lane through constant and dispersive slabs
+  equals NM; transparent shadows on/off bit-identical in every lane where
+  every lane is an anchor; with an HG mask making one lane ineligible only
+  that lane changes (DL-344 off there).
+- `mask` (per-lane eligibility: HG scattering 2/2/1.25/0.8 at
+  450/550/600/640 nm): the ineligible lane owns exactly 0 (HWSS and NM)
+  and keeps PT (e.g. mirror lane 640 full/ref 1.000, polished 1.017 /
+  0.983); eligible lanes partition exactly; ineligible hero and ineligible
+  companion. 149/0 at 16 salts x 4096 (`full16_mask.log`; at 8 salts x
+  2048 one Required-share check failed on a single-salt estimator-B
+  outlier, 148/1, which is why B-based sections use 16 salts).
+- `body` (DL-378's body): polished delta-coat ceiling, indexed mesh both
+  windings and clipped plane, emitter hit delegated (`material none`) and
+  in the HWSS body (luminaire with a BSDF): every lane full == SMS-off,
+  SMS-owned == PT-owned, == NM; the predicate owned 100 % of PT's polished
+  chains (e.g. 5852/5852 queries, 0 uncertain).
+- `lanes` (16 salts x 4096): mirror (closed form per lane: e.g. lane 450
+  nm 0.08531 +- 0.00131 vs 0.08421), slabs, transformed slab, dispersive
+  slab (both windings/transformed), glass and dispersive spheres (the
+  dispersive ball's SMS-off lanes separate at z = 50), start-inside both
+  windings, nested exterior replay, dispersive-enclosure camera fallback,
+  SSS receiver: 575/2 on the first full run (`dev_lanes_full.log`); both
+  failures were the n = 1.9 immersed ball's 450-nm lane, attributed by
+  `--section nmprobe` to Phase 3's own NM estimator (DL-450) and replaced
+  in the gate by a 1.6/1.5/1.45 ball (38/0 at 32 salts,
+  `dev_immersed_gentle.log`).
+- `modeoff`: a forced-legacy scope is bit-identical to extended off, and
+  extended-off HWSS is deterministic.
+- Complete file at `1fc7bcaf5` (all sections, default salts, run
+  `hwss_full_1fc7bcaf5.log`, 21.6 min single-threaded): **1106/0**, two
+  confirmation re-renders (mirror mesh lane 600 nm and clipped-plane
+  polished lane 450 nm, HWSS-vs-NM; both pass at their second stage and
+  were already the gate run's failures, see decision 4). The body section
+  at `87871209f` (with DL-378's reported rows): 227/0. Counts differ
+  between test revisions as checks were added; the current numbers are
+  in the round-1 record below.
+
+Red proofs.
+
+- Committed Phase-3 sources (`fbd421bd1` ManifoldSolver.h/.cpp and
+  PathTracingIntegrator.cpp, hashes verified; script `redproof.sh`):
+  with the two-stage test (`redproof2/`, test `1fc7bcaf5`) build 0
+  diagnostics; modeoff 16/0 (unchanged by construction), tir 71/26,
+  delta 48/7, mask 133/60, body 171/120, lanes 593/161; with the earlier
+  single-stage test (`redproof/`) tir 32/29, delta 30/7, mask 90/59, body
+  103/120, lanes 426/151. Restored HEAD builds green with 0 diagnostics.
+- Mode-off cross-build: `SMSLegacyModeTest` (7 shipped fixtures incl. the
+  HWSS spectral one, 4 trials) on Phase-3 sources dumped, HEAD compared:
+  28 images, maximum 0 float32 ULP, 0 changed components (97/0).
+- In-tree mutations (`mutation.sh`, each restored, two-stage test, run
+  `mutation2/`): M1 delegations hand every lane the HERO's anchor bit ->
+  mask 165/6; M2 every lane's SMS evaluated at the hero wavelength -> tir
+  81/16; M3 the body's PART 1 uses the hero's anchor bit -> mask 159/12
+  (eligible companions double-count, full/ref 2.1-2.4); M4 the delegated
+  emission gate left closed -> mask 157/3 (an ineligible lane's delegated
+  hit is dropped). Single-stage (`mutation/`, `mutation-m4/`): 143/6,
+  46/15, 137/12, 146/3. M4 against `body` alone stays 223/0: there the
+  predicate owns every polished chain, so a dropped kept-hit carries
+  nothing -- the `mask` rows are the ones that see it.
+
+DL-378. Under extended mode its body and delegated paths are addressed
+(above). Extended OFF -- the shipped default, and the row's own defect --
+is unchanged by the mode-off contract; the row stays OPEN. `body` prints
+legacy readings (reported, not gated): on this fixture legacy HWSS and
+legacy NM read the identical deterministic 0.0042184 against SMS-off
+0.0034-0.0036 -- the legacy split covers that chain at NM too, so this is
+not DL-378's loss but a legacy over-read of the polished coat chain,
+filed as DL-452.
+
+Remaining gaps (stated explicitly):
+
+- The HWSS shader-op path stays legacy (DL-451).
+- No equivalence-proved sharing across lanes: up to four eligibility
+  stack builds, four estimator-B evaluations per anchor and four
+  classifications per candidate emitter hit (cost below; DL-449 levers).
+- DL-450: estimator B reads low / heavy-tailed at a strongly dispersive
+  immersed ball (unresolved; a REPORTED band since review round 1).
+- DL-379 is inherited per lane (the delta-limit rule); not re-measured
+  under HWSS. DL-446/447 apply per lane unchanged.
+- Termination: lanes that a dispersive delta vertex of a BSDF material
+  terminates are discarded by the existing rasterizer normalization; the
+  per-lane NM equalities are gated only on termination-free fixtures.
+- Not run: Xcode, Deployment and Opto builds.
+
+Targeted gate (`.claude/logs/sms-phase4/gate.sh`, run `gate-87871209f`,
+library `87871209f`; each test built individually with a checked exit
+code and 0 diagnostics; library `make all` 0 diagnostics):
+ManifoldSolverTest 388/0, SMSUniformDispersionTest 300/0 and `--shipped`
+10/0, ExteriorIndexInvarianceTest 299/0, SMSEmitterDirectionTest 344/0,
+SMSMediumAnchorTest 27/0, TransparentShadowPartitionTest 42/0,
+WeaveGapShadowTransmittanceTest 244/0, OpenSheetIndexConventionTest 24/0,
+GradedIndexInteriorFactorTest 101/0, ManifoldNormalDerivativeTest 141/0,
+DoubleSidedEmitterTest 34/0, AlphaSMSGeometryTest 216/0,
+AlphaSMSTransportTest 20/0, AlphaSMSReciprocalTest 27/0,
+PTGuidingMISPartitionTest 185/0, SourceHygieneTest 172/0,
+CstDeriveGoldenTest 458 MATCH / 0 DRIFT, SMSExtendedReferenceTest default
+6522/0, `--production-only` 393/0, `--signed-only` 641/0, `--review-only`
+193401/0, `--r8-sss-clamp-only` 1065/0, `--r14-sss-replacement-only`
+1769/0, SMSDomainReplayTest 8200/0, SMSLegacyModeTest 41/0,
+SMSExtendedPartitionTest 542/0, SSSHWSSCompanionTest 22/0,
+OptimalMISTrainingSitesTest 111/0, MediumInsideOutsideInvariantTest 52/0,
+SMSExtendedHWSSTest 1055/5 (the single-stage test; its five failures
+were the three statistical cases of decision 4, re-run green with fresh
+salts; the two-stage file at `1fc7bcaf5` reads 1106/0 above). Only the
+test file and documents changed after that gate run.
+
+Test updates required by the behaviour change: `SMSExtendedPartitionTest`
+no longer asserts "HWSS bit-identical with extended on/off" (moved here as
+the forced-legacy identity); `SMSExtendedReferenceTest`'s SSS clamp modes
+treat HWSS (mode 3) like RGB/NM under extended mode and keep the legacy
+clamp check for extended off.
+
+Cost (`--section cost`, one worker, n = 8 interleaved extended/off pairs
+of one 4096-sample HWSS point render each, timing includes scene parse
+and preparation; measured with a shared machine at load average ~3.8 --
+the paired ratio is the reported quantity): glass slab 10.43 +- 0.05x
+(0.947 vs 0.091 s), dispersive slab 10.89 +- 0.07x, polished ceiling
+2.28 +- 0.01x, glass sphere 19.52 +- 0.20x. Each lane runs its own
+eligibility stack build, estimator and classification; no equivalence-
+proved lane sharing is implemented (DL-449's levers, plus lane sharing,
+apply). Mode-off cost was not measured: extended-off HWSS executes the
+pre-Phase-4 arithmetic (0 ULP above) plus a few per-vertex branches.
+
+### Phase 4 review round 1 (2026-10-07)
+
+Three fresh lenses, zero P1. P2s and their dispositions:
+
+1. **Sobol' dimension budget.** PT gives each vertex one 32-slot stream
+   (`StartStream( 16 + depth )`) holding NEE, SMS and the PART 3 scatter
+   in order; an HWSS vertex runs NEE and SMS once per lane.
+   `SobolDimensionBudgetTest` Test I (new; real integrator, 512 samples,
+   stream-auditing sampler, highest slot = draw offset from the stream's
+   first dimension) measured, on the pre-fix body (red, `r1-redproof-
+   budget/red.log`), extended HWSS reaching slot 60 / 40 / 62 (slab + area
+   emitter / slab + omni / polished ceiling), with 48.5 / 49.3 / 100 % of
+   (sample, vertex) pairs past 32; extended NM and RGB <= 20; legacy NM
+   <= 18; legacy HWSS 52 / 32 / 54 (48.9 / 0 / 100 %). Fix (`9c620c1be`):
+   an EXTENDED lane's SMS evaluation draws from `SobolSampler::ForkStream`
+   at `PathTransportUtilities::PTExtendedSMSStream(depth, lane)` --
+   streams [141312, 145408), past every BDPT/VCM block, wraps 552..567,
+   depth mod 1024, enumerated collision-free by Test G2 -- so the vertex
+   stream keeps NEE and the scatter only: post-fix extended HWSS highest
+   slot 20 / 13 / 22, 0 overruns; one extended SMS evaluation draws at
+   most 10 values from its own stream. Legacy lanes are unchanged (mode-
+   off); the legacy overrun is DL-453. The fork copies the sample index
+   and scramble seed (same sequence, its own dimension counter); in the
+   independent test mode its generator is re-keyed by the stream.
+   **Image effect.** The DL-283 protocol (`--section samplerbias`: n
+   renders per sampler, every render salted, salted Sobol' vs the
+   independent sampler, 1024 spp at one receiver point, lane mean of
+   extended HWSS) resolved no bias before or after at its precision:
+   pre-fix polished -0.71 % (z -0.82) and +0.15 % (z 0.18), slab +0.10 %
+   (0.10) and +1.73 % (1.62); post-fix polished -2.21 % (z -2.39) and
+   +2.38 % (z +2.75), slab -1.29 % (-1.17) and +0.53 % (0.49) (two
+   independent 256-render batches each, runs `r1_samplerbias256*`). The
+   polished fixture's two post-fix batches differ by 4.6 % against a
+   nominal 1.3 % se -- its estimator-B tail makes the per-batch se
+   optimistic -- so the bound is roughly +-3 %, and the fix is justified
+   by the budget, not by a measured bias.
+2. **Gating.** The two-stage retry is removed (`b97b85fec`). Equality
+   checks use Student-t critical values at the Welch-Satterthwaite df
+   with a Bonferroni split of a two-sided 0.0027 over each case's
+   equality checks (typically 16-20: t critical ~4.0-4.3); detection
+   checks (an owned share, estimator A delivering light) use the
+   one-sided t quantile of the Gaussian 3-sigma level; exact checks as
+   before. Estimator-B sections (`lanes`, `body`, `mask`) moved from 16
+   to 32 salts: of the 100 gated lane means 17 have relative se > 3 %, 3
+   > 5 % (max 5.6 %), none > 10 % (was 49 / 16 / 2 of 108 at 16 salts).
+   Definition: the larger of the HWSS-full and NM-full relative se per
+   lane; on the HWSS full alone it is 15 / 3 / 0 (round-2 recount).
+   First full run with no retries: **1106/0** at `b97b85fec` (36.9 min
+   single-threaded, run `r1_hwss_full_b97b85fec.log`).
+3. **DL-450.** The n = 1.9 ball stays in `lanes` as a REPORTED band
+   (equalities printed with their critical values, not gated; at 32
+   salts every lane is inside, d/se -0.87..0.35 at 450 nm). The 256-salt
+   recipe (`--section nmprobe`, run `r1_dl450_256.log`): NM at 450 nm
+   0.963 of SMS-off (z -3.41; per-salt skewness 1.29); HWSS lane 1.014 (z
+   0.30) dominated by one salt at 57.2 against a median 4.30 (skewness
+   13.8). The reciprocal K is light-tailed (mean K 5.54 as the 1/p(T)
+   estimate; buckets p50/p90/p99/p99.9 >= 4/8/16/64, max 512); the tail
+   is in the per-root contribution. Unresolved: low in 4 of 5
+   independent readings (2.4-3.6 sigma); heavy tail suspected, bias not
+   excluded.
+4. **Mode-off evidence.** `SMSLegacyModeTest` gained three legacy HWSS +
+   SMS scenes through the edited paths (polished delta-coat caster with
+   the emitter hit delegated / in the body; random-walk SSS receiver
+   under a slab). Phase-3 sources dumped vs HEAD (`modeoff_xbuild.sh`,
+   run `modeoff-xbuild2`): 10 fixtures x 4 trials = 40 images, maximum 0
+   float32 ULP, 0 changed components (133/0).
+5. **Docs.** Decision 4 reworded (the five first-run failures were HWSS
+   vs NM / owned vs NM-owned, HWSS above NM in all three); the Phase 3
+   "HWSS still ignores extended mode" line marked historical.
+   **GUI `indirect` mode (P3, recorded):** an extended hand-off passes
+   the bundle's real `bPassedThroughSpecular` to the delegated NM body
+   (legacy passes false), so in the GUI `indirect` render mode a
+   delegated emitter hit at depth 1 after a delta lobe at depth 0 is no
+   longer treated as the MIS partner of a suppressed depth-0 NEE (it
+   has none) and survives -- the Pel/NM loop's own rule. Extended mode
+   only; not covered by a test.
+
+Round-1 red proofs and gate.
+
+- Committed Phase-3 sources (`redproof.sh`, run `redproof3`, test at
+  `60dd1b3ad`): modeoff 19/0 (unchanged by construction), tir 51/29,
+  delta 41/7, mask 92/60, body 110/120, lanes 447/150; restored HEAD
+  green, 0 diagnostics; mode-off 40 images 0 float32 ULP.
+- Sobol' budget: Test I red on the pre-fix PT body (above), green after.
+- In-tree mutations under the new gating (`mutation3`): M1 mask 146/6,
+  M2 tir 64/16, M3 mask 140/12, M4 mask 149/3 -- all red; restored
+  build 0 diagnostics.
+- Targeted gate (`gate.sh`, run `gate-r1`, library at `60dd1b3ad`, all 27
+  builds rc 0 with 0 diagnostics, library `make all` 0 diagnostics):
+  ManifoldSolverTest 388/0, SMSUniformDispersionTest 300/0 and
+  `--shipped` 10/0, ExteriorIndexInvarianceTest 299/0,
+  SMSEmitterDirectionTest 344/0, SMSMediumAnchorTest 27/0,
+  TransparentShadowPartitionTest 42/0, WeaveGapShadowTransmittanceTest
+  244/0, OpenSheetIndexConventionTest 24/0, GradedIndexInteriorFactorTest
+  101/0, ManifoldNormalDerivativeTest 141/0, DoubleSidedEmitterTest 34/0,
+  AlphaSMSGeometryTest 216/0, AlphaSMSTransportTest 20/0,
+  AlphaSMSReciprocalTest 27/0, PTGuidingMISPartitionTest 185/0,
+  SourceHygieneTest 172/0, CstDeriveGoldenTest 458 MATCH / 0 DRIFT,
+  SMSExtendedReferenceTest default 6522/0, `--production-only` 393/0,
+  `--signed-only` 641/0, `--review-only` 193401/0, `--r8-sss-clamp-only`
+  1065/0, `--r14-sss-replacement-only` 1769/0, SMSDomainReplayTest
+  8200/0, SMSLegacyModeTest 53/0, SMSExtendedPartitionTest 542/0,
+  SMSExtendedHWSSTest 1106/0, SobolDimensionBudgetTest passed (Test I
+  extended HWSS highest slot 20 / 13 / 22, 0 overruns),
+  OptimalMISTrainingSitesTest 111/0, MediumInsideOutsideInvariantTest
+  52/0. **SSSHWSSCompanionTest 21/1**: its VCM random-walk hwss
+  TRUE/FALSE channel-0 ratio read 0.9365 against a +-0.060 band. VCM
+  does not reach any changed code (the diff touches the PT HWSS body,
+  ManifoldSolver's lane eligibility, a new SobolSampler member and new
+  constants); the same binary re-run twice reads 0.9940 and 0.9930,
+  22/0 each (`r1_ssshwss_rerun*.log`), and the earlier gate read 0.9924.
+  Recorded as a non-reproducing outlier of that suite, not a Phase 4
+  result.
+
+### Phase 4 review round 2 (2026-10-07)
+
+Three fresh lenses, zero P1; Xcode Deployment and Opto builds of
+`1f7426825` clean (only the allowed OIDN search-path notice). Changes:
+
+1. **DL-450 discriminator.** The estimator reviewer's analysis: at 450 nm
+   the relative index 1.9/1.4 makes the ball a lens (focal length ~0.285
+   from its centre) whose conjugate of points inside the emitter lies
+   within ~2 % of the receiver -- inside the spherical-aberration
+   caustic, where the light-side Jacobian diverges and estimator B's
+   per-root contribution has (log-)infinite second moment. Test (`--
+   section nmprobe --probe-ball-z`, 256 salts x 4096 spp, NM and HWSS
+   lane at 450 nm, runs `r2_dl450_z045.log`, `r2_dl450_z075.log`):
+
+   | ball z | NM full/SMS-off | HWSS lane full/SMS-off | NM per-salt skew, max/median | HWSS skew, max/median |
+   |---|---|---|---|---|
+   | 0.55 (original, `r1_dl450_256`) | 0.963 (z -3.41) | 1.014 (z +0.30) | 1.29, 1.66 | 13.8, 13.3 |
+   | 0.45 (image moved off the receiver) | 0.994 (z -0.68) | 1.000 (z +0.04) | 0.84, 1.50 | 0.56, 1.39 |
+   | 0.75 (SMS owns ~10 %) | 1.013 (z +1.07) | 0.985 (z -1.31) | 2.60, 2.19 | 1.63, 1.94 |
+
+   Moving the image off the receiver removes the deficit and the
+   outliers with the estimator unchanged, so DL-450 is recorded as an
+   **infinite-variance focal caustic of estimator B, not a bias**; the
+   row stays OPEN as a variance / known-limitation row (remedy class: a
+   bounded-variance treatment near folds and foci, e.g. a Jacobian
+   regularization or a mixture with PT's own strategy there). The
+   readings at z = 0.55, 450 nm, each against its own SMS-off render:
+
+   | reading | salts (salt base) | ratio |
+   |---|---|---|
+   | HWSS lane, `lanes` case | 16 (83000) | 0.902 |
+   | same case, extended | 32 (83000, overlaps the 16) | 0.922 |
+   | HWSS lane, `lanes` case, gate-r1 | 32 (105000) | 0.948 (d/se -0.87 at t critical 4.26) |
+   | HWSS lane, probe | 64 (171500) | 1.076 |
+   | HWSS lane, probe | 256 (400500) | 1.014 |
+   | NM, probe | 32 (171000) | 0.991 |
+   | NM, probe | 64 (171000, overlaps the 32) | 0.948 |
+   | NM, probe | 256 (400000) | 0.963 |
+   | NM in the `lanes` case (vs the HWSS SMS-off) | 16 / 32 (83000) / 32 (105000) | 0.925 / 0.954 / 0.927 |
+
+   Independent HWSS readings (one per salt set): 0.902 (z -3.6), 0.948
+   (d/se -0.87), 1.076 (z +0.98), 1.014 (z +0.30): two below 1, one
+   beyond 2 sigma. NM: 0.991 / 0.948 (one salt set, 32 / 64 salts),
+   0.963 (z -3.41), and the lane-case NM renders 0.925 / 0.954 / 0.927
+   (two salt sets): low in every independent set. Every sample mean is
+   dominated by rare large salts. The earlier "low in 4 of 5" phrasing
+   counted overlapping salt sets and is withdrawn.
+2. **Gate characterization (detection floors).** With the round-1
+   gating, a check fails only beyond ~4.0-4.3 combined se. Estimated
+   floor (critical value x combined se / reference, run
+   `r1_hwss_full_b97b85fec.log`): `lanes` median 11 %, p90 23 %, max 28 %;
+   `mask` median 18 %, max 26 %; `body` median 10.5 %, max 12 %;
+   `tir` median 4.3 %, max 7.1 %; `delta` median 4.7 %, max 7.6 %.
+   The estimator-B lane equalities therefore cannot see a per-lane
+   defect below roughly 10-25 %; the fine discrimination is carried by
+   the estimator-A (`tir`, `delta`) equalities, the exact checks
+   (termination, an exactly zero owned share, bit identities) and the
+   closed-form mirror rows. The four in-tree mutations are gross (a lane
+   owning nothing, a doubled lane, hero-domain TIR weights) and do not
+   probe the floor. Known redundancy: `full` and `kept` share their
+   salts, so SMS-owned - PT-owned = (full - kept) - (ref - kept) = full -
+   ref exactly; the owned equality repeats full == ref with a different
+   se. Salt robustness (binary at `dedc223bb`'s library, test unchanged
+   since): default salt base 1106/0 (`r2_hwss_default.log`, 37.6 min),
+   `--salt-base 900000` 1106/0, `--salt-base 1700000` 1106/0 (36.4 min)
+   -- three independent salt sets, zero false reds, so no suite-level
+   remedy was needed (with the b97b85fec run, four of four).
+3. **P3s.** PT logs once when HWSS extended SMS reaches depth >= 1024
+   (its lane streams then repeat depth - 1024's; no behaviour change);
+   `SobolSampler.h`'s stream map lists `PTExtendedSMSStream`; Test I's
+   comment states that fork draws are invisible to the in-render audit
+   and bounded by construction (measured directly at depth 0);
+   `SMSLegacyModeTest`'s header states that fixtures 7-9 are verified only
+   by the two-build dump comparison, and a negative control renders
+   fixtures 7 and 9 through a directly built HWSS rasterizer with
+   extended mode on vs off (off repeats bit-identically; on differs in
+   3381 and 12288 of 16384 float32 components). Committed `dedc223bb`.
+4. A low-priority ledger row (DL-454) records the SSSHWSSCompanionTest VCM
+   random-walk red-ratio flake.
+
+Round-2 verification (library and tests at `dedc223bb`; library `make
+all` and every test build 0 diagnostics): SobolDimensionBudgetTest
+passed (Test I extended HWSS highest slot 20 / 13 / 22, 0 overruns;
+`r2_budget.log`); SMSLegacyModeTest cross-build (`modeoff_xbuild.sh`, run
+`modeoff-xbuild-r2`): Phase-3 sources vs HEAD, 40 images at 0 float32
+ULP, HEAD 137/0; on the Phase-3 build the negative control is red (2
+failures: extended on == off there, as HWSS ignored extended mode) and
+green at HEAD; SMSExtendedHWSSTest 1106/0 at three salt bases (above).
+The rest of the targeted gate is `gate-r1` (round 1); only comments, a
+log line on an unreachable-by-default depth and tests changed since.

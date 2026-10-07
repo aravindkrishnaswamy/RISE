@@ -2794,22 +2794,25 @@ static void NativeSSSReferenceClamps(bool replacement=false,char blend='=') {
                     Check(caster->positiveReturns>0,"SSS witness has positive actual recursive shader returns");
                     if(replacing) Check(caster->referenceReturns==0,"ordinary replacement of reference PT cannot retain recursive reference provenance");
                     else if(replacement&&mode<3) Check(caster->referenceReturns>0,"additive native shader retains actual mixed reference returns");
-                    if(reference&&mode<3) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
+                    // Phase 4: HWSS (mode 3) evaluates extended SMS per lane; its
+                    // SSS first hit delegates each lane to extended NM.
+                    if(reference&&(mode<3||clamped<2)) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
                     integrator->release();caster->release();shader->release();safe_release(direct);op->release();
                 }
             }
             for(unsigned salt=0;salt<means[0].size();++salt) {
                 Check(means[0][salt]>0,"SSS clamp witness has positive native radiance");
-                if(reference&&mode<3&&!replacement) Check(means[0][salt]==means[1][salt],"SSS reference radiance survives caller indirect clamp");
-                else if(replacement&&!replacing&&mode<3) {
+                // Phase 4: HWSS (mode 3) is extended like RGB/NM; its legacy
+                // (extended-off) configurations 2/3 keep the old rules.
+                if(reference&&!replacement) Check(means[0][salt]==means[1][salt],"SSS reference radiance survives caller indirect clamp");
+                else if(replacement&&!replacing) {
                     // This omni-lit composition also has ordinary-only
                     // subpaths. Their clamp can reduce the total; the actual
                     // mixed recursive returns are audited separately above.
                     Check(means[1][salt]<=means[0][salt],"ordinary-only subpaths in mixed composition retain their clamp");
-                } else Check(means[1][salt]<means[0][salt],"ordinary or HWSS legacy SSS continuation retains indirect clamp");
+                } else Check(means[1][salt]<means[0][salt],"ordinary SSS continuation retains indirect clamp");
                 if(mode==3) {
-                    Check(means[0][salt]==means[2][salt],"HWSS SSS extended on/off identity without clamps");
-                    Check(means[1][salt]==means[3][salt],"HWSS SSS extended on/off identity with clamps");
+                    Check(means[3][salt]<means[2][salt],"HWSS extended-off SSS continuation retains indirect clamp");
                 }
             }
         }
