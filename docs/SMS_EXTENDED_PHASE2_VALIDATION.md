@@ -2,7 +2,7 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The most recent completed gate is Round 16 at `d449c0742c0cda9c31fc623504855be7a553f655` (524038 make, 625016 Xcode, 348269 sanitizer checks, zero failures). Fresh Round 16 reviewed documentation head `88982d1f5` and found a native cached-capture P1 and signed-capture P2; repairs are undergoing focused proof and replacement validation. Two pre-existing octree-accounting P2s are measured and filed as DL-441/DL-442 under the task's allowed disposition. Phase 2 remains unmerged; historical gates do not validate these new repairs.
+The latest completed replacement gate at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778` passes 54 make modes/525120/0, 54 actual Xcode controls/627180/0, and 29 all-project sanitizer modes/349351/0, with clean make/Deployment/Opto zero owned diagnostics. Cached recursion and signed-return repairs have coherent committed proof. Fresh Round 17 review remains required; Phase 2 is unmerged. Earlier sections are historical.
 
 
 ## Historical composed gate at a6b4aa37a (2026-10-04)
@@ -1724,3 +1724,35 @@ The signed-capture P2 affects both cached operations. Finite nonzero tagged refe
 Focused repaired-source checks pass 1009/0 for signed captures and 73/0 for recursive/concurrent capture. Signed controls observe actual nonzero native reference returns before an explicit negative shader transform, both windings, RGB/NM450/NM650 and four salts, first build/reuse, and legacy/extended transitions. They additionally require exact negation of independently captured positive native RGB/NM returns; they do not claim to be a signed-light fixture. Recursion controls use actual native DistributionTracing capture, nested sphere objects sharing each cached operation, RGB/NM/HWSS and four simultaneous root callers; a positive secondary-capture count proves actual recursion. The initial negative-BSDF fixture produced no reference-bearing negative return and was discarded. An initial recursive fixture used invalid skin profile parameters and produced nonfinite output; the final fixture uses the same valid skin parameters as the existing cached-provenance controls and an off-sample ray. No diffusion formula changes.
 
 All three reviewers independently identify lost collapsed-node mass; estimator/evidence also identify overlapping-child duplication. Native constant-kernel probes measure planar 4→8, split-plane 2→3, equal-mass leaf/collapsed 16→8 and unequal-mass 10→4. These pre-existing arithmetic P2s are filed as DL-441/DL-442 under the explicitly authorized measured-ledger option. They are not repaired in extended SMS because changing their arithmetic changes mode-off SSS brightness. No composite or future membership-provenance row is opened. Round 17 coherent committed red/green proofs, full replacement gates and fresh review remain required.
+
+
+### Fresh Round 17 replacement gate (2026-10-06)
+
+Native/test checkpoint `97d2e2ff68c25d8dc22feea2e4f83b3d74139778`; master `08552560b54b517b7a8a0696eb9d317953b26bbe`. Evidence: `.claude/logs/sms-phase2-round17-final/source.json`, `final-gate/completed-summary.json`, and `.claude/logs/sms-phase2-round17/proofs/results.json`. All 31 native/four test hashes verify. A coherent four-native-path rollback (both cached operations and their headers) to `88982d1f5` uses the final test source. Signed capture fails 673/336 then restores 1009/0. Each cached operation independently times out at the recorded 30-second deadlock deadline, then restores 37/0; combined recursion/concurrency restores 73/0 and prior cached provenance 8897/0. Those expected deadlock timeouts are failed functional proofs, not zero samples or passing Monte Carlo measurements. Historical committed proofs remain separately scoped.
+
+| Gate | Result |
+|---|---|
+| Clean make | 376 compilation actions; zero owned diagnostics |
+| Actual Xcode Deployment/Opto | 393/393 compilation actions; zero owned diagnostics |
+| Make regressions | 20 executables / 54 modes / 525120 checks / 0 failures |
+| CST derive corpus | 458 MATCH / 0 DRIFT; 465 corpus scenes, 0 UNCOVERED / 0 STALE |
+| Actual Xcode-linked controls | 54 modes / 627180 checks / 0 failures; actual Xcode project objects with the recorded make-built `Profiling.o` utility exception |
+| ASan/UBSan/float-cast-overflow | all 374 linked project units / 29 modes / 349351 checks / 0 failures; external dependency libraries uninstrumented; bundled stb/cgltf units included |
+| Limited cached SSS TSan | test, both cached operations and octree instrumented; other project/third-party units native; recursive, signed and concurrent-octree modes pass |
+| Mode-off parity | 28 salted comparisons; 27 float32 bit-identical images, maximum 1 float32 ULP |
+| Storage-output invariant | 40 original salted production means; maximum 0.0 double ULP |
+| Process maximum RSS | 102924288 bytes; production fixture only |
+
+| Mode-off fixture | Paired cost change mean (%) | Sample SD (%) |
+|---|---:|---:|
+| RGB k=1 | 1.737418 | 2.628048 |
+| RGB k=2 | 0.225402 | 0.257599 |
+| NM | 1.747703 | 0.716577 |
+| HWSS | 2.724838 | 0.989458 |
+| AdvancedShader RGB | 0.184700 | 0.433330 |
+| Cached SSS RGB | -0.054898 | 0.273344 |
+| Donner-Jensen cached SSS RGB | 0.836886 | 0.739510 |
+
+Eight alternating committed-source A/B builds use seven fixtures, four independent salts, one worker and reserve 0. Negative noisy timing means do not establish a speedup. Multiple cold cached-SSS builders can duplicate capture work; one-worker timings and logical scratch/query counters provide no multicore cold-construction bound. Caller depth remains part of the native capture context; this repair does not claim a depth-independent cache estimator. Published trees are immutable during rendering, and losing builders retain local RAII ownership. Signed native RGB/NM capture/return controls require exact negation of independent positive captures; ordinary/HWSS legacy projection remains unchanged. The signed spectral extension subtracts existing positive/negative RGB illuminant uplifts and remains an RGB-valued cached-SSS approximation.
+
+DL-441/DL-442 retain measured pre-existing octree duplication/lost-mass P2s under the user's authorized filing option; no brightness arithmetic is changed for them. Target DL-312/DL-420/DL-437 remain OPEN. Narrow-cone bands retain their original channelwise three-combined-SD tests and matching reference SD; the accepted wide-cone discrepancy remains measurement-only. Fresh independent Round 17 review and integration remain required. No composite/future-provenance ledger row is opened.
