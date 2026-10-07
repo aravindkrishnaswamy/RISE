@@ -623,6 +623,11 @@ namespace RISE
                 const IScene&,const IORStack&,SMSQueryDomain,std::vector<SMSDomainVertex>&,ISampler&,Scalar,Scalar,ManifoldResult&) const;
             void SolveCoreInto(const Point3&,const Vector3&,const Point3&,const Vector3&,
                 std::vector<ManifoldVertex>&,ISampler&,bool,Scalar,ManifoldResult&) const;
+            bool BuildExtendedWalk(const Point3&,const Point3&,const IScene&,const IORStack&,
+                SMSQueryDomain,ISampler&,std::vector<SMSDomainVertex>&,const RasterizerState&,
+                const IObject*,const std::vector<SMSDomainVertex>*,const Vector3*) const;
+            void FinalizeExtendedRootInto(const Point3&,const Vector3&,const Point3&,const Vector3&,
+                const IScene&,ISampler&,const RasterizerState&,SMSDomainRoot&,const LightSample*) const;
             void ProposeExtendedRootInto(const Point3&,const Vector3&,const Point3&,const IScene&,
                 const IORStack&,SMSQueryDomain,ISampler&,const RasterizerState&,SMSDomainRoot&) const;
             RISEPel EvaluateExtendedDelta(const Point3&, const Vector3&, const Vector3&,
@@ -723,10 +728,21 @@ namespace RISE
 
             bool BuildExtendedSeed(const Point3& start, const Point3& end,
                 const IScene&, const IORStack&, SMSQueryDomain, ISampler&,
-                std::vector<SMSDomainVertex>&, const RasterizerState& = nullRasterizerState) const;
+                std::vector<SMSDomainVertex>&, const RasterizerState& = nullRasterizerState,
+                const IObject* selectedEmitter = nullptr) const;
             SMSDomainRoot ProposeExtendedRoot(const Point3& start, const Vector3& startNormal,
                 const Point3& end, const IScene&, const IORStack&, SMSQueryDomain,
                 ISampler&, const RasterizerState& = nullRasterizerState) const;
+            // Shared bounded ownership policy. Seeds depend only on endpoints,
+            // topology and domain; no sampled vertex positions or retry history.
+            std::vector<SMSDomainRoot> CanonicalExtendedRoots(const Point3&,const Vector3&,
+                const LightSample&,const IScene&,const SMSDomainRoot& topology,
+                const RasterizerState& = nullRasterizerState) const;
+            RISEPel EvaluateExtendedAreaReference(const Point3&,const Vector3&,const Vector3&,
+                const OrthonormalBasis3D&,const IMaterial&,const Vector3&,const IScene&,
+                const IRayCaster&,ISampler&,const LightSample&,const IORStack&,
+                const RayIntersectionGeometric* = nullptr,Scalar nm = 0,int rgbComponent = -1) const;
+            static bool SameExtendedTopology(const SMSDomainRoot&,const SMSDomainRoot&);
             static bool SameExtendedRoot(const SMSDomainRoot&, const SMSDomainRoot&, Scalar tolerance);
             static Scalar ExtendedReflectionProbability(bool reflection, bool transmission,
                 Scalar fresnel, bool tir, Scalar explorationFloor);

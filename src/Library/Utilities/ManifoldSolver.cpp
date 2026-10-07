@@ -7563,7 +7563,17 @@ Scalar ManifoldSolver::ExtendedReflectionProbability(bool reflection, bool trans
 
 bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
     const IScene& scene, const IORStack& live, SMSQueryDomain domain, ISampler& sampler,
-    std::vector<SMSDomainVertex>& vertices, const RasterizerState& raster) const
+    std::vector<SMSDomainVertex>& vertices, const RasterizerState& raster, const IObject* selectedEmitter) const
+{
+    return BuildExtendedWalk(start,end,scene,live,domain,sampler,vertices,raster,
+        selectedEmitter,nullptr,nullptr);
+}
+
+bool ManifoldSolver::BuildExtendedWalk(const Point3& start,const Point3& end,
+    const IScene& scene,const IORStack& live,SMSQueryDomain domain,ISampler& sampler,
+    std::vector<SMSDomainVertex>& vertices,const RasterizerState& raster,
+    const IObject* selectedEmitter,const std::vector<SMSDomainVertex>* topology,
+    const Vector3* firstDirection) const
 {
     SMSWorkerScratchLease scratch(true,config.referenceCounters);
     vertices.clear();
@@ -7577,14 +7587,25 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
     SMSStartingMedia media; IORStack stack(live.EnvironmentIOR());
     if(!SMSDomainReplay::Capture(scene, start, live, media)
         || !SMSDomainReplay::BuildStack(media, domain, stack)) return false;
-    const std::size_t chosen = std::min(casters.size()-1,
-        static_cast<std::size_t>(sampler.Get1D()*casters.size()));
-    const IObject* firstCaster = casters[chosen];
-    const Scalar u = sampler.Get1D(), v = sampler.Get1D(), w = sampler.Get1D();
-    Point3 point; Vector3 normal; Point2 uv;
-    firstCaster->UniformRandomPoint(&point, &normal, &uv, Point3(u,v,w));
-    Vector3 direction = Vector3Ops::mkVector3(point, start);
-    if(Vector3Ops::NormalizeMag(direction) <= 0) return false;
+    if(topology && (topology->empty() || topology->size()>config.maxChainDepth
+        || topology->size()>SMSChainRecord::kMaxVertices
+        || (config.targetBounces && topology->size()!=config.targetBounces))) return false;
+    const IObject* firstCaster = nullptr;
+    Vector3 direction;
+    if(topology) {
+        firstCaster=topology->front().geometry.pObject;
+        if(!firstDirection || std::find(casters.begin(),casters.end(),firstCaster)==casters.end()) return false;
+        direction=*firstDirection;
+    } else {
+        const std::size_t chosen=std::min(casters.size()-1,
+            static_cast<std::size_t>(sampler.Get1D()*casters.size()));
+        firstCaster=casters[chosen];
+        const Scalar u=sampler.Get1D(),v=sampler.Get1D(),w=sampler.Get1D();
+        Point3 point;Vector3 normal;Point2 uv;
+        firstCaster->UniformRandomPoint(&point,&normal,&uv,Point3(u,v,w));
+        direction=Vector3Ops::mkVector3(point,start);
+    }
+    if(Vector3Ops::NormalizeMag(direction)<=0) return false;
     Point3 previous = start;
     for(unsigned int depth=0; depth<config.maxChainDepth; ++depth) {
         Ray ray(previous, direction);
@@ -7595,8 +7616,15 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
         // walk boundary after the first caster. It is only a proposal filter;
         // a solved root must still pass complete ordered scene visibility.
         const Scalar emitterProjection = Vector3Ops::Dot(Vector3Ops::mkVector3(end, ray.origin), direction);
-        if(!config.targetBounces && !vertices.empty() && emitterProjection > 0
+        if(!selectedEmitter && !config.targetBounces && !vertices.empty() && emitterProjection > 0
             && (!hit.geometric.bHit || hit.geometric.range > emitterProjection)) break;
+        if(selectedEmitter && hit.geometric.bHit && hit.pObject==selectedEmitter) {
+            if(vertices.empty()) return false;
+            break;
+        }
+        if(topology && (vertices.size()>=topology->size()
+            || hit.pObject!=(*topology)[vertices.size()].geometry.pObject
+            || hit.pMaterial!=(*topology)[vertices.size()].geometry.pMaterial)) return false;
         if(!hit.geometric.bHit || !hit.pObject || !hit.pMaterial
             || (vertices.empty() && hit.pObject != firstCaster)) return false;
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
@@ -7621,9 +7649,15 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
         const Scalar probabilityR = ExtendedReflectionProbability(query.reflection, query.transmission,
             fresnel, tir, config.extendedEventFloor);
         if(!std::isfinite(probabilityR)) return false;
-        const bool reflection = probabilityR == 1 || (probabilityR > 0 && sampler.Get1D() < probabilityR);
+        const bool reflection = topology ? (*topology)[vertices.size()].geometry.isReflection
+            : probabilityR == 1 || (probabilityR > 0 && sampler.Get1D() < probabilityR);
+        if(topology && ((reflection && probabilityR<=0) || (!reflection && probabilityR>=1))) return false;
         if(!SMSDomainReplay::Cross(*hit.pMaterial, hit.pObject, hit.geometric, domain,
             reflection, stack, etaI, etaT, exiting)) return false;
+        if(topology) {
+            const auto& expected=(*topology)[vertices.size()].geometry;
+            if(expected.isExiting!=exiting || expected.etaI!=etaI || expected.etaT!=etaT) return false;
+        }
         vertices.emplace_back(hit.geometric);
         auto& vertex = vertices.back().geometry;
         vertex.position = SMSReferenceSurfacePoint(*hit.pObject,hit.geometric);
@@ -7639,9 +7673,11 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
         direction=reflection?law.reflected:law.transmitted;
         if(!reflection && !law.hasTransmission) return false;
         if(Vector3Ops::NormalizeMag(direction) <= 0) return false;
-        if(config.targetBounces && vertices.size() == config.targetBounces) break;
+        if((topology && vertices.size()==topology->size())
+            || (config.targetBounces && vertices.size()==config.targetBounces)) break;
     }
-    return !vertices.empty() && (!config.targetBounces || vertices.size() == config.targetBounces);
+    return !vertices.empty() && (!topology || vertices.size()==topology->size())
+        && (!config.targetBounces || vertices.size() == config.targetBounces);
 }
 
 SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vector3& startNormal,
@@ -7676,14 +7712,23 @@ void ManifoldSolver::ProposeExtendedRootInto(const Point3& start, const Vector3&
         if(counters) counters->zeroTrials.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    FinalizeExtendedRootInto(start,startNormal,end,Vector3(0,0,1),scene,sampler,raster,root,nullptr);
+}
+
+void ManifoldSolver::FinalizeExtendedRootInto(const Point3& start,const Vector3& startNormal,
+    const Point3& end,const Vector3& endNormal,const IScene& scene,ISampler& sampler,
+    const RasterizerState& raster,SMSDomainRoot& root,const LightSample* emitter) const
+{
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    auto* counters=config.referenceCounters;
     // Root matching resolves geometry at sqrt(machine epsilon) relative to
     // the endpoint scale. Polish the angular constraints more tightly, then
     // reject roots whose inverse-Jacobian correction cannot resolve that band.
     const Scalar tolerance = std::sqrt(std::numeric_limits<Scalar>::epsilon()) * root.scale;
     const Scalar polish = std::min(config.solverThreshold, std::sqrt(std::numeric_limits<Scalar>::epsilon())/64);
-    ManifoldSolver replay(config,true,&root.vertices,SMSDomainWavelength(domain));
-    replay.SolveDomainCoreInto(start,startNormal,end,Vector3(0,0,1),scene,root.startingStack,
-        domain,root.vertices,sampler,tolerance,polish,root.result);
+    ManifoldSolver replay(config,true,&root.vertices,SMSDomainWavelength(root.domain));
+    replay.SolveDomainCoreInto(start,startNormal,end,endNormal,scene,root.startingStack,
+        root.domain,root.vertices,sampler,tolerance,polish,root.result);
     if(root.result.valid) {
         Scalar contextGain=1;
         for(const auto& vertex:root.vertices) contextGain=std::max(contextGain,vertex.contextSlope*root.scale);
@@ -7692,8 +7737,8 @@ void ManifoldSolver::ProposeExtendedRootInto(const Point3& start, const Vector3&
             // This deterministic refinement is part of every proposal and
             // retry, not an extra discovery or a changed event topology.
             const Scalar contextPolish=std::max(std::numeric_limits<Scalar>::epsilon(),polish/contextGain);
-            replay.SolveDomainCoreInto(start,startNormal,end,Vector3(0,0,1),scene,root.startingStack,
-                domain,root.vertices,sampler,tolerance,contextPolish,root.result);
+            replay.SolveDomainCoreInto(start,startNormal,end,endNormal,scene,root.startingStack,
+                root.domain,root.vertices,sampler,tolerance,contextPolish,root.result);
         }
     }
     bool visible = root.result.valid;
@@ -7743,7 +7788,11 @@ void ManifoldSolver::ProposeExtendedRootInto(const Point3& start, const Vector3&
         Ray ray(previous,direction); ray.Advance(1e-8);
         RayIntersection hit(ray,raster);
         scene.GetObjects()->IntersectRay(hit,true,true,false);
-        if(hit.geometric.bHit && hit.geometric.range < Point3Ops::Distance(ray.origin,end)-tolerance)
+        if(emitter) {
+            visible=hit.geometric.bHit && hit.pObject==emitter->pLuminary
+                && hit.pMaterial==emitter->pLuminary->GetMaterial()
+                && Point3Ops::Distance(SMSReferenceSurfacePoint(*hit.pObject,hit.geometric),end)<=tolerance;
+        } else if(hit.geometric.bHit && hit.geometric.range < Point3Ops::Distance(ray.origin,end)-tolerance)
             visible = false;
     }
     root.accepted = visible;
@@ -7752,6 +7801,54 @@ void ManifoldSolver::ProposeExtendedRootInto(const Point3& start, const Vector3&
         counters->rejectedRoots.fetch_add(1, std::memory_order_relaxed);
     }
     return;
+}
+
+bool ManifoldSolver::SameExtendedTopology(const SMSDomainRoot& a,const SMSDomainRoot& b)
+{
+    if(!a.domain.Valid() || !b.domain.Valid() || a.domain.kind!=b.domain.kind
+        || a.domain.component!=b.domain.component || a.domain.nm!=b.domain.nm
+        || !a.startingStack.SameInterfaces(b.startingStack) || a.vertices.empty()
+        || a.vertices.size()!=b.vertices.size()) return false;
+    for(std::size_t i=0;i<a.vertices.size();++i) {
+        const auto& x=a.vertices[i].geometry;const auto& y=b.vertices[i].geometry;
+        if(!x.pObject || !x.pMaterial || x.pObject!=y.pObject || x.pMaterial!=y.pMaterial
+            || x.isReflection!=y.isReflection || x.isExiting!=y.isExiting
+            || x.etaI!=y.etaI || x.etaT!=y.etaT) return false;
+    }
+    return true;
+}
+
+std::vector<SMSDomainRoot> ManifoldSolver::CanonicalExtendedRoots(const Point3& start,
+    const Vector3& startNormal,const LightSample& emitter,const IScene& scene,
+    const SMSDomainRoot& topology,const RasterizerState& raster) const
+{
+    std::vector<SMSDomainRoot> roots;
+    if(emitter.isDelta || !emitter.pLuminary || !(emitter.pdfSelect>0)
+        || !(emitter.pdfPosition>0) || topology.vertices.empty()
+        || topology.vertices.size()>SMSChainRecord::kMaxVertices) return roots;
+    // This fixed sampler is never used to choose canonical coordinates or
+    // events. Native Newton is deterministic; reference PDF estimation is off.
+    RandomNumberGenerator rng(0x42304341u);IndependentSampler sampler(rng);
+    Vector3 directions[2];directions[0]=Vector3Ops::mkVector3(emitter.position,start);
+    Point3 point;Vector3 normal;Point2 uv;
+    topology.vertices.front().geometry.pObject->UniformRandomPoint(&point,&normal,&uv,Point3(.5,.5,.5));
+    directions[1]=Vector3Ops::mkVector3(point,start);
+    for(const Vector3& direction:directions) {
+        SMSDomainRoot root(topology.domain,topology.startingStack);
+        root.scale=Point3Ops::Distance(start,emitter.position);
+        if(!(root.scale>0) || !std::isfinite(root.scale)
+            || !BuildExtendedWalk(start,emitter.position,scene,root.startingStack,root.domain,
+                sampler,root.vertices,raster,emitter.pLuminary,&topology.vertices,&direction)) continue;
+        if(!SameExtendedTopology(root,topology)) continue;
+        FinalizeExtendedRootInto(start,startNormal,emitter.position,emitter.normal,scene,
+            sampler,raster,root,&emitter);
+        if(!root.accepted) continue;
+        const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*root.scale;
+        bool duplicate=false;
+        for(const auto& prior:roots) if(SameExtendedRoot(prior,root,tolerance)) {duplicate=true;break;}
+        if(!duplicate) roots.push_back(std::move(root));
+    }
+    return roots;
 }
 
 bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance)
@@ -7821,6 +7918,89 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
                     std::fabs(y.objectPosition.z)})) return false;
     }
     return true;
+}
+
+RISEPel ManifoldSolver::EvaluateExtendedAreaReference(const Point3& pos,const Vector3& geomNormal,
+    const Vector3& shadingNormal,const OrthonormalBasis3D& onb,const IMaterial& material,
+    const Vector3& outgoing,const IScene& scene,const IRayCaster& caster,ISampler& parent,
+    const LightSample& light,const IORStack& stack,const RayIntersectionGeometric* context,
+    Scalar nm,int rgbComponent) const
+{
+    RISEPel total(0,0,0);
+    const IBSDF* bsdf=material.GetBSDF();
+    const auto* ls=caster.GetLightSampler();
+    if(!bsdf || !ls || ls->IsSoloActive() || light.isDelta || !light.pLuminary
+        || !light.pLuminary->GetGeometry() || !light.pLuminary->GetGeometry()->CanBeAreaLight()
+        || !(light.pdfSelect>0) || !(light.pdfPosition>0)
+        || !std::isfinite(light.pdfSelect) || !std::isfinite(light.pdfPosition)
+        || !ExtendedAnchorEligible(scene,caster,pos,stack,nm)) return total;
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    SMSLoopSampler discovery(parent,0x42304449u),retry(parent,0x42305254u);
+    const unsigned int trials=config.multiTrials?config.multiTrials:1;
+    const RasterizerState& raster=context?context->rast:nullRasterizerState;
+    for(unsigned int trial=0;trial<trials;++trial) {
+        const unsigned int component=nm>0?0:rgbComponent>=0?static_cast<unsigned>(rgbComponent)
+            :std::min(2u,static_cast<unsigned>(discovery.sampler.Get1D()*3));
+        if(component>2) continue;
+        const SMSQueryDomain domain=nm>0?SMSQueryDomain::NM(nm):SMSQueryDomain::RGB(component);
+        SMSStartingMedia media;IORStack domainStack(stack.EnvironmentIOR());
+        if(!SMSDomainReplay::Capture(scene,pos,stack,media)
+            || !SMSDomainReplay::BuildStack(media,domain,domainStack)) continue;
+        SMSDomainRoot topology(domain,domainStack);
+        if(config.referenceCounters) config.referenceCounters->proposalTrials.fetch_add(1,std::memory_order_relaxed);
+        if(!BuildExtendedSeed(pos,light.position,scene,domainStack,domain,discovery.sampler,
+            topology.vertices,raster,light.pLuminary)) {
+            if(config.referenceCounters) config.referenceCounters->zeroTrials.fetch_add(1,std::memory_order_relaxed);
+            continue;
+        }
+        const auto roots=CanonicalExtendedRoots(pos,shadingNormal,light,scene,topology,raster);
+        if(roots.empty()) {
+            if(config.referenceCounters) config.referenceCounters->zeroTrials.fetch_add(1,std::memory_order_relaxed);
+            continue; // no reciprocal loop for an empty owned set
+        }
+        Scalar physical=0;
+        for(const auto& root:roots) {
+            const auto& chain=root.result.specularChain;
+            Vector3 incoming=Vector3Ops::mkVector3(chain.front().position,pos);
+            const Scalar distance=Vector3Ops::NormalizeMag(incoming);
+            if(!(distance>0)) continue;
+            RayIntersectionGeometric hit(Ray(pos,-outgoing),raster);
+            if(context) hit=*context;
+            hit.bHit=true;hit.ptIntersection=pos;hit.vNormal=shadingNormal;
+            hit.vGeomNormal=geomNormal;hit.onb=onb;hit.ambientIOR=root.startingStack.top();
+            const Scalar f=nm>0?bsdf->valueStatefulNM(incoming,hit,nm,&root.startingStack)
+                :bsdf->valueStateful(incoming,hit,&root.startingStack)[component];
+            const Vector3 lightToChain=Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,light.position));
+            const Scalar le=nm>0?SMSAreaLeNM(light,lightToChain,nm):SMSAreaLe(light,lightToChain)[component];
+            ManifoldSolver native(config,true,&root.vertices,SMSDomainWavelength(root.domain));
+            const Scalar geometry=std::fabs(Vector3Ops::Dot(chain.front().geomNormal,incoming))/(distance*distance)
+                *native.ComputeLightToFirstVertexJacobianDet(chain,pos,light.position,light.normal);
+            const Scalar value=f*std::fabs(Vector3Ops::Dot(shadingNormal,incoming))
+                *root.result.contributionNM*le*geometry;
+            if(std::isfinite(value)) physical+=value;
+        }
+        if(physical==0 || !std::isfinite(physical)) continue;
+        if(config.referenceCounters) {
+            config.referenceCounters->acceptedDiscoveries.fetch_add(1,std::memory_order_relaxed);
+            config.referenceCounters->ownedRoots.fetch_add(roots.size(),std::memory_order_relaxed);
+        }
+        SMSDomainRoot retryTopology(domain,domainStack);
+        const auto walk=[&](ISampler& sampler)->const SMSDomainRoot& {
+            retryTopology.vertices.clear();
+            if(!BuildExtendedSeed(pos,light.position,scene,domainStack,domain,sampler,
+                retryTopology.vertices,raster,light.pLuminary)) retryTopology.vertices.clear();
+            return retryTopology;
+        };
+        // Every retry uses the exact discovery walk, including failed walks;
+        // canonical solves are outside this loop and never consume retry RNG.
+        const Scalar reciprocal=SMSRootReference::Reciprocal(topology,retry.sampler,walk,
+            [](const SMSDomainRoot& a,const SMSDomainRoot& b){return SameExtendedTopology(a,b);},
+            config.maxBernoulliTrials,true,config.referenceCounters);
+        total[component]+=SMSRootReference::Deposit(physical,reciprocal,
+            nm>0 || rgbComponent>=0?Scalar(1):Scalar(1)/3,
+            light.pdfSelect*light.pdfPosition,trials);
+    }
+    return total;
 }
 
 RISEPel ManifoldSolver::EvaluateExtendedDelta(const Point3& pos, const Vector3& geomNormal,
