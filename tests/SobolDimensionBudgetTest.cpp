@@ -1842,6 +1842,12 @@ static void TestMediumDistanceStreamAudit()
 // the stream's first dimension) any vertex stream reached and the fraction
 // of (sample, vertex stream) pairs past 32.
 //
+// The extended SMS draws themselves go through a SobolSampler::ForkStream
+// COPY, so the in-render audit cannot see them: their count is bounded by
+// construction (a fixed light sample plus two two-draw loop seeds per
+// evaluation, whatever N, K or the outcome) and is measured DIRECTLY below
+// by evaluating one SMS call at depth 0 on an auditing sampler.
+//
 // Gate: no EXTENDED configuration overruns a vertex stream (the Phase 4
 // fix moves extended per-lane SMS onto `PTExtendedSMSStream`).  Legacy
 // configurations are reported only (mode-off must not change; a legacy

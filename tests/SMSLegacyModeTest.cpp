@@ -1,7 +1,24 @@
 // Cross-build float32 ULP comparisons, exact hashes, diagnostics and timing.
 // Adopted 2026-10-04; within-build rejection tests retain HashPixels doubles.
 // Run the same --trial value after each interleaved master/candidate build.
+//
+// Fixtures 7-9 (sms-ext Phase 4 review) are legacy HWSS + SMS scenes through
+// the HWSS paths Phase 4 edited.  Like 0-6 they are verified ONLY by the
+// two-build dump comparison (RISE_SMS_LEGACY_DUMP_DIR on the base build,
+// RISE_SMS_LEGACY_REFERENCE_DIR on the candidate); a single run asserts
+// only that they render lit.  The negative control below shows those
+// fixtures would see the change: the SAME fixture rendered by a directly
+// constructed HWSS rasterizer with extended mode ON differs from it with
+// extended mode OFF (and the OFF render repeats bit-identically).
 #include "SMSRenderTestSupport.h"
+#include "../src/Library/Rendering/PathTracingSpectralRasterizer.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Utilities/ManifoldSolver.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/ISampling2D.h"
+#include "../src/Library/Interfaces/IPixelFilter.h"
+#include "../src/Library/RISE_API.h"
 #include <iomanip>
 #include <sstream>
 
@@ -90,6 +107,43 @@ static std::string Phase4HWSSScene(unsigned int fixture)
             "standard_object\n{\n name emitter\n geometry emitter_geo\n material lum\n}\n";
     }
     return s;
+}
+
+// Directly constructed PT spectral HWSS rasterizer (extended mode is an
+// internal ManifoldSolverConfig field, not parser-exposed), 16 spp,
+// one salt.  Returns the float32 RGBA pixels, empty on failure.
+static std::vector<float> RenderDirectHWSS(const std::string& text,bool extended)
+{
+    std::vector<float> out;
+    if(!ConfigureTestWorker()) return out;
+    const std::string path=TestTempPath("sms_legacy_neg_"+std::to_string(::getpid())+".RISEscene");
+    {std::ofstream f(path);f<<text;}
+    IJobPriv* job=nullptr;
+    if(!RISE_CreateJobPriv(&job)||!job||!job->LoadAsciiSceneViaCst(path.c_str())) {std::remove(path.c_str());safe_release(job);return out;}
+    std::remove(path.c_str());
+    const IScene& scene=*job->GetScene();
+    scene.GetObjects()->PrepareForRendering();
+    std::vector<IShaderOp*> ops;IShader* shader=nullptr;
+    if(!RISE_API_CreateStandardShader(&shader,ops)) {safe_release(job);return out;}
+    auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&scene);
+    ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=extended;
+    StabilityConfig stability;
+    auto* rasterizer=new PathTracingSpectralRasterizer(caster,380,720,8,1,cfg,AdaptiveSamplingConfig(),stability,false,true);
+    ISampling2D* samples=nullptr;IPixelFilter* filter=nullptr;
+    RISE_API_CreateMultiJitteredSampling2D(&samples,1,1);RISE_API_CreateBoxPixelFilter(&filter,1,1);
+    if(samples&&filter) {
+        samples->SetNumSamples(16);rasterizer->SubSampleRays(samples,filter);
+        auto* capture=new CapturingRasterizerOutput();rasterizer->AddRasterizerOutput(capture);
+        rasterizer->AttachToScene(&scene);
+        std::srand(4242);GlobalRNG()=RandomNumberGenerator(4242);
+        SobolSamplerTestHooks::ValueSalt().store(0x4E454731u);
+        rasterizer->RasterizeScene(scene,nullptr,nullptr);
+        SobolSamplerTestHooks::ValueSalt().store(0);
+        for(const auto& c:capture->pixels) {out.push_back(float(c.base.r));out.push_back(float(c.base.g));out.push_back(float(c.base.b));out.push_back(float(c.a));}
+        rasterizer->DetachFromScene(&scene);capture->release();
+    }
+    safe_release(samples);safe_release(filter);rasterizer->release();caster->release();shader->release();safe_release(job);
+    return out;
 }
 
 int main(int argc,char** argv)
@@ -184,6 +238,23 @@ int main(int argc,char** argv)
         }
         const auto stats=Summarize(seconds);
         std::cout<<"LEGACY timing fixture="<<fixture<<" mean="<<stats.mean<<" sd="<<stats.sd<<" n="<<count<<std::endl;
+    }
+    // Negative control for fixtures 7-9 (see the header).
+    for(unsigned fixture:{7u,9u}) {
+        const std::string scene=Phase4HWSSScene(fixture);
+        const auto off=RenderDirectHWSS(scene,false), again=RenderDirectHWSS(scene,false), on=RenderDirectHWSS(scene,true);
+        bool complete=!off.empty()&&off.size()==again.size()&&off.size()==on.size();
+        unsigned long long repeat=0,changed=0,maxULP=0;
+        if(complete) for(std::size_t i=0;i<off.size();++i) {
+            if(Float32ULPDistance(off[i],again[i])) ++repeat;
+            const auto d=Float32ULPDistance(off[i],on[i]);
+            if(d>1) ++changed;
+            maxULP=std::max(maxULP,d);
+        }
+        std::cout<<"LEGACY negative control fixture="<<fixture<<" extended-off repeat changed="<<repeat
+            <<" extended-on vs off components > 1 ULP="<<changed<<" of "<<off.size()<<" max_ulps="<<maxULP<<std::endl;
+        Check(complete&&repeat==0,"negative control: extended-off direct HWSS render repeats bit-identically");
+        Check(complete&&changed>0,"negative control: extended-on output differs from extended-off on the Phase 4 fixture");
     }
     std::cout<<passCount<<" passed, "<<failCount<<" failed"<<std::endl;
     return failCount?1:0;

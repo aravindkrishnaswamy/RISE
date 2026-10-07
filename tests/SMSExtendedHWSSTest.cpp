@@ -64,7 +64,8 @@ namespace
 {
     bool g_quick=false;
     std::string g_caseFilter;
-    unsigned g_biasSalts=64;    // `--bias-salts N`: samplerbias render count per sampler   // `--case <substring>`: run matching LaneCase labels only
+    unsigned g_biasSalts=64;
+    double g_probeBallZ=0.55;   // `--probe-ball-z Z`: nmprobe's ball centre height (DL-450 discriminator)    // `--bias-salts N`: samplerbias render count per sampler   // `--case <substring>`: run matching LaneCase labels only
     const unsigned kLanes=SampledWavelengths::N;
     using Lanes=std::array<Scalar,SampledWavelengths::N>;
 
@@ -243,11 +244,12 @@ namespace
     }
     // Nested exterior: camera, receiver, ball and emitter inside an
     // enclosure (constant 1.4 or dispersive); the ball is `ball`.
-    SceneSpec ImmersedBallScene(const std::string& enclosure,const std::string& ball) {
+    SceneSpec ImmersedBallScene(const std::string& enclosure,const std::string& ball,double ballZ=0.55) {
         SceneSpec s;s.label="immersed ball enclosure="+enclosure+" ball="+ball;
+        if(ballZ!=0.55) s.label+=" z="+std::to_string(ballZ);
         s.text=Header()
             +ClippedQuad("receiver_geo",0,-0.5,0.5,-0.5,0.5,false,true)+Obj("receiver","receiver_geo","diffuse")
-            +"sphere_geometry\n{\n name ball_geo\n radius 0.15\n}\n"+Obj("caster","ball_geo",ball," position 0.3 0 0.55\n")
+            +"sphere_geometry\n{\n name ball_geo\n radius 0.15\n}\n"+Obj("caster","ball_geo",ball," position 0.3 0 "+std::to_string(ballZ)+"\n")
             +ClippedQuad("emitter_geo",1,0.5,0.7,-0.1,0.1,false,false)+Obj("emitter","emitter_geo","lum"," position 0 0 0\n")
             +MeshBox("enclosure_geo",false)+Obj("enclosure","enclosure_geo",enclosure," position 0 0 0.5\n scale 3 3 1\n");
         const std::string from="name lum\n exitance light_color\n scale 10";
@@ -856,7 +858,7 @@ static void PrintSaltQuantiles(const std::string& label,std::vector<double> v)
 static void NMProbeSection()
 {
     RenderOptions o;o.N=4096;o.salts=g_quick?8:g_biasSalts;o.saltBase=g_saltBase;
-    const auto spec=ImmersedBallScene("medium14","prism");
+    const auto spec=ImmersedBallScene("medium14","prism",g_probeBallZ);
     const unsigned w=0;
     const auto ref=Render(spec,Mode::Ref,o,int(w));
     SMSReferenceCounters nmCounters;
@@ -929,6 +931,7 @@ int main(int argc,char** argv)
         else if(a=="--case" && i+1<argc) g_caseFilter=argv[++i];
         else if(a=="--salt-base" && i+1<argc) g_saltBase=unsigned(std::stoul(argv[++i]));
         else if(a=="--bias-salts" && i+1<argc) g_biasSalts=unsigned(std::stoul(argv[++i]));
+        else if(a=="--probe-ball-z" && i+1<argc) g_probeBallZ=std::stod(argv[++i]);
     }
     const auto run=[&](const char* name,void(*f)()) {
         if(section.empty()||section==name) {std::cout<<"=== "<<name<<" ===\n";f();}

@@ -159,6 +159,10 @@ namespace RISE
 			// bounce 0's, and so on) -- one dimension driving a
 			// light-vertex and an eye-vertex decision of one path, a
 			// -12 % bias in dense fog.
+			//   PT extended SMS (sms-ext Phase 4): per (PT depth mod 1024,
+			//   lane) one stream at 141312 + 4 * depth + lane, [141312,
+			//   145408), drawn through ForkStream so it never moves the
+			//   vertex stream -- PathTransportUtilities::PTExtendedSMSStream.
 			// The full map, including the wrap-region families past
 			// the dimension table, is SobolDimensionBudgetTest G2.
 			//

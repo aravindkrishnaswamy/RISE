@@ -18,6 +18,7 @@
 #include "pch.h"
 #include "PathTracingIntegrator.h"
 #include "../Utilities/SobolSampler.h"
+#include <atomic>
 #include "../Rendering/LuminaryManager.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/IndependentSampler.h"
@@ -6934,6 +6935,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				std::optional<SobolSampler> smsLaneStream;
 				if( bSMSExtendedLoopHW ) {
 					if( const SobolSampler* sobol = dynamic_cast<const SobolSampler*>( &smsSampler ) ) {
+						// Depths past the cap reuse depth - 1024's streams
+						// (documented ceiling); say so once.  No behaviour change.
+						if( depth >= PathTransportUtilities::kPTExtendedSMSDepthCap ) {
+							static std::atomic<bool> warned{ false };
+							if( !warned.exchange( true, std::memory_order_relaxed ) ) {
+								GlobalLog()->PrintEasyWarning( "PathTracingIntegrator:: HWSS extended SMS at path depth >= 1024: its per-lane Sobol' streams (PTExtendedSMSStream) repeat those of depth - 1024." );
+							}
+						}
 						smsLaneStream.emplace( sobol->ForkStream(
 							PathTransportUtilities::PTExtendedSMSStream( depth, w ) ) );
 					}
