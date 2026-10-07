@@ -62,6 +62,7 @@ static void CheckCrossBuildPixels(const std::vector<RISEColor>& pixels,unsigned 
 static std::string Phase4HWSSScene(unsigned int fixture)
 {
     std::string s="RISE ASCII SCENE 7\n"
+        "standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n"
         "film\n{\n width 64\n height 64\n}\n"
         "pinhole_camera\n{\n location 0.6 0 3.2\n lookat 0.6 0 0\n up 0 1 0\n fov 40\n}\n"
         "pathtracing_spectral_rasterizer\n{\n samples 64\n pixel_filter box\n oidn_denoise FALSE\n"
