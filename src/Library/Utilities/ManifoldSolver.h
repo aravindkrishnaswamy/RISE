@@ -118,6 +118,19 @@ namespace RISE
             // Any draw makes that answer uncertain (unowned); tests assert 0.
             std::atomic<unsigned long long> canonicalSamplerDraws{0};
             std::atomic<unsigned long long> partitionQueries{0}, partitionOwned{0}, partitionUncertain{0};
+            // Diagnostics of an unaccepted Newton projection of PT's chain
+            // (counted only when counters are attached): Newton itself
+            // failed; a canonical root of the same topology lies within
+            // 1e-3 / 1e-8 of the scale of every recorded PT vertex.
+            std::atomic<unsigned long long> projectionNewtonFailures{0};
+            std::atomic<unsigned long long> uncertainNearOwned{0}, uncertainAtOwned{0}, uncertainWithOwnedSet{0};
+            // Cost/consistency diagnostics: RGB queries answered by one
+            // shared classification, canonical sets reused within one B
+            // evaluation, robust projection retries that succeeded, and
+            // canonical roots B declined because PT's record of that very
+            // root would not classify owned (the symmetric rule).
+            std::atomic<unsigned long long> componentReuse{0}, canonicalCacheHits{0};
+            std::atomic<unsigned long long> robustProjections{0}, asymmetricRootsDeclined{0};
         };
 
         // Counts logical scene queries in the active extended diagnostic scope.
@@ -161,6 +174,14 @@ namespace RISE
             }
             static Scalar Deposit(Scalar physicalContribution, Scalar reciprocal,
                 Scalar channelProbability, Scalar emitterProbability, unsigned int originalTrials);
+        };
+
+        // Test-only process hook (never set by a parser, API or production
+        // code): zero estimator B's area deposit after its fixed parent
+        // draws while PT keeps applying ownership, so a render isolates the
+        // PT-kept set and shares every PT path with the full render.
+        struct SMSExtendedTestHooks {
+            static std::atomic<bool>& DropAreaContributions();
         };
 
         struct SMSQueryDomain {
@@ -343,11 +364,7 @@ namespace RISE
             SMSDomainCounters* domainCounters; ///< Optional diagnostics; caller owns lifetime.
             SMSReferenceCounters* referenceCounters; ///< Optional estimator A diagnostics; caller owns lifetime.
             Scalar extendedEventFloor;     ///< Positive exploration mass for both supported R/T events.
-            /// Internal test diagnostic, never set by a parser or API: zero
-            /// estimator B's area-emitter contribution while PT keeps applying
-            /// the canonical ownership predicate, so a render isolates the
-            /// PT-kept set. Leaves delta lights (estimator A) unchanged.
-            bool extendedDropAreaContributions;
+
 			unsigned int	maxIterations;			///< Newton iteration limit
 			Scalar			solverThreshold;		///< Convergence threshold on ||C||
 			Scalar			uniquenessThreshold;	///< Threshold to distinguish solutions
@@ -481,7 +498,6 @@ namespace RISE
             domainCounters( nullptr ),
             referenceCounters( nullptr ),
             extendedEventFloor( 0.05 ),
-            extendedDropAreaContributions( false ),
 			maxIterations( 15 ),
 			solverThreshold( 1e-4 ),
 			uniquenessThreshold( 1e-2 ),
@@ -657,7 +673,15 @@ namespace RISE
             // replaying its recorded vertices (objects, events, positions)
             // from the anchor. Applies the walk's acceptance filters.
             bool ReplayExtendedChain(const SMSChainRecord&,const IObject& luminary,const IScene&,
-                SMSQueryDomain,const RasterizerState&,SMSDomainRoot&) const;
+                SMSQueryDomain,const RasterizerState&,SMSDomainRoot&,bool* customFresnel=nullptr) const;
+            // One classification of a recorded chain ending on `luminary` at
+            // the partition point y: 1 owned, 0 not owned (no replayable
+            // topology / not in the canonical set), -1 uncertain (PT's
+            // chain has no accepted projection). `ownedSet` reuses an
+            // already computed canonical set of the same (anchor,y,T).
+            int ClassifyExtendedChain(const SMSChainRecord&,const IObject& luminary,const Point3& y,
+                const Vector3& yNormal,const IScene&,SMSQueryDomain,const RasterizerState&,
+                const std::vector<SMSDomainRoot>* ownedSet) const;
             // Static/scene inputs both sides of the area partition share.
             bool ExtendedAreaPartitionApplies(const IScene&,const IRayCaster&,const IObject* luminary,
                 Scalar* pdfSelect) const;
@@ -774,10 +798,20 @@ namespace RISE
             // PT's suppression alike; an uncertain solve contributes nothing.
             void CanonicalExtendedRoots(const Point3& anchor,const Vector3& anchorShadingNormal,
                 const IObject& luminary,const Point3& y,const Vector3& yNormal,const IScene&,
-                const SMSDomainRoot& topology,const RasterizerState&,std::vector<SMSDomainRoot>& owned) const;
+                const SMSDomainRoot& topology,const RasterizerState&,std::vector<SMSDomainRoot>& owned,
+                const SMSDomainRoot* stopAt=nullptr) const;
             // The partition's emitter point: `p` projected onto the luminary
-            // along `n` (removes a sampler's off-surface push).
-            static Point3 ExtendedLuminaryPoint(const IObject& luminary,const Point3& p,const Vector3& n);
+            // along `n`, removing a single-sided sampler's object-space 1e-5
+            // push. False (uncertain) unless the luminary is met within that
+            // push's world-space bound of `p`.
+            static bool ExtendedLuminaryPoint(const IObject& luminary,const Point3& p,const Vector3& n,Point3& out);
+            // PT side for RGB: per component c with evaluate[c], owned[c].
+            // When the three replayed component topologies are identical
+            // (objects, events, indices, membership, no coating Fresnel)
+            // one classification serves all three.
+            void ExtendedEmitterHitOwnedRGB(const SMSChainRecord& rec,const IObject& luminary,
+                const Point3& y,const Vector3& yNormal,const IScene&,const IRayCaster&,
+                const bool evaluate[3],bool owned[3],const RasterizerState& = nullRasterizerState) const;
             // PT side of the area partition: does the canonical predicate own
             // the actual chain recorded in `rec`, ending on `luminary` at `y`,
             // in `domain`? False whenever the answer is uncertain.

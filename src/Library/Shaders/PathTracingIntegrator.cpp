@@ -2764,16 +2764,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					if( smsExtendedRecord && ri.pObject ) {
 						bool anyOwned = false, anyKept = false;
 						if constexpr ( Traits::is_pel ) {
+							// A zero-throughput component carries nothing
+							// either way; skip its solves.  Identical
+							// component replays share one classification.
+							bool evaluate[3], owned[3];
 							for( unsigned int c = 0; c < 3; c++ ) {
-								// A zero-throughput component carries
-								// nothing either way; skip its solves.
-								const bool owned = throughput[c] != 0 &&
-									pSolver->ExtendedEmitterHitOwned( *smsChain, *ri.pObject,
-										ri.geometric.ptIntersection, ri.geometric.vGeomNormal,
-										scene, caster, SMSQueryDomain::RGB( c ), ri.geometric.rast );
-								smsKeepMask[c] = owned ? Scalar( 0 ) : Scalar( 1 );
-								anyOwned = anyOwned || owned;
-								anyKept = anyKept || !owned;
+								evaluate[c] = throughput[c] != 0;
+							}
+							pSolver->ExtendedEmitterHitOwnedRGB( *smsChain, *ri.pObject,
+								ri.geometric.ptIntersection, ri.geometric.vGeomNormal,
+								scene, caster, evaluate, owned, ri.geometric.rast );
+							for( unsigned int c = 0; c < 3; c++ ) {
+								const bool componentOwned = evaluate[c] && owned[c];
+								smsKeepMask[c] = componentOwned ? Scalar( 0 ) : Scalar( 1 );
+								anyOwned = anyOwned || componentOwned;
+								anyKept = anyKept || !componentOwned;
 							}
 						} else {
 							anyOwned = pSolver->ExtendedEmitterHitOwned( *smsChain, *ri.pObject,

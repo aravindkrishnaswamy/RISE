@@ -7837,15 +7837,44 @@ namespace
 // its normal) while PT's hit lies on it. Both sides map their point
 // through this one projection onto the luminary, so the predicate's y is
 // the same function of the surface point.
-Point3 ManifoldSolver::ExtendedLuminaryPoint(const IObject& luminary,const Point3& p,const Vector3& n)
+std::atomic<bool>& SMSExtendedTestHooks::DropAreaContributions()
 {
+    static std::atomic<bool> drop{false};
+    return drop;
+}
+
+bool ManifoldSolver::ExtendedLuminaryPoint(const IObject& luminary,const Point3& p,const Vector3& n,Point3& out)
+{
+    out=p;
     Vector3 axis=n;
-    if(Vector3Ops::NormalizeMag(axis)<=0) return p;
-    const Scalar reach=Scalar(1e-3)*std::max<Scalar>(1,std::max({std::fabs(p.x),std::fabs(p.y),std::fabs(p.z)}));
-    RayIntersection hit(Ray(Point3Ops::mkPoint3(p,axis*reach),-axis),nullRasterizerState);
-    luminary.IntersectRay(hit,2*reach,true,true,false);
-    if(!hit.geometric.bHit) return p;
-    return SMSReferenceSurfacePoint(luminary,hit.geometric);
+    if(Vector3Ops::NormalizeMag(axis)<=0) return false;
+    // A single-sided sampler pushes its point 1e-5 along the OBJECT-space
+    // normal (ClippedPlaneGeometry); bound that push in world space by the
+    // transform's column lengths. The reach and the acceptance band stay
+    // tied to it, so a thin or concave luminary, or large coordinates,
+    // cannot project onto a different part of the same luminary.
+    const Matrix4 m=luminary.GetFinalTransformMatrix();
+    Scalar stretch=0;
+    for(const Vector3& e:{Vector3(1,0,0),Vector3(0,1,0),Vector3(0,0,1)})
+        stretch=std::max(stretch,Vector3Ops::Magnitude(Vector3Ops::Transform(m,e)));
+    if(!(stretch>0) || !std::isfinite(stretch)) return false;
+    const Scalar roundoff=64*std::numeric_limits<Scalar>::epsilon()
+        *std::max<Scalar>(1,std::max({std::fabs(p.x),std::fabs(p.y),std::fabs(p.z)}));
+    const Scalar push=Scalar(1e-5)*std::sqrt(Scalar(3))*stretch;
+    const Scalar reach=2*push+roundoff;
+    // Approach from the given side first, then from the other: a
+    // single-sided surface is not hit from behind, and the caller's normal
+    // may name either face.
+    for(const Scalar side:{Scalar(1),Scalar(-1)}) {
+        RayIntersection hit(Ray(Point3Ops::mkPoint3(p,axis*(side*reach)),axis*(-side)),nullRasterizerState);
+        luminary.IntersectRay(hit,2*reach,true,true,false);
+        if(!hit.geometric.bHit) continue;
+        const Point3 q=SMSReferenceSurfacePoint(luminary,hit.geometric);
+        if(!(Point3Ops::Distance(q,p)<=push+roundoff)) return false;
+        out=q;
+        return true;
+    }
+    return false;
 }
 
 bool ManifoldSolver::ExtendedAreaPartitionApplies(const IScene& scene,const IRayCaster& caster,
@@ -7869,7 +7898,8 @@ bool ManifoldSolver::ExtendedAreaPartitionApplies(const IScene& scene,const IRay
 
 void ManifoldSolver::CanonicalExtendedRoots(const Point3& start,const Vector3& startNormal,
     const IObject& luminary,const Point3& y,const Vector3& yNormal,const IScene& scene,
-    const SMSDomainRoot& topology,const RasterizerState& raster,std::vector<SMSDomainRoot>& roots) const
+    const SMSDomainRoot& topology,const RasterizerState& raster,std::vector<SMSDomainRoot>& roots,
+    const SMSDomainRoot* stopAt) const
 {
     roots.clear();
     auto* counters=config.referenceCounters;
@@ -7914,14 +7944,21 @@ void ManifoldSolver::CanonicalExtendedRoots(const Point3& start,const Vector3& s
         const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*root.scale;
         bool duplicate=false;
         for(const auto& prior:roots) if(SameExtendedRoot(prior,root,tolerance,true)) {duplicate=true;break;}
-        if(!duplicate) roots.push_back(std::move(root));
+        if(duplicate) continue;
+        // A membership query stops at the first canonical root that IS the
+        // queried chain; the answer (member or not) is unchanged.
+        const bool member=stopAt && SameExtendedRoot(root,*stopAt,tolerance,true);
+        roots.push_back(std::move(root));
+        if(member) break;
     }
     if(counters) counters->canonicalRoots.fetch_add(roots.size(),std::memory_order_relaxed);
 }
 
 bool ManifoldSolver::ReplayExtendedChain(const SMSChainRecord& rec,const IObject& luminary,
-    const IScene& scene,SMSQueryDomain domain,const RasterizerState& raster,SMSDomainRoot& root) const
+    const IScene& scene,SMSQueryDomain domain,const RasterizerState& raster,SMSDomainRoot& root,
+    bool* customFresnel) const
 {
+    if(customFresnel) *customFresnel=false;
     root.vertices.clear();root.domain=domain;root.accepted=false;root.uncertainty=0;
     SMSResetResult(root.result);
     const unsigned int k=rec.count;
@@ -7964,6 +8001,7 @@ bool ManifoldSolver::ReplayExtendedChain(const SMSChainRecord& rec,const IObject
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         SMSNativeMaterialQuery query;
         if(!SMSDomainReplay::Query(*hit.pMaterial,hit.geometric,stack,domain,query)) return false;
+        if(customFresnel && query.customFresnel) *customFresnel=true;
         IORStack reflected(stack);
         Scalar etaI,etaT;bool exiting;
         if(!SMSDomainReplay::Cross(*hit.pMaterial,hit.pObject,hit.geometric,domain,
@@ -8006,10 +8044,86 @@ bool ManifoldSolver::ReplayExtendedChain(const SMSChainRecord& rec,const IObject
     return true;
 }
 
+int ManifoldSolver::ClassifyExtendedChain(const SMSChainRecord& rec,const IObject& luminary,
+    const Point3& y,const Vector3& yNormal,const IScene& scene,SMSQueryDomain domain,
+    const RasterizerState& raster,const std::vector<SMSDomainRoot>* ownedSet) const
+{
+    auto* counters=config.referenceCounters;
+    // PT's chain as a topology T in this domain.
+    SMSDomainRoot topology(domain,IORStack(rec.anchorStack.EnvironmentIOR()));
+    if(!ReplayExtendedChain(rec,luminary,scene,domain,raster,topology)) return 0;
+    // PT's chain projected onto the manifold by Newton from its own
+    // vertices: itself for an exact delta chain; for a finite-scattering
+    // warp, the root it is near (the adopted delta-limit treatment, DL-379).
+    SMSDomainRoot actual(topology);
+    actual.scale=Point3Ops::Distance(rec.anchorPos,y);
+    if(!(actual.scale>0) || !std::isfinite(actual.scale)) return -1;
+    SMSCanonicalGuardSampler guard;
+    FinalizeExtendedRootInto(rec.anchorPos,rec.anchorShadingNormal,y,yNormal,scene,guard,raster,actual,&luminary,false);
+    if(!actual.accepted && !guard.draws) {
+        // A warped chain far from its delta-limit root can exhaust plain
+        // Newton (measured: ~8 % of DL-379 ball-lens queries at the focus,
+        // none on the exact-delta twin). A deterministic damped solve with
+        // a larger budget extends the same "root Newton reaches from PT's
+        // vertices" rule; it never changes the canonical set.
+        ManifoldSolverConfig robust=config;
+        robust.useLevenbergMarquardt=true;
+        robust.maxIterations=std::max(4*config.maxIterations,60u);
+        robust.referenceCounters=nullptr;robust.domainCounters=nullptr;
+        ManifoldSolver projector(robust,true,nullptr,SMSDomainWavelength(domain));
+        SMSDomainRoot retry(topology);retry.scale=actual.scale;
+        projector.FinalizeExtendedRootInto(rec.anchorPos,rec.anchorShadingNormal,y,yNormal,scene,guard,raster,retry,&luminary,false);
+        if(retry.accepted && !guard.draws) {
+            if(counters) counters->robustProjections.fetch_add(1,std::memory_order_relaxed);
+            actual=std::move(retry);
+        }
+    }
+    if(guard.draws) {
+        if(counters) counters->canonicalSamplerDraws.fetch_add(guard.draws,std::memory_order_relaxed);
+        return -1;
+    }
+    std::vector<SMSDomainRoot> local;
+    if(!actual.accepted) {
+        if(counters) {
+            if(!actual.result.valid) counters->projectionNewtonFailures.fetch_add(1,std::memory_order_relaxed);
+            const std::vector<SMSDomainRoot>* roots=ownedSet;
+            if(!roots) {
+                CanonicalExtendedRoots(rec.anchorPos,rec.anchorShadingNormal,luminary,y,yNormal,scene,topology,raster,local);
+                roots=&local;
+            }
+            Scalar nearest=RISE_INFINITY;
+            for(const auto& root:*roots) {
+                Scalar worst=0;
+                const auto& chain=root.result.specularChain;
+                for(std::size_t i=0;i<chain.size()&&i<rec.count;++i)
+                    worst=std::max(worst,Point3Ops::Distance(chain[i].position,rec.v[i].position));
+                nearest=std::min(nearest,worst);
+            }
+            if(!roots->empty()) counters->uncertainWithOwnedSet.fetch_add(1,std::memory_order_relaxed);
+            if(nearest<=Scalar(1e-3)*actual.scale) counters->uncertainNearOwned.fetch_add(1,std::memory_order_relaxed);
+            if(nearest<=Scalar(1e-8)*actual.scale) counters->uncertainAtOwned.fetch_add(1,std::memory_order_relaxed);
+        }
+        return -1;
+    }
+    const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*actual.scale;
+    if(!ownedSet) {
+        CanonicalExtendedRoots(rec.anchorPos,rec.anchorShadingNormal,luminary,y,yNormal,scene,topology,raster,local,&actual);
+        ownedSet=&local;
+    }
+    for(const auto& root:*ownedSet) if(SameExtendedRoot(root,actual,tolerance,true)) return 1;
+    return 0;
+}
+
 bool ManifoldSolver::ExtendedEmitterHitOwned(const SMSChainRecord& rec,const IObject& luminary,
     const Point3& hitPoint,const Vector3& yNormal,const IScene& scene,const IRayCaster& caster,
     SMSQueryDomain domain,const RasterizerState& raster) const
 {
+    if(domain.kind==SMSQueryDomain::RGBComponent) {
+        bool evaluate[3]={false,false,false},owned[3]={false,false,false};
+        if(domain.component<3) evaluate[domain.component]=true;
+        ExtendedEmitterHitOwnedRGB(rec,luminary,hitPoint,yNormal,scene,caster,evaluate,owned,raster);
+        return domain.component<3 && owned[domain.component];
+    }
     auto* counters=config.referenceCounters;
     if(counters) counters->partitionQueries.fetch_add(1,std::memory_order_relaxed);
     const auto uncertain=[counters]() {
@@ -8021,31 +8135,79 @@ bool ManifoldSolver::ExtendedEmitterHitOwned(const SMSChainRecord& rec,const IOb
     Scalar pdfSelect=0;
     if(!ExtendedAreaPartitionApplies(scene,caster,&luminary,&pdfSelect)) return false;
     SMSWorkerScratchLease scratch(true,config.referenceCounters);
-    const Point3 y=ExtendedLuminaryPoint(luminary,hitPoint,yNormal);
-    // PT's chain as a topology T in this domain.
-    SMSDomainRoot topology(domain,IORStack(rec.anchorStack.EnvironmentIOR()));
-    if(!ReplayExtendedChain(rec,luminary,scene,domain,raster,topology)) return false;
-    // PT's chain projected onto the manifold by Newton from its own
-    // vertices: itself for an exact delta chain; for a finite-scattering
-    // warp, the root it is near (the adopted delta-limit treatment, DL-379).
-    SMSDomainRoot actual(topology);
-    actual.scale=Point3Ops::Distance(rec.anchorPos,y);
-    if(!(actual.scale>0) || !std::isfinite(actual.scale)) return uncertain();
-    SMSCanonicalGuardSampler guard;
-    FinalizeExtendedRootInto(rec.anchorPos,rec.anchorShadingNormal,y,yNormal,scene,guard,raster,actual,&luminary,false);
-    if(guard.draws) {
-        if(counters) counters->canonicalSamplerDraws.fetch_add(guard.draws,std::memory_order_relaxed);
-        return uncertain();
-    }
-    if(!actual.accepted) return uncertain();
-    std::vector<SMSDomainRoot> owned;
-    CanonicalExtendedRoots(rec.anchorPos,rec.anchorShadingNormal,luminary,y,yNormal,scene,topology,raster,owned);
-    const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*actual.scale;
-    for(const auto& root:owned) if(SameExtendedRoot(root,actual,tolerance,true)) {
-        if(counters) counters->partitionOwned.fetch_add(1,std::memory_order_relaxed);
+    Point3 y;
+    if(!ExtendedLuminaryPoint(luminary,hitPoint,yNormal,y)) return uncertain();
+    const int answer=ClassifyExtendedChain(rec,luminary,y,yNormal,scene,domain,raster,nullptr);
+    if(answer<0) return uncertain();
+    if(answer>0 && counters) counters->partitionOwned.fetch_add(1,std::memory_order_relaxed);
+    return answer>0;
+}
+
+namespace
+{
+    // Same replayed topology in two RGB components, and nothing in the
+    // chain whose acceptance depends on the component's wavelength.
+    bool SMSReplayComponentEquivalent(const SMSDomainRoot& a,const SMSDomainRoot& b)
+    {
+        if(a.vertices.size()!=b.vertices.size() || a.vertices.empty()
+            || !a.startingStack.SameInterfaces(b.startingStack)
+            || a.startingStack.top()!=b.startingStack.top()) return false;
+        for(std::size_t i=0;i<a.vertices.size();++i) {
+            const auto& x=a.vertices[i].geometry;const auto& y=b.vertices[i].geometry;
+            if(x.pObject!=y.pObject || x.pMaterial!=y.pMaterial || x.isReflection!=y.isReflection
+                || x.isExiting!=y.isExiting || x.etaI!=y.etaI || x.etaT!=y.etaT || x.eta!=y.eta
+                || x.canRefract!=y.canRefract) return false;
+        }
         return true;
     }
-    return false;
+}
+
+void ManifoldSolver::ExtendedEmitterHitOwnedRGB(const SMSChainRecord& rec,const IObject& luminary,
+    const Point3& hitPoint,const Vector3& yNormal,const IScene& scene,const IRayCaster& caster,
+    const bool evaluate[3],bool owned[3],const RasterizerState& raster) const
+{
+    auto* counters=config.referenceCounters;
+    owned[0]=owned[1]=owned[2]=false;
+    unsigned int queries=0;
+    for(unsigned int c=0;c<3;++c) queries+=evaluate[c]?1u:0u;
+    if(!queries) return;
+    if(counters) counters->partitionQueries.fetch_add(queries,std::memory_order_relaxed);
+    const auto uncertain=[counters,queries]() {
+        if(counters) counters->partitionUncertain.fetch_add(queries,std::memory_order_relaxed);
+    };
+    if(!ExtendedModeActive(scene) || !rec.anchorValid || !rec.extendedAnchor || rec.broken) {uncertain();return;}
+    Scalar pdfSelect=0;
+    if(!ExtendedAreaPartitionApplies(scene,caster,&luminary,&pdfSelect)) return;
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    Point3 y;
+    if(!ExtendedLuminaryPoint(luminary,hitPoint,yNormal,y)) {uncertain();return;}
+    // Collapse: identical replays in every evaluated component, no coating
+    // (wavelength-dependent) Fresnel anywhere -> one classification.
+    int shared=-2;
+    if(queries>1) {
+        SMSDomainRoot first(SMSQueryDomain::RGB(0),IORStack(rec.anchorStack.EnvironmentIOR()));
+        bool equivalent=true;bool firstSet=false;unsigned int firstComponent=0;
+        for(unsigned int c=0;c<3 && equivalent;++c) {
+            if(!evaluate[c]) continue;
+            SMSDomainRoot replay(SMSQueryDomain::RGB(c),IORStack(rec.anchorStack.EnvironmentIOR()));
+            bool coated=false;
+            if(!ReplayExtendedChain(rec,luminary,scene,SMSQueryDomain::RGB(c),raster,replay,&coated) || coated) {equivalent=false;break;}
+            if(!firstSet) {first=std::move(replay);firstSet=true;firstComponent=c;}
+            else equivalent=SMSReplayComponentEquivalent(first,replay);
+        }
+        if(equivalent && firstSet) {
+            shared=ClassifyExtendedChain(rec,luminary,y,yNormal,scene,SMSQueryDomain::RGB(firstComponent),raster,nullptr);
+            if(counters) counters->componentReuse.fetch_add(queries-1,std::memory_order_relaxed);
+        }
+    }
+    for(unsigned int c=0;c<3;++c) {
+        if(!evaluate[c]) continue;
+        const int answer=shared!=-2?shared
+            :ClassifyExtendedChain(rec,luminary,y,yNormal,scene,SMSQueryDomain::RGB(c),raster,nullptr);
+        if(answer<0) {if(counters) counters->partitionUncertain.fetch_add(1,std::memory_order_relaxed);continue;}
+        owned[c]=answer>0;
+        if(owned[c] && counters) counters->partitionOwned.fetch_add(1,std::memory_order_relaxed);
+    }
 }
 
 bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance,
@@ -8150,17 +8312,24 @@ RISEPel ManifoldSolver::EvaluateExtendedAreaReference(const Point3& pos,const Ve
     // Independently seeded discovery and retry streams; each consumes a
     // fixed two parent dimensions whatever N, K or the outcome.
     SMSLoopSampler discovery(parent,0x42304449u),retry(parent,0x42305254u);
-    if(config.extendedDropAreaContributions) return total; // diagnostic: PT-kept set only
+    if(SMSExtendedTestHooks::DropAreaContributions().load(std::memory_order_relaxed)) return total; // test hook: PT-kept set only
     const unsigned int trials=config.multiTrials?config.multiTrials:1;
     const RasterizerState& raster=context?context->rast:nullRasterizerState;
     RayIntersectionGeometric receiver(Ray(pos,-outgoing),raster);
     if(context) receiver=*context;
     receiver.bHit=true;receiver.ptIntersection=pos;receiver.vNormal=shadingNormal;
     receiver.vGeomNormal=geomNormal;receiver.onb=onb;
-    std::vector<SMSDomainRoot> roots;
     // The predicate's emitter point (on the luminary); the sampled point
-    // keeps its area density: the projection only removes a sub-1e-4 push.
-    const Point3 y=ExtendedLuminaryPoint(*light.pLuminary,light.position,light.normal);
+    // keeps its area density: the projection only removes the sampler's
+    // sub-1e-4 push. Uncertain -> SMS owns nothing here (PT's hit at the
+    // same surface point is classified through the same projection).
+    Point3 y;
+    if(!ExtendedLuminaryPoint(*light.pLuminary,light.position,light.normal,y)) return total;
+    // Canonical sets are a deterministic function of (anchor, y, T,
+    // domain); anchor and y are fixed for this evaluation, so a topology
+    // that recurs across the N trials reuses its set. Never across anchors.
+    struct CachedTopology { SMSDomainRoot topology; std::vector<SMSDomainRoot> roots; Scalar physical; };
+    std::vector<CachedTopology> cache;
     for(unsigned int trial=0;trial<trials;++trial) {
         const unsigned int component=nm>0?0:rgbComponent>=0?static_cast<unsigned>(rgbComponent)
             :std::min(2u,static_cast<unsigned>(discovery.sampler.Get1D()*3));
@@ -8177,32 +8346,65 @@ RISEPel ManifoldSolver::EvaluateExtendedAreaReference(const Point3& pos,const Ve
             continue;
         }
         // Ownership is decided here, before and independently of the K loop.
-        CanonicalExtendedRoots(pos,shadingNormal,*light.pLuminary,y,light.normal,
-            scene,topology,raster,roots);
-        if(roots.empty()) {
+        const CachedTopology* entry=nullptr;
+        for(const auto& cached:cache) if(SameExtendedTopology(cached.topology,topology)) {entry=&cached;break;}
+        if(entry) {
+            if(config.referenceCounters) config.referenceCounters->canonicalCacheHits.fetch_add(1,std::memory_order_relaxed);
+        } else {
+            CachedTopology fresh{topology,{},0};
+            std::vector<SMSDomainRoot> canonical;
+            CanonicalExtendedRoots(pos,shadingNormal,*light.pLuminary,y,light.normal,
+                scene,topology,raster,canonical);
+            std::vector<char> admitted(canonical.size(),0);
+            for(std::size_t r=0;r<canonical.size();++r) {
+                const auto& chain=canonical[r].result.specularChain;
+                if(chain.empty() || chain.size()>SMSChainRecord::kMaxVertices) continue;
+                // Symmetric rule: deposit a root only if PT, having traced
+                // exactly this chain, would classify it owned. Otherwise a
+                // canonical root whose own record is uncertain or unowned
+                // would be counted by both estimators.
+                SMSChainRecord record;
+                record.SetAnchor(pos,geomNormal,shadingNormal,stack,true);
+                record.count=static_cast<unsigned int>(chain.size());
+                for(std::size_t i=0;i<chain.size();++i) {
+                    auto& v=record.v[i];
+                    v.position=chain[i].position;v.normal=chain[i].normal;v.geomNormal=chain[i].geomNormal;
+                    v.objectPosition=chain[i].objectPosition;v.uv=chain[i].uv;v.pObject=chain[i].pObject;
+                    v.isReflection=chain[i].isReflection;
+                }
+                admitted[r]=ClassifyExtendedChain(record,*light.pLuminary,y,light.normal,scene,domain,raster,&canonical)==1;
+                if(!admitted[r] && config.referenceCounters)
+                    config.referenceCounters->asymmetricRootsDeclined.fetch_add(1,std::memory_order_relaxed);
+            }
+            for(std::size_t r=0;r<canonical.size();++r) {
+                if(!admitted[r]) continue;
+                auto& root=canonical[r];
+                const auto& chain=root.result.specularChain;
+                Vector3 incoming=Vector3Ops::mkVector3(chain.front().position,pos);
+                const Scalar distance=Vector3Ops::NormalizeMag(incoming);
+                if(!(distance>0)) continue;
+                receiver.ambientIOR=root.startingStack.top();
+                const Scalar f=nm>0?bsdf->valueStatefulNM(incoming,receiver,nm,&root.startingStack)
+                    :bsdf->valueStateful(incoming,receiver,&root.startingStack)[component];
+                const Vector3 lightToChain=Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,y));
+                const Scalar le=nm>0?SMSAreaLeNM(light,lightToChain,nm):SMSAreaLe(light,lightToChain)[component];
+                ManifoldSolver native(config,true,&root.vertices,SMSDomainWavelength(root.domain));
+                const Scalar geometry=std::fabs(Vector3Ops::Dot(chain.front().geomNormal,incoming))/(distance*distance)
+                    *native.ComputeLightToFirstVertexJacobianDet(chain,pos,y,light.normal);
+                const Scalar value=f*std::fabs(Vector3Ops::Dot(shadingNormal,incoming))
+                    *root.result.contributionNM*le*geometry;
+                if(std::isfinite(value)) fresh.physical+=value;
+                fresh.roots.push_back(std::move(root));
+            }
+            cache.push_back(std::move(fresh));
+            entry=&cache.back();
+        }
+        if(entry->roots.empty()) {
             if(config.referenceCounters) config.referenceCounters->zeroTrials.fetch_add(1,std::memory_order_relaxed);
             continue; // an empty owned set enters no reciprocal loop
         }
-        Scalar physical=0;
-        for(const auto& root:roots) {
-            const auto& chain=root.result.specularChain;
-            if(chain.empty()) continue;
-            Vector3 incoming=Vector3Ops::mkVector3(chain.front().position,pos);
-            const Scalar distance=Vector3Ops::NormalizeMag(incoming);
-            if(!(distance>0)) continue;
-            receiver.ambientIOR=root.startingStack.top();
-            const Scalar f=nm>0?bsdf->valueStatefulNM(incoming,receiver,nm,&root.startingStack)
-                :bsdf->valueStateful(incoming,receiver,&root.startingStack)[component];
-            const Vector3 lightToChain=Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,y));
-            const Scalar le=nm>0?SMSAreaLeNM(light,lightToChain,nm):SMSAreaLe(light,lightToChain)[component];
-            ManifoldSolver native(config,true,&root.vertices,SMSDomainWavelength(root.domain));
-            const Scalar geometry=std::fabs(Vector3Ops::Dot(chain.front().geomNormal,incoming))/(distance*distance)
-                *native.ComputeLightToFirstVertexJacobianDet(chain,pos,y,light.normal);
-            const Scalar value=f*std::fabs(Vector3Ops::Dot(shadingNormal,incoming))
-                *root.result.contributionNM*le*geometry;
-            if(std::isfinite(value)) physical+=value;
-        }
-        if(config.referenceCounters) config.referenceCounters->ownedRoots.fetch_add(roots.size(),std::memory_order_relaxed);
+        const Scalar physical=entry->physical;
+        if(config.referenceCounters) config.referenceCounters->ownedRoots.fetch_add(entry->roots.size(),std::memory_order_relaxed);
         if(physical==0 || !std::isfinite(physical)) continue;
         if(config.referenceCounters) config.referenceCounters->acceptedDiscoveries.fetch_add(1,std::memory_order_relaxed);
         SMSDomainRoot retryTopology(domain,domainStack);

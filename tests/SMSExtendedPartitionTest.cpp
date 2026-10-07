@@ -46,6 +46,8 @@
 #include <iomanip>
 #include <map>
 #include <chrono>
+#define PIN_RATIO 1.0556
+#define PIN_SE 0.0122
 
 namespace
 {
@@ -60,6 +62,23 @@ namespace
             for(double x:values) sd+=(x-mean)*(x-mean);
             sd=n>1?std::sqrt(sd/double(n-1)):0;
             se=n>0?sd/std::sqrt(double(n)):0;
+        }
+    };
+
+    // Scoped use of the test-only hook that zeroes estimator B's deposit.
+    struct DropScope {
+        bool previous=false;
+        explicit DropScope(bool on) {
+#ifdef RISE_SMS_EXTENDED_PARTITION
+            previous=SMSExtendedTestHooks::DropAreaContributions().exchange(on);
+#else
+            (void)on;
+#endif
+        }
+        ~DropScope() {
+#ifdef RISE_SMS_EXTENDED_PARTITION
+            SMSExtendedTestHooks::DropAreaContributions().store(previous);
+#endif
         }
     };
 
@@ -118,12 +137,13 @@ namespace
         s<<(reverse?" triangle 0 2 1\n triangle 0 3 2\n":" triangle 0 1 2\n triangle 0 2 3\n");
         return s.str()+"}\n";
     }
-    // Closed double-sided indexed-mesh unit box [-1,1]^3, both windings.
-    std::string MeshBox(const std::string& name,bool reverse) {
-        std::ostringstream s;
+    // Closed double-sided indexed-mesh box [-hx,hx]x[-hy,hy]x[-hz,hz]
+    // (default the unit box [-1,1]^3), both windings.
+    std::string MeshBox(const std::string& name,bool reverse,double hx=1,double hy=1,double hz=1) {
+        std::ostringstream s;s<<std::setprecision(17);
         s<<"indexedmesh_geometry\n{\n name "<<name<<"\n double_sided TRUE\n face_normals TRUE\n";
         const int p[8][3]={{-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},{-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1}};
-        for(const auto& v:p) s<<" vertex "<<v[0]<<' '<<v[1]<<' '<<v[2]<<'\n';
+        for(const auto& v:p) s<<" vertex "<<v[0]*hx<<' '<<v[1]*hy<<' '<<v[2]*hz<<'\n';
         for(int i=0;i<8;++i) s<<" uv "<<(i%2)<<' '<<((i/2)%2)<<'\n';
         const int t[12][3]={{0,2,1},{0,3,2},{4,5,6},{4,6,7},{0,1,5},{0,5,4},
             {3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5}};
@@ -159,6 +179,43 @@ namespace
             +Obj("caster","mirror_geo","mirror")
             +ClippedQuad("emitter_geo",k,k,2*k,-0.5*k,0.5*k,facing!=EmitterFacing::AwayFromCaster,facing==EmitterFacing::DoubleSided)
             +Obj("emitter","emitter_geo","lum");
+        return s;
+    }
+    // The planar-mirror scene translated by `offset` along x: large world
+    // coordinates around an unchanged geometry (closed form unchanged).
+    SceneSpec MirrorSceneOffset(double offset) {
+        SceneSpec s;
+        std::ostringstream label;label<<"mirror offset="<<offset;s.label=label.str();
+        s.camera=Ray(Point3(offset,0,0.3),Vector3(0,0,-1));
+        std::ostringstream at;at<<std::setprecision(17)<<" position "<<offset<<" 0 0\n";
+        s.text=Header()
+            +ClippedQuad("receiver_geo",0,-0.5,0.5,-0.5,0.5,false,true)+Obj("receiver","receiver_geo","diffuse",at.str())
+            +MeshQuad("mirror_geo",2,0.4,4,-2,2,false)+Obj("caster","mirror_geo","mirror",at.str())
+            +ClippedQuad("emitter_geo",1,1,2,-0.5,0.5,true,false)+Obj("emitter","emitter_geo","lum",at.str());
+        return s;
+    }
+    // A thin, double-sided, CLOSED luminary (indexed-mesh box 5e-4 thick,
+    // inward winding) under the mirror: thinner than the first projection
+    // reach (1e-3), whose -n probe from an inward sampled normal crossed
+    // the box and landed on the far face.
+    SceneSpec ThinLuminaryMirrorScene(bool reverse) {
+        SceneSpec s;s.label=std::string("thin closed luminary reverse=")+(reverse?"1":"0");
+        s.text=Header()
+            +ClippedQuad("receiver_geo",0,-0.5,0.5,-0.5,0.5,false,true)+Obj("receiver","receiver_geo","diffuse")
+            +MeshQuad("mirror_geo",2,0.4,4,-2,2,false)+Obj("caster","mirror_geo","mirror")
+            // Authored thin (not scaled): Object::GetArea's |det|^(2/3)
+            // area is exact only for uniform scale (DL-448).
+            +MeshBox("emitter_geo",reverse,0.5,0.5,0.00025)+Obj("emitter","emitter_geo","lum"," position 1.5 0 1\n");
+        return s;
+    }
+    // Delta light (omni) above a closed glass slab: the three switches at an
+    // extended anchor (estimator A, DL-344 shadow opacity).
+    SceneSpec DeltaSlabScene() {
+        SceneSpec s;s.label="omni light through slab";
+        s.text=Header()
+            +ClippedQuad("receiver_geo",0,-0.5,0.5,-0.5,0.5,false,true)+Obj("receiver","receiver_geo","diffuse")
+            +MeshBox("slab_geo",false)+Obj("caster","slab_geo","glass"," position 0 0 2\n scale 1.5 1.5 0.25\n")
+            +"omni_light\n{\n name source\n position 0.2 0 3.5\n color 1 1 1\n power 40\n}\n";
         return s;
     }
     // k = 2 refraction through a closed glass slab (z in [1.75,2.25]) with
@@ -200,7 +257,7 @@ namespace
     SceneSpec SSSReceiverScene() {
         SceneSpec s;s.label="SSS receiver under slab";
         s.text=Header()
-            +"randomwalk_sss_material\n{\n name rw\n ior 1.3\n absorption 0.8 0.4 0.04\n scattering 3 3.5 4\n g 0\n roughness 0.1\n max_bounces 64\n}\n"
+            +"randomwalk_sss_material\n{\n name rw\n ior 1.3\n absorption 0.8 0.4 0.04\n scattering 3 3.5 4\n g 0\n roughness 0.8\n max_bounces 64\n}\n"
             +MeshBox("receiver_geo",false)+Obj("receiver","receiver_geo","rw"," position 0 0 -0.1\n scale 0.5 0.5 0.1\n")
             +MeshBox("slab_geo",false)+Obj("caster","slab_geo","glass"," position 0 0 2\n scale 1.5 1.5 0.25\n")
             +ClippedQuad("emitter_geo",3.5,-0.6,0.6,-0.6,0.6,false,true)+Obj("emitter","emitter_geo","lum");
@@ -240,6 +297,7 @@ namespace
         Scalar nm=0; unsigned N=16384, salts=4, saltBase=61000, trials=2;
         bool hwss=false; ManifoldSolverConfig::SeedingMode seeding=ManifoldSolverConfig::eSeedingSnell;
         unsigned targetBounces=0; bool biased=true; SMSReferenceCounters* counters=nullptr;
+        bool transparentShadows=false; unsigned photonCount=0;
         // Shade CastRay re-entries (BSSRDF continuations) with a
         // PathTracingShaderOp carrying the same SMS configuration.
         bool reentryShaderOp=false;
@@ -254,10 +312,8 @@ namespace
         if(!fixture.Ok()) return out;
         ManifoldSolverConfig cfg;cfg.enabled=mode!=Mode::Ref;cfg.extendedMode=mode!=Mode::Legacy;
         cfg.biased=o.biased;cfg.multiTrials=o.trials;cfg.maxBernoulliTrials=64;
-        cfg.seedingMode=o.seeding;cfg.targetBounces=o.targetBounces;
-#ifdef RISE_SMS_EXTENDED_PARTITION
-        cfg.extendedDropAreaContributions=mode==Mode::Kept;
-#endif
+        cfg.seedingMode=o.seeding;cfg.targetBounces=o.targetBounces;cfg.photonCount=o.photonCount;
+        const DropScope drop(mode==Mode::Kept);
         cfg.referenceCounters=o.counters;
         StabilityConfig stability;stability.rrMinDepth=4;
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
@@ -265,7 +321,8 @@ namespace
         if(o.reentryShaderOp) {reentry=new PathTracingShaderOp(cfg,stability);ops.push_back(reentry);}
         const bool shaderOk=RISE_API_CreateStandardShader(&shader,ops)&&shader;
         if(!shaderOk) {if(reentry) reentry->release();return out;}
-        auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&fixture.Scene());
+        auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(o.transparentShadows);
+        caster->AttachScene(&fixture.Scene());
         auto* integrator=new PathTracingIntegrator(cfg,stability);integrator->SetMaxPathDepth(spec.maxDepth);
         if(integrator->GetSolver()) {
             std::vector<const IObject*> casters;ManifoldSolver::EnumerateSpecularCasters(fixture.Scene(),casters);
@@ -319,7 +376,11 @@ namespace
         std::cout<<" topologyRetries="<<counters.topologyRetryTrials<<" canonicalSolves="<<counters.canonicalSolves
             <<" canonicalRoots="<<counters.canonicalRoots<<" partitionQueries="<<counters.partitionQueries
             <<" partitionOwned="<<counters.partitionOwned<<" uncertain="<<counters.partitionUncertain
-            <<" samplerDraws="<<counters.canonicalSamplerDraws;
+            <<" samplerDraws="<<counters.canonicalSamplerDraws
+            <<" newtonFail="<<counters.projectionNewtonFailures<<" uncertainNearOwned="<<counters.uncertainNearOwned
+            <<" uncertainAtOwned="<<counters.uncertainAtOwned<<" uncertainWithOwnedSet="<<counters.uncertainWithOwnedSet<<" robustProjections="<<counters.robustProjections
+            <<" asymmetricDeclined="<<counters.asymmetricRootsDeclined<<" componentReuse="<<counters.componentReuse
+            <<" cacheHits="<<counters.canonicalCacheHits;
         Check(counters.canonicalSamplerDraws==0,label+": the canonical predicate drew no random number");
 #endif
         unsigned long long median=0, total=0;
@@ -452,7 +513,10 @@ static void PredicateOn(const SceneSpec& spec,unsigned samples,bool expectOwned=
             LightSample light;
             if(!ls->SampleLight(f.Scene(),const_cast<LuminaryManager*>(manager)->getLuminaries(),sampler,light)) continue;
             if(light.isDelta || light.pLuminary!=luminary) continue;
-            const Point3 y=ManifoldSolver::ExtendedLuminaryPoint(*luminary,light.position,light.normal);
+            Point3 y;
+            if(!ManifoldSolver::ExtendedLuminaryPoint(*luminary,light.position,light.normal,y)) {
+                Check(false,spec.label+": sampled emitter point projects onto its luminary");continue;
+            }
             SMSStartingMedia media;IORStack domainStack(a.stack.EnvironmentIOR());
             if(!SMSDomainReplay::Capture(f.Scene(),a.pos,a.stack,media)
                 || !SMSDomainReplay::BuildStack(media,domain,domainStack)) {Check(false,"anchor media replay");continue;}
@@ -567,8 +631,14 @@ static void PredicateFilters()
     Check(!solver->ExtendedEmitterHitOwned(rec,*luminary,Point3(2.5,0,1),Vector3(0,0,1),f.Scene(),*caster,domain),
         "an emitter point off the luminary is not owned");
     // The sampler's 1e-5 push of a single-sided plane maps back to the surface.
-    const Point3 pushed=ManifoldSolver::ExtendedLuminaryPoint(*luminary,Point3(1.5,0,1.00001),Vector3(0,0,1));
-    Check(std::fabs(pushed.z-1)<1e-12,"the partition's emitter point is projected onto the luminary");
+    Point3 pushed;
+    Check(ManifoldSolver::ExtendedLuminaryPoint(*luminary,Point3(1.5,0,1.00001),Vector3(0,0,1),pushed)
+        && std::fabs(pushed.z-1)<1e-12,"the partition's emitter point is projected onto the luminary");
+    // A point farther from the luminary than the sampler's push is not
+    // silently moved: the answer is uncertain.
+    Point3 far;
+    Check(!ManifoldSolver::ExtendedLuminaryPoint(*luminary,Point3(1.5,0,1.001),Vector3(0,0,1),far),
+        "a point beyond the sampler-push band is uncertain, not projected");
     ManifoldSolverConfig off=cfg;off.extendedMode=false;auto* legacy=new ManifoldSolver(off);
     Check(!legacy->ExtendedEmitterHitOwned(rec,*luminary,y,Vector3(0,0,1),f.Scene(),*caster,domain),
         "extended mode off owns nothing");
@@ -608,7 +678,7 @@ static std::vector<std::vector<double>> Channels(const PointResult& r,bool perCh
 }
 
 static void PartitionCase(const SceneSpec& spec,RenderOptions o,Owned owned=Owned::Required,bool expectKept=false,
-    bool perChannel=false)
+    bool perChannel=false,double maxRelativeBand=0)
 {
     o.saltBase=g_saltBase;g_saltBase+=100;
     SMSReferenceCounters counters;
@@ -631,6 +701,11 @@ static void PartitionCase(const SceneSpec& spec,RenderOptions o,Owned owned=Owne
             <<" ref="<<r.mean<<"+-"<<r.se<<" full="<<fu.mean<<"+-"<<fu.se<<" full/ref="<<fu.mean/r.mean;
         Check(std::isfinite(fu.mean)&&std::isfinite(r.mean),tag.str()+": finite");
         Check(Agree(fu,r),tag.str()+": extended full render = SMS-off PT within 3 combined se");
+        if(maxRelativeBand>0) {
+            const double band=3*std::hypot(fu.se,r.se)/std::fabs(r.mean);
+            std::cout<<" band="<<band;
+            Check(band<=maxRelativeBand,tag.str()+": full==ref band is tight enough to detect mis-ownership");
+        }
         if(spec.closedForm>=0) {
             std::cout<<" closedForm="<<spec.closedForm;
             Check(std::fabs(fu.mean-spec.closedForm)<=3*fu.se+1e-3*spec.closedForm,tag.str()+": full = closed form within 3 se");
@@ -697,6 +772,13 @@ static void RenderSection()
         auto spec=MirrorScene(true,false,EmitterFacing::TowardCaster,scale);spec.closedForm=MirrorClosedForm(spec,scale);
         PartitionCase(spec,o,scale<1?Owned::Reported:Owned::Required);
     }
+    // Large world coordinates (translation 1000) and a thin closed
+    // double-sided luminary in both windings (partition-point projection).
+    {
+        auto spec=MirrorSceneOffset(1000);spec.closedForm=MirrorClosedForm(MirrorScene(true,false,EmitterFacing::TowardCaster));
+        PartitionCase(spec,o);
+    }
+    for(bool reverse:{false,true}) PartitionCase(ThinLuminaryMirrorScene(reverse),o);
     // Emitter sidedness: facing away (no caustic, direct only), double-sided.
     PartitionCase(MirrorScene(true,false,EmitterFacing::AwayFromCaster),o,Owned::Forbidden);
     PartitionCase(MirrorScene(true,true,EmitterFacing::DoubleSided),o);
@@ -722,11 +804,12 @@ static void RenderSection()
     // Delegations: SSS receiver (BSDF anchor + BSSRDF re-entry), RGB and
     // NM; an SPF-only wrapped caster SMS can never own.
     {
-        RenderOptions r=o;r.reentryShaderOp=true;
-        PartitionCase(SSSReceiverScene(),r,Owned::Reported);
-        RenderOptions nm=r;nm.nm=600;PartitionCase(SSSReceiverScene(),nm,Owned::Reported);
+        // Gated band <= 10 % (3 combined se / reference), checked below.
+        RenderOptions r=o;r.reentryShaderOp=true;r.N=g_quick?2048:16384;r.trials=4;
+        PartitionCase(SSSReceiverScene(),r,Owned::Required,false,false,0.10);
+        RenderOptions nm=r;nm.nm=600;PartitionCase(SSSReceiverScene(),nm,Owned::Required,false,false,0.10);
     }
-    PartitionCase(WrappedCasterScene(),o,Owned::Forbidden);
+    {RenderOptions w=o;w.N=g_quick?2048:16384;PartitionCase(WrappedCasterScene(),w,Owned::Forbidden,false,false,0.10);}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -753,6 +836,32 @@ static void SwitchSection()
         bool same=a.ok&&b.ok;
         for(unsigned c=0;same&&c<3;++c) for(unsigned s=0;same&&s<a.c[c].size();++s) same=a.c[c][s]==b.c[c][s];
         Check(same,"legacy renders are deterministic under a fixed salt (precondition of the identity checks)");
+    }
+    // Three switches at a delta light (estimator A + DL-344). At an
+    // extended anchor the shadow ray is opaque at dielectrics whether or not
+    // transparent shadows are on, and SMS delivers the light: on/off renders
+    // are bit-identical and SMS contributed. At an INELIGIBLE anchor (a
+    // photon configuration) all three switches stay off together: no SMS
+    // proposal, and transparent shadows change the render.
+    {
+        RenderOptions d;d.N=2048;d.salts=4;d.saltBase=92000;
+        const auto spec=DeltaSlabScene();
+        SMSReferenceCounters onCounters,offCounters,inCounters;
+        RenderOptions a=d;a.transparentShadows=true;a.counters=&onCounters;
+        RenderOptions b=d;b.transparentShadows=false;b.counters=&offCounters;
+        const auto on=RenderPoint(spec,Mode::Full,a), off=RenderPoint(spec,Mode::Full,b);
+        bool same=on.ok&&off.ok;
+        for(unsigned c=0;same&&c<3;++c) for(unsigned s=0;same&&s<on.c[c].size();++s) same=on.c[c][s]==off.c[c][s];
+        Check(same,"extended anchor: transparent shadows on/off bit-identical (DL-344 shadow opaque where SMS evaluates)");
+        Check(onCounters.acceptedDiscoveries>0,"extended anchor: estimator A delivered the delta light through the slab");
+        RenderOptions ia=d;ia.photonCount=1000;ia.transparentShadows=true;ia.counters=&inCounters;
+        RenderOptions ib=d;ib.photonCount=1000;ib.transparentShadows=false;
+        const auto ion=RenderPoint(spec,Mode::Full,ia), ioff=RenderPoint(spec,Mode::Full,ib);
+        double mon=0,moff=0;for(unsigned s=0;s<ion.c[1].size();++s){mon+=ion.c[1][s];moff+=ioff.c[1][s];}
+        std::cout<<"three-switch: eligible on="<<Moments(on.c[1]).mean<<" ineligible transparent on="<<mon/4
+            <<" off="<<moff/4<<" ineligible proposals="<<inCounters.proposalTrials<<"\n";
+        Check(ion.ok&&ioff.ok&&mon>moff*1.05,"ineligible anchor: transparent shadows deliver the light (DL-344 off)");
+        Check(inCounters.proposalTrials==0&&inCounters.acceptedDiscoveries==0,"ineligible anchor: no SMS work at all");
     }
 #ifdef RISE_SMS_EXTENDED_PARTITION
     // Kept and full renders share every PT path: where SMS owns nothing
@@ -806,11 +915,7 @@ namespace
         caster->AttachScene(&fixture.Scene());
         ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=extended;cfg.biased=true;
         cfg.maxBernoulliTrials=64;cfg.multiTrials=2;cfg.referenceCounters=counters;
-#ifdef RISE_SMS_EXTENDED_PARTITION
-        cfg.extendedDropAreaContributions=drop;
-#else
-        (void)drop;
-#endif
+        const DropScope dropScope(drop);
         StabilityConfig stability;stability.rrMinDepth=8;
         auto* rasterizer=new PathTracingPelRasterizer(caster,cfg,PathGuidingConfig(),AdaptiveSamplingConfig(),stability,false);
         rasterizer->SetInteractiveDenoiseSuppressed(true);
@@ -848,7 +953,7 @@ namespace
 static void BallLensFixture(bool dielectric)
 {
     const std::string label=dielectric?"DL-379 ball lens dielectric scattering 1e5":"DL-372 ball lens perfect refractor";
-    const unsigned spp=g_quick?16:64, n=8;
+    const unsigned spp=g_quick?16:64, n=dielectric?16:8;
     std::vector<double> ext,legacy,kept,pt,vcm,extSeconds,legacySeconds;
     SMSReferenceCounters counters;
     for(unsigned i=0;i<n;++i) {
@@ -886,9 +991,17 @@ static void BallLensFixture(bool dielectric)
     if(dielectric) {
         // DL-379 stays open: the delta-limit partition's bias is reported,
         // not gated beyond a sanity band.
-        std::cout<<label<<" DL-379 measured bias ext/VCM-1="<<(e.mean/v.mean-1)
-            <<" +- "<<(e.mean/v.mean)*std::hypot(e.se/e.mean,v.se/v.mean)<<" (reported, not gated)\n";
-        Check(std::fabs(e.mean/v.mean-1)<0.2,label+": delta-limit bias within a 20% sanity band");
+        // DL-379 KNOWN-BIAS PIN (open row; not a closure). The delta-limit
+        // partition keeps every warped PT chain whose Newton projection is
+        // not accepted, while B prices the full delta root: measured
+        // ext/VCM = kPin +- kPinSe (n 16, 64 spp, 24x24; round-1 review
+        // build). A change in
+        // either direction beyond 3 combined se fails.
+        const double kPin=PIN_RATIO, kPinSe=PIN_SE;
+        const double ratio=e.mean/v.mean, se=ratio*std::hypot(e.se/e.mean,v.se/v.mean);
+        std::cout<<label<<" DL-379 measured bias ext/VCM-1="<<(ratio-1)<<" +- "<<se
+            <<" pinned "<<(kPin-1)<<" +- "<<kPinSe<<" (known-bias pin)\n";
+        if(!g_quick) Check(std::fabs(ratio-kPin)<=3*std::hypot(se,kPinSe),label+": DL-379 known-bias pin (ext/VCM within 3 combined se of the pinned value)");
     } else {
         Check(Agree(e,p),label+": extended image = PT SMS-off within 3 combined se");
     }
@@ -949,17 +1062,31 @@ int main(int argc,char** argv)
         PredicateOn(ImmersedBallScene(false),400);
     }
 #endif
+    if(section=="dl379") BallLensFixture(true);
+    if(section=="dl372") BallLensFixture(false);
     if(section=="ballpoint") {
         RenderOptions o;o.salts=16;o.N=g_quick?1024:4096;
+        for(bool dielectric:{false,true})
         for(const auto& p:{std::array<double,2>{0,0},std::array<double,2>{0.3,0.2},std::array<double,2>{0.8,0}})
-            PartitionCase(BallLensPoint(false,p[0],p[1]),o,Owned::Reported,false);
+            PartitionCase(BallLensPoint(dielectric,p[0],p[1]),o,Owned::Reported,false);
     }
     if(section=="delegation") {
+        RenderOptions o;o.salts=16;
+        RenderOptions r=o;r.reentryShaderOp=true;r.N=g_quick?2048:16384;r.trials=4;
+        PartitionCase(SSSReceiverScene(),r,Owned::Required,false,false,0.10);
+        {RenderOptions nm=r;nm.nm=600;PartitionCase(SSSReceiverScene(),nm,Owned::Required,false,false,0.10);}
+        {RenderOptions w=o;w.N=g_quick?2048:16384;PartitionCase(WrappedCasterScene(),w,Owned::Forbidden,false,false,0.10);}
+    }
+    if(section=="thin") {
         RenderOptions o;o.salts=16;o.N=g_quick?1024:4096;
-        RenderOptions r=o;r.reentryShaderOp=true;
-        PartitionCase(SSSReceiverScene(),r,Owned::Reported);
-        {RenderOptions nm=r;nm.nm=600;PartitionCase(SSSReceiverScene(),nm,Owned::Reported);}
-        PartitionCase(WrappedCasterScene(),o,Owned::Forbidden);
+        for(bool reverse:{false,true}) PartitionCase(ThinLuminaryMirrorScene(reverse),o);
+    }
+    if(section=="newcases") {
+        RenderOptions o;o.salts=16;o.N=g_quick?1024:4096;
+        auto spec=MirrorSceneOffset(1000);spec.closedForm=MirrorClosedForm(MirrorScene(true,false,EmitterFacing::TowardCaster));
+        PartitionCase(spec,o);
+        for(bool reverse:{false,true}) PartitionCase(ThinLuminaryMirrorScene(reverse),o);
+        SwitchSection();
     }
     if(section=="focus") {
         RenderOptions o;o.salts=64;o.N=4096;o.saltBase=777000;
