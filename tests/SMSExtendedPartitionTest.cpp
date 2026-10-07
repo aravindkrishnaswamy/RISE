@@ -305,9 +305,11 @@ namespace
     bool Agree(const Moments& a,const Moments& b) {
         return std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se);
     }
+#ifdef RISE_SMS_EXTENDED_PARTITION
     std::vector<double> Diff(const std::vector<double>& a,const std::vector<double>& b) {
         std::vector<double> d;for(std::size_t i=0;i<a.size()&&i<b.size();++i) d.push_back(a[i]-b[i]);return d;
     }
+#endif
 
     void PrintCounters(const std::string& label,const SMSReferenceCounters& counters) {
         std::cout<<label<<" counters proposals="<<counters.proposalTrials<<" zeros="<<counters.zeroTrials

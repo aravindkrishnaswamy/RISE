@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phases 3–4 remain pending; earlier audit sections are historical.**
+**Status: adopted implementation contract. Phase 1 merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 implemented and merged at `818004785c4b14a831b2f60828a935f1e897e56a` after the full Round 17 gate and three fresh independent reviews with zero P1. Measured P2s remain OPEN as DL-441–443; DL-312/437/420 are not closed. Phase 3 is implemented on branch `sms-ext-phase3` and awaits independent review (see the Phase 3 implementation record at the end); Phase 4 remains pending; earlier audit sections are historical.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -857,3 +857,118 @@ Fresh Round 12 gate: 45 make modes / 483402/0, 36 actual Xcode-linked controls /
 Fresh Round 13 gate: 46 make modes / 500509/0, 38 actual Xcode-linked controls / 577988/0, 21 all-374-unit sanitizer modes / 324755/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
 
 Fresh Round 14 gate: 47 make modes / 508576/0, 40 actual Xcode-linked controls / 594122/0, 22 all-374-unit sanitizer modes / 332822/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+
+## Phase 3 implementation record (2026-10-06, pending independent review)
+
+Branch `sms-ext-phase3`, implementation commit `f3a5dbdc1` on master
+`f3737d927`. Estimator B and the area-emitter partition are implemented
+for RGB and NM PT. HWSS still ignores extended mode (Phase 4). Nothing is
+exposed to the parser or API; tests enable it through
+`ManifoldSolverConfig::extendedMode`. No ledger row is closed by this
+record.
+
+What runs where:
+
+- `ManifoldSolver::EvaluateExtendedAreaReference` is estimator B. All four
+  SMS entry points dispatch a non-delta luminary sample to it at an
+  extended anchor (delta point/spot lights keep estimator A; environment
+  samples stay with PT). Two independently seeded `SMSLoopSampler`s
+  (discovery, retry) consume a fixed two parent dimensions each,
+  whatever N, K or the outcome.
+- `ManifoldSolver::CanonicalExtendedRoots` is the ONE ownership predicate.
+  Estimator B sums `C(r,c)` over its result before any retry, and PT
+  suppresses through `ManifoldSolver::ExtendedEmitterHitOwned`, which
+  replays PT's recorded chain in the requested domain
+  (`ReplayExtendedChain`), projects it onto the manifold with the same
+  Newton finalization from PT's own vertices, and asks whether that root
+  is in the canonical set of its topology and emitter point.
+- `PathTracingIntegrator`: a loop whose anchors are extended (extended
+  mode active, not forced legacy) always records the chain, and
+  `SMSChainRecord::extendedAnchor` is the mode bit. RGB ownership is
+  decided per component and masks emission per component; NM per
+  wavelength. A legacy record keeps the split rule or suppress-all.
+  The three switches move together per anchor through the existing
+  `smsCurrentAnchor` gate.
+
+Implementation decisions inside the contract, recorded for review:
+
+1. **Seed policy.** The endpoint-aware trace toward `y` cannot seed a
+   reflection topology, and any single surface point can be occluded
+   from the anchor (a double-sided emitter between the receiver and a
+   mirror left a two-seed policy owning nothing). The static policy is
+   that trace plus five fixed surface coordinates of the topology's
+   first caster, keyed only by (anchor, `y`, topology, domain).
+2. **Root equivalence for the partition** compares two converged solves
+   of one canonical topology at the full `sqrt(eps)*scale` band
+   (`SameExtendedRoot(...,partitionBand=true)`). Estimator A's
+   resolution-limited band split one ball-lens root into two (solves
+   3e-15..3e-12 apart against a 2e-15 band): a double count in B's
+   deduplication and a PT/SMS mismatch. Distinct regular roots closer
+   than the band are treated as a fold, outside the regular-root domain.
+3. **Emitter point.** `SampleLight` returns a single-sided clipped plane's
+   point pushed 1e-5 along its normal while PT's hit lies on the surface.
+   Both sides map their point through `ExtendedLuminaryPoint`, a
+   projection onto the luminary; B prices the root at that point.
+4. **DL-379.** PT's chain is assigned to the root Newton reaches from its
+   own vertices: identity for exact delta chains, the adopted delta-limit
+   rule for finite-scattering dielectrics.
+5. **Uncertainty.** A guard sampler records any random draw inside the
+   predicate and makes that answer unowned; PT keeps every uncertain or
+   unrecorded chain, and B contributes only accepted canonical roots.
+6. **DL-295's `uncovered` latch** is not applied to an extended record:
+   a chain through a delta event the extended domain cannot replay is
+   never owned, so the predicate already keeps it, and applying the latch
+   as well could only keep a chain SMS owns.
+7. `ManifoldSolverConfig::extendedDropAreaContributions` is an internal
+   diagnostic: it zeroes B's deposit after the fixed parent draws, so a
+   render with it shares every PT path with the full render and isolates
+   the PT-kept set.
+
+Measured limits (not fixed here): at 1/1000 scene scale the native solve
+accepts no root (an absolute floor in the Phase 1/2 solve), so the
+partition gives every path to PT and stays exact; the closed slab's
+side-face `TRT` chains have no canonical root and stay with PT; per-
+component RGB ownership costs up to three predicate evaluations per
+candidate emitter hit.
+
+Evidence (`tests/SMSExtendedPartitionTest.cpp`; raw logs under
+`.claude/logs/sms-phase3/`, not committed):
+
+- Point renders through production `IntegrateRay{,NM}`, 16 salts, 3
+  combined-se bands: extended full = SMS-off PT and SMS-owned
+  (full - kept, paired PT paths) = PT-owned (ref - kept) on every case:
+  indexed-mesh mirror (both windings) and clipped-plane control against a
+  closed form (RGB and NM), x1000 scale, emitter facing away (owned 0)
+  and double-sided, N = 1/2/4, closed slab both windings, transformed
+  instance, per-component RGB slab (1.3/1.5/1.9; owned c0/c1/c2
+  0.141/0.117/0.111 vs PT 0.141/0.125/0.119) and NM, sphere, start-inside
+  box both windings, SSS receiver with PT re-entry (RGB/NM), an SPF-only
+  wrapped caster (owned 0), DL-336 immersed ball (full/ref 1.000) and its
+  air control, DL-421/DL-376 uniform-seeding configurations.
+- DL-372 ball-lens image (24x24, 64 spp, n = 8): extended/PT 0.984
+  +- 0.020, extended/VCM 0.990; PT/VCM 1.006.
+- DL-379 (dielectric `scattering 1e5`, delta-limit partition):
+  extended/VCM - 1 = **+5.5 % +- 2.2 %** (n = 8). Reported, not gated;
+  DL-379 stays open.
+- Committed-source red proof (master `f3737d927` sources, partition-API
+  checks compiled out): render 105/8 (mirror x1000 scale 1.88x PT,
+  double-sided emitter 0.967, slab reverse 0.869, transformed slab
+  0.842, sphere 0.972, 1/1000 scale 0) and fixtures 64/3 (DL-372 image
+  1.061 of PT, DL-421 uniform slab 0.532, DL-376 uniform unbiased sphere
+  0.663). Restored HEAD: green.
+- In-tree A/B of decisions 1-3 (predicate section): resolution-limited
+  band 127/1 (DL-336 owned != membership); no emitter-point projection
+  123/5 (single-sided emitters own nothing); two-seed policy 126/2
+  (double-sided emitter owns nothing).
+- Mode-off cross-build: `SMSLegacyModeTest` against a master-source dump,
+  28 images, maximum float32 distance 0 ULP.
+- Cost (one worker, ball-lens image): extended 13.5 s vs extended-off
+  0.56 s per image (24x); the PT-side per-component predicate and the
+  six-seed canonical solves dominate (2.7 M canonical solves for 0.15 M
+  camera samples). Not optimized in this phase.
+
+Observations outside this phase: with `multi_trials 2` the legacy snell
+estimator reads 1.057-1.061 of PT on the DL-372 image (extended mode
+off); the start-inside fixture's SMS-off PT itself reads 0.457 vs 0.171
+between the two windings of one double-sided closed mesh (extended agrees
+with PT in each winding).
