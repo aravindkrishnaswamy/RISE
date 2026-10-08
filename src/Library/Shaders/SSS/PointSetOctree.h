@@ -61,6 +61,7 @@ namespace RISE
 				PointSet* pElements;					// Elements of this node
 				RISEPel irrad;							// Average irradiance of this node
                 bool smsReferenceRadiance = false;
+                std::size_t sampleCount = 0;
 				
 				Scalar HowFarIsPointFromYou(
 					Vector3& dir,
