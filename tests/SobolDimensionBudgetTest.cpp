@@ -1972,6 +1972,31 @@ namespace PTSMSBudget
 	}
 }
 
+// DL-453: a ForkStream fork that draws alpha samples (legacy SMS under
+// scene alpha coverage) hands its alpha position back with JoinAlpha, so
+// the parent never redraws an alpha dimension the fork used.
+static void TestForkJoinAlpha()
+{
+	std::cout << "\nTest I0: ForkStream / JoinAlpha alpha-region hand-back\n";
+	SobolSampler parent( 5, 77 );
+	parent.StartStream( 16 );
+	const Scalar firstParentAlpha = parent.GetAlpha1D();
+	SobolSampler fork = parent.ForkStream( PathTransportUtilities::PTSMSLaneStream( 0, 1 ) );
+	const Scalar f0 = fork.GetAlpha1D(), f1 = fork.GetAlpha1D();
+	SobolSampler probe( fork );
+	const Scalar forkNext = probe.GetAlpha1D();
+	parent.JoinAlpha( fork );
+	const Scalar parentNext = parent.GetAlpha1D();
+	SobolSampler untouched( 5, 77 );
+	untouched.StartStream( 16 );
+	untouched.JoinAlpha( untouched.ForkStream( 20 ) );		// a fork that drew no alpha: no-op
+	const bool ok = parentNext == forkNext && parentNext != f0 && parentNext != f1 &&
+		untouched.GetAlpha1D() == firstParentAlpha;
+	std::cout << "  parent resumes at the fork's next alpha draw: " << ( ok ? "yes" : "NO" ) << "\n";
+	if( !ok ) { std::cerr << "  FAIL: JoinAlpha did not resume the alpha region past the fork's draws\n"; exit( 1 ); }
+	std::cout << "  Passed!\n";
+}
+
 static void TestPTSMSVertexBudget()
 {
 	using namespace PTSMSBudget;
@@ -2020,6 +2045,7 @@ int main( int /*argc*/, char** /*argv*/ )
 	TestShippedSceneStreamBudget();
 	TestStreamMap();
 	TestMediumDistanceStreamAudit();
+	TestForkJoinAlpha();
 	TestPTSMSVertexBudget();
 
 	std::cout << "\nAll Sobol dimension budget tests passed!\n";
