@@ -838,8 +838,10 @@ static void RenderSection()
     // RGB indices (PT's dispersive RGB split needs more samples) and NM.
     for(bool reverse:{false,true}) PartitionCase(SlabScene(reverse,"glass",false),o,Owned::Required,true);
     PartitionCase(SlabScene(true,"glass",true),o,Owned::Required,true);
-    {RenderOptions p=o;p.N=g_quick?4096:16384;PartitionCase(SlabScene(false,"prism",false),p,Owned::Required,true,true);}
-    {RenderOptions p=o;p.nm=450;PartitionCase(SlabScene(false,"prism",false),p,Owned::Required,true);}
+    // DL-446 canonical side-reflection seeds can own nearly the whole caustic;
+    // a significant unowned remainder is not required. Energy/ownership still gate.
+    {RenderOptions p=o;p.N=g_quick?4096:16384;PartitionCase(SlabScene(false,"prism",false),p,Owned::Required,false,true);}
+    {RenderOptions p=o;p.nm=450;PartitionCase(SlabScene(false,"prism",false),p,Owned::Required,false);}
     // Sphere control; start inside a closed glass box, both windings.
     PartitionCase(SphereScene(),o,Owned::Required,true);
     for(bool reverse:{false,true}) PartitionCase(InsideScene(reverse),o);
