@@ -3212,13 +3212,13 @@ static std::string SlabScene(bool reverse, unsigned inner, unsigned outer) {
         +"\n outer "+std::to_string(outer)+"\n}\n";
     return text;
 }
-static std::vector<RISEColor> SlabExtendedRender(const std::string& text, unsigned salt) {
+static std::vector<RISEColor> SlabExtendedRender(const std::string& text, unsigned salt, bool legacy=false, unsigned spp=4096) {
     Fixture fixture(text);
     std::vector<IShaderOp*> ops;IShader* shader=nullptr;
     if(!RISE_API_CreateStandardShader(&shader,ops)) return {};
     auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(true);
     caster->AttachScene(&fixture.Scene());
-    ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;cfg.targetBounces=2;
+    ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=!legacy;cfg.targetBounces=2;
     cfg.maxBernoulliTrials=64;cfg.multiTrials=1;
 #ifdef RISE_SMS_REFERENCE_A
     SMSReferenceCounters counters;SMSDomainCounters domainCounters;
@@ -3231,7 +3231,7 @@ static std::vector<RISEColor> SlabExtendedRender(const std::string& text, unsign
     RISE_API_CreateMultiJitteredSampling2D(&samples,1,1);
     RISE_API_CreateBoxPixelFilter(&filter,1,1);
     if(!samples||!filter) {safe_release(samples);safe_release(filter);rasterizer->release();caster->release();shader->release();return {};}
-    samples->SetNumSamples(4096);rasterizer->SubSampleRays(samples,filter);
+    samples->SetNumSamples(spp);rasterizer->SubSampleRays(samples,filter);
     auto* capture=new CapturingRasterizerOutput();rasterizer->AddRasterizerOutput(capture);
     rasterizer->AttachToScene(&fixture.Scene());
     SobolSamplerTestHooks::ValueSalt().store(salt);
@@ -3248,6 +3248,26 @@ static std::vector<RISEColor> SlabExtendedRender(const std::string& text, unsign
     rasterizer->DetachFromScene(&fixture.Scene());
     capture->release();samples->release();filter->release();rasterizer->release();caster->release();shader->release();
     return pixels;
+}
+static void DL420LegacySlab() {
+    Check(ConfigureTestWorker(),"DL-420 one worker");
+    for(bool omni:{false,true}) {
+        std::vector<double> sms,ref;
+        for(unsigned t=0;t<4;++t) {
+            const unsigned seed=420000+t,salt=SobolSequence::HashCombine(seed,kSaltTag);
+            std::string text=SlabScene(false,30,45);
+            if(omni) text=text.substr(0,text.find("spot_light\n"))+"omni_light\n{\n name source\n position 0.5 0 2\n color 1 1 1\n power 40\n}\n";
+            std::srand(seed);GlobalRNG()=RandomNumberGenerator(seed);
+            const auto a=SlabExtendedRender(text,salt,true,256);
+            g_seedBase=seed;g_renderIndex=0;
+            const auto b=Render(text+"bdpt_pel_rasterizer\n{\n samples 256\n max_eye_depth 2\n max_light_depth 4\n rr_min_depth 20\n pixel_filter box\n oidn_denoise FALSE\n}\n","dl420_bdpt");
+            Check(a.size()==256&&b.ok&&b.pixels.size()==256,"DL-420 controls render");
+            double av=0,bv=0;for(const auto& pixel:a) av+=pixel.base[0];for(const auto& pixel:b.pixels) bv+=pixel.base[0];
+            sms.push_back(av/256);ref.push_back(bv/256);
+        }
+        const Moments a(sms),b(ref);
+        std::cout<<"DL-420 omni="<<omni<<" legacy="<<a.mean<<" +/- "<<a.sd/2<<" BDPT="<<b.mean<<" +/- "<<b.sd/2<<" ratio="<<a.mean/b.mean<<'\n';
+    }
 }
 static void SlabRenders() {
     Check(ConfigureTestWorker(),"slab render uses one configured worker");
@@ -3285,6 +3305,8 @@ static void SlabRenders() {
 }
 
 int main(int argc,char** argv) {
+    if(argc==2&&std::string(argv[1])=="--dl420-only") {DL420LegacySlab();std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;}
+
 #ifdef RISE_SMS_REFERENCE_A
     std::cout<<"SMS record bytes vertex="<<sizeof(ManifoldVertex)
         <<" domainVertex="<<sizeof(SMSDomainVertex)<<" root="<<sizeof(SMSDomainRoot)
