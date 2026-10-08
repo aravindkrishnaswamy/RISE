@@ -7148,7 +7148,11 @@ void ManifoldSolver::SolveCoreInto(const Point3& shadingPoint, const Vector3& sh
 			// 0.01 still catches the truly pathological cases (e.g. < 1mm
 			// separation where the derivative stencil radius 0.01 literally
 			// overlaps the next vertex) without shedding good roots.
-			const Scalar minReliableSegment = 0.01;
+			// Native frames refine inside their own scale-relative matching
+            // band; the legacy finite-difference stencil cutoff does not apply.
+            const Scalar minReliableSegment = nativeEventConstraints
+                ? std::sqrt(std::numeric_limits<Scalar>::epsilon()) * Point3Ops::Distance(shadingPoint,emitterPoint)
+                : Scalar(0.01);
 			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
 			bool tooShort = false;
 			// tooShortIdx / tooShortDist exist only to feed the
