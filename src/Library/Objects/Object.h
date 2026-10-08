@@ -126,14 +126,14 @@ namespace RISE
 			//! mirrored object instances of the same source mesh.
 			Scalar											m_tangentFrameSign;
 
-			//! World-area scaling of the transform's linear part,
-			//! |det|^(2/3): exact for rotations / reflections / uniform
-			//! scales, geometric-mean approximation for non-uniform
-			//! scale or shear.  Cached by FinalizeTransformations();
-			//! multiplied into GetArea() so pdfPosition = 1/GetArea()
-			//! matches the WORLD-space samples UniformRandomPoint
-			//! returns.  0 for degenerate (non-invertible) transforms.
-			Scalar											m_worldAreaScale;
+			//! Area scale; exact triangle integration for non-uniform meshes/boxes,
+			//! determinant scale for other shapes (exact for uniform transforms).
+			Scalar m_worldAreaScale;
+			//! Local triangles selected using their transformed areas. Per instance,
+			//! because geometry can be shared by objects with different transforms.
+			void RebuildAreaSampling();
+			TriangleListType m_areaTriangles;
+			std::vector<Scalar> m_areaCDF;
 
 			//! World-LINEAR scaling of the transform's linear part,
 			//! |det|^(1/3) -- the length-measure sibling of

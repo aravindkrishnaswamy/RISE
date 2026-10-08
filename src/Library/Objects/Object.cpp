@@ -16,6 +16,9 @@
 #include "../Modifiers/ModifierFrame.h"
 #include "Object.h"
 #include "SnapshotLeafClone.h"
+#include "../Geometry/TriangleMeshGeometry.h"
+#include "../Geometry/TriangleMeshGeometryIndexed.h"
+#include "../Geometry/BoxGeometry.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Intersection/TextureFootprintCompute.h"
@@ -525,6 +528,8 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	dst.SURFACE_INTERSEC_ERROR = SURFACE_INTERSEC_ERROR;
 	dst.m_tangentFrameSign     = m_tangentFrameSign;
 	dst.m_worldAreaScale       = m_worldAreaScale;
+	dst.m_areaTriangles        = m_areaTriangles;
+	dst.m_areaCDF              = m_areaCDF;
 	dst.m_worldLinearScale     = m_worldLinearScale;
 	// The proximity query's transform bounds ride along with the other two
 	// transform-derived caches.  A clone's FinalizeTransformations would
@@ -608,6 +613,9 @@ bool Object::AssignGeometry( const IGeometry& pGeom )
 
 	pGeometry = &pGeom;
 	pGeometry->addref();
+	const Scalar absDet=fabs(Matrix4Ops::Determinant(m_mxFinalTrans));
+	m_worldAreaScale=absDet>0?pow(absDet,Scalar(2.0/3.0)):0;
+	RebuildAreaSampling();
 
 	return true;
 }
@@ -1595,27 +1603,20 @@ void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, 
 		return;
 	}
 
-	// DL-108: an overriding UV generator (if bound) must chart the SAME
-	// object-space point/normal an override generator on this object's
-	// IntersectRay path charts (docs/DL95_OBJECT_UV_GENERATOR_INPUT.md's
-	// frame decision) -- so when one is present, always obtain a LOCAL
-	// object-space point+normal to feed it, even if the caller passed a
-	// null `point`/`normal` (only wanting `coord`).  Mirrors
-	// `IntersectRay`'s own placement: run the generator BEFORE
-	// transforming to world space, below.
-	if( pUVGenerator && coord )
-	{
-		Point3  ptObjSpace;
-		Vector3 vNormObjSpace;
-		pGeometry->UniformRandomPoint( point ? point : &ptObjSpace, normal ? normal : &vNormObjSpace, coord, prand );
-
-		const Point3&  ptForGen = point  ? *point  : ptObjSpace;
-		const Vector3& nmForGen = normal ? *normal : vNormObjSpace;
-		pUVGenerator->GenerateUV( ptForGen, nmForGen, *coord );
+	Point3 localPoint;
+	Vector3 localNormal;
+	Point3* samplePoint = point ? point : &localPoint;
+	Vector3* sampleNormal = normal ? normal : &localNormal;
+	if( !m_areaCDF.empty() ) {
+		const auto it = std::upper_bound(m_areaCDF.begin(),m_areaCDF.end(),prand.z);
+		const std::size_t index = std::min(std::size_t(it-m_areaCDF.begin()),m_areaCDF.size()-1);
+		GeometricUtilities::PointOnTriangle(samplePoint,sampleNormal,coord,m_areaTriangles[index],prand.x,prand.y);
+	} else {
+		pGeometry->UniformRandomPoint(samplePoint,sampleNormal,coord,prand);
 	}
-	else
-	{
-		pGeometry->UniformRandomPoint( point, normal, coord, prand );
+	// UV overrides chart the local sample, just as on the intersection path.
+	if( pUVGenerator && coord ) {
+		pUVGenerator->GenerateUV(*samplePoint,*sampleNormal,*coord);
 	}
 
 	if( point ) {
@@ -1623,7 +1624,7 @@ void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, 
 	}
 
 	if( normal ) {
-		*normal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxFinalTrans, (*normal) ));
+		*normal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, (*normal) ));
 	}
 }
 
@@ -1666,31 +1667,10 @@ Scalar Object::GetArea( ) const
 		return Scalar( 0 );
 	}
 
-	// WORLD-AREA JACOBIAN (2026-08-13): pGeometry->GetArea() is the
-	// OBJECT-space surface area, but UniformRandomPoint() returns points
-	// transformed through m_mxFinalTrans -- so every consumer that claims
-	// pdfPosition = 1/GetArea() (LightSampler NEE, BDPT/VCM InitLight,
-	// photon-emission power normalization, SSS dipole sampling) needs the
-	// WORLD-space area or the claimed density is wrong by the transform's
-	// area scaling (a `scale 2` emitter previously lit its surroundings at
-	// 1/4 the correct NEE energy; measured 0.39x after MIS mixing).
-	//
-	// m_worldAreaScale = |det(linear part)|^(2/3), cached by
-	// FinalizeTransformations(): EXACT for rotations, reflections, and
-	// uniform scales (the overwhelmingly common case: det = s^3, area
-	// scale = s^2).  For non-uniform scale or shear it is the geometric-
-	// mean approximation -- the true area factor varies across the surface
-	// with the local normal, and object-space-uniform sampling is then not
-	// world-uniform either, so the residual error there sits in the
-	// sampler, not just this scalar (LuminaryManager warns once when a
-	// non-uniformly-scaled luminaire is admitted).  Exactness needs
-	// per-geometry integration; not attempted here.
-	//
-	// RISE_INFINITY guard: InfinitePlaneGeometry::GetArea() returns the
-	// DBL_MAX sentinel; multiplying it by any factor > 1 (a scale, or a
-	// rotation whose determinant lands at 1+1ulp) would overflow to +inf,
-	// which turns the light-selection alias table's TotalWeight into inf
-	// and every pdfSelect into NaN.  Pass the sentinel through untouched.
+	// DL-448: non-uniform meshes and analytic boxes use an exact per-triangle
+	// world-area CDF. Other analytic shapes retain the determinant approximation
+	// under non-uniform transforms; uniform transforms are exact for every shape.
+	// Preserve the infinite-plane sentinel rather than overflowing it.
 	const Scalar objArea = pGeometry->GetArea();
 	if( objArea <= 0 || objArea >= RISE_INFINITY ) {
 		return objArea;
@@ -1907,12 +1887,7 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 	const Scalar det = Matrix4Ops::Determinant( m_mxFinalTrans );
 	m_tangentFrameSign = (det < Scalar( 0 )) ? Scalar( -1 ) : Scalar( 1 );
 
-	// World-area scaling of the linear part, cached here (the transform is
-	// immutable during render) so the hot GetArea() path is a single
-	// multiply.  |det|^(2/3) is EXACT for rotations / reflections / uniform
-	// scales; for non-uniform scale or shear it is the geometric-mean
-	// approximation (see GetArea()'s comment).  Degenerate transform → 0,
-	// matching the "cannot area-sample" sentinel convention.
+	// Default for uniform transforms and shapes without an exact triangle surface.
 	const Scalar absDet = fabs( det );
 	m_worldAreaScale = (absDet > Scalar( 0 ))
 		? pow( absDet, Scalar( 2.0 / 3.0 ) )
@@ -1953,6 +1928,7 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 	// DERIVED, at the one site that assigns the source -- never written
 	// anywhere else, so the two cannot drift.
 	m_sigmaExact = ( m_sigmaSource == SigmaSource::Exact );
+	RebuildAreaSampling();
 	// The loose-bound diagnostic latch is deliberately NOT re-armed here,
 	// matching the REFUSAL latch just below it.  This used to re-arm on
 	// every FinalizeTransformations -- which fires once per animation frame
@@ -1975,4 +1951,41 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 	// every animation frame.  A transform that becomes degenerate mid-
 	// animation is therefore reported only if it had not already refused --
 	// the quieter direction, chosen deliberately.
+}
+
+void Object::RebuildAreaSampling()
+{
+	m_areaTriangles.clear();
+	m_areaCDF.clear();
+	if( pGeometry && !m_sigmaExact && fabs(Matrix4Ops::Determinant(m_mxFinalTrans)) > 0 &&
+		(dynamic_cast<const TriangleMeshGeometry*>(pGeometry) ||
+		 dynamic_cast<const TriangleMeshGeometryIndexed*>(pGeometry) ||
+		 dynamic_cast<const BoxGeometry*>(pGeometry)) ) {
+		IndexTriangleListType indices;
+		VerticesListType vertices;NormalsListType normals;TexCoordsListType coords;
+		if( pGeometry->TessellateToMesh(indices,vertices,normals,coords,1) ) {
+			Scalar area=0;
+			for( const auto& index:indices ) {
+				Triangle tri;
+				for(unsigned k=0;k<3;++k) {
+					tri.vertices[k]=vertices[index.iVertices[k]];
+					tri.normals[k]=normals[index.iNormals[k]];
+					tri.coords[k]=coords[index.iCoords[k]];
+				}
+				const Vector3 e1=Vector3Ops::Transform(m_mxFinalTrans,Vector3Ops::mkVector3(tri.vertices[1],tri.vertices[0]));
+				const Vector3 e2=Vector3Ops::Transform(m_mxFinalTrans,Vector3Ops::mkVector3(tri.vertices[2],tri.vertices[0]));
+				const Scalar triangleArea=0.5*Vector3Ops::Magnitude(Vector3Ops::Cross(e1,e2));
+				if( triangleArea > 0 ) {
+					area+=triangleArea;
+					m_areaTriangles.push_back(tri);m_areaCDF.push_back(area);
+				}
+			}
+			if( area > 0 && pGeometry->GetArea() > 0 ) {
+				m_worldAreaScale=area/pGeometry->GetArea();
+				for( auto& cdf:m_areaCDF ) cdf/=area;
+				m_areaCDF.back()=1;
+			}
+		}
+	}
+
 }
