@@ -10,6 +10,15 @@
 // fixtures would see the change: the SAME fixture rendered by a directly
 // constructed HWSS rasterizer with extended mode ON differs from it with
 // extended mode OFF (and the OFF render repeats bit-identically).
+//
+// DL-453 (2026-10-07, user-approved legacy image change): legacy HWSS + SMS
+// lanes draw their SMS samples from per-lane Sobol' streams, so fixtures 3
+// (shipped spectral_dispersive_caustic_pt_sms_uniform, hwss TRUE), 7 and 8
+// differ from a pre-DL-453 base (measured: fixture 9 does not -- its SSS
+// receiver hands the camera ray to the NM body, which keeps the vertex
+// stream); set RISE_SMS_LEGACY_CHANGED_FIXTURES=3,7,8 for that one
+// comparison.  Against a post-DL-453 base every fixture is gated at <= 1
+// ULP again.
 #include "SMSRenderTestSupport.h"
 #include "../src/Library/Rendering/PathTracingSpectralRasterizer.h"
 #include "../src/Library/Rendering/RayCaster.h"
@@ -65,8 +74,18 @@ static void CheckCrossBuildPixels(const std::vector<RISEColor>& pixels,unsigned 
         if(complete) for(std::size_t i=0;i<values.size();++i) {
             const auto distance=Float32ULPDistance(reference[i],values[i]);maximum=std::max(maximum,distance);if(distance)++changed;
         }
-        std::cout<<"LEGACY precision fixture="<<fixture<<" trial="<<trial<<" max_float32_ulps="<<maximum<<" changed_components="<<changed<<std::endl;
-        Check(complete&&maximum<=1,"cross-build mode-off RGBA differs by at most one float32 ULP");
+        // RISE_SMS_LEGACY_CHANGED_FIXTURES ("3,7,8"): fixtures a sanctioned
+        // legacy image change moves between the two builds (DL-453 moved
+        // legacy HWSS + SMS lanes' SMS draws onto their own Sobol' streams:
+        // fixtures 3, 7 and 8 against a pre-DL-453 base).  Reported, not gated.
+        bool expectedChange=false;
+        if(const char* list=std::getenv("RISE_SMS_LEGACY_CHANGED_FIXTURES")) {
+            std::stringstream items(list);std::string item;
+            while(std::getline(items,item,',')) if(!item.empty() && std::stoul(item)==fixture) expectedChange=true;
+        }
+        std::cout<<"LEGACY precision fixture="<<fixture<<" trial="<<trial<<" max_float32_ulps="<<maximum<<" changed_components="<<changed
+            <<(expectedChange?" (sanctioned change, reported)":"")<<std::endl;
+        Check(complete&&(expectedChange||maximum<=1),"cross-build mode-off RGBA differs by at most one float32 ULP");
     }
 }
 
@@ -239,8 +258,12 @@ int main(int argc,char** argv)
         const auto stats=Summarize(seconds);
         std::cout<<"LEGACY timing fixture="<<fixture<<" mean="<<stats.mean<<" sd="<<stats.sd<<" n="<<count<<std::endl;
     }
-    // Negative control for fixtures 7-9 (see the header).
-    for(unsigned fixture:{7u,9u}) {
+    // Negative control for fixtures 7-9 (see the header).  Fixture 9 only
+    // since DL-453: fixture 7's single-sided emitter faces away from the
+    // coat, so SMS contributes nothing there in either mode, and its old
+    // extended-on/off difference was only the per-lane stream layout,
+    // which DL-453 made common to both modes (measured: bit-identical).
+    for(unsigned fixture:{9u}) {
         const std::string scene=Phase4HWSSScene(fixture);
         const auto off=RenderDirectHWSS(scene,false), again=RenderDirectHWSS(scene,false), on=RenderDirectHWSS(scene,true);
         bool complete=!off.empty()&&off.size()==again.size()&&off.size()==on.size();

@@ -65,6 +65,7 @@ namespace
     bool g_quick=false;
     std::string g_caseFilter;
     unsigned g_biasSalts=64;
+    bool g_biasLegacy=false;    // `--bias-legacy`: samplerbias renders legacy (extended-off) HWSS (DL-453)
     double g_probeBallZ=0.55;   // `--probe-ball-z Z`: nmprobe's ball centre height (DL-450 discriminator)    // `--bias-salts N`: samplerbias render count per sampler   // `--case <substring>`: run matching LaneCase labels only
     const unsigned kLanes=SampledWavelengths::N;
     using Lanes=std::array<Scalar,SampledWavelengths::N>;
@@ -892,7 +893,8 @@ static void NMProbeSection()
 // draws (every render salted) vs the independent sampler (every
 // SobolSampler draw i.i.d.; an unbiased reference no stream overrun can
 // reach), n renders each; per lane and the 4-lane mean, z of the
-// difference.  `--salt-base` moves both sets.
+// difference.  `--salt-base` moves both sets; `--bias-legacy` renders
+// legacy (extended-off) HWSS + SMS instead (DL-453).
 //////////////////////////////////////////////////////////////////////
 static void SamplerBiasSection()
 {
@@ -901,7 +903,8 @@ static void SamplerBiasSection()
         RenderOptions sob=o;sob.saltBase=g_saltBase;
         RenderOptions ind=o;ind.saltBase=g_saltBase+5000;ind.independent=true;
         g_saltBase+=10000;
-        const auto a=Render(spec,Mode::Full,sob), b=Render(spec,Mode::Full,ind);
+        const Mode mode=g_biasLegacy?Mode::Legacy:Mode::Full;
+        const auto a=Render(spec,mode,sob), b=Render(spec,mode,ind);
         std::vector<double> ma, mb;
         for(unsigned s2=0;s2<o.salts;++s2) {
             double x=0,y=0;for(unsigned w=0;w<kLanes;++w){x+=a.lane[w][s2];y+=b.lane[w][s2];}
@@ -909,7 +912,7 @@ static void SamplerBiasSection()
         }
         for(unsigned w=0;w<=kLanes;++w) {
             const Moments x(w<kLanes?a.lane[w]:ma), y(w<kLanes?b.lane[w]:mb);
-            std::cout<<std::setprecision(8)<<"SAMPLERBIAS "<<spec.label<<(w<kLanes?" lane="+std::to_string(w):std::string(" lane-mean"))
+            std::cout<<std::setprecision(8)<<"SAMPLERBIAS "<<(g_biasLegacy?"legacy ":"")<<spec.label<<(w<kLanes?" lane="+std::to_string(w):std::string(" lane-mean"))
                 <<" sobol="<<x.mean<<"+-"<<x.se<<" independent="<<y.mean<<"+-"<<y.se
                 <<" rel="<<(x.mean/y.mean-1)*100<<"% z="<<(x.mean-y.mean)/std::hypot(x.se,y.se)<<" n="<<o.salts<<" spp="<<o.N<<"\n";
         }
@@ -930,6 +933,7 @@ int main(int argc,char** argv)
         else if(a=="--section" && i+1<argc) section=argv[++i];
         else if(a=="--case" && i+1<argc) g_caseFilter=argv[++i];
         else if(a=="--salt-base" && i+1<argc) g_saltBase=unsigned(std::stoul(argv[++i]));
+        else if(a=="--bias-legacy") g_biasLegacy=true;
         else if(a=="--bias-salts" && i+1<argc) g_biasSalts=unsigned(std::stoul(argv[++i]));
         else if(a=="--probe-ball-z" && i+1<argc) g_probeBallZ=std::stod(argv[++i]);
     }

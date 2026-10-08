@@ -32,9 +32,9 @@
 //       collision-freedom asserted with NO known exceptions (DL-286
 //       closed the light/eye/select/NEE overlaps it used to pin).
 //    I. PT vertex streams with SMS: the highest slot any vertex stream
-//       reaches under legacy / extended NM, RGB and HWSS (extended gated
-//       at <= 32; legacy HWSS reported, DL-453); one extended SMS
-//       evaluation's draws fit its own stream (PTExtendedSMSStream, G2).
+//       reaches under legacy / extended NM, RGB and HWSS (HWSS and
+//       extended gated at <= 32, legacy HWSS since DL-453); one forked
+//       lane SMS evaluation's draws fit its own stream (PTSMSLaneStream, G2).
 //    H. BDPT's real generators on a heterogeneous and a homogeneous
 //       medium: no vertex stream overruns, no dimension drawn twice
 //       within a walk (DL-283), and no dimension (Sobol') or primary
@@ -1338,9 +1338,9 @@ static void TestStreamMap()
 	{
 		std::vector<unsigned int> streams;
 		unsigned int wrapLo = ~0u, wrapHi = 0u;
-		for( unsigned int d = 0; d < PathTransportUtilities::kPTExtendedSMSDepthCap; d++ ) {
-			for( unsigned int lane = 0; lane < PathTransportUtilities::kPTExtendedSMSLanes; lane++ ) {
-				const unsigned int st = (unsigned int)PathTransportUtilities::PTExtendedSMSStream( d, lane );
+		for( unsigned int d = 0; d < PathTransportUtilities::kPTSMSLaneDepthCap; d++ ) {
+			for( unsigned int lane = 0; lane < PathTransportUtilities::kPTSMSLanes; lane++ ) {
+				const unsigned int st = (unsigned int)PathTransportUtilities::PTSMSLaneStream( d, lane );
 				streams.push_back( st );
 				const unsigned int w0 = st * stride / table, w1 = ( st * stride + stride - 1u ) / table;
 				if( w0 < wrapLo ) wrapLo = w0;
@@ -1359,13 +1359,13 @@ static void TestStreamMap()
 		std::cout << "  PT extended SMS: " << streams.size() << " streams [" << streams.front() << ", "
 			<< streams.back() << "], wrap counts " << wrapLo << ".." << wrapHi
 			<< ( unique ? ", all distinct" : ", DUPLICATES" ) << "\n";
-		if( !unique || streams.front() != (unsigned int)PathTransportUtilities::kPTExtendedSMSStreamBase ||
-			streams.back() + 1u != (unsigned int)PathTransportUtilities::kPTExtendedSMSStreamEnd ||
+		if( !unique || streams.front() != (unsigned int)PathTransportUtilities::kPTSMSLaneStreamBase ||
+			streams.back() + 1u != (unsigned int)PathTransportUtilities::kPTSMSLaneStreamEnd ||
 			streams.front() < deepHi[1][1] || streams.front() < deepHi[1][0] ||
 			streams.front() < (unsigned int)BDPTUtilities::kMediumDistanceStreamEnd ||
 			wrapLo != 552u || wrapHi != 567u ||
-			(unsigned long long)PathTransportUtilities::kPTExtendedSMSStreamEnd * stride >= ( 1ull << 29 ) ||
-			PathTransportUtilities::PTExtendedSMSStream( 1024u, 0u ) != PathTransportUtilities::PTExtendedSMSStream( 0u, 0u ) ) {
+			(unsigned long long)PathTransportUtilities::kPTSMSLaneStreamEnd * stride >= ( 1ull << 29 ) ||
+			PathTransportUtilities::PTSMSLaneStream( 1024u, 0u ) != PathTransportUtilities::PTSMSLaneStream( 0u, 0u ) ) {
 			std::cerr << "  FAIL: PT extended SMS streams are not the documented distinct set past "
 				<< "every BDPT/VCM block, on wraps 552..567, below the alpha region, depth mod 1024.\n";
 			ok = false;
@@ -1842,16 +1842,16 @@ static void TestMediumDistanceStreamAudit()
 // the stream's first dimension) any vertex stream reached and the fraction
 // of (sample, vertex stream) pairs past 32.
 //
-// The extended SMS draws themselves go through a SobolSampler::ForkStream
-// COPY, so the in-render audit cannot see them: their count is bounded by
-// construction (a fixed light sample plus two two-draw loop seeds per
-// evaluation, whatever N, K or the outcome) and is measured DIRECTLY below
-// by evaluating one SMS call at depth 0 on an auditing sampler.
+// An HWSS lane's SMS draws go through a SobolSampler::ForkStream COPY, so
+// the in-render audit cannot see them; one evaluation's draws are measured
+// DIRECTLY below by evaluating one SMS call at depth 0 on an auditing
+// sampler (extended: a fixed light sample plus two two-draw loop seeds;
+// legacy HWSS: the light sample plus the solver's per-trial draws).
 //
-// Gate: no EXTENDED configuration overruns a vertex stream (the Phase 4
-// fix moves extended per-lane SMS onto `PTExtendedSMSStream`).  Legacy
-// configurations are reported only (mode-off must not change; a legacy
-// overrun is a ledger row, DL-453).
+// Gate: no HWSS or extended configuration overruns a vertex stream (the
+// Phase 4 fix moved extended per-lane SMS onto `PTSMSLaneStream`; DL-453
+// moved legacy HWSS lanes there too).  Legacy NM runs SMS once per vertex
+// on the vertex stream and is reported.
 // ================================================================
 namespace PTSMSBudget
 {
@@ -1920,16 +1920,16 @@ namespace PTSMSBudget
 		// The fork PT hands one extended SMS evaluation draws from a stream
 		// of its own (a SobolSampler copy, invisible to the audit below):
 		// measure one evaluation's draws directly at the receiver point.
-		if( kind >= eExtNM ) {
+		if( kind >= eExtNM || kind == eLegacyHWSS ) {
 			RayIntersection hit( camera, nullRasterizerState );
 			scene.GetObjects()->IntersectRay( hit, true, true, false );
 			IORStack air( 1.0 );
 			for( unsigned int i = 0; i < N && hit.geometric.bHit; i++ ) {
 				StreamAuditSobol sampler( i, 41 );
-				sampler.StartStream( PathTransportUtilities::PTExtendedSMSStream( 0, i % 4 ) );
+				sampler.StartStream( PathTransportUtilities::PTSMSLaneStream( 0, i % 4 ) );
 				pt->GetSolver()->EvaluateAtShadingPointNM( hit.geometric.ptIntersection, hit.geometric.vGeomNormal,
 					hit.geometric.vNormal, hit.geometric.onb, hit.pMaterial, Vector3( 0, 0, 1 ), scene, *caster,
-					sampler, 450 + 50 * ( i % 4 ), &air, &hit.geometric, false );
+					sampler, 450 + 50 * ( i % 4 ), &air, &hit.geometric, kind == eLegacyHWSS );
 				out.smsStreams++;
 				if( sampler.draws.size() > out.maxSMS ) out.maxSMS = (unsigned int)sampler.draws.size();
 			}
@@ -1972,6 +1972,31 @@ namespace PTSMSBudget
 	}
 }
 
+// DL-453: a ForkStream fork that draws alpha samples (legacy SMS under
+// scene alpha coverage) hands its alpha position back with JoinAlpha, so
+// the parent never redraws an alpha dimension the fork used.
+static void TestForkJoinAlpha()
+{
+	std::cout << "\nTest I0: ForkStream / JoinAlpha alpha-region hand-back\n";
+	SobolSampler parent( 5, 77 );
+	parent.StartStream( 16 );
+	const Scalar firstParentAlpha = parent.GetAlpha1D();
+	SobolSampler fork = parent.ForkStream( PathTransportUtilities::PTSMSLaneStream( 0, 1 ) );
+	const Scalar f0 = fork.GetAlpha1D(), f1 = fork.GetAlpha1D();
+	SobolSampler probe( fork );
+	const Scalar forkNext = probe.GetAlpha1D();
+	parent.JoinAlpha( fork );
+	const Scalar parentNext = parent.GetAlpha1D();
+	SobolSampler untouched( 5, 77 );
+	untouched.StartStream( 16 );
+	untouched.JoinAlpha( untouched.ForkStream( 20 ) );		// a fork that drew no alpha: no-op
+	const bool ok = parentNext == forkNext && parentNext != f0 && parentNext != f1 &&
+		untouched.GetAlpha1D() == firstParentAlpha;
+	std::cout << "  parent resumes at the fork's next alpha draw: " << ( ok ? "yes" : "NO" ) << "\n";
+	if( !ok ) { std::cerr << "  FAIL: JoinAlpha did not resume the alpha region past the fork's draws\n"; exit( 1 ); }
+	std::cout << "  Passed!\n";
+}
+
 static void TestPTSMSVertexBudget()
 {
 	using namespace PTSMSBudget;
@@ -1990,15 +2015,15 @@ static void TestPTSMSVertexBudget()
 				<< r.maxVertex << ", (sample, vertex) pairs past " << SobolSampler::kStreamStride << ": "
 				<< r.overruns << " of " << r.pairs << " (" << std::setprecision( 4 )
 				<< ( r.pairs ? 100.0 * double( r.overruns ) / double( r.pairs ) : 0.0 ) << std::defaultfloat
-				<< " %); one extended SMS evaluation (" << r.smsStreams << " probed): max draws " << r.maxSMS
-				<< ( k <= eLegacyHWSS ? "  (reported)" : "" ) << "\n";
+				<< " %); one forked lane SMS evaluation (" << r.smsStreams << " probed): max draws " << r.maxSMS
+				<< ( k == eLegacyNM ? "  (reported)" : "" ) << "\n";
 			if( !r.ok || r.pairs == 0 ) { std::cerr << "  FAIL: render did not run\n"; ok = false; }
-			if( k >= eExtNM && r.overruns ) {
-				std::cerr << "  FAIL: an extended configuration overruns a PT vertex stream.\n";
+			if( k != eLegacyNM && r.overruns ) {
+				std::cerr << "  FAIL: an HWSS / extended configuration overruns a PT vertex stream (DL-453 for legacy HWSS).\n";
 				ok = false;
 			}
 			if( r.maxSMS > SobolSampler::kStreamStride ) {
-				std::cerr << "  FAIL: one extended SMS evaluation draws more than its stream holds.\n";
+				std::cerr << "  FAIL: one forked lane SMS evaluation draws more than its stream holds.\n";
 				ok = false;
 			}
 		}
@@ -2020,6 +2045,7 @@ int main( int /*argc*/, char** /*argv*/ )
 	TestShippedSceneStreamBudget();
 	TestStreamMap();
 	TestMediumDistanceStreamAudit();
+	TestForkJoinAlpha();
 	TestPTSMSVertexBudget();
 
 	std::cout << "\nAll Sobol dimension budget tests passed!\n";
