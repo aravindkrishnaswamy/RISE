@@ -12,6 +12,9 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Geometry/TriangleMeshGeometry.h"
+#include "../Geometry/TriangleMeshGeometryIndexed.h"
+#include "../Geometry/BoxGeometry.h"
 #include "LuminaryManager.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight() capability check below
 #include "../Utilities/RandomNumbers.h"
@@ -173,15 +176,8 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 			return;
 		}
 
-		// Non-uniform-scale warning (2026-08-13, GetArea world-area
-		// Jacobian): Object::GetArea() corrects the claimed NEE pdf by
-		// |det|^(2/3), which is EXACT only for rotations / reflections /
-		// uniform scales.  A non-uniformly scaled (or sheared) luminaire
-		// gets a geometric-mean approximation that can sit further from
-		// the true world area than no correction at all (e.g. a unit box
-		// flattened to a panel light), and object-space-uniform sampling
-		// is not world-uniform on such a transform either.  Announce it
-		// once so the wrong light level is diagnosable instead of silent.
+		// Meshes and boxes integrate world area and sample its CDF (DL-448).
+		// Other analytic shapes still approximate non-uniform surface scaling.
 		{
 			// Row-vector convention (see PointsOps.h Transform): the image
 			// of object-space basis vector e_i is storage ROW i, so for the
@@ -193,7 +189,10 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 			const Scalar sz2 = mx._20*mx._20 + mx._21*mx._21 + mx._22*mx._22;
 			const Scalar mn = std::min( sx2, std::min( sy2, sz2 ) );
 			const Scalar mx2 = std::max( sx2, std::max( sy2, sz2 ) );
-			if( mn <= 0 || mx2 > mn * Scalar( 1.0 + 1e-6 ) ) {
+			if( (mn <= 0 || mx2 > mn * Scalar( 1.0 + 1e-6 )) &&
+                !dynamic_cast<const TriangleMeshGeometry*>(pObject.GetGeometry()) &&
+                !dynamic_cast<const TriangleMeshGeometryIndexed*>(pObject.GetGeometry()) &&
+                !dynamic_cast<const BoxGeometry*>(pObject.GetGeometry()) ) {
 				static std::atomic<bool> warnedNonUniformLuminaire{ false };
 				bool expected = false;
 				if( warnedNonUniformLuminaire.compare_exchange_strong( expected, true ) ) {
