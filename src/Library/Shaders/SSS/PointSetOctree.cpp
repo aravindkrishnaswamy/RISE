@@ -159,7 +159,7 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 
 		// Subdivision required
 		// Make eight children
-		pChildren = new PointSetOctreeNode*[8];
+		pChildren = new PointSetOctreeNode*[8]();
 		GlobalLog()->PrintNew( pChildren, __FILE__, __LINE__, "point set octree children" );
 
 		for( unsigned char x=0; x<8; x++ )
