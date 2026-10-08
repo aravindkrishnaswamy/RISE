@@ -1521,6 +1521,56 @@ namespace
 	}
 }
 
+namespace {
+ void TestDL312MirrorParity() {
+  const auto path=WriteScene(BuildScene(Model::SMSMirror,Integrator::PT,1,16,"snell",1),"dl312_query");
+  IJobPriv* job=nullptr;
+  Check(RISE_CreateJobPriv(&job)&&job&&job->LoadAsciiSceneViaCst(path.c_str()),"DL-312 mirror fixture loads");
+  if(!job) return;
+  job->GetScene()->GetObjects()->PrepareForRendering();
+  auto* shader=new StandardShader(std::vector<IShaderOp*>());
+  auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(job->GetScene());
+  ManifoldSolverConfig cfg;cfg.enabled=true;cfg.biased=true;cfg.multiTrials=1;cfg.targetBounces=1;
+  auto* solver=new ManifoldSolver(cfg);
+  std::vector<const IObject*> casters;ManifoldSolver::EnumerateSpecularCasters(*job->GetScene(),casters);solver->SetSpecularCasters(casters);
+  const auto* floor=job->GetScene()->GetObjects()->GetItem("floor_obj");
+  std::vector<double> rgb,nm;
+  const IORStack air(1);
+  for(unsigned t=0;t<4;++t) {
+   SobolSamplerTestHooks::ValueSalt().store(SobolSequence::HashCombine(312000+t,312u));
+   double a=0,b=0;
+   for(unsigned sample=0;sample<4096;++sample) {
+    SobolSampler sr(sample,29),sn(sample,29);
+    const Point3 pos(-3+6*sr.Get1D(),0,-3+6*sr.Get1D());sn.Get1D();sn.Get1D();
+    const Vector3 normal(0,1,0),wo=Vector3Ops::Normalize(Vector3Ops::mkVector3(Point3(0,2.2,3.4),pos));
+    OrthonormalBasis3D onb;onb.CreateFromW(normal);
+    const auto r=solver->EvaluateAtShadingPoint(pos,normal,normal,onb,floor->GetMaterial(),wo,*job->GetScene(),*caster,sr,&air);
+    const auto n=solver->EvaluateAtShadingPointNM(pos,normal,normal,onb,floor->GetMaterial(),wo,*job->GetScene(),*caster,sn,550,&air);
+    // Normalize the native spectral pricing (RGB painter uplift) before
+    // comparing seed coverage. Geometry and mirror Jacobians are achromatic.
+    RayIntersectionGeometric rig(Ray(pos,-wo),nullRasterizerState);
+    rig.bHit=true;rig.ptIntersection=pos;rig.vNormal=normal;rig.vGeomNormal=normal;rig.onb=onb;
+    const Vector3 incoming=Vector3Ops::Normalize(Vector3Ops::mkVector3(Point3(0,3.8,0),pos));
+    const auto* bsdf=floor->GetMaterial()->GetBSDF();
+    const Scalar f=bsdf->valueStateful(incoming,rig,&air)[0],fn=bsdf->valueStatefulNM(incoming,rig,550,&air);
+    const auto* light=job->GetScene()->GetLights()->GetItem("point");
+    const auto* mirror=job->GetScene()->GetObjects()->GetItem("mirror_obj")->GetMaterial();
+    const Scalar tint=mirror->GetSpecularInfoNM(rig,air,550).attenuationNM/mirror->GetSpecularInfo(rig,air).attenuation[0];
+    const Scalar pricing=(fn/f)*tint*light->emittedRadianceNM(Vector3(0,-1,0),550)/light->emittedRadiance(Vector3(0,-1,0))[0];
+    a+=r.contribution[0];b+=n.contribution/pricing;
+   }
+   rgb.push_back(a/4096);nm.push_back(b/4096);
+  }
+  SobolSamplerTestHooks::ValueSalt().store(0);
+  const auto a=Summarize(rgb),b=Summarize(nm);
+  const double se=std::sqrt((a.sd*a.sd+b.sd*b.sd)/4);
+  std::cout<<"DL-312 native query RGB="<<a.mean<<" NM="<<b.mean<<" combinedSE="<<se<<" ratio="<<b.mean/a.mean<<'\n';
+  Check(a.mean>0&&b.mean>0&&std::fabs(a.mean-b.mean)<=3*se+1e-12,"DL-312 NM mirror supplements match RGB within three combined SE");
+  solver->release();caster->release();shader->release();safe_release(job);std::remove(path.c_str());
+ }
+
+}
+
 int main( int argc, char** argv )
 {
 	// Must precede scene loading / the first cached GlobalOptions read.
@@ -1534,6 +1584,8 @@ int main( int argc, char** argv )
 		setenv("RISE_OPTIONS_FILE",workerOptionsPath,1);
 #endif
 	}
+	if(argc==2&&std::string(argv[1])=="--dl312-only") {TestDL312MirrorParity();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;}
 	unsigned int trials = 4;
 	bool unitOnly = false;
 	std::string only;

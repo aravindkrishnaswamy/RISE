@@ -10490,6 +10490,62 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 //   throughout.
 //////////////////////////////////////////////////////////////////////
 
+namespace {
+void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm) {
+
+	if( nm > 0 )
+	{
+		// Override each vertex's IOR with the wavelength-dependent value.
+		// This is what makes dispersion work — the Newton solver will find
+		// a different position for each wavelength due to the different IOR.
+		IORStack queryIor( 1.0 );
+		for( unsigned int i = 0; i < chain.size(); i++ )
+		{
+			if( chain[i].pMaterial )
+			{
+				// Build a minimal RayIntersectionGeometric for the query
+				Ray dummyRay( chain[i].position, chain[i].normal );
+				RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
+				rig.bHit = true;
+				rig.ptIntersection = chain[i].position;
+				rig.vNormal = chain[i].normal;
+				rig.vGeomNormal = chain[i].geomNormal;
+				rig.ptCoord = chain[i].uv;
+				rig.ptObjIntersec = chain[i].objectPosition;
+
+				SpecularInfo specNM = chain[i].pMaterial->GetSpecularInfoNM(
+					rig, queryIor, nm );
+				chain[i].eta = specNM.ior;
+				chain[i].attenuationNM = specNM.attenuationNM;
+				chain[i].attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
+				chain[i].hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
+				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
+				// Also update the wavelength-dependent side of the
+				// (etaI, etaT) pair populated by BuildSeedChain.  The
+				// vertex's "outgoing-medium IOR" for entering, or
+				// "incoming-medium IOR" for exiting, IS the surface
+				// material's IOR — which is what specNM.ior gives us
+				// per wavelength (dispersion).  The OPPOSITE side's IOR
+				// (the surrounding medium) is left as set by the RGB
+				// BuildSeedChain pass; for typical SMS scenes (single
+				// dielectric in air, surrounding = 1.0) this is
+				// wavelength-independent and correct.  For doubly-
+				// nested dispersive scenes (e.g. dispersive-glass inside
+				// dispersive-glass) the surrounding side would also be
+				// wavelength-dependent and needs a separate per-vertex
+				// stack-of-NM-IORs to track exactly — left for a future
+				// extension when such a scene exists.
+				if( chain[i].isExiting ) {
+					chain[i].etaI = specNM.ior;
+				} else {
+					chain[i].etaT = specNM.ior;
+				}
+			}
+		}
+	}
+
+}
+}
 ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const Point3& pos,
 	const Vector3& geomNormal,
@@ -10582,10 +10638,23 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		pos, geomNormal, lightSample.position, scene, caster,
 		seedChain, pIorStack, &sampler, nm );
 
-	if( chainLen == 0 || seedChain.empty() )
-	{
-		return result;
-	}
+    std::vector<std::vector<ManifoldVertex>> baseSeeds;
+    if(chainLen>0&&!seedChain.empty()) baseSeeds.push_back(seedChain);
+    for(const IObject* mirror:mSpecularCasters) {
+        if(!ProbeIsPureMirrorCaster(mirror)) continue;
+        for(unsigned m=0;m<std::max(config.multiTrials,1u);++m) {
+            Point3 point;Vector3 normal;Point2 uv;
+            mirror->UniformRandomPoint(&point,&normal,&uv,
+                Point3(loopSampler.Get1D(),loopSampler.Get1D(),loopSampler.Get1D()));
+            std::vector<ManifoldVertex> chain;
+            if(BuildSeedChain(pos,point,scene,caster,chain,false,pIorStack,&sampler)>0
+                && !chain.empty() && chain.front().pObject==mirror) {
+                RefreshLegacySeedNM(chain,nm);
+                baseSeeds.push_back(std::move(chain));
+            }
+        }
+    }
+    if(baseSeeds.empty()) return result;
 
 	// Multi-trial SMS with photon-aided seeding + root-dedupe — see
 	// EvaluateAtShadingPoint (RGB) for the full rationale.
@@ -10597,7 +10666,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const unsigned int N = ( config.multiTrials > 0 ) ? config.multiTrials : 1;
 	const Scalar dedupeThr = ( config.uniquenessThreshold > 0.0 )
 		? config.uniquenessThreshold : 1e-4;
-	const std::vector<ManifoldVertex> baseSeedChain = seedChain;
+	const std::vector<ManifoldVertex> baseSeedChain = baseSeeds.front();
 
 	// See the RGB EvaluateAtShadingPoint companion: photon retrieval is
 	// independent of `multi_trials` (N) so a scene that only sets
@@ -10645,13 +10714,16 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	unsigned int validTrials = 0;
 
 	std::size_t photonCursor = 0;
+    const IObject* pFirstCaster=baseSeedChain.front().pObject;
+    const bool surfaceSampleReflectionFallback=baseSeedChain.size()==1
+        && !baseSeedChain.front().canRefract && pFirstCaster && pFirstCaster->GetGeometry();
 
 	// Total trial budget: 1 base seed + photon trials + (N - 1) extras.
 	// Mirrors the RGB site's totalTrials.  The `trial > 0` branch below
 	// consumes photons; without `+ photonSeeds.size()` here, only the
 	// (N-1) extra slots could draw from the photon list — the rest of
 	// the queried photons would be silently discarded.
-	const unsigned int totalTrials = 1u
+	const unsigned int totalTrials = static_cast<unsigned int>(baseSeeds.size())
 		+ static_cast<unsigned int>( photonSeeds.size() )
 		+ ( N > 0 ? N - 1 : 0 );
 
@@ -10665,15 +10737,18 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	for( unsigned int trial = 0; trial < totalTrials; trial++ )
 	{
 		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
+        if(trial<baseSeeds.size()) trialSeed=baseSeeds[trial];
+        bool useSurfaceSample=trial==0 && surfaceSampleReflectionFallback;
 
 		// See RGB variant for the rationale: use photon's stored chain
 		// directly (reversed and with flipped isExiting) to preserve
 		// the topology the photon actually traversed.
-		if( trial > 0 )
+		if( trial >= baseSeeds.size() )
 		{
 			if( photonCursor >= photonSeeds.size() ) {
-				continue;
-			}
+                if(!surfaceSampleReflectionFallback) continue;
+                useSurfaceSample=true;
+            } else {
 			const SMSPhoton& ph = photonSeeds[photonCursor];
 			photonCursor++;
 
@@ -10694,6 +10769,33 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 			std::vector<ManifoldVertex> newChain;
 			if( ReversePhotonChainForSeed( ph, newChain, nm ) == 0 ) continue;
 			trialSeed = newChain;
+            }
+		}
+
+		// Build a single-vertex seed by uniform-sampling the reflective
+		// caster's surface.  Inherits material data from the original
+		// baseSeedChain[0]; only position/normal change.  Newton then
+		// walks from this random surface point to a true reflection root.
+		if( useSurfaceSample )
+		{
+			Point3 sp;
+			Vector3 sn;
+			Point2 sc;
+			pFirstCaster->UniformRandomPoint(
+				&sp, &sn, &sc,
+				Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
+			ManifoldVertex mv = baseSeedChain[0];
+			mv.position = sp;
+			mv.normal   = sn;
+			mv.geomNormal = sn;	// uniform-area sample: best-available proxy
+			mv.uv       = sc;
+			mv.dpdu = Vector3(0,0,0);  // Solve will compute via ComputeVertexDerivatives
+			mv.dpdv = Vector3(0,0,0);
+			mv.dndu = Vector3(0,0,0);
+			mv.dndv = Vector3(0,0,0);
+			mv.valid = false;
+			trialSeed.clear();
+			trialSeed.push_back( mv );
 		}
 
 		ManifoldResult mResult = Solve(
@@ -10933,56 +11035,7 @@ unsigned int ManifoldSolver::BuildSnellBaseSeed(
 		return 0;
 	}
 
-	if( nm > 0 )
-	{
-		// Override each vertex's IOR with the wavelength-dependent value.
-		// This is what makes dispersion work — the Newton solver will find
-		// a different position for each wavelength due to the different IOR.
-		IORStack queryIor( 1.0 );
-		for( unsigned int i = 0; i < chain.size(); i++ )
-		{
-			if( chain[i].pMaterial )
-			{
-				// Build a minimal RayIntersectionGeometric for the query
-				Ray dummyRay( chain[i].position, chain[i].normal );
-				RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
-				rig.bHit = true;
-				rig.ptIntersection = chain[i].position;
-				rig.vNormal = chain[i].normal;
-				rig.vGeomNormal = chain[i].geomNormal;
-				rig.ptCoord = chain[i].uv;
-				rig.ptObjIntersec = chain[i].objectPosition;
-
-				SpecularInfo specNM = chain[i].pMaterial->GetSpecularInfoNM(
-					rig, queryIor, nm );
-				chain[i].eta = specNM.ior;
-				chain[i].attenuationNM = specNM.attenuationNM;
-				chain[i].attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
-				chain[i].hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
-				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
-				// Also update the wavelength-dependent side of the
-				// (etaI, etaT) pair populated by BuildSeedChain.  The
-				// vertex's "outgoing-medium IOR" for entering, or
-				// "incoming-medium IOR" for exiting, IS the surface
-				// material's IOR — which is what specNM.ior gives us
-				// per wavelength (dispersion).  The OPPOSITE side's IOR
-				// (the surrounding medium) is left as set by the RGB
-				// BuildSeedChain pass; for typical SMS scenes (single
-				// dielectric in air, surrounding = 1.0) this is
-				// wavelength-independent and correct.  For doubly-
-				// nested dispersive scenes (e.g. dispersive-glass inside
-				// dispersive-glass) the surrounding side would also be
-				// wavelength-dependent and needs a separate per-vertex
-				// stack-of-NM-IORs to track exactly — left for a future
-				// extension when such a scene exists.
-				if( chain[i].isExiting ) {
-					chain[i].etaI = specNM.ior;
-				} else {
-					chain[i].etaT = specNM.ior;
-				}
-			}
-		}
-	}
+	RefreshLegacySeedNM(chain,nm);
 
 	return static_cast<unsigned int>( chain.size() );
 }
@@ -11003,19 +11056,19 @@ unsigned int ManifoldSolver::BuildSnellBaseSeed(
 //   docs/SMS_ENERGY_LOSS_INVESTIGATION.md section 7.
 //////////////////////////////////////////////////////////////////////
 
-bool ManifoldSolver::SplitSuppressionExact( const IRayCaster& caster, bool spectral ) const
+bool ManifoldSolver::SplitSuppressionExact( const IRayCaster& caster, bool /*spectral*/ ) const
 {
 	// Uniform seeding samples its seeds; the unbiased estimator weights
 	// each found root by an estimated 1/p (it estimates every root, so
 	// suppressing them all is its partition); photon-aided trials and the
-	// RGB pure-mirror supplement add random seeds; alpha coverage routes
+	// RGB/NM pure-mirror supplements add random seeds; alpha coverage routes
 	// snell mode to the uniform evaluator.
 	if( config.seedingMode != ManifoldSolverConfig::eSeedingSnell ) return false;
 	if( !config.biased ) return false;
 	if( pPhotonMap && pPhotonMap->IsBuilt() ) return false;
 	const LightSampler* pLS = caster.GetLightSampler();
 	if( !pLS || pLS->SceneHasAlphaCoverage() ) return false;
-	if( !spectral && mHasPureMirrorCaster ) return false;
+	if( mHasPureMirrorCaster ) return false;
 	return true;
 }
 
@@ -11050,10 +11103,10 @@ SMSChainCoverage ManifoldSolver::ClassifyEmitterHitCoverage(
 	if( seed.empty() ) {
 		return eSMSChainNotCovered;		// no seed: SMS estimates nothing here
 	}
-	// RGB snell mode replaces a k = 1 mirror base seed by a RANDOM surface
+	// RGB/NM snell mode replaces a k = 1 mirror base seed by a RANDOM surface
 	// sample (EvaluateAtShadingPoint's surface-sample fallback): no exact
-	// answer.  The spectral evaluator has no such fallback.
-	if( nm <= 0 && seed.size() == 1 && !seed[0].canRefract ) {
+	// answer in either evaluator.
+	if( seed.size() == 1 && !seed[0].canRefract ) {
 		return eSMSChainCoverageUnknown;
 	}
 
