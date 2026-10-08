@@ -651,6 +651,27 @@ static void PolishedLegacySection()
     }
 }
 
+static void BelowTIRReflectionSection()
+{
+    RenderOptions o;o.N=4096;o.salts=4;o.targetBounces=1;
+    for(bool reverse:{false,true}) {
+        auto spec=CeilingScene("glass",true,reverse);
+        const auto emitter=ClippedQuad("emitter_geo",1,1,2,-0.5,0.5,true,false)+Obj("emitter","emitter_geo","lum");
+        spec.text.erase(spec.text.find(emitter),emitter.size());
+        spec.text+="spot_light\n{\n name upward\n position 1.5 0 1\n target 1 0 2\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n";
+        const auto legacy=Render(spec,Mode::Legacy,o),full=Render(spec,Mode::Full,o);
+        Check(legacy.ok&&full.ok,"DL-437 reflection controls render");
+        for(unsigned w=0;w<kLanes;++w) {
+            const auto nm=Render(spec,Mode::Full,o,int(w));
+            const Moments a(full.lane[w]),b(nm.lane[w]),old(legacy.lane[w]);
+            std::cout<<"DL-437 winding="<<reverse<<" lane="<<w<<" legacy="<<old.mean<<" extended="<<a.mean<<" +/- "<<a.se<<" NM="<<b.mean<<" +/- "<<b.se<<'\n';
+            if(reverse) Check(old.mean==0,"DL-437 legacy below-TIR reflection remains absent for the omitted winding");
+            Check(nm.ok&&a.mean>3*a.se&&b.mean>3*b.se,"DL-437 extended HWSS and NM light the reflection fixture");
+            Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-437 per-lane HWSS agrees with NM at 3 se");
+        }
+    }
+}
+
 static void LegacyBodySplitSection()
 {
     // A one-bounce coat reflection is outside an SMS target of two.
@@ -989,6 +1010,7 @@ int main(int argc,char** argv)
     run("body",BodySection);
     run("dl452",PolishedLegacySection);
     run("dl378",LegacyBodySplitSection);
+    run("dl437",BelowTIRReflectionSection);
     run("lanes",LanesSection);
     if(section=="cost") {std::cout<<"=== cost ===\n";CostSection();}
     if(section=="nmprobe") {std::cout<<"=== nmprobe ===\n";NMProbeSection();}
