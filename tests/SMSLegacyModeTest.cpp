@@ -10,6 +10,13 @@
 // fixtures would see the change: the SAME fixture rendered by a directly
 // constructed HWSS rasterizer with extended mode ON differs from it with
 // extended mode OFF (and the OFF render repeats bit-identically).
+//
+// DL-453 (2026-10-07, user-approved legacy image change): legacy HWSS + SMS
+// lanes draw their SMS samples from per-lane Sobol' streams, so fixtures 3
+// (shipped spectral_dispersive_caustic_pt_sms_uniform, hwss TRUE) and 7-9
+// differ from a pre-DL-453 base; set RISE_SMS_LEGACY_CHANGED_FIXTURES=3,7,8,9
+// for that one comparison.  Against a post-DL-453 base every fixture is
+// gated at <= 1 ULP again.
 #include "SMSRenderTestSupport.h"
 #include "../src/Library/Rendering/PathTracingSpectralRasterizer.h"
 #include "../src/Library/Rendering/RayCaster.h"
@@ -65,8 +72,18 @@ static void CheckCrossBuildPixels(const std::vector<RISEColor>& pixels,unsigned 
         if(complete) for(std::size_t i=0;i<values.size();++i) {
             const auto distance=Float32ULPDistance(reference[i],values[i]);maximum=std::max(maximum,distance);if(distance)++changed;
         }
-        std::cout<<"LEGACY precision fixture="<<fixture<<" trial="<<trial<<" max_float32_ulps="<<maximum<<" changed_components="<<changed<<std::endl;
-        Check(complete&&maximum<=1,"cross-build mode-off RGBA differs by at most one float32 ULP");
+        // RISE_SMS_LEGACY_CHANGED_FIXTURES ("3,7,8,9"): fixtures a sanctioned
+        // legacy image change moves between the two builds (DL-453 moved
+        // legacy HWSS + SMS lanes' SMS draws onto their own Sobol' streams:
+        // fixtures 3 and 7-9 against a pre-DL-453 base).  Reported, not gated.
+        bool expectedChange=false;
+        if(const char* list=std::getenv("RISE_SMS_LEGACY_CHANGED_FIXTURES")) {
+            std::stringstream items(list);std::string item;
+            while(std::getline(items,item,',')) if(!item.empty() && std::stoul(item)==fixture) expectedChange=true;
+        }
+        std::cout<<"LEGACY precision fixture="<<fixture<<" trial="<<trial<<" max_float32_ulps="<<maximum<<" changed_components="<<changed
+            <<(expectedChange?" (sanctioned change, reported)":"")<<std::endl;
+        Check(complete&&(expectedChange||maximum<=1),"cross-build mode-off RGBA differs by at most one float32 ULP");
     }
 }
 
