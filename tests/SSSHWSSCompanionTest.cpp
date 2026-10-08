@@ -49,6 +49,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "../src/Library/Interfaces/IOptions.h"
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -71,6 +72,7 @@ namespace RISE { bool RISE_CreateJobPriv( IJobPriv** ppi ); }
 
 namespace
 {
+	char workerOptionsPath[512] = {};
 	int passCount = 0;
 	int failCount = 0;
 	unsigned int g_renderIndex = 0;
@@ -280,6 +282,20 @@ namespace
 
 int main( int argc, char** argv )
 {
+    // Set options before the first cached GlobalOptions read or scene load.
+    if(!std::getenv("RISE_OPTIONS_FILE")) {
+        std::snprintf(workerOptionsPath,sizeof(workerOptionsPath),"/tmp/dl454_options_%d.txt",int(::getpid()));
+        std::ofstream options(workerOptionsPath);options<<"force_number_of_threads 1\n";options.close();
+        if(!options) return 1;
+        std::atexit([](){std::remove(workerOptionsPath);});
+#ifdef _WIN32
+        if(_putenv_s("RISE_OPTIONS_FILE",workerOptionsPath)!=0) return 1;
+#else
+        if(setenv("RISE_OPTIONS_FILE",workerOptionsPath,1)!=0) return 1;
+#endif
+    }
+	Check(GlobalOptions().ReadInt("force_number_of_threads",0)==1,"DL-454 companion renders use exactly one worker");
+	if(argc==2&&std::strcmp(argv[1],"--worker-only")==0) return failCount?1:0;
 	const bool withMlt = argc >= 2 && std::strcmp( argv[1], "--mlt" ) == 0;
 	if( argc >= 2 && std::strcmp( argv[1], "--control" ) == 0 ) {
 		RunKind( "lambertian control", LambertianMaterial(), 256, 0.03, 0.03, false );
