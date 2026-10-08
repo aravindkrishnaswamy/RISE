@@ -629,6 +629,28 @@ static void LanesSection()
 //////////////////////////////////////////////////////////////////////
 // body: DL-378 -- a BSDF caster's delta lobe inside the HWSS body
 //////////////////////////////////////////////////////////////////////
+static void PolishedLegacySection()
+{
+    RenderOptions o;o.N=4096;o.salts=4;
+    for(bool reverse:{false,true}) {
+        const auto spec=CeilingScene("polished",true,reverse,"lum");
+        const auto legacy=Render(spec,Mode::Legacy,o),ref=Render(spec,Mode::Ref,o);
+        for(unsigned w=0;w<kLanes&&legacy.ok&&ref.ok;++w) {
+            const Moments a(legacy.lane[w]),b(ref.lane[w]);
+            std::cout<<"DL-452 winding="<<reverse<<" lane="<<w<<" legacy="<<a.mean<<" +/- "<<a.se
+                <<" PT="<<b.mean<<" +/- "<<b.se<<" ratio="<<a.mean/b.mean<<"\n";
+            Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-452 legacy polished HWSS agrees with SMS-off within 3 se");
+        }
+        const auto nl=Render(spec,Mode::Legacy,o,0),nr=Render(spec,Mode::Ref,o,0);
+        if(nl.ok&&nr.ok) {
+            const Moments a(nl.lane[0]),b(nr.lane[0]);
+            std::cout<<"DL-452 NM winding="<<reverse<<" legacy="<<a.mean<<" PT="<<b.mean<<"\n";
+            Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-452 legacy polished NM agrees with SMS-off within 3 se");
+        }
+        Check(legacy.ok&&ref.ok&&nl.ok&&nr.ok,"DL-452 every comparison rendered");
+    }
+}
+
 static void BodySection()
 {
     // Estimator B (heavy reciprocal tail): 32 salts x 4096, as `lanes`.
@@ -945,6 +967,7 @@ int main(int argc,char** argv)
     run("delta",DeltaSection);
     run("mask",MaskSection);
     run("body",BodySection);
+    run("dl452",PolishedLegacySection);
     run("lanes",LanesSection);
     if(section=="cost") {std::cout<<"=== cost ===\n";CostSection();}
     if(section=="nmprobe") {std::cout<<"=== nmprobe ===\n";NMProbeSection();}
