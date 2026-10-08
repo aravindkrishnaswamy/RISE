@@ -1546,3 +1546,27 @@ failures: extended on == off there, as HWSS ignored extended mode) and
 green at HEAD; SMSExtendedHWSSTest 1106/0 at three salt bases (above).
 The rest of the targeted gate is `gate-r1` (round 1); only comments, a
 log line on an unreachable-by-default depth and tests changed since.
+
+### Phase 4 integration and master gate (2026-10-07)
+
+Round 3 (a fresh focused review of `1f7426825..66e5b4aed`: the one-time
+depth log, test-only changes and docs) found zero P1; its DL-450 wording
+P3 is applied in `bb0859ec4`. Merged to master at `e0d2d0caa`.
+
+Targeted master gate at `e0d2d0caa` (library plus 27 test builds, each
+exit 0, no compiler warnings): ManifoldSolverTest 388/0;
+SMSUniformDispersionTest 300/0 and `--shipped` 10/0;
+ExteriorIndexInvarianceTest 299/0; SMSEmitterDirectionTest 344/0;
+SMSMediumAnchorTest 27/0; TransparentShadowPartitionTest 42/0;
+WeaveGapShadowTransmittanceTest 244/0; OpenSheetIndexConventionTest 24/0;
+ManifoldNormalDerivativeTest 141/0; GradedIndexInteriorFactorTest,
+DoubleSidedEmitterTest and SSSHWSSCompanionTest zero failures;
+AlphaSMSGeometry 216/0, AlphaSMSTransport 20/0, AlphaSMSReciprocal 27/0;
+PTGuidingMISPartitionTest 185/0; SourceHygieneTest 172/0;
+CstDeriveGoldenTest 458 MATCH / 0 DRIFT; SMSExtendedReferenceTest
+6522/0, production 393/0, signed 641/0, review 193401/0, SSS clamp
+1065/0, SSS replacement 1769/0; SMSDomainReplayTest 8200/0;
+SMSLegacyModeTest 57/0 (single build; the cross-build dump comparison is
+recorded above); SMSExtendedPartitionTest 542/0; SMSExtendedHWSSTest
+1106/0; SobolDimensionBudgetTest passed; OptimalMISTrainingSitesTest
+111/0; MediumInsideOutsideInvariantTest 52/0. No ledger row was closed.
