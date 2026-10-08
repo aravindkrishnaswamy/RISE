@@ -1080,6 +1080,44 @@ int main(int argc,char** argv)
 #ifndef RISE_SMS_EXTENDED_PARTITION
     std::cout<<"NOTE: RISE_SMS_EXTENDED_PARTITION absent: partition-API checks compiled out\n";
 #endif
+    if(section=="dl444") {
+        for(bool reverse:{false,true}) {
+            Fixture f(InsideScene(reverse).text);
+            IORStack stack(1);IORStackSeeding::SeedFromPoint(stack,Point3(0,0,0.3),f.Scene());
+            Check(stack.topObject()==f.Object("caster") && stack.top()==1.5,"DL-444 camera seeded inside glass for both windings");
+            IORStack outside(1);IORStackSeeding::SeedFromPoint(outside,Point3(0,0,3),f.Scene());
+            Check(outside.topObject()!=f.Object("caster"),"DL-444 outside camera remains in air for both windings");
+        }
+        RenderOptions o;o.salts=4;o.N=4096;
+        for(Scalar nm:{Scalar(0),Scalar(550)}) {
+            o.nm=nm;
+            const auto outward=RenderPoint(InsideScene(false),Mode::Ref,o);
+            const auto inward=RenderPoint(InsideScene(true),Mode::Ref,o);
+            Moments a(outward.c[0]),b(inward.c[0]);
+            std::cout<<"DL-444 nm="<<nm<<" outward="<<a.mean<<" +/- "<<a.se
+                     <<" inward="<<b.mean<<" +/- "<<b.se<<"\n";
+            Check(outward.ok&&inward.ok&&Agree(a,b),"DL-444 SMS-off PT winding invariance within 3 combined se");
+        }
+    }
+    if(section=="dl444-reference") {
+        RenderOptions o;o.salts=4;o.N=4096;
+        const auto point=RenderPoint(InsideScene(false),Mode::Ref,o);
+        Moments pt(point.c[0]);
+        const std::string camera="film\n{\n width 1\n height 1\n}\n"
+            "pinhole_camera\n{\n location 0 0 0.3\n lookat 0 0 0\n up 0 1 0\n fov 0.0001\n}\n"
+            "standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n";
+        for(bool reverse:{false,true}) {
+            std::vector<double> values;
+            for(unsigned i=0;i<4;++i) {
+                const auto r=Render(InsideScene(reverse).text+camera+std::string("vcm_pel_rasterizer\n{\n samples 4096\n max_eye_depth 16\n max_light_depth 16\n merge_radius 0.0\n vc_enabled TRUE\n vm_enabled FALSE\n pixel_filter box\n oidn_denoise FALSE\n}\n"),"dl444_vcm");
+                Check(r.ok,"DL-444 VCM reference renders");values.push_back(r.mean);
+            }
+            Moments vcm(values);
+            std::cout<<"DL-444 reference winding="<<reverse<<" VCM="<<vcm.mean<<" +/- "<<vcm.se
+                <<" PT="<<pt.mean<<" +/- "<<pt.se<<"\n";
+            Check(Agree(pt,vcm),"DL-444 PT agrees with independent VCM within 3 combined se");
+        }
+    }
     if(section=="dl448") {
         Fixture f(ThinLuminaryMirrorScene(false,true).text);
         const IObject* emitter=f.Object("emitter");
