@@ -1570,3 +1570,55 @@ SMSLegacyModeTest 57/0 (single build; the cross-build dump comparison is
 recorded above); SMSExtendedPartitionTest 542/0; SMSExtendedHWSSTest
 1106/0; SobolDimensionBudgetTest passed; OptimalMISTrainingSitesTest
 111/0; MediumInsideOutsideInvariantTest 52/0. No ledger row was closed.
+
+### DL-453: legacy HWSS lanes on per-lane SMS streams (2026-10-07)
+
+User ruling: legacy (extended-off) HWSS + SMS images may change to fix
+the Sobol' overrun the Phase 4 round-1 review measured. Every HWSS
+lane's SMS evaluation -- legacy as well as extended -- now draws from a
+`SobolSampler::ForkStream` fork at `PathTransportUtilities::
+PTSMSLaneStream(depth, lane)`, the Phase 4 block renamed from
+`PTExtendedSMSStream` (same [141312, 145408); one bundle is either
+legacy or extended, so the two modes never share a (depth, lane) stream
+in one sample). Legacy SMS may draw alpha samples under scene alpha
+coverage (extended is ineligible there), so the fork's alpha position is
+handed back with the new `SobolSampler::JoinAlpha`. Extended HWSS, the
+RGB/NM bodies, BDPT and VCM are unchanged. The legacy shader-op chain
+(`SMSShaderOp` under the pixel-based rasterizers) opens no per-vertex
+streams and so has none to overrun; `RayCaster::CastRayHWSS` reaches the
+fixed body through `PathTracingShaderOp`.
+
+Measurements (`debt-dl453`):
+
+- `SobolDimensionBudgetTest` Test I now gates legacy HWSS at 0
+  overruns: highest slot 52 / 32 / 54 -> 20 / 11 / 22 (slab + area,
+  slab + omni, polished ceiling + area), pairs past 32 48.9 % / 0 % /
+  100 % -> 0; red on master sources (two fixtures fail). One forked
+  legacy lane evaluation draws at most 8 (6 / 8 / 8), unchanged for
+  `multi_trials` 2, 16 and 32 in snell and uniform seeding. Test I0
+  checks the JoinAlpha hand-back.
+- Image impact, `SMSExtendedHWSSTest --section samplerbias
+  --bias-legacy` (salted Sobol' vs the independent sampler, 256 renders
+  x 1024 spp, salt bases 71000 and 91000), lane-mean:
+
+  | fixture | build | base 71000 | base 91000 |
+  |---|---|---|---|
+  | slab (glass, area) | master | +0.51 % (z 0.88) | -0.07 % (z -0.12) |
+  | slab (glass, area) | DL-453 | -0.83 % (z -1.48) | +0.07 % (z 0.13) |
+  | polished ceiling | master | -0.001 % (z -0.26) | -0.003 % (z -0.63) |
+  | polished ceiling | DL-453 | +0.001 % (z 0.19) | -0.002 % (z -0.44) |
+
+  No bias is resolved before or after at a detection floor of ~0.5 %
+  (slab, independent se) and ~0.01 % (ceiling). The overrun is fixed as
+  a sampler-correlation hazard, not because a bias was measured.
+- `SMSLegacyModeTest` cross-build (master dump vs DL-453, trial 0):
+  fixtures 0-2, 4-6 and 9 at 0 float32 ULP; fixtures 3 (shipped
+  `spectral_dispersive_caustic_pt_sms_uniform`, hwss TRUE), 7 and 8
+  change (mean 1.53911 -> 1.53942, 0.016215 -> 0.016210, 0.017813 ->
+  0.017732; single 64-spp renders, i.e. noise realisations). Fixture 9's
+  SSS receiver hands the camera ray to the NM body. The test reports
+  fixtures listed in `RISE_SMS_LEGACY_CHANGED_FIXTURES` instead of
+  gating them. Its negative control keeps fixture 9 only: fixture 7's
+  single-sided emitter faces away from the coat, SMS contributes nothing
+  there, and its extended-on/off difference had been the stream layout
+  alone (now bit-identical).
