@@ -6925,27 +6925,25 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				if( swl.terminated[w] || !smsLaneAnchorNow[w] ) continue;
 
 				// Pass both geometric and shading — see other SMS sites.
-				// Phase 4 review: an extended lane's SMS draws (light
-				// sample, estimator loop seeds) come from a stream of its
-				// own (PathTransportUtilities::PTExtendedSMSStream): four
-				// lanes of NEE + SMS overran this vertex's stream into the
-				// next vertex's (SobolDimensionBudgetTest Test I).  Legacy
-				// lanes keep drawing from the vertex stream (mode-off
-				// arithmetic unchanged; DL-453).
+				// Each lane's SMS draws (light sample, solver seeds) come
+				// from a stream of its own (PathTransportUtilities::
+				// PTSMSLaneStream): four lanes of NEE + SMS overran this
+				// vertex's stream into the next vertex's
+				// (SobolDimensionBudgetTest Test I) -- extended lanes
+				// since the Phase 4 review, legacy lanes since DL-453.
 				std::optional<SobolSampler> smsLaneStream;
-				if( bSMSExtendedLoopHW ) {
-					if( const SobolSampler* sobol = dynamic_cast<const SobolSampler*>( &smsSampler ) ) {
-						// Depths past the cap reuse depth - 1024's streams
-						// (documented ceiling); say so once.  No behaviour change.
-						if( depth >= PathTransportUtilities::kPTExtendedSMSDepthCap ) {
-							static std::atomic<bool> warned{ false };
-							if( !warned.exchange( true, std::memory_order_relaxed ) ) {
-								GlobalLog()->PrintEasyWarning( "PathTracingIntegrator:: HWSS extended SMS at path depth >= 1024: its per-lane Sobol' streams (PTExtendedSMSStream) repeat those of depth - 1024." );
-							}
+				SobolSampler* smsParentSobol = dynamic_cast<SobolSampler*>( &smsSampler );
+				if( smsParentSobol ) {
+					// Depths past the cap reuse depth - 1024's streams
+					// (documented ceiling); say so once.  No behaviour change.
+					if( depth >= PathTransportUtilities::kPTSMSLaneDepthCap ) {
+						static std::atomic<bool> warned{ false };
+						if( !warned.exchange( true, std::memory_order_relaxed ) ) {
+							GlobalLog()->PrintEasyWarning( "PathTracingIntegrator:: HWSS SMS at path depth >= 1024: its per-lane Sobol' streams (PTSMSLaneStream) repeat those of depth - 1024." );
 						}
-						smsLaneStream.emplace( sobol->ForkStream(
-							PathTransportUtilities::PTExtendedSMSStream( depth, w ) ) );
 					}
+					smsLaneStream.emplace( smsParentSobol->ForkStream(
+						PathTransportUtilities::PTSMSLaneStream( depth, w ) ) );
 				}
 				ISampler& smsLaneSampler = smsLaneStream ? static_cast<ISampler&>( *smsLaneStream ) : smsSampler;
 				ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
@@ -6962,6 +6960,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// delta light, B for an area emitter) in an extended
 					// bundle; the legacy solver otherwise.
 					swl.lambda[w], &iorStack, &ri.geometric, smsLegacyHandOff );
+				// DL-453: legacy SMS under scene alpha coverage draws alpha
+				// samples from the fork; resume the vertex sampler's alpha
+				// region past them.  (Extended SMS is ineligible with alpha.)
+				if( smsLaneStream && smsParentSobol ) {
+					smsParentSobol->JoinAlpha( *smsLaneStream );
+				}
 
 				if( sms.valid )
 				{
