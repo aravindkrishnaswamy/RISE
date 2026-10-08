@@ -146,7 +146,8 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 			irrad = irrad + i->irrad;
             smsReferenceRadiance = smsReferenceRadiance || i->smsReferenceRadiance;
 		}
-		irrad = irrad * (1.0/Scalar(pElements->size()) );
+		sampleCount = pElements->size();
+		irrad = irrad * (1.0/Scalar(sampleCount) );
 
 		return true;
 	}
@@ -158,7 +159,7 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 
 		// Subdivision required
 		// Make eight children
-		pChildren = new PointSetOctreeNode*[8];
+		pChildren = new PointSetOctreeNode*[8]();
 		GlobalLog()->PrintNew( pChildren, __FILE__, __LINE__, "point set octree children" );
 
 		for( unsigned char x=0; x<8; x++ )
@@ -171,7 +172,8 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 				pChildren[x] = 0;
 				numRejects++;
 			} else {
-				irrad = irrad + pChildren[x]->AverageIrradiance();
+				sampleCount += pChildren[x]->sampleCount;
+				irrad = irrad + pChildren[x]->AverageIrradiance() * Scalar(pChildren[x]->sampleCount);
                 smsReferenceRadiance = smsReferenceRadiance || pChildren[x]->smsReferenceRadiance;
 			}
 		}
@@ -186,7 +188,7 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 				return false;
 		}
 
-		irrad = irrad * (1.0/Scalar(8-numRejects) );
+		irrad = irrad * (1.0/Scalar(sampleCount) );
 	}
 
 	return true;
@@ -234,16 +236,16 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 					// profile against it.
 					if( exteriorIOR == 1.0 ) {
 						if( pBSDF ) {
-							accumulate( pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ), pChildren[i]->smsReferenceRadiance );
+							accumulate( pFunc.ComputeTotalExtinction( dist ) * (pChildren[i]->AverageIrradiance() * Scalar(pChildren[i]->sampleCount)) * pBSDF->valueStateful( vdir, rig, pIorStack ), pChildren[i]->smsReferenceRadiance );
 						} else {
-							accumulate( pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance(), pChildren[i]->smsReferenceRadiance );
+							accumulate( pFunc.ComputeTotalExtinction( dist ) * (pChildren[i]->AverageIrradiance() * Scalar(pChildren[i]->sampleCount)), pChildren[i]->smsReferenceRadiance );
 						}
 					} else {
 						const RISEPel ext = pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR );
 						if( pBSDF ) {
-							accumulate( ext * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ), pChildren[i]->smsReferenceRadiance );
+							accumulate( ext * (pChildren[i]->AverageIrradiance() * Scalar(pChildren[i]->sampleCount)) * pBSDF->valueStateful( vdir, rig, pIorStack ), pChildren[i]->smsReferenceRadiance );
 						} else {
-							accumulate( ext * pChildren[i]->AverageIrradiance(), pChildren[i]->smsReferenceRadiance );
+							accumulate( ext * (pChildren[i]->AverageIrradiance() * Scalar(pChildren[i]->sampleCount)), pChildren[i]->smsReferenceRadiance );
 						}
 					}
 				}
