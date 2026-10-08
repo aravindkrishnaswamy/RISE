@@ -7148,7 +7148,11 @@ void ManifoldSolver::SolveCoreInto(const Point3& shadingPoint, const Vector3& sh
 			// 0.01 still catches the truly pathological cases (e.g. < 1mm
 			// separation where the derivative stencil radius 0.01 literally
 			// overlaps the next vertex) without shedding good roots.
-			const Scalar minReliableSegment = 0.01;
+			// Native frames refine inside their own scale-relative matching
+            // band; the legacy finite-difference stencil cutoff does not apply.
+            const Scalar minReliableSegment = nativeEventConstraints
+                ? std::sqrt(std::numeric_limits<Scalar>::epsilon()) * Point3Ops::Distance(shadingPoint,emitterPoint)
+                : Scalar(0.01);
 			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
 			bool tooShort = false;
 			// tooShortIdx / tooShortDist exist only to feed the
@@ -8007,12 +8011,45 @@ void ManifoldSolver::CanonicalExtendedRoots(const Point3& start,const Vector3& s
     // caches, retry history or which paths PT happened to trace.
     static const Point3 kSurfaceSeeds[kExtendedCanonicalSurfaceSeeds]={
         Point3(.5,.5,.5),Point3(.25,.25,.25),Point3(.75,.25,.5),Point3(.25,.75,.5),Point3(.75,.75,.75)};
-    Vector3 directions[1+kExtendedCanonicalSurfaceSeeds];
+    std::vector<Vector3> directions(1+kExtendedCanonicalSurfaceSeeds);
     directions[0]=Vector3Ops::mkVector3(y,start);
     for(unsigned int i=0;i<kExtendedCanonicalSurfaceSeeds;++i) {
         Point3 point;Vector3 normal;Point2 uv;
         topology.vertices.front().geometry.pObject->UniformRandomPoint(&point,&normal,&uv,kSurfaceSeeds[i]);
         directions[1+i]=Vector3Ops::mkVector3(point,start);
+    }
+    // A refract/reflect/refract topology can reach a side of a closed
+    // mesh that the endpoint ray and five surface seeds never visit.
+    // Reflect y about each local bounding plane of its internal reflector.
+    // These bounded directions depend only on the topology's object, its fixed
+    // transform and the endpoints, never on a sampled walk's hit positions.
+    for(std::size_t i=1;i+1<k;++i) {
+        const auto& vertex=topology.vertices[i].geometry;
+        const IObject* object=vertex.pObject;
+        if(!vertex.isReflection || !object) continue;
+        const IGeometry* geometry=object->GetGeometry();
+        if(!geometry || (!dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry)
+            && !dynamic_cast<const TriangleMeshGeometry*>(geometry))) continue;
+        const auto box=geometry->GenerateBoundingBox();
+        const auto transform=object->GetFinalTransformMatrix();
+        const Point3 localY=Point3Ops::Transform(object->GetFinalInverseTransformMatrix(),y);
+        for(unsigned axis=0;axis<3;++axis) for(bool upper:{false,true}) {
+            const Point3 bound=upper?box.ur:box.ll;Point3 image=localY;
+            if(axis==0) image.x=2*bound.x-localY.x;
+            else if(axis==1) image.y=2*bound.y-localY.y;
+            else image.z=2*bound.z-localY.z;
+            const Point3 localStart=Point3Ops::Transform(object->GetFinalInverseTransformMatrix(),start);
+            // The virtual-image ray ignores refraction at the two other
+            // faces. Bracket its incidence angle with two fixed corrections.
+            for(Scalar factor:{Scalar(1),Scalar(.9),Scalar(1.1)}) {
+                Point3 aim=image;
+                if(axis==0) aim.x=localStart.x+factor*(image.x-localStart.x);
+                else if(axis==1) aim.y=localStart.y+factor*(image.y-localStart.y);
+                else aim.z=localStart.z+factor*(image.z-localStart.z);
+                directions.push_back(Vector3Ops::mkVector3(Point3Ops::Transform(transform,aim),start));
+            }
+        }
+        break; // bounded: the first internal reflector only
     }
     for(const Vector3& direction:directions) {
         SMSCanonicalGuardSampler guard;

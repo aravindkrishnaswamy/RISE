@@ -487,7 +487,7 @@ namespace
     }
 }
 
-static void PredicateOn(const SceneSpec& spec,unsigned samples,bool expectOwned=true)
+static void PredicateOn(const SceneSpec& spec,unsigned samples,bool expectOwned=true,bool requireTRT=false)
 {
     Fixture f(spec.text);
     if(!f.Ok()) {Check(false,"predicate fixture loads");return;}
@@ -587,6 +587,8 @@ static void PredicateOn(const SceneSpec& spec,unsigned samples,bool expectOwned=
                 if(!RecordFromPositions(f,a,Positions(root),y,rec)) {++recordFailures;continue;}
                 const bool o=solver->ExtendedEmitterHitOwned(rec,*luminary,y,light.normal,f.Scene(),*caster,domain);
                 proposalOwned+=o;
+                std::string proposalSignature;for(const auto& v:root.vertices) proposalSignature+=v.geometry.isReflection?'R':'T';
+                topologyCounts["proposal_"+proposalSignature+(o?"/owned":"/kept")]++;
                 if(o!=member) {
                     ++mismatch;
                     std::cout<<"  MISMATCH owned="<<o<<" member="<<member<<" canon="<<canon.size()<<"\n";
@@ -603,6 +605,7 @@ static void PredicateOn(const SceneSpec& spec,unsigned samples,bool expectOwned=
     std::cout<<"\n";
     Check(walks>0,spec.label+": proposal walks reach the emitter");
     if(expectOwned) Check(owned>0,spec.label+": the canonical predicate owns roots");
+    if(requireTRT) Check(topologyCounts["proposal_TRT/owned"]>0 && topologyCounts["proposal_TRT/kept"]==0,spec.label+": canonical seeds own accepted side-face TRT proposals");
     Check(counters.canonicalSamplerDraws==0,spec.label+": canonical predicate draws no random number");
     Check(mismatch==0,spec.label+": owned(record of proposal root) == membership in canonical O(T,y)");
     Check(recordFailures==0,spec.label+": PT-style records rebuild for every root");
@@ -805,12 +808,11 @@ static void RenderSection()
         auto spec=MirrorScene(false,false,EmitterFacing::TowardCaster);spec.closedForm=MirrorClosedForm(spec);
         PartitionCase(spec,o);
     }
-    // At 1/1000 the native solver accepts no root (an absolute floor
-    // inside the Phase 1/2 solve, measured); the partition then gives
-    // every path to PT and stays exact, which is what is gated there.
+    // Native segment rejection uses the endpoint scale (DL-447), so
+    // both scales must retain canonical ownership as well as exact energy.
     for(double scale:{1000.0,0.001}) {
         auto spec=MirrorScene(true,false,EmitterFacing::TowardCaster,scale);spec.closedForm=MirrorClosedForm(spec,scale);
-        PartitionCase(spec,o,scale<1?Owned::Reported:Owned::Required);
+        PartitionCase(spec,o);
     }
     // Large world coordinates (translation 1000) and a thin closed
     // double-sided luminary in both windings (partition-point projection).
@@ -1208,6 +1210,17 @@ int main(int argc,char** argv)
         std::cout<<"focus full mean="<<m.mean<<" se="<<m.se<<" sd="<<m.sd<<" min="<<mn<<" max="<<mx<<" n=64\n";
     }
 #ifdef RISE_SMS_EXTENDED_PARTITION
+    if(section=="dl446") for(bool reverse:{false,true}) PredicateOn(SlabScene(reverse,"glass",false),200,true,true);
+    if(section=="dl447") {
+        for(double scale:{.001,1000.0}) PredicateOn(MirrorScene(true,false,EmitterFacing::TowardCaster,scale),100);
+        RenderOptions o;o.salts=4;o.N=4096;
+        auto spec=MirrorScene(true,false,EmitterFacing::TowardCaster,.001);spec.closedForm=MirrorClosedForm(spec,.001);
+        PartitionCase(spec,o);
+    }
+    if(section=="dl446-render") {
+        RenderOptions o;o.salts=4;o.N=4096;
+        for(bool reverse:{false,true}) PartitionCase(SlabScene(reverse,"glass",false),o,Owned::Required,true);
+    }
     if(section=="tiny") PredicateOn(MirrorScene(true,false,EmitterFacing::TowardCaster,0.001),100);
 #endif
     if(section=="all"||section=="render") RenderSection();
