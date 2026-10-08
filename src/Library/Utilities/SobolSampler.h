@@ -268,6 +268,9 @@ namespace RISE
 			//! Resume the alpha region after a ForkStream fork's draws
 			//! (DL-453): the next GetAlpha1D draws past every alpha
 			//! dimension the fork used.  A no-op when the fork drew none.
+			//! Precondition: the parent draws no alpha between ForkStream
+			//! and JoinAlpha; otherwise the two ranges overlap and the max
+			//! below hides the reuse.
 			void JoinAlpha( const SobolSampler& fork )
 			{
 				if( fork.alphaDimension > alphaDimension ) {
