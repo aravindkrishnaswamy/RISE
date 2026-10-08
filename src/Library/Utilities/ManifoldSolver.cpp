@@ -5323,6 +5323,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		}
 
 		SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, seedIor );
+        const bool polishedCoat=dynamic_cast<const PolishedMaterial*>(pMat)!=nullptr;
 
 		if( !specInfo.isSpecular )
 		{
@@ -5363,7 +5364,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		mv.attenuationAppliesToReflection = specInfo.attenuationAppliesToReflection;
 		mv.hasCustomSpecularFresnel = specInfo.hasCustomSpecularFresnel;
 		mv.attenuationIsInteriorTransmittance = specInfo.attenuationIsInteriorTransmittance;
-		mv.isReflection = !specInfo.canRefract;
+		mv.isReflection = polishedCoat || !specInfo.canRefract;
 		mv.canRefract = specInfo.canRefract;
 		mv.valid = false;  // Derivatives not yet computed; Solve will handle it
 
@@ -5407,8 +5408,8 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		// already on the stack (the walk left its back region around the
 		// sheet's edge) re-enters: the stale entry is dropped first.
 		const bool bOpenSheetHit = ri.geometric.bProvablyNoInterior;
-		const bool bEntering = bOpenSheetHit ? ( cosI < 0 ) : ( sameObjectAgain ? false : (cosI < 0) );
-		const bool bStaleReentry = bEntering && sameObjectAgain;
+		const bool bEntering = polishedCoat || (bOpenSheetHit ? ( cosI < 0 ) : ( sameObjectAgain ? false : (cosI < 0) ));
+		const bool bStaleReentry = !polishedCoat && bEntering && sameObjectAgain;
 		if( bStaleReentry ) {
 			IORStack outer( seedIor );
 			outer.pop();
@@ -5455,7 +5456,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		chain.push_back( mv );
 
 		// Follow refraction/reflection to determine the next ray direction.
-		if( specInfo.canRefract )
+		if( specInfo.canRefract && !polishedCoat )
 		{
 			// SMS energy-loss push (DL-373): resolve the medium on the far
 			// side of the interface BEFORE refracting.  The walk used to
@@ -5962,6 +5963,31 @@ RISEPel ManifoldSolver::EvaluateVertexFresnelRGB( const ManifoldVertex& v,
 		EvaluateVertexFresnel( v, cosI, etaI, etaT, ScalarPainterRGB::kChannelNM[2] ) );
 }
 
+namespace {
+    // A polished coat has a delta reflection but no delta transmission.
+    // Its SPF prices both mesh windings from the surrounding medium, rather
+    // than interpreting a back-facing sheet as a glass-to-air crossing.
+    bool LegacyPolishedKray(const ManifoldVertex& vertex,const Vector3& wi,
+        Scalar etaI,Scalar etaT,Scalar nm,Scalar kray[3]) {
+        if(!vertex.pMaterial || !dynamic_cast<const PolishedMaterial*>(vertex.pMaterial)) return false;
+        kray[0]=kray[1]=kray[2]=0;
+        if(!vertex.isReflection) return true;
+        const auto* brdf=dynamic_cast<const PolishedBRDF*>(vertex.pMaterial->GetBSDF());
+        if(!brdf) return false;
+        RayIntersectionGeometric hit(Ray(vertex.position,-wi),nullRasterizerState);
+        hit.bHit=true;hit.ptIntersection=vertex.position;hit.ptObjIntersec=vertex.objectPosition;
+        hit.ptCoord=vertex.uv;hit.vNormal=vertex.normal;
+        // The stored shading normal may be ray-oriented independently of the
+        // winding; expose it as the geometric frame too, matching the SPF's
+        // oriented incident frame for this ideal reflection.
+        hit.vGeomNormal=vertex.normal;hit.onb.CreateFromW(vertex.normal);
+        PolishedLobes lobes;
+        brdf->Resolve(hit,vertex.isExiting?etaT:etaI,nm,lobes);
+        PolishedBRDF::DeltaKray(lobes,kray);
+        return true;
+    }
+}
+
 RISEPel ManifoldSolver::EvaluateChainThroughput(
 	const Point3& startPoint,
 	const Point3& endPoint,
@@ -6019,6 +6045,12 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		// chain itself converged.
 		Scalar eta_i, eta_t;
 		GetEffectiveEtas( v, eta_i, eta_t );
+        Scalar polishedKray[3];
+        if(LegacyPolishedKray(v,wi,eta_i,eta_t,Scalar(-1),polishedKray)) {
+            throughput=throughput*RISEPel(polishedKray[0],polishedKray[1],polishedKray[2]);
+            continue;
+        }
+
 
 		// Mirrors use their painter reflectance without a dielectric factor.
 		// Refracting interfaces use Fresnel (the native SPF's coating law when
@@ -6127,6 +6159,12 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		const Scalar cosI = fabs( Vector3Ops::Dot( wi, v.normal ) );
 		Scalar eta_i, eta_t;
 		GetEffectiveEtas( v, eta_i, eta_t );
+        Scalar polishedKray[3];
+        if(LegacyPolishedKray(v,wi,eta_i,eta_t,nm,polishedKray)) {
+            throughput*=polishedKray[0];
+            continue;
+        }
+
 
 		// Same three-case dispatch as the RGB variant: pure mirrors take
 		// full reflectance, dielectric reflection (incl. TIR) and

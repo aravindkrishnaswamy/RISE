@@ -939,7 +939,7 @@ namespace
     }
     // Mean of (r+g+b)/3 over the image, extended PT with an internal config.
     double ExtendedImage(const std::string& text,unsigned spp,unsigned salt,bool extended,bool drop,
-        SMSReferenceCounters* counters) {
+        SMSReferenceCounters* counters,unsigned trials=2,Scalar threshold=1e-4) {
         Fixture fixture(text);
         if(!fixture.Ok()) return -1;
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
@@ -947,7 +947,7 @@ namespace
         auto* caster=new RayCaster(false,16,*shader,true);
         caster->AttachScene(&fixture.Scene());
         ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=extended;cfg.biased=true;
-        cfg.maxBernoulliTrials=64;cfg.multiTrials=2;cfg.referenceCounters=counters;
+        cfg.maxBernoulliTrials=64;cfg.multiTrials=trials;cfg.referenceCounters=counters;cfg.solverThreshold=threshold;
         const DropScope dropScope(drop);
         StabilityConfig stability;stability.rrMinDepth=8;
         auto* rasterizer=new PathTracingPelRasterizer(caster,cfg,PathGuidingConfig(),AdaptiveSamplingConfig(),stability,false);
@@ -1080,6 +1080,25 @@ int main(int argc,char** argv)
 #ifndef RISE_SMS_EXTENDED_PARTITION
     std::cout<<"NOTE: RISE_SMS_EXTENDED_PARTITION absent: partition-API checks compiled out\n";
 #endif
+    if(section=="dl445") {
+        std::vector<double> one,two,pt,tight;
+        for(unsigned i=0;i<4;++i) {
+            const unsigned salt=SobolSequence::HashCombine(973000+i,271);
+            std::srand(salt);GlobalRNG()=RandomNumberGenerator(salt);
+            one.push_back(ExtendedImage(BallLensScene(false),64,salt,false,false,nullptr,1));
+            std::srand(salt);GlobalRNG()=RandomNumberGenerator(salt);
+            two.push_back(ExtendedImage(BallLensScene(false),64,salt,false,false,nullptr,2));
+            std::srand(salt);GlobalRNG()=RandomNumberGenerator(salt);
+            tight.push_back(ExtendedImage(BallLensScene(false),64,salt,false,false,nullptr,2,1e-8));
+            g_seedBase=salt;g_renderIndex=0;
+            const auto r=Render(BallLensScene(false)+RasterizerPT(64),"dl445_pt");
+            Check(r.ok,"DL-445 PT control rendered");pt.push_back(r.mean);
+        }
+        Moments a(one),b(two),p(pt),t(tight);
+        std::cout<<"DL-445 trials1="<<a.mean<<" +/- "<<a.se<<" trials2="<<b.mean<<" +/- "<<b.se
+            <<" tight="<<t.mean<<" +/- "<<t.se<<" PT="<<p.mean<<" +/- "<<p.se<<" ratio="<<b.mean/p.mean<<"\n";
+        Check(one==two,"DL-445 extra trials without photons are exact no-ops for this refracting ball");
+    }
     if(section=="dl444") {
         for(bool reverse:{false,true}) {
             Fixture f(InsideScene(reverse).text);
