@@ -651,6 +651,26 @@ static void PolishedLegacySection()
     }
 }
 
+static void LegacyBodySplitSection()
+{
+    // A one-bounce coat reflection is outside an SMS target of two.
+    // NM must keep it; legacy HWSS used to drop every such emitter hit.
+    RenderOptions o;o.N=4096;o.salts=4;o.targetBounces=2;
+    for(bool reverse:{false,true}) for(const char* emitter:{"lum","lumbsdf"}) {
+        const auto spec=CeilingScene("polished",true,reverse,emitter);
+        const auto hw=Render(spec,Mode::Legacy,o);
+        Check(hw.ok,"DL-378 legacy HWSS body renders");
+        for(unsigned w=0;w<kLanes;++w) {
+            const auto nm=Render(spec,Mode::Legacy,o,int(w));
+            const Moments a(hw.lane[w]),b(nm.lane[w]);
+            std::cout<<"DL-378 "<<spec.label<<" lane="<<w<<" HWSS="<<a.mean<<" +/- "<<a.se
+                <<" NM="<<b.mean<<" +/- "<<b.se<<" ratio="<<a.mean/b.mean<<'\n';
+            Check(nm.ok&&a.mean>0&&b.mean>0&&std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),
+                "DL-378 uncovered legacy body hit agrees with NM per-lane split within 3 se");
+        }
+    }
+}
+
 static void BodySection()
 {
     // Estimator B (heavy reciprocal tail): 32 salts x 4096, as `lanes`.
@@ -659,8 +679,8 @@ static void BodySection()
         for(bool reverse:{false,true}) LaneCase(CeilingScene("polished",true,reverse,lum),o);
         LaneCase(CeilingScene("polished",false,false,lum),o);
     }
-    // DL-378 itself (extended OFF, the shipped legacy rule; reported, not
-    // gated): legacy HWSS vs SMS-off HWSS on the delegated-emitter scene.
+    // Report legacy HWSS vs SMS-off HWSS on the covered delegated-emitter
+    // control; dl378 separately gates uncovered paths per lane.
     if(g_caseFilter.empty()) {
         const auto spec=CeilingScene("polished",true,false,"lum");
         RenderOptions l=o;l.saltBase=g_saltBase;g_saltBase+=1000;
@@ -968,6 +988,7 @@ int main(int argc,char** argv)
     run("mask",MaskSection);
     run("body",BodySection);
     run("dl452",PolishedLegacySection);
+    run("dl378",LegacyBodySplitSection);
     run("lanes",LanesSection);
     if(section=="cost") {std::cout<<"=== cost ===\n";CostSection();}
     if(section=="nmprobe") {std::cout<<"=== nmprobe ===\n";NMProbeSection();}

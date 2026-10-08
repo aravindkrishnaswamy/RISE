@@ -5941,12 +5941,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// fresh at a camera-ray first hit, so it starts false.
 	bool bSMSAnchor = false;
 	// DL-372 / DL-336: the anchor + delta chain record (see the Pel/NM
-	// loop), kept here only to hand to the per-wavelength NM delegations
-	// below, whose PART 1 then applies the split suppression.  This
-	// body's own suppression (PART 3's `nextConsiderEmission` after a
-	// delta lobe at a BSDF vertex) keeps today's rule: SMS ran per lane,
-	// so a split would be a per-lane decision on one shared hero path
-	// (DL-378).
+	// loop). Deterministic legacy Snell mode classifies the body's own
+	// emitter hits per wavelength and hands the record to NM delegations.
+	// Random-seed modes retain suppress-all (DL-378).
 	//
 	// Phase 4: an extended bundle records the chain in every seeding mode
 	// (the canonical predicate needs it, as in the Pel/NM extended loop)
@@ -6575,12 +6572,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// (`bPassedThroughSpecular`), so the delegated PART 1 asks the
 				// predicate in this lane's domain instead of dropping the hit
 				// -- the Pel/NM loop's `smsGuardedEmission` rule.  A legacy
-				// bundle passes today's arguments.
+				// bundle also reopens the gate when it has an exact Snell record.
 				const bool laneAnchor = bSMSExtendedLoopHW ? smsLaneAnchor[w] : bSMSAnchor;
 				hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 					rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 					pRadianceMap, depth, iorStack, bsdfPdf, 0,
-					bSMSExtendedLoopHW ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
+					( bSMSExtendedLoopHW || smsChainHWSS ) ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
 					importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
@@ -6593,7 +6590,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// cannot represent (`bSMSChainUncovered`, forwarded as its
 					// own parameter so the delegated body's PART 1 latch AND
 					// PART 3 both see it through the next SMS caster).
-					bSMSExtendedLoopHW && bPassedThroughSpecular, laneAnchor, pAOV, misBsdfPdfComp[w],
+					( bSMSExtendedLoopHW || smsChainHWSS ) && bPassedThroughSpecular, laneAnchor, pAOV, misBsdfPdfComp[w],
 					1, bSMSChainUncovered,
 					( smsChainHWSS && ( !bSMSExtendedLoopHW || laneAnchor ) ) ? &*smsChainHWSS : nullptr,
 					smsLegacyHandOff);
@@ -6637,7 +6634,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 						rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 						pRadianceMap, depth, laneStack, bsdfPdf, 0,
-						bSMSExtendedLoopHW ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
+						( bSMSExtendedLoopHW || smsChainHWSS ) ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
 						importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
@@ -6660,7 +6657,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// DL-170: what they forward is now THIS LANE's own
 						// `misBsdfPdfComp[w]`, not the hero's -- see the
 						// no-BSDF delegation above.
-						bSMSExtendedLoopHW && bPassedThroughSpecular, laneAnchor, pAOV, misBsdfPdfComp[w],
+						( bSMSExtendedLoopHW || smsChainHWSS ) && bPassedThroughSpecular, laneAnchor, pAOV, misBsdfPdfComp[w],
 						1, bSMSChainUncovered,
 						( smsChainHWSS && ( !bSMSExtendedLoopHW || laneAnchor ) ) ? &*smsChainHWSS : nullptr,
 						smsLegacyHandOff);
@@ -6704,7 +6701,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			// loop does per component / wavelength.  A lane whose anchor
 			// was not an SMS anchor (ineligible there), an uncertain
 			// answer, or a missing extended record keeps the hit.  A
-			// legacy bundle keeps today's rule (`considerEmission` alone).
+			// legacy deterministic bundle applies its per-lane Snell split below.
 			bool smsLaneKeep[SampledWavelengths::N];
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				smsLaneKeep[w] = true;
@@ -6731,6 +6728,24 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					}
 				}
 			}
+            else if(pEmitter && !soloSuppressEmissionHW && smsChainHWSS
+                && bSMSEnabled && bPassedThroughSpecular && bSMSAnchor && !bSMSChainUncovered) {
+                // Legacy deterministic Snell ownership is wavelength-specific,
+                // just as in the NM body. Unknown retains suppress-all.
+                emissionGateHW=considerEmission || smsGuardedEmissionHW;
+                if(emissionGateHW) {
+                    const IGeometry* geometry=ri.pObject?ri.pObject->GetGeometry():nullptr;
+                    for(unsigned w=0;w<SampledWavelengths::N;++w) {
+                        if(swl.terminated[w] || throughputComp[w]==0) continue;
+                        const SMSChainCoverage coverage=geometry && geometry->CanBeAreaLight()
+                            ? pSolver->ClassifyEmitterHitCoverage(*smsChainHWSS,
+                                ri.geometric.ptIntersection,ri.geometric.vGeomNormal,scene,caster,swl.lambda[w])
+                            : eSMSChainNotCovered;
+                        smsLaneKeep[w]=coverage==eSMSChainNotCovered;
+                    }
+                }
+            }
+
 			if( pEmitter && emissionGateHW && !soloSuppressEmissionHW )
 			{
 				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
