@@ -369,7 +369,8 @@ void VCMPelRasterizer::IntegratePixel(
 				lightMis.clear();
 				lightStoreScratch.clear();
 				VCMIntegrator::ConvertLightSubpath(
-					localLightVerts, mVCMNormalization, lightStoreScratch, &lightMis );
+					localLightVerts, mVCMNormalization, lightStoreScratch, &lightMis,
+					VCMIntegrator::SeeThroughLive( *pCaster ) );
 				if( pSplatFilm && !localLightVerts.empty() && !lightMis.empty() ) {
 					pIntegrator->SplatLightSubpathToCamera(
 						localLightVerts, lightMis,

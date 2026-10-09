@@ -584,13 +584,13 @@ namespace RISE
 		/// @a seeThroughNEE (DL-330 review P1): the eye family also has
 		/// BDPT's see-through s = 1 connection -- NEE from an eye vertex to a
 		/// delta light root across a straight chain of delta pass-throughs
-		/// (DeltaPassThroughChainToRoot), taken whenever no standard
-		/// strategy covers the path.  It is then a witness like any other
-		/// NEE split: the eye covers verts[w..p], the light only the root,
-		/// the gaps being crossed by the connection.  BDPT and MLT pass
-		/// true when the scene's pass-through shadow walk is live
-		/// (`RayCaster::DeltaPassThroughShadowsActive`); VCM, which has no
-		/// such connection, passes false.
+		/// (DeltaPassThroughChainToRoot), evaluated on every such path and
+		/// MIS-weighted since DL-425 (DL-424 gave VCM the same NEE).  It is
+		/// a witness like any other NEE split: the eye covers verts[w..p],
+		/// the light only the root, the gaps being crossed by the
+		/// connection.  BDPT, MLT and VCM pass true when the scene's
+		/// pass-through shadow walk is live
+		/// (`RayCaster::DeltaPassThroughShadowsActive`).
 		inline int LightSegmentEyeWitness(
 			const std::vector<BDPTVertex>& verts,
 			const std::size_t s,

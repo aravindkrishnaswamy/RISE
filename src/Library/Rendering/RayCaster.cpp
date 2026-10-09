@@ -2525,12 +2525,16 @@ bool RayCaster::WalkShadowSegment(
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
 	const Point3* pSegmentEnd,
     ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
-	unsigned int* pPassThroughCrossings
+	unsigned int* pPassThroughCrossings,
+	Scalar* pPassThroughProb
 	) const
 {
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	if( pPassThroughCrossings ) {
 		*pPassThroughCrossings = 0;
+	}
+	if( pPassThroughProb ) {
+		*pPassThroughProb = 1;
 	}
 
 	// DL-292: every "reached the light" return goes through here, so the
@@ -2636,8 +2640,15 @@ bool RayCaster::WalkShadowSegment(
 			if( bNM ) {
 				const Scalar t = pSPF->DeltaPassThroughTransmittanceNM( ri.geometric, nm );
 				transmittance = transmittance * t;
+				if( pPassThroughProb ) {
+					*pPassThroughProb *= t;
+				}
 			} else {
-				transmittance = transmittance * pSPF->DeltaPassThroughTransmittance( ri.geometric );
+				const RISEPel t = pSPF->DeltaPassThroughTransmittance( ri.geometric );
+				transmittance = transmittance * t;
+				if( pPassThroughProb ) {
+					*pPassThroughProb *= ColorMath::MaxValue( t );
+				}
 			}
 			if( pPassThroughCrossings ) {
 				( *pPassThroughCrossings )++;
@@ -3415,9 +3426,10 @@ bool RayCaster::DeltaPassThroughShadowsActive() const
 bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
     Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
     GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool smsCoversLight,
-    unsigned int* pPassThroughCrossings) const
+    unsigned int* pPassThroughCrossings, Scalar* pPassThroughProb) const
 {
     if (pPassThroughCrossings) *pPassThroughCrossings = 0;
+    if (pPassThroughProb) *pPassThroughProb = 1;
     if (boundaries) boundaries->clear();
     const bool passThrough = deltaLight && DeltaPassThroughShadowsActive();
     // DL-344: dielectrics see-through for DELTA lights, except where SMS
@@ -3426,7 +3438,7 @@ bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool n
     if (dielectrics || passThrough)
         return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
             dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart,
-            pPassThroughCrossings);
+            pPassThroughCrossings, pPassThroughProb);
     // DL-292: the binary test leaves the track un-Finish()ed -- the caller
     // prices the crossing-free segment with ConnectionScaleToPoint.
     transmittance = RISEPel(1,1,1);

@@ -155,7 +155,8 @@ namespace RISE
 				GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
 				const Point3* pSegmentEnd,
 				ISampler* alphaSampler = 0, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0,
-				unsigned int* pPassThroughCrossings = 0		///< [out] DL-330: when non-null, the number of delta pass-throughs the walk crossed (written on every return)
+				unsigned int* pPassThroughCrossings = 0,	///< [out] DL-330: when non-null, the number of delta pass-throughs the walk crossed (written on every return)
+				Scalar* pPassThroughProb = 0				///< [out] DL-424/425: when non-null, the product over crossed pass-throughs of the per-crossing MIS pseudo-probability (MaxValue of the crossing's transmittance in RGB, its NM value in spectral; 1 when none) -- BDPTVertex::passThroughProb's walk-side twin
 				) const;
 
 			//! Runtime override for the environment radiance scale,
@@ -402,7 +403,8 @@ namespace RISE
                 GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	///< [in/out] DL-292: as CastShadowRayAuto's
                 const Point3* pSegmentEnd = 0,							///< [in] DL-292: as CastShadowRayAuto's
                 bool smsCoversLight = false,							///< [in] DL-344: as CastShadowRayAuto's bSMSCoversLight
-                unsigned int* pPassThroughCrossings = 0) const;		///< [out] DL-330: delta pass-throughs crossed (0 when the walk did not run)
+                unsigned int* pPassThroughCrossings = 0,		///< [out] DL-330: delta pass-throughs crossed (0 when the walk did not run)
+                Scalar* pPassThroughProb = 0) const;			///< [out] DL-424/425: see WalkShadowSegment
 
 			bool CastShadowRayTransmittance(
 				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)

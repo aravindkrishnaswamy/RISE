@@ -114,8 +114,16 @@ namespace RISE
 				const std::vector<BDPTVertex>& verts,
 				const VCMNormalization& norm,
 				std::vector<LightVertex>& out,
-				std::vector<VCMMisQuantities>* outMis = 0
+				std::vector<VCMMisQuantities>* outMis = 0,
+				const bool seeThroughLive = false	///< DL-424: SeeThroughLive( caster )
 				);
+
+			/// DL-424: is the see-through NEE (an eye vertex connecting to
+			/// a delta light through thin-weave delta pass-throughs) live
+			/// in this scene?  Exactly when the pass-through shadow walk is
+			/// (RayCaster::DeltaPassThroughShadowsActive).  EvaluateNEE and
+			/// ConvertLightSubpath must agree on it.
+			static bool SeeThroughLive( const IRayCaster& caster );
 
 			/// Walk a generated BDPT eye subpath and derive the
 			/// per-vertex SmallVCM running quantities (dVCM, dVC,
