@@ -74,6 +74,7 @@ namespace RISE
 			kLVF_JumpCover		= 1 << 4,	///< DL-380: a light-side subsurface jump before this vertex has an eye-family witness (jumpCover* below)
 			kLVF_JumpCoverEscape	= 1 << 5,	///< DL-380: that witness is the eye escaping to an environment root (one extra eye-walk iteration)
 			kLVF_IsMedium		= 1 << 6,	///< DL-469: a MEDIUM scatter vertex, stored for the volume merge only
+			kLVF_TypeSplitPrefix	= 1 << 7,	///< DL-471: a vertex at light-subpath position 2 .. pathLength-1 has a connectible material with no declared lobe type (BDPTUtilities::LightPrefixNeedsTypeSplit)
 										///< (VCMIntegrator.cpp, "volume merging"); surface merges skip it.
 			kLVF_HasVertexColor	= 1 << 3	///< Set when vColor was populated from a colored mesh hit at store time. No merge-path reader exists (verified 2026-09-11: `lv.vColor` / this bit have exactly one write site, VCMIntegrator.cpp's ConvertLightSubpath, and no reader anywhere in tree) -- the light side's material response is already folded into `throughput` by the time it reaches the store. Kept for the KD-tree layout and any future consumer.
 		};
@@ -108,6 +109,11 @@ namespace RISE
 													///< stepBase + pathLength.  kLightVertexNoSteps when
 													///< the subpath's records were not kept (the merge
 													///< then uses `mis` unwindowed)
+			unsigned char		capCounts[4];		///< DL-471: per-type bounce counts the light walk took at
+													///< verts[1 .. pathLength-1] (diffuse, glossy, transmission,
+													///< translucent; saturating), for the merge's per-path
+													///< per-type cap check (BDPTUtilities::MergeTypeCapStatus);
+													///< fits the padding before `normal`
 
 			Vector3				normal;			///< Shading normal at the vertex (BSDF-frame; merge-time BSDF eval)
 			Vector3				geomNormal;		///< Geometric flat-face normal at the vertex.
@@ -166,6 +172,7 @@ namespace RISE
 				lightSurface( 0 ),
 				stepChunk( 0 ),
 				stepBase( kLightVertexNoSteps ),
+				capCounts{ 0, 0, 0, 0 },
 				normal( 0, 0, 1 ),
 				geomNormal( 0, 0, 1 ),
 				wi( 0, 0, 0 ),

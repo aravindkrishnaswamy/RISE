@@ -454,6 +454,35 @@ partition kept, so none of them moves; every vertex is still clamped
 against the threshold.  (The flagged vertices grow the store by ~7 % on
 `vcm_sss_dragon` and ~62 % on an SSS-walled room.)
 
+#### 4b. Per-type bounce caps restrict the INTEGRAND, not the strategy set (DL-471, 2026-10-09)
+
+`max_diffuse_bounce` & co. are per PATH in PT, BDPT and VCM: count the lobe
+type of the scatter at every x_1 .. x_{K-1} (x_K, next to the light, is free
+unless its scatter is a delta lobe or it has no BSDF -- PT's rule, DL-467).
+With lobe labels this is a restriction of the integrand f_cap, not of which
+strategies exist: a strategy's expected contribution at an unlabelled path
+is the sum over its sampled interior labels times the allowed part of its
+endpoints' BSDFs, which is f_cap exactly, provided (a) every walk truncation
+discards only over-cap labellings (the light walk does not count its free
+first vertex; the eye walk traces a free x_K's over-cap continuation for the
+s = 0 emitter hit only) and (b) a COUNTED connection endpoint has a defined
+type.  So the MIS densities are unchanged; every strategy just evaluates the
+joined-path check (`BDPTUtilities::JoinedTypeCapStatus`).
+
+(b) holds when the endpoint's material declares one lobe type
+(`IMaterial::ConnectionScatterType`).  Otherwise the strategy cannot price
+the path: BDPT/MLT drop it from the estimate and from every denominator
+(`MISWeight`), and VCM -- whose running sums cannot drop one strategy --
+estimates a path that has such a vertex at a counted position with s = 0 and
+s = 1 alone, weighted against each other only.  Both are exact: the s = 0 /
+s = 1 strategies never have a counted endpoint, so every path PT reaches
+keeps a strategy.  The cost is variance on those paths (DL-481).  Pinned by
+`BDPTDepthCapMISTest` rows F (Lambertian corner), G (GGX corner) and P (a
+brute-force partition: MISWeight over the strategies that evaluate sums to 1
+within the caps and 0 over them, for declared, undeclared and delta
+vertices).  Subsurface paths (DL-482) and see-through / guided
+continuations (DL-483) are outside this.
+
 ### 5. SMS — no per-strategy MIS reweight
 
 SMS contributions are splat-accumulated as an auxiliary technique.

@@ -2024,6 +2024,11 @@ namespace {
 		unsigned int eyeTransmissionBounces = 0;
 		unsigned int eyeTranslucentBounces = 0;
 		unsigned int eyeVolumeBounces = 0;
+		// DL-471: the previous continuation went past a per-type cap from a
+		// vertex that may be the path's free last vertex x_K -- it is traced
+		// for the vertex it reaches (the s = 0 emitter hit) and the walk
+		// stops there (see the per-type cap check below).
+		bool eyeCapEmissionOnly = false;
 		// Unified surface-bounce cap (DL-210): caps surface vertices to
 		// maxEyeDepth on both Pel and NM walks, matching GenerateLightSubpathImpl.
 		unsigned int eyeSurfaceBounces = 0;
@@ -2298,6 +2303,10 @@ namespace {
 						// records the stack top its throughput was priced to.
 						GradedIndexMedium::RecordVertex( iorStack, mv.pGradedMedium, mv.gradedIOR );
 						vertices.push_back( mv );
+						// DL-471: an emission-only segment ends at the vertex it reaches.
+						if( eyeCapEmissionOnly ) {
+							break;
+						}
 
 						// Sample the phase function for continuation direction
 						const IPhaseFunction* pPhase = pMed->GetPhaseFunction();
@@ -2702,6 +2711,11 @@ namespace {
 			}
 
 			vertices.push_back( v );
+			// DL-471: an emission-only segment ends at the vertex it reaches
+			// (its emission is the s = 0 strategy's; nothing scatters on).
+			if( eyeCapEmissionOnly ) {
+				break;
+			}
 
 			//
 			// Sample the SPF for the next direction
@@ -3235,11 +3249,24 @@ namespace {
 				break;
 			}
 
-			// Per-type bounce limits
+			// Per-type bounce limits, per PATH (DL-471, BDPTUtilities::
+			// JoinedTypeCapStatus): the eye walk counts every continuation
+			// it takes.  Past the cap the vertex can only be the path's LAST
+			// scattering vertex x_K, which PT leaves free when its scatter
+			// is a non-delta lobe of a material with a BSDF (DL-467: traced
+			// for its MIS-weighted emitter hit) -- so trace it for the s = 0
+			// emitter hit and stop at the vertex it reaches.  Every other
+			// strategy through that vertex counts this scatter and is
+			// rejected by the joined check.  A delta / BSDF-less x_K keeps
+			// PT's plain cut.
+			vertices.back().capType = pScat->type;
 			if( PathTransportUtilities::ExceedsBounceLimitForType(
 					pScat->type, eyeDiffuseBounces, eyeGlossyBounces,
 					eyeTransmissionBounces, eyeTranslucentBounces, stabilityConfig ) ) {
-				break;
+				if( vertices.back().isDelta || !vertices.back().isConnectible ) {
+					break;
+				}
+				eyeCapEmissionOnly = true;
 			}
 
 	#ifdef RISE_ENABLE_OPENPGL
@@ -5884,6 +5911,11 @@ EvaluateAllStrategiesImpl(
 	}
 	}
 #endif
+	// DL-471: per-path per-type caps (MISWeight returns 0 for a path over
+	// one; skipping it here only saves the connection's cost).
+	const BDPTUtilities::BounceTypeCaps typeCaps = BDPTUtilities::MakeBounceTypeCaps(
+		self.GetStabilityConfig().maxDiffuseBounce, self.GetStabilityConfig().maxGlossyBounce,
+		self.GetStabilityConfig().maxTransmissionBounce, self.GetStabilityConfig().maxTranslucentBounce );
 	if( !useCompletePathStrategySelection )
 	{
 		// Iterate over all valid (s,t) combinations where s + t >= 2.
@@ -5902,6 +5934,11 @@ EvaluateAllStrategiesImpl(
 					continue;
 				}
 				if( !lightFamilyKeeps( s, t, volBounces ) ) {
+					continue;
+				}
+				if( typeCaps.active &&
+					BDPTUtilities::JoinedTypeCapStatus( lightVerts.data(), eyeVerts.data(), s, t, typeCaps ) !=
+						BDPTUtilities::eTypeCapOK ) {
 					continue;
 				}
 
@@ -5947,6 +5984,11 @@ EvaluateAllStrategiesImpl(
 					if( eyeEnd.volumeBounces > self.GetStabilityConfig().maxVolumeBounce ) continue;
 					if( eyeEnd.type != BDPTVertex::SURFACE ) continue;
 					if( !eyeEnd.pMaterial ) continue;
+					// DL-471: the eye endpoint is the free x_K; the eye
+					// prefix must be within the per-path per-type caps.
+					if( typeCaps.active &&
+						BDPTUtilities::JoinedTypeCapStatus( nullptr, eyeVerts.data(), 1, t, typeCaps ) !=
+							BDPTUtilities::eTypeCapOK ) continue;
 
 					// DL-207: a BSSRDF entry vertex (`isBSSRDFEntry`, spawned
 					// by the eye subpath's own BSSRDF-sampling block above
@@ -6210,6 +6252,20 @@ Scalar BDPTIntegrator::MISWeight(
 		return 0;
 	}
 
+	// DL-471: per-type bounce caps are a property of the JOINED path
+	// (BDPTUtilities::JoinedTypeCapStatus).  A path over a cap is not in
+	// the estimate (weight 0), and a strategy whose counted connection
+	// endpoint has no declared lobe type cannot price the path; it is
+	// dropped here and from every other strategy's denominator below.
+	const BDPTUtilities::BounceTypeCaps typeCaps = BDPTUtilities::MakeBounceTypeCaps(
+		GetStabilityConfig().maxDiffuseBounce, GetStabilityConfig().maxGlossyBounce,
+		GetStabilityConfig().maxTransmissionBounce, GetStabilityConfig().maxTranslucentBounce );
+	if( typeCaps.active &&
+		BDPTUtilities::JoinedTypeCapStatus( lightVerts.data(), eyeVerts.data(), s, t, typeCaps ) !=
+			BDPTUtilities::eTypeCapOK ) {
+		return 0;
+	}
+
 	// If only one strategy is possible, weight = 1
 	if( s + t == 2 ) {
 		// For a path of length 1 (2 vertices), there might still be
@@ -6305,6 +6361,7 @@ Scalar BDPTIntegrator::MISWeight(
 		const BDPTVertex& D = lightVerts[m];
 		const bool dShape = ( D.type == BDPTVertex::SURFACE && D.pMaterial ) || D.type == BDPTVertex::MEDIUM;
 		if( m >= 2 && dShape && D.isConnectible && !D.isDelta && !D.isBSSRDFEntry &&
+			!BDPTUtilities::EndpointNeedsTypeSplit( D, typeCaps ) &&
 			BDPTUtilities::DeltaPassThroughChainToRoot( lightVerts, m ) )
 		{
 			// Eye caps: the eye walk covers eyeVerts[0..t-1] and
@@ -6552,6 +6609,15 @@ Scalar BDPTIntegrator::MISWeight(
 			{
 				continue;
 			}
+			// DL-471: strategy (i, s+t-i) joins lightVerts[i-1] (path
+			// position i-1 from the root) to vi (position i); a position
+			// >= 2 is a counted endpoint and needs its lobe type.
+			if( typeCaps.active &&
+				( ( i >= 2 && BDPTUtilities::EndpointNeedsTypeSplit( vi, typeCaps ) ) ||
+				  ( i >= 3 && BDPTUtilities::EndpointNeedsTypeSplit( lightVerts[i-1], typeCaps ) ) ) )
+			{
+				continue;
+			}
 
 			// Strategy (i, s+t-i): compute contribution to denominator
 			#if MISWEIGHT_BALANCE_HEURISTIC
@@ -6708,6 +6774,15 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 			if( j > 0 && ( eyeVerts[j-1].isDelta || !eyeVerts[j-1].isConnectible ) ) {
+				continue;
+			}
+			// DL-471: strategy (s+t-j, j) joins vj (path position s+t-1-j
+			// from the root) to eyeVerts[j-1] (position s+t-j); a position
+			// >= 2 is a counted endpoint and needs its lobe type.
+			if( typeCaps.active &&
+				( ( s + t >= 3 + static_cast<unsigned int>(j) && BDPTUtilities::EndpointNeedsTypeSplit( vj, typeCaps ) ) ||
+				  ( s + t >= 2 + static_cast<unsigned int>(j) && BDPTUtilities::EndpointNeedsTypeSplit( eyeVerts[j-1], typeCaps ) ) ) )
+			{
 				continue;
 			}
 
@@ -7908,11 +7983,21 @@ unsigned int GenerateLightSubpathImpl(
 			break;
 		}
 
-		// Per-type bounce limits
-		if( PathTransportUtilities::ExceedsBounceLimitForType(
-				pScat->type, diffuseBounces, glossyBounces,
-				transmissionBounces, translucentBounces, stabilityConfig ) ) {
-			break;
+		// Per-type bounce limits, per PATH (DL-471, BDPTUtilities::
+		// JoinedTypeCapStatus).  The first vertex after the root is the
+		// path's last scattering vertex x_K, whose scatter PT leaves free
+		// when it is a non-delta lobe of a material with a BSDF, so it is
+		// not counted here; every later vertex is (and past the cap no
+		// strategy through the next vertex can be in the estimate).
+		const bool capFreeFirstVertex = vertices.size() == 2 &&
+			!vertices.back().isDelta && vertices.back().isConnectible;
+		if( !capFreeFirstVertex ) {
+			vertices.back().capType = pScat->type;
+			if( PathTransportUtilities::ExceedsBounceLimitForType(
+					pScat->type, diffuseBounces, glossyBounces,
+					transmissionBounces, translucentBounces, stabilityConfig ) ) {
+				break;
+			}
 		}
 
 		// Throughput update: beta *= f * |cos| / pdf.  localScatteringWeight

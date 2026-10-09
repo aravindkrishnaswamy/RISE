@@ -72,6 +72,30 @@
 //             Gated on RGB PT (closed form) and on spectral PT with
 //             `hwss TRUE` (max_diffuse_bounce 0 == unlimited).
 //
+//  DL-471: per-type caps are per PATH in BDPT / VCM / MLT too (they were
+//    per SUBPATH, so a joined path could carry ~2N + 2 vertices of the
+//    type, and the MIS weights ignored them).  BDPTUtilities::
+//    JoinedTypeCapStatus counts the lobe types of the joined path's
+//    x_1 .. x_{K-1} (x_K, the vertex next to the light, free unless its
+//    scatter is delta or it has no BSDF -- PT's rule), and BDPT / MLT drop
+//    a strategy whose counted endpoint's material declares no single lobe
+//    type (IMaterial::ConnectionScatterType).
+//
+//      Row F  open Lambertian corner (floor + back wall, small area light,
+//             black surround): BDPT (8,8) and VCM (8,8) at
+//             max_diffuse_bounce 0 / 1 == PT at the same cap.  Pre-fix the
+//             review measured BDPT +2.97 % at 0.
+//      Row G  the same corner in `ggx_material` (a diffuse AND a glossy
+//             lobe, so no declared type), all walls and (G2) the back wall
+//             only: BDPT (which drops the strategies with such a counted
+//             endpoint) and VCM (which estimates such a path with S0 + NEE
+//             alone) == PT under max_glossy_bounce / max_diffuse_bounce.
+//      Row P  a brute-force partition check on synthetic paths: with caps,
+//             MISWeight over every strategy that evaluates a nonzero
+//             contribution sums to exactly 1 for a path within the caps
+//             and to 0 for one over them, for single-type, undeclared-type
+//             and delta vertices, and at the free x_K.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <cstdio>
@@ -97,6 +121,10 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Shaders/BDPTVertex.h"
+#include "../src/Library/Utilities/BDPTUtilities.h"
+#include "../src/Library/Utilities/StabilityConfig.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -728,17 +756,238 @@ static void RowE()
 	Check( v8.ok && pt.ok && Agree( v8, pt, 4.0, 0.02 ), "slabs: VCM (8,8) agrees with PT" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Row F / G (DL-471): an open corner -- floor and back wall, a small
+// one-sided area light above, nothing else (escapes are black).
+//////////////////////////////////////////////////////////////////////
+//! `walls`: 0 all Lambertian, 1 all GGX, 2 GGX back wall over a Lambertian floor.
+static std::string CornerScene( const std::string& rasterizerChunk, const int walls )
+{
+	std::string s = "RISE ASCII SCENE 7\n"
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0.6 2.5\n\tlookat 0 -0.4 -1.5\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_diffuse\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.6 0.6 0.6\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_lum\n\tcolor 20.0 20.0 20.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_lum\n\texitance pnt_lum\n\tscale 1.0\n\tmaterial none\n}\n\n";
+	s += "ggx_material\n{\n\tname mat_ggx\n\trd pnt_diffuse\n\trs pnt_rs\n\talphax 0.3\n\talphay 0.3\n"
+	     "\tfresnel_mode schlick_f0\n}\n\n";
+	s += "lambertian_material\n{\n\tname mat_lam\n\treflectance pnt_diffuse\n}\n\n";
+	s += Wall( "floor", "-2 -1 -3", "-2 -1 1", "2 -1 1", "2 -1 -3", walls == 1 ? "mat_ggx" : "mat_lam" );
+	s += Wall( "back",  "-2 -1 -3", "2 -1 -3", "2 3 -3", "-2 3 -3", walls == 0 ? "mat_lam" : "mat_ggx" );
+	s += "clippedplane_geometry\n{\n\tname lum_g\n\tpta -0.5 2 -1.5\n\tptb 0.5 2 -1.5\n"
+	     "\tptc 0.5 2 -0.5\n\tptd -0.5 2 -0.5\n\tdoublesided FALSE\n}\n"
+	     "standard_object\n{\n\tname lum\n\tgeometry lum_g\n\tmaterial mat_lum\n}\n\n";
+	s += rasterizerChunk;
+	return s;
+}
+
+//! `kind` 0 PT, 1 BDPT (8,8), 2 VCM (8,8); `capLine` e.g. "\tmax_diffuse_bounce 0\n".
+static std::string CappedChunk( const int kind, const std::string& capLine, const unsigned int spp )
+{
+	const char* names[] = { "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer" };
+	char buf[512];
+	std::snprintf( buf, sizeof(buf), "%s\n{\n%s\tsamples %u\n%s\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n",
+		names[kind], kind == 0 ? "" : "\tmax_eye_depth 8\n\tmax_light_depth 8\n", spp, capLine.c_str() );
+	return buf;
+}
+
+static void CornerRow( const char* rowName, const int walls, const char* capName, const unsigned int capValue,
+	unsigned int& seed )
+{
+	const int n = Repeats();
+	char cap[96];
+	std::snprintf( cap, sizeof(cap), "\t%s %u\n", capName, capValue );
+	const Stats pt = RenderStatsSalted( CornerScene( CappedChunk( 0, cap, 64 ), walls ), n, seed );
+	const Stats bd = RenderStatsSalted( CornerScene( CappedChunk( 1, cap, 32 ), walls ), n, seed + 30u );
+	const Stats vc = RenderStatsSalted( CornerScene( CappedChunk( 2, cap, 32 ), walls ), n, seed + 60u );
+	seed += 100u;
+	char lp[96], lb[96], lv[96];
+	std::snprintf( lp, sizeof(lp), "%s PT %s %u", rowName, capName, capValue );
+	std::snprintf( lb, sizeof(lb), "%s BDPT %s %u", rowName, capName, capValue );
+	std::snprintf( lv, sizeof(lv), "%s VCM %s %u", rowName, capName, capValue );
+	Check( pt.ok && bd.ok && vc.ok, std::string( lp ) + ": rendered" );
+	Print( lp, pt );
+	Print( lb, bd );
+	Print( lv, vc );
+	std::printf( "    BDPT/PT %.4f  VCM/PT %.4f\n", pt.mean > 0 ? bd.mean / pt.mean : 0.0, pt.mean > 0 ? vc.mean / pt.mean : 0.0 );
+	Check( pt.ok && bd.ok && Agree( bd, pt, 4.0, 0.005 ), std::string( lb ) + " agrees with PT" );
+	Check( pt.ok && vc.ok && Agree( vc, pt, 4.0, 0.005 ), std::string( lv ) + " agrees with PT" );
+}
+
+static void RowF()
+{
+	std::cout << "--- Row F: open Lambertian corner, per-type cap per PATH (DL-471) ---" << std::endl;
+	unsigned int seed = 47100u;
+	CornerRow( "F", 0, "max_diffuse_bounce", 0, seed );
+	CornerRow( "F", 0, "max_diffuse_bounce", 1, seed );
+}
+
+static void RowG()
+{
+	std::cout << "--- Row G: GGX corner (no declared lobe type: BDPT drops strategies, VCM falls back to S0 + NEE) ---" << std::endl;
+	unsigned int seed = 47200u;
+	CornerRow( "G", 1, "max_glossy_bounce", 0, seed );
+	CornerRow( "G", 1, "max_glossy_bounce", 1, seed );
+	CornerRow( "G", 1, "max_diffuse_bounce", 0, seed );
+	CornerRow( "G", 1, "max_diffuse_bounce", 2, seed );
+	CornerRow( "G2", 2, "max_glossy_bounce", 0, seed );
+	CornerRow( "G2", 2, "max_diffuse_bounce", 1, seed );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row P (DL-471): brute-force MIS partition under per-type caps.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	class TypedStubMaterial : public IMaterial, public Reference
+	{
+		unsigned int type;
+	protected:
+		virtual ~TypedStubMaterial() {}
+	public:
+		explicit TypedStubMaterial( unsigned int t ) : type( t ) {}
+		IBSDF* GetBSDF() const override { return nullptr; }
+		ISPF* GetSPF() const override { return nullptr; }
+		IEmitter* GetEmitter() const override { return nullptr; }
+		unsigned int ConnectionScatterType() const override { return type; }
+	};
+
+	struct PVert
+	{
+		int kind;					///< 0 root (area light), 1 surface, 2 camera
+		const IMaterial* mat;
+		bool delta;					///< sampled lobe was a delta (a mirror)
+		unsigned int label;			///< ScatRayType of the scatter here
+		Scalar l, e;				///< light- / eye-side area densities
+	};
+
+	BDPTVertex MakeP( const std::vector<PVert>& p, unsigned int i, bool lightSide )
+	{
+		BDPTVertex v;
+		v.position = Point3( 0.1 * i, 0.37 * ( i % 2 ), 0.2 * i );
+		const PVert& d = p[i];
+		if( d.kind == 0 ) {
+			v.type = BDPTVertex::LIGHT;
+			v.isDelta = false;
+		} else if( d.kind == 2 ) {
+			v.type = BDPTVertex::CAMERA;
+		} else {
+			v.type = BDPTVertex::SURFACE;
+			v.pMaterial = d.mat;
+			v.isDelta = d.delta;
+			v.isConnectible = true;
+		}
+		v.isLightSubpathVertex = lightSide;
+		v.pdfFwd = lightSide ? d.l : d.e;
+		v.pdfRev = lightSide ? d.e : d.l;
+		return v;
+	}
+
+	//! Sum of MISWeight over every strategy whose connection evaluates
+	//! (neither endpoint a delta vertex), with each walk's `capType`
+	//! stamped as the walks stamp it.
+	Scalar PartitionSum( const std::vector<PVert>& p, const StabilityConfig& stab )
+	{
+		BDPTIntegrator* integ = new BDPTIntegrator( 16, 16, stab );
+		const unsigned int n = static_cast<unsigned int>( p.size() );
+		Scalar sum = 0;
+		for( unsigned int s = 0; s + 1 <= n; s++ ) {
+			const unsigned int t = n - s;
+			if( t < 1 ) continue;
+			std::vector<BDPTVertex> lv, ev;
+			for( unsigned int i = 0; i < s; i++ ) {
+				BDPTVertex v = MakeP( p, i, true );
+				// The light walk does not count its free first vertex.
+				if( i >= 2 || ( i == 1 && ( v.isDelta || !v.isConnectible ) ) ) {
+					v.capType = static_cast<ScatteredRay::ScatRayType>( p[i].label );
+				}
+				lv.push_back( v );
+			}
+			for( unsigned int j = 0; j < t; j++ ) {
+				BDPTVertex v = MakeP( p, n - 1 - j, false );
+				if( j >= 1 && p[n - 1 - j].kind == 1 ) {
+					v.capType = static_cast<ScatteredRay::ScatRayType>( p[n - 1 - j].label );
+				}
+				ev.push_back( v );
+			}
+			// A connection through a delta endpoint evaluates nothing.
+			if( s >= 1 && lv[s - 1].type == BDPTVertex::SURFACE && lv[s - 1].isDelta ) continue;
+			if( t >= 1 && ev[t - 1].type == BDPTVertex::SURFACE && ev[t - 1].isDelta ) continue;
+			sum += integ->MISWeight( lv, ev, s, t );
+		}
+		safe_release( integ );
+		return sum;
+	}
+}
+
+static void RowP()
+{
+	std::cout << "--- Row P: brute-force MIS partition under per-type caps (DL-471) ---" << std::endl;
+	TypedStubMaterial* lam = new TypedStubMaterial( ScatteredRay::eRayDiffuse );
+	TypedStubMaterial* multi = new TypedStubMaterial( 0 );
+	TypedStubMaterial* mirror = new TypedStubMaterial( 0 );
+	const unsigned int D = ScatteredRay::eRayDiffuse, G = ScatteredRay::eRayReflection;
+	auto root = []() { PVert v = { 0, nullptr, false, 0, 0.8, 0.6 }; return v; };
+	auto cam  = []() { PVert v = { 2, nullptr, false, 0, 0.5, 1.0 }; return v; };
+	auto surf = []( const IMaterial* m, bool delta, unsigned int label, Scalar l, Scalar e ) {
+		PVert v = { 1, m, delta, label, l, e }; return v; };
+
+	struct Case { const char* name; std::vector<PVert> path; unsigned int mdb, mgb; Scalar expect; };
+	std::vector<Case> cases;
+	// root, x_K .. x_1, camera (path order from the light)
+	cases.push_back( { "3 Lambertian, diffuse cap 1 (2 counted)", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( lam, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 1, UINT_MAX, 0 } );
+	cases.push_back( { "3 Lambertian, diffuse cap 2", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( lam, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 2, UINT_MAX, 1 } );
+	cases.push_back( { "4 Lambertian, diffuse cap 3", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( lam, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.2, 1.1 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 3, UINT_MAX, 1 } );
+	cases.push_back( { "4 Lambertian, diffuse cap 2", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( lam, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.2, 1.1 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 2, UINT_MAX, 0 } );
+	cases.push_back( { "undeclared x2 (diffuse label), diffuse cap 2", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( multi, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 2, UINT_MAX, 1 } );
+	cases.push_back( { "undeclared x2 (diffuse label), diffuse cap 1", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( multi, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 1, UINT_MAX, 0 } );
+	cases.push_back( { "undeclared x2 (glossy label), glossy cap 1, diffuse cap 1", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( multi, false, G, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 1, 1, 1 } );
+	cases.push_back( { "undeclared x2 (glossy label), glossy cap 0", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( multi, false, G, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, 0, 0 } );
+	cases.push_back( { "undeclared free x_K (glossy label), glossy cap 0", { root(), surf( multi, false, G, 0.3, 0.9 ), surf( lam, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 2, 0, 1 } );
+	cases.push_back( { "two undeclared, diffuse cap 3", { root(), surf( multi, false, D, 0.3, 0.9 ), surf( multi, false, D, 1.7, 0.4 ), surf( multi, false, D, 0.2, 1.1 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 3, UINT_MAX, 1 } );
+	cases.push_back( { "delta mirror at x_K counted, glossy cap 1", { root(), surf( mirror, true, G, 1.3, 0.7 ), surf( lam, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, 1, 1 } );
+	cases.push_back( { "delta mirror at x_K counted, glossy cap 0", { root(), surf( mirror, true, G, 1.3, 0.7 ), surf( lam, false, D, 1.7, 0.4 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, 0, 0 } );
+	cases.push_back( { "delta mirror at x2, glossy cap 0", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( mirror, true, G, 1.3, 0.7 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, 0, 0 } );
+	cases.push_back( { "delta mirror at x2, glossy cap 1, diffuse cap 1", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( mirror, true, G, 1.3, 0.7 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 1, 1, 1 } );
+	cases.push_back( { "no caps (control)", { root(), surf( multi, false, D, 0.3, 0.9 ), surf( mirror, true, G, 1.3, 0.7 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 1 } );
+
+	for( Case& c : cases ) {
+		// A delta scatter generates its neighbours' densities as Diracs:
+		// zero (remap0 in MISWeight).
+		for( std::size_t i = 1; i + 1 < c.path.size(); i++ ) {
+			if( c.path[i].delta ) {
+				c.path[i + 1].l = 0;
+				c.path[i - 1].e = 0;
+			}
+		}
+		StabilityConfig stab;
+		stab.maxDiffuseBounce = c.mdb;
+		stab.maxGlossyBounce = c.mgb;
+		const Scalar sum = PartitionSum( c.path, stab );
+		std::printf( "    %-60s sum %.12f (expect %.0f)\n", c.name, sum, c.expect );
+		Check( std::fabs( sum - c.expect ) < 1e-9, std::string( "partition: " ) + c.name );
+	}
+	safe_release( lam );
+	safe_release( multi );
+	safe_release( mirror );
+}
+
 int main()
 {
-	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467, DL-470)" << std::endl;
+	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467, DL-470, DL-471)" << std::endl;
 	// RISE_DL351_ROWS (e.g. "CD") runs a subset; default all.
 	const char* rows = std::getenv( "RISE_DL351_ROWS" );
-	const std::string sel = rows ? rows : "ABCDE";
+	const std::string sel = rows ? rows : "ABCDEFGP";
 	if( sel.find( 'A' ) != std::string::npos ) RowA();
 	if( sel.find( 'B' ) != std::string::npos ) RowB();
 	if( sel.find( 'C' ) != std::string::npos ) RowC();
 	if( sel.find( 'D' ) != std::string::npos ) RowD();
 	if( sel.find( 'E' ) != std::string::npos ) RowE();
+	if( sel.find( 'F' ) != std::string::npos ) RowF();
+	if( sel.find( 'G' ) != std::string::npos ) RowG();
+	if( sel.find( 'P' ) != std::string::npos ) RowP();
 	std::cout << std::endl << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;
 }

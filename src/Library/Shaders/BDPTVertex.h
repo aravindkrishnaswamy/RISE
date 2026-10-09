@@ -290,6 +290,18 @@ namespace RISE
 		/// common spectral dependence can also make them coincide.
 		ScatteredRay::ScatRayType	scatterType;
 
+		/// DL-471: the scatter type this vertex's own continuation was
+		/// COUNTED as by its walk's per-type bounce cap
+		/// (`max_diffuse_bounce` & co., PathTransportUtilities::
+		/// ExceedsBounceLimitForType); `eRayUnknown` when the walk counted
+		/// nothing here (an endpoint, a medium vertex, a subsurface jump,
+		/// the light walk's FREE first vertex -- see BDPTUtilities::
+		/// JoinedTypeCapStatus).  Unlike `scatterType` it is the drawn
+		/// lobe's type even under a guiding substitution (the walk counts
+		/// the continuation it actually traced).  Read only by the per-path
+		/// per-type cap check; no RayIntersectionGeometric counterpart.
+		ScatteredRay::ScatRayType	capType;
+
 		/// Sampler-input distance from the live ray origin to this hit,
 		/// including the generators' ray advance. Used ONLY by companion
 		/// throughput replay (DL-222), not connection BSDF reconstruction
@@ -432,6 +444,7 @@ namespace RISE
 
 		isDelta( false ),
 		scatterType( ScatteredRay::eRayUnknown ),
+		capType( ScatteredRay::eRayUnknown ),
 		scatterIncomingDistance( 0 ),
 		isLightSubpathVertex( false ),
 		isConnectible( true ),
