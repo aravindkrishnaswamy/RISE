@@ -42,6 +42,7 @@
 #include "../Interfaces/ICamera.h"
 #include "../Cameras/CameraUtilities.h"
 #include "../Rendering/SplatFilm.h"
+#include "../Rendering/RayCaster.h"
 #include "../Utilities/GradedIndexMedium.h"
 
 
@@ -664,11 +665,18 @@ static inline Scalar AreaToSolidAngleFactor(
 // (kLVF_JumpCover), and the splat / connection / merge sites decide per
 // strategy through BDPTUtilities::LightJumpPartition.
 //////////////////////////////////////////////////////////////////////
+bool VCMIntegrator::SeeThroughLive( const IRayCaster& caster )
+{
+	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
+	return pRC && pRC->DeltaPassThroughShadowsActive();
+}
+
 void VCMIntegrator::ConvertLightSubpath(
 	const std::vector<BDPTVertex>& verts,
 	const VCMNormalization& norm,
 	std::vector<LightVertex>& out,
-	std::vector<VCMMisQuantities>* outMis
+	std::vector<VCMMisQuantities>* outMis,
+	const bool seeThroughLive
 	)
 {
 	const std::size_t n = verts.size();
@@ -683,7 +691,7 @@ void VCMIntegrator::ConvertLightSubpath(
 	// DL-380: the light-side jump covers, stamped on every stored vertex
 	// so a merge can decide the partition against its own eye part.
 	static thread_local BDPTUtilities::LightJumpPartition partition;
-	partition.Build( verts, MergingActive( norm ) );
+	partition.Build( verts, MergingActive( norm ), seeThroughLive );
 
 	for( std::size_t i = 0; i < n; i++ )
 	{
@@ -783,6 +791,34 @@ void VCMIntegrator::ConvertLightSubpath(
 		// A parallel environment emission has no first-edge r² factor.
 		const bool applyDistSqToDVCM = !(i == 1 && prev.pEnvLight);
 		mis = ApplyGeometricUpdate( mis, distSq, cosFix, applyDistSqToDVCM );
+
+		// DL-424: the first vertex D past a straight chain of thin-weave
+		// gap draws S1..Sk from a delta-position light L is also reached
+		// by the see-through NEE from the eye (EvaluateNEEImpl).  The
+		// specular update at each gap zeroed dVCM -- the NEE term -- so
+		// it is rebuilt here as if the light had emitted straight to D
+		// with its direction density scaled by the gaps' pseudo-
+		// probabilities (BDPTVertex::passThroughProb; the NEE side scales
+		// its own emission density by the shadow walk's identical
+		// product):  dVCM = (directPdfA / (emissionPdfW * prod P)) *
+		// |L - D|^2 / cos_D,  InitLight followed by the geometric update
+		// over the whole segment.  dVC and dVM stay 0 (delta root).  The
+		// recurrence carries the term to every later vertex, so splats,
+		// interior connections and merges all count the see-through.
+		if( seeThroughLive && i >= 2 && verts[0].type == BDPTVertex::LIGHT && verts[0].isDelta &&
+			verts[0].pLight && !verts[0].pEnvLight && verts[0].emissionPdfW > 0 &&
+			BDPTUtilities::DeltaPassThroughChainToRoot( verts, i ) )
+		{
+			Scalar prob = 1;
+			for( std::size_t q = 1; q < i; q++ ) {
+				prob *= verts[q].passThroughProb;
+			}
+			const Scalar distLDSq = Vector3Ops::SquaredModulus(
+				Vector3Ops::mkVector3( v.position, verts[0].position ) );
+			if( prob > 0 && distLDSq > 0 ) {
+				mis.dVCM = ( verts[0].pdfFwd / ( verts[0].emissionPdfW * prob ) ) * distLDSq / cosFix;
+			}
+		}
 
 		if( outMis ) (*outMis)[i] = mis;
 
@@ -1317,6 +1353,7 @@ namespace
 		const LuminaryManager::LuminariesList& luminaries = pLumManager
 			? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
 			: emptyList;
+		const bool seeThroughLive = VCMIntegrator::SeeThroughLive( caster );	// DL-424
 
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
@@ -1337,6 +1374,14 @@ namespace
 			const bool eyeIsMedium_vcm = ( v.type == BDPTVertex::MEDIUM );
 
 			sampler.StartStream( 48 + static_cast<unsigned int>( i ) );
+
+			Scalar seeThroughProb = 1;	// DL-424: 1 = an ordinary visible connection
+			typename Traits::value_type seeThroughTr = Traits::zero();
+			if constexpr( Traits::is_pel ) {
+				seeThroughTr = RISEPel( 1, 1, 1 );
+			} else {
+				seeThroughTr = 1;
+			}
 
 			LightSample ls;
 			if( !pLS->SampleLight( scene, luminaries, sampler, ls ) ) {
@@ -1370,7 +1415,33 @@ namespace
 						v.position.z + wiVis.z * kVisFar );
 				}
 				if( !VCMIsVisible( caster, v.position, visTargetVCM, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
-					continue;
+					// DL-424: a delta light behind thin-weave delta
+					// pass-throughs only -- BDPT's DL-330/425 see-through
+					// connection.  MIS-weighted below with the emission
+					// density scaled by the gaps' pseudo-probability
+					// product, ConvertLightSubpath's twin.
+					const RayCaster* pRCst = dynamic_cast<const RayCaster*>( &caster );
+					if( ls.pEnvLight || !ls.isDelta || !ls.pLight || !seeThroughLive || !pRCst ) {
+						continue;
+					}
+					Scalar walkNM = 0;
+					if constexpr( Traits::is_nm ) {
+						walkNM = tag.nm;
+					}
+					RISEPel walkT( 1, 1, 1 );
+					unsigned int kGaps = 0;
+					Scalar walkProb = 1;
+					if( pRCst->CastShadowRayAutoSampled( Ray( v.position, dirToLight ), dist - VCM_RAY_EPSILON,
+							Traits::is_nm, walkNM, walkT, true, sampler, (sceneAlpha ? &boundaryHits : nullptr),
+							dist, VCM_RAY_EPSILON, 0, 0, false, &kGaps, &walkProb ) || kGaps == 0 || !( walkProb > 0 ) ) {
+						continue;
+					}
+					seeThroughProb = walkProb;
+					if constexpr( Traits::is_pel ) {
+						seeThroughTr = walkT;
+					} else {
+						seeThroughTr = walkT[0];
+					}
 				}
 			}
 
@@ -1510,7 +1581,9 @@ namespace
 				emissionDirPdfSA = EmitterSides::CosineEmissionPdf(
 					LightSampler::LuminaryIsTwoSided( ls.pLuminary ), ls.normal, -dirToLight );
 			} else if( ls.pLight ) {
-				emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight );
+				// DL-424: through gaps, the light side reaches v only via
+				// their draws (seeThroughProb == 1 otherwise).
+				emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight ) * seeThroughProb;
 			} else if( envCaseVCM ) {
 				// Env emission: query at the actually-sampled wi to
 				// match the wi used for Le and BSDF eval above.
@@ -1679,7 +1752,7 @@ namespace
 			const Scalar gradedScale = GradedIndexMedium::ConnectionScaleToPoint(
 				v.pGradedMedium, v.gradedIOR, ls.position );
 			const typename Traits::value_type contribution =
-				VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_nee * ( G / invLightPdfArea ) * ( weight * gradedScale );
+				VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_nee * seeThroughTr * ( G / invLightPdfArea ) * ( weight * gradedScale );
 			total = total + contribution;
 		}
 

@@ -905,6 +905,7 @@ static void TestQueryMatchesSampler()
 // closed: omni light overhead.
 //////////////////////////////////////////////////////////////////////
 static std::string RastBDPTSpectral( unsigned int spp, bool hwss );	// defined below
+static std::string RastVCMSpectral( unsigned int spp, bool hwss );	// defined below
 
 static void TestClosedFormOmni()
 {
@@ -933,6 +934,10 @@ static void TestClosedFormOmni()
 	// salted).  MIS-weighted, it reads g*L0 to 0.04 % at 64 spp.
 	rows.push_back( { "BDPT RGB (DL-425)", RastBDPT( 64 ), 0.02, kTight } );
 	rows.push_back( { "BDPT spectral hwss=true (DL-425)", RastBDPTSpectral( 64, true ), 0.03, kTight } );
+	// DL-424: VCM's own see-through NEE (merging and splats alone read
+	// 2.02 (sd 3.78) / 1.21 (sd 1.30) of g*L0 at 64 / 256 spp).
+	rows.push_back( { "VCM RGB (DL-424)", RastVCM( 64 ), 0.02, kTight } );
+	rows.push_back( { "VCM spectral hwss=true (DL-424)", RastVCMSpectral( 64, true ), 0.03, kTight } );
 	RunReceiverRows( "closed omni", kOmni, rows, gaps, 2 );
 
 	// The bidirectional rows under the spot twin (see ReceiverScene's
@@ -1054,6 +1059,18 @@ static std::string RastBDPTSpectral( unsigned int spp, bool hwss )
 	std::ostringstream ss;
 	ss << "bdpt_spectral_rasterizer\n{\n\tsamples " << spp * SppScale()
 	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
+	   << "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
+	   << "\thwss " << ( hwss ? "true" : "false" ) << "\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+//! DL-424: VCM spectral twin of RastBDPTSpectral (merging on).
+static std::string RastVCMSpectral( unsigned int spp, bool hwss )
+{
+	std::ostringstream ss;
+	ss << "vcm_spectral_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
+	   << "\tpixel_filter box\n\toidn_denoise FALSE\n"
 	   << "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
 	   << "\thwss " << ( hwss ? "true" : "false" ) << "\n}\n\n" << kOutputChunk;
 	return ss.str();
@@ -1198,7 +1215,9 @@ static void TestBDPTSeeThroughDeltaLight()
 		{ "BDPT RGB         (mesh)",         RastBDPT( 64 ),                  true,  0.03 },
 		{ "BDPT spectral hwss=true",         RastBDPTSpectral( 512, true ),   false, 0.04 },
 		{ "BDPT spectral hwss=true  (mesh)", RastBDPTSpectral( 512, true ),   true,  0.04 },
-		{ "VCM RGB",                         RastVCM( 256 ),                  false, -1.0 },
+		// DL-424: printed only before VCM had the see-through NEE (merging
+		// alone: 0.137 +/- 0.27 sd); now 1.000 of g^2 at 64 spp.
+		{ "VCM RGB",                         RastVCM( 256 ),                  false, 0.03 },
 	};
 	unsigned int k = 0;
 	for( const R& r : rows )
@@ -2453,6 +2472,38 @@ static void MeasureDL425( unsigned int n )
 	}
 }
 
+//! Opt-in (WEAVE_GAP_FILTER=dl424, argv[2] = n): VCM RGB on the
+//! `seethrough` scene (L - gap - patch - gap - camera, omni, gap 0.3,
+//! closed form g^2) and on the curtain (`closed` omni, gap 0.3, closed
+//! form g), n salted renders each: mean, per-render sd, s/render.
+static void MeasureDL424( unsigned int n )
+{
+	const double g = 0.3;
+	std::cout << "=== dl424: VCM RGB, omni, gap 0.3 (n = " << n << ") ===" << std::endl;
+	for( int scene = 0; scene < 2; scene++ ) {
+		const double cf = scene == 0 ? g * g : g;
+		const std::string extra = scene == 0 ? BlackWeaveSheet( g ) + VerticalBlackSheetChunks() : std::string();
+		const unsigned int spps[] = { 64, 256 };
+		for( unsigned int spp : spps ) {
+			std::vector<double> rs, secs;
+			for( unsigned int i = 0; i < n; i++ ) {
+				const unsigned int salt = SobolSequence::HashCombine( 0xD424u + 0x100u * scene + spp, i );
+				const double L0 = RenderSalted( Assemble( RastPT( 64 ), ReceiverScene( kOmni, false, 0.0, kTight ) ), "d424_l0", salt );
+				const auto t0 = std::chrono::steady_clock::now();
+				const double L = RenderSalted( Assemble( RastVCM( spp ), ReceiverScene( kOmni, true, g, kTight, false, extra ) ),
+					"d424_l", SobolSequence::HashCombine( salt, 0x51u ) );
+				const auto t1 = std::chrono::steady_clock::now();
+				secs.push_back( std::chrono::duration<double>( t1 - t0 ).count() );
+				rs.push_back( L / L0 / cf );
+			}
+			double m, sd, ms, ss;
+			MeanSd( rs, m, sd ); MeanSd( secs, ms, ss );
+			std::printf( "  VCM %-10s %4u spp: (L/L0)/cf = %.4f  per-render sd %.4f  se %.4f  (%.2f s/render)\n",
+				scene == 0 ? "seethrough" : "curtain", spp, m, sd, sd / std::sqrt( double( n ) ), ms );
+		}
+	}
+}
+
 static void MeasureDesignDocTable( unsigned int nRepeats )
 {
 	std::cout << "=== table: docs/CLOTH_FABRIC_DESIGN.md section 15 item 27 (24x24, 512 spp, n = "
@@ -2882,6 +2933,15 @@ int main( int argc, char** argv )
 			if( v > 0 ) n = (unsigned int)v;
 		}
 		MeasureDL330( n );
+		return 0;
+	}
+	if( filter && std::strstr( filter, "dl424" ) ) {
+		unsigned int n = 8;
+		if( argc > 2 ) {
+			const long v = std::strtol( argv[2], nullptr, 10 );
+			if( v > 0 ) n = (unsigned int)v;
+		}
+		MeasureDL424( n );
 		return 0;
 	}
 	if( filter && std::strstr( filter, "dl425" ) ) {
