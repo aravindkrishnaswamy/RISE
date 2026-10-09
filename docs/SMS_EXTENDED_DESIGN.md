@@ -1650,3 +1650,25 @@ Measurements (`debt-dl453`):
   single-sided emitter faces away from the coat, SMS contributes nothing
   there, and its extended-on/off difference had been the stream layout
   alone (now bit-identical).
+
+### DL-449: answer-preserving cost cuts (2026-10-08)
+
+Profiling the DL-372 image (one worker) found 42 % of extended time in
+failed `type_info` comparisons: on Apple arm64 a non-matching
+`dynamic_cast` / `typeid` falls back to `strcmp` of mangled names, and the
+extended walk, Newton constraint and domain replay classify the same few
+materials and objects at every event and iteration. `ManifoldSolver.cpp`
+now routes every such query through `SMSDynamicCast` / `SMSSameType`,
+memoized per thread by (dynamic `type_info` address, source-subobject
+offset) and storing the result's offset from the complete object, so a hit
+reproduces `dynamic_cast` exactly. `SMSDomainReplay::Capture` is memoized
+inside one extended evaluation by everything it reads (scene, anchor bits,
+environment index, ordered stack keys). Ownership is unchanged by
+construction and by measurement: the partition test's predicate section is
+byte-identical to the pre-change build, and the ball-lens image means and
+all partition counters are bit-identical. Extended/off on the DL-372 image
+falls from 16.1x to 9.8x (CPU, interleaved, n 6); HWSS cost ratios roughly
+halve (slab 17.5x -> 9.0x, sphere 18.9x -> 9.7x). The remainder is B's
+canonical solves (half of them converge to a root an earlier seed already
+found); measured ownership-changing levers and their owned-share cost are
+recorded in DL-449, which stays open.
