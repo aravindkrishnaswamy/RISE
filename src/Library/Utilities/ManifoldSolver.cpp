@@ -696,6 +696,10 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
 
 namespace
 {
+    void RefreshLegacySeedNM(std::vector<RISE::Implementation::ManifoldVertex>& chain,
+        RISE::Scalar nm,const RISE::Point3& start,const RISE::IScene& scene,
+        const RISE::IORStack* starting);
+
     bool SMSCaptureUncached(const RISE::IScene& scene,const RISE::Point3& anchor,
         const RISE::IORStack& live,RISE::Implementation::SMSStartingMedia& result);
 }
@@ -10587,34 +10591,9 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	// `GetSpecularInfoNM` so the chain `Solve` converges to the correct
 	// wavelength-specific caustic root (essential for dispersive glass).
 	auto applyNMEtaToChain = [&]( std::vector<ManifoldVertex>& chain ) {
-		IORStack queryIor( 1.0 );
-		for( ManifoldVertex& v : chain ) {
-			if( v.pMaterial ) {
-				Ray dummyRay( v.position, v.normal );
-				RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
-				rigLocal.bHit          = true;
-				rigLocal.ptIntersection = v.position;
-				rigLocal.vNormal       = v.normal;
-				rigLocal.vGeomNormal   = v.geomNormal;
-				rigLocal.ptCoord       = v.uv;
-				rigLocal.ptObjIntersec = v.objectPosition;
-				SpecularInfo specNM = v.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm );
-				v.eta         = specNM.ior;
-				// DL-353: the solve reads the explicit interface pair, not
-				// the legacy single-index field. Match companion replay:
-				// replace the material side; retain the seeded exterior.
-				if( v.isExiting ) v.etaI = specNM.ior;
-				else v.etaT = specNM.ior;
-				v.attenuation = specNM.attenuation;
-				v.attenuationNM = specNM.attenuationNM;
-				v.attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
-				v.hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
-				v.attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
-				v.canRefract  = specNM.canRefract;
-			}
-			v.valid = false;
-		}
-	};
+        RefreshLegacySeedNM(chain,nm,pos,scene,pIorStack);
+        for(auto& vertex:chain) vertex.valid=false;
+    };
 
 	auto buildSeedFromUniformOnCaster = [&](
 		const IObject* pCasterObj,
@@ -10903,7 +10882,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 //////////////////////////////////////////////////////////////////////
 
 namespace {
-void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm) {
+void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm,
+    const Point3& start,const IScene& scene,const IORStack* starting) {
 
 	if( nm > 0 )
 	{
@@ -10932,21 +10912,8 @@ void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm) {
 				chain[i].attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
 				chain[i].hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
 				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
-				// Also update the wavelength-dependent side of the
-				// (etaI, etaT) pair populated by BuildSeedChain.  The
-				// vertex's "outgoing-medium IOR" for entering, or
-				// "incoming-medium IOR" for exiting, IS the surface
-				// material's IOR — which is what specNM.ior gives us
-				// per wavelength (dispersion).  The OPPOSITE side's IOR
-				// (the surrounding medium) is left as set by the RGB
-				// BuildSeedChain pass; for typical SMS scenes (single
-				// dielectric in air, surrounding = 1.0) this is
-				// wavelength-independent and correct.  For doubly-
-				// nested dispersive scenes (e.g. dispersive-glass inside
-				// dispersive-glass) the surrounding side would also be
-				// wavelength-dependent and needs a separate per-vertex
-				// stack-of-NM-IORs to track exactly — left for a future
-				// extension when such a scene exists.
+                // Fallback for contexts declined by native replay below:
+                // refresh the material side, preserving the seeded exterior.
 				if( chain[i].isExiting ) {
 					chain[i].etaI = specNM.ior;
 				} else {
@@ -10955,6 +10922,37 @@ void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm) {
 			}
 		}
 	}
+
+    if(!(nm>0) || chain.empty()) return;
+    const IORStack air(1);
+    SMSStartingMedia media;
+    IORStack replay(1);
+    const auto domain=SMSQueryDomain::NM(nm);
+    // Reuse the audited membership capture, including enclosing objects
+    // absent from the chain. Unsupported contexts retain legacy behavior.
+    if(!SMSDomainReplay::Capture(scene,start,starting?*starting:air,media)
+        || !SMSDomainReplay::BuildStack(media,domain,replay)) return;
+    auto refreshed=chain;
+    Point3 previous=start;
+    Scalar scale=1;
+    for(const auto& vertex:chain) scale=std::max(scale,Point3Ops::Distance(start,vertex.position));
+    for(auto& vertex:refreshed) {
+        if(!vertex.pObject || !vertex.pMaterial) return;
+        const Vector3 direction=Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position,previous));
+        RayIntersection hit(Ray(previous,direction),nullRasterizerState);
+        if(&vertex!=&refreshed.front()) hit.geometric.ray.Advance(1e-8);
+        vertex.pObject->IntersectRay(hit,RISE_INFINITY,true,true,false);
+        SMSCompleteNativeHit(hit,scene.GetObjects());
+        if(!hit.geometric.bHit || hit.pMaterial!=vertex.pMaterial
+            || Point3Ops::Distance(hit.geometric.ptIntersection,vertex.position)>1e-5*scale) return;
+        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+        bool exiting;
+        if(!SMSDomainReplay::Cross(*vertex.pMaterial,vertex.pObject,hit.geometric,
+            domain,vertex.isReflection,replay,vertex.etaI,vertex.etaT,exiting)
+            || exiting!=vertex.isExiting) return;
+        previous=vertex.position;
+    }
+    chain.swap(refreshed);
 
 }
 }
@@ -11061,7 +11059,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
             std::vector<ManifoldVertex> chain;
             if(BuildSeedChain(pos,point,scene,caster,chain,false,pIorStack,&sampler)>0
                 && !chain.empty() && chain.front().pObject==mirror) {
-                RefreshLegacySeedNM(chain,nm);
+                RefreshLegacySeedNM(chain,nm,pos,scene,pIorStack);
                 baseSeeds.push_back(std::move(chain));
             }
         }
@@ -11450,7 +11448,7 @@ unsigned int ManifoldSolver::BuildSnellBaseSeed(
 		return 0;
 	}
 
-	RefreshLegacySeedNM(chain,nm);
+	RefreshLegacySeedNM(chain,nm,pos,scene,pIorStack);
 
 	return static_cast<unsigned int>( chain.size() );
 }

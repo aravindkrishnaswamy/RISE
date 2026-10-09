@@ -134,7 +134,7 @@ namespace
         }
         return { band/(27.0*16), all/r.pixels.size() };
     }
-    void Nested( bool hwssOnly=false, bool constantOuter=false )
+    void Nested( bool hwssOnly=false, bool constantOuter=false, bool matchedOnly=false, unsigned repeats=6 )
     {
         // Invariant: a monochromatic render of the dispersive outer medium at
         // wavelength L equals the same scene with the outer index replaced by
@@ -145,20 +145,30 @@ namespace
                                Case{"hwss-vs-nohwss 450-650 nw4 (UNMATCHED quadrature, DL-456 contrast)",450,650,4,true},
                                Case{"hwss-vs-nohwss 450-650 nw160 (matched quadrature)",450,650,160,true} } ) {
             if( hwssOnly && !c.hwss ) continue;
+            if(!hwssOnly && c.hwss) continue;
+            if(matchedOnly && c.nw!=160) continue;
             for( const char* mode : {"snell","uniform","extended"} ) {
                 const unsigned spp = std::string(mode)=="extended" ? 512 : 256;
                 Series disp, flat;
+                std::array<Series,3> dispChannel,flatChannel;
+                const auto channelBand=[](const RenderResult& image,unsigned c) {
+                    double total=0;
+                    for(size_t i=0;i<image.pixels.size();++i) if(i%64>=26 && i%64<=52)
+                        total+=image.pixels[i].base[c]*image.pixels[i].a;
+                    return total/(27*16);
+                };
                 // The constant control index: n at the lane wavelength (hwss
                 // spans a band, so its control is the 450 and 650 constants
                 // mixed 1:1 by the invariant only when mono; skipped there).
                 const bool mono = !c.hwss;
-                for( unsigned t=0;t<6;++t ) {
+                for( unsigned t=0;t<repeats;++t ) {
                     g_renderIndex=t;
                     std::string dscene=NestedScene(SpecRaster(mode,c.hwss,c.nb,c.ne,c.nw,spp));
                     if( constantOuter ) dscene.replace(dscene.find("ior sf11"),8,"ior 1.8");
                     const auto r=Render(dscene,"nested");
                     Check(r.ok&&r.mean>0,std::string("DL-391 ")+mode+" lit");
                     disp.v.push_back(BandTotals(r)[0]);
+                    for(unsigned c=0;c<3;++c) dispChannel[c].v.push_back(channelBand(r,c));
                     g_renderIndex=t;
                     std::string scene=NestedScene(SpecRaster(mode,false,c.nb,c.ne,c.nw,spp));
                     if( constantOuter ) scene.replace(scene.find("ior sf11"),8,"ior 1.8");
@@ -166,8 +176,11 @@ namespace
                     const auto q=Render(scene,"nested_ref");
                     Check(q.ok&&q.mean>0,std::string("DL-391 reference ")+mode+" lit");
                     flat.v.push_back(BandTotals(q)[0]);
+                    for(unsigned c=0;c<3;++c) flatChannel[c].v.push_back(channelBand(q,c));
                 }
                 Report(std::string("DL-391 ")+c.label+" "+mode+(mono?" dispersive vs constant-n(L) band":" hwss TRUE vs hwss FALSE band"),disp,flat);
+                for(unsigned channel=0;channel<3;++channel)
+                    Report(std::string("DL-391 ")+c.label+" "+mode+" channel "+std::to_string(channel),dispChannel[channel],flatChannel[channel]);
                 if( mono && std::string(mode)=="extended" ) Check(Agree3(disp,flat),std::string("DL-391 ")+c.label+": extended dispersive outer = constant n(L) outer");
             }
         }
@@ -477,7 +490,8 @@ int main( int argc, char** argv )
     if( all || section=="slab" ) Slab(lights,modes,n?n:4,extSpp?extSpp:512);
     if( all || section=="ball" ) Ball(modes,n?n:8,extSpp?extSpp:256);
     if( all || section=="slab-closed" ) SlabClosedForm(n?n:8,extSpp?extSpp:256);
-    if( section=="nested" ) Nested();
+    if( section=="nested" ) Nested(false,false,false,n?n:6);
+    if( section=="nested-matched" ) Nested(true,false,true,n?n:4);
     if( section=="nested-hwss" ) Nested(true);
     if( section=="nested-hwss-const" ) Nested(true,true);
     std::cout<<passCount<<" passed, "<<failCount<<" failed"<<std::endl;
