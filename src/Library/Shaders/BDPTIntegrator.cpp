@@ -6325,6 +6325,44 @@ Scalar BDPTIntegrator::MISWeight(
 		}
 	}
 
+	// DL-351: the subpath DEPTH CAPS bound which strategies exist.  A
+	// strategy (s', t') of this path is generated only if the eye walk
+	// can produce its t'-vertex eye part (at most `max_eye_depth`
+	// surface hits and `WalkIterationBudget(max_eye_depth,
+	// max_volume_bounce)` iterations -- one per surface hit, medium
+	// scatter or escape) and the light walk its s'-vertex light part (at
+	// most `max_light_depth` surface hits, same iteration budget).  A
+	// strategy past a cap has density ZERO in Veach's sum; reserving
+	// denominator mass for it (as this function did before DL-351) lost
+	// that mass from the strategies that do exist -- the env-lit fog box
+	// read 0.674 of PT at max_light_depth 0.  Both walks below extend one
+	// subpath monotonically, so the first term past a cap ends the walk
+	// (`break`), like DL-375's barrier.  Counting is DL-380's
+	// (BDPTUtilities::CountsAsSurfaceHit): the camera, a light root and a
+	// subsurface ENTRY do not count; an area-light root joining the EYE
+	// part is the eye's hit on the emitter and counts, an environment
+	// root is an escape iteration.  Per-type caps (`max_diffuse_bounce`
+	// & co.) are NOT modelled: a connection endpoint has no sampled lobe
+	// type, so whether the alternative walk's scatter there would have
+	// exceeded a per-type cap is undefined (DL-467).
+	const BDPTUtilities::EyeWalkCaps misEyeCaps = BDPTUtilities::MakeEyeWalkCaps(
+		GetMaxEyeDepth(), GetStabilityConfig().maxVolumeBounce );
+	const long long misLightSurfCap = static_cast<long long>( GetMaxLightDepth() );
+	const long long misLightIterCap = static_cast<long long>( BDPTUtilities::WalkIterationBudget(
+		GetMaxLightDepth(), GetStabilityConfig().maxVolumeBounce ) );
+	long long misEyeSurf = 0, misEyeVol = 0;
+	bool misEyeEscape = false;
+	for( unsigned int q = 1; q < t && q < eyeVerts.size(); q++ ) {
+		if( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[q] ) ) misEyeSurf++;
+		else if( eyeVerts[q].type == BDPTVertex::MEDIUM ) misEyeVol++;
+		else if( eyeVerts[q].type == BDPTVertex::LIGHT ) misEyeEscape = true;
+	}
+	long long misLightSurf = 0, misLightVol = 0;
+	for( unsigned int q = 1; q < s && q < lightVerts.size(); q++ ) {
+		if( BDPTUtilities::CountsAsSurfaceHit( lightVerts[q] ) ) misLightSurf++;
+		else if( lightVerts[q].type == BDPTVertex::MEDIUM ) misLightVol++;
+	}
+
 	//
 	// Walk along the light subpath (decreasing s, increasing t)
 	// This computes ratios for strategies (s-1, t+1), (s-2, t+2), etc.
@@ -6360,6 +6398,24 @@ Scalar BDPTIntegrator::MISWeight(
 			// the walk ends here.  (It used to pass through on remap0 and
 			// reserve that mass with pdfs measured across the jump.)
 			if( vi.isBSSRDFEntry ) {
+				break;
+			}
+
+			// DL-351: the term at i is strategy (i, s+t-i), whose EYE part
+			// gains vi; past the eye walk's caps it (and every later term)
+			// does not exist.
+			if( i == 0 ) {
+				if( vi.type == BDPTVertex::LIGHT && vi.pEnvLight ) {
+					misEyeEscape = true;
+				} else {
+					misEyeSurf++;
+				}
+			} else if( BDPTUtilities::CountsAsSurfaceHit( vi ) ) {
+				misEyeSurf++;
+			} else if( vi.type == BDPTVertex::MEDIUM ) {
+				misEyeVol++;
+			}
+			if( !BDPTUtilities::EyeWalkCanGenerate( misEyeSurf, misEyeVol, misEyeEscape, misEyeCaps ) ) {
 				break;
 			}
 
@@ -6533,6 +6589,22 @@ Scalar BDPTIntegrator::MISWeight(
 			// to eyeVerts[j-1], the hit where the eye went in, across the
 			// jump; it and everything beyond it do not exist.
 			if( vj.isBSSRDFEntry ) {
+				break;
+			}
+
+			// DL-351: the term at j is strategy (s+t-j, j), whose LIGHT
+			// part gains vj (the light ROOT when s == 0 at j == t-1, which
+			// the light walk does not count); past the light walk's caps it
+			// (and every later term) does not exist.
+			if( !( s == 0 && static_cast<unsigned int>(j) + 1 == t ) ) {
+				if( BDPTUtilities::CountsAsSurfaceHit( vj ) ) {
+					misLightSurf++;
+				} else if( vj.type == BDPTVertex::MEDIUM ) {
+					misLightVol++;
+				}
+			}
+			if( misLightSurf > misLightSurfCap ||
+				misLightSurf + misLightVol > misLightIterCap ) {
 				break;
 			}
 
