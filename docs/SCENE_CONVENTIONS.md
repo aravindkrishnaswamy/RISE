@@ -1269,15 +1269,18 @@ integrator since DL-247).
 
 | Setting | PT | BDPT / MLT | VCM |
 |---|---|---|---|
-| surface depth | no scene knob: a fixed 128-vertex loop | `max_eye_depth` / `max_light_depth` bound SURFACE hits per SUBPATH; since DL-351 the MIS weights know it, so the render estimates exactly the paths with **K <= max_eye_depth + max_light_depth** | same path set, but its recurrence MIS is still cap-blind (DL-467): at shallow caps it loses energy (closed box at (1,1): VCM 0.0643 vs BDPT 0.0839) |
+| surface depth | no scene knob: a fixed 128-vertex loop | `max_eye_depth` / `max_light_depth` bound SURFACE hits per SUBPATH; since DL-351 the MIS weights know it, so the render estimates exactly the paths that have at least one CONNECTIBLE split (eye part <= `max_eye_depth`, light part <= `max_light_depth`, joined at non-delta, connectible vertices); in an all-diffuse scene that is **K <= max_eye_depth + max_light_depth** and only the sum matters | same path set, but its recurrence MIS is still cap-blind (DL-467): at shallow caps it loses energy (closed box at (1,1): VCM 0.0643 vs BDPT 0.0839) |
 | `max_diffuse_bounce` & co. | per PATH: at most N continuations of that type; NEE at the last vertex is free, so N = 0 is direct lighting (but the BSDF-sampled emitter hit past the cap is not traced while NEE there keeps its MIS weight, a small loss -- DL-467) | per SUBPATH: each walk may take N continuations of that type, so a joined path can carry up to about 2N + 2 such vertices; the MIS weights ignore these caps (DL-467) | as BDPT |
 
 Consequences for authors:
 
 - For a BDPT/MLT render that should match an unlimited PT render, make
   `max_eye_depth + max_light_depth` exceed the path depth that carries
-  energy (the defaults 8 + 8, MLT 10 + 10, are 16 / 20 surfaces).  Only
-  the SUM matters: (2, 0), (1, 1) and (0, 2) render the same image.
+  energy (the defaults 8 + 8, MLT 10 + 10, are 16 / 20 surfaces).  In an
+  ALL-DIFFUSE scene only the sum matters: (2, 0), (1, 1) and (0, 2)
+  render the same image.  Not with delta or non-connectible vertices: a
+  split cannot join at a mirror, so camera -> mirror -> floor -> light is
+  reached at (2, 0) but missed by (1, 1) and (0, 2).
 - A medium shell's two crossings count: an env-lit fog box needs
   `max_eye_depth + max_light_depth >= 2` before anything inside is lit.
 - Do not use per-type caps to compare integrators -- the same

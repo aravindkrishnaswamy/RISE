@@ -11997,8 +11997,8 @@ namespace RISE
 						cd.description = "RGB bidirectional path-tracing integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at most max_eye_depth + max_light_depth scattering surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max surface hits on the light subpath; only max_eye_depth + max_light_depth matters to BDPT/MLT (SCENE_CONVENTIONS 8.10)"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max surface hits on the light subpath; BDPT/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -12128,8 +12128,8 @@ namespace RISE
 						cd.description = "Spectral bidirectional path-tracing integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at most max_eye_depth + max_light_depth scattering surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max surface hits on the light subpath; only max_eye_depth + max_light_depth matters to BDPT/MLT (SCENE_CONVENTIONS 8.10)"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max surface hits on the light subpath; BDPT/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -12239,8 +12239,8 @@ namespace RISE
 						cd.description = "RGB vertex-connection-and-merging integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at most max_eye_depth + max_light_depth scattering surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; only max_eye_depth + max_light_depth matters to BDPT/MLT (SCENE_CONVENTIONS 8.10)";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; BDPT/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = to_hint(dflt.mergeRadius); }
 						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = to_hint(dflt.enableVC); }
 						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = to_hint(dflt.enableVM); }
@@ -12346,8 +12346,8 @@ namespace RISE
 						cd.description = "Spectral vertex-connection-and-merging integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at most max_eye_depth + max_light_depth scattering surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; only max_eye_depth + max_light_depth matters to BDPT/MLT (SCENE_CONVENTIONS 8.10)";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; BDPT/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = to_hint(dflt.mergeRadius); }
 						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = to_hint(dflt.enableVC); }
 						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = to_hint(dflt.enableVM); }
@@ -12972,8 +12972,8 @@ namespace RISE
 						cd.description = "Metropolis Light Transport (RGB).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
-						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at most max_eye_depth + max_light_depth scattering surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; only max_eye_depth + max_light_depth matters to BDPT/MLT (SCENE_CONVENTIONS 8.10)";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; BDPT/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = to_hint(dflt.nBootstrap); }
 						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = to_hint(dflt.nChains); }
 						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = to_hint(dflt.nMutationsPerPixel); }
@@ -13048,8 +13048,8 @@ namespace RISE
 						cd.description = "Metropolis Light Transport (spectral).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
-						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at most max_eye_depth + max_light_depth scattering surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; only max_eye_depth + max_light_depth matters to BDPT/MLT (SCENE_CONVENTIONS 8.10)";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM weights are cap-blind, DL-467; SCENE_CONVENTIONS 8.10)";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; BDPT/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = to_hint(dflt.nBootstrap); }
 						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = to_hint(dflt.nChains); }
 						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = to_hint(dflt.nMutationsPerPixel); }

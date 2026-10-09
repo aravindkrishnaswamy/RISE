@@ -1705,10 +1705,13 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 // itself (type CAMERA, pdfFwd=1, throughput=1), subsequent vertices
 // are surface intersections.
 //
-// The camera's whole-film directional PDF (BDPTCameraUtilities::
-// PdfDirectionMIS, DL-402)
-// is used as pdfFwdPrev for the first surface vertex.  For pinhole
-// cameras this is 1/cos^3(theta) * focaldist^2 (Veach eq. 8.10).
+// The camera's WHOLE-FILM directional PDF (BDPTCameraUtilities::
+// PdfDirectionMIS, DL-402) is used as pdfFwdPrev for the first surface
+// vertex: the one-pixel density PdfDirection (for a pinhole,
+// d^2 / (A_pixel cos^3(theta)), Veach eq. 8.10) divided by W * H, i.e.
+// d^2 / (A_film cos^3(theta)) -- the light-tracing strategies splat
+// anywhere on the film, so the eye side's competing density must be the
+// whole film's too.
 //////////////////////////////////////////////////////////////////////
 
 namespace {
@@ -4622,9 +4625,12 @@ ConnectAndEvaluateImplCore(
 	// MISWeight(0, 2) (the camera ray hitting the same emitter) still
 	// counted it in its denominator: a directly visible emitter lost the
 	// (1,1) share of its energy, r^2 / (1 + r^2) with r the light's area
-	// density over the per-pixel camera density at the emitter point --
-	// 40 % at 100 x 75 on `sms_k2_flatslab`'s 0.08-unit luminaire, falling
-	// as 1/(W H)^2 with resolution.  It is now evaluated by the t == 1
+	// density over the camera density at the emitter point -- 40 % at
+	// 100 x 75 on `sms_k2_flatslab`'s 0.08-unit luminaire, falling as
+	// 1/(W H)^2 with resolution while that density was the PER-PIXEL one
+	// (since DL-402 MISWeight uses the whole-film density, PdfDirectionMIS,
+	// so the (1,1) share no longer shrinks with resolution).  It is now
+	// evaluated by the t == 1
 	// case below, whose LIGHT-vertex branch was written for it and was
 	// unreachable.
 	if( s == 1 && t >= 2 )

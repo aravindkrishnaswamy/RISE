@@ -376,9 +376,11 @@ namespace
 			const double seRel = ( ptRef.m > 0 && sA.m > 0 )
 				? rel * std::sqrt( ( sA.se / sA.m ) * ( sA.se / sA.m ) + ( ptRef.se / ptRef.m ) * ( ptRef.se / ptRef.m ) )
 				: 0;
-			const double tolD = std::max( 3.0 * seRel, 0.05 );
+			// Capped at 10 %: a noisy run must not widen the band past
+			// what still catches a dropped splat layer / NEE (15-99 %).
+			const double tolD = std::min( std::max( 3.0 * seRel, 0.05 ), 0.10 );
 			std::cout << "  D tolerance " << tolD << " (3 se = " << 3.0 * seRel << ")" << std::endl;
-			Check( sA.n > 1 && std::fabs( rel - 1.0 ) < tolD, std::string( rc.label ) + ": D animation frame agrees with the PT still within max(3 se, 5%) (ratio " + std::to_string( rel ) + ")" );
+			Check( sA.n > 1 && std::fabs( rel - 1.0 ) < tolD, std::string( rc.label ) + ": D animation frame agrees with the PT still within min(max(3 se, 5%), 10%) (ratio " + std::to_string( rel ) + ")" );
 		}
 
 		// --- F: interlaced fields (DL-462).  Each field is its own
