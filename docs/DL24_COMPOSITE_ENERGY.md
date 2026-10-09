@@ -1575,3 +1575,124 @@ composite 2/0.  Library builds warning-free.  Cost: a light-subpath
 connection at such a composite evaluates the layered value once more
 (the swapped query); no shipped scene binds a translucent-bottomed
 composite on an open sheet, so no shipped render changes.
+
+## 11. DL-406 (slice `debt-dl406`, 2026-10-09): the warps DL-297 left ideal
+
+Branched from `master` `4ef05c006`.  Term (a) (section 9.2) connected a
+bottom visit to the exit through the top's delta-tagged transmission with
+an adjoint draw of a Phong `cos^N` warp only; a Henyey-Greenstein
+`dielectric_material` (`hg TRUE`) and a per-channel / dispersive RGB top
+reported "no warp" and were connected as an ideal refraction -- the same
+energy, all of it in the ideal-Snell direction.
+
+### 11.1 What the sampler actually does
+
+Read off `DielectricSPF::GenerateScatteredRay`, not off the ledger row:
+
+* **HG** (`hg TRUE`, `g = scattering`): `alpha = acos(mu)` with `mu` from
+  the HG inverse CDF `mu = (1 + g^2 - ((1 - g^2)/(1 - g + 2 g xi))^2)/(2g)`
+  for `g < 1`.  The perturbation runs only for `0 < alpha < PI/2`, so every
+  draw with `mu <= 0` leaves EXACTLY on the Snell axis: a delta part of
+  weight `P_d = F_HG(0) = (1 - g^2)/(2g) (1/sqrt(1 + g^2) - 1/(1 + g))`
+  (the row's "past 90 deg" is right).  The rest is the HG polar marginal
+  `0.5 (1 - g^2)/(1 + g^2 - 2 g mu)^1.5` on `(0, 1]`, azimuth uniform on
+  `PerturbClipped`'s valid arc.  `g == 0` makes the sampler's `1/(2g)`
+  non-finite (alpha NaN, never perturbed): an ideal delta.  `g <= -1` is
+  not a distribution; both report none, as before.
+* **RGB per-channel** (`Scatter`'s `disperse` test: a per-channel `ior`
+  or `scattering`, or an AR stack): `DoSingleRGBComponent` once per
+  channel with that channel's ior, scattering and AR wavelength and ONE
+  shared random pair, each transmission carrying only its own channel.
+
+### 11.2 The fix
+
+* `ISPF`: `DeltaTransmissionWarpLaw` (kind Phong / HG, `DeltaFraction`,
+  `PolarDensity` -- the sub-density of the perturbed draws --
+  `SampleWarpedPolar`), `DeltaTransmissionWarp( ri, nm, channel )`,
+  `DeltaTransmissionWarpIsPerChannel( ri )`, and a `channel` argument on
+  `DeltaTransmissionWarpPdf`.  `DeltaTransmissionWarpExponent` survives
+  as a non-virtual Phong-only wrapper (SMS reads it).
+* `DielectricSPF`: the law per channel (`ResolveWarpChannel` mirrors
+  `Scatter`'s channel selection exactly); `DeltaTransmissionWarpPdf`
+  builds the axis by running the real sampler with its own no-warp value
+  (`scattering 1` for HG, `1e6` for Phong) and returns
+  `PolarDensity(c) / (2 half)`.
+* `CompositeSPF::ConnectThroughTop`: term (a) for one law = the DELTA
+  part's ideal connection at `u = inverse Snell(wOut)` scaled by
+  `DeltaFraction` (1 for an ideal top, 0 for Phong) + the PERTURBED
+  part through one adjoint draw of the law about `wOut` (HG: the marginal
+  restricted to `mu > 0`, renormalized by `1 - P_d`), weighted
+  `q cos t / (p cos wOut)`.  A per-channel RGB top is connected once per
+  channel through that channel's law, each masked to its channel; when no
+  channel warps the single ideal connection runs as before.  The Phong
+  path is BIT-IDENTICAL (Section W's output diffs empty against the base
+  library); the shipped composite scene's top is a uniform Phong glass, so
+  no shipped render moves.
+
+### 11.3 Evidence
+
+`CompositeEnergyConservationTest` Section W2 (`--dl406-only`): Section
+W's exit-energy histogram (6 bins in `cos theta_out`, theta 0 / 45,
+16 x 20000, untilted, jittered position) per CHANNEL, composite vs the
+independent layer walk; the per-channel rows are referenced to the walk
+through the UNIFORM top with that channel's ior and scattering (identical
+code per channel, and a white bottom does not mix channels -- the
+dispersive walk itself has a heavy tail the batch sem does not resolve).
+Rows: HG g 0.6 (RGB and NM 550 nm), HG g -0.3 (`P_d` 0.714; g 0.6: 0.124), per-channel
+scattering 0 / 5 / 10000, dispersive ior 1.45 / 1.5 / 1.6 at scattering
+0, dispersive ior with per-channel HG g 0.3 / 0.6 / 0.85.
+
+| row (theta 0, bin grazing -> normal) | base composite | fixed composite | walk |
+|---|---|---|---|
+| HG g 0.6 | 0.013 / 0.065 / 0.129 / 0.192 / 0.253 / 0.349 | 0.073 / 0.102 / 0.137 / 0.176 / 0.216 / 0.298 | 0.074 / 0.101 / 0.135 / 0.175 / 0.216 / 0.299 |
+| HG g -0.3 | 0.013 / 0.065 / 0.129 / 0.192 / 0.253 / 0.349 | 0.047 / 0.087 / 0.137 / 0.185 / 0.232 / 0.314 | 0.047 / 0.086 / 0.136 / 0.185 / 0.231 / 0.315 |
+| per-channel scattering, red (scattering 0) | 0.013 / 0.065 / 0.128 / 0.191 / 0.252 / 0.351 | 0.119 / 0.134 / 0.150 / 0.169 / 0.185 / 0.240 | 0.122 / 0.136 / 0.151 / 0.168 / 0.183 / 0.239 |
+
+Base library (`4ef05c006`, the four library files checked out over the
+new test): Section W + W2 **69 / 159**, W2 z from -179 (every warped
+row red; the scattering-10000 channel is the control, green in both).
+Fixed: **228 / 0**, W2 max |z| 2.85 over 192 bins, Section W unchanged
+(max |z| 2.04, output identical).
+
+Section M gains family 3 (re-covering the warped separate-panes case
+DL-407 (2) moved to delta-sharp glass): the separate panes with the
+parser-default WARPED glass, the composite being {warped glass / sharp
+glass} -- its index-matched inner interface sharp, so each pane is one
+warped interface exactly like the plain-glass twin, including at the TIR
+edge (band 0.5 %; measured within 0.15 % in all 18 cells, e.g. inward
+single-sided PT / BDPT / VCM 4.6319 / 4.6374 / 4.6313 against plain glass
+4.6341 / 4.6405 / 4.6352; `--sheets-only` 134 / 0).  A {warped / warped} pair blurs that edge twice
+(-0.3 %): each layer warps its own transmission by definition, the
+equivalent pair of separate warped surfaces -- the composite's model, not
+a defect, and not term (a) (a dielectric bottom has no BSDF; that
+transport is all walker).
+
+### 11.4 What it does not change
+
+* The delta part, like every ideal connection, inverts Snell about the
+  SHADING normal; under a tilted shading normal the sampler may re-derive
+  the axis about the true surface (DL-111).  Pre-existing for every ideal
+  top; the perturbed part is exact there (its `q` comes from the top).
+* On a dispersive RGB top, `eta` is the walk's gap index (`gap0`), i.e.
+  the index of the channel the walk's entry selected; every other channel
+  of such a walk carries zero throughput, so that is exact for walks
+  entered from above.  A DL-472 back-face walk (beta 1 in every channel
+  at its bottom entry) still uses one `eta` for all three channels --
+  pre-existing, unchanged.
+* Cost: a per-channel RGB top now scatters the top once per channel (and
+  an HG top twice: delta + perturbed part) per term-(a) evaluation; no
+  shipped scene binds either.
+
+### 11.5 Gates
+
+Library warning-free.  `CompositeEnergyConservationTest` `--dl406-only`
+228/0, full run 1089/0 (built before family 3), `--sheets-only` 134/0
+(with family 3); `LayeredWhiteFurnaceTest` 0 of 63 failed;
+`TransmissionPushGateTest` 416/0; `BDPTStrategyBalanceTest` 370/0;
+`VCMStrategyBalanceTest` 165/0; `SourceHygieneTest` 172/0;
+`HWSSCompanionKrayTest` 204/0; `SMSDomainReplayTest` 8212/0;
+`DielectricARTest` 33/0; `CurvePainterRGBDispersionTest` 15/0;
+`CompositeExtinctionTest` pass; `CompositeSubsurfaceRejectionTest` pass;
+`WeaveGapShadowTransmittanceTest` query 81/0, composite 2/0 (its full
+single-threaded run was not completed).  No render-level measurement: no
+shipped scene binds an HG or per-channel composite top.
