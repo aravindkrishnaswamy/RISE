@@ -183,6 +183,31 @@ bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
         return mesh->HasUncertainSMSNormalOrientation();
     return false;
 }
+// DL-382: a clear transmissive surface whose geometry is neither certified
+// closed nor certified open (a non-planar open mesh, a slab authored as one
+// open mesh, a mesh with stray boundary edges) is crossed by the IOR-stack
+// rule, which is non-reciprocal on genuinely open sheets (DL-345).  Only
+// the inline/imported mesh classes carry the certificates; Bezier/bilinear
+// patch sets and CSG are not reported (no certificate either way).
+// Returns 0 (certified closed, certified open, or not a clear transmissive
+// mesh), 1 (an indexed / displaced mesh that failed the watertightness
+// certificate and is not a planar sheet), 2 (a non-indexed `rawmesh` mesh
+// that is not a planar sheet: that class has NO watertightness check, so it
+// may well be a closed solid).
+int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
+{
+    const IMaterial* material = object.GetMaterial();
+    const ISPF* spf = material ? material->GetSPF() : nullptr;
+    if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) return 0;
+    const IGeometry* geometry = object.GetGeometry();
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
+        return (!mesh->IsCertifiedWatertight() && !mesh->IsProvablyOpenSheet()) ? 1 : 0;
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
+        return mesh->IsProvablyOpenSheet() ? 0 : 2;
+    if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(geometry))
+        return displaced->HasUncertifiedOpenness() ? 1 : 0;
+    return 0;
+}
 bool ObjectWrapsComposite(const IObject& object)
 {
     if(WrapsComposite(object.GetMaterial())) return true;
@@ -2255,6 +2280,39 @@ void ObjectManager::PrepareForRendering() const
         GlobalLog()->PrintEx(eLog_Warning,
             "Extended SMS is inert for this prepared scene: composite object '%s'; using legacy SMS and suppression.",
             smsFirstCompositeObject.c_str());
+    }
+    // DL-382: warn ONCE per scene (this manager), not per preparation --
+    // an animation prepares every frame.  Re-armed only when the set of
+    // offending objects changes (an edit added or fixed one).
+    {
+        unsigned int n[3] = { 0, 0, 0 };
+        std::string first[3];
+        std::string key;
+        for(const auto& item : items) {
+            if(!item.second.first->IsWorldVisible()) continue;
+            const int kind = ObjectUncertifiedOpenTransmissiveMesh(*item.second.first);
+            if(kind == 0) continue;
+            if(first[kind].empty()) first[kind] = item.first.c_str();
+            ++n[kind];
+            key += item.first.c_str();
+            key += kind == 1 ? "|1;" : "|2;";
+        }
+        if(key != openMeshWarningKey) {
+            openMeshWarningKey = key;
+            if(n[1]) {
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "ObjectManager: %u transmissive mesh object(s) (first '%s') are neither certified watertight nor a single planar sheet; "
+                    "they are refracted by the IOR-stack rule, which is right for a closed solid with stray boundary edges but not reciprocal on a genuinely OPEN surface (PT/BDPT/VCM can disagree). "
+                    "Author glass as a closed solid, or each open sheet as one planar mesh / clipped plane (docs/SCENE_CONVENTIONS.md, DL-382).",
+                    n[1], first[1].c_str());
+            }
+            if(n[2]) {
+                GlobalLog()->PrintEx(eLog_Info,
+                    "ObjectManager: %u transmissive rawmesh object(s) (first '%s') are not a single planar sheet; that mesh class has no watertightness check, "
+                    "so they use the IOR-stack rule -- correct if they are closed solids, not reciprocal if they are OPEN sheets (docs/SCENE_CONVENTIONS.md, DL-382).",
+                    n[2], first[2].c_str());
+            }
+        }
     }
 
 	// 87 step 2: RE-BAKE the hierarchy, every frame.  This is the whole of
