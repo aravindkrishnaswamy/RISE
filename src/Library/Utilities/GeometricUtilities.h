@@ -422,6 +422,7 @@ namespace RISE
 			std::uint64_t state;
 			PrandStream( const Point3& prand, const std::uint64_t salt )
 			{
+				static_assert( sizeof( Scalar ) == sizeof( std::uint64_t ), "PrandStream seeds from 64-bit Scalar bit patterns" );
 				std::uint64_t b[3];
 				std::memcpy( &b[0], &prand.x, sizeof( std::uint64_t ) );
 				std::memcpy( &b[1], &prand.y, sizeof( std::uint64_t ) );

@@ -648,6 +648,7 @@ bool Object::AssignGeometry( const IGeometry& pGeom )
 	// A swapped geometry can never match the old entries: retire them now
 	// (an editor operation, outside any render).
 	PruneWorldAreaSampling();
+	m_warnedAreaFallback.store( false );
 
 	return true;
 }
@@ -1645,6 +1646,12 @@ void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, 
 		// Similarity transform: object-uniform IS world-uniform.  Unchanged
 		// (bit-identical) path.
 		pGeometry->UniformRandomPoint( samplePoint, sampleNormal, coord, prand );
+	} else if( was->worldCdf ) {
+		// Exact world-area triangle CDF (a low-acceptance triangle surface).
+		const std::vector<Scalar>& cdf = *was->worldCdf;
+		const auto it = std::upper_bound( cdf.begin(), cdf.end(), prand.z );
+		const std::size_t index = std::min( std::size_t( it - cdf.begin() ), cdf.size() - 1 );
+		GeometricUtilities::PointOnTriangle( samplePoint, sampleNormal, coord, was->geom->triangles[index], prand.x, prand.y );
 	} else if( !was->rejection ) {
 		// Constant stretch (a planar shape): object-uniform is world-uniform.
 		pGeometry->UniformRandomPoint( samplePoint, sampleNormal, coord, prand );
@@ -2265,6 +2272,13 @@ std::shared_ptr<const Object::GeometryAreaData> Object::BuildGeometryData( const
 				for( auto& c : g->objCdf ) c /= area;
 				g->objCdf.back() = 1;
 				g->triangleSurface = true;
+				g->planar = true;
+				for( const Vector3& n : g->faceNormals ) {
+					if( Vector3Ops::Magnitude( Vector3Ops::Cross( n, g->faceNormals[0] ) ) > Scalar( 1e-9 ) ) {
+						g->planar = false;
+						break;
+					}
+				}
 			} else {
 				g->triangles.clear(); g->faceNormals.clear(); g->faceAreas.clear(); g->objCdf.clear();
 			}
@@ -2273,9 +2287,22 @@ std::shared_ptr<const Object::GeometryAreaData> Object::BuildGeometryData( const
 
 	// CURVED SHAPES: the faces of two tessellations (for a Richardson step
 	// on E[J]) and the fine one's vertex normals (for the Lipschitz bound).
+	// The detail is capped so a MULTI-PATCH geometry (a 1000-patch bilinear
+	// set tessellates every patch at the requested detail) stays near
+	// kMaxFaces fine faces: probe at detail 8, scale by sqrt, floor 4.
+	// The rejection bound stays rigorous regardless (sigma1*sigma2 cap).
+	unsigned int fineDetail = 128;
+	if( !g->triangleSurface ) {
+		static const Scalar kMaxFaces = 65536;
+		std::vector<Vector3> probeN; std::vector<Scalar> probeA;
+		if( TessellatedFaces( *pGeometry, 8, probeN, probeA, 0, 0 ) ) {
+			const Scalar d = 8 * sqrt( kMaxFaces / Scalar( probeN.size() ) );
+			fineDetail = static_cast<unsigned int>( r_max( Scalar( 4 ), r_min( Scalar( 128 ), d ) ) ) & ~1u;
+		}
+	}
 	if( !g->triangleSurface &&
-		TessellatedFaces( *pGeometry, 128, g->fineN, g->fineA, &g->vertexNormals, &g->maxNormalSpread ) ) {
-		TessellatedFaces( *pGeometry, 64, g->coarseN, g->coarseA, 0, 0 );
+		TessellatedFaces( *pGeometry, fineDetail, g->fineN, g->fineA, &g->vertexNormals, &g->maxNormalSpread ) ) {
+		TessellatedFaces( *pGeometry, fineDetail / 2, g->coarseN, g->coarseA, 0, 0 );
 		g->planar = true;
 		for( const Vector3& n : g->fineN ) {
 			if( Vector3Ops::Magnitude( Vector3Ops::Cross( n, g->fineN[0] ) ) > Scalar( 1e-9 ) ) {
@@ -2316,6 +2343,22 @@ std::shared_ptr<const Object::MetricAreaData> Object::BuildMetricData( const Wor
 		m->worldAreaScale = MeanStretch( g.faceNormals, g.faceAreas, m->K, &minJ, &maxJ );
 		m->rejection = maxJ - minJ > Scalar( 1e-12 ) * maxJ;
 		m->bound = maxJ * Scalar( 1 + 1e-12 );
+		if( m->rejection && m->worldAreaScale < Scalar( 0.05 ) * maxJ ) {
+			// Rejection would accept < 5 %: build the exact world-area CDF
+			// for this metric instead (O(T) once, O(log T) per sample).
+			m->worldCdf.reserve( g.faceAreas.size() );
+			Scalar acc = 0;
+			for( std::size_t t = 0; t < g.faceAreas.size(); t++ ) {
+				acc += g.faceAreas[t] * Stretch( m->K, g.faceNormals[t] );
+				m->worldCdf.push_back( acc );
+			}
+			if( acc > 0 ) {
+				for( auto& c : m->worldCdf ) c /= acc;
+				m->worldCdf.back() = 1;
+			} else {
+				m->worldCdf.clear();
+			}
+		}
 		return m;
 	}
 
@@ -2367,8 +2410,8 @@ const Object::GeometryAreaData* Object::FindOrBuildGeometryData( const WorldArea
 		if( !g ) break;
 		if( g->key.SameGeometry( key ) ) return g;
 	}
-	if( !mayBuild ) {
-		return 0;
+	if( !mayBuild || m_geomSlots[kMaxAreaSlots - 1].load( std::memory_order_acquire ) ) {
+		return 0;	// a FULL geometry table stays lock-free
 	}
 	std::lock_guard<std::mutex> lock( m_worldAreaMutex );
 	for( const auto& g : m_geomOwned ) {
@@ -2399,6 +2442,7 @@ bool Object::AcquireWorldAreaView( WorldAreaView& view ) const
 		view.bound = m.bound;
 		view.rejection = m.rejection;
 		for( int i = 0; i < 6; i++ ) view.K[i] = m.K[i];
+		view.worldCdf = m.worldCdf.empty() ? 0 : &m.worldCdf;
 	};
 	// Hot path: lock-free scan of the published metric slots.  Entries are
 	// retired only at a frame boundary and freed a frame later, so a
@@ -2422,7 +2466,9 @@ bool Object::AcquireWorldAreaView( WorldAreaView& view ) const
 		}
 		return false;
 	}
-	{
+	// A FULL metric table stays lock-free: the per-call fallback below needs
+	// no shared state.
+	if( !m_metricSlots[kMaxAreaSlots - 1].load( std::memory_order_acquire ) ) {
 		std::lock_guard<std::mutex> lock( m_worldAreaMutex );
 		for( const auto& m : m_metricOwned ) {
 			if( m->key.Matches( key ) ) {
@@ -2446,6 +2492,7 @@ bool Object::AcquireWorldAreaView( WorldAreaView& view ) const
 	view.worldAreaScale = MeanStretch( g->histN, g->histW, view.K, 0, 0 );
 	view.bound = sqrt( r_max( LambdaMax( view.K ), Scalar( 0 ) ) ) * Scalar( 1 + 1e-9 );
 	view.rejection = !g->planar;
+	view.worldCdf = 0;
 	return view.worldAreaScale > 0;
 }
 
@@ -2475,5 +2522,4 @@ void Object::PruneWorldAreaSampling() const
 		m_geomSlots[i].store( i < m_geomOwned.size() ? m_geomOwned[i].get() : 0, std::memory_order_release );
 		m_metricSlots[i].store( i < m_metricOwned.size() ? m_metricOwned[i].get() : 0, std::memory_order_release );
 	}
-	m_warnedAreaFallback.store( false );
 }

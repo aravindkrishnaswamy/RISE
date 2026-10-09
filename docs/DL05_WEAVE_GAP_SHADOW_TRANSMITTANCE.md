@@ -862,12 +862,12 @@ was missing.
 
 ### 10.4 Residuals
 
-- **DL-424** (new): VCM has no vertex-connection strategy for
+- **DL-424** (new; CLOSED by section 11): VCM has no vertex-connection strategy for
   `L - S - D - S - E` with a delta light either; merging covers it with a
   heavy tail on small receivers (the `seethrough` VCM row).  Variance, not
   bias; the BDPT construction above would transfer only with a
   merging-aware partition.
-- **DL-425** (new, round-2 review P2): the see-through yields every path a
+- **DL-425** (new, round-2 review P2; CLOSED by section 11): the see-through yields every path a
   standard strategy covers, so a directly seen diffuse receiver under an
   OMNI light behind a gap is left to light tracing alone (BDPT 1024 spp
   0.265 vs 0.30, 63 % per-render sd; PT exact at 64 spp).  The fix is a
@@ -881,3 +881,88 @@ was missing.
 - No shipped scene moves: the two shipped thin-weave scenes
   (`sheer_curtain`, `weave_presets`) render with `pathtracing_pel_rasterizer`,
   whose code path no part of this slice touches.
+
+## 11. DL-424 and DL-425: the see-through connection as an MIS strategy
+
+Slice `debt-weave-strategies`, branched from `master` `bd2ef0451`,
+2026-10-08.  Regressions: `tests/WeaveGapShadowTransmittanceTest.cpp`
+`closed` (new BDPT / VCM omni rows, RGB and hwss), `seethrough` (the VCM
+row is now gated), opt-in `dl424` / `dl425` measurements.
+
+### 11.1 Design
+
+Section 10.3's rule (weight 1 where no standard strategy generates the
+path, 0 elsewhere) is a valid partition but a poor one: in the common
+curtain -- a receiver seen directly, lit by a point light through one
+gap -- light tracing covers the path, so the see-through yielded it, and
+light tracing finds a small receiver almost never.  The see-through is now
+an ordinary MIS strategy in BDPT (power heuristic) and VCM (the SmallVCM
+recurrence), with ONE density shared by both directions of every ratio:
+
+- Every gap draw on a light walk records a pseudo-probability
+  `BDPTVertex::passThroughProb` (MaxValue of
+  `ISPF::DeltaPassThroughTransmittance` in RGB, the NM value at the hero
+  wavelength in spectral).  The see-through's shadow walk accumulates the
+  identical per-crossing factor (`WalkShadowSegment`'s new
+  `pPassThroughProb`).  For a bare weave this IS the gap-draw probability
+  `g(x)`; for the fabric / coated wrappers it is a positive surrogate --
+  MIS stays exact for any positive pseudo-density computed identically on
+  every side (only optimality is at stake).
+- The light side's density of the see-through endpoint D is the light's
+  emission density toward D times the product of the gaps'
+  pseudo-probabilities, converted to area at D over the whole distance
+  `|L - D|` (the stored `pdfFwd(D)` is the delta convention's 0).
+- **BDPT.**  The see-through puts that density in its eye endpoint's
+  `pdfRev` (the rest of the s = 1 bookkeeping unchanged), and `MISWeight`
+  adds the matching term `ri * pdfRev(D) / pdfFwdThrough(D)` to every
+  light-tracing strategy whose light prefix is a delta-position root plus
+  a straight chain of gap draws (`DeltaPassThroughChainToRoot`).  Depth
+  caps are honoured on the side that cannot over-count: the see-through's
+  own denominator drops light-tracing strategies the light walk cannot
+  reach (DL-380's lesson; at a path nothing else covers its weight is 1,
+  as before), and the light-tracing terms count the see-through only where
+  the eye walk can reach D (`EyeWalkCanGenerate`).  Leaving a
+  non-evaluated strategy out of ONE denominator keeps the weight sum <= 1.
+  `DeltaPassThroughCoverSlack` is gone; the see-through now walks on every
+  blocked s = 1 connection to a delta light in a scene whose pass-through
+  walk is live.
+- **VCM.**  `EvaluateNEEImpl` gains the same see-through (walk on a
+  blocked delta-light NEE), with `wCamera`'s emission density scaled by
+  the walk's product.  `ConvertLightSubpath` rebuilds `dVCM` at the first
+  vertex past a straight gap chain from a delta root -- InitLight followed
+  by the geometric update over the whole segment, the direction density
+  scaled by the same product -- where the specular update at each gap had
+  zeroed it.  `dVC` / `dVM` stay 0 (delta root), and the recurrence carries
+  the term to every later vertex, so splats, interior connections and
+  merges all count the new NEE.  The DL-317/380 subsurface partition
+  counts it as an eye-family witness in all three VCM call sites
+  (`VCMIntegrator::SeeThroughLive`), as BDPT and MLT already did.
+  MLT inherits BDPT's weights.
+
+### 11.2 Measurements (salted, `seed base 1000`)
+
+| row | base `bd2ef0451` | this slice |
+|---|---|---|
+| `closed` omni BDPT RGB 64 spp, L/L0 (closed form g = 0.3 / 0.1) | 0.00005 / 0.00010 | 0.30009 / 0.10004 |
+| same, BDPT spectral hwss=true | 0.00004 / 0.00005 | 0.30007 / 0.10001 |
+| same, VCM RGB | 0.00009 / 0.00004 | 0.29997 / 0.10003 |
+| same, VCM spectral hwss=true | 0.282 / 0.00009 | 0.30020 / 0.10004 |
+| `dl425` curtain BDPT RGB, (L/L0)/g, n = 8: 16 / 64 / 256 spp | 0.0001 / 2.20 (sd 4.07) / 0.0003 | 1.0002 / 1.0004 / 1.0003 (sd 1e-4) |
+| `dl425` s/render, 64 / 256 spp | 0.06 / 0.23 | 0.07 / 0.26 |
+| `dl424` VCM curtain (L/L0)/g, n = 8: 64 / 256 spp | 2.02 (sd 3.78) / 1.21 (sd 1.30) | 1.0008 (sd 0.0017) / 1.0006 (sd 0.0005) |
+| `dl424` VCM `seethrough` (L/L0)/g^2: 64 / 256 spp | 0.0000 / 0.85 (sd 1.05) | 0.9998 (sd 0.0010) / 0.9998 (sd 0.0005) |
+| `dl424` VCM s/render 64 / 256 spp (curtain) | 0.07 / 0.26 | 0.08 / 0.32 |
+| `dl330` closed weave sphere gap 0.3, omni, 512 spp, n = 4: BDPT mean (sd) | 0.010964 (1.3e-4) | 0.010970 (5e-6) |
+| same, VCM mean (sd) | 0.010947 (8.5e-4) | 0.010980 (4e-6) |
+| same, gap 0.0 and area-light controls | -- | bit-identical |
+
+The base row at 64 spp reading 2.20 is the heavy tail itself: one of eight
+renders caught a light-tracing splat.  On the closed sphere (where light
+tracing, merging and the see-through all compete) the means agree with the
+base to within its own error bar while the per-render sd falls 27x (BDPT)
+and 200x (VCM); the ~1.6 % over PT there is the pre-existing closed-shell
+PT residual the gap-0 control carries too (debt 25).  Cost: the walk now
+runs on every blocked delta-light connection in a scene with a gap
+(+10-25 % s/render on these 16 x 16 fixtures), against a variance
+reduction of four orders of magnitude on the curtain.
+

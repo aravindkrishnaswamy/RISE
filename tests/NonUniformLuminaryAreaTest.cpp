@@ -60,6 +60,7 @@
 #include "../src/Library/Interfaces/ITransformable.h"
 #include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/Interfaces/IAnimator.h"
+#include "../src/Library/Objects/Object.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -363,6 +364,29 @@ static void TestUniformity()
 			std::cout << "    rejection acceptance (rigorous bound) "
 				<< o->GetArea() / o->GetGeometry()->GetArea() / 100.0 << "\n";
 		}
+	}
+	{
+		// A mesh thin in OBJECT space stretched along its thin axis: a
+		// 1 x 1 x 1e-5 box scaled (1, 1, 1e5) is the unit cube in world.
+		// Rejection by the per-face stretch would accept ~3e-5 of
+		// candidates; the entry must switch to the exact world-area CDF
+		// (no cap hits, exact area, 1/6 of the samples per face).
+		std::string t2 = kFixtureHeader;
+		t2 += ObjectText( Shape{ "thin", "box_geometry\n{\n\tname geo_thin\n\twidth 1\n\theight 1\n\tdepth 0.00001\n}\n\n", "\tscale 1 1 100000\n" }, "lum", "0 0 0" );
+		Fixture ft( t2 );
+		const IObject* o = ft.Object( "thin" );
+		CheckArea( o, 6.0, "box 1x1x1e-5 scaled (1,1,1e5) = unit cube" );
+		unsigned zFace = 0, off = 0; const unsigned M = 12000;
+		for( unsigned i = 0; o && i < M; i++ ) {
+			Point3 p; Vector3 n;
+			o->UniformRandomPoint( &p, &n, nullptr, Point3( ( i + 0.5 ) / M, RadInv( 3, i ), RadInv( 5, i ) ) );
+			if( std::fabs( std::fabs( p.z ) - 0.5 ) < 1e-6 ) zFace++;
+			else if( std::fabs( std::fabs( p.x ) - 0.5 ) > 1e-9 && std::fabs( std::fabs( p.y ) - 0.5 ) > 1e-9 ) off++;
+		}
+		CheckFraction( double( zFace ) / M, 2.0 / 6.0, M, "thin box stretched (1,1,1e5): +-z face share" );
+		Check( off == 0, "DL-448 thin box stretched: every sample on the cube" );
+		const Implementation::Object* io = dynamic_cast<const Implementation::Object*>( o );
+		Check( io && io->WorldAreaRejectionCapHits() == 0, "DL-448 thin box stretched: no rejection-cap hits" );
 	}
 	for( const char* n : { "rot", "shr" } ) {
 		const LinearMap m = MapOf( f.Object( n ) );

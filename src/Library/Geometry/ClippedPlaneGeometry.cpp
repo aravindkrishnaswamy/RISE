@@ -468,11 +468,11 @@ SurfaceDerivatives ClippedPlaneGeometry::ComputeSurfaceDerivatives( const Point3
 
 Scalar ClippedPlaneGeometry::GetArea( ) const
 {
-	// Parallelogram approximation: |edgeA[0]| * |edgeB[1]|.  Exact for
-	// planar parallelograms (the dominant use case).  Non-parallelogram
-	// quads compute a parallelogram area through edge magnitudes which
-	// over-estimates for trapezoids and under-estimates for re-entrant
-	// shapes.  TODO: integrate |dpdu × dpdv| over (u, v) for an exact
+	// Edge-magnitude product |edgeA[0]| * |edgeB[1]|: exact for RECTANGLES
+	// only (the dominant use case).  A non-rectangular parallelogram
+	// needs |edgeA[0] x edgeB[1]| (the product over-states it by
+	// 1/sin(angle)), and a general quad over-estimates for trapezoids and
+	// under-estimates for re-entrant shapes (DL-460).  TODO: integrate |dpdu × dpdv| over (u, v) for an exact
 	// bilinear surface area when this matters for light sampling pdfs.
 	return (Vector3Ops::Magnitude(vEdgesA[0]) * Vector3Ops::Magnitude(vEdgesB[1]));
 }

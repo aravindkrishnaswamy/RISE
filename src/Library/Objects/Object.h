@@ -190,7 +190,7 @@ namespace RISE
 				std::vector<Scalar>		fineA, coarseA;
 				std::vector<Vector3>	vertexNormals;
 				Scalar					maxNormalSpread = 0;
-				bool					planar = false;
+				bool					planar = false;			//!< one normal (either surface kind)
 				// both: area-weighted normal histogram (weights > 0)
 				std::vector<Vector3>	histN;
 				std::vector<Scalar>		histW;
@@ -204,6 +204,10 @@ namespace RISE
 				Scalar					bound = 0;				//!< >= sup J
 				bool					rejection = false;
 				Scalar					K[6] = { 0, 0, 0, 0, 0, 0 };	//!< adj(G)
+				//! Triangle surfaces whose rejection would accept < 5 % (a
+				//! mesh thin in object space stretched along its thin axis):
+				//! the exact WORLD-area triangle CDF for this metric instead.
+				std::vector<Scalar>		worldCdf;
 			};
 			//! What a sampling call needs, by value.
 			struct WorldAreaView
@@ -213,6 +217,7 @@ namespace RISE
 				Scalar					bound = 0;
 				bool					rejection = false;
 				Scalar					K[6] = { 0, 0, 0, 0, 0, 0 };
+				const std::vector<Scalar>*	worldCdf = 0;
 			};
 			static const unsigned int kMaxAreaSlots = 16;
 			void ResetWorldAreaSampling();
@@ -240,6 +245,9 @@ namespace RISE
 			//! ObjectManager::PrepareForRendering (single-threaded); frees
 			//! only the generation retired by the previous call.
 			void PruneWorldAreaSampling() const;
+			//! Surface samples whose rejection loop hit its candidate cap
+			//! and fell back to an object-uniform point (diagnostic).
+			unsigned long long WorldAreaRejectionCapHits() const { return m_rejectionCapHits.load( std::memory_order_relaxed ); }
 		protected:
 
 			//! World-LINEAR scaling of the transform's linear part,

@@ -1308,7 +1308,7 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   per-frame world-area prune; H: a
   bit-for-bit gate that similarity transforms take the unchanged path (plus
   hashes for a cross-build A/B). Includes rotation x scale and shear rows. Red
-  on `932f7c0a0` (sections A-C): 11/22; green 54/0 (all sections).
+  on `932f7c0a0` (sections A-C): 11/22; green 59/0 (all sections; B includes a thin-in-object-space mesh stretched along its thin axis).
 
 - `EmitterAverageExitanceTest` (DL-431): the luminary's average exitance
   (light-selection weight, photon power / budget) over its own surface points.

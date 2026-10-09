@@ -458,7 +458,8 @@ void VCMSpectralRasterizer::IntegratePixel(
 				if( mVCMNormalization.mEnableVC ) {
 					VCMIntegrator::ConvertLightSubpath(
 						localLightVerts, mVCMNormalization,
-						lightStoreScratchSp, &lightMisSp );
+						lightStoreScratchSp, &lightMisSp,
+						VCMIntegrator::SeeThroughLive( *pCaster ) );
 					if( pSplatFilm && !localLightVerts.empty() && !lightMisSp.empty() ) {
 						pIntegrator->SplatLightSubpathToCameraNM(
 							localLightVerts, lightMisSp,
@@ -557,7 +558,8 @@ void VCMSpectralRasterizer::IntegratePixel(
 					if( mVCMNormalization.mEnableVC ) {
 						VCMIntegrator::ConvertLightSubpath(
 							compLight, mVCMNormalization,
-							compLightStoreScratch, &compLightMis );
+							compLightStoreScratch, &compLightMis,
+							VCMIntegrator::SeeThroughLive( *pCaster ) );
 						if( pSplatFilm && !compLight.empty() && !compLightMis.empty() ) {
 							pIntegrator->SplatLightSubpathToCameraNM(
 								compLight, compLightMis,

@@ -46,6 +46,8 @@
 #include <cmath>
 #include <limits>
 #include "Geometry/GeometryUtilities.h"
+#include "Geometry/TriangleMeshGeometry.h"
+#include "Geometry/TriangleMeshGeometryIndexed.h"
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -7842,6 +7844,26 @@ bool Job::ComposeObjectHierarchy( )
 
 //! Adds an object
 /// \return TRUE if successful, FALSE otherwise
+// DL-409: the DL-382 planar certificate or an exactly flat enclosing box
+// proves that this geometry cannot bound a volume. Do not infer this from
+// bOpenSheet or failed watertightness:
+// those also describe closed imported meshes the certificate cannot classify.
+static bool RefuseVolumeFreeRandomWalk_(const IGeometry* geometry, const IMaterial* material,
+    const char* objectName)
+{
+    if(!geometry || !material || !material->GetRandomWalkSSSParams()) return false;
+    const auto* indexed=dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>(geometry);
+    const auto* triangles=dynamic_cast<const Implementation::TriangleMeshGeometry*>(geometry);
+    const bool certified=(indexed && indexed->IsProvablyOpenSheet()) ||
+        (triangles && triangles->IsProvablyOpenSheet());
+    const BoundingBox box=geometry->GenerateBoundingBox();
+    if(!certified && box.ll.x!=box.ur.x && box.ll.y!=box.ur.y && box.ll.z!=box.ur.z) return false;
+    GlobalLog()->PrintEx(eLog_Error,
+        "randomwalk_sss_material (DL-409): object `%s` has provably zero-volume geometry; "
+        "author a closed thin slab for random-walk subsurface transport", objectName);
+    return true;
+}
+
 bool Job::AddObject(
 	const char* name,										///< [in] Name of the object
 	const char* geom,										///< [in] Name of the geometry for the object
@@ -7871,6 +7893,8 @@ bool Job::AddObject(
 	if( shader ) { pShaderObj = pShaderManager->GetItem( shader ); if( !pShaderObj ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Shader not found `%s`", shader ); return false; } }
 	IPainter* pRadPnt = 0;
 	if( !( radianceMapConfig.name == "none" ) ) { pRadPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() ); if( !pRadPnt ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() ); return false; } }
+
+	if(RefuseVolumeFreeRandomWalk_(pGeometry,pMat,name)) return false;
 
 	// Slice 3 (stable-object apply): in incremental re-point mode an EXISTING same-named
 	// object is re-pointed IN PLACE (its address, which the top-level BVH stores raw, is
@@ -12264,6 +12288,8 @@ bool Job::SetObjectMaterial(
 		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMaterial:: material not found `%s`", materialName );
 		return false;
 	}
+
+	if(RefuseVolumeFreeRandomWalk_(pObj->GetGeometry(),pMat,objName)) return false;
 
 	// Mirrors the interactive editor's material-swap path
 	// (SceneEditor: materialManager->GetItem -> obj.AssignMaterial).
