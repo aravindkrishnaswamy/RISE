@@ -1823,10 +1823,71 @@ static void SectionD10()
 		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
 		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
 		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n"
-		"composite_material\n{\n\tname mat_cc\n\ttop mat_glass\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		"composite_material\n{\n\tname mat_cc\n\ttop mat_glass\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr0\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0\n\textinction 0.0\n}\n\n";
+	// DL-472 (1): glass/translucent now follows the face rule on an open
+	// sheet (a back arrival meets the bottom first), so back != front by
+	// design.  Gates: the composite reads the same under PT / BDPT / VCM
+	// from each side (2 %), and from the FRONT it equals the equivalent
+	// pair of SEPARATE sheets (glass at z = 0, translucent 0.002 behind it)
+	// under PT (3 %).  From the BACK the pair is printed only: the
+	// separate pair is itself not consistent there (PT 0.0351 against
+	// BDPT / VCM 0.0441 -- a standalone translucent sheet is not
+	// reciprocal, DL-223, and the light reaches it through a delta glass
+	// sheet), while the composite reads 0.0376 under all three.
+	{
+		double compRef[2] = { -1, -1 };
+		const std::string pairGeo =
+			"clippedplane_geometry\n{\n\tname qg\n\tpta -4 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd -4 3 0\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qt\n\tpta -4 -3 -0.002\n\tptb 4 -3 -0.002\n\tptc 4 3 -0.002\n\tptd -4 3 -0.002\n}\n\n";
+		const std::string compGeo =
+			"clippedplane_geometry\n{\n\tname qc\n\tpta -4 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd -4 3 0\n}\n\n";
+		for( int r = 0; r < 3; ++r ) {
+			for( int b = 0; b < 2; ++b ) {
+				const double z = b ? -1.0 : 1.0;
+				double v[2] = { -1, -1 };
+				for( int k = 0; k < 2; ++k ) {
+					std::ostringstream sc;
+					sc << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 16\n}\n\n"
+					   << "pinhole_camera\n{\n\tlocation 0 0 " << 7.0 * z << "\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+					   << mats << ( k == 0 ? compGeo : pairGeo )
+					   << ( k == 0 ? std::string( "standard_object\n{\n\tname S\n\tgeometry qc\n\tmaterial mat_gtr0\n}\n\n" )
+					               : std::string( "standard_object\n{\n\tname G\n\tgeometry qg\n\tmaterial mat_glass\n}\n\n"
+					                              "standard_object\n{\n\tname T\n\tgeometry qt\n\tmaterial mat_tr\n}\n\n" ) )
+					   // An AREA light on the camera's side: a delta light would
+					   // not reach the separate pair's translucent sheet through
+					   // the glass sheet (NEE cannot see through a delta coat),
+					   // so the pair would read 0 from the glass side.
+					   << "uniformcolor_painter\n{\n\tname pnt_em\n\tcolor 1 1 1\n}\n\n"
+					   << "lambertian_luminaire_material\n{\n\tname mat_em\n\texitance pnt_em\n\tscale 10.0\n\tmaterial none\n}\n\n"
+					   << "clippedplane_geometry\n{\n\tname gem\n\tpta -1.5 2 " << 4.0 * z << "\n\tptb 1.5 2 " << 4.0 * z << "\n\tptc 1.5 3.5 " << 4.0 * z << "\n\tptd -1.5 3.5 " << 4.0 * z << "\n}\n\n"
+					   << "standard_object\n{\n\tname E\n\tgeometry gem\n\tmaterial mat_em\n}\n\n"
+					   << ( r == 0 ? PtRasterizer( false, 1024 ) : r == 1 ? BdptRasterizer( false, 1024, 12 ) : VcmRasterizer( false, 1024, 12 ) );
+					CapturingRasterizerOutput* cap = 0;
+					SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * ( 91100u + 13u * (unsigned)( 4 * r + 2 * b + k ) ) + 0x85EBCA6Bu );
+					const bool ok = Render( sc.str(), "d10p", cap, 91100u + 13u * (unsigned)( 4 * r + 2 * b + k ) );
+					SobolSamplerTestHooks::ValueSalt().store( 0u );
+					v[k] = ok ? RegionMean( *cap, 2, cap->width - 2 ) : -1;
+					if( cap ) safe_release( cap );
+				}
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
+				std::cout << "    D10 glass/translucent (thickness 0) vs separate pair, " << ( b ? "BACK " : "FRONT" ) << ", " << in << ": composite "
+				          << std::setprecision(5) << v[0] << " pair " << v[1] << ", ratio " << ( v[1] > 0 ? v[0] / v[1] : -1 ) << "\n";
+				if( r == 0 ) {
+					compRef[b] = v[0];
+					if( b == 0 ) {
+						Check( v[0] > 0 && v[1] > 0 && std::fabs( v[0] / v[1] - 1.0 ) <= 0.03,
+							"[D10] glass/translucent == separate pair, front view (PT)" );
+					}
+				} else {
+					Check( v[0] > 0 && compRef[b] > 0 && std::fabs( v[0] / compRef[b] - 1.0 ) <= 0.02,
+						std::string( "[D10] glass/translucent composite agrees with PT, " ) + ( b ? "back" : "front" ) + " view (" + in + ")" );
+				}
+			}
+		}
+	}
 	struct Row { const char* name; const char* mat; bool singleSidedMesh; };
 	const Row rows[] = {
-		{ "glass/translucent, double-sided clipped plane", "mat_gtr", false },
 		{ "coat over Lambertian 0.8, single-sided flat mesh", "mat_cc", true },
 	};
 	for( const Row& row : rows ) {

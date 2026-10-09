@@ -2107,7 +2107,11 @@ namespace RISE
 					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, L ) );
 					SetLayerRay( cur, ri, w, L );
 					atBottom = true;
-				} else if( start == eStartNaturalBottom || start == eStartCoveredBottom ) {
+				} else if( start == eStartCoveredBottom ) {
+					// DL-472 (1): the two-sided model's stacks (MakeBackStacks).
+					st = MakeBackStacks<P>( s, ri, entry, nm ).entry;
+					atBottom = true;
+				} else if( start == eStartNaturalBottom ) {
 					// From below: the ray is in the BELOW medium (the
 					// entry stack's top -- O's index when the stack holds
 					// O, the medium the ray is in when it does not).
@@ -2188,6 +2192,10 @@ namespace RISE
 						}
 					}
 					st = after;
+					if( start == eStartCoveredBottom && ev == 0 ) {
+						// Past the bottom into the gap: back in C.
+						st = MakeBackStacks<P>( s, ri, entry, nm ).gap;
+					}
 
 					beta = P::Mul( beta, P::Scaled( P::Kray( *r ), Scalar( 1 ) / q ) );
 					const Vector3 w = Vector3Ops::Normalize( r->ray.Dir() );
@@ -2272,21 +2280,30 @@ namespace RISE
 			//             front (w2), the bottom's own sampler at the entry
 			//             (w3, both sides) and a cosine toward the back (w5);
 			//    WALKER   everything else (eStartCoveredBottom).
-			//  Stacks follow the natural from-below walker exactly: OUT is
-			//  the medium in front, the entry is at the below medium's
-			//  index with the bottom's own key, and an exit through the
-			//  top carries the radiance factor (n_below / n_out)^2 at the
-			//  consumer (RestoreOpenSheetStacks' crossing index), which the
-			//  VALUE includes and the kray does not; an exit back through
-			//  the bottom stays in the below medium (factor 1).
+			//  Stacks: OUT is the medium in front; the ray arrives in the
+			//  BELOW medium (C = OUT plus O at the below medium's index).
+			//  The bottom is met from OUTSIDE itself, exactly as the top is
+			//  in the from-above model (Keyed( C, bottom key ), its key not
+			//  contained: a translucent bottom shows its ENTRY lobes -- its
+			//  front reflection -- as a separate translucent sheet seen from
+			//  behind does), and a ray it passes into the gap is back in C
+			//  (its own re-push dropped), so the top is met from inside O
+			//  and exits to OUT.  An exit through the top carries the
+			//  radiance factor (n_below / n_out)^2 at the consumer
+			//  (RestoreOpenSheetStacks' crossing index), which the VALUE
+			//  includes and the kray does not; an exit back through the
+			//  bottom stays in the below medium (factor 1).  (The natural
+			//  from-below WALKER of every other composite keeps the
+			//  DL-341 convention -- the bottom met from inside.)
 			// -----------------------------------------------------------
 			struct BackStacks
 			{
 				IORStack out;			//!< the medium in front of the sheet (OUT)
-				IORStack entry;			//!< what the bottom sees at the entry event
+				IORStack gap;			//!< C: the below medium (OUT plus O at its index), keyed O
+				IORStack entry;			//!< what the bottom sees at the entry event: C keyed to the bottom
 				Scalar   below;			//!< the below medium's index
 				Scalar   etaUp;			//!< radiance eta^2 of an exit through the top
-				BackStacks() : out( Scalar( 1 ) ), entry( Scalar( 1 ) ), below( 1 ), etaUp( 1 ) {}
+				BackStacks() : out( Scalar( 1 ) ), gap( Scalar( 1 ) ), entry( Scalar( 1 ) ), below( 1 ), etaUp( 1 ) {}
 			};
 
 			template<class P>
@@ -2300,9 +2317,11 @@ namespace RISE
 				BackStacks b;
 				b.out = OutsideOf( S );
 				b.below = s.BelowMediumIOR( ri, b.out, nm, b.out.top() );
-				b.entry = GapStackForBelow<P>( s, ri, b.out, nm );
-				b.entry.SetCurrentObject( BottomKey( s ) );
-				b.entry.push( b.below );
+				b.gap = b.out;
+				if( b.out.currentObject() ) {
+					b.gap.push( b.below );
+				}
+				b.entry = Keyed( b.gap, BottomKey( s ) );
 				const Scalar no = b.out.top();
 				b.etaUp = ( b.out.currentObject() && no > 0 && b.below > 0 && no != b.below )
 					? ( b.below / no ) * ( b.below / no ) : Scalar( 1 );
@@ -2344,10 +2363,7 @@ namespace RISE
 				}
 				T beta = P::Scaled( P::Kray( c0[k] ), Scalar( 1 ) / q );
 				Vector3 w = Vector3Ops::Normalize( c0[k].ray.Dir() );
-				IORStack gap( c0[k].ior_stack ? *c0[k].ior_stack : bs.entry );
-				if( bs.out.currentObject() ) {
-					gap.SetCurrentObject( bs.out.currentObject() );
-				}
+				IORStack gap( bs.gap );		// past the bottom: back in C (see THE BACK-FACE MODEL)
 				if( !Roulette<P>( s, beta, c0[k].type, 0, hs ) ) {
 					return;
 				}
