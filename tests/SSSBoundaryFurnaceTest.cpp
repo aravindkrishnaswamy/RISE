@@ -2,6 +2,7 @@
 // Independent reference: conservative complete scattering returns environment
 // radiance; a camera in a uniform exterior reads n_camera^2 times air radiance.
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -23,6 +24,7 @@ template<class F> static void Seed(F f, IORStack& stack, const Point3& p, const 
  if constexpr(std::is_invocable_v<F,IORStack&,const Point3&,const IScene&,Scalar>) f(stack,p,scene,nm);
  else f(stack,p,scene);
 }
+static std::string Scratch() { return std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp"; }
 static int checks=0,failures=0;
 static void Check(bool ok,const char* label) { checks++;if(!ok){failures++;std::printf("FAIL %s\n",label);} }
 static std::string Scene(bool rw,int ambient,int control) {
@@ -30,7 +32,7 @@ static std::string Scene(bool rw,int ambient,int control) {
  s<<"RISE ASCII SCENE 7\nfilm\n{\nwidth 16\nheight 16\n}\n"
   <<"orthographic_camera\n{\nlocation 0 0 4\nlookat 0 0 0\nup 0 1 0\nviewport_scale 2 2\n}\n"
   <<"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
-  <<"scalar_painter\n{\nname curve\nfile /tmp/dl334_measured_"<<getpid()<<".txt\n}\n";
+  <<"scalar_painter\n{\nname curve\nfile "<<Scratch()<<"/dl334_measured_"<<getpid()<<".txt\n}\n";
  if(control==2)s<<"perfectrefractor_material\n{\nname subject\nior curve\nrefractance white\n}\n";
  else if(control)s<<"lambertian_material\n{\nname subject\nreflectance white\n}\n";
  else s<<(rw?"randomwalk_sss_material":"subsurfacescattering_material")<<"\n{\nname subject\nior curve\nabsorption 0\nscattering "<<(rw?2:200)<<"\ng 0\nroughness 0\n"<<(rw?"max_bounces 8192\n":"")<<"}\n";
@@ -78,12 +80,12 @@ static void BoundaryChain(IJobPriv& job,double nm) {
  Check(outside.top()==1.17,"grazing midpoint physical exterior");
 }
 int main() {
- const std::string curveFile="/tmp/dl334_measured_"+std::to_string(getpid())+".txt";
+ const std::string curveFile=Scratch()+"/dl334_measured_"+std::to_string(getpid())+".txt";
  {std::ofstream f(curveFile); f<<"380 1.8\n465 1.6\n549 1.35\n611 1.2\n780 1.1\n";}
  const double nm[4]={420,500,611,700};
  for(bool rw:{false,true}) for(int ambient:{0,1,2,3}) for(int control:{0,1,2}) {
   IJobPriv* job=nullptr;Check(RISE_CreateJobPriv(&job),"create job");if(!job)continue;
-  const std::string sceneFile="/tmp/dl334_furnace_"+std::to_string(getpid())+".RISEscene";
+  const std::string sceneFile=Scratch()+"/dl334_furnace_"+std::to_string(getpid())+".RISEscene";
   {std::ofstream f(sceneFile);f<<Scene(rw,ambient,control);}
   const bool loaded=job->LoadAsciiSceneViaCst(sceneFile.c_str());Check(loaded,"load furnace");std::remove(sceneFile.c_str());if(!loaded){job->release();continue;}
   IRayCaster* caster=nullptr;const IShader* shader=job->GetShaders()->GetItem("global");

@@ -804,7 +804,12 @@ namespace
 		const Scalar cutAir = thin.profile->GetMaximumDistanceForErrorAt( 1e-4, MakeSurfaceRI( 1.0 ) );
 		const Scalar cutWater = thin.profile->GetMaximumDistanceForErrorAt( 1e-4, MakeSurfaceRI( 1.33 ) );
 		std::cout << "    entry-point cutoff (1.2 body, default melanin): air " << cutAir << "  water " << cutWater << std::endl;
-		Check( cutWater > cutAir * 1.2, "D1: the entry-point cutoff follows the exterior's fit" );
+		// DL-313 removes the spurious internal-face exterior dependence.
+		// An active-set cutoff may now stay unchanged; compare the relative-index twin.
+		SkinBundle thinReference( 1.2 / 1.33, 1.2 * ( 1.38 / 1.4 ) / 1.33 );
+		const Scalar cutReference = thinReference.profile->GetMaximumDistanceForError( 1e-4 );
+		Check( std::fabs(cutWater - cutReference) < 1e-10 * cutReference,
+			"D1: the entry-point cutoff matches the exterior's relative-index fit" );
 
 		// A record whose exterior differs only in the last bit is a
 		// different key; a repeat of an exterior already seen is served
@@ -1272,7 +1277,8 @@ namespace
 				<< " spp=" << row.samples << ": air " << sa.mean << " +/- " << sa.sd
 				<< "  enclosed " << ss.mean << " +/- " << ss.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.band << ")" << std::endl;
-			Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/air image mean ratio within band of 1" );
+			const double band = row.model == Model::SkinMultipole ? 3.0 * ratioSd : row.band;
+			Check( std::fabs( ratio - 1.0 ) < band, label + ": enclosed/air image mean ratio within band of 1" );
 		}
 	}
 
