@@ -325,11 +325,18 @@ void BDPTRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect
 	// Fresh splat film for the s<=1 / t==1 strategies.  Per animation
 	// frame this also discards the previous frame's splats (the Flush*
 	// overrides in BidirectionalRasterizerBase composite them).
-	safe_release( pSplatFilm );
-	pSplatFilm = new SplatFilm( width, height );
+	// DL-462: the second field of an interlaced frame keeps the film and
+	// the counter -- both fields' splats compose in the frame's single
+	// flush, divided by the full frame's sample count.
+	// (Same film dimensions by construction: both fields share one image.)
+	const bool continuing = mContinuingInterlacedFrame && pSplatFilm;
+	if( !continuing ) {
+		safe_release( pSplatFilm );
+		pSplatFilm = new SplatFilm( width, height );
 
-	// Reset adaptive sample counter for this render / frame.
-	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
+		// Reset adaptive sample counter for this render / frame.
+		mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
+	}
 
 	// Total sample count for splat film resolve/unresolve.  Must be set
 	// before any blocks render so the progressive hooks work.

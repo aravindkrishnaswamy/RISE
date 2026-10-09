@@ -62,6 +62,7 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   mProgressBase( 0 ),
   mProgressWeight( 0 ),
   mProgressTotal( 0 ),
+  mContinuingInterlacedFrame( false ),
   pAOVBuffers( 0 )
 {
 	if( pCaster ) {
@@ -1656,7 +1657,18 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// frames — VCM clears and rebuilds its store each call.  It may
 	// also flip progressiveConfig.enabled / samplesPerPass on for VM;
 	// the per-iteration loop below honors that just like RasterizeScene.
-	PreRenderSetup( pScene, pRect );
+	// DL-462: the second field of an interlaced frame continues the
+	// frame the first field started; tell the subclass hook so it keeps
+	// the frame-wide splat film / adaptive counter instead of resetting
+	// them (which dropped the first field's splats: ~half energy).
+	{
+		struct ContinuationFlag {
+			bool& f;
+			ContinuationFlag( bool& flag, bool v ) : f( flag ) { f = v; }
+			~ContinuationFlag() { f = false; }
+		} continuation( mContinuingInterlacedFrame, !resetAOVs );
+		PreRenderSetup( pScene, pRect );
+	}
 
 	// Capture the progress base the animation caller set for this
 	// frame — the per-pass loop below extends it; the caller advances

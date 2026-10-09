@@ -966,3 +966,37 @@ runs on every blocked delta-light connection in a scene with a gap
 (+10-25 % s/render on these 16 x 16 fixtures), against a variance
 reduction of four orders of magnitude on the curtain.
 
+
+### 11.3 Review follow-ups (`debt-followups`, 2026-10-08)
+
+- **Gap-draw recording keyed on what the see-through keys on.**  The light
+  walk used to record `passThroughProb` only for an `eRayRefraction` ray,
+  while the see-through side (`DeltaPassThroughChainToRoot`) recognises any
+  straight delta draw of a `HasDeltaPassThrough` material.  A future
+  wrapper emitting its gap ray with another type would have left the
+  probability 0 -- the light-tracing strategies then stop counting the
+  see-through while the see-through still counts them, and the weights sum
+  above 1.  The recording now keys on `HasDeltaPassThrough` plus an
+  undeviated continuation (`BDPTUtilities::IsStraightContinuation`, the
+  chain test's own tolerance), and `MISWeight` asserts the pairing on the
+  light prefix.  Bit-identical for every shipped wrapper (each emits its
+  gap as `eRayRefraction`, straight).
+- **One RayCaster resolution per subpath pair.**  `ConnectAndEvaluate`'s
+  per-(s,t) `dynamic_cast` to `RayCaster` (for `DeltaPassThroughShadowsActive`
+  and the walk) now reads a scoped thread-local that
+  `EvaluateAllStrategiesImpl` fills once per subpath pair (keyed on the
+  caster's address, restored on scope exit); a call outside that scope
+  resolves directly.
+- **Deterministic partition test** (`tests/BDPTSeeThroughMISPartitionTest.cpp`):
+  synthetic `L - S1..Sk - D - [D2] - E` paths split per strategy from one
+  set of full-path densities; `MISWeight` over the light-tracing,
+  interior and see-through strategies sums to 1 to 1e-9 (1 / 2 gaps, with
+  / without D2), stays <= 1 under light/eye depth caps, and a contrast
+  with the light side blind to the see-through reads 1.4998.
+- **Wrapper and cap rows** (`WeaveGapShadowTransmittanceTest`
+  `wrapcurtain`, `curtaincaps`, salted, n = 4, 64 spp): the omni curtain
+  through `fabric_material` / `coated_material` over a black-yarn gapped
+  weave, BDPT and VCM L/L0 against PT's -- fabric 0.24982 / 0.24984 vs PT
+  0.24981, coated 0.12288 / 0.12292 vs 0.12288; the plain curtain under
+  BDPT at `max_light_depth 1` (0.30011 / 0.10004 of L0 at g 0.3 / 0.1)
+  and `max_eye_depth 1` (0.30002 / 0.10004).
