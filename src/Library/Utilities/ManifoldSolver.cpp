@@ -42,11 +42,83 @@
 #include <typeinfo>
 #include <optional>
 #include <array>
+#include <cstring>
 
 namespace {
     using RISE::Implementation::SMSReferenceCounters;
     thread_local SMSReferenceCounters* smsActiveDiagnostics=nullptr;
     thread_local unsigned smsScratchDepth=0;
+
+    // Memoized dynamic type queries (DL-449). On Apple arm64 a failed
+    // type_info comparison falls back to strcmp of mangled names, and the
+    // extended predicate asks the same few questions of the same few
+    // materials/objects at every walk event and Newton iteration (42 % of
+    // its time was RTTI). Both answers below are exact functions of the key:
+    // dynamic_cast<To*>(p) depends only on the most-derived type of *p and
+    // on WHICH From subobject p addresses, and the latter is identified by
+    // p's offset from the complete object (distinct subobjects of one type
+    // have distinct offsets). The cached entry stores the result's offset
+    // from the complete object, so a hit reproduces dynamic_cast exactly.
+    // type_info objects have static storage, so a key never dangles; a type
+    // with several type_info copies merely occupies several entries.
+    constexpr unsigned kSMSTypeCacheSize=8;
+    template<class To,class From>
+    const To* SMSDynamicCast(const From* p) {
+        static_assert(std::is_polymorphic<From>::value,"SMSDynamicCast needs a polymorphic source");
+        if(!p) return nullptr;
+        const char* complete=static_cast<const char*>(dynamic_cast<const void*>(p));
+        const std::type_info* type=&typeid(*p);
+        const std::ptrdiff_t subobject=reinterpret_cast<const char*>(p)-complete;
+        struct Entry { const std::type_info* type=nullptr; std::ptrdiff_t subobject=0, offset=0; bool castable=false; };
+        thread_local Entry table[kSMSTypeCacheSize];
+        thread_local unsigned cursor=0;
+        for(const Entry& e:table) if(e.type==type && e.subobject==subobject)
+            return e.castable?reinterpret_cast<const To*>(complete+e.offset):nullptr;
+        const To* result=dynamic_cast<const To*>(p);
+        Entry& e=table[cursor++%kSMSTypeCacheSize];
+        e.type=type;e.subobject=subobject;e.castable=result!=nullptr;
+        e.offset=result?reinterpret_cast<const char*>(result)-complete:0;
+        return result;
+    }
+    // Capture memo (DL-449). SMSDomainReplay::Capture is a deterministic
+    // function of (scene, anchor, environment index, ordered stack object
+    // keys): it reads nothing else from the live stack, and the prepared
+    // scene is immutable while a render evaluates. A memo exists only
+    // inside an SMSCaptureMemoScope (one extended evaluation on one thread)
+    // and matches the anchor bit for bit, so a hit returns exactly what the
+    // uncached Capture would have computed.
+    struct SMSCaptureMemo {
+        struct Entry {
+            const RISE::IScene* scene=nullptr; RISE::Point3 anchor; RISE::Scalar environment=0;
+            std::vector<const RISE::IObject*> keys; bool captured=false;
+            RISE::Implementation::SMSStartingMedia media;
+        };
+        static constexpr std::size_t kEntries=8;
+        std::vector<Entry> entries;
+    };
+    thread_local SMSCaptureMemo* smsCaptureMemo=nullptr;
+    struct SMSCaptureMemoScope {
+        SMSCaptureMemo memo; bool owner=false;
+        SMSCaptureMemoScope() { if(!smsCaptureMemo) {smsCaptureMemo=&memo;owner=true;} }
+        ~SMSCaptureMemoScope() { if(owner) smsCaptureMemo=nullptr; }
+        SMSCaptureMemoScope(const SMSCaptureMemoScope&)=delete;
+        SMSCaptureMemoScope& operator=(const SMSCaptureMemoScope&)=delete;
+    };
+
+    // typeid(x)==typeid(T), memoized by the dynamic type_info address.
+    template<class T,class From>
+    bool SMSSameType(const From& x) {
+        static_assert(std::is_polymorphic<From>::value,"SMSSameType needs a polymorphic source");
+        const std::type_info* type=&typeid(x);
+        struct Entry { const std::type_info* type=nullptr; bool same=false; };
+        thread_local Entry table[kSMSTypeCacheSize];
+        thread_local unsigned cursor=0;
+        for(const Entry& e:table) if(e.type==type) return e.same;
+        const bool same=*type==typeid(T);
+        Entry& e=table[cursor++%kSMSTypeCacheSize];
+        e.type=type;e.same=same;
+        return same;
+    }
 
     void SMSResetResult(RISE::Implementation::ManifoldResult& result) {
         std::vector<RISE::Implementation::ManifoldVertex> buffer;
@@ -139,33 +211,32 @@ namespace {
     RISE::Point2 SMSPeriodicTextureAxes(const RISE::IObject& object, const RISE::Vector3& normal) {
         using namespace RISE;
         using namespace RISE::Implementation;
-        const auto* native = dynamic_cast<const Object*>(&object);
+        const auto* native = SMSDynamicCast<Object>(&object);
         const IGeometry* geometry = object.GetGeometry();
-        if(!native || typeid(object) != typeid(Object) || !native->UsesNativeTextureChart() || !geometry) return Point2(0,0);
-        const auto& type = typeid(*geometry);
-        if(type == typeid(SphereGeometry) || type == typeid(EllipsoidGeometry)) return Point2(1,0);
-        if(type == typeid(TorusGeometry)) return Point2(1,1);
-        if(type == typeid(CylinderGeometry)) {
+        if(!native || !SMSSameType<Object>(object) || !native->UsesNativeTextureChart() || !geometry) return Point2(0,0);
+        if(SMSSameType<SphereGeometry>(*geometry) || SMSSameType<EllipsoidGeometry>(*geometry)) return Point2(1,0);
+        if(SMSSameType<TorusGeometry>(*geometry)) return Point2(1,1);
+        if(SMSSameType<CylinderGeometry>(*geometry)) {
             const Vector3 localNormal = Vector3Ops::Normalize(Vector3Ops::Transform(
                 Matrix4Ops::Transpose(object.GetFinalTransformMatrix()),normal));
-            return Point2(dynamic_cast<const CylinderGeometry*>(geometry)->TextureLongitudeIsPeriodic(localNormal) ? 1 : 0,0);
+            return Point2(SMSDynamicCast<CylinderGeometry>(geometry)->TextureLongitudeIsPeriodic(localNormal) ? 1 : 0,0);
         }
         return Point2(0,0);
     }
     bool SMSConstantSeamMaterial(const RISE::IMaterial& material) {
         using namespace RISE;
         using namespace RISE::Implementation;
-        if(const auto* m = dynamic_cast<const PerfectReflectorMaterial*>(&material)) {
+        if(const auto* m = SMSDynamicCast<PerfectReflectorMaterial>(&material)) {
             const IPainter& tint=m->GetReflectance();
-            return typeid(tint) == typeid(UniformColorPainter);
+            return SMSSameType<UniformColorPainter>(tint);
         }
-        if(const auto* m = dynamic_cast<const PerfectRefractorMaterial*>(&material)) {
+        if(const auto* m = SMSDynamicCast<PerfectRefractorMaterial>(&material)) {
             const IPainter& tint=m->GetRefractivity();
-            return typeid(tint) == typeid(UniformColorPainter);
+            return SMSSameType<UniformColorPainter>(tint);
         }
-        if(const auto* m = dynamic_cast<const DielectricMaterial*>(&material))
+        if(const auto* m = SMSDynamicCast<DielectricMaterial>(&material))
             return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
-        if(const auto* m = dynamic_cast<const PolishedMaterial*>(&material))
+        if(const auto* m = SMSDynamicCast<PolishedMaterial>(&material))
             return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
         return false;
     }
@@ -173,11 +244,11 @@ namespace {
         if(!SMSConstantSeamMaterial(material)) return false;
         const auto* modifier=object.GetModifier();
         if(!modifier) return true;
-        const auto* audited=dynamic_cast<const RISE::ISMSModifierDifferential*>(modifier);
+        const auto* audited=SMSDynamicCast<RISE::ISMSModifierDifferential>(modifier);
         return audited && audited->HasSMSDifferentialContract() && !audited->SMSFrameDependsOnUV();
     }
     void SMSCompleteNativeHit(RISE::RayIntersection& hit,const RISE::IObjectManager* objects) {
-        if(const auto* native=dynamic_cast<const RISE::Implementation::ObjectManager*>(objects))
+        if(const auto* native=SMSDynamicCast<RISE::Implementation::ObjectManager>(objects))
             native->CompleteShadingSignals(hit.geometric,hit.pObject);
     }
     struct SMSDeltaDirections {
@@ -214,14 +285,14 @@ namespace {
             law.hasTransmission=Optics::CalculateRefractedRay(shading,etaI,etaT,law.transmitted);
             law.totalInternalReflection=!law.hasTransmission;
             bool fallbackAllowed=true;
-            if(law.hasTransmission && (dynamic_cast<const Implementation::DielectricMaterial*>(material)
-                    || dynamic_cast<const Implementation::PerfectRefractorMaterial*>(material))) {
+            if(law.hasTransmission && (SMSDynamicCast<Implementation::DielectricMaterial>(material)
+                    || SMSDynamicCast<Implementation::PerfectRefractorMaterial>(material))) {
                 // Native dielectric/refractor SPFs gate their DL-111 fallback on ref < 1,
                 // before changing the incidence. Film saturation is not TIR:
                 // retain proposal exploration mass, but reject this zero lobe.
                 Scalar reflectance=Optics::CalculateDielectricReflectanceCosine(
                     std::fabs(Vector3Ops::Dot(incoming,eventNormal)),etaI,etaT);
-                const auto* dielectric=dynamic_cast<const Implementation::DielectricSPF*>(material->GetSPF());
+                const auto* dielectric=SMSDynamicCast<Implementation::DielectricSPF>(material->GetSPF());
                 if(dielectric && dielectric->EvaluateSpecularFresnelAfterRefraction(
                     std::fabs(Vector3Ops::Dot(incoming,shading)),etaI,etaT,exiting,wavelength,reflectance))
                     law.fresnelCosine=std::fabs(Vector3Ops::Dot(incoming,shading));
@@ -235,10 +306,10 @@ namespace {
                 law.transmitted=incoming;
                 law.hasTransmission=Optics::CalculateRefractedRay(geom,etaI,etaT,law.transmitted);
                 law.totalInternalReflection=!law.hasTransmission;
-                if(law.hasTransmission && (dynamic_cast<const Implementation::DielectricMaterial*>(material)
-                    || dynamic_cast<const Implementation::PerfectRefractorMaterial*>(material))) {
+                if(law.hasTransmission && (SMSDynamicCast<Implementation::DielectricMaterial>(material)
+                    || SMSDynamicCast<Implementation::PerfectRefractorMaterial>(material))) {
                     Scalar reflectance=Optics::CalculateDielectricReflectanceCosine(law.fresnelCosine,etaI,etaT);
-                    if(const auto* dielectric=dynamic_cast<const Implementation::DielectricSPF*>(material->GetSPF()))
+                    if(const auto* dielectric=SMSDynamicCast<Implementation::DielectricSPF>(material->GetSPF()))
                         dielectric->EvaluateSpecularFresnelAfterRefraction(law.fresnelCosine,etaI,etaT,exiting,wavelength,reflectance);
                     if(reflectance>=1) law.hasTransmission=false;
                 }
@@ -256,7 +327,7 @@ namespace {
     // in the context and normalize only the native consumed event field.
     RISE::Vector3 SMSNativeEventNormal(const RISE::IMaterial& material,
         const RISE::RayIntersectionGeometric& hit) {
-        return dynamic_cast<const RISE::Implementation::PolishedMaterial*>(&material)
+        return SMSDynamicCast<RISE::Implementation::PolishedMaterial>(&material)
             ? RISE::Vector3Ops::Normalize(hit.vNormal) : hit.onb.w();
     }
     bool SMSNeedsNativeFrame(const RISE::Implementation::ManifoldVertex& v) {
@@ -289,7 +360,7 @@ namespace {
         }
         const auto law=SMSNativeDirections(Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous)),
             v.normal,v.geomNormal,v.etaI,v.etaT,v.canRefract && v.pMaterial
-                && typeid(*v.pMaterial)!=typeid(Implementation::PolishedMaterial),false,v.pMaterial,v.isExiting,wavelength);
+                && !SMSSameType<Implementation::PolishedMaterial>(*v.pMaterial),false,v.pMaterial,v.isExiting,wavelength);
         if(!v.isReflection && !law.hasTransmission) v.valid=false;
         if(branch) *branch=(v.isReflection?unsigned(law.reflectionFallback)
             :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2)
@@ -341,15 +412,15 @@ namespace {
 
     bool SMSAuditedModifier(const RISE::IObject& object) {
         const auto* modifier=object.GetModifier();
-        const auto* differential=dynamic_cast<const RISE::ISMSModifierDifferential*>(modifier);
+        const auto* differential=SMSDynamicCast<RISE::ISMSModifierDifferential>(modifier);
         if(!modifier) return true;
         if(!differential || !differential->HasSMSDifferentialContract()) return false;
         if(!differential->SMSFrameDependsOnUV()) return true;
-        const auto* native=dynamic_cast<const RISE::Implementation::Object*>(&object);
+        const auto* native=SMSDynamicCast<RISE::Implementation::Object>(&object);
         if(!native) return false;
         const auto* generator=native->SMSUVGenerator();
         if(!generator) return true; // Audited native geometry chart.
-        const auto* uv=dynamic_cast<const RISE::ISMSUVDifferential*>(generator);
+        const auto* uv=SMSDynamicCast<RISE::ISMSUVDifferential>(generator);
         return uv && uv->HasSMSUVDifferentialContract();
     }
     RISE::Vector3 SMSNormalizedDifferential(const RISE::Vector3& value,
@@ -389,9 +460,9 @@ namespace {
             SMSCompleteNativeHit(raw,objects);SMSCompleteNativeHit(rp,objects);SMSCompleteNativeHit(rm,objects);
             if(!raw.geometric.bHit || !rp.geometric.bHit || !rm.geometric.bHit) return false;
             const auto* geometry=center.pObject->GetGeometry();
-            const bool nativeMesh=dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>(raw.geometric.signals.pProvider)
-                || (geometry && (typeid(*geometry)==typeid(Implementation::TriangleMeshGeometryIndexed)
-                    || typeid(*geometry)==typeid(Implementation::TriangleMeshGeometry)));
+            const bool nativeMesh=SMSDynamicCast<Implementation::TriangleMeshGeometryIndexed>(raw.geometric.signals.pProvider)
+                || (geometry && (SMSSameType<Implementation::TriangleMeshGeometryIndexed>(*geometry)
+                    || SMSSameType<Implementation::TriangleMeshGeometry>(*geometry)));
             if(nativeMesh) {
                 const auto& a=raw.geometric.signals;const auto& b=rp.geometric.signals;const auto& c=rm.geometric.signals;
                 const bool samePrimitive=a.primId>=0 && a.primId==b.primId && a.primId==c.primId
@@ -404,8 +475,8 @@ namespace {
                     // Native UV charts can change independently of a flat
                     // normal. Only an audited generated mapping supplies its
                     // own derivative across a primitive boundary.
-                    const auto* modifier=dynamic_cast<const ISMSModifierDifferential*>(raw.pModifier);
-                    const auto* native=dynamic_cast<const Implementation::Object*>(center.pObject);
+                    const auto* modifier=SMSDynamicCast<ISMSModifierDifferential>(raw.pModifier);
+                    const auto* native=SMSDynamicCast<Implementation::Object>(center.pObject);
                     if(modifier && modifier->SMSFrameDependsOnUV()
                         && (!native || !native->SMSUVGenerator())) return false;
                     const auto flat=[](const RayIntersectionGeometric& hit) {
@@ -439,13 +510,13 @@ namespace {
                 (rp.geometric.ptCoord.y-rm.geometric.ptCoord.y)/(2*step));
             Vector3 normal=input.normal,frameW=input.frameW;
             if(raw.pModifier) {
-                const auto* provider=dynamic_cast<const ISMSModifierDifferential*>(raw.pModifier);
+                const auto* provider=SMSDynamicCast<ISMSModifierDifferential>(raw.pModifier);
                 if(!provider) return false;
                 if(provider->SMSFrameDependsOnUV()) {
-                    const auto* native=dynamic_cast<const Implementation::Object*>(center.pObject);
+                    const auto* native=SMSDynamicCast<Implementation::Object>(center.pObject);
                     if(!native) return false;
                     if(const auto* generator=native->SMSUVGenerator()) {
-                        const auto* uv=dynamic_cast<const ISMSUVDifferential*>(generator);
+                        const auto* uv=SMSDynamicCast<ISMSUVDifferential>(generator);
                         // Object::IntersectRay generates UVs before promoting
                         // normals to world space. Reconstruct that exact input
                         // convention, including the normalization chain rule.
@@ -463,7 +534,7 @@ namespace {
             }
             auto modified=raw.geometric;
             if(raw.pModifier) raw.pModifier->Modify(modified);
-            if(dynamic_cast<const Implementation::PolishedMaterial*>(center.pMaterial)) {
+            if(SMSDynamicCast<Implementation::PolishedMaterial>(center.pMaterial)) {
                 dn=SMSNormalizedDifferential(modified.vNormal,normal);
             } else {
                 dn=std::fabs(Vector3Ops::Magnitude(modified.onb.w())-1)>Scalar(1e-6)
@@ -514,7 +585,7 @@ namespace {
     RISE::Point3 SMSReferenceSurfacePoint(const RISE::IObject& object,
         const RISE::RayIntersectionGeometric& hit) {
         using namespace RISE;
-        const auto* native = dynamic_cast<const Implementation::Object*>(&object);
+        const auto* native = SMSDynamicCast<Implementation::Object>(&object);
         if(!native) return hit.ptIntersection;
         const Vector3 localDirection = Vector3Ops::Normalize(Vector3Ops::Transform(
             object.GetFinalInverseTransformMatrix(),hit.ray.Dir()));
@@ -531,14 +602,13 @@ bool RISE::Implementation::SMSQueryDomain::Valid() const
 
 bool RISE::Implementation::SMSDomainReplay::PotentialCaster(const IMaterial& material)
 {
-    const auto& type=typeid(material);
-    if(type!=typeid(DielectricMaterial) && type!=typeid(PerfectRefractorMaterial)
-        && type!=typeid(PolishedMaterial) && type!=typeid(PerfectReflectorMaterial)) return false;
+    if(!SMSSameType<DielectricMaterial>(material) && !SMSSameType<PerfectRefractorMaterial>(material)
+        && !SMSSameType<PolishedMaterial>(material) && !SMSSameType<PerfectReflectorMaterial>(material)) return false;
     const IScalarPainter* index = nullptr;
-    if(const auto* m = dynamic_cast<const DielectricMaterial*>(&material)) index = &m->GetIOR();
-    else if(const auto* m = dynamic_cast<const PerfectRefractorMaterial*>(&material)) index = &m->GetIOR();
-    else if(const auto* m = dynamic_cast<const PolishedMaterial*>(&material)) index = &m->GetIOR();
-    else return dynamic_cast<const PerfectReflectorMaterial*>(&material) != nullptr;
+    if(const auto* m = SMSDynamicCast<DielectricMaterial>(&material)) index = &m->GetIOR();
+    else if(const auto* m = SMSDynamicCast<PerfectRefractorMaterial>(&material)) index = &m->GetIOR();
+    else if(const auto* m = SMSDynamicCast<PolishedMaterial>(&material)) index = &m->GetIOR();
+    else return SMSDynamicCast<PerfectReflectorMaterial>(&material) != nullptr;
     return index->IsPositionIndependent();
 }
 
@@ -565,22 +635,22 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
     bool hg = false;
     bool finiteDielectric = false;
     bool polishedReflectionOnly = false;
-    if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(&material)) {
+    if(const auto* dielectric = SMSDynamicCast<DielectricMaterial>(&material)) {
         index = &dielectric->GetIOR();
         scattering = &dielectric->GetScattering();
         hg = dielectric->GetHG();
         finiteDielectric = true;
     }
-    else if(const auto* refractor = dynamic_cast<const PerfectRefractorMaterial*>(&material))
+    else if(const auto* refractor = SMSDynamicCast<PerfectRefractorMaterial>(&material))
         index = &refractor->GetIOR();
-    else if(const auto* polished = dynamic_cast<const PolishedMaterial*>(&material)) {
+    else if(const auto* polished = SMSDynamicCast<PolishedMaterial>(&material)) {
         index = &polished->GetIOR();
         scattering = &polished->GetScattering();
         hg = polished->GetHG();
         coatTint = &polished->GetTransmittance();
         polishedReflectionOnly = true; // the substrate has no clear delta transmission
     }
-    else if(!dynamic_cast<const PerfectReflectorMaterial*>(&material))
+    else if(!SMSDynamicCast<PerfectReflectorMaterial>(&material))
         return false;
     // A successful point query does not certify constant IOR throughout a root basin.
     if(index && !index->IsPositionIndependent()) return false;
@@ -619,14 +689,47 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
         && std::isfinite(result.attenuation) && result.attenuation >= 0;
 }
 
+namespace
+{
+    bool SMSCaptureUncached(const RISE::IScene& scene,const RISE::Point3& anchor,
+        const RISE::IORStack& live,RISE::Implementation::SMSStartingMedia& result);
+}
+
 bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     const Point3& anchor, const IORStack& live, SMSStartingMedia& result)
 {
+    SMSCaptureMemo* memo=smsCaptureMemo;
+    if(!memo) return SMSCaptureUncached(scene,anchor,live,result);
+    const Scalar environment=live.EnvironmentIOR();
+    const std::vector<const IObject*> keys=live.ObjectKeys();
+    for(const auto& entry:memo->entries)
+        if(entry.scene==&scene && !std::memcmp(&entry.anchor,&anchor,sizeof(Point3))
+            && !std::memcmp(&entry.environment,&environment,sizeof(Scalar)) && entry.keys==keys) {
+            result=entry.media;
+            return entry.captured;
+        }
+    const bool captured=SMSCaptureUncached(scene,anchor,live,result);
+    if(memo->entries.size()<SMSCaptureMemo::kEntries) {
+        SMSCaptureMemo::Entry entry;
+        entry.scene=&scene;entry.anchor=anchor;entry.environment=environment;
+        entry.keys=keys;entry.captured=captured;entry.media=result;
+        memo->entries.push_back(std::move(entry));
+    }
+    return captured;
+}
+
+namespace
+{
+bool SMSCaptureUncached(const RISE::IScene& scene,
+    const RISE::Point3& anchor, const RISE::IORStack& live, RISE::Implementation::SMSStartingMedia& result)
+{
+    using namespace RISE;
+    using namespace RISE::Implementation;
     result = SMSStartingMedia();
     result.environmentIndex = live.EnvironmentIOR();
     if(!std::isfinite(result.environmentIndex) || result.environmentIndex <= 0
         || !scene.GetObjects() || scene.GetGlobalMedium()) return false;
-    const auto* preparedObjects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    const auto* preparedObjects = SMSDynamicCast<ObjectManager>(scene.GetObjects());
     if(!preparedObjects || !preparedObjects->ExtendedSMSAllowed()
         || preparedObjects->HasUncertainSMSNormalOrientation()) return false;
     struct Objects : IEnumCallback<IObject> {
@@ -678,6 +781,8 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     return true;
 }
 
+}
+
 bool RISE::Implementation::SMSDomainReplay::BuildStack(const SMSStartingMedia& media,
     SMSQueryDomain domain, IORStack& result)
 {
@@ -709,7 +814,7 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
     if(!Query(material, hit, next, domain, query)
         || (reflection ? !query.reflection : !query.transmission)) return false;
     if(!std::isfinite(next.top()) || next.top() <= 0) return false;
-    if(dynamic_cast<const PolishedMaterial*>(&material)) {
+    if(SMSDynamicCast<PolishedMaterial>(&material)) {
         // The coat is a reflection on the incident ambient side, not a
         // transmissive open-sheet crossing. Native polished never pops
         // membership or reverses ambient/coat indices on a back face.
@@ -754,7 +859,7 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
         const Scalar wavelength = domain.kind == SMSQueryDomain::Wavelength ? domain.nm
             : ScalarPainterRGB::kChannelNM[domain.component];
         if(query.customFresnel && !(query.transmission && !law.hasTransmission)) {
-            const auto* dielectric=dynamic_cast<const DielectricSPF*>(material.GetSPF());
+            const auto* dielectric=SMSDynamicCast<DielectricSPF>(material.GetSPF());
             if(!dielectric || !dielectric->EvaluateSpecularFresnelAfterRefraction(cosine,etaI,etaT,exiting,wavelength,fresnel))
                 return false;
         }
@@ -820,7 +925,7 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
     auto& chain=scratch.Vertices(0,config.maxChainDepth);
     chain.reserve(vertices.size());
     for(SMSDomainVertex& record : vertices) {
-        if(const auto* objects=dynamic_cast<const ObjectManager*>(scene.GetObjects()))
+        if(const auto* objects=SMSDynamicCast<ObjectManager>(scene.GetObjects()))
             objects->CompleteShadingSignals(record.context,record.geometry.pObject);
         ManifoldVertex vertex = record.geometry;
         if(!vertex.pMaterial || !vertex.pObject || !SMSAuditedModifier(*vertex.pObject)) { return; }
@@ -865,13 +970,13 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
         Scalar contextSlope=0;
         if(convergenceThreshold > 0) {
             Point2 axes = SMSPeriodicTextureAxes(*vertex.pObject,hit.geometric.UnflippedGeomNormal());
-            const auto* nativeObject=dynamic_cast<const Object*>(vertex.pObject);
+            const auto* nativeObject=SMSDynamicCast<Object>(vertex.pObject);
             const IGeometry* geometry=vertex.pObject->GetGeometry();
             // Authored mesh chart boundaries are NOT periodic aliases. A
             // varying boundary context remains uncertain, while a certified
             // constant event law does not depend on its UV representation.
             if(nativeObject && nativeObject->UsesNativeTextureChart() && geometry
-                && (typeid(*geometry)==typeid(TriangleMeshGeometryIndexed) || typeid(*geometry)==typeid(TriangleMeshGeometry))) axes=Point2(1,1);
+                && (SMSSameType<TriangleMeshGeometryIndexed>(*geometry) || SMSSameType<TriangleMeshGeometry>(*geometry))) axes=Point2(1,1);
             const Scalar band = std::sqrt(std::numeric_limits<Scalar>::epsilon());
             bool meshEdge=false;
             if(nativeObject && nativeObject->UsesNativeTextureChart() && geometry) {
@@ -879,22 +984,22 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                 // DisplacedGeometry forwards its realized indexed mesh's
                 // actual hit payload. The provider, not the outer recipe,
                 // identifies the triangle whose chart boundary was hit.
-                const auto* indexed=dynamic_cast<const TriangleMeshGeometryIndexed*>(signal.pProvider);
-                if(indexed && typeid(*indexed)==typeid(TriangleMeshGeometryIndexed)) {
+                const auto* indexed=SMSDynamicCast<TriangleMeshGeometryIndexed>(signal.pProvider);
+                if(indexed && SMSSameType<TriangleMeshGeometryIndexed>(*indexed)) {
                     meshEdge=signal.primId<0
                         || std::min({signal.baryA,signal.baryB,1-signal.baryA-signal.baryB})<=band;
-                } else if(typeid(*geometry)==typeid(TriangleMeshGeometryIndexed)) {
+                } else if(SMSSameType<TriangleMeshGeometryIndexed>(*geometry)) {
                     meshEdge=true; // missing native triangle provenance is uncertain
-                } else if(typeid(*geometry)==typeid(TriangleMeshGeometry)) {
-                    meshEdge=dynamic_cast<const TriangleMeshGeometry*>(geometry)->NativeTriangleEdgeDistance(hit.geometric)<=band;
+                } else if(SMSSameType<TriangleMeshGeometry>(*geometry)) {
+                    meshEdge=SMSDynamicCast<TriangleMeshGeometry>(geometry)->NativeTriangleEdgeDistance(hit.geometric)<=band;
                 }
             }
             const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
                 || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
             const bool uvIndependent=SMSContextIgnoresUV(*vertex.pObject,*vertex.pMaterial);
             if(seam && !uvIndependent) return;
-            const bool nativeOpticalPrice=dynamic_cast<const DielectricSPF*>(vertex.pMaterial->GetSPF())
-                || dynamic_cast<const PerfectRefractorMaterial*>(vertex.pMaterial);
+            const bool nativeOpticalPrice=SMSDynamicCast<DielectricSPF>(vertex.pMaterial->GetSPF())
+                || SMSDynamicCast<PerfectRefractorMaterial>(vertex.pMaterial);
             if(nativeOpticalPrice || meshEdge || hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
                 && !SMSConstantSeamMaterial(*vertex.pMaterial))) {
                 // Authored normals can switch transmission fallback and its
@@ -910,7 +1015,7 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                 const auto eventBranch=[&](const RayIntersectionGeometric& context) {
                     const auto law=SMSNativeDirections(context.ray.Dir(),SMSNativeEventNormal(*vertex.pMaterial,context),
                         context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract
-                            &&typeid(*vertex.pMaterial)!=typeid(PolishedMaterial),false,vertex.pMaterial,
+                            &&!SMSSameType<PolishedMaterial>(*vertex.pMaterial),false,vertex.pMaterial,
                         vertex.isExiting,SMSDomainWavelength(domain));
                     return (vertex.isReflection?unsigned(law.reflectionFallback)
                         :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2))
@@ -922,8 +1027,8 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                 // reconstruction; their numeric quantization is not a change
                 // in Fresnel support. Their input contexts are checked below.
                 const auto opticalWeight=[&](const RayIntersectionGeometric& context,Scalar& weight) {
-                    const auto* dielectric=dynamic_cast<const DielectricSPF*>(vertex.pMaterial->GetSPF());
-                    if(!dielectric && !dynamic_cast<const PerfectRefractorMaterial*>(vertex.pMaterial)) {weight=1;return true;}
+                    const auto* dielectric=SMSDynamicCast<DielectricSPF>(vertex.pMaterial->GetSPF());
+                    if(!dielectric && !SMSDynamicCast<PerfectRefractorMaterial>(vertex.pMaterial)) {weight=1;return true;}
                     const bool custom=dielectric && dielectric->GetARLayerCount();
                     const auto law=SMSNativeDirections(context.ray.Dir(),SMSNativeEventNormal(*vertex.pMaterial,context),
                         context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract,custom,
@@ -5323,7 +5428,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		}
 
 		SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, seedIor );
-        const bool polishedCoat=dynamic_cast<const PolishedMaterial*>(pMat)!=nullptr;
+        const bool polishedCoat=SMSDynamicCast<PolishedMaterial>(pMat)!=nullptr;
 
 		if( !specInfo.isSpecular )
 		{
@@ -5849,7 +5954,7 @@ void ManifoldSolver::WarnHWSSLegacyMode()
 bool ManifoldSolver::ExtendedModeActive(const IScene& scene) const
 {
     if(!config.extendedMode) return false;
-    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    const auto* objects = SMSDynamicCast<ObjectManager>(scene.GetObjects());
     return objects && objects->ExtendedSMSAllowed();
 }
 
@@ -5862,14 +5967,14 @@ bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaste
         || !std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
         || config.extendedEventFloor > 0.5 || config.photonCount || scene.GetGlobalMedium()
         || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) return false;
-    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    const auto* objects = SMSDynamicCast<ObjectManager>(scene.GetObjects());
     if(!objects || objects->HasRejectedTransmissiveCaster()) return false;
     // HG eligibility is domain-dependent, unlike position independence.
     // Finite-Phong dielectric warps retain the adopted delta-limit policy.
     RayIntersectionGeometric context(Ray(point, Vector3(0,0,1)), nullRasterizerState);
     for(const IObject* object : objects->ExtendedSMSCasters()) {
         if(!SMSAuditedModifier(*object)) return false;
-        const auto* dielectric = dynamic_cast<const DielectricMaterial*>(object->GetMaterial());
+        const auto* dielectric = SMSDynamicCast<DielectricMaterial>(object->GetMaterial());
         if(!dielectric || !dielectric->GetHG()) continue;
         const IScalarPainter& scattering = dielectric->GetScattering();
         if(nm > 0) {
@@ -5915,12 +6020,12 @@ void ManifoldSolver::ExtendedAnchorEligibleNM(const IScene& scene, const IRayCas
         || !std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
         || config.extendedEventFloor > 0.5 || config.photonCount || scene.GetGlobalMedium()
         || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) { none(); return; }
-    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    const auto* objects = SMSDynamicCast<ObjectManager>(scene.GetObjects());
     if(!objects || objects->HasRejectedTransmissiveCaster()) { none(); return; }
     RayIntersectionGeometric context(Ray(point, Vector3(0,0,1)), nullRasterizerState);
     for(const IObject* object : objects->ExtendedSMSCasters()) {
         if(!SMSAuditedModifier(*object)) { none(); return; }
-        const auto* dielectric = dynamic_cast<const DielectricMaterial*>(object->GetMaterial());
+        const auto* dielectric = SMSDynamicCast<DielectricMaterial>(object->GetMaterial());
         if(!dielectric || !dielectric->GetHG()) continue;
         const IScalarPainter& scattering = dielectric->GetScattering();
         for(unsigned int i=0; i<count; ++i) {
@@ -5969,10 +6074,10 @@ namespace {
     // than interpreting a back-facing sheet as a glass-to-air crossing.
     bool LegacyPolishedKray(const ManifoldVertex& vertex,const Vector3& wi,
         Scalar etaI,Scalar etaT,Scalar nm,Scalar kray[3]) {
-        if(!vertex.pMaterial || !dynamic_cast<const PolishedMaterial*>(vertex.pMaterial)) return false;
+        if(!vertex.pMaterial || !SMSDynamicCast<PolishedMaterial>(vertex.pMaterial)) return false;
         kray[0]=kray[1]=kray[2]=0;
         if(!vertex.isReflection) return true;
-        const auto* brdf=dynamic_cast<const PolishedBRDF*>(vertex.pMaterial->GetBSDF());
+        const auto* brdf=SMSDynamicCast<PolishedBRDF>(vertex.pMaterial->GetBSDF());
         if(!brdf) return false;
         RayIntersectionGeometric hit(Ray(vertex.position,-wi),nullRasterizerState);
         hit.bHit=true;hit.ptIntersection=vertex.position;hit.ptObjIntersec=vertex.objectPosition;
@@ -7665,7 +7770,7 @@ bool ManifoldSolver::BuildExtendedWalk(const Point3& start,const Point3& end,
 {
     SMSWorkerScratchLease scratch(true,config.referenceCounters);
     vertices.clear();
-    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    const auto* objects = SMSDynamicCast<ObjectManager>(scene.GetObjects());
     if(!objects || !objects->ExtendedSMSAllowed() || !domain.Valid() || !config.maxChainDepth
         || !std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
         || config.extendedEventFloor > 0.5) return false;
@@ -7730,7 +7835,7 @@ bool ManifoldSolver::BuildExtendedWalk(const Point3& start,const Point3& end,
         if(query.customFresnel && !tir) {
             const Scalar wavelength = domain.kind == SMSQueryDomain::Wavelength ? domain.nm
                 : ScalarPainterRGB::kChannelNM[domain.component];
-            const auto* dielectric=dynamic_cast<const DielectricSPF*>(hit.pMaterial->GetSPF());
+            const auto* dielectric=SMSDynamicCast<DielectricSPF>(hit.pMaterial->GetSPF());
             if(!dielectric || !dielectric->EvaluateSpecularFresnelAfterRefraction(
                 cosine,etaI,etaT,exiting,wavelength,fresnel)) return false;
         }
@@ -7978,7 +8083,7 @@ bool ManifoldSolver::ExtendedAreaPartitionApplies(const IScene& scene,const IRay
         || !luminary->GetMaterial()->GetEmitter()) return false;
     if(!pdfSelect) return true;
     const ILuminaryManager* manager=caster.GetLuminaries();
-    const auto* luminaryManager=dynamic_cast<const LuminaryManager*>(manager);
+    const auto* luminaryManager=SMSDynamicCast<LuminaryManager>(manager);
     if(!luminaryManager) return false;
     const Scalar pmf=ls->PdfSelectLuminary(scene,
         const_cast<LuminaryManager*>(luminaryManager)->getLuminaries(),*luminary,Point3(0,0,0),Vector3(0,0,1));
@@ -7992,6 +8097,7 @@ void ManifoldSolver::CanonicalExtendedRoots(const Point3& start,const Vector3& s
     const SMSDomainRoot& topology,const RasterizerState& raster,std::vector<SMSDomainRoot>& roots,
     const SMSDomainRoot* stopAt) const
 {
+    SMSCaptureMemoScope captureMemo;
     roots.clear();
     auto* counters=config.referenceCounters;
     const std::size_t k=topology.vertices.size();
@@ -8028,8 +8134,8 @@ void ManifoldSolver::CanonicalExtendedRoots(const Point3& start,const Vector3& s
         const IObject* object=vertex.pObject;
         if(!vertex.isReflection || !object) continue;
         const IGeometry* geometry=object->GetGeometry();
-        if(!geometry || (!dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry)
-            && !dynamic_cast<const TriangleMeshGeometry*>(geometry))) continue;
+        if(!geometry || (!SMSDynamicCast<TriangleMeshGeometryIndexed>(geometry)
+            && !SMSDynamicCast<TriangleMeshGeometry>(geometry))) continue;
         const auto box=geometry->GenerateBoundingBox();
         const auto transform=object->GetFinalTransformMatrix();
         const Point3 localY=Point3Ops::Transform(object->GetFinalInverseTransformMatrix(),y);
@@ -8090,7 +8196,7 @@ bool ManifoldSolver::ReplayExtendedChain(const SMSChainRecord& rec,const IObject
         || k>config.maxChainDepth || (config.targetBounces && k!=config.targetBounces)
         || !domain.Valid() || !std::isfinite(config.extendedEventFloor)
         || config.extendedEventFloor<=0 || config.extendedEventFloor>0.5) return false;
-    const auto* objects=dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    const auto* objects=SMSDynamicCast<ObjectManager>(scene.GetObjects());
     if(!objects || !objects->ExtendedSMSAllowed()) return false;
     const auto& casters=objects->ExtendedSMSCasters();
     if(casters.empty()) return false;
@@ -8139,7 +8245,7 @@ bool ManifoldSolver::ReplayExtendedChain(const SMSChainRecord& rec,const IObject
         if(query.customFresnel && !tir) {
             const Scalar wavelength=domain.kind==SMSQueryDomain::Wavelength ? domain.nm
                 : ScalarPainterRGB::kChannelNM[domain.component];
-            const auto* dielectric=dynamic_cast<const DielectricSPF*>(hit.pMaterial->GetSPF());
+            const auto* dielectric=SMSDynamicCast<DielectricSPF>(hit.pMaterial->GetSPF());
             if(!dielectric || !dielectric->EvaluateSpecularFresnelAfterRefraction(
                 law.fresnelCosine,etaI,etaT,exiting,wavelength,fresnel)) return false;
         }
@@ -8172,6 +8278,7 @@ int ManifoldSolver::ClassifyExtendedChain(const SMSChainRecord& rec,const IObjec
     const Point3& y,const Vector3& yNormal,const IScene& scene,SMSQueryDomain domain,
     const RasterizerState& raster,const std::vector<SMSDomainRoot>* ownedSet) const
 {
+    SMSCaptureMemoScope captureMemo;
     auto* counters=config.referenceCounters;
     // PT's chain as a topology T in this domain.
     SMSDomainRoot topology(domain,IORStack(rec.anchorStack.EnvironmentIOR()));
@@ -8242,6 +8349,7 @@ bool ManifoldSolver::ExtendedEmitterHitOwned(const SMSChainRecord& rec,const IOb
     const Point3& hitPoint,const Vector3& yNormal,const IScene& scene,const IRayCaster& caster,
     SMSQueryDomain domain,const RasterizerState& raster) const
 {
+    SMSCaptureMemoScope captureMemo;
     if(domain.kind==SMSQueryDomain::RGBComponent) {
         bool evaluate[3]={false,false,false},owned[3]={false,false,false};
         if(domain.component<3) evaluate[domain.component]=true;
@@ -8290,6 +8398,7 @@ void ManifoldSolver::ExtendedEmitterHitOwnedRGB(const SMSChainRecord& rec,const 
     const Point3& hitPoint,const Vector3& yNormal,const IScene& scene,const IRayCaster& caster,
     const bool evaluate[3],bool owned[3],const RasterizerState& raster) const
 {
+    SMSCaptureMemoScope captureMemo;
     auto* counters=config.referenceCounters;
     owned[0]=owned[1]=owned[2]=false;
     unsigned int queries=0;
@@ -8418,6 +8527,7 @@ RISEPel ManifoldSolver::EvaluateExtendedAreaReference(const Point3& pos,const Ve
     const LightSample& light,const IORStack& stack,const RayIntersectionGeometric* context,
     Scalar nm,int rgbComponent) const
 {
+    SMSCaptureMemoScope captureMemo;
     // Estimator B: one proposal walk yields a topology T; its owned roots
     // O(T,y) are the canonical solves (the same predicate PT suppresses
     // with); K counts independent walks until T recurs. The deposit
@@ -8652,7 +8762,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
 	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager* pLumManager = SMSDynamicCast<LuminaryManager>( pLumMgr );
 	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
@@ -9659,7 +9769,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
 	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager* pLumManager = SMSDynamicCast<LuminaryManager>( pLumMgr );
 	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
@@ -10132,7 +10242,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
 	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager* pLumManager = SMSDynamicCast<LuminaryManager>( pLumMgr );
 	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
@@ -10622,7 +10732,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
 	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager* pLumManager = SMSDynamicCast<LuminaryManager>( pLumMgr );
 	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
