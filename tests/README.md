@@ -1322,6 +1322,21 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   omni light, a moving luminary. Red on `c73078dc2`: growing +2.0 % (z +142),
   moving +1.7 % (z +105), parented -1.7 % (z -1513); green 24/0.
 
+- `LuminarySamplerAreaTest` (DL-459 / DL-460): object-space area-uniformity
+  of the Bezier, SDF and clipped-plane luminary samplers and the matching
+  `GetArea`. A: areas against closed forms / independent quadrature (a
+  coplanar dart against a pixel-occupancy count of its image) and the
+  rectangle's legacy arithmetic; B: region shares (5 sigma) and, for an SDF
+  sphere at `sampling_detail` 8, an equal-area chi-square at 48M iid samples;
+  C: a trapezoid quad, a cubic-warped flat Bezier square and a curved Bezier
+  dome as luminaries over a floor, PT vs BDPT vs VCM and vs an exactly
+  sampled mesh twin (4 salted renders x 1024 spp, 3 combined se); H: sampler
+  and area hashes of a rectangle and a parallelogram for a cross-build A/B.
+  B also intersects a single-sided dart from above and below (positive-sheet
+  hits only). Red 9/25 on `c73078dc2`; green 38/0. Optional args: seed,
+  section (A/B/C/H; T prints SDF sampler ns/sample, not a gate), spp,
+  repeats; `DL459_SDF_M` overrides the chi-square count.
+
 - `EmitterAverageExitanceTest` (DL-431): the luminary's average exitance
   (light-selection weight, photon power / budget) over its own surface points.
   Row 1 renders the wall-and-camera rig with `1.5 (P.x^2+P.y^2)` (zero at the
