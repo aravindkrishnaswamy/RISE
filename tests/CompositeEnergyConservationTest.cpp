@@ -1681,15 +1681,19 @@ static void SectionM()
 						// DL-345's face rule there, which makes its WINDING
 						// physical (the back side is the below medium): its
 						// twin keeps the cell's winding and varies only the
-						// sidedness.  glass/translucent (a non-delta layer)
-						// presents its top on either face, so winding must not
-						// matter: double-sided outward twin.  The mixed quad is
-						// not certified (stack rule): outward twin.
+						// sidedness.  Since DL-472 (1) glass/translucent (a
+						// translucent bottom, term (c)) follows the face rule too
+						// -- a back arrival meets the bottom first -- so its
+						// winding is physical as well (an inward sheet is seen
+						// from behind: ~1.55 against an outward sheet's ~0.53)
+						// and its twin keeps the cell's winding.  The mixed
+						// quad is not certified (stack rule): outward twin.
 						geo = MatrixQuad( "qT", -4, 0, 0, w, ds == 1 ) +
-						      ( c.kind == 0 ? MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) : MatrixQuad( "qR", 0, 4, 0, ( c.kind == 2 && w != 2 ) ? w : 0, true ) );
+						      ( c.kind == 0 ? MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) : MatrixQuad( "qR", 0, 4, 0, ( c.kind != 0 && w != 2 ) ? w : 0, true ) );
 						objs = obj( "L", "qT", c.mat, 0 ) + obj( "Rr", "qR", twinMat, 0 );
 					}
 					const char* gName = ( g == 0 ) ? "closed box, furnace" : ( g == 1 ) ? "closed box, light inside" : "open sheet, furnace";
+					double ptCell = -1;
 					for( int r = 0; r < 3; ++r ) {
 						const std::string scene = head + geo + objs + ( g == 1 ? lights : std::string() ) + rast( r, env, spp );
 						// A light inside the box is the noisiest geometry
@@ -1709,6 +1713,20 @@ static void SectionM()
 						          << gName << " | " << inName[r] << ": " << std::setprecision(5) << mL << " vs twin " << mR << "\n";
 						const std::string tag = std::string( c.name ) + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + ", " + gName + " (" + inName[r] + ")";
 						gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= band, "[M] == twin, " + tag );
+						// DL-472 (1): the two-sided glass/translucent sheet is
+						// one model for every integrator (before it, BDPT /
+						// VCM read 0.607 / 0.750 against PT's 0.534 on the
+						// outward twin).  3 % for single 256-spp renders.
+						// Certified windings only: the mixed quad is not a
+						// provably open sheet, so term (c) is off there and
+						// its single renders scatter ~3 % (pre-existing).
+						if( g == 2 && c.kind == 1 && w != 2 ) {
+							if( r == 0 ) {
+								ptCell = mL;
+							} else if( ptCell > 0 ) {
+								gate( ok && std::fabs( mL / ptCell - 1.0 ) <= 0.03, "[M] BDPT / VCM == PT (DL-472 (1)), " + tag );
+							}
+						}
 						if( g == 0 && c.kind != 1 ) {
 							gate( ok && std::fabs( mL - 1.0 ) <= band, "[M] lossless closed box == 1, " + tag );
 						}

@@ -1188,8 +1188,14 @@ namespace RISE
 					const ScatteredRay& r = cb[i];
 					const bool up = Vector3Ops::Dot( r.ray.Dir(), n ) > 0;
 					// DL-296: a non-delta exit DOWN through a bottom whose
-					// BSDF transmits is priced by term (c).
-					if( r.isDelta || ( !up && !s.bBottomTransmits ) || !s.pBottomBSDF ) {
+					// BSDF transmits is priced by term (c) -- where term (c)
+					// is LIVE (an open sheet).  On a closed object that exit
+					// stays walker transport and must keep the walker's
+					// larger share: with the 0.05 floor the walker's 20x
+					// weights made a closed glass/translucent box read
+					// 1.6 % low at 256 spp (CompositeEnergyConservationTest
+					// D9).  The cache key carries the live bit (DoProbe).
+					if( r.isDelta || ( !up && !TransmissionLive( s, ri ) ) || !s.pBottomBSDF ) {
 						pr.walkerPossible = true;
 					}
 					if( up && P::Weight( r ) > bestW ) {
@@ -1235,6 +1241,7 @@ namespace RISE
 			struct ProbeCacheEntry
 			{
 				bool                valid;
+				bool                live;			// DL-296: TransmissionLive at the entry (not in the record)
 				unsigned long long  id;
 				Scalar              nm;
 				Scalar              key[kProbeKeySize];
@@ -1280,7 +1287,7 @@ namespace RISE
 				ProbeKey( ri, outside, key );
 				for( int i = 0; i < kProbeCacheSize; i++ ) {
 					const ProbeCacheEntry& e = cache[i];
-					if( e.valid && e.id == s.instanceId && e.nm == nm &&
+					if( e.valid && e.id == s.instanceId && e.nm == nm && e.live == TransmissionLive( s, ri ) &&
 						std::memcmp( e.key, key, sizeof( key ) ) == 0 ) {
 						return e.probe;
 					}
@@ -1289,6 +1296,7 @@ namespace RISE
 				ProbeCacheEntry& e = cache[next];
 				next = ( next + 1 ) % kProbeCacheSize;
 				e.valid = true;
+				e.live = TransmissionLive( s, ri );
 				e.id = s.instanceId;
 				e.nm = nm;
 				std::memcpy( e.key, key, sizeof( key ) );
