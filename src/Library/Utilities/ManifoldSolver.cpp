@@ -61,6 +61,10 @@ namespace {
     // from the complete object, so a hit reproduces dynamic_cast exactly.
     // type_info objects have static storage, so a key never dangles; a type
     // with several type_info copies merely occupies several entries.
+    // Each <To,From> instantiation has its own table, so the source static
+    // type is part of the key. Precondition: never call on an object under
+    // construction or destruction (its construction-vtable layout could share
+    // a key with a complete object of that class but need another offset).
     constexpr unsigned kSMSTypeCacheSize=8;
     template<class To,class From>
     const To* SMSDynamicCast(const From* p) {
