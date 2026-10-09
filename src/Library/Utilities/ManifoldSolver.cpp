@@ -5967,10 +5967,21 @@ namespace
 		}
 	}
 
+	inline RISEPel SMSScaledByTr( const RISEPel& v, const RISEPel& tr )
+	{
+		return ( tr.r != 1 || tr.g != 1 || tr.b != 1 ) ? v * tr : v;
+	}
+
 	bool SMSSceneHasObjectMedia( const IRayCaster& caster )
 	{
 		const LightSampler* ls = caster.GetLightSampler();
 		return ls ? ls->SceneHasObjectMedia() : true;
+	}
+
+	bool SMSChainMediaPossible( const IRayCaster& caster )
+	{
+		const IScene* pScene = caster.GetAttachedScene();
+		return pScene && ( pScene->GetGlobalMedium() || SMSSceneHasObjectMedia( caster ) );
 	}
 }
 
@@ -6017,6 +6028,42 @@ Scalar ManifoldSolver::EvaluateChainMediumTransmittanceNM(
 			return true;
 		} );
 	return Tr;
+}
+
+namespace
+{
+	// DL-419 call sites use these as `if( media possible ) x = Fold( x )`:
+	// out of line, by value, and only when the scene has a medium at all,
+	// so a MEDIUM-FREE render executes no extra arithmetic.  It is still
+	// not guaranteed bit-identical to the pre-DL-419 build: under
+	// -ffast-math the added code changes how the large evaluators are
+	// scheduled/contracted.  Measured (8 spp, single worker): 4 of 6 shipped
+	// SMS scenes bit-identical; sms_k2_glasssphere / sms_k2_flatslab differ
+	// in 1.8 % / 4.2 % of channels by < 2e-15 relative (a few ulp), means equal to
+	// 9 digits.
+#if defined( _MSC_VER )
+	__declspec( noinline )
+#else
+	__attribute__(( noinline ))
+#endif
+	RISEPel SMSFoldChainMedia( const ManifoldSolver& solver, const RISEPel& value,
+		const Point3& start, const Point3& end, const std::vector<ManifoldVertex>& chain,
+		const IRayCaster& caster, const IORStack* pIorStack )
+	{
+		return SMSScaledByTr( value, solver.EvaluateChainMediumTransmittance( start, end, chain, caster, pIorStack ) );
+	}
+#if defined( _MSC_VER )
+	__declspec( noinline )
+#else
+	__attribute__(( noinline ))
+#endif
+	Scalar SMSFoldChainMediaNM( const ManifoldSolver& solver, const Scalar value,
+		const Point3& start, const Point3& end, const std::vector<ManifoldVertex>& chain,
+		const IRayCaster& caster, const IORStack* pIorStack, const Scalar nm )
+	{
+		const Scalar tr = solver.EvaluateChainMediumTransmittanceNM( start, end, chain, caster, pIorStack, nm );
+		return tr != 1 ? value * tr : value;
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -7801,18 +7848,13 @@ bool ManifoldSolver::ComputeTrialContribution(
 		? std::fmin( smsGeometric, config.maxGeometricTerm )
 		: smsGeometric;
 
-	// DL-419: the walk pays every chain segment's medium transmittance.
-	const RISEPel mediumTr = EvaluateChainMediumTransmittance(
-		pos, lightSample.position, mResult.specularChain, caster, pIorStack );
-
 	outContribution = fBSDF
 		* mResult.contribution
 		* actualLe * cosAtShading * effectiveGeometric
 		/ ( lightSample.pdfPosition * lightSample.pdfSelect );
-	// Separate, guarded multiply: a medium-free scene stays bit-identical.
-	if( mediumTr.r != 1 || mediumTr.g != 1 || mediumTr.b != 1 ) {
-		outContribution = outContribution * mediumTr;
-	}
+	// DL-419: the walk pays every chain segment's medium transmittance.
+	if( SMSChainMediaPossible( caster ) ) outContribution = SMSFoldChainMedia( *this, outContribution,
+		pos, lightSample.position, mResult.specularChain, caster, pIorStack );
 
 	return true;
 }
@@ -7892,11 +7934,8 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	Scalar chainThroughput = EvaluateChainThroughputNM(
 		pos, lightSample.position, mResult.specularChain, nm );
 	// DL-419: the walk pays every chain segment's medium transmittance.
-	{
-		const Scalar mediumTr = EvaluateChainMediumTransmittanceNM(
-			pos, lightSample.position, mResult.specularChain, caster, pIorStack, nm );
-		if( mediumTr != 1 ) chainThroughput *= mediumTr;	// medium-free: bit-identical
-	}
+	if( SMSChainMediaPossible( caster ) ) chainThroughput = SMSFoldChainMediaNM( *this, chainThroughput,
+		pos, lightSample.position, mResult.specularChain, caster, pIorStack, nm );
 
 	const ManifoldVertex& lastSpec = mResult.specularChain.back();
 	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
@@ -9409,6 +9448,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		}
 	}
 
+	// DL-419: per-chain medium transmittance only where a medium exists.
+	const bool chainMediaPossible = SMSChainMediaPossible( caster );
 	for( unsigned int trial = 0; trial < totalTrials; trial++ )
 	{
 		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
@@ -9718,6 +9759,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			actualLe = SMSAreaLe( lightSample, dirSpecToLight );
 			if( ColorMath::MaxValue(actualLe) <= 0 ) continue;
 		}
+		// DL-419: the walk pays every chain segment's medium transmittance.
+		// Folded into the emitted radiance out of line (see SMSFoldChainMedia).
+		if( chainMediaPossible ) actualLe = SMSFoldChainMedia( *this, actualLe,
+			pos, lightSample.position, mResult.specularChain, caster, pIorStack );
 
 		// SMS measure-conversion via implicit function theorem.
 		//
@@ -9768,18 +9813,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		// final scale-down (if any) is applied post-loop below.
 		const Scalar clampedGeometric = smsGeometric;
 
-		// DL-419: the walk pays every chain segment's medium transmittance.
-		const RISEPel mediumTr = EvaluateChainMediumTransmittance(
-			pos, lightSample.position, mResult.specularChain, caster, pIorStack );
-
 		RISEPel trialContribution = fBSDF
 			* mResult.contribution
 			* actualLe * cosAtShading * clampedGeometric
 			/ (lightSample.pdfPosition * lightSample.pdfSelect);
-		// Separate, guarded multiply: a medium-free scene stays bit-identical.
-		if( mediumTr.r != 1 || mediumTr.g != 1 || mediumTr.b != 1 ) {
-			trialContribution = trialContribution * mediumTr;
-		}
 
 		// Silence unused-variable warning if cosAtLight ends up unused;
 		// keep its computation above for backface culling (non-delta lights).
@@ -11236,11 +11273,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		Scalar chainThroughput = EvaluateChainThroughputNM(
 			pos, lightSample.position, mResult.specularChain, nm );
 		// DL-419: the walk pays every chain segment's medium transmittance.
-		{
-			const Scalar mediumTr = EvaluateChainMediumTransmittanceNM(
-				pos, lightSample.position, mResult.specularChain, caster, pIorStack, nm );
-			if( mediumTr != 1 ) chainThroughput *= mediumTr;	// medium-free: bit-identical
-		}
+		if( SMSChainMediaPossible( caster ) ) chainThroughput = SMSFoldChainMediaNM( *this, chainThroughput,
+			pos, lightSample.position, mResult.specularChain, caster, pIorStack, nm );
 
 		// Direction from light to last specular vertex (for emission eval)
 		const ManifoldVertex& lastSpec = mResult.specularChain.back();
