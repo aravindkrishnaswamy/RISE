@@ -83,7 +83,7 @@ spectral_painter
 	file				colors/cornellbox_light.spectra
 	nmbegin				386
 	nmend				711
-	scale				4
+	scale				2.3
 }
 
 ##################################################
