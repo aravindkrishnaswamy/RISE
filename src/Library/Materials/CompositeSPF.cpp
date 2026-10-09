@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "CompositeSPF.h"
+#include "TranslucentSPF.h"
 #include <optional>
 #include "../Interfaces/ILog.h"
 
@@ -2133,9 +2134,11 @@ namespace RISE
 	//! (IORStackSeeding::ResolveOpenSheetCrossing) would reinterpret those
 	//! internal crossings -- an up-going walk ray meets the top from the
 	//! sheet's back -- so every layer call sees the record WITHOUT that
-	//! certification: the composite keeps its pre-DL-345 containment
-	//! semantics on a clipped plane as on any other surface.  Copies only
-	//! when the flag is set.
+	//! certification.  The composite applies the face rule ONCE, at its
+	//! own boundary (DL-407 (2), 2026-10-08): the frame is the sheet's true
+	//! winding normal, and a walk that reaches the back without having
+	//! crossed starts in the below medium (OpenSheetWalkStack /
+	//! RestoreOpenSheetStacks).
 	//!
 	//! DL-341 review round 1 (2026-10-02): the entry side is the TRUE
 	//! geometric one.  A double-sided mesh / Bezier patch flips BOTH normals
@@ -2161,8 +2164,9 @@ namespace RISE
 	//! un-certifies a closed box: round 3 read 0.466 there), and
 	//! `BezierPatchGeometry` never sets it at all (DL-220).  An open sheet
 	//! hit with no prior crossing presents its top whichever face is hit;
-	//! a provably open sheet (`bProvablyNoInterior`) keeps its reported
-	//! side (DL-407); hair's ray-derived normal has no true side.  BDPT /
+	//! a provably open sheet (`bProvablyNoInterior`) follows DL-345's face
+	//! rule instead (DL-407 (2), below); hair's ray-derived normal has no
+	//! true side.  BDPT /
 	//! VCM reprice a connection on a record rebuilt by
 	//! PathVertexEval::PopulateRIGFromVertex (which replays the
 	//! surface-identity flags and the arrival facing, BDPTVertex) against
@@ -2180,7 +2184,8 @@ namespace RISE
 	static inline const RayIntersectionGeometric& CompositeLayerFrame(
 		const RayIntersectionGeometric& ri,
 		std::optional<RayIntersectionGeometric>& store,
-		const IORStack* pStack
+		const IORStack* pStack,
+		const bool faceRule = false
 		)
 	{
 		// Review rounds 6 and 7 (2026-10-02): the frame is oriented BY THE
@@ -2208,14 +2213,29 @@ namespace RISE
 		// The facing is a fact of the VERTEX: a record rebuilt for a BDPT /
 		// VCM query aims its ray per query (-wi), so it carries the live
 		// hit's answer in `arrivalGeomFacing` and `GeomNormalOpposesArrival()`
-		// reads that.  A provably open sheet (`bProvablyNoInterior`, the
-		// clipped plane) and a ray-derived normal (hair) are never turned
-		// (DL-407: the clipped plane presents its reported side), nor is a
-		// stackless caller's record.
+		// reads that.  A provably open sheet (`bProvablyNoInterior`) is
+		// turned by its FACE instead (below), a ray-derived normal (hair)
+		// never, nor is a stackless caller's record.
 		bool flip = false;
 		if( ri.HasTrueGeomSide() && !ri.bProvablyNoInterior && pStack && pStack->currentObject() ) {
 			const bool opposes = ri.bGeomNormalOrientedToRay || ri.GeomNormalOpposesArrival();
 			flip = pStack->containsCurrent() ? opposes : !opposes;
+		}
+		// DL-407 (2) (2026-10-08): a TRANSMITTING composite on a PROVABLY
+		// open sheet (`faceRule`, FollowsOpenSheetFaceRule) follows
+		// DL-345's FACE rule -- its back side IS the composite's below
+		// medium -- so the frame is the TRUE winding normal: a front
+		// arrival meets the top, a back arrival is walked from below (the
+		// caller's stack is completed by OpenSheetWalkStack).  It used to
+		// keep the reported side, which on a double-sided sheet presented
+		// the top on both faces while the plain dielectric twin followed
+		// the face rule; since DL-382 every flat consistently wound
+		// triangle mesh is such a sheet too.  An OPAQUE composite (nothing
+		// below to be in) keeps the reported side: its back face is a
+		// card's other side (D7 / D8), and a from-below walk there is
+		// delta-tagged, invisible to NEE (DL-296).
+		if( faceRule && ri.bGeomNormalOrientedToRay ) {
+			flip = true;
 		}
 		if( !ri.bProvablyNoInterior && !ri.bGeomNormalOrientedToRay && !flip && ri.arrivalGeomFacing == 0 ) {
 			return ri;
@@ -2246,6 +2266,142 @@ namespace RISE
 		store->bGeomNormalOrientedToRay = false;
 		return *store;
 	}
+
+	//! DL-407 (2): true when @a ri struck a provably open sheet
+	//! from BEHIND under DL-345's face rule (the arrival travels along the
+	//! TRUE winding normal).  Read through GeomNormalOpposesArrival so a
+	//! BDPT / VCM record rebuilt with a per-query ray answers for the live
+	//! hit.
+	static inline bool OpenSheetBackArrival( const RayIntersectionGeometric& ri )
+	{
+		if( !ri.bProvablyNoInterior || !ri.HasTrueGeomSide() ) {
+			return false;
+		}
+		const bool reportedOpposes = ri.GeomNormalOpposesArrival();
+		const bool trueOpposes = ri.bGeomNormalOrientedToRay ? !reportedOpposes : reportedOpposes;
+		return !trueOpposes;
+	}
+
+	//! DL-407 (2): the stack a walk on a provably open sheet starts
+	//! from.  Struck from behind by a walk that never crossed the sheet
+	//! (the stack lacks O), the walk is IN the below medium by the face
+	//! rule: O is pushed at BelowMediumIOR and the walk proceeds as from
+	//! inside a closed composite.  Every other case returns @a pStack.
+	//! DL-407 (2): does this hit follow DL-345's face rule?  A provably
+	//! open sheet, a stateful caller, and a composite that TRANSMITS
+	//! (CompositeSPF::TransmitsThrough) -- only then is there a below
+	//! medium for the back side to be.
+	static inline bool FollowsOpenSheetFaceRule(
+		const CompositeSPF& s,
+		const RayIntersectionGeometric& riIn,
+		const IORStack* pStack,
+		const Scalar nm
+		)
+	{
+		return pStack && riIn.bProvablyNoInterior && riIn.HasTrueGeomSide() && s.TransmitsThrough( riIn, *pStack, nm );
+	}
+
+	static inline const IORStack* OpenSheetWalkStack(
+		const CompositeSPF& s,
+		const RayIntersectionGeometric& riIn,
+		const IORStack* pStack,
+		const Scalar nm,
+		std::optional<IORStack>& store,
+		Scalar& below,
+		bool& faceRule
+		)
+	{
+		faceRule = FollowsOpenSheetFaceRule( s, riIn, pStack, nm );
+		if( !faceRule || !pStack->currentObject() || pStack->containsCurrent() || !OpenSheetBackArrival( riIn ) ) {
+			return pStack;
+		}
+		below = s.BelowMediumIOR( riIn, *pStack, nm, pStack->top() );
+		store.emplace( *pStack );
+		store->push( below );
+		return &*store;
+	}
+
+	//! DL-407 (2): hands the rays a synthesized-stack walk emitted
+	//! (container slots [first, Count())) back in the caller's terms.  A ray
+	//! still below the sheet carries the synthesized O: dropped, so it
+	//! continues with the caller's stack (the plain dielectric's back-face
+	//! reflection leaves the stack alone too).  A ray that left upward
+	//! through the top already carries the caller's stack; it records the
+	//! index it refracted FROM (IORStack::crossingEtaFrom), which the
+	//! caller's stack does not show -- exactly the face rule's unpushed
+	//! exit (IORStackSeeding::NewTransmittedStack).
+	static void RestoreOpenSheetStacks(
+		ScatteredRayContainer& scattered,
+		const unsigned int first,
+		const IORStack& caller,
+		const Scalar below,
+		const Vector3& trueNormal
+		)
+	{
+		for( unsigned int i = first; i < scattered.Count(); ++i ) {
+			ScatteredRay& r = scattered[i];
+			if( r.ior_stack && r.ior_stack->containsCurrent() ) {
+				IORStack* p = new IORStack( *r.ior_stack );
+				GlobalLog()->PrintNew( p, __FILE__, __LINE__, "ior stack" );
+				p->pop();
+				if( r.delete_stack ) {
+					safe_delete( r.ior_stack );
+				}
+				r.ior_stack = p;
+				r.delete_stack = true;
+				continue;
+			}
+			if( !r.ior_stack && !( Vector3Ops::Dot( r.ray.Dir(), trueNormal ) > 0 ) ) {
+				continue;
+			}
+			IORStack* p = new IORStack( r.ior_stack ? *r.ior_stack : caller );
+			GlobalLog()->PrintNew( p, __FILE__, __LINE__, "ior stack" );
+			if( below != p->top() ) {
+				p->SetCrossingEtaFrom( below );
+			}
+			if( r.ior_stack && r.delete_stack ) {
+				safe_delete( r.ior_stack );
+			}
+			r.ior_stack = p;
+			r.delete_stack = true;
+		}
+	}
+
+Scalar CompositeSPF::BelowMediumIOR(
+	const RayIntersectionGeometric& ri,
+	const IORStack& ior_stack,
+	const Scalar nm,
+	const Scalar outerIOR
+	) const
+{
+	auto layer = [&]( const ISPF& L, const Scalar fallback ) -> Scalar {
+		if( const CompositeSPF* pc = dynamic_cast<const CompositeSPF*>( &L ) ) {
+			return pc->BelowMediumIOR( ri, ior_stack, nm, fallback );
+		}
+		const SpecularInfo si = ( nm > 0 ) ? L.GetSpecularInfoNM( ri, ior_stack, nm ) : L.GetSpecularInfo( ri, ior_stack );
+		return ( si.valid && si.canRefract && si.ior > 0 ) ? si.ior : fallback;
+	};
+	return layer( bottom, layer( top, outerIOR ) );
+}
+
+bool CompositeSPF::TransmitsThrough(
+	const RayIntersectionGeometric& ri,
+	const IORStack& ior_stack,
+	const Scalar nm
+	) const
+{
+	auto layer = [&]( const ISPF& L ) -> bool {
+		if( const CompositeSPF* pc = dynamic_cast<const CompositeSPF*>( &L ) ) {
+			return pc->TransmitsThrough( ri, ior_stack, nm );
+		}
+		if( dynamic_cast<const TranslucentSPF*>( &L ) ) {
+			return true;
+		}
+		const SpecularInfo si = ( nm > 0 ) ? L.GetSpecularInfoNM( ri, ior_stack, nm ) : L.GetSpecularInfo( ri, ior_stack );
+		return si.valid && si.clearTransmission;
+	};
+	return layer( top ) && layer( bottom );
+}
 
 RISEPel CompositeSPF::DeltaPassThroughTransmittance(
 	const RayIntersectionGeometric& riIn
@@ -2322,9 +2478,17 @@ void CompositeSPF::Scatter(
 			) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
+	std::optional<IORStack> sheetStore;
+	Scalar sheetBelow = 0;
+	bool faceRule = false;
+	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, Scalar( -1 ), sheetStore, sheetBelow, faceRule );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
 
-	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeRGB>( *this, ri, sampler, Scalar( -1 ), scattered, ior_stack );
+	const unsigned int firstRay = scattered.Count();
+	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeRGB>( *this, ri, sampler, Scalar( -1 ), scattered, walkStack );
+	if( sheetStore ) {
+		RestoreOpenSheetStacks( scattered, firstRay, ior_stack, sheetBelow, riIn.UnflippedGeomNormal() );
+	}
 }
 
 void CompositeSPF::ScatterNM(
@@ -2336,9 +2500,17 @@ void CompositeSPF::ScatterNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
+	std::optional<IORStack> sheetStore;
+	Scalar sheetBelow = 0;
+	bool faceRule = false;
+	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, nm, sheetStore, sheetBelow, faceRule );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
 
-	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeNM>( *this, ri, sampler, nm, scattered, ior_stack );
+	const unsigned int firstRay = scattered.Count();
+	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeNM>( *this, ri, sampler, nm, scattered, walkStack );
+	if( sheetStore ) {
+		RestoreOpenSheetStacks( scattered, firstRay, ior_stack, sheetBelow, riIn.UnflippedGeomNormal() );
+	}
 }
 
 Scalar CompositeSPF::Pdf(
@@ -2348,9 +2520,13 @@ Scalar CompositeSPF::Pdf(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
+	std::optional<IORStack> sheetStore;
+	Scalar sheetBelow = 0;
+	bool faceRule = false;
+	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, Scalar( -1 ), sheetStore, sheetBelow, faceRule );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
 
-	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeRGB>( *this, ri, wo, Scalar( -1 ), ior_stack );
+	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeRGB>( *this, ri, wo, Scalar( -1 ), walkStack );
 }
 
 Scalar CompositeSPF::PdfNM(
@@ -2361,9 +2537,13 @@ Scalar CompositeSPF::PdfNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
+	std::optional<IORStack> sheetStore;
+	Scalar sheetBelow = 0;
+	bool faceRule = false;
+	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, nm, sheetStore, sheetBelow, faceRule );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
 
-	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeNM>( *this, ri, wo, nm, ior_stack );
+	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeNM>( *this, ri, wo, nm, walkStack );
 }
 
 RISEPel CompositeSPF::EvaluateLayered(
@@ -2373,10 +2553,14 @@ RISEPel CompositeSPF::EvaluateLayered(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, pStack );
+	std::optional<IORStack> sheetStore;
+	Scalar sheetBelow = 0;
+	bool faceRule = false;
+	const IORStack* pWalkStack = OpenSheetWalkStack( *this, riIn, pStack, Scalar( -1 ), sheetStore, sheetBelow, faceRule );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, pWalkStack, faceRule );
 
 	RISEPel direct, walked;
-	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeRGB>( *this, vLightIn, ri, pStack, Scalar( -1 ), direct, walked );
+	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeRGB>( *this, vLightIn, ri, pWalkStack, Scalar( -1 ), direct, walked );
 	return direct + walked;
 }
 
@@ -2388,10 +2572,14 @@ Scalar CompositeSPF::EvaluateLayeredNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, pStack );
+	std::optional<IORStack> sheetStore;
+	Scalar sheetBelow = 0;
+	bool faceRule = false;
+	const IORStack* pWalkStack = OpenSheetWalkStack( *this, riIn, pStack, nm, sheetStore, sheetBelow, faceRule );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, pWalkStack, faceRule );
 
 	Scalar direct = 0, walked = 0;
-	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeNM>( *this, vLightIn, ri, pStack, nm, direct, walked );
+	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeNM>( *this, vLightIn, ri, pWalkStack, nm, direct, walked );
 	return direct + walked;
 }
 
@@ -2404,7 +2592,11 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
+	std::optional<IORStack> sheetStore;
+	Scalar sheetBelow = 0;
+	bool faceRule = false;
+	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, nm, sheetStore, sheetBelow, faceRule );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
 
 	// Every non-delta emission in AGGREGATE mode is priced
 	// value(dir) * cos / Pdf(dir) with the deterministic layered value, so
@@ -2415,11 +2607,11 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 	if( !CompositeSPFImpl::CoveredEntry( ri ) ) {
 		return -1;
 	}
-	const CompositeSPFImpl::Probe pr = CompositeSPFImpl::DoProbe<CompositeSPFImpl::PipeNM>( *this, ri, ior_stack, nm );
+	const CompositeSPFImpl::Probe pr = CompositeSPFImpl::DoProbe<CompositeSPFImpl::PipeNM>( *this, ri, walkStack, nm );
 	if( !pr.det ) {
 		return -1;
 	}
-	return EvaluateLayeredNM( outDir, ri, nm, &ior_stack );
+	return EvaluateLayeredNM( outDir, ri, nm, &walkStack );
 }
 
 Scalar CompositeSPF::EvaluateKrayNM(
@@ -2431,7 +2623,11 @@ Scalar CompositeSPF::EvaluateKrayNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
+	std::optional<IORStack> sheetStore;
+	Scalar sheetBelow = 0;
+	bool faceRule = false;
+	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, nm, sheetStore, sheetBelow, faceRule );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
 
 	// Reached for DELTA rays (the HWSS ladders pass pdfHero = -1 for them).
 	// A DIRECT delta ray is the top's own delta up-going REFLECTION,
@@ -2469,7 +2665,7 @@ Scalar CompositeSPF::EvaluateKrayNM(
 		return -1;
 	}
 	{
-		const CompositeSPFImpl::Probe pr = CompositeSPFImpl::DoProbe<CompositeSPFImpl::PipeNM>( *this, ri, ior_stack, nm );
+		const CompositeSPFImpl::Probe pr = CompositeSPFImpl::DoProbe<CompositeSPFImpl::PipeNM>( *this, ri, walkStack, nm );
 		if( !pr.det ) {
 			return -1;
 		}
@@ -2481,7 +2677,7 @@ Scalar CompositeSPF::EvaluateKrayNM(
 	{
 		CompositeSPFImpl::HashedSampler hs( seed ^ CompositeSPFImpl::kSaltProbeA );
 		std::optional<IORStack> outStore;
-		top.ScatterNM( ri, hs, nm, c, CompositeSPFImpl::OutRef( ior_stack, outStore ) );
+		top.ScatterNM( ri, hs, nm, c, CompositeSPFImpl::OutRef( walkStack, outStore ) );
 	}
 	const unsigned int count = c.Count();
 	Scalar total = 0;

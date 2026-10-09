@@ -317,6 +317,31 @@ namespace RISE
 			//! class can be priced at all.  CompositeMaterial presents a
 			//! CompositeBSDF exactly when this is true.
 			bool HasLayeredValue() const { return pTopBSDF || pBottomBSDF; }
+
+			//! DL-407 (2): the index of the medium BELOW this
+			//! composite -- the index a walk that crosses both layers
+			//! downward pushes for the object (the bottom's index when the
+			//! bottom refracts, else the gap's: the top's index when the top
+			//! refracts, else @a outerIOR).  A nested composite layer
+			//! answers recursively.  Used to start a walk on a provably open
+			//! sheet struck from BEHIND, whose back side is that medium
+			//! under DL-345's face rule.
+			Scalar BelowMediumIOR(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack,
+				const Scalar nm,									///< [in] wavelength, or <= 0 for the RGB query
+				const Scalar outerIOR
+				) const;
+
+			//! DL-407 (2): true when light can cross the whole stack (each
+			//! layer a clear dielectric / perfect refractor, a translucent
+			//! layer, or a composite that transmits) -- the composites to
+			//! which DL-345's open-sheet face rule applies.
+			bool TransmitsThrough(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack,
+				const Scalar nm										///< [in] wavelength, or <= 0 for the RGB query
+				) const;
 		};
 
 		//! The BSDF of a composite: the SAME function the composite's
