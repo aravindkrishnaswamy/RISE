@@ -132,6 +132,8 @@ static BDPTVertex MakeSentinelSurfaceVertex()
 	v.ptObjIntersec = Point3( 0.125, -0.875, 0.5 );
 	v.vColor          = RISEPel( 0.42, 0.71, 0.13 );
 	v.bHasVertexColor = true;
+	v.bHasCoatDecodeOnb = true;		// DL-302 sentinel: a frame distinct from v.onb
+	v.coatDecodeOnb.CreateFromW( Vector3( 1, 0, 0 ) );
 
 	// ---- derivatives: the expression VM's curv / curvR, plus the UV
 	// Jacobian and the texcoord chart map.  Every scalar distinct, and
@@ -268,6 +270,10 @@ void TestPopulateRIG_AllFields()
 	// bHasVertexColor — gates whether painters consume vColor.
 	Check( ri.bHasVertexColor == true,
 		"bHasVertexColor should mirror vertex.bHasVertexColor" );
+
+	// DL-302: coat-normal decode frame.
+	Check( ri.bHasCoatDecodeOnb && IsClose( ri.coatDecodeOnb.w().x, 1.0 ),
+		"coatDecodeOnb / bHasCoatDecodeOnb should mirror the vertex (DL-302)" );
 
 	// ------------------------------------------------------------------
 	// derivatives — the expression VM's `curv` / `curvR` come from this

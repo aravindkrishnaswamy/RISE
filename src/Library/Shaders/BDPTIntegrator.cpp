@@ -2586,6 +2586,8 @@ namespace {
 			v.bProvablyNoInterior = ri.geometric.bProvablyNoInterior;
 			v.bGeomNormalOpposesArrival = ri.geometric.GeomNormalOpposesArrival();
 			v.onb = ri.geometric.onb;
+			v.bHasCoatDecodeOnb = ri.geometric.bHasNormalMapFrame || ri.geometric.bHasCoatDecodeOnb;	// DL-302
+			if( v.bHasCoatDecodeOnb ) v.coatDecodeOnb = ri.geometric.bHasNormalMapFrame ? ri.geometric.normalMapOnb : ri.geometric.coatDecodeOnb;
 			v.ptCoord = ri.geometric.ptCoord;
 			v.ptCoord1 = ri.geometric.ptCoord1;
 			v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
@@ -7227,6 +7229,8 @@ unsigned int GenerateLightSubpathImpl(
 		v.bProvablyNoInterior = ri.geometric.bProvablyNoInterior;
 		v.bGeomNormalOpposesArrival = ri.geometric.GeomNormalOpposesArrival();
 		v.onb = ri.geometric.onb;
+		v.bHasCoatDecodeOnb = ri.geometric.bHasNormalMapFrame || ri.geometric.bHasCoatDecodeOnb;	// DL-302
+		if( v.bHasCoatDecodeOnb ) v.coatDecodeOnb = ri.geometric.bHasNormalMapFrame ? ri.geometric.normalMapOnb : ri.geometric.coatDecodeOnb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptCoord1 = ri.geometric.ptCoord1;
 		v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;

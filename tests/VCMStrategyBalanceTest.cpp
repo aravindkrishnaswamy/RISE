@@ -1872,6 +1872,84 @@ static const char* kRasterizerVCMSchlickL =
 	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
+
+//////////////////////////////////////////////////////////////////////
+// DL-302: `coated_material` with a COAT NORMAL over a BASE normal-map
+// modifier (wall + floor).  The coat normal decodes from the PRE-modifier
+// frame; a BDPT/VCM vertex rebuild that dropped that frame
+// (BDPTVertex::coatDecodeOnb / PathVertexEval::PopulateRIGFromVertex)
+// would decode it from the MODIFIED frame at connection time while the
+// walk used the original one, splitting PT from the bidirectional
+// integrators.  Dark sharp-coat wall so the coat lobe carries the image; band max(0.1%, 3 sigma): with the replay dropped BDPT reads -0.27% (5.8 sigma), with it -0.0007%.
+//////////////////////////////////////////////////////////////////////
+static std::string SceneCoatNormalOverNormalMap()
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	if( a == std::string::npos || b == std::string::npos ) return std::string();
+	s.replace( a, b + 2 - a,
+		"uniformcolor_painter\n{\n\tname pnt_coatmap\n\tcolor 0.85 0.5 1.0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_basemap\n\tcolor 0.5 0.85 1.0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"normal_map_modifier\n{\n\tname nm_cn\n\tnormal_map pnt_basemap\n\tscale 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_cn_dark\n\tcolor 0.05 0.05 0.05\n}\n\n"
+		"lambertian_material\n{\n\tname mat_cn_base\n\treflectance pnt_cn_dark\n}\n\n"
+		"coated_material\n{\n\tname mat_schlick\n\tbase mat_cn_base\n\tcoat_weight 1\n\tcoat_ior 1.5\n"
+		"\tcoat_roughness 0.03\n\tcoat_normal pnt_coatmap\n}\n" );
+	const std::string objOld = "\tmaterial mat_schlick\n}";
+	size_t pos = 0;
+	int n = 0;
+	while( ( pos = s.find( objOld, pos ) ) != std::string::npos ) {
+		const std::string objNew = "\tmaterial mat_schlick\n\tmodifier nm_cn\n}";
+		s.replace( pos, objOld.size(), objNew );
+		pos += objNew.size();
+		++n;
+	}
+	return ( n == 2 ) ? s : std::string();
+}
+
+static bool MeasureCoatNormalSalted( const char* rasterizer, const std::string& sceneText, int n, double& mean, double& sd )
+{
+	const std::string path = WriteSceneToTempFile( ( std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + sceneText ).c_str(), "dl302_coatnormal" );
+	if( path.empty() ) return false;
+	std::vector<double> v;
+	for( int i = 0; i < n; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x302u, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		if( !st.valid ) break;
+		v.push_back( ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0 );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( int( v.size() ) != n ) return false;
+	double sum = 0;
+	for( double x : v ) sum += x;
+	mean = sum / n;
+	double ss = 0;
+	for( double x : v ) ss += ( x - mean ) * ( x - mean );
+	sd = std::sqrt( ss / ( n - 1 ) );
+	return std::isfinite( mean ) && mean > 0;
+}
+
+static void TestCoatNormalOverNormalMap()
+{
+	std::cout << "Testing DL-302 coat_normal over normal_map_modifier (PT vs VCM, n = 4 salted)" << std::endl;
+	const std::string scene = SceneCoatNormalOverNormalMap();
+	Check( !scene.empty(), "DL-302 coat-normal scene assembled from topology L's fixture" );
+	if( scene.empty() ) return;
+	double pt = 0, ptSd = 0, bi = 0, biSd = 0;
+	const bool ok = MeasureCoatNormalSalted( kRasterizerPTSchlickL, scene, 4, pt, ptSd )
+		&& MeasureCoatNormalSalted( kRasterizerVCMSchlickL, scene, 4, bi, biSd );
+	Check( ok, "DL-302 renders produced output" );
+	if( !ok ) return;
+	const double rel = bi / pt - 1.0;
+	const double se = std::sqrt( ( ptSd / pt ) * ( ptSd / pt ) + ( biSd / bi ) * ( biSd / bi ) ) / 2.0;
+	std::printf( "    PT %.7f (sd %.7f)  VCM %.7f (sd %.7f)  VCM/PT %+.4f%% (se %.4f%%)\n",
+		pt, ptSd, bi, biSd, 100.0 * rel, 100.0 * se );
+	Check( std::fabs( rel ) <= std::max( 0.001, 3.0 * se ), "DL-302 VCM mean agrees with PT within max(0.1%, 3 sigma)" );
+}
+
 static void TestSchlickMultiLobe()
 {
 	RunTopologyTest( "multi-lobe schlick_material wall + floor, area emitter (DL-69)",
@@ -3113,6 +3191,12 @@ int main( int argc, char** argv )
 	}
 
 	// DL-317: the SSS barrier rows (and topology U) alone.
+	if( argc >= 2 && std::strcmp( argv[1], "--dl302-only" ) == 0 ) {
+		TestCoatNormalOverNormalMap();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
 	if( argc >= 2 && std::strcmp( argv[1], "--dl317-only" ) == 0 ) {
 		ApplySeedOverride( 2 );
 		TestSSSBarrierDL317();
@@ -3219,6 +3303,7 @@ int main( int argc, char** argv )
 	if( argc >= 2 && std::strcmp( argv[1], "--l-only" ) == 0 ) {
 		ApplySeedOverride( 2 );
 		TestSchlickMultiLobe();
+	TestCoatNormalOverNormalMap();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -3281,6 +3366,7 @@ int main( int argc, char** argv )
 	TestSubmergedFloorAreaLight();
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
+	TestCoatNormalOverNormalMap();
 	TestPolishedAB();
 	TestNullBSDFMaterialContinuation();
 	TestRoughSSSEmptyContainerU();

@@ -1521,7 +1521,7 @@ wraps with `coated_material`.  The agent texture recipes
 `rough_stone` and `aged_bronze` (were `cooktorrance_material`) and
 `brushed_metal` (was `ward_anisotropic_material`) in `AgentSession.cpp`
 emit `ggx_material` since DL-400 (2026-10-02; `conductor` with
-`extinction 1` for the first two, `schlick_f0` for the third; a measured
+`extinction 1` for `aged_bronze`, `schlick_f0` for `brushed_metal` and, since DL-415, `rough_stone` (0.04 dielectric F0 tint); a measured
 look change, numbers in the DL-400 ledger row); the eval
 fixtures that name the legacy kinds are hand-written scenes and keep them.
 The GUI node palettes list the deprecated kinds last with a

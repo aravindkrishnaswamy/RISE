@@ -835,6 +835,14 @@ namespace RISE
         bool bHasShaderDirection;
         OrthonormalBasis3D normalMapOnb;
         bool bHasNormalMapFrame;
+        //! DL-302: the shading frame as it stood BEFORE the first
+        //! normal-perturbing modifier (NormalMap / Relief / Glint) ran on this
+        //! hit; recorded by ModifierFrame::RecordPreModifierFrame.  Only the
+        //! coat-normal decode reads it, so an independently authored Coat
+        //! Normal tilts from the original frame instead of composing with the
+        //! base normal map.  Unset (false) when no modifier ran.
+        OrthonormalBasis3D coatDecodeOnb;
+        bool bHasCoatDecodeOnb;
 		Vector3						vShadingTangent;
 		Scalar						shadingBitangentSign;	// +1 or -1 companion to vShadingTangent (DL-12)
 		bool						bHasShadingTangent;
@@ -897,7 +905,7 @@ namespace RISE
 		  bitangentSign( 1.0 ),
 		  bHasTangent( false ),
 		  bShadingTangentFromGeometry( false ),
-          bHasShaderDirection(false), bHasNormalMapFrame(false),
+          bHasShaderDirection(false), bHasNormalMapFrame(false), bHasCoatDecodeOnb(false),
 		  shadingBitangentSign( 1.0 ),
 		  bHasShadingTangent( false ),
 		  bHasWireEdgeInfo( false ),
@@ -948,6 +956,7 @@ namespace RISE
 		  bShadingTangentFromGeometry( r.bShadingTangentFromGeometry ),
           vShaderDirection(r.vShaderDirection), bHasShaderDirection(r.bHasShaderDirection),
           normalMapOnb(r.normalMapOnb), bHasNormalMapFrame(r.bHasNormalMapFrame),
+          coatDecodeOnb(r.coatDecodeOnb), bHasCoatDecodeOnb(r.bHasCoatDecodeOnb),
 		  vShadingTangent( r.vShadingTangent ),
 		  shadingBitangentSign( r.shadingBitangentSign ),
 		  bHasShadingTangent( r.bHasShadingTangent ),
@@ -999,6 +1008,7 @@ namespace RISE
 			bShadingTangentFromGeometry = r.bShadingTangentFromGeometry;
             vShaderDirection=r.vShaderDirection; bHasShaderDirection=r.bHasShaderDirection;
             normalMapOnb=r.normalMapOnb; bHasNormalMapFrame=r.bHasNormalMapFrame;
+            coatDecodeOnb=r.coatDecodeOnb; bHasCoatDecodeOnb=r.bHasCoatDecodeOnb;
 			vShadingTangent = r.vShadingTangent;
 			shadingBitangentSign = r.shadingBitangentSign;
 			bHasShadingTangent = r.bHasShadingTangent;
