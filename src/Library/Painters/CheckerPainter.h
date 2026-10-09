@@ -45,9 +45,9 @@ namespace RISE
 			//! for painters that BLEND several sources; a selector emits
 			//! exactly one child's spectrum, so forwarding preserves a
 			//! physical SPD bound to an emissive slot (the default would
-			//! re-uplift its RGB projection -- and emit BLACK for a
-			//! `piecewise_linear_function`-backed child).
+			//! re-uplift its RGB projection, a different spectrum).
 			Scalar							GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel							GetRadianceColor( const RayIntersectionGeometric& ri ) const;	//!< DL-396: forwards like GetRadianceNM
 
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );

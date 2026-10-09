@@ -65,7 +65,7 @@ namespace RISE
 				rig.ptCoord.x = 0.5 + v.x * r;
 				rig.ptCoord.y = 0.5 - v.y * r;
 
-				return pRadianceMap.GetColor( rig ) * dScale;
+				return pRadianceMap.GetRadianceColor( rig ) * dScale;
 			}
 
 			//! Returns the radiance from that direction for the given wavelength

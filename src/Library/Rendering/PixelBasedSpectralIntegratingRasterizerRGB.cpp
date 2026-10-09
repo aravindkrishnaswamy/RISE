@@ -179,7 +179,7 @@ void PixelBasedSpectralIntegratingRasterizerRGB::IntegratePixel(
 			weights += fabs(weight);
 
 			if( temporal_samples ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + ((bTimeHalton?mh.next(0):random.CanonicalRandom())*temporal_exposure) );
+				AnimateSceneToSampleTime( pScene, temporal_start + ((bTimeHalton?mh.next(0):random.CanonicalRandom())*temporal_exposure) );
 			}
 
 			Ray ray;

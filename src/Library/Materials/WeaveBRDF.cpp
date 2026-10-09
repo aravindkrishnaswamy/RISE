@@ -898,7 +898,7 @@ void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar n
 			// `Scatter` stores as the ray's pdf, and a wavelength-
 			// dependent one would put that stored hero-wavelength density
 			// out of step with a companion-wavelength `Pdf()` call.
-			const Scalar raw = IsUntintedWhite( rgb ) ? Scalar( 1 ) : s.color->GetColorNM( ri, nm );
+			const Scalar raw = IsUntintedWhitePainter( *s.color, rgb ) ? Scalar( 1 ) : s.color->GetColorNM( ri, nm );
 			d.tintNM = ClampNaNSafe( raw, Scalar( 0 ), Scalar( 1 ) );
 		}
 	}

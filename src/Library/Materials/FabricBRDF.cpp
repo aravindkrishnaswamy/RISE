@@ -137,7 +137,7 @@ void FabricBRDF::ResolveFabric( const RayIntersectionGeometric& ri, const Scalar
 		// to run `IsUntintedWhite` on it, which on this path is a second
 		// painter evaluation for a value we already have.  Semantics are
 		// identical -- same predicate, same fallback (IPainter.h).
-		out.tintNM = IsUntintedWhite( rgb )
+		out.tintNM = IsUntintedWhitePainter( *pSheenColor, rgb )
 			? Scalar(1)
 			: r_max( Scalar(0), pSheenColor->GetColorNM( ri, nm ) );	// DL-386: negative -> 0, as ReflectanceColorNM
 	}

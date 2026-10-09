@@ -70,6 +70,7 @@ StochasticTilePainter::StochasticTilePainter(
 	mean( mean_ ),
 	meanSpec( RGBAlbedoSpectrum::FromRGB( mean_ ) ),
 	meanRadSpec( RGBIlluminantSpectrum::FromRGB( ClampedMeanForIlluminant( mean_ ) ) ),
+	meanRad( ClampedMeanForIlluminant( mean_ ) ),
 	blendGamma( blendGamma_ )
 {
 	source.addref();
@@ -178,6 +179,28 @@ RISEPel StochasticTilePainter::GetColor( const RayIntersectionGeometric& ri ) co
 	// scales a Pel by a Scalar).
 	const Scalar invDenom = Scalar( 1 ) / Scalar( std::sqrt( (double)wsq ) );
 	return mean + weighted * invDenom;
+}
+
+RISEPel StochasticTilePainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: GetColor's reconstruction in the SOURCE view -- per-sample
+	// reads and the mean move together, as in GetRadianceNM.
+	Scalar w[3];
+	Point2 uv[3];
+	ComputeHexTiling( ri.ptCoord, w, uv );
+
+	RayIntersectionGeometric ri2 = ri;
+	ri2.txFootprint.valid = false;
+
+	RISEPel weighted( 0, 0, 0 );
+	Scalar wsq = 0;
+	for( int k = 0; k < 3; ++k ) {
+		ri2.ptCoord = uv[k];
+		weighted = weighted + ( source.GetRadianceColor( ri2 ) - meanRad ) * w[k];
+		wsq += w[k] * w[k];
+	}
+	const Scalar invDenom = Scalar( 1 ) / Scalar( std::sqrt( (double)wsq ) );
+	return meanRad + weighted * invDenom;
 }
 
 Scalar StochasticTilePainter::GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const

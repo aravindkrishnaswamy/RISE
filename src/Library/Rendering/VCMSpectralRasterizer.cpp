@@ -279,7 +279,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 			weightsAccrued += weight;
 
 			if( temporal_samples ) {
-				pScene.GetAnimator()->EvaluateAtTime(
+				AnimateSceneToSampleTime( pScene,
 					temporal_start + ( rc.random.CanonicalRandom() * temporal_exposure ) );
 			}
 

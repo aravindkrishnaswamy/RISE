@@ -189,12 +189,13 @@ namespace RISE
 			//! the antialiased stamp edge it is exactly 0 or 1, i.e. a
 			//! pure forward.  Forwarding preserves a physical SPD on
 			//! either side; the generic composed-`GetColor` default would
-			//! re-uplift the composite's RGB (and emit BLACK if either
-			//! side is a `piecewise_linear_function`-backed painter).  In
+			//! re-uplift the composite's RGB projection, a different
+			//! spectrum.  In
 			//! the partial-coverage band the result is a coverage-weighted
 			//! sum of two illuminant-shaped spectra, which stays
 			//! illuminant-shaped.
 			Scalar			GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel			GetRadianceColor( const RayIntersectionGeometric& ri ) const;	//!< DL-396: RGB twin of GetRadianceNM
 			SpectralPacket	GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetAlpha( const RayIntersectionGeometric& ri ) const;
 

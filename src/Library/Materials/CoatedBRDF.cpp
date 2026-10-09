@@ -149,8 +149,9 @@ void CoatedBRDF::ResolveCoat(
 	// the measured curve either way.  Epsilon guards the RGB side against
 	// a painter that returns 1 - 1e-16 rather than exactly 1.
 	const RISEPel tintRGB = ReflectanceColor( *pCoatTint, ri );
-	const Scalar  minTint = r_min( r_min( tintRGB[0], tintRGB[1] ), tintRGB[2] );
-	out.tinted = ( minTint < Scalar(1) - Scalar(1e-6) );
+	// Same predicate as GuardedGetColorNM (IPainter.h IsUntintedWhitePainter:
+	// min channel >= 1 - 1e-6, and never for a physical spectrum, DL-396).
+	out.tinted = !IsUntintedWhitePainter( *pCoatTint, tintRGB );
 
 	if( !out.tinted ) {
 		// Untinted: never sample the spectral pipe at all, so no

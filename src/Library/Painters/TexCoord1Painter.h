@@ -104,8 +104,7 @@ namespace RISE
 			//! nothing -- it only swaps in the second UV set and hands
 			//! the sample to one source.  See UVTransformPainter's twin
 			//! comment: the generic default would uplift the composed
-			//! `GetColor` and lose a physical SPD (black, for a
-			//! `piecewise_linear_function`-backed exitance).
+			//! `GetColor` and lose a physical SPD to its RGB projection.
 			Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 			{
 				if( !ri.bHasTexCoord1 ) return source.GetRadianceNM( ri, nm );
@@ -113,6 +112,16 @@ namespace RISE
 				ri2.ptCoord = ri.ptCoord1;
 				ri2.txFootprint.valid = false;
 				return source.GetRadianceNM( ri2, nm );
+			}
+
+			//! DL-396: RGB twin of GetRadianceNM, same forwarding.
+			RISEPel GetRadianceColor( const RayIntersectionGeometric& ri ) const
+			{
+				if( !ri.bHasTexCoord1 ) return source.GetRadianceColor( ri );
+				RayIntersectionGeometric ri2 = ri;
+				ri2.ptCoord = ri.ptCoord1;
+				ri2.txFootprint.valid = false;
+				return source.GetRadianceColor( ri2 );
 			}
 
 			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const

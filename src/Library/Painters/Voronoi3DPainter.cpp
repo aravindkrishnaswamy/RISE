@@ -117,3 +117,9 @@ Scalar Voronoi3DPainter::GetRadianceNM( const RayIntersectionGeometric& ri, cons
 	// SINGLE-SOURCE SELECTOR -- see the header comment.
 	return ComputeWhich(ri).GetRadianceNM(ri,nm);
 }
+
+RISEPel Voronoi3DPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: the RGB twin of GetRadianceNM -- forward to the selected child.
+	return ComputeWhich(ri).GetRadianceColor(ri);
+}

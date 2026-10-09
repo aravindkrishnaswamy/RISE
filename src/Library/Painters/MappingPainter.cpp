@@ -198,9 +198,9 @@ Scalar MappingPainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 // (blend / ramp / noise-interpolated), where the emitted thing is the
 // composed colour.  Applying it here would discard the source's own
 // radiance spectrum: a `spectral_painter` behind a `uv_transform` on a
-// luminaire's exitance would be re-uplifted from its RGB projection,
-// and a `piecewise_linear_function`-backed painter (whose `GetColor`
-// is BLACK) would emit exactly ZERO.
+// luminaire's exitance would be re-uplifted from its RGB projection
+// (a different spectrum), as would a `piecewise_linear_function`-backed
+// painter's.
 //
 // Triplanar sums the three projections' radiance with weights that sum
 // to 1 -- a convex combination of illuminant-shaped spectra of the SAME
@@ -243,6 +243,49 @@ Scalar MappingPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const 
 				if( w[k] <= Scalar(0) ) continue;
 				ri2.ptCoord = uv2[k];
 				sum += source.GetRadianceNM( ri2, nm ) * w[k];
+			}
+			return sum;
+		}
+	}
+}
+
+RISEPel MappingPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: RGB twin of GetRadianceNM -- identical structure.
+	switch( projection ) {
+		case Proj_UV: {
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptCoord = ApplyUV( ri.ptCoord );
+			// P1-B fix: stale-footprint rationale, see GetColor's Proj_UV
+			// case above.
+			ri2.txFootprint.valid = false;
+			return source.GetRadianceColor( ri2 );
+		}
+		case Proj_World: {
+			// world/object leave ptCoord untouched -- footprint stays valid.
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptIntersection = Apply3D( ri.ptIntersection );
+			return source.GetRadianceColor( ri2 );
+		}
+		case Proj_Object: {
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptObjIntersec = Apply3D( ri.ptObjIntersec );
+			return source.GetRadianceColor( ri2 );
+		}
+		case Proj_Triplanar:
+		default: {
+			Scalar w[3];
+			Point2 uv2[3];
+			ComputeTriplanar( ri, w, uv2 );
+			RayIntersectionGeometric ri2 = ri;
+			// P1-B fix: stale-footprint rationale, see GetColor's
+			// Proj_Triplanar case above.
+			ri2.txFootprint.valid = false;
+			RISEPel sum( 0, 0, 0 );
+			for( int k = 0; k < 3; ++k ) {
+				if( w[k] <= Scalar(0) ) continue;
+				ri2.ptCoord = uv2[k];
+				sum = sum + source.GetRadianceColor( ri2 ) * w[k];
 			}
 			return sum;
 		}

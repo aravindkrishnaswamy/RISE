@@ -56,6 +56,14 @@ namespace RISE
 				);
 			void GetTimeRange( Scalar& begin, Scalar& end );
 			void EvaluateAtTime( const Scalar time );
+
+			//! DL-457: appends every keyframe time strictly inside (t0, t1).
+			void CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const
+			{
+				for( KeyframesList::const_iterator k = keyframes.begin(); k != keyframes.end(); ++k ) {
+					if( (*k)->time > t0 && (*k)->time < t1 ) out.push_back( (*k)->time );
+				}
+			}
 		};
 	}
 }

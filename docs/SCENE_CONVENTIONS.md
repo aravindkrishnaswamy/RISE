@@ -1081,7 +1081,26 @@ invocations (e.g., `RISE-CLI --width A scene.RISEscene` then
 
 ---
 
-## 8.7. Don't drive an anisotropic lobe from a DISCRETE cell field
+## 8.6. Motion blur: camera `exposure` is a CENTRED shutter
+
+A camera's `exposure` turns on motion blur in ANIMATION renders
+(`RasterizeAnimation`; a still render never samples time).  Each pixel sample
+draws its own time in `[t - exposure/2, t + exposure/2]` around the frame time
+`t` -- the shutter is centred, not trailing.  So a frame at `t = 0` with
+`exposure 1` and keyframes at 0 and 1 spends half its exposure clamped to the
+`t = 0` key; to blur over a keyframed span `[0, 1]`, render the frame at
+`t = 0.5`.  A reference "average of static renders" must use the same centred
+interval (DL-457 was filed against one that did not).  `scanning_rate` /
+`pixel_rate` shift each scanline's / pixel's window further.
+
+Two consequences worth knowing: an animation frame with `exposure > 0`
+renders SINGLE-THREADED (per-sample scene evaluation mutates the scene, so
+the frame runs on the calling thread), and the top-level acceleration bounds
+each object over the whole shutter -- exactly for motion linear between
+keyframes, approximately for rotations (see `IObjectManager.h`, "Motion
+blur").
+
+
 
 A weave, a tile course, a brick bond — the natural way to author any of them is
 the cell formula: `floor(u*N)` for the cell index, `mod(i + k*j, 5)` for the

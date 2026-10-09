@@ -18,6 +18,7 @@
 #include "IReference.h"
 #include "IKeyframable.h"
 #include "../Utilities/RString.h"
+#include <vector>
 
 namespace RISE
 {
@@ -50,9 +51,10 @@ namespace RISE
 
 		//! Evaluates the ACTIVE animation at the given time.
 		//! WARNING: This mutates keyframed scene elements (camera, transforms,
-		//! painters) through stored pointers. When called during multi-threaded
-		//! temporal sampling, this is a pre-existing data race in the animation
-		//! system. A proper fix would require per-thread interpolated state.
+		//! painters) through stored pointers, so it must never run while other
+		//! threads render.  Motion blur calls it per pixel sample, which is
+		//! safe only because a frame with camera exposure renders on the
+		//! calling thread (PixelBasedRasterizerHelper::RenderFrameOfAnimationPass).
 		virtual void EvaluateAtTime( const Scalar time ) = 0;
 
 		//! Tells us whether anything is keyframed
@@ -116,6 +118,13 @@ namespace RISE
 			bool& do_fields,
 			bool& invert_fields
 			) const = 0;
+
+		//! DL-457: appends the ACTIVE animation's keyframe times that lie
+		//! strictly inside (t0, t1), unsorted and possibly repeated.  A
+		//! motion-blur frame samples the shutter at these times too, so a
+		//! keyframe between two uniform samples (a reversal, a short
+		//! excursion) is inside the swept bounds.
+		virtual void CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const { (void)t0; (void)t1; (void)out; }
 	};
 }
 

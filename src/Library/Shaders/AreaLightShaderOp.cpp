@@ -137,7 +137,7 @@ void AreaLightShaderOp::PerformOperation(
 
 			const Scalar	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
 			const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
-			c = c + (emm.GetColor(ri.geometric) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->valueStateful(vToLight,ri.geometric,&ior_stack):RISEPel(1,1,1)));
+			c = c + (emm.GetRadianceColor(ri.geometric) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->valueStateful(vToLight,ri.geometric,&ior_stack):RISEPel(1,1,1)));
 		}
 	}
 

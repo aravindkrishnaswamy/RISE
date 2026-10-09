@@ -408,17 +408,135 @@ private:
 
 bool ObjectManager::ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const
 {
-	return bbox.DoIntersect( elem->getBoundingBox() );
+	return bbox.DoIntersect( ElementBounds( elem ) );
 }
 
 BoundingBox ObjectManager::GetElementBoundingBox( const MYOBJ elem ) const
 {
-	return elem->getBoundingBox();
+	return ElementBounds( elem );
 }
 
 char ObjectManager::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const
 {
-	return GeometricUtilities::WhichSideOfPlane( plane, elem->getBoundingBox() );
+	return GeometricUtilities::WhichSideOfPlane( plane, ElementBounds( elem ) );
+}
+
+BoundingBox ObjectManager::ElementBounds( const IObjectPriv* elem ) const
+{
+	if( !motionBounds.empty() ) {
+		const std::map<const IObjectPriv*, MotionBox>::const_iterator it = motionBounds.find( elem );
+		if( it != motionBounds.end() ) {
+			const MotionBox& m = it->second;
+			const Scalar mll[3] = { m.box.ll.x, m.box.ll.y, m.box.ll.z };
+			const Scalar mur[3] = { m.box.ur.x, m.box.ur.y, m.box.ur.z };
+			const Scalar pad[3] = { m.pad.x, m.pad.y, m.pad.z };
+			Scalar ll[3], ur[3];
+			for( int a = 0; a < 3; a++ ) {
+				if( m.axisFinite[a] ) {
+					ll[a] = mll[a] - 0.5*pad[a];
+					ur[a] = mur[a] + 0.5*pad[a];
+				} else {
+					// Non-finite (or near-overflow) in SOME shutter sample:
+					// the full extent, not the nominal box, which may be
+					// finite at the nominal pose and still under-cover.
+					ll[a] = -RISE_INFINITY;
+					ur[a] = RISE_INFINITY;
+				}
+			}
+			return BoundingBox( Point3( ll[0], ll[1], ll[2] ), Point3( ur[0], ur[1], ur[2] ) );
+		}
+	}
+	return elem->getBoundingBox();
+}
+
+void ObjectManager::ClearMotionBounds() const
+{
+	motionBounds.clear();
+	motionSweepActive = false;
+	recomposePerSample = true;
+}
+
+void ObjectManager::BeginMotionSweep() const
+{
+	motionBounds.clear();
+	motionSweepActive = true;
+	motionSweepSamples = 0;
+	motionSweepMovedHierarchy = false;
+}
+
+void ObjectManager::EndMotionSweep() const
+{
+	motionSweepActive = false;
+	recomposePerSample = motionSweepMovedHierarchy;
+}
+
+void ObjectManager::AccumulateMotionBounds() const
+{
+	// Every registered object (world-invisible ones included: a build skips
+	// them anyway, and recording them costs one box).
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i=items.begin(), e=items.end(); i!=e; ++i ) {
+		const IObjectPriv* o = i->second.first;
+		const BoundingBox b = o->getBoundingBox();
+		const Scalar bll[3] = { b.ll.x, b.ll.y, b.ll.z };
+		const Scalar bur[3] = { b.ur.x, b.ur.y, b.ur.z };
+		bool finite[3];
+		for( int a = 0; a < 3; a++ ) {
+			// |v| >= DBL_MAX/4 counts as non-finite too: a finite axis then
+			// has |coordinate| < DBL_MAX/4 and |pad| < DBL_MAX/2, so the
+			// padded box ElementBounds forms cannot overflow to +-inf.
+			finite[a] = std::isfinite( bll[a] ) && std::isfinite( bur[a] ) &&
+				std::fabs( bll[a] ) < RISE_INFINITY*0.25 && std::fabs( bur[a] ) < RISE_INFINITY*0.25;
+		}
+		std::map<const IObjectPriv*, MotionBox>::iterator it = motionBounds.find( o );
+		if( it == motionBounds.end() ) {
+			MotionBox m;
+			m.box = b;
+			m.last = b;
+			m.pad = Vector3( 0, 0, 0 );
+			for( int a = 0; a < 3; a++ ) m.axisFinite[a] = finite[a];
+			motionBounds[o] = m;
+			continue;
+		}
+		MotionBox& m = it->second;
+		for( int a = 0; a < 3; a++ ) m.axisFinite[a] = m.axisFinite[a] && finite[a];
+		m.box.Include( b.ll );
+		m.box.Include( b.ur );
+		const Scalar lll[3] = { m.last.ll.x, m.last.ll.y, m.last.ll.z };
+		const Scalar lur[3] = { m.last.ur.x, m.last.ur.y, m.last.ur.z };
+		Scalar pad[3] = { m.pad.x, m.pad.y, m.pad.z };
+		for( int a = 0; a < 3; a++ ) {
+			if( m.axisFinite[a] ) {
+				pad[a] = r_max( pad[a], r_max( std::fabs( bll[a] - lll[a] ), std::fabs( bur[a] - lur[a] ) ) );
+			}
+		}
+		m.pad = Vector3( pad[0], pad[1], pad[2] );
+		m.last = b;
+	}
+	if( motionSweepActive ) {
+		motionSweepSamples++;
+	}
+}
+
+void ObjectManager::RecomposeAnimatedHierarchy() const
+{
+	// RebakeHierarchy moves only parented objects, and returns immediately
+	// when there are no links.  Unlike PrepareForRendering it must NOT
+	// invalidate the spatial structure here: this runs per motion-blur
+	// sample, against a structure built from swept (shutter) bounds that
+	// already contain every pose the walk can produce.
+	if( motionSweepActive ) {
+		// The first sample's walk also undoes whatever pose the scene was
+		// left in before the sweep, so only later samples count as motion.
+		const bool moved = RebakeHierarchy();
+		if( moved && motionSweepSamples > 0 ) {
+			motionSweepMovedHierarchy = true;
+		}
+		return;
+	}
+	if( recomposePerSample ) {
+		RebakeHierarchy();
+	}
 }
 
 void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
@@ -499,6 +617,10 @@ ObjectManager::ObjectManager(
   pBVH( 0 ),
   pOctree( 0 ),
   mSpatialGen( NextSpatialGeneration() ),
+  motionSweepActive( false ),
+  motionSweepSamples( 0 ),
+  motionSweepMovedHierarchy( false ),
+  recomposePerSample( true ),
   bUseBSPtree( bUseBSPtree_ ),
   bUseOctree( bUseOctree_ ),
   nMaxObjectsPerNode( nMaxObjectsPerNode_ ),
@@ -595,7 +717,9 @@ void ObjectManager::CreateBVH() const
 	GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
 	for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 		if( i->second.first->IsWorldVisible() ) {
-			bbox.Include( i->second.first->getBoundingBox() );
+			const BoundingBox b = ElementBounds( i->second.first );
+			bbox.Include( b.ll );
+			bbox.Include( b.ur );
 			elements.push_back( i->second.first );
 		}
 	}
@@ -648,7 +772,9 @@ void ObjectManager::CreateOctree() const
 	GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
 	for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 		if( i->second.first->IsWorldVisible() ) {
-			bbox.Include( i->second.first->getBoundingBox() );
+			const BoundingBox b = ElementBounds( i->second.first );
+			bbox.Include( b.ll );
+			bbox.Include( b.ur );
 			elements.push_back( i->second.first );
 		}
 	}
@@ -741,7 +867,7 @@ void ObjectManager::EnsureBoxSnapshot() const
 	for( i = items.begin(), e = items.end(); i != e; ++i ) {
 		ObjectBoxSnapshot::Entry entry;
 		entry.pObj = i->second.first;
-		entry.box  = entry.pObj->getBoundingBox();
+		entry.box  = ElementBounds( entry.pObj );	// DL-457: swept over the shutter under motion blur
 		snap->entries.push_back( entry );
 	}
 
@@ -2494,6 +2620,13 @@ void ObjectManager::InvalidateSpatialStructure() const
 		delete retiredBoxes[k];
 	}
 	retiredBoxes.clear();
+	// DL-457: swept boxes describe the shutter of the structure they were
+	// accumulated for.  Dropping them here makes every OTHER rebuild path
+	// (an edit, MLT's per-frame driver) build from current boxes; the
+	// motion-blur frame driver invalidates first and accumulates after.
+	motionBounds.clear();
+	motionSweepActive = false;
+	recomposePerSample = true;
 	treeCreationMutex.unlock();
 	// Shadow cache slots are reset but not freed — the array persists.
 	if( shadowCache ) {

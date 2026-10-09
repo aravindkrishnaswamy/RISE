@@ -1302,7 +1302,8 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   world-area fraction of samples in a normal/position region (5 sigma); C:
   floor renders under an orthographic camera, scaled vs directly authored
   surface and PT vs BDPT vs VCM (8 salted renders x 256 spp, 4 combined se);
-  D: motion blur (`RasterizeAnimation`, camera exposure 1, multithreaded) of a
+  D: motion blur (`RasterizeAnimation`, camera exposure 1; an exposure > 0
+  frame renders on the calling thread) of a
   rotating and of an animated-scale non-uniform sphere against authored
   ellipsoids, and a 24-frame loop (EvaluateAtTime + PrepareForRendering) of
   keyframed geometry and animated non-uniform scale -- red without the
@@ -1310,6 +1311,22 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   bit-for-bit gate that similarity transforms take the unchanged path (plus
   hashes for a cross-build A/B). Includes rotation x scale and shear rows. Red
   on `932f7c0a0` (sections A-C): 11/22; green 59/0 (all sections; B includes a thin-in-object-space mesh stretched along its thin axis).
+
+- `MotionBlurTimeAverageTest` (DL-457): a motion-blurred frame (camera
+  exposure 1 at frame time 0.5, so the CENTRED shutter is the timelines'
+  [0, 1]) equals the mean of static renders at 8 or 32 midpoints of that
+  same shutter, PT and BDPT (VCM with `DL457_VCM`); 16 blurred renders, a
+  Welch t-test at Bonferroni family level 0.01 over every comparison run.
+  Rows: a scaled luminary; black occluders growing past / moving out of their
+  frame-time bounds, one carried by an animated parent, one rotating rod
+  (white environment, forty out-of-view spheres so the TLAS gives the
+  occluder its own leaf); a rotated infinite-plane floor (its +-DBL_MAX box
+  overflows under rotation); a moving omni light; a moving luminary.  Red on
+  `c73078dc2`: growing +2.0 %, moving +1.7 %, parented -1.7 %; the infinite
+  plane and rod rows red on the first DL-457 fix (`4f9ea3d20`, see the
+  ledger row).  `perf` mode (not a gate) times a blurred frame with 400
+  static parent links.  Args: seed, row (a-h / all / perf), spp, blurred
+  renders.
 
 - `LuminarySamplerAreaTest` (DL-459 / DL-460): object-space area-uniformity
   of the Bezier, SDF and clipped-plane luminary samplers and the matching
@@ -1337,6 +1354,19 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   directly (P-keyed 9.9, UV-keyed equals the old grid, constant is verbatim,
   composite local exitance). Red on `388907e94`: PT 0.0011 / BDPT 0.0001 of the
   closed form, photon flux 0 and 150x, 18/12; green 37/0.
+- `SpectralOnlyEmitterTest` (DL-396): an area emitter whose exitance is a
+  `piecewise_linear_function` (a physical SPD with no RGB authoring). Row A
+  lights a grey wall with a chromatic ramp SPD (Lambertian and Phong N=2) under
+  PT / BDPT RGB and PT / BDPT / VCM / MLT spectral, hwss FALSE / TRUE, against
+  the closed-form wall luminance; row B pairs an RGB emitter with a
+  spectral-only one (plus an all-RGB control) to check the selection pmf
+  partition; row C swaps `sms_k1_refract`'s light for a spectral-only SPD equal
+  to the white RGB control's own radiance spectrum (Y-normalised D65) and
+  compares snell / uniform / extended SMS, spectral and RGB. 4 salted renders
+  per row; `A`, `B` or `C` as the first argument runs one row. Red (the
+  painter's RGB black): PT / BDPT / MLT spectral 0.0001-0.0011 of the closed
+  form, RGB 0, mixed 0.37, snell SMS 0.46 of the control (RGB 0), 39/40;
+  green 87/0.
 
 - `BDPTSeeThroughMISPartitionTest` (DL-424/425 review): synthetic
   `L - gap(s) - D - [D2] - E` paths split per strategy from one set of
