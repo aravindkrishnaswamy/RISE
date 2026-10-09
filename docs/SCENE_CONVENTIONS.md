@@ -1255,9 +1255,16 @@ integrator and in SMS (DL-345, 2026-10-02,
   inside") convention, which is right for a closed solid but not reciprocal
   on open sheets.  A slab built as ONE two-sheet mesh still renders right
   (both crossings key on one object); a slab built from two separate
-  NON-planar open meshes does not.  `ObjectManager` logs one warning per
-  render naming the first transmissive mesh that is neither certified
-  closed nor a planar sheet.
+  NON-planar open meshes does not. `ObjectManager` warns once for each
+  unchanged set of uncertain transmissive objects, naming the first one.
+  Besides indexed/displaced meshes, this includes Bezier and bilinear
+  patch sets, uncertified clipped planes, and CSG containing uncertain
+  or open transmitting operands. Raw meshes without a closed-volume
+  certificate produce an informational diagnostic because they may be
+  closed solids. These warnings confer no certificate: a boundary loop
+  does not establish non-self-intersection or prove empty interior.
+  Use planar consistently wound sheets or certified closed solids when
+  reciprocal transmission is required.
 
 ## 8.10. Depth caps do not mean the same paths in every integrator (DL-351)
 

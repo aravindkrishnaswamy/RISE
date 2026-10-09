@@ -95,6 +95,7 @@ namespace RISE
 												///< normal -- so a legacy-sentinel photon's `geomNormal` can
 												///< disagree in sign with `normal` (see
 												///< `ManifoldSolver.h`'s own note on this exception).
+			Scalar				etaI, etaT;	///< Forward native interface; zero denotes an older record.
 			Scalar				eta;			///< Material IOR at this vertex.
 			const IObject*		pObject;
 			const IMaterial*	pMaterial;
@@ -102,7 +103,7 @@ namespace RISE
 
 			SMSPhotonChainVertex() :
 				position( 0, 0, 0 ), objectPosition( 0, 0, 0 ), uv( 0, 0 ), normal( 0, 0, 0 ), geomNormal( 0, 0, 0 ),
-				eta( 1.0 ), pObject( 0 ), pMaterial( 0 ), flags( 0 ) {}
+				etaI( 0 ), etaT( 0 ), eta( 1.0 ), pObject( 0 ), pMaterial( 0 ), flags( 0 ) {}
 		};
 
 		/// Fixed upper bound on the number of specular vertices we store

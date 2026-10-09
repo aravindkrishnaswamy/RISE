@@ -27,16 +27,29 @@
 //                bottom visit it CONNECTS to the requested exit
 //                direction through the top's delta refraction (term a)
 //                and at every top visit it evaluates the top's own
-//                exit BSDF (term b).  It is sampled from a KNOWN density
-//                (a mixture of a cosine hemisphere and the bottom's own
-//                sampler), so `Pdf` reports the exact density of what
-//                `Scatter` emits.
+//                exit BSDF (term b).  DL-296 (2026-10-09): when the
+//                BOTTOM transmits through its own BSDF (the bottom
+//                material ScattersFullSphere -- translucent_material, a
+//                thin-transmission weave), COVERED also holds a non-delta
+//                exit DOWN through the bottom after a walk entered from
+//                above, at a record on a surface that provably encloses
+//                no volume (an open sheet; elsewhere the class stays
+//                WALKER, DL-472): every bottom visit connects to a below-horizon
+//                direction through the bottom's BSDF (term c, no
+//                Jacobian), and the layered value carries the radiance
+//                eta^2 of that exit (BelowEtaScale) while the emitted
+//                kray leaves it to the ray's BELOW stack.  It is sampled
+//                from a KNOWN density (a mixture of a cosine hemisphere
+//                above, the bottom's own sampler, and -- DL-296 -- a
+//                cosine hemisphere below), so `Pdf` reports the exact
+//                density of what `Scatter` emits.
 //
 //    WALKER   -- everything else: all-delta walks (glass over glass or
 //                a mirror), walks whose last non-delta event is followed
 //                by more delta events (glass over a polished coat),
 //                layers with no BSDF (skin), transmission out through the
-//                BOTTOM, walks entered from below and arrivals behind a
+//                BOTTOM by a delta lobe or through a bottom whose BSDF does
+//                not price it (DL-472), walks entered from below and arrivals behind a
 //                tilted shading normal (DL-341).  These are sampled
 //                by an unbiased single-path random walk and emitted
 //                DELTA-TAGGED: no NEE / connection strategy prices them,
@@ -102,6 +115,12 @@ namespace RISE
 			const ISPF& bottom;				// bottom
 			const IBSDF* pTopBSDF;			// top layer's BSDF, or 0 (prices the DIRECT class and term (b))
 			const IBSDF* pBottomBSDF;		// bottom layer's BSDF, or 0 (prices term (a))
+			//! DL-296: the bottom layer's BSDF prices its own transmission
+			//! (the bottom MATERIAL scatters over the full sphere and has a
+			//! BSDF -- translucent_material), so the evaluator's term (c)
+			//! connects every bottom visit to a direction BELOW the stack
+			//! and the walker leaves that class to the covered sampler.
+			const bool bBottomTransmits;
 			const unsigned int max_recur;	// depth past which Russian roulette may terminate a walk (DL-24: no longer a hard cut)
 
 			const unsigned int max_reflection_recursion;		// per-type Russian-roulette onset depth
@@ -188,7 +207,8 @@ namespace RISE
 				const Scalar thickness_,							// thickness between the materials
 				const IScalarPainter& extinction_,					// extinction coefficient for absorption between layers (physical scalar)
 				const IBSDF* pTopBSDF_ = 0,							// top layer's BSDF (CompositeMaterial passes it); 0 = none
-				const IBSDF* pBottomBSDF_ = 0						// bottom layer's BSDF (CompositeMaterial passes it); 0 = none
+				const IBSDF* pBottomBSDF_ = 0,						// bottom layer's BSDF (CompositeMaterial passes it); 0 = none
+				const bool bottomTransmits_ = false					// DL-296: the bottom MATERIAL's ScattersFullSphere() (ignored without pBottomBSDF_)
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -297,8 +317,10 @@ namespace RISE
 			//! The layered evaluator.  Returns the NON-DELTA response of the
 			//! composite for light arriving from `vLightIn` scattered toward
 			//! `-ri.ray.Dir()`: the top's own BSDF at the entry vertex plus
-			//! the covered walked class.  Zero for an entry from below and
-			//! for any direction on the far side (both are walker-only).
+			//! the covered walked class.  Zero for an entry from below
+			//! (walker-only, DL-472); on the far side, the covered
+			//! transmission out through a transmitting bottom (term c,
+			//! DL-296, including its radiance eta^2), else zero.
 			//! `pStack` is the caller's LIVE IOR stack, or 0.
 			RISEPel EvaluateLayered(
 				const Vector3& vLightIn,
@@ -317,6 +339,12 @@ namespace RISE
 			//! class can be priced at all.  CompositeMaterial presents a
 			//! CompositeBSDF exactly when this is true.
 			bool HasLayeredValue() const { return pTopBSDF || pBottomBSDF; }
+
+			//! DL-296: true when the layered value can have a below-horizon
+			//! term (transmission out through the bottom, term (c), live at
+			//! records with bProvablyNoInterior), so the composite's BSDF
+			//! scatters over the full sphere.
+			bool HasTransmissionValue() const { return bBottomTransmits; }
 
 			//! DL-407 (2): the index of the medium BELOW this
 			//! composite -- the index a walk that crosses both layers
@@ -338,7 +366,7 @@ namespace RISE
 			//! refractor, or a nested composite that does) -- the
 			//! composites to which DL-345's open-sheet face rule applies.
 			//! A translucent (non-delta) layer is excluded: a from-below
-			//! walk is delta-tagged and invisible to NEE (DL-296), so a
+			//! walk is delta-tagged and invisible to NEE (DL-472), so a
 			//! delta light would contribute nothing to the back face.
 			bool TransmitsThrough(
 				const RayIntersectionGeometric& ri,

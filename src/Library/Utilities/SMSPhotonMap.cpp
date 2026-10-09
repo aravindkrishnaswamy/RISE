@@ -343,29 +343,26 @@ namespace
 			// so we preserve the raw cosI-based side indicator (consumer
 			// uses it only for Fresnel eta_i/eta_t bookkeeping on the
 			// reflection, which is direction-dependent).
-			// Side-of-surface decision: use the GEOMETRIC normal so the
-			// `bEntering` flag stamped on the photon chain matches the
-			// actual face orientation (not Phong-perturbed shading).
-			// A bump-mapped reflector can otherwise mislabel entering vs
-			// exiting on a reflection vertex, propagating a wrong
-			// `isExiting` bit into the photon record and downstream
-			// Fresnel etaI/etaT pair.  PBRT 4e §10.1.1.
-			// DL-70: against the TRUE, ray-INDEPENDENT geometric normal.
-			// A double-sided specular caster reports a `vGeomNormal`
-			// opposing the photon at every vertex, so `cosI` was
-			// unconditionally negative and the reflection branch stamped
-			// `bEntering = true` on a back-face vertex too, propagating a
-			// wrong side bit (and therefore a wrong Fresnel etaI/etaT
-			// pair) into the photon record.  No-op on every geometry that
-			// does not flip.
-			const Scalar cosI = ri.geometric.TrueGeomFacing( ray.Dir() );
+			// Snapshot the native interface before adopting the scattered ray's
+			// stack. Reflection preserves membership; transmission reverses
+			// this pair when the receiver reconstructs the photon seed.
 			const bool bReflection = ( pScat->type == ScatteredRay::eRayReflection );
-			const bool bEntering = bReflection
-			    ? ( cosI < 0 )          // reflection: medium unchanged; keep
-			                             // cosI-based side for Fresnel lookup
-			    : ( ri.geometric.bProvablyNoInterior
-			        ? ( cosI < 0 )       // DL-345: an open sheet is crossed by its face
-			        : !bSameObjectAlreadyPreScatter ); // refraction: pre-scatter stack state
+			const SpecularInfo specInfo = ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
+			IORStack destination( ior_stack );
+			bool bEntering = !bSameObjectAlreadyPreScatter;
+			Scalar etaI = bEntering ? ior_stack.top() : specInfo.ior;
+			Scalar etaT = specInfo.ior;
+			if( ri.geometric.bProvablyNoInterior ) {
+				const IORStackSeeding::OpenSheetCrossing crossing =
+					IORStackSeeding::ResolveOpenSheetCrossing( ri.geometric, specInfo.ior, destination );
+				bEntering = crossing.bEntering;
+				etaI = crossing.etaFrom;
+				etaT = crossing.etaTo;
+			} else if( !bEntering ) {
+				destination.pop();
+				etaT = destination.top();
+			}
+
 
 			// Record vertex in photon-direction order.
 			SMSPhotonChainVertex& v = out.chain[specularHits];
@@ -389,13 +386,9 @@ namespace
 			v.geomNormal = ri.geometric.UnflippedGeomNormal();
 			v.pObject   = ri.pObject;
 			v.pMaterial = ri.pMaterial;
-			// eta comes from the material's specular info at this vertex.
-			// GetSpecularInfo returns (isSpecular, ior, canRefract, ...).
-			// Use the IOR of the material directly.
-			{
-				SpecularInfo specInfo = ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
-				v.eta = specInfo.ior;
-			}
+			v.eta = specInfo.ior;
+			v.etaI = etaI;
+			v.etaT = etaT;
 			v.flags = static_cast<unsigned char>(
 				( bEntering   ? 0x0 : 0x1 ) |
 				( bReflection ? 0x2 : 0x0 ) );

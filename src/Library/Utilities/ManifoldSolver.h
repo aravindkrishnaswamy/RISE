@@ -1240,13 +1240,10 @@ namespace RISE
 			/// Restores exact UV and object-frame hit coordinates.
 			/// Sets `mv.valid = false` so `Solve` recomputes derivatives.
 			///
-			/// `mv.etaI` / `mv.etaT` stay at the default 1.0 — RISE's
-			/// SMSPhoton storage doesn't carry IOR-stack snapshots, so
-			/// downstream half-vector / Fresnel math falls back to
-			/// air-on-other-side via `GetEffectiveEtas` (correct for
-			/// single-dielectric-in-air photons; wrong for nested
-			/// dielectrics — see `EvaluateAtShadingPointNM` for the
-			/// matching limitation).
+			/// Restores native interface indices recorded by photon transport;
+			/// transmission swaps their order, reflection preserves it.
+			/// Old records with zero indices retain the material/air fallback.
+			/// NM callers must additionally replay wavelength-dependent membership.
 			///
 			/// \return Number of vertices written into `chain`.  Returns 0
 			///         when the photon's chain length is invalid.

@@ -43,6 +43,34 @@ namespace RISE
 	//! \f[
 	//!   \forall\Theta: \int_{\Omega_x}fr(x, \Theta \leftrightarrow \Psi) cos( n_x, \Psi) dw_\Psi \leq 1
 	//! \f]
+	//! DL-472 (1): the TRANSPORT MODE of an `IBSDF::value` query.  A BSDF
+	//! that refracts INSIDE itself (a `composite_material` whose top
+	//! refracts over a bottom that transmits through its own BSDF -- the
+	//! only one today) is not symmetric in its arguments: its radiance
+	//! value carries the basic-radiance factor (n_out / n_in)^2 of the
+	//! index step (RISE prices that factor on RADIANCE walks only,
+	//! REFRACTIVE_RADIANCE_SCALING.md), and a light-subpath (IMPORTANCE)
+	//! connection must not see it.  PathVertexEval::EvalBSDFAtVertex{,NM}
+	//! sets this for a light-subpath vertex; every other BSDF ignores it
+	//! (their values are reciprocal).  Thread-local, scoped, nestable.
+	inline bool& BSDFImportanceModeFlag()
+	{
+		thread_local bool flag = false;
+		return flag;
+	}
+
+	struct BSDFImportanceScope
+	{
+		bool prev;
+		explicit BSDFImportanceScope( const bool importance ) : prev( BSDFImportanceModeFlag() )
+		{
+			BSDFImportanceModeFlag() = importance;
+		}
+		~BSDFImportanceScope() { BSDFImportanceModeFlag() = prev; }
+		BSDFImportanceScope( const BSDFImportanceScope& ) = delete;
+		BSDFImportanceScope& operator=( const BSDFImportanceScope& ) = delete;
+	};
+
 	class IBSDF : public virtual IReference
 	{
 	protected:
