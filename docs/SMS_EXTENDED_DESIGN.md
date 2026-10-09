@@ -99,7 +99,7 @@ The design builds on these facts. Code references are to that commit.
 | DL-420 | Snell SMS reads +1.6..+1.8 % high for a spot light through a refracting caster. | Becomes a fixture of the delta-light reference phase. |
 | DL-352 | Newton stalls on displaced casters. | Not an estimator defect: displaced and Phong-shaded meshes are eligible, but their low root coverage is reported, not hidden. |
 
-Status 2026-10-08: DL-437, DL-438, DL-376, DL-421, DL-420 and DL-445 are closed by measurement (ledger rows; `SMSSupersededRowsTest`); DL-353 (remainder) and DL-391 stay open. These are design dependencies, not closures. DL-331's photon stack reconstruction and DL-419's medium attenuation remain separate prerequisites for their later modes; DL-396 (an RGB-black spectral emitter) is out of scope.
+Status 2026-10-08: DL-437, DL-438, DL-376, DL-421, DL-420 and DL-445 are closed by measurement (ledger rows; `SMSSupersededRowsTest`); DL-353 (remainder) and DL-391 stay open. These are design dependencies, not closures. DL-331's photon stack reconstruction remains a separate prerequisite for its later mode, and DL-419's medium attenuation is implemented for legacy SMS only (closed 2026-10-09: `EvaluateChainMediumTransmittance`); extended SMS still refuses media and needs its own segment laws before admitting them; DL-396 (an RGB-black spectral emitter) is out of scope.
 
 ## Material and medium contract
 

@@ -1144,6 +1144,10 @@ namespace RISE
 			/// are skipped.
 			bool SceneHasAlphaCoverage() const { return bSceneHasAlphaCoverage; }
             bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
+            /// True if any object carries an interior medium (cached during
+            /// Prepare).  DL-419: SMS's chain transmittance walks segment
+            /// boundaries only when this is set.
+            bool SceneHasObjectMedia() const { return bSceneHasObjectMedia; }
 
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  When M>0, EvaluateDirectLighting draws

@@ -968,7 +968,8 @@ namespace RISE
 			/// Computes Fresnel-weighted transmittance/reflectance product
 			/// along a chain. Boundary multipliers apply per event; dielectric
 			/// tau applies per world-unit distance on exiting transmission,
-			/// matching DielectricSPF. Participating-medium extinction is DL-419.
+			/// matching DielectricSPF. Participating-medium extinction is a
+			/// separate factor, EvaluateChainMediumTransmittance (DL-419).
 			///
 			/// \return Per-channel attenuation factor for the chain
 			RISEPel EvaluateChainThroughput(
@@ -982,6 +983,39 @@ namespace RISE
 				const Point3& startPoint,
 				const Point3& endPoint,
 				const std::vector<ManifoldVertex>& chain,
+				const Scalar nm
+				) const;
+
+			/// DL-419: participating-medium transmittance along every
+			/// segment of a solved chain, receiver (`startPoint`) -> v_1 ->
+			/// ... -> v_k -> light (`endPoint`).  The medium of each segment
+			/// follows the walk's own convention (MediumTracking): the
+			/// innermost enclosing object's interior medium, else the
+			/// scene's global medium.  The receiver's enclosing objects come
+			/// from `pIorStack` (null: the global medium only); a
+			/// TRANSMISSIVE chain vertex enters (`!isExiting`) or leaves
+			/// (`isExiting`) its object, a reflection changes nothing; a
+			/// medium boundary crossed strictly inside a segment pushes or
+			/// pops by its true geometric facing, as the NEE shadow walk
+			/// does.  Homogeneous media are closed form; a heterogeneous
+			/// medium's EvalTransmittance is the same per-call estimator PT
+			/// NEE uses (it consumes no sampler dimension).  Returns exactly
+			/// 1 (no ray cast) when the scene has no medium at all.
+			RISEPel EvaluateChainMediumTransmittance(
+				const Point3& startPoint,
+				const Point3& endPoint,
+				const std::vector<ManifoldVertex>& chain,
+				const IRayCaster& caster,
+				const IORStack* pIorStack
+				) const;
+
+			/// Scalar (spectral) variant of EvaluateChainMediumTransmittance.
+			Scalar EvaluateChainMediumTransmittanceNM(
+				const Point3& startPoint,
+				const Point3& endPoint,
+				const std::vector<ManifoldVertex>& chain,
+				const IRayCaster& caster,
+				const IORStack* pIorStack,
 				const Scalar nm
 				) const;
 
