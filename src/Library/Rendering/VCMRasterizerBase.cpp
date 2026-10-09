@@ -779,6 +779,22 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
 
+	// DL-463: a motion-blurred frame that will trace each pass at its own
+	// shutter time (WantsPerPassShutterTime: merging on, radius > 0) has
+	// its pass-0 store rebuilt by OnProgressivePassBegin; tracing it here
+	// at the frame time would be thrown away.
+	if( mPerPassShutterTimeCandidate && effectiveMergeRadius > 0 ) {
+		mSplatTotalSamples = 1.0;
+		if( pSampling ) {
+			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		}
+		mSplatTotalSamples *= GetSplatSampleScale();
+		GlobalLog()->PrintEx( eLog_Info,
+			"VCMRasterizerBase::PreRenderSetup:: per-pass shutter time -- "
+			"the light store is traced at each pass's time" );
+		return;
+	}
+
 	// Parallel light pass — generates K × W × H light subpaths using
 	// distinct Sobol sample indices [0 .. K-1] for super-iteration 0.
 	// Per-thread local buffers are concat'd into the shared store in
@@ -900,8 +916,10 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	const unsigned int passIdx
 	) const
 {
-	// Pass 0: PreRenderSetup already built the store.
-	if( passIdx == 0 ) {
+	// Pass 0: PreRenderSetup already built the store -- at the frame
+	// time.  A per-pass shutter time (DL-463) has since moved the scene,
+	// so the store is rebuilt for pass 0 too (without a radius shrink).
+	if( passIdx == 0 && !mPerPassShutterTime ) {
 		return;
 	}
 
@@ -948,7 +966,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	// floor == base, the radius stays at r_0 forever — matches the
 	// prior fixed-radius behavior exactly.
 	// ---------------------------------------------------------------
-	if( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 )
+	if( passIdx > 0 && mProgressiveRadiusEnabled && mBaseMergeRadius > 0 )
 	{
 		mMergeRadiusPassCount++;
 		const Scalar n = static_cast<Scalar>( mMergeRadiusPassCount );
@@ -962,6 +980,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	pLightVertexStore->Clear();
 
 	// K = 1 matches the forced samplesPerPass = 1 in PreRenderSetup.
+	// (A pass-0 rebuild at a per-pass shutter time reuses sample index 0.)
 	const unsigned int samplesPerSuperIter = 1;
 	const uint32_t baseSampleIndex = passIdx;
 
@@ -1048,6 +1067,12 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		passIdx, totalStored, samplesPerSuperIter,
 		(double)mCurrentMergeRadius, (double)mMergeRadiusFloor,
 		(double)( mBaseMergeRadius > 0 ? mCurrentMergeRadius / mBaseMergeRadius : 1.0 ) );
+}
+
+bool VCMRasterizerBase::WantsPerPassShutterTime() const
+{
+	return pIntegrator && pLightVertexStore && pIntegrator->GetEnableVM() &&
+		mVCMNormalization.mMergeRadiusSq > 0;
 }
 
 // GetIntermediateOutputImage and ResolveSplatIntoScratch are inherited

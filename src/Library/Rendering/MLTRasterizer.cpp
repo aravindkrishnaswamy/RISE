@@ -1401,12 +1401,11 @@ void MLTRasterizer::RasterizeSceneAnimation(
 		? ( time_end - time_start ) / Scalar( num_frames - 1 )
 		: 0;
 
-	// Scene-wide setup: AttachScene + LightSampler are built once, not
-	// per frame.  Matches PixelBasedRasterizerHelper::RasterizeScene-
-	// Animation — keyframed transforms are picked up via the per-frame
-	// EvaluateAtTime + InvalidateSpatialStructure + PrepareForRendering
-	// dance below; light-sampler weights are NOT rebuilt per frame
-	// (consistent with PT/BDPT/VCM animation behavior).
+	// Scene-wide setup: AttachScene + LightSampler are built once; per
+	// frame, keyframed transforms are picked up via EvaluateAtTime +
+	// InvalidateSpatialStructure + PrepareForRendering, and the light
+	// sampler's tables are refreshed in place (DL-463), as in
+	// PixelBasedRasterizerHelper::PrepareSceneForFrame.
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
 	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
@@ -1429,6 +1428,11 @@ void MLTRasterizer::RasterizeSceneAnimation(
 			pScene.GetObjects()->InvalidateSpatialStructure();
 		}
 		pScene.GetObjects()->PrepareForRendering();
+		// DL-463 (b): rebuild the light-selection tables for this frame's
+		// light poses / powers (in place: the integrator's pointer stays).
+		if( bHasKeyframedObjects ) {
+			pCaster->RefreshLightSamplers();
+		}
 		pScene.SetSceneTime( curtime );
 
 		GlobalLog()->PrintEx( eLog_Event,

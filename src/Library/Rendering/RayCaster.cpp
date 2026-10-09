@@ -617,6 +617,30 @@ void RayCaster::RebuildLightSamplers()
 	}
 }
 
+void RayCaster::AccumulateLightMotionSample()
+{
+	if( pLightSampler && pScene && pLuminaryManager ) {
+		const LuminaryManager* pConcrete = dynamic_cast<const LuminaryManager*>( pLuminaryManager );
+		if( pConcrete ) {
+			pLightSampler->AccumulateMotionSample( *pScene, pConcrete->getLuminaries() );
+		}
+	}
+}
+
+void RayCaster::RefreshLightSamplers()
+{
+	// DL-463: rebuild the selection tables IN PLACE from the scene's
+	// current state (plus any motion sweep).  The luminary list itself is
+	// structural and cannot change mid-animation; the environment sampler
+	// is time-independent and Prepare keeps it.
+	if( pLightSampler && pScene && pLuminaryManager ) {
+		const LuminaryManager* pConcrete = dynamic_cast<const LuminaryManager*>( pLuminaryManager );
+		if( pConcrete ) {
+			pLightSampler->Prepare( *pScene, pConcrete->getLuminaries() );
+		}
+	}
+}
+
 unsigned int RayCaster::GetSamplerRebuildCount() { return s_samplerRebuildCount.load( std::memory_order_relaxed ); }
 void         RayCaster::ResetSamplerRebuildCount() { s_samplerRebuildCount.store( 0, std::memory_order_relaxed ); }
 

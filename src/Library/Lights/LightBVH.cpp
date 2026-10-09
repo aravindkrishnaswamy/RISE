@@ -203,7 +203,19 @@ Scalar LightBVH::NodeImportance(
 			// The cone axis represents the average emission direction.
 			const Scalar cosTheta = Vector3Ops::Dot( d, node.coneAxis );
 			const Scalar theta = acos( std::max( Scalar(-1), std::min( Scalar(1), cosTheta ) ) );
-			const Scalar thetaPrime = std::max( Scalar(0), theta - node.coneHalfAngle );
+			Scalar thetaPrime = std::max( Scalar(0), theta - node.coneHalfAngle );
+
+			// DL-463: a subtree holding a shutter-swept light has a box
+			// that the light crosses, so the direction from ANY point of
+			// the box -- not just its centre -- must be bounded (Conty &
+			// Kulla's theta_b: the half-angle the box's bounding sphere
+			// subtends).  A static subtree keeps the centre test unchanged.
+			if( node.motion )
+			{
+				const Scalar r = Scalar(0.5) * Vector3Ops::Magnitude( node.bounds.GetExtents() );
+				thetaPrime = ( dLen <= r ) ? Scalar(0) :
+					std::max( Scalar(0), thetaPrime - asin( std::min( Scalar(1), r / dLen ) ) );
+			}
 
 			orientationFactor = std::max( Scalar(0), cos( thetaPrime ) );
 		}
@@ -270,6 +282,19 @@ void LightBVH::Build(
 			prim.cone = OrientationCone::FullSphere();
 		}
 
+		// DL-463: under motion blur the entry carries its box and cone
+		// over the whole shutter; a frame-time cone or box would cull a
+		// light that has since turned or moved (zero importance = never
+		// selected while it shines).
+		if( entry.hasMotionBounds )
+		{
+			prim.bounds = entry.motionBounds;
+			prim.bounds.EnsureBoxHasVolume();
+			prim.cone.axis = entry.motionConeAxis;
+			prim.cone.halfAngle = entry.motionConeHalfAngle;
+			prim.motion = true;
+		}
+
 		prim.centroid = prim.bounds.GetCenter();
 	}
 
@@ -308,6 +333,7 @@ unsigned int LightBVH::BuildRecursive(
 	// Compute bounding box, total power, and merged orientation cone
 	node.bounds = prims[start].bounds;
 	node.power = prims[start].power;
+	node.motion = prims[start].motion;
 	OrientationCone mergedCone = prims[start].cone;
 
 	for( unsigned int i = start + 1; i < end; i++ )
@@ -315,6 +341,7 @@ unsigned int LightBVH::BuildRecursive(
 		node.bounds.Include( prims[i].bounds );
 		node.power += prims[i].power;
 		mergedCone = OrientationCone::Merge( mergedCone, prims[i].cone );
+		node.motion = node.motion || prims[i].motion;
 	}
 
 	node.coneAxis = mergedCone.axis;

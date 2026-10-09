@@ -1081,7 +1081,7 @@ namespace RISE
 				// in scene format v6 (Phase B2 of the Camera/Film/Output
 				// split).  Camera chunks are now imaging-only; the
 				// rasterizer reads grid dims from `Scene::GetFilm()`.
-				{ auto& p = P(); p.name = "exposure";           p.kind = ValueKind::Double;     p.description = "Shutter exposure time (motion blur in animation renders). The shutter is CENTRED on the frame time: each pixel sample draws its time in [t - exposure/2, t + exposure/2]. An animation frame with exposure > 0 renders single-threaded. 0 = no motion blur"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "exposure";           p.kind = ValueKind::Double;     p.description = "Shutter exposure time (motion blur in animation renders). The shutter is CENTRED on the frame time: each pixel sample draws its time in [t - exposure/2, t + exposure/2]. An animation frame with exposure > 0 renders single-threaded, except VCM with vertex merging, which traces each progressive pass at one shutter time. 0 = no motion blur"; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "scanning_rate";      p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "pixel_rate";         p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "pitch";              p.kind = ValueKind::Double;     p.description = "Pitch rotation (degrees)"; }
@@ -5374,7 +5374,7 @@ namespace RISE
 						// width / height / pixelAR moved to the `film` chunk
 						// in scene format v6 (Phase B2 of the Camera/Film/Output
 						// split).  Camera chunks are now imaging-only.
-						{ auto& p = P(); p.name = "exposure";      p.kind = ValueKind::Double;     p.description = "Shutter exposure time (motion blur in animation renders). The shutter is CENTRED on the frame time: each pixel sample draws its time in [t - exposure/2, t + exposure/2]. An animation frame with exposure > 0 renders single-threaded. 0 = no motion blur"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "exposure";      p.kind = ValueKind::Double;     p.description = "Shutter exposure time (motion blur in animation renders). The shutter is CENTRED on the frame time: each pixel sample draws its time in [t - exposure/2, t + exposure/2]. An animation frame with exposure > 0 renders single-threaded, except VCM with vertex merging, which traces each progressive pass at one shutter time. 0 = no motion blur"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "scanning_rate"; p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "pixel_rate";    p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
 						return cd;

@@ -445,10 +445,41 @@ namespace RISE
 			Scalar				exitance;	///< MaxValue of radiant exitance
 			Point3				position;	///< Representative position for distance estimates
 			bool				twoSided;	///< DL-320: mesh luminary on double-sided geometry (emits from both faces); false for delta lights
+
+			/// DL-463: under motion blur the light BVH bounds this entry over
+			/// the whole shutter, not at the frame time alone (see
+			/// LightSampler::AccumulateMotionSample).  False: the BVH reads
+			/// the light's current bounds and cone.
+			bool				hasMotionBounds = false;
+			BoundingBox			motionBounds;			///< Union of the entry's bounds over the shutter samples
+			Vector3				motionConeAxis;			///< Orientation cone bounding every sample's emission cone
+			Scalar				motionConeHalfAngle = 0;
 		};
 
 		class LightSampler : public virtual Reference
 		{
+		public:
+			/// DL-463: per-light state accumulated over a motion-blur sweep,
+			/// indexed by the light manager's order (lights) and the
+			/// luminary list's order (luminaries).
+			struct MotionSweepRecord
+			{
+				Scalar			exitanceSum = 0;	///< Sum over samples of the selection weight
+				unsigned int	samples = 0;
+				bool			anyPositive = false;
+				BoundingBox		bounds;
+				bool			boundsValid = false;
+				Vector3			coneAxis;
+				Scalar			coneHalfAngle = 0;
+				bool			coneValid = false;
+				// Padding for motion between samples, the ObjectManager
+				// rule: half the largest change between consecutive samples
+				// (box corners per axis; the cone axis's angle).
+				BoundingBox		lastBox;
+				Vector3			lastAxis;
+				Scalar			boxPad[3] = { 0, 0, 0 };
+				Scalar			anglePad = 0;
+			};
 		protected:
 			virtual ~LightSampler();
 
@@ -465,6 +496,12 @@ namespace RISE
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
 			bool bSceneHasAlphaCoverage = false;
             bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
+
+			BoundingBox						sweptSceneBox;		///< Union of world-visible objects' boxes over the sweep (env emission disc)
+			bool							sweptSceneBoxValid = false;
+			std::vector<MotionSweepRecord>	sweptLights;
+			std::vector<MotionSweepRecord>	sweptLuminaries;
+			bool							bMotionSweep = false;
 
 			/// Light BVH for importance-weighted selection (null when disabled)
 			LightBVH*					pLightBVH;
@@ -906,6 +943,34 @@ namespace RISE
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries	///< [in] List of mesh luminaries
 				);
+
+			/// DL-463: motion-blur sweep.  A motion-blurred frame moves the
+			/// scene to its own time at every pixel sample, but the selection
+			/// tables are built once per frame.  Any table both sides read is
+			/// an unbiased pmf, EXCEPT where it is zero for a light that emits
+			/// at some sample time: a light dark (or excluded) at the frame
+			/// time, or a light BVH cone / box that culls a light which has
+			/// since turned or moved.  The rasterizer moves the scene through
+			/// the shutter and calls AccumulateMotionSample at each time; the
+			/// next Prepare then weights each light by its mean power over the
+			/// samples (keeping it whenever any sample emits) and gives the
+			/// BVH the union of its boxes and cones.  Prepare consumes the
+			/// sweep (a later Prepare without a new sweep is a plain one).
+			/// Single-threaded, like Prepare.
+			void ClearMotionSweep();
+			void AccumulateMotionSample(
+				const IScene& scene,
+				const LuminaryManager::LuminariesList& luminaries
+				);
+
+			/// DL-463: a luminary's selection weight as Prepare computes it
+			/// (total emitted power: DL-320 face count, DL-431 surface mean).
+			static Scalar LuminarySelectionWeight( const IObject* pLum );
+			/// DL-463: the weight Prepare gives a swept light (the shutter
+			/// mean; `nominal` when no sample emitted).
+			static Scalar SweptSelectionWeight( const MotionSweepRecord& rec, const Scalar nominal );
+			/// DL-463: hands the swept box / cone to the light BVH.
+			static void ApplySweptBounds( LightEntry& entry, const MotionSweepRecord& rec );
 
 			/// Selects a light proportional to exitance, samples an emission
 			/// position and direction, and fills the LightSample struct.
