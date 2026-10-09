@@ -43,6 +43,10 @@ namespace RISE
 			mutable bool smsPolicyPrepared = false;
 			mutable bool smsHasComposite = false;
 			mutable std::string smsFirstCompositeObject;
+			//! DL-382: the offending-object set last warned about, so the
+			//! uncertified-open-mesh warning fires once per scene, not per
+			//! PrepareForRendering (an animation prepares every frame).
+			mutable std::string openMeshWarningKey;
             mutable std::vector<const IObject*> smsExtendedCasters;
             mutable bool smsRejectedTransmissiveCaster = false;
             mutable bool smsUncertainNormalOrientation = false;

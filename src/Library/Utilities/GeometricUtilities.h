@@ -589,6 +589,93 @@ namespace RISE
 					const BoundingBox& bb								///< [in] The bounding box to check
 					);
 
+
+		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
+		//! well-defined front side?  True iff every corner lies within
+		//! `max(1e-9, 1e-6 * bbox diagonal)` of one plane (the DL-143 weld
+		//! epsilon, so the tolerance means the same thing as "the same
+		//! vertex" does elsewhere) AND every non-degenerate triangle's
+		//! WINDING normal points to the same side of it.
+		//!
+		//! Why this is a certificate and not a guess: a planar set has empty
+		//! interior and a connected complement, whatever its topology, holes
+		//! or overlaps; and for any oriented CLOSED surface the flux of a
+		//! constant field vanishes (`integral n . d dA = 0`), so a surface
+		//! whose winding normals ALL satisfy `n . d > 0` has no closed
+		//! oriented component -- in particular a flat closed box (top and
+		//! bottom wound outward) is refused, however thin.  Any pocket the
+		//! tolerance admits is thinner than twice the weld epsilon.
+		//!
+		//! It is deliberately NOT "has a boundary edge": "not certified
+		//! closed" is not "certified open" (DL-143 audited four glTF assets,
+		//! all closed solids, none of which certify closed), and a mesh with
+		//! a boundary can be a box plus a stray quad.  Two parallel sheets
+		//! in ONE mesh (a slab built as one open mesh) are refused too: N
+		//! open sheets can bound a volume no single sheet can (DL-157
+		//! round 3), so a collection is never certified.
+		//!
+		//! `corner( t, k )` returns triangle `t`'s k-th corner.
+		template< class CornerFn >
+		inline bool IsPlanarConsistentlyWoundSheet( const size_t nTris, CornerFn corner )
+		{
+			if( nTris == 0 ) {
+				return false;
+			}
+			BoundingBox bb( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+				Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+			for( size_t t = 0; t < nTris; ++t ) {
+				for( int k = 0; k < 3; ++k ) {
+					bb.Include( corner( t, k ) );
+				}
+			}
+			const Vector3 ext = Vector3Ops::mkVector3( bb.ur, bb.ll );
+			const Scalar diag = Vector3Ops::Magnitude( ext );
+			if( !( diag > 0 ) || !( diag < RISE_INFINITY ) ) {
+				return false;
+			}
+			const Scalar eps = diag * 1e-6 > 1e-9 ? diag * 1e-6 : 1e-9;
+			const Scalar degenerate = diag * diag * 1e-12;
+
+			// Reference plane: the largest triangle's.
+			size_t best = nTris;
+			Scalar bestMag = 0;
+			for( size_t t = 0; t < nTris; ++t ) {
+				const Point3& a = corner( t, 0 );
+				const Vector3 c = Vector3Ops::Cross(
+					Vector3Ops::mkVector3( corner( t, 1 ), a ),
+					Vector3Ops::mkVector3( corner( t, 2 ), a ) );
+				const Scalar m = Vector3Ops::Magnitude( c );
+				if( m > bestMag ) {
+					bestMag = m;
+					best = t;
+				}
+			}
+			if( best == nTris || !( bestMag > degenerate ) ) {
+				return false;
+			}
+			const Point3 p0 = corner( best, 0 );
+			const Vector3 n = Vector3Ops::Normalize( Vector3Ops::Cross(
+				Vector3Ops::mkVector3( corner( best, 1 ), p0 ),
+				Vector3Ops::mkVector3( corner( best, 2 ), p0 ) ) );
+
+			for( size_t t = 0; t < nTris; ++t ) {
+				for( int k = 0; k < 3; ++k ) {
+					const Scalar d = Vector3Ops::Dot( Vector3Ops::mkVector3( corner( t, k ), p0 ), n );
+					if( !( d <= eps && d >= -eps ) ) {
+						return false;
+					}
+				}
+				const Point3& a = corner( t, 0 );
+				const Vector3 c = Vector3Ops::Cross(
+					Vector3Ops::mkVector3( corner( t, 1 ), a ),
+					Vector3Ops::mkVector3( corner( t, 2 ), a ) );
+				const Scalar m = Vector3Ops::Magnitude( c );
+				if( m > degenerate && !( Vector3Ops::Dot( c, n ) > 0 ) ) {
+					return false;
+				}
+			}
+			return true;
+		}
 	}
 }
 

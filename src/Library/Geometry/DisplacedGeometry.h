@@ -188,6 +188,10 @@ namespace RISE
 			// single-threaded.  Same lightweight static-counter pattern as
 			// TriangleMeshGeometryIndexed's s_nextGeometryId.
             bool HasUncertainSMSNormalOrientation() const;
+            //! DL-382: neither certified closed nor certified open (the
+            //! realized mesh's own certificates, or DL-345's convex-plane
+            //! base).  Such a transmissive surface keeps the IOR-stack rule.
+            bool HasUncertifiedOpenness() const;
 			static unsigned int GetBuildMeshCount();
 			static void         ResetBuildMeshCount();
 
