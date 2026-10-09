@@ -131,9 +131,9 @@ This is the open spike the roadmap flags for A3/D3 (§13 #1: "is a spectral hove
 fall back to commit-on-release?"). Concrete guidance for the swatch:
 
 - A flat colour swatch needs **no path tracer** — for the Kelvin/mono/CSV modes the swatch colour is just
-  `SpectralPacket::GetXYZ()` → `XYZtoRec709RGB` (the exact path `SpectralColorPainter` and `BlackBodyPainter`
-  already run in their constructors — [SpectralColorPainter.cpp:22](../../src/Library/Painters/SpectralColorPainter.cpp),
-  [BlackBodyPainter.cpp:160](../../src/Library/Painters/BlackBodyPainter.cpp)). This is **microseconds**, fully
+  `ProjectPhysicalSpectrumToRGB` (Painter.cpp; the exact projection `SpectralColorPainter` and `BlackBodyPainter`
+  run in their constructors since DL-464 — reflectance view under D65 for `GetColor`, source view for
+  `GetRadianceColor`; the old `SpectralPacket::GetXYZ()` bin mean was unnormalised). This is **microseconds**, fully
   live on slider drag, no render. *Decision: the swatch is computed, not rendered, for D1/D2.*
   - **⚠ Evaluate the swatch by deterministic dense-wavelength integration, NOT 4 stochastic hero samples.**
     The renderer carries 4 hero λ per *path* and Monte-Carlo-integrates over many paths; a UI swatch has no path

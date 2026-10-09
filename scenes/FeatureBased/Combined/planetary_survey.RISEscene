@@ -215,12 +215,16 @@ uniformcolor_painter
 
 
 
-# Blackbody radiator for the central star (~5800K sun-like)
+# Blackbody radiator for the central star (~5800K sun-like).  `normalize`
+# (default TRUE) puts the Planck peak at `scale`; 0.94 makes the RGB
+# source colour's largest channel ~1, which is what this RGB scene's star
+# rendered at before DL-464 (the old RGB view ignored `scale`, whose
+# previous value 0.0005 dimmed only the spectral path).
 blackbody_painter
 {
 	name				pnt_star
 	temperature			5800
-	scale				0.0005
+	scale				0.94
 }
 
 # Color painters for procedural textures

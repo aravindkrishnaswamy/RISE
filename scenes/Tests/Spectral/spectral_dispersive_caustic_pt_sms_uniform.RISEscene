@@ -75,7 +75,6 @@ spectral_painter
 	file				colors/cornellbox_green.spectra
 	nmbegin				400
 	nmend				700
-	scale				3
 }
 
 spectral_painter
@@ -84,7 +83,6 @@ spectral_painter
 	file				colors/cornellbox_red.spectra
 	nmbegin				400
 	nmend				700
-	scale				3
 }
 
 spectral_painter
@@ -93,7 +91,6 @@ spectral_painter
 	file				colors/cornellbox_white.spectra
 	nmbegin				400
 	nmend				700
-	scale				3
 }
 
 spectral_painter
