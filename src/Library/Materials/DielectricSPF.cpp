@@ -743,59 +743,116 @@ Scalar DielectricSPF::PdfNM(
 	return 0;
 }
 
-// DL-297.  The `scattering` warp of the delta-tagged transmission, as a
-// density the composite's layered evaluator can connect through (ISPF has
-// the contract).  Only the Phong `cos^N` form has one: a Henyey-Greenstein
-// warp leaves every draw with `alpha >= PI/2` UNPERTURBED (a delta part at
-// the Snell axis), and the RGB pipe's per-channel / dispersive loop emits
-// one transmitted ray per channel about three different axes -- both report
-// "none", and the evaluator keeps pricing them as an ideal refraction.
-Scalar DielectricSPF::DeltaTransmissionWarpExponent(
+// DL-297 / DL-406.  The `scattering` warp of the delta-tagged transmission,
+// as a law and a density the composite's layered evaluator can connect
+// through (ISPF has the contract).  Everything below is read off
+// GenerateScatteredRay's own sampler:
+//
+//   * Phong (`hg` false): alpha = acos(u^(1/(N+1))), always perturbed while
+//     N < 1e6 (the delta pass-through convention).
+//   * Henyey-Greenstein (`hg` true, g = scattering): alpha from the HG
+//     inverse CDF while g < 1; the perturbation runs ONLY for
+//     alpha < PI/2, so every draw with cos(alpha) <= 0 leaves exactly on
+//     the Snell axis -- a delta part of weight F_HG(0).  g == 0 makes the
+//     sampler's 1/(2g) non-finite, alpha NaN and the perturbation never
+//     run: an ideal delta, reported as none; g <= -1 is not a
+//     distribution (none, as before DL-406).
+//   * The RGB pipe's dispersive / per-channel loop (DoSingleRGBComponent
+//     per channel, one shared random pair) emits one transmission per
+//     channel with that channel's ior, scattering and AR wavelength.
+bool DielectricSPF::ResolveWarpChannel(
 	const RayIntersectionGeometric& ri,
-	const Scalar nm
+	const Scalar nm,
+	const int channel,
+	Scalar& scat,
+	Scalar& rIndex,
+	Scalar& lam
 	) const
 {
-	if( bHG ) {
-		return -1;
-	}
-	Scalar v = 0;
 	if( nm > 0 ) {
-		v = pScat->GetValueAtNM( ri, nm );
-	} else {
-		if( pRIndex->HasPerChannelVariation() || pScat->HasPerChannelVariation() || arStack.nLayers > 0 ) {
-			return -1;
-		}
-		v = pScat->GetValuesAt( ri ).v[0];
+		scat = pScat->GetValueAtNM( ri, nm );
+		rIndex = pRIndex->GetValueAtNM( ri, nm );
+		lam = nm;
+		return true;
 	}
-	// GenerateScatteredRay warps exactly when `scattering < 1e6` (the delta
-	// pass-through convention); `cos^N` is a density for any N > -1.
-	return ( v < 1000000.0 && v > Scalar( -1 ) ) ? v : Scalar( -1 );
+	if( !DeltaTransmissionWarpIsPerChannel( ri ) ) {
+		// One transmission for every channel: Scatter reads channel 0
+		// (`iorVals.v[0]`, `scatVals.v[0]`, nm -1).
+		scat = pScat->GetValuesAt( ri ).v[0];
+		rIndex = pRIndex->GetValuesAt( ri ).v[0];
+		lam = -1.0;
+		return true;
+	}
+	if( channel < 0 || channel > 2 ) {
+		return false;
+	}
+	scat = pScat->GetValuesAt( ri ).v[channel];
+	rIndex = pRIndex->GetValuesAt( ri ).v[channel];
+	lam = ScalarPainterRGB::kChannelNM[channel];
+	return true;
+}
+
+bool DielectricSPF::DeltaTransmissionWarpIsPerChannel(
+	const RayIntersectionGeometric& /*ri*/
+	) const
+{
+	// Exactly Scatter's `disperse` test.
+	return pRIndex->HasPerChannelVariation() || pScat->HasPerChannelVariation() || arStack.nLayers > 0;
+}
+
+DeltaTransmissionWarpLaw DielectricSPF::DeltaTransmissionWarp(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm,
+	const int channel
+	) const
+{
+	Scalar v = 0, rIndex = 1, lam = -1;
+	if( !ResolveWarpChannel( ri, nm, channel, v, rIndex, lam ) ) {
+		return DeltaTransmissionWarpLaw();
+	}
+	if( bHG ) {
+		if( v < Scalar( 1 ) && v > Scalar( -1 ) && v != Scalar( 0 ) ) {
+			return DeltaTransmissionWarpLaw( DeltaTransmissionWarpLaw::eHenyeyGreenstein, v );
+		}
+		return DeltaTransmissionWarpLaw();
+	}
+	// `cos^N` is a density for any N > -1.
+	if( v < 1000000.0 && v > Scalar( -1 ) ) {
+		return DeltaTransmissionWarpLaw( DeltaTransmissionWarpLaw::ePhong, v );
+	}
+	return DeltaTransmissionWarpLaw();
 }
 
 Scalar DielectricSPF::DeltaTransmissionWarpPdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& w,
 	const Scalar nm,
-	const IORStack& ior_stack
+	const IORStack& ior_stack,
+	const int channel
 	) const
 {
-	const Scalar N = DeltaTransmissionWarpExponent( ri, nm );
-	if( !( N > Scalar( -1 ) ) ) {
+	Scalar scat = 0, rIndex = 1, lam = -1;
+	if( !ResolveWarpChannel( ri, nm, channel, scat, rIndex, lam ) ) {
+		return 0;
+	}
+	const DeltaTransmissionWarpLaw law = DeltaTransmissionWarp( ri, nm, channel );
+	if( !law.IsWarped() ) {
 		return 0;
 	}
 
 	// The warp's AXIS is the transmitted direction GenerateScatteredRay
 	// builds before it perturbs (Snell about the shading normal, re-derived
 	// about the true surface when that is wrong-side -- DL-111).  Running
-	// it with `random.x == 1` draws `alpha == 0`, i.e. no perturbation, so
-	// the returned direction IS that axis and every branch of the real
-	// sampler is reused rather than re-implemented.
+	// it with a `scattering` that draws `alpha == 0` (1 for HG, 1e6 for
+	// Phong: the sampler's own no-warp values) leaves the direction
+	// unperturbed, so the returned direction IS that axis and every branch
+	// of the real sampler is reused rather than re-implemented.
 	const bool bFromInside = ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent();
-	const Scalar rIndex = ( nm > 0 ) ? pRIndex->GetValueAtNM( ri, nm ) : pRIndex->GetValuesAt( ri ).v[0];
 	ScatteredRay dielectric;
 	ScatteredRay fresnel;
 	bool bDielectric = false, bFresnel = false;
-	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2( 1.0, 0.5 ), N, rIndex, nm, ior_stack, false );
+	const Scalar noWarp = bHG ? Scalar( 1 ) : Scalar( 1000000.0 );
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2( 1.0, 0.5 ), noWarp, rIndex, lam, ior_stack, false );
 	if( !bDielectric || !( ref < 1.0 ) ) {
 		return 0;
 	}
@@ -828,5 +885,5 @@ Scalar DielectricSPF::DeltaTransmissionWarpPdf(
 	if( !( half > 0 ) ) {
 		return 0;
 	}
-	return ( N + Scalar( 1 ) ) * pow( c, N ) / ( Scalar( 2 ) * half );
+	return law.PolarDensity( r_min( Scalar( 1 ), c ) ) / ( Scalar( 2 ) * half );
 }

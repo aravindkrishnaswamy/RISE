@@ -188,6 +188,84 @@ namespace RISE
 		ScatteredRay* RandomlySelectDiffuse( double random, bool bNM, Scalar* selectedProbability ) const;
 	};
 
+	//! DL-406.  The angular law of the WARP an SPF applies to its
+	//! DELTA-TAGGED transmission (ISPF::DeltaTransmissionWarp): the polar
+	//! cosine mu = cos(alpha) of the perturbation about the transmission's
+	//! own (Snell) axis is drawn from this law, and the azimuth uniformly
+	//! on the arc that keeps the ray crossing the surface (DL-68 / DL-111,
+	//! GeometricUtilities::PerturbClipped).  Two laws exist in the tree:
+	//!
+	//!   * ePhong (param N > -1): mu = u^(1/(N+1)), density (N+1) mu^N on
+	//!     (0,1]; every draw is perturbed (DeltaFraction 0).
+	//!   * eHenyeyGreenstein (param g, -1 < g < 1, g != 0): mu from the HG
+	//!     inverse CDF on [-1,1]; a draw with mu <= 0 (alpha >= 90 deg) is
+	//!     NOT perturbed and leaves exactly on the axis -- a delta part of
+	//!     weight F_HG(0) -- and the rest is the HG polar marginal
+	//!     restricted to (0,1] (DielectricSPF::GenerateScatteredRay).
+	//!
+	//! PolarDensity is the density in mu of the PERTURBED draws only, a
+	//! sub-density integrating to 1 - DeltaFraction() over (0,1];
+	//! SampleWarpedPolar draws mu from it normalized.
+	struct DeltaTransmissionWarpLaw
+	{
+		enum Kind { eNone = 0, ePhong, eHenyeyGreenstein };
+		Kind   kind;
+		Scalar param;
+
+		DeltaTransmissionWarpLaw() : kind( eNone ), param( 0 ) {}
+		DeltaTransmissionWarpLaw( const Kind k, const Scalar p ) : kind( k ), param( p ) {}
+
+		bool IsWarped() const { return kind != eNone; }
+
+		//! Probability that a draw stays exactly on the axis.
+		Scalar DeltaFraction() const
+		{
+			if( kind == eHenyeyGreenstein ) {
+				const Scalar g = param;
+				const Scalar d = ( Scalar( 1 ) - g * g ) / ( Scalar( 2 ) * g ) *
+					( Scalar( 1 ) / sqrt( Scalar( 1 ) + g * g ) - Scalar( 1 ) / ( Scalar( 1 ) + g ) );
+				return d < 0 ? Scalar( 0 ) : ( d > 1 ? Scalar( 1 ) : d );
+			}
+			return kind == eNone ? Scalar( 1 ) : Scalar( 0 );
+		}
+
+		//! Density in mu of the perturbed draws, mu in (0,1].
+		Scalar PolarDensity( const Scalar mu ) const
+		{
+			if( !( mu > 0 ) || mu > Scalar( 1 ) ) {
+				return 0;
+			}
+			if( kind == ePhong ) {
+				return ( param + Scalar( 1 ) ) * pow( mu, param );
+			}
+			if( kind == eHenyeyGreenstein ) {
+				const Scalar g = param;
+				const Scalar den = Scalar( 1 ) + g * g - Scalar( 2 ) * g * mu;
+				return Scalar( 0.5 ) * ( Scalar( 1 ) - g * g ) / ( den * sqrt( den ) );
+			}
+			return 0;
+		}
+
+		//! mu in (0,1] from the perturbed part, density
+		//! PolarDensity(mu) / (1 - DeltaFraction()), by inversion of u.
+		Scalar SampleWarpedPolar( const Scalar u ) const
+		{
+			Scalar mu = 1;
+			if( kind == ePhong ) {
+				mu = pow( u, Scalar( 1 ) / ( param + Scalar( 1 ) ) );
+			} else if( kind == eHenyeyGreenstein ) {
+				// The sampler's own inverse CDF, at xi restricted to the
+				// perturbed range [F(0), 1].
+				const Scalar g = param;
+				const Scalar pd = DeltaFraction();
+				const Scalar xi = pd + u * ( Scalar( 1 ) - pd );
+				const Scalar inner = ( Scalar( 1 ) - g * g ) / ( Scalar( 1 ) - g + Scalar( 2 ) * g * xi );
+				mu = ( Scalar( 1 ) / ( Scalar( 2 ) * g ) ) * ( Scalar( 1 ) + g * g - inner * inner );
+			}
+			return mu < 0 ? Scalar( 0 ) : ( mu > Scalar( 1 ) ? Scalar( 1 ) : mu );
+		}
+	};
+
 	//! Represents the Scattering Probability Function
 	//! The SPF describes how light is scattered.  It typically returns some reflected
 	//! and transimitted rays.  The SPF is constructed based on a Probability Distribution
@@ -309,7 +387,7 @@ namespace RISE
 		//! DL-341.  True when every DELTA-tagged transmission this SPF emits
 		//! leaves along the Snell refraction of the incoming direction about
 		//! the shading normal (a pass-through being the index-matched case),
-		//! or along a warp of it described by DeltaTransmissionWarpExponent /
+		//! or along a warp of it described by DeltaTransmissionWarp /
 		//! DeltaTransmissionWarpPdf.  CompositeSPF's layered evaluator
 		//! connects a substrate to the exit through such a transmission by
 		//! inverting Snell's law; an SPF whose delta-tagged transmissions are
@@ -320,36 +398,65 @@ namespace RISE
 			return true;
 		}
 
-		//! DL-297.  The Phong exponent N of the angular WARP this SPF applies
+		//! DL-297 / DL-406.  The angular law of the WARP this SPF applies
 		//! to its DELTA-TAGGED transmission at this record and wavelength
-		//! (`nm <= 0` selects the RGB pipe): a `DielectricSPF` with a finite
-		//! `scattering` perturbs its Snell direction by a `cos^N` lobe,
-		//! clipped to the crossing half-space (DL-111), and still tags the
-		//! ray delta.  Negative when that transmission is an ideal delta
-		//! (no warp), and also when its warp has no single-exponent Phong
-		//! form -- a Henyey-Greenstein warp (which keeps a delta part), or
-		//! a per-channel RGB warp / dispersion -- so a caller then treats
-		//! the transmission as ideal.  The default: no warp.
-		virtual Scalar DeltaTransmissionWarpExponent(
+		//! (`nm <= 0` selects the RGB pipe): a `DielectricSPF` with a
+		//! finite `scattering` perturbs its Snell direction by a Phong
+		//! `cos^N` or a Henyey-Greenstein lobe, clipped to the crossing
+		//! half-space (DL-111), and still tags the ray delta.  eNone when
+		//! that transmission is an ideal delta.  `channel` (0..2) selects
+		//! one RGB channel's transmission where the RGB pipe emits one per
+		//! channel (DeltaTransmissionWarpIsPerChannel); -1 otherwise.  A
+		//! per-channel SPF asked for channel -1 on the RGB pipe answers
+		//! eNone (no single law describes three rays).  The default: none.
+		virtual DeltaTransmissionWarpLaw DeltaTransmissionWarp(
 			const RayIntersectionGeometric& ri,							///< [in] Hit (only its painters' position is read)
-			const Scalar nm												///< [in] Wavelength, or <= 0 for the RGB pipe
+			const Scalar nm,											///< [in] Wavelength, or <= 0 for the RGB pipe
+			const int channel											///< [in] RGB channel, or -1
 			) const
 		{
-			return -1;
+			return DeltaTransmissionWarpLaw();
 		}
 
-		//! DL-297.  The solid-angle density with which the warped delta
-		//! transmission of the ray arriving along `ri.ray.Dir()` lands at
-		//! the unit direction `w`: exactly the density of the draw Scatter
-		//! makes (its clip and DL-111 re-derivation included), 0 off its
-		//! support.  Meaningful only where DeltaTransmissionWarpExponent is
-		//! non-negative at the same record; CompositeSPF's layered
-		//! evaluator prices a warped coat's exit with it.
+		//! DL-406.  True when this SPF's RGB-pipe Scatter emits one delta
+		//! transmission PER CHANNEL (each carrying only its own channel's
+		//! weight, about its own axis and with its own warp) -- the
+		//! dispersive / per-channel `DielectricSPF`.  Meaningless on the NM
+		//! pipe (one wavelength, one ray).
+		virtual bool DeltaTransmissionWarpIsPerChannel(
+			const RayIntersectionGeometric& ri							///< [in] Hit
+			) const
+		{
+			return false;
+		}
+
+		//! DL-297.  The Phong exponent of DeltaTransmissionWarp at channel
+		//! -1, or -1 when that law is not a Phong warp (kept for callers
+		//! that only recognise the Phong form).
+		Scalar DeltaTransmissionWarpExponent(
+			const RayIntersectionGeometric& ri,
+			const Scalar nm
+			) const
+		{
+			const DeltaTransmissionWarpLaw law = DeltaTransmissionWarp( ri, nm, -1 );
+			return law.kind == DeltaTransmissionWarpLaw::ePhong ? law.param : Scalar( -1 );
+		}
+
+		//! DL-297 / DL-406.  The solid-angle density with which the
+		//! PERTURBED part of the warped delta transmission of the ray
+		//! arriving along `ri.ray.Dir()` lands at the unit direction `w`:
+		//! exactly the density of the draw Scatter makes (its clip and
+		//! DL-111 re-derivation included), 0 off its support.  A sub-density
+		//! when the law keeps a delta part (Henyey-Greenstein: it integrates
+		//! to 1 - DeltaFraction()).  Meaningful only where
+		//! DeltaTransmissionWarp(ri, nm, channel) is warped; CompositeSPF's
+		//! layered evaluator prices a warped coat's exit with it.
 		virtual Scalar DeltaTransmissionWarpPdf(
 			const RayIntersectionGeometric& ri,							///< [in] Hit (ray direction = the incoming direction)
 			const Vector3& w,											///< [in] Unit outgoing direction
 			const Scalar nm,											///< [in] Wavelength, or <= 0 for the RGB pipe
-			const IORStack& ior_stack									///< [in] Index of refraction stack
+			const IORStack& ior_stack,									///< [in] Index of refraction stack
+			const int channel											///< [in] RGB channel, or -1
 			) const
 		{
 			return 0;

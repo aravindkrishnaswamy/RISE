@@ -78,6 +78,20 @@ namespace RISE
 			static ARStack BuildARStack( const Scalar* n, const Scalar* k,
 			                             const Scalar* t, int nLayers );
 
+			//! DL-406: the (scattering, ior, AR wavelength) Scatter uses for
+			//! the transmission `channel` selects at this record (`nm > 0`:
+			//! the NM pipe, channel ignored; RGB: channel -1 on a top that is
+			//! not per-channel, 0..2 on one that is).  False when no single
+			//! transmission matches the request.
+			bool ResolveWarpChannel(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm,
+				const int channel,
+				Scalar& scat,
+				Scalar& rIndex,
+				Scalar& lam
+				) const;
+
 			Scalar GenerateScatteredRay(
 				ScatteredRay& dielectric,									///< [out] Scattered dielectric ray
 				ScatteredRay& fresnel,										///< [out] Scattered fresnel or reflected ray
@@ -168,18 +182,26 @@ namespace RISE
 				return info;
 			}
 
-			//! DL-297: see ISPF.  The Phong `scattering` warp of the delta-
-			//! tagged transmission (HG and per-channel RGB report none).
-			Scalar DeltaTransmissionWarpExponent(
+			//! DL-297 / DL-406: see ISPF.  The `scattering` warp of the
+			//! delta-tagged transmission: Phong `cos^N`, or Henyey-Greenstein
+			//! (whose draws past 90 deg stay on the axis) when `hg` is set;
+			//! per channel on a dispersive / per-channel RGB top.
+			DeltaTransmissionWarpLaw DeltaTransmissionWarp(
 				const RayIntersectionGeometric& ri,
-				const Scalar nm
+				const Scalar nm,
+				const int channel
+				) const override;
+
+			bool DeltaTransmissionWarpIsPerChannel(
+				const RayIntersectionGeometric& ri
 				) const override;
 
 			Scalar DeltaTransmissionWarpPdf(
 				const RayIntersectionGeometric& ri,
 				const Vector3& w,
 				const Scalar nm,
-				const IORStack& ior_stack
+				const IORStack& ior_stack,
+				const int channel
 				) const override;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
