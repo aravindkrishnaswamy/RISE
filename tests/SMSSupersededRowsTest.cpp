@@ -9,9 +9,16 @@
 //   slab        DL-421 / DL-420 (glass slab: spot, omni, area vs depth-matched
 //               BDPT/VCM; legacy uniform/snell as controls)       [gated]
 //   ball        DL-376 / DL-445 (DL-372 ball-lens image vs PT and VCM) [gated]
+//   slab-closed DL-455 omni slab direct caustic per chain length vs an
+//               unfolded-image closed form                       [gated]
 //   nested, nested-hwss, nested-hwss-const
 //               DL-391 nested dispersive exterior probes          [measurement]
 // Options: --section <name> --lights spot,omni,area --modes a,b --n N --extspp S
+//          --seed B (salt base) --ball-y Y (DL-455 focus discriminator)
+//          --no-slab (direct-light calibration, mode ptplain)
+// Slab modes: extended[:tb], extd[:tb] (extended, direct caustic only:
+// max_diffuse_bounce 0), uniform/snell[:tb], bdpt, bdpt8, bdpt16, vcm,
+// vcm16, ptplain. SMS_ROWS_VERBOSE=1 prints every salted render.
 #include "SMSRenderTestSupport.h"
 #include <sstream>
 #include <iomanip>
@@ -167,6 +174,7 @@ namespace
     }
 
     // ---------------- DL-372 ball lens (DL-376 / DL-445) -------------------
+    std::string g_ballY = "1.5";
     std::string BallScene( const std::string& raster )
     {
         std::ostringstream ss;
@@ -183,7 +191,7 @@ namespace
               "clippedplane_geometry\n{\n\tname floor_geom\n\tpta -5.0 0.0 -5.0\n\tptb -5.0 0.0 5.0\n\tptc 5.0 0.0 5.0\n\tptd 5.0 0.0 -5.0\n}\n\n"
               "clippedplane_geometry\n{\n\tname light_geom\n\tpta -1.5 0.0 -1.5\n\tptb 1.5 0.0 -1.5\n\tptc 1.5 0.0 1.5\n\tptd -1.5 0.0 1.5\n}\n\n"
               "standard_object\n{\n\tname floor\n\tgeometry floor_geom\n\tmaterial floor_mat\n}\n\n"
-              "standard_object\n{\n\tname glass_sphere\n\tgeometry sphere_geom\n\tposition 0 1.5 0\n\tmaterial glass_mat\n}\n\n"
+              "standard_object\n{\n\tname glass_sphere\n\tgeometry sphere_geom\n\tposition 0 "<<g_ballY<<" 0\n\tmaterial glass_mat\n}\n\n"
               "standard_object\n{\n\tname area_light\n\tgeometry light_geom\n\tposition 0 5.0 0\n\tmaterial light_mat\n}\n\n";
         return ss.str()+raster;
     }
@@ -216,6 +224,7 @@ namespace
                 const auto r=Render(BallScene(BallRaster(md.name,md.trials,md.tb,spp)),"ball");
                 Check(r.ok&&r.mean>0,std::string("ball ")+md.label+" lit");
                 m[md.label].v.push_back(r.mean);
+                if( std::getenv("SMS_ROWS_VERBOSE") ) std::cout<<"BALLRUN "<<md.label<<" "<<t<<" "<<std::setprecision(9)<<r.mean<<std::endl;
             }
             std::cout<<"BALL "<<md.label<<" mean="<<m[md.label].mean()<<" +/- "<<m[md.label].se()<<std::endl;
         }
@@ -230,11 +239,13 @@ namespace
         }
         for( const char* l : {"extended tb0 trials1","extended tb0 trials2","extended tb2 trials1","extended tb2 trials2"} )
             if( m.find(l)!=m.end() ) {
-                // Measured extended residual on this scene: -0.7..-1.6 % (tb 2 / tb 0, 4 sigma at n 8);
-                // gate with a 2 % floor, against legacy uniform's +14 % / -70 %.
+                // DL-455: the -0.7..-1.6 % read at n 8 did not survive more
+                // salts (skew ~2): n 192 tb0 trials1 0.9998 +/- 0.0018, n 96
+                // tb0 trials2 / tb2 trials1 1.0034 +/- 0.0029 / 0.0028. 1 %
+                // floor, against legacy uniform's +14 % / -70 %.
                 const Series &e=m[l], &p=m["PT (SMS off)"];
-                Check(std::fabs(e.mean()/p.mean()-1) <= 3*std::hypot(e.se()/e.mean(),p.se()/p.mean())+0.02,
-                      std::string("ball: ")+l+" = PT within 3 combined se + 2 %");
+                Check(std::fabs(e.mean()/p.mean()-1) <= 3*std::hypot(e.se()/e.mean(),p.se()/p.mean())+0.01,
+                      std::string("ball: ")+l+" = PT within 3 combined se + 1 %");
             }
     }
 
@@ -250,6 +261,7 @@ namespace
         for( int i=0;i<12;++i ) s<<" triangle "<<t[i][0]<<' '<<t[i][reverse?2:1]<<' '<<t[i][reverse?1:2]<<'\n';
         return s.str()+"}\n";
     }
+    bool g_noSlab = false;
     std::string SlabScene( const std::string& light, const std::string& raster )
     {
         std::string text="RISE ASCII SCENE 7\nuniformcolor_painter\n{\n name white\n color 1 1 1\n}\n"
@@ -258,7 +270,7 @@ namespace
             "film\n{\n width 16\n height 16\n}\n"
             "pinhole_camera\n{\n location 0 0 -1.9\n lookat 0 0 -2\n up 0 1 0\n fov 174.275189547777\n}\n"
             "lambertian_material\n{\n name diffuse\n reflectance white\n}\n";
-        text+=CubeMesh(false)+"standard_object\n{\n name slab\n geometry shape\n material glass\n scale 3 3 0.25\n}\n"
+        text+=CubeMesh(false)+(g_noSlab?std::string():std::string("standard_object\n{\n name slab\n geometry shape\n material glass\n scale 3 3 0.25\n}\n"))+
             "clippedplane_geometry\n{\n name floor\n pta -4 -2 -2\n ptb -4 2 -2\n ptc 4 2 -2\n ptd 4 -2 -2\n doublesided TRUE\n}\n"
             "standard_object\n{\n name receiver\n geometry floor\n material diffuse\n}\n";
         return text+light+raster;
@@ -280,9 +292,12 @@ namespace
         else if( mode=="bdpt8" ) r<<"bdpt_pel_rasterizer\n{\n samples "<<spp<<"\n max_eye_depth 8\n max_light_depth 8\n rr_min_depth 20\n pixel_filter box\n oidn_denoise FALSE\n}\n";
         else if( mode=="bdpt16" ) r<<"bdpt_pel_rasterizer\n{\n samples "<<spp<<"\n max_eye_depth 16\n max_light_depth 16\n rr_min_depth 20\n pixel_filter box\n oidn_denoise FALSE\n}\n";
         else if( mode=="vcm" ) r<<"vcm_pel_rasterizer\n{\n samples "<<spp<<"\n max_eye_depth 8\n max_light_depth 8\n merge_radius 0.0\n vc_enabled true\n vm_enabled true\n pixel_filter box\n oidn_denoise FALSE\n}\n";
+        else if( mode=="ptplain" ) r<<"pathtracing_pel_rasterizer\n{\n samples "<<spp<<"\n pixel_filter box\n oidn_denoise FALSE\n}\n";
+        else if( mode=="vcm16" ) r<<"vcm_pel_rasterizer\n{\n samples "<<spp<<"\n max_eye_depth 16\n max_light_depth 16\n merge_radius 0.0\n vc_enabled true\n vm_enabled true\n pixel_filter box\n oidn_denoise FALSE\n}\n";
         else {
             r<<"pathtracing_pel_rasterizer\n{\n samples "<<spp<<"\n rr_min_depth 20\n pixel_filter box\n oidn_denoise FALSE\n sms_enabled TRUE\n sms_target_bounces "<<tb<<"\n";
             if( mode=="extended" ) r<<" sms_extended TRUE\n sms_multi_trials 1\n";
+            else if( mode=="extd" ) r<<" sms_extended TRUE\n sms_multi_trials 1\n max_diffuse_bounce 0\n";
             else r<<" sms_seeding "<<mode<<"\n sms_biased TRUE\n sms_multi_trials 1\n";
             r<<"}\n";
         }
@@ -292,23 +307,29 @@ namespace
     {
         struct Light { const char* name; const char* text; std::vector<const char*> modes; const char* ext; const char* uni; double tol; };
         // tol: documented relative floor on |extended/reference - 1| (spot and
-        // area read within noise; omni extended reads +1.0..1.1 % high at 3.4
-        // sigma against depth-16 BDPT / depth-8 VCM, an unattributed residual).
+        // area read within noise). Omni: the +1.0..1.2 % DL-455 excess was
+        // estimator A's rediscovery identity (fixed; slab-closed gates it);
+        // it now reads -0.5 % +/- 0.14 % against depth-8 VCM (n 288), the
+        // heavy-tailed 4+-vertex corner/TRRT chains reading about half
+        // their closed form (DL-465).
         const Light cases[]={
             {"spot",kSpot,{"uniform","snell","extended","bdpt8","vcm"},"extended","uniform",0.005},
-            {"omni",kOmni,{"uniform:0","extended:0","bdpt16","vcm"},"extended:0","uniform:0",0.015},
+            {"omni",kOmni,{"uniform:0","extended:0","bdpt16","vcm"},"extended:0","uniform:0",0.01},
             {"area",kArea,{"uniform","extended","bdpt8","vcm"},"extended","uniform",0.01} };
         for( const Light& L : cases ) {
             if( lights.find(L.name)==std::string::npos ) continue;
             std::map<std::string,Series> m;
-            for( const char* mode : L.modes ) {
-                if( !modesFilter.empty() && (","+modesFilter+",").find(std::string(",")+mode+",")==std::string::npos ) continue;
-                const unsigned spp = std::string(mode).rfind("extended",0)==0 ? extSpp : 1024;
+            std::vector<std::string> modeList;
+            if( modesFilter.empty() ) for( const char* md : L.modes ) modeList.push_back(md);
+            else { std::stringstream ms(modesFilter); std::string tok; while( std::getline(ms,tok,',') ) modeList.push_back(tok); }
+            for( const std::string& mode : modeList ) {
+                const unsigned spp = (mode.rfind("extended",0)==0 || mode.rfind("extd",0)==0) ? extSpp : 1024;
                 for( unsigned t=0;t<n;++t ) {
                     g_renderIndex=t;
                     const auto r=Render(SlabScene(L.text,SlabRaster(mode,spp)),"slab");
                     Check(r.ok&&r.mean>0,"slab render lit");
                     m[mode].v.push_back(r.mean);
+                    if( std::getenv("SMS_ROWS_VERBOSE") ) std::cout<<"SLABRUN "<<L.name<<" "<<mode<<" "<<t<<" "<<std::setprecision(9)<<r.mean<<std::endl;
                 }
                 std::cout<<"SLAB "<<L.name<<" mode="<<mode<<" mean="<<m[mode].mean()<<" +/- "<<m[mode].se()<<std::endl;
             }
@@ -324,6 +345,44 @@ namespace
                 std::string("slab ")+L.name+": extended = VCM within 3 combined se + "+std::to_string(L.tol));
             if( m.find(L.uni)!=m.end() ) Check(m[L.uni].mean()/v.mean()<0.97,
                 std::string("slab ")+L.name+": legacy uniform seeding reads >3 % low (control: the DL-421 defect legacy mode retains)");
+        }
+    }
+
+    // DL-455 closed form: the omni slab's DIRECT caustic per chain length
+    // (extended, max_diffuse_bounce 0, sms_target_bounces k) against an
+    // independent unfolded-image quadrature of the same box -- each side
+    // reflection a mirror image of the floor point, unpolarized dielectric
+    // Fresnel per interface (TIR = 1), entry/exit inside the faces, image
+    // mean of (I/pi) E over the visible floor square [-2,2]^2 (1600^2
+    // midpoint grid, 4e5-node angle table; resolution-converged to 3e-4
+    // relative). Normalization pinned by the no-slab direct render,
+    // 40/pi * mean(D/(r^2+D^2)^1.5) = 0.631818 (PT reads 0.6318182).
+    //   k = 2 (T-T)          0.6300666
+    //   k = 3 (T-R-T, sides) 0.0779853
+    //   k = 4 (corner, TRRT) 0.0042208 -- not gated: heavy-tailed (skew
+    //         4.3 at 64 spp), reads ~half; a residual recorded on DL-455.
+    // Measured (n 48-512 salted renders, 64 spp): k = 2 1.0012 +/- 0.0009,
+    // k = 3 1.0011 +/- 0.0071. Pre-fix the k = 3 row read +7 % (estimator A's resolution-limited
+    // rediscovery identity rejected ~0.4 % of genuine rediscoveries).
+    void SlabClosedForm( unsigned n, unsigned spp )
+    {
+        // The k = 3 row is ~2x noisier per render than k = 2 relative to its
+        // mean, so it runs 3n renders at 2x spp (its pre-fix +7 % then sits
+        // outside 3 se + 1 %).
+        const struct { const char* mode; double truth; double floor; unsigned nScale, sppScale; } rows[]={
+            {"extd:2",0.6300666,0.003,1,1},{"extd:3",0.0779853,0.01,3,2} };
+        for( const auto& row : rows ) {
+            Series s;
+            for( unsigned t=0;t<n*row.nScale;++t ) {
+                g_renderIndex=t;
+                const auto r=Render(SlabScene(kOmni,SlabRaster(row.mode,spp*row.sppScale)),"slab_closed");
+                Check(r.ok&&r.mean>0,"slab closed-form render lit");
+                s.v.push_back(r.mean);
+            }
+            const double ratio=s.mean()/row.truth, se=s.se()/row.truth;
+            std::cout<<"SLAB CLOSED "<<row.mode<<" mean="<<s.mean()<<" +/- "<<s.se()<<" closed form="<<row.truth
+                <<" ratio="<<ratio<<" +/- "<<se<<std::endl;
+            Check(std::fabs(ratio-1)<=3*se+row.floor,std::string("DL-455 omni slab direct ")+row.mode+" = closed form within 3 se + floor");
         }
     }
 
@@ -408,12 +467,16 @@ int main( int argc, char** argv )
         else if( a=="--lights" && i+1<argc ) lights=argv[++i];
         else if( a=="--modes" && i+1<argc ) modes=argv[++i];
         else if( a=="--n" && i+1<argc ) n=unsigned(std::atoi(argv[++i]));
+        else if( a=="--no-slab" ) g_noSlab=true;
+        else if( a=="--ball-y" && i+1<argc ) g_ballY=argv[++i];
+        else if( a=="--seed" && i+1<argc ) g_seedBase=unsigned(std::atoi(argv[++i]));
         else if( a=="--extspp" && i+1<argc ) extSpp=unsigned(std::atoi(argv[++i]));
     }
     const bool all=section=="all";
     if( all || section=="dispersion" ) Dispersion();
     if( all || section=="slab" ) Slab(lights,modes,n?n:4,extSpp?extSpp:512);
     if( all || section=="ball" ) Ball(modes,n?n:8,extSpp?extSpp:256);
+    if( all || section=="slab-closed" ) SlabClosedForm(n?n:8,extSpp?extSpp:256);
     if( section=="nested" ) Nested();
     if( section=="nested-hwss" ) Nested(true);
     if( section=="nested-hwss-const" ) Nested(true,true);

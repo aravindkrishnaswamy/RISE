@@ -933,6 +933,8 @@ Implementation decisions inside the contract, recorded for review:
    3e-15..3e-12 apart against a 2e-15 band): a double count in B's
    deduplication and a PT/SMS mismatch. Distinct regular roots closer
    than the band are treated as a fold, outside the regular-root domain.
+   (DL-455, 2026-10-09: the same split inflated estimator A's own K by
+   rejecting genuine rediscoveries; A now uses this band too.)
 3. **Emitter point.** `SampleLight` returns a single-sided clipped plane's
    point pushed 1e-5 along its normal while PT's hit lies on the surface.
    Both sides map their point through `ExtendedLuminaryPoint`, a
@@ -1672,3 +1674,27 @@ halve (slab 17.5x -> 9.0x, sphere 18.9x -> 9.7x). The remainder is B's
 canonical solves (half of them converge to a root an earlier seed already
 found); measured ownership-changing levers and their owned-share cost are
 recorded in DL-449, which stays open.
+
+### DL-455: estimator A's rediscovery identity (2026-10-09)
+
+Estimator A's K loop asks whether a retry re-found the discovered root. It
+used the resolution-limited identity -- vertex positions within the sum of
+the two solves' last Newton corrections -- but two converged solves of one
+root from different seeds can land further apart than that band (the
+partition's own measured case: 3e-15..3e-12 against a 2e-15 band). On the
+omni glass slab, 0.36 % of genuine rediscoveries (same objects and events,
+every vertex within 1e-9 of scale) were rejected, each one an extra trial in
+K, so the slab read +1.08 % (paired over 288 salts, 29 sigma). Estimator A
+now uses `ManifoldSolver::SameRediscoveredRoot`, the full sqrt(eps)-scale
+band estimator B's partition already uses; distinct regular roots closer than
+that band are a fold, outside the supported regular-root domain.
+
+Reference: an unfolded-image closed form of the slab's direct caustic per
+chain length (each side TIR a mirror image of the floor point; unpolarized
+dielectric Fresnel per interface; normalization pinned by the no-slab direct
+render). `SMSSupersededRowsTest --section slab-closed` gates k = 2 (T-T,
+1.0012..1.0017) and k = 3 (side T-R-T, 1.0011 +/- 0.0071; +9.7 % with the
+old identity). The k >= 4 chains (vertical-edge corners, T-R-R-T) are
+heavy-tailed and read about half their closed form (DL-465). The ball-lens
+deficit the row also recorded did not survive more salts (n 192: 0.9998 +/-
+0.0018); its n 8 reading was a skewed small sample.
