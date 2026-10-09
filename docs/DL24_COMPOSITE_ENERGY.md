@@ -1476,12 +1476,19 @@ non-delta bottom event (term (a), whose walk now includes the ENTRY event
 an exit back through the bottom after a top reflection (term (c));
 sampled from a cosine toward the front, the bottom's own sampler and a
 cosine toward the back; WALKER is the rest (`eStartCoveredBottom`).  `Pdf`
-is its exact density, `EvaluateLobeFNM` its companion weight.  The stacks
-follow the natural from-below walker exactly (OUT in front, the bottom's
-own key at the below medium's index); an exit through the top carries the
-radiance factor `(n_below / n_out)^2` through
-`RestoreOpenSheetStacks`' crossing index -- the value includes it, the
-kray does not.  Which side a query is on is read from the query's own ray
+is its exact density, `EvaluateLobeFNM` its companion weight.  Stacks: the
+ray arrives in the below medium C (OUT plus O at the below index); the
+bottom is met from OUTSIDE itself, exactly as the top is from above (its
+key on C but not contained, so a translucent bottom shows its ENTRY lobes,
+front reflection included, as a separate translucent sheet seen from
+behind does), and a ray it passes into the gap is back in C, so the top is
+met from inside O and exits to OUT.  (A first version used the natural
+from-below walker's convention -- the bottom met from inside, EXIT lobes,
+no reflection from behind -- and read a glass/translucent sheet seen from
+the back at 0.058 against the separate pair's 0.035-0.044; now 0.0376.)
+An exit through the top carries the radiance factor `(n_below / n_out)^2`
+through `RestoreOpenSheetStacks`' crossing index -- the value includes
+it, the kray does not.  Which side a query is on is read from the query's own ray
 against the frame's TRUE normal, and each side normalizes the stack it
 starts from (`FrontStack` / `MakeBackStacks`), so a BDPT reverse-density
 query rebuilt from the other vertex gets that side's model.
@@ -1531,6 +1538,40 @@ direction pairs; back arrivals 0 `kray*Pdf*eta^2` mismatches on ~38 000
 non-delta rays per angle, back furnace 1.003 / 1.002 / 0.994.
 
 Section M: the glass/translucent open-sheet cells now follow the face
-rule, so an INWARD sheet is seen from behind (~1.55, like the face-ruled
-nested composite) and the twin keeps the cell's winding; a new gate
-requires BDPT / VCM == PT on those cells (3 %).
+rule, so an INWARD sheet is seen from behind and the twin keeps the cell's
+winding; a new gate requires BDPT / VCM == PT on those cells (3 %); the inward (back-viewed) cells read 1.784 / 1.786 / 1.787 (PT / BDPT / VCM, single-sided) against the outward 0.532 / 0.532 / 0.538.
+Section D10's glass/translucent row asserted back == front (the
+pre-face-rule model); it now gates the composite across PT / BDPT / VCM
+from each side (2 %) and against the separate pair from the front (PT,
+3 %), with an area light on the camera's side (a delta light cannot reach
+the pair's translucent sheet through its delta glass sheet).  From the
+back the pair is printed only: it is not itself consistent there (PT
+0.0351, BDPT / VCM 0.0441) while the composite reads 0.0376 / 0.0376 /
+0.0375.
+
+**Closed objects stay as on master.**  With the term off on a closed
+composite, a non-delta transmission out of a translucent bottom is walker
+transport again, and the probe must still flag it: the first version of
+this slice tested the bottom's capability instead of the LIVE bit, gave
+the walker its 0.05 floor share (20x weights) and read the D9 closed
+glass/translucent box 1.6 % low at 256 spp.  The probe now asks
+`TransmissionLive` (carried in its cache key); D9 matches master
+(consistent / inverted 0.919 / 0.919 PT, 0.912 / 0.915 BDPT, 0.911 /
+0.914 VCM; master 0.920 / 0.918, 0.911 / 0.915, 0.912 / 0.915).
+`--dl296-probe` (closed box, emitter inside): PT / BDPT / VCM 0.149 /
+0.150 / 0.150.
+
+**Gates (final build, branch merged with `master` `4c01fb2cc`).**
+`CompositeEnergyConservationTest`: `--dl472-unit` 10/0, `--dl296-only`
+44/0, `--sheets-only` 116/0, `--no-render` 481/0, `--stack-only --render`
+510/0 (D, D7-D10, H, T, W), `--sidedness-only` 278/0; `--dl296-probe`
+closed box PT / BDPT / VCM 0.149 / 0.150 / 0.151 (emitter inside) and
+0.0508 / 0.0535 / 0.0504 (outside; master 0.0502 / 0.0535 / 0.0511).
+`TranslucentLobeConsistencyTest` 1229/0, `LayeredWhiteFurnaceTest` 0 of
+63, `CompositeExtinctionTest` pass, `SPFBSDFConsistencyTest` pass,
+`SPFPdfConsistencyTest` pass, `HWSSCompanionKrayTest` 204/0,
+`SourceHygieneTest` 172/0, `WeaveGapShadowTransmittanceTest` query 81/0,
+composite 2/0.  Library builds warning-free.  Cost: a light-subpath
+connection at such a composite evaluates the layered value once more
+(the swapped query); no shipped scene binds a translucent-bottomed
+composite on an open sheet, so no shipped render changes.
