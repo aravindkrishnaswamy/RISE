@@ -2194,6 +2194,30 @@ static void TestRoughSSSEmptyContainerU()
 		"DL-307 / DL-317 topology U: VCM/PT within +/- 0.8% (pre-DL-317 -5.2%, pre-DL-307 -6.1%)" );
 }
 
+// DL-367 measurement: distinguish sample-count drift from salt noise without
+// changing the parity gate or the transport. Independent SMS-free PT reference.
+static void MeasureRoughSSSU(unsigned samples) {
+ auto replace=[](std::string s,const std::string& a,const std::string& b){auto p=s.find(a);if(p!=std::string::npos)s.replace(p,a.size(),b);return s;};
+ std::vector<double> pt,on,off;
+ for(unsigned i=0;i<8;++i) {
+  g_seedBase=367001+101*i;
+  auto render=[&](const char* raster,bool merging){
+   std::string r=replace(raster,"samples 2048","samples "+std::to_string(samples));
+   if(!merging)r=replace(r,"vm_enabled true","vm_enabled false");
+   auto path=WriteSceneToTempFile((std::string("RISE ASCII SCENE 7\n")+r+kSceneRoughSSSU).c_str(),"dl367");
+   auto stats=RenderAndComputeStats(path.c_str());std::remove(path.c_str());
+   Check(stats.valid,"DL367 probe produces finite output");
+   return stats.valid ? (stats.mean[0]+stats.mean[1]+stats.mean[2])/3 : -1.;
+  };
+  pt.push_back(render(kRasterizerPTRoughSSSU,true));
+  on.push_back(render(kRasterizerVCMRoughSSSU,true));
+  off.push_back(render(kRasterizerVCMRoughSSSU,false));
+ }
+ auto stat=[](const std::vector<double>& v){double m=0,ss=0;for(double x:v)m+=x;m/=v.size();for(double x:v)ss+=(x-m)*(x-m);return std::make_pair(m,std::sqrt(ss/(v.size()-1)/v.size()));};
+ auto p=stat(pt),a=stat(on),b=stat(off);
+ std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
+}
+
 //////////////////////////////////////////////////////////////////////
 // Topology W: NARROW-FOV light-tracing splat (DL-294) -- VCM twin of
 // BDPTStrategyBalanceTest topology W (docs/DL294_NARROW_FOV_SPLAT.md).
@@ -3163,6 +3187,8 @@ int main( int argc, char** argv )
 			if( v > 0 ) g_seedBase = (unsigned int)v;
 		}
 	};
+
+ if(argc>=3 && std::strcmp(argv[1],"--dl367-only")==0) {MeasureRoughSSSU(std::strtoul(argv[2],nullptr,10));return failCount?1:0;}
 
 	// DL-317: the delta-lit random-walk wall rows (D1/D2) alone.
 	if( argc >= 2 && std::strcmp( argv[1], "--dl317-delta-only" ) == 0 ) {
