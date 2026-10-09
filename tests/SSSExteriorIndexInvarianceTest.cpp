@@ -2061,6 +2061,51 @@ namespace
 		}
 	}
 
+	// DL-411: sphere AND an enclosing box is exactly the sphere. A mesh
+	// operand supplies only a nearest root; CSG must still recognize an
+	// interior random-walk segment. The clipped case exercises mesh exits.
+	std::string BuildRandomWalkCSGScene( bool mesh, bool clipped, unsigned int samples )
+	{
+		std::string scene = BuildFurnaceScene( Model::RandomWalk, Integrator::PT, 1.5, samples );
+		const std::string original = "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		const auto at = scene.find( original );
+		if( at == std::string::npos ) return "";
+		std::string replacement = "standard_object\n{\n\tname sphere_operand\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		if( mesh ) {
+			replacement += MeshBox( "enclosing_geo", clipped ? 1.4 : 4, clipped ? 1.4 : 4, clipped ? 1.4 : 4, true );
+		} else {
+			replacement += "box_geometry\n{\n\tname enclosing_geo\n\twidth 4\n\theight 4\n\tdepth 4\n}\n\n";
+		}
+		replacement += "standard_object\n{\n\tname box_operand\n\tgeometry enclosing_geo\n\tmaterial subject\n}\n\ncsg_object\n{\n\tname subject_obj\n\tobja sphere_operand\n\tobjb box_operand\n\toperation intersection\n\tmaterial subject\n}\n\n";
+		scene.replace( at, original.size(), replacement );
+		return scene;
+	}
+
+	void TestRandomWalkCSGFurnace( unsigned int trials, const std::string& only )
+	{
+		const char* names[] = { "primitive enclosing box", "mesh enclosing box", "mesh clipping box" };
+		for( int k = 0; k < 3; ++k ) {
+			const std::string label = std::string( "F5: random_walk/PT CSG " ) + names[k];
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildRandomWalkCSGScene( k != 0, k == 2, 64 ), "dl411" );
+			Check( !path.empty(), label + ": scene written" );
+			std::vector<double> m;
+			bool valid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double value = RenderFurnaceMean( path, 49000 + t );
+				valid = valid && value > 0;
+				m.push_back( value );
+			}
+			std::remove( path.c_str() );
+			Check( valid, label + ": every render finite and non-black" );
+			if( !valid ) continue;
+			const Stats st = Summarize( m );
+			const double band = std::fmax( 0.005, 3 * st.sd );
+			std::cout << label << " mean " << st.mean << " +/- " << st.sd << " expected 1, band " << band << std::endl;
+			Check( std::fabs( st.mean - 1 ) < band, label + ": conservative closed body equals white environment" );
+		}
+	}
+
 	void TestTouchingSSSRoom( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "F: closed room of touching conservative SSS slabs (DL-370), n=" << trials << std::endl;
@@ -2140,6 +2185,7 @@ int main( int argc, char** argv )
 		TestTouchingSSSPair( trials, only );
 		TestCoincidentOwnSideNeighbour( trials, only );
 		TestNeighbourWinding( trials, only );
+		TestRandomWalkCSGFurnace( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;
