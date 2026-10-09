@@ -466,16 +466,23 @@ static void SectionC( Fixtures& f )
 		{ "C1 dielectric/white Lambertian", MakeComposite( *f.dSmooth, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
 		{ "C2 dielectric/red Lambertian, t=0.5 ext 0.3", MakeComposite( *f.dSmooth, *f.lambRed, 3, 3, 3, 3, 3, 0.5, *new UniformScalarPainter( 0.3 ) ) },
 		{ "C3 translucent/red Lambertian",  MakeComposite( *f.trans,   *f.lambRed, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
+		// DL-296: a transmitting bottom -- its covered rays out through
+		// the bottom are non-delta too (they carry the BELOW stack, whose
+		// eta^2 the value includes and the kray does not).
+		{ "C4 dielectric/translucent, t=0.2 ext 0.3", MakeComposite( *f.dSmooth, *f.trans, 3, 3, 3, 3, 3, 0.2, *new UniformScalarPainter( 0.3 ) ) },
 	};
 
 	for( const Cfg& c : cfgs ) {
 		const IBSDF* pBSDF = c.m->GetBSDF();
 		const ISPF& spf = *c.m->GetSPF();
 		for( int pipe = 0; pipe < 2; ++pipe ) {
-			int checked = 0, bad = 0;
+			int checked = 0, bad = 0, below = 0;
 			double worst = 0;
 			for( int t = 0; t < 3; ++t ) {
-				const RayIntersectionGeometric ri = MakeIntersection( kThetas[t] * kPi / 180.0 );
+				RayIntersectionGeometric ri = MakeIntersection( kThetas[t] * kPi / 180.0 );
+				// DL-296: term (c) is live only on a surface that provably
+				// encloses no volume (an open sheet); C4 is that case.
+				ri.bProvablyNoInterior = c.m->ScattersFullSphere();
 				IORStack stack = MakeTestIORStack( g_stub );
 				RandomNumberGenerator rng( 555u + t );
 				IndependentSampler sampler( rng );
@@ -489,12 +496,15 @@ static void SectionC( Fixtures& f )
 						const Vector3 d = Vector3Ops::Normalize( s.ray.Dir() );
 						const double cosO = std::fabs( Vector3Ops::Dot( d, ri.onb.w() ) );
 						const double pdf = pipe ? spf.PdfNM( ri, d, 550.0, stack ) : spf.Pdf( ri, d, stack );
+						// DL-296: the radiance eta^2 of the ray's own stack.
+						const double eta = RadianceEtaScale( stack, s.ior_stack );
+						if( d.z < 0 ) below++;
 						double lhs, rhs;
 						if( pipe ) {
-							lhs = s.krayNM * pdf;
+							lhs = s.krayNM * pdf * eta;
 							rhs = pBSDF ? pBSDF->valueStatefulNM( d, ri, 550.0, &stack ) * cosO : 0.0;
 						} else {
-							lhs = ColorMath::MaxValue( s.kray * pdf );
+							lhs = ColorMath::MaxValue( s.kray * pdf * eta );
 							rhs = pBSDF ? ColorMath::MaxValue( pBSDF->valueStateful( d, ri, &stack ) * cosO ) : 0.0;
 						}
 						const double rel = std::fabs( lhs - rhs ) / std::max( 1e-12, std::fabs( rhs ) );
@@ -505,9 +515,12 @@ static void SectionC( Fixtures& f )
 				}
 			}
 			std::cout << "    " << c.name << ( pipe ? " [NM]" : " [RGB]" ) << ": non-delta rays checked = "
-			          << checked << ", mismatches = " << bad << ", worst rel = " << worst << "\n";
+			          << checked << " (" << below << " below), mismatches = " << bad << ", worst rel = " << worst << "\n";
 			Check( checked > 1000, std::string( "[C] " ) + c.name + ( pipe ? " NM" : " RGB" ) + " emits non-delta rays" );
 			Check( bad == 0, std::string( "[C] " ) + c.name + ( pipe ? " NM" : " RGB" ) + " kray*Pdf == value*cos for every non-delta ray" );
+			if( c.m->ScattersFullSphere() ) {
+				Check( below > 500, std::string( "[C] " ) + c.name + ( pipe ? " NM" : " RGB" ) + " emits non-delta rays below the stack (DL-296)" );
+			}
 		}
 		c.m->release();
 	}
@@ -1668,15 +1681,19 @@ static void SectionM()
 						// DL-345's face rule there, which makes its WINDING
 						// physical (the back side is the below medium): its
 						// twin keeps the cell's winding and varies only the
-						// sidedness.  glass/translucent (a non-delta layer)
-						// presents its top on either face, so winding must not
-						// matter: double-sided outward twin.  The mixed quad is
-						// not certified (stack rule): outward twin.
+						// sidedness.  Since DL-472 (1) glass/translucent (a
+						// translucent bottom, term (c)) follows the face rule too
+						// -- a back arrival meets the bottom first -- so its
+						// winding is physical as well (an inward sheet is seen
+						// from behind: ~1.55 against an outward sheet's ~0.53)
+						// and its twin keeps the cell's winding.  The mixed
+						// quad is not certified (stack rule): outward twin.
 						geo = MatrixQuad( "qT", -4, 0, 0, w, ds == 1 ) +
-						      ( c.kind == 0 ? MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) : MatrixQuad( "qR", 0, 4, 0, ( c.kind == 2 && w != 2 ) ? w : 0, true ) );
+						      ( c.kind == 0 ? MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) : MatrixQuad( "qR", 0, 4, 0, ( c.kind != 0 && w != 2 ) ? w : 0, true ) );
 						objs = obj( "L", "qT", c.mat, 0 ) + obj( "Rr", "qR", twinMat, 0 );
 					}
 					const char* gName = ( g == 0 ) ? "closed box, furnace" : ( g == 1 ) ? "closed box, light inside" : "open sheet, furnace";
+					double ptCell = -1;
 					for( int r = 0; r < 3; ++r ) {
 						const std::string scene = head + geo + objs + ( g == 1 ? lights : std::string() ) + rast( r, env, spp );
 						// A light inside the box is the noisiest geometry
@@ -1696,6 +1713,20 @@ static void SectionM()
 						          << gName << " | " << inName[r] << ": " << std::setprecision(5) << mL << " vs twin " << mR << "\n";
 						const std::string tag = std::string( c.name ) + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + ", " + gName + " (" + inName[r] + ")";
 						gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= band, "[M] == twin, " + tag );
+						// DL-472 (1): the two-sided glass/translucent sheet is
+						// one model for every integrator (before it, BDPT /
+						// VCM read 0.607 / 0.750 against PT's 0.534 on the
+						// outward twin).  3 % for single 256-spp renders.
+						// Certified windings only: the mixed quad is not a
+						// provably open sheet, so term (c) is off there and
+						// its single renders scatter ~3 % (pre-existing).
+						if( g == 2 && c.kind == 1 && w != 2 ) {
+							if( r == 0 ) {
+								ptCell = mL;
+							} else if( ptCell > 0 ) {
+								gate( ok && std::fabs( mL / ptCell - 1.0 ) <= 0.03, "[M] BDPT / VCM == PT (DL-472 (1)), " + tag );
+							}
+						}
 						if( g == 0 && c.kind != 1 ) {
 							gate( ok && std::fabs( mL - 1.0 ) <= band, "[M] lossless closed box == 1, " + tag );
 						}
@@ -1792,10 +1823,71 @@ static void SectionD10()
 		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
 		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
 		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n"
-		"composite_material\n{\n\tname mat_cc\n\ttop mat_glass\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		"composite_material\n{\n\tname mat_cc\n\ttop mat_glass\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr0\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0\n\textinction 0.0\n}\n\n";
+	// DL-472 (1): glass/translucent now follows the face rule on an open
+	// sheet (a back arrival meets the bottom first), so back != front by
+	// design.  Gates: the composite reads the same under PT / BDPT / VCM
+	// from each side (2 %), and from the FRONT it equals the equivalent
+	// pair of SEPARATE sheets (glass at z = 0, translucent 0.002 behind it)
+	// under PT (3 %).  From the BACK the pair is printed only: the
+	// separate pair is itself not consistent there (PT 0.0351 against
+	// BDPT / VCM 0.0441 -- a standalone translucent sheet is not
+	// reciprocal, DL-223, and the light reaches it through a delta glass
+	// sheet), while the composite reads 0.0376 under all three.
+	{
+		double compRef[2] = { -1, -1 };
+		const std::string pairGeo =
+			"clippedplane_geometry\n{\n\tname qg\n\tpta -4 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd -4 3 0\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qt\n\tpta -4 -3 -0.002\n\tptb 4 -3 -0.002\n\tptc 4 3 -0.002\n\tptd -4 3 -0.002\n}\n\n";
+		const std::string compGeo =
+			"clippedplane_geometry\n{\n\tname qc\n\tpta -4 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd -4 3 0\n}\n\n";
+		for( int r = 0; r < 3; ++r ) {
+			for( int b = 0; b < 2; ++b ) {
+				const double z = b ? -1.0 : 1.0;
+				double v[2] = { -1, -1 };
+				for( int k = 0; k < 2; ++k ) {
+					std::ostringstream sc;
+					sc << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 16\n}\n\n"
+					   << "pinhole_camera\n{\n\tlocation 0 0 " << 7.0 * z << "\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+					   << mats << ( k == 0 ? compGeo : pairGeo )
+					   << ( k == 0 ? std::string( "standard_object\n{\n\tname S\n\tgeometry qc\n\tmaterial mat_gtr0\n}\n\n" )
+					               : std::string( "standard_object\n{\n\tname G\n\tgeometry qg\n\tmaterial mat_glass\n}\n\n"
+					                              "standard_object\n{\n\tname T\n\tgeometry qt\n\tmaterial mat_tr\n}\n\n" ) )
+					   // An AREA light on the camera's side: a delta light would
+					   // not reach the separate pair's translucent sheet through
+					   // the glass sheet (NEE cannot see through a delta coat),
+					   // so the pair would read 0 from the glass side.
+					   << "uniformcolor_painter\n{\n\tname pnt_em\n\tcolor 1 1 1\n}\n\n"
+					   << "lambertian_luminaire_material\n{\n\tname mat_em\n\texitance pnt_em\n\tscale 10.0\n\tmaterial none\n}\n\n"
+					   << "clippedplane_geometry\n{\n\tname gem\n\tpta -1.5 2 " << 4.0 * z << "\n\tptb 1.5 2 " << 4.0 * z << "\n\tptc 1.5 3.5 " << 4.0 * z << "\n\tptd -1.5 3.5 " << 4.0 * z << "\n}\n\n"
+					   << "standard_object\n{\n\tname E\n\tgeometry gem\n\tmaterial mat_em\n}\n\n"
+					   << ( r == 0 ? PtRasterizer( false, 1024 ) : r == 1 ? BdptRasterizer( false, 1024, 12 ) : VcmRasterizer( false, 1024, 12 ) );
+					CapturingRasterizerOutput* cap = 0;
+					SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * ( 91100u + 13u * (unsigned)( 4 * r + 2 * b + k ) ) + 0x85EBCA6Bu );
+					const bool ok = Render( sc.str(), "d10p", cap, 91100u + 13u * (unsigned)( 4 * r + 2 * b + k ) );
+					SobolSamplerTestHooks::ValueSalt().store( 0u );
+					v[k] = ok ? RegionMean( *cap, 2, cap->width - 2 ) : -1;
+					if( cap ) safe_release( cap );
+				}
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
+				std::cout << "    D10 glass/translucent (thickness 0) vs separate pair, " << ( b ? "BACK " : "FRONT" ) << ", " << in << ": composite "
+				          << std::setprecision(5) << v[0] << " pair " << v[1] << ", ratio " << ( v[1] > 0 ? v[0] / v[1] : -1 ) << "\n";
+				if( r == 0 ) {
+					compRef[b] = v[0];
+					if( b == 0 ) {
+						Check( v[0] > 0 && v[1] > 0 && std::fabs( v[0] / v[1] - 1.0 ) <= 0.03,
+							"[D10] glass/translucent == separate pair, front view (PT)" );
+					}
+				} else {
+					Check( v[0] > 0 && compRef[b] > 0 && std::fabs( v[0] / compRef[b] - 1.0 ) <= 0.02,
+						std::string( "[D10] glass/translucent composite agrees with PT, " ) + ( b ? "back" : "front" ) + " view (" + in + ")" );
+				}
+			}
+		}
+	}
 	struct Row { const char* name; const char* mat; bool singleSidedMesh; };
 	const Row rows[] = {
-		{ "glass/translucent, double-sided clipped plane", "mat_gtr", false },
 		{ "coat over Lambertian 0.8, single-sided flat mesh", "mat_cc", true },
 	};
 	for( const Row& row : rows ) {
@@ -2823,6 +2915,300 @@ static void SectionK8( Fixtures& f )
 }
 
 
+//////////////////////////////////////////////////////////////////////
+//  Section X -- DL-296 (2026-10-09): transmission OUT THROUGH a
+//  transmitting bottom is priced by the layered evaluator (term c), so a
+//  DELTA light behind the sheet reaches the camera through it.
+//
+//  Left half: composite{glass/B} (thickness 0) on an open double-sided
+//  quad at z = 0.  Right half: the equivalent pair of SEPARATE sheets -- a
+//  glass quad at z = 0 and a B quad just below it.  Camera in front (+z);
+//  lights are listed below.  Pre-DL-296 the
+//  composite half read exactly 0 under a delta light under every
+//  integrator (the whole transmitted class was delta-tagged walker
+//  transport, invisible to NEE and to connections) while the separate
+//  pair read its true value.  Both halves carry the same 1/eta^2 (the ray
+//  that crossed the glass is inside index 1.5, the dielectric's
+//  separate-sheets convention).
+//
+//  Bottoms B (both translucent_material; a thin-transmission weave bottom
+//  is out of the DL-296 scope, DL-472):
+//    translucent             ref 0.3, tau 0.7, ext 0, N 3 -- NOT
+//                            reciprocal on its own (DL-223); consistent
+//                            here because a light-subpath connection is
+//                            the ADJOINT of the eye-side value (DL-472
+//                            (1), ImportanceSwap), so one function prices
+//                            each path from both ends.
+//    lambertian translucent  ref 0, tau 1, ext 0, N 1 -- reciprocal.
+//  Lights: a WHITE FURNACE (both faces lit -- the case DL-472 (1)'s
+//  two-sided model exists for; before it BDPT / VCM read 1.06x / 1.17x PT
+//  on the translucent row), an omni (delta) light behind, under PT / BDPT
+//  / VCM and PT spectral (hwss off and on: the covered transmission's
+//  companion weight is the layered value WITHOUT its eta^2,
+//  EvaluateLobeFNM), and a small area emitter behind under PT.  Bands:
+//  composite / pair and composite / PT 1 % (2 % for the spectral rows).
+//  Each row is the mean of 3 salted renders.
+//////////////////////////////////////////////////////////////////////
+static std::string PtSpectralRasterizer( bool hwss, int spp )
+{
+	std::ostringstream s;
+	s << "standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+	  << "pathtracing_spectral_rasterizer\n{\n\tsamples " << spp << "\n\toidn_denoise FALSE\n\tpixel_filter box\n"
+	  << "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss " << ( hwss ? "true" : "false" ) << "\n";
+	s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+	return s.str();
+}
+
+static void SectionX()
+{
+	std::cout << "\n[X] DL-296: delta / area light BEHIND a composite{glass/B} sheet\n";
+	const std::string common =
+		"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_em\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_em\n\texitance pnt_em\n\tscale 40.0\n\tmaterial none\n}\n\n";
+	struct Bottom { const char* name; std::string text; double bdptVcmBand; };
+	const Bottom bottoms[] = {
+		{ "translucent", "translucent_material\n{\n\tname mat_b\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 3\n\tscattering 0\n}\n\n", 0.01 },
+		{ "lambertian translucent", "uniformcolor_painter\n{\n\tname pnt_z\n\tcolor 0 0 0\n}\n\nuniformcolor_painter\n{\n\tname pnt_one\n\tcolor 1 1 1\n}\n\n"
+		  "translucent_material\n{\n\tname mat_b\n\tref pnt_z\n\ttau pnt_one\n\text 0\n\tN 1\n\tscattering 0\n}\n\n", 0.01 },
+	};
+	struct Light { const char* name; std::string text; bool area; };
+	const Light lights[] = {
+		{ "white furnace", "uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n", false },
+		{ "omni (delta)", "omni_light\n{\n\tname lgt\n\tposition 0 0 -3\n\tcolor 1.0 1.0 1.0\n\tpower 40.0\n}\n\n", false },
+		{ "area quad",    std::string( "clippedplane_geometry\n{\n\tname g_em\n\tpta -0.5 -0.5 -3\n\tptb 0.5 -0.5 -3\n\tptc 0.5 0.5 -3\n\tptd -0.5 0.5 -3\n\tdoublesided FALSE\n}\n\n"
+		                               "standard_object\n{\n\tname em\n\tgeometry g_em\n\tmaterial mat_em\n}\n\n" ), true },
+	};
+	unsigned seed = 296001u;
+	for( const Bottom& B : bottoms ) {
+		const std::string mats = common + B.text +
+			"composite_material\n{\n\tname mat_comp\n\ttop mat_glass\n\tbottom mat_b\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		for( const Light& L : lights ) {
+			const bool envProbe = ( L.text.find( "pnt_env" ) != std::string::npos );
+			double ptComposite = -1;
+			for( int r = 0; r < 5; ++r ) {
+				if( L.area && r != 0 ) continue;
+				if( envProbe && r >= 3 ) continue;		// the spectral helper has no environment
+				const int spp = L.area ? 1024 : 256;
+				const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
+					"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+					"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" +
+					mats + MatrixQuad( "q_comp", -3.9, -0.1, 0.0, 0, true ) +
+					MatrixQuad( "q_glass", 0.1, 3.9, 0.0, 0, true ) + MatrixQuad( "q_b", 0.1, 3.9, -0.002, 0, true ) +
+					"standard_object\n{\n\tname C\n\tgeometry q_comp\n\tmaterial mat_comp\n}\n\n"
+					"standard_object\n{\n\tname G\n\tgeometry q_glass\n\tmaterial mat_glass\n}\n\n"
+					"standard_object\n{\n\tname T\n\tgeometry q_b\n\tmaterial mat_b\n}\n\n" + L.text +
+					( r == 0 ? PtRasterizer( envProbe, spp ) : r == 1 ? BdptRasterizer( envProbe, spp, 12 ) : r == 2 ? VcmRasterizer( envProbe, spp, 12 )
+					  : PtSpectralRasterizer( r == 4, spp ) );
+				if( const char* ld = std::getenv( "DL296_LIGHT_DEPTH" ) ) {	// opt-in diagnosis: cap the light subpath
+					std::string& sc = const_cast<std::string&>( scene );
+					const size_t at = sc.find( "max_light_depth 12" );
+					if( at != std::string::npos ) sc.replace( at, 18, std::string( "max_light_depth " ) + ld );
+				}
+				const int kReps = 3;
+				double mL = 0, mR = 0, rMin = 1e30, rMax = -1e30;
+				bool ok = true;
+				for( int k = 0; k < kReps; ++k ) {
+					CapturingRasterizerOutput* cap = 0;
+					// Salted: an unsalted repeat reuses the same Sobol' points.
+					SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * seed + 0x85EBCA6Bu );
+					const bool okk = Render( scene, "dl296", cap, seed++ );
+					SobolSamplerTestHooks::ValueSalt().store( 0u );
+					const double l = okk ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+					const double rr = okk ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+					if( cap ) safe_release( cap );
+					ok = ok && okk && l >= 0 && rr > 0;
+					mL += l / kReps;
+					mR += rr / kReps;
+					if( rr > 0 ) { rMin = std::min( rMin, l / rr ); rMax = std::max( rMax, l / rr ); }
+				}
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : ( r == 2 ) ? "VCM " : ( r == 3 ) ? "PT spectral" : "PT spectral hwss";
+				std::cout << "    X " << B.name << ", " << L.name << ", " << in << ": composite " << std::setprecision(5) << mL
+				          << " | separate pair " << mR << "  ratio " << ( mR > 0 ? mL / mR : -1 )
+				          << "  (per-render [" << rMin << ", " << rMax << "])\n";
+				const std::string tag = std::string( B.name ) + ", " + L.name + " (" + in + ")";
+				const double band = ( r >= 3 ) ? 0.02 : B.bdptVcmBand;
+				Check( ok && mR > 0, "[X] separate pair is lit, " + tag );
+				Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= band, "[X] composite == separate pair, " + tag );
+				if( r == 0 ) {
+					ptComposite = mL;
+				} else if( ptComposite > 0 && r <= 2 ) {
+					Check( ok && std::fabs( mL / ptComposite - 1.0 ) <= band, "[X] composite agrees with PT, " + tag );
+				}
+			}
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section R -- DL-472 (1) two-sided model, SPF level (--dl472-unit).
+//
+//  A composite{glass / T} on a PROVABLY OPEN sheet (+z true normal),
+//  T a lossless, reciprocal transmitter (translucent ref 0, tau 1, ext 0,
+//  scattering 0, N 1: a cosine transmission lobe from either side).
+//  R1  reciprocity: value(wi = a -> wo = b) from a FRONT arrival equals
+//      (n_front / n_back)^2 value(b -> a) from the mirrored BACK arrival
+//      (n_back the sheet's below medium, 1.5 -- the radiance BSDF across
+//      an index step), averaged over jittered positions (value is one MC
+//      estimate per query).
+//  R2  back arrivals: every non-delta ray satisfies
+//      kray * Pdf * eta^2(stack) == value * cos (one function per side).
+//  R3  back-arrival furnace: E[sum kray * eta^2] over both sides == 1
+//      (lossless stack) -- the mirror of section F5.
+//////////////////////////////////////////////////////////////////////
+static RayIntersectionGeometric MakeSheetIntersection( const Vector3& inDir, const Point3& p )
+{
+	const RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( Ray( Point3( p.x - inDir.x, p.y - inDir.y, p.z - inDir.z ), inDir ), rs );
+	ri.bHit = true;
+	ri.range = 1.0;
+	ri.ptIntersection = p;
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+	ri.bProvablyNoInterior = true;
+	return ri;
+}
+
+static void RunSectionR( const char* label, const IMaterial& m, const bool gateReciprocity )
+{
+	const ISPF& spf = *m.GetSPF();
+	const IBSDF& bsdf = *m.GetBSDF();
+	const double nBack = 1.5;
+	struct Pair { double thA, phA, thB, phB; };
+	const Pair pairs[] = { { 0, 0, 0, 0 }, { 30, 0, 20, 90 }, { 60, 45, 40, 200 }, { 10, 0, 70, 180 } };
+	for( const Pair& pp : pairs ) {
+		auto dir = []( double th, double ph, double sz ) {
+			const double t = th * kPi / 180.0, q = ph * kPi / 180.0;
+			return Vector3( std::sin( t ) * std::cos( q ), std::sin( t ) * std::sin( q ), sz * std::cos( t ) );
+		};
+		const Vector3 a = dir( pp.thA, pp.phA, 1 );		// front side
+		const Vector3 b = dir( pp.thB, pp.phB, -1 );	// back side
+		RandomNumberGenerator rng( 4720u );
+		double sF = 0, sB = 0, sF2 = 0, sB2 = 0;
+		const int N = 40000;
+		for( int i = 0; i < N; ++i ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			IORStack st = MakeTestIORStack( g_stub );
+			const RayIntersectionGeometric rf = MakeSheetIntersection( -a, p );
+			const RayIntersectionGeometric rb = MakeSheetIntersection( -b, p );
+			const double vf = ColorMath::MaxValue( bsdf.valueStateful( b, rf, &st ) );
+			const double vb = ColorMath::MaxValue( bsdf.valueStateful( a, rb, &st ) );
+			sF += vf; sF2 += vf * vf; sB += vb; sB2 += vb * vb;
+		}
+		const double mF = sF / N, mB = sB / N;
+		const double eF = std::sqrt( std::max( 0.0, sF2 / N - mF * mF ) / N ), eB = std::sqrt( std::max( 0.0, sB2 / N - mB * mB ) / N );
+		const double k = 1.0 / ( nBack * nBack );
+		const double rel = ( mB > 0 ) ? mF / ( k * mB ) : -1;
+		std::cout << "    R1 " << label << " a(" << pp.thA << "," << pp.phA << ") b(" << pp.thB << "," << pp.phB << "): front f(a->b) " << std::setprecision(5) << mF << " +- " << eF
+		          << ", back f(b->a) " << mB << " +- " << eB << ", f_front / ((1/n^2) f_back) = " << rel << "\n";
+		if( gateReciprocity ) {
+			const double tol = 4 * std::sqrt( eF * eF + k * k * eB * eB ) / std::max( 1e-12, k * mB ) + 0.01;
+			Check( mF > 0 && mB > 0 && std::fabs( rel - 1 ) <= tol, std::string( "[R1] " ) + label + " reciprocity across the sheet, pair " + std::to_string( (int)pp.thA ) + "/" + std::to_string( (int)pp.thB ) );
+		}
+	}
+	// R2 / R3 at back arrivals.
+	for( int t = 0; t < 3; ++t ) {
+		const double th = kThetas[t] * kPi / 180.0;
+		const Vector3 inDir( std::sin( th ), 0, std::cos( th ) );	// travelling +z: a back arrival
+		RandomNumberGenerator rng( 4721u + t );
+		IndependentSampler sampler( rng );
+		int bad = 0, nonDelta = 0;
+		double sum = 0;
+		const int N = 40000;
+		for( int i = 0; i < N; ++i ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			const RayIntersectionGeometric ri = MakeSheetIntersection( inDir, p );
+			IORStack st = MakeTestIORStack( g_stub );
+			ScatteredRayContainer sc;
+			spf.Scatter( ri, sampler, sc, st );
+			for( unsigned j = 0; j < sc.Count(); ++j ) {
+				const ScatteredRay& r = sc[j];
+				sum += ColorMath::MaxValue( r.kray );
+				if( r.isDelta ) continue;
+				nonDelta++;
+				const double eta = RadianceEtaScale( st, r.ior_stack );
+				const Vector3 d = Vector3Ops::Normalize( r.ray.Dir() );
+				const double pdf = spf.Pdf( ri, d, st );
+				const double lhs = ColorMath::MaxValue( r.kray ) * pdf * eta;
+				const double rhs = ColorMath::MaxValue( bsdf.valueStateful( d, ri, &st ) ) * std::fabs( d.z );
+				const double rel = std::fabs( lhs - rhs ) / std::max( 1e-12, std::fabs( rhs ) );
+				if( rel > 1e-9 ) bad++;
+			}
+		}
+		std::cout << "    R2/R3 " << label << " back arrival theta " << kThetas[t] << ": non-delta " << nonDelta << ", kray*Pdf*eta^2 mismatches " << bad
+		          << ", furnace E[sum kray] " << std::setprecision(5) << sum / N << "\n";
+		Check( nonDelta > 1000 && bad == 0, std::string( "[R2] " ) + label + " back arrival: kray*Pdf*eta^2 == value*cos, theta " + std::to_string( (int)kThetas[t] ) );
+		if( gateReciprocity ) {
+			Check( std::fabs( sum / N - 1.0 ) <= 0.02, std::string( "[R3] " ) + label + " back-arrival furnace (lossless stack) == 1, theta " + std::to_string( (int)kThetas[t] ) );
+		}
+	}
+}
+
+static void SectionR( Fixtures& f )
+{
+	std::cout << "\n[R] DL-472 (1): two-sided composite model on an open sheet (SPF level)\n";
+	UniformColorPainter* zero = new UniformColorPainter( RISEPel( 0, 0, 0 ) ); zero->addref();
+	TranslucentMaterial* tLam = new TranslucentMaterial( *zero, *f.white, *f.s0, *f.s1, *f.s0 ); tLam->addref();
+	CompositeMaterial* m = MakeComposite( *f.dSmooth, *tLam, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+	RunSectionR( "glass/lambertian-translucent", *m, true );
+	m->release(); tLam->release(); zero->release();
+
+}
+
+//! Opt-in measurement (--dl296-probe, no assertions): a composite
+//! {glass/translucent} closed box with an emitter INSIDE it (Section M's
+//! "light inside" cell, double-sided outward), composite half only, PT /
+//! BDPT / VCM, 3 salted renders each.  The emitter is unseeded (DL-407 (1)),
+//! so light-side walks meet the wall's top from inside.  DL296_PROBE_OUT=1
+//! moves the emitter outside, behind the box; DL296_PROBE_SEED offsets the
+//! salts.  This is the configuration that showed term (c) must stay off on
+//! a surface that may bound an interior: with it live there BDPT / VCM
+//! read 0.435 / 0.417 against PT 0.152 (light inside) and 0.0102 / 0.0071
+//! against 0.0525 (light outside); master and the shipped (open-sheet-only)
+//! rule agree across PT / BDPT / VCM within the renders' noise.
+static void ProbeLightInside()
+{
+	std::cout << "\n[probe] composite{glass/translucent} box, light inside\n";
+	const std::string scene0 = std::string( "RISE ASCII SCENE 7\n" ) +
+		"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_e\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_e\n\tscale 20.0\n\tmaterial none\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n" +
+		WindingBox( "bT", std::vector<int>(), true ) +
+		"standard_object\n{\n\tname L\n\tgeometry bT\n\tposition -2 0 0\n\tmaterial mat_gtr\n}\n\n"
+		"sphere_geometry\n{\n\tname sg\n\tradius 0.3\n}\n\n"
+		"clippedplane_geometry\n{\n\tname fq\n\tpta -6 -3.5 -4\n\tptb -6 -3.5 4\n\tptc 6 -3.5 4\n\tptd 6 -3.5 -4\n}\n\n"
+		+ ( std::getenv( "DL296_PROBE_OUT" ) ? "standard_object\n{\n\tname eL\n\tgeometry sg\n\tposition -2 0 -2.5\n\tmaterial mat_emit\n}\n\n"
+		                                   : "standard_object\n{\n\tname eL\n\tgeometry sg\n\tposition -2 0 0\n\tmaterial mat_emit\n}\n\n" ) +
+		"standard_object\n{\n\tname F\n\tgeometry fq\n\tmaterial mat_l8\n}\n\n";
+	unsigned seed = 296500u + ( std::getenv( "DL296_PROBE_SEED" ) ? (unsigned)std::atoi( std::getenv( "DL296_PROBE_SEED" ) ) : 0u );
+	for( int r = 0; r < 3; ++r ) {
+		const std::string scene = scene0 + ( r == 0 ? PtRasterizer( false, 1024 ) : r == 1 ? BdptRasterizer( false, 1024, 12 ) : VcmRasterizer( false, 1024, 12 ) );
+		double m = 0;
+		for( int k = 0; k < 3; ++k ) {
+			CapturingRasterizerOutput* cap = 0;
+			SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * seed + 0x85EBCA6Bu );
+			const bool ok = Render( scene, "dl296probe", cap, seed++ );
+			SobolSamplerTestHooks::ValueSalt().store( 0u );
+			const double l = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			if( cap ) safe_release( cap );
+			m += l / 3;
+		}
+		std::cout << "    " << ( r == 0 ? "PT  " : r == 1 ? "BDPT" : "VCM " ) << ": " << std::setprecision(5) << m << "\n";
+	}
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "CompositeEnergyConservationTest (DL-24 / DL-221)" << std::endl;
@@ -2851,6 +3237,20 @@ int main( int argc, char** argv )
 		SectionT( f );
 		SectionW( f );
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) { SectionD(); SectionD10(); }
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--dl472-unit" ) {
+		SectionR( f );
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--dl296-probe" ) {
+		ProbeLightInside();
+		return 0;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--dl296-only" ) {
+		SectionX();
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
