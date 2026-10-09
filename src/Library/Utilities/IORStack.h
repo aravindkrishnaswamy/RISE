@@ -108,6 +108,9 @@ namespace RISE
                 return result;
             }
             Scalar EnvironmentIOR() const { return c.front().ior; }
+            std::size_t depth() const { return c.size(); }
+            const IObject* objectAt( std::size_t i ) const { return c[i].pObj; }
+            void setIORAt( std::size_t i, Scalar ior ) { c[i].ior = ior; }
             bool SameInterfaces(const MyIORStack& other) const {
                 if(c.size() != other.c.size()) return false;
                 for(std::size_t i=0; i<c.size(); ++i)
@@ -273,6 +276,21 @@ namespace RISE
 		{
 			if( iorstack.size() > 1 ) {
 				iorstack.top().ior = ior;
+			}
+		}
+
+		// DL-335: indexed access to the entries BELOW the top, outermost
+		// first (entry 0 is the environment and is never rewritten).  Used
+		// only by GradedIndexMedium::Advance to re-record an ENCLOSING
+		// graded medium's index at the walk's current vertex while a nested
+		// object is innermost, so the nested object's exit refracts into
+		// n(exit point) on every walk (eye and light alike).
+		inline std::size_t Depth() const { return iorstack.depth(); }
+		inline const IObject* ObjectAt( const std::size_t i ) const { return iorstack.objectAt( i ); }
+		inline void SetIORAt( const std::size_t i, const Scalar ior )
+		{
+			if( i > 0 && i < iorstack.depth() ) {
+				iorstack.setIORAt( i, ior );
 			}
 		}
 
