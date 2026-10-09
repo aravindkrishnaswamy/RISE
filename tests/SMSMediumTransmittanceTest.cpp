@@ -27,10 +27,10 @@
 //            medium: the walk's convention (MediumTracking: inside a
 //            caster with no medium the global medium applies) gives
 //            exp(-0.1 * (3.0 + |camera - floor|)).
-//    C  extended SMS (`sms_extended TRUE`) on B1: media are outside its
-//       contract (a transmissive caster with an interior medium makes
-//       every anchor ineligible), so it must not be brighter than the
-//       closed form either.
+//    C  extended SMS (`sms_extended TRUE`) on B1 and B3: media are
+//       outside its contract, so the scene runs legacy SMS (before this
+//       routing every anchor was ineligible and the caustic rendered
+//       black); gated two-sided on the same closed forms.
 //
 //  Usage: SMSMediumTransmittanceTest [--trials n] [--only substring]
 //
@@ -308,29 +308,15 @@ int main( int argc, char** argv )
 		SlabScene( Integ::NMSMS, SlabMedium::Global, 4096 ), SlabScene( Integ::NMSMS, SlabMedium::None, 1024 ),
 		trGlobal, 0.01, trials, seed, only );
 
-	// C: extended SMS must not be over-lit where media are out of
-	// contract.  It may legitimately render the caustic dark (an
-	// ineligible anchor gets no SMS estimate in extended mode).
-	{
-		const std::string label = "C: extended, interior absorber / legacy none";
-		if( only.empty() || label.find( only ) != std::string::npos ) {
-			std::vector<double> tv, rv;
-			bool ok = true;
-			for( unsigned int t = 0; t < trials; ++t ) {
-				const unsigned int s = seed++;
-				const double a = RenderMean( SlabScene( Integ::PTSMSExtended, SlabMedium::Homogeneous, spp ), s );
-				const double b = RenderMean( SlabScene( Integ::PTSMS, SlabMedium::None, spp ), s );
-				if( !( a >= 0 ) || !( b > 0 ) ) ok = false;
-				tv.push_back( a ); rv.push_back( b );
-			}
-			Check( ok, label + ": every render finite" );
-			if( ok ) {
-				const double r = Summarize( tv ).mean / Summarize( rv ).mean;
-				std::cout << "  " << label << ": ratio " << r << " (closed form " << trInterior << ")" << std::endl;
-				Check( r < trInterior + 0.01, label + ": not brighter than the closed form" );
-			}
-		}
-	}
+	// C: extended SMS has no medium segment laws; a scene with media runs
+	// legacy SMS (ObjectManager / ExtendedModeActive route it), so the
+	// extended-on render must equal the closed form, not go black.
+	RatioRow( "C: extended, interior absorber / legacy none",
+		SlabScene( Integ::PTSMSExtended, SlabMedium::Homogeneous, spp ), SlabScene( Integ::PTSMS, SlabMedium::None, spp ),
+		trInterior, 0.01, trials, seed, only );
+	RatioRow( "C: extended, global absorber / legacy none",
+		SlabScene( Integ::PTSMSExtended, SlabMedium::Global, 1024 ), SlabScene( Integ::PTSMS, SlabMedium::None, 16 ),
+		trGlobal, 0.01, trials, seed, only );
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;

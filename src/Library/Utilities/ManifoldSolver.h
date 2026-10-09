@@ -694,6 +694,7 @@ namespace RISE
                 const IRayCaster&, ISampler&, const LightSample&, const IORStack&,
                 const RayIntersectionGeometric*, Scalar nm = 0) const;
             std::atomic<bool> hwssExtendedWarningEmitted{false};
+            mutable std::atomic<bool> mediumExtendedWarningEmitted{false};
 			LightSampler* pLightSampler;
 
 			/// Optional photon-aided seeding pass.  Set once by the

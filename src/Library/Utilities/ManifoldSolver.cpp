@@ -1945,6 +1945,7 @@ namespace
 void ManifoldSolver::SetSpecularCasters( std::vector<const IObject*> list )
 {
     hwssExtendedWarningEmitted.store(false, std::memory_order_relaxed);
+    mediumExtendedWarningEmitted.store(false, std::memory_order_relaxed);
 	mSpecularCasters = std::move( list );
 	mHasPureMirrorCaster = false;
 	for( const IObject* pCaster : mSpecularCasters ) {
@@ -5889,6 +5890,15 @@ namespace
 	//! Walks the chain's segments; `apply( medium, segRay, length )`
 	//! multiplies one homogeneous-in-identity piece into the caller's
 	//! transmittance and returns false once it is negligible.
+	//!
+	//! Truncations (the same family as LightSampler's shadow walk):
+	//!  - transmittance below 1e-6 is returned as exactly 0;
+	//!  - at most 16 enclosing objects are tracked (deeper nesting is
+	//!    dropped: under-attenuation);
+	//!  - at most 16 medium-walk boundaries per segment, the rest of the
+	//!    segment taking the stack state at that point;
+	//!  - boundaries within WALK_EPSILON (1e-5, absolute) of a segment end
+	//!    are attributed to the chain vertex there, not walked.
 	template<class Apply>
 	void WalkSMSChainMedia(
 		const Point3& start, const Point3& end,
@@ -5903,8 +5913,8 @@ namespace
 
 		SMSChainMediumStack stack;
 		if( pIorStack ) {
-			const std::vector<const IObject*> keys = pIorStack->ObjectKeys();
-			for( const IObject* k : keys ) stack.push( k );
+			// Bottom to top; the base (environment) entry has no object.
+			for( std::size_t k = 0; k < pIorStack->Depth(); ++k ) stack.push( pIorStack->ObjectAt( k ) );
 		}
 
 		const std::size_t nSeg = chain.size() + 1;
@@ -6129,6 +6139,16 @@ void ManifoldSolver::WarnHWSSLegacyMode()
 bool ManifoldSolver::ExtendedModeActive(const IScene& scene) const
 {
     if(!config.extendedMode) return false;
+    // DL-419: extended SMS has no participating-medium segment laws, so a
+    // scene with a global medium runs legacy SMS (which prices chain media)
+    // rather than refusing every anchor; object media are routed the same
+    // way by ObjectManager::ExtendedSMSAllowed().
+    if(scene.GetGlobalMedium()) {
+        if(!mediumExtendedWarningEmitted.load(std::memory_order_relaxed)
+            && !mediumExtendedWarningEmitted.exchange(true, std::memory_order_relaxed))
+            GlobalLog()->PrintEasyWarning("Extended SMS is inert for this scene: it has a global medium; using legacy SMS and suppression.");
+        return false;
+    }
     const auto* objects = SMSDynamicCast<ObjectManager>(scene.GetObjects());
     return objects && objects->ExtendedSMSAllowed();
 }
@@ -7786,9 +7806,13 @@ bool ManifoldSolver::ComputeTrialContribution(
 		pos, lightSample.position, mResult.specularChain, caster, pIorStack );
 
 	outContribution = fBSDF
-		* mResult.contribution * mediumTr
+		* mResult.contribution
 		* actualLe * cosAtShading * effectiveGeometric
 		/ ( lightSample.pdfPosition * lightSample.pdfSelect );
+	// Separate, guarded multiply: a medium-free scene stays bit-identical.
+	if( mediumTr.r != 1 || mediumTr.g != 1 || mediumTr.b != 1 ) {
+		outContribution = outContribution * mediumTr;
+	}
 
 	return true;
 }
@@ -7868,8 +7892,11 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	Scalar chainThroughput = EvaluateChainThroughputNM(
 		pos, lightSample.position, mResult.specularChain, nm );
 	// DL-419: the walk pays every chain segment's medium transmittance.
-	chainThroughput *= EvaluateChainMediumTransmittanceNM(
-		pos, lightSample.position, mResult.specularChain, caster, pIorStack, nm );
+	{
+		const Scalar mediumTr = EvaluateChainMediumTransmittanceNM(
+			pos, lightSample.position, mResult.specularChain, caster, pIorStack, nm );
+		if( mediumTr != 1 ) chainThroughput *= mediumTr;	// medium-free: bit-identical
+	}
 
 	const ManifoldVertex& lastSpec = mResult.specularChain.back();
 	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
@@ -9746,9 +9773,13 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			pos, lightSample.position, mResult.specularChain, caster, pIorStack );
 
 		RISEPel trialContribution = fBSDF
-			* mResult.contribution * mediumTr
+			* mResult.contribution
 			* actualLe * cosAtShading * clampedGeometric
 			/ (lightSample.pdfPosition * lightSample.pdfSelect);
+		// Separate, guarded multiply: a medium-free scene stays bit-identical.
+		if( mediumTr.r != 1 || mediumTr.g != 1 || mediumTr.b != 1 ) {
+			trialContribution = trialContribution * mediumTr;
+		}
 
 		// Silence unused-variable warning if cosAtLight ends up unused;
 		// keep its computation above for backface culling (non-delta lights).
@@ -11205,8 +11236,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		Scalar chainThroughput = EvaluateChainThroughputNM(
 			pos, lightSample.position, mResult.specularChain, nm );
 		// DL-419: the walk pays every chain segment's medium transmittance.
-		chainThroughput *= EvaluateChainMediumTransmittanceNM(
-			pos, lightSample.position, mResult.specularChain, caster, pIorStack, nm );
+		{
+			const Scalar mediumTr = EvaluateChainMediumTransmittanceNM(
+				pos, lightSample.position, mResult.specularChain, caster, pIorStack, nm );
+			if( mediumTr != 1 ) chainThroughput *= mediumTr;	// medium-free: bit-identical
+		}
 
 		// Direction from light to last specular vertex (for emission eval)
 		const ManifoldVertex& lastSpec = mResult.specularChain.back();
