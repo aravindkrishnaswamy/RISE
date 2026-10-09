@@ -7679,9 +7679,7 @@ void ManifoldSolver::SolveCoreInto(const Point3& shadingPoint, const Vector3& sh
 //   each material to recover attenuation / canRefract flags that
 //   the photon record doesn't carry.
 //
-//   See header doc-comment for caveats around `etaI`/`etaT` (left
-//   at default 1.0 because SMSPhoton storage doesn't snapshot the
-//   IOR stack).
+//   Transmission reverses the recorded native interface pair.
 //////////////////////////////////////////////////////////////////////
 
 unsigned int ManifoldSolver::ReversePhotonChainForSeed(
@@ -7753,6 +7751,10 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 		mv.isExiting    = mv.isReflection
 			? ( ( pv.flags & 0x1 ) != 0 )
 			: ( ( pv.flags & 0x1 ) == 0 );
+		if( pv.etaI > 0 && pv.etaT > 0 ) {
+			mv.etaI = mv.isReflection ? pv.etaI : pv.etaT;
+			mv.etaT = mv.isReflection ? pv.etaT : pv.etaI;
+		}
 		mv.valid = false;
 	}
 	return k;
@@ -9549,79 +9551,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				continue;
 			}
 
-			std::vector<ManifoldVertex> newChain( k );
-			IORStack queryIor( 1.0 );
-			for( unsigned int i = 0; i < k; i++ )
-			{
-				const SMSPhotonChainVertex& pv = ph.chain[ k - 1 - i ];
-				ManifoldVertex& mv = newChain[i];
-				mv.position    = pv.position;
-				mv.objectPosition = pv.objectPosition;
-				mv.uv = pv.uv;
-				mv.normal      = pv.normal;
-				mv.geomNormal  = ( Vector3Ops::SquaredModulus( pv.geomNormal ) > NEARZERO )
-					? pv.geomNormal : pv.normal;
-				mv.pObject     = pv.pObject;
-				mv.pMaterial   = pv.pMaterial;
-				mv.eta         = pv.eta;
-				// Query the material at this vertex for its actual specular
-				// attenuation (a.k.a. refractance color for dielectrics,
-				// reflectance for mirrors).  The previous hardcoded white
-				// was correct for the typical white-glass test scenes but
-				// silently dropped material colour for any coloured specular
-				// — a colour / absorption bias in the caustic that only
-				// photon-aided multi-trial SMS would expose as an occasional
-				// bright-channel-mismatched trial.  BuildSeedChain already
-				// does this lookup at line 2303; parity restores it here.
-				if( pv.pMaterial ) {
-					Ray dummyRay( pv.position, pv.normal );
-					RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
-					rigLocal.bHit = true;
-					rigLocal.ptIntersection = pv.position;
-					rigLocal.ptObjIntersec = pv.objectPosition;
-					rigLocal.ptCoord = pv.uv;
-					rigLocal.vNormal = pv.normal;
-					rigLocal.vGeomNormal = mv.geomNormal;
-					SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
-					mv.attenuation = spec.attenuation;
-					mv.attenuationNM = spec.attenuationNM;
-					mv.attenuationAppliesToReflection = spec.attenuationAppliesToReflection;
-					mv.hasCustomSpecularFresnel = spec.hasCustomSpecularFresnel;
-					mv.attenuationIsInteriorTransmittance = spec.attenuationIsInteriorTransmittance;
-					mv.canRefract  = spec.canRefract;
-				} else {
-					mv.attenuation = RISEPel( 1, 1, 1 );
-					mv.attenuationNM = 1;
-					mv.attenuationAppliesToReflection = true;
-					mv.hasCustomSpecularFresnel = false;
-					mv.attenuationIsInteriorTransmittance = false;
-					mv.canRefract  = true;   // safe default: dielectric Fresnel path
-				}
-				// Chain-vertex semantics recovered from the photon record:
-				//   flags bit 0 = photon-direction isExiting (refractions only)
-				//   flags bit 1 = isReflection (scatter picked reflection, not
-				//                  refraction — no medium change)
-				// Photon-direction isExiting flag is FLIPPED: what was
-				// ENTERING for the photon is EXITING for the receiver
-				// ray going the other way through the same surface.
-				// Reflection vertices are direction-independent so no flip.
-				mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
-				mv.isExiting    = mv.isReflection
-				                ? ( ( pv.flags & 0x1 ) != 0 )    // preserve
-				                : ( ( pv.flags & 0x1 ) == 0 );   // flip
-				mv.valid     = false;        // derivatives will be re-computed by Solve
-				// SMS photon storage doesn't carry the IOR-stack
-				// snapshot at each vertex — only `eta` (the surface
-				// material's IOR).  mv.etaI and mv.etaT stay at the
-				// default 1.0 here, and downstream half-vector /
-				// Fresnel math falls back to the air-on-other-side
-				// assumption via GetEffectiveEtas.  Correct for
-				// single-dielectric-in-air photon caustics; WRONG
-				// for nested-dielectric photon-seeded chains.  See
-				// the matching comment in EvaluateAtShadingPointNM
-				// for the full rationale and the path to fix it
-				// (extend SMSPhotonChainVertex storage at emission).
-			}
+			std::vector<ManifoldVertex> newChain;
+			if( ReversePhotonChainForSeed( ph, newChain ) == 0 ) continue;
 			trialSeed = newChain;
 			}  // end photon-aided branch (else of "no more photons")
 		}
@@ -11201,6 +11132,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 			std::vector<ManifoldVertex> newChain;
 			if( ReversePhotonChainForSeed( ph, newChain, nm ) == 0 ) continue;
+			RefreshLegacySeedNM(newChain,nm,pos,scene,pIorStack);
 			trialSeed = newChain;
             }
 		}
