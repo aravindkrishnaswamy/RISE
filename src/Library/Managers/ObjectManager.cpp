@@ -17,6 +17,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
+#include "../Objects/Object.h"      // DL-448 per-frame world-area prune
 #include "../Objects/CSGObject.h"   // telling a CSG operand from a container node (both are hidden)
 #include "../Interfaces/ISurfaceSignalProvider.h"	// ProximityDemand: the snapshot's cost gate
 #include "../Materials/CompositeMaterial.h"
@@ -2247,6 +2248,17 @@ void ObjectManager::PrepareForRendering() const
 	// picking paths) reach PrepareForRendering before RayCaster::AttachScene's
 	// realize pass, and this is the funnel they share.  Idempotent.
 	RealizeAllObjects();
+	// DL-448: retire world-area sampling entries that no longer describe
+	// an object's pose (once per frame, no render in flight; each object
+	// frees the PREVIOUS frame's retirees only).
+	{
+		GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+		for( i=items.begin(), e=items.end(); i!=e; ++i ) {
+			if( const Object* o = dynamic_cast<const Object*>( i->second.first ) ) {
+				o->PruneWorldAreaSampling();
+			}
+		}
+	}
 
     // One decision per preparation, including hidden CSG operands. No probes
     // or IOR history can certify their absence under DL-407.

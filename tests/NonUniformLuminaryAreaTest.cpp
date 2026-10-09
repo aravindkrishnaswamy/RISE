@@ -617,38 +617,64 @@ static void TestAnimation()
 		Check( pt.ok && ref.ok && pt.mean > 0, "DL-448 animated-scale motion blur renders (no crash, finite)" );
 		Check( Agree( pt, ref ), "DL-448 animated-scale motion blur: scaled sphere vs radii-keyframed ellipsoid" );
 	}
-	// D2: a keyframed GEOMETRY parameter must re-key the world-area entry.
+	// D2: keyframed GEOMETRY parameters and an animated non-uniform SCALE,
+	// over 24 frames (EvaluateAtTime + PrepareForRendering, as a frame
+	// loop does): more distinct keys than the per-frame cache holds, so
+	// this fails unless entries are retired at each frame boundary.
 	{
 		std::string text = kFixtureHeader;
 		text += ObjectText( SphereScaled( "sph", 2, 1, 0.5 ), "lum", "0 0 0" );
 		text += ObjectText( Shape{ "box", "box_geometry\n{\n\tname geo_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n", "\tscale 2 1 0.5\n" }, "lum", "0 0 0" );
+		text += ObjectText( Shape{ "box2", "box_geometry\n{\n\tname geo_box2\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n", "\tscale 2 1 0.5\n" }, "lum", "0 0 0" );
+		text += ObjectText( SphereScaled( "sph2", 1, 1, 1 ), "lum", "0 0 0" );
 		text += Timeline( "geometry", "geo_sph", "radius", "1", "2" );
 		text += Timeline( "geometry", "geo_box", "width", "1", "3" );
+		text += Timeline( "object", "box2", "scale", "2 1 0.5", "0.5 1 3" );
+		text += Timeline( "object", "sph2", "scale", "2 1 0.5", "0.5 1 3" );
 		Fixture f( text );
 		IScene* scene = f.job ? f.job->GetScene() : nullptr;
-		for( const double t : { 0.0, 1.0, 0.5, 0.0 } ) {
-			if( !scene ) break;
+		const int kFrames = 24;
+		int areaFail = 0, sampleFail = 0;
+		double worstRel = 0;
+		for( int k = 0; scene && k < kFrames; k++ ) {
+			const double t = double( k ) / ( kFrames - 1 );
 			scene->GetAnimator()->EvaluateAtTime( t );
 			scene->GetObjects()->PrepareForRendering();
 			const double r = 1 + t, w = 1 + 2 * t;
-			char label[128];
-			std::snprintf( label, sizeof( label ), "keyframed sphere radius %g, scale (2,1,0.5)", r );
-			CheckArea( f.Object( "sph" ), EllipsoidArea( 2 * r, r, 0.5 * r ), label );
-			// Box w x 1 x 1 scaled (2,1,0.5): faces 2w x 1, 2w x 0.5, 1 x 0.5.
-			std::snprintf( label, sizeof( label ), "keyframed box width %g, scale (2,1,0.5)", w );
-			CheckArea( f.Object( "box" ), 2 * ( 2*w*1 + 2*w*0.5 + 1*0.5 ), label );
-			// Samples lie on the CURRENT box (not a stale triangle CDF).
-			bool onBox = true;
-			for( unsigned i = 0; i < 256; i++ ) {
-				Point3 p; Vector3 n;
-				f.Object( "box" )->UniformRandomPoint( &p, &n, nullptr, Point3( ( i + 0.5 ) / 256, RadInv( 3, i ), RadInv( 5, i ) ) );
-				const double ex = std::fabs( std::fabs( p.x ) - w ), ey = std::fabs( std::fabs( p.y ) - 0.5 ), ez = std::fabs( std::fabs( p.z ) - 0.25 );
-				const bool inside = std::fabs( p.x ) <= w + 1e-9 && std::fabs( p.y ) <= 0.5 + 1e-9 && std::fabs( p.z ) <= 0.25 + 1e-9;
-				if( !inside || std::min( ex, std::min( ey, ez ) ) > 1e-9 ) onBox = false;
+			const double sx = 2 - 1.5 * t, sy = 1, sz = 0.5 + 2.5 * t;
+			const double expect[4] = {
+				EllipsoidArea( 2 * r, r, 0.5 * r ),
+				2 * ( 2*w*1 + 2*w*0.5 + 1*0.5 ),
+				2 * ( sx*sy + sx*sz + sy*sz ),
+				EllipsoidArea( sx, sy, sz ) };
+			const char* names[4] = { "sph", "box", "box2", "sph2" };
+			for( int o = 0; o < 4; o++ ) {
+				const IObject* obj = f.Object( names[o] );
+				const double rel = obj ? std::fabs( obj->GetArea() / expect[o] - 1 ) : 1;
+				worstRel = std::max( worstRel, rel );
+				if( rel > 2e-5 ) {
+					if( areaFail++ < 4 ) std::printf( "    frame %d %s: area %g expected %g\n", k, names[o], obj ? obj->GetArea() : -1.0, expect[o] );
+				}
 			}
-			std::snprintf( label, sizeof( label ), "DL-448 keyframed box samples lie on the width-%g box", w );
-			Check( onBox, label );
+			// Box samples lie on the CURRENT box, and their world-area share
+			// on the +-x faces matches it (not a stale CDF, not object-uniform).
+			const IObject* box = f.Object( "box2" );
+			unsigned xFace = 0; const unsigned N = 4096;
+			for( unsigned i = 0; box && i < N; i++ ) {
+				Point3 p; Vector3 n;
+				box->UniformRandomPoint( &p, &n, nullptr, Point3( ( i + 0.5 ) / N, RadInv( 3, i ), RadInv( 5, i ) ) );
+				if( std::fabs( std::fabs( p.x ) - 0.5 * sx ) < 1e-9 ) xFace++;
+				else if( std::fabs( std::fabs( p.y ) - 0.5 * sy ) > 1e-9 && std::fabs( std::fabs( p.z ) - 0.5 * sz ) > 1e-9 ) sampleFail++;
+			}
+			const double pX = ( sy * sz ) / ( sx*sy + sx*sz + sy*sz );
+			const double z = ( double( xFace ) / N - pX ) / std::sqrt( pX * ( 1 - pX ) / N );
+			if( std::fabs( z ) > 5 ) {
+				if( sampleFail++ < 4 ) std::printf( "    frame %d box2 x-face share %g expected %g (z %g)\n", k, double( xFace ) / N, pX, z );
+			}
 		}
+		std::printf( "  D2 %d frames: worst area rel error %g\n", kFrames, worstRel );
+		Check( areaFail == 0, "DL-448 24-frame animation: keyframed geometry and animated non-uniform scale keep exact areas" );
+		Check( sampleFail == 0, "DL-448 24-frame animation: box samples stay on the current box with world-area face shares" );
 	}
 }
 
@@ -708,6 +734,7 @@ static void PrintSimilarityHashes()
 
 int main( int argc, char** argv )
 {
+	std::setvbuf( stdout, nullptr, _IONBF, 0 );
 	if( argc > 1 ) g_seedBase = unsigned( std::strtoul( argv[1], nullptr, 10 ) );
 	const std::string only = argc > 2 ? argv[2] : "all";
 	if( argc > 3 ) g_spp = std::atoi( argv[3] );
