@@ -20,13 +20,17 @@
 //       omni light, VCM with merge_radius 0.05 (surface merging on).
 //    D  A with medium light vertices stored with probability 0.2 (the
 //       memory thinning): unchanged within the same band.
+//    E  A's fog box with a floor inside (surface and medium light vertices
+//       in one store), medium vertices stored at q = 0.01 vs q = 1 (both
+//       VCM): the firefly clamps must judge a thinned vertex on its
+//       physical throughput, so q must not move the mean (old 0.632).
 //    C  the ledger scene (tests/SMSMediumTransmittanceTest.cpp row A: a
 //       Lambertian sphere inside A's box) -- printed only: its VCM
 //       variance is heavy-tailed (the sphere's light reaches it only by
 //       surface merging at the auto radius; per-pair sd up to 0.23 at
 //       n = 8).  Measured at n = 48: 1.004 +/- 0.017 (pre-fix 0.80).
 //
-//  Usage: VCMVolumeMergeTest [--trials n]
+//  Usage: VCMVolumeMergeTest [--trials n] [--only <label substring>]
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -136,6 +140,22 @@ namespace
 		return o.str();
 	}
 
+	//! Row E: A's fog box with a Lambertian floor inside it, so one store
+	//! holds surface vertices (which set the firefly-clamp thresholds) and
+	//! medium vertices (the fog seen through the wall is merge-only).
+	std::string FogFloorBoxScene( bool vcm, unsigned int spp )
+	{
+		std::string s = FogBoxScene( vcm, spp, false );
+		const std::string floorChunks =
+			"uniformcolor_painter\n{\n\tname grey\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+			"lambertian_material\n{\n\tname fl\n\treflectance grey\n}\n\n"
+			"clippedplane_geometry\n{\n\tname floor_geo\n\tpta -1.4 -1.4 1.4\n\tptb 1.4 -1.4 1.4\n\tptc 1.4 -1.4 -1.4\n\tptd -1.4 -1.4 -1.4\n\tdoublesided FALSE\n}\n\n"
+			"standard_object\n{\n\tname floor\n\tgeometry floor_geo\n\tmaterial fl\n}\n\n";
+		const std::size_t at = s.find( "omni_light" );
+		s.insert( at, floorChunks );
+		return s;
+	}
+
 	//! Row B: global medium over a floor; VCM surface merging forced on.
 	std::string GlobalFogScene( bool vcm, unsigned int spp )
 	{
@@ -211,14 +231,19 @@ namespace
 	//! Paired salted renders; returns the ratio of means and prints it.
 	//! Gates |ratio - expected| < band when band > 0.
 	double RatioRow( const std::string& label, const std::string& test, const std::string& ref,
-		double expected, double band, unsigned int trials, unsigned int& seed, const std::string& only )
+		double expected, double band, unsigned int trials, unsigned int& seed, const std::string& only,
+		double qTest = -1, double qRef = -1 )
 	{
 		if( !only.empty() && label.find( only ) == std::string::npos ) return -1;
 		std::vector<double> tv, rv, ratios;
 		bool valid = true;
 		for( unsigned int t = 0; t < trials; ++t ) {
 			const unsigned int s = seed++;
+			// q < 0 leaves the store-probability override as it is; 0
+			// clears it (the rasterizer's own q).
+			if( qTest >= 0 ) VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( qTest );
 			const double a = RenderMean( test, s );
+			if( qRef >= 0 ) VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( qRef );
 			const double b = RenderMean( ref, s );
 			if( !( a > 0 ) || !( b > 0 ) ) valid = false;
 			tv.push_back( a ); rv.push_back( b ); ratios.push_back( a / b );
@@ -245,7 +270,10 @@ int main( int argc, char** argv )
 	if( trials < 2 ) trials = 2;
 	std::cout << "=== DL-469 VCM volume merging, n=" << trials << " ===" << std::endl;
 	unsigned int seed = 46900;
-	const std::string only;
+	std::string only;
+	for( int i = 1; i < argc; ++i ) {
+		if( std::string( argv[i] ) == "--only" && i + 1 < argc ) only = argv[++i];
+	}
 
 	// A: pre-fix 0.58 (the single-scatter share had no strategy).
 	RatioRow( "A: fog box, VCM / PT",
@@ -260,6 +288,26 @@ int main( int argc, char** argv )
 	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.2 );
 	RatioRow( "D: fog box, store probability 0.2, VCM / PT",
 		FogBoxScene( true, 512, false ), FogBoxScene( false, 64, false ), 1.0, 0.06, trials, seed, only );
+	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.0 );
+
+	// E: a store holding surface AND medium light vertices (A's fog box
+	// with a Lambertian floor inside), medium vertices stored at q = 0.01
+	// against q = 1, both VCM.  The store's two firefly clamps derive
+	// their threshold from the surface vertices; a thinned medium vertex
+	// carries throughput / q, so comparing that stored value capped its
+	// PHYSICAL throughput at threshold * q -- a bias growing as q falls
+	// (DL-469 review round 2).  They now judge q * stored.  Measured
+	// (salted, 1024 spp): old clamp 0.632, n = 8, per-pair sd 0.040;
+	// fixed 0.936, n = 32, per-pair sd 0.177 (q = 0.01 keeps 1 % of the
+	// medium vertices, so the test render is noisy and heavy-tailed; the
+	// residual is within 2 SE and includes the larger volume radius a
+	// thinner store gets, DL-474).  At q = 0.05 the old clamp read
+	// 1.037 +/- 0.038 (n = 8): too little to see, hence q = 0.01.
+	{
+		const unsigned int trialsE = trials < 16 ? 16 : trials;
+		RatioRow( "E: fog box with a floor, medium store probability 0.01 / 1, VCM",
+			FogFloorBoxScene( true, 1024 ), FogFloorBoxScene( true, 1024 ), 1.0, 0.2, trialsE, seed, only, 0.01, 1.0 );
+	}
 	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.0 );
 
 	// C: the ledger row; pre-fix 0.80 (printed: heavy-tailed, see header).

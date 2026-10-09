@@ -1030,7 +1030,12 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			if( clampThreshold > 0 ) {
 				for( std::size_t k = 0; k < storeSize; k++ ) {
 					LightVertex& lv = pLightVertexStore->GetMutable( k );
-					const Scalar maxC = ColorMath::MaxValue( lv.throughput );
+					// DL-469: a thinned medium vertex carries throughput / q;
+					// judge and cap its PHYSICAL throughput, q * stored, so
+					// the clamp does not tighten as q falls.
+					const Scalar q = ( ( lv.flags & kLVF_IsMedium ) && mVolumeStoreProbability > 0 )
+						? mVolumeStoreProbability : Scalar( 1 );
+					const Scalar maxC = q * ColorMath::MaxValue( lv.throughput );
 					if( maxC > clampThreshold ) {
 						lv.throughput = lv.throughput * ( clampThreshold / maxC );
 						// Rebuild the cached NM-merge spectrum to match --
@@ -1214,7 +1219,8 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	if( pIntegrator->GetEnableVM() && mThroughputClampMultiplier > 0 ) {
 		pLightVertexStore->ClampOutlierThroughputs(
 			mThroughputClampPercentile,
-			mThroughputClampMultiplier );
+			mThroughputClampMultiplier,
+			mVolumeStoreProbability );	// DL-469: medium vertices judged un-thinned
 	}
 
 	pLightVertexStore->BuildKDTreeParallel();

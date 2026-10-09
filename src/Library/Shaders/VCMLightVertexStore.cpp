@@ -636,7 +636,8 @@ namespace
 
 void LightVertexStore::ClampOutlierThroughputs(
 	const Scalar percentile,
-	const Scalar multiplier
+	const Scalar multiplier,
+	const Scalar mediumStoreProbability
 	)
 {
 	if( mVertices.empty() ) {
@@ -687,7 +688,11 @@ void LightVertexStore::ClampOutlierThroughputs(
 	// scale) so chromaticity stays the same; only the magnitude is
 	// capped.  Vertices already at or below threshold are untouched.
 	for( std::size_t i = 0; i < n; i++ ) {
-		const Scalar lum = LightVertexLuminance( mVertices[i].throughput );
+		// DL-469: a thinned medium vertex is judged on its physical
+		// throughput, q * stored (see the header).
+		const Scalar q = ( ( mVertices[i].flags & kLVF_IsMedium ) && mediumStoreProbability > 0 )
+			? mediumStoreProbability : Scalar( 1 );
+		const Scalar lum = q * LightVertexLuminance( mVertices[i].throughput );
 		if( lum > threshold ) {
 			const Scalar scale = threshold / lum;
 			mVertices[i].throughput = mVertices[i].throughput * scale;

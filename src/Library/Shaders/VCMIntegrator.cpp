@@ -297,7 +297,8 @@ namespace
 	//////////////////////////////////////////////////////////////////
 
 	/// DL-469: the medium-vertex thinning draw, Bernoulli(q).  A hash of
-	/// the vertex position, its subpath index and the pass seed: the
+	/// the vertex position, its index i along the light subpath and the
+	/// pass seed: the
 	/// position is itself a continuous random variable of the light
 	/// walk, so the hashed uniform is independent of the integrand.
 	inline bool VolumeStoreAccepted( const Point3& p, const unsigned int index, const VCMNormalization& norm )
