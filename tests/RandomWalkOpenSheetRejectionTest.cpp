@@ -20,6 +20,12 @@ int main()
     const auto start=lone.find("standard_object\n{\n\tname outer\n");
     lone.erase(start,lone.find("}\n\n",start)+3-start);
     Check(!LoadBody(lone),"DL-409 lone open card is refused");
+    std::string oblique=lone;
+    const char* before[]={"vertex -0.25 0 -0.25","vertex 0.25 0 -0.25","vertex 0.25 0 0.25","vertex -0.25 0 0.25"};
+    const char* after[]={"vertex -0.25 -0.75 -0.25","vertex 0.25 -0.25 -0.25","vertex 0.25 0.75 0.25","vertex -0.25 0.25 0.25"};
+    for(int i=0;i<4;++i) oblique.replace(oblique.find(before[i]),std::strlen(before[i]),after[i]);
+    Check(!LoadBody(oblique),"DL-409 oblique certified planar mesh is refused");
+
     std::string normal=lone;
     const auto mat=normal.find("material block"); normal.replace(mat,14,"material ordinary");
     const auto declaration=normal.find("standard_object");
