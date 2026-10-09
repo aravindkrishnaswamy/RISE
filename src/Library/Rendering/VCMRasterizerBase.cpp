@@ -470,8 +470,16 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		const_cast<VCMRasterizerBase*>(this)->progressiveConfig.enabled = true;
 	}
 
+	// DL-462: the second field of an interlaced frame keeps the splat
+	// film and the adaptive counter (both fields compose in the frame's
+	// single flush); the light pass below still re-runs at the field's
+	// own time.
+	const bool continuing = mContinuingInterlacedFrame && pSplatFilm;
+
 	// Reset the adaptive sample counter for this render.
-	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
+	if( !continuing ) {
+		mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
+	}
 
 	// Snapshot the active camera once — structural changes serialize
 	// against rendering per the IScenePriv.h contract.
@@ -498,8 +506,10 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 
 	// Splat film for t=1 light-to-camera contributions.  Needed
 	// regardless of VM state (VC's t=1 splat goes through here).
-	safe_release( pSplatFilm );
-	pSplatFilm = new SplatFilm( width, height );
+	if( !continuing ) {
+		safe_release( pSplatFilm );
+		pSplatFilm = new SplatFilm( width, height );
+	}
 
 	// VM-disabled: skip the entire light vertex store build.
 	// VC's t=1 splats are generated per-sample in IntegratePixel,

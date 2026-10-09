@@ -17,6 +17,8 @@
 //  Cases, per rasterizer (PT/BDPT/VCM pel+spectral, MLT pel+spectral):
 //    A. no timeline, RasterizeAnimation(0,0,1)   vs Rasterize
 //    B. no timeline, RasterizeAnimation(0,1,2)   both frames vs Rasterize
+//    F. (BDPT/VCM) interlaced fields, RasterizeAnimation(0,0,1,fields)
+//       vs Rasterize -- DL-462 (second field reset the splat film)
 //    C. keyframed omni light moving left -> right over two frames: each
 //       animation frame vs a STILL of a static scene with the light at
 //       that frame's position, plus a left/right asymmetry check.
@@ -134,7 +136,7 @@ namespace
 	//! (IJob::Rasterize); otherwise RasterizeAnimation(t0, t1, frames).
 	std::map<unsigned int, FrameStat> RenderOnce(
 		const std::string& scenePath, uint32_t salt,
-		unsigned int frames, double t0, double t1 )
+		unsigned int frames, double t0, double t1, bool fields = false )
 	{
 		std::map<unsigned int, FrameStat> out;
 		IJobPriv* pJob = nullptr;
@@ -153,7 +155,7 @@ namespace
 		if( frames == 0 ) {
 			pJob->Rasterize();
 		} else {
-			pJob->RasterizeAnimation( t0, t1, frames, false, false );
+			pJob->RasterizeAnimation( t0, t1, frames, fields, false );
 		}
 		SobolSamplerTestHooks::ValueSalt().store( 0u );
 
@@ -246,6 +248,29 @@ namespace
 		return s;
 	}
 
+	//! Case F body: a diffuse quad lit by an omni light behind the camera
+	//! both directly and through a perfect mirror further behind it.  The
+	//! mirrored component (L - S - D - E with a delta light) is reachable
+	//! by BDPT/VCM ONLY through light tracing (t == 1 splats), so a
+	//! dropped splat layer shows as a ~20% deficit here (it is a few
+	//! percent at most on the case-A scene).
+	std::string BodyF()
+	{
+		std::string s;
+		s += "film\n{\n\twidth 24\n\theight 24\n}\n\n";
+		s += "pinhole_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
+		s += "uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.6 0.6 0.6\n}\n\n";
+		s += "lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n";
+		s += "uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 1.0 1.0 1.0\n}\n\n";
+		s += "perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_white\n}\n\n";
+		s += "clippedplane_geometry\n{\n\tname quad\n\tpta -2 -2 0\n\tptb 2 -2 0\n\tptc 2 2 0\n\tptd -2 2 0\n}\n\n";
+		s += "standard_object\n{\n\tname obj_quad\n\tgeometry quad\n\tmaterial mat_diffuse\n}\n\n";
+		s += "clippedplane_geometry\n{\n\tname mirror\n\tpta -4 -4 5\n\tptb 4 -4 5\n\tptc 4 4 5\n\tptd -4 4 5\n}\n\n";
+		s += "standard_object\n{\n\tname obj_mirror\n\tgeometry mirror\n\tmaterial mat_mirror\n}\n\n";
+		s += "omni_light\n{\n\tname l_omni\n\tpower 60.0\n\tcolor 1.0 1.0 1.0\n\tposition 0 0 4.6\n}\n\n";
+		return s;
+	}
+
 	struct RastCase
 	{
 		const char* label;
@@ -270,12 +295,13 @@ namespace
 
 	//! Collects per-frame means (or left/right) over kRepeats salted renders.
 	std::vector<std::vector<FrameStat>> Collect(
-		const std::string& path, unsigned int frames, double t0, double t1, uint32_t saltBase )
+		const std::string& path, unsigned int frames, double t0, double t1, uint32_t saltBase,
+		bool fields = false )
 	{
 		const unsigned int nf = frames == 0 ? 1 : frames;
 		std::vector<std::vector<FrameStat>> perFrame( nf );
 		for( int r = 0; r < kRepeats; r++ ) {
-			const std::map<unsigned int, FrameStat> m = RenderOnce( path, saltBase + r, frames, t0, t1 );
+			const std::map<unsigned int, FrameStat> m = RenderOnce( path, saltBase + r, frames, t0, t1, fields );
 			for( unsigned int f = 0; f < nf; f++ ) {
 				auto it = m.find( f );
 				if( it != m.end() && it->second.valid ) perFrame[f].push_back( it->second );
@@ -328,6 +354,39 @@ namespace
 			const double rel = ptRef.m > 0 ? sA.m / ptRef.m : 0;
 			std::cout << "  D anim(1 frame) / PT still = " << rel << std::endl;
 			Check( std::fabs( rel - 1.0 ) < 0.05, std::string( rc.label ) + ": D animation frame within 5% of the PT still (ratio " + std::to_string( rel ) + ")" );
+		}
+
+		// --- F: interlaced fields (DL-462).  Each field is its own
+		// RenderFrameOfAnimation call into ONE image flushed once; the
+		// second field's PreRenderSetup used to delete the first field's
+		// splat film, so BDPT/VCM splat layers came out at ~half energy.
+		// Static scene (BodyF: a mirror-reflected delta light only light
+		// tracing reaches), so the field frame must match the still.
+		{
+			const std::string lbl( rc.label );
+			if( lbl == "BDPT" || lbl == "BDPT-spectral" || lbl == "VCM" || lbl == "VCM-spectral" ) {
+				// VCM's merges also reach the mirrored path, which dilutes the
+				// splat share; the VC-only variant (vm_enabled FALSE) leaves
+				// light tracing as its only strategy, as in BDPT.
+				const bool isVCM = lbl.compare( 0, 3, "VCM" ) == 0;
+				for( int variant = 0; variant < ( isVCM ? 2 : 1 ); variant++ ) {
+					std::string chunk( rc.chunk );
+					std::string tag = lbl;
+					if( variant == 1 ) {
+						chunk.insert( chunk.find( "{\n" ) + 2, "\tvm_enabled FALSE\n" );
+						tag += " (VC only)";
+					}
+					const std::string fPath = WriteScene(
+						std::string( "RISE ASCII SCENE 7\n" ) + kShader + chunk + BodyF(),
+						lbl + "_f" + std::to_string( variant ) );
+					const Stat sFStill = MeanOf( Collect( fPath, 0, 0, 0, 1000 )[0], 0 );
+					const Stat sF = MeanOf( Collect( fPath, 1, 0.0, 0.0, 1100, true )[0], 0 );
+					std::remove( fPath.c_str() );
+					const bool okF = Agree( sFStill, sF, detail );
+					std::cout << "  F " << tag << " still vs anim(1 frame, interlaced fields) " << detail << std::endl;
+					Check( okF, tag + ": F interlaced-field animation frame matches still " + detail );
+				}
+			}
 		}
 
 		const auto animB = Collect( staticPath, 2, 0.0, 1.0, 300 );
