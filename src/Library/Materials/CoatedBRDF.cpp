@@ -644,13 +644,16 @@ namespace
 				// the stratum's linearised spread -- a uniform (u1, u2) square
 				// maps to mu_u with variance (d1^2 + d2^2) / 12, d1 / d2 the
 				// change of mu_u across one stratum in each direction, taken
-				// from the neighbouring strata's samples (central differences;
-				// one-sided at the ends of the radial axis, periodic in the
-				// azimuthal one).  Centring keeps the quadrature's first moment
-				// (the midpoint rule); differencing samples, not corners, keeps
-				// clear of the VNDF's u1 -> 1 singularity, where the corner of
-				// the last radial stratum maps to a grazing microfacet.
-				auto czAt = [&]( const int s1, const int s2 ) { return cz[ s1 * kLobeS + ( ( s2 + kLobeS ) % kLobeS ) ]; };
+				// from the neighbouring strata's samples.  In
+				// MicrofacetUtils::VNDF_Sample_Aniso u1 is the AZIMUTH
+				// (phi = 2 pi u1, periodic: central differences wrap) and u2
+				// the POLAR coordinate of the cap (pole at u2 = 0, rim at
+				// u2 = 1: one-sided at the two ends, never wrapped).
+				// Centring keeps the quadrature's first moment (the midpoint
+				// rule); differencing samples, not corners, keeps clear of the
+				// cap's rim at u2 -> 1, where a corner maps to a grazing
+				// microfacet.
+				auto czAt = [&]( const int s1, const int s2 ) { return cz[ ( ( s1 + kLobeS ) % kLobeS ) * kLobeS + s2 ]; };
 				for( int s1 = 0; s1 < kLobeS; ++s1 ) {
 					for( int s2 = 0; s2 < kLobeS; ++s2 ) {
 						const int id = s1 * kLobeS + s2;
@@ -658,16 +661,16 @@ namespace
 						const Scalar uc = cz[id];
 						Scalar d1 = 0;
 						{
-							const Scalar zm = ( s1 > 0 ) ? czAt( s1 - 1, s2 ) : Scalar(-1);
-							const Scalar zp = ( s1 + 1 < kLobeS ) ? czAt( s1 + 1, s2 ) : Scalar(-1);
+							const Scalar zm = czAt( s1 - 1, s2 );
+							const Scalar zp = czAt( s1 + 1, s2 );
 							if( zm > Scalar(0) && zp > Scalar(0) ) d1 = Scalar(0.5) * ( zp - zm );
 							else if( zp > Scalar(0) ) d1 = zp - uc;
 							else if( zm > Scalar(0) ) d1 = uc - zm;
 						}
 						Scalar d2 = 0;
 						{
-							const Scalar zm = czAt( s1, s2 - 1 );
-							const Scalar zp = czAt( s1, s2 + 1 );
+							const Scalar zm = ( s2 > 0 ) ? czAt( s1, s2 - 1 ) : Scalar(-1);
+							const Scalar zp = ( s2 + 1 < kLobeS ) ? czAt( s1, s2 + 1 ) : Scalar(-1);
 							if( zm > Scalar(0) && zp > Scalar(0) ) d2 = Scalar(0.5) * ( zp - zm );
 							else if( zp > Scalar(0) ) d2 = zp - uc;
 							else if( zm > Scalar(0) ) d2 = uc - zm;
@@ -717,7 +720,6 @@ namespace
 	{
 		Scalar alpha, eta, tau;
 		bool   valid;
-		Scalar phi[kLobeN], psi[kLobeN];				//!< bin-averaged Phi = F_in a^2, Psi = (1 - F_in) a
 		Scalar g0[kLobeN], g5[kLobeN];					//!< spec return at view node j, per Fresnel basis
 		Scalar e0[kLobeN], e5[kLobeN];					//!< spec escape at view node j
 		Scalar Q0, Q5, E0, E5, G0, G5, H0, H5;			//!< spec hemispherical integrals
@@ -934,6 +936,12 @@ namespace
 
 		//! A mass with centroid c and variance var, as a uniform spread of
 		//! half-width sqrt(3 var) (plus 1e-7, so no window is a point).
+		//! An ACCEPTED APPROXIMATION where the window straddles mu_c: the
+		//! true mass inside a bin or sub-bin is not uniform, so the share
+		//! priced on either side of the critical cosine's edge is the
+		//! uniform model's, matched to the mass's first two moments only.
+		//! What it buys is continuity: the price is a continuous function
+		//! of c, var and eta, which no point or clamped-window rule is.
 		static Scalar HalfWidth( const Scalar var )
 		{
 			return sqrt( r_max( var, Scalar(0) ) * Scalar(3) ) + Scalar(1e-7);
@@ -954,19 +962,6 @@ namespace
 		W.Build( eta, tau, opaque );
 		const Scalar muCrit = W.muC;
 		auto pointWeights = [&]( const Scalar mu, Scalar& ph, Scalar& pv ) { W.Lookup( mu, ph, pv ); };
-
-		// Bin averages (eight midpoints per bin): only multiplied by a bin
-		// mass that is zero, or carried by BlendAlphaBases.
-		for( int k = 0; k < kLobeN; ++k ) {
-			Scalar ps = 0, ss = 0;
-			for( int s = 0; s < 8; ++s ) {
-				Scalar ph, pv;
-				pointWeights( ( Scalar( k * 8 + s ) + Scalar(0.5) ) / Scalar(kLobeN * 8), ph, pv );
-				ps += ph; ss += pv;
-			}
-			b.phi[k] = ps / Scalar(8);
-			b.psi[k] = ss / Scalar(8);
-		}
 
 		// roughness interpolation, linear in sqrt(alpha)
 		const LobeSpillTable& T = SpillTable();
@@ -1021,15 +1016,25 @@ namespace
 		// Each view node's sub-bins, alpha-interpolated once per build
 		// (only the nodes the patch reads): mass, F5 mass, centroid and
 		// the uniform half-width of the sub-bin's own measured spread.
+		// The patch spans 2 view-node intervals (kPatchW = 2 / kLobeN) and
+		// reads both nodes of each, so at most kSubSlots distinct nodes; the
+		// slots are per-thread storage reused by every build (no heap
+		// allocation per build).
 		struct SubBins { int n; Scalar u0[kLobeSubBins], u5[kLobeSubBins], mc[kLobeSubBins], hw[kLobeSubBins]; };
-		std::vector<SubBins> subCache;
+		constexpr int kSubSlots = 6;
+		static thread_local SubBins subCache[kSubSlots];
+		int nSub = 0;
 		int subSlot[kLobeN];
 		for( int j = 0; j < kLobeN; ++j ) subSlot[j] = -1;
 		auto subBinsFor = [&]( const int j ) -> const SubBins& {
 			if( subSlot[j] < 0 ) {
-				subSlot[j] = (int)subCache.size();
-				subCache.emplace_back();
-				SubBins& sbn = subCache.back();
+				// Never reached past kSubSlots (see above); reuse the last slot
+				// rather than overrun if a future change widens the patch.
+				const int slot = r_min( nSub, kSubSlots - 1 );
+				if( nSub < kSubSlots ) ++nSub;
+				for( int jj = 0; jj < kLobeN; ++jj ) if( subSlot[jj] == slot ) subSlot[jj] = -1;
+				subSlot[j] = slot;
+				SubBins& sbn = subCache[slot];
 				sbn.n = 0;
 				for( int ks = 0; ks < kLobeSubBins; ++ks ) {
 					const std::size_t sa = ( (std::size_t)ia * kLobeN + j ) * kLobeSubBins + ks;
@@ -1048,7 +1053,6 @@ namespace
 			}
 			return subCache[ subSlot[j] ];
 		};
-		subCache.reserve( 8 );
 		auto shiftedSum = [&]( const Scalar mu, Scalar& og0, Scalar& og5, Scalar& oe0, Scalar& oe5 ) {
 			og0 = og5 = oe0 = oe5 = 0;
 			Scalar xv = mu * Scalar(kLobeN) - Scalar(1);
@@ -1238,7 +1242,6 @@ namespace
 			out.g5[j] = mix( c00.g5[j], c01.g5[j], c10.g5[j], c11.g5[j] );
 			out.e0[j] = mix( c00.e0[j], c01.e0[j], c10.e0[j], c11.e0[j] );
 			out.e5[j] = mix( c00.e5[j], c01.e5[j], c10.e5[j], c11.e5[j] );
-			out.phi[j] = out.psi[j] = Scalar(0);		// build-time only; unused by evaluation
 		}
 		// The patch arrays are anchored to mu_c, which is linear in this
 		// blend's eta coordinate: blending them index-wise blends aligned
@@ -1271,7 +1274,6 @@ namespace
 		for( int j = 0; j < kLobeN; ++j ) {
 			out.g0[j] = mix( b0.g0[j], b1.g0[j] );  out.g5[j] = mix( b0.g5[j], b1.g5[j] );
 			out.e0[j] = mix( b0.e0[j], b1.e0[j] );  out.e5[j] = mix( b0.e5[j], b1.e5[j] );
-			out.phi[j] = b0.phi[j];  out.psi[j] = b0.psi[j];		// alpha-independent
 		}
 		for( int p = 0; p < kPatchN; ++p ) {
 			out.pg0[p] = mix( b0.pg0[p], b1.pg0[p] );  out.pg5[p] = mix( b0.pg5[p], b1.pg5[p] );

@@ -420,9 +420,14 @@ relative coat index; three causes, each a rule keyed on the critical cosine
   the recycled term jumped 14 % (value 0.24 %) over delta-eta 1e-5 at
   alpha 0.1, eta 1.01415.  Each stratum's mass is now spread as a uniform
   CENTRED on its sample with the stratum's linearised spread (from the
-  neighbouring strata's samples -- not its corners, which hit the VNDF's
-  `u1 -> 1` singularity and overstated the tail by 1.5 % in K5), and the
-  table stores each sub-bin's second moment.
+  neighbouring strata's samples: periodic in `u1`, the VNDF's azimuth,
+  one-sided at the two ends of `u2`, its polar coordinate -- not from the
+  stratum's corners, which reach the cap's rim at `u2 -> 1` and overstated
+  the tail by 1.5 % in K5), and the table stores each sub-bin's second
+  moment.  A uniform window that straddles `mu_c` is an accepted
+  approximation (it matches the mass's first two moments, not its shape,
+  on either side of the edge); what it buys is a price continuous in the
+  window and in eta.
 * **Rules that switched with eta.**  The three bins around `mu_c` were
   priced by a window whose half-width was clamped to the centroid's distance
   from the bin edge, the rest at their centroid; `pointWeights` read exact
@@ -445,12 +450,27 @@ relative coat index; three causes, each a rule keyed on the critical cosine
   patches anchored to different `mu_c` hands off continuously too.
 
 Red-proof `tests/CoatedEtaContinuityTest.cpp` (dense eta sweeps of
-`value`/`valueNM` at fixed directions, absorbing and clear, worst adjacent
-step <= max(0.001 %, 20 x the median step)): master 10 passed / 10 failed,
-fix 20 / 0.  `CompositeEnergyConservationTest --coated-only` K1-K7 227/0
-(K5's white furnace stays in [0.985, 1.012]).  Values move where the old
-point masses sat: the alpha .1 / eta 1.014 / view 80 row above read 9 %
-lower (the spike over-priced its TIR return).
+`value` (RGB channels 0 and 2 of a chromatic F0) and `valueNM` (550 and
+450 nm) at fixed directions, absorbing and clear, alpha .002-.3, the
+reported windows plus a mid-range 1.25-1.75 net; worst adjacent step <=
+max(0.001 %, 20 x the median step)): master 40 passed / 20 failed, fix
+60 / 0.  `CompositeEnergyConservationTest --coated-only` K1-K8 all pass;
+K5 gained a clear-coat white-furnace row at eta 2.87 (0.998-1.010 at
+0-80 deg), and K5b compares an absorbing eta-1.0145 coat over GGX F0 .9
+alpha .1 with the composite (1.002 / 0.999 / 1.005 at 0 / 60 / 80 deg --
+a consistency pin, green on master too: the moved component is a few per
+cent of the small recycled term, below an albedo's noise).  Values move
+where the old point masses sat: `value` at alpha .1 / view 80 / light 0
+reads 3.8 % lower than master below the old step (eta 1.0136) and 9.2 %
+lower above it (eta 1.0147) -- the spike over-priced its TIR return.
+
+Shipped coated-over-GGX scenes (PT pel, OIDN off, 4 salted renders per
+build, the same salts and the same object mask in both, Rec.709
+luminance, mean +- se): `lacquer_and_rain_still_life` at 320 x 180 / 96
+spp, `mat_worn_lacquer_brass` region 0.159141 +- 0.000135 -> 0.159121 +-
+0.000140 (-0.01 %); `tidal_stones` at 400 x 300 / 32 spp, `mat_stone`
+region 0.0867268 +- 0.0000036 -> 0.0867217 +- 0.0000045 (-0.006 %).  No
+resolvable change.
 
 Cost (same machine, master -> fix): an absorbing-coat basis build 22 ->
 48 us; the once-per-process tables 33 -> 85 ms (spill 9 -> 21 ms, clear
