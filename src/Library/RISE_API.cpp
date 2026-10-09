@@ -4591,6 +4591,16 @@ namespace RISE
 			return false;
 		}
 
+		// DL-422: a layered subsurface jump needs entry/exit transport
+		// through the other layer. The surface-only composite has no such
+		// model, so fail explicitly instead of silently dropping the jump.
+		if( top.GetDiffusionProfile() || top.GetRandomWalkSSSParams() ||
+			bottom.GetDiffusionProfile() || bottom.GetRandomWalkSSSParams() ) {
+			*ppi = 0;
+			GlobalLog()->PrintSourceError( "composite_material (DL-422): subsurface layers are unsupported; use a bare subsurface material or separate objects", __FILE__, __LINE__ );
+			return false;
+		}
+
 		(*ppi) = new CompositeMaterial( top, bottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, extinction );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "composite material" );
 		return true;

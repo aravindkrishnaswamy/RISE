@@ -4797,7 +4797,10 @@ bool Job::AddCompositeMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateCompositeMaterial( &pMaterial, *pTop, *pBottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, *pExt );
+	if( !RISE_API_CreateCompositeMaterial( &pMaterial, *pTop, *pBottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, *pExt ) ) {
+		safe_release( pExt );
+		return false;
+	}
 
 	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
