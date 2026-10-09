@@ -95,7 +95,9 @@
 #include "../src/Library/Interfaces/ILog.h"
 
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Materials/FabricMaterial.h"
 #include "TestStubObject.h"
+#include "WeaveTestFixture.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -2363,6 +2365,9 @@ static void SectionK4K6( Fixtures& f )
 			{ 1.04,  { 70.0, 80.0, 85.0 } },
 			{ 1.13,  { 70.0, 80.0, 85.0 } },
 			{ 3.0,   { 60.0, 75.0, 79.0, 83.0 } },
+			// DL-426: the critical patch's far end crosses normal incidence
+			// at eta ~2.874 (the clear table stepped 1.9 % there).
+			{ 2.87,  { 0.0, 60.0, 75.0, 80.0 } },
 		};
 		// alpha 0.002: a lobe narrower than the view-node spacing, whose
 		// return the critical patch carries (pre-patch 1.09 at eta 1.5 /
@@ -2385,6 +2390,35 @@ static void SectionK4K6( Fixtures& f )
 			}
 			metal->release();
 		}
+	}
+
+	// ---- K5b: DL-426, an absorbing coat of relative index ~1 vs the
+	//      composite.  The window where the pre-DL-426 basis stepped (alpha
+	//      .1, eta 1.0145, grazing view): the coated directional albedo must
+	//      still agree with the explicit two-layer walk.  A consistency pin,
+	//      green on the pre-DL-426 code too (1.0034 / 0.9995 / 1.0054): the
+	//      component DL-426 moves is a few per cent of the small recycled
+	//      term, below this albedo's noise.
+	{
+		std::cout << "    K5b absorbing near-unity coat (eta 1.0145, sigma_t 0.2) over GGX F0 .9 alpha .1, coated vs composite:\n";
+		UniformScalarPainter* nNear = new UniformScalarPainter( 1.0145 );  nNear->addref();
+		DielectricMaterial* smoothNear = new DielectricMaterial( *f.s1, *nNear, *sDelta, false );  smoothNear->addref();
+		UniformScalarPainter* ext = new UniformScalarPainter( 0.2 );  ext->addref();
+		GGXMaterial* metal = MakeSchlickGgx( 0.0, 0.9, 0.1 );
+		CompositeMaterial* comp = MakeComposite( *smoothNear, *metal, 3, 3, 3, 3, 3, 1.0, *ext );
+		CoatedMaterial* coat = MakeCoated( *metal, 0.2, *f.white, 1.0145 );
+		const double thetas[] = { 0.0, 60.0, 80.0 };
+		for( double th : thetas ) {
+			const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7301u + (unsigned)th );
+			const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9301u + (unsigned)th );
+			const double ratio = sc.mean / sp.mean;
+			const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
+			std::cout << "      theta " << (int)th << ": coated " << std::setprecision(5) << sc.mean << " +- " << sc.sem
+			          << "  composite " << sp.mean << " +- " << sp.sem << "  coated/composite " << ratio << " +- " << semR << "\n";
+			Check( std::fabs( ratio - 1.0 ) <= std::max( 0.03, 5.0 * semR ),
+				std::string( "[K5b] near-unity absorbing coat theta " ) + std::to_string( (int)th ) + " coated / composite == 1" );
+		}
+		coat->release(); comp->release(); metal->release(); ext->release(); smoothNear->release(); nNear->release();
 	}
 
 	// ---- K7: double-sided indexed mesh, front vs back (render) ---------
@@ -2561,6 +2595,101 @@ static void SectionK( Fixtures& f )
 }
 
 
+//////////////////////////////////////////////////////////////////////
+//  K8 -- DL-417 (OPEN; measurement + pin): a coat over a fabric_material
+//  or weave_material substrate, coated / composite of the same physical
+//  layers (smooth 1.5 coat, thickness 1).  These substrates keep the
+//  pre-DL-388 OUTER-frame model with the Lambertian recycling factor.
+//  Measured 2026-10-08 (8 x 20000 draws per side): grey-base fabric
+//  (sheen rough .3) 1.04 / 1.10 at 45 / 70 deg under a clear coat; weave
+//  silk / denim 1.05-1.08 clear and 0.82-0.90 under sigma_t 0.3.  The
+//  refracted frame with the COSINE reservoir (Oren-Nayar's model) was
+//  tried and is worse: a lossless white fabric reads 1.054 (an energy
+//  GAIN) and the weaves 1.13-1.40 under a clear coat -- their first bounce
+//  escapes far more than a Lambertian's (1 - r_i) share, which the
+//  cosine factor 1 / (1 - r_i R) then amplifies.  Closing it needs the
+//  substrate's own first-bounce return g (the GGX lobe reservoir's
+//  kernel) for an anisotropic, spatially varying fibre BSDF.  The rows
+//  are PINNED per row at its measured value +- (0.015 + 5 sem), and
+//  the lossless white fabric's clear-coat furnace must stay <= 1.012
+//  (it reads 1.0084 at 0 deg: the outer-frame model's own gain).  Runs with --coated-only, alone with --dl417-only (~15 s).
+static void SectionK8( Fixtures& f )
+{
+	std::cout << "\n[K8] DL-417 (open): coated_material over fabric / weave substrates, coated vs composite (pinned)\n";
+	UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
+	DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
+
+	UniformColorPainter*  sheenWhite = new UniformColorPainter( RISEPel( 1, 1, 1 ) );  sheenWhite->addref();
+	UniformScalarPainter* sr3 = new UniformScalarPainter( 0.3 );  sr3->addref();
+	UniformScalarPainter* sr7 = new UniformScalarPainter( 0.7 );  sr7->addref();
+	UniformColorPainter*  grey = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  grey->addref();
+	LambertianMaterial*   lambGrey = new LambertianMaterial( *grey );  lambGrey->addref();
+	FabricMaterial* fabLamb3 = new FabricMaterial( *lambGrey, *sheenWhite, *sr3, *f.s0 );  fabLamb3->addref();
+	FabricMaterial* fabLamb7 = new FabricMaterial( *f.lamb, *sheenWhite, *sr7, *f.s0 );  fabLamb7->addref();
+	WeaveTest::PresetWeave silk( "silk", 0, 0.5, true );
+	WeaveTest::PresetWeave denim( "denim", 0, 0.5, true );
+
+	// pin[sigma][theta]: the coated / composite ratio measured 2026-10-08
+	// with these seeds (outer-frame model).  lossless: the substrate's own
+	// albedo is 1, so the coated furnace must not exceed 1 beyond K5's band.
+	struct Sub { const char* name; IMaterial* m; double pin[2][3]; bool lossless; };
+	Sub subs[] = {
+		{ "fabric (sheen 1, rough .3) over Lambertian .5", fabLamb3, { { 0.9935, 1.0384, 1.1052 }, { 0.9887, 1.0314, 1.0656 } }, false },
+		{ "fabric (sheen 1, rough .7) over Lambertian 1", fabLamb7, { { 1.0130, 1.0041, 0.9935 }, { 0.9752, 0.9755, 0.9766 } }, true },
+		{ "weave silk (white dyes, coverage .5)", silk.Material(), { { 1.0537, 1.0692, 0.9141 }, { 0.8243, 0.8984, 0.8916 } }, false },
+		{ "weave denim (white dyes, coverage .5)", denim.Material(), { { 1.0753, 1.0435, 0.9707 }, { 0.8817, 0.8775, 0.8987 } }, false },
+	};
+	const double sigmas[] = { 0.0, 0.3 };
+	const double thetas[] = { 0.0, 45.0, 70.0 };
+	for( Sub& sb : subs ) {
+		int si = 0;
+		{
+			RISEPel H;
+			sb.m->GetBSDF()->hemisphericalAlbedo( MakeIntersection( 0.3 ), H );
+			std::cout << "      " << sb.name << ": bare directional albedo";
+			for( double th : thetas ) {
+				const FurnaceStats b = Furnace( *sb.m->GetSPF(), th, false, false, 4, 20000, 5201u + (unsigned)th );
+				std::cout << " " << (int)th << ":" << std::setprecision(4) << b.mean;
+			}
+			std::cout << "  hemisphericalAlbedo " << H[0] << "\n";
+		}
+		for( double sg : sigmas ) {
+			UniformScalarPainter* ext = new UniformScalarPainter( sg );  ext->addref();
+			CompositeMaterial* comp = MakeComposite( *smooth, *sb.m, 3, 3, 3, 3, 3, 1.0, *ext );
+			CoatedMaterial* coat = MakeCoated( *sb.m, sg, *f.white );
+			int ti = 0;
+			for( double th : thetas ) {
+				const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7201u + (unsigned)th );
+				const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9201u + (unsigned)th );
+				const double ratio = sc.mean / sp.mean;
+				const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
+				std::cout << "      " << sb.name << " sigma_t " << std::setprecision(3) << sg << " theta " << (int)th
+				          << ": coated " << std::setprecision(5) << sc.mean << " +- " << sc.sem
+				          << "  composite " << sp.mean << " +- " << sp.sem
+				          << "  coated/composite " << ratio << " +- " << semR << "\n";
+				const double pin = sb.pin[si][ti];
+				Check( std::fabs( ratio - pin ) <= 0.015 + 5.0 * semR,
+					std::string( "[K8] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
+					std::to_string( (int)th ) + " coated / composite at its DL-417 residual pin " + std::to_string( pin ) + " +- (0.015 + 5 sem)" );
+				if( sb.lossless && sg == 0.0 ) {
+					// A lossless substrate under a clear coat: the coated furnace
+					// must not exceed 1 beyond K5's band (measured 1.0084 at 0
+					// deg -- the outer-frame model's own gain, DL-417).
+					Check( sc.mean <= 1.012 + 5.0 * sc.sem,
+						std::string( "[K8] " ) + sb.name + " theta " + std::to_string( (int)th ) +
+						" lossless clear-coat furnace <= 1.012 (" + std::to_string( sc.mean ) + ")" );
+				}
+				++ti;
+			}
+			coat->release(); comp->release(); ext->release();
+			++si;
+		}
+	}
+	fabLamb3->release(); fabLamb7->release(); lambGrey->release(); grey->release();
+	sr3->release(); sr7->release(); sheenWhite->release(); smooth->release(); sDelta->release();
+}
+
+
 int main( int argc, char** argv )
 {
 	std::cout << "CompositeEnergyConservationTest (DL-24 / DL-221)" << std::endl;
@@ -2572,8 +2701,14 @@ int main( int argc, char** argv )
 	Fixtures f = MakeFixtures();
 
 	const bool skipRender = ( argc > 1 && std::string( argv[1] ) == "--no-render" );
+	if( argc > 1 && std::string( argv[1] ) == "--dl417-only" ) {
+		SectionK8( f );
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc > 1 && std::string( argv[1] ) == "--coated-only" ) {
 		SectionK( f );
+		SectionK8( f );
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -2614,6 +2749,7 @@ int main( int argc, char** argv )
 	SectionW( f );
 	SectionG( f );
 	SectionK( f );
+	SectionK8( f );
 	if( !skipRender ) {
 		SectionD();
 	}

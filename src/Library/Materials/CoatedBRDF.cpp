@@ -542,15 +542,50 @@ namespace
 
 	struct LobeSpillTable
 	{
-		std::vector<Scalar> t0;		//!< F = 1
+		std::vector<Scalar> t0;		//!< F = 1 (the sum of the bin's sub-bins)
 		std::vector<Scalar> t5;		//!< F = (1 - w.m)^5
-		std::vector<Scalar> tm;		//!< F = 1, times mu_u: the bin's mass centroid is tm / t0
-		std::vector<Scalar> t2;		//!< F = 1, times mu_u^2: the bin's mass spread is t2/t0 - (tm/t0)^2
-		std::vector<Scalar> s0;		//!< F = 1 on kLobeSubBins sub-bins per bin (the critical patch)
+		std::vector<Scalar> tm;		//!< F = 1, times mu_u (the bin's centroid is tm / t0)
+		std::vector<Scalar> t2;		//!< F = 1, times mu_u^2 (the bin's spread is t2 / t0 - centroid^2)
+		std::vector<Scalar> s0;		//!< F = 1 on kLobeSubBins sub-bins per bin
 		std::vector<Scalar> s5;		//!< F = (1 - w.m)^5 on the sub-bins
-		std::vector<Scalar> sm;		//!< F = 1, times mu_u, on the sub-bins (their centroids)
+		std::vector<Scalar> sm;		//!< F = 1, times mu_u, on the sub-bins (centroid sm / s0)
+		std::vector<Scalar> s2;		//!< F = 1, times mu_u^2, on the sub-bins (spread s2/s0 - centroid^2)
 	};
 
+	//! Deposits a mass spread UNIFORMLY over [lo, hi] (in the outgoing
+	//! cosine) into the sub-bins, with its first and second moments.
+	inline void DepositSpill( Scalar* sub0, Scalar* sub5, Scalar* subm, Scalar* sub2,
+		const Scalar lo, const Scalar hi, const Scalar centre, const Scalar wt, const Scalar wt5 )
+	{
+		const Scalar len = hi - lo;
+		if( !( len > Scalar(1e-12) ) ) {
+			const int ks = r_min( kLobeSubBins - 1, r_max( 0, (int)( centre * Scalar(kLobeSubBins) ) ) );
+			sub0[ks] += wt;  sub5[ks] += wt5;
+			subm[ks] += wt * centre;  sub2[ks] += wt * centre * centre;
+			return;
+		}
+		const int k0 = r_min( kLobeSubBins - 1, r_max( 0, (int)( lo * Scalar(kLobeSubBins) ) ) );
+		const int k1 = r_min( kLobeSubBins - 1, r_max( 0, (int)( hi * Scalar(kLobeSubBins) ) ) );
+		for( int ks = k0; ks <= k1; ++ks ) {
+			const Scalar a = r_max( lo, Scalar(ks) / Scalar(kLobeSubBins) );
+			const Scalar b = ( ks == kLobeSubBins - 1 ) ? hi : r_min( hi, Scalar(ks + 1) / Scalar(kLobeSubBins) );
+			if( !( b > a ) ) continue;
+			const Scalar share = ( b - a ) / len;
+			sub0[ks] += wt * share;  sub5[ks] += wt5 * share;
+			subm[ks] += wt * share * Scalar(0.5) * ( a + b );
+			sub2[ks] += wt * share * ( a * a + a * b + b * b ) / Scalar(3);
+		}
+	}
+
+	//! DL-426: each VNDF stratum's mass is spread over its own IMAGE in
+	//! the outgoing cosine (a uniform centred on the stratum's sample with
+	//! the linearised spread of its corners), not deposited as a point.  The 32 x 32 strata are a deterministic quadrature: at a
+	//! normal view every azimuth stratum of one radial ring reflects to
+	//! the SAME mu_u, so the table held point masses of up to 1/32 of the
+	//! lobe in its tail -- and a point mass crossing the critical cosine's
+	//! square-root edge as eta moves makes the priced return jump (22 %
+	//! of the recycled term over delta-eta 1e-5 at alpha 0.1, eta 1.01415).
+	//! The true spill is a density; this is its piecewise-uniform model.
 	LobeSpillTable BuildLobeSpillTable()
 	{
 		using namespace RISE;
@@ -562,9 +597,11 @@ namespace
 		T.s0.assign( (std::size_t)kLobeA * kLobeN * kLobeSubBins, Scalar(0) );
 		T.s5.assign( (std::size_t)kLobeA * kLobeN * kLobeSubBins, Scalar(0) );
 		T.sm.assign( (std::size_t)kLobeA * kLobeN * kLobeSubBins, Scalar(0) );
+		T.s2.assign( (std::size_t)kLobeA * kLobeN * kLobeSubBins, Scalar(0) );
 		OrthonormalBasis3D onb;
 		onb.CreateFromW( Vector3( 0, 0, 1 ) );
 		const Scalar invS2 = Scalar(1) / Scalar( kLobeS * kLobeS );
+		std::vector<Scalar> cz( (std::size_t)kLobeS * kLobeS ), cw( cz.size() ), cw5( cz.size() );
 		for( int a = 0; a < kLobeA; ++a ) {
 			const Scalar alpha = LobeAlphaNode( a );
 			for( int j = 0; j < kLobeN; ++j ) {
@@ -580,8 +617,12 @@ namespace
 				Scalar* sub0 = &T.s0[ ( (std::size_t)a * kLobeN + j ) * kLobeSubBins ];
 				Scalar* sub5 = &T.s5[ ( (std::size_t)a * kLobeN + j ) * kLobeSubBins ];
 				Scalar* subm = &T.sm[ ( (std::size_t)a * kLobeN + j ) * kLobeSubBins ];
+				Scalar* sub2 = &T.s2[ ( (std::size_t)a * kLobeN + j ) * kLobeSubBins ];
+				// Pass 1: every stratum's sample (the midpoint rule).
 				for( int s1 = 0; s1 < kLobeS; ++s1 ) {
 					for( int s2 = 0; s2 < kLobeS; ++s2 ) {
+						const int id = s1 * kLobeS + s2;
+						cz[id] = -1;  cw[id] = cw5[id] = 0;
 						const Scalar u1 = ( Scalar(s1) + Scalar(0.5) ) / Scalar(kLobeS);
 						const Scalar u2 = ( Scalar(s2) + Scalar(0.5) ) / Scalar(kLobeS);
 						const Vector3 m = MicrofacetUtils::VNDF_Sample_Aniso( w, onb, alpha, alpha, u1, u2 );
@@ -592,18 +633,59 @@ namespace
 						if( !( uz > Scalar(0) ) ) continue;
 						const Vector3 ul( Vector3Ops::Dot( u, onb.u() ), Vector3Ops::Dot( u, onb.v() ), uz );
 						const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alpha, alpha, wl, ul );
-						const Scalar wt = ( G1 > Scalar(0) ) ? G2 / G1 * invS2 : Scalar(0);
-						const int k = r_min( kLobeN - 1, (int)( uz * Scalar(kLobeN) ) );
 						const Scalar om = Scalar(1) - wm;
 						const Scalar om2 = om * om;
-						row0[k] += wt;
-						row5[k] += wt * om2 * om2 * om;
-						rowm[k] += wt * uz;
-						row2[k] += wt * uz * uz;
-						const int ks = r_min( kLobeSubBins - 1, (int)( uz * Scalar(kLobeSubBins) ) );
-						sub0[ks] += wt;
-						sub5[ks] += wt * om2 * om2 * om;
-						subm[ks] += wt * uz;
+						cz[id]  = r_min( uz, Scalar(1) );
+						cw[id]  = ( G1 > Scalar(0) ) ? G2 / G1 * invS2 : Scalar(0);
+						cw5[id] = cw[id] * om2 * om2 * om;
+					}
+				}
+				// Pass 2: deposit each as a uniform CENTRED on its sample with
+				// the stratum's linearised spread -- a uniform (u1, u2) square
+				// maps to mu_u with variance (d1^2 + d2^2) / 12, d1 / d2 the
+				// change of mu_u across one stratum in each direction, taken
+				// from the neighbouring strata's samples.  In
+				// MicrofacetUtils::VNDF_Sample_Aniso u1 is the AZIMUTH
+				// (phi = 2 pi u1, periodic: central differences wrap) and u2
+				// the POLAR coordinate of the cap (pole at u2 = 0, rim at
+				// u2 = 1: one-sided at the two ends, never wrapped).
+				// Centring keeps the quadrature's first moment (the midpoint
+				// rule); differencing samples, not corners, keeps clear of the
+				// cap's rim at u2 -> 1, where a corner maps to a grazing
+				// microfacet.
+				auto czAt = [&]( const int s1, const int s2 ) { return cz[ ( ( s1 + kLobeS ) % kLobeS ) * kLobeS + s2 ]; };
+				for( int s1 = 0; s1 < kLobeS; ++s1 ) {
+					for( int s2 = 0; s2 < kLobeS; ++s2 ) {
+						const int id = s1 * kLobeS + s2;
+						if( !( cz[id] > Scalar(0) ) ) continue;
+						const Scalar uc = cz[id];
+						Scalar d1 = 0;
+						{
+							const Scalar zm = czAt( s1 - 1, s2 );
+							const Scalar zp = czAt( s1 + 1, s2 );
+							if( zm > Scalar(0) && zp > Scalar(0) ) d1 = Scalar(0.5) * ( zp - zm );
+							else if( zp > Scalar(0) ) d1 = zp - uc;
+							else if( zm > Scalar(0) ) d1 = uc - zm;
+						}
+						Scalar d2 = 0;
+						{
+							const Scalar zm = ( s2 > 0 ) ? czAt( s1, s2 - 1 ) : Scalar(-1);
+							const Scalar zp = ( s2 + 1 < kLobeS ) ? czAt( s1, s2 + 1 ) : Scalar(-1);
+							if( zm > Scalar(0) && zp > Scalar(0) ) d2 = Scalar(0.5) * ( zp - zm );
+							else if( zp > Scalar(0) ) d2 = zp - uc;
+							else if( zm > Scalar(0) ) d2 = uc - zm;
+						}
+						const Scalar hw = Scalar(0.5) * sqrt( d1 * d1 + d2 * d2 );
+						DepositSpill( sub0, sub5, subm, sub2,
+							r_max( uc - hw, Scalar(0) ), r_min( uc + hw, Scalar(1) ), uc, cw[id], cw5[id] );
+					}
+				}
+				for( int k = 0; k < kLobeN; ++k ) {
+					for( int q = 0; q < kLobeSubBins / kLobeN; ++q ) {
+						row0[k] += sub0[ k * ( kLobeSubBins / kLobeN ) + q ];
+						row5[k] += sub5[ k * ( kLobeSubBins / kLobeN ) + q ];
+						rowm[k] += subm[ k * ( kLobeSubBins / kLobeN ) + q ];
+						row2[k] += sub2[ k * ( kLobeSubBins / kLobeN ) + q ];
 					}
 				}
 				// Calibrate the row's total to the single-scatter albedo
@@ -616,7 +698,7 @@ namespace
 				if( sum > Scalar(0) ) {
 					const Scalar scale = MicrofacetEnergyLUT::LookupEssG2( mu, alpha ) / sum;
 					for( int k = 0; k < kLobeN; ++k ) { row0[k] *= scale; row5[k] *= scale; rowm[k] *= scale; row2[k] *= scale; }
-					for( int k = 0; k < kLobeSubBins; ++k ) { sub0[k] *= scale; sub5[k] *= scale; subm[k] *= scale; }
+					for( int k = 0; k < kLobeSubBins; ++k ) { sub0[k] *= scale; sub5[k] *= scale; subm[k] *= scale; sub2[k] *= scale; }
 				}
 			}
 		}
@@ -638,7 +720,6 @@ namespace
 	{
 		Scalar alpha, eta, tau;
 		bool   valid;
-		Scalar phi[kLobeN], psi[kLobeN];				//!< bin-averaged Phi = F_in a^2, Psi = (1 - F_in) a
 		Scalar g0[kLobeN], g5[kLobeN];					//!< spec return at view node j, per Fresnel basis
 		Scalar e0[kLobeN], e5[kLobeN];					//!< spec escape at view node j
 		Scalar Q0, Q5, E0, E5, G0, G5, H0, H5;			//!< spec hemispherical integrals
@@ -659,14 +740,31 @@ namespace
 
 	//! g / e at view cosine mu: the critical patch on [mu_c, mu_c + W),
 	//! the view nodes elsewhere.
+	//! The view-node arrays at mu, linearly EXTRAPOLATED past normal
+	//! incidence (only the patch's far end, mu_c + W, can lie there).
+	inline Scalar LobeNodeLerp( const Scalar* arr, const Scalar mu )
+	{
+		Scalar xi = mu * Scalar(kLobeN) - Scalar(1);
+		xi = r_max( xi, Scalar(0) );
+		const int    i = r_min( (int)xi, kLobeN - 2 );
+		const Scalar f = xi - Scalar(i);
+		return arr[i] + ( arr[i + 1] - arr[i] ) * f;
+	}
+
 	inline Scalar LobeArrLookup( const Scalar* node, const Scalar* patch, const Scalar muC, const Scalar mu )
 	{
 		if( mu >= muC && mu < muC + kPatchW ) {
 			const Scalar xs = sqrt( ( mu - muC ) / kPatchW ) * Scalar(kPatchN - 1);
-			const int    i  = r_min( (int)xs, kPatchN - 2 );
-			const Scalar m0 = LobePatchNode( muC, i ), m1 = LobePatchNode( muC, i + 1 );
-			const Scalar f  = ( m1 > m0 ) ? ( mu - m0 ) / ( m1 - m0 ) : Scalar(0);
-			return patch[i] + ( patch[i + 1] - patch[i] ) * f;
+			const int    k  = r_min( (int)xs, kPatchN - 2 );
+			const Scalar m0 = LobePatchNode( muC, k ), m1 = LobePatchNode( muC, k + 1 );
+			const Scalar g  = ( m1 > m0 ) ? ( mu - m0 ) / ( m1 - m0 ) : Scalar(0);
+			// DL-426: the last patch cell ends on the NODE interpolant's own
+			// value at mu_c + W, so the hand-off to the node arrays is
+			// continuous for every basis -- a direct build's patch is joined
+			// there already (the same number), the clear table's index-wise
+			// eta blend of patches anchored to different mu_c is not.
+			const Scalar p1 = ( k + 1 == kPatchN - 1 ) ? LobeNodeLerp( node, m1 ) : patch[k + 1];
+			return patch[k] + ( p1 - patch[k] ) * g;
 		}
 		Scalar x = mu * Scalar(kLobeN) - Scalar(1);
 		x = r_min( r_max( x, Scalar(0) ), Scalar(kLobeN - 1) );
@@ -674,6 +772,181 @@ namespace
 		const Scalar f = x - Scalar(i);
 		return node[i] + ( node[i + 1] - node[i] ) * f;
 	}
+
+	//! DL-426: the coat's weights Phi(mu) = F_in(mu) a(mu)^2 and
+	//! Psi(mu) = (1 - F_in(mu)) a(mu) as ONE continuous tabulated function
+	//! of the internal cosine, accurate at the critical cosine for every
+	//! eta.  Below mu_c the coat totally reflects (F_in = 1, Psi = 0, Phi =
+	//! a^2: smooth in mu); above it F_in is the external Fresnel at the
+	//! OUTER cosine t = sqrt(1 - eta^2 (1 - mu^2)), smooth in t -- the
+	//! square-root edge at mu_c is the change of variables mu -> t, not a
+	//! property of the weights.  So the table is two grids that meet at
+	//! mu_c (where both read Phi = a^2, Psi = 0): uniform in mu on [0,
+	//! mu_c] and uniform in t on [mu_c, 1].  It replaces a single grid
+	//! uniform in mu that smeared the edge over one cell, patched by exact
+	//! evaluation inside fixed distances of mu_c -- rules that switched as
+	//! eta moved mu_c past them, which made the basis (and value())
+	//! DISCONTINUOUS in eta (22 % in the recycled term over delta-eta
+	//! 1e-5 at alpha 0.1, eta 1.01415).
+	struct CoatWeightTable
+	{
+		static constexpr int kA = 128;		//!< nodes uniform in mu on [0, mu_c]
+		static constexpr int kB = 192;		//!< nodes uniform in the outer cosine t on [mu_c, 1]
+		static constexpr int kL = 256;		//!< cell-finding accelerator cells over [mu_c, 1]
+		Scalar eta, muC, invStepA, invStepL;
+		// Node positions (in mu), weights, slopes per unit mu, and the
+		// cumulative integrals INT_0^mu {Phi, Psi} dmu of the
+		// piecewise-linear-in-mu interpolant through the nodes, at the nodes.
+		Scalar muA[kA], phA[kA], sphA[kA], cphA[kA];
+		Scalar muB[kB], phB[kB], psB[kB], sphB[kB], spsB[kB], cphB[kB], cpsB[kB];
+		int    lutB[kL + 1];
+
+		static Scalar Atten( const Scalar mu, const Scalar tau, const bool opaque )
+		{
+			if( opaque ) return Scalar(0);
+			if( !( tau > Scalar(0) ) ) return Scalar(1);
+			return ( mu > Scalar(0) ) ? exp( -tau / mu ) : Scalar(0);
+		}
+
+		void Build( const Scalar eta_, const Scalar tau, const bool opaque )
+		{
+			using namespace RISE::Implementation;
+			eta = eta_;
+			muC = ( eta > Scalar(1) ) ? sqrt( Scalar(1) - Scalar(1) / ( eta * eta ) ) : Scalar(0);
+			invStepA = ( muC > Scalar(0) ) ? Scalar(kA - 1) / muC : Scalar(0);
+			for( int i = 0; i < kA; ++i ) {
+				muA[i] = muC * Scalar(i) / Scalar(kA - 1);
+				const Scalar a = Atten( muA[i], tau, opaque );
+				phA[i] = a * a;
+			}
+			cphA[0] = 0;
+			for( int i = 0; i + 1 < kA; ++i ) {
+				const Scalar h = muA[i + 1] - muA[i];
+				sphA[i] = ( h > Scalar(0) ) ? ( phA[i + 1] - phA[i] ) / h : Scalar(0);
+				cphA[i + 1] = cphA[i] + Scalar(0.5) * ( phA[i] + phA[i + 1] ) * h;
+			}
+			sphA[kA - 1] = 0;
+			const Scalar e2 = eta * eta;
+			for( int i = 0; i < kB; ++i ) {
+				const Scalar t = Scalar(i) / Scalar(kB - 1);
+				muB[i] = ( i == 0 ) ? muC : ( ( i == kB - 1 ) ? Scalar(1) : sqrt( r_max( Scalar(0), t * t + e2 - Scalar(1) ) ) / eta );
+				const Scalar F = ( eta > Scalar(1) ) ? CoatedLayer::Fresnel( t, eta ) : Scalar(0);
+				const Scalar a = Atten( muB[i], tau, opaque );
+				phB[i] = F * a * a;
+				psB[i] = ( Scalar(1) - F ) * a;
+			}
+			cphB[0] = cphA[kA - 1];
+			cpsB[0] = 0;
+			for( int i = 0; i + 1 < kB; ++i ) {
+				const Scalar h = muB[i + 1] - muB[i];
+				sphB[i] = ( h > Scalar(0) ) ? ( phB[i + 1] - phB[i] ) / h : Scalar(0);
+				spsB[i] = ( h > Scalar(0) ) ? ( psB[i + 1] - psB[i] ) / h : Scalar(0);
+				cphB[i + 1] = cphB[i] + Scalar(0.5) * ( phB[i] + phB[i + 1] ) * h;
+				cpsB[i + 1] = cpsB[i] + Scalar(0.5) * ( psB[i] + psB[i + 1] ) * h;
+			}
+			sphB[kB - 1] = spsB[kB - 1] = 0;
+			// lutB[c]: the B cell holding the left edge of accelerator cell c.
+			invStepL = ( Scalar(1) - muC > Scalar(0) ) ? Scalar(kL) / ( Scalar(1) - muC ) : Scalar(0);
+			int i = 0;
+			for( int c = 0; c <= kL; ++c ) {
+				const Scalar m = muC + ( Scalar(1) - muC ) * Scalar(c) / Scalar(kL);
+				while( i < kB - 2 && muB[i + 1] <= m ) ++i;
+				lutB[c] = i;
+			}
+		}
+
+		//! The cell holding mu in [0, 1]: segment A (i into muA) or B.
+		inline void Cell( const Scalar mu, bool& inA, int& i ) const
+		{
+			if( mu < muC ) {
+				inA = true;
+				i = r_min( r_max( (int)( mu * invStepA ), 0 ), kA - 2 );
+				return;
+			}
+			inA = false;
+			const int c = r_min( r_max( (int)( ( mu - muC ) * invStepL ), 0 ), kL );
+			i = lutB[c];
+			while( i < kB - 2 && mu >= muB[i + 1] ) ++i;
+		}
+
+		inline void LerpInCell( const bool inA, const int i, const Scalar mu, Scalar& ph, Scalar& pv ) const
+		{
+			if( inA ) {
+				ph = phA[i] + sphA[i] * ( mu - muA[i] );
+				pv = 0;
+			} else {
+				const Scalar x = mu - muB[i];
+				ph = phB[i] + sphB[i] * x;
+				pv = psB[i] + spsB[i] * x;
+			}
+		}
+
+		inline void Lookup( Scalar mu, Scalar& ph, Scalar& pv ) const
+		{
+			mu = r_min( r_max( mu, Scalar(0) ), Scalar(1) );
+			bool inA; int i;
+			Cell( mu, inA, i );
+			LerpInCell( inA, i, mu, ph, pv );
+		}
+
+		//! INT_0^mu {Phi, Psi} dmu of the same interpolant, mu in cell (inA, i).
+		inline void CumulativeInCell( const bool inA, const int i, const Scalar mu, Scalar& cph, Scalar& cps ) const
+		{
+			if( inA ) {
+				const Scalar x = mu - muA[i];
+				cph = cphA[i] + x * ( phA[i] + Scalar(0.5) * sphA[i] * x );
+				cps = 0;
+			} else {
+				const Scalar x = mu - muB[i];
+				cph = cphB[i] + x * ( phB[i] + Scalar(0.5) * sphB[i] * x );
+				cps = cpsB[i] + x * ( psB[i] + Scalar(0.5) * spsB[i] * x );
+			}
+		}
+
+		//! The weights averaged over a mass spread uniformly on [lo, hi]
+		//! (clipped to [0, 1]): the exact average of the piecewise-linear
+		//! interpolant, through its cumulative integral.  Continuous in
+		//! lo, hi and eta; a vanishing range reads the point.  (A range
+		//! inside one cell averages a LINEAR function, so its midpoint
+		//! value is the same number, read directly.)
+		inline void Window( Scalar lo, Scalar hi, Scalar& ph, Scalar& pv ) const
+		{
+			lo = r_max( lo, Scalar(0) );
+			hi = r_min( hi, Scalar(1) );
+			if( !( hi - lo > Scalar(1e-9) ) ) {
+				Lookup( Scalar(0.5) * ( lo + hi ), ph, pv );
+				return;
+			}
+			bool inA0; int i0;
+			Cell( lo, inA0, i0 );
+			const Scalar top = inA0 ? muA[i0 + 1] : muB[i0 + 1];
+			if( hi <= top && ( !inA0 || hi < muC ) ) {
+				LerpInCell( inA0, i0, Scalar(0.5) * ( lo + hi ), ph, pv );
+				return;
+			}
+			bool inA1; int i1;
+			Cell( hi, inA1, i1 );
+			Scalar a0, b0, a1, b1;
+			CumulativeInCell( inA0, i0, lo, a0, b0 );
+			CumulativeInCell( inA1, i1, hi, a1, b1 );
+			const Scalar inv = Scalar(1) / ( hi - lo );
+			ph = ( a1 - a0 ) * inv;
+			pv = ( b1 - b0 ) * inv;
+		}
+
+		//! A mass with centroid c and variance var, as a uniform spread of
+		//! half-width sqrt(3 var) (plus 1e-7, so no window is a point).
+		//! An ACCEPTED APPROXIMATION where the window straddles mu_c: the
+		//! true mass inside a bin or sub-bin is not uniform, so the share
+		//! priced on either side of the critical cosine's edge is the
+		//! uniform model's, matched to the mass's first two moments only.
+		//! What it buys is continuity: the price is a continuous function
+		//! of c, var and eta, which no point or clamped-window rule is.
+		static Scalar HalfWidth( const Scalar var )
+		{
+			return sqrt( r_max( var, Scalar(0) ) * Scalar(3) ) + Scalar(1e-7);
+		}
+	};
 
 	void BuildLobeBasis( LobeBasis& b, const Scalar alpha, const Scalar eta, const Scalar tau )
 	{
@@ -683,31 +956,12 @@ namespace
 		b.JAphi = b.JApsi = b.JMphi = b.JMpsi = 0;
 		const bool opaque = !( tau < std::numeric_limits<Scalar>::infinity() );
 
-		// The coat's weights on a fine sub-grid.  Phi and Psi carry the
-		// square-root kink of F_in at the critical cosine, so every
-		// hemispherical integral below is taken on this sub-grid with the
-		// EXACT weights, and the spec node arrays are interpolated onto it:
-		// the integrals are then the ones value()'s own out-coupling and
-		// escape actually perform (G especially -- the kernel's
-		// normalisation must match the integral of what it multiplies, or
-		// a lossless substrate stops summing to 1).
-		const int kSub = 8;
-		const int nS = kLobeN * kSub;
-		Scalar phiS[kLobeN * 8], psiS[kLobeN * 8];
-		for( int k = 0; k < kLobeN; ++k ) {
-			Scalar ps = 0, ss = 0;
-			for( int s = 0; s < kSub; ++s ) {
-				const int    i  = k * kSub + s;
-				const Scalar mu = ( Scalar(i) + Scalar(0.5) ) / Scalar(nS);
-				const Scalar F  = CoatedLayer::FresnelInside( mu, eta );
-				const Scalar a  = opaque ? Scalar(0) : ( ( tau > Scalar(0) ) ? exp( -tau / mu ) : Scalar(1) );
-				phiS[i] = F * a * a;
-				psiS[i] = ( Scalar(1) - F ) * a;
-				ps += phiS[i]; ss += psiS[i];
-			}
-			b.phi[k] = ps / Scalar(kSub);
-			b.psi[k] = ss / Scalar(kSub);
-		}
+		// The coat's weights (DL-426: one continuous function of mu, exact
+		// at the critical cosine; see CoatWeightTable).
+		CoatWeightTable W;
+		W.Build( eta, tau, opaque );
+		const Scalar muCrit = W.muC;
+		auto pointWeights = [&]( const Scalar mu, Scalar& ph, Scalar& pv ) { W.Lookup( mu, ph, pv ); };
 
 		// roughness interpolation, linear in sqrt(alpha)
 		const LobeSpillTable& T = SpillTable();
@@ -717,41 +971,16 @@ namespace
 		const Scalar fa = x - Scalar(ia);
 
 		// Per view node: the spec lobe's return, escape and albedo for each
-		// Fresnel basis function.  Each histogram bin is weighted at its
-		// mass CENTROID (interpolated on the fine weight grid), not by the
-		// bin average: within one bin next to the critical cosine F_in
-		// falls from ~0.6 to ~0.2, and a lobe whose mirror direction sits
-		// in that bin would otherwise be charged the bin's average return
-		// (measured: a white mirror-like metal at 70 deg read 1.03).
-		auto fine = [&]( const Scalar* arr, const Scalar mu ) {
-			Scalar xi = mu * Scalar(nS) - Scalar(0.5);
-			xi = r_min( r_max( xi, Scalar(0) ), Scalar(nS - 1) );
-			const int    i = r_min( (int)xi, nS - 2 );
-			const Scalar f = xi - Scalar(i);
-			return arr[i] + ( arr[i + 1] - arr[i] ) * f;
-		};
-		// The coat's EXACT weights at one cosine (used for the bins that hold
-		// the critical cosine, where the fine grid's own linear
-		// interpolation would round the step off over 1/256).
-		const int    kCritPts = 16;
-		const Scalar muCrit   = ( eta > Scalar(1) ) ? sqrt( Scalar(1) - Scalar(1) / ( eta * eta ) ) : Scalar(0);
-		const int    kCrit    = r_min( (int)( muCrit * Scalar(kLobeN) ), kLobeN - 1 );
-		auto fineExact = [&]( const Scalar mu, Scalar& ph, Scalar& pv ) {
-			const Scalar F = CoatedLayer::FresnelInside( mu, eta );
-			const Scalar a = opaque ? Scalar(0) : ( ( tau > Scalar(0) ) ? exp( -tau / r_max( mu, Scalar(1e-6) ) ) : Scalar(1) );
-			ph = F * a * a;
-			pv = ( Scalar(1) - F ) * a;
-		};
-		// The coat's weights at one cosine: exact next to mu_c, the fine
-		// grid's linear interpolation elsewhere.
-		auto pointWeights = [&]( Scalar mu, Scalar& ph, Scalar& pv ) {
-			mu = r_min( r_max( mu, Scalar(0) ), Scalar(1) );
-			if( std::fabs( mu - muCrit ) < Scalar(2) / Scalar(nS) ) {
-				fineExact( mu, ph, pv );
-			} else {
-				ph = fine( phiS, mu ); pv = fine( psiS, mu );
-			}
-		};
+		// Fresnel basis function.  DL-426: EVERY bin is priced by one rule
+		// -- its mass spread uniformly with the bin's own measured centroid
+		// and spread, averaged against the continuous weights (CoatWeight
+		// Table::Window) -- for every eta.  The pre-DL-426 build priced most
+		// bins at their centroid and the three around mu_c by a uniform
+		// window whose half-width was clamped to the centroid's distance
+		// from the bin edge (a lopsided bin was priced at almost one
+		// point); the set of windowed bins moved with eta, a
+		// discontinuity.  Narrow lobes near mu_c are resolved by the
+		// critical patch below, on the sub-bins.
 		Scalar p0[kLobeN], p5[kLobeN];
 		for( int j = 0; j < kLobeN; ++j ) {
 			const std::size_t oa = ( (std::size_t)ia * kLobeN + j ) * kLobeN;
@@ -760,43 +989,16 @@ namespace
 			for( int k = 0; k < kLobeN; ++k ) {
 				const Scalar t0 = T.t0[oa + k] + ( T.t0[ob + k] - T.t0[oa + k] ) * fa;
 				const Scalar t5 = T.t5[oa + k] + ( T.t5[ob + k] - T.t5[oa + k] ) * fa;
+				q0 += t0;  q5 += t5;
+				if( !( t0 > Scalar(0) ) ) continue;
 				const Scalar tm = T.tm[oa + k] + ( T.tm[ob + k] - T.tm[oa + k] ) * fa;
 				const Scalar t2 = T.t2[oa + k] + ( T.t2[ob + k] - T.t2[oa + k] ) * fa;
-				Scalar ph = b.phi[k], pv = b.psi[k];
-				if( t0 > Scalar(0) ) {
-					const Scalar mc = tm / t0;
-					if( k >= kCrit - 1 && k <= kCrit + 1 ) {
-						// The bin holds (or neighbours) the critical cosine,
-						// where F_in steps from 1 to the external Fresnel with
-						// a square-root edge: one point cannot price a step
-						// that a broad lobe straddles, and a bin-wide average
-						// misprices a narrow lobe that does not.  Model the
-						// bin's mass as UNIFORM with the bin's own centroid
-						// and spread (half-width sqrt(3 var), clamped to the
-						// bin) and average the exact weights over it -- a
-						// near-delta lobe then reads its own point, a broad
-						// one the step it actually straddles.
-						const Scalar lo = Scalar(k) / Scalar(kLobeN), hi = Scalar(k + 1) / Scalar(kLobeN);
-						const Scalar c  = r_min( r_max( mc, lo ), hi );
-						const Scalar vr = r_max( Scalar(0), t2 / t0 - mc * mc );
-						const Scalar r  = r_min( sqrt( Scalar(3) * vr ), r_min( c - lo, hi - c ) );
-						Scalar sp = 0, sv = 0;
-						for( int q = 0; q < kCritPts; ++q ) {
-							const Scalar mu = c + r * ( Scalar(2) * ( Scalar(q) + Scalar(0.5) ) / Scalar(kCritPts) - Scalar(1) );
-							Scalar fp, fv;
-							pointWeights( mu, fp, fv );
-							sp += fp; sv += fv;
-						}
-						ph = sp / Scalar(kCritPts);
-						pv = sv / Scalar(kCritPts);
-					} else {
-						ph = fine( phiS, mc );
-						pv = fine( psiS, mc );
-					}
-				}
+				const Scalar mc = tm / t0;
+				const Scalar hw = CoatWeightTable::HalfWidth( t2 / t0 - mc * mc );
+				Scalar ph, pv;
+				W.Window( mc - hw, mc + hw, ph, pv );
 				g0 += t0 * ph;  g5 += t5 * ph;
 				e0 += t0 * pv;  e5 += t5 * pv;
-				q0 += t0;       q5 += t5;
 			}
 			b.g0[j] = g0; b.g5[j] = g5; b.e0[j] = e0; b.e5[j] = e5;
 			p0[j] = q0; p5[j] = q5;
@@ -806,7 +1008,51 @@ namespace
 		b.muC = muCrit;
 		// The spill histogram at an arbitrary view mu, by displacement:
 		// the two bracketing view nodes' sub-bin histograms, each sub-bin's
-		// mass at its own centroid shifted by mu - mu_node.
+		// mass at its own centroid shifted by mu - mu_node.  A view past 1
+		// (a patch node beyond normal incidence, DL-426) reads the last
+		// node shifted: an extrapolation, so the patch is ONE function on
+		// [mu_c, mu_c + W] for every eta, and only its part below 1 is
+		// ever looked up.
+		// Each view node's sub-bins, alpha-interpolated once per build
+		// (only the nodes the patch reads): mass, F5 mass, centroid and
+		// the uniform half-width of the sub-bin's own measured spread.
+		// The patch spans 2 view-node intervals (kPatchW = 2 / kLobeN) and
+		// reads both nodes of each, so at most kSubSlots distinct nodes; the
+		// slots are per-thread storage reused by every build (no heap
+		// allocation per build).
+		struct SubBins { int n; Scalar u0[kLobeSubBins], u5[kLobeSubBins], mc[kLobeSubBins], hw[kLobeSubBins]; };
+		constexpr int kSubSlots = 6;
+		static thread_local SubBins subCache[kSubSlots];
+		int nSub = 0;
+		int subSlot[kLobeN];
+		for( int j = 0; j < kLobeN; ++j ) subSlot[j] = -1;
+		auto subBinsFor = [&]( const int j ) -> const SubBins& {
+			if( subSlot[j] < 0 ) {
+				// Never reached past kSubSlots (see above); reuse the last slot
+				// rather than overrun if a future change widens the patch.
+				const int slot = r_min( nSub, kSubSlots - 1 );
+				if( nSub < kSubSlots ) ++nSub;
+				for( int jj = 0; jj < kLobeN; ++jj ) if( subSlot[jj] == slot ) subSlot[jj] = -1;
+				subSlot[j] = slot;
+				SubBins& sbn = subCache[slot];
+				sbn.n = 0;
+				for( int ks = 0; ks < kLobeSubBins; ++ks ) {
+					const std::size_t sa = ( (std::size_t)ia * kLobeN + j ) * kLobeSubBins + ks;
+					const std::size_t sb = ( (std::size_t)( ia + 1 ) * kLobeN + j ) * kLobeSubBins + ks;
+					const Scalar u0 = T.s0[sa] + ( T.s0[sb] - T.s0[sa] ) * fa;
+					if( !( u0 > Scalar(0) ) ) continue;
+					const Scalar um = T.sm[sa] + ( T.sm[sb] - T.sm[sa] ) * fa;
+					const Scalar u2 = T.s2[sa] + ( T.s2[sb] - T.s2[sa] ) * fa;
+					const Scalar mc = um / u0;
+					sbn.u0[sbn.n] = u0;
+					sbn.u5[sbn.n] = T.s5[sa] + ( T.s5[sb] - T.s5[sa] ) * fa;
+					sbn.mc[sbn.n] = mc;
+					sbn.hw[sbn.n] = CoatWeightTable::HalfWidth( u2 / u0 - mc * mc );
+					++sbn.n;
+				}
+			}
+			return subCache[ subSlot[j] ];
+		};
 		auto shiftedSum = [&]( const Scalar mu, Scalar& og0, Scalar& og5, Scalar& oe0, Scalar& oe5 ) {
 			og0 = og5 = oe0 = oe5 = 0;
 			Scalar xv = mu * Scalar(kLobeN) - Scalar(1);
@@ -818,69 +1064,62 @@ namespace
 				const Scalar wv = side ? fv : ( Scalar(1) - fv );
 				if( !( wv > Scalar(0) ) ) continue;
 				const Scalar dmu = mu - LobeViewNode( j );
-				const std::size_t oa = ( (std::size_t)ia * kLobeN + j ) * kLobeN;
-				const std::size_t ob = ( (std::size_t)( ia + 1 ) * kLobeN + j ) * kLobeN;
-				for( int k = 0; k < kLobeN; ++k ) {
-					const Scalar t0 = T.t0[oa + k] + ( T.t0[ob + k] - T.t0[oa + k] ) * fa;
-					if( !( t0 > Scalar(0) ) ) continue;
-					// The bin's sub-bins, each its mass at its own centroid (a
-					// sub-bin is 1/256 wide; near normal incidence a narrow
-					// lobe spans a fraction of one, mu_u = cos compressing the
-					// angular spread by sin theta, so even a sub-bin-wide
-					// uniform window overstates its spread on the edge).
-					for( int q = 0; q < kLobeSubBins / kLobeN; ++q ) {
-						const int    ks  = k * ( kLobeSubBins / kLobeN ) + q;
-						const std::size_t sa = ( (std::size_t)ia * kLobeN + j ) * kLobeSubBins + ks;
-						const std::size_t sb = ( (std::size_t)( ia + 1 ) * kLobeN + j ) * kLobeSubBins + ks;
-						const Scalar u0 = T.s0[sa] + ( T.s0[sb] - T.s0[sa] ) * fa;
-						if( !( u0 > Scalar(0) ) ) continue;
-						const Scalar u5 = T.s5[sa] + ( T.s5[sb] - T.s5[sa] ) * fa;
-						const Scalar um = T.sm[sa] + ( T.sm[sb] - T.sm[sa] ) * fa;
-						Scalar ph, pv;
-						pointWeights( um / u0 + dmu, ph, pv );
-						og0 += wv * u0 * ph;  og5 += wv * u5 * ph;
-						oe0 += wv * u0 * pv;  oe5 += wv * u5 * pv;
-					}
+				// The node's sub-bins, each its mass spread over its own
+				// measured width (a sub-bin is 1/256 wide; near normal
+				// incidence a narrow lobe spans a fraction of one, mu_u =
+				// cos compressing the angular spread by sin theta, so a
+				// sub-bin-WIDE window would overstate its spread on the
+				// edge -- its own variance does not).
+				const SubBins& sbn = subBinsFor( j );
+				Scalar a0 = 0, a5 = 0, c0 = 0, c5 = 0;
+				for( int q = 0; q < sbn.n; ++q ) {
+					const Scalar c = sbn.mc[q] + dmu;
+					Scalar ph, pv;
+					W.Window( c - sbn.hw[q], c + sbn.hw[q], ph, pv );
+					a0 += sbn.u0[q] * ph;  a5 += sbn.u5[q] * ph;
+					c0 += sbn.u0[q] * pv;  c5 += sbn.u5[q] * pv;
 				}
+				og0 += wv * a0;  og5 += wv * a5;
+				oe0 += wv * c0;  oe5 += wv * c5;
 			}
-		};
-		auto nodeLerp = []( const Scalar* arr, const Scalar mu ) {
-			Scalar xi = mu * Scalar(kLobeN) - Scalar(1);
-			xi = r_min( r_max( xi, Scalar(0) ), Scalar(kLobeN - 1) );
-			const int    i = r_min( (int)xi, kLobeN - 2 );
-			const Scalar f = xi - Scalar(i);
-			return arr[i] + ( arr[i + 1] - arr[i] ) * f;
 		};
 		const bool patched = alpha < kPatchAlphaMax;
 		for( int p = 0; p < kPatchN; ++p ) {
-			const Scalar mp = r_min( LobePatchNode( muCrit, p ), Scalar(1) );
+			const Scalar mp = LobePatchNode( muCrit, p );
 			if( patched ) {
 				shiftedSum( mp, b.pg0[p], b.pg5[p], b.pe0[p], b.pe5[p] );
 			} else {
-				b.pg0[p] = nodeLerp( b.g0, mp );  b.pg5[p] = nodeLerp( b.g5, mp );
-				b.pe0[p] = nodeLerp( b.e0, mp );  b.pe5[p] = nodeLerp( b.e5, mp );
+				b.pg0[p] = LobeNodeLerp( b.g0, mp );  b.pg5[p] = LobeNodeLerp( b.g5, mp );
+				b.pe0[p] = LobeNodeLerp( b.e0, mp );  b.pe5[p] = LobeNodeLerp( b.e5, mp );
 			}
 		}
 		if( patched ) {
 			// Join the view-node arrays continuously at the patch's far end
-			// (a correction growing as s^2 from 0 at mu_c).
+			// (a correction growing as s^2 from 0 at mu_c) -- DL-426: for
+			// every eta, through the node arrays' extrapolation when mu_c + W
+			// lies past normal incidence (it was skipped there, a step in eta
+			// at ~2.874).
 			const Scalar muE = muCrit + kPatchW;
-			if( muE <= Scalar(1) ) {
-				const Scalar d0 = nodeLerp( b.g0, muE ) - b.pg0[kPatchN - 1];
-				const Scalar d5 = nodeLerp( b.g5, muE ) - b.pg5[kPatchN - 1];
-				const Scalar f0 = nodeLerp( b.e0, muE ) - b.pe0[kPatchN - 1];
-				const Scalar f5 = nodeLerp( b.e5, muE ) - b.pe5[kPatchN - 1];
-				for( int p = 0; p < kPatchN; ++p ) {
-					const Scalar s  = Scalar(p) / Scalar(kPatchN - 1);
-					const Scalar s2 = s * s;
-					b.pg0[p] += d0 * s2;  b.pg5[p] += d5 * s2;
-					b.pe0[p] += f0 * s2;  b.pe5[p] += f5 * s2;
-				}
+			const Scalar d0 = LobeNodeLerp( b.g0, muE ) - b.pg0[kPatchN - 1];
+			const Scalar d5 = LobeNodeLerp( b.g5, muE ) - b.pg5[kPatchN - 1];
+			const Scalar f0 = LobeNodeLerp( b.e0, muE ) - b.pe0[kPatchN - 1];
+			const Scalar f5 = LobeNodeLerp( b.e5, muE ) - b.pe5[kPatchN - 1];
+			for( int p = 0; p < kPatchN; ++p ) {
+				const Scalar sp = Scalar(p) / Scalar(kPatchN - 1);
+				const Scalar s2 = sp * sp;
+				b.pg0[p] += d0 * s2;  b.pg5[p] += d5 * s2;
+				b.pe0[p] += f0 * s2;  b.pe5[p] += f5 * s2;
 			}
 		}
 
-		// Hemispherical integrals on the sub-grid, against the arrays
-		// looked up exactly as LobeDirection reads them.
+		// Hemispherical integrals 2 INT (.) mu dmu against the arrays
+		// looked up exactly as LobeDirection reads them.  DL-426: split at
+		// mu_c -- midpoints uniform in mu below it, uniform in the outer
+		// cosine t above it (dmu = t dt / (eta^2 mu)), so the square-root
+		// edge of Psi at mu_c is resolved by construction and the nodes
+		// move continuously with eta.  (Pre-DL-426 the 1/256 cells within
+		// 2.5 cells of mu_c were sub-sampled with exact weights: a rule
+		// that switched cells as mu_c moved.)
 		auto interp = []( const Scalar* arr, const Scalar mu ) {
 			Scalar xi = mu * Scalar(kLobeN) - Scalar(1);
 			xi = r_min( r_max( xi, Scalar(0) ), Scalar(kLobeN - 1) );
@@ -888,25 +1127,25 @@ namespace
 			const Scalar f = xi - Scalar(i);
 			return arr[i] + ( arr[i + 1] - arr[i] ) * f;
 		};
-		// The fine cells next to mu_c are SUB-SAMPLED with the exact weights:
-		// Psi rises from 0 at mu_c with a square-root edge that steepens as
-		// eta -> 1 (most of it inside one 1/256 cell at eta 1.06), so one
-		// midpoint sample there misjudges G -- the out-coupling's
-		// normalisation -- and a lossless metal read 1.034 at 86 deg.
 		b.Q0 = b.Q5 = b.E0 = b.E5 = b.G0 = b.G5 = b.H0 = b.H5 = 0;
-		const int kCellSub = 16;
-		for( int i = 0; i < nS; ++i ) {
-			const Scalar center = ( Scalar(i) + Scalar(0.5) ) / Scalar(nS);
-			const bool   crit   = std::fabs( center - muCrit ) < Scalar(2.5) / Scalar(nS);
-			const int    m      = crit ? kCellSub : 1;
-			const Scalar sM     = Scalar(1) - MicrofacetEnergyLUT::LookupEssG2( center, alpha );
-			for( int q = 0; q < m; ++q ) {
-				const Scalar mu = crit ? ( Scalar(i) + ( Scalar(q) + Scalar(0.5) ) / Scalar(m) ) / Scalar(nS) : center;
-				const Scalar wq = Scalar(2) * mu / ( Scalar(nS) * Scalar(m) );
-				Scalar ph = phiS[i], pv = psiS[i];
-				if( crit ) {
-					fineExact( mu, ph, pv );
+		const int kQA = 128, kQB = 192;
+		for( int seg = 0; seg < 2; ++seg ) {
+			const int nq = seg ? kQB : kQA;
+			if( seg == 0 && !( muCrit > Scalar(0) ) ) continue;
+			for( int q = 0; q < nq; ++q ) {
+				const Scalar u = ( Scalar(q) + Scalar(0.5) ) / Scalar(nq);
+				Scalar mu, wq;
+				if( seg == 0 ) {
+					mu = muCrit * u;
+					wq = Scalar(2) * mu * muCrit / Scalar(nq);
+				} else {
+					// t = u; mu = sqrt(t^2 + eta^2 - 1) / eta; 2 mu dmu = 2 t dt / eta^2
+					mu = sqrt( r_max( Scalar(0), u * u + eta * eta - Scalar(1) ) ) / eta;
+					wq = Scalar(2) * u / ( eta * eta * Scalar(nq) );
 				}
+				Scalar ph, pv;
+				pointWeights( mu, ph, pv );
+				const Scalar sM = Scalar(1) - MicrofacetEnergyLUT::LookupEssG2( mu, alpha );
 				const Scalar r0 = interp( p0, mu ), r5 = interp( p5, mu );
 				b.Q0 += wq * r0 * ph;  b.Q5 += wq * r5 * ph;
 				b.E0 += wq * r0 * pv;  b.E5 += wq * r5 * pv;
@@ -1003,7 +1242,6 @@ namespace
 			out.g5[j] = mix( c00.g5[j], c01.g5[j], c10.g5[j], c11.g5[j] );
 			out.e0[j] = mix( c00.e0[j], c01.e0[j], c10.e0[j], c11.e0[j] );
 			out.e5[j] = mix( c00.e5[j], c01.e5[j], c10.e5[j], c11.e5[j] );
-			out.phi[j] = out.psi[j] = Scalar(0);		// build-time only; unused by evaluation
 		}
 		// The patch arrays are anchored to mu_c, which is linear in this
 		// blend's eta coordinate: blending them index-wise blends aligned
@@ -1036,7 +1274,6 @@ namespace
 		for( int j = 0; j < kLobeN; ++j ) {
 			out.g0[j] = mix( b0.g0[j], b1.g0[j] );  out.g5[j] = mix( b0.g5[j], b1.g5[j] );
 			out.e0[j] = mix( b0.e0[j], b1.e0[j] );  out.e5[j] = mix( b0.e5[j], b1.e5[j] );
-			out.phi[j] = b0.phi[j];  out.psi[j] = b0.psi[j];		// alpha-independent
 		}
 		for( int p = 0; p < kPatchN; ++p ) {
 			out.pg0[p] = mix( b0.pg0[p], b1.pg0[p] );  out.pg5[p] = mix( b0.pg5[p], b1.pg5[p] );

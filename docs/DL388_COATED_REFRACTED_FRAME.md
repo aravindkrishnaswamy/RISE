@@ -263,6 +263,13 @@ basis build).  One-time: the two tables build in 16 ms on the first coated-GGX e
   (it sums to 1 however the reservoir equilibrates); that is the
   energy-gain part section 8 fixed.
 * **DL-417** -- fabric and weave substrates keep the outer-frame model.
+  Measured 2026-10-08 (`CompositeEnergyConservationTest` K8, coated /
+  composite): grey-base fabric 1.04 / 1.10 at 45 / 70 deg, weaves 0.82-1.08.
+  The refracted frame with the cosine reservoir was tried and rejected (a
+  lossless white fabric 1.054, weaves up to 1.40 under a clear coat: their
+  first bounce escapes far more than a Lambertian's `1 - r_i` share, which
+  `1 / (1 - r_i R)` amplifies); the fix needs the lobe reservoir's own `g`
+  for a fibre BSDF.  K8 pins the residual.
 * Approximations inside the GGX summary (recycled term only; the single
   bounce is the substrate's own `value`): anisotropic roughness uses
   `sqrt(alphaX alphaY)`; conductor / thin-film Fresnel is projected on the
@@ -397,3 +404,74 @@ evaluation.  An absorbing coat whose roughness leaves its roughness cell
 pays a node build (8.6 us, or ~22 us below roughness 0.25 where the patch
 is built).
 
+
+## 9. DL-426 -- the lobe basis is continuous in eta (2026-10-08)
+
+The GGX lobe basis (`BuildLobeBasis`) was a DISCONTINUOUS function of the
+relative coat index; three causes, each a rule keyed on the critical cosine
+`mu_c(eta)` or a quadrature artifact that `mu_c` swept across:
+
+* **Point masses in the spill table.**  The 32 x 32 VNDF strata are a
+  deterministic midpoint quadrature, and at a normal view every azimuth
+  stratum of one radial ring reflects to the SAME `mu_u`: the table held
+  point masses of up to 1/32 of the lobe in its tail (2.8 % of an alpha .1
+  lobe at `mu_u` 0.16646).  `Phi` has a square-root edge at `mu_c`, so as
+  `mu_c` crossed such a point the priced return moved with infinite slope:
+  the recycled term jumped 14 % (value 0.24 %) over delta-eta 1e-5 at
+  alpha 0.1, eta 1.01415.  Each stratum's mass is now spread as a uniform
+  CENTRED on its sample with the stratum's linearised spread (from the
+  neighbouring strata's samples: periodic in `u1`, the VNDF's azimuth,
+  one-sided at the two ends of `u2`, its polar coordinate -- not from the
+  stratum's corners, which reach the cap's rim at `u2 -> 1` and overstated
+  the tail by 1.5 % in K5), and the table stores each sub-bin's second
+  moment.  A uniform window that straddles `mu_c` is an accepted
+  approximation (it matches the mass's first two moments, not its shape,
+  on either side of the edge); what it buys is a price continuous in the
+  window and in eta.
+* **Rules that switched with eta.**  The three bins around `mu_c` were
+  priced by a window whose half-width was clamped to the centroid's distance
+  from the bin edge, the rest at their centroid; `pointWeights` read exact
+  Fresnel within 2/256 of `mu_c` and a fine grid elsewhere; the
+  hemispherical integrals sub-sampled the cells within 2.5/256 of `mu_c`.
+  All three are now one rule for every eta: the coat's weights are ONE
+  piecewise-linear table (`CoatWeightTable`) whose nodes are uniform in
+  `mu` below `mu_c` and uniform in the OUTER cosine `t` above it (the
+  square-root edge is the change of variables, not a property of the
+  weights, so the table is exact at the edge for every eta); every bin and
+  sub-bin is priced as a uniform of its own measured spread, averaged
+  exactly through the table's cumulative integral; the integrals are split
+  at `mu_c` (midpoints in `mu` below, in `t` above, `2 mu dmu = 2 t dt /
+  eta^2`).
+* **The critical patch's far end.**  The join to the node arrays was skipped
+  once `mu_c + W` passed 1 (eta ~2.874; the clear table also stepped 1.9 %
+  there); it is now always applied through the node arrays' linear
+  extrapolation, and the patch's last cell ends on the NODE interpolant's
+  own value at `mu_c + W`, so the clear table's index-wise eta blend of
+  patches anchored to different `mu_c` hands off continuously too.
+
+Red-proof `tests/CoatedEtaContinuityTest.cpp` (dense eta sweeps of
+`value` (RGB channels 0 and 2 of a chromatic F0) and `valueNM` (550 and
+450 nm) at fixed directions, absorbing and clear, alpha .002-.3, the
+reported windows plus a mid-range 1.25-1.75 net; worst adjacent step <=
+max(0.001 %, 20 x the median step)): master 40 passed / 20 failed, fix
+60 / 0.  `CompositeEnergyConservationTest --coated-only` K1-K8 all pass;
+K5 gained a clear-coat white-furnace row at eta 2.87 (0.998-1.010 at
+0-80 deg), and K5b compares an absorbing eta-1.0145 coat over GGX F0 .9
+alpha .1 with the composite (1.002 / 0.999 / 1.005 at 0 / 60 / 80 deg --
+a consistency pin, green on master too: the moved component is a few per
+cent of the small recycled term, below an albedo's noise).  Values move
+where the old point masses sat: `value` at alpha .1 / view 80 / light 0
+reads 3.8 % lower than master below the old step (eta 1.0136) and 9.2 %
+lower above it (eta 1.0147) -- the spike over-priced its TIR return.
+
+Shipped coated-over-GGX scenes (PT pel, OIDN off, 4 salted renders per
+build, the same salts and the same object mask in both, Rec.709
+luminance, mean +- se): `lacquer_and_rain_still_life` at 320 x 180 / 96
+spp, `mat_worn_lacquer_brass` region 0.159141 +- 0.000135 -> 0.159121 +-
+0.000140 (-0.01 %); `tidal_stones` at 400 x 300 / 32 spp, `mat_stone`
+region 0.0867268 +- 0.0000036 -> 0.0867217 +- 0.0000045 (-0.006 %).  No
+resolvable change.
+
+Cost (same machine, master -> fix): an absorbing-coat basis build 22 ->
+48 us; the once-per-process tables 33 -> 85 ms (spill 9 -> 21 ms, clear
+table 24 -> 64 ms); a clear-coat `value` unchanged (186 -> 187 ns).
