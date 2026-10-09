@@ -135,7 +135,8 @@ namespace
         // an unrefreshed nested exterior breaks it; extended replays the stack.
         struct Case { const char* label; double nb, ne; unsigned nw; bool hwss; };
         for( const Case& c : { Case{"450nm",450,450.01,1,false}, Case{"650nm",650,650.01,1,false},
-                               Case{"hwss-vs-nohwss 450-650",450,650,4,true} } ) {
+                               Case{"hwss-vs-nohwss 450-650 nw4 (UNMATCHED quadrature, DL-456 contrast)",450,650,4,true},
+                               Case{"hwss-vs-nohwss 450-650 nw160 (matched quadrature)",450,650,160,true} } ) {
             if( hwssOnly && !c.hwss ) continue;
             for( const char* mode : {"snell","uniform","extended"} ) {
                 const unsigned spp = std::string(mode)=="extended" ? 512 : 256;
