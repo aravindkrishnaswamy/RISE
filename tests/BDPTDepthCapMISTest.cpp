@@ -42,8 +42,35 @@
 //  Every row is a mean over salted randomized-QMC replicates of ONE loaded
 //  scene (SobolSamplerTestHooks), so the sd includes the QMC error.
 //
-//  Informational (printed, not gated): VCM at (1,1) on Row A's box --
-//    VCM's recurrence MIS is still cap-blind (DL-467).
+//  DL-467: VCM's recurrence MIS must honour the same caps.  Its running
+//    quantities reserved density for every strategy whatever the caps, so
+//    at (1,1) on Row A's box VCM read 0.0643 against BDPT's cap-invariant
+//    0.0839.  Now VCM gets the same rows: Row A at the same (a, b) splits,
+//    gated against each other AND against BDPT's group mean (VCM is
+//    balance-heuristic, BDPT power-2, so only the estimated integral is
+//    shared), and Row B's fog box (whose delta shell turns merging on, so
+//    the merge weights' windows are exercised too).
+//
+//  DL-467 (3): PT's per-type caps.  At a vertex whose BSDF continuation
+//    would exceed `max_diffuse_bounce`, PT used to DROP the continuation
+//    while NEE there kept its MIS weight against it, losing the
+//    BSDF-sampled share of that vertex's direct light.  The capped
+//    continuation is now traced for its MIS-weighted emission only.  In
+//    Row A's all-Lambertian box, PT at max_diffuse_bounce N then estimates
+//    exactly the paths of at most N + 1 surfaces -- BDPT's (N + 1, 0):
+//
+//      Row C  PT max_diffuse_bounce 0 / 1 / 2  ==  BDPT (1,0) / (2,0) / (3,0).
+//
+//    Row C barely discriminates: its 1 x 1 emitter is small, so the
+//    power heuristic gives the BSDF-sampled hit almost no weight and the
+//    lost share is ~0.03 %.  The discriminating row is one where BSDF
+//    sampling dominates:
+//
+//      Row D  a lone Lambertian quad (albedo 0.8) under a uniform unit
+//             environment, filling the frame: nothing can interreflect, so
+//             the image is 0.8 at EVERY max_diffuse_bounce, including 0.
+//             Gated on RGB PT (closed form) and on spectral PT with
+//             `hwss TRUE` (max_diffuse_bounce 0 == unlimited).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -257,6 +284,9 @@ static void RowA()
 	const Cfg sum2[] = { { 2, 0, "BDPT (2,0)" }, { 1, 1, "BDPT (1,1)" }, { 0, 2, "BDPT (0,2)" } };
 	const Cfg sum3[] = { { 3, 0, "BDPT (3,0)" }, { 2, 1, "BDPT (2,1)" }, { 1, 2, "BDPT (1,2)" } };
 	unsigned int seed = 3510u;
+	double bdptGroupMean[2] = { 0, 0 };
+	Stats bdptRef[2];
+	int g = 0;
 	for( const auto* group : { sum2, sum3 } ) {
 		Stats st[3];
 		for( int k = 0; k < 3; k++ ) {
@@ -269,12 +299,35 @@ static void RowA()
 			Check( Agree( st[0], st[k], 4.0, 0.01 ),
 				std::string( group[k].label ) + " agrees with " + group[0].label + " (same a + b)" );
 		}
+		bdptGroupMean[g] = ( st[0].mean + st[1].mean + st[2].mean ) / 3.0;
+		bdptRef[g] = st[0];
+		g++;
 	}
 
-	// Informational: VCM at (1,1).  VCM's recurrence MIS is still
-	// cap-blind (DL-467), so it is printed, not gated.
-	const Stats vcm = RenderStatsSalted( BoxScene( VCMChunk( 1, 1, spp ) ), n, seed );
-	Print( "VCM (1,1) [info, DL-467]", vcm );
+	// DL-467: VCM over the same splits.
+	const Cfg vsum2[] = { { 2, 0, "VCM (2,0)" }, { 1, 1, "VCM (1,1)" }, { 0, 2, "VCM (0,2)" } };
+	const Cfg vsum3[] = { { 3, 0, "VCM (3,0)" }, { 2, 1, "VCM (2,1)" }, { 1, 2, "VCM (1,2)" } };
+	g = 0;
+	for( const auto* group : { vsum2, vsum3 } ) {
+		Stats st[3];
+		for( int k = 0; k < 3; k++ ) {
+			st[k] = RenderStatsSalted( BoxScene( VCMChunk( group[k].a, group[k].b, spp ) ), n, seed );
+			seed += 100u;
+			Check( st[k].ok, std::string( group[k].label ) + ": rendered" );
+			Print( group[k].label, st[k] );
+		}
+		for( int k = 1; k < 3; k++ ) {
+			Check( Agree( st[0], st[k], 4.0, 0.01 ),
+				std::string( group[k].label ) + " agrees with " + group[0].label + " (same a + b)" );
+		}
+		for( int k = 0; k < 3; k++ ) {
+			Stats ref = bdptRef[g];
+			ref.mean = bdptGroupMean[g];
+			Check( Agree( st[k], ref, 4.0, 0.015 ),
+				std::string( group[k].label ) + " agrees with BDPT at the same a + b" );
+		}
+		g++;
+	}
 
 	// The DEFAULT caps (8, 8) against PT (fixed 128) are informational:
 	// paths past 16 surfaces carry ~0.3 % here.  At (32, 32) BDPT must
@@ -322,6 +375,10 @@ static std::string FogRasterizer( const char* kind, unsigned int eyeDepth, unsig
 	char buf[512];
 	if( std::string( kind ) == "pt" ) {
 		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples 32\n" );
+	} else if( std::string( kind ) == "vcm" ) {
+		std::snprintf( buf, sizeof(buf),
+			"vcm_pel_rasterizer\n{\n\tmax_eye_depth %u\n\tmax_light_depth %u\n\tsamples 32\n",
+			eyeDepth, lightDepth );
 	} else {
 		std::snprintf( buf, sizeof(buf),
 			"bdpt_pel_rasterizer\n{\n\tmax_eye_depth %u\n\tmax_light_depth %u\n\tsamples 32\n",
@@ -356,13 +413,152 @@ static void RowB()
 	const Stats pt = RenderStatsSalted( FogBoxScene( FogRasterizer( "pt", 0, 0 ) ), n, seed );
 	Print( "PT", pt );
 	Check( pt.ok && Agree( st[3], pt, 4.0, 0.0 ), "BDPT (20,20) agrees with PT within 4 combined se" );
+
+	// DL-467: VCM over the same sweep.  The shell is a delta surface, so
+	// merging is live here.  VCM's sd is larger (merging is consistent,
+	// not unbiased), hence the wider relative floor.
+	seed += 100u;
+	Stats vst[4];
+	for( int k = 0; k < 4; k++ ) {
+		vst[k] = RenderStatsSalted( FogBoxScene( FogRasterizer( "vcm", 20, lightDepths[k] ) ), n, seed );
+		seed += 100u;
+		char label[64];
+		std::snprintf( label, sizeof(label), "VCM (20,%u)", lightDepths[k] );
+		Check( vst[k].ok, std::string( label ) + ": rendered" );
+		Print( label, vst[k] );
+	}
+	for( int k = 0; k < 3; k++ ) {
+		char label[96];
+		std::snprintf( label, sizeof(label), "VCM (20,%u) agrees with (20,20)", lightDepths[k] );
+		Check( Agree( vst[k], vst[3], 4.0, 0.02 ), label );
+	}
+	Check( pt.ok && Agree( vst[3], pt, 4.0, 0.02 ), "VCM (20,20) agrees with PT" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row C (DL-467): PT max_diffuse_bounce N == BDPT (N+1, 0) on Row A's box.
+//////////////////////////////////////////////////////////////////////
+static void RowC()
+{
+	std::cout << "--- Row C: PT max_diffuse_bounce N vs BDPT (N+1, 0), closed Lambertian box ---" << std::endl;
+	const int n = Repeats();
+	unsigned int seed = 46700u;
+	for( unsigned int N = 0; N <= 2; N++ ) {
+		char buf[512];
+		std::snprintf( buf, sizeof(buf),
+			"pathtracing_pel_rasterizer\n{\n\tsamples 32\n\tmax_diffuse_bounce %u\n"
+			"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", N );
+		const Stats pt = RenderStatsSalted( BoxScene( buf ), n, seed );
+		const Stats bd = RenderStatsSalted( BoxScene( BDPTChunk( N + 1, 0, 32 ) ), n, seed + 50u );
+		seed += 100u;
+		char lp[64], lb[64];
+		std::snprintf( lp, sizeof(lp), "PT max_diffuse_bounce %u", N );
+		std::snprintf( lb, sizeof(lb), "BDPT (%u,0)", N + 1 );
+		Check( pt.ok && bd.ok, std::string( lp ) + ": rendered" );
+		Print( lp, pt );
+		Print( lb, bd );
+		Check( Agree( pt, bd, 4.0, 0.01 ), std::string( lp ) + " agrees with " + lb );
+	}
+
+	// The HWSS loop's emission-only segment ends on this box's BSDF-less
+	// luminaire, where the bundle would otherwise hand each lane to the
+	// NM body: `hwss TRUE` must agree with the per-wavelength NM walk.
+	for( unsigned int N = 0; N <= 1; N++ ) {
+		Stats sp[2];
+		for( int h = 0; h < 2; h++ ) {
+			char buf[512];
+			std::snprintf( buf, sizeof(buf),
+				"pathtracing_spectral_rasterizer\n{\n\tsamples 32\n\tnmbegin 380\n\tnmend 720\n"
+				"\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss %s\n\tmax_diffuse_bounce %u\n"
+				"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", h ? "TRUE" : "FALSE", N );
+			sp[h] = RenderStatsSalted( BoxScene( buf ), n, seed + 10u * unsigned( h ) );
+			char l[64];
+			std::snprintf( l, sizeof(l), "PT spectral hwss %s mdb %u", h ? "TRUE" : "FALSE", N );
+			Print( l, sp[h] );
+		}
+		seed += 100u;
+		char l[96];
+		std::snprintf( l, sizeof(l), "PT spectral mdb %u: hwss TRUE agrees with hwss FALSE", N );
+		Check( sp[0].ok && sp[1].ok && Agree( sp[0], sp[1], 4.0, 0.01 ), l );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row D (DL-467): env-lit lone floor -- max_diffuse_bounce must not matter.
+//////////////////////////////////////////////////////////////////////
+static std::string EnvFloorScene( const std::string& rasterizerBody )
+{
+	std::string s = "RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 3 0.001\n\tlookat 0 0 0\n\tup 0 0 -1\n\tfov 30.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n"
+		"clippedplane_geometry\n{\n\tname floor_quad\n"
+		"\tpta -4 0 -4\n\tptb -4 0 4\n\tptc 4 0 4\n\tptd 4 0 -4\n}\n\n"
+		"standard_object\n{\n\tname obj_floor\n\tgeometry floor_quad\n\tmaterial mat_floor\n}\n\n";
+	s += rasterizerBody;
+	return s;
+}
+
+static std::string EnvFloorPT( bool spectral, unsigned int mdb )
+{
+	std::string s = spectral ?
+		"pathtracing_spectral_rasterizer\n{\n\tsamples 32\n\tnmbegin 380\n\tnmend 720\n"
+		"\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss TRUE\n" :
+		"pathtracing_pel_rasterizer\n{\n\tsamples 32\n";
+	if( mdb != 0xFFFFFFFFu ) {
+		char buf[64];
+		std::snprintf( buf, sizeof(buf), "\tmax_diffuse_bounce %u\n", mdb );
+		s += buf;
+	}
+	s += "\tpixel_filter box\n\toidn_denoise FALSE\n"
+	     "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n}\n\n";
+	return s;
+}
+
+static void RowD()
+{
+	std::cout << "--- Row D: env-lit lone Lambertian floor, max_diffuse_bounce must not matter ---" << std::endl;
+	const int n = Repeats();
+	unsigned int seed = 46800u;
+	const unsigned int mdbs[] = { 0, 1, 0xFFFFFFFFu };
+	Stats pel[3], spec[3];
+	for( int k = 0; k < 3; k++ ) {
+		char lp[64], ls[64];
+		if( mdbs[k] == 0xFFFFFFFFu ) {
+			std::snprintf( lp, sizeof(lp), "PT unlimited" );
+			std::snprintf( ls, sizeof(ls), "PT spectral hwss unlimited" );
+		} else {
+			std::snprintf( lp, sizeof(lp), "PT max_diffuse_bounce %u", mdbs[k] );
+			std::snprintf( ls, sizeof(ls), "PT spectral hwss mdb %u", mdbs[k] );
+		}
+		pel[k] = RenderStatsSalted( EnvFloorScene( EnvFloorPT( false, mdbs[k] ) ), n, seed );
+		spec[k] = RenderStatsSalted( EnvFloorScene( EnvFloorPT( true, mdbs[k] ) ), n, seed + 50u );
+		seed += 100u;
+		Check( pel[k].ok && spec[k].ok, std::string( lp ) + ": rendered" );
+		Print( lp, pel[k] );
+		Print( ls, spec[k] );
+		Stats closed = { 0.8, 0, n, true };
+		Check( Agree( pel[k], closed, 4.0, 0.005 ), std::string( lp ) + " equals the closed form 0.8" );
+	}
+	for( int k = 0; k < 2; k++ ) {
+		Check( Agree( spec[k], spec[2], 4.0, 0.005 ),
+			std::string( "PT spectral hwss mdb " ) + ( k == 0 ? "0" : "1" ) + " agrees with unlimited" );
+	}
 }
 
 int main()
 {
-	std::cout << "BDPTDepthCapMISTest (DL-351)" << std::endl;
-	RowA();
-	RowB();
+	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467)" << std::endl;
+	// RISE_DL351_ROWS (e.g. "CD") runs a subset; default all.
+	const char* rows = std::getenv( "RISE_DL351_ROWS" );
+	const std::string sel = rows ? rows : "ABCD";
+	if( sel.find( 'A' ) != std::string::npos ) RowA();
+	if( sel.find( 'B' ) != std::string::npos ) RowB();
+	if( sel.find( 'C' ) != std::string::npos ) RowC();
+	if( sel.find( 'D' ) != std::string::npos ) RowD();
 	std::cout << std::endl << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;
 }
