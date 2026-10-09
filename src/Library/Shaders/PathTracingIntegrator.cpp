@@ -1941,6 +1941,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// so PART 1 can still keep a hit SMS does not reach.
 	bool smsGuardedEmission = false;
 
+	// DL-467: the previous vertex's BSDF-sampled continuation was past a
+	// per-type bounce cap (`max_diffuse_bounce` & co.) and is traced for
+	// its MIS-weighted EMISSION only -- see PART 3.
+	bool capEmissionOnly = false;
+
 	const LightSampler* pLS = caster.GetLightSampler();
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -2076,6 +2081,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// below are exhaustive.
 				if( scattered )
 				{
+					// DL-467: an emission-only segment ends at a scatter
+					// (the analog no-scatter branches below already weight
+					// the surviving segment by its transmittance).
+					if( capEmissionOnly ) {
+						break;
+					}
 					// Volume scatter event
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
 					const Vector3 wo = currentRay.Dir();
@@ -3011,6 +3022,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 			} // else (not suppressed by SMS)
 			}
+		}
+
+		// DL-467: an emission-only segment (a capped BSDF continuation)
+		// contributes its emitter hit above and nothing else.
+		if( capEmissionOnly ) {
+			break;
 		}
 
 		// ============================================================
@@ -4587,8 +4604,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( bsdfTimesCosVal );
 			rs2.type = PathTracingRayType( *pS );
 
+			// DL-467: a NON-DELTA continuation past a per-type cap is NEE's
+			// MIS partner at this vertex -- NEE above weighted its sample
+			// against this very density -- so dropping it lost the
+			// BSDF-sampled share of the direct light here (a Lambertian
+			// quad under a uniform environment at max_diffuse_bounce 0 read
+			// 0.142 against its closed form 0.8: the uniform env-NEE has little
+			// weight against a cosine BSDF).  It is traced for EMISSION ONLY: the next
+			// iteration adds its MIS-weighted emitter / environment hit and
+			// stops (no NEE, scatter, SSS or medium scatter after it), as
+			// PBRT-v4 and Cycles do.  `max_diffuse_bounce N` therefore means
+			// paths with at most N diffuse continuations, the last vertex's
+			// direct light estimated with full MIS.  A DELTA continuation
+			// has no NEE partner and keeps the plain cut.
 			if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
-				skipContinuation = true;
+				if( pS->isDelta ) {
+					skipContinuation = true;
+				} else if( !skipContinuation ) {
+					capEmissionOnly = true;
+				}
 			}
 
 			// SMS double-count guard: after a delta scatter the next
@@ -5956,6 +5990,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// was also a hardcoded literal 128; see SetMaxPathDepth's doc.
 	const unsigned int maxDepth = EffectivePathTracingMaxDepth( rc, mMaxPathDepth );
 
+	// DL-467: HWSS twin of the Pel/NM loop's flag (see its PART 3).
+	bool capEmissionOnly = false;
+
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
 		smsPendingValidHWSS = false;
@@ -6029,6 +6066,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// handled above), so the three branches are exhaustive.
 				if( scattered )
 				{
+					// DL-467: an emission-only segment ends at a scatter.
+					if( capEmissionOnly ) {
+						break;
+					}
 					// ====================================================
 					// MAIN-LOOP VOLUMETRIC WALK -- HWSS twin.
 					//
@@ -6525,7 +6566,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// always precedes this hand-off; the first hit is a BSDF vertex, but
 		// the chain reaching here need not be ANCHORED by one -- camera ->
 		// polished coat -> glass has no anchor.)
-		if( !pBRDFCur )
+		// DL-467: an emission-only segment needs only PART 1 below, which
+		// is per-wavelength already; the per-lane hand-offs exist for the
+		// transport AFTER this hit, which an emission-only segment does
+		// not have.
+		if( !pBRDFCur && !capEmissionOnly )
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
@@ -6572,6 +6617,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		}
 
 		// Check for SSS mid-path — fall back to per-wavelength
+		if( !capEmissionOnly )
 		{
 			ISubSurfaceDiffusionProfile* pProfile =
 				ri.pMaterial ? ri.pMaterial->GetDiffusionProfile() : 0;
@@ -6830,6 +6876,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				smsLaneAnchorNow[w] = pSolver != 0;
 			}
+		}
+
+		// DL-467: an emission-only segment contributes PART 1 only.
+		if( capEmissionOnly ) {
+			break;
 		}
 
 		// ============================================================
@@ -7273,8 +7324,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		rs2.bsdfMisPdf = misBsdfPdfHW;
 		rs2.type = PathTracingRayType( *pS );
 
+		// DL-467: a non-delta continuation past a per-type cap is traced
+		// for emission only (the Pel/NM loop's PART 3 has the full note).
 		if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
-			skipContinuation = true;
+			if( pS->isDelta ) {
+				skipContinuation = true;
+			} else if( !skipContinuation ) {
+				capEmissionOnly = true;
+			}
 		}
 
 		// DL-295: suppress only a chain SMS can represent (the Pel/NM

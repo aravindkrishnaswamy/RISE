@@ -67,7 +67,22 @@ namespace RISE
 			Scalar dVC;
 			Scalar dVM;
 
-			VCMMisQuantities() : dVCM( 0 ), dVC( 0 ), dVM( 0 ) {}
+			/// DL-467: the affine step that produced THIS record's (dVC,
+			/// dVM) from the PREVIOUS record of the same subpath array
+			/// (ConvertLightSubpath / ConvertEyeSubpath stamp every
+			/// record):  dVC_i = xf * dVC_{i-1} + xgVC,  dVM_i = xf *
+			/// dVM_{i-1} + xgVM.  dVC and dVM share the multiplier (every
+			/// update scales them alike) and dVCM never depends on them,
+			/// so replaying these steps from a record whose dVC / dVM are
+			/// zeroed drops exactly the MIS terms of the strategies that
+			/// lie past that record -- the depth-cap window
+			/// (VCMIntegrator.cpp, "DL-467").  Not read by the ordinary
+			/// weights; 0 on a record nobody stamped.
+			Scalar xf;
+			Scalar xgVC;
+			Scalar xgVM;
+
+			VCMMisQuantities() : dVCM( 0 ), dVC( 0 ), dVM( 0 ), xf( 0 ), xgVC( 0 ), xgVM( 0 ) {}
 		};
 
 		/// Per-iteration constants shared by all subpaths.  Derived
@@ -94,6 +109,83 @@ namespace RISE
 				mEnableVC( true ),
 				mEnableVM( true )
 			{}
+		};
+
+		/// DL-467: accumulates the affine (dVC, dVM) step between two
+		/// records while the recurrence runs.  Each Compose* mirrors the
+		/// corresponding Apply* below branch for branch.
+		struct VCMTransfer
+		{
+			Scalar f;
+			Scalar gVC;
+			Scalar gVM;
+
+			VCMTransfer() : f( 1 ), gVC( 0 ), gVM( 0 ) {}
+
+			/// The state was overwritten by a value independent of the
+			/// previous record (an entry barrier / onward update).
+			void Reset( const VCMMisQuantities& q )
+			{
+				f = 0;
+				gVC = q.dVC;
+				gVM = q.dVM;
+			}
+
+			/// Mirrors ApplyGeometricUpdate.
+			void ComposeGeometric( const Scalar absCosThetaFix )
+			{
+				if( absCosThetaFix > 0 ) {
+					const Scalar invCos = Scalar( 1 ) / absCosThetaFix;
+					f *= invCos;
+					gVC *= invCos;
+					gVM *= invCos;
+				} else {
+					f = 0;
+					gVC = 0;
+					gVM = 0;
+				}
+			}
+
+			/// Mirrors ApplyBsdfSamplingUpdate; `qBefore` is the state the
+			/// update is applied to (its dVCM enters the constant part).
+			void ComposeBsdf(
+				const VCMMisQuantities& qBefore,
+				const Scalar cosThetaOut,
+				const Scalar bsdfDirPdfW,
+				const Scalar bsdfRevPdfW,
+				const bool specular,
+				const VCMNormalization& norm
+				)
+			{
+				if( specular ) {
+					f *= cosThetaOut;
+					gVC *= cosThetaOut;
+					gVM *= cosThetaOut;
+					return;
+				}
+				if( bsdfDirPdfW <= 0 ) {
+					f = 0;
+					gVC = 0;
+					gVM = 0;
+					return;
+				}
+				const Scalar factor = cosThetaOut * ( Scalar( 1 ) / bsdfDirPdfW );
+				const Scalar mul = factor * bsdfRevPdfW;
+				f *= mul;
+				gVC = mul * gVC + factor * ( qBefore.dVCM + norm.mMisVmWeightFactor );
+				gVM = mul * gVM + factor * ( qBefore.dVCM * norm.mMisVcWeightFactor + Scalar( 1 ) );
+			}
+
+			/// Write the accumulated step into a record and start over.
+			void StampAndRestart( VCMMisQuantities& q )
+			{
+				q.xf = f;
+				q.xgVC = gVC;
+				q.xgVM = gVM;
+				f = 1;
+				gVC = 0;
+				gVM = 0;
+			}
 		};
 
 		/// Compute the per-iteration normalization constants.
