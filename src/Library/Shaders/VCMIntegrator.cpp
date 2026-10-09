@@ -1874,7 +1874,7 @@ namespace
 
 		// DL-317 / DL-380: the by-path subsurface partition, per vertex.
 		static thread_local BDPTUtilities::LightJumpPartition partition;
-		partition.Build( lightVerts, MergingActive( norm ) );
+		partition.Build( lightVerts, MergingActive( norm ), VCMIntegrator::SeeThroughLive( caster ) );	// DL-424: the see-through NEE is an eye-family witness
 		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
 		for( std::size_t i = 0; i < lightVerts.size(); i++ )
 		{
@@ -2167,7 +2167,7 @@ namespace
 
 		// DL-317 / DL-380: the by-path subsurface partition, per strategy.
 		static thread_local BDPTUtilities::LightJumpPartition partition;
-		partition.Build( lightVerts, MergingActive( norm ) );
+		partition.Build( lightVerts, MergingActive( norm ), VCMIntegrator::SeeThroughLive( caster ) );	// DL-424: the see-through NEE is an eye-family witness
 		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
 		static thread_local std::vector<unsigned int> eyeSurface;	// eye-walk surface count of eyeVerts[0..j]
 		eyeSurface.assign( eyeVerts.size(), 0u );
