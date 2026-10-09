@@ -3,10 +3,13 @@
 #define main WeaveGapSuiteMain
 #include "WeaveGapShadowTransmittanceTest.cpp"
 #undef main
-int main(int argc, char** argv)
+int RunLegacyCoverageMeasurement(int argc, char** argv)
 {
     const std::string mode=argc>1?argv[1]:"uniform";
     const unsigned spp=argc>2?std::strtoul(argv[2],nullptr,10):512;
+    bool failed=false;
+    const bool gate=argc>3;
+    const bool firstOnly=argc>4 && std::string(argv[4])=="first-reflection";
     for(int kind: {0,1,2}) {
         std::vector<double> on,off;
         for(unsigned t=0;t<4;++t) {
@@ -26,6 +29,16 @@ int main(int argc, char** argv)
         std::cout<<"DL339 mode="<<mode<<" kind="<<kind<<" SMS="<<a<<" PT="<<b<<" ratio="<<a/b
             <<" 3sigma_abs="<<3*std::sqrt(va+vb)<<std::endl;
         if(!(b>0&&a>=0)) return 1;
+        // DL-339's first-reflection proof cannot cover the dielectric's
+        // T-R-... families. Keep that aggregate as a residual measurement.
+        if(gate && !(firstOnly && kind==2) && std::fabs(a-b)>3*std::sqrt(va+vb)) {
+            std::cerr << "FAIL: DL-339 uncovered uniform reflection kind=" << kind << std::endl;
+            failed=true;
+        }
     }
-    return 0;
+    return failed?1:0;
 }
+
+#ifndef SMS_COVERAGE_NO_MAIN
+int main(int argc,char** argv) { return RunLegacyCoverageMeasurement(argc,argv); }
+#endif

@@ -1908,12 +1908,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// (anchor, emitter point), PART 1 suppresses an anchored caster chain's
 	// emitter hit only if SMS's own seed + solve from the anchor reaches
 	// it, and keeps it at full weight otherwise; `smsChain` carries the
-	// anchor (the inputs PART 2 gave SMS) and the delta chain since it.  In
-	// every other mode it stays disengaged and today's rule applies.  An
+	// anchor (the inputs PART 2 gave SMS) and the delta chain since it.
+	// DL-339 also records stochastic legacy chains for a conservative
+	// first-reflection impossibility proof; unknown classes keep the rule. An
 	// anchor inherited from a caller without a record (a medium hand-off)
 	// leaves `anchorValid` false: today's rule again.
 	const bool bSMSSplit = bSMSEnabled &&
-		pSolver->SplitSuppressionExact( caster, !Traits::is_pel );
+		pSolver->NeedsLegacyChainRecord( caster, !Traits::is_pel );
 	// Extended SMS (Phase 3): every anchor this loop evaluates is an
 	// extended anchor (eligibility already gates `smsCurrentAnchor`), so
 	// its area-emitter hits are partitioned by the canonical ownership
@@ -5960,7 +5961,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// and closes DL-378 there: the body's own emitter hits and the NM
 	// delegations are classified per lane.
 	std::optional<SMSChainRecord> smsChainHWSS;
-	if( pSolver && ( bSMSExtendedLoopHW || pSolver->SplitSuppressionExact( caster, true ) ) ) {
+	if( pSolver && ( bSMSExtendedLoopHW || pSolver->NeedsLegacyChainRecord( caster, true ) ) ) {
 		smsChainHWSS.emplace();
 	}
 	bool smsPendingValidHWSS = false;
@@ -6752,8 +6753,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			}
             else if(pEmitter && !soloSuppressEmissionHW && smsChainHWSS
                 && bSMSEnabled && bPassedThroughSpecular && bSMSAnchor && !bSMSChainUncovered) {
-                // Legacy deterministic Snell ownership is wavelength-specific,
-                // just as in the NM body. Unknown retains suppress-all.
+                // Legacy ownership is wavelength-specific, as in NM;
+                // DL-339 also keeps provably unseeded first reflections.
+                // Unknown retains suppress-all.
                 emissionGateHW=considerEmission || smsGuardedEmissionHW;
                 if(emissionGateHW) {
                     const IGeometry* geometry=ri.pObject?ri.pObject->GetGeometry():nullptr;

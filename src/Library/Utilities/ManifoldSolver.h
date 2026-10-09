@@ -1205,9 +1205,15 @@ namespace RISE
 			/// DETERMINISTIC function of (anchor, emitter point) -- snell
 			/// seeding, biased, no photon map, no alpha coverage, and (RGB
 			/// only, @a spectral false) no pure-mirror caster.  Only then
-			/// can PT keep exactly the paths SMS does not estimate; in
-			/// every other mode PT keeps today's suppress-everything rule.
+			/// can PT keep exactly the paths SMS does not estimate.
+			/// Other modes cannot use deterministic root replay; DL-339's
+			/// conservative first-reflection proof is handled separately.
 			bool SplitSuppressionExact( const IRayCaster& caster, bool spectral ) const;
+
+            /// DL-339: record stochastic legacy chains too when a native
+            /// first-reflection impossibility proof may keep the emitter hit.
+            /// Unknown classes retain the existing suppression rule.
+            bool NeedsLegacyChainRecord( const IRayCaster& caster, bool spectral ) const;
 
 			/// DL-372 / DL-336: does SMS's own snell seed + solve, run from
 			/// the anchor recorded in @a rec toward emitter point @a y,
@@ -1217,7 +1223,8 @@ namespace RISE
 			/// not exactly a root; it is assigned to the root Newton
 			/// reaches from PT's own vertices (the delta-limit partition).
 			/// @a nm 0 = the RGB estimator, > 0 = the spectral one at that
-			/// wavelength.  Call only when SplitSuppressionExact holds.
+			/// wavelength. Call when NeedsLegacyChainRecord holds; stochastic modes
+            /// only use the DL-339 first-reflection impossibility proof.
 			SMSChainCoverage ClassifyEmitterHitCoverage(
 				const SMSChainRecord& rec,
 				const Point3& y,
