@@ -4349,7 +4349,7 @@ bool Job::AddRandomWalkSSSMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateRandomWalkSSSMaterial( &pMaterial, *pIOR, *pAbsorption, *pScattering, gVal, roughnessVal, maxBouncesVal );
 
-	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	const bool ok = pMaterial && RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pIOR );
@@ -4707,7 +4707,7 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 		roughnessVal
 		);
 
-	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	const bool ok = pMaterial && RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	// Release the 9 resolved scalar painters — the material's
