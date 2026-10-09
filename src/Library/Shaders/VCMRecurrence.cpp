@@ -113,6 +113,28 @@ VCMNormalization RISE::Implementation::ComputeNormalization(
 }
 
 //////////////////////////////////////////////////////////////////////
+// SetVolumeMergeRadius (DL-469)
+//////////////////////////////////////////////////////////////////////
+void RISE::Implementation::SetVolumeMergeRadius(
+	VCMNormalization& n,
+	const Scalar volumeRadius
+	)
+{
+	if( volumeRadius > 0 && n.mLightSubPathCount > 0 && n.mEnableVC && n.mEnableVM ) {
+		n.mVolumeMergeRadius = volumeRadius;
+		n.mVolumeMergeRadiusSq = volumeRadius * volumeRadius;
+		n.mMisVolumeWeightFactor =
+			n.mLightSubPathCount * ( Scalar( 4 ) / Scalar( 3 ) ) * PI * volumeRadius * n.mVolumeMergeRadiusSq;
+		n.mVolumeNormalization = Scalar( 1 ) / n.mMisVolumeWeightFactor;
+	} else {
+		n.mVolumeMergeRadius = 0;
+		n.mVolumeMergeRadiusSq = 0;
+		n.mVolumeNormalization = 0;
+		n.mMisVolumeWeightFactor = 0;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // InitLight
 //
 // First vertex on a light subpath.  From SmallVCM GenerateLightSample:
@@ -270,7 +292,8 @@ VCMMisQuantities RISE::Implementation::ApplyBsdfSamplingUpdate(
 	const Scalar bsdfDirPdfW,
 	const Scalar bsdfRevPdfW,
 	const bool specular,
-	const VCMNormalization& norm
+	const VCMNormalization& norm,
+	const bool medium
 	)
 {
 	VCMMisQuantities r;
@@ -301,8 +324,10 @@ VCMMisQuantities RISE::Implementation::ApplyBsdfSamplingUpdate(
 	// Read the old q.dVCM before we overwrite it.
 	const Scalar oldDVCM = q.dVCM;
 
-	r.dVC = factor * ( q.dVC * bsdfRevPdfW + oldDVCM + norm.mMisVmWeightFactor );
-	r.dVM = factor * ( q.dVM * bsdfRevPdfW + oldDVCM * norm.mMisVcWeightFactor + Scalar( 1 ) );
+	// DL-469: the merge at THIS vertex is the volume merge at a medium
+	// vertex (VertexMergeFactorVC / VM).
+	r.dVC = factor * ( q.dVC * bsdfRevPdfW + oldDVCM + VertexMergeFactorVC( norm, medium ) );
+	r.dVM = factor * ( q.dVM * bsdfRevPdfW + oldDVCM * norm.mMisVcWeightFactor + VertexMergeFactorVM( norm, medium ) );
 	r.dVCM = invFwd;
 
 	return r;

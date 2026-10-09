@@ -133,7 +133,8 @@ namespace RISE
 			Scalar ComputeBBoxSurfaceArea() const;
 
 			/// DL-380: number of stored vertices NOT flagged
-			/// `kLVF_JumpCover` (see ComputeBBoxSurfaceArea).
+			/// `kLVF_JumpCover` (see ComputeBBoxSurfaceArea), nor
+			/// `kLVF_IsMedium` (DL-469's volume-merge vertices).
 			std::size_t CountOrdinaryVertices() const;
 
 			/// Clamp outlier throughputs to suppress photon-mapping

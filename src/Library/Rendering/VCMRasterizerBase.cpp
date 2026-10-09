@@ -82,6 +82,9 @@ VCMRasterizerBase::VCMRasterizerBase(
 	mMergeRadiusFloor( 0 ),
 	mGeometricRadiusFloor( 0 ),
 	mMergeRadiusPassCount( 0 ),
+	mBaseVolumeRadius( 0 ),
+	mCurrentVolumeRadius( 0 ),
+	mVolumeRadiusPassCount( 0 ),
 	mRadiusShrinkAlpha( Scalar( 2.0 ) / Scalar( 3.0 ) ),
 	mTargetPhotonsPerQuery( Scalar( 20 ) ),
 	// `vcm_disable_progressive_radius=true` in global.options (or via
@@ -345,6 +348,8 @@ namespace
 		std::size_t	samples = 0;		///< eye rays traced
 		std::size_t	mergeable = 0;		///< reached a merge vertex with a usable footprint
 		Scalar		medianFootprint = 0;	///< world-space pixel spacing there (median)
+		std::size_t	medium = 0;			///< DL-469: reached a medium scatter first (through delta surfaces only)
+		Scalar		medianMediumFootprint = 0;	///< DL-469: pixel spacing at that medium vertex (median)
 	};
 
 	EyeMergeFootprint EstimateEyeMergeFootprint(
@@ -374,6 +379,7 @@ namespace
 
 		std::vector<Scalar> footprints;
 		footprints.reserve( pixels / ( static_cast<std::size_t>( stride ) * stride ) + 1 );
+		std::vector<Scalar> mediumFootprints;
 		std::vector<BDPTVertex> verts;
 		std::vector<uint32_t> starts;
 
@@ -406,6 +412,18 @@ namespace
 					const BDPTVertex& v = verts[k];
 					pathLength += Vector3Ops::Magnitude( Vector3Ops::mkVector3( v.position, prev ) );
 					prev = v.position;
+					if( v.type == BDPTVertex::MEDIUM ) {
+						// DL-469: the volume merge's resolution scale.
+						const RayDifferentials& d = cameraRay.diffs;
+						const Scalar fx = Vector3Ops::Magnitude( d.rxOrigin + d.rxDir * pathLength );
+						const Scalar fy = Vector3Ops::Magnitude( d.ryOrigin + d.ryDir * pathLength );
+						const Scalar fp = Scalar( 0.5 ) * ( fx + fy );
+						if( fp > 0 && std::isfinite( fp ) ) {
+							mediumFootprints.push_back( fp );
+							out.medium++;
+						}
+						break;
+					}
 					if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
 						break;
 					}
@@ -429,6 +447,11 @@ namespace
 			std::nth_element( footprints.begin(),
 				footprints.begin() + footprints.size() / 2, footprints.end() );
 			out.medianFootprint = footprints[footprints.size() / 2];
+		}
+		if( !mediumFootprints.empty() ) {
+			std::nth_element( mediumFootprints.begin(),
+				mediumFootprints.begin() + mediumFootprints.size() / 2, mediumFootprints.end() );
+			out.medianMediumFootprint = mediumFootprints[mediumFootprints.size() / 2];
 		}
 		return out;
 	}
@@ -515,11 +538,14 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	// VC's t=1 splats are generated per-sample in IntegratePixel,
 	// not from this prepass, so VC-only mode needs no store.
 	if( !pIntegrator->GetEnableVM() ) {
+		mBaseVolumeRadius = 0;	// DL-469: the volume merge is a merging strategy too
+		mCurrentVolumeRadius = 0;
 		mVCMNormalization = ComputeNormalization(
 			width, height,
 			Scalar( 0 ),
 			pIntegrator->GetEnableVC(),
 			false );
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
 
 		mSplatTotalSamples = 1.0;
 		if( pSampling ) {
@@ -550,6 +576,49 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
 	PrepareRuntimeContext( rc );
 
+	// DL-469: the volume-merge radius (VCMIntegrator.cpp, "volume
+	// merging"), from the density of the medium light vertices it
+	// merges with: their per-pass count n over their bounding volume V
+	// gives a ball holding kVolumeTargetNeighbours of them on average,
+	// r_v = cbrt( 3 K V / (4 pi n) ), clipped to a few pixel footprints
+	// (below, after the merge-radius pre-pass, which collects the same
+	// light subpaths).  It shrinks per pass (OnProgressivePassBegin).
+	mBaseVolumeRadius = 0;
+	mCurrentVolumeRadius = 0;
+	mVolumeRadiusPassCount = 0;
+	std::size_t mediumCount = 0;
+	Point3 mediumMin( 0, 0, 0 ), mediumMax( 0, 0, 0 );
+	auto accumulateMediumVertices = [&]( const std::vector<BDPTVertex>& verts ) {
+		for( std::size_t k = 1; k < verts.size(); k++ ) {
+			if( verts[k].type != BDPTVertex::MEDIUM || !verts[k].isConnectible ) {
+				continue;
+			}
+			const Point3& p = verts[k].position;
+			if( mediumCount == 0 ) {
+				mediumMin = mediumMax = p;
+			} else {
+				mediumMin.x = std::min( mediumMin.x, p.x ); mediumMax.x = std::max( mediumMax.x, p.x );
+				mediumMin.y = std::min( mediumMin.y, p.y ); mediumMax.y = std::max( mediumMax.y, p.y );
+				mediumMin.z = std::min( mediumMin.z, p.z ); mediumMax.z = std::max( mediumMax.z, p.z );
+			}
+			mediumCount++;
+		}
+	};
+	// With a user radius the pre-pass below does not run; shoot its
+	// subpaths here instead (one per pixel, sample index 0 -- the same
+	// ones the pre-pass shoots).
+	if( pIntegrator->GetRequestedMergeRadius() > 0 ) {
+		for( unsigned int y = 0; y < height; y++ ) {
+			for( unsigned int x = 0; x < width; x++ ) {
+				SobolSampler sampler( 0, y * width + x );
+				tmpLightVerts.clear();
+				static thread_local std::vector<uint32_t> tmpVolumeStarts;
+				pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, tmpVolumeStarts, rc.random );
+				accumulateMediumVertices( tmpLightVerts );
+			}
+		}
+	}
+
 	// Determine the merge radius.  If the user supplied a positive
 	// radius, use it directly.  Otherwise run a pre-pass over the
 	// light subpaths to derive an auto-radius.
@@ -578,6 +647,9 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 					// segment-length median isn't skewed by branch-crossing
 					// prefix-copy boundaries (which are not real segments).
 					pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, tmpLightSubpathStarts2, rc.random );
+					if( s == 0 ) {
+						accumulateMediumVertices( tmpLightVerts );	// DL-469
+					}
 					for( std::size_t k = 1; k < tmpLightVerts.size(); k++ ) {
 						const BDPTVertex& curr = tmpLightVerts[k];
 						const BDPTVertex& prevV = tmpLightVerts[k - 1];
@@ -658,10 +730,16 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 				"VCMRasterizerBase::PreRenderSetup:: no specular "
 				"vertices — disabling VM" );
 			effectiveMergeRadius = 0;
+			// No light pass follows: no store for the volume merge either
+			// (its light prefixes need a non-connectible surface, which a
+			// delta surface would have flagged as specular).
+			mBaseVolumeRadius = 0;
+			mCurrentVolumeRadius = 0;
 
 			mVCMNormalization = ComputeNormalization(
 				width, height, Scalar( 0 ),
 				pIntegrator->GetEnableVC(), false );
+			SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
 
 			mSplatTotalSamples = 1.0;
 			if( pSampling ) {
@@ -755,6 +833,36 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		}
 	}
 
+	// DL-469: the volume-merge radius from the medium vertices collected
+	// above.
+	if( mediumCount >= 8 ) {
+		const Scalar dx = mediumMax.x - mediumMin.x, dy = mediumMax.y - mediumMin.y, dz = mediumMax.z - mediumMin.z;
+		const Scalar ext = std::max( dx, std::max( dy, dz ) );
+		const Scalar minExt = Scalar( 1e-3 ) * ext;
+		const Scalar volume = std::max( dx, minExt ) * std::max( dy, minExt ) * std::max( dz, minExt );
+		const Scalar kVolumeTargetNeighbours = Scalar( GlobalOptions().ReadDouble( "vcm_volume_merge_neighbours", 0.01 ) );
+		if( volume > 0 && kVolumeTargetNeighbours > 0 ) {
+			const Scalar rDensity = std::cbrt( Scalar( 3 ) * kVolumeTargetNeighbours * volume /
+				( Scalar( 4 ) * PI * static_cast<Scalar>( mediumCount ) ) );
+			// The bounding volume over-states where the vertices are (a
+			// global medium's light walks run far past anything the
+			// camera sees), so the radius is also clipped to what the
+			// image resolves: kVolumeFootprints pixel footprints at the
+			// first medium vertex the eye reaches.
+			const Scalar kVolumeFootprints = Scalar( GlobalOptions().ReadDouble( "vcm_volume_merge_footprints", 2.0 ) );
+			const EyeMergeFootprint eye = EstimateEyeMergeFootprint(
+				pScene, *pCaster, *pCamera, *pGen, rc, width, height );
+			const Scalar rEye = kVolumeFootprints * eye.medianMediumFootprint;
+			mBaseVolumeRadius = ( eye.medium > 0 && rEye > 0 && rEye < rDensity ) ? rEye : rDensity;
+			mCurrentVolumeRadius = mBaseVolumeRadius;
+			GlobalLog()->PrintEx( eLog_Event,
+				"VCMRasterizerBase::PreRenderSetup:: volume merge (DL-469): %zu medium "
+				"light vertices per pass, density radius %g, eye radius %g (%zu of %zu eye samples), "
+				"radius %g", mediumCount, (double)rDensity, (double)rEye, eye.medium, eye.samples,
+				(double)mBaseVolumeRadius );
+		}
+	}
+
 	// Set up progressive-radius state.  With user-supplied radius, the
 	// geometric floor defaults to 1/10th of it (mirrors the auto path).
 	if( mGeometricRadiusFloor <= 0 && effectiveMergeRadius > 0 ) {
@@ -775,6 +883,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		effectiveMergeRadius,
 		pIntegrator->GetEnableVC(),
 		pIntegrator->GetEnableVM() );
+	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
@@ -825,6 +934,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			pIntegrator->GetEnableVC(),
 			pIntegrator->GetEnableVM(),
 			static_cast<Scalar>( pathsShot ) );
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
 	}
 
 	// Throughput clamping (kept as secondary safeguard).
@@ -844,7 +954,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		throughputLums.reserve( storeSize );
 		for( std::size_t k = 0; k < storeSize; k++ ) {
 			const LightVertex& lv = pLightVertexStore->Get( k );
-			if( lv.flags & kLVF_JumpCover ) {
+			if( lv.flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
 				continue;
 			}
 			throughputLums.push_back( ColorMath::MaxValue( lv.throughput ) );
@@ -927,7 +1037,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	if( !pIntegrator || !pLightVertexStore || !pIntegrator->GetEnableVM() ) {
 		return;
 	}
-	if( mVCMNormalization.mMergeRadiusSq <= 0 ) {
+	if( mVCMNormalization.mMergeRadiusSq <= 0 && mBaseVolumeRadius <= 0 ) {
 		return;
 	}
 
@@ -976,6 +1086,15 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		const Scalar rClamped = std::max( rShrunk, mMergeRadiusFloor );
 		mCurrentMergeRadius = rClamped;
 	}
+	// DL-469: the volume radius shrinks as r^3 ~ (n + alpha) / (n + 1)
+	// (the 3-D analogue of the r^2 rule above), floored at a tenth of r_0.
+	if( passIdx > 0 && mProgressiveRadiusEnabled && mBaseVolumeRadius > 0 )
+	{
+		mVolumeRadiusPassCount++;
+		const Scalar n = static_cast<Scalar>( mVolumeRadiusPassCount );
+		const Scalar shrinkFactor = std::cbrt( ( n + mRadiusShrinkAlpha ) / ( n + Scalar( 1 ) ) );
+		mCurrentVolumeRadius = std::max( mCurrentVolumeRadius * shrinkFactor, Scalar( 0.1 ) * mBaseVolumeRadius );
+	}
 
 	pLightVertexStore->Clear();
 
@@ -992,6 +1111,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		width, height, mCurrentMergeRadius,
 		pIntegrator->GetEnableVC(),
 		pIntegrator->GetEnableVM() );
+	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
@@ -1019,6 +1139,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 			pIntegrator->GetEnableVC(),
 			pIntegrator->GetEnableVM(),
 			static_cast<Scalar>( pathsShot ) );
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
 	}
 
 	// Cap outlier photon throughputs before tree balance.  The biased
@@ -1072,7 +1193,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 bool VCMRasterizerBase::WantsPerPassShutterTime() const
 {
 	return pIntegrator && pLightVertexStore && pIntegrator->GetEnableVM() &&
-		mVCMNormalization.mMergeRadiusSq > 0;
+		( mVCMNormalization.mMergeRadiusSq > 0 || mBaseVolumeRadius > 0 );
 }
 
 // GetIntermediateOutputImage and ResolveSplatIntoScratch are inherited

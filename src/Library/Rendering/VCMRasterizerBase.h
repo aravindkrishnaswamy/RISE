@@ -64,6 +64,14 @@ namespace RISE
 			mutable Scalar mGeometricRadiusFloor;		///< Scene-derived safety floor (0.001 * medianSegment)
 			mutable unsigned int mMergeRadiusPassCount;	///< n in the Hachisuka shrinkage formula
 
+			// DL-469: volume-merge radius (3-D kernel, see
+			// VCMIntegrator.cpp "volume merging"), sized from the density
+			// of eligible medium light vertices and shrunk per pass like
+			// the surface radius (cube-root factor).  0 = off.
+			mutable Scalar mBaseVolumeRadius;
+			mutable Scalar mCurrentVolumeRadius;
+			mutable unsigned int mVolumeRadiusPassCount;
+
 			// Tunable constants (exposed via scene params in a later step).
 			Scalar mRadiusShrinkAlpha;			///< Hachisuka alpha; 2/3 gives optimal rate
 			Scalar mTargetPhotonsPerQuery;		///< Expected photons-per-query used to derive density floor

@@ -577,7 +577,7 @@ std::size_t LightVertexStore::CountOrdinaryVertices() const
 {
 	std::size_t c = 0;
 	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
-		if( !( mVertices[i].flags & kLVF_JumpCover ) ) {
+		if( !( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) ) {	// DL-469: and the volume-merge vertices
 			c++;
 		}
 	}
@@ -595,7 +595,7 @@ Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
 	Point3 mn( 0, 0, 0 );
 	Point3 mx = mn;
 	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
-		if( mVertices[i].flags & kLVF_JumpCover ) {
+		if( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
 			continue;
 		}
 		const Point3& p = mVertices[i].ptPosition;
@@ -658,7 +658,7 @@ void LightVertexStore::ClampOutlierThroughputs(
 	std::vector<Scalar> lums;
 	lums.reserve( n );
 	for( std::size_t i = 0; i < n; i++ ) {
-		if( mVertices[i].flags & kLVF_JumpCover ) {
+		if( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
 			continue;
 		}
 		lums.push_back( LightVertexLuminance( mVertices[i].throughput ) );
