@@ -35,6 +35,9 @@
 #include "../Geometry/TriangleMeshGeometry.h"
 #include "../Geometry/TriangleMeshGeometryIndexed.h"
 #include "../Geometry/DisplacedGeometry.h"
+#include "../Geometry/BezierPatchGeometry.h"
+#include "../Geometry/BilinearPatchGeometry.h"
+#include "../Geometry/ClippedPlaneGeometry.h"
 #include "../Materials/WeaveMaterial.h"
 #include "../Materials/OrenNayarMaterial.h"
 #include "../Materials/CookTorranceMaterial.h"
@@ -187,16 +190,26 @@ bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
 // DL-382: a clear transmissive surface whose geometry is neither certified
 // closed nor certified open (a non-planar open mesh, a slab authored as one
 // open mesh, a mesh with stray boundary edges) is crossed by the IOR-stack
-// rule, which is non-reciprocal on genuinely open sheets (DL-345).  Only
-// the inline/imported mesh classes carry the certificates; Bezier/bilinear
-// patch sets and CSG are not reported (no certificate either way).
-// Returns 0 (certified closed, certified open, or not a clear transmissive
-// mesh), 1 (an indexed / displaced mesh that failed the watertightness
-// certificate and is not a planar sheet), 2 (a non-indexed `rawmesh` mesh
-// that is not a planar sheet: that class has NO watertightness check, so it
-// may well be a closed solid).
+// rule, which is non-reciprocal on genuinely open sheets (DL-345).
+// Kind 1: failed indexed/displaced certificate; 2: raw mesh with no closed
+// certificate; 3: patches/CSG with no sound open-versus-closed certificate.
+// An uncertainty warning must never confer an open-sheet transport flag.
 int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
 {
+    if(const auto* csg=dynamic_cast<const CSGObject*>(&object)) {
+        for(const IObject* operand : {csg->GetOperandA(),csg->GetOperandB()}) {
+            if(!operand) continue;
+            if(ObjectUncertifiedOpenTransmissiveMesh(*operand)) return 3;
+            const IMaterial* m=operand->GetMaterial();
+            const ISPF* f=m ? m->GetSPF() : nullptr;
+            if(!dynamic_cast<const DielectricSPF*>(f) && !dynamic_cast<const PerfectRefractorSPF*>(f)) continue;
+            const IGeometry* g=operand->GetGeometry();
+            if(dynamic_cast<const ClippedPlaneGeometry*>(g) || dynamic_cast<const DisplacedGeometry*>(g)) return 3;
+            if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(g)) if(mesh->IsProvablyOpenSheet()) return 3;
+            if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(g)) if(mesh->IsProvablyOpenSheet()) return 3;
+        }
+        return 0;
+    }
     const IMaterial* material = object.GetMaterial();
     const ISPF* spf = material ? material->GetSPF() : nullptr;
     if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) return 0;
@@ -207,6 +220,8 @@ int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
         return mesh->IsProvablyOpenSheet() ? 0 : 2;
     if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(geometry))
         return displaced->HasUncertifiedOpenness() ? 1 : 0;
+    if(dynamic_cast<const BezierPatchGeometry*>(geometry) || dynamic_cast<const BilinearPatchGeometry*>(geometry)) return 3;
+    if(const auto* plane=dynamic_cast<const ClippedPlaneGeometry*>(geometry)) return plane->IsPlanarConvexQuad() ? 0 : 3;
     return 0;
 }
 bool ObjectWrapsComposite(const IObject& object)
@@ -2533,8 +2548,8 @@ void ObjectManager::PrepareForRendering() const
     // an animation prepares every frame.  Re-armed only when the set of
     // offending objects changes (an edit added or fixed one).
     {
-        unsigned int n[3] = { 0, 0, 0 };
-        std::string first[3];
+        unsigned int n[4] = { 0, 0, 0, 0 };
+        std::string first[4];
         std::string key;
         for(const auto& item : items) {
             if(!item.second.first->IsWorldVisible()) continue;
@@ -2543,7 +2558,7 @@ void ObjectManager::PrepareForRendering() const
             if(first[kind].empty()) first[kind] = item.first.c_str();
             ++n[kind];
             key += item.first.c_str();
-            key += kind == 1 ? "|1;" : "|2;";
+            key += "|" + std::to_string(kind) + ";";
         }
         if(key != openMeshWarningKey) {
             openMeshWarningKey = key;
@@ -2553,6 +2568,13 @@ void ObjectManager::PrepareForRendering() const
                     "they are refracted by the IOR-stack rule, which is right for a closed solid with stray boundary edges but not reciprocal on a genuinely OPEN surface (PT/BDPT/VCM can disagree). "
                     "Author glass as a closed solid, or each open sheet as one planar mesh / clipped plane (docs/SCENE_CONVENTIONS.md, DL-382).",
                     n[1], first[1].c_str());
+            }
+            if(n[3]) {
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "ObjectManager: %u transmissive patch / uncertified-plane / CSG object(s) (first '%s') have no sound open-sheet or closed-volume certificate. "
+                    "They retain the IOR-stack rule; genuinely OPEN sheets can refract non-reciprocally. A boundary loop alone does not prove that a surface cannot enclose a volume. "
+                    "Author each sheet as a planar consistently wound mesh / convex clipped plane, or use a certified closed solid (docs/SCENE_CONVENTIONS.md, DL-382).",
+                    n[3], first[3].c_str());
             }
             if(n[2]) {
                 GlobalLog()->PrintEx(eLog_Info,

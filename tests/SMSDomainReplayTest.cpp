@@ -148,7 +148,19 @@ static void ComponentAndCrossingCases()
                 Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,SMSQueryDomain::RGB(c),true,stack,ni,nt,exiting),"reflection domain replay");
                 Check(stack.SameInterfaces(before),"reflection preserves membership");
                 Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,SMSQueryDomain::RGB(c),false,stack,ni,nt,exiting),"transmission domain replay");
-                Check(Near(ni,1)&&Near(nt,indices[c]),"first closed or uncertified mesh crossing follows native membership");
+                if(closed) {
+                    Check(Near(ni,1)&&Near(nt,indices[c]),"first closed mesh crossing follows native membership");
+                } else {
+                    // DL-382: a single flat consistently wound quad is a
+                    // certified open sheet, so the DL-345 face rule applies:
+                    // the front face enters, the back face exits.  The quad's
+                    // winding normal is -z (+z when reversed); the ray
+                    // travels along -side*z.
+                    const double windingZ=reverse?1.0:-1.0;
+                    const bool front=windingZ*(-side)<0;
+                    Check(front ? (Near(ni,1)&&Near(nt,indices[c])) : (Near(ni,indices[c])&&Near(nt,1)),
+                        "certified open flat mesh sheet follows the DL-345 face rule");
+                }
             }
         }
     }
@@ -779,8 +791,14 @@ static void ParticipatingMediumCases()
         if(!shader) continue;
         RayCaster* caster=new RayCaster(false,16,*shader,true); caster->AttachScene(&loaded.Scene());
         ManifoldSolverConfig config; config.enabled=true; config.extendedMode=true; ManifoldSolver* solver=new ManifoldSolver(config);
-        Check(!solver->ExtendedAnchorEligible(loaded.Scene(),*caster,Point3(offset,0,0),live),
-            "participating starting medium disables coupled extended switches");
+        // DL-419: a scene with a global or object medium is routed to
+        // legacy SMS scene-wide, so all three coupled extended switches are
+        // off for every anchor (ExtendedAnchorEligible then means "legacy
+        // SMS may run" and returns true).
+        Check(!solver->ExtendedModeActive(loaded.Scene()),
+            "participating medium routes the scene to legacy SMS (coupled extended switches off)");
+        Check(solver->ExtendedAnchorEligible(loaded.Scene(),*caster,Point3(offset,0,0),live),
+            "legacy-routed medium scene keeps legacy SMS at the anchor");
         solver->release(); caster->release(); shader->release();
         if(global) continue; // Global exclusion is scene-level; Cross has no scene argument.
         for(int side : {-1,1}) {
