@@ -528,7 +528,7 @@ balance-heuristic optimum for one light subpath per eye sample uses the
 whole-film density (PBRT; SmallVCM divides by the light path count), which
 would give the light-tracing strategies W H times more weight.  That is a
 variance question across every BDPT render, recorded as DL-402, not done
-here.
+here (done since: section 9).
 
 ### 8.3 Stored references
 
@@ -540,3 +540,67 @@ shift was the sole cause; the four `evals/references` PNGs were
 regenerated with `generate_references.sh` (2075 / 0).  The showcase suites
 (Pavilion 57/0, ShelfBunny 63/0, TidalStones 122/0), AgentEvalReplay 272/0
 and AgentEvalLiveTransport 452/0 needed nothing.
+
+## 9. DL-402 -- the camera density in BDPT's MIS ratios is the whole-film one (2026-10-09)
+
+**Change.**  BDPT/MLT trace ONE light subpath per eye sample and splat
+its t == 1 connections anywhere on the film, so per pixel the
+light-tracing strategies draw W H times as many samples as the eye
+strategies.  The multi-sample balance / power heuristic (Veach 9.2)
+therefore weights with the WHOLE-FILM camera density, per-pixel / (W H)
+-- PBRT-v3/v4's `PdfWe` (film area, splats scaled by 1/spp) and
+SmallVCM's division by the light-path count, which RISE's VCM already
+applies in `InitCamera`.  `BDPTCameraUtilities::PdfDirectionMIS` returns
+`PdfDirection / (W H)` (unscaled for a delta-direction orthographic
+camera, which has no t == 1 strategy), and it is now the ONLY camera
+density in BDPT's MIS: the first eye vertex's `pdfFwd`
+(`GenerateEyeSubpathImpl`'s initial `pdfFwdPrev`) and every t == 1
+connection's light-endpoint `pdfRev` (the s == 0 light-endpoint, the
+(1,1) light-root and the general t == 1 cases, RGB and NM).  Because both
+sides of every ratio change together the partition stays exact.
+Contributions (`Importance`) and VCM's `emissionPdfW` keep the per-pixel
+value.  MLT runs the same `BDPTIntegrator` and moves with it.  `MISWeight`
+itself is untouched.
+
+**Variance** (salted K-trial, both modes in one binary via a temporary
+toggle, interleaved per salt; per-pixel variance summed over the image
+divided by the summed squared mean; box filter, OIDN off; 128 x 128
+unless noted, 8 spp):
+
+| scene | K | old relVar | new relVar | old / new | t/render old -> new |
+|---|---|---|---|---|---|
+| DL-354 flat slab + small visible emitter, 100 x 75, 16 spp | 64 | 0.0808 | 0.0227 | 3.6x | 0.10 -> 0.11 s |
+| same, 200 x 150, 16 spp | 64 | 0.0452 | 0.0134 | 3.4x | 0.24 -> 0.24 s |
+| `cornellbox_bdpt_caustics` (glass sphere) | 24 | 0.00999 | 0.00384 | 2.6x | 0.24 -> 0.25 s |
+| `cornellbox_bdpt` (diffuse) | 24 | 0.00261 | 0.00192 | 1.35x | 0.25 -> 0.26 s |
+| `cornellbox_bdpt_glossy` | 24 | 0.00274 | 0.00171 | 1.6x | 0.24 -> 0.23 s |
+| `cornellbox_bdpt_thinlens` | 24 | 0.1030 | 0.0826 | 1.25x | 0.26 -> 0.26 s |
+| `cornellbox_bdpt_pointlight` | 24 | 0.00618 | 0.00534 | 1.16x | 0.35 -> 0.35 s |
+
+No scene regressed; cost is unchanged, so the spp-matched figures are
+also time-matched.  The DL-354 suite's BDPT window energy now reads
+687.98 with sd 0.00 at 200 x 150 -- the small emitter is carried almost
+entirely by light tracing, as it should be.
+
+**Means.**  The image means agree within noise everywhere except the
+point-light Cornell box at its scene `max_eye_depth 8 / max_light_depth
+8`: new - old = -0.34 % (paired z = -17, concentrated around the tall
+block, -3 % in one grid cell).  That is the depth-cap partition (DL-351),
+not this change: at depth 30 old / new / PT read 0.60542 / 0.60535 /
+0.60558 image means and agree cell by cell.  With caps, `MISWeight`
+counts strategies the capped walks cannot generate, and how much of a
+long path's weight lands on those phantom strategies depends on the
+heuristic's inputs -- moving weight toward t == 1 moves the (pre-existing)
+truncation loss.  It disappears when DL-351 lands.
+
+**Suites.**  BDPTStrategyBalanceTest 370/0, VCMStrategyBalanceTest 165/0,
+PixelCenterConventionTest 48/0, CameraImportanceTest 984/0,
+BDPTSeeThroughMISPartitionTest 8/0, SpectralSplatIntegralNormalizationTest
+21/0, WeaveGapShadowTransmittanceTest 281/0, CstDeriveGoldenTest 459 MATCH.
+AnimationRasterizerParityTest first read 101/1: its MLT-spectral D row
+gated ONE deterministic MLT realization (MLT's seeds were a fixed function
+of the scene, so salted repeats were identical).  DL-468 added a PSSMLT
+seed salt and made the row average 12 salted replicates against
+max(3 se, 5 %): MLT-spectral / PT = 1.0019 +/- 0.017 with this change and
+0.982 +/- 0.029 without (n = 12), 102/0 on both -- no bias, and lower
+MLT-spectral spread under the whole-film weighting.

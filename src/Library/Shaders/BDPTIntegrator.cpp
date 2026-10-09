@@ -1705,7 +1705,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 // itself (type CAMERA, pdfFwd=1, throughput=1), subsequent vertices
 // are surface intersections.
 //
-// The camera's directional PDF (BDPTCameraUtilities::PdfDirection)
+// The camera's whole-film directional PDF (BDPTCameraUtilities::
+// PdfDirectionMIS, DL-402)
 // is used as pdfFwdPrev for the first surface vertex.  For pinhole
 // cameras this is 1/cos^3(theta) * focaldist^2 (Veach eq. 8.10).
 //////////////////////////////////////////////////////////////////////
@@ -1984,7 +1985,16 @@ namespace {
 		vertices[0].emissionPdfW = cameraIsDeltaDirection ? Scalar( 0 ) : pdfCamDir;
 		vertices[0].cosAtGen = 1.0;
 
+		// DL-402: the MIS input is the WHOLE-FILM density (one light
+		// subpath per eye sample, splatted anywhere on the film); see
+		// BDPTCameraUtilities::PdfDirectionMIS.  The t == 1 cases use
+		// the same function for the light endpoint's pdfRev, so the
+		// partition stays exact.  `emissionPdfW` above keeps the
+		// per-pixel density: VCM divides by its own light-path count.
 		Scalar pdfFwdPrev = pdfCamDir;
+		if( pCamera && !cameraIsDeltaDirection ) {
+			pdfFwdPrev = BDPTCameraUtilities::PdfDirectionMIS( *pCamera, cameraRay );
+		}
 		IORStack iorStack( 1.0 );
 		// Seed from the camera position: if the camera sits inside a
 		// dielectric (submerged camera, camera inside a medium volume),
@@ -4464,7 +4474,7 @@ ConnectAndEvaluateImplCore(
 		const Scalar savedLightPdfRev = lightEnd.pdfRev;
 		{
 			Ray camRayToLight( camPos, -dirToCam );
-			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirectionMIS( camera, camRayToLight );
 			if( lightIsMedium_t0 ) {
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( camPdfDir, lightEnd.sigma_t_scalar, distSq );
@@ -4566,7 +4576,7 @@ ConnectAndEvaluateImplCore(
 		const Scalar savedLightPdfRev = lightEnd.pdfRev;
 		{
 			Ray camRayToLight( camPos, -dirToCam );
-			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirectionMIS( camera, camRayToLight );
 			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
 		}
@@ -5194,7 +5204,7 @@ ConnectAndEvaluateImplCore(
 
 			{
 				Ray camRayToLight( camPos, -dirToCam );
-				const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+				const Scalar camPdfDir = BDPTCameraUtilities::PdfDirectionMIS( camera, camRayToLight );
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
 			}
@@ -5248,7 +5258,7 @@ ConnectAndEvaluateImplCore(
 		// Medium vertices: sigma_t/dist^2 replaces |cos|/dist^2
 		{
 			Ray camRayToLight( camPos, -dirToCam );
-			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirectionMIS( camera, camRayToLight );
 			if( lightIsMedium_t1 ) {
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( camPdfDir, lightEnd.sigma_t_scalar, distSq );
