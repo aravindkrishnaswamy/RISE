@@ -1268,12 +1268,12 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
 
 ## 10. DL-296 (slice `debt-dl296`, 2026-10-09): transmission out through the bottom
 
-Branched from `master` `638591364`.  **Status: implemented for a bottom
-that transmits through its OWN BSDF (`translucent_material`, a
-thin-transmission `weave_material`) on a provably open sheet; PT is
-fixed; NOT closed, because BDPT / VCM are inconsistent on an open sheet
-lit from both sides (section 10.6), and Section M's `--sheets-only`
-reads 104/4.**  The rest of the walker class is DL-472.
+Branched from `master` `638591364`.  **Status: implemented for a
+TRANSLUCENT bottom on a provably open sheet, PT / BDPT / VCM consistent
+since the two-sided model of section 10.7 (DL-472 (1)), which resolved
+the blocker recorded in section 10.6.**  A thin-transmission weave bottom
+was in the first scope and is not any more (section 10.7); the rest of
+the walker class is DL-472.
 
 ### 10.1 The defect
 
@@ -1402,7 +1402,10 @@ furnace F5 (dielectric / lossless translucent): 0.9954 +- 0.0107 /
   composite shell still contributes nothing.  Needs the reverse-density
   and seeding consistency named in 10.2 (DL-407 (1)).
 * Walks entered FROM BELOW and arrivals behind a tilted shading normal
-  (the natural walks): still delta-tagged.  So a delta light seen through
+  (the natural walks): still delta-tagged -- except a back-face arrival
+  on an open sheet with a translucent bottom, which section 10.7 prices
+  (two-sided model).  A thin-transmission weave bottom is out of the
+  DL-296 scope altogether (section 10.7).  So a delta light seen through
   the back face of a composite sheet, or through a CLOSED composite
   object (the second wall is crossed from inside, i.e. from below), still
   contributes nothing under PT.
@@ -1456,3 +1459,78 @@ covered evaluator (DL-472 (1)), so a back arrival prices the same
 transport, mirrored.  The slice's commits carry the open-sheet, both-faces
 version (`TransmissionLive`); the four failing Section M cells and the
 furnace rows above are its known state.
+
+### 10.7 Resolution: the two-sided model (DL-472 (1), same slice, 2026-10-09)
+
+Two changes, both needed (each alone was measured insufficient).
+
+**1. Present the sheet by its TRUE face.**  A composite whose term (c) can
+be live now follows DL-345's face rule on a provably open sheet
+(`FollowsOpenSheetFaceRule`), so a FRONT arrival meets the top first and
+a BACK arrival meets the BOTTOM first.  A back arrival is priced by the
+exact mirror of the from-above model (`CompositeSPFImpl`, "THE BACK-FACE
+MODEL"): DIRECT is the bottom's own back-side lobes at the entry vertex
+(priced by its BSDF); COVERED is an exit through the top after a
+non-delta bottom event (term (a), whose walk now includes the ENTRY event
+-- `BuildWalkFromBelow`), an exit through the top's BSDF (term (b)) and
+an exit back through the bottom after a top reflection (term (c));
+sampled from a cosine toward the front, the bottom's own sampler and a
+cosine toward the back; WALKER is the rest (`eStartCoveredBottom`).  `Pdf`
+is its exact density, `EvaluateLobeFNM` its companion weight.  The stacks
+follow the natural from-below walker exactly (OUT in front, the bottom's
+own key at the below medium's index); an exit through the top carries the
+radiance factor `(n_below / n_out)^2` through
+`RestoreOpenSheetStacks`' crossing index -- the value includes it, the
+kray does not.  Which side a query is on is read from the query's own ray
+against the frame's TRUE normal, and each side normalizes the stack it
+starts from (`FrontStack` / `MakeBackStacks`), so a BDPT reverse-density
+query rebuilt from the other vertex gets that side's model.
+
+**2. Light-subpath connections evaluate the ADJOINT.**  The face rule
+alone took the reciprocal-bottom furnace from 1.06x / 1.17x (BDPT / VCM)
+only to 1.03x / 1.17x: a non-delta BSDF that refracts INSIDE itself is
+not symmetric in its arguments (its radiance value carries the
+`(n_out/n_in)^2` of the index step; section R1 measures
+`f_front(a->b) = f_back(b->a) / n^2` to 2e-4), and BDPT / VCM evaluate a
+light-subpath vertex with the roles swapped.  `PathVertexEval::
+EvalBSDFAtVertex{,NM}` now marks a light-subpath vertex with the new
+`BSDFImportanceScope` (`IBSDF.h`, thread-local; every other BSDF ignores
+it), and the composite answers such a query with the radiance value of
+the SWAPPED query (`ImportanceSwap`: arrival from the eye side, light
+toward the original arrival).  Both ends of a connection then price a
+path with ONE function -- which also removes `translucent_material`'s own
+non-reciprocity (DL-223) from the composite's connections.  (A first
+version that only dropped the eta^2 factor in importance mode fixed the
+reciprocal bottom -- 0.999 / 0.999 / 1.000 -- but left the N 3, tau 0.7
+translucent at VCM 1.023 in the furnace.)
+
+**Scope narrowed to a translucent bottom.**  A thin-transmission
+`weave_material` bottom also claims the full sphere, but under the
+composite's back-face layer record its value did not match its own
+sampler (section R, measured before the scope: back `f(b->a)` ~0 at every
+oblique pair while the front read 0.069, `kray*Pdf*eta^2 != value*cos` on
+78 % of back-arrival rays, back furnace 0.39-0.46), so
+`CompositeMaterial` passes the transmission flag only for a
+`TranslucentMaterial` bottom; a weave bottom is walker-only as before
+DL-296 (DL-472).
+
+**Evidence** (`--dl296-only`, composite / separate pair, mean of 3 salted
+renders; `--dl472-unit`):
+
+| bottom, light | PT | BDPT | VCM |
+|---|---|---|---|
+| translucent (N 3), white furnace | 0.999 | 1.002 | 0.999 |
+| translucent (N 3), omni behind | 1.001 | 0.998 | 0.999 |
+| reciprocal translucent (N 1, tau 1), white furnace | 1.001 | 0.999 | 1.000 |
+| reciprocal translucent, omni behind | 0.999 | 0.999 | 1.000 |
+
+(Before section 10.7 the first row read 0.999 / 1.064 / 1.167.)  Area
+rows 0.999 (PT); spectral rows within 0.3 %.  Section R: reciprocity
+`f_front / (f_back / n^2)` = 1.0001 / 1.0001 / 1.0002 / 1.0001 over four
+direction pairs; back arrivals 0 `kray*Pdf*eta^2` mismatches on ~38 000
+non-delta rays per angle, back furnace 1.003 / 1.002 / 0.994.
+
+Section M: the glass/translucent open-sheet cells now follow the face
+rule, so an INWARD sheet is seen from behind (~1.55, like the face-ruled
+nested composite) and the twin keeps the cell's winding; a new gate
+requires BDPT / VCM == PT on those cells (3 %).
