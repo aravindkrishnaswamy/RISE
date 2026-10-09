@@ -2534,6 +2534,22 @@ static void Geometry() {
             Check(!ManifoldSolver::SameExtendedRoot(root,changed,1e-7),"root identity includes starting membership");
             changed=root;changed.vertices[0].geometry.position.x+=.001;
             Check(!ManifoldSolver::SameExtendedRoot(root,changed,1e-7),"close separated geometry is not the same root");
+            // DL-455: estimator A's rediscovery identity. Two Newton solves of
+            // one root from different seeds land within the full band but not
+            // within their last-correction band; the resolution-limited
+            // identity counted such a retry as a miss (K too large: the omni
+            // glass slab read +1.08 %). A shift of half the band must match,
+            // a shift past the band must not.
+            {
+                const Scalar band=std::sqrt(std::numeric_limits<Scalar>::epsilon())*root.scale;
+                changed=root;
+                for(auto& v:changed.vertices) v.geometry.position.x+=band/2;
+                Check(root.uncertainty<=band/8,"DL-455 fixture: the solved root's last-correction band is below a quarter of the shift");
+                Check(ManifoldSolver::SameRediscoveredRoot(root,changed,band),"DL-455 estimator A rediscovery matches a re-solve within the full band");
+                Check(!ManifoldSolver::SameExtendedRoot(root,changed,band),"DL-455 control: the resolution-limited identity rejects the same re-solve");
+                changed=root;changed.vertices[0].geometry.position.x+=2*band;
+                Check(!ManifoldSolver::SameRediscoveredRoot(root,changed,band),"DL-455 rediscovery still separates geometry beyond the band");
+            }
         }
         solver->release();
     }
