@@ -834,10 +834,14 @@ namespace RISE
                 const RayIntersectionGeometric* = nullptr,Scalar nm = 0,int rgbComponent = -1) const;
             static bool SameExtendedTopology(const SMSDomainRoot&,const SMSDomainRoot&);
             // partitionBand: the area partition's identity (full tolerance band
-            // for two converged solves of one canonical topology); false: the
-            // reference estimators' resolution-limited identity.
+            // for two converged solves of one canonical topology -- also
+            // estimator A's rediscovery, via SameRediscoveredRoot); false:
+            // the resolution-limited identity.
             static bool SameExtendedRoot(const SMSDomainRoot&, const SMSDomainRoot&, Scalar tolerance,
                 bool partitionBand = false);
+            // Estimator A's K-loop identity: a retry that re-solves the
+            // discovered root from another seed (full tolerance band, DL-455).
+            static bool SameRediscoveredRoot(const SMSDomainRoot&, const SMSDomainRoot&, Scalar tolerance);
             static Scalar ExtendedReflectionProbability(bool reflection, bool transmission,
                 Scalar fresnel, bool tir, Scalar explorationFloor);
 
