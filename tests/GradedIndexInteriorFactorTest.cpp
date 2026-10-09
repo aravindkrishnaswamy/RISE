@@ -191,7 +191,7 @@ static std::vector<double> TileMeansOf( const CapturingRasterizerOutput& cap, in
 static std::string WriteTemp( const std::string& text, const char* tag )
 {
 	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/graded_index_interior_%s_%d.RISEscene", tag, (int)::getpid() );
+	std::snprintf( path, sizeof(path), "%s/graded_index_interior_%s_%d.RISEscene", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : ".", tag, (int)::getpid() );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return std::string();
 	ofs << text;
