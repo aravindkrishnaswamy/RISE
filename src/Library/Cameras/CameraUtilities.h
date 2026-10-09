@@ -301,6 +301,31 @@ namespace RISE
 			const Ray& ray							///< [in] Ray from the camera
 			);
 
+		/// The camera's directional density AS AN MIS INPUT (DL-402).
+		///
+		/// `PdfDirection` is the density of ONE PIXEL's sample, but BDPT
+		/// and MLT trace one light subpath per eye sample and splat it
+		/// anywhere on the film, so per pixel the light-tracing (t == 1)
+		/// strategies draw W*H times as many samples as the eye
+		/// strategies.  The balance / power heuristic with sample counts
+		/// (Veach 9.2) therefore carries the WHOLE-FILM density,
+		/// `PdfDirection / (W * H)` -- PBRT-v3/v4's `PdfWe` (film area,
+		/// splat scaled by 1/spp) and SmallVCM's division by the
+		/// light-path count, which RISE's own VCM applies in
+		/// `InitCamera`.  Using the per-pixel density instead still
+		/// partitions to one (no bias) but gives t == 1 W*H times too
+		/// little weight.  Every site where the camera density enters a
+		/// BDPT MIS ratio -- the first eye vertex's `pdfFwd` and every
+		/// t == 1 connection's light-endpoint `pdfRev` -- must use THIS,
+		/// never `PdfDirection`, or the partition breaks.  Contributions
+		/// (`Importance`) and VCM (`emissionPdfW`, its own count) are
+		/// unaffected.  A delta-direction (orthographic) camera has no
+		/// t == 1 strategy and is returned unscaled.
+		Scalar PdfDirectionMIS(
+			const ICamera& cam,					///< [in] Camera
+			const Ray& ray							///< [in] Ray from the camera
+			);
+
 		/// A point on the camera's entrance aperture, sampled for a
 		/// t==1 light-tracing connection.
 		struct ApertureSample

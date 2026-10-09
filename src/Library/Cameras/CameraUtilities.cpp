@@ -726,6 +726,22 @@ Scalar BDPTCameraUtilities::PdfDirection(
 	return 0.0;
 }
 
+Scalar BDPTCameraUtilities::PdfDirectionMIS(
+	const ICamera& cam,
+	const Ray& ray )
+{
+	const Scalar pdf = PdfDirection( cam, ray );
+	if( pdf <= 0 || IsDeltaDirection( cam ) ) {
+		return pdf;
+	}
+	const CameraCommon* common = dynamic_cast<const CameraCommon*>( &cam );
+	if( !common ) {
+		return pdf;
+	}
+	const Scalar pixels = Scalar( common->GetWidth() ) * Scalar( common->GetHeight() );
+	return pixels > 0 ? pdf / pixels : pdf;
+}
+
 BDPTCameraUtilities::ApertureSample BDPTCameraUtilities::SampleAperture(
 	const ICamera& cam,
 	const Point2& uv )
