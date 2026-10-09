@@ -1091,8 +1091,10 @@ Consequences worth knowing:
   BDPT, MLT and the legacy rasterizers (per-sample scene evaluation mutates
   the scene, so the frame runs on the calling thread).
 - VCM with vertex merging instead traces each progressive pass at ONE
-  shutter time (the scene moves once per pass; pass k draws its time in the
-  k-th of N equal strata), so its light store and the eye samples merged
+  shutter time (the scene moves once per pass; the N passes take the N
+  equal strata of the shutter in a random order, so any prefix of the passes
+  -- an adaptively converged pixel, an early preview -- covers the whole
+  shutter), so its light store and the eye samples merged
   against it share a time; those frames render multi-threaded (DL-463).  At
   low pass counts the blur is a set of N superimposed poses rather than
   per-pixel noise.  A camera with `scanning_rate` / `pixel_rate` keeps the

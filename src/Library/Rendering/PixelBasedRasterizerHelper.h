@@ -556,8 +556,8 @@ namespace RISE
 		/// samples' own time -- VCM's vertex-merging light store, which
 		/// every eye sample of a pass merges against.  A motion-blurred
 		/// animation frame (exposure, no scanning / pixel rate) then
-		/// moves the whole scene to one shutter time per pass (stratified
-		/// across the passes, jittered within each stratum) and renders
+		/// moves the whole scene to one shutter time per pass (one stratum
+		/// per pass, strata in a random order, jittered within each) and renders
 		/// the pass's light store and all its eye samples at that time,
 		/// instead of a per-sample time against a frame-time store.  The
 		/// progressive film's average over passes is the shutter average.
