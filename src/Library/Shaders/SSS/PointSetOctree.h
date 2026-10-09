@@ -27,6 +27,8 @@
 #include "../../Interfaces/ISubSurfaceExtinctionFunction.h"
 #include "../../Interfaces/IBSDF.h"
 #include "../../Utilities/GeometricUtilities.h"
+#include <functional>
+#include <utility>
 
 namespace RISE
 {
@@ -35,10 +37,19 @@ namespace RISE
 		class PointSetOctree
 		{
 		public:
+            struct ModeKeyLess {
+                bool operator()(const std::pair<const IObject*,bool>& a,const std::pair<const IObject*,bool>& b) const {
+                    const std::less<const IObject*> less;
+                    if(less(a.first,b.first)) return true;
+                    if(less(b.first,a.first)) return false;
+                    return a.second<b.second;
+                }
+            };
 			struct SamplePoint
 			{
 				Point3			ptPosition;			// Location of the sample point
 				RISEPel			irrad;				// irradiance of the sample point
+                bool smsReferenceRadiance = false;
 			};
 			typedef std::vector<SamplePoint> PointSet;
 
@@ -49,6 +60,8 @@ namespace RISE
 				PointSetOctreeNode** pChildren;			// Children of this node
 				PointSet* pElements;					// Elements of this node
 				RISEPel irrad;							// Average irradiance of this node
+                bool smsReferenceRadiance = false;
+                std::size_t sampleCount = 0;
 				
 				Scalar HowFarIsPointFromYou(
 					Vector3& dir,
@@ -76,7 +89,8 @@ namespace RISE
 					const unsigned int maxElements,
 					const BoundingBox& bbox,
 					const char which_child,
-					const unsigned char max_recursion_level
+					const unsigned char max_recursion_level,
+                    unsigned tree_level = 0
 					);
 
 				void Evaluate(
@@ -89,7 +103,8 @@ namespace RISE
 					const IBSDF* pBSDF,
 					const RayIntersectionGeometric& rig,
 					const IORStack* pIorStack = 0,
-					const Scalar exteriorIOR = 1.0
+					const Scalar exteriorIOR = 1.0,
+                    bool* referenceRadiance = nullptr
 					) const;
 			};
 
@@ -127,10 +142,11 @@ namespace RISE
 				const IBSDF* pBSDF,
 				const RayIntersectionGeometric& rig,
 				const IORStack* pIorStack = 0,
-				const Scalar exteriorIOR = 1.0		///< DL-291: index of the medium around the body (1 = air)
+				const Scalar exteriorIOR = 1.0,		///< DL-291: index of the medium around the body (1 = air)
+                bool* referenceRadiance = nullptr
 				)
 			{
-				return root.Evaluate( c, bbox, 99, point, pFunc, pFunc.GetMaximumDistanceForError(error), pBSDF, rig, pIorStack, exteriorIOR );
+				return root.Evaluate( c, bbox, 99, point, pFunc, pFunc.GetMaximumDistanceForError(error), pBSDF, rig, pIorStack, exteriorIOR, referenceRadiance );
 			};
 		};
 	}

@@ -25,12 +25,12 @@ namespace RISE
 	/// OIDN quality preset selector for the post-process denoiser.
 	///
 	/// `Auto` picks one of the explicit presets per render using the
-	/// heuristic `r = render_seconds / megapixels`:
+	/// scene-static policy `r = sample_budget * rasterizer_weight`:
 	///   r < 3   → Fast
 	///   r < 20  → Balanced
 	///   r >= 20 → High
 	///
-	/// Explicit values force the preset regardless of render time.
+	/// Explicit values force the preset regardless of the sample budget.
 	/// Replaces OIDN's `DEFAULT` constant on the public surface
 	/// (DEFAULT was just an alias for HIGH; Auto is more useful).
 	enum class OidnQuality
@@ -53,7 +53,7 @@ namespace RISE
 	///          explicit requests aren't silently downgraded.
 	///
 	/// The actually-selected device type is logged on first denoise
-	/// (e.g. "OIDN: creating Metal device (one-time per rasterizer)")
+	/// (e.g. "OIDN: creating Metal device (cached while backend request is unchanged)")
 	/// so it's easy to confirm GPU acceleration is on after a render.
 	enum class OidnDevice
 	{

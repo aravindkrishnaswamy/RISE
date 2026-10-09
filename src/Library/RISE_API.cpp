@@ -9173,7 +9173,7 @@ namespace RISE
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -9229,7 +9229,7 @@ namespace RISE
 								const Scalar lambda_end,			///< [in] nm to end sampling at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls

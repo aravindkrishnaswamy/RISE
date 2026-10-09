@@ -57,6 +57,8 @@ namespace RISE
 			virtual Scalar	emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm ) const;
 			virtual RISEPel	averageRadiantExitance() const;
 			virtual Scalar	averageRadiantExitanceNM( const Scalar nm ) const;
+			virtual RISEPel	radiantExitanceAt( const RayIntersectionGeometric& ri ) const;
+			virtual Scalar	radiantExitanceAtNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual Vector3 getEmmittedPhotonDir( const RayIntersectionGeometric& ri, const Point2& random ) const;
 		};
 	}

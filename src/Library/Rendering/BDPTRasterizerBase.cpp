@@ -328,8 +328,8 @@ void BDPTRasterizerBase::RasterizeScene(
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 
 #ifdef RISE_ENABLE_OIDN
-	// Stamp render-start wall clock so the OIDN auto-quality heuristic
-	// can compute render_seconds / megapixels at denoise time.
+	// Stamp render-start wall clock for duration telemetry.
+	// Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
 
@@ -1262,11 +1262,11 @@ void BDPTRasterizerBase::RasterizeScene(
 			mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 				pRect->left, pRect->top, pRect->right, pRect->bottom,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+				EstimateDenoiseWorkPerMegapixel() );
 		} else {
 			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+				EstimateDenoiseWorkPerMegapixel() );
 		}
 	}
 #endif

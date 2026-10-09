@@ -58,10 +58,18 @@ namespace RISE
 			TriangleAreasList		areasCDF;			// Cumulative density function of the triangle areas
 			Scalar					totalArea;			// Total area
 
+            // Intrinsic winding audit, refreshed with the area cache on real
+            // mesh mutation. Shared instances/preparation only read it.
+            bool smsUncertainNormalOrientation = true;
+            unsigned long long smsOrientationAudits = 0, smsOrientationTriangleVisits = 0;
+
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas();
 
 		public:
+            bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
+            unsigned long long SMSOrientationAudits() const {return smsOrientationAudits;}
+            unsigned long long SMSOrientationTriangleVisits() const {return smsOrientationTriangleVisits;}
 			TriangleMeshGeometry(
 				const bool bDoubleSided_
 				);
@@ -114,6 +122,9 @@ namespace RISE
 			void DoneTriangles( ) override;						// I'm done feeding you a bunch of triangles
 
 			const MyTriangleList	getTriangles() const{ return polygons; }
+            // Extended SMS only: constant-time edge classification from the
+            // actual primitive/barycentrics stamped by the intersector.
+            Scalar NativeTriangleEdgeDistance(const RayIntersectionGeometric& hit) const;
 
 			// From TreeElementProcessor
 			typedef const Triangle*	MYOBJ;

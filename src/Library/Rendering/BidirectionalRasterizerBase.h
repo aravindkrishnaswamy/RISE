@@ -51,6 +51,9 @@ namespace RISE
 		class BidirectionalRasterizerBase : public virtual PixelBasedRasterizerHelper
 		{
 		protected:
+#ifdef RISE_ENABLE_OIDN
+			double DenoiseWorkPerMegaSample() const override { return 0.6; }
+#endif
 			mutable SplatFilm*				pSplatFilm;
 			mutable IRasterImage*			pScratchImage;		///< Scratch buffer for splat composition
 			mutable Scalar					mSplatTotalSamples;	///< Cached for progressive resolve
@@ -96,7 +99,7 @@ namespace RISE
 			/// Returns a scratch image with resolved splats composited
 			/// on top of the current primary, for progressive display.
 			/// Scratch buffer is lazily allocated on first call.
-			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const override;
 
 			/// Copy `src` into the scratch buffer and resolve the splat
 			/// film on top.  Shared body for the Flush* overrides that

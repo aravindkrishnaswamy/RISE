@@ -125,6 +125,42 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////////////
+		// PTSMSLaneStream (sms-ext Phase 4 review; DL-453).
+		//
+		// The sampler stream one HWSS-lane SMS evaluation (light sample
+		// plus the solver's seeds, extended or legacy) draws from at PT
+		// vertex `depth`, wavelength lane / RGB component `lane` (0..3).
+		// PT's vertex stream (`StartStream( 16 + depth )`) holds NEE, SMS
+		// and the PART 3 scatter in order; an HWSS vertex runs NEE and SMS
+		// once per lane, which overran the stream's kStreamStride slots
+		// into the next vertex's (SobolDimensionBudgetTest Test I).  Every
+		// HWSS lane's SMS evaluation therefore draws from a forked sampler
+		// positioned at this stream (SobolSampler::ForkStream) -- extended
+		// since Phase 4, legacy since DL-453 (one bundle is either legacy
+		// or extended, so the two never share a (depth, lane) stream in
+		// one sample).  The RGB and NM bodies run SMS once per vertex and
+		// keep the vertex stream.  (Named PTExtendedSMSStream until
+		// DL-453.)
+		//
+		// [141312, 145408): past BDPT/VCM's fixed-budget deep-walk block
+		// (which ends at 141266; PT never shares a sampler with BDPT, but
+		// the documented map stays collision-free), wrap counts 552..567.
+		// `depth` is taken mod 1024: PT depths >= 1024 (SetMaxPathDepth is
+		// unclamped, default 128) share streams with depth - 1024.
+		//////////////////////////////////////////////////////////////////////
+		static const int kPTSMSLaneStreamBase = 141312;
+		static const unsigned int kPTSMSLanes = 4;
+		static const unsigned int kPTSMSLaneDepthCap = 1024;
+		static const int kPTSMSLaneStreamEnd = kPTSMSLaneStreamBase +
+			static_cast<int>( kPTSMSLanes * kPTSMSLaneDepthCap );
+
+		inline int PTSMSLaneStream( const unsigned int depth, const unsigned int lane )
+		{
+			return kPTSMSLaneStreamBase + static_cast<int>(
+				kPTSMSLanes * ( depth % kPTSMSLaneDepthCap ) + ( lane % kPTSMSLanes ) );
+		}
+
+		//////////////////////////////////////////////////////////////////////
 		// Russian Roulette
 		//////////////////////////////////////////////////////////////////////
 

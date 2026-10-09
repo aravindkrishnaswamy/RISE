@@ -66,6 +66,7 @@ void SMSShaderOp::PerformOperation(
 	IndependentSampler fallbackSampler( rc.random );
 	ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
+	// Dedicated SMSShaderOp has no PT suppression partner and stays legacy.
 	// SMS receiver normal: pass BOTH the geometric and shading normals
 	// so the solver can use shading for BSDF eval / cosine factor and
 	// geometric for probe-direction fallback / chain-topology decisions.
@@ -78,7 +79,7 @@ void SMSShaderOp::PerformOperation(
 		woOutgoing,
 		*pScene,
 		caster,
-		smsSampler, &ior_stack );
+		smsSampler, &ior_stack, &ri.geometric, true );
 
 	if( sms.valid )
 	{
@@ -131,7 +132,7 @@ Scalar SMSShaderOp::PerformOperationNM(
 		*pScene,
 		caster,
 		smsSamplerNM,
-		nm, &ior_stack );
+		nm, &ior_stack, &ri.geometric, true );
 
 	if( sms.valid )
 	{

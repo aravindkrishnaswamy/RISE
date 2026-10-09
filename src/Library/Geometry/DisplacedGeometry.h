@@ -187,6 +187,7 @@ namespace RISE
 			// future caller realizes off-thread; in practice realization is
 			// single-threaded.  Same lightweight static-counter pattern as
 			// TriangleMeshGeometryIndexed's s_nextGeometryId.
+            bool HasUncertainSMSNormalOrientation() const;
 			static unsigned int GetBuildMeshCount();
 			static void         ResetBuildMeshCount();
 

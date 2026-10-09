@@ -18,9 +18,49 @@
 #include "../Utilities/IndependentSampler.h"
 #include "DirectLightingShaderOp.h"
 #include "DistributionTracingShaderOp.h"
+#include "PathTracingShaderOp.h"
+#include "ReflectionShaderOp.h"
+#include "RefractionShaderOp.h"
+#include "AreaLightShaderOp.h"
+#include "EmissionShaderOp.h"
+#include "FinalGatherShaderOp.h"
+#include "GlobalPelPhotonMapShaderOp.h"
+#include "GlobalSpectralPhotonMapShaderOp.h"
+#include "CausticPelPhotonMapShaderOp.h"
+#include "CausticSpectralPhotonMapShaderOp.h"
+#include "TranslucentPelPhotonMapShaderOp.h"
+#include "ShadowPhotonMapShaderOp.h"
+#include "SSS/SubSurfaceScatteringShaderOp.h"
+#include "SSS/DonnerJensenSkinSSSShaderOp.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace {
+    // These exact native providers overwrite their result independently of
+    // the incoming accumulator, including their early-return paths. Unknown
+    // providers and input-dependent alpha/transparency ops retain provenance.
+    bool SMSIndependentShaderResult(const IShaderOp& op) {
+        const auto& type=typeid(op);
+        return type==typeid(PathTracingShaderOp)
+            || type==typeid(ReflectionShaderOp)
+            || type==typeid(RefractionShaderOp)
+            || type==typeid(AreaLightShaderOp)
+            || type==typeid(EmissionShaderOp)
+            || type==typeid(FinalGatherShaderOp)
+            || type==typeid(GlobalPelPhotonMapShaderOp)
+            || type==typeid(GlobalSpectralPhotonMapShaderOp)
+            || type==typeid(CausticPelPhotonMapShaderOp)
+            || type==typeid(CausticSpectralPhotonMapShaderOp)
+            || type==typeid(TranslucentPelPhotonMapShaderOp)
+            || type==typeid(ShadowPhotonMapShaderOp)
+            || type==typeid(DirectLightingShaderOp)
+            || type==typeid(DistributionTracingShaderOp)
+            || type==typeid(SubSurfaceScatteringShaderOp)
+            || type==typeid(DonnerJensenSkinSSSShaderOp);
+    }
+    bool SMSReplacesShaderResult(char operation) {return operation=='=' || operation=='e';}
+}
 
 void AdvancedShader::ResolveChainFlagsForDepth(
 	unsigned int depth,
@@ -76,6 +116,10 @@ void AdvancedShader::Shade(
 		return;
 	}
 
+    const bool incomingReference=rc.smsReferenceRadiance;
+    SMSReferenceRadianceScope shaderReturn(rc);
+    if(c[0]!=0 || c[1]!=0 || c[2]!=0) rc.smsReferenceRadiance=incomingReference;
+
 	const ISPF* pSPF = ri.pMaterial?ri.pMaterial->GetSPF():0;
 
 	ScatteredRayContainer scattered;
@@ -96,7 +140,10 @@ void AdvancedShader::Shade(
 		const SHADE_OP& op = *i;
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
 			RISEPel cthis = c;
+            const bool accumulatedReference=rc.smsReferenceRadiance;
+            if(accumulatedReference && SMSIndependentShaderResult(*op.pShaderOp)) rc.smsReferenceRadiance=false;
 			op.pShaderOp->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+            if(!SMSReplacesShaderResult(op.operation)) rc.smsReferenceRadiance=accumulatedReference || rc.smsReferenceRadiance;
 			switch( op.operation ) {
 				default:
 				case 'a':
@@ -153,6 +200,7 @@ Scalar AdvancedShader::ShadeNM(
 	}
 
 	Scalar c = 0;
+    SMSReferenceRadianceScope shaderReturn(rc);
 
 	// DL-171/DL-209 -- see Shade's identical construction above.
 	IRayCaster::RAY_STATE rs2 = rs;
@@ -163,7 +211,10 @@ Scalar AdvancedShader::ShadeNM(
 	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
 		const SHADE_OP& op = *i;
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
+            const bool accumulatedReference=rc.smsReferenceRadiance;
+            if(accumulatedReference && SMSIndependentShaderResult(*op.pShaderOp)) rc.smsReferenceRadiance=false;
 			const Scalar cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+            if(!SMSReplacesShaderResult(op.operation)) rc.smsReferenceRadiance=accumulatedReference || rc.smsReferenceRadiance;
 
 			switch( op.operation ) {
 				default:

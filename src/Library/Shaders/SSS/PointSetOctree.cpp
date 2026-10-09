@@ -41,7 +41,7 @@ PointSetOctree::PointSetOctreeNode::~PointSetOctreeNode()
 		}
 
 		GlobalLog()->PrintDelete( pChildren, __FILE__, __LINE__ );
-		delete pChildren;
+		delete[] pChildren;
 		pChildren = 0;
 	}
 
@@ -75,71 +75,16 @@ void PointSetOctree::PointSetOctreeNode::MyBBFromParent(
 	BoundingBox& my_bb 
 	) const
 {
-	// Figure out our bouding box based on the parent's bounding box and which child
-	// we are... 
-	Point3 ptBoxCenter = Point3Ops::WeightedAverage2( bbox.ll, bbox.ur, 0.5 );
+    my_bb=bbox;
+    if(which_child==99) return;
+    const Point3 center=bbox.GetCenter();
+    // Exact sibling boxes. Membership below assigns the split plane to
+    // the upper child; outer endpoints remain included at the root.
+    my_bb.ll=Point3((which_child&1)?center.x:bbox.ll.x,
+        (which_child&2)?center.y:bbox.ll.y,(which_child&4)?center.z:bbox.ll.z);
+    my_bb.ur=Point3((which_child&1)?bbox.ur.x:center.x,
+        (which_child&2)?bbox.ur.y:center.y,(which_child&4)?bbox.ur.z:center.z);
 
-	const Scalar&	AvgX = ptBoxCenter.x;
-	const Scalar&	AvgY = ptBoxCenter.y;
-	const Scalar&	AvgZ = ptBoxCenter.z;
-
-	static const Scalar box_error = NEARZERO;
-
-	switch( which_child )
-	{
-	case 99:
-		// Entire bbox.  Pad by box_error so that points sitting exactly
-		// on the bbox boundary survive IsPointInsideBox's strict-`<`
-		// test, matching the per-octant cases below.  Without the pad,
-		// any sample plane that all kept points share (e.g. a caustic
-		// patch on a single box face, where every point's y == ur.y)
-		// gets fully rejected at the root and AddElements returns false.
-		my_bb.ll = Point3( bbox.ll.x-box_error, bbox.ll.y-box_error, bbox.ll.z-box_error );
-		my_bb.ur = Point3( bbox.ur.x+box_error, bbox.ur.y+box_error, bbox.ur.z+box_error );
-		break;
-	case 0:
-		// Sub node 1, same LL as us, UR as our center
-		my_bb.ll = Point3( bbox.ll.x-box_error, bbox.ll.y-box_error, bbox.ll.z-box_error );
-		my_bb.ur = Point3( ptBoxCenter.x+box_error, ptBoxCenter.y+box_error, ptBoxCenter.z+box_error );
-		break;
-	case 1:
-		// Sub node 2, almost the same LL as us, but x is now averaged with max
-		// UR is our UR but z and y is averaged with min
-		my_bb.ll = Point3( AvgX-box_error, bbox.ll.y-box_error, bbox.ll.z-box_error );
-		my_bb.ur = Point3( bbox.ur.x+box_error, AvgY+box_error, AvgZ+box_error );
-		break;
-	case 2:
-		// Sub node 3, almost same LL as us, but y is averaged. UR is same for y but x and 
-		// z are averaged
-		my_bb.ll = Point3( bbox.ll.x-box_error, AvgY-box_error, bbox.ll.z-box_error );
-		my_bb.ur = Point3( AvgX+box_error, bbox.ur.y+box_error, AvgZ+box_error );
-		break;
-	case 3:
-		// Sub node 4, LL.z is same as our LL but x and y are averaged, UR x and y are our UR but z is averaged
-		my_bb.ll = Point3( AvgX-box_error, AvgY-box_error, bbox.ll.z-box_error );
-		my_bb.ur = Point3( bbox.ur.x+box_error, bbox.ur.y+box_error, AvgZ+box_error );
-		break;
-	case 4:
-		// Sub node 5, LL x and y is our LL, z is averaged, UR z is our UR y and z are averaged
-		my_bb.ll = Point3( bbox.ll.x-box_error, bbox.ll.y-box_error, AvgZ-box_error );
-		my_bb.ur = Point3( AvgX+box_error, AvgY+box_error, bbox.ur.z+box_error );
-		break;
-	case 5:
-		// Sub node 6, LL x and z are averaged, y is our LL, UR, x and z are our UR and y is averaged
-		my_bb.ll = Point3( AvgX-box_error, bbox.ll.y-box_error, AvgZ-box_error );
-		my_bb.ur = Point3( bbox.ur.x+box_error, AvgY+box_error, bbox.ur.z+box_error );
-		break;
-	case 6:
-		// Sub node 7, LL y and z are averaged, x is our LL, UR, y and z are our UR and x is averaged
-		my_bb.ll = Point3( bbox.ll.x-box_error, AvgY-box_error, AvgZ-box_error );
-		my_bb.ur = Point3( AvgX+box_error, bbox.ur.y+box_error, bbox.ur.z+box_error );
-		break;
-	case 7:
-		// Sub node 8, LL is the center and UR is our UR
-		my_bb.ll = Point3( ptBoxCenter.x-box_error, ptBoxCenter.y-box_error, ptBoxCenter.z-box_error );
-		my_bb.ur = Point3( bbox.ur.x+box_error, bbox.ur.y+box_error, bbox.ur.z+box_error );
-		break;
-	};
 }
 
 const RISEPel& PointSetOctree::PointSetOctreeNode::AverageIrradiance(
@@ -153,7 +98,8 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 	const unsigned int maxElements,
 	const BoundingBox& bbox,
 	const char which_child,
-	const unsigned char max_recursion_level
+	const unsigned char max_recursion_level,
+    unsigned tree_level
 	)
 {
 	// We add the given elements to our section, 
@@ -163,7 +109,6 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 
 	// If children must be created we subdivide evenly into 8 children passing
 	// the element list
-	static unsigned int tree_level = 0;
 	tree_level++;
 
 	BoundingBox my_bb;
@@ -172,13 +117,18 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 	PointSet elements_list;
 	PointSet::const_iterator i, e;
 	for( i=points.begin(), e=points.end(); i!=e; i++ ) {
-		if( GeometricUtilities::IsPointInsideBox( i->ptPosition, my_bb.ll, my_bb.ur ) ) {
-			elements_list.push_back( *i );
-		}
+        const Point3& p=i->ptPosition;
+        if(which_child==99) {
+            if(p.x>=bbox.ll.x && p.x<=bbox.ur.x && p.y>=bbox.ll.y && p.y<=bbox.ur.y
+                && p.z>=bbox.ll.z && p.z<=bbox.ur.z) elements_list.push_back(*i);
+        } else {
+            const Point3 center=bbox.GetCenter();
+            const unsigned child=(p.x>=center.x?1u:0u)|(p.y>=center.y?2u:0u)|(p.z>=center.z?4u:0u);
+            if(child==unsigned(which_child)) elements_list.push_back(*i);
+        }
 	}
 
 	if( elements_list.size() < 1 ) {
-		tree_level--;
 		return false;
 	}
 
@@ -194,10 +144,11 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 		PointSet::const_iterator i, e;
 		for( i=pElements->begin(), e=pElements->end(); i!=e; i++ ) {
 			irrad = irrad + i->irrad;
+            smsReferenceRadiance = smsReferenceRadiance || i->smsReferenceRadiance;
 		}
-		irrad = irrad * (1.0/Scalar(pElements->size()) );
+		sampleCount = pElements->size();
+		irrad = irrad * (1.0/Scalar(sampleCount) );
 
-		tree_level--;
 		return true;
 	}
 	else
@@ -208,20 +159,22 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 
 		// Subdivision required
 		// Make eight children
-		pChildren = new PointSetOctreeNode*[8];
+		pChildren = new PointSetOctreeNode*[8]();
 		GlobalLog()->PrintNew( pChildren, __FILE__, __LINE__, "point set octree children" );
 
 		for( unsigned char x=0; x<8; x++ )
 		{
 			pChildren[x] = new PointSetOctreeNode( );
 			GlobalLog()->PrintNew( pChildren[x], __FILE__, __LINE__, "ChildNode" );
-			if( !pChildren[x]->AddElements( elements_list, maxElements, my_bb, x, max_recursion_level ) ) {
+			if( !pChildren[x]->AddElements( elements_list, maxElements, my_bb, x, max_recursion_level, tree_level ) ) {
 				GlobalLog()->PrintDelete( pChildren[x], __FILE__, __LINE__ );
 				delete pChildren[x];
 				pChildren[x] = 0;
 				numRejects++;
 			} else {
-				irrad = irrad + pChildren[x]->AverageIrradiance();
+				sampleCount += pChildren[x]->sampleCount;
+				irrad = irrad + pChildren[x]->AverageIrradiance() * Scalar(pChildren[x]->sampleCount);
+                smsReferenceRadiance = smsReferenceRadiance || pChildren[x]->smsReferenceRadiance;
 			}
 		}
 
@@ -230,16 +183,14 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 		if( numRejects == 8 ) {
 			GlobalLog()->Print( eLog_Error, "PointSetOctreeNode: I have elements but none of my children do!  Should never happen" );
 			GlobalLog()->PrintDelete( pChildren, __FILE__, __LINE__ );
-			delete pChildren;
+			delete[] pChildren;
 			pChildren = 0;
-			tree_level--;
-			return false;
+				return false;
 		}
 
-		irrad = irrad * (1.0/Scalar(8-numRejects) );
+		irrad = irrad * (1.0/Scalar(sampleCount) );
 	}
 
-	tree_level--;
 	return true;
 }
 
@@ -253,9 +204,17 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 	const IBSDF* pBSDF,
 	const RayIntersectionGeometric& rig,
 	const IORStack* pIorStack,
-	const Scalar exteriorIOR
+	const Scalar exteriorIOR,
+    bool* referenceRadiance
 	) const
 {
+    // A cached sample/node is an opaque mixed return. Propagate its tag
+    // only when its weighted value actually contributes to this evaluation.
+    const auto accumulate=[&](const RISEPel& term,bool tagged) {
+        c=c+term;
+        if(referenceRadiance && tagged && (term[0]!=0 || term[1]!=0 || term[2]!=0)) *referenceRadiance=true;
+    };
+
 	if( pChildren ) {
 		BoundingBox my_bb;
 		MyBBFromParent( bbox, which_child, my_bb );
@@ -269,7 +228,7 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 					// DL-291: forward the live IOR stack (DL-223 dropped it here, so
 					// every node below the root priced a stateful BSDF stacklessly)
 					// and the exterior index to every depth.
-					pChildren[i]->Evaluate( c, my_bb, i, point, pFunc, maxDistance, pBSDF, rig, pIorStack, exteriorIOR );
+					pChildren[i]->Evaluate( c, my_bb, i, point, pFunc, maxDistance, pBSDF, rig, pIorStack, exteriorIOR, referenceRadiance );
 				} else {
 					// Use the node's average irradiance as an estimate.
 					// DL-291: air (every shipped scene) keeps the original
@@ -277,16 +236,16 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 					// profile against it.
 					if( exteriorIOR == 1.0 ) {
 						if( pBSDF ) {
-							c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+							accumulate( pFunc.ComputeTotalExtinction( dist ) * (pChildren[i]->AverageIrradiance() * Scalar(pChildren[i]->sampleCount)) * pBSDF->valueStateful( vdir, rig, pIorStack ), pChildren[i]->smsReferenceRadiance );
 						} else {
-							c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance();
+							accumulate( pFunc.ComputeTotalExtinction( dist ) * (pChildren[i]->AverageIrradiance() * Scalar(pChildren[i]->sampleCount)), pChildren[i]->smsReferenceRadiance );
 						}
 					} else {
 						const RISEPel ext = pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR );
 						if( pBSDF ) {
-							c = c + ext * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+							accumulate( ext * (pChildren[i]->AverageIrradiance() * Scalar(pChildren[i]->sampleCount)) * pBSDF->valueStateful( vdir, rig, pIorStack ), pChildren[i]->smsReferenceRadiance );
 						} else {
-							c = c + ext * pChildren[i]->AverageIrradiance();
+							accumulate( ext * (pChildren[i]->AverageIrradiance() * Scalar(pChildren[i]->sampleCount)), pChildren[i]->smsReferenceRadiance );
 						}
 					}
 				}
@@ -303,9 +262,9 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 				const Vector3& vdir = Vector3Ops::mkVector3( i->ptPosition, point );
 				const Scalar dist = Vector3Ops::Magnitude( vdir );
 				if( pBSDF ) {
-					c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+					accumulate( pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ), i->smsReferenceRadiance );
 				} else {
-					c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad;
+					accumulate( pFunc.ComputeTotalExtinction( dist ) * i->irrad, i->smsReferenceRadiance );
 				}
 			}
 		} else {
@@ -314,9 +273,9 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 				const Scalar dist = Vector3Ops::Magnitude( vdir );
 				const RISEPel ext = pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR );
 				if( pBSDF ) {
-					c = c + ext * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+					accumulate( ext * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ), i->smsReferenceRadiance );
 				} else {
-					c = c + ext * i->irrad;
+					accumulate( ext * i->irrad, i->smsReferenceRadiance );
 				}
 			}
 		}

@@ -1093,7 +1093,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+				EstimateDenoiseWorkPerMegapixel() );
 
 			FlushDenoisedToOutputs( *pImage, 0, 0 );
 		} else
@@ -1225,7 +1225,7 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 
 				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-					GetRenderElapsedSeconds() );
+					EstimateDenoiseWorkPerMegapixel() );
 
 				FlushDenoisedToOutputs( *pImage, 0, frameIdx );
 			} else

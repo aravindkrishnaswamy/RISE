@@ -49,6 +49,8 @@ namespace RISE
 				GlobalLog()->PrintNew( pEmitter, __FILE__, __LINE__, "pEmitter" );
 			}
 			
+			const IMaterial& GetBaseMaterial() const { return pMaterial; }
+
 			/// \return The BRDF for this material.  NULL If there is no BRDF
 			inline IBSDF* GetBSDF() const {			return pMaterial.GetBSDF(); };
 

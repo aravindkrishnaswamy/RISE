@@ -63,8 +63,8 @@
 //             SMS-off parity, as are the review-round rows (a smooth
 //             SSS / polished caster seen with no SMS anchor, the HWSS
 //             SSS and no-BSDF hand-offs with and without an anchor); an
-//             anchored no-gap caster reflection is pinned SUPPRESSED
-//             (DL-339 (a)); the ior-1.0 perfect refractor plane is
+//             anchored no-gap caster reflection is parity under DL-372
+//             (the historical DL-339 (a) suppression is removed); the ior-1.0 perfect refractor plane is
 //             printed and the ior-1.5 open sheet (DL-339 (b)) is SMS-on
 //             vs SMS-off parity since DL-345.  Renders here are
 //             Sobol'-salted per (seed base, index) but NOT reproducible
@@ -104,9 +104,9 @@
 //             ratios.  No assertions -- a measurement aid.
 //
 //  SEEDING: argv[1] is an optional seed base (default 1000); every
-//  render calls std::srand( seedBase + renderIndex ) first -- the
-//  tests/FabricRenderTest.cpp convention (RISE renders are seeded from
-//  unsynchronized libc rand(), not the wall clock).
+//  render calls std::srand( seedBase + renderIndex ) and applies a
+//  Sobol value salt. RenderSalted preserves its caller-supplied salt;
+//  ordinary renders derive one from the seed base and render index.
 //
 //  OIDN is disabled on every rasterizer (the capture only overrides
 //  OutputImage, which the default OutputDenoisedImage would feed with
@@ -178,13 +178,8 @@ static void Check( bool condition, const std::string& testName )
 
 static unsigned int g_seedBase = 1000;
 static unsigned int g_renderIndex = 0;
-//! DL-295's section salts every render's Sobol' VALUE scramble with
-//! (seed base, render index) -- `SobolSamplerTestHooks::ValueSalt` -- so
-//! re-running the suite at another seed base is an INDEPENDENT
-//! randomized-QMC replicate (unsalted, every seed base reuses the
-//! identical Sobol' points and a seed sweep omits the QMC error).  Off
-//! (salt 0, the sampler's own points) everywhere else.
-static bool g_saltRenders = false;
+//! DL-355: every render uses its own randomized-QMC value salt.
+//! libc rand() alone leaves BDPT/VCM on one frozen Sobol point set.
 
 //! WEAVE_GAP_SPP_SCALE (env, measurement aid only): multiplies every
 //! gated row's sample count, to separate a structured (QMC) residual from
@@ -249,7 +244,7 @@ static void PixelLuminance( const CapturingRasterizerOutput& cap, std::vector<do
 	}
 }
 
-//! FNV-1a over the captured pixels' float bytes (the scenehash section).
+//! FNV-1a over the captured pixels' double bytes (the scenehash section).
 static unsigned long long PixelHash( const CapturingRasterizerOutput& cap )
 {
 	unsigned long long h = 1469598103934665603ull;
@@ -267,7 +262,7 @@ static unsigned long long PixelHash( const CapturingRasterizerOutput& cap )
 static unsigned long long g_lastPixelHash = 0;
 static std::vector<RISEColor> g_lastPixels;
 
-static double Render( const std::string& sceneText, const char* tag, std::vector<double>* pPixels = nullptr )
+static double Render( const std::string& sceneText, const char* tag, std::vector<double>* pPixels = nullptr, unsigned int explicitSalt = 0u )
 {
 	char path[512];
 	std::snprintf( path, sizeof(path), "/tmp/weave_gap_shadow_%s_%d.RISEscene",
@@ -279,16 +274,8 @@ static double Render( const std::string& sceneText, const char* tag, std::vector
 	}
 
 	std::srand( g_seedBase + g_renderIndex );
-	// Only the DL-295 section's global switch writes the salt here.  Every
-	// other caller leaves it as found: 0 (the default, and what
-	// `RenderSalted` restores) or `RenderSalted`'s own explicit salt.
-	// (DL-330 slice: this used to store 0 whenever the switch was off,
-	// silently discarding RenderSalted's salt -- its "salted repeats" all
-	// reused one Sobol' point set.)
-	if( g_saltRenders ) {
-		SobolSamplerTestHooks::ValueSalt().store(
-			SobolSequence::HashCombine( 0xD295u + g_seedBase, g_renderIndex ) );
-	}
+	SobolSamplerTestHooks::ValueSalt().store( explicitSalt ? explicitSalt
+		: SobolSequence::HashCombine( 0xD355u + g_seedBase, g_renderIndex ) );
 	g_renderIndex++;
 
 	double result = -1.0;
@@ -311,15 +298,15 @@ static double Render( const std::string& sceneText, const char* tag, std::vector
 		}
 		safe_release( pJob );
 	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	std::remove( path );
 	return result;
 }
 
 //! Render with an EXPLICIT Sobol' salt (P2-2, DL-294): BDPT's and VCM's
 //! Sobol' streams are keyed by pixel/sample index, not by libc `rand()`,
-//! so `Render`'s own `std::srand` increment leaves them BIT-IDENTICAL --
-//! every one of `Render`'s callers that repeats a scene without salting
-//! measures ONE fixed QMC realisation, not a distribution.  `salt` should
+//! so libc seed increments alone would leave them BIT-IDENTICAL.
+//! `Render` salts every call; this helper selects an explicit salt. `salt` should
 //! come from `SobolSequence::HashCombine` over a caller-chosen base so
 //! repeats are independent draws; reset to 0 after so this function's
 //! callers cannot leak a salt into unrelated `Render()` calls elsewhere
@@ -327,10 +314,25 @@ static double Render( const std::string& sceneText, const char* tag, std::vector
 static double RenderSalted( const std::string& sceneText, const char* tag, unsigned int salt,
 	std::vector<double>* pPixels = nullptr )
 {
-	SobolSamplerTestHooks::ValueSalt().store( salt );
-	const double result = Render( sceneText, tag, pPixels );
+	const double result = Render( sceneText, tag, pPixels, SobolSequence::HashCombine( g_seedBase, salt ) );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	return result;
+}
+
+//! Independent salted renders; no averaging of captures used by ROI tests.
+static double RenderMeanN( const std::string& sceneText, const char* tag, unsigned int n = 8 )
+{
+    double sum = 0, sum2 = 0;
+    for( unsigned int i = 0; i < n; ++i ) {
+        const double v = Render( sceneText, tag );
+        if( !( v >= 0 ) ) return -1;
+        sum += v;
+        sum2 += v*v;
+    }
+    const double mean=sum/n;
+    const double se=std::sqrt(std::max(0.0,(sum2-sum*mean)/(n*(n-1))));
+    std::cout << "  salted average " << tag << " n=" << n << " mean=" << mean << " SE=" << se << std::endl;
+    return mean;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -634,7 +636,7 @@ static void RunReceiverRows( const char* section, LightKind light, const std::ve
 {
 	for( const RowSpec& row : rows )
 	{
-		const double L0 = Render( Assemble( row.rast, ReceiverScene( light, false, 0.0, row.cam ) ), "l0" );
+		const double L0 = RenderMeanN( Assemble( row.rast, ReceiverScene( light, false, 0.0, row.cam ) ), "l0" );
 		Check( L0 > 0, std::string( section ) + " " + row.label + ": no-sheet control renders non-black" );
 		if( !( L0 > 0 ) ) continue;
 		std::cout << "  " << section << " " << row.label << ": L0 (no sheet) = " << L0 << std::endl;
@@ -642,7 +644,7 @@ static void RunReceiverRows( const char* section, LightKind light, const std::ve
 		for( int k = 0; k < nGaps; k++ )
 		{
 			const double g = gaps[k];
-			const double L = Render( Assemble( row.rast, ReceiverScene( light, true, g, row.cam ) ), "lg" );
+			const double L = RenderMeanN( Assemble( row.rast, ReceiverScene( light, true, g, row.cam ) ), "lg" );
 			Check( L >= 0, std::string( section ) + " " + row.label + ": sheet render produced output" );
 			const double ratio = L / L0;
 			char buf[256];
@@ -937,16 +939,34 @@ static void TestClosedFormOmni()
 // Before DL-05's CompositeSPF override the composite reported no
 // pass-through and PT read exactly 0 while BDPT read g^2 * L0.
 //////////////////////////////////////////////////////////////////////
+static void MeasureComposite( unsigned int n )
+{
+    std::vector<double> ratios;
+    for( unsigned int i = 0; i < n; ++i ) {
+        const double base = Render( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide ) ), "composite_base" );
+        const double gap = Render( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, true, 0.3, kWide, true ) ), "composite_gap" );
+        ratios.push_back( gap / base / 0.09 );
+        std::cout << "composite salted ratio " << ratios.back() << std::endl;
+    }
+    double mean = 0, ss = 0;
+    for( double q : ratios ) mean += q;
+    mean /= n;
+    for( double q : ratios ) ss += (q-mean)*(q-mean);
+    std::cout << "composite calibration: mean=" << mean << " sd=" << std::sqrt(ss/(n-1)) << " n=" << n << std::endl;
+}
+
 static void TestClosedFormComposite()
 {
 	std::cout << "=== composite: receiver under a composite of two gapped weaves (gap 0.3 each), spot light ===" << std::endl;
 	struct R { const char* label; std::string rast; double tol; };
-	const R rows[] = { { "PT RGB", RastPT( 64 ), 0.02 }, { "BDPT RGB", RastBDPT( 1024 ), 0.03 } };
+	const R rows[] = { { "PT RGB", RastPT( 64 ), 0.02 }, { "BDPT RGB", RastBDPT( 1024 ), 0.06 } };
+	// n=16 salted single-render relative ratio sd=0.088761; n=32
+	// gives SE=0.01569, so the BDPT 0.06 band is 3.82 SE.
 	const double g = 0.3, expected = g * g;
 	for( const R& r : rows )
 	{
-		const double L0 = Render( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kWide ) ), "c_l0" );
-		const double L  = Render( Assemble( r.rast, ReceiverScene( kSpot, true, g, kWide, true ) ), "c_lg" );
+		const double L0 = RenderMeanN( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kWide ) ), "c_l0", 32 );
+		const double L  = RenderMeanN( Assemble( r.rast, ReceiverScene( kSpot, true, g, kWide, true ) ), "c_lg", 32 );
 		char buf[256];
 		std::snprintf( buf, sizeof(buf), "composite %s: L/L0 = %.5f  (closed form g^2 = %.5f, rel err %+.3f%%)",
 			r.label, L / L0, expected, 100.0 * ( L / L0 / expected - 1.0 ) );
@@ -1773,7 +1793,6 @@ static std::string TwoChainScene( bool gap, bool slab1 )
 //! round-1 review scenes, to size the gated rows' sample counts.
 static void ProbeReviewScenes()
 {
-	g_saltRenders = true;
 	struct P { const char* label; std::string scene; bool hwss; };
 	const P rows[] = {
 		{ "floor SSS direct pel", CasterFloorScene( false, false, false ), false },
@@ -1806,8 +1825,6 @@ static void ProbeReviewScenes()
 		ParityRow( r.label, r.hwss ? RastPTSpectralSMS( spp, true, true ) : RastPTSMS( spp, true ),
 			r.hwss ? RastPTSpectralSMS( spp, true, false ) : RastPTSMS( spp, false ), r.scene, -1.0 );
 	}
-	g_saltRenders = false;
-	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
@@ -1815,7 +1832,6 @@ static void TestSMSEmissionThroughGap()
 {
 	std::cout << "=== sms: PT with sms_enabled, emission reached through a weave gap (DL-295) ===" << std::endl;
 	const double g = 0.3;
-	g_saltRenders = true;
 
 	// Closed forms, SMS on, black-yarn sheet (exact).  Pre-fix: every
 	// row but the env box reads 0.
@@ -1943,8 +1959,6 @@ static void TestSMSEmissionThroughGap()
 		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.0" ) ), -1.0 );
 	ParityRow( "area perfectrefractor ior 1.5 open sheet PT RGB (DL-339 (b) / DL-345)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
 		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.5" ) ), 0.03 );
-	g_saltRenders = false;
-	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
@@ -2108,9 +2122,9 @@ static void TestTwoLayerLightOutside()
 	for( const L& r : rows )
 	{
 		const std::string body = LayerScene( r.geom, r.gap, -3.0, res );
-		const double pt   = Render( Assemble( RastPT( spp ),   body ), "lay_pt" );
-		const double bdpt = Render( Assemble( RastBDPT( spp ), body ), "lay_bdpt" );
-		const double vcm  = Render( Assemble( RastVCM( spp ),  body ), "lay_vcm" );
+		const double pt   = RenderMeanN( Assemble( RastPT( spp ),   body ), "lay_pt" );
+		const double bdpt = RenderMeanN( Assemble( RastBDPT( spp ), body ), "lay_bdpt" );
+		const double vcm  = RenderMeanN( Assemble( RastVCM( spp ),  body ), "lay_vcm" );
 		Check( pt > 0 && bdpt > 0 && vcm > 0, std::string( "layers " ) + r.label + ": all three renders non-black" );
 		if( !( pt > 0 && bdpt > 0 && vcm > 0 ) ) continue;
 		char buf[256];
@@ -2186,35 +2200,15 @@ static void TestNarrowFovSplat()
 		Check( ptL0 > 0, "fovsweep: PT reference renders non-black" );
 		if( !( ptL0 > 0 ) ) continue;
 
-		// Tolerances: BDPT and VCM-without-merging are the pure splat
-		// on the gap render; their post-fix residuals are QMC-pattern
-		// and read <= 0.18 % at fov >= 2 (a single realisation), so 1 %
-		// is a >5x margin while the pre-fix -6.05 % (fov 2) fails by 5x.
-		// Full VCM's gap render additionally carries its merge-radius
-		// blur of the spot's penumbra (-1.05 +/- 0.07 % at fov 3, n = 4;
-		// -0.02 % with merging off, so not the splat), hence 2 %.  Every L0
-		// (no-sheet) row is NEE-dominated and reads <= 0.10 %; pre-fix
-		// full VCM's L0 read -1.42 % at fov 2 (its balance-heuristic
-		// splat share times the 6 % loss), so 0.5 %.
-		//
-		// P2-2 (external review, 2026-09-29): at fov 1 the per-pixel
-		// splat count is low enough that this is NOT a single-realisation
-		// tolerance question -- every render here is now SALTED (a real
-		// QMC draw, not the one fixed point the pre-review test measured,
-		// whose "sd 0.000" was an artifact of measuring only that one
-		// point), and fov 1's true salted spread is much wider than at
-		// other fovs: n = 8 salted repeats (`WEAVE_GAP_FILTER=dl294`,
-		// this binary's own salting, seed base 1000) read BDPT gap
-		// -0.410 +/- 0.344 % (sd) and VCM-merging-off gap -0.126 +/-
-		// 0.616 % (sd) at fov 1, against BDPT gap sd 0.240 % (fov 2),
-		// 0.089 % (fov 3), 0.035 % (fov 5), 0.033 % (fov 10) -- see
-		// `docs/DL294_NARROW_FOV_SPLAT.md` section 5 for the full
-		// salted table.  So only fov 1's gap band widens, to 0.03 (an
-		// ~8.7 sd margin on BDPT's 0.344 % and ~4.9 sd on VCM-merging-
-		// off's 0.616 %) for the three rows whose tolGap was 0.01 at
-		// other fovs; VCM RGB (with merging) keeps its 0.02 band at
-		// every fov, since its own merge-radius blur already sets it,
-		// not the splat noise this row is about.
+		// DL-390 corrected-salt audit (n=4, seed 1000): fov-1 gap
+		// sample sd is 0.946% BDPT, 0.394% VCM, 0.274% VCM-no-merge.
+		// Their 3%/2%/3% bands are 3.17/5.08/10.95 sample sd wide.
+		// At fov 2, BDPT/VCM/no-merge sd is 0.128/0.073/0.186%;
+		// at fov 3 it is 0.068/0.075/0.090%. Full VCM retains its
+		// ~1.1% merge-radius penumbra deficit at fov 3, inside 2%.
+		// Earlier helper-swallowed salt measurements in DL294's closure
+		// are historical, not the calibration for this corrected helper.
+		// Gaussian and remaining fovs: batch validation record.
 		struct R { const char* label; std::string rast; double tolGap; double tolGapFov1; double tolL0; bool edge; };
 		const R rows[] = {
 			{ "BDPT RGB",              RastBDPT( 1024 ),       0.01, 0.03, 0.005, true },
@@ -2340,6 +2334,24 @@ static void MeanSd( const std::vector<double>& v, double& mean, double& sd )
 	}
 }
 
+// Separate corrected-salt audit for the Gaussian-filter fov row.
+static void MeasureGaussianSweep()
+{
+    for(int k=0;k<kNumSweepFovs;++k) {
+        const double fov=kSweepFovs[k];
+        std::vector<double> ratios;
+        for(unsigned int t=0;t<4;++t) {
+            const unsigned int salt=SobolSequence::HashCombine(390u+unsigned(k),t);
+            const double base=RenderSalted(Assemble(RastPT(64),ReceiverScene(kSpot,false,0.0,kWide,false,std::string(),std::string(),fov)),"gm_base",salt);
+            const double gap=RenderSalted(Assemble(RastBDPTDefaultFilter(1024),ReceiverScene(kSpot,true,kSweepGap,kWide,false,std::string(),std::string(),fov)),"gm_gap",SobolSequence::HashCombine(salt,1u));
+            Check(base>0 && gap>=0,"Gaussian calibration finite and lit");
+            ratios.push_back(gap/(kSweepGap*base));
+        }
+        double mean,sd; MeanSd(ratios,mean,sd);
+        std::cout << "Gaussian fov=" << fov << " ratio=" << mean << " sd=" << sd << " n=4" << std::endl;
+    }
+}
+
 //! Opt-in (WEAVE_GAP_FILTER=dl330, argv[2] = n): the closed weave sphere
 //! (gap 0.3 and 0.0) lit from outside by the omni light (a DELTA light)
 //! and by a small spherical AREA emitter at the same place, PT / BDPT /
@@ -2351,7 +2363,7 @@ static void MeasureDL330( unsigned int nRepeats )
 {
 	std::cout << "=== dl330: closed weave sphere, omni vs small area light (24x24, 512 spp, n = "
 		<< nRepeats << ") ===" << std::endl;
-	g_saltRenders = true;
+
 	for( int light = 0; light < 2; light++ ) {
 		for( int gi = 0; gi < 2; gi++ ) {
 			const double gap = gi == 0 ? 0.3 : 0.0;
@@ -2390,7 +2402,7 @@ static void MeasureDL330( unsigned int nRepeats )
 				light == 0 ? "omni" : "area", gap, mp, sp, mb, sb, mv, sv, mb / mp, mv / mp );
 		}
 	}
-	g_saltRenders = false;
+
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
@@ -2423,7 +2435,7 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 	// `rand()` -- which no Sobol' stream reads -- so the "+/- sd" columns
 	// of section 5's table were ~0 by construction and every BDPT/PT and
 	// VCM/PT ratio there is ONE Sobol' point set, not a distribution.
-	g_saltRenders = true;
+
 	for( const T& r : rows )
 	{
 		if( rowFilter && !std::strstr( r.label, rowFilter ) ) continue;
@@ -2439,7 +2451,7 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 		std::printf( "  | %-34s | PT %.5f +/- %.5f | BDPT %.5f +/- %.5f | VCM %.5f +/- %.5f | BDPT/PT %.4f | VCM/PT %.4f |\n",
 			r.label, mp, sp, mb, sb, mv, sv, mb / mp, mv / mp );
 	}
-	g_saltRenders = false;
+
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
@@ -2589,7 +2601,6 @@ static void AuditMeans( double& whole, double& roi )
 
 static void MeasureCausticAudit( unsigned int n, unsigned int ptSpp, unsigned int vcmSpp )
 {
-	g_saltRenders = true;
 	const char* coverName[5] = { "no sheet (control)", "sheet over the whole emitter", "sheet over the x<0 half",
 		"no sheet, global fog", "no sheet, sphere ior 1.0" };
 	const char* only = std::getenv( "WEAVE_GAP_AUDIT_COVERS" );	// e.g. "34"; default "012"
@@ -2619,8 +2630,6 @@ static void MeasureCausticAudit( unsigned int n, unsigned int ptSpp, unsigned in
 		std::printf( "  dl295audit %-30s | ROI:   PT+SMS %.5f +/- %.5f  PT %.5f +/- %.5f  VCM %.5f +/- %.5f  | SMS/PT %.4f  SMS/VCM %.4f\n",
 			coverName[cover], m[0][1], sd[0][1], m[1][1], sd[1][1], m[2][1], sd[2][1], m[0][1] / m[1][1], m[0][1] / m[2][1] );
 	}
-	g_saltRenders = false;
-	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
@@ -2672,7 +2681,6 @@ static const unsigned int kSplitSpp = 256;
 //! n salted replicates of each gated split row, mean +/- sd of SMS on/off.
 static void MeasureSplitRows( unsigned int n )
 {
-	g_saltRenders = true;
 	struct M { const char* label; std::string scene; bool hwss; };
 	const M rows[] = {
 		{ "ball lens caustic, perfect refractor", BallLensCausticScene( false ), false },
@@ -2696,15 +2704,12 @@ static void MeasureSplitRows( unsigned int n )
 		MeanSd( q, m, sd );
 		std::printf( "  splitmeasure %-52s SMS on/off %.5f +/- %.5f (n %u)\n", r.label, m, sd, n );
 	}
-	g_saltRenders = false;
-	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
 static void TestSMSSplitSuppression()
 {
 	std::cout << "=== split: PT keeps the anchored emitter hits SMS's seed does not reach (DL-372 / DL-336) ===" << std::endl;
-	g_saltRenders = true;
 	// BANDS from MeasureSplitRows (single worker, seed base 1000, salted),
 	// docs/SMS_ENERGY_LOSS_INVESTIGATION.md section 7; each band holds the
 	// measured mean by >= 4 sd and excludes the pre-split value by > 40 sd.
@@ -2722,12 +2727,31 @@ static void TestSMSSplitSuppression()
 		RastPTSMS( kSplitSpp, true ), RastPTSMS( kSplitSpp, false ), BallLensCausticScene( true ), 0.99, 1.08 );
 	RatioBandRow( "ball lens caustic, perfect refractor HWSS (no-BSDF hand-off carries the record)",
 		RastPTSpectralSMS( kSplitSpp, true, true ), RastPTSpectralSMS( kSplitSpp, true, false ), BallLensCausticScene( false ), 0.96, 1.03 );
-	g_saltRenders = false;
-	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
 static char g_optPath[512] = { 0 };
+
+// Exact regression for DL-390: Render used to overwrite RenderSalted's
+// caller-supplied salt with zero, making four independent salts identical.
+static void TestExplicitSaltContract()
+{
+    const std::string scene = Assemble( RastBDPT( 64 ), ReceiverScene( kSpot, true, 0.3, kWide, true ) );
+    unsigned long long previous = 0;
+    const unsigned int startIndex=g_renderIndex;
+    const RandomNumberGenerator priorRng=GlobalRNG();
+    for( unsigned int i = 0; i < 4; ++i ) {
+        // Hold both RNGs fixed so only the explicit value salt changes.
+        GlobalRNG()=RandomNumberGenerator(390u);
+        g_renderIndex=startIndex;
+        const double v = RenderSalted( scene, "salt_contract", SobolSequence::HashCombine( 390u, i ) );
+        Check( v >= 0, "salt contract: valid render" );
+        if( i ) Check( g_lastPixelHash != previous, "salt contract: distinct value salts change BDPT point set" );
+        previous = g_lastPixelHash;
+    }
+    GlobalRNG()=priorRng;
+    g_renderIndex=startIndex+4;
+}
 
 int main( int argc, char** argv )
 {
@@ -2759,9 +2783,13 @@ int main( int argc, char** argv )
 		const long v = std::strtol( argv[1], nullptr, 10 );
 		if( v > 0 ) g_seedBase = (unsigned int)v;
 	}
+	std::srand(g_seedBase);
+	GlobalRNG()=RandomNumberGenerator(g_seedBase);
 	std::cout << "WeaveGapShadowTransmittanceTest (DL-05)   seed base = " << g_seedBase << std::endl;
 
 	const char* filter = std::getenv( "WEAVE_GAP_FILTER" );
+	if( filter && std::strstr( filter, "gaussianmeasure" ) ) { MeasureGaussianSweep(); return failCount ? 1 : 0; }
+	if( filter && std::strstr( filter, "compositemeasure" ) ) { MeasureComposite( 16 ); return 0; }
 	if( filter && std::strstr( filter, "dl294" ) ) {
 		unsigned int n = 4;
 		if( argc > 2 ) {
@@ -2819,6 +2847,7 @@ int main( int argc, char** argv )
 		return 0;
 	}
 
+	if( !filter || std::strstr( filter, "saltcontract" ) ) TestExplicitSaltContract();
 	if( !filter || std::strstr( filter, "query" ) )       TestQueryMatchesSampler();
 	if( !filter || std::strstr( filter, "closed" ) )      TestClosedFormOmni();
 	if( !filter || std::strstr( filter, "composite" ) )   TestClosedFormComposite();

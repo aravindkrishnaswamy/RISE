@@ -19,6 +19,39 @@
 #include "../Utilities/Profiling.h"
 #include "../Objects/CSGObject.h"   // telling a CSG operand from a container node (both are hidden)
 #include "../Interfaces/ISurfaceSignalProvider.h"	// ProximityDemand: the snapshot's cost gate
+#include "../Materials/CompositeMaterial.h"
+#include "../Materials/LambertianLuminaireMaterial.h"
+#include "../Materials/PhongLuminaireMaterial.h"
+#include "../Materials/CoatedMaterial.h"
+#include "../Materials/FabricMaterial.h"
+#include "../Utilities/ManifoldSolver.h"
+#include "../Materials/DielectricMaterial.h"
+#include "../Materials/PerfectRefractorMaterial.h"
+#include "../Materials/Material.h"
+#include "../Materials/LambertianMaterial.h"
+#include "../Materials/PerfectReflectorMaterial.h"
+#include "../Materials/PolishedMaterial.h"
+#include "../Geometry/TriangleMeshGeometry.h"
+#include "../Geometry/TriangleMeshGeometryIndexed.h"
+#include "../Geometry/DisplacedGeometry.h"
+#include "../Materials/WeaveMaterial.h"
+#include "../Materials/OrenNayarMaterial.h"
+#include "../Materials/CookTorranceMaterial.h"
+#include "../Materials/IsotropicPhongMaterial.h"
+#include "../Materials/AshikminShirleyAnisotropicPhongMaterial.h"
+#include "../Materials/SchlickMaterial.h"
+#include "../Materials/WardIsotropicGaussianMaterial.h"
+#include "../Materials/WardAnisotropicEllipticalGaussianMaterial.h"
+#include "../Materials/TranslucentMaterial.h"
+#include "../Materials/HairMaterial.h"
+#include "../Materials/DataDrivenMaterial.h"
+#include "../Materials/DonnerJensenSkinBSSRDFMaterial.h"
+#include "../Materials/SubSurfaceScatteringMaterial.h"
+#include "../Materials/RandomWalkSSSMaterial.h"
+#include "../Materials/GenericHumanTissueMaterial.h"
+#include "../Materials/BioSpecSkinMaterial.h"
+#include "../Materials/GGXMaterial.h"
+#include "../Materials/SheenMaterial.h"
 #include <atomic>
 #include "../Utilities/ISampler.h"
 #include <cmath>
@@ -31,6 +64,134 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace {
+
+// Inspect authored material graphs, never sampled specular metadata. A
+// composite nested under a luminaire or another wrapper remains unsupported.
+bool WrapsComposite(const IMaterial* material)
+{
+    if(!material) return false;
+    if(dynamic_cast<const CompositeMaterial*>(material)
+        || dynamic_cast<const CompositeSPF*>(material->GetSPF())) return true;
+    if(const auto* m = dynamic_cast<const LambertianLuminaireMaterial*>(material))
+        return WrapsComposite(&m->GetBaseMaterial());
+    if(const auto* m = dynamic_cast<const PhongLuminaireMaterial*>(material))
+        return WrapsComposite(&m->GetBaseMaterial());
+    if(const auto* m = dynamic_cast<const CoatedMaterial*>(material))
+        return WrapsComposite(&m->GetBase());
+    if(const auto* m = dynamic_cast<const FabricMaterial*>(material))
+        return WrapsComposite(&m->GetBase());
+    return false;
+}
+// Optional transmission hints do not certify an extension's metadata. Only
+// exact audited native types can establish absence of an unsupported clear
+// interface. Unknown providers conservatively make anchors ineligible.
+bool AuditedMaterialGraph(const IMaterial& material)
+{
+    const std::type_info& type=typeid(material);
+    if(type==typeid(LambertianLuminaireMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const LambertianLuminaireMaterial&>(material).GetBaseMaterial());
+    if(type==typeid(PhongLuminaireMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const PhongLuminaireMaterial&>(material).GetBaseMaterial());
+    if(type==typeid(CoatedMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const CoatedMaterial&>(material).GetBase());
+    if(type==typeid(FabricMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const FabricMaterial&>(material).GetBase());
+    return type==typeid(NullMaterial)
+        || type==typeid(LambertianMaterial)
+        || type==typeid(PerfectReflectorMaterial)
+        || type==typeid(PerfectRefractorMaterial)
+        || type==typeid(DielectricMaterial)
+        || type==typeid(PolishedMaterial)
+        || type==typeid(CompositeMaterial)
+        || type==typeid(LambertianLuminaireMaterial)
+        || type==typeid(PhongLuminaireMaterial)
+        || type==typeid(CoatedMaterial)
+        || type==typeid(FabricMaterial)
+        || type==typeid(WeaveMaterial)
+        || type==typeid(OrenNayarMaterial)
+        || type==typeid(CookTorranceMaterial)
+        || type==typeid(IsotropicPhongMaterial)
+        || type==typeid(AshikminShirleyAnisotropicPhongMaterial)
+        || type==typeid(SchlickMaterial)
+        || type==typeid(WardIsotropicGaussianMaterial)
+        || type==typeid(WardAnisotropicEllipticalGaussianMaterial)
+        || type==typeid(TranslucentMaterial)
+        || type==typeid(HairMaterial)
+        || type==typeid(DataDrivenMaterial)
+        || type==typeid(DonnerJensenSkinBSSRDFMaterial)
+        || type==typeid(SubSurfaceScatteringMaterial)
+        || type==typeid(RandomWalkSSSMaterial)
+        || type==typeid(GenericHumanTissueMaterial)
+        || type==typeid(BioSpecSkinMaterial)
+        || type==typeid(GGXMaterial)
+        || type==typeid(SheenMaterial);
+}
+// The delta-shadow gate covers clear transmission through every caster,
+// so a transmissive interface outside the proposal domain makes an anchor
+// ineligible. A remote supported caster cannot repair that missing coverage.
+// This is distinct from composite mode selection: rejection keeps PT and
+// disables SMS at the anchor; composites retain the entire legacy mode.
+bool ObjectHasClearTransmission(const IObject& object)
+{
+    const IMaterial* material = object.GetMaterial();
+    if(material && !AuditedMaterialGraph(*material)) return true;
+    const ISPF* spf = material ? material->GetSPF() : nullptr;
+    if(dynamic_cast<const DielectricSPF*>(spf) || dynamic_cast<const PerfectRefractorSPF*>(spf)
+        || (material && (material->CouldLightPassThrough() || material->HasDeltaPassThrough()))) return true;
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object))
+        return (csg->GetOperandA() && ObjectHasClearTransmission(*csg->GetOperandA()))
+            || (csg->GetOperandB() && ObjectHasClearTransmission(*csg->GetOperandB()));
+    return false;
+}
+bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
+{
+    const IMaterial* material = object.GetMaterial();
+    if(material && !AuditedMaterialGraph(*material)) return true;
+    const ISPF* spf = material ? material->GetSPF() : nullptr;
+    const bool nativeClear = dynamic_cast<const DielectricSPF*>(spf)
+        || dynamic_cast<const PerfectRefractorSPF*>(spf);
+    const bool transmissive = material && (nativeClear
+        || (material->CouldLightPassThrough() || material->HasDeltaPassThrough()));
+    if(transmissive && (!SMSDomainReplay::PotentialCaster(*material)
+        || object.GetInteriorMedium() || !object.GetGeometry()
+        || !object.GetGeometry()->CanBeAreaLight())) return true;
+    // A partial HG interface has no supported delta-limit query. Its
+    // scattering declaration must certify independence before a value can
+    // establish eligibility for the whole interface.
+    if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(material))
+        if(dielectric->GetHG() && !dielectric->GetScattering().IsPositionIndependent()) return true;
+    // A CSG hit can inherit a clear operand's material while the container
+    // itself has no material. Its complete surface has no uniform-sampling
+    // API, so even individually supported operands cannot give the required
+    // positive proposal mass for that effective caster.
+    if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmission(object)) return true;
+    return false;
+}
+// Native mesh intersections may orient their geometric normal to authored
+// shading normals before recording the ray-facing flip. Opposing corners
+// therefore cannot certify winding-derived medium membership. Mesh finalization
+// and mutation own the audit; preparation reads it without copying triangles.
+bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
+{
+    const IGeometry* geometry=object.GetGeometry();
+    if(!geometry || !object.GetMaterial() || !SMSDomainReplay::PotentialCaster(*object.GetMaterial())) return false;
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    if(const auto* mesh=dynamic_cast<const DisplacedGeometry*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    return false;
+}
+bool ObjectWrapsComposite(const IObject& object)
+{
+    if(WrapsComposite(object.GetMaterial())) return true;
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
+        return (csg->GetOperandA() && ObjectWrapsComposite(*csg->GetOperandA()))
+            || (csg->GetOperandB() && ObjectWrapsComposite(*csg->GetOperandB()));
+    }
+    return false;
+}
 
 // Process-wide monotonic source for spatial-structure generation values.
 // Each ObjectManager seeds its generation here at construction and draws
@@ -1110,6 +1271,7 @@ bool ObjectManager::DeepestOtherContainment(
 
 void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+    SMSRecordSceneIntersection();
 	RISE_PROFILE_PHASE(GeomPrimary);
 	RISE_PROFILE_INC(nPrimaryRays);
 
@@ -1162,13 +1324,23 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		}
 	}
 
+    CompleteShadingSignals(ri.geometric,ri.pObject);
+
+	if( !ri.geometric.bHit ) {
+		RISE_PROFILE_INC(nMisses);
+	}
+}
+
+void ObjectManager::CompleteShadingSignals(RayIntersectionGeometric& geometry,const IObject* object) const
+{
 	// THE CROSS-OBJECT SIGNAL STAMP (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
-	// §5.1).  ONE site, after traversal, on the WINNING record -- all three
+	// §5.1). ONE shared completion site: traversal passes its winning hit,
+	// and extended SMS passes a freshly intersected direct-object hit. All three
 	// branches above (BVH4, octree, linear) fall through to here, and the
 	// per-candidate `myRI` copy-back happens INSIDE traversal, so nothing
-	// downstream can overwrite what is written here.  `pSelf` is copied from
-	// `ri.pObject` rather than recomputed, so the two identities can never
-	// disagree: `Object::IntersectRay` and `CSGObject::IntersectRay` both set
+	// downstream can overwrite what is written here. The caller passes the
+	// current hit object as `pSelf` rather than recomputing its identity:
+	// `Object::IntersectRay` and `CSGObject::IntersectRay` both set
 	// `pObject` to themselves, so a CSG hit names the COMPOSITE and an operand
 	// -- never reached by the manager -- can never be `pSelf`.
 	//
@@ -1209,13 +1381,10 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		EnsureBoxSnapshot();
 	}
 
-	ri.geometric.signals.pScene  = this;
-	ri.geometric.signals.pSelf   = ri.pObject;
-	ri.geometric.signals.ptWorld = ri.geometric.ptIntersection;
+	geometry.signals.pScene  = this;
+	geometry.signals.pSelf   = object;
+	geometry.signals.ptWorld = geometry.ptIntersection;
 
-	if( !ri.geometric.bHit ) {
-		RISE_PROFILE_INC(nMisses);
-	}
 }
 
 bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
@@ -2053,6 +2222,40 @@ void ObjectManager::PrepareForRendering() const
 	// picking paths) reach PrepareForRendering before RayCaster::AttachScene's
 	// realize pass, and this is the funnel they share.  Idempotent.
 	RealizeAllObjects();
+
+    // One decision per preparation, including hidden CSG operands. No probes
+    // or IOR history can certify their absence under DL-407.
+    smsHasComposite = false;
+    smsFirstCompositeObject.clear();
+    for(const auto& item : items) {
+        if(ObjectWrapsComposite(*item.second.first)) {
+            smsHasComposite = true;
+            smsFirstCompositeObject = item.first.c_str();
+            break;
+        }
+    }
+    smsPolicyPrepared = true;
+    smsExtendedCasters.clear();
+    smsRejectedTransmissiveCaster = false;
+    smsUncertainNormalOrientation = false;
+    if(!smsHasComposite) {
+        for(const auto& item : items) {
+            const IObject* object = item.second.first;
+            if(object->IsWorldVisible() && ObjectHasUncertainSMSNormalOrientation(*object))
+                smsUncertainNormalOrientation = true;
+            if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object))
+                smsRejectedTransmissiveCaster = true;
+            if(object->IsWorldVisible() && object->GetGeometry()
+                && object->GetGeometry()->CanBeAreaLight() && object->GetMaterial()
+                && SMSDomainReplay::PotentialCaster(*object->GetMaterial()))
+                smsExtendedCasters.push_back(object);
+        }
+    }
+    if(smsHasComposite) {
+        GlobalLog()->PrintEx(eLog_Warning,
+            "Extended SMS is inert for this prepared scene: composite object '%s'; using legacy SMS and suppression.",
+            smsFirstCompositeObject.c_str());
+    }
 
 	// 87 step 2: RE-BAKE the hierarchy, every frame.  This is the whole of
 	// hierarchical animation.  On the animation path EvaluateAtTime runs

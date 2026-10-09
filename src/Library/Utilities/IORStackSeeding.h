@@ -34,7 +34,8 @@
 //    Shoot a probe ray in a fixed direction from the seed point and
 //    count, PER OBJECT, the net parity of exits-vs-entries along the
 //    probe.  An object contains the seed iff its net parity is
-//    positive (more exits than entries — the probe must cross its
+//    positive (with inward closed-solid winding normalized by signed containment;
+//    more exits than entries — the probe must cross its
 //    boundary one more time outward than inward to leave).
 //
 //    Counting exits-only is INCORRECT.  A probe that passes
@@ -119,6 +120,7 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IObject.h"
+#include "../Interfaces/IGeometry.h"
 #include "../Interfaces/SpecularInfo.h"
 #include "../Intersection/RayIntersection.h"
 
@@ -150,6 +152,7 @@ namespace RISE
 			Scalar ior;
 			int parity;
 			int firstExitStep;  // probe step of FIRST exit, for stack-order sort
+            int firstEntryStep; // inward-wound closed solids reverse these faces
 			// DL-46: true for a `hasInterior`-only (non-refracting,
 			// stateful) material -- push re-pushes the stack's CURRENT
 			// top instead of this entry's captured `ior`, matching
@@ -301,6 +304,7 @@ namespace RISE
 							e->ior = info.ior;
 							e->parity = 0;
 							e->firstExitStep = -1;
+                            e->firstEntryStep = -1;
 							e->repushParentIor = !info.canRefract;
 						}
 						if( e )
@@ -314,6 +318,7 @@ namespace RISE
 								}
 							} else {
 								e->parity--;
+                                if(e->firstEntryStep<0) e->firstEntryStep=step;
 							}
 						}
 					}
@@ -323,6 +328,24 @@ namespace RISE
 				probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
 				probe.Advance( kSeedEps );
 			}
+            // DL-444: a closed inward-wound mesh has negative signed face
+            // parity even when the point is inside. Normalize that sign only
+            // when the object's independent signed-distance query certifies
+            // containment. Open sheets keep the established face convention.
+            for(std::size_t i=0;i<count;++i) {
+                ProbeEntry& entry=out[i];
+                if(entry.parity>=0) continue;
+                const IGeometry* geometry=entry.pObj->GetGeometry();
+                if(!geometry) continue;
+                const Point3 local=Point3Ops::Transform(entry.pObj->GetFinalInverseTransformMatrix(),pos);
+                const BoundingBox box=geometry->GenerateBoundingBox();
+                const Scalar reach=Point3Ops::Distance(local,box.ll)+Vector3Ops::Magnitude(box.GetExtents());
+                Scalar signedDistance=0;bool exact=false;
+                if(geometry->SignedDistanceLower(local,reach,signedDistance,exact) && exact && signedDistance<0) {
+                    entry.parity=-entry.parity;
+                    entry.firstExitStep=entry.firstEntryStep;
+                }
+            }
 			return count;
 		}
 

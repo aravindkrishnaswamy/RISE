@@ -1100,6 +1100,65 @@ bool LightSampler::AcceptEmitterAlpha(
     return material->AcceptAlpha(alphaRI, sampler);
 }
 
+LightSampler::LuminaryExitance LightSampler::AverageLuminaryExitance( const IObject* pLum )
+{
+	LuminaryExitance result;
+	result.average = RISEPel( 0, 0, 0 );
+	result.uniform = true;
+
+	const IMaterial* pMaterial = pLum ? pLum->GetMaterial() : 0;
+	const IEmitter* pEmitter = pMaterial ? pMaterial->GetEmitter() : 0;
+	if( !pEmitter ) {
+		return result;
+	}
+	result.average = pEmitter->averageRadiantExitance();
+
+	// A luminary with no directly-owned geometry (a CSG composite) or no area
+	// has no surface to sample: the emitter's own average stands.
+	if( !pLum->GetGeometry() || !( pLum->GetArea() > 0 ) ) {
+		return result;
+	}
+
+	// Deterministic: a 10x10 stratified grid over the two surface coordinates
+	// (the same 100 points -- and the same cell centres -- the emitter's own UV
+	// grid used, which is what makes a UV-keyed painter on a parametric plane
+	// average identically), and a golden-ratio sequence on the third
+	// coordinate, which a triangle mesh uses to pick its triangle by area.
+	// No render RNG is consumed.
+	static const int kGrid = 10;
+	RISEPel sum( 0, 0, 0 );
+	RISEPel first( 0, 0, 0 );
+	bool uniform = true;
+	for( int gy = 0; gy < kGrid; gy++ ) for( int gx = 0; gx < kGrid; gx++ ) {
+		const int k = gy * kGrid + gx;
+		const Scalar z = Scalar( k + 1 ) * Scalar( 0.6180339887498949 );
+		const Point3 prand( ( Scalar( gx ) + Scalar( 0.5 ) ) / Scalar( kGrid ),
+			( Scalar( gy ) + Scalar( 0.5 ) ) / Scalar( kGrid ), z - Scalar( int( z ) ) );
+
+		Point3 position;
+		Vector3 normal;
+		Point2 coord;
+		pLum->UniformRandomPoint( &position, &normal, &coord, prand );
+
+		RayIntersectionGeometric rig( Ray(), nullRasterizerState );
+		FillEmitterRecord( rig, position, normal, coord, EmitterObjectPoint( pLum, position, rig.ptObjIntersec ) );
+
+		const RISEPel v = pEmitter->radiantExitanceAt( rig );
+		if( k == 0 ) {
+			first = v;
+		} else if( !( v.r == first.r && v.g == first.g && v.b == first.b ) ) {
+			uniform = false;
+		}
+		sum = sum + v;
+	}
+
+	if( !uniform ) {
+		result.average = sum * ( Scalar( 1 ) / Scalar( kGrid * kGrid ) );
+		result.uniform = false;
+	}
+	return result;
+}
+
 LightSampler::LightSampler() :
   pPreparedScene( 0 ),
   pPreparedLuminaries( 0 ),
@@ -1290,7 +1349,9 @@ void LightSampler::Prepare(
 			// the one-sided `M * A`.  Any PMF would be unbiased as long as
 			// both sides read the same one; this one is the physical power.
 			const bool twoSided = LuminaryIsTwoSided( luminaries[li].pLum );
-			const RISEPel power = pEmitter->averageRadiantExitance() * area *
+			// DL-431: the surface mean over this luminary's own points, not
+			// the emitter's construction-time estimate at P = Po = 0.
+			const RISEPel power = AverageLuminaryExitance( luminaries[li].pLum ).average * area *
 				EmitterSides::FaceCount( twoSided );
 			const Scalar exitance = ColorMath::MaxValue( power );
 			if( exitance > 0 )
@@ -1770,18 +1831,19 @@ bool LightSampler::SampleLight(
 
 		// THE SHADING PAYLOAD for this sampled point (slice S3 of
 		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).  Probed ONCE
-		// here and carried on the sample, because FIVE records are built
+		// here and carried on the sample, because consumers build records
 		// from this one point and every one of them must read the same
 		// channel: this `rig`, `GenerateLightSubpathImpl`'s NM hero `Le`
 		// rebuild, its HWSS companion-wavelength twin `rigW`, the BDPT
-		// `type == LIGHT` root vertex, and `VCMIntegrator`'s light-vertex
-		// NEE record.  Probing per consumer would cost five rays and --
+		// `type == LIGHT` root vertex, `VCMIntegrator`'s light-vertex
+		// NEE record, and SMS's solved-chain emission queries (DL-347).
+		// Probing per consumer would add redundant rays and --
 		// worse -- could disagree between the hero and its companion
 		// wavelengths, which is the spectral form of the very defect this
 		// slice closes.
 		//
 		// The probe is NORMAL-ALIGNED: no single direction is "the"
-		// direction this record is viewed from (the five consumers each
+		// direction this record is viewed from (the consumers each
 		// look from somewhere else), so it stands off along the sampled
 		// normal and fires back onto the point.  Since the round-2
 		// transport review the two NEE sites use this SAME entry point, so
@@ -1801,12 +1863,12 @@ bool LightSampler::SampleLight(
 
 		// `Po`, on the other hand, is NOT gated and costs no ray -- it is
 		// read by painters that register no signal demand.  Carried on the
-		// sample for the same five consumers, for the same reason.
+		// sample for the same consumers, for the same reason.
 		sample.ptObjIntersec = EmitterObjectPoint(
 			lumEntry.pLum, sample.position, sample.ptObjIntersec );
 
 		// DL-44: the surface UV `UniformRandomPoint` returned for this
-		// sample, carried for the same five rebuild sites `ptObjIntersec`
+		// sample, carried for the same rebuild sites `ptObjIntersec`
 		// is (see `LightSample::ptCoord`'s doc comment).  Ungated and
 		// ray-free, like `Po` above -- it is simply `coord`, already
 		// computed a few lines up.

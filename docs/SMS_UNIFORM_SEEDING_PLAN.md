@@ -2,7 +2,12 @@
 
 > **Status:** **COMPLETED EXECUTION PLAN.** Uniform/Mitsuba-faithful seeding,
 > multi-trial sampling, and the cited photon-aided extension shipped. Sections
-> called out below as branching-related are historical.
+> called out below as branching-related are historical. The phase goals
+> and the original deferred-debt list below are also historical: RGB and
+> NM uniform evaluators now both implement multi-trial biased sampling,
+> Bernoulli reciprocal-probability sampling, and biased photon supplements.
+> Current spectral index limitations are tracked in DEBT_LEDGER.md (DL-353
+> and its residual rows), rather than the original spectral-dispatch gap.
 >
 > **2026-05 update**: Path-tree branching (`branchingThreshold` + `BuildSeedChainBranching`) was excised from RISE.  Sections referencing Option C / Fresnel-branching / `branching_threshold` describe historical context and are no longer accurate for the live codebase.  SMS uniform mode now uses single-chain stochastic seeds with `multi_trials` for variance reduction — matches Mitsuba SOTA convention.
 

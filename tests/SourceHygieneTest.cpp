@@ -704,6 +704,13 @@ int main()
 
 	std::vector<std::string> offenders;
 	int scanned = 0;
+    // /Yu ignores declarations before the through-header on Windows.
+    for(const char* name : {"Object.cpp","CSGObject.cpp"}) {
+        std::ifstream in(testsDir.parent_path()/"src/Library/Objects"/name);
+        std::string line,firstInclude;
+        while(std::getline(in,line)) if(line.find("#include") == 0) {firstInclude=line;break;}
+        Check(firstInclude=="#include \"pch.h\"",std::string(name)+" preserves Windows PCH through-header declarations");
+    }
 
 	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
 		if( !entry.is_regular_file() ) { continue; }
@@ -752,9 +759,9 @@ int main()
 	// OutputImage; IRasterizerOutput::OutputDenoisedImage's default
 	// implementation forwards POST-denoise pixels there, and oidn_denoise
 	// defaults TRUE -- so a suite that never sets `oidn_denoise FALSE` is
-	// silently comparing OIDN-denoised images, and OIDN's timing-based
-	// `auto` quality flips between runs (debt-26 sibling sweep, 2026-09-05;
-	// see docs/skills/bdpt-vcm-mis-balance.md's "Sibling sweep" addendum).
+	// silently comparing OIDN-denoised images rather than the estimator.
+	// Auto is deterministic since DL-360; filtering still changes means.
+	// See docs/skills/bdpt-vcm-mis-balance.md's "Sibling sweep" addendum.
 	// Opt out with an "OIDN-DENOISED-OK" comment documenting why a suite
 	// is allowed to stay denoised.
 	//
@@ -4779,7 +4786,8 @@ int main()
 	// ---- `signals` is written in a CLOSED set of files, and nowhere else ----
 	// docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1.  The cross-object channel
 	// (`pScene` / `pSelf` / `ptWorld`) is stamped ONCE, at the tail of
-	// ObjectManager::IntersectRay, on the winning record -- and the whole
+	// ObjectManager::CompleteShadingSignals, called by scene traversal and
+	// extended SMS direct-object context completion -- and the whole
 	// design rests on one invariant: NOTHING assigns `signals` after that
 	// function returns.  A new assignment anywhere else would silently
 	// overwrite the stamp with a default-constructed channel and turn every
@@ -4792,7 +4800,7 @@ int main()
 	// does the writing, only that no NEW file has joined the set.  That is
 	// still the check that matters, because every hazardous addition would be
 	// in a new file (a new geometry intersector, a new transform layer, a new
-	// painter pipe) rather than smuggled into one of the ten below.
+	// painter pipe) rather than smuggled into one of the sanctioned files below.
 	//
 	// RED-PROVED by adding `ri.geometric.signals.primId = 3;` to a scratch
 	// copy of Rendering/RayCaster.cpp: the census reported RayCaster.cpp and
@@ -4829,6 +4837,7 @@ int main()
 		};
 
 		std::vector<std::string> writers;
+        bool nonindexedProvenanceOnly = true;
 		if( fs::exists( libDir ) ) {
 			for( const auto& e : fs::recursive_directory_iterator( libDir ) ) {
 				if( !e.is_regular_file() ) { continue; }
@@ -4855,7 +4864,20 @@ int main()
 				bool writes = false;
 				while( ( at = flat.find( "signals", at ) ) != std::string::npos ) {
 					const bool wholeWord = ( at == 0 || !Scan::IsIdentChar( flat[at-1] ) );
-					if( wholeWord && Scan::WritesAt( flat, at ) ) { writes = true; break; }
+					if( wholeWord && Scan::WritesAt( flat, at ) ) {
+                        writes = true;
+                        if( f.filename() == "TriangleMeshGeometrySpecializations.h" ) {
+                            size_t member = at + 7;
+                            if( member < flat.size() && flat[member] == ' ' ) ++member;
+                            const bool qualified = member < flat.size() && flat[member] == '.';
+                            if( qualified ) ++member;
+                            const size_t begin = member;
+                            while( member < flat.size() && Scan::IsIdentChar(flat[member]) ) ++member;
+                            const std::string field = flat.substr(begin, member-begin);
+                            nonindexedProvenanceOnly = nonindexedProvenanceOnly && qualified
+                                && (field == "pProvider" || field == "primId" || field == "baryA" || field == "baryB");
+                        }
+                    }
 					at += 1;
 				}
 				if( writes ) { writers.push_back( f.filename().string() ); }
@@ -4866,7 +4888,7 @@ int main()
 			std::cout << "  signals writer: " << w << std::endl;
 		}
 
-		// The TEN files allowed to write it, and why each one is:
+		// The sanctioned files allowed to write it, and why each one is:
 		//   BDPTIntegrator.cpp                         `v.signals = ri.geometric
 		//                                              .signals` at the eye and
 		//                                              light subpath generators.
@@ -4969,6 +4991,8 @@ int main()
 		//                                              SampleResult (DL-22).
 		//   RayIntersectionGeometric.h                 the record's own operator=
 		//   SDFGeometry.cpp                            the SDF intersector's stamp
+		//   TriangleMeshGeometrySpecializations.h       native primitive/barycentric
+        //                                              provenance only; no cross-object stamp.
 		//   TriangleMeshGeometryIndexedSpecializations.h   the mesh intersector's
 		const char* kAllowedSignalWriters[] = {
 			"BDPTIntegrator.cpp",
@@ -4985,21 +5009,18 @@ int main()
 			"RayIntersectionGeometric.h",
 			"SDFGeometry.cpp",
 			"TriangleMeshGeometryIndexedSpecializations.h",
+            "TriangleMeshGeometrySpecializations.h",
 		};
 		const size_t nAllowed = sizeof( kAllowedSignalWriters ) / sizeof( kAllowedSignalWriters[0] );
 		bool setMatches = ( writers.size() == nAllowed );
 		for( size_t i = 0; setMatches && i < nAllowed; ++i ) {
 			setMatches = ( writers[i] == kAllowedSignalWriters[i] );
 		}
+        Check( nonindexedProvenanceOnly,
+               "nonindexed mesh signal writes contain only primitive provenance, preserving cross-object stamps" );
 		Check( setMatches,
-		       "cross-object signal channel: `signals` is assigned ONLY in the thirteen files "
-		       "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 sanctions (seven that stamp or "
-		       "adopt it, the two that FORWARD the stamp onto a BDPTVertex and back out "
-		       "of it per docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3.1, the one "
-		       "that stamps a PROBED emitter record per that document's §5, and the three "
-		       "that stamp/forward live BSSRDF entry records per DL-22) -- a new writer "
-		       "would clobber ObjectManager::IntersectRay's pScene/pSelf/ptWorld stamp and "
-		       "silently turn every proximity() in the frame into its neutral 0" );
+               "cross-object signal channel: signal writers match the fifteen sanctioned files in "
+               "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md section 5.1; new writers require an audited stamp contract" );
 		if( !setMatches ) {
 			std::cout << "  expected exactly:" << std::endl;
 			for( size_t i = 0; i < nAllowed; ++i ) {

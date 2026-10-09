@@ -207,6 +207,7 @@ namespace
 	}
 
 	// Air configuration and its uniformly scaled twin (relative 1.33 both).
+	unsigned int g_seedOffset = 0;
 	const Scalar kAirExterior = 1.0;
 	const Scalar kAirInterior = 1.33;
 	const Scalar kScale = 1.5;
@@ -973,6 +974,7 @@ namespace
 	{
 	public:
 		std::vector<RISEColor> pixels;
+		unsigned int expectedSalt = 0;
 		CapturingRasterizerOutput() {}
 	protected:
 		virtual ~CapturingRasterizerOutput() {}
@@ -980,6 +982,7 @@ namespace
 		virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
 		virtual void OutputImage( const IRasterImage& image, const Rect*, const unsigned int ) override
 		{
+			if( expectedSalt ) Check( SobolSamplerTestHooks::ValueSalt().load() == expectedSalt, "independent value salt reaches the render" );
 			pixels.resize( size_t( image.GetWidth() ) * image.GetHeight() );
 			for( unsigned int y = 0; y < image.GetHeight(); y++ )
 				for( unsigned int x = 0; x < image.GetWidth(); x++ )
@@ -1151,9 +1154,12 @@ namespace
 		job->RemoveRasterizerOutputs();
 		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl49 capture" );
+		cap->expectedSalt = SobolSequence::HashCombine( seed, 0x332u );
 		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( seed, 0x332u ) );
 		std::srand( seed );
 		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double mean = -1;
 		if( rendered && !cap->pixels.empty() ) {
 			double sum = 0;
@@ -1196,34 +1202,27 @@ namespace
 		// so these rows are what pin BDPTVertex::mediumIOR on the entry
 		// vertices that PathVertexEval re-evaluates.
 		const Scalar kDense = 1.33 / 1.5;
-		// Bands: several times the measured sd of the ratio at these sample
-		// counts and far below the pre-DL-49 deviations of the same rows
-		// (both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md).  BDPT renders
-		// are deterministic for a fixed libc seed, and the pairs share one,
-		// so the BDPT diffusion rows read exactly 1 after the fix -- at THIS
-		// seed order only: common random numbers do not make the two sides
-		// bit-identical in general (the pre-DL-307 build reads 0.99958 on
-		// the rough row and 1.00336 on the dense row when either is run
-		// alone with --only, i.e. at the first seeds), because a path whose
-		// branch decisions differ in the last ulp diverges from its twin.
-		// DL-307 (2026-09-28) lets rough-SSS BDPT subpaths continue where
-		// they used to die, so more pairs diverge and the rough row read
-		// 1.0066 +/- 0.0066 at 32 spp -- a 1-sigma reading against a band
-		// the independent-sides noise never supported.  It now renders at
-		// 512 spp (ratio sd 0.0016, band 3.7 sd; 0.99881 in the full run,
-		// 0.99919 alone).
+		// DL-332: deliberately independent Sobol salts for BDPT/spectral pairs.
+		// RGB PT retains common random numbers. Full-suite calibration
+		// exposed more variance than isolated slices: at 2048 spp rough/
+		// dense BDPT ratio SE reached 0.002926/0.002847; at 256 spp
+		// spectral diffusion means differed by 0.0428 across two seeds.
+		// Raise their budgets to 8192/4096/1024 respectively, retaining
+		// bands 0.006/0.008/0.04. Five full salted runs measure the
+		// actual spread of each tested mean (validation record).
+		// Fixed libc seeds alone do not randomize BDPT's Sobol pattern.
 		const Row rows[] = {
 			{ Model::Lambertian,     Integrator::PT,         16,  0.02,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PT,         64,  0.02,  kAirInterior, kScale },
 			{ Model::DiffusionRough, Integrator::PT,         64,  0.01,  kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::BDPT,       32,  0.02,  kAirInterior, kScale },
-			{ Model::DiffusionRough, Integrator::BDPT,       512, 0.006, kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       512, 0.02,  kAirInterior, kScale },
+			{ Model::DiffusionRough, Integrator::BDPT,       8192, 0.006, kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::PTSpectral, 64,  0.04,  kAirInterior, kScale },
-			{ Model::RandomWalk,     Integrator::PTSpectral, 64,  0.05,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PTSpectral, 1024, 0.04,  kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::PTSpectral, 256, 0.05,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PT,         256, 0.008, kDense,       kScale },
-			{ Model::Diffusion,      Integrator::BDPT,       32,  0.005, kDense,       kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       4096, 0.008, kDense,       kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kDense,       kScale },
 			// DL-291 rows (bands set from measured sd; see
 			// docs/DL49_SSS_EXTERIOR_INDEX.md section 10).  The skin BDPT
@@ -1240,7 +1239,7 @@ namespace
 			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.03,  1.3 / 1.5,    kScale },
 			{ Model::LegacySkinOp,   Integrator::PixelPel,   4,   0.02,  1.4,          kScale },
 		};
-		unsigned int seed = 49000;
+		unsigned int seed = 49000 + g_seedOffset;
 		for( const Row& row : rows ) {
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) +
 				( row.airInterior < 1.0 ? "_dense" : "" ) + "/" + IntegratorName( row.integrator );
@@ -1251,15 +1250,12 @@ namespace
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
 			std::vector<double> air, scaled;
 			bool allValid = true;
-			// Interleave the two sides so machine-load drift cannot bias the
-			// ratio, and give each pair the SAME libc seed (common random
-			// numbers: the invariance says the two sides are the same
-			// function, so correlating their noise only tightens the ratio;
-			// the independent-sides sd printed below is then conservative).
+			// Interleave independent randomized-QMC replicates.
 			for( unsigned int t = 0; t < trials; ++t ) {
-				const unsigned int pairSeed = seed++;
+				const unsigned int pairSeed = seed;
+				seed += 2;
 				const double a = RenderMean( airPath, pairSeed, 1.0, t == 0, label + " air" );
-				const double s = RenderMean( scaledPath, pairSeed, row.exterior, t == 0, label + " enclosed" );
+				const double s = RenderMean( scaledPath, row.integrator == Integrator::PT ? pairSeed : pairSeed + 1, row.exterior, t == 0, label + " enclosed" );
 				if( !( a > 0 ) || !( s > 0 ) ) allValid = false;
 				air.push_back( a );
 				scaled.push_back( s );
@@ -1391,9 +1387,13 @@ namespace
 		job->RemoveRasterizerOutputs();
 		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl306 capture" );
+		const unsigned int salt = SobolSequence::HashCombine( seed, 0x399u );
+		cap->expectedSalt = salt ? salt : 399u;
 		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( cap->expectedSalt );
 		std::srand( seed );
 		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double h = -1;
 		const unsigned int side = 32;
 		if( rendered && cap->pixels.size() == size_t( side ) * side ) {
@@ -1428,8 +1428,9 @@ namespace
 	{
 		std::cout << "C: rendered R+T white furnace (DL-306), n=" << trials << std::endl;
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
-		// Bands: several times the measured sd of H at these sample counts,
-		// far below the pre-DL-306 deviations (docs/DL306_SSS_FRESNEL_PARTITION.md).
+		// Retain historical physics bands, with a per-row check that they
+		// cover at least three measured SDs of the salted mean H.
+		// Pre-DL-306 deviations: docs/DL306_SSS_FRESNEL_PARTITION.md.
 		const Row rows[] = {
 			{ Model::Lambertian, Integrator::PT,         64, 0.01, 1.0 },
 			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.05 },
@@ -1441,8 +1442,9 @@ namespace
 			{ Model::RandomWalk, Integrator::PTSpectral, 512, 0.01, 1.128 },
 			{ Model::Diffusion,  Integrator::PT,         64, 0.01, 1.05 },
 		};
-		unsigned int seed = 30600;
+		unsigned int rowIndex = 0;
 		for( const Row& row : rows ) {
+			unsigned int seed = 30600 + g_seedOffset + rowIndex++ * trials;
 			std::ostringstream lab;
 			lab << "C: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta;
 			const std::string label = lab.str();
@@ -1462,6 +1464,10 @@ namespace
 			const Stats st = Summarize( h );
 			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 ) << " spp=" << row.samples
 				<< ": H = <R>+<T> = " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			const double meanSD = st.sd / std::sqrt( double( trials ) );
+			std::cout << "    salted furnace mean SD=" << meanSD
+				<< " band/meanSD=" << ( meanSD > 0 ? row.band / meanSD : 0 ) << std::endl;
+			Check( 3.0 * meanSD < row.band, label + ": band covers three measured SDs of salted mean H" );
 			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": reflection + transmission partition H within band of 1" );
 		}
 	}
@@ -1532,7 +1538,7 @@ namespace
 			{ Model::RandomWalk, Integrator::PTSpectral, 256, 0.01,  1.5 },
 			{ Model::RandomWalk, Integrator::BDPT,       64,  0.01,  1.5 },
 		};
-		unsigned int seed = 31500;
+		unsigned int seed = 31500 + g_seedOffset;
 		for( const EncRow& row : encRows ) {
 			std::ostringstream lab;
 			lab << "E1: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta
@@ -2110,9 +2116,10 @@ int main( int argc, char** argv )
 		if( a == "--unit-only" ) unitOnly = true;
 		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
 		else if( a == "--diffusion-scattering" && i + 1 < argc ) kFurnaceDiffusionScattering = std::atof( argv[++i] );
+		else if( a == "--seed" && i + 1 < argc ) g_seedOffset = static_cast<unsigned int>( std::strtoul( argv[++i], nullptr, 10 ) );
 		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
 	}
-	if( trials < 2 ) trials = 2;
+	if( trials < 4 ) trials = 4;
 
 	std::cout << "=== DL-49 SSS exterior-index invariance ===" << std::endl;
 	TestProfileFresnel();

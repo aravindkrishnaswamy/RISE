@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/ManifoldSolver.h"
 #include "../Modifiers/ModifierFrame.h"
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
@@ -799,6 +800,7 @@ namespace
 
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
 {
+    SMSRecordObjectIntersection();
     ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
     ri.geometric.bHasShaderDirection=ri.geometric.bHasNormalMapFrame=false;
 	// The hitting of front and back faces are IGNORED for CSG objects!

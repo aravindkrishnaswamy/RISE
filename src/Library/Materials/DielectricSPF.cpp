@@ -151,6 +151,29 @@ static Scalar ARStackReflectance(
 	return RISE::ThinFilm::ReflectanceConductorStack( cosI, lam, N0, film, thick, nF, Ns );
 }
 
+bool DielectricSPF::EvaluateSpecularFresnelAfterRefraction(Scalar cosI,Scalar etaI,Scalar etaT,
+    bool exiting,Scalar nm,Scalar& reflectance) const
+{
+    if(arStack.nLayers==0) return false;
+    reflectance=ARStackReflectance(arStack,exiting,cosI,nm,etaI,etaT);
+    return true;
+}
+
+bool DielectricSPF::EvaluateSpecularFresnel( Scalar cosI, Scalar etaI, Scalar etaT,
+	bool exiting, Scalar nm, Scalar& reflectance ) const
+{
+	if( arStack.nLayers == 0 ) return false;
+	// Use the SPF's Snell/TIR classifier before evaluating its fixed film
+	// stack. Canonical incidence retains the caller's solved cosine/indices.
+	Vector3 refracted( std::sqrt( r_max( Scalar(0), Scalar(1)-cosI*cosI ) ), -cosI, 0 );
+	if( !Optics::CalculateRefractedRay( Vector3(0,1,0), etaI, etaT, refracted ) ) {
+		reflectance = 1;
+	} else {
+		EvaluateSpecularFresnelAfterRefraction(cosI,etaI,etaT,exiting,nm,reflectance);
+	}
+	return true;
+}
+
 //! Returns true if there was reflection
 Scalar DielectricSPF::GenerateScatteredRay(
 	ScatteredRay& dielectric,									///< [out] Scattered dielectric ray

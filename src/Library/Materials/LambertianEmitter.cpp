@@ -116,6 +116,16 @@ Scalar LambertianEmitter::averageRadiantExitanceNM( const Scalar nm ) const
 	return averageSpectrum.ValueAtNM( int(nm) );
 }
 
+RISEPel LambertianEmitter::radiantExitanceAt( const RayIntersectionGeometric& ri ) const
+{
+	return pRadEx->GetColor( ri ) * scale;
+}
+
+Scalar LambertianEmitter::radiantExitanceAtNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	return pRadEx->GetRadianceNM( ri, nm ) * scale;
+}
+
 Vector3 LambertianEmitter::getEmmittedPhotonDir( const RayIntersectionGeometric& ri, const Point2& random ) const
 {
 	return GeometricUtilities::CreateDiffuseVector( ri.onb, random );

@@ -125,10 +125,10 @@ namespace RISE
 			Scalar				m_max_distance_lut;		///< Conservative max distance across all grid points
 
 			// --- Per-object octrees (lazy init) ---
-			typedef std::map<const IObject*, PointSetOctree*> PointSetMap;
+			typedef std::map<std::pair<const IObject*,bool>, PointSetOctree*,PointSetOctree::ModeKeyLess> PointSetMap;
 			// Known scene-immutability exception: pointsets are lazily built on first
-			// access because construction requires ray tracing the scene. Access is
-			// serialized by create_mutex (one std::lock_guard'd find-or-build), thread-safe.
+			// access because construction requires ray tracing the scene. Map
+			// lookup/publication are serialized by create_mutex; shader capture is unlocked.
 			mutable PointSetMap	pointsets;
 			mutable RMutex		create_mutex;
 

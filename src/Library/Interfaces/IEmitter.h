@@ -62,6 +62,32 @@ namespace RISE
 			const Scalar nm												///< [in] Wavelength to process
 			) const = 0;
 
+		//! Radiant exitance AT the point @a ri describes (DL-431): the painter
+		//! value times the emitter's scale, with no cosine / lobe factor -- the
+		//! quantity `averageRadiantExitance` is the surface mean of.  The
+		//! default forwards to the average, which is exact for an emitter whose
+		//! exitance is uniform over its surface; every shipped emitter
+		//! overrides it, because a painter may be keyed on UV, world position
+		//! `P` or object position `Po`.  Callers hand it a record built by
+		//! `LightSampler::FillEmitterRecord`.
+		virtual RISEPel radiantExitanceAt(
+			const RayIntersectionGeometric& ri							///< [in] Record at the emitting point
+			) const
+		{
+			(void)ri;
+			return averageRadiantExitance();
+		}
+
+		//! Same as above for a particular wavelength.
+		virtual Scalar radiantExitanceAtNM(
+			const RayIntersectionGeometric& ri,							///< [in] Record at the emitting point
+			const Scalar nm												///< [in] Wavelength to process
+			) const
+		{
+			(void)ri;
+			return averageRadiantExitanceNM( nm );
+		}
+
 		//! Returns a random emmited photon direction for this material, assuming
 		//! the material has emmisive properties
 		/// \return Vector which represents the direction of photon emmision

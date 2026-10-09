@@ -62,6 +62,8 @@ namespace RISE
 		struct SMSPhotonChainVertex
 		{
 			Point3				position;
+			Point3				objectPosition;	///< Exact photon hit, including CSG child frame
+			Point2				uv;
 			Vector3				normal;			///< Shading normal at hit (post-modifier; BSDF-frame).
 												///< Drives Newton's half-vector constraint and chain-throughput
 												///< Fresnel cosine at the receiver-side reconstruction.
@@ -99,7 +101,7 @@ namespace RISE
 			unsigned char		flags;			///< bit 0: isExiting (photon-direction, refractions only); bit 1: isReflection (scatter chose reflection, not refraction).
 
 			SMSPhotonChainVertex() :
-				position( 0, 0, 0 ), normal( 0, 0, 0 ), geomNormal( 0, 0, 0 ),
+				position( 0, 0, 0 ), objectPosition( 0, 0, 0 ), uv( 0, 0 ), normal( 0, 0, 0 ), geomNormal( 0, 0, 0 ),
 				eta( 1.0 ), pObject( 0 ), pMaterial( 0 ), flags( 0 ) {}
 		};
 
@@ -107,8 +109,7 @@ namespace RISE
 		/// per photon.  Photons with longer chains are dropped at
 		/// trace time rather than spilling into a dynamic allocation.
 		/// Empirically k=7 covers 99.9% of paths on test scenes and
-		/// keeps sizeof(SMSPhoton) at ~560 bytes — ~5.4 MB for a 10k
-		/// photon pass, which is negligible.
+		/// bounds per-photon chain storage independently of scene size.
 		enum { kSMSMaxPhotonChain = 7 };
 
 		struct SMSPhoton

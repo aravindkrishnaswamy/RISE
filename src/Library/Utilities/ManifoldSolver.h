@@ -40,6 +40,16 @@
 #ifndef MANIFOLD_SOLVER_
 #define MANIFOLD_SOLVER_
 
+// Allows regression harnesses to invoke the shipped legacy entry points
+// when this implementation is replaced by committed master sources.
+#define RISE_SMS_DOMAIN_REPLAY 1
+#define RISE_SMS_SCENE_POLICY 1
+#define RISE_SMS_REFERENCE_A 1
+#define RISE_SMS_SCRATCH_COUNTERS 1
+#define RISE_SMS_NATIVE_EVENT_NORMALS 1
+#define RISE_SMS_FRESNEL_FALLBACK_DOMAIN 1
+#define RISE_SMS_EXTENDED_PARTITION 1
+
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Interfaces/IMaterial.h"
@@ -52,6 +62,7 @@
 #include "../Utilities/IORStack.h"
 #include <vector>
 #include <memory>
+#include <atomic>
 #include "../Intersection/RayIntersection.h"
 
 namespace RISE
@@ -83,6 +94,148 @@ namespace RISE
                 return true;
             }
             Scalar Estimate() const { return estimate; }
+        };
+
+        // Extended-domain records are separate from legacy vertex metadata.
+        struct SMSDomainCounters {
+            std::atomic<unsigned long long> attempts{0}, newtonIterations{0};
+            std::atomic<unsigned long long> acceptedRoots{0}, rejectedRoots{0};
+        };
+
+        struct SMSReferenceCounters {
+            std::atomic<unsigned long long> proposalTrials{0}, zeroTrials{0};
+            std::atomic<unsigned long long> retryTrials{0}, tailTrials{0}, rouletteStops{0};
+            std::atomic<unsigned long long> acceptedDiscoveries{0}, rejectedRoots{0}, ownedRoots{0};
+            std::atomic<unsigned long long> sceneIntersectionQueries{0}, objectIntersectionQueries{0}, materialQueries{0};
+            std::atomic<unsigned long long> scratchBufferGrowths{0}, scratchFrames{0}, scratchPeakBytes{0};
+            std::atomic<unsigned long long> retryHistogram[32]{}; // powers of two, last bucket saturates
+            // Estimator B (area-emitter partition). `retryTrials` counts every
+            // reciprocal trial of both estimators; `topologyRetryTrials` is the
+            // walk-only subset estimator B spends, so estimator A's root-level
+            // K is retryTrials - topologyRetryTrials.
+            std::atomic<unsigned long long> topologyRetryTrials{0}, canonicalSolves{0}, canonicalRoots{0};
+            // Draws requested from the canonical predicate's guard sampler.
+            // Any draw makes that answer uncertain (unowned); tests assert 0.
+            std::atomic<unsigned long long> canonicalSamplerDraws{0};
+            std::atomic<unsigned long long> partitionQueries{0}, partitionOwned{0}, partitionUncertain{0};
+            // Diagnostics of an unaccepted Newton projection of PT's chain
+            // (counted only when counters are attached): Newton itself
+            // failed; a canonical root of the same topology lies within
+            // 1e-3 / 1e-8 of the scale of every recorded PT vertex.
+            std::atomic<unsigned long long> projectionNewtonFailures{0};
+            std::atomic<unsigned long long> uncertainNearOwned{0}, uncertainAtOwned{0}, uncertainWithOwnedSet{0};
+            // Cost/consistency diagnostics: RGB queries answered by one
+            // shared classification, canonical sets reused within one B
+            // evaluation, robust projection retries that succeeded, and
+            // canonical roots B declined because PT's record of that very
+            // root would not classify owned (the symmetric rule).
+            std::atomic<unsigned long long> componentReuse{0}, canonicalCacheHits{0};
+            std::atomic<unsigned long long> robustProjections{0}, asymmetricRootsDeclined{0};
+        };
+
+        // Counts logical scene queries in the active extended diagnostic scope.
+        void SMSRecordSceneIntersection();
+        void SMSRecordObjectIntersection();
+
+        // Estimator A's reciprocal is conditional on the SAME channel and
+        // endpoint context as discovery. Proposal includes every zero trial.
+        // The weighted roulette sum is an estimate even when roulette stops;
+        // discarding it would bias the accepted discovery toward zero.
+        struct SMSRootReference {
+            template<class Root, class Proposal, class Match>
+            static Scalar Reciprocal(const Root& root, ISampler& retrySampler,
+                Proposal&& proposal, Match&& match, unsigned int budget,
+                bool roulette, SMSReferenceCounters* counters = nullptr) {
+                SMSReciprocalTail tail(budget);
+                unsigned long long trials = 0;
+                Scalar uncapped = 1;
+                for(;;) {
+                    ++trials;
+                    if(counters) {
+                        counters->retryTrials.fetch_add(1, std::memory_order_relaxed);
+                        if(trials > (budget ? budget : 1024))
+                            counters->tailTrials.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    decltype(auto) candidate = proposal(retrySampler);
+                    if(match(root, candidate)) break;
+                    if(roulette) {
+                        if(!tail.ContinueAfterFailure(retrySampler)) {
+                            if(counters) counters->rouletteStops.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        }
+                    } else ++uncapped;
+                }
+                if(counters) {
+                    unsigned int bucket = 0;
+                    for(auto n = trials; n > 1 && bucket < 31; n >>= 1) ++bucket;
+                    counters->retryHistogram[bucket].fetch_add(1, std::memory_order_relaxed);
+                }
+                return roulette ? tail.Estimate() : uncapped;
+            }
+            static Scalar Deposit(Scalar physicalContribution, Scalar reciprocal,
+                Scalar channelProbability, Scalar emitterProbability, unsigned int originalTrials);
+        };
+
+        // TEST-ONLY. Never set by production code, a parser or the public
+        // API (no production source references it; tests set and restore it
+        // around a render). When set, estimator B's area deposit is zeroed
+        // after its fixed parent draws while PT keeps applying ownership,
+        // so a render isolates the PT-kept set and shares every PT path
+        // with the full render. Left set, it would drop owned caustics.
+        struct SMSExtendedTestHooks {
+            static std::atomic<bool>& DropAreaContributions();
+        };
+
+        struct SMSQueryDomain {
+            enum Kind { RGBComponent, Wavelength } kind;
+            unsigned int component;
+            Scalar nm;
+            static SMSQueryDomain RGB(unsigned int c) { return {RGBComponent, c, 0}; }
+            static SMSQueryDomain NM(Scalar wavelength) { return {Wavelength, 0, wavelength}; }
+            bool Valid() const;
+        };
+        struct SMSNativeMaterialQuery {
+            Scalar index = 1;
+            Scalar attenuation = 1;
+            bool reflection = false, transmission = false;
+            bool dielectricInterface = false;
+            bool deltaLimitProxy = false; // adopted finite-Phong dielectric approximation
+            bool interiorTransmittance = false, reflectionTint = false;
+            bool customFresnel = false;
+        };
+        struct SMSMediumCapture {
+            const IObject* identity;
+            const IMaterial* material;
+            RayIntersectionGeometric context;
+            SMSMediumCapture(const IObject* object, const IMaterial* provider,
+                             const RayIntersectionGeometric& hit)
+                : identity(object), material(provider), context(hit) {}
+        };
+        struct SMSStartingMedia {
+            Scalar environmentIndex = 1;
+            std::vector<SMSMediumCapture> enclosing; // outermost first
+            bool reconstructible = false;
+        };
+        class SMSDomainReplay {
+        public:
+            // Static potential, not a sampled zero-lobe classification. A
+            // supported patch must retain proposal mass even if probes miss it.
+            static bool PotentialCaster(const IMaterial&);
+            // Neutral refusal for unrecognized providers, composites and spatial IOR.
+            static bool Query(const IMaterial&, const RayIntersectionGeometric&,
+                              const IORStack&, SMSQueryDomain, SMSNativeMaterialQuery&);
+            static bool Capture(const IScene&, const Point3&, const IORStack&, SMSStartingMedia&);
+            static bool BuildStack(const SMSStartingMedia&, SMSQueryDomain, IORStack&);
+            static bool EventWeight(const IMaterial&, const RayIntersectionGeometric&,
+                                    const IORStack&, SMSQueryDomain, bool reflection,
+                                    bool exiting, Scalar etaI, Scalar etaT,
+                                    Scalar segmentLength, Scalar& weight);
+            // Identity is a live scene object, not an opaque stack token. The caller
+            // retains the real hit context, including the open-sheet certificate.
+            // Reflection leaves membership unchanged; transmission applies the native crossing.
+            static bool Cross(const IMaterial&, const IObject*, const RayIntersectionGeometric&,
+                              SMSQueryDomain, bool reflection, IORStack&,
+                              Scalar& etaI, Scalar& etaT, bool& exiting);
         };
 
 		/// Data stored at each specular vertex during the manifold walk.
@@ -138,6 +291,7 @@ namespace RISE
 			Vector3				dpdv;			///< Position derivative w.r.t. second surface param (world space)
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)
 			Vector3				dndv;			///< Normal derivative w.r.t. second surface param (world space)
+			Point3				objectPosition;	///< Exact hit in the geometry/CSG child frame for Po painters
 			Point2				uv;				///< Surface parameters
 			Scalar				eta;			///< Surface MATERIAL'S IOR at this vertex (e.g. 1.5 for typical glass).  Kept for backward compatibility with callers that just want "the dielectric's nominal IOR".  For half-vector / Snell / Fresnel math, prefer (etaI, etaT) below — they encode the actual interface, including nested-dielectric cases where neither side is air.
 			Scalar				etaI;			///< IOR on the INCOMING (`wi`) side of the interface — Walter et al. 2007 notation η_i.  This is the medium the ray is travelling FROM as it hits this vertex.  Default 1.0 (air).
@@ -147,6 +301,10 @@ namespace RISE
 			///<
 			///< Populated by BuildSeedChain (RGB and NM variants) at the time of each hit, using the same `currentIOR` and IOR-stack the seed-trace already maintains.  Single-IOR scenes (the existing test corpus) get etaI=1.0 (entering) or etaT=1.0 (exiting), matching the old hardcoded defaults — so unchanged behaviour for those scenes.  ValidateChainPhysics may also fall back to `eta` when (etaI, etaT) are at default-1.0 for back-compat with hand-constructed chains.
 			RISEPel				attenuation;	///< Color attenuation at this vertex (e.g., colored glass refractance, mirror reflectance)
+			Scalar				attenuationNM;	///< Cached wavelength-resolved multiplier, filled by spectral seed/reconstruction queries.
+			bool				attenuationAppliesToReflection; ///< Native refractor tint is transmission-only.
+			bool				hasCustomSpecularFresnel; ///< Reuse the material SPF coating law at the solved angle.
+			bool				attenuationIsInteriorTransmittance;	///< Dielectric per-unit-distance tau; exiting transmission only.
 			bool				isReflection;	///< True if the chain ray bounces off (mirror, Fresnel reflection on glass, or TIR); false if it refracts through.
 			bool				canRefract;		///< True if the underlying material can refract (dielectric).  False for pure mirrors / conductors.  Selects the throughput law: dielectrics use Fresnel(cosI, η_i, η_t) (covers reflection, refraction, and TIR); mirrors take full reflectance from the painter without an angle-dependent Fresnel factor.  Default true so hand-constructed test chains and pre-existing back-compat callers behave as dielectrics — the prior implicit assumption.
 			bool				isExiting;		///< True if ray EXITS the object at this vertex (glass→air).  Set at seed-build time via IOR-stack object tracking.  Refraction-direction code uses this (NOT a local dot test) because a double-sided thin-sheet mesh can be crossed twice with the normal pointing in the same direction at both hits.
@@ -173,11 +331,16 @@ namespace RISE
 			geomNormal( Vector3(0,0,0) ),
 			dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 			dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
+			objectPosition( Point3(0,0,0) ),
 			uv( Point2(0,0) ),
 			eta( 1.0 ),
 			etaI( 1.0 ),
 			etaT( 1.0 ),
 			attenuation( 1.0, 1.0, 1.0 ),
+			attenuationNM( 1.0 ),
+			attenuationAppliesToReflection( true ),
+			hasCustomSpecularFresnel( false ),
+			attenuationIsInteriorTransmittance( false ),
 			isReflection( false ),
 			canRefract( true ),
 			isExiting( false ),
@@ -189,9 +352,21 @@ namespace RISE
 		};
 
 		/// Configuration for the manifold solver.
+        struct SMSDomainVertex {
+            ManifoldVertex geometry;
+            RayIntersectionGeometric context;
+            Scalar contextSlope = 0; // measured context and normalized native-Fresnel price change per physical displacement
+            explicit SMSDomainVertex(const RayIntersectionGeometric& hit) : context(hit) {}
+        };
+
 		struct ManifoldSolverConfig
 		{
 			bool			enabled;				///< Master switch: when false, no ManifoldSolver is created
+            bool extendedMode;             ///< Internal opt-in; no parser/API exposure.
+            SMSDomainCounters* domainCounters; ///< Optional diagnostics; caller owns lifetime.
+            SMSReferenceCounters* referenceCounters; ///< Optional estimator A diagnostics; caller owns lifetime.
+            Scalar extendedEventFloor;     ///< Positive exploration mass for both supported R/T events.
+
 			unsigned int	maxIterations;			///< Newton iteration limit
 			Scalar			solverThreshold;		///< Convergence threshold on ||C||
 			Scalar			uniquenessThreshold;	///< Threshold to distinguish solutions
@@ -321,6 +496,10 @@ namespace RISE
 
 			ManifoldSolverConfig() :
 			enabled( false ),
+            extendedMode( false ),
+            domainCounters( nullptr ),
+            referenceCounters( nullptr ),
+            extendedEventFloor( 0.05 ),
 			maxIterations( 15 ),
 			solverThreshold( 1e-4 ),
 			uniquenessThreshold( 1e-2 ),
@@ -360,6 +539,17 @@ namespace RISE
 			}
 		};
 
+        struct SMSDomainRoot {
+            SMSQueryDomain domain;
+            IORStack startingStack;
+            std::vector<SMSDomainVertex> vertices;
+            ManifoldResult result;
+            bool accepted = false;
+            Scalar scale = 1;
+            Scalar uncertainty = 0; // world-space last Newton correction plus coordinate roundoff
+            explicit SMSDomainRoot(SMSQueryDomain d, const IORStack& stack) : domain(d), startingStack(stack) {}
+        };
+
 		/// DL-372 / DL-336 split suppression: what PT carries from the SMS
 		/// ANCHOR (the non-delta vertex whose SMS evaluation estimates the
 		/// chain) through the delta chain to an emitter hit, so the hit can
@@ -375,12 +565,18 @@ namespace RISE
 				Point3			position;		///< PT's hit point at this delta vertex
 				Vector3			normal;			///< shading normal (post-modifier), as RayCaster published it
 				Vector3			geomNormal;		///< TRUE outward geometric normal (DL-70)
+				Point3			objectPosition;
 				Point2			uv;
 				const IObject*	pObject;
 				bool			isReflection;	///< the PT path stayed on the incident side here
 			};
 
 			bool			anchorValid;		///< the anchor's SMS inputs are recorded below
+			/// The anchor evaluated EXTENDED SMS (estimator B for area
+			/// emitters), so an emitter hit is owned only through
+			/// ManifoldSolver::ExtendedEmitterHitOwned.  False: a legacy
+			/// anchor, which keeps the split rule or suppress-all.
+			bool			extendedAnchor;
 			bool			broken;				///< the path left the specular-chain model (a medium scatter) -- no exact answer
 			Point3			anchorPos;
 			Vector3			anchorGeomNormal;
@@ -389,17 +585,18 @@ namespace RISE
 			unsigned int	count;				///< delta vertices since the anchor (may exceed kMaxVertices)
 			Vertex			v[kMaxVertices];
 
-			SMSChainRecord() : anchorValid( false ), broken( false ), anchorStack( 1.0 ), count( 0 ) {}
+			SMSChainRecord() : anchorValid( false ), extendedAnchor( false ), broken( false ), anchorStack( 1.0 ), count( 0 ) {}
 
 			//! A non-delta vertex that is NOT an SMS anchor (SPF-only,
 			//! BSSRDF): no SMS estimate covers what follows.
-			void Invalidate() { anchorValid = false; broken = false; count = 0; }
+			void Invalidate() { anchorValid = false; extendedAnchor = false; broken = false; count = 0; }
 
 			//! A new anchor: the vertex whose SMS evaluation recorded
 			//! these inputs scattered non-delta.
-			void SetAnchor( const Point3& p, const Vector3& gN, const Vector3& sN, const IORStack& s )
+			void SetAnchor( const Point3& p, const Vector3& gN, const Vector3& sN, const IORStack& s,
+				bool extended = false )
 			{
-				anchorValid = true; broken = false; count = 0;
+				anchorValid = true; extendedAnchor = extended; broken = false; count = 0;
 				anchorPos = p; anchorGeomNormal = gN; anchorShadingNormal = sN; anchorStack = s;
 			}
 
@@ -414,6 +611,7 @@ namespace RISE
 					w.normal = rig.vNormal;
 					w.geomNormal = rig.UnflippedGeomNormal();
 					w.uv = rig.ptCoord;
+					w.objectPosition = rig.ptObjIntersec;
 					w.pObject = pObj;
 					const Vector3& n = rig.vGeomNormal;
 					w.isReflection = Vector3Ops::Dot( dIn, n ) * Vector3Ops::Dot( dOut, n ) < 0;
@@ -446,6 +644,56 @@ namespace RISE
 		{
 		protected:
 			ManifoldSolverConfig config;
+            bool nativeEventConstraints = false; // Private extended solve instance; legacy instances stay false.
+            const std::vector<SMSDomainVertex>* nativeContexts = nullptr; // Borrowed only by a private solve instance.
+            Scalar nativeWavelength = 550; // Immutable private-solve domain, including fallback decisions.
+            ManifoldSolver(const ManifoldSolverConfig&, bool nativeEvents, const std::vector<SMSDomainVertex>* = nullptr, Scalar = 550);
+            const RasterizerState& NativeRaster(std::size_t i) const {
+                return nativeContexts && i<nativeContexts->size() ? (*nativeContexts)[i].context.rast : nullRasterizerState;
+            }
+            const IObjectManager* NativeSceneObjects(std::size_t i) const {
+                return nativeContexts && i<nativeContexts->size() ? (*nativeContexts)[i].context.signals.pScene : nullptr;
+            }
+            bool ComputeNativeVertexFrame(ManifoldVertex&, Scalar projectionDistance) const;
+            ManifoldResult SolveDomainCore(const Point3&,const Vector3&,const Point3&,const Vector3&,
+                const IScene&,const IORStack&,SMSQueryDomain,std::vector<SMSDomainVertex>&,ISampler&,Scalar,Scalar) const;
+            ManifoldResult SolveCore(const Point3&, const Vector3&, const Point3&, const Vector3&,
+                std::vector<ManifoldVertex>&, ISampler&, bool estimateLegacyPDF, Scalar convergenceThreshold = 0) const;
+            void SolveDomainCoreInto(const Point3&,const Vector3&,const Point3&,const Vector3&,
+                const IScene&,const IORStack&,SMSQueryDomain,std::vector<SMSDomainVertex>&,ISampler&,Scalar,Scalar,ManifoldResult&) const;
+            void SolveCoreInto(const Point3&,const Vector3&,const Point3&,const Vector3&,
+                std::vector<ManifoldVertex>&,ISampler&,bool,Scalar,ManifoldResult&) const;
+            bool BuildExtendedWalk(const Point3&,const Point3&,const IScene&,const IORStack&,
+                SMSQueryDomain,ISampler&,std::vector<SMSDomainVertex>&,const RasterizerState&,
+                const IObject*,const std::vector<SMSDomainVertex>*,const Vector3*) const;
+            // emitterObject null: a delta endpoint (any farther hit is unoccluded);
+            // otherwise the final segment must reach that luminary at `end`.
+            void FinalizeExtendedRootInto(const Point3&,const Vector3&,const Point3&,const Vector3&,
+                const IScene&,ISampler&,const RasterizerState&,SMSDomainRoot&,const IObject* emitterObject,
+                bool countRejection=true) const;
+            // Rebuild the domain topology of an actual PT delta chain by
+            // replaying its recorded vertices (objects, events, positions)
+            // from the anchor. Applies the walk's acceptance filters.
+            bool ReplayExtendedChain(const SMSChainRecord&,const IObject& luminary,const IScene&,
+                SMSQueryDomain,const RasterizerState&,SMSDomainRoot&,bool* customFresnel=nullptr) const;
+            // One classification of a recorded chain ending on `luminary` at
+            // the partition point y: 1 owned, 0 not owned (no replayable
+            // topology / not in the canonical set), -1 uncertain (PT's
+            // chain has no accepted projection). `ownedSet` reuses an
+            // already computed canonical set of the same (anchor,y,T).
+            int ClassifyExtendedChain(const SMSChainRecord&,const IObject& luminary,const Point3& y,
+                const Vector3& yNormal,const IScene&,SMSQueryDomain,const RasterizerState&,
+                const std::vector<SMSDomainRoot>* ownedSet) const;
+            // Static/scene inputs both sides of the area partition share.
+            bool ExtendedAreaPartitionApplies(const IScene&,const IRayCaster&,const IObject* luminary,
+                Scalar* pdfSelect) const;
+            void ProposeExtendedRootInto(const Point3&,const Vector3&,const Point3&,const IScene&,
+                const IORStack&,SMSQueryDomain,ISampler&,const RasterizerState&,SMSDomainRoot&) const;
+            RISEPel EvaluateExtendedDelta(const Point3&, const Vector3&, const Vector3&,
+                const OrthonormalBasis3D&, const IMaterial&, const Vector3&, const IScene&,
+                const IRayCaster&, ISampler&, const LightSample&, const IORStack&,
+                const RayIntersectionGeometric*, Scalar nm = 0) const;
+            std::atomic<bool> hwssExtendedWarningEmitted{false};
 			LightSampler* pLightSampler;
 
 			/// Optional photon-aided seeding pass.  Set once by the
@@ -475,6 +723,22 @@ namespace RISE
 
 		public:
 			ManifoldSolver( const ManifoldSolverConfig& cfg );
+            void WarnHWSSLegacyMode();
+            // Effective opt-in after the prepared scene-wide policy. Unknown
+            // or unprepared managers leave extended mode inert.
+            bool ExtendedModeActive(const IScene&) const;
+            // When extended mode is inert this returns true to preserve the
+            // existing contribution/suppression/shadow switches together.
+            bool ExtendedAnchorEligible(const IScene&, const IRayCaster&, const Point3&,
+                                        const IORStack&, Scalar nm = 0) const;
+            // HWSS (Phase 4): eligible[i] == ExtendedAnchorEligible(..., nm[i])
+            // for every i with evaluate[i] (false otherwise). Only the inputs
+            // that do not depend on the wavelength (global checks, modifier
+            // audit, starting-media capture) are evaluated once; the HG
+            // scattering test and the domain stack build run per lane.
+            void ExtendedAnchorEligibleNM(const IScene&, const IRayCaster&, const Point3&,
+                const IORStack&, const Scalar* nm, const bool* evaluate, unsigned int count,
+                bool* eligible) const;
 
 			/// Attach a photon-aided seed map.  Must be called AFTER the
 			/// map's Build() has completed (the map is read-only from
@@ -521,6 +785,61 @@ namespace RISE
 				std::vector<ManifoldVertex>& specularChain,
 				ISampler& sampler
 				) const;
+
+            // Domain-isolated solve. Proposals and production estimators are separate.
+            ManifoldResult SolveDomain(const Point3& start, const Vector3& startNormal,
+                const Point3& end, const Vector3& endNormal, const IScene& scene,
+                const IORStack& startingStack, SMSQueryDomain domain,
+                std::vector<SMSDomainVertex>& vertices, ISampler& sampler,
+                Scalar positionTolerance, Scalar convergenceThreshold = 0) const;
+
+            bool BuildExtendedSeed(const Point3& start, const Point3& end,
+                const IScene&, const IORStack&, SMSQueryDomain, ISampler&,
+                std::vector<SMSDomainVertex>&, const RasterizerState& = nullRasterizerState,
+                const IObject* selectedEmitter = nullptr) const;
+            SMSDomainRoot ProposeExtendedRoot(const Point3& start, const Vector3& startNormal,
+                const Point3& end, const IScene&, const IORStack&, SMSQueryDomain,
+                ISampler&, const RasterizerState& = nullRasterizerState) const;
+            // Shared bounded ownership policy. Seeds depend only on endpoints,
+            // topology and domain; no sampled vertex positions or retry history.
+            // Fixed first-caster surface seeds of the canonical predicate.
+            static const unsigned int kExtendedCanonicalSurfaceSeeds = 5;
+            // The returned roots are the OWNED set O(T,y) of estimator B and
+            // PT's suppression alike; an uncertain solve contributes nothing.
+            void CanonicalExtendedRoots(const Point3& anchor,const Vector3& anchorShadingNormal,
+                const IObject& luminary,const Point3& y,const Vector3& yNormal,const IScene&,
+                const SMSDomainRoot& topology,const RasterizerState&,std::vector<SMSDomainRoot>& owned,
+                const SMSDomainRoot* stopAt=nullptr) const;
+            // The partition's emitter point: `p` projected onto the luminary
+            // along `n`, removing a single-sided sampler's object-space 1e-5
+            // push. False (uncertain) unless the luminary is met within that
+            // push's world-space bound of `p`.
+            static bool ExtendedLuminaryPoint(const IObject& luminary,const Point3& p,const Vector3& n,Point3& out);
+            // PT side for RGB: per component c with evaluate[c], owned[c].
+            // When the three replayed component topologies are identical
+            // (objects, events, indices, membership, no coating Fresnel)
+            // one classification serves all three.
+            void ExtendedEmitterHitOwnedRGB(const SMSChainRecord& rec,const IObject& luminary,
+                const Point3& y,const Vector3& yNormal,const IScene&,const IRayCaster&,
+                const bool evaluate[3],bool owned[3],const RasterizerState& = nullRasterizerState) const;
+            // PT side of the area partition: does the canonical predicate own
+            // the actual chain recorded in `rec`, ending on `luminary` at `y`,
+            // in `domain`? False whenever the answer is uncertain.
+            bool ExtendedEmitterHitOwned(const SMSChainRecord& rec,const IObject& luminary,
+                const Point3& y,const Vector3& yNormal,const IScene&,const IRayCaster&,
+                SMSQueryDomain domain,const RasterizerState& = nullRasterizerState) const;
+            RISEPel EvaluateExtendedAreaReference(const Point3&,const Vector3&,const Vector3&,
+                const OrthonormalBasis3D&,const IMaterial&,const Vector3&,const IScene&,
+                const IRayCaster&,ISampler&,const LightSample&,const IORStack&,
+                const RayIntersectionGeometric* = nullptr,Scalar nm = 0,int rgbComponent = -1) const;
+            static bool SameExtendedTopology(const SMSDomainRoot&,const SMSDomainRoot&);
+            // partitionBand: the area partition's identity (full tolerance band
+            // for two converged solves of one canonical topology); false: the
+            // reference estimators' resolution-limited identity.
+            static bool SameExtendedRoot(const SMSDomainRoot&, const SMSDomainRoot&, Scalar tolerance,
+                bool partitionBand = false);
+            static Scalar ExtendedReflectionProbability(bool reflection, bool transmission,
+                Scalar fresnel, bool tir, Scalar explorationFloor);
 
 			/// Traces a seed ray from start toward end, collecting intersections
 			/// with specular objects to build the initial chain.
@@ -643,7 +962,9 @@ namespace RISE
 				) const;
 
 			/// Computes Fresnel-weighted transmittance/reflectance product
-			/// along a converged specular chain, including Beer's law attenuation.
+			/// along a chain. Boundary multipliers apply per event; dielectric
+			/// tau applies per world-unit distance on exiting transmission,
+			/// matching DielectricSPF. Participating-medium extinction is DL-419.
 			///
 			/// \return Per-channel attenuation factor for the chain
 			RISEPel EvaluateChainThroughput(
@@ -668,8 +989,9 @@ namespace RISE
 				RISEPel		contribution;	///< Total SMS contribution (BSDF * G * throughput * Le / pdf)
 				Scalar		misWeight;		///< MIS weight for this contribution
 				bool		valid;			///< True if a valid specular path was found
+                bool referenceA;    ///< Extended reference estimator (A: delta lights, B: area partition); unclamped.
 
-				SMSContribution() : contribution( RISEPel(0,0,0) ), misWeight( 1.0 ), valid( false ) {}
+				SMSContribution() : contribution( RISEPel(0,0,0) ), misWeight( 1.0 ), valid( false ), referenceA( false ) {}
 			};
 
 			/// Standalone SMS evaluation at a single shading point.
@@ -706,7 +1028,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr,
+                const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
 			/// Uniform-on-shape SMS evaluator (Mitsuba-faithful single- /
@@ -729,8 +1052,9 @@ namespace RISE
 			///      lines 32-42).
 			///
 			/// Selected at runtime by `config.seedingMode == eSeedingUniform`.
-			/// Geometric Bernoulli `1/p` (Phase 5) and photon-aided trial
-			/// integration (Phase 7) layer on top of this scaffold.
+			/// Biased mode sums unique roots from multiTrials area seeds and
+			/// optional photon seeds. Unbiased mode (also selected for alpha
+			/// coverage) uses Bernoulli `1/p` with area seeds only.
 			SMSContribution EvaluateAtShadingPointUniform(
 				const Point3& pos,
 				const Vector3& geomNormal,
@@ -741,7 +1065,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr,
+                const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
 			/// Spectral variant of SMS evaluation.
@@ -750,8 +1075,9 @@ namespace RISE
 				Scalar		contribution;
 				Scalar		misWeight;
 				bool		valid;
+                bool referenceA;
 
-				SMSContributionNM() : contribution( 0 ), misWeight( 1.0 ), valid( false ) {}
+				SMSContributionNM() : contribution( 0 ), misWeight( 1.0 ), valid( false ), referenceA( false ) {}
 			};
 
 			/// Spectral counterpart of `EvaluateAtShadingPointUniform`.
@@ -771,7 +1097,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				const Scalar nm,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr,
+                const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
 			SMSContributionNM EvaluateAtShadingPointNM(
@@ -785,7 +1112,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				const Scalar nm,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr,
+                const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
 			/// Tests whether the external segments of an SMS specular
@@ -869,6 +1197,8 @@ namespace RISE
 			///
 			/// Re-queries each vertex's material for `attenuation` /
 			/// `canRefract` (avoids relying on stale photon-deposit data).
+			/// Positive nm also re-queries spectral IOR; zero preserves RGB eta.
+			/// Restores exact UV and object-frame hit coordinates.
 			/// Sets `mv.valid = false` so `Solve` recomputes derivatives.
 			///
 			/// `mv.etaI` / `mv.etaT` stay at the default 1.0 — RISE's
@@ -883,7 +1213,8 @@ namespace RISE
 			///         when the photon's chain length is invalid.
 			unsigned int ReversePhotonChainForSeed(
 				const SMSPhoton& photon,
-				std::vector<ManifoldVertex>& chain
+				std::vector<ManifoldVertex>& chain,
+				Scalar nm = 0
 				) const;
 
 			/// Computes a single converged trial's contribution at the
@@ -905,6 +1236,9 @@ namespace RISE
 			/// mode), and by both their photon-aided extension paths.
 			/// The spectral counterpart `ComputeTrialContributionNM`
 			/// performs the same logic on `Scalar` per-wavelength.
+			/// outSmsGeometric reports the raw factor for the caller's sum clamp.
+			/// clampGeometric applies a positive maxGeometricTerm to this trial;
+			/// nonpositive limits disable clamping, as in the sum-clamp paths.
 			bool ComputeTrialContribution(
 				const Point3& pos,
 				const Vector3& geomNormal,
@@ -963,6 +1297,9 @@ namespace RISE
 
 			/// Subtracts 2x2 blocks: C = A - B.
 			static void Sub2x2( const Scalar* A, const Scalar* B, Scalar* C );
+
+			static Scalar EvaluateVertexFresnel( const ManifoldVertex& v, Scalar cosI, Scalar etaI, Scalar etaT, Scalar nm );
+			static RISEPel EvaluateVertexFresnelRGB( const ManifoldVertex& v, Scalar cosI, Scalar etaI, Scalar etaT );
 
 			/// Exact dielectric Fresnel reflectance (unpolarized average).
 			/// \param cosI     Cosine of incidence angle (positive)
@@ -1057,7 +1394,7 @@ namespace RISE
 				std::vector<ManifoldVertex>& chain,
 				const Point3& fixedStart,
 				const Point3& fixedEnd,
-				Scalar smoothing = 0.0
+				Scalar smoothing = 0.0, Scalar convergenceThreshold = 0
 				) const;
 
 			/// Evaluates the 2k-dimensional constraint vector.
@@ -1152,7 +1489,7 @@ namespace RISE
 				ManifoldVertex& vertex,
 				Scalar du,
 				Scalar dv,
-				Scalar smoothing = 0.0
+				Scalar smoothing = 0.0, bool referenceRefinement = false
 				) const;
 
 			/// Fills in surface derivative data (dpdu, dpdv, dndu, dndv)
@@ -1166,7 +1503,7 @@ namespace RISE
 			/// (default) preserves the legacy mesh-FD-probe behaviour.
 			bool ComputeVertexDerivatives(
 				ManifoldVertex& vertex,
-				Scalar smoothing = 0.0
+				Scalar smoothing = 0.0, bool referenceRefinement = false
 				) const;
 
 			/// Make dpdu, dpdv an orthonormal basis of the tangent plane

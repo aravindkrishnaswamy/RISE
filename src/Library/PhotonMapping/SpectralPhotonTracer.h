@@ -95,17 +95,20 @@ namespace RISE
             void TraceNPhotons(const unsigned int numPhotons, PhotonMapType* pPhotonMap,
                 const Scalar /*legacyTotalExitance*/, uint64_t& numshot, Scalar batchWeight = 1) const
             {
-                struct Source { const IObject* object; const ILightPriv* light; Scalar weight; };
+                struct Source { const IObject* object; const ILightPriv* light; Scalar weight; bool uniform; };
                 std::vector<Source> sources;
                 Scalar total = 0;
-                const auto add = [&](const IObject* object, const ILightPriv* light, Scalar weight) {
-                    if (weight > 0 && std::isfinite(weight)) { sources.push_back({object,light,weight}); total += weight; }
+                const auto add = [&](const IObject* object, const ILightPriv* light, Scalar weight, bool uniform = true) {
+                    if (weight > 0 && std::isfinite(weight)) { sources.push_back({object,light,weight,uniform}); total += weight; }
                 };
                 for (const auto& entry : pLumManager->getLuminaries()) {
                     const IObject* object = entry.pLum;
                     const bool twoSided = object->GetGeometry() && object->GetGeometry()->IsDoubleSided();
                     const Scalar area = object->GetArea()*EmitterSides::FaceCount(twoSided);
-                    add(object, nullptr, ColorMath::MaxValue(object->GetMaterial()->GetEmitter()->averageRadiantExitance())*area);
+                    // DL-431: weight by the luminary's own surface mean (the emitter's
+                    // construction-time average is taken at P = Po = 0).
+                    const LightSampler::LuminaryExitance mean = LightSampler::AverageLuminaryExitance(object);
+                    add(object, nullptr, ColorMath::MaxValue(mean.average)*area, mean.uniform);
                 }
                 for (unsigned int attempt = 0; attempt < numPhotons; ++attempt) {
                     ++numshot; // includes rejected alpha, zero power, and zero deposits
@@ -166,7 +169,10 @@ namespace RISE
 
 						// Each photon gets a different wavelength...
 						const Scalar nm = pPhotonMap->SampleWavelength(random.CanonicalRandom());
-						const Scalar power = pEmitter->averageRadiantExitanceNM(nm) * area * dPowerScale * batchWeight / q;
+						// DL-431: exitance AT the emission point (see PhotonTracer.h);
+						// a uniform luminary keeps the emitter's cached spectrum.
+						const Scalar exitanceNM = selected->uniform ? pEmitter->averageRadiantExitanceNM(nm) : pEmitter->radiantExitanceAtNM(rig, nm);
+						const Scalar power = exitanceNM * area * dPowerScale * batchWeight / q;
 
 						// Fresh per-photon stack seeded from THIS photon's
 						// origin: a luminaire sealed inside nested

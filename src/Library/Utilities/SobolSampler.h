@@ -159,6 +159,11 @@ namespace RISE
 			// bounce 0's, and so on) -- one dimension driving a
 			// light-vertex and an eye-vertex decision of one path, a
 			// -12 % bias in dense fog.
+			//   PT HWSS SMS lanes (sms-ext Phase 4 extended; DL-453
+			//   legacy): per (PT depth mod 1024,
+			//   lane) one stream at 141312 + 4 * depth + lane, [141312,
+			//   145408), drawn through ForkStream so it never moves the
+			//   vertex stream -- PathTransportUtilities::PTSMSLaneStream.
 			// The full map, including the wrap-region families past
 			// the dimension table, is SobolDimensionBudgetTest G2.
 			//
@@ -237,6 +242,40 @@ namespace RISE
 			void StartStream( int streamIndex )
 			{
 				dimension = static_cast<unsigned int>(streamIndex) * kStreamStride;
+			}
+
+			//! A sampler on the SAME sequence and scramble (sample index,
+			//! seed) positioned at `streamIndex`, with its own dimension
+			//! counter: draws from it never move this sampler's position.
+			//! For a consumer that must draw from a stream of its own in
+			//! the middle of another stream's draws (PT's HWSS SMS lanes,
+			//! PathTransportUtilities::PTSMSLaneStream).  In the
+			//! independent test mode the fork's generator is re-keyed by
+			//! the stream so its draws are fresh, not a replay of this
+			//! sampler's.  The fork starts at this sampler's alpha
+			//! position; a caller whose forked draws may include alpha
+			//! draws (legacy SMS with scene alpha coverage, DL-453)
+			//! hands the position back with JoinAlpha afterwards, so no
+			//! alpha dimension is drawn twice in one sample.
+			SobolSampler ForkStream( int streamIndex ) const
+			{
+				SobolSampler fork( *this );
+				fork.StartStream( streamIndex );
+				fork.rngState ^= ( uint64_t( static_cast<uint32_t>( streamIndex ) ) + 1ull ) * 0x9E3779B97F4A7C15ull;
+				return fork;
+			}
+
+			//! Resume the alpha region after a ForkStream fork's draws
+			//! (DL-453): the next GetAlpha1D draws past every alpha
+			//! dimension the fork used.  A no-op when the fork drew none.
+			//! Precondition: the parent draws no alpha between ForkStream
+			//! and JoinAlpha; otherwise the two ranges overlap and the max
+			//! below hides the reuse.
+			void JoinAlpha( const SobolSampler& fork )
+			{
+				if( fork.alphaDimension > alphaDimension ) {
+					alphaDimension = fork.alphaDimension;
+				}
 			}
 		};
 	}

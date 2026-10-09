@@ -154,6 +154,11 @@ namespace RISE
 			size_t numTriangles() const { return ptr_polygons.size(); }
 #endif
 
+            // Intrinsic winding audit, refreshed with the area cache on real
+            // mesh mutation. Shared instances/preparation only read it.
+            bool smsUncertainNormalOrientation = true;
+            unsigned long long smsOrientationAudits = 0, smsOrientationTriangleVisits = 0;
+
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas();
 
@@ -219,6 +224,9 @@ namespace RISE
 				Scalar& outValue ) const;
 
 		public:
+            bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
+            unsigned long long SMSOrientationAudits() const {return smsOrientationAudits;}
+            unsigned long long SMSOrientationTriangleVisits() const {return smsOrientationTriangleVisits;}
 			TriangleMeshGeometryIndexed(
 				const bool bDoubleSided_,
 				const bool bUseFaceNormals

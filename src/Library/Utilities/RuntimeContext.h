@@ -100,6 +100,14 @@ namespace RISE
 		/// chain.
 		mutable bool											bFastPreview;
 
+		// Scoped transport provenance: HWSS and its nested NM shader/SSS
+		// fallbacks must keep legacy SMS until lane ownership is implemented.
+		mutable bool smsForceLegacy = false;
+
+		// Radiance provenance for opaque recursive shader returns. A return
+		// containing reference SMS must remain unclamped at its SSS caller.
+		mutable bool smsReferenceRadiance = false;
+
 		/// Optional per-render transport settings supplied by an ephemeral
 		/// PathTracingPelRasterizer.  Unlike mutating a scene-owned default
 		/// shader, these values travel with each worker context, so an SSS
@@ -248,25 +256,28 @@ namespace RISE
 			const IReference* pObj,
 			const RISEPel& c, 
 			const IObject* pObject,
-			const RasterizerState& rast
+			const RasterizerState& rast,
+            bool referenceRadiance = false, unsigned mode = 0
 			) const
 		{
 			RasterizerStateCache* pCache = 0;
 			StateCacheMapType::iterator it = stateCaches.find( pObj );
 			if( it == stateCaches.end() ) {
 				pCache = new RasterizerStateCache();
+                stateCaches[pObj] = pCache;
 			} else {
 				pCache = it->second;
 			}
 
-			pCache->SetState( c, pObject, rast );
+			pCache->SetState( c, pObject, rast, referenceRadiance, mode );
 		}
 
 		bool StateCache_HasStateChanged(
 			const IReference* pObj,
 			RISEPel& c,
 			const IObject* pObject,
-			const RasterizerState& rast
+			const RasterizerState& rast,
+            bool* referenceRadiance = nullptr, unsigned mode = 0
 			) const
 		{
 			RasterizerStateCache* pCache = 0;
@@ -279,8 +290,33 @@ namespace RISE
 				pCache = it->second;
 			}
 
-			return pCache->HasStateChanged( c, pObject, rast );
+			return pCache->HasStateChanged( c, pObject, rast, referenceRadiance, mode );
 		}
+	};
+	// RuntimeContext is worker-local. Restore the caller's mode on every exit,
+	// including nested casts and exceptions; do not copy its owning caches.
+	class SMSReferenceRadianceScope
+	{
+		const RuntimeContext& context;
+		const bool previous;
+	public:
+		explicit SMSReferenceRadianceScope(const RuntimeContext& rc) :
+			context(rc), previous(rc.smsReferenceRadiance) { context.smsReferenceRadiance = false; }
+		bool HasReferenceRadiance() const { return context.smsReferenceRadiance; }
+		~SMSReferenceRadianceScope() { context.smsReferenceRadiance = previous || context.smsReferenceRadiance; }
+		SMSReferenceRadianceScope(const SMSReferenceRadianceScope&) = delete;
+		SMSReferenceRadianceScope& operator=(const SMSReferenceRadianceScope&) = delete;
+	};
+	class SMSLegacyModeScope
+	{
+		const RuntimeContext& context;
+		const bool previous;
+	public:
+		SMSLegacyModeScope(const RuntimeContext& rc, bool force) :
+			context(rc), previous(rc.smsForceLegacy) { context.smsForceLegacy = previous || force; }
+		~SMSLegacyModeScope() { context.smsForceLegacy = previous; }
+		SMSLegacyModeScope(const SMSLegacyModeScope&) = delete;
+		SMSLegacyModeScope& operator=(const SMSLegacyModeScope&) = delete;
 	};
 }
 

@@ -35,7 +35,7 @@ namespace RISE
 			public virtual Reference
 		{
 		protected:
-			virtual ~DielectricSPF( );
+			~DielectricSPF( ) override;
 
 			//! Pointer storage so the interactive editor can rebind
 			//! via Set*.  See LambertianBRDF for pattern.
@@ -135,7 +135,7 @@ namespace RISE
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = true;
@@ -143,6 +143,8 @@ namespace RISE
 				info.ior = pRIndex->GetValuesAt( ri ).v[0];
 				const ScalarTriple t = pTau->GetValuesAt( ri );
 				info.attenuation = RISEPel( t.v[0], t.v[1], t.v[2] );
+				info.attenuationIsInteriorTransmittance = true;
+				info.hasCustomSpecularFresnel = arStack.nLayers > 0;
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;
@@ -152,12 +154,15 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack,
 				const Scalar nm
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
 				info.ior = pRIndex->GetValueAtNM( ri, nm );
+				info.attenuationNM = r_max( Scalar(0), pTau->GetValueAtNM( ri, nm ) );
+				info.attenuationIsInteriorTransmittance = true;
+				info.hasCustomSpecularFresnel = arStack.nLayers > 0;
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;
@@ -168,14 +173,14 @@ namespace RISE
 			Scalar DeltaTransmissionWarpExponent(
 				const RayIntersectionGeometric& ri,
 				const Scalar nm
-				) const;
+				) const override;
 
 			Scalar DeltaTransmissionWarpPdf(
 				const RayIntersectionGeometric& ri,
 				const Vector3& w,
 				const Scalar nm,
 				const IORStack& ior_stack
-				) const;
+				) const override;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.
@@ -184,7 +189,7 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const IORStack& ior_stack								///< [in] Index of refraction stack
-				) const;
+				) const override;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors which taking into
@@ -195,10 +200,10 @@ namespace RISE
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const IORStack& ior_stack								///< [in] Index of refraction stack
-				) const;
+				) const override;
 
 			//! Returns the PDF for sampling the given outgoing direction (always 0 for delta distributions)
-			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const;
+			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const override;
 			//! DL-24 review P1-1 / round-2 P1-A: both lobes are emitted every
 			//! call with deterministic weights, and a wrong-side delta lobe
 			//! is re-derived, never dropped.  The ONE random element is the
@@ -207,10 +212,17 @@ namespace RISE
 			//! shading normal it can land between the geometric and shading
 			//! planes and read "up".  Deterministic therefore iff the warp
 			//! is off at this query or the shading normal is untilted.
-			bool SelectionMassIsDeterministic( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			bool SelectionMassIsDeterministic( const RayIntersectionGeometric& ri, const Scalar nm ) const override;
 
 			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
-			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const;
+			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const override;
+            // Native raw-film query after an actual shading/geometric Snell
+            // calculation succeeded. Does not reclassify raw W cosine as TIR.
+            bool EvaluateSpecularFresnelAfterRefraction(Scalar cosI,Scalar etaI,Scalar etaT,
+                bool exiting,Scalar nm,Scalar& reflectance) const;
+			bool EvaluateSpecularFresnel( Scalar cosI, Scalar etaI, Scalar etaT,
+				bool exiting, Scalar nm, Scalar& reflectance ) const override;
+
 		};
 	}
 }

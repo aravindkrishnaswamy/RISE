@@ -368,7 +368,7 @@ static void PartA_WorldMatrixExactness()
 // normals are derived from the winding exactly as the RAW loader does
 // (TriangleMeshLoaderRAW.cpp), so the twin's normals are produced by the
 // geometry, never copied from the thing under test.
-static ITriangleMeshGeometry* BuildWedge( bool flipX )
+static ITriangleMeshGeometry* BuildWedge( bool flipX, const Vector3 stretch = Vector3(1,1,1) )
 {
 	ITriangleMeshGeometry* mesh = 0;
 	RISE_API_CreateTriangleMeshGeometry( &mesh, /*double_sided*/ false );
@@ -389,6 +389,9 @@ static ITriangleMeshGeometry* BuildWedge( bool flipX )
 		Point3 a( apex[0], apex[1], apex[2] );
 		Point3 b( outline[i][0],   outline[i][1],   outline[i][2] );
 		Point3 c( outline[i+1][0], outline[i+1][1], outline[i+1][2] );
+		a=Point3(a.x*stretch.x,a.y*stretch.y,a.z*stretch.z);
+		b=Point3(b.x*stretch.x,b.y*stretch.y,b.z*stretch.z);
+		c=Point3(c.x*stretch.x,c.y*stretch.y,c.z*stretch.z);
 		if( flipX ) {
 			a.x = -a.x; b.x = -b.x; c.x = -c.x;
 			// WINDING FIX: reflecting the positions reverses the traversal
@@ -995,24 +998,9 @@ static void PartC_EmitterSamplingPath()
 		scaled->release();
 	}
 
-	// MIRROR + NON-UNIFORM SCALE.  The uniform case above cannot separate a
-	// correct |det|^(2/3) from a hard-coded s^2, and it is the case where the
-	// reflection's sign has the least room to show: det = -s^3 and |det|^(2/3)
-	// is s^2 either way.  With `stretch 2 3 4` the determinant is -24 and the
-	// contract is |det|^(2/3) = 24^(2/3), a number no accidental formulation
-	// (mean of the axes, product of two of them, the largest squared) reproduces.
-	//
-	// KNOWN DIVERGENCE, DELIBERATELY NOT ASSERTED HERE.  Under a NON-UNIFORM
-	// scale `UniformRandomPoint` pushes the sample normal through the FORWARD
-	// matrix (Object.cpp) while `IntersectRay` pushes the hit normal through the
-	// INVERSE-TRANSPOSE, and those disagree the moment the scale stops being
-	// uniform.  That is a pre-existing wrongness of the sampler under non-uniform
-	// scale, entirely independent of `mirror` (it reproduces with `stretch 2 3 4`
-	// and no mirror at all), and fixing it belongs with the world-area Jacobian's
-	// own "exactness needs per-geometry integration" note -- NOT here.  What IS
-	// mirror-specific, and is asserted, is that the mirrored sampler agrees
-	// EXACTLY with the same-stretch un-mirrored one under reflection: point and
-	// normal both, whatever convention that normal is computed in.
+	// DL-448: compare exact world area and sampled normals against a mesh
+	// with the same stretch baked into its vertices and recomputed face normals.
+
 	{
 		const Vector3 stretch( 2, 3, 4 );
 		Implementation::Object* mirroredStretched = new Implementation::Object( meshA );
@@ -1024,14 +1012,16 @@ static void PartC_EmitterSamplingPath()
 		plainStretched->SetStretch( stretch );
 		plainStretched->FinalizeTransformations();
 
-		const double wantScale = std::pow( 24.0, 2.0 / 3.0 );
+		ITriangleMeshGeometry* authoredMesh=BuildWedge(false,stretch);
+		Implementation::Object* authored=new Implementation::Object(authoredMesh);
+		authored->FinalizeTransformations();
+		const double wantArea=authored->GetArea();
 		const double gotArea   = (double)mirroredStretched->GetArea();
 		const double plainArea = (double)plainStretched->GetArea();
 		char buf[224];
 		std::snprintf( buf, sizeof(buf),
-			"C: mirror + `stretch 2 3 4` scales the emitter area by |det|^(2/3) = 24^(2/3) = %.17g "
-			"(got %.17g, want %.17g)", wantScale, gotArea, wantScale * aT );
-		Check( std::fabs( gotArea - wantScale * aT ) <= 1e-9 * aT, buf );
+			"C: mirror + stretch has the authored mesh area (got %.17g, want %.17g)",gotArea,wantArea );
+		Check( std::fabs( gotArea - wantArea ) <= 1e-12 * wantArea, buf );
 		Check( gotArea == gotArea && gotArea > 0.0,
 		       "C: ... and it is finite and positive -- a SIGNED det^(2/3) would be NaN at det = -24" );
 		Check( std::fabs( gotArea - plainArea ) <= 1e-12 * plainArea,
@@ -1042,9 +1032,11 @@ static void PartC_EmitterSamplingPath()
 			const Point3 prand( ( ( i * 7 ) % 32 + 0.5 ) / 32.0,
 			                    ( ( i * 23 ) % 32 + 0.5 ) / 32.0,
 			                    ( ( i * 11 ) % 32 + 0.5 ) / 32.0 );
-			Point3 pM, pP; Vector3 nM, nP; Point2 uvM, uvP;
+			Point3 pM, pP, pA; Vector3 nM, nP, nA; Point2 uvM, uvP;
 			mirroredStretched->UniformRandomPoint( &pM, &nM, &uvM, prand );
 			plainStretched->UniformRandomPoint( &pP, &nP, &uvP, prand );
+			authored->UniformRandomPoint(&pA,&nA,nullptr,prand);
+			Check(PtClose(pP,pA,1e-12)&&VecClose(nP,nA,1e-12),"DL-448 transformed mesh sample and normal match authored mesh");
 			if( PtClose( pM, Point3( -pP.x, pP.y, pP.z ), 1e-12 ) ) ++pts;
 			if( VecClose( nM, Vector3Ops::Normalize( Vector3( -nP.x, nP.y, nP.z ) ), 1e-12 ) ) ++norms;
 		}
@@ -1053,6 +1045,7 @@ static void PartC_EmitterSamplingPath()
 		       "of the same-stretch un-mirrored one" );
 		Check( norms == 32, "C: ... and so is every sample normal" );
 
+		authored->release();authoredMesh->release();
 		plainStretched->release();
 		mirroredStretched->release();
 	}

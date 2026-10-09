@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 #ifdef RISE_ENABLE_MAILBOXING
@@ -254,6 +255,7 @@ Scalar TriangleMeshGeometryIndexed::GetArea( ) const
 
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
+    smsUncertainNormalOrientation=true;
 	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -271,11 +273,13 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 
 void TriangleMeshGeometryIndexed::AddVertex( const Point3& point )
 {
+    smsUncertainNormalOrientation=true;
 	pPoints.push_back( point );
 }
 
 void TriangleMeshGeometryIndexed::AddNormal( const Vector3& normal )
 {
+    smsUncertainNormalOrientation=true;
 	if( !bUseFaceNormals ) {
 		pNormals.push_back( normal );
 	}
@@ -288,11 +292,13 @@ void TriangleMeshGeometryIndexed::AddTexCoord( const Point2& coord )
 
 void TriangleMeshGeometryIndexed::AddVertices( const VerticesListType& points )
 {
+    smsUncertainNormalOrientation=true;
 	pPoints.insert( pPoints.end(), points.begin(), points.end() );
 }
 
 void TriangleMeshGeometryIndexed::AddNormals( const NormalsListType& normals )
 {
+    smsUncertainNormalOrientation=true;
 	if( !bUseFaceNormals ) {
 		pNormals.insert( pNormals.end(), normals.begin(), normals.end() );
 	}
@@ -344,11 +350,13 @@ void TriangleMeshGeometryIndexed::AddTexCoords1( const TexCoordsListType& coords
 
 void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri )
 {
+    smsUncertainNormalOrientation=true;
 	indexedtris.push_back( tri );
 }
 
 void TriangleMeshGeometryIndexed::AddIndexedTriangles( const IndexTriangleListType& tris )
 {
+    smsUncertainNormalOrientation=true;
 	indexedtris.insert( indexedtris.end(), tris.begin(), tris.end() );
 }
 
@@ -475,6 +483,9 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 	areas.clear();
 	areasCDF.clear();
 	totalArea = 0;
+    smsUncertainNormalOrientation = ptr_polygons.empty();
+    ++smsOrientationAudits;
+    smsOrientationTriangleVisits += ptr_polygons.size();
 
 	// Compute triangle areas
 	{
@@ -483,7 +494,16 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 			const PointerTriangle&	thisTri = (*i);
 			Vector3 vEdgeA = Vector3Ops::mkVector3( *thisTri.pVertices[1], *thisTri.pVertices[0] );
 			Vector3 vEdgeB = Vector3Ops::mkVector3( *thisTri.pVertices[2], *thisTri.pVertices[0] );
-			const Scalar thisArea = (Vector3Ops::Magnitude(Vector3Ops::Cross(vEdgeA,vEdgeB))) * 0.5;
+			const Vector3 face=Vector3Ops::Cross(vEdgeA,vEdgeB);
+            const Scalar faceLength=Vector3Ops::Magnitude(face);
+            // Match the native face-normal tessellation convention, including
+            // its degenerate-face fallback, without materializing arrays.
+            const Vector3 faceNormal=faceLength>NEARZERO?face*(1/faceLength):Vector3(0,0,1);
+            for(unsigned k=0;k<3;++k) {
+                const Scalar orientation=Vector3Ops::Dot(face,thisTri.pNormals[k]?*thisTri.pNormals[k]:faceNormal);
+                if(!std::isfinite(orientation) || orientation<0) smsUncertainNormalOrientation=true;
+            }
+            const Scalar thisArea = faceLength * 0.5;
 			totalArea += thisArea;
 			areas.push_back( thisArea );
 		}
@@ -645,15 +665,18 @@ namespace
 	//! needs a second geometric test at "the same tolerance the weld
 	//! itself trusted" (the coplanarity test below) doesn't re-derive
 	//! the formula and risk drifting from it.
-	void WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId, Scalar* outEps = nullptr )
+	bool WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId, Scalar* outEps = nullptr )
 	{
 		outWeldedId.assign( points.size(), 0u );
 		if( points.empty() ) {
 			if( outEps ) { *outEps = Scalar( 1e-9 ); }
-			return;
+			return true;
 		}
 
 		BoundingBox bbox( points[0], points[0] );
+		for( const auto& p : points ) {
+			if( !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ) return false;
+		}
 		for( std::size_t i = 1; i < points.size(); ++i ) {
 			bbox.Include( points[i] );
 		}
@@ -661,20 +684,39 @@ namespace
 		const Scalar diag = Vector3Ops::Magnitude( extents );
 		const Scalar eps = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag );
 		const Scalar cell = eps;
+		if( !std::isfinite(cell) || !(cell > 0) ) return false;
 		if( outEps ) { *outEps = eps; }
 
+		// Keep the existing grid for representable absolute coordinates. When
+		// translation exceeds its integer range, use a mesh-local origin.
+		// Relative coordinates are bounded by diag/eps <= 1e6. Strict bounds
+		// below also leave room for the signed +/-1 neighbor additions.
+		const auto safeCoordinate = [cell](Scalar v) {
+			const double c=std::floor(double(v/cell));
+			return std::isfinite(c) && c > double(std::numeric_limits<std::int64_t>::min())
+				&& c < double(std::numeric_limits<std::int64_t>::max());
+		};
+		bool localGrid=false;
+		for( const auto& p : points ) {
+			if( !safeCoordinate(p.x) || !safeCoordinate(p.y) || !safeCoordinate(p.z) ) {localGrid=true;break;}
+		}
+		const Point3 origin=localGrid?bbox.ll:Point3(0,0,0);
 		auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
-			return (std::int64_t)std::floor( (double)( v / cell ) );
+			return static_cast<std::int64_t>(std::floor(double(v/cell)));
 		};
 		// A simple, well-distributed combine for the 3D cell key -- collisions are
 		// fine (unordered_map handles them; a false-positive bucket collision only
 		// costs an extra distance check, never a wrong weld, since every candidate
 		// found is still distance-checked against `eps` below).
-		auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::int64_t {
-			return x * 73856093LL ^ y * 19349663LL ^ z * 83492791LL;
+		auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::uint64_t {
+            // Hash products intentionally wrap modulo 2^64. Convert before
+            // multiplication so large translated cells have defined arithmetic.
+			return static_cast<std::uint64_t>(x) * 73856093ULL
+                ^ static_cast<std::uint64_t>(y) * 19349663ULL
+                ^ static_cast<std::uint64_t>(z) * 83492791ULL;
 		};
 
-		std::unordered_map<std::int64_t, std::vector<unsigned int>> grid;
+		std::unordered_map<std::uint64_t, std::vector<unsigned int>> grid;
 		grid.reserve( points.size() );
 		std::vector<Point3> weldedPos;
 		weldedPos.reserve( points.size() );
@@ -682,16 +724,16 @@ namespace
 
 		for( std::size_t i = 0; i < points.size(); ++i ) {
 			const Point3& p = points[i];
-			const std::int64_t cx = cellCoord( p.x );
-			const std::int64_t cy = cellCoord( p.y );
-			const std::int64_t cz = cellCoord( p.z );
+			const std::int64_t cx = cellCoord( p.x-origin.x );
+			const std::int64_t cy = cellCoord( p.y-origin.y );
+			const std::int64_t cz = cellCoord( p.z-origin.z );
 
 			unsigned int foundId = 0xFFFFFFFFu;
 			for( int dz = -1; dz <= 1 && foundId == 0xFFFFFFFFu; ++dz ) {
 				for( int dy = -1; dy <= 1 && foundId == 0xFFFFFFFFu; ++dy ) {
 					for( int dx = -1; dx <= 1 && foundId == 0xFFFFFFFFu; ++dx ) {
-						const std::int64_t key = cellKey( cx + dx, cy + dy, cz + dz );
-						std::unordered_map<std::int64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
+						const std::uint64_t key = cellKey( cx + dx, cy + dy, cz + dz );
+						std::unordered_map<std::uint64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
 						if( git == grid.end() ) { continue; }
 						const std::vector<unsigned int>& candidates = git->second;
 						for( std::size_t c = 0; c < candidates.size(); ++c ) {
@@ -713,6 +755,7 @@ namespace
 			}
 			outWeldedId[i] = foundId;
 		}
+		return true;
 	}
 }
 
@@ -897,7 +940,7 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 
 	std::vector<unsigned int> weldedId;
 	Scalar weldEps = Scalar( 1e-9 );
-	WeldVertexPositions( pPoints, weldedId, &weldEps );
+	if( !WeldVertexPositions( pPoints, weldedId, &weldEps ) ) return;
 
 	// DL-150.  Report the weld's own vertex-count reduction so an author
 	// can see an over-aggressive weld even when the discriminator below
@@ -1915,6 +1958,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 
 void TriangleMeshGeometryIndexed::ComputeVertexNormals()
 {
+    smsUncertainNormalOrientation=true;
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );

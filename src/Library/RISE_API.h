@@ -3354,7 +3354,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -3375,7 +3375,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_end,			///< [in] nm to end sampling at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -3394,7 +3394,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
 								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -3422,7 +3422,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
 								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -3452,7 +3452,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
 								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -3476,7 +3476,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool enableVC,				///< [in] Enable vertex connection strategies
 								const bool enableVM,				///< [in] Enable vertex merging strategy
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -3503,7 +3503,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool enableVC,				///< [in] Enable vertex connection strategies
 								const bool enableVM,				///< [in] Enable vertex merging strategy
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -3534,7 +3534,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const SMSSeedingMode smsSeedingMode,	///< [in] SMS seeding strategy: `SMSSeedingMode::Snell` (legacy Snell-trace, default) or `SMSSeedingMode::Uniform` (Mitsuba-faithful uniform-area on caustic-caster shapes; required for principled geometric Bernoulli).
 								const unsigned int smsTargetBounces,	///< [in] REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -3558,7 +3558,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const AutoIntegratorChoice integrator,	///< [in] Author pin (Auto = dispatcher decides -> PT in Phase 1)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process (forwarded to the delegate)
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 								const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
@@ -3591,7 +3591,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
 								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process (forwarded to the delegate)
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 								const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
@@ -3627,7 +3627,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const SMSSeedingMode smsSeedingMode,	///< [in] SMS seeding strategy: `SMSSeedingMode::Snell` (legacy Snell-trace, default) or `SMSSeedingMode::Uniform` (Mitsuba-faithful uniform-area on caustic-caster shapes; required for principled geometric Bernoulli).
 								const unsigned int smsTargetBounces,	///< [in] REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
@@ -3680,7 +3680,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
 								const Scalar largeStepProb,					///< [in] Large step probability
 								const bool oidnDenoise,						///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,				///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,				///< [in] OIDN quality preset (Auto = scene-static work policy)
 								const OidnDevice oidnDevice,				///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const OidnPrefilter oidnPrefilter,			///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								ISampling2D* pSampler,						///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
@@ -3725,7 +3725,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int nSpectralSamples,///< [in] Spectral samples per evaluation
 								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								ISampling2D* pSampler,				///< [in] Pixel sampler (stored but unused by the MLT loop); may be null

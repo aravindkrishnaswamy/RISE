@@ -166,6 +166,7 @@ Scalar TriangleMeshGeometry::GetArea( ) const
 
 void TriangleMeshGeometry::BeginTriangles( )
 {
+    smsUncertainNormalOrientation=true;
 	safe_release( pPolygonsBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -173,6 +174,7 @@ void TriangleMeshGeometry::BeginTriangles( )
 
 void TriangleMeshGeometry::AddTriangle( const Triangle& tri )
 {
+    smsUncertainNormalOrientation=true;
 	// Add the triangle, precompute the stuff that needs to be precompute
 	polygons.push_back( tri );
 }
@@ -187,6 +189,9 @@ void TriangleMeshGeometry::ComputeAreas()
 	areas.clear();
 	areasCDF.clear();
 	totalArea = 0;
+    smsUncertainNormalOrientation = polygons.empty();
+    ++smsOrientationAudits;
+    smsOrientationTriangleVisits += polygons.size();
 
 	// Compute triangle areas
 	{
@@ -195,7 +200,12 @@ void TriangleMeshGeometry::ComputeAreas()
 			const Triangle& thisTri = (*i);
 			Vector3 vEdgeA = Vector3Ops::mkVector3( thisTri.vertices[1], thisTri.vertices[0] );
 			Vector3 vEdgeB = Vector3Ops::mkVector3( thisTri.vertices[2], thisTri.vertices[0] );
-			const Scalar thisArea = (Vector3Ops::Magnitude(Vector3Ops::Cross(vEdgeA,vEdgeB))) * 0.5;
+			const Vector3 face=Vector3Ops::Cross(vEdgeA,vEdgeB);
+            for(unsigned k=0;k<3;++k) {
+                const Scalar orientation=Vector3Ops::Dot(face,thisTri.normals[k]);
+                if(!std::isfinite(orientation) || orientation<0) smsUncertainNormalOrientation=true;
+            }
+            const Scalar thisArea = Vector3Ops::Magnitude(face) * 0.5;
 			totalArea += thisArea;
 			areas.push_back( thisArea );
 		}
@@ -689,4 +699,12 @@ SurfaceDerivatives TriangleMeshGeometry::ComputeSurfaceDerivatives( const Point3
 	}
 
 	return TMComputeTriangleDerivatives( *bestTri, objSpaceNormal, bestU, bestV );
+}
+
+Scalar TriangleMeshGeometry::NativeTriangleEdgeDistance(const RayIntersectionGeometric& hit) const
+{
+    const auto& signal=hit.signals;
+    if(signal.pProvider || signal.primId<0 || static_cast<std::size_t>(signal.primId)>=polygons.size()
+        || !std::isfinite(signal.baryA) || !std::isfinite(signal.baryB)) return 0;
+    return std::min({signal.baryA,signal.baryB,1-signal.baryA-signal.baryB});
 }

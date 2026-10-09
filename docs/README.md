@@ -38,6 +38,8 @@ The latest repository-wide documentation audit is
 - [GEOMETRY_DERIVATIVES.md](GEOMETRY_DERIVATIVES.md): surface-derivative
   contract
 - [SMS.md](SMS.md): current Specular Manifold Sampling overview
+- [SMS_EXTENDED_PHASE1_VALIDATION.md](SMS_EXTENDED_PHASE1_VALIDATION.md): Phase 1 primitive/rejection evidence, committed source regressions, off-mode hashes and interleaved cost checkpoint; acceptance pending
+- [SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md): adopted R/T seed sampling, RGB channel geometry, medium replay, and shared PT/SMS ownership contract; Phase 1 in progress
 - [VCM.md](VCM.md): current Vertex Connection and Merging overview
 - [OIDN.md](OIDN.md): OIDN integration, backlog, and decisions
 - [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md): current Rec.709 Jakob-Hanika LUT limits
