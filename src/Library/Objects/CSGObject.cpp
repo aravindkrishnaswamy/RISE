@@ -798,6 +798,22 @@ namespace
 	}
 }
 
+// DL-411: meshes publish only the nearest root, even when asked for
+// exit information. Recover the contained-origin interval convention from
+// certified geometry instead of interpreting its infinite range2 as outside.
+static void RecoverContainedOperand( const IObject* operand, RayIntersection& hit )
+{
+	if( hit.geometric.bHit && !hit.hasBoundaryRange2 ) {
+		Scalar distance = 0;
+		bool exact = false;
+		if( operand->SignedDistanceLower( hit.geometric.ray.origin, Scalar( 1e-3 ), distance, exact ) && distance < 0 ) {
+			hit.geometric.range2 = 0;
+			hit.boundaryRange2 = 0;
+			hit.hasBoundaryRange2 = true;
+		}
+	}
+}
+
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
 {
     SMSRecordObjectIntersection();
@@ -881,6 +897,8 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
 	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
+	RecoverContainedOperand( pObjectA, riObjA );
+	RecoverContainedOperand( pObjectB, riObjB );
 
 	/* Not necessary, should never happen!
 	if( riObjA.geometric.bHit && riObjA.geometric.range2 == RISE_INFINITY ) {
@@ -1893,6 +1911,8 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	// light.
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
 	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
+	RecoverContainedOperand( pObjectA, riObjA );
+	RecoverContainedOperand( pObjectB, riObjB );
 
 	// Do different things depending on the type of CSG operation
 	switch( op )
