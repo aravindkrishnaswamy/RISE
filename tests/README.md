@@ -1304,6 +1304,22 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   composite local exitance). Red on `388907e94`: PT 0.0011 / BDPT 0.0001 of the
   closed form, photon flux 0 and 150x, 18/12; green 37/0.
 
+- `BDPTZeroDensityConnectibleTest` (DL-430): a 0.5 Lambertian floor lit by a
+  one-sided 4x4 area emitter, with the floor's material swapped after load for
+  a test-local material whose BSDF is that Lambertian and whose SPF is either
+  absent or the Lambertian SPF restricted to world x >= 0 (`Pdf` 0 elsewhere).
+  Direct-only scene, so PT on the plain Lambertian floor is exact; each image
+  half of PT / BDPT / VCM on both materials (and BDPT on the plain floor) must
+  sit within 3 % of it (4 salted renders each, half-mean sd <= 0.0006). Red on
+  `388907e94` and again on `e64d2f5f2`: BDPT null SPF 0.0039x on both halves, BDPT half SPF 0.592x /
+  0.411x, 11/4; green 15/0. VCM and PT read 1.000 in both builds.
+  A second fixture puts the null-SPF hole behind the SECOND eye vertex (the
+  visible floor is lit only via a Lambertian side wall that sees the hole
+  wall below the floor plane) so the eye-walk break is reached; BDPT and VCM
+  must match PT on the same material within 10 %. With only the eye-walk
+  break disabled BDPT reads 0.00038x / 0.00008x; the `e64d2f5f2` library
+  reads 14/6 overall, the branch 20/0.
+
 ## Blender tangent producers (DL-213)
 
 `BlenderBridgeTangentTest` renders the actual bridge mesh against authored-core,
