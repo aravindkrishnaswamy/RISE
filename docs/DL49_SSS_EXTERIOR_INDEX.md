@@ -710,7 +710,8 @@ correction:** NOT on the other native rasterizers -- a `pixelpel` or
 - `spectral_skin_fast` / `spectral_skinmodel` read NaN under BDPT in BOTH
   builds -- not BioSpec: an `infiniteplane_geometry` luminaire with
   `scale` above 1 turns the whole image NaN under PT and BDPT (filed
-  **DL-311**).
+  **DL-311**; closed 2026-10-08 -- infinite planes now decline
+  `CanBeAreaLight()`, so they never enter the light table).
 
 ### 11.4 Cost
 
@@ -740,7 +741,7 @@ changed walk; the mover measurement is in §11.6 (+5.80 % at `855ce136`,
 Found while measuring, genuinely separate, filed:
 **DL-311** (infinite-plane luminaire with `scale` > 1 -> NaN image under
 PT/BDPT; `averageRadiantExitance * GetArea()` with `GetArea() ==
-RISE_INFINITY` overflows the light power) and **DL-312** (the NM snell SMS
+RISE_INFINITY` overflows the light power; closed 2026-10-08, see the ledger row) and **DL-312** (the NM snell SMS
 path lacks the RGB path's pure-mirror caster supplemental seeds: on the
 mirror fixture the spectral snell row renders 0.021 against RGB snell 0.046
 and both uniform rows 0.041-0.042).

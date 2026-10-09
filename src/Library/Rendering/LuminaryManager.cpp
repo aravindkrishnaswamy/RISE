@@ -167,9 +167,10 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 				"tests/CSGNullGeometryLuminaireCrashTest.cpp) or a BSDF-sampled hit (PT pel, "
 				"verified; code-identical elsewhere, untested)." :
 				"LuminaryManager:: an emissive material is bound to a geometry that cannot be "
-				"uniformly area-sampled (CanBeAreaLight() == false, e.g. a degenerate zero-area "
-				"field, or an SDF whose sampling mesh provably missed renderable surface -- see "
-				"the SDFGeometry warning above; raise sampling_detail).  It will NOT act as an "
+				"uniformly area-sampled (CanBeAreaLight() == false, e.g. an infinite plane, which "
+				"has no finite area density; a degenerate zero-area field; or an SDF whose sampling "
+				"mesh provably missed renderable surface -- see the SDFGeometry warning above; raise "
+				"sampling_detail).  It will NOT act as an "
 				"area light (no NEE importance sampling); it is never selected by light-sampling, "
 				"but still contributes emission on direct camera view or a BSDF-sampled hit.",
 				__FILE__, __LINE__ );
