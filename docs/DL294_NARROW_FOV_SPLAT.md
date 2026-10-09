@@ -597,9 +597,10 @@ truncation loss.  It disappears when DL-351 lands.
 PixelCenterConventionTest 48/0, CameraImportanceTest 984/0,
 BDPTSeeThroughMISPartitionTest 8/0, SpectralSplatIntegralNormalizationTest
 21/0, WeaveGapShadowTransmittanceTest 281/0, CstDeriveGoldenTest 459 MATCH.
-AnimationRasterizerParityTest reads 101/1: its MLT-spectral D row gates ONE
-deterministic MLT realization (the per-render salts do not reach MLT's
-chain RNG).  Varying only `bootstrap_samples` 20000..20010, the pre-change
-build reads mean 0.940 and fails 8 of 11; this change reads mean 0.964
-(0.924 .. 1.008), but its realization at the shipped 20000 is 0.924.
-Recorded as DL-468, not widened here.
+AnimationRasterizerParityTest first read 101/1: its MLT-spectral D row
+gated ONE deterministic MLT realization (MLT's seeds were a fixed function
+of the scene, so salted repeats were identical).  DL-468 added a PSSMLT
+seed salt and made the row average 12 salted replicates against
+max(3 se, 5 %): MLT-spectral / PT = 1.0019 +/- 0.017 with this change and
+0.982 +/- 0.029 without (n = 12), 102/0 on both -- no bias, and lower
+MLT-spectral spread under the whole-film weighting.

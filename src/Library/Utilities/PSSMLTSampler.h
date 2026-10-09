@@ -56,11 +56,41 @@
 #include <vector>
 #include <utility>
 #include <cmath>
+#include <atomic>
+#include <cstdint>
 
 namespace RISE
 {
 	namespace Implementation
 	{
+		//////////////////////////////////////////////////////////////
+		// PSSMLTSamplerTestHooks (DL-468) -- the PSSMLT twin of
+		// SobolSamplerTestHooks::ValueSalt.  MLT is otherwise a fully
+		// deterministic function of the scene and its parameters: the
+		// bootstrap samplers are seeded by their index, the chains by
+		// (bootstrap index, chain index), so repeated renders return the
+		// IDENTICAL image and the run-to-run spread is zero.  A nonzero
+		// salt is mixed into every PSSMLT seed (sampler construction,
+		// the chain proposal re-seed, the chain acceptance RNG and the
+		// bootstrap-CDF selection RNG), making each salt an independent
+		// MLT replicate.  Zero (the default, and every production
+		// render) leaves every seed bit-identical.  Set it between
+		// renders, never during one.
+		//////////////////////////////////////////////////////////////
+		struct PSSMLTSamplerTestHooks
+		{
+			static std::atomic<uint32_t>& SeedSalt()
+			{
+				static std::atomic<uint32_t> v( 0u );
+				return v;
+			}
+			static unsigned int Salted( const unsigned int seed )
+			{
+				const uint32_t salt = SeedSalt().load( std::memory_order_relaxed );
+				return salt ? ( seed ^ ( salt * 0x9E3779B9u + 0x7F4A7C15u ) ) : seed;
+			}
+		};
+
 		/// PSSMLTSampler records the random number stream consumed by BDPT
 		/// and mutates it for Metropolis-Hastings exploration of path space.
 		///
@@ -372,7 +402,7 @@ namespace RISE
 			/// StartIteration().
 			void ReSeedRNG( const unsigned int newSeed )
 			{
-				rng = RandomNumberGenerator( newSeed );
+				rng = RandomNumberGenerator( PSSMLTSamplerTestHooks::Salted( newSeed ) );
 			}
 		};
 	}

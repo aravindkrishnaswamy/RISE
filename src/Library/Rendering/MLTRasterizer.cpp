@@ -528,7 +528,7 @@ void MLTRasterizer::InitChain(
 	const unsigned int chainSeed     = seed.seed * 2654435761u + chainIndex;
 	const unsigned int proposalSeed  = chainSeed ^ 0xA55A5AA5u;
 	state.pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
-	state.chainRNG = RandomNumberGenerator( chainSeed );
+	state.chainRNG = RandomNumberGenerator( PSSMLTSamplerTestHooks::Salted( chainSeed ) );
 
 	// Phase 1: reproduce the bootstrap path as the chain's iteration 1.
 	state.pSampler->StartIteration();
@@ -971,7 +971,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 	for( unsigned int c = 0; c < effectiveChains; c++ )
 	{
 		// Select initial state from bootstrap CDF
-		RandomNumberGenerator selRNG( c * 31337 );
+		RandomNumberGenerator selRNG( PSSMLTSamplerTestHooks::Salted( c * 31337 ) );
 		const Scalar u = selRNG.CanonicalRandom();
 		const unsigned int bootstrapIdx = SelectFromCDF( cdf, u );
 		const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];

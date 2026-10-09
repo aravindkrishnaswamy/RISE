@@ -41,6 +41,7 @@
 #include <map>
 #include <cmath>
 #include <string>
+#include <algorithm>
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -55,6 +56,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Utilities/PSSMLTSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -151,6 +153,9 @@ namespace
 		pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
 		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x458u, salt ) );
+		// DL-468: MLT's chains are otherwise a deterministic function of
+		// the scene, so every repeat returned the identical image (se 0).
+		PSSMLTSamplerTestHooks::SeedSalt().store( SobolSequence::HashCombine( 0x468u, salt ) | 1u );
 		std::srand( 1000u + salt );
 		if( frames == 0 ) {
 			pJob->Rasterize();
@@ -158,6 +163,7 @@ namespace
 			pJob->RasterizeAnimation( t0, t1, frames, fields, false );
 		}
 		SobolSamplerTestHooks::ValueSalt().store( 0u );
+		PSSMLTSamplerTestHooks::SeedSalt().store( 0u );
 
 		out = pCap->frames;
 		safe_release( pCap );
@@ -193,7 +199,10 @@ namespace
 		return a.n > 0 && b.n > 0 && d <= tol && a.m > 0 && b.m > 0;
 	}
 
-	const int kRepeats = 4;
+	// Salted repeats per render set.  MLT's single-render spread on this
+	// rig is several percent (MLT-spectral ~6 %), so its cases take 12
+	// (DL-468); the other rasterizers keep 4.
+	int kRepeats = 4;
 
 	//////////////////////////////////////////////////////////////////
 	// Scene pieces
@@ -320,6 +329,7 @@ namespace
 	void RunCase( const RastCase& rc )
 	{
 		std::cout << "== " << rc.label << std::endl;
+		kRepeats = ( std::string( rc.label ).compare( 0, 3, "MLT" ) == 0 ) ? 12 : 4;
 		std::string detail;
 
 		// --- A/B: static scene (emitter + omni), no timeline ---
@@ -351,8 +361,24 @@ namespace
 				havePT = true;
 			}
 			const double rel = ptRef.m > 0 ? sA.m / ptRef.m : 0;
-			std::cout << "  D anim(1 frame) / PT still = " << rel << std::endl;
-			Check( std::fabs( rel - 1.0 ) < 0.05, std::string( rc.label ) + ": D animation frame within 5% of the PT still (ratio " + std::to_string( rel ) + ")" );
+			std::cout << "  D anim(1 frame) / PT still = " << rel << "  (anim " << sA.m << " +/- " << sA.se << ", PT " << ptRef.m << " +/- " << ptRef.se << ", n " << sA.n << ")" << std::endl;
+			// DL-468: gate on the measured spread, never on one
+			// realization.  MLT used to be a deterministic function of
+			// the scene (se exactly 0), so this row gated ONE chain set
+			// whose single-render sd is ~6 % on this 24 x 24 rig for
+			// MLT-spectral (hwss FALSE chroma noise under a Y-only
+			// target): measured 16 salted repeats read 0.995 +/- 0.015
+			// (no bias), while the unsalted value at bootstrap 20000..20010
+			// ranged 0.916 .. 1.008.  The tolerance is 3 combined
+			// relative standard errors, floored at the 5 % band the row
+			// was designed with (dropping a splat layer or NEE costs
+			// 15-99 %, the MLT cases run 12 repeats, giving MLT-spectral ~5 % at 3 se).
+			const double seRel = ( ptRef.m > 0 && sA.m > 0 )
+				? rel * std::sqrt( ( sA.se / sA.m ) * ( sA.se / sA.m ) + ( ptRef.se / ptRef.m ) * ( ptRef.se / ptRef.m ) )
+				: 0;
+			const double tolD = std::max( 3.0 * seRel, 0.05 );
+			std::cout << "  D tolerance " << tolD << " (3 se = " << 3.0 * seRel << ")" << std::endl;
+			Check( sA.n > 1 && std::fabs( rel - 1.0 ) < tolD, std::string( rc.label ) + ": D animation frame agrees with the PT still within max(3 se, 5%) (ratio " + std::to_string( rel ) + ")" );
 		}
 
 		// --- F: interlaced fields (DL-462).  Each field is its own
