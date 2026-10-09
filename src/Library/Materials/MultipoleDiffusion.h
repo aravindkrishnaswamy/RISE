@@ -43,10 +43,8 @@ namespace RISE
 		double	sigma_sp;		///< Reduced scattering coefficient (cm^-1)
 		double	thickness;		///< Layer thickness (cm)
 		double	ior;			///< Index of refraction RELATIVE to the medium surrounding the stack
-								///< (DL-291).  Each slab's single extrapolation term A below is
-								///< evaluated against that ambient medium; in air this is the
-								///< layer's absolute index.  Inter-layer coupling (StackLayersHankel's
-								///< Ft_down/Ft_up) uses ratios of these values, so it is unaffected.
+								///< (DL-291). Composite evaluation derives each face's boundary
+								///< condition from its adjacent layer, or this exterior.
 
 		// Derived parameters (computed by ComputeLayerDerivedParams)
 		double	sigma_t_prime;	///< sigma_a + sigma_sp
@@ -57,8 +55,9 @@ namespace RISE
 		double	A;				///< Boundary condition = (1+Fdr)/(1-Fdr)
 		double	z_r;			///< Real source depth = 1/sigma_t'
 		double	z_v;			///< Virtual source depth = z_r + 4*A*D
-		double	d_e;			///< Extrapolated boundary = 2*A*D
-		double	slab_period;	///< 2*(thickness + 2*d_e) — multipole spacing
+		double	d_e;			///< Top extrapolated boundary = 2*A*D
+		double	d_e_bottom;	///< Bottom extrapolated boundary (equal for standalone slabs)
+		double	slab_period;	///< 2*(thickness + d_e + d_e_bottom) — multipole spacing
 	};
 
 	/// Compute derived parameters from primary parameters.

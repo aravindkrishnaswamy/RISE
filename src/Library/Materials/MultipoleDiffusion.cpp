@@ -16,6 +16,7 @@
 #include "pch.h"
 #include "MultipoleDiffusion.h"
 #include <cmath>
+#include <vector>
 
 using namespace RISE;
 
@@ -60,6 +61,7 @@ void RISE::ComputeLayerDerivedParams( LayerParams& lp )
 		lp.z_r = 1e10;
 		lp.z_v = 1e10;
 		lp.d_e = 2.0 * lp.A * lp.D;
+		lp.d_e_bottom = lp.d_e;
 		lp.slab_period = 2.0 * (lp.thickness + 2.0 * lp.d_e);
 		return;
 	}
@@ -74,6 +76,7 @@ void RISE::ComputeLayerDerivedParams( LayerParams& lp )
 	lp.z_r = 1.0 / lp.sigma_t_prime;
 	lp.z_v = lp.z_r + 4.0 * lp.A * lp.D;
 	lp.d_e = 2.0 * lp.A * lp.D;
+	lp.d_e_bottom = lp.d_e;
 	lp.slab_period = 2.0 * (lp.thickness + 2.0 * lp.d_e);
 }
 
@@ -155,11 +158,11 @@ void RISE::EvaluateMultipoleReflectanceHankel(
 	const double prefactor = lp.alpha_prime / 2.0;
 
 	// Method of images for a slab with extrapolated boundaries at
-	// z_top = -d_e  and  z_bottom = d + d_e.
+	// z_top = -d_e  and  z_bottom = d + d_e_bottom.
 	//
 	// The dipole pair (real at z_r, Q=+1; virtual at -z_v, Q=-1)
 	// is reflected between the two boundaries, generating image
-	// pairs at offsets j*L where L = 2*(d + 2*d_e) is the full
+	// pairs at offsets j*L where L = 2*(d + d_e + d_e_bottom) is the full
 	// period.  Since z_v = z_r + 2*d_e, the reflected-about-bottom
 	// images at offset j duplicate the primary images at offset j±1,
 	// so only the primary dipole pair is needed per period.
@@ -171,12 +174,19 @@ void RISE::EvaluateMultipoleReflectanceHankel(
 	//
 	// where q = sqrt(sigma_tr^2 + s^2).
 
-	const double d_eff = d + 2.0 * lp.d_e;
+	const double d_eff = d + lp.d_e + lp.d_e_bottom;
 	const double L = 2.0 * d_eff;		// full period
 
 	for( int i = 0; i < N_freq; i++ )
 	{
 		const double s = s_grid[i];
+		// The image series is not uniformly convergent at q=0. Its exact
+		// diffusion limit partitions conservative flux between both faces.
+		if( lp.sigma_tr == 0.0 && s == 0.0 ) {
+			R_tilde_out[i] = lp.alpha_prime * (d + lp.d_e_bottom - lp.z_r) / d_eff;
+			T_tilde_out[i] = lp.alpha_prime * (lp.z_r + lp.d_e) / d_eff;
+			continue;
+		}
 		double R_sum = 0;
 		double T_sum = 0;
 
@@ -276,54 +286,54 @@ void RISE::ComputeCompositeProfileHankel(
 {
 	if( N_layers <= 0 || N_freq <= 0 ) return;
 
-	double* R_layer = new double[N_freq];
-	double* T_layer = new double[N_freq];
-	double* R_accum = new double[N_freq];
-	double* T_accum = new double[N_freq];
-	double* R_temp  = new double[N_freq];
-	double* T_temp  = new double[N_freq];
-
-	// Start from the bottom-most layer
-	EvaluateMultipoleReflectanceHankel(
-		layers[N_layers - 1], s_grid, N_freq,
-		R_accum, T_accum, N_multipole );
-
-	// Stack layers from bottom to top
-	for( int L = N_layers - 2; L >= 0; L-- )
-	{
-		EvaluateMultipoleReflectanceHankel(
-			layers[L], s_grid, N_freq,
-			R_layer, T_layer, N_multipole );
-
-		// Fresnel coupling at the boundary between layers[L] (top) and layers[L+1] (bottom).
-		// Downward: light exits layers[L] into layers[L+1], eta = n_top / n_bottom.
-		// Upward:   light exits layers[L+1] into layers[L], eta = n_bottom / n_top.
-		const double eta_down = layers[L].ior / layers[L + 1].ior;
-		const double eta_up   = layers[L + 1].ior / layers[L].ior;
-		const double Ft_down  = 1.0 - ComputeFdr( eta_down );
-		const double Ft_up    = 1.0 - ComputeFdr( eta_up );
-
-		StackLayersHankel(
-			R_layer, T_layer,
-			R_accum, T_accum,
-			Ft_down, Ft_up,
-			N_freq,
-			R_temp, T_temp );
-
-		double* swap;
-		swap = R_accum; R_accum = R_temp; R_temp = swap;
-		swap = T_accum; T_accum = T_temp; T_temp = swap;
+	// A matched homogeneous interface is absent physically: do not insert
+	// another dipole source or a Fresnel coupling at an arbitrary split.
+	std::vector<LayerParams> slabs;
+	for( int i = 0; i < N_layers; ++i ) {
+		if( !slabs.empty() && slabs.back().ior == layers[i].ior &&
+			slabs.back().sigma_a == layers[i].sigma_a &&
+			slabs.back().sigma_sp == layers[i].sigma_sp ) {
+			slabs.back().thickness += layers[i].thickness;
+		} else {
+			slabs.push_back(layers[i]);
+		}
+	}
+	for( size_t i = 0; i < slabs.size(); ++i ) {
+		LayerParams& lp = slabs[i];
+		ComputeLayerDerivedParams(lp);
+		const double eta_top = lp.ior / (i ? slabs[i-1].ior : 1.0);
+		const double eta_bottom = lp.ior / (i+1 < slabs.size() ? slabs[i+1].ior : 1.0);
+		lp.Fdr = eta_top == 1.0 ? 0.0 : ComputeFdr(eta_top);
+		lp.A = (1.0 + lp.Fdr) / (1.0 - lp.Fdr + 1e-30);
+		const double fb = eta_bottom == 1.0 ? 0.0 : ComputeFdr(eta_bottom);
+		lp.d_e = 2.0 * lp.A * lp.D;
+		lp.d_e_bottom = 2.0 * lp.D * (1.0 + fb) / (1.0 - fb + 1e-30);
+		lp.z_v = lp.z_r + 2.0 * lp.d_e;
+		// Donner & Jensen 2005, Eq. 16: distinct extrapolation planes.
+		lp.slab_period = 2.0 * (lp.thickness + lp.d_e + lp.d_e_bottom);
 	}
 
-	for( int i = 0; i < N_freq; i++ )
-	{
-		composite_R_out[i] = R_accum[i];
+	std::vector<double> rup(N_freq), tdown(N_freq), rdown(N_freq), tup(N_freq), accum(N_freq), scratch(N_freq);
+	EvaluateMultipoleReflectanceHankel(slabs.back(), s_grid, N_freq,
+		accum.data(), scratch.data(), N_multipole);
+	for( int L = static_cast<int>(slabs.size()) - 2; L >= 0; --L ) {
+		const LayerParams& lp = slabs[L];
+		EvaluateMultipoleReflectanceHankel(lp, s_grid, N_freq,
+			rup.data(), tdown.data(), N_multipole);
+		LayerParams reversed = lp;
+		reversed.d_e = lp.d_e_bottom;
+		reversed.d_e_bottom = lp.d_e;
+		reversed.z_v = lp.z_r + 2.0 * reversed.d_e;
+		EvaluateMultipoleReflectanceHankel(reversed, s_grid, N_freq,
+			rdown.data(), tup.data(), N_multipole);
+		const double eta = lp.ior / slabs[L+1].ior;
+		const double ft = eta == 1.0 ? 1.0 :
+			(1.0 - ComputeFdr(eta)) * (1.0 - ComputeFdr(1.0/eta));
+		for( int i = 0; i < N_freq; ++i ) {
+			const double denom = 1.0 - rdown[i] * ft * accum[i];
+			accum[i] = fabs(denom) < 1e-30 ? rup[i] :
+				rup[i] + tdown[i] * ft * accum[i] * tup[i] / denom;
+		}
 	}
-
-	delete[] R_layer;
-	delete[] T_layer;
-	delete[] R_accum;
-	delete[] T_accum;
-	delete[] R_temp;
-	delete[] T_temp;
+	for( int i = 0; i < N_freq; ++i ) composite_R_out[i] = accum[i];
 }
