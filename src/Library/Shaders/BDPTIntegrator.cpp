@@ -55,6 +55,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <atomic>
 #include "pch.h"
 #include "BDPTIntegrator.h"
 #include "../Utilities/FiniteMath.h"
@@ -6269,12 +6270,20 @@ Scalar BDPTIntegrator::MISWeight(
 		// record its pseudo-probability would end the chain here while the
 		// see-through connection (DeltaPassThroughChainToRoot) still
 		// recognises the longer chain -- a double count.
-		assert( !( m + 1 < s && lightVerts[m].type == BDPTVertex::SURFACE &&
+		// Diagnostic only (never abort a render: release builds keep asserts
+		// live, and the position-derived direction can differ from the traced
+		// ray right at the straightness tolerance).
+		if( m + 1 < s && lightVerts[m].type == BDPTVertex::SURFACE &&
 			lightVerts[m].isDelta && lightVerts[m].pMaterial &&
 			lightVerts[m].pMaterial->HasDeltaPassThrough() &&
 			BDPTUtilities::IsStraightContinuation(
 				Vector3Ops::mkVector3( lightVerts[m].position, lightVerts[m - 1].position ),
-				Vector3Ops::mkVector3( lightVerts[m + 1].position, lightVerts[m].position ) ) ) );
+				Vector3Ops::mkVector3( lightVerts[m + 1].position, lightVerts[m].position ) ) ) {
+			static std::atomic<bool> warned( false );
+			if( !warned.exchange( true, std::memory_order_relaxed ) ) {
+				GlobalLog()->PrintEasyWarning( "BDPT MISWeight: straight delta pass-through vertex without a recorded passThroughProb (see-through MIS pairing); possible double count" );
+			}
+		}
 		const BDPTVertex& D = lightVerts[m];
 		const bool dShape = ( D.type == BDPTVertex::SURFACE && D.pMaterial ) || D.type == BDPTVertex::MEDIUM;
 		if( m >= 2 && dShape && D.isConnectible && !D.isDelta && !D.isBSSRDFEntry &&
