@@ -118,9 +118,7 @@ namespace RISE
 			//! sample to exactly one source.  The generic
 			//! `IPainter::GetRadianceNM` default would uplift the
 			//! composed `GetColor` instead, throwing away a physical SPD
-			//! behind the transform -- and for a `piecewise_linear_
-			//! function`-backed painter, whose `GetColor` is BLACK, a
-			//! luminaire's exitance would emit exactly zero.  Forward to
+			//! behind the transform for its RGB projection.  Forward to
 			//! the same source at the same transformed `ri`.
 			Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 			{

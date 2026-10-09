@@ -198,9 +198,9 @@ Scalar MappingPainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 // (blend / ramp / noise-interpolated), where the emitted thing is the
 // composed colour.  Applying it here would discard the source's own
 // radiance spectrum: a `spectral_painter` behind a `uv_transform` on a
-// luminaire's exitance would be re-uplifted from its RGB projection,
-// and a `piecewise_linear_function`-backed painter (whose `GetColor`
-// is BLACK) would emit exactly ZERO.
+// luminaire's exitance would be re-uplifted from its RGB projection
+// (a different spectrum), as would a `piecewise_linear_function`-backed
+// painter's.
 //
 // Triplanar sums the three projections' radiance with weights that sum
 // to 1 -- a convex combination of illuminant-shaped spectra of the SAME

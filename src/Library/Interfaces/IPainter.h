@@ -256,14 +256,22 @@ namespace RISE
 	//! RGBUnboundedSpectrum::FromRGB / RGBIlluminantSpectrum::FromRGB in the
 	//! same header) -- binding one to a guarded slot would break this
 	//! assumption and must not be done without revisiting the guard.
+	//! The white-guard predicate for a painter slot, given the painter's
+	//! RGB sample `c` already in hand: authored untinted white AND not a
+	//! physical spectrum (DL-396 -- a spectrally defined painter's RGB is
+	//! only a projection; a bright SPD can project to min channel >= 1
+	//! while its samples are anything but 1, so it must never be replaced
+	//! by exact white).  THE one predicate: `GuardedGetColorNM` and every
+	//! inlined guard (WeaveBRDF, FabricBRDF, CoatedBRDF) call it.
+	//! `IsSpectrallyDefined` is evaluated only after the cheap test passes.
+	inline bool IsUntintedWhitePainter( const IPainter& p, const RISEPel& c )
+	{
+		return IsUntintedWhite( c ) && !p.IsSpectrallyDefined();
+	}
+
 	inline Scalar GuardedGetColorNM( const IPainter& p, const RayIntersectionGeometric& ri, const Scalar nm )
 	{
-		// DL-396: a PHYSICAL spectrum is never "authored white" -- its RGB
-		// is only a projection (a bright SPD can project to min channel
-		// >= 1 while its samples are anything but 1), so the guard must
-		// not replace its samples.  IsSpectrallyDefined is evaluated only
-		// after the cheap white test passes.
-		if( IsUntintedWhite( p.GetColor( ri ) ) && !p.IsSpectrallyDefined() ) {
+		if( IsUntintedWhitePainter( p, p.GetColor( ri ) ) ) {
 			return Scalar(1);
 		}
 		return p.GetColorNM( ri, nm );

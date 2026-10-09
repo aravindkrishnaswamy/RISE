@@ -162,7 +162,8 @@ void EnvironmentSampler::Build()
 			rig.ptCoord.x = s;
 			rig.ptCoord.y = t_coord;
 
-			const RISEPel color = painter.GetColor( rig ) * dScale;
+			// DL-396: the SOURCE view, as RadianceMap::GetRadiance emits.
+			const RISEPel color = painter.GetRadianceColor( rig ) * dScale;
 			const Scalar luminance = ColorMath::MaxValue( color );
 
 			// Compute theta from (s, t)

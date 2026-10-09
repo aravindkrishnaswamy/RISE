@@ -1712,7 +1712,9 @@ namespace RISE
 								const double bias				///< [in] Biases the iridescence to one color or another
 								);
 
-	//! Creates a painter that paints a spectrum from a Function1D
+	//! Creates a painter that paints a spectrum from a Function1D.
+	//! Precondition: `func` must be fully built (all control points added)
+	//! before this call -- its RGB projections (DL-396) are cached here.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateFunction1DSpectralPainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
