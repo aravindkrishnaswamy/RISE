@@ -424,25 +424,41 @@ namespace RISE
 		//! `bOpenSheet` as "no interior" therefore misreads a genuine
 		//! interior EXIT on an ordinary closed mesh as an entry.
 		//!
-		//! Only a geometry whose SHAPE forbids an interior can set this,
-		//! and today that is exactly ONE class: `ClippedPlaneGeometry`
-		//! -- four corners spanning one bilinear sheet with a boundary,
-		//! which cannot enclose a volume however it is transformed, so
-		//! the claim needs no build-time check and cannot be wrong.  Set
-		//! under the SAME back-face condition as `bOpenSheet` there, so
-		//! a front-face hit leaves it false and the ordinary ray anchor
-		//! applies.
+		//! Only a geometry whose SHAPE forbids an interior can set this.
+		//! The setters, each stamping EVERY hit (front and back -- DL-345
+		//! needs front hits recognised too):
+		//!  - `ClippedPlaneGeometry`: four corners spanning one bounded
+		//!    bilinear sheet, which cannot enclose a volume however it is
+		//!    transformed -- no build-time check needed;
+		//!  - `DisplacedGeometry` over a coplanar convex clipped plane
+		//!    (DL-345): the graph of a function over the quad;
+		//!  - `TriangleMeshGeometryIndexed` / `TriangleMeshGeometry` that
+		//!    are ONE planar, consistently wound sheet with authored
+		//!    normals agreeing with the winding (DL-382,
+		//!    `IsProvablyOpenSheet`, decided by
+		//!    `GeometricUtilities::IsPlanarConsistentlyWoundSheet` at build
+		//!    and on every vertex update).
 		//!
-		//! TWO CLASSES OF GEOMETRY CAN NEVER SET IT.
+		//! WHAT CAN NEVER SET IT.
 		//!
-		//! (1) Anything MESH-LIKE.  "Not certified closed" is not
-		//! "certified open", and `bOpenSheet` on the two mesh classes
-		//! means only the former.
+		//! (1) A mesh on the strength of its TOPOLOGY.  "Not certified
+		//! closed" is not "certified open", and `bOpenSheet` on the two
+		//! mesh classes means only the former; a boundary edge proves
+		//! nothing (a box plus a stray quad has one).  The DL-382 mesh
+		//! certificate is GEOMETRIC instead: a planar set has empty
+		//! interior and a connected complement whatever its topology.
 		//!
-		//! (2) Anything holding a COLLECTION of primitives, however
-		//! interior-free each one is on its own -- an interior is a
-		//! property of the whole surface, and N open sheets can bound a
-		//! volume that no single sheet can.  `BezierPatchGeometry` is
+		//! (2) A COLLECTION of primitives on the strength of each one
+		//! being interior-free -- an interior is a property of the whole
+		//! surface, and N open sheets can bound a volume that no single
+		//! sheet can.  Coplanarity is what defeats that argument for the
+		//! DL-382 meshes: every triangle lies in ONE plane, so their
+		//! union is still a planar set, and the consistent-winding
+		//! requirement refuses any closed oriented component (a constant
+		//! field has zero flux through a closed surface, so one cannot
+		//! have every normal on the same side) -- a box flattened inside
+		//! the tolerance is refused, and two parallel sheets in one mesh
+		//! are not coplanar.  `BezierPatchGeometry` is
 		//! the concrete case (DL-157 review round 3, P1): it reads as
 		//! "one patch" from its name only.  `patches` is a vector with a
 		//! BSP/Octree over it, and `Job.cpp`'s `.bezier` loader puts
@@ -461,11 +477,6 @@ namespace RISE
 		//! of the OBJECT -- a CSG tree built from planes can perfectly
 		//! well have an interior, so the wrapper must not inherit an
 		//! operand's claim.
-		//!
-		//! WHO READS IT: `TranslucentSPFDetail::BuildLobeSet`'s STACKLESS
-		//! side inference only (a caller with a live IOR stack asks the
-		//! stack instead; modern PT/BDPT/VCM integrator paths are
-		//! stacked, while photon gathers and SMS still have stackless sites).  See DL-157's closure doc section 3.1.
 		bool						bProvablyNoInterior;
 
 		//! DL-341 review round 6 (2026-10-02): which way the reported

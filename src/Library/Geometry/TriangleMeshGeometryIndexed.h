@@ -158,6 +158,12 @@ namespace RISE
             // mesh mutation. Shared instances/preparation only read it.
             bool smsUncertainNormalOrientation = true;
             unsigned long long smsOrientationAudits = 0, smsOrientationTriangleVisits = 0;
+            //! DL-382: the mesh is ONE planar, consistently wound sheet with
+            //! certain normal orientation, so it provably encloses no volume
+            //! (GeometricUtilities::IsPlanarConsistentlyWoundSheet carries
+            //! the argument).  Refreshed with the area cache; stamped as
+            //! `RayIntersectionGeometric::bProvablyNoInterior` on every hit.
+            bool m_bProvablyOpenSheet = false;
 
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas();
@@ -225,6 +231,10 @@ namespace RISE
 
 		public:
             bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
+            bool IsProvablyOpenSheet() const {return m_bProvablyOpenSheet;}
+            //! DL-382: certified closed (DL-143/150/197).  Neither this nor
+            //! IsProvablyOpenSheet() -> the mesh is UNCERTIFIED.
+            bool IsCertifiedWatertight() const {return m_bWatertight;}
             unsigned long long SMSOrientationAudits() const {return smsOrientationAudits;}
             unsigned long long SMSOrientationTriangleVisits() const {return smsOrientationTriangleVisits;}
 			TriangleMeshGeometryIndexed(
