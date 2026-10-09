@@ -72,6 +72,9 @@ namespace RISE
 {
 	namespace RandomWalkSSS
 	{
+		//! Winding-independent entry admission for solids that certify containment.
+		Scalar EntryFacing( const RayIntersectionGeometric& ri, const IObject* object, const Vector3& wo );
+
 		/// Traces a random walk inside a mesh object and returns the
 		/// exit point as a BSSRDFSampling::SampleResult.
 		///

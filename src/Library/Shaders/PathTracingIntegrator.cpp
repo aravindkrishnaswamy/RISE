@@ -3324,38 +3324,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// cosine uses SHADING.  See the BSSRDF site above for
 				// the rationale.
 				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
-				// DL-70: against the TRUE, ray-INDEPENDENT geometric
-				// normal.  A double-sided mesh reports a `vGeomNormal`
-				// that opposes the ray at every hit, so this gate was an
-				// unconditional PASS and a BACK-face (interior) hit was
-				// admitted into BSSRDF entry sampling -- feeding
-				// `BSSRDFSampling::SampleEntryPoint`, whose own DL-71
-				// correction already works in TRUE-normal space, a
-				// shading point on the wrong side of the surface.
-				// `TrueGeomFacing` restores the agreement; it is a no-op
-				// on single-sided meshes and analytic primitives.
-				// Deliberately NOT a `HasTrueGeomSide()` SKIP: a hair hit
-				// has no true side (DL-75), but rejecting it here would
-				// silently remove subsurface scattering from hair, a
-				// combination DL-75 left undefined-but-permitted and
-				// `HairSSSEntryNormalTest` characterises as producing
-				// well-defined output.  `TrueGeomFacing` is the identity
-				// on a ray-derived normal, so hair keeps exactly its
-				// pre-DL-70 behaviour here.
-				//
-				// DL-96 (CLOSED): this gate used to assume CLOSED-SOLID
-				// semantics unconditionally -- "outside" is the single,
-				// fixed, TRUE outward normal, so exactly one face of a
-				// double-sided mesh admitted BSSRDF entry, silently
-				// dropping SSS entry from an OPEN double-sided sheet's
-				// (a leaf, a cloth card) second face, where both faces
-				// are legitimate entry points.  `BSSRDFEntryFacing()`
-				// keeps that closed-solid gate for a genuinely closed
-				// solid (`!bOpenSheet`), and for an open sheet
-				// (`bOpenSheet`, set by the geometry -- see its doc
-				// comment) admits entry from whichever RAY-FACING side
-				// the ray actually struck instead, so both faces enter.
-				const Scalar cosInGeom = ri.geometric.BSSRDFEntryFacing( wo );
+				// DL-414: certified containment decides the arrival side
+				// independently of mesh winding. Open sheets keep their face rule.
+				const Scalar cosInGeom = RandomWalkSSS::EntryFacing( ri.geometric, ri.pObject, wo );
 				if( cosInGeom > NEARZERO )
 				{
 					// Fresnel cosine clamped via fabs+NEARZERO to a safe
