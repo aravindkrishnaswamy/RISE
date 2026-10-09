@@ -205,6 +205,8 @@ static const int kFilm = 32;
 //! pre-DL-09 and a post-DL-09 build: these fixtures render deterministically
 //! (uniformly lit floor, per-pixel-seeded Sobol, pinned libc seed).
 static unsigned long long g_lastHash = 0;
+// Optional test-only setup before workers start (DL-331 seed-budget probe).
+static void (*g_beforeGradedRender)(IJobPriv*) = nullptr;
 static unsigned long long HashPixels( const CapturingRasterizerOutput& cap )
 {
 	unsigned long long h = 1469598103934665603ULL;
@@ -227,6 +229,7 @@ static std::vector<double> RenderTiles( const std::string& sceneText, const char
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { std::remove( path.c_str() ); return tiles; }
 	if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+        if(g_beforeGradedRender) g_beforeGradedRender(pJob);
 		pJob->RemoveRasterizerOutputs();
 		CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
