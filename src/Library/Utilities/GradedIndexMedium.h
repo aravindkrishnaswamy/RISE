@@ -189,7 +189,9 @@ namespace RISE
 		//! value would otherwise owe.  The product telescopes either way.
 		//! A walk that prices NO interfaces (ShadowSegmentTrack) must not
 		//! call this: its nested through-trip telescopes only on the
-		//! unchanged entry value.
+		//! unchanged entry value.  Invariant: every key below the top
+		//! is a real scene object (FieldOf dereferences it); opaque keys
+		//! such as CompositeSPF's never reach a walk stack.
 		inline void RecordEnclosingAt( IORStack& stack, const Point3& p )
 		{
 			const std::size_t depth = stack.Depth();
