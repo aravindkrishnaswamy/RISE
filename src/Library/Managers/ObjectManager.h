@@ -43,6 +43,11 @@ namespace RISE
 			mutable bool smsPolicyPrepared = false;
 			mutable bool smsHasComposite = false;
 			mutable std::string smsFirstCompositeObject;
+			//! DL-419: a visible object carries an interior medium.  Extended
+			//! SMS has no segment medium laws, so such a scene runs legacy
+			//! SMS (which prices chain media) instead of refusing every anchor.
+			mutable bool smsHasObjectMedium = false;
+			mutable std::string smsFirstMediumObject;
 			//! DL-382: the offending-object set last warned about, so the
 			//! uncertified-open-mesh warning fires once per scene, not per
 			//! PrepareForRendering (an animation prepares every frame).
@@ -583,7 +588,7 @@ namespace RISE
 			void PrepareForRendering() const;
 
 			// Prepared static-scene policy; read-only during worker execution.
-			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && !smsHasComposite; }
+			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && !smsHasComposite && !smsHasObjectMedium; }
 			const std::string& FirstCompositeObject() const { return smsFirstCompositeObject; }
             const std::vector<const IObject*>& ExtendedSMSCasters() const { return smsExtendedCasters; }
             bool HasUncertainSMSNormalOrientation() const { return smsUncertainNormalOrientation; }
