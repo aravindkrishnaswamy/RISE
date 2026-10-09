@@ -1424,6 +1424,7 @@ debt-dl325 slice note (2026-10-03, branched from `master` `9e1e6ebb5`; does NOT 
 
 **Authoritative totals on `master` (recount after each merge; per-slice notes
 below are each slice's own snapshot at its branch HEAD and do NOT sum):**
+- 2026-10-08 debt-followups (merged with master `4e8cef6f4`): DL-462 closed (interlaced-field animation keeps the frame's splat film); DL-424/425 review follow-ups landed (no rows opened or closed by them). **311 main rows: 32 open, 279 closed** (recounted from row identifiers). Highest ID DL-462; next free DL-463.
 - 2026-10-08 supervisor merge of debt-mlt-spectral (DL-461 closed): **311 main rows: 33 open, 278 closed** (recounted from row identifiers). Highest ID DL-462; next free DL-463.
 - 2026-10-08 debt-mlt-spectral: DL-461 filed and closed (MLT spectral missing the spectral integral normalization). **310 main rows: 33 open, 277 closed** (computed from identifier cells on this branch). Highest ID DL-461 (DL-462 reserved by the supervisor); next free DL-463.
 - 2026-10-08 supervisor merge of debt-dl458 (DL-458 closed; DL-462 opened; DL-461 reserved for debt-mlt-spectral): **310 main rows: 33 open, 277 closed** (recounted from row identifiers). Highest ID DL-462.
