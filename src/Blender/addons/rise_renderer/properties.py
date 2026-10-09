@@ -245,6 +245,11 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         min=0,
         max=16,
     )
+    sms_extended: bpy.props.BoolProperty(
+        name="Extended SMS",
+        description="Opt-in unbiased reference SMS estimators (point/spot and area lights, per-lane HWSS). Ignores Biased and Seeding; inert with composite materials; roughly 10-17x slower on caustic-heavy scenes",
+        default=False,
+    )
 
     adaptive_max_samples: bpy.props.IntProperty(
         name="Max Samples",

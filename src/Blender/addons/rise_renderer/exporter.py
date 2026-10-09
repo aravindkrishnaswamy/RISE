@@ -107,6 +107,7 @@ class RenderSettingsData:
     sms_use_levenberg_marquardt: bool
     sms_seeding_mode: int
     sms_target_bounces: int
+    sms_extended: bool
     adaptive_max_samples: int
     adaptive_threshold: float
     adaptive_show_map: bool
@@ -3961,6 +3962,7 @@ def build_render_settings(scene) -> RenderSettingsData:
         sms_use_levenberg_marquardt=bool(rise.sms_use_levenberg_marquardt),
         sms_seeding_mode=int(rise.sms_seeding_mode),
         sms_target_bounces=int(rise.sms_target_bounces),
+        sms_extended=bool(rise.sms_extended),
         adaptive_max_samples=int(rise.adaptive_max_samples),
         adaptive_threshold=float(rise.adaptive_threshold),
         adaptive_show_map=bool(rise.adaptive_show_map),

@@ -362,7 +362,7 @@ namespace RISE
 		struct ManifoldSolverConfig
 		{
 			bool			enabled;				///< Master switch: when false, no ManifoldSolver is created
-            bool extendedMode;             ///< Internal opt-in; no parser/API exposure.
+            bool extendedMode;             ///< Opt-in; scene parameter `sms_extended` on pathtracing_{pel,spectral}_rasterizer (SMSConfig::extended -> RISE_API_CreatePathTracing*RasterizerEx).
             SMSDomainCounters* domainCounters; ///< Optional diagnostics; caller owns lifetime.
             SMSReferenceCounters* referenceCounters; ///< Optional estimator A diagnostics; caller owns lifetime.
             Scalar extendedEventFloor;     ///< Positive exploration mass for both supported R/T events.

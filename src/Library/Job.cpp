@@ -10520,8 +10520,8 @@ bool Job::SetPathTracingPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
-	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, _jobFs);
+	RISE_API_CreatePathTracingPelRasterizerEx( &pRaster, pCaster, pPixelSampler, pPixelFilter,
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, smsConfig.extended, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -10628,9 +10628,9 @@ bool Job::SetPathTracingSpectralRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
-	RISE_API_CreatePathTracingSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
+	RISE_API_CreatePathTracingSpectralRasterizerEx( &pRaster, pCaster, pPixelSampler, pPixelFilter,
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, smsConfig.extended, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a

@@ -1048,6 +1048,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "sms_two_stage";                          p.kind = ValueKind::Bool;   p.description = "Two-stage solver: smooth seed then refine on actual surface (Zeltner 2020 §5)"; p.defaultValueHint = to_hint(d.twoStage); }
 				{ auto& p = P(); p.name = "sms_seeding";                            p.kind = ValueKind::String; p.description = "SMS seeding strategy: \"snell\" (legacy Snell-trace) or \"uniform\" (Mitsuba-faithful uniform-on-shape)"; p.defaultValueHint = to_hint(d.seedingMode); }
 				{ auto& p = P(); p.name = "sms_target_bounces";                     p.kind = ValueKind::UInt;   p.description = "REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode."; p.defaultValueHint = to_hint(d.targetBounces); }
+				{ auto& p = P(); p.name = "sms_extended";                           p.kind = ValueKind::Bool;   p.description = "Extended SMS (opt-in): unbiased reference estimators -- root-level (A) for point/spot lights, topology-level (B) with a PT ownership partition for area emitters, per-lane under hwss.  Ignores sms_biased and sms_seeding; sms_photon_count > 0, a global medium or alpha coverage disables SMS at the anchor; inert (with one warning) on scenes containing a composite_material.  The HWSS shader-op path stays legacy (DL-451); finite-scattering dielectrics are treated at their delta limit (DL-379, measured +5.5%).  Costly: ~10-17x PT on caustic-heavy scenes (DL-449).  See docs/SMS_EXTENDED_DESIGN.md."; p.defaultValueHint = to_hint(d.extended); }
 			}
 			template<typename PushFn>
 			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
@@ -12664,6 +12665,7 @@ namespace RISE
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 					if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
 					if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
+					if( bag.Has("sms_extended") )         smsConfig.extended        = bag.GetBool("sms_extended");
 					if( bag.Has("sms_seeding") ) {
 						std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 						std::transform( sv.begin(), sv.end(), sv.begin(),
@@ -12812,6 +12814,7 @@ namespace RISE
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
 				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
+				if( bag.Has("sms_extended") )         smsConfig.extended        = bag.GetBool("sms_extended");
 				if( bag.Has("sms_seeding") ) {
 					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),

@@ -23,6 +23,7 @@ the bridge talks to RISE only through the existing public APIs in
 - Heterogeneous VDB-backed volume objects driven by the `density` grid, exported through a temporary slice cache.
 - Point, spot, sun, and world ambient approximation. Blender area lights are still approximated as point lights.
 - Curated advanced ray controls for path tracing, adaptive sampling, path guiding, stability, and OIDN denoising.
+- Extended SMS (`sms_extended`) is exposed as the **Extended SMS** render setting (ABI v17); see `docs/SMS_EXTENDED_DESIGN.md` "Using extended SMS".
 - Native bridge ABI/version validation plus runtime capability reporting for OIDN, path guiding, and VDB volume support.
 
 ## Current Limitations

@@ -101,6 +101,7 @@ class RISE_RENDER_PT_path_tracing(_RISEPanel):
         sms_col.enabled = settings.sms_enabled
         sms_col.prop(settings, "sms_seeding_mode")
         sms_col.prop(settings, "sms_target_bounces")
+        sms_col.prop(settings, "sms_extended")
         sms_col.prop(settings, "sms_max_iterations")
         sms_col.prop(settings, "sms_threshold")
         sms_col.prop(settings, "sms_max_chain_depth")

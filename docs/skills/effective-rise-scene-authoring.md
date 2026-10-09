@@ -263,6 +263,15 @@ full empirical writeup; quick decision tree:
    - **Displaced-egg-class** (single-basin interior-light): photons
      don't help, just cost ~6× more wall-time.  Don't enable.
 
+4. **`sms_extended`**: default `FALSE`.  `TRUE` switches to the
+   extended reference estimators (point/spot lights and area emitters,
+   with a PT ownership partition so missed roots cost variance, not
+   energy).  It ignores `sms_seeding` and `sms_biased`, and
+   `sms_photon_count > 0` disables SMS under it.  It is inert on
+   scenes with a `composite_material`, and it costs roughly 10-17x on
+   caustic-heavy scenes.  See [docs/SMS_EXTENDED_DESIGN.md] §"Using
+   extended SMS".
+
 ### 8. Save the working scene to `scenes/Tests/` or `scenes/FeatureBased/`
 
 Once the scene renders correctly, add a header comment that documents:

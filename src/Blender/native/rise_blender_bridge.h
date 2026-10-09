@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 16
+#define RISE_BLENDER_API_VERSION 17
 
 #ifdef __cplusplus
 extern "C" {
@@ -648,6 +648,9 @@ typedef struct rise_blender_render_settings {
 	int sms_use_levenberg_marquardt;
 	uint32_t sms_seeding_mode;     // rise_blender_sms_seeding
 	uint32_t sms_target_bounces;
+	// ABI v17: extended SMS (`sms_extended`, SMSConfig::extended).  Non-zero
+	// selects the reference estimators of docs/SMS_EXTENDED_DESIGN.md.
+	int sms_extended;
 
 	// Adaptive sampling
 	uint32_t adaptive_max_samples;
