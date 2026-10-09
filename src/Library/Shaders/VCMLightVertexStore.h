@@ -70,6 +70,33 @@ namespace RISE
 			/// is responsible for ordering across threads.
 			void Concat( std::vector<LightVertex>&& localBuffer );
 
+			/// DL-470: as above, together with the buffer's light-subpath
+			/// step records (ConvertLightSubpath's `outSteps`) in blocks;
+			/// each vertex's (stepChunk, stepBase) indexes `localBlocks`.
+			/// The blocks are ADOPTED as chunks of the step pool (never
+			/// copied into one shared array -- that doubled the light
+			/// pass's peak memory) and stepChunk is rebased onto them.
+			void Concat( std::vector<LightVertex>&& localBuffer, std::vector< std::vector<VCMStep> >&& localBlocks );
+
+			/// DL-470: record 0 of `v`'s light subpath in the step pool, or
+			/// 0 when its records were not kept.  Read-only once the store
+			/// is built, like the vertices.
+			const VCMStep* StepsOf( const LightVertex& v ) const
+			{
+				if( v.stepBase == kLightVertexNoSteps || v.stepChunk >= mStepChunks.size() ) {
+					return 0;
+				}
+				return &mStepChunks[v.stepChunk][0] + v.stepBase;
+			}
+
+			/// DL-470: total step records kept (all chunks).
+			std::size_t StepCount() const
+			{
+				std::size_t n = 0;
+				for( std::size_t c = 0; c < mStepChunks.size(); c++ ) n += mStepChunks[c].size();
+				return n;
+			}
+
 			/// Build a left-balanced KD-tree over the current
 			/// contents.  After this call the store is read-only;
 			/// Query() is safe from any thread.  Step 3 fills this
@@ -175,6 +202,7 @@ namespace RISE
 
 		private:
 			std::vector<LightVertex>	mVertices;
+			std::vector< std::vector<VCMStep> >	mStepChunks;	///< DL-470 step pool, one chunk per Concat
 			bool						mBuilt;
 		};
 	}
