@@ -17,6 +17,7 @@
 #include "ManifoldSolver.h"
 #include "../Managers/ObjectManager.h"
 #include "../Geometry/SphereGeometry.h"
+#include "../Geometry/BoxGeometry.h"
 #include "../Geometry/EllipsoidGeometry.h"
 #include "../Geometry/TorusGeometry.h"
 #include "../Geometry/CylinderGeometry.h"
@@ -32,6 +33,8 @@
 #include "../Interfaces/IScalarPainter.h"
 
 #include "../Materials/DielectricMaterial.h"
+#include "../Materials/RandomWalkSSSMaterial.h"
+#include "GradedIndexMedium.h"
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/PerfectReflectorMaterial.h"
 #include "../Materials/PolishedMaterial.h"
@@ -46,6 +49,7 @@
 #include <cstring>
 
 namespace {
+    constexpr RISE::Scalar kLegacySeedOffset=1e-2;
     using RISE::Implementation::SMSReferenceCounters;
     thread_local SMSReferenceCounters* smsActiveDiagnostics=nullptr;
     thread_local unsigned smsScratchDepth=0;
@@ -5298,7 +5302,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		return 0;
 	}
 
-	const Scalar offsetEps = 1e-2;
+	const Scalar offsetEps = kLegacySeedOffset;
 	const std::size_t startSize = chain.size();
 
 	// EMITTER STOP: capture the original start position and original
@@ -11440,6 +11444,14 @@ bool ManifoldSolver::SplitSuppressionExact( const IRayCaster& caster, bool /*spe
 	return true;
 }
 
+bool ManifoldSolver::NeedsLegacyChainRecord( const IRayCaster& caster, bool spectral ) const
+{
+    if( SplitSuppressionExact(caster, spectral) ) return true;
+    if( pPhotonMap && pPhotonMap->IsBuilt() ) return false;
+    const LightSampler* lights=caster.GetLightSampler();
+    return lights && !lights->SceneHasAlphaCoverage();
+}
+
 SMSChainCoverage ManifoldSolver::ClassifyEmitterHitCoverage(
 	const SMSChainRecord& rec,
 	const Point3& y,
@@ -11456,6 +11468,73 @@ SMSChainCoverage ManifoldSolver::ClassifyEmitterHitCoverage(
 	if( k == 0 || k > SMSChainRecord::kMaxVertices ) {
 		return eSMSChainCoverageUnknown;
 	}
+
+    if( !SplitSuppressionExact(caster, nm>0) ) {
+        // DL-339: an exact *impossibility* proof, not a Snell-root test for
+        // a stochastic proposal. A first hit on a closed native primitive
+        // from strictly outside, with constant lower incident index, can
+        // only seed T. Newton preserves R/T flags. Later reflections can
+        // originate in a TIR seed and move below critical; do not retain
+        // those using this argument. Photon seeds explicitly include R.
+        if( !NeedsLegacyChainRecord(caster, nm>0) || !rec.v[0].isReflection )
+            return eSMSChainCoverageUnknown;
+        // A HWSS record may carry the hero's exterior index. Without
+        // replaying its enclosures, only an environment-only NM stack is
+        // safe for this proof; exact Snell classification above is unchanged.
+        if(nm>0 && rec.anchorStack.Depth()!=1) return eSMSChainCoverageUnknown;
+        const auto& first=rec.v[0];
+        const IObject* object=first.pObject;
+        if( !object || !SMSSameType<Object>(*object) || object->GetModifier() ||
+            object->GetInteriorMedium() || scene.GetGlobalMedium() || GradedIndexMedium::TopField(rec.anchorStack) )
+            return eSMSChainCoverageUnknown;
+        const IGeometry* geometry=object->GetGeometry();
+        if( !geometry || !(SMSSameType<BoxGeometry>(*geometry) ||
+            SMSSameType<SphereGeometry>(*geometry) || SMSSameType<EllipsoidGeometry>(*geometry)) )
+            return eSMSChainCoverageUnknown;
+        IORStack stack(rec.anchorStack); stack.SetCurrentObject(object);
+        Scalar distance=0; bool exact=false;
+        if( stack.containsCurrent() || !object->SignedDistanceLower(rec.anchorPos,
+            RISE_INFINITY, distance, exact) || !(distance>kLegacySeedOffset) )
+            return eSMSChainCoverageUnknown;
+        // The seed advances by kLegacySeedOffset in any proposed
+        // direction before its first intersection. A positive lower
+        // distance greater than that advance keeps every launch outside.
+        const IMaterial* material=object->GetMaterial();
+        const IScalarPainter* index=nullptr;
+        if( const auto* m=SMSDynamicCast<DielectricMaterial>(material) ) {
+            if(!SMSSameType<DielectricMaterial>(*material)) return eSMSChainCoverageUnknown;
+            index=&m->GetIOR();
+        }
+        else if( const auto* m=SMSDynamicCast<PerfectRefractorMaterial>(material) ) {
+            if(!SMSSameType<PerfectRefractorMaterial>(*material)) return eSMSChainCoverageUnknown;
+            index=&m->GetIOR();
+        }
+        else if( const auto* m=SMSDynamicCast<RandomWalkSSSMaterial>(material) ) {
+            if(!SMSSameType<RandomWalkSSSMaterial>(*material)) return eSMSChainCoverageUnknown;
+            index=&m->GetIOR();
+        }
+        if( !index || !index->IsPositionIndependent() ) return eSMSChainCoverageUnknown;
+        const Scalar incident=stack.top();
+        if( !(incident>0) || !std::isfinite(incident) ) return eSMSChainCoverageUnknown;
+        Vector3 direction=Vector3Ops::mkVector3(first.position,rec.anchorPos);
+        if( Vector3Ops::NormalizeMag(direction)<=NEARZERO ) return eSMSChainCoverageUnknown;
+        RayIntersectionGeometric rig(Ray(rec.anchorPos,direction),nullRasterizerState);
+        rig.bHit=true; rig.ptIntersection=first.position; rig.ptObjIntersec=first.objectPosition;
+        rig.ptCoord=first.uv; rig.vNormal=first.normal; rig.vGeomNormal=first.geomNormal;
+        rig.ambientIOR=incident;
+        const ScalarTriple rgb=index->GetValuesAt(rig);
+        // A strict gap also avoids equality/grazing roundoff in Refract.
+        for(unsigned lane=0;lane<3;++lane) if( !std::isfinite(rgb.v[lane]) ||
+            !(rgb.v[lane]>incident*(1+1e-8)) ) return eSMSChainCoverageUnknown;
+        if(nm>0) {
+            const Scalar spectralIndex=index->GetValueAtNM(rig,nm);
+            if(!std::isfinite(spectralIndex) || !(spectralIndex>incident*(1+1e-8)))
+                return eSMSChainCoverageUnknown;
+        }
+        const SpecularInfo info=material->GetSpecularInfo(rig,stack);
+        return info.valid && info.isSpecular && info.canRefract
+            ? eSMSChainNotCovered : eSMSChainCoverageUnknown;
+    }
 
 	// The exact mode draws nothing: no alpha coverage (the seed walk's
 	// intersection draws only at partial coverage) and a biased Solve

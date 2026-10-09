@@ -149,6 +149,9 @@ inline bool ConfigureTestWorker()
     return configured;
 }
 
+// Optional test-only diagnostics installed before any render workers start.
+inline void (*g_beforeSMSRender)(IJobPriv*) = nullptr;
+
 inline RenderResult Render( const std::string& sceneText, const char* tag, unsigned int delayMs = 0 )
 {
 	RenderResult r{ {}, 0, 0, 0, 0, false };
@@ -166,6 +169,7 @@ inline RenderResult Render( const std::string& sceneText, const char* tag, unsig
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { std::remove( path.c_str() ); return r; }
 	if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+        if(g_beforeSMSRender) g_beforeSMSRender(pJob);
 		pJob->RemoveRasterizerOutputs();
 		CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
