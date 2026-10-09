@@ -204,8 +204,8 @@ namespace
         s.text=Header()
             +ClippedQuad("receiver_geo",0,-0.5,0.5,-0.5,0.5,false,true)+Obj("receiver","receiver_geo","diffuse")
             +MeshQuad("mirror_geo",2,0.4,4,-2,2,false)+Obj("caster","mirror_geo","mirror")
-            // Authored thin (not scaled): Object::GetArea's |det|^(2/3)
-            // area is exact only for uniform scale (DL-448).
+            // Authored thin vs scaled: the DL-448 red/green pair (the scaled
+            // box once read 0.0377 area against the true ~2.002).
             +(scaled?MeshBox("emitter_geo",reverse):MeshBox("emitter_geo",reverse,0.5,0.5,0.00025))
             +Obj("emitter","emitter_geo","lum",std::string(" position 1.5 0 1\n")+(scaled?" scale 0.5 0.5 0.00025\n":""));
         return s;

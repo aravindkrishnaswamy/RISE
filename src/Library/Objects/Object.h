@@ -26,6 +26,9 @@
 
 #include <atomic>	// the two one-shot proximity diagnostic latches below
 #include <typeinfo>	// DescribeKind names the geometry's own type
+#include <memory>	// DL-448 lazily built world-area sampling cache
+#include <mutex>
+#include <vector>
 
 namespace RISE
 {
@@ -126,14 +129,126 @@ namespace RISE
 			//! mirrored object instances of the same source mesh.
 			Scalar											m_tangentFrameSign;
 
-			//! Area scale; exact triangle integration for non-uniform meshes/boxes,
-			//! determinant scale for other shapes (exact for uniform transforms).
+			//! World-area scale |det|^(2/3) of the linear part: EXACT for
+			//! rotations / reflections / uniform scales.  Used by GetArea()
+			//! whenever m_needsWorldAreaSampling is false.
 			Scalar m_worldAreaScale;
-			//! Local triangles selected using their transformed areas. Per instance,
-			//! because geometry can be shared by objects with different transforms.
-			void RebuildAreaSampling();
-			TriangleListType m_areaTriangles;
-			std::vector<Scalar> m_areaCDF;
+
+			//! DL-448: world-uniform surface sampling under a NON-similarity
+			//! transform.  Object-space-uniform samples pushed through a
+			//! non-uniform map are NOT uniform in world area: the local area
+			//! stretch is J(n) = |det L| |L^-T n| = sqrt(n^T adj(G) n) for the
+			//! object-space unit geometric normal n, G = L^T L.  The sampler
+			//! draws the geometry's OWN object-area distribution and accepts a
+			//! candidate with probability J / Jbound, so the accepted density
+			//! is world-uniform for ANY G; pdfPosition = 1/GetArea() with
+			//! GetArea() = object area * E[J], so no consumer changes.
+			//!  - triangle surfaces (meshes, box, displaced): the object-area
+			//!    triangle CDF (geometry-only); J is constant per flat
+			//!    triangle, so E[J] and max J are exact per metric;
+			//!  - curved shapes: the geometry's own sampler; E[J] by a
+			//!    Richardson-extrapolated tessellation, bound sigma1*sigma2
+			//!    (rigorous), or a vertex-Lipschitz bound when that would
+			//!    accept < 2 % (an open shape; warned).
+			//!
+			//! CACHING.  GeometryAreaData (keyed by geometry pointer, area and
+			//! bounding box -- a keyframed geometry parameter re-keys) holds
+			//! everything metric-independent; MetricAreaData (keyed by that
+			//! plus G, rotation-invariant so rigid motion re-uses it) holds
+			//! E[J] and the bound.  Up to kMaxAreaSlots of each are published
+			//! in lock-free atomic slots and OWNED by the object; they are
+			//! retired only by PruneWorldAreaSampling(), which
+			//! ObjectManager::PrepareForRendering calls once per frame (no
+			//! render in flight), and a retired generation is freed only at
+			//! the NEXT prune.  Within one frame, past kMaxAreaSlots metrics
+			//! (an animated non-uniform scale under motion blur) E[J] comes
+			//! per call from the geometry's area-weighted normal histogram
+			//! (an approximation, ~1e-3 on the test shapes) with the rigorous
+			//! sigma1*sigma2 bound; past kMaxAreaSlots GEOMETRIES in one frame
+			//! (a keyframed geometry under motion blur) the object falls back
+			//! to |det|^(2/3) and object-uniform sampling, with a warning.
+			struct WorldAreaKey
+			{
+				const IGeometry*		geometry = 0;
+				Scalar					geomArea = 0;
+				Point3					bbll, bbur;
+				Scalar					G[6] = { 0, 0, 0, 0, 0, 0 };	//!< 00 11 22 01 02 12
+				bool SameGeometry( const WorldAreaKey& o ) const;
+				bool Matches( const WorldAreaKey& o ) const;
+			};
+			struct GeometryAreaData
+			{
+				WorldAreaKey			key;					//!< geometry fields only
+				bool					triangleSurface = false;
+				// triangle surfaces
+				TriangleListType		triangles;				//!< object space (sampling)
+				std::vector<Vector3>	faceNormals;			//!< unit, per triangle
+				std::vector<Scalar>		faceAreas;
+				std::vector<Scalar>		objCdf;					//!< normalized object-area CDF
+				// curved surfaces: tessellation faces at two details
+				std::vector<Vector3>	fineN, coarseN;
+				std::vector<Scalar>		fineA, coarseA;
+				std::vector<Vector3>	vertexNormals;
+				Scalar					maxNormalSpread = 0;
+				bool					planar = false;			//!< one normal (either surface kind)
+				// both: area-weighted normal histogram (weights > 0)
+				std::vector<Vector3>	histN;
+				std::vector<Scalar>		histW;
+				Scalar					histWSum = 0;
+			};
+			struct MetricAreaData
+			{
+				WorldAreaKey			key;
+				const GeometryAreaData*	geom = 0;				//!< owned by the object's geometry list
+				Scalar					worldAreaScale = 0;		//!< E[J]
+				Scalar					bound = 0;				//!< >= sup J
+				bool					rejection = false;
+				Scalar					K[6] = { 0, 0, 0, 0, 0, 0 };	//!< adj(G)
+				//! Triangle surfaces whose rejection would accept < 5 % (a
+				//! mesh thin in object space stretched along its thin axis):
+				//! the exact WORLD-area triangle CDF for this metric instead.
+				std::vector<Scalar>		worldCdf;
+			};
+			//! What a sampling call needs, by value.
+			struct WorldAreaView
+			{
+				const GeometryAreaData*	geom = 0;
+				Scalar					worldAreaScale = 0;
+				Scalar					bound = 0;
+				bool					rejection = false;
+				Scalar					K[6] = { 0, 0, 0, 0, 0, 0 };
+				const std::vector<Scalar>*	worldCdf = 0;
+			};
+			static const unsigned int kMaxAreaSlots = 16;
+			void ResetWorldAreaSampling();
+			void ComputeWorldAreaKey( WorldAreaKey& key ) const;
+			//! False when no view can be had (caller takes the |det|^(2/3) path).
+			bool AcquireWorldAreaView( WorldAreaView& view ) const;
+			const GeometryAreaData* FindOrBuildGeometryData( const WorldAreaKey& key, const bool mayBuild ) const;
+			std::shared_ptr<const GeometryAreaData> BuildGeometryData( const WorldAreaKey& key ) const;
+			std::shared_ptr<const MetricAreaData> BuildMetricData( const WorldAreaKey& key, const GeometryAreaData& g ) const;
+			std::atomic<bool> m_needsWorldAreaSampling;
+			mutable std::atomic<const GeometryAreaData*> m_geomSlots[kMaxAreaSlots];
+			mutable std::atomic<const MetricAreaData*> m_metricSlots[kMaxAreaSlots];
+			mutable std::mutex m_worldAreaMutex;
+			//! Owners (guarded by m_worldAreaMutex); slot i is owned by entry i.
+			mutable std::vector<std::shared_ptr<const GeometryAreaData>> m_geomOwned;
+			mutable std::vector<std::shared_ptr<const MetricAreaData>> m_metricOwned;
+			//! The generation retired by the last prune, freed at the next one.
+			mutable std::vector<std::shared_ptr<const GeometryAreaData>> m_geomRetired;
+			mutable std::vector<std::shared_ptr<const MetricAreaData>> m_metricRetired;
+			mutable std::atomic<bool> m_warnedAreaFallback;
+			mutable std::atomic<unsigned long long> m_rejectionCapHits;
+		public:
+			//! Retire every cached world-area entry that does not describe the
+			//! CURRENT geometry/transform.  Called once per frame from
+			//! ObjectManager::PrepareForRendering (single-threaded); frees
+			//! only the generation retired by the previous call.
+			void PruneWorldAreaSampling() const;
+			//! Surface samples whose rejection loop hit its candidate cap
+			//! and fell back to an object-uniform point (diagnostic).
+			unsigned long long WorldAreaRejectionCapHits() const { return m_rejectionCapHits.load( std::memory_order_relaxed ); }
+		protected:
 
 			//! World-LINEAR scaling of the transform's linear part,
 			//! |det|^(1/3) -- the length-measure sibling of

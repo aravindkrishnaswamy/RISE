@@ -20,6 +20,8 @@
 #include "../Utilities/BoundingBox.h"
 #include "../Polygon.h"
 #include <vector>
+#include <cstdint>
+#include <cstring>
 
 namespace RISE
 {
@@ -404,6 +406,39 @@ namespace RISE
 					const Point3& c11, const Point3& c01,
 					const Scalar u
 					);
+
+		//! DL-448: a deterministic uniform stream derived from a sample's
+		//! canonical random point, for REJECTION samplers that must stay a
+		//! pure function of the one Point3 they are handed (the sampler
+		//! interface carries no generator).  SplitMix64 seeded by the bits of
+		//! all three coordinates: the first candidate is still the caller's
+		//! own point (stratification is kept whenever it is accepted); only
+		//! the accept variates and any retries come from this stream.  NESTED
+		//! rejection samplers (a scaled ellipsoid: Object's stretch rejection
+		//! around EllipsoidGeometry's own) MUST pass distinct salts, or both
+		//! levels draw the same accept variates and the result is biased.
+		struct PrandStream
+		{
+			std::uint64_t state;
+			PrandStream( const Point3& prand, const std::uint64_t salt )
+			{
+				static_assert( sizeof( Scalar ) == sizeof( std::uint64_t ), "PrandStream seeds from 64-bit Scalar bit patterns" );
+				std::uint64_t b[3];
+				std::memcpy( &b[0], &prand.x, sizeof( std::uint64_t ) );
+				std::memcpy( &b[1], &prand.y, sizeof( std::uint64_t ) );
+				std::memcpy( &b[2], &prand.z, sizeof( std::uint64_t ) );
+				state = b[0] ^ ( b[1] * 0x9E3779B97F4A7C15ULL ) ^ ( b[2] * 0xC2B2AE3D27D4EB4FULL ) ^ ( salt * 0xD6E8FEB86659FD93ULL );
+				Next();	// mix the seed once before the first variate
+			}
+			Scalar Next()
+			{
+				std::uint64_t z = ( state += 0x9E3779B97F4A7C15ULL );
+				z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+				z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+				z ^= ( z >> 31 );
+				return Scalar( z >> 11 ) * Scalar( 1.0 / 9007199254740992.0 );
+			}
+		};
 
 		//! AREA-UNIFORM SAMPLING ON A BILINEAR PATCH.
 		//!

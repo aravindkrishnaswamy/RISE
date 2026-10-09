@@ -19,6 +19,7 @@
 #include "../Geometry/TriangleMeshGeometry.h"
 #include "../Geometry/TriangleMeshGeometryIndexed.h"
 #include "../Geometry/BoxGeometry.h"
+#include "../Geometry/DisplacedGeometry.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Intersection/TextureFootprintCompute.h"
@@ -27,6 +28,8 @@
 #include <cmath>		// the Jacobi sweep's sqrt / fabs
 #include <cfloat>		// DBL_EPSILON -- the Jacobi pair's relative widening
 #include <algorithm>	// std::min / std::max over the three singular values
+#include <memory>
+#include <mutex>		// DL-448 lazy world-area sampling build
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -350,6 +353,9 @@ Object::Object( ) :
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
   m_worldAreaScale( 1.0 ),
+  m_needsWorldAreaSampling( false ),
+  m_warnedAreaFallback( false ),
+  m_rejectionCapHits( 0 ),
   m_worldLinearScale( 1.0 ),
   m_sigmaMax( 1.0 ),
   m_sigmaMin( 1.0 ),
@@ -358,6 +364,11 @@ Object::Object( ) :
   m_sigmaLooseWarned( false ),
   m_distanceRefusalWarned( false )
 {
+	// std::atomic arrays are not value-initialized before C++20.
+	for( unsigned int i = 0; i < kMaxAreaSlots; i++ ) {
+		m_geomSlots[i].store( 0, std::memory_order_relaxed );
+		m_metricSlots[i].store( 0, std::memory_order_relaxed );
+	}
 }
 
 
@@ -376,6 +387,9 @@ Object::Object( const IGeometry* pGeometry_ ) :
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
   m_worldAreaScale( 1.0 ),
+  m_needsWorldAreaSampling( false ),
+  m_warnedAreaFallback( false ),
+  m_rejectionCapHits( 0 ),
   m_worldLinearScale( 1.0 ),
   m_sigmaMax( 1.0 ),
   m_sigmaMin( 1.0 ),
@@ -384,6 +398,11 @@ Object::Object( const IGeometry* pGeometry_ ) :
   m_sigmaLooseWarned( false ),
   m_distanceRefusalWarned( false )
 {
+	// std::atomic arrays are not value-initialized before C++20.
+	for( unsigned int i = 0; i < kMaxAreaSlots; i++ ) {
+		m_geomSlots[i].store( 0, std::memory_order_relaxed );
+		m_metricSlots[i].store( 0, std::memory_order_relaxed );
+	}
 	if( pGeometry ) {
 		pGeometry->addref();
 	} else {
@@ -528,8 +547,20 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	dst.SURFACE_INTERSEC_ERROR = SURFACE_INTERSEC_ERROR;
 	dst.m_tangentFrameSign     = m_tangentFrameSign;
 	dst.m_worldAreaScale       = m_worldAreaScale;
-	dst.m_areaTriangles        = m_areaTriangles;
-	dst.m_areaCDF              = m_areaCDF;
+	// DL-448: same geometry, same transform -> the immutable sampling
+	// entries are SHARED (the clone co-owns them, so the raw slot pointers
+	// it inherits stay valid for its whole life), never rebuilt.
+	dst.m_needsWorldAreaSampling.store( m_needsWorldAreaSampling.load() );
+	{
+		std::lock_guard<std::mutex> lock( m_worldAreaMutex );
+		std::lock_guard<std::mutex> dstLock( dst.m_worldAreaMutex );
+		dst.m_geomOwned = m_geomOwned;
+		dst.m_metricOwned = m_metricOwned;
+		for( unsigned int i = 0; i < kMaxAreaSlots; i++ ) {
+			dst.m_geomSlots[i].store( i < m_geomOwned.size() ? m_geomOwned[i].get() : 0, std::memory_order_release );
+			dst.m_metricSlots[i].store( i < m_metricOwned.size() ? m_metricOwned[i].get() : 0, std::memory_order_release );
+		}
+	}
 	dst.m_worldLinearScale     = m_worldLinearScale;
 	// The proximity query's transform bounds ride along with the other two
 	// transform-derived caches.  A clone's FinalizeTransformations would
@@ -613,9 +644,11 @@ bool Object::AssignGeometry( const IGeometry& pGeom )
 
 	pGeometry = &pGeom;
 	pGeometry->addref();
-	const Scalar absDet=fabs(Matrix4Ops::Determinant(m_mxFinalTrans));
-	m_worldAreaScale=absDet>0?pow(absDet,Scalar(2.0/3.0)):0;
-	RebuildAreaSampling();
+	ResetWorldAreaSampling();
+	// A swapped geometry can never match the old entries: retire them now
+	// (an editor operation, outside any render).
+	PruneWorldAreaSampling();
+	m_warnedAreaFallback.store( false );
 
 	return true;
 }
@@ -1607,16 +1640,73 @@ void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, 
 	Vector3 localNormal;
 	Point3* samplePoint = point ? point : &localPoint;
 	Vector3* sampleNormal = normal ? normal : &localNormal;
-	if( !m_areaCDF.empty() ) {
-		const auto it = std::upper_bound(m_areaCDF.begin(),m_areaCDF.end(),prand.z);
-		const std::size_t index = std::min(std::size_t(it-m_areaCDF.begin()),m_areaCDF.size()-1);
-		GeometricUtilities::PointOnTriangle(samplePoint,sampleNormal,coord,m_areaTriangles[index],prand.x,prand.y);
+	WorldAreaView view;
+	const WorldAreaView* was = ( m_needsWorldAreaSampling.load( std::memory_order_relaxed ) && AcquireWorldAreaView( view ) ) ? &view : 0;
+	if( !was ) {
+		// Similarity transform: object-uniform IS world-uniform.  Unchanged
+		// (bit-identical) path.
+		pGeometry->UniformRandomPoint( samplePoint, sampleNormal, coord, prand );
+	} else if( was->worldCdf ) {
+		// Exact world-area triangle CDF (a low-acceptance triangle surface).
+		const std::vector<Scalar>& cdf = *was->worldCdf;
+		const auto it = std::upper_bound( cdf.begin(), cdf.end(), prand.z );
+		const std::size_t index = std::min( std::size_t( it - cdf.begin() ), cdf.size() - 1 );
+		GeometricUtilities::PointOnTriangle( samplePoint, sampleNormal, coord, was->geom->triangles[index], prand.x, prand.y );
+	} else if( !was->rejection ) {
+		// Constant stretch (a planar shape): object-uniform is world-uniform.
+		pGeometry->UniformRandomPoint( samplePoint, sampleNormal, coord, prand );
 	} else {
-		pGeometry->UniformRandomPoint(samplePoint,sampleNormal,coord,prand);
+		// Accept the object-uniform candidate with probability J/bound; the
+		// accepted density in world area is the constant 1/(A_obj E[J]) =
+		// 1/GetArea().  The first candidate is prand itself (keeps its
+		// stratification when accepted); the accept variates and retries
+		// come from a stream seeded by prand's bits, so the map stays a pure
+		// function of prand.
+		const Scalar* K = was->K;
+		auto stretch = [K]( const Vector3& n ) -> Scalar {
+			const Scalar q = K[0]*n.x*n.x + K[1]*n.y*n.y + K[2]*n.z*n.z +
+				2 * ( K[3]*n.x*n.y + K[4]*n.x*n.z + K[5]*n.y*n.z );
+			return sqrt( r_max( q, Scalar( 0 ) ) );
+		};
+		const GeometryAreaData& g = *was->geom;
+		GeometricUtilities::PrandStream stream( prand, 0x4F424A /*'OBJ'*/ );
+		Point3 cand = prand;
+		static const int kMaxCandidates = 4096;
+		bool accepted = false;
+		for( int attempt = 0; attempt < kMaxCandidates && !accepted; ++attempt ) {
+			Scalar J;
+			if( g.triangleSurface ) {
+				// Object-area triangle CDF (geometry-only); J is constant
+				// on a flat triangle.
+				const auto it = std::upper_bound( g.objCdf.begin(), g.objCdf.end(), cand.z );
+				const std::size_t index = std::min( std::size_t( it - g.objCdf.begin() ), g.objCdf.size() - 1 );
+				GeometricUtilities::PointOnTriangle( samplePoint, sampleNormal, coord, g.triangles[index], cand.x, cand.y );
+				J = stretch( g.faceNormals[index] );
+			} else {
+				pGeometry->UniformRandomPoint( samplePoint, sampleNormal, coord, cand );
+				const Scalar len = Vector3Ops::Magnitude( *sampleNormal );
+				J = ( len > 0 ) ? stretch( *sampleNormal * ( Scalar( 1 ) / len ) ) : Scalar( 0 );
+			}
+			accepted = stream.Next() * was->bound <= J;
+			if( !accepted ) {
+				const Scalar r0 = stream.Next(), r1 = stream.Next(), r2 = stream.Next();
+				cand = Point3( r0, r1, r2 );
+			}
+		}
+		if( !accepted ) {
+			// The last candidate is object-uniform, not world-uniform: a
+			// (vanishingly rare at any usable acceptance) bias.  Count it.
+			if( m_rejectionCapHits.fetch_add( 1, std::memory_order_relaxed ) == 0 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Object:: a non-uniformly transformed %s luminary exhausted %d rejection candidates "
+					"for one surface sample (stretch bound %g, E[J] %g); that sample is object-uniform (DL-448)",
+					DescribeKind(), kMaxCandidates, double( was->bound ), double( was->worldAreaScale ) );
+			}
+		}
 	}
 	// UV overrides chart the local sample, just as on the intersection path.
 	if( pUVGenerator && coord ) {
-		pUVGenerator->GenerateUV(*samplePoint,*sampleNormal,*coord);
+		pUVGenerator->GenerateUV( *samplePoint, *sampleNormal, *coord );
 	}
 
 	if( point ) {
@@ -1667,13 +1757,20 @@ Scalar Object::GetArea( ) const
 		return Scalar( 0 );
 	}
 
-	// DL-448: non-uniform meshes and analytic boxes use an exact per-triangle
-	// world-area CDF. Other analytic shapes retain the determinant approximation
-	// under non-uniform transforms; uniform transforms are exact for every shape.
+	// WORLD area, so every consumer's pdfPosition = 1/GetArea() matches the
+	// world-space samples UniformRandomPoint returns.  Similarity transforms:
+	// |det|^(2/3), exact.  Non-similarity (DL-448): the exact world area of
+	// the per-instance sampling construction (see WorldAreaSampling).
 	// Preserve the infinite-plane sentinel rather than overflowing it.
 	const Scalar objArea = pGeometry->GetArea();
 	if( objArea <= 0 || objArea >= RISE_INFINITY ) {
 		return objArea;
+	}
+	if( m_needsWorldAreaSampling.load( std::memory_order_relaxed ) ) {
+		WorldAreaView view;
+		if( AcquireWorldAreaView( view ) ) {
+			return objArea * view.worldAreaScale;
+		}
 	}
 	return objArea * m_worldAreaScale;
 }
@@ -1928,7 +2025,7 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 	// DERIVED, at the one site that assigns the source -- never written
 	// anywhere else, so the two cannot drift.
 	m_sigmaExact = ( m_sigmaSource == SigmaSource::Exact );
-	RebuildAreaSampling();
+	ResetWorldAreaSampling();
 	// The loose-bound diagnostic latch is deliberately NOT re-armed here,
 	// matching the REFUSAL latch just below it.  This used to re-arm on
 	// every FinalizeTransformations -- which fires once per animation frame
@@ -1953,39 +2050,476 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 	// the quieter direction, chosen deliberately.
 }
 
-void Object::RebuildAreaSampling()
+
+//////////////////////////////////////////////////////////////////////
+// DL-448: world-uniform area sampling under non-similarity transforms
+// (see Object.h, "DL-448: world-uniform surface sampling").
+//////////////////////////////////////////////////////////////////////
+
+void Object::ResetWorldAreaSampling()
 {
-	m_areaTriangles.clear();
-	m_areaCDF.clear();
-	if( pGeometry && !m_sigmaExact && fabs(Matrix4Ops::Determinant(m_mxFinalTrans)) > 0 &&
-		(dynamic_cast<const TriangleMeshGeometry*>(pGeometry) ||
-		 dynamic_cast<const TriangleMeshGeometryIndexed*>(pGeometry) ||
-		 dynamic_cast<const BoxGeometry*>(pGeometry)) ) {
+	const Scalar absDet = fabs( Matrix4Ops::Determinant( m_mxFinalTrans ) );
+	m_worldAreaScale = ( absDet > Scalar( 0 ) ) ? pow( absDet, Scalar( 2.0 / 3.0 ) ) : Scalar( 0 );
+	// Only a NON-similarity map stretches area non-uniformly; m_sigmaExact
+	// is FinalizeTransformations' similarity certificate (to 1e-12).  This
+	// runs per sample under motion blur, on render workers: it frees
+	// nothing (entries are keyed; see PruneWorldAreaSampling).
+	m_needsWorldAreaSampling.store( pGeometry && !m_sigmaExact && absDet > Scalar( 0 ), std::memory_order_relaxed );
+}
+
+bool Object::WorldAreaKey::SameGeometry( const WorldAreaKey& o ) const
+{
+	return geometry == o.geometry && geomArea == o.geomArea &&
+		bbll.x == o.bbll.x && bbll.y == o.bbll.y && bbll.z == o.bbll.z &&
+		bbur.x == o.bbur.x && bbur.y == o.bbur.y && bbur.z == o.bbur.z;
+}
+
+bool Object::WorldAreaKey::Matches( const WorldAreaKey& o ) const
+{
+	if( !SameGeometry( o ) ) {
+		return false;
+	}
+	// The metric moves by rounding under a rotation (rigid motion blur);
+	// 1e-9 of its scale is a 1e-9-relative change in J, far below noise.
+	const Scalar scale = fabs( G[0] ) + fabs( G[1] ) + fabs( G[2] );
+	for( int i = 0; i < 6; i++ ) {
+		if( fabs( G[i] - o.G[i] ) > Scalar( 1e-9 ) * scale ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void Object::ComputeWorldAreaKey( WorldAreaKey& key ) const
+{
+	key.geometry = pGeometry;
+	key.geomArea = pGeometry->GetArea();
+	const BoundingBox bb = pGeometry->GenerateBoundingBox();
+	key.bbll = bb.ll;
+	key.bbur = bb.ur;
+	// Row-vector convention: storage row i is the image of e_i, so the
+	// metric L^T L has entries row_i . row_j.  ONE snapshot of the live
+	// matrix; everything downstream derives from this key.
+	const Matrix4 m = m_mxFinalTrans;
+	const Vector3 r0( m._00, m._01, m._02 ), r1( m._10, m._11, m._12 ), r2( m._20, m._21, m._22 );
+	key.G[0] = Vector3Ops::Dot( r0, r0 );
+	key.G[1] = Vector3Ops::Dot( r1, r1 );
+	key.G[2] = Vector3Ops::Dot( r2, r2 );
+	key.G[3] = Vector3Ops::Dot( r0, r1 );
+	key.G[4] = Vector3Ops::Dot( r0, r2 );
+	key.G[5] = Vector3Ops::Dot( r1, r2 );
+}
+
+namespace
+{
+	//! adj(G) of a symmetric G stored (00 11 22 01 02 12).  For unit n,
+	//! J(n)^2 = |det L|^2 n^T G^-1 n = n^T adj(G) n.
+	inline void Adjugate( const Scalar* G, Scalar* K )
+	{
+		const Scalar a = G[0], d = G[1], f = G[2], b = G[3], c = G[4], e = G[5];
+		K[0] = d*f - e*e; K[1] = a*f - c*c; K[2] = a*d - b*b;
+		K[3] = c*e - b*f; K[4] = b*e - c*d; K[5] = b*c - a*e;
+	}
+
+	inline Scalar Stretch( const Scalar* K, const Vector3& n )
+	{
+		const Scalar q = K[0]*n.x*n.x + K[1]*n.y*n.y + K[2]*n.z*n.z +
+			2 * ( K[3]*n.x*n.y + K[4]*n.x*n.z + K[5]*n.y*n.z );
+		return sqrt( r_max( q, Scalar( 0 ) ) );
+	}
+
+	//! Largest eigenvalue of a symmetric 3x3 (closed form, trigonometric).
+	//! sqrt of it for adj(G) is sigma1*sigma2, the supremum of J over all
+	//! unit normals.
+	inline Scalar LambdaMax( const Scalar* K )
+	{
+		const Scalar p1 = K[3]*K[3] + K[4]*K[4] + K[5]*K[5];
+		const Scalar q = ( K[0] + K[1] + K[2] ) / 3;
+		if( p1 <= Scalar( 1e-30 ) * ( q*q + Scalar( 1e-300 ) ) ) {
+			return r_max( K[0], r_max( K[1], K[2] ) );
+		}
+		const Scalar p2 = ( K[0]-q )*( K[0]-q ) + ( K[1]-q )*( K[1]-q ) + ( K[2]-q )*( K[2]-q ) + 2 * p1;
+		const Scalar p = sqrt( p2 / 6 );
+		const Scalar b00 = ( K[0]-q )/p, b11 = ( K[1]-q )/p, b22 = ( K[2]-q )/p;
+		const Scalar b01 = K[3]/p, b02 = K[4]/p, b12 = K[5]/p;
+		const Scalar detB = b00*( b11*b22 - b12*b12 ) - b01*( b01*b22 - b12*b02 ) + b02*( b01*b12 - b11*b02 );
+		const Scalar r = r_max( Scalar( -1 ), r_min( Scalar( 1 ), detB / 2 ) );
+		return q + 2 * p * cos( acos( r ) / 3 );
+	}
+
+	//! Octahedral map of a unit vector to a 64 x 64 grid.
+	static const unsigned int kNormalBinRes = 64;
+	inline unsigned int NormalBin( const Vector3& n )
+	{
+		const Scalar l1 = fabs( n.x ) + fabs( n.y ) + fabs( n.z );
+		if( !( l1 > 0 ) ) return 0;
+		Scalar u = n.x / l1, v = n.y / l1;
+		if( n.z < 0 ) {
+			const Scalar ou = u;
+			u = ( 1 - fabs( v ) ) * ( ou >= 0 ? 1 : -1 );
+			v = ( 1 - fabs( ou ) ) * ( v >= 0 ? 1 : -1 );
+		}
+		const unsigned int iu = std::min( kNormalBinRes - 1, static_cast<unsigned int>( ( u * 0.5 + 0.5 ) * kNormalBinRes ) );
+		const unsigned int iv = std::min( kNormalBinRes - 1, static_cast<unsigned int>( ( v * 0.5 + 0.5 ) * kNormalBinRes ) );
+		return iv * kNormalBinRes + iu;
+	}
+
+	//! Faces of a tessellation: unit normal and (twice) area each.
+	bool TessellatedFaces( const IGeometry& g, const unsigned int detail,
+		std::vector<Vector3>& faceN, std::vector<Scalar>& faceA,
+		std::vector<Vector3>* vertexNormals, Scalar* maxSpread )
+	{
 		IndexTriangleListType indices;
-		VerticesListType vertices;NormalsListType normals;TexCoordsListType coords;
-		if( pGeometry->TessellateToMesh(indices,vertices,normals,coords,1) ) {
-			Scalar area=0;
-			for( const auto& index:indices ) {
-				Triangle tri;
-				for(unsigned k=0;k<3;++k) {
-					tri.vertices[k]=vertices[index.iVertices[k]];
-					tri.normals[k]=normals[index.iNormals[k]];
-					tri.coords[k]=coords[index.iCoords[k]];
-				}
-				const Vector3 e1=Vector3Ops::Transform(m_mxFinalTrans,Vector3Ops::mkVector3(tri.vertices[1],tri.vertices[0]));
-				const Vector3 e2=Vector3Ops::Transform(m_mxFinalTrans,Vector3Ops::mkVector3(tri.vertices[2],tri.vertices[0]));
-				const Scalar triangleArea=0.5*Vector3Ops::Magnitude(Vector3Ops::Cross(e1,e2));
-				if( triangleArea > 0 ) {
-					area+=triangleArea;
-					m_areaTriangles.push_back(tri);m_areaCDF.push_back(area);
-				}
+		VerticesListType vertices; NormalsListType normals; TexCoordsListType coords;
+		if( !g.TessellateToMesh( indices, vertices, normals, coords, detail ) ) {
+			return false;
+		}
+		faceN.clear(); faceA.clear();
+		Scalar spread = 0;
+		for( const auto& index : indices ) {
+			const Point3& v0 = vertices[index.iVertices[0]];
+			const Vector3 c = Vector3Ops::Cross(
+				Vector3Ops::mkVector3( vertices[index.iVertices[1]], v0 ),
+				Vector3Ops::mkVector3( vertices[index.iVertices[2]], v0 ) );
+			const Scalar ao = Vector3Ops::Magnitude( c );
+			if( !( ao > 0 ) ) {
+				continue;
 			}
-			if( area > 0 && pGeometry->GetArea() > 0 ) {
-				m_worldAreaScale=area/pGeometry->GetArea();
-				for( auto& cdf:m_areaCDF ) cdf/=area;
-				m_areaCDF.back()=1;
+			faceN.push_back( c * ( Scalar( 1 ) / ao ) );
+			faceA.push_back( ao );
+			if( maxSpread && !normals.empty() ) {
+				Vector3 n[3];
+				for( unsigned k = 0; k < 3; k++ ) {
+					n[k] = Vector3Ops::Normalize( normals[index.iNormals[k]] );
+				}
+				spread = std::max( spread, std::max( Vector3Ops::Magnitude( n[0] - n[1] ),
+					std::max( Vector3Ops::Magnitude( n[1] - n[2] ), Vector3Ops::Magnitude( n[0] - n[2] ) ) ) );
+			}
+		}
+		if( vertexNormals ) {
+			vertexNormals->clear();
+			for( const auto& n : normals ) {
+				const Scalar l = Vector3Ops::Magnitude( n );
+				if( l > 0 ) vertexNormals->push_back( n * ( Scalar( 1 ) / l ) );
+			}
+		}
+		if( maxSpread ) *maxSpread = spread;
+		return !faceA.empty();
+	}
+
+	inline Scalar MeanStretch( const std::vector<Vector3>& ns, const std::vector<Scalar>& ws, const Scalar* K, Scalar* minJ, Scalar* maxJ )
+	{
+		Scalar sum = 0, wsum = 0;
+		for( std::size_t i = 0; i < ns.size(); i++ ) {
+			const Scalar J = Stretch( K, ns[i] );
+			sum += ws[i] * J;
+			wsum += ws[i];
+			if( minJ ) *minJ = r_min( *minJ, J );
+			if( maxJ ) *maxJ = r_max( *maxJ, J );
+		}
+		return ( wsum > 0 ) ? sum / wsum : Scalar( 0 );
+	}
+}
+
+std::shared_ptr<const Object::GeometryAreaData> Object::BuildGeometryData( const WorldAreaKey& key ) const
+{
+	std::shared_ptr<GeometryAreaData> g = std::make_shared<GeometryAreaData>();
+	g->key = key;
+	std::vector<Scalar> binW( kNormalBinRes * kNormalBinRes, Scalar( 0 ) );
+	std::vector<Vector3> binN( kNormalBinRes * kNormalBinRes, Vector3( 0, 0, 0 ) );
+	auto bin = [&]( const Vector3& n, const Scalar w ) {
+		const unsigned int b = NormalBin( n );
+		binW[b] += w;
+		binN[b] = binN[b] + n * w;
+	};
+
+	// TRIANGLE SURFACES: the exact triangles (TessellateToMesh is a pass-
+	// through for meshes and the displaced bake, exact for the box).
+	// Their samplers' normals are interpolated SHADING normals, so the
+	// stretch is taken from each triangle's own face normal instead.
+	if( dynamic_cast<const TriangleMeshGeometry*>( pGeometry ) ||
+		dynamic_cast<const TriangleMeshGeometryIndexed*>( pGeometry ) ||
+		dynamic_cast<const DisplacedGeometry*>( pGeometry ) ||
+		dynamic_cast<const BoxGeometry*>( pGeometry ) )
+	{
+		IndexTriangleListType indices;
+		VerticesListType vertices; NormalsListType normals; TexCoordsListType coords;
+		if( pGeometry->TessellateToMesh( indices, vertices, normals, coords, 1 ) ) {
+			Scalar area = 0;
+			for( const auto& index : indices ) {
+				Triangle tri;
+				for( unsigned k = 0; k < 3; ++k ) {
+					tri.vertices[k] = vertices[index.iVertices[k]];
+					tri.normals[k]  = normals[index.iNormals[k]];
+					tri.coords[k]   = coords[index.iCoords[k]];
+				}
+				const Vector3 c = Vector3Ops::Cross(
+					Vector3Ops::mkVector3( tri.vertices[1], tri.vertices[0] ),
+					Vector3Ops::mkVector3( tri.vertices[2], tri.vertices[0] ) );
+				const Scalar a2 = Vector3Ops::Magnitude( c );
+				if( !( a2 > 0 ) ) {
+					continue;	// never drawn: zero object area
+				}
+				const Vector3 n = c * ( Scalar( 1 ) / a2 );
+				g->triangles.push_back( tri );
+				g->faceNormals.push_back( n );
+				g->faceAreas.push_back( 0.5 * a2 );
+				area += 0.5 * a2;
+				g->objCdf.push_back( area );
+				bin( n, 0.5 * a2 );
+			}
+			if( area > 0 ) {
+				for( auto& c : g->objCdf ) c /= area;
+				g->objCdf.back() = 1;
+				g->triangleSurface = true;
+				g->planar = true;
+				for( const Vector3& n : g->faceNormals ) {
+					if( Vector3Ops::Magnitude( Vector3Ops::Cross( n, g->faceNormals[0] ) ) > Scalar( 1e-9 ) ) {
+						g->planar = false;
+						break;
+					}
+				}
+			} else {
+				g->triangles.clear(); g->faceNormals.clear(); g->faceAreas.clear(); g->objCdf.clear();
 			}
 		}
 	}
 
+	// CURVED SHAPES: the faces of two tessellations (for a Richardson step
+	// on E[J]) and the fine one's vertex normals (for the Lipschitz bound).
+	// The detail is capped so a MULTI-PATCH geometry (a 1000-patch bilinear
+	// set tessellates every patch at the requested detail) stays near
+	// kMaxFaces fine faces: probe at detail 8, scale by sqrt, floor 4.
+	// The rejection bound stays rigorous regardless (sigma1*sigma2 cap).
+	unsigned int fineDetail = 128;
+	if( !g->triangleSurface ) {
+		static const Scalar kMaxFaces = 65536;
+		std::vector<Vector3> probeN; std::vector<Scalar> probeA;
+		if( TessellatedFaces( *pGeometry, 8, probeN, probeA, 0, 0 ) ) {
+			const Scalar d = 8 * sqrt( kMaxFaces / Scalar( probeN.size() ) );
+			fineDetail = static_cast<unsigned int>( r_max( Scalar( 4 ), r_min( Scalar( 128 ), d ) ) ) & ~1u;
+		}
+	}
+	if( !g->triangleSurface &&
+		TessellatedFaces( *pGeometry, fineDetail, g->fineN, g->fineA, &g->vertexNormals, &g->maxNormalSpread ) ) {
+		TessellatedFaces( *pGeometry, fineDetail / 2, g->coarseN, g->coarseA, 0, 0 );
+		g->planar = true;
+		for( const Vector3& n : g->fineN ) {
+			if( Vector3Ops::Magnitude( Vector3Ops::Cross( n, g->fineN[0] ) ) > Scalar( 1e-9 ) ) {
+				g->planar = false;
+				break;
+			}
+		}
+		// Histogram from the Richardson-combined face areas.  A bin whose
+		// combined weight is not positive is dropped: the histogram is an
+		// APPROXIMATION of the normal measure (used only past the per-frame
+		// metric cap), not an exact quantity.
+		for( std::size_t i = 0; i < g->fineN.size(); i++ ) bin( g->fineN[i], g->fineA[i] * Scalar( 4.0 / 3.0 ) );
+		for( std::size_t i = 0; i < g->coarseN.size(); i++ ) bin( g->coarseN[i], -g->coarseA[i] * Scalar( 1.0 / 3.0 ) );
+	}
+
+	for( unsigned int b = 0; b < kNormalBinRes * kNormalBinRes; b++ ) {
+		const Scalar len = Vector3Ops::Magnitude( binN[b] );
+		if( binW[b] > 0 && len > 0 ) {
+			g->histN.push_back( binN[b] * ( Scalar( 1 ) / len ) );
+			g->histW.push_back( binW[b] );
+			g->histWSum += binW[b];
+		}
+	}
+	return g;
+}
+
+std::shared_ptr<const Object::MetricAreaData> Object::BuildMetricData( const WorldAreaKey& key, const GeometryAreaData& g ) const
+{
+	std::shared_ptr<MetricAreaData> m = std::make_shared<MetricAreaData>();
+	m->key = key;
+	m->geom = &g;
+	Adjugate( key.G, m->K );
+	const Scalar sigma12 = sqrt( r_max( LambdaMax( m->K ), Scalar( 0 ) ) ) * Scalar( 1 + 1e-9 );
+
+	if( g.triangleSurface ) {
+		// J is constant on each flat triangle: E[J] and max J are exact.
+		Scalar minJ = RISE_INFINITY, maxJ = 0;
+		m->worldAreaScale = MeanStretch( g.faceNormals, g.faceAreas, m->K, &minJ, &maxJ );
+		m->rejection = maxJ - minJ > Scalar( 1e-12 ) * maxJ;
+		m->bound = maxJ * Scalar( 1 + 1e-12 );
+		if( m->rejection && m->worldAreaScale < Scalar( 0.05 ) * maxJ ) {
+			// Rejection would accept < 5 %: build the exact world-area CDF
+			// for this metric instead (O(T) once, O(log T) per sample).
+			m->worldCdf.reserve( g.faceAreas.size() );
+			Scalar acc = 0;
+			for( std::size_t t = 0; t < g.faceAreas.size(); t++ ) {
+				acc += g.faceAreas[t] * Stretch( m->K, g.faceNormals[t] );
+				m->worldCdf.push_back( acc );
+			}
+			if( acc > 0 ) {
+				for( auto& c : m->worldCdf ) c /= acc;
+				m->worldCdf.back() = 1;
+			} else {
+				m->worldCdf.clear();
+			}
+		}
+		return m;
+	}
+
+	Scalar minJ = RISE_INFINITY, maxJ = 0;
+	const Scalar fine = MeanStretch( g.fineN, g.fineA, m->K, &minJ, &maxJ );
+	const Scalar coarse = MeanStretch( g.coarseN, g.coarseA, m->K, 0, 0 );
+	const Scalar rich = ( Scalar( 4 ) * fine - coarse ) / Scalar( 3 );
+	// A tessellator whose detail does not refine gives equal ratios; the
+	// step is rejected if it leaves [minJ, maxJ].
+	m->worldAreaScale = ( coarse > 0 && rich >= minJ && rich <= maxJ ) ? rich : fine;
+	if( g.planar ) {
+		m->rejection = false;	// one normal: constant stretch
+		return m;
+	}
+	m->rejection = true;
+	// RIGOROUS bound: J(n) <= sigma1 sigma2 for every unit n (Nanson).  A
+	// tessellation maximum is NOT a bound (an ellipsoid (100,1,1) under
+	// (1,10,10) read 35.5 against a true supremum of 99.6).
+	m->bound = sigma12;
+	if( m->worldAreaScale < Scalar( 0.02 ) * sigma12 ) {
+		// An OPEN shape whose normals never approach the most-stretched
+		// direction would waste > 50 candidates per sample.  Per-vertex
+		// Lipschitz bound: J(n) <= J(n_v) + sigma1 sigma2 |n - n_v|, with
+		// |n - n_v| taken as the largest vertex-normal spread of a fine
+		// triangle (exact as h -> 0, not a proof -- hence the warning).
+		Scalar vmax = 0;
+		for( const Vector3& n : g.vertexNormals ) vmax = r_max( vmax, Stretch( m->K, n ) );
+		const Scalar lip = r_min( sigma12, ( vmax + sigma12 * g.maxNormalSpread ) * Scalar( 1 + 1e-9 ) );
+		if( lip > maxJ && lip < sigma12 ) {
+			m->bound = lip;
+			static std::atomic<bool> warnedLipschitz{ false };
+			bool expected = false;
+			if( warnedLipschitz.compare_exchange_strong( expected, true ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Object:: a non-uniformly transformed %s samples its world area by rejection "
+					"against a vertex-Lipschitz stretch bound (the rigorous sigma1*sigma2 bound "
+					"would accept %.3g of candidates) (DL-448)",
+					DescribeKind(), double( m->worldAreaScale / sigma12 ) );
+			}
+		}
+	}
+	return m;
+}
+
+const Object::GeometryAreaData* Object::FindOrBuildGeometryData( const WorldAreaKey& key, const bool mayBuild ) const
+{
+	for( unsigned int i = 0; i < kMaxAreaSlots; i++ ) {
+		const GeometryAreaData* g = m_geomSlots[i].load( std::memory_order_acquire );
+		if( !g ) break;
+		if( g->key.SameGeometry( key ) ) return g;
+	}
+	if( !mayBuild || m_geomSlots[kMaxAreaSlots - 1].load( std::memory_order_acquire ) ) {
+		return 0;	// a FULL geometry table stays lock-free
+	}
+	std::lock_guard<std::mutex> lock( m_worldAreaMutex );
+	for( const auto& g : m_geomOwned ) {
+		if( g->key.SameGeometry( key ) ) return g.get();
+	}
+	if( m_geomOwned.size() >= kMaxAreaSlots ) {
+		return 0;
+	}
+	std::shared_ptr<const GeometryAreaData> built = BuildGeometryData( key );
+	if( !built->triangleSurface && built->fineN.empty() ) {
+		return 0;	// cannot be tessellated
+	}
+	m_geomSlots[m_geomOwned.size()].store( built.get(), std::memory_order_release );
+	m_geomOwned.push_back( built );
+	return built.get();
+}
+
+bool Object::AcquireWorldAreaView( WorldAreaView& view ) const
+{
+	if( !pGeometry ) {
+		return false;
+	}
+	WorldAreaKey key;
+	ComputeWorldAreaKey( key );
+	auto fill = [&view]( const MetricAreaData& m ) {
+		view.geom = m.geom;
+		view.worldAreaScale = m.worldAreaScale;
+		view.bound = m.bound;
+		view.rejection = m.rejection;
+		for( int i = 0; i < 6; i++ ) view.K[i] = m.K[i];
+		view.worldCdf = m.worldCdf.empty() ? 0 : &m.worldCdf;
+	};
+	// Hot path: lock-free scan of the published metric slots.  Entries are
+	// retired only at a frame boundary and freed a frame later, so a
+	// pointer read here cannot dangle.
+	for( unsigned int i = 0; i < kMaxAreaSlots; i++ ) {
+		const MetricAreaData* m = m_metricSlots[i].load( std::memory_order_acquire );
+		if( !m ) break;
+		if( m->key.Matches( key ) ) {
+			fill( *m );
+			return true;
+		}
+	}
+	const GeometryAreaData* g = FindOrBuildGeometryData( key, true );
+	if( !g ) {
+		if( !m_warnedAreaFallback.exchange( true ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Object:: a non-uniformly transformed %s luminary cannot be area-sampled exactly "
+				"(no tessellation, or more than %u geometry variants in one frame -- a keyframed "
+				"geometry under motion blur); it uses the |det|^(2/3) approximation (DL-448)",
+				DescribeKind(), kMaxAreaSlots );
+		}
+		return false;
+	}
+	// A FULL metric table stays lock-free: the per-call fallback below needs
+	// no shared state.
+	if( !m_metricSlots[kMaxAreaSlots - 1].load( std::memory_order_acquire ) ) {
+		std::lock_guard<std::mutex> lock( m_worldAreaMutex );
+		for( const auto& m : m_metricOwned ) {
+			if( m->key.Matches( key ) ) {
+				fill( *m );
+				return true;
+			}
+		}
+		if( m_metricOwned.size() < kMaxAreaSlots ) {
+			std::shared_ptr<const MetricAreaData> built = BuildMetricData( key, *g );
+			m_metricSlots[m_metricOwned.size()].store( built.get(), std::memory_order_release );
+			m_metricOwned.push_back( built );
+			fill( *built );
+			return true;
+		}
+	}
+	// More metrics than slots in this frame (an animated non-uniform scale
+	// under motion blur): E[J] per call from the normal histogram (an
+	// approximation), with the rigorous bound.
+	Adjugate( key.G, view.K );
+	view.geom = g;
+	view.worldAreaScale = MeanStretch( g->histN, g->histW, view.K, 0, 0 );
+	view.bound = sqrt( r_max( LambdaMax( view.K ), Scalar( 0 ) ) ) * Scalar( 1 + 1e-9 );
+	view.rejection = !g->planar;
+	view.worldCdf = 0;
+	return view.worldAreaScale > 0;
+}
+
+void Object::PruneWorldAreaSampling() const
+{
+	WorldAreaKey key;
+	const bool haveKey = pGeometry != 0;
+	if( haveKey ) {
+		ComputeWorldAreaKey( key );
+	}
+	std::lock_guard<std::mutex> lock( m_worldAreaMutex );
+	// Free the generation retired LAST frame, retire everything that does
+	// not describe the current pose now.
+	m_geomRetired.clear();
+	m_metricRetired.clear();
+	std::vector<std::shared_ptr<const GeometryAreaData>> keepG;
+	std::vector<std::shared_ptr<const MetricAreaData>> keepM;
+	for( auto& g : m_geomOwned ) {
+		( haveKey && g->key.SameGeometry( key ) ? keepG : m_geomRetired ).push_back( g );
+	}
+	for( auto& m : m_metricOwned ) {
+		( haveKey && m->key.Matches( key ) ? keepM : m_metricRetired ).push_back( m );
+	}
+	m_geomOwned.swap( keepG );
+	m_metricOwned.swap( keepM );
+	for( unsigned int i = 0; i < kMaxAreaSlots; i++ ) {
+		m_geomSlots[i].store( i < m_geomOwned.size() ? m_geomOwned[i].get() : 0, std::memory_order_release );
+		m_metricSlots[i].store( i < m_metricOwned.size() ? m_metricOwned[i].get() : 0, std::memory_order_release );
+	}
 }

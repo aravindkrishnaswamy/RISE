@@ -1032,11 +1032,9 @@ static void PartC_EmitterSamplingPath()
 			const Point3 prand( ( ( i * 7 ) % 32 + 0.5 ) / 32.0,
 			                    ( ( i * 23 ) % 32 + 0.5 ) / 32.0,
 			                    ( ( i * 11 ) % 32 + 0.5 ) / 32.0 );
-			Point3 pM, pP, pA; Vector3 nM, nP, nA; Point2 uvM, uvP;
+			Point3 pM, pP; Vector3 nM, nP; Point2 uvM, uvP;
 			mirroredStretched->UniformRandomPoint( &pM, &nM, &uvM, prand );
 			plainStretched->UniformRandomPoint( &pP, &nP, &uvP, prand );
-			authored->UniformRandomPoint(&pA,&nA,nullptr,prand);
-			Check(PtClose(pP,pA,1e-12)&&VecClose(nP,nA,1e-12),"DL-448 transformed mesh sample and normal match authored mesh");
 			if( PtClose( pM, Point3( -pP.x, pP.y, pP.z ), 1e-12 ) ) ++pts;
 			if( VecClose( nM, Vector3Ops::Normalize( Vector3( -nP.x, nP.y, nP.z ) ), 1e-12 ) ) ++norms;
 		}
@@ -1044,6 +1042,44 @@ static void PartC_EmitterSamplingPath()
 		       "C: under a NON-UNIFORM scale every mirrored sample point is still the exact reflection "
 		       "of the same-stretch un-mirrored one" );
 		Check( norms == 32, "C: ... and so is every sample normal" );
+
+		// DL-448: the stretched mesh samples the SAME world-area
+		// distribution as the mesh with the stretch baked into its vertices.
+		// (Not prand-for-prand: the stretched object draws its object-area
+		// CDF and rejects by the per-face stretch.)  Compare per-face shares,
+		// faces identified by their world normal.
+		{
+			const int N = 8192;
+			std::vector<Vector3> keys; std::vector<int> cntA, cntP;
+			auto slot = [&]( const Vector3& n ) -> int {
+				for( size_t k = 0; k < keys.size(); ++k ) if( VecClose( keys[k], n, 1e-9 ) ) return int( k );
+				keys.push_back( n ); cntA.push_back( 0 ); cntP.push_back( 0 ); return int( keys.size() - 1 );
+			};
+			bool onAuthoredFace = true;
+			for( int i = 0; i < N; ++i ) {
+				const Point3 prand( ( i + 0.5 ) / N, std::fmod( i * 0.6180339887498949, 1.0 ), std::fmod( i * 0.7548776662466927 + 0.5, 1.0 ) );
+				Point3 pA, pP; Vector3 nA, nP;
+				authored->UniformRandomPoint( &pA, &nA, nullptr, prand );
+				cntA[slot( nA )]++;
+			}
+			const size_t authoredFaces = keys.size();
+			for( int i = 0; i < N; ++i ) {
+				const Point3 prand( ( i + 0.5 ) / N, std::fmod( i * 0.6180339887498949, 1.0 ), std::fmod( i * 0.7548776662466927 + 0.5, 1.0 ) );
+				Point3 pP; Vector3 nP;
+				plainStretched->UniformRandomPoint( &pP, &nP, nullptr, prand );
+				const int k = slot( nP );
+				if( size_t( k ) >= authoredFaces ) onAuthoredFace = false;
+				cntP[k]++;
+			}
+			bool shares = true;
+			for( size_t k = 0; k < keys.size(); ++k ) {
+				const double pa = double( cntA[k] ) / N, pp = double( cntP[k] ) / N;
+				const double sd = std::sqrt( std::max( pa * ( 1 - pa ), 1.0 / N ) * 2.0 / N );
+				if( std::fabs( pa - pp ) > 5 * sd ) shares = false;
+			}
+			Check( onAuthoredFace, "DL-448 C: every stretched-mesh sample normal is an authored-mesh face normal" );
+			Check( shares, "DL-448 C: stretched-mesh per-face sample shares match the authored mesh (5 sigma)" );
+		}
 
 		authored->release();authoredMesh->release();
 		plainStretched->release();
