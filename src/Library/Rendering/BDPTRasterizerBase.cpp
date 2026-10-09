@@ -307,6 +307,39 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 	// BidirectionalRasterizerBase destructor.
 }
 
+void BDPTRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
+{
+	PixelBasedRasterizerHelper::PreRenderSetup( pScene, pRect );
+
+	const IFilm* pFilm = pScene.GetFilm();
+	if( !pFilm ) {
+		return;
+	}
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
+	ConfigureSplatRegion( pRect, width, height );
+
+	// Share the RayCaster's prepared LightSampler with the integrator.
+	pIntegrator->SetLightSampler( pCaster ? pCaster->GetLightSampler() : 0 );
+
+	// Fresh splat film for the s<=1 / t==1 strategies.  Per animation
+	// frame this also discards the previous frame's splats (the Flush*
+	// overrides in BidirectionalRasterizerBase composite them).
+	safe_release( pSplatFilm );
+	pSplatFilm = new SplatFilm( width, height );
+
+	// Reset adaptive sample counter for this render / frame.
+	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
+
+	// Total sample count for splat film resolve/unresolve.  Must be set
+	// before any blocks render so the progressive hooks work.
+	mSplatTotalSamples = 1.0;
+	if( pSampling ) {
+		mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+	}
+	mSplatTotalSamples *= GetSplatSampleScale();
+}
+
 void BDPTRasterizerBase::RasterizeScene(
 	const IScene& pScene,
 	const Rect* pRect,
@@ -339,7 +372,6 @@ void BDPTRasterizerBase::RasterizeScene(
 	const IFilm* pFilm = pScene.GetFilm();
 	const unsigned int width = pFilm->GetWidth();
 	const unsigned int height = pFilm->GetHeight();
-	ConfigureSplatRegion( pRect, width, height );
 
 	// Training can cast probe rays to estimate incident radiance,
 	// so the ray caster needs the scene attached before training starts.
@@ -347,31 +379,12 @@ void BDPTRasterizerBase::RasterizeScene(
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
 
-	// Per-rasterizer pre-render hook.  BDPT inherits the empty no-op
-	// default from PixelBasedRasterizerHelper; PT/VCM use their own
-	// overrides (e.g. SMS photon-map build, path-guide warmup).
+	// Per-render setup shared with every animation frame (DL-458):
+	// light sampler -> integrator, fresh splat film, splat region,
+	// adaptive counter, splat sample divisor.  See PreRenderSetup below.
 	PreRenderSetup( pScene, pRect );
 
-	// Share the RayCaster's prepared LightSampler with the integrator
-	const LightSampler* pLS = pCaster->GetLightSampler();
-	pIntegrator->SetLightSampler( pLS );
-
-	// Create the splat film for s<=1 strategies
-	safe_release( pSplatFilm );
-	pSplatFilm = new SplatFilm( width, height );
-
-	// Reset adaptive sample counter for this render
-	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
-
 	PrepareAOVBuffers_( width, height );
-
-	// Compute total sample count for splat film resolve/unresolve.
-	// Must be set before any blocks render so the progressive hooks work.
-	mSplatTotalSamples = 1.0;
-	if( pSampling ) {
-		mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
-	}
-	mSplatTotalSamples *= GetSplatSampleScale();
 
 #ifdef RISE_ENABLE_OPENPGL
 	// Path guiding: training phase
@@ -1213,28 +1226,13 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 
 	if( bWillDenoise ) {
-		// Pre-denoised output = inline box + splats.  Resolve the splat
-		// film into the canonical image for the duration of the flush,
-		// then subtract it back out so OIDN's denoise input below stays
-		// splat-free.  The previous separate pre-denoised copy reached
-		// only the legacy IRasterizerOutput chain; bound-mode FrameStore
-		// observers (FileEncoderObserver — the post-L8 CLI file outputs)
-		// read the CANONICAL at MarkPreDenoiseComplete and wrote the
-		// plain file without any t=1 splat energy.  See the twin fix at
-		// VCMRasterizerBase::FlushPreDenoisedToOutputs, where VCM's
-		// balance heuristic makes the loss catastrophic; observer
-		// dispatch is synchronous so the Unresolve cannot race a file
-		// write.
-		const Scalar splatSpp = GetEffectiveSplatSPP( width, height );
-		{
-			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-			pSplatFilm->Resolve( *pImage, splatSpp, ActiveSplatRegion() );
-		}
+		// Pre-denoised output = inline box + splats.
+		// BidirectionalRasterizerBase::FlushPreDenoisedToOutputs resolves
+		// the splat film into the canonical image for the duration of the
+		// flush and then Unresolves it, so OIDN's input below stays
+		// splat-free (see that function's comment for why the canonical,
+		// not a scratch copy, must carry the splats).
 		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
-		{
-			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-			pSplatFilm->Unresolve( *pImage, splatSpp, ActiveSplatRegion() );
-		}
 	}
 
 #ifdef RISE_ENABLE_OIDN
@@ -1271,23 +1269,13 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 #endif
 
-	// Resolve splat film: add t==1 strategy contributions to the
-	// denoised image.  Each pixel sample may have contributed one
-	// splat per (s,t) strategy with needsSplat=true, so we divide
-	// by the total number of pixel samples to get the correct
-	// per-pixel average.  Splats are added AFTER denoising because
-	// their splatted accumulation pattern is incompatible with OIDN.
-	// Skipped in show_adaptive_map mode — the heatmap from the
-	// progressive resolve is the final output; overlaying splats
-	// would corrupt the grayscale ramp.
-	if( !GetAdaptiveShowMap() ) {
-		// L6e-1.1 — bracket the full-image splat resolve via RAII.
-		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-		pSplatFilm->Resolve(
-			*pImage,
-			GetEffectiveSplatSPP( width, height ),
-			ActiveSplatRegion() );
-	}
+	// The t==1 splat film is composited onto the (denoised) image by the
+	// BidirectionalRasterizerBase Flush* overrides below (DL-458): splats
+	// are added AFTER denoising because their splatted accumulation is
+	// incompatible with OIDN, and skipped in show_adaptive_map mode.
+	// Keeping the composition in the flush (not inline here) is what lets
+	// an animation frame, which flushes through the same overrides from
+	// PixelBasedRasterizerHelper::RasterizeSceneAnimation, match a still.
 
 #ifdef RISE_ENABLE_OPENPGL
 	{

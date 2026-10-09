@@ -49,7 +49,7 @@ namespace RISE
 			// See BDPTPelRasterizer for the diamond-disambiguation rationale.
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
 			{
-				PixelBasedRasterizerHelper::PreRenderSetup( pScene, pRect );
+				BDPTRasterizerBase::PreRenderSetup( pScene, pRect );
 			}
 
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
