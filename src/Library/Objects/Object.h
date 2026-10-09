@@ -26,6 +26,7 @@
 
 #include <atomic>	// the two one-shot proximity diagnostic latches below
 #include <typeinfo>	// DescribeKind names the geometry's own type
+#include <memory>	// DL-448 lazily built world-area sampling cache
 
 namespace RISE
 {
@@ -126,14 +127,45 @@ namespace RISE
 			//! mirrored object instances of the same source mesh.
 			Scalar											m_tangentFrameSign;
 
-			//! Area scale; exact triangle integration for non-uniform meshes/boxes,
-			//! determinant scale for other shapes (exact for uniform transforms).
+			//! World-area scale |det|^(2/3) of the linear part: EXACT for
+			//! rotations / reflections / uniform scales.  Used by GetArea()
+			//! whenever m_needsWorldAreaSampling is false.
 			Scalar m_worldAreaScale;
-			//! Local triangles selected using their transformed areas. Per instance,
-			//! because geometry can be shared by objects with different transforms.
-			void RebuildAreaSampling();
-			TriangleListType m_areaTriangles;
-			std::vector<Scalar> m_areaCDF;
+
+			//! DL-448: world-uniform surface sampling under a NON-similarity
+			//! transform.  Object-space-uniform samples pushed through a
+			//! non-uniform map are NOT uniform in world area: the local
+			//! area stretch is J(n) = |det L| * |L^-T n| (n the object-space
+			//! unit geometric normal).  Two exact constructions, built
+			//! LAZILY (only luminaries / point-set SSS objects ever sample or
+			//! ask for area, and the build can cost milliseconds):
+			//!  - triangle surfaces (meshes, box, displaced): a per-instance
+			//!    world-area CDF over the exact triangles;
+			//!  - every other (curved) shape: rejection of the geometry's own
+			//!    object-uniform sample with probability J/Jbound, so the
+			//!    accepted density is world-uniform, with the world area
+			//!    A_obj * E[J] from a deterministic 2^16-point Halton
+			//!    quadrature of the same sampler.
+			//! Either way pdfPosition = 1/GetArea() stays exact, so no
+			//! consumer changes.  Per instance: geometry can be shared by
+			//! objects with different transforms.  Immutable once built.
+			struct WorldAreaSampling
+			{
+				Scalar					worldAreaScale = 0;		//!< world area / object area
+				TriangleListType		triangles;				//!< triangle path (object space)
+				std::vector<Scalar>		cdf;					//!< normalized world-area CDF
+				bool					rejection = false;		//!< curved path, J varies
+				Scalar					jacobianBound = 0;		//!< >= max J (curved path)
+			};
+			void ResetWorldAreaSampling();
+			const WorldAreaSampling& GetWorldAreaSampling() const;
+			std::shared_ptr<const WorldAreaSampling> BuildWorldAreaSampling() const;
+			Scalar SurfaceAreaJacobian( const Vector3& objNormal ) const;
+			bool m_needsWorldAreaSampling;
+			//! Lazily built; read/written only through std::atomic_load /
+			//! std::atomic_store (a memoized pure function of the immutable
+			//! geometry + transform, reset when either changes).
+			mutable std::shared_ptr<const WorldAreaSampling> m_worldAreaSampling;
 
 			//! World-LINEAR scaling of the transform's linear part,
 			//! |det|^(1/3) -- the length-measure sibling of

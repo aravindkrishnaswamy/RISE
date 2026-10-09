@@ -2352,16 +2352,22 @@ static void TestObjectWorldArea()
 	}
 
 	{
-		// non-uniform scale: |det|^(2/3) geometric-mean APPROXIMATION.
-		// This pins the documented current behaviour (not ground truth —
-		// the true world area of a stretched sphere differs; see the
-		// comment in Object::GetArea and the LuminaryManager warn-once).
+		// non-uniform scale (DL-448): the TRUE world area.  A radius-1.5
+		// sphere stretched (4, 0.05, 4) is the oblate spheroid a = 6,
+		// c = 0.075: area 2 pi a^2 (1 + (1 - e^2)/e atanh e),
+		// e = sqrt(1 - c^2/a^2).  (Before DL-448 this pinned the
+		// |det|^(2/3) geometric-mean approximation, 38 % low here.)
 		Implementation::Object* o = new Implementation::Object( g );
 		o->SetStretch( Vector3( 4.0, 0.05, 4.0 ) );
 		o->FinalizeTransformations();
-		const Scalar expect = geomArea * pow( 4.0 * 0.05 * 4.0, 2.0 / 3.0 );
-		REQUIRE( IsClose( o->GetArea(), expect, 1e-9 * geomArea ),
-			"object-area: non-uniform scale uses |det|^(2/3) approximation" );
+		const Scalar a = 6.0, c = 0.075;
+		const Scalar e = sqrt( 1.0 - c * c / ( a * a ) );
+		const Scalar expect = 2.0 * PI * a * a * ( 1.0 + ( 1.0 - e * e ) / e * atanh( e ) );
+		// 1e-4: the world area of a non-similarity curved shape is a
+		// Richardson-extrapolated tessellation ratio; this 80:1 rim is its
+		// hardest case (measured -2.2e-5).
+		REQUIRE( IsClose( o->GetArea(), expect, 1e-4 * expect ),
+			"object-area: non-uniform scale gives the true world (oblate spheroid) area" );
 		o->release();
 	}
 	{

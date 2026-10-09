@@ -306,26 +306,23 @@ void EllipsoidGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Poin
 	const Scalar b = m_vRadius.y;
 	const Scalar c = m_vRadius.z;
 
-	// Use the precomputed marginal CDF to sample theta with area-uniform distribution.
-	// Binary search for the CDF bin containing prand.x.
-	const Scalar* it = std::lower_bound( m_thetaCDF + 1, m_thetaCDF + THETA_CDF_SIZE + 1, prand.x );
-	int idx = int(it - m_thetaCDF) - 1;
-	if( idx < 0 ) idx = 0;
-	if( idx >= (int)THETA_CDF_SIZE ) idx = THETA_CDF_SIZE - 1;
-
-	// Linearly interpolate within the bin to get theta
-	const Scalar binWidth = m_thetaCDF[idx + 1] - m_thetaCDF[idx];
-	const Scalar t = (binWidth > 0.0) ? (prand.x - m_thetaCDF[idx]) / binWidth : 0.5;
-	const Scalar theta = PI * (idx + t) / Scalar(THETA_CDF_SIZE);
-
-	const Scalar sinTheta = sin(theta);
-	const Scalar cosTheta = cos(theta);
-	const Scalar phi = TWO_PI * prand.y;
-
-	// Point on the ellipsoid surface using the correct semi-axes
-	const Point3 pt( a * sinTheta * cos(phi),
-					  b * sinTheta * sin(phi),
-					  c * cosTheta );
+	// Area-uniform: rejection from the uniform unit sphere (see the header).
+	GeometricUtilities::PrandStream stream( prand, 0x454C4C /*'ELL'*/ );
+	Point2 cand( prand.x, prand.y );
+	Point3 pt( 0, 0, c );
+	for( int attempt = 0; attempt < 1024; ++attempt ) {
+		const Scalar cosTheta = 1.0 - 2.0 * cand.x;
+		const Scalar sinTheta = sqrt( r_max( Scalar( 0 ), 1.0 - cosTheta * cosTheta ) );
+		const Scalar phi = TWO_PI * cand.y;
+		const Scalar sx = sinTheta * cos( phi ), sy = sinTheta * sin( phi ), sz = cosTheta;
+		pt = Point3( a * sx, b * sy, c * sz );
+		const Scalar J = sqrt( b*c*sx*b*c*sx + a*c*sy*a*c*sy + a*b*sz*a*b*sz );
+		if( stream.Next() * m_dJacobianMax <= J ) {
+			break;
+		}
+		const Scalar r0 = stream.Next(), r1 = stream.Next();
+		cand = Point2( r0, r1 );
+	}
 
 	if( point ) {
 		*point = pt;
@@ -532,15 +529,7 @@ bool EllipsoidGeometry::ComputeAnalyticalDerivatives(
 
 Scalar EllipsoidGeometry::GetArea( ) const
 {
-	// This is an approximation taken from:
-	// http://home.att.net/~numericana/answer/ellipsoid.htm
-	const Scalar p = log(3.0)/log(2.0);
-	
-	const Scalar ap = pow( m_vRadius.x, p );
-	const Scalar bp = pow( m_vRadius.y, p );
-	const Scalar cp = pow( m_vRadius.z, p );
-
-	return TWO_PI * (ap*bp + ap*cp + bp*cp);
+	return m_dArea;
 }
 
 static const unsigned int RADII_ID = 100;
@@ -585,55 +574,39 @@ void EllipsoidGeometry::RegenerateData( )
 
 	m_OVmaxRadius = 1.0 / (r_max( r_max(m_vRadius.x, m_vRadius.y), m_vRadius.z ));
 
-	// Build marginal CDF for theta to enable area-uniform sampling.
-	// For the parametric ellipsoid r(theta,phi) = (a*sinT*cosP, b*sinT*sinP, c*cosT),
-	// the area element is:
-	//   dA = sinT * sqrt(b^2*c^2*sin^2T*cos^2P + a^2*c^2*sin^2T*sin^2P + a^2*b^2*cos^2T) dT dP
-	// We numerically integrate over phi to get the marginal M(theta), then build the CDF.
+	// Exact surface area (DL-448): the area element of
+	// r(theta,phi) = (a sinT cosP, b sinT sinP, c cosT) is
+	//   dA = sinT sqrt(b^2c^2 sin^2T cos^2P + a^2c^2 sin^2T sin^2P + a^2b^2 cos^2T) dT dP,
+	// smooth and periodic in phi, so a midpoint rule converges fast.
 	const Scalar a = m_vRadius.x;
 	const Scalar b = m_vRadius.y;
 	const Scalar c = m_vRadius.z;
-
 	const Scalar a2 = a*a, b2 = b*b, c2 = c*c;
-
-	m_thetaCDF[0] = 0.0;
-	static const unsigned int PHI_STEPS = 64;
-
-	for( unsigned int i = 0; i < THETA_CDF_SIZE; i++ )
+	static const unsigned int THETA_STEPS = 512;
+	static const unsigned int PHI_STEPS = 512;
+	Scalar cos2P[PHI_STEPS], sin2P[PHI_STEPS];
+	for( unsigned int j = 0; j < PHI_STEPS; j++ ) {
+		const Scalar phi = TWO_PI * (j + 0.5) / Scalar(PHI_STEPS);
+		cos2P[j] = cos(phi) * cos(phi);
+		sin2P[j] = sin(phi) * sin(phi);
+	}
+	Scalar area = 0.0;
+	for( unsigned int i = 0; i < THETA_STEPS; i++ )
 	{
-		const Scalar theta = PI * (i + 0.5) / Scalar(THETA_CDF_SIZE);
+		const Scalar theta = PI * (i + 0.5) / Scalar(THETA_STEPS);
 		const Scalar sinT = sin(theta);
 		const Scalar cosT = cos(theta);
 		const Scalar sin2T = sinT * sinT;
 		const Scalar cos2T = cosT * cosT;
-
-		// Numerically integrate the area element magnitude over phi
 		Scalar phiSum = 0.0;
 		for( unsigned int j = 0; j < PHI_STEPS; j++ )
 		{
-			const Scalar phi = TWO_PI * (j + 0.5) / Scalar(PHI_STEPS);
-			const Scalar cosP = cos(phi);
-			const Scalar sinP = sin(phi);
-
-			phiSum += sqrt(
-				b2*c2*sin2T*cosP*cosP +
-				a2*c2*sin2T*sinP*sinP +
-				a2*b2*cos2T
-			);
+			phiSum += sqrt( b2*c2*sin2T*cos2P[j] + a2*c2*sin2T*sin2P[j] + a2*b2*cos2T );
 		}
-
-		// Strip area = sinT * (avg over phi) * 2pi * dTheta
-		m_thetaCDF[i+1] = m_thetaCDF[i] +
-			sinT * (phiSum / Scalar(PHI_STEPS)) * TWO_PI * (PI / Scalar(THETA_CDF_SIZE));
+		area += sinT * (phiSum / Scalar(PHI_STEPS)) * TWO_PI * (PI / Scalar(THETA_STEPS));
 	}
-
-	// Normalize CDF to [0,1]
-	const Scalar totalCDF = m_thetaCDF[THETA_CDF_SIZE];
-	if( totalCDF > 0.0 ) {
-		for( unsigned int i = 1; i <= THETA_CDF_SIZE; i++ ) {
-			m_thetaCDF[i] /= totalCDF;
-		}
-	}
+	m_dArea = area;
+	m_dJacobianMax = r_max( r_max( b*c, a*c ), a*b );
 }
 
 

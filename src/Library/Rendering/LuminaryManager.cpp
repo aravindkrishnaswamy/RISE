@@ -12,9 +12,6 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include "../Geometry/TriangleMeshGeometry.h"
-#include "../Geometry/TriangleMeshGeometryIndexed.h"
-#include "../Geometry/BoxGeometry.h"
 #include "LuminaryManager.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight() capability check below
 #include "../Utilities/RandomNumbers.h"
@@ -177,36 +174,9 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 			return;
 		}
 
-		// Meshes and boxes integrate world area and sample its CDF (DL-448).
-		// Other analytic shapes still approximate non-uniform surface scaling.
-		{
-			// Row-vector convention (see PointsOps.h Transform): the image
-			// of object-space basis vector e_i is storage ROW i, so for the
-			// scale-then-rotate composition standard_object builds, the row
-			// norms of the linear part are exactly the per-axis scales.
-			const Matrix4 mx = pObject.GetFinalTransformMatrix();
-			const Scalar sx2 = mx._00*mx._00 + mx._01*mx._01 + mx._02*mx._02;
-			const Scalar sy2 = mx._10*mx._10 + mx._11*mx._11 + mx._12*mx._12;
-			const Scalar sz2 = mx._20*mx._20 + mx._21*mx._21 + mx._22*mx._22;
-			const Scalar mn = std::min( sx2, std::min( sy2, sz2 ) );
-			const Scalar mx2 = std::max( sx2, std::max( sy2, sz2 ) );
-			if( (mn <= 0 || mx2 > mn * Scalar( 1.0 + 1e-6 )) &&
-                !dynamic_cast<const TriangleMeshGeometry*>(pObject.GetGeometry()) &&
-                !dynamic_cast<const TriangleMeshGeometryIndexed*>(pObject.GetGeometry()) &&
-                !dynamic_cast<const BoxGeometry*>(pObject.GetGeometry()) ) {
-				static std::atomic<bool> warnedNonUniformLuminaire{ false };
-				bool expected = false;
-				if( warnedNonUniformLuminaire.compare_exchange_strong( expected, true ) ) {
-					GlobalLog()->PrintEx( eLog_Warning,
-						"LuminaryManager:: an area light carries a NON-UNIFORM scale (or shear) "
-						"in its object transform.  GetArea()'s world-area correction is exact "
-						"only for uniform scales; this emitter's NEE pdf uses a geometric-mean "
-						"approximation and its surface sampling is not uniform in world area, "
-						"so its light contribution is approximate.  Prefer baking the aspect "
-						"into the geometry and keeping the object scale uniform." );
-				}
-			}
-		}
+		// DL-448: no non-uniform-scale caveat any more -- Object samples a
+		// non-similarity luminary uniformly in WORLD area and GetArea()
+		// returns that world area, for every geometry kind.
 
 		LUM_ELEM elem;
 		elem.pLum = &pObject;

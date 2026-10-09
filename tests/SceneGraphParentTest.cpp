@@ -444,16 +444,19 @@ int main()
 			       "B2: the world normal equals the closed-form ellipsoid normal normalize(px/9, py, pz) -- "
 			       "the inverse-transpose is built from the COMPOSED matrix, not the local one" );
 
-			// Area under a non-uniform parent.  The composed determinant is 3
-			// (the child is identity, the parent scales x by 3), so the world
-			// area must be the OBJECT-space area times |det|^(2/3) = 3^(2/3).
-			// Taken against the geometry's own reported area rather than a
-			// hardcoded 4*pi, so this pins the JACOBIAN -- the thing hierarchy
-			// can get wrong -- and not the ellipsoid area formula.
+			// Area under a non-uniform parent.  The composed map scales x by 3,
+			// so the world surface is the prolate spheroid with polar semi-axis
+			// a = 3 and equatorial b = 1, whose area has the closed form
+			// 2 pi b^2 (1 + a/(b e) asin e), e = sqrt(1 - b^2/a^2) -- the TRUE
+			// world area (DL-448; before it, |det(COMPOSED)|^(2/3) = 3^(2/3)
+			// times the object area, a geometric-mean approximation).  Only the
+			// COMPOSED matrix produces it, so this still pins the hierarchy.
 			const Scalar objArea = ball->GetGeometry() ? ball->GetGeometry()->GetArea() : Scalar( 0 );
 			Check( objArea > 0, "B2: the geometry reports a positive object-space area" );
-			Check( objArea > 0 && Close( ball->GetArea(), objArea * std::pow( 3.0, 2.0 / 3.0 ), 1e-6 ),
-			       "B2: world area = object area * |det(COMPOSED)|^(2/3)" );
+			const double ecc = std::sqrt( 1.0 - 1.0 / 9.0 );
+			const double prolate = 2.0 * 3.14159265358979323846 * ( 1.0 + 3.0 / ecc * std::asin( ecc ) );
+			Check( objArea > 0 && Close( ball->GetArea(), prolate, 1e-5 * prolate ),
+			       "B2: world area = the composed map's true (prolate spheroid) area" );
 		}
 		j->release();
 	}

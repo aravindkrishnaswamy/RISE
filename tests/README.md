@@ -1295,6 +1295,15 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   (the emitter's own `averageRadiantExitance` was estimated at P = 0 until
   DL-431, below).
 
+- `NonUniformLuminaryAreaTest` (DL-448): curved analytic luminaries (sphere,
+  ellipsoid, cylinder, torus, disk) under a NON-similarity transform. A:
+  `GetArea()` against closed forms / independent quadrature (2e-5); B: the
+  world-area fraction of samples in a normal/position region (5 sigma); C:
+  floor renders under an orthographic camera, scaled vs directly authored
+  surface and PT vs BDPT vs VCM (8 salted renders x 256 spp, 4 combined se);
+  `H` (argv[2]) prints similarity-transform sampler hashes for a bit-identity
+  A/B. Red on `932f7c0a0`: 11/22; green 33/0.
+
 - `EmitterAverageExitanceTest` (DL-431): the luminary's average exitance
   (light-selection weight, photon power / budget) over its own surface points.
   Row 1 renders the wall-and-camera rig with `1.5 (P.x^2+P.y^2)` (zero at the

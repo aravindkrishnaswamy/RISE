@@ -34,12 +34,15 @@ namespace RISE
 			//! consistent with the tessellated mesh and with each other.
 			void EllipsoidUVFromPosition( const Point3& pt, Point2& uv ) const;
 
-			// Marginal theta CDF for area-uniform sampling on the ellipsoid surface.
-			// The naive (costheta = 1-2u) mapping is only uniform on a sphere;
-			// for an ellipsoid we precompute a CDF that warps theta to account
-			// for the varying area element.
-			static const unsigned int THETA_CDF_SIZE = 256;
-			Scalar			m_thetaCDF[THETA_CDF_SIZE + 1];
+			// DL-448: area-uniform sampling by REJECTION from the uniform unit
+			// sphere: x = diag(a,b,c) s, accepted with probability
+			// J(s)/Jmax, J(s) = |(bc s_x, ac s_y, ab s_z)| the area stretch
+			// (Nanson) -- acceptance >= 1/2.  The old marginal-theta CDF with
+			// uniform phi was area-uniform only for a == b, and GetArea()
+			// was a ~1 % approximation (Thomsen) the sampler never matched.
+			// m_dArea is the exact area by a 512 x 512 midpoint quadrature.
+			Scalar			m_dArea;
+			Scalar			m_dJacobianMax;
 
 			virtual ~EllipsoidGeometry( );
 
