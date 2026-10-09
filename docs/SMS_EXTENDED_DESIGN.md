@@ -4,6 +4,34 @@
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
+## Using extended SMS
+
+Extended mode is opt-in through the scene parameter `sms_extended` (bool, default `FALSE`) on `pathtracing_pel_rasterizer` and `pathtracing_spectral_rasterizer`, next to the other `sms_*` parameters. It requires `sms_enabled TRUE`. The parameter sets `SMSConfig::extended`, which `Job` passes to `RISE_API_CreatePathTracing{Pel,Spectral}RasterizerEx` and on to `ManifoldSolverConfig::extendedMode`. The frozen non-`Ex` factories forward `false`. The Blender add-on exposes it as **Extended SMS** (bridge ABI v17). The `auto_rasterizer` / `auto_spectral_rasterizer` dispatchers build their PT delegate with SMS disabled, so the parameter does not apply to them.
+
+```
+pathtracing_pel_rasterizer
+{
+	samples           64
+	sms_enabled       TRUE
+	sms_extended      TRUE
+}
+```
+
+What it does:
+- **Point and spot lights** (`omni_light`, `spot_light`): estimator A, the root-level reference estimator ([A](#a-root-level-reference-estimator-standalone-ownership-delta-lights)). Native R/T event proposals, selected-domain medium replay and survival-weighted rediscovery replace the legacy snell/uniform seeds. Other zero-area lights (directional, ambient) get no SMS contribution in extended mode.
+- **Area emitters** (luminaire-material objects): estimator B ([B](#b-topology-level-estimator-partition-mode-area-emitters)) with the [shared PT ownership partition](#shared-path-ownership-area-emitters). PT keeps every emitter hit whose specular chain SMS does not own, so coverage gaps cost variance, not energy.
+- **Spectral `hwss TRUE`**: each lane is evaluated with its own geometry and ownership (Phase 4).
+- `sms_biased`, `sms_seeding` and `sms_two_stage` are not part of the extended contract and are ignored. `sms_multi_trials` (trials per evaluation), `sms_bernoulli_trials` (rediscovery cap), `sms_target_bounces`, `sms_max_chain_depth` and `sms_threshold` are still used.
+- An anchor is ineligible, and gets no SMS at all with PT owning every path, when `sms_photon_count > 0`, the scene has a global medium or alpha coverage, a transmissive caster is unsupported, or a caster's modifier is not audited, or the chain settings are degenerate (`sms_max_chain_depth 0`, `sms_target_bounces` above `sms_max_chain_depth`, or `sms_threshold` <= 0) ([Eligibility](#eligibility-and-the-three-coupled-switches)). Setting `sms_photon_count` together with `sms_extended` therefore disables SMS. `sms_extended` also requires `sms_enabled TRUE`; without it the flag does nothing.
+
+Limits:
+- **Composite scenes:** if any object's material is or wraps `composite_material`, extended mode is inert for the whole prepared scene. One warning names the first composite, and legacy SMS runs ([interim composite policy](#adopted-interim-composite-policy-2026-10-03)).
+- **HWSS shader-op path:** the legacy pixel-based spectral rasterizer in HWSS mode (`RayCaster::CastRayHWSS`) stays on legacy SMS and logs one warning (DL-451). The PT spectral rasterizer is not affected.
+- **Finite-scattering dielectrics** (`dielectric_material` with finite `scattering`, the parser default 1e4 included) are treated at their delta limit. The measured bias is **+5.5 % +- 2.2 %** against VCM on the DL-379 fixture (DL-379, open).
+- **Cost:** extended area-emitter rendering is about **10-17x** slower than extended-off PT on caustic-heavy scenes (DL-449: 14-17x on the ball-lens image). Point/spot-light scenes are cheaper.
+
+`scenes/Tests/SMS/sms_k2_glasssphere_extended.RISEscene` is the shipped example. `tests/SMSExtendedSceneParamTest.cpp` pins the parameter: parse to `extendedMode`, and bit-identical renders against the internal flag.
+
 ## Recommended scope
 
 Implement an opt-in extended solver in small increments:

@@ -295,7 +295,7 @@ void TestAbiVersionAndAlphaFields()
 {
 	std::cout << "Test: ABI version 16 and preserved append-only v14 alpha fields" << std::endl;
 
-	Check( RISE_BLENDER_API_VERSION == 16, "RISE_BLENDER_API_VERSION is 16" );
+	Check( RISE_BLENDER_API_VERSION == 17, "RISE_BLENDER_API_VERSION is 17" );
 
 	Check( offsetof( rise_blender_material, alpha ) >
 	       offsetof( rise_blender_material, coat_normal_scale ),

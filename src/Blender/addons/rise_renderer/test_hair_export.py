@@ -655,7 +655,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 16)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 17)
 
     def test_mesh_struct_matches(self):
         self._assert_matches(bridge._Mesh, "rise_blender_mesh")

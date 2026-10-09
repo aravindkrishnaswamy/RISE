@@ -89,6 +89,7 @@ namespace RISE
 		bool			useLevenbergMarquardt;	///< Levenberg-Marquardt damping in `ManifoldSolver::NewtonSolve` (default FALSE — opt-in).  Damps J's diagonal by `λ × mean(|J_ii|)` between iterations; λ shrinks on accepted line-search steps and grows on rejected ones.  Recovers ~5pp Newton-fail rate on heavy-displacement meshes vs pure Newton, at the cost of ~50-100% more solver work per shading point on those scenes — turn on only when you've confirmed the scene benefits.  Negligible cost on smooth geometry / scenes without SMS.  See `docs/SMS_LEVENBERG_MARQUARDT.md`.
 		SMSSeedingMode	seedingMode;		///< Seeding strategy for `EvaluateAtShadingPoint`.  Default `Snell` (RISE legacy: trace from shading point toward light, refracting at every specular surface).  `Uniform` = Mitsuba-faithful uniform-area sample on each cached caster shape, then SnellContinue (required for principled geometric Bernoulli `1/p` per Zeltner 2020 §4.3 Algorithm 2).  Opt-in via `sms_seeding "uniform"`.  See `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
 		unsigned int	targetBounces;		///< Mitsuba `m_config.bounces` analogue: REQUIRED chain length.  When > 0, the seed-builder traces EXACTLY this many specular hits and rejects seeds that don't reach (or that overshoot) the target.  Default 0 = "no target": snell mode discovers chain length via the emitter-projection cap, uniform mode caps at `maxChainDepth` only.  Set to the natural caustic K for the scene (typically 2 for a glass shell or interior-light scene).  Active in BOTH snell and uniform modes.  Recommended for `sms_seeding "uniform"`, where without it seed-chain length is variable and produces wildly different topology than the natural caustic.
+		bool			extended;			///< Extended SMS (`sms_extended`, default false): forwards to `ManifoldSolverConfig::extendedMode` -- reference estimators (A for point/spot lights, B + PT ownership partition for area emitters, per-lane HWSS).  Ignores `biased`/`seedingMode`; inert on composite scenes.  See docs/SMS_EXTENDED_DESIGN.md "Using extended SMS".
 
 		SMSConfig() :
 		  enabled( false ),
@@ -103,7 +104,8 @@ namespace RISE
 		  twoStage( false ),
 		  useLevenbergMarquardt( false ),
 		  seedingMode( SMSSeedingMode::Snell ),
-		  targetBounces( 0 )
+		  targetBounces( 0 ),
+		  extended( false )
 		{
 		}
 	};

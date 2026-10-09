@@ -9592,6 +9592,37 @@ namespace RISE
 		return true;
 	}
 
+	// Forward declaration (this file does not include RISE_API.h until
+	// later); the definition follows the frozen forwarder below.
+	bool RISE_API_CreatePathTracingPelRasterizerEx(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
+								const bool smsExtended,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
 	//! Creates a pure path tracing Pel rasterizer
 	bool RISE_API_CreatePathTracingPelRasterizer(
 								IRasterizer** ppi,
@@ -9610,6 +9641,40 @@ namespace RISE
 								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
 							const unsigned int smsTargetBounces,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								)
+	{
+		return RISE_API_CreatePathTracingPelRasterizerEx( ppi, caster, pSamples, pFilter, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, smsTwoStage, smsUseLevenbergMarquardt, smsSeedingMode, smsTargetBounces, false, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore );
+	}
+
+	//! Ex: adds `smsExtended` (ManifoldSolverConfig::extendedMode, the `sms_extended`
+	//! scene parameter).  The legacy symbol above forwards with false.
+	bool RISE_API_CreatePathTracingPelRasterizerEx(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
+								const bool smsExtended,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -9641,6 +9706,7 @@ namespace RISE
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
 			smsConfig.targetBounces = smsTargetBounces;
+			smsConfig.extendedMode = smsExtended;
 		}
 
 		PathTracingPelRasterizer* pRasterizer = new PathTracingPelRasterizer(
@@ -9769,6 +9835,41 @@ namespace RISE
 		return true;
 	}
 
+	// Forward declaration (this file does not include RISE_API.h until
+	// later); the definition follows the frozen forwarder below.
+	bool RISE_API_CreatePathTracingSpectralRasterizerEx(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
+								const bool smsExtended,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
 	//! Creates a pure path tracing spectral rasterizer
 	bool RISE_API_CreatePathTracingSpectralRasterizer(
 								IRasterizer** ppi,
@@ -9802,6 +9903,44 @@ namespace RISE
 								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
+		return RISE_API_CreatePathTracingSpectralRasterizerEx( ppi, caster, pSamples, pFilter, lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, smsTwoStage, smsUseLevenbergMarquardt, smsSeedingMode, smsTargetBounces, false, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, useZSobol, useHWSS, frameStore );
+	}
+
+	//! Ex: adds `smsExtended` (ManifoldSolverConfig::extendedMode, the `sms_extended`
+	//! scene parameter).  The legacy symbol above forwards with false.
+	bool RISE_API_CreatePathTracingSpectralRasterizerEx(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
+								const bool smsExtended,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								)
+	{
 		if( !ppi ) {
 			return false;
 		}
@@ -9822,6 +9961,7 @@ namespace RISE
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
 			smsConfig.targetBounces = smsTargetBounces;
+			smsConfig.extendedMode = smsExtended;
 		}
 
 		PathTracingSpectralRasterizer* pRasterizer = new PathTracingSpectralRasterizer(

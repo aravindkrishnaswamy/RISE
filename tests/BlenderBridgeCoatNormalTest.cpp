@@ -189,7 +189,7 @@ void TestAbiVersionAndCoatNormalFields()
 {
 	std::cout << "Test: ABI version 16 and preserved append-only v14 coat-normal fields" << std::endl;
 
-	Check( RISE_BLENDER_API_VERSION == 16, "RISE_BLENDER_API_VERSION is 16" );
+	Check( RISE_BLENDER_API_VERSION == 17, "RISE_BLENDER_API_VERSION is 17" );
 	Check( rise_blender_api_version() == RISE_BLENDER_API_VERSION,
 		"rise_blender_api_version() reports the compiled-in constant" );
 
