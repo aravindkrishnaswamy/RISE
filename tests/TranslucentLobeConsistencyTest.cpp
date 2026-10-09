@@ -80,6 +80,7 @@
 #include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Materials/CompositeMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
 #include "../src/Library/Geometry/BezierPatchGeometry.h"
 #include "../src/Library/Geometry/ClippedPlaneGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
@@ -877,6 +878,13 @@ static void GateKrayNM( const IObject* obj, const IObject* other )
 //  evaluation prices).  So the flag must be FALSE for BOTH orders, and
 //  the check below asserts the reason rather than the flag alone: the
 //  presented value transmits nothing.
+//
+//  DL-296 (2026-10-09): the layered value now HAS a far-side term when
+//  the BOTTOM transmits through its own BSDF (CompositeSPF term (c)), and
+//  the flag is that term's: claimed for composite{lambertian/translucent}
+//  (whose value is still 0 below, the Lambertian top transmitting
+//  nothing) and for composite{dielectric/translucent} (which prices the
+//  far side), never for an opaque bottom.
 //////////////////////////////////////////////////////////////////////
 static void GateCompositeFullSphere()
 {
@@ -928,8 +936,32 @@ static void GateCompositeFullSphere()
 			std::string( "[G] " ) + label + " prices the near side" );
 		EXPECT( vBelow == 0,
 			std::string( "[G] " ) + label + " prices NOTHING on the far side of the stack" );
-		EXPECT( !m->ScattersFullSphere(),
-			std::string( "[G] " ) + label + " therefore does NOT claim the full-sphere capability" );
+		// DL-296 (2026-10-09): the capability now follows the BOTTOM --
+		// a transmitting bottom (translucent) gives the layered value a
+		// below-horizon term (transmission out through it).  Over a
+		// Lambertian top that term is zero (the top transmits nothing,
+		// value(below) above), so the claim only costs NEE samples there;
+		// over an opaque bottom it is never made.
+		EXPECT( m->ScattersFullSphere() == ( k == 1 ),
+			std::string( "[G] " ) + label + ( k == 1
+				? " claims the full-sphere capability (its bottom transmits, DL-296)"
+				: " does NOT claim the full-sphere capability (opaque bottom)" ) );
+	}
+
+	// DL-296: a TRANSMITTING stack -- a dielectric over translucent --
+	// prices the far side through its bottom.
+	{
+		UniformScalarPainter* one = new UniformScalarPainter( 1.0 ); one->addref();
+		UniformScalarPainter* i15 = new UniformScalarPainter( 1.5 ); i15->addref();
+		UniformScalarPainter* sc = new UniformScalarPainter( 10000.0 ); sc->addref();
+		DielectricMaterial* gl = new DielectricMaterial( *one, *i15, *sc, false ); gl->addref();
+		CompositeMaterial* glTr = new CompositeMaterial( *gl, *tr, 4, 2, 2, 2, 2, 0.1, *z ); glTr->addref();
+		const double vBelow = glTr->GetBSDF() ? ColorMath::MaxValue( glTr->GetBSDF()->value( below, ri ) ) : -1;
+		std::cout << "    composite{dielectric/translucent}: value(below)=" << vBelow
+		          << "  ScattersFullSphere=" << ( glTr->ScattersFullSphere() ? "true" : "false" ) << std::endl;
+		EXPECT( vBelow > 0, "[G] composite{dielectric/translucent} prices the far side (DL-296)" );
+		EXPECT( glTr->ScattersFullSphere(), "[G] composite{dielectric/translucent} claims the full-sphere capability (DL-296)" );
+		glTr->release(); gl->release(); sc->release(); i15->release(); one->release();
 	}
 
 	topLamb->release(); topTrans->release(); lm->release(); tr->release();

@@ -124,12 +124,14 @@ CompositeSPF::CompositeSPF(
 	const Scalar thickness_,
 	const IScalarPainter& extinction_,
 	const IBSDF* pTopBSDF_,
-	const IBSDF* pBottomBSDF_
+	const IBSDF* pBottomBSDF_,
+	const bool bottomTransmits_
 	) :
   top( top_ ),
   bottom( bottom_ ),
   pTopBSDF( pTopBSDF_ ),
   pBottomBSDF( pBottomBSDF_ ),
+  bBottomTransmits( bottomTransmits_ && pBottomBSDF_ != 0 ),
   max_recur( max_recur_ ),
   max_reflection_recursion( max_reflection_recursion_ ),
   max_refraction_recursion( max_refraction_recursion_ ),
@@ -673,6 +675,56 @@ namespace RISE
 				return Vector3Ops::Dot( w, geomN ) > 0;
 			}
 
+			//! DL-296: the mirror of PassesGeomGate -- `w` leaves on the
+			//! FAR side of the true surface (a transmission out through
+			//! the bottom of the stack).
+			static inline bool PassesBelowGate( const RayIntersectionGeometric& ri, const Vector3& w )
+			{
+				const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar( 1e-12 ) )
+					? ri.vGeomNormal : ri.onb.w();
+				const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+				return Vector3Ops::Dot( w, geomN ) < 0;
+			}
+
+			//! DL-296: the EXTERNAL stack of a ray that leaves the stack
+			//! DOWN through the bottom after a walk entered from above
+			//! (ToExternal's BELOW form): OUT plus O at the below medium's
+			//! index.  For a non-refracting transmitting bottom
+			//! (translucent re-pushes the gap's index) that index is the
+			//! gap's, which is exactly BelowMediumIOR's fallback chain.
+			static inline IORStack BelowExternalStack(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const IORStack& out,
+				const Scalar nm
+				)
+			{
+				IORStack below( out );
+				if( out.currentObject() ) {
+					below.push( s.BelowMediumIOR( ri, out, nm, out.top() ) );
+				}
+				return below;
+			}
+
+			//! DL-296: the radiance-mode eta^2 factor of a covered
+			//! transmission out through the bottom -- RadianceEtaScale from
+			//! the walk's stack to the external BELOW stack, the factor a
+			//! radiance walk applies to the emitted ray from its stack.  The
+			//! layered VALUE includes it (NEE and BDPT eye connections price
+			//! the transport with no stack change of their own); the emitted
+			//! kray excludes it (the ray's stack carries it), the ISPF.h
+			//! eta^2 contract every transmitting SPF follows.
+			static inline Scalar BelowEtaScale(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const IORStack& out,
+				const Scalar nm
+				)
+			{
+				const IORStack below = BelowExternalStack( s, ri, out, nm );
+				return RadianceEtaScale( out, &below );
+			}
+
 			//! The record a layer event is evaluated at: the same shading
 			//! point, a ray along `dir` whose origin is advanced by the gap
 			//! crossing's slant length so a layer that reads its own
@@ -1036,7 +1088,9 @@ namespace RISE
 				for( unsigned int i = 0; i < cb.Count(); i++ ) {
 					const ScatteredRay& r = cb[i];
 					const bool up = Vector3Ops::Dot( r.ray.Dir(), n ) > 0;
-					if( r.isDelta || !up || !s.pBottomBSDF ) {
+					// DL-296: a non-delta exit DOWN through a bottom whose
+					// BSDF transmits is priced by term (c).
+					if( r.isDelta || ( !up && !s.bBottomTransmits ) || !s.pBottomBSDF ) {
 						pr.walkerPossible = true;
 					}
 					if( up && P::Weight( r ) > bestW ) {
@@ -1179,6 +1233,7 @@ namespace RISE
 			struct Weights
 			{
 				Scalar w1, w2, w3, w4;
+				Scalar w5;					// DL-296: COVERED, cosine hemisphere BELOW (transmission out through the bottom)
 				bool   aggregate;
 			};
 
@@ -1190,7 +1245,7 @@ namespace RISE
 			static Weights MakeWeights( const CompositeSPF& s, const Probe& pr )
 			{
 				Weights W;
-				W.w1 = W.w2 = W.w3 = W.w4 = 0;
+				W.w1 = W.w2 = W.w3 = W.w4 = W.w5 = 0;
 				W.aggregate = pr.det;
 
 				Scalar up = pr.Qup;
@@ -1215,7 +1270,16 @@ namespace RISE
 						const Scalar u = pr.walkerPossible ? kWalkerShareIfPossible : kWalkerShareFloor;
 						W.w4 = dn * u;
 						const Scalar e = dn - W.w4;
-						if( s.pBottomBSDF ) {
+						if( s.bBottomTransmits ) {
+							// DL-296: the covered class now has a below-
+							// horizon part (term (c)).  The bottom's own
+							// sampler (w3) covers both hemispheres; the
+							// below cosine (w5) keeps every below direction
+							// reachable whatever the bottom's lobe shape.
+							W.w2 = Scalar( 0.35 ) * e;
+							W.w3 = Scalar( 0.45 ) * e;
+							W.w5 = Scalar( 0.2 ) * e;
+						} else if( s.pBottomBSDF ) {
 							W.w2 = Scalar( 0.5 ) * e;
 							W.w3 = Scalar( 0.5 ) * e;
 						} else {
@@ -1231,13 +1295,14 @@ namespace RISE
 			static Weights NormalizedWeights( const CompositeSPF& s, const Probe& pr, bool& any )
 			{
 				Weights W = MakeWeights( s, pr );
-				const Scalar total = W.w1 + W.w2 + W.w3 + W.w4;
+				const Scalar total = W.w1 + W.w2 + W.w3 + W.w4 + W.w5;
 				any = ( total > 0 );
 				if( any ) {
 					W.w1 /= total;
 					W.w2 /= total;
 					W.w3 /= total;
 					W.w4 /= total;
+					W.w5 /= total;
 				}
 				return W;
 			}
@@ -1258,6 +1323,25 @@ namespace RISE
 			{
 				const Scalar cosN = Vector3Ops::Dot( w, ri.onb.w() );
 				Scalar walked = 0;
+				if( !( cosN > 0 ) ) {
+					// DL-296: below the stack only the covered TRANSMISSION
+					// class is non-delta: the below cosine (w5) and the
+					// bottom's own sampler (w3), both emitted only on the
+					// far geometric side.  No DIRECT term: the top's own
+					// down-going lobes are the walk's entry, not exits.
+					if( s.bBottomTransmits && PassesBelowGate( ri, w ) ) {
+						if( W.w5 > 0 ) {
+							walked += W.w5 * ( -cosN ) * INV_PI;
+						}
+						if( W.w3 > 0 ) {
+							walked += W.w3 * P::Pdf( s.bottom, ri, w, nm, outside );
+						}
+					}
+					if( pWalkedOnly ) {
+						*pWalkedOnly = walked;
+					}
+					return walked;
+				}
 				if( W.w2 > 0 && PassesGeomGate( ri, w ) ) {
 					walked += W.w2 * cosN * INV_PI;
 				}
@@ -1558,6 +1642,23 @@ namespace RISE
 				const Vector3 n = ri.onb.w();
 				RayIntersectionGeometric rec( ri );
 
+				// DL-296, term (c): an exit BELOW the stack -- every bottom
+				// visit transmits out through the bottom's own BSDF (the
+				// mirror of term (b)).  The walker's matching exits (a
+				// non-delta down-going bottom lobe) are left to the covered
+				// sampler.  No Jacobian: nothing refracts after the bottom
+				// event.  The radiance eta^2 factor is applied by the
+				// caller (BelowEtaScale).
+				if( !( Vector3Ops::Dot( wOut, n ) > 0 ) ) {
+					if( s.bBottomTransmits ) {
+						for( size_t i = 0; i < path.betaBot.size(); i++ ) {
+							SetLayerRay( rec, ri, path.wBot[i], path.LBot[i] );
+							f = f + P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, wOut, rec, nm, &path.gapBot[i] ) );
+						}
+					}
+					return f;
+				}
+
 				// Term (a): every bottom visit connects to wOut through the
 				// top's delta transmission at u.
 				if( s.pBottomBSDF && !path.betaBot.empty() && s.top.DeltaTransmissionIsRefraction() ) {
@@ -1697,7 +1798,8 @@ namespace RISE
 				const IORStack* pStack,
 				const Scalar nm,
 				typename P::T& direct,
-				typename P::T& walked
+				typename P::T& walked,
+				const bool includeBelowEta = true
 				)
 			{
 				direct = P::Zero();
@@ -1707,6 +1809,21 @@ namespace RISE
 				}
 				const Vector3 w = Vector3Ops::Normalize( vLightIn );
 				if( !( Vector3Ops::Dot( w, ri.onb.w() ) > 0 ) ) {
+					// DL-296: below the stack the only non-delta response
+					// is the covered transmission out through the bottom
+					// (term (c)); no DIRECT part.
+					if( !s.bBottomTransmits || !PassesBelowGate( ri, w ) ) {
+						return;
+					}
+					IORStack fabricated( ri.ambientIOR > 0 ? ri.ambientIOR : Scalar( 1 ) );
+					if( !pStack ) {
+						fabricated.SetCurrentObject( StacklessKey() );
+					}
+					const IORStack& st = pStack ? *pStack : fabricated;
+					walked = EvaluateWalked<P>( s, ri, w, st, nm );
+					if( includeBelowEta ) {
+						walked = P::Scaled( walked, BelowEtaScale( s, ri, st, nm ) );
+					}
 					return;
 				}
 				if( s.pTopBSDF ) {
@@ -1892,12 +2009,19 @@ namespace RISE
 
 					if( atBottom ) {
 						if( cosN <= 0 ) {
-							// Out through the bottom: never priced by the
-							// evaluator.
-							P::SetKray( *r, P::Mul( beta, P::Scaled( P::Kray( *r ), Scalar( 1 ) / q ) ) );
-							r->isDelta = true;
-							SetExternalStack( s, *r, after, out );
-							Emit( scattered, *r );
+							// Out through the bottom.  DL-296: priced by
+							// the evaluator's term (c) -- and so left to the
+							// covered sampler -- when it is a non-delta
+							// lobe of a bottom whose BSDF transmits, on the
+							// far geometric side, after a covered entry.
+							const bool covered = ( start == eStartCoveredTop ) && !r->isDelta &&
+								s.bBottomTransmits && PassesBelowGate( ri, Vector3Ops::Normalize( r->ray.Dir() ) );
+							if( !covered ) {
+								P::SetKray( *r, P::Mul( beta, P::Scaled( P::Kray( *r ), Scalar( 1 ) / q ) ) );
+								r->isDelta = true;
+								SetExternalStack( s, *r, after, out );
+								Emit( scattered, *r );
+							}
 							return;
 						}
 						lastBottomEvaluable = ( s.pBottomBSDF != 0 ) && !r->isDelta;
@@ -1960,13 +2084,21 @@ namespace RISE
 				Scalar walkedPdf = 0;
 				const Scalar pdf = MixturePdf<P>( s, ri, w, outside, nm, pr, W, &walkedPdf );
 				T direct, walked;
-				EvaluateLayeredParts<P>( s, w, ri, &entry, nm, direct, walked );
+				// DL-296: a covered transmission out through the bottom
+				// carries the BELOW stack, which applies its eta^2 factor
+				// at the radiance consumer; its kray excludes it.
+				EvaluateLayeredParts<P>( s, w, ri, &entry, nm, direct, walked, false );
 				const Scalar cosO = fabs( Vector3Ops::Dot( w, ri.vNormal ) );
 
 				ScatteredRay out;
 				out.type = type;
 				out.isDelta = false;
 				out.ray.Set( ri.ptIntersection, w );
+				if( !( Vector3Ops::Dot( w, ri.onb.w() ) > 0 ) ) {
+					out.ior_stack = new IORStack( BelowExternalStack( s, ri, entry, nm ) );
+					GlobalLog()->PrintNew( out.ior_stack, __FILE__, __LINE__, "ior stack" );
+					out.delete_stack = true;
+				}
 				if( walkedOnly ) {
 					if( !( walkedPdf > 0 ) ) {
 						return;
@@ -2054,6 +2186,19 @@ namespace RISE
 						if( r && !r->isDelta && Vector3Ops::Dot( r->ray.Dir(), n ) > 0 ) {
 							EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, outside, pr, W,
 								Vector3Ops::Normalize( r->ray.Dir() ), r->type, !W.aggregate );
+						} else if( r && !r->isDelta && s.bBottomTransmits &&
+							PassesBelowGate( ri, Vector3Ops::Normalize( r->ray.Dir() ) ) ) {
+							// DL-296: the bottom's own transmission lobe
+							// proposes a covered exit BELOW the stack.
+							EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, outside, pr, W,
+								Vector3Ops::Normalize( r->ray.Dir() ), r->type, !W.aggregate );
+						}
+					} else if( u < W.w1 + W.w2 + W.w3 + W.w5 ) {
+						// DL-296: cosine hemisphere BELOW the stack.
+						const Vector3 w = -GeometricUtilities::CreateDiffuseVector( ri.onb, sampler.Get2D() );
+						if( PassesBelowGate( ri, w ) ) {
+							EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, outside, pr, W,
+								w, ScatteredRay::eRayTranslucent, !W.aggregate );
 						}
 					} else {
 						if( W.w4 > 0 ) {
@@ -2081,7 +2226,7 @@ namespace RISE
 					return 0;
 				}
 				const Vector3 w = Vector3Ops::Normalize( wo );
-				if( !( Vector3Ops::Dot( w, ri.onb.w() ) > 0 ) ) {
+				if( !( Vector3Ops::Dot( w, ri.onb.w() ) > 0 ) && !s.bBottomTransmits ) {
 					return 0;
 				}
 				const Probe pr = DoProbe<P>( s, ri, ior_stack, nm );
@@ -2233,7 +2378,7 @@ namespace RISE
 		// opaque one, or one with a non-delta translucent layer) presents
 		// its top on either face (below): its back face is a card's other
 		// side (D7 / D8 / D10), and a from-below walk there is
-		// delta-tagged, invisible to NEE (DL-296).
+		// delta-tagged, invisible to NEE (DL-472).
 		if( faceRule && ri.bGeomNormalOrientedToRay ) {
 			flip = true;
 		}
@@ -2619,6 +2764,14 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 	const CompositeSPFImpl::Probe pr = CompositeSPFImpl::DoProbe<CompositeSPFImpl::PipeNM>( *this, ri, walkStack, nm );
 	if( !pr.det ) {
 		return -1;
+	}
+	// DL-296: a covered ray out through the BOTTOM carried its kray
+	// without the radiance eta^2 factor (its BELOW stack applies it), so
+	// its companion weight is the layered value without it too.
+	if( !( Vector3Ops::Dot( outDir, ri.onb.w() ) > 0 ) ) {
+		Scalar direct = 0, walked = 0;
+		CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeNM>( *this, outDir, ri, &walkStack, nm, direct, walked, false );
+		return direct + walked;
 	}
 	return EvaluateLayeredNM( outDir, ri, nm, &walkStack );
 }

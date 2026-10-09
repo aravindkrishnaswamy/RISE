@@ -90,7 +90,8 @@ namespace RISE
 					// never produces.
 					CompositeSPF* pComposite = new CompositeSPF( *top.GetSPF(), *bottom.GetSPF(),
 						max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion,
-						max_translucent_recursion, thickness, extinction, top.GetBSDF(), bottom.GetBSDF() );
+						max_translucent_recursion, thickness, extinction, top.GetBSDF(), bottom.GetBSDF(),
+						bottom.ScattersFullSphere() );
 					pSPF = pComposite;
 					// DL-05: the straight-through lobe needs BOTH layers to
 					// pass (CompositeSPF::DeltaPassThroughTransmittance).
@@ -108,7 +109,17 @@ namespace RISE
 						pBRDF = new CompositeBSDF( *pComposite, top.GetBSDF() ? top.GetBSDF() : bottom.GetBSDF() );
 						GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "CompositeBSDF" );
 					}
-					bScattersFullSphere = false;
+					// DL-296 (2026-10-09): ...except when the BOTTOM transmits
+					// through its own BSDF (translucent_material, whose value
+					// and Pdf really have support below its horizon since
+					// DL-157 / DL-41).  The layered value then has a
+					// below-horizon term -- transmission out through the
+					// bottom, CompositeSPF's term (c) -- that NEE and BDPT /
+					// VCM connections price, and the capability is that
+					// term's.  A light BEHIND such a sheet (a point light
+					// especially) used to reach the camera only through
+					// delta-tagged walker rays, i.e. not at all.
+					bScattersFullSphere = pComposite->HasTransmissionValue();
 				} else {
 					// Only one layer can scatter: that layer IS the
 					// material (the pre-DL-24 behaviour, kept verbatim).
