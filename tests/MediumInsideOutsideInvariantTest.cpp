@@ -271,8 +271,8 @@ public:
 static double RenderMean( const std::string& sceneText, unsigned int seed )
 {
 	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/medium_inside_outside_%d.RISEscene",
-		static_cast<int>(::getpid()) );
+	std::snprintf( path, sizeof(path), "%s/medium_inside_outside_%d.RISEscene",
+		std::getenv( "TMPDIR" ) ? std::getenv( "TMPDIR" ) : "/tmp", static_cast<int>(::getpid()) );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return -1.0;
@@ -345,8 +345,8 @@ static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned in
 {
 	Stats st = { 0, 0, n, false };
 	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/medium_inside_outside_salted_%d.RISEscene",
-		static_cast<int>(::getpid()) );
+	std::snprintf( path, sizeof(path), "%s/medium_inside_outside_salted_%d.RISEscene",
+		std::getenv( "TMPDIR" ) ? std::getenv( "TMPDIR" ) : "/tmp", static_cast<int>(::getpid()) );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return st;
@@ -654,8 +654,8 @@ static bool MltPathEstimate( const std::string& sceneText, bool independent, uns
 	MltEstimate& out )
 {
 	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/medium_inside_outside_mlt_%d.RISEscene",
-		static_cast<int>(::getpid()) );
+	std::snprintf( path, sizeof(path), "%s/medium_inside_outside_mlt_%d.RISEscene",
+		std::getenv( "TMPDIR" ) ? std::getenv( "TMPDIR" ) : "/tmp", static_cast<int>(::getpid()) );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return false;
@@ -770,7 +770,7 @@ static void EnvironmentGeneratedDensity()
 {
  const std::string scene = BoxScene(RasterizerChunk("bdpt", ""), kCameraInside)
   + "omni_light\n{\n\tname density_selection\n\tpower 1000\n\tcolor 1 1 1\n\tposition 0 1 0\n}\n";
- const std::string path = "/tmp/dl346_density_" + std::to_string(getpid()) + ".RISEscene";
+ const std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/dl346_density_" + std::to_string(getpid()) + ".RISEscene";
  { std::ofstream out(path); out << scene; }
  IJobPriv* job = nullptr;
  const bool loaded = RISE_CreateJobPriv(&job) && job && job->LoadAsciiSceneViaCst(path.c_str());

@@ -3159,7 +3159,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// scaled by it.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag,
+										// DL-416: the exit shadow leg starts in the live exterior medium.
+										bssrdfSampler, ri.pObject, pCurrentMedium, false, pMediumObject, tag,
 										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
 											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ),
 										// DL-292: the SAME stack the continuation below
@@ -3420,7 +3421,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// scaled by it.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, bssrdf.ExitObject( ri.pObject ), 0, false, 0, tag,
+										// DL-416: mirror the ordinary surface NEE medium binding.
+										bssrdfSampler, bssrdf.ExitObject( ri.pObject ), pCurrentMedium, false, pMediumObject, tag,
 										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
 											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ),
 										// DL-292: the SAME stack the continuation below

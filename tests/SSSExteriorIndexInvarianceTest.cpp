@@ -1130,7 +1130,7 @@ namespace
 	std::string WriteScene( const std::string& text, const std::string& tag )
 	{
 		char path[512];
-		std::snprintf( path, sizeof( path ), "/tmp/dl49_invariance_%s_%d.RISEscene", tag.c_str(), static_cast<int>( ::getpid() ) );
+		std::snprintf( path, sizeof( path ), "%s/dl49_invariance_%s_%d.RISEscene", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp", tag.c_str(), static_cast<int>( ::getpid() ) );
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return std::string();
 		ofs << text;
@@ -1907,17 +1907,22 @@ namespace
 	{
 		std::cout << "F3: random-walk body coincident on the walker's own side (DL-370), n=" << trials << std::endl;
 		const char* names[3] = { "double-sided mesh inset", "box inset", "open double-sided mesh sheet on the face" };
-		// Row 2 is PINNED, not furnace-gated: a random walk entering an
-		// OPEN sheet has no interior to walk in and dies (DL-409), which
-		// master reads as 0.8775 +/- 0.0005 (n = 4).  The pin catches a
-		// crossing INTO the sheet (round 1 of DL-370 read 0.851).
-		const double expected[3] = { 1.0, 1.0, 0.8775 };
+		// DL-409 refuses the provably volume-free card with a named diagnostic.
+		const double expected[3] = { 1.0, 1.0, 0.0 };
 		unsigned int seed = 37200;
 		for( int kind = 0; kind < 3; ++kind ) {
 			const std::string label = std::string( "F3: random_walk/PT " ) + names[kind];
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
 			const std::string path = WriteScene( BuildInsetScene( kind, 64 ), "dl370inset" );
 			Check( !path.empty(), label + ": scene file written" );
+            if(kind==2) {
+                IJobPriv* job=0;
+                const bool loaded=RISE_CreateJobPriv(&job) && job && job->LoadAsciiSceneViaCst(path.c_str());
+                Check(!loaded,label+": volume-free random-walk binding refused (DL-409)");
+                safe_release(job);
+                std::remove(path.c_str());
+                continue;
+            }
 			std::vector<double> m;
 			bool allValid = true;
 			for( unsigned int t = 0; t < trials; ++t ) {
