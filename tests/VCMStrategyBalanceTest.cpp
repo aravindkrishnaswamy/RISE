@@ -300,8 +300,8 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 {
 	char path[512];
 	std::snprintf( path, sizeof(path),
-		"/tmp/vcm_strategy_balance_%s_%d.RISEscene",
-		tag, static_cast<int>(::getpid()) );
+		"%s/vcm_strategy_balance_%s_%d.RISEscene",
+		std::getenv( "TMPDIR" ) ? std::getenv( "TMPDIR" ) : "/tmp", tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return std::string();
