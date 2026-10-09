@@ -1418,6 +1418,7 @@ debt-dl325 slice note (2026-10-03, branched from `master` `9e1e6ebb5`; does NOT 
 
 **Authoritative totals on `master` (recount after each merge; per-slice notes
 below are each slice's own snapshot at its branch HEAD and do NOT sum):**
+- 2026-10-08 supervisor merge of debt-weave-strategies (DL-424/425 closed) after DL-382 partial: **305 main rows: 32 open, 273 closed** (recounted from row identifiers).
 - 2026-10-08 debt-codex2 recount: **305 main rows: 34 open, 271 closed** (computed from identifier cells); DL-416 and DL-409 closed.
 - 2026-10-08 DL-426 closed (`debt-coated`, review round 1 addressed: the GGX lobe basis is continuous in the coat index -- spill-table strata spread, one weight table exact at the critical cosine, the patch join always applied; `CoatedEtaContinuityTest` red 40/20 on `8d4944773`, green 60/0); DL-417 measured and pinned, left open; no new rows. **305 main rows: 38 open, 267 closed**.
 - 2026-10-08 DL-335 closed (`debt-dl335`, pending supervisor review): nested-object exits inside a graded medium refract into n(exit) on every walk (`GradedIndexMedium::RecordEnclosingAt`); row T gates VCM/PT through the nested ball; no rows opened. **303 main rows: 41 open, 262 closed**.
