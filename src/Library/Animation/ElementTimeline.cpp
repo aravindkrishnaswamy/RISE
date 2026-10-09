@@ -86,3 +86,14 @@ void ElementTimeline::EvaluateAtTimeForAnimation( const Scalar time, const Strin
 	}
 	pElement->RegenerateData();
 }
+
+void ElementTimeline::CollectKeyframeTimesForAnimation( const Scalar t0, const Scalar t1, const String& animation, std::vector<Scalar>& out ) const
+{
+	AnimationTimelineList::const_iterator a = animations.find( animation );
+	if( a == animations.end() ) {
+		return;
+	}
+	for( TimelineList::const_iterator it=a->second.begin(); it!=a->second.end(); it++ ) {
+		it->second->CollectKeyframeTimes( t0, t1, out );
+	}
+}

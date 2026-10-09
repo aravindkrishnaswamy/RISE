@@ -504,6 +504,30 @@ namespace RISE
 		/// as path guiding training.  Default does nothing.
 		virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const {}
 
+		/// DL-457: moves the scene to ONE motion-blur sample's time.
+		/// Evaluating the animator alone leaves parented objects composed
+		/// against their parents' frame-time pose; the hierarchy re-bake
+		/// carries them along.  Single-threaded: a frame with exposure
+		/// renders on the calling thread (RenderFrameOfAnimationPass).
+		static void AnimateSceneToSampleTime( const IScene& pScene, const Scalar t )
+		{
+			pScene.GetAnimator()->EvaluateAtTime( t );
+			pScene.GetObjects()->RecomposeAnimatedHierarchy();
+		}
+
+		/// DL-457: the interval [t0, t1] every motion-blur sample time of
+		/// the frame at `time` falls in (camera exposure plus any scanning
+		/// / pixel rate across the image).  False when the camera has no
+		/// exposure (no per-sample time).
+		static bool FrameShutterInterval( const ICamera& cam, const Scalar time, const unsigned int width, const unsigned int height, Scalar& t0, Scalar& t1 );
+
+		/// DL-457: moves the scene to a frame's nominal time and prepares
+		/// the spatial structure for it -- over the whole shutter when the
+		/// camera has exposure and `bSweepShutter` is set, so a ray that
+		/// meets an object anywhere it goes during the exposure tests it.
+		/// The AOV fallback passes FALSE: it traces the nominal time only.
+		void PrepareSceneForFrame( const IScene& pScene, const Scalar time, const bool bHasKeyframedObjects, const unsigned int width, const unsigned int height, const bool bSweepShutter = true ) const;
+
 		/// Called at the beginning of each progressive pass, before
 		/// the per-pixel dispatch.  Subclasses can override to
 		/// refresh per-iteration state (e.g. VCM rebuilds its

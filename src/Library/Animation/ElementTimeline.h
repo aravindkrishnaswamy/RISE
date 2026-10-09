@@ -54,6 +54,9 @@ namespace RISE
 			//! If this element has no timelines in that animation it is left
 			//! untouched (RegenerateData is not called).
 			void EvaluateAtTimeForAnimation( const Scalar time, const String& animation );
+
+			//! DL-457: appends the named animation's keyframe times inside (t0, t1).
+			void CollectKeyframeTimesForAnimation( const Scalar t0, const Scalar t1, const String& animation, std::vector<Scalar>& out ) const;
 		};
 	}
 }

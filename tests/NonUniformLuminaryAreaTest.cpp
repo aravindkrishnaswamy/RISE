@@ -622,13 +622,13 @@ static void TestAnimation()
 	// histogram.  Reference: the same motion blur of an authored
 	// ellipsoid_geometry whose RADII are keyframed identically (a geometry
 	// keyframe under a similarity transform -- the pre-existing path).
-	// SHRINKING only: the top-level acceleration is built once per frame
-	// and not refit per temporal sample, so a surface that grows past its
-	// t = 0 bounds loses BSDF-sampled emitter hits under any geometry.
-	// NOT the reference: the time-average of static renders.  A blurred
-	// animated luminary reads far from it on the PRE-EXISTING path too (a
-	// uniformly scaled sphere 1 -> 0.5: blurred 0.133 vs time-average
-	// 0.088, DL-457) -- not a DL-448 effect.
+	// (DL-457: the blurred frame IS the time-average of static renders over
+	// its shutter, which is centred on the frame time -- here [-0.5, 0.5],
+	// half of it clamped to the t = 0 key.  The "0.133 blurred vs 0.088
+	// averaged" once filed against this rig averaged statics over [0, 1]
+	// instead.  Since DL-457 the top-level acceleration bounds every object
+	// over the shutter, so a surface may also GROW past its frame-time
+	// bounds; MotionBlurTimeAverageTest is the time-average gate.)
 	{
 		const Shape s = SphereScaled( "e", 1.2, 0.6, 0.15 );
 		const Shape a = EllipsoidScaled( "e", 1.2, 0.6, 0.15, 1, 1, 1 );

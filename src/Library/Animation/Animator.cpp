@@ -178,6 +178,18 @@ void Animator::EvaluateAtTime( const Scalar time )
 	}
 }
 
+void Animator::CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const
+{
+	// The same active-animation resolution EvaluateAtTime uses.
+	const String& active =
+		!IsBlankName( activeAnimation ) ? activeAnimation :
+		( !animations.empty() ? animations[0].name : activeAnimation );
+
+	for( ElementList::const_iterator it=elements.begin(); it!=elements.end(); it++ ) {
+		it->second->CollectKeyframeTimesForAnimation( t0, t1, active, out );
+	}
+}
+
 bool Animator::DeclareAnimation(
 	const String& name,
 	const double time_start,

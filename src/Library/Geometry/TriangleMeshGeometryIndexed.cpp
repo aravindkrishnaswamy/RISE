@@ -386,15 +386,16 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	// DEBUG contract guard, the same one DisplacedGeometry::Realize() uses:
 	// this function rewrites vertex data and refits the BVH under any
 	// traversal that happens to be running, so it is a BETWEEN-FRAMES
-	// operation and nothing else.  It is asserted rather than trusted because
-	// there is a known way in: motion-blur temporal sampling calls
-	// IAnimator::EvaluateAtTime from worker threads (ARCHITECTURE.md:68-74),
-	// and a keyframed displacement painter's notification reaches here
-	// synchronously through DisplacedGeometry::RefreshMeshVertices.  A DEBUG
-	// build now says so instead of corrupting a traversal quietly.
+	// operation and nothing else.  It is asserted rather than trusted: motion-
+	// blur temporal sampling calls IAnimator::EvaluateAtTime per pixel
+	// sample, and a keyframed displacement painter's notification reaches
+	// here synchronously through DisplacedGeometry::RefreshMeshVertices.
+	// That path is single-threaded (a frame with exposure renders on the
+	// calling thread; docs/ARCHITECTURE.md "Animation / Temporal Sampling",
+	// DL-457), so the assert holds; a DEBUG build says so if it ever stops.
 	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
 		"TriangleMeshGeometryIndexed::UpdateVertices() during the parallel render — vertex mutation "
-		"and BVH refit are between-frames operations (docs/ARCHITECTURE.md:68-74)" );
+		"and BVH refit are between-frames operations (docs/ARCHITECTURE.md, Animation / Temporal Sampling)" );
 
 	if( !pPtrBVH ) {
 		GlobalLog()->PrintEasyWarning(

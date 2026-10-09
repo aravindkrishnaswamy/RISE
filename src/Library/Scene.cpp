@@ -608,8 +608,10 @@ void Scene::SetSceneTime( const Scalar time ) const
 	// bump's generation, misses, reads state this function has not
 	// finished moving, and inserts that answer stamped NEW -- where
 	// nothing would ever drop it.  Reaching that window needs a thread
-	// running concurrently with us, which is the documented mid-pass
-	// `EvaluateAtTime` motion-blur path.
+	// running concurrently with us.  No current path does: motion blur's
+	// mid-pass `EvaluateAtTime` runs on the rendering thread itself (an
+	// exposure > 0 frame is single-threaded, DL-457) and never calls this
+	// function.  The guard is defence in depth.
 	//
 	// A SCOPE GUARD rather than a trailing statement, because every
 	// `Regenerate()` below can THROW (they allocate photon arrays and

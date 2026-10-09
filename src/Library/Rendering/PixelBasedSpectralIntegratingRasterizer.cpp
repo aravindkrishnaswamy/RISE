@@ -408,7 +408,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 				}
 
 				if( temporal_samples ) {
-					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+					AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 				}
 
 				// Install a Sobol sampler for this pixel sample so that

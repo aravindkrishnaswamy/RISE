@@ -420,8 +420,9 @@ namespace RISE
 		//! TriangleMeshGeometryIndexed::InvalidateSignalBakes is the one
 		//! that has only the trailing bump: it evaluates nothing at all.
 		//! Reaching the window the trailing bump closes needs another
-		//! thread running during the mutation, which is the documented
-		//! mid-pass `EvaluateAtTime` motion-blur path below.
+		//! thread running during the mutation; motion blur's mid-pass
+		//! `EvaluateAtTime` (below) is not one -- it runs on the rendering
+		//! thread itself (DL-457) -- so today the trailing bump is defence.
 		//!
 		//! THE IN-FLIGHT WINDOW THAT ORDERING CANNOT CLOSE.  A lookup is
 		//! not atomic with its insert: L1Find/L2Find, then the provider or
@@ -457,7 +458,9 @@ namespace RISE
 		//!
 		//! THE ONE KNOWN HOLE, and it is pre-existing: motion blur's
 		//! per-sample `EvaluateAtTime` moves keyframed values DURING a
-		//! pass (a documented race that predates this memo).  For an
+		//! pass (single-threaded -- an exposure > 0 frame renders on the
+		//! calling thread, DL-457 -- but still mid-pass, so the memo is not
+		//! bumped between samples).  For an
 		//! expression that is a hazard only if a keyframed value could
 		//! change the program's output without changing its context --
 		//! and it essentially cannot: `param`s are compile-time constants
@@ -477,8 +480,7 @@ namespace RISE
 		//! every sample carries its own sub-pixel jitter, so two temporal
 		//! samples that produce a BIT-IDENTICAL `ptObject` -- which is what
 		//! a collision needs -- essentially do not occur.  Not provably
-		//! impossible; the same window the pre-existing motion-blur race
-		//! already opens for everything else on that path.
+		//! impossible.
 		//!
 		//! THAT JITTER CLAIM RESTS ON A GATE, named here so a future API
 		//! change is auditable rather than silently widening this window.

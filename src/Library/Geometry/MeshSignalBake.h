@@ -239,22 +239,18 @@ namespace RISE
 		//! use-after-free this design can actually reach.
 		//!
 		//! The cache's contract says invalidation never runs concurrent with
-		//! rendering -- and that contract is VIOLATED today by one documented
-		//! pre-existing path: motion-blur temporal sampling calls
-		//! `IAnimator::EvaluateAtTime` from worker threads
-		//! (ARCHITECTURE.md:68-74), so a keyframed displacement painter drives
-		//! `DisplacedGeometry::RefreshMeshVertices` -> `UpdateVertices` ->
-		//! `InvalidateSignalBakes` on a worker thread.  With a raw `Table*`
-		//! that `delete` could land while another worker was mid-interpolation
-		//! on the very same table.  A `shared_ptr` makes the table outlive the
-		//! cache's reference to it, so the reader finishes on a table that is
-		//! still alive and merely STALE.
-		//!
-		//! What this does NOT fix, said plainly: the same path also mutates
-		//! the vertex array and refits the BVH under traversal.  That race is
-		//! PRE-EXISTING, is what ARCHITECTURE.md documents, and remains.  This
-		//! removes the NEW use-after-free Phase 3 layered on top of it -- it
-		//! does not make vertex mutation from a worker thread safe.
+		//! rendering.  Motion-blur temporal sampling calls
+		//! `IAnimator::EvaluateAtTime` per pixel sample, so a keyframed
+		//! displacement painter drives `DisplacedGeometry::RefreshMeshVertices`
+		//! -> `UpdateVertices` -> `InvalidateSignalBakes` MID-PASS; this was
+		//! once documented as a worker-thread race, but a frame with camera
+		//! exposure renders on the calling thread only (checked 2026-10-08,
+		//! DL-457; docs/ARCHITECTURE.md "Animation / Temporal Sampling"), so
+		//! no reader is concurrent with it.  The `shared_ptr` is kept as
+		//! defence: should a threaded motion-blur path ever appear, a reader
+		//! would finish on a table that is still alive and merely STALE --
+		//! though that path would also mutate the vertex array and refit the
+		//! BVH under traversal, which this does not make safe.
 		typedef std::shared_ptr<const Table> TableRef;
 
 		MeshSignalBakeCache();
