@@ -263,6 +263,13 @@ basis build).  One-time: the two tables build in 16 ms on the first coated-GGX e
   (it sums to 1 however the reservoir equilibrates); that is the
   energy-gain part section 8 fixed.
 * **DL-417** -- fabric and weave substrates keep the outer-frame model.
+  Measured 2026-10-08 (`CompositeEnergyConservationTest` K8, coated /
+  composite): grey-base fabric 1.04 / 1.10 at 45 / 70 deg, weaves 0.82-1.08.
+  The refracted frame with the cosine reservoir was tried and rejected (a
+  lossless white fabric 1.054, weaves up to 1.40 under a clear coat: their
+  first bounce escapes far more than a Lambertian's `1 - r_i` share, which
+  `1 / (1 - r_i R)` amplifies); the fix needs the lobe reservoir's own `g`
+  for a fibre BSDF.  K8 pins the residual.
 * Approximations inside the GGX summary (recycled term only; the single
   bounce is the substrate's own `value`): anisotropic roughness uses
   `sqrt(alphaX alphaY)`; conductor / thin-film Fresnel is projected on the
