@@ -427,9 +427,23 @@ BoundingBox ObjectManager::ElementBounds( const IObjectPriv* elem ) const
 		const std::map<const IObjectPriv*, MotionBox>::const_iterator it = motionBounds.find( elem );
 		if( it != motionBounds.end() ) {
 			const MotionBox& m = it->second;
-			const Vector3 h = m.pad * 0.5;
-			return BoundingBox( Point3( m.box.ll.x - h.x, m.box.ll.y - h.y, m.box.ll.z - h.z ),
-			                    Point3( m.box.ur.x + h.x, m.box.ur.y + h.y, m.box.ur.z + h.z ) );
+			const BoundingBox cur = elem->getBoundingBox();
+			const Scalar mll[3] = { m.box.ll.x, m.box.ll.y, m.box.ll.z };
+			const Scalar mur[3] = { m.box.ur.x, m.box.ur.y, m.box.ur.z };
+			const Scalar cll[3] = { cur.ll.x, cur.ll.y, cur.ll.z };
+			const Scalar cur3[3] = { cur.ur.x, cur.ur.y, cur.ur.z };
+			const Scalar pad[3] = { m.pad.x, m.pad.y, m.pad.z };
+			Scalar ll[3], ur[3];
+			for( int a = 0; a < 3; a++ ) {
+				if( m.axisFinite[a] ) {
+					ll[a] = mll[a] - 0.5*pad[a];
+					ur[a] = mur[a] + 0.5*pad[a];
+				} else {
+					ll[a] = cll[a];
+					ur[a] = cur3[a];
+				}
+			}
+			return BoundingBox( Point3( ll[0], ll[1], ll[2] ), Point3( ur[0], ur[1], ur[2] ) );
 		}
 	}
 	return elem->getBoundingBox();
@@ -438,6 +452,22 @@ BoundingBox ObjectManager::ElementBounds( const IObjectPriv* elem ) const
 void ObjectManager::ClearMotionBounds() const
 {
 	motionBounds.clear();
+	motionSweepActive = false;
+	recomposePerSample = true;
+}
+
+void ObjectManager::BeginMotionSweep() const
+{
+	motionBounds.clear();
+	motionSweepActive = true;
+	motionSweepSamples = 0;
+	motionSweepMovedHierarchy = false;
+}
+
+void ObjectManager::EndMotionSweep() const
+{
+	motionSweepActive = false;
+	recomposePerSample = motionSweepMovedHierarchy;
 }
 
 void ObjectManager::AccumulateMotionBounds() const
@@ -448,23 +478,39 @@ void ObjectManager::AccumulateMotionBounds() const
 	for( i=items.begin(), e=items.end(); i!=e; ++i ) {
 		const IObjectPriv* o = i->second.first;
 		const BoundingBox b = o->getBoundingBox();
+		const Scalar bll[3] = { b.ll.x, b.ll.y, b.ll.z };
+		const Scalar bur[3] = { b.ur.x, b.ur.y, b.ur.z };
+		bool finite[3];
+		for( int a = 0; a < 3; a++ ) {
+			finite[a] = std::isfinite( bll[a] ) && std::isfinite( bur[a] );
+		}
 		std::map<const IObjectPriv*, MotionBox>::iterator it = motionBounds.find( o );
 		if( it == motionBounds.end() ) {
 			MotionBox m;
 			m.box = b;
 			m.last = b;
 			m.pad = Vector3( 0, 0, 0 );
+			for( int a = 0; a < 3; a++ ) m.axisFinite[a] = finite[a];
 			motionBounds[o] = m;
 			continue;
 		}
 		MotionBox& m = it->second;
+		for( int a = 0; a < 3; a++ ) m.axisFinite[a] = m.axisFinite[a] && finite[a];
 		m.box.Include( b.ll );
 		m.box.Include( b.ur );
-		const Scalar dx = r_max( std::fabs( b.ll.x - m.last.ll.x ), std::fabs( b.ur.x - m.last.ur.x ) );
-		const Scalar dy = r_max( std::fabs( b.ll.y - m.last.ll.y ), std::fabs( b.ur.y - m.last.ur.y ) );
-		const Scalar dz = r_max( std::fabs( b.ll.z - m.last.ll.z ), std::fabs( b.ur.z - m.last.ur.z ) );
-		m.pad = Vector3( r_max( m.pad.x, dx ), r_max( m.pad.y, dy ), r_max( m.pad.z, dz ) );
+		const Scalar lll[3] = { m.last.ll.x, m.last.ll.y, m.last.ll.z };
+		const Scalar lur[3] = { m.last.ur.x, m.last.ur.y, m.last.ur.z };
+		Scalar pad[3] = { m.pad.x, m.pad.y, m.pad.z };
+		for( int a = 0; a < 3; a++ ) {
+			if( m.axisFinite[a] ) {
+				pad[a] = r_max( pad[a], r_max( std::fabs( bll[a] - lll[a] ), std::fabs( bur[a] - lur[a] ) ) );
+			}
+		}
+		m.pad = Vector3( pad[0], pad[1], pad[2] );
 		m.last = b;
+	}
+	if( motionSweepActive ) {
+		motionSweepSamples++;
 	}
 }
 
@@ -475,7 +521,18 @@ void ObjectManager::RecomposeAnimatedHierarchy() const
 	// invalidate the spatial structure here: this runs per motion-blur
 	// sample, against a structure built from swept (shutter) bounds that
 	// already contain every pose the walk can produce.
-	RebakeHierarchy();
+	if( motionSweepActive ) {
+		// The first sample's walk also undoes whatever pose the scene was
+		// left in before the sweep, so only later samples count as motion.
+		const bool moved = RebakeHierarchy();
+		if( moved && motionSweepSamples > 0 ) {
+			motionSweepMovedHierarchy = true;
+		}
+		return;
+	}
+	if( recomposePerSample ) {
+		RebakeHierarchy();
+	}
 }
 
 void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
@@ -556,6 +613,10 @@ ObjectManager::ObjectManager(
   pBVH( 0 ),
   pOctree( 0 ),
   mSpatialGen( NextSpatialGeneration() ),
+  motionSweepActive( false ),
+  motionSweepSamples( 0 ),
+  motionSweepMovedHierarchy( false ),
+  recomposePerSample( true ),
   bUseBSPtree( bUseBSPtree_ ),
   bUseOctree( bUseOctree_ ),
   nMaxObjectsPerNode( nMaxObjectsPerNode_ ),
@@ -2560,6 +2621,8 @@ void ObjectManager::InvalidateSpatialStructure() const
 	// (an edit, MLT's per-frame driver) build from current boxes; the
 	// motion-blur frame driver invalidates first and accumulates after.
 	motionBounds.clear();
+	motionSweepActive = false;
+	recomposePerSample = true;
 	treeCreationMutex.unlock();
 	// Shadow cache slots are reset but not freed — the array persists.
 	if( shadowCache ) {

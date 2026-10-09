@@ -523,9 +523,10 @@ namespace RISE
 
 		/// DL-457: moves the scene to a frame's nominal time and prepares
 		/// the spatial structure for it -- over the whole shutter when the
-		/// camera has exposure, so a ray that meets an object anywhere it
-		/// goes during the exposure tests it.
-		void PrepareSceneForFrame( const IScene& pScene, const Scalar time, const bool bHasKeyframedObjects, const unsigned int width, const unsigned int height ) const;
+		/// camera has exposure and `bSweepShutter` is set, so a ray that
+		/// meets an object anywhere it goes during the exposure tests it.
+		/// The AOV fallback passes FALSE: it traces the nominal time only.
+		void PrepareSceneForFrame( const IScene& pScene, const Scalar time, const bool bHasKeyframedObjects, const unsigned int width, const unsigned int height, const bool bSweepShutter = true ) const;
 
 		/// Called at the beginning of each progressive pass, before
 		/// the per-pixel dispatch.  Subclasses can override to

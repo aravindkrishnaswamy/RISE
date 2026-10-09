@@ -111,16 +111,34 @@ namespace RISE
 			//! union of the object's box over the accumulated shutter samples;
 			//! `pad` the largest per-axis change of any box face between two
 			//! consecutive samples, half of which is added on every side so
-			//! curved motion between samples (a rotation) stays inside.
-			//! Written only between passes (AccumulateMotionBounds /
-			//! ClearMotionBounds), read only by the single-threaded builds.
+			//! motion that curves between samples stays inside.  An axis on
+			//! which any sample's box is non-finite (an infinite plane, whose
+			//! +-DBL_MAX box overflows under a rotation) is NOT swept: the
+			//! build reads that axis from the object's current box, because
+			//! inf - inf is NaN and BoundingBox::Include ignores NaN.
+			//! Written only between passes (BeginMotionSweep /
+			//! AccumulateMotionBounds / EndMotionSweep / ClearMotionBounds),
+			//! read only by the single-threaded builds.
 			struct MotionBox
 			{
 				BoundingBox box;
 				BoundingBox last;
 				Vector3 pad;
+				bool axisFinite[3];
 			};
 			mutable std::map<const IObjectPriv*, MotionBox> motionBounds;
+
+			//! DL-457: per-sample hierarchy re-compose policy.  During a
+			//! sweep every RecomposeAnimatedHierarchy runs and records whether
+			//! any sample after the first moved a parented object; after the
+			//! sweep that record decides whether the per-pixel-sample calls
+			//! run at all (a scene with links but no animated parented
+			//! subtree pays nothing per sample).  TRUE (always re-compose)
+			//! whenever no sweep has decided it.
+			mutable bool motionSweepActive;
+			mutable unsigned int motionSweepSamples;
+			mutable bool motionSweepMovedHierarchy;
+			mutable bool recomposePerSample;
 
 			//! The box every spatial build uses for `elem`: its swept box when
 			//! one was accumulated, else its current box.
@@ -560,7 +578,9 @@ namespace RISE
 
 			void InvalidateSpatialStructure() const;
 			void ClearMotionBounds() const;
+			void BeginMotionSweep() const;
 			void AccumulateMotionBounds() const;
+			void EndMotionSweep() const;
 			void RecomposeAnimatedHierarchy() const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }
 		};

@@ -15,6 +15,8 @@
 #include "pch.h"
 #include "../Utilities/ExpressionMemo.h"
 #include "PixelBasedRasterizerHelper.h"
+#include <algorithm>
+#include <vector>
 #include "../Utilities/RTime.h"
 #include "../Utilities/Profiling.h"
 #include "../RasterImages/RasterImage.h"
@@ -1599,7 +1601,8 @@ void PixelBasedRasterizerHelper::PrepareSceneForFrame(
 	const Scalar time,
 	const bool bHasKeyframedObjects,
 	const unsigned int width,
-	const unsigned int height
+	const unsigned int height,
+	const bool bSweepShutter
 	) const
 {
 	IAnimator* pAnimator = pScene.GetAnimator();
@@ -1608,32 +1611,55 @@ void PixelBasedRasterizerHelper::PrepareSceneForFrame(
 	pAnimator->EvaluateAtTime( time );
 	pObjects->ClearMotionBounds();
 
-	if( bHasKeyframedObjects ) {
-		// Rebuild spatial structure after transforms update but before
-		// SetSceneTime, which regenerates photon maps via ray tracing.
-		// (Invalidating also drops any swept boxes, so do it first.)
-		pObjects->InvalidateSpatialStructure();
+	if( !bHasKeyframedObjects ) {
+		// Nothing moves, so per-sample scene-graph re-composes are pointless.
+		pObjects->BeginMotionSweep();
+		pObjects->EndMotionSweep();
+		pObjects->PrepareForRendering();
+		return;
+	}
 
-		// DL-457: under exposure every pixel sample moves the scene to its
-		// own time in the shutter, but the spatial structure is built once,
-		// here.  Bound every object over the whole shutter: sample the
-		// animator across it and union each object's box.  The object
-		// manager pads each box by half the largest change between two
-		// consecutive samples, which covers motion that curves between
-		// them (a rotation); linear motion is covered exactly.
-		const ICamera* pCam = pScene.GetCamera();
-		Scalar t0 = time, t1 = time;
-		if( pCam && FrameShutterInterval( *pCam, time, width, height, t0, t1 ) ) {
-			static const unsigned int kShutterSamples = 32;
-			for( unsigned int k = 0; k <= kShutterSamples; k++ ) {
-				AnimateSceneToSampleTime( pScene, t0 + ( t1 - t0 ) * Scalar( k ) / Scalar( kShutterSamples ) );
-				pObjects->AccumulateMotionBounds();
-			}
-			// Back to the nominal pose, hierarchy included, so the re-bake
-			// inside PrepareForRendering sees nothing move (a move there
-			// would invalidate, and with it drop the swept boxes).
-			AnimateSceneToSampleTime( pScene, time );
+	// Rebuild spatial structure after transforms update but before
+	// SetSceneTime, which regenerates photon maps via ray tracing.
+	// (Invalidating also drops any swept boxes, so do it first.)
+	pObjects->InvalidateSpatialStructure();
+
+	// DL-457: under exposure every pixel sample (and every photon time
+	// stratum) moves the scene to its own time, but the spatial structure
+	// is built once, here.  Bound every object over the whole interval:
+	// sample the animator uniformly across it AND at every keyframe time
+	// inside it, and union each object's box.  Exact for motion linear
+	// between those times; the object manager pads each box by half the
+	// largest change between consecutive samples for motion that curves
+	// between them (see IObjectManager.h's scope note).
+	const ICamera* pCam = pScene.GetCamera();
+	Scalar t0 = time, t1 = time;
+	if( bSweepShutter && pCam && FrameShutterInterval( *pCam, time, width, height, t0, t1 ) ) {
+		// The photon tracers sample [time - E/2, time + E/2] whatever the
+		// scanning / pixel rate (PhotonTracer.h).
+		const Scalar exposure = pCam->GetExposureTime();
+		t0 = r_min( t0, time - exposure*0.5 );
+		t1 = r_max( t1, time + exposure*0.5 );
+
+		static const unsigned int kShutterSamples = 64;
+		std::vector<Scalar> times;
+		times.reserve( kShutterSamples + 1 );
+		for( unsigned int k = 0; k <= kShutterSamples; k++ ) {
+			times.push_back( t0 + ( t1 - t0 ) * Scalar( k ) / Scalar( kShutterSamples ) );
 		}
+		pAnimator->CollectKeyframeTimes( t0, t1, times );
+		std::sort( times.begin(), times.end() );
+
+		pObjects->BeginMotionSweep();
+		for( std::size_t k = 0; k < times.size(); k++ ) {
+			AnimateSceneToSampleTime( pScene, times[k] );
+			pObjects->AccumulateMotionBounds();
+		}
+		// Back to the nominal pose, hierarchy included, so the re-bake
+		// inside PrepareForRendering sees nothing move (a move there
+		// would invalidate, and with it drop the swept boxes).
+		AnimateSceneToSampleTime( pScene, time );
+		pObjects->EndMotionSweep();
 	}
 	pObjects->PrepareForRendering();
 }
@@ -2208,7 +2234,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					// Restore the deterministic nominal field state before the bounded
 					// fallback. The fallback deliberately does not replay the beauty
 					// pass's temporal sample distribution (AGENT_PERCEPTION.md).
-					PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height );
+					PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height, false );
 					pScene.SetSceneTime( curtime_upper );
 					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
 					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
@@ -2227,7 +2253,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			if( pAOVBuffers && interlacedFallbackPlan.Any() ) {
 				// RenderFrameOfAnimation may leave the animator at its final
 				// exposure sample. Re-establish the nominal lower-field state.
-				PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height );
+				PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height, false );
 				pScene.SetSceneTime( curtime_lower );
 				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
 				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
@@ -2277,7 +2303,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				// As with fields above, motion-blur/scanning samples can leave the
 				// animator at an arbitrary sample time. The bounded fallback is a
 				// deterministic nominal-frame approximation, not temporal replay.
-				PrepareSceneForFrame( pScene, fallbackNominalTime, bHasKeyframedObjects, width, height );
+				PrepareSceneForFrame( pScene, fallbackNominalTime, bHasKeyframedObjects, width, height, false );
 				pScene.SetSceneTime( fallbackNominalTime );
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter, pRect );

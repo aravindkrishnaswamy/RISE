@@ -92,19 +92,42 @@ namespace RISE
 		// time, but the spatial structure is built once per frame.  It must
 		// therefore bound each object over the whole SHUTTER, not at the
 		// frame's nominal time, or a ray that meets an object outside its
-		// nominal-time leaf box never tests it.  The frame driver samples the
-		// animator across the shutter, calling AccumulateMotionBounds() after
-		// each sample, and the next build uses the swept boxes.  All three run
-		// single-threaded between passes, like InvalidateSpatialStructure.
+		// nominal-time leaf box never tests it.  The frame driver
+		// (PixelBasedRasterizerHelper::PrepareSceneForFrame) brackets a
+		// sweep with BeginMotionSweep / EndMotionSweep, samples the animator
+		// across the shutter (uniform samples plus every keyframe time inside
+		// it), and calls AccumulateMotionBounds() after each sample; the next
+		// build uses the swept boxes.  All of this runs single-threaded
+		// between passes, like InvalidateSpatialStructure, which drops them.
+		//
+		// SCOPE: exact for motion that is linear between the sampled times
+		// (keyframed translation and scale under linear interpolation, the
+		// samples including every keyframe).  Motion that curves between
+		// samples (a rotation, a non-linear interpolator's overshoot) is
+		// covered by padding each box with half the largest change between
+		// two consecutive samples -- an approximation that fails only for
+		// motion fast enough to alias the samples (a rotation of tens of
+		// degrees per shutter/64, or one whose box repeats at sample times).
 
 		//! Forgets every swept box: the next build uses each object's
 		//! current bounding box (the static, non-motion-blurred case).
 		virtual void ClearMotionBounds() const {}
 
+		//! Starts a sweep: forgets every swept box and starts recording
+		//! whether the scene graph moves between samples.
+		virtual void BeginMotionSweep() const {}
+
 		//! Unions every object's CURRENT world bounding box into its swept
 		//! box.  Call once per shutter sample, after the animator has been
 		//! evaluated (and RecomposeAnimatedHierarchy() has run) at that time.
+		//! Axes on which an object's box is not finite (an infinite plane)
+		//! are not swept; builds read them from the current box.
 		virtual void AccumulateMotionBounds() const {}
+
+		//! Ends a sweep.  If no parented object moved between its samples,
+		//! RecomposeAnimatedHierarchy() becomes a no-op until the next
+		//! sweep, ClearMotionBounds() or InvalidateSpatialStructure().
+		virtual void EndMotionSweep() const {}
 
 		//! Re-composes parented objects against their parents' CURRENT world
 		//! transforms after the animator moved them, without touching the

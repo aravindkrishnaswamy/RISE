@@ -110,6 +110,8 @@ namespace RISE
 				bool& do_fields,
 				bool& invert_fields
 				) const;
+
+			void CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const;
 		};
 	}
 }

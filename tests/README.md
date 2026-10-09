@@ -1315,12 +1315,18 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
 - `MotionBlurTimeAverageTest` (DL-457): a motion-blurred frame (camera
   exposure 1 at frame time 0.5, so the CENTRED shutter is the timelines'
   [0, 1]) equals the mean of static renders at 8 or 32 midpoints of that
-  same shutter, PT and BDPT (VCM with `DL457_VCM`), 3 combined se: a scaled
-  luminary, a black occluder growing past / moving out of its frame-time
-  bounds and one carried by an animated parent (white environment, forty
-  out-of-view spheres so the TLAS gives the occluder its own leaf), a moving
-  omni light, a moving luminary. Red on `c73078dc2`: growing +2.0 % (z +142),
-  moving +1.7 % (z +105), parented -1.7 % (z -1513); green 24/0.
+  same shutter, PT and BDPT (VCM with `DL457_VCM`); 16 blurred renders, a
+  Welch t-test at Bonferroni family level 0.01 over every comparison run.
+  Rows: a scaled luminary; black occluders growing past / moving out of their
+  frame-time bounds, one carried by an animated parent, one rotating rod
+  (white environment, forty out-of-view spheres so the TLAS gives the
+  occluder its own leaf); a rotated infinite-plane floor (its +-DBL_MAX box
+  overflows under rotation); a moving omni light; a moving luminary.  Red on
+  `c73078dc2`: growing +2.0 %, moving +1.7 %, parented -1.7 %; the infinite
+  plane and rod rows red on the first DL-457 fix (`4f9ea3d20`, see the
+  ledger row).  `perf` mode (not a gate) times a blurred frame with 400
+  static parent links.  Args: seed, row (a-h / all / perf), spp, blurred
+  renders.
 
 - `LuminarySamplerAreaTest` (DL-459 / DL-460): object-space area-uniformity
   of the Bezier, SDF and clipped-plane luminary samplers and the matching

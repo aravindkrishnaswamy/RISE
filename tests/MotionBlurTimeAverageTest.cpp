@@ -50,7 +50,9 @@
 #include <vector>
 #include <cmath>
 #include <string>
-#include <unistd.h>
+#include <filesystem>
+#include <random>
+#include <chrono>
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -74,7 +76,57 @@ static unsigned int g_renderIndex = 0;
 static int passCount = 0;
 static int failCount = 0;
 static int g_spp = 256;
-static int g_repeats = 4;
+static int g_repeats = 4;			//!< static renders per reference time (2 where 32 times)
+static int g_blurRepeats = 16;		//!< blurred renders per frame
+static int g_comparisons = 1;		//!< family size for the Bonferroni correction
+static const double kFamilyAlpha = 0.01;
+
+//! Regularized incomplete beta I_x(a, b) (Numerical Recipes' continued fraction).
+static double BetaCF( const double a, const double b, const double x )
+{
+	const double tiny = 1e-300;
+	double c = 1, d = 1 - ( a + b ) * x / ( a + 1 );
+	if( std::fabs( d ) < tiny ) d = tiny;
+	d = 1 / d;
+	double h = d;
+	for( int m = 1; m <= 300; m++ ) {
+		const int m2 = 2 * m;
+		double aa = m * ( b - m ) * x / ( ( a + m2 - 1 ) * ( a + m2 ) );
+		d = 1 + aa * d; if( std::fabs( d ) < tiny ) d = tiny;
+		c = 1 + aa / c; if( std::fabs( c ) < tiny ) c = tiny;
+		d = 1 / d; h *= d * c;
+		aa = -( a + m ) * ( a + b + m ) * x / ( ( a + m2 ) * ( a + m2 + 1 ) );
+		d = 1 + aa * d; if( std::fabs( d ) < tiny ) d = tiny;
+		c = 1 + aa / c; if( std::fabs( c ) < tiny ) c = tiny;
+		d = 1 / d;
+		const double del = d * c;
+		h *= del;
+		if( std::fabs( del - 1 ) < 1e-14 ) break;
+	}
+	return h;
+}
+static double IncompleteBeta( const double a, const double b, const double x )
+{
+	if( x <= 0 ) return 0;
+	if( x >= 1 ) return 1;
+	const double bt = std::exp( std::lgamma( a + b ) - std::lgamma( a ) - std::lgamma( b ) + a * std::log( x ) + b * std::log( 1 - x ) );
+	return x < ( a + 1 ) / ( a + b + 2 ) ? bt * BetaCF( a, b, x ) / a : 1 - bt * BetaCF( b, a, 1 - x ) / b;
+}
+//! Two-sided p-value of Student's t at `dof` degrees of freedom.
+static double TwoSidedP( const double t, const double dof )
+{
+	return IncompleteBeta( 0.5 * dof, 0.5, dof / ( dof + t * t ) );
+}
+//! The two-sided critical |t| at level `alpha` (bisection on TwoSidedP).
+static double CriticalT( const double alpha, const double dof )
+{
+	double lo = 0, hi = 1000;
+	for( int i = 0; i < 200; i++ ) {
+		const double mid = 0.5 * ( lo + hi );
+		if( TwoSidedP( mid, dof ) > alpha ) lo = mid; else hi = mid;
+	}
+	return 0.5 * ( lo + hi );
+}
 
 static void Check( bool condition, const std::string& testName )
 {
@@ -116,7 +168,8 @@ public:
 //! Renders the single frame at `frameTime` through RasterizeAnimation.
 static bool RenderOnce( const std::string& sceneText, const double frameTime, double& mean )
 {
-	const std::string path = Fmt( "/tmp/dl457_render_%d.RISEscene", static_cast<int>( ::getpid() ) );
+	static const std::string path = ( std::filesystem::temp_directory_path() /
+		Fmt( "dl457_render_%08x.RISEscene", static_cast<unsigned int>( std::random_device()() ) ) ).string();
 	{ std::ofstream ofs( path ); ofs << sceneText; }
 	bool ok = false;
 	IJobPriv* pJob = nullptr;
@@ -230,25 +283,44 @@ static void RunCase( const char* label, const std::string& body, const bool floo
 		integrators.push_back( { "VCM", "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( !floor ) + "}\n\n" } );
 	}
 	for( const auto& ig : integrators ) {
-		const Stat blur = RenderN( Scene( body, ig.ras, kExposure, floor ), kFrame, 2 * g_repeats );
-		double refMean = 0, refVar = 0;
+		const Stat blur = RenderN( Scene( body, ig.ras, kExposure, floor ), kFrame, g_blurRepeats );
+		const int refRepeats = times >= 32 ? 2 : g_repeats;
+		double refMean = 0, refVar = 0, refDofDen = 0;
 		bool ok = blur.ok;
 		for( int k = 0; k < times && ok; k++ ) {
 			const double t = kFrame - 0.5 * kExposure + ( k + 0.5 ) * kExposure / times;
-			const Stat s = RenderN( Scene( body, ig.ras, 0.0, floor ), t, times >= 32 ? 2 : g_repeats );
+			const Stat s = RenderN( Scene( body, ig.ras, 0.0, floor ), t, refRepeats );
 			ok = ok && s.ok;
 			refMean += s.mean / times;
-			refVar += s.se * s.se / ( double( times ) * times );
+			const double v = s.se * s.se / ( double( times ) * times );
+			refVar += v;
+			refDofDen += v * v / ( refRepeats - 1 );
 		}
-		const double se = std::sqrt( blur.se * blur.se + refVar );
+		// Welch-Satterthwaite: the reference variance is a sum of `times`
+		// independent per-time variance estimates.
+		const double vb = blur.se * blur.se;
+		const double var = vb + refVar;
+		const double dofDen = vb * vb / ( g_blurRepeats - 1 ) + refDofDen;
+		const double dof = dofDen > 0 ? var * var / dofDen : 1e6;
+		const double se = std::sqrt( var );
 		const double z = se > 0 ? ( blur.mean - refMean ) / se : 0;
-		std::printf( "  %-4s %-48s blurred %.6f +/- %.6f  time-average %.6f +/- %.6f  ratio %.4f  z %+.2f\n",
-			ig.name, label, blur.mean, blur.se, refMean, std::sqrt( refVar ), refMean > 0 ? blur.mean / refMean : 0.0, z );
+		const double crit = CriticalT( kFamilyAlpha / g_comparisons, dof );
+		std::printf( "  %-4s %-48s blurred %.6f +/- %.6f  time-average %.6f +/- %.6f  ratio %.4f  t %+.2f (dof %.0f, crit %.2f)\n",
+			ig.name, label, blur.mean, blur.se, refMean, std::sqrt( refVar ), refMean > 0 ? blur.mean / refMean : 0.0, z, dof, crit );
 		Check( ok && blur.mean > 0, std::string( "DL-457 renders complete: " ) + ig.name + " " + label );
-		Check( ok && std::fabs( blur.mean - refMean ) <= 3 * se + 1e-12,
+		Check( ok && std::fabs( blur.mean - refMean ) <= crit * se + 1e-12,
 			std::string( "DL-457 motion blur = time average of static renders: " ) + ig.name + " " + label );
 	}
 }
+
+struct Case
+{
+	const char* key;
+	const char* label;
+	std::string body;
+	bool floor;
+	int times;
+};
 
 int main( int argc, char** argv )
 {
@@ -256,39 +328,73 @@ int main( int argc, char** argv )
 	if( argc > 1 ) g_seedBase = unsigned( std::strtoul( argv[1], nullptr, 10 ) );
 	const std::string only = argc > 2 ? argv[2] : "all";
 	if( argc > 3 ) g_spp = std::atoi( argv[3] );
-	if( argc > 4 ) g_repeats = std::atoi( argv[4] );
+	if( argc > 4 ) g_blurRepeats = std::atoi( argv[4] );
 	std::cout << "MotionBlurTimeAverageTest (DL-457)\n";
 
-	if( only == "all" || only == "a" ) {
-		RunCase( "a: luminary sphere scale 1 -> 0.5",
+	const std::string rodOccluder =
+		Sphere( "rod", "black_mat", "0 0 0", "1.5 0.1 0.1" ) +
+		Timeline( "object", "rod", "orientation", "0 0 0", "0 0 90" );
+
+	const Case cases[] = {
+		{ "a", "a: luminary sphere scale 1 -> 0.5",
 			Sphere( "e", "lum", "0.3 0 2.6", "1 1 1" ) +
-			Timeline( "object", "e", "scale", "1 1 1", "0.5 0.5 0.5" ) );
-	}
-	if( only == "all" || only == "b" ) {
-		RunCase( "b: occluder grows 0.1 -> 0.9 past its bounds",
+			Timeline( "object", "e", "scale", "1 1 1", "0.5 0.5 0.5" ), true, 8 },
+		{ "b", "b: occluder grows 0.1 -> 0.9 past its bounds",
 			Sphere( "occ", "black_mat", "0 0 0", "0.1 0.1 0.1" ) +
-			Timeline( "object", "occ", "scale", "0.1 0.1 0.1", "0.9 0.9 0.9" ) + Padding(), false, 32 );
-	}
-	if( only == "all" || only == "c" ) {
-		RunCase( "c: moving omni light",
+			Timeline( "object", "occ", "scale", "0.1 0.1 0.1", "0.9 0.9 0.9" ) + Padding(), false, 32 },
+		{ "c", "c: moving omni light",
 			"omni_light\n{\n\tname l_omni\n\tpower 20.0\n\tcolor 1.0 1.0 1.0\n\tposition -1.5 0 2\n}\n\n" +
-			Timeline( "light", "l_omni", "position", "-1.5 0 2", "1.5 0 2" ), true, 32 );
-	}
-	if( only == "all" || only == "e" ) {
-		RunCase( "e: moving occluder",
+			Timeline( "light", "l_omni", "position", "-1.5 0 2", "1.5 0 2" ), true, 32 },
+		{ "e", "e: moving occluder",
 			Sphere( "occ", "black_mat", "-3 0 0", "0.5 0.5 0.5" ) +
-			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32 );
-	}
-	if( only == "all" || only == "f" ) {
-		RunCase( "f: occluder carried by a moving parent",
+			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32 },
+		{ "f", "f: occluder carried by a moving parent",
 			std::string( "standard_object\n{\n\tname rig\n\tposition -3 0 0\n}\n\n" ) +
 			"standard_object\n{\n\tname occ\n\tparent rig\n\tgeometry geo_unit\n\tmaterial black_mat\n\tposition 0 0 0\n\tscale 0.5 0.5 0.5\n}\n\n" +
-			Timeline( "object", "rig", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32 );
-	}
-	if( only == "all" || only == "d" ) {
-		RunCase( "d: moving luminary sphere",
+			Timeline( "object", "rig", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32 },
+		{ "d", "d: moving luminary sphere",
 			Sphere( "e", "lum", "-1.5 0 2.6", "0.5 0.5 0.5" ) +
-			Timeline( "object", "e", "position", "-1.5 0 2.6", "1.5 0 2.6" ) + Padding(), true, 32 );
+			Timeline( "object", "e", "position", "-1.5 0 2.6", "1.5 0 2.6" ) + Padding(), true, 32 },
+		// An infinite plane's box is +-DBL_MAX; any rotation overflows it
+		// to inf, and a naive sweep turned inf - inf into a NaN box that
+		// BoundingBox::Include ignores, dropping the floor from the TLAS.
+		{ "g", "g: rotated infinite-plane floor + moving occluder",
+			std::string( "infiniteplane_geometry\n{\n\tname geo_inf\n}\n\n" ) +
+			"standard_object\n{\n\tname inffloor\n\tgeometry geo_inf\n\tmaterial floor_mat\n\tposition 0 0 -0.6\n\torientation 0 0 90\n}\n\n" +
+			Sphere( "occ", "black_mat", "-3 0 0", "0.5 0.5 0.5" ) +
+			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32 },
+		{ "h", "h: rotating rod occluder (0 -> 90 deg)", rodOccluder + Padding(), false, 32 },
+	};
+
+	if( only == "perf" ) {
+		// Not a gate: wall time of a motion-blurred PT frame whose scene has
+		// 400 parent links but no animated parented subtree (only an
+		// unrelated sphere moves).  Compare across builds.
+		std::string body;
+		for( int i = 0; i < 400; i++ ) {
+			body += Fmt( "standard_object\n{\n\tname rig%d\n\tposition %g %g -5\n}\n\n", i, -40.0 + 0.2 * ( i % 20 ), -40.0 + 0.2 * ( i / 20 ) );
+			body += Fmt( "standard_object\n{\n\tname kid%d\n\tparent rig%d\n\tgeometry geo_unit\n\tmaterial floor_mat\n\tscale 0.05 0.05 0.05\n}\n\n", i, i );
+		}
+		body += Sphere( "occ", "black_mat", "-3 0 0", "0.5 0.5 0.5" ) + Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" );
+		const std::string text = Scene( body, RasPT( true ), 1.0, false );
+		for( int r = 0; r < 3; r++ ) {
+			double m = 0;
+			const auto t0 = std::chrono::steady_clock::now();
+			RenderOnce( text, 0.5, m );
+			const double sec = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
+			std::printf( "  perf: blurred frame %.3f s (mean %.6f)\n", sec, m );
+		}
+		return 0;
+	}
+
+	const int nIntegrators = std::getenv( "DL457_VCM" ) ? 3 : 2;
+	g_comparisons = 0;
+	for( const Case& c : cases ) {
+		if( only == "all" || only == c.key ) g_comparisons += nIntegrators;
+	}
+	if( g_comparisons == 0 ) g_comparisons = 1;
+	for( const Case& c : cases ) {
+		if( only == "all" || only == c.key ) RunCase( c.label, c.body, c.floor, c.times );
 	}
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";
 	return failCount == 0 ? 0 : 1;
