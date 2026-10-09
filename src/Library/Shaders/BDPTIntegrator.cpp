@@ -1073,6 +1073,21 @@ BDPTIntegrator::BDPTIntegrator(
   guidingTrainingStats()
 #endif
 {
+	// DL-481: say once, when the integrator is built for a render (BDPT,
+	// VCM and MLT all build one), that a per-type cap which can bind may
+	// lose paths only light tracing / connections / merges reach.
+	const BDPTUtilities::BounceTypeCaps typeCaps = BDPTUtilities::MakeBounceTypeCaps(
+		stabilityConfig.maxDiffuseBounce, stabilityConfig.maxGlossyBounce,
+		stabilityConfig.maxTransmissionBounce, stabilityConfig.maxTranslucentBounce,
+		maxEyeDepth, maxLightDepth );
+	if( typeCaps.active ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"BDPT/VCM/MLT: a per-type bounce cap can bind (diffuse %u, glossy %u, transmission %u, translucent %u "
+			"against max_eye_depth %u + max_light_depth %u; UINT_MAX = cannot bind).  Under it, light-traced, "
+			"connected or merged paths through a receiver with several lobe types (GGX, coated, ...) can be LOST "
+			"-- e.g. a point-light caustic onto a GGX floor -- see DL-481 (docs/DEBT_LEDGER.md)",
+			typeCaps.cap[0], typeCaps.cap[1], typeCaps.cap[2], typeCaps.cap[3], maxEyeDepth, maxLightDepth );
+	}
 }
 
 BDPTIntegrator::~BDPTIntegrator()

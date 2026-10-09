@@ -296,10 +296,13 @@ namespace RISE
 		/// ExceedsBounceLimitForType); `eRayUnknown` when the walk counted
 		/// nothing here (an endpoint, a medium vertex, a subsurface jump,
 		/// the light walk's FREE first vertex -- see BDPTUtilities::
-		/// JoinedTypeCapStatus).  Unlike `scatterType` it is the drawn
-		/// lobe's type even under a guiding substitution (the walk counts
-		/// the continuation it actually traced).  Read only by the per-path
-		/// per-type cap check; no RayIntersectionGeometric counterpart.
+		/// JoinedTypeCapStatus).  It is `pScat->type` at the walk's cap
+		/// check: the selected lobe's type, or -- when guiding SUBSTITUTED
+		/// the direction -- the guide placeholder's `eRayDiffuse` (the walk
+		/// continues on `guideTemplateRay`), which is how PT counts a guide
+		/// draw too (DL-483 item 2).  `scatterType` instead records
+		/// `eRayUnknown` there.  Read only by the per-path per-type cap
+		/// check; no RayIntersectionGeometric counterpart.
 		ScatteredRay::ScatRayType	capType;
 
 		/// Sampler-input distance from the live ray origin to this hit,

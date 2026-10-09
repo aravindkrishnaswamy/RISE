@@ -896,9 +896,11 @@ static void RowH()
 			char l0[96];
 			std::snprintf( l0, sizeof(l0), "%s %s no cap", kind, ggx ? "GGX" : "Lambertian" );
 			Print( l0, none );
-			const char* caps[] = { "\tmax_transmission_bounce 100\n", "\tmax_translucent_bounce 0\n" };
-			const char* capNames[] = { "max_transmission_bounce 100", "max_translucent_bounce 0" };
-			for( int c = 0; c < 2; c++ ) {
+			// max_glossy_bounce 100 hits a GGX floor lobe, so only the depth
+			// bound (rule (a): 100 >= 10 + 10) keeps it inert.
+			const char* caps[] = { "\tmax_transmission_bounce 100\n", "\tmax_translucent_bounce 0\n", "\tmax_glossy_bounce 100\n" };
+			const char* capNames[] = { "max_transmission_bounce 100", "max_translucent_bounce 0", "max_glossy_bounce 100" };
+			for( int c = 0; c < 3; c++ ) {
 				const Stats st = RenderStatsSalted( PointCausticScene( PointCausticChunk( kind, caps[c] ), ggx != 0 ), n, seed );
 				seed += 100u;
 				char l[128];
@@ -1047,6 +1049,10 @@ static void RowP()
 	// Only the light-tracing splat reaches it.
 	cases.push_back( { "point caustic, GGX-like receiver, translucent cap 0 (cannot apply to it)", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( ggx, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 1, UINT_MAX, 0 } );
 	cases.push_back( { "point caustic, GGX-like receiver, transmission cap 100 (cannot bind)", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( ggx, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 1, 100, UINT_MAX } );
+	// Rule (a) alone (MakeBounceTypeCaps' depth bound): an all-types
+	// receiver, so its type mask cannot excuse it; the cap 100 is above
+	// max_eye_depth + max_light_depth = 32 and must be ignored.
+	cases.push_back( { "point caustic, all-types receiver, transmission cap 100 (depth bound only)", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( multi, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 1, 100, UINT_MAX } );
 	cases.push_back( { "DL-481: point caustic, undeclared receiver, transmission cap 1 -> lost", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( multi, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 0, 1, UINT_MAX } );
 	// DL-481 residual, pinned: a binding cap on one of the receiver's lobe
 	// types leaves the splat (the only strategy) excluded -- the path is lost.
