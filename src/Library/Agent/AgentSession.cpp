@@ -13658,12 +13658,16 @@ namespace RISE
 						ScaffoldJitterRange( name, "stone_wearcontrast", 1.3, 2.1 ),
 						ScaffoldJitterRange( name, "stone_wearseed", 0.0, 100.0 ), false ) } );
 
-				// DL-400: ggx_material (conductor Fresnel, ior default 2.45 as
-				// cooktorrance_material had it, extinction 1 = cooktorrance's own
-				// default -- GGX's would be 3.45), the facet field driving BOTH axes
+				// DL-400: ggx_material, the facet field driving BOTH axes
 				// (cooktorrance's single `facets` was an isotropic GGX alpha).
+				// DL-415: stone is a DIELECTRIC -- `schlick_f0` with a ~0.04 grey
+				// F0 tint (the old black `rs none` made the facet field drive a
+				// lobe that carried no energy, so the roughness variation was
+				// invisible).
+				const std::string nSpec = "tmpl_" + name + "_spec";
+				out.chunks.push_back( { "uniformcolor_painter", nSpec, ScaffoldUniformColorText( nSpec, 0.04, 0.04, 0.04 ) } );
 				out.chunks.push_back( { "ggx_material", nMat,
-					ScaffoldGGXText( nMat, nPebble, "none", nFacets, nFacets, "conductor", "1" ) } );
+					ScaffoldGGXText( nMat, nPebble, nSpec, nFacets, nFacets, "schlick_f0" ) } );
 				out.materialName = nMat;
 				out.materialKind = "ggx_material";
 				out.boundSlots.push_back( { "alphax", nFacets } );
