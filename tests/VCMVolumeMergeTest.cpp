@@ -252,7 +252,7 @@ int main( int argc, char** argv )
 		FogBoxScene( true, 512, false ), FogBoxScene( false, 64, false ), 1.0, 0.06, trials, seed, only );
 	// B: pre-fix 0.977 (phantom medium merge in the MIS denominators).
 	RatioRow( "B: global fog, forced surface merging, VCM / PT",
-		GlobalFogScene( true, 64 ), GlobalFogScene( false, 128 ), 1.0, 0.015, trials, seed, only );
+		GlobalFogScene( true, 64 ), GlobalFogScene( false, 512 ), 1.0, 0.015, trials, seed, only );
 	// D: A's scene with medium light vertices stored with probability
 	// q = 0.2 (the memory thinning; DL-469 review P1).  Throughput / q and
 	// the MIS factor q eta_v keep the estimator and the partition exact,
