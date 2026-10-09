@@ -200,10 +200,11 @@ static std::string Rasterizer( Integrator which )
 // faces UP (+y); the reverse winding faces DOWN.
 //////////////////////////////////////////////////////////////////////
 enum Glass { kSingleSheet, kOpenSlab, kDisplacedSlab, kClosedSlab, kOpenStacked, kClosedStacked,
-	kSingleSheetDown, kMeshSingle, kMeshSingleDown, kMeshSlab, kMeshSlabOneObject };
+	kSingleSheetDown, kMeshSingle, kMeshSingleDown, kMeshSlab, kMeshSlabOneObject,
+	kSingleSheetOneSided, kMeshSingleOneSided };
 enum Camera { kBelow, kAbove };
 
-static std::string PlaneChunk( const char* name, double y, bool up )
+static std::string PlaneChunk( const char* name, double y, bool up, bool doubleSided = true )
 {
 	std::ostringstream ss;
 	ss << "clippedplane_geometry\n{\n\tname " << name << "\n";
@@ -212,7 +213,7 @@ static std::string PlaneChunk( const char* name, double y, bool up )
 	} else {
 		ss << "\tpta -4 " << y << " -4\n\tptb 4 " << y << " -4\n\tptc 4 " << y << " 4\n\tptd -4 " << y << " 4\n";
 	}
-	ss << "\tdoublesided TRUE\n}\n\n";
+	ss << "\tdoublesided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n}\n\n";
 	return ss.str();
 }
 
@@ -221,7 +222,7 @@ static std::string PlaneChunk( const char* name, double y, bool up )
 //! `twoSheets` puts a second, down-facing copy at `y2` into the SAME
 //! mesh (a slab authored as one open mesh -- never certified).
 static std::string MeshChunk( const char* name, double y, bool up,
-	bool twoSheets = false, double y2 = 0.0 )
+	bool twoSheets = false, double y2 = 0.0, bool doubleSided = true )
 {
 	std::ostringstream ss;
 	ss << "indexedmesh_geometry\n{\n\tname " << name << "\n";
@@ -236,7 +237,7 @@ static std::string MeshChunk( const char* name, double y, bool up,
 	if( twoSheets ) quad( y2, !up );
 	ss << "\ttriangle 0 1 2\n\ttriangle 0 2 3\n";
 	if( twoSheets ) ss << "\ttriangle 4 5 6\n\ttriangle 4 6 7\n";
-	ss << "\tdouble_sided TRUE\n}\n\n";
+	ss << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n}\n\n";
 	return ss.str();
 }
 
@@ -270,6 +271,14 @@ static std::string Scene( Glass glass, Camera cam, bool omni = false )
 		break;
 	case kSingleSheetDown:
 		ss << PlaneChunk( "geo_sheet", 2.0, false )
+		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
+		break;
+	case kSingleSheetOneSided:
+		ss << PlaneChunk( "geo_sheet", 2.0, true, false )
+		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
+		break;
+	case kMeshSingleOneSided:
+		ss << MeshChunk( "geo_sheet", 2.0, true, false, 0.0, false )
 		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
 		break;
 	case kMeshSingle:
@@ -455,6 +464,19 @@ int main( int argc, char** argv )
 			std::string l = std::string( "single mesh sheet (" ) + wn + ") " + kIntegratorName[i] + " / PT";
 			RatioRow( l.c_str(), mesh[i], mesh[kPT], 0.05 );
 		}
+	}
+	// SINGLE-SIDED planar mesh (the rawmesh / ply / glTF default): its back
+	// face is culled, so the eye walk from the receiver misses the sheet
+	// while the light walk refracts into it -- integrators legitimately
+	// differ, by GEOMETRY, not by the index convention.  The gate is
+	// equivalence with the same single-sided sheet as a clipped plane,
+	// per integrator.
+	std::cout << "single-sided planar mesh vs single-sided clipped plane" << std::endl;
+	for( int i = 0; i < kNumIntegrators; i++ ) {
+		const Stat plane = Measure( Integrator( i ), kSingleSheetOneSided, kBelow, n );
+		const Stat mesh = Measure( Integrator( i ), kMeshSingleOneSided, kBelow, n );
+		std::string l = std::string( "single-sided mesh sheet / single-sided clipped plane " ) + kIntegratorName[i];
+		RatioRow( l.c_str(), mesh, plane, 0.05 );
 	}
 	for( int c = 0; c < 2; c++ ) {
 		std::cout << "mesh slab, " << camName[c] << std::endl;

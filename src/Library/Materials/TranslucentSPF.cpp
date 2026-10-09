@@ -545,16 +545,18 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		// 0.321477 / 0.310505 / 0.313584 on the backscatter at tilt
 		// 0/30/60, against 1.000000 everywhere with the clause gone.
 		//
-		// `ri.bProvablyNoInterior` is the flag that means what is needed,
-		// and exactly one class sets it: `ClippedPlaneGeometry`, whose
-		// four corners span ONE bounded bilinear sheet.  A mesh can never
-		// set it, because "not certified closed" is not "certified open";
-		// neither can any geometry holding a COLLECTION of primitives,
-		// since N interior-free sheets can bound a volume no single sheet
-		// can -- `BezierPatchGeometry` stamped it in round 2 and was
-		// removed in round 3 for exactly that reason (its `patches` is a
-		// vector, and a `.bezier` file's 28 patches load into one
-		// geometry).  Where the flag is absent the ray anchor is what is
+		// `ri.bProvablyNoInterior` is the flag that means what is needed;
+		// its setters (a clipped plane, a displaced coplanar convex one,
+		// and since DL-382 a mesh that is ONE planar consistently wound
+		// sheet) are listed on the flag's own doc.  A mesh is never
+		// certified on topology ("not certified closed" is not "certified
+		// open"), and a COLLECTION of primitives is never certified on the
+		// strength of each being interior-free, since N such sheets can
+		// bound a volume -- `BezierPatchGeometry` stamped it in round 2 and
+		// was removed in round 3 for exactly that reason (its `patches` is
+		// a vector, and a `.bezier` file's 28 patches load into one
+		// geometry).  The planar mesh escapes that argument only because
+		// its triangles are COPLANAR: their union is still one planar set.  Where the flag is absent the ray anchor is what is
 		// left, and it is right for the interior exit and wrong for the
 		// sheet's back face (the residual on DL-223).
 		//
