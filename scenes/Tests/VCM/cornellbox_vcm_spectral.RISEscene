@@ -58,7 +58,6 @@ spectral_painter
 	file				colors/cornellbox_green.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -67,7 +66,6 @@ spectral_painter
 	file				colors/cornellbox_red.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -76,7 +74,6 @@ spectral_painter
 	file				colors/cornellbox_white.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -85,7 +82,7 @@ spectral_painter
 	file				colors/cornellbox_light.spectra
 	nmbegin				386
 	nmend				711
-	scale				4
+	scale				3.2
 }
 
 lambertian_material

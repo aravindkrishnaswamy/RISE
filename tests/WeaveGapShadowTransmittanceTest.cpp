@@ -271,7 +271,8 @@ static std::vector<RISEColor> g_lastPixels;
 static double Render( const std::string& sceneText, const char* tag, std::vector<double>* pPixels = nullptr, unsigned int explicitSalt = 0u )
 {
 	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/weave_gap_shadow_%s_%d.RISEscene",
+	std::snprintf( path, sizeof(path), "%s/weave_gap_shadow_%s_%d.RISEscene",
+        std::getenv("TMPDIR") ? std::getenv("TMPDIR") : ".",
 		tag, static_cast<int>( ::getpid() ) );
 	{
 		std::ofstream ofs( path );
@@ -2942,7 +2943,7 @@ int main( int argc, char** argv )
 	// sweep IS the run-to-run spread, and the `sms` bands are set from one.
 	// (Must precede the first GlobalOptions() read, which caches.)
 	if( !std::getenv( "RISE_OPTIONS_FILE" ) ) {
-		std::snprintf( g_optPath, sizeof(g_optPath), "/tmp/weave_gap_options_%d.txt", static_cast<int>( ::getpid() ) );
+		std::snprintf( g_optPath, sizeof(g_optPath), "%s/weave_gap_options_%d.txt", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : ".", static_cast<int>( ::getpid() ) );
 		char* optPath = g_optPath;
 		std::atexit( []() { std::remove( g_optPath ); } );
 		std::ofstream opt( optPath );

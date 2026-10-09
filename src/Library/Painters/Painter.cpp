@@ -72,7 +72,7 @@ Scalar Painter::Evaluate( const Scalar x, const Scalar y ) const
 	return c[0];
 }
 
-RISEPel RISE::Implementation::ProjectPhysicalSpectrumToRGB( const IFunction1D& f, const bool bAsRadiance )
+RISEPel RISE::Implementation::ProjectPhysicalSpectrumToRGB( Scalar (*eval)( const void* ctx, const Scalar nm ), const void* ctx, const bool bAsRadiance )
 {
 	// 1 nm Riemann sums; numerator and denominator share the grid, so the
 	// step cancels.  The reflectance view weights by the Y-normalised D65
@@ -87,10 +87,20 @@ RISEPel RISE::Implementation::ProjectPhysicalSpectrumToRGB( const IFunction1D& f
 		ySum += double( cmf.Y );
 		const Scalar w = bAsRadiance ? Scalar( 1 ) :
 			RGBIlluminantSpectrum::ReferenceIlluminant( Scalar( nm ) );
-		sum = sum + cmf * ( f.Evaluate( Scalar( nm ) ) * w );
+		sum = sum + cmf * ( eval( ctx, Scalar( nm ) ) * w );
 	}
 	if( !( ySum > 0.0 ) ) {
 		return RISEPel( 0, 0, 0 );
 	}
 	return ColorUtils::XYZtoRec709RGB( sum * Scalar( 1.0 / ySum ) );
+}
+
+static Scalar EvalFunction1D( const void* ctx, const Scalar nm )
+{
+	return static_cast<const IFunction1D*>( ctx )->Evaluate( nm );
+}
+
+RISEPel RISE::Implementation::ProjectPhysicalSpectrumToRGB( const IFunction1D& f, const bool bAsRadiance )
+{
+	return ProjectPhysicalSpectrumToRGB( &EvalFunction1D, &f, bAsRadiance );
 }

@@ -23,13 +23,34 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		//! `blackbody_painter`: Planck's law at `temperature`.
+		//!
+		//! Magnitude convention (DL-464, documented 2026-10-09):
+		//! `GetColorNM(nm) = M_lambda(T, nm) * s`, where M_lambda is the
+		//! HEMISPHERICAL spectral exitance of a blackbody, `2 pi h c^2 /
+		//! (lambda^5 (exp(hc / (lambda k T)) - 1))`, in W m^-2 per METRE of
+		//! wavelength (so ~1e13 at 6500 K in the visible), and `s` is the
+		//! authored `scale` -- divided, when `normalize` is set, by
+		//! M_lambda at the Wien peak `0.0029 / T` m, so the curve's PEAK
+		//! (which may lie outside the visible band) equals `scale`.
+		//! The ruling: `scale` multiplies the spectrum on EVERY path --
+		//! `GetColorNM`, `GetRadianceNM`, `GetSpectrum` -- and the RGB
+		//! views are the DL-396 projections of that same scaled spectrum
+		//! (`GetColor`: reflectance under D65; `GetRadianceColor`: the
+		//! source view the spectral film resolves).  Before DL-464
+		//! `GetColor` was an unnormalised bin mean of the spectrum that,
+		//! with `normalize`, was then max-channel normalised to 1 --
+		//! ignoring `scale` entirely -- so RGB and spectral renders of a
+		//! blackbody emitter disagreed by large factors.
 		class BlackBodyPainter : public virtual Painter
 		{
 		protected:
-			RISEPel					color;					///< Color in RISEPel terms
-			SpectralPacket			spectrum;				///< The actual spectrum (no scale)
+			RISEPel					reflectanceRGB;			///< D65 reflectance view of the scaled SPD
+			RISEPel					radianceRGB;			///< source view of the scaled SPD
+			SpectralPacket			spectrum;				///< The scaled spectrum, binned
 			Scalar					temperature;			///< Temporature in Kelvins
-			Scalar					scale;					///< A scale factor
+			Scalar					scale;					///< The authored (keyframable) scale factor
+			Scalar					effectiveScale;			///< `scale`, divided by the peak when normalizing
 
 			const Scalar			lambda_begin; 
 			const Scalar			lambda_end; 
@@ -54,6 +75,10 @@ namespace RISE
 			virtual ~BlackBodyPainter();
 
 		public:
+			//! Planck's hemispherical spectral exitance (W m^-2 m^-1) at
+			//! wavelength `lambda` in METRES.
+			static Scalar SpectralExitance( const Scalar T, const Scalar lambda ) { return IntensityForWavelength( T, lambda ); }
+
 			// Constructor based on temperature of blackbody
 			BlackBodyPainter( const Scalar temp, const Scalar lambda_begin, const Scalar lambda_end, const unsigned int num_freq, const bool normalize, const Scalar scale );
 
@@ -63,6 +88,7 @@ namespace RISE
 			RISEPel							GetColor( const RayIntersectionGeometric& ri  ) const;
 			SpectralPacket					GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar							GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel							GetRadianceColor( const RayIntersectionGeometric& ri ) const;
 
 			//! PHYSICAL SPD -- pass through verbatim (Stage C slice 2).
 			//! This painter's GetColorNM is not a Jakob-Hanika uplift of an

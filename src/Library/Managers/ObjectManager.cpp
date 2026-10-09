@@ -2491,6 +2491,15 @@ void ObjectManager::PrepareForRendering() const
             break;
         }
     }
+    smsHasObjectMedium = false;
+    smsFirstMediumObject.clear();
+    for(const auto& item : items) {
+        if(item.second.first->IsWorldVisible() && item.second.first->GetInteriorMedium()) {
+            smsHasObjectMedium = true;
+            smsFirstMediumObject = item.first.c_str();
+            break;
+        }
+    }
     smsPolicyPrepared = true;
     smsExtendedCasters.clear();
     smsRejectedTransmissiveCaster = false;
@@ -2512,6 +2521,13 @@ void ObjectManager::PrepareForRendering() const
         GlobalLog()->PrintEx(eLog_Warning,
             "Extended SMS is inert for this prepared scene: composite object '%s'; using legacy SMS and suppression.",
             smsFirstCompositeObject.c_str());
+    }
+    else if(smsHasObjectMedium) {
+        // DL-419: extended SMS has no participating-medium segment laws;
+        // legacy SMS prices the chain's medium transmittance.
+        GlobalLog()->PrintEx(eLog_Warning,
+            "Extended SMS is inert for this prepared scene: object '%s' has an interior medium; using legacy SMS and suppression.",
+            smsFirstMediumObject.c_str());
     }
     // DL-382: warn ONCE per scene (this manager), not per preparation --
     // an animation prepares every frame.  Re-armed only when the set of

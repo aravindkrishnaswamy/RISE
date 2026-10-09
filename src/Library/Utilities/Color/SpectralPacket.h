@@ -316,8 +316,13 @@ namespace RISE
 				return 0;
 			}
 
-			// Find the rigt frequency
-			int idx = int((nm-lambda_begin)/delta);
+			// Find the rigt frequency.  nm == lambda_end lands one past the
+			// last bin; it belongs to the last bin (DL-464: this read past
+			// the array).
+			unsigned int idx = (unsigned int)((nm-lambda_begin)/delta);
+			if( idx >= num_freq ) {
+				idx = num_freq - 1;
+			}
 			return amplitudes[idx];
 		}
 	};
