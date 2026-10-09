@@ -17,6 +17,9 @@
 #include "Geometry.h"
 #include "../Interfaces/IBezierPatchGeometry.h"
 #include "../Octree.h"
+#include <memory>
+#include <mutex>
+#include <vector>
 #include "../BSPTreeSAH.h"
 #include "../Utilities/BoundingBox.h"
 
@@ -62,6 +65,25 @@ namespace RISE
 			unsigned int			nMaxPerOctantNode;	// Max patches per accelerator leaf
 			unsigned char			nMaxRecursionLevel;	// Max accelerator recursion depth
 			bool					bUseBSP;			// BSP tree (true) or Octree (false)?
+
+			//! DL-459: AREA-UNIFORM SAMPLING TABLE, built lazily (only a
+			//! surface-sampled patch set -- an area light, SSS -- pays for it)
+			//! and reset by AddPatch / Prepare.  Each patch is split into
+			//! nAreaCells x nAreaCells (u, v) cells; `m_cellBound` is a
+			//! RIGOROUS upper bound of |dP/du x dP/dv| over the cell (the
+			//! largest Bernstein coefficient of the cross product restricted
+			//! to the cell -- convex-hull property), `m_cellCdf` the
+			//! normalized cumulative of those bounds over every (patch, cell),
+			//! and `m_area` the Gauss-Legendre integral of the same area
+			//! element.  UniformRandomPoint draws a cell from the CDF and
+			//! accepts a uniform point in it with probability J / bound, so
+			//! its density is exactly J / integral(J) = 1/GetArea().
+			static const unsigned int nAreaCells = 4;
+			mutable std::unique_ptr<std::once_flag>	m_areaOnce;
+			mutable std::vector<Scalar>		m_cellCdf;
+			mutable std::vector<Scalar>		m_cellBound;
+			mutable Scalar					m_area;
+			void EnsureAreaTable() const;
 
 			virtual ~BezierPatchGeometry( );
 

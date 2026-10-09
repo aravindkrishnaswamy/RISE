@@ -242,6 +242,15 @@ namespace RISE
 			//! the linear-interpolated tessellation of it.
 			Point3  ProjectToSurface( const Point3& p ) const;
 
+			//! DL-459: area ratio dA_surface / dA_chord of the projection
+			//! of a chord triangle (unit normal `m`) onto the zero set at
+			//! the chord point `x`: |m . n| / (1 + d (k1 + k2)), d the signed
+			//! offset of `x` from its projection `y` along n -- the tilt
+			//! factor exactly, the curvature factor to first order in d (the
+			//! Gaussian-curvature term is O(d^2)).  Clamped to [0.5, 2] near
+			//! creases.  Writes the projection and its normal.
+			Scalar  ProjectionJacobian( const Point3& x, const Vector3& m, Point3& y, Vector3& n, bool* clamped = 0 ) const;
+
 			//! Core mesher: marching TETRAHEDRA (Freudenthal 6-tet cube split -- face-
 			//! consistent across the grid, no ambiguous cases, watertight by
 			//! construction) over the padded bbox at `cells` cells along the longest
@@ -254,7 +263,9 @@ namespace RISE
 			struct SampleTri
 			{
 				Point3  a, b, c;
-				Scalar  cumArea;	//!< cumulative area up to and including this triangle
+				Vector3 m;			//!< unit chord-triangle normal (projection-Jacobian tilt)
+				Scalar  jBound;		//!< DL-459: bound of ProjectionJacobian over the triangle
+				Scalar  cumArea;	//!< cumulative PROPOSAL weight (chord area x jBound) up to and including this triangle
 			};
 
 			//! Builds m_sampleTris / m_surfaceArea from GenerateSurfaceMesh at
@@ -267,6 +278,7 @@ namespace RISE
 			mutable std::unique_ptr<std::once_flag>  m_samplingOnce;	//!< reset by InvalidateSamplingStructure when an animated field changes the surface
 			mutable std::vector<SampleTri>  m_sampleTris;
 			mutable Scalar                  m_surfaceArea;
+			mutable Scalar                  m_proposalTotal = 0;	//!< DL-459: sum of chord area x jBound (the sampling CDF's total)
 			mutable unsigned int            m_missedFeatureCells = 0;	//!< definite-miss cells found by EnsureSamplingStructure's detector
 
 			// Heightfield mode (the analytic exact-surface twin of DisplacedGeometry).

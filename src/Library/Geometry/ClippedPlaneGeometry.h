@@ -17,6 +17,8 @@
 
 #include "Geometry.h"
 #include <algorithm>		// std::max (SelfHitRootFloor over the four corners)
+#include <vector>
+#include <array>
 
 namespace RISE
 {
@@ -58,12 +60,13 @@ namespace RISE
 			//! is the bilinear patch through the four corners, and only for
 			//! a coplanar CONVEX quad is that patch's image the polygon the
 			//! corners outline.  For a coplanar DART (one corner inside the
-			//! triangle of the other three) the image is a proper subset of
-			//! the polygon, so the point-to-polygon form UNDER-reports over
-			//! the reflex lobe -- contact painted where there is none, the
-			//! one direction this signal must never fail in -- and
-			//! over-reports outside.  A dart therefore REFUSES, exactly as
-			//! a non-coplanar quad does.  Meaningful only when
+			//! triangle of the other three) the patch FOLDS: its image is the
+			//! polygon PLUS a folded overshoot outside it (DL-460: a degree
+			//! argument -- see the area-mode comment below), so the
+			//! point-to-polygon form is not the patch's distance there.  It
+			//! errs only toward over-reporting (it misses the overshoot), but
+			//! "exact" is this function's contract, so a dart REFUSES,
+			//! exactly as a non-coplanar quad does.  Meaningful only when
 			//! `bCornersCoplanar` (the test needs the plane basis).
 			//!
 			//! Every `rect_light` and every hand-authored panel is a convex
@@ -77,6 +80,62 @@ namespace RISE
 			Vector3	vPlaneNormal;
 			Vector3	vPlaneU;
 			Vector3	vPlaneV;
+
+			//! DL-460: AREA AND AREA-UNIFORM SAMPLING of the traced bilinear
+			//! surface, decided in RegenerateData.  The area element is
+			//! |w(u,v)| with w = dpdu x dpdv = vJacA + u vJacB + v vJacC
+			//! (AFFINE in (u, v): the uv term D x D vanishes), so it is
+			//! constant exactly for a parallelogram.
+			//!   eAreaRectangle     -- the legacy |e0| |e1| product and the
+			//!                         uniform-(u,v) sampler, bit-identical to
+			//!                         every pre-DL-460 rect_light / panel.
+			//!   eAreaParallelogram -- |e0 x e1|, uniform (u, v) (exact).
+			//!   eAreaGeneral       -- exact integral of the area integrand
+			//!                         (closed form when coplanar, Gauss-
+			//!                         Legendre otherwise) and an exact
+			//!                         area-proportional sampler: a cell CDF
+			//!                         over a nAreaCells^2 grid weighted by a
+			//!                         RIGOROUS per-cell bound (the integrand
+			//!                         is convex, so its maximum is at a cell
+			//!                         corner) plus rejection against it.
+			//! A COPLANAR NON-CONVEX quad (a dart) folds: the area element
+			//! changes sign across a line in (u, v), the folded sheet maps
+			//! OUTSIDE the polygon onto points the positive sheet already
+			//! covers (degree argument: the planar inverse has at most two
+			//! roots), and the intersector reports such a point once.  So the
+			//! luminary surface is the positive sheet alone: integrand
+			//! max(0, sgn n.w), sgn the polygon orientation, and the area is
+			//! the IMAGE area.  A coplanar self-intersecting (bow-tie) quad
+			//! keeps |n.w| (both lobes), documented as approximate where the
+			//! sheets overlap.
+			enum AreaMode { eAreaRectangle = 0, eAreaParallelogram = 1, eAreaGeneral = 2 };
+			AreaMode nAreaMode;
+			Scalar	dArea;
+			Vector3	vJacA, vJacB, vJacC;
+			int		nJacPlanar;			//!< 0: |w|;  1: max(0, dJacSign n.w);  2: |n.w| (bow-tie)
+			Scalar	dJacSign;
+			static const unsigned int nAreaCells = 16;
+			//! FIXED-SIZE storage (never reallocated, never empty): temporal
+			//! sampling may run EvaluateAtTime -> RegenerateData on one render
+			//! worker while another samples, so the worst a race can produce
+			//! is a torn value, never an out-of-bounds read.  `bHasCellTable`
+			//! says whether the table is usable (false: degenerate quad).
+			std::array<Scalar, nAreaCells * nAreaCells>	vCellCdf;	//!< normalized cumulative of cell bound weights
+			std::array<Scalar, nAreaCells * nAreaCells>	vCellBound;	//!< per-cell rigorous bound of the integrand
+			bool	bHasCellTable;
+			//! A coplanar quad whose area element changes sign (a dart): the
+			//! intersector re-maps a hit on the folded sheet to its preimage
+			//! on the positive sheet (see RemapToPositiveSheet).
+			bool	bFolded;
+
+			//! DL-460: for a folded coplanar quad, re-map (u, v) on the
+			//! negative (folded) sheet to the positive-sheet preimage of the
+			//! same point, so culling, normals and texture coordinates agree
+			//! with the luminary (the positive sheet) the sampler draws.
+			void	RemapToPositiveSheet( Scalar& u, Scalar& v ) const;
+
+			Scalar	AreaIntegrand( const Scalar u, const Scalar v ) const;
+			void	BuildAreaData();
 
 		public:
 			ClippedPlaneGeometry( const Point3 (&vP_)[4], const bool bDoubleSided_ );

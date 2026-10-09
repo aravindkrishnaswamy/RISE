@@ -28,6 +28,8 @@
 #include "../Utilities/FiniteMath.h"		// RISE::IsFiniteDouble -- the superellipsoid's non-finite guards
 #include "../Utilities/SurfaceCurvature.h"
 #include "../Utilities/OrthonormalBasis3D.h"	// occlusion's cosine-weighted march directions
+#include "../Utilities/GeometricUtilities.h"	// PrandStream (DL-459 rejection variates)
+#include <atomic>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -2445,6 +2447,24 @@ Point3 SDFGeometry::ProjectToSurface( const Point3& p ) const
 	return q;
 }
 
+Scalar SDFGeometry::ProjectionJacobian( const Point3& x, const Vector3& m, Point3& y, Vector3& n, bool* clamped ) const
+{
+	y = ProjectToSurface( x );
+	n = GradientNormal( y );
+	const Scalar d = ( x.x - y.x )*n.x + ( x.y - y.y )*n.y + ( x.z - y.z )*n.z;
+	// The curvature term matters only off the surface; an on-surface point
+	// (a mesh vertex) skips the finite-difference divergence.
+	const Scalar div = ( std::fabs( d ) > m_eps ) ? DivergenceOfUnitNormal( y, n, CurvatureFDStep() ) : Scalar(0);
+	const Scalar tilt = std::fabs( Vector3Ops::Dot( m, n ) );
+	const Scalar den = Scalar(1) + d * div;
+	Scalar J = ( den > Scalar(0) ) ? tilt / den : Scalar(2);
+	bool c = false;
+	if( J < Scalar(0.5) ) { J = Scalar(0.5); c = true; }
+	if( J > Scalar(2) )   { J = Scalar(2);   c = true; }
+	if( clamped ) *clamped = c;
+	return J;
+}
+
 // Marching TETRAHEDRA surface extraction.
 //
 // Each grid cell splits into the Freudenthal/Kuhn 6 tetrahedra around the main
@@ -2735,55 +2755,64 @@ void SDFGeometry::EnsureSamplingStructure() const
 		}
 		std::sort( tmp.begin(), tmp.end(), []( const TriTmp& l, const TriTmp& r ) { return l.key < r.key; } );
 
-		// Curvature-corrected triangle weights.  UniformRandomPoint samples a
-		// PLANAR chord triangle and Newton-projects onto the zero set; that
-		// projection is not area-preserving, so weighting the CDF by raw chord
-		// area makes the on-surface density -- and GetArea, which LightSampler
-		// turns into pdfPosition = 1/area -- first-order biased by the local
-		// chord offset x curvature (the projection of a chord at signed
-		// offset d expands/contracts area by J = dA_surface / dA_chord
-		// ~= 1 - d * (k1 + k2), with k1 + k2 = div n_hat evaluated at the
-		// foot point).  Weighting each triangle by chordArea * Jbar (3-point
-		// edge-midpoint quadrature -- exact for the quadratic chord-offset
-		// profile, so the per-triangle MEAN of J is captured and the residual
-		// within-triangle term is zero-mean) and returning the same corrected
-		// measure from GetArea keeps the sampled density and the claimed pdf
-		// consistent to the next order in (cell / curvature radius).  J is
-		// clamped to [0.5, 2] near creases where FD curvature spikes; the
-		// clamp count is reported in the build diagnostic.
-		const Scalar hfd = CurvatureFDStep();
+		// DL-459: EXACT AREA-UNIFORM SAMPLING of the projected surface.
+		// UniformRandomPoint draws a point uniform on a PLANAR chord
+		// triangle and Newton-projects it onto the zero set; that map is not
+		// area-preserving -- its area ratio J = dA_surface / dA_chord is
+		// ProjectionJacobian (the tilt |m.n| between chord and surface
+		// normal, times 1 / (1 + d (k1 + k2)) for the chord's offset d).  So
+		// the sampler proposes triangle t with weight chordArea_t x jBound_t
+		// (jBound a bound of J over t) and ACCEPTS the projected point with
+		// probability J / jBound: the accepted chord density is then
+		// proportional to J, i.e. the SURFACE density is uniform, for any
+		// curvature.  The area it is uniform over is sum_t integral_t J dA,
+		// integrated by the 3-edge-midpoint rule (exact for the quadratic
+		// chord-offset profile) -- that, not the pre-DL-459 per-triangle
+		// mean weighting (which left the within-triangle Jacobian variation
+		// as a density distortion and omitted the tilt factor), is GetArea.
+		// The bound is the largest J at the 3 vertices, 3 edge midpoints and
+		// the centroid with 2 % headroom.  It is NOT rigorous: on a smooth
+		// surface J - 1 is O((h k)^2), far inside the headroom, but at a
+		// crease (where the finite-difference curvature spikes and J hits
+		// its [0.5, 2] clamp) an interior J can exceed it.  Such a candidate
+		// is simply accepted (probability 1), i.e. that spot is slightly
+		// under-sampled; nothing counts it.
 		unsigned int jClamped = 0;
-		auto jacobianAt = [this, hfd, &jClamped]( const Point3& x ) -> Scalar {
-			const Point3 y = ProjectToSurface( x );
-			const Vector3 n = GradientNormal( y );
-			const Scalar d = ( x.x - y.x )*n.x + ( x.y - y.y )*n.y + ( x.z - y.z )*n.z;
-			// one-sided FD divergence of the unit normal = k1 + k2 at y.
-			// Extracted to DivergenceOfUnitNormal so the intersection-time
-			// `curv` signal (design doc 5.4) shares this exact stencil
-			// instead of carrying a second copy of it.
-			const Scalar div = DivergenceOfUnitNormal( y, n, hfd );
-			Scalar J = Scalar(1) - d * div;
-			if( J < Scalar(0.5) ) { J = Scalar(0.5); jClamped++; }
-			if( J > Scalar(2) )   { J = Scalar(2);   jClamped++; }
+		auto jacobianAt = [this, &jClamped]( const Point3& x, const Vector3& m ) -> Scalar {
+			Point3 y; Vector3 n; bool c = false;
+			const Scalar J = ProjectionJacobian( x, m, y, n, &c );
+			if( c ) jClamped++;
 			return J;
 		};
 
-		Scalar total = 0;
+		Scalar total = 0, proposal = 0;
 		m_sampleTris.reserve( tmp.size() );
 		for( size_t t = 0; t < tmp.size(); ++t ) {
 			const Point3& A = tmp[t].a;
 			const Point3& B = tmp[t].b;
 			const Point3& C = tmp[t].c;
+			const Vector3 e1( B.x - A.x, B.y - A.y, B.z - A.z );
+			const Vector3 e2( C.x - A.x, C.y - A.y, C.z - A.z );
+			const Vector3 m = Vector3Ops::Normalize( Vector3Ops::Cross( e1, e2 ) );
 			const Point3 m1( ( A.x + B.x )*Scalar(0.5), ( A.y + B.y )*Scalar(0.5), ( A.z + B.z )*Scalar(0.5) );
 			const Point3 m2( ( B.x + C.x )*Scalar(0.5), ( B.y + C.y )*Scalar(0.5), ( B.z + C.z )*Scalar(0.5) );
 			const Point3 m3( ( C.x + A.x )*Scalar(0.5), ( C.y + A.y )*Scalar(0.5), ( C.z + A.z )*Scalar(0.5) );
-			const Scalar Jbar = ( jacobianAt( m1 ) + jacobianAt( m2 ) + jacobianAt( m3 ) ) / Scalar(3);
-			total += tmp[t].area * Jbar;
+			const Point3 ctr( ( A.x + B.x + C.x )/Scalar(3), ( A.y + B.y + C.y )/Scalar(3), ( A.z + B.z + C.z )/Scalar(3) );
+			const Scalar J1 = jacobianAt( m1, m ), J2 = jacobianAt( m2, m ), J3 = jacobianAt( m3, m );
+			Scalar jMax = std::max( J1, std::max( J2, J3 ) );
+			jMax = std::max( jMax, jacobianAt( ctr, m ) );
+			jMax = std::max( jMax, jacobianAt( A, m ) );
+			jMax = std::max( jMax, jacobianAt( B, m ) );
+			jMax = std::max( jMax, jacobianAt( C, m ) );
+			const Scalar jBound = jMax * Scalar(1.02);
+			total += tmp[t].area * ( J1 + J2 + J3 ) / Scalar(3);
+			proposal += tmp[t].area * jBound;
 			SampleTri st;
-			st.a = tmp[t].a; st.b = tmp[t].b; st.c = tmp[t].c; st.cumArea = total;
+			st.a = A; st.b = B; st.c = C; st.m = m; st.jBound = jBound; st.cumArea = proposal;
 			m_sampleTris.push_back( st );
 		}
 		m_surfaceArea = total;
+		m_proposalTotal = proposal;
 
 		// Missed-component detector.  Marching tets only see sign changes at
 		// CELL CORNERS, so a feature thinner than a cell (a tiny nub, a thin
@@ -2874,16 +2903,17 @@ void SDFGeometry::EnsureSamplingStructure() const
 	} );
 }
 
-// Uniform-by-area surface sampling: triangle CDF weighted by chord area x
-// projection Jacobian (see EnsureSamplingStructure), sqrt-barycentric point on
-// the planar triangle, Newton-projected onto the zero set (so the sample lies
-// ON the sphere-traced surface and shadow rays see a consistent occluder),
-// normal from the exact gradient.  The J-weighted CDF and the J-corrected
-// GetArea make the realized on-surface density consistent with the light
-// sampler's pdfPosition = 1/GetArea() up to the zero-mean within-triangle
-// Jacobian residual and the J clamp near creases -- one order better than the
-// raw chord-area CDF, but NOT exact: surface components the sampling mesh
-// missed entirely are never sampled (see SuspectedMissedFeatureCells).
+// Uniform-by-area surface sampling (DL-459): a chord triangle drawn by
+// chord area x Jacobian bound, a sqrt-barycentric point on it, Newton-
+// projected onto the zero set (so the sample lies ON the sphere-traced
+// surface and shadow rays see a consistent occluder), accepted with
+// probability J / bound (J = the projection's area ratio), normal from the
+// exact gradient.  The accepted density is uniform on the projected surface
+// and GetArea is that surface's area (sum of per-triangle integrals of J),
+// so it matches the light sampler's pdfPosition = 1/GetArea() up to the
+// midpoint-rule quadrature of a smooth J and the first-order curvature
+// factor -- NOT for surface components the sampling mesh missed entirely,
+// which are never sampled (see SuspectedMissedFeatureCells).
 void SDFGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
 	EnsureSamplingStructure();
@@ -2900,42 +2930,64 @@ void SDFGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* co
 		return;
 	}
 
-	// Pick a triangle by the area CDF, then REUSE the pick variable: rescaling
-	// (target - cumPrev) / triArea yields a fresh uniform in [0,1), so the whole
-	// sample needs only TWO random dims (prand.x, prand.y) -- the same consumption
-	// pattern as every other geometry's UniformRandomPoint.  Consuming a third
-	// dim is hazardous under stratified / padded samplers (dims can be
-	// correlated), and measurably biased the NEE estimate when prand.z fed the
-	// barycentric directly.
-	const Scalar r0 = clampS( prand.x, Scalar(0), Scalar(0.9999999) );
-	const Scalar target = r0 * m_surfaceArea;
-	size_t lo = 0, hi = m_sampleTris.size() - 1;
-	while( lo < hi ) {
-		const size_t mid = ( lo + hi ) >> 1;
-		if( m_sampleTris[mid].cumArea < target ) {
-			lo = mid + 1;
-		} else {
-			hi = mid;
+	// Pick a triangle by the PROPOSAL CDF (chord area x jBound), then REUSE
+	// the pick variable: rescaling (target - cumPrev) / triWeight yields a
+	// fresh uniform in [0,1), so a candidate needs only TWO random dims
+	// (prand.x, prand.y) -- the same consumption pattern as every other
+	// geometry's UniformRandomPoint.  Consuming a third dim is hazardous
+	// under stratified / padded samplers (dims can be correlated), and
+	// measurably biased the NEE estimate when prand.z fed the barycentric
+	// directly.  DL-459: the projected candidate is accepted with
+	// probability J / jBound (see EnsureSamplingStructure), the accept
+	// variates and retries drawn from a stream seeded by prand's bits.
+	GeometricUtilities::PrandStream stream( prand, 0x534446 /*'SDF'*/ );
+	Scalar c0 = prand.x, c2 = prand.y;
+	Point3 pSample;
+	Vector3 nSample( 0, 1, 0 );
+	static const int kMaxCandidates = 4096;
+	bool accepted = false;
+	for( int attempt = 0; attempt < kMaxCandidates && !accepted; ++attempt ) {
+		const Scalar r0 = clampS( c0, Scalar(0), Scalar(0.9999999) );
+		const Scalar target = r0 * m_proposalTotal;
+		size_t lo = 0, hi = m_sampleTris.size() - 1;
+		while( lo < hi ) {
+			const size_t mid = ( lo + hi ) >> 1;
+			if( m_sampleTris[mid].cumArea < target ) {
+				lo = mid + 1;
+			} else {
+				hi = mid;
+			}
+		}
+		const SampleTri& st = m_sampleTris[lo];
+		const Scalar cumPrev = ( lo > 0 ) ? m_sampleTris[lo-1].cumArea : Scalar(0);
+		const Scalar triW = st.cumArea - cumPrev;
+		const Scalar r1 = ( triW > 0 ) ? clampS( ( target - cumPrev ) / triW, Scalar(0), Scalar(1) ) : clampS( prand.z, Scalar(0), Scalar(1) );
+
+		// uniform point on the triangle (sqrt warp)
+		const Scalar sq = std::sqrt( r1 );
+		const Scalar r2 = clampS( c2, Scalar(0), Scalar(1) );
+		const Scalar wa = Scalar(1) - sq;
+		const Scalar wb = sq * ( Scalar(1) - r2 );
+		const Scalar wc = sq * r2;
+		const Point3 x( st.a.x*wa + st.b.x*wb + st.c.x*wc,
+		                st.a.y*wa + st.b.y*wb + st.c.y*wc,
+		                st.a.z*wa + st.b.z*wb + st.c.z*wc );
+		const Scalar J = ProjectionJacobian( x, st.m, pSample, nSample );
+		accepted = stream.Next() * st.jBound < J;
+		if( !accepted ) {
+			c0 = stream.Next(); c2 = stream.Next();
 		}
 	}
-	const SampleTri& st = m_sampleTris[lo];
-	const Scalar cumPrev = ( lo > 0 ) ? m_sampleTris[lo-1].cumArea : Scalar(0);
-	const Scalar triArea = st.cumArea - cumPrev;
-	const Scalar r1 = ( triArea > 0 ) ? clampS( ( target - cumPrev ) / triArea, Scalar(0), Scalar(1) ) : clampS( prand.z, Scalar(0), Scalar(1) );
-
-	// uniform point on the triangle (sqrt warp)
-	const Scalar sq = std::sqrt( r1 );
-	const Scalar r2 = clampS( prand.y, Scalar(0), Scalar(1) );
-	const Scalar wa = Scalar(1) - sq;
-	const Scalar wb = sq * ( Scalar(1) - r2 );
-	const Scalar wc = sq * r2;
-	Point3 pSample( st.a.x*wa + st.b.x*wb + st.c.x*wc,
-	                st.a.y*wa + st.b.y*wb + st.c.y*wc,
-	                st.a.z*wa + st.b.z*wb + st.c.z*wc );
-	pSample = ProjectToSurface( pSample );
+	if( !accepted ) {
+		static std::atomic<bool> warned{ false };
+		bool expected = false;
+		if( warned.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEasyWarning( "SDFGeometry:: area sampler exhausted its rejection candidates (DL-459); that sample is not area-uniform" );
+		}
+	}
 
 	if( point )  { *point  = pSample; }
-	if( normal ) { *normal = GradientNormal( pSample ); }
+	if( normal ) { *normal = nSample; }
 	if( coord )  { *coord  = ( m_isHeightfield ? Point2( (pSample.x+m_hfRadius)/(2*m_hfRadius), (pSample.y+m_hfRadius)/(2*m_hfRadius) ) : cylUV( pSample, m_bbox ) ); }
 }
 
@@ -3137,6 +3189,7 @@ void SDFGeometry::InvalidateSamplingStructure()
 	m_samplingOnce = std::make_unique<std::once_flag>();
 	m_sampleTris.clear();
 	m_surfaceArea = 0;
+	m_proposalTotal = 0;
 	m_missedFeatureCells = 0;
 }
 
