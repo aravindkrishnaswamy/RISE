@@ -70,6 +70,11 @@ namespace RISE
 			Scalar				lambda_end;			///< End of spectral range (nm)
 			unsigned int		nSpectralSamples;	///< Spectral samples per MLT evaluation
 			bool				bUseHWSS;			///< Use Hero Wavelength Spectral Sampling
+			/// DL-461: spectral integral normalization (lambda_end - lambda_begin) / k_y,
+			/// k_y = integral of ybar over the band -- the same factor every other
+			/// spectral rasterizer carries as `mYNormalization`
+			/// (PixelBasedSpectralIntegratingRasterizer).  ~3.74 over [380, 780] nm.
+			Scalar				yNormalization;
 
 			virtual ~MLTSpectralRasterizer();
 
