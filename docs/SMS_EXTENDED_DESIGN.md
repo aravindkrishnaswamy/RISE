@@ -1695,6 +1695,6 @@ dielectric Fresnel per interface; normalization pinned by the no-slab direct
 render). `SMSSupersededRowsTest --section slab-closed` gates k = 2 (T-T,
 1.0012..1.0017) and k = 3 (side T-R-T, 1.0011 +/- 0.0071; +9.7 % with the
 old identity). The k >= 4 chains (vertical-edge corners, T-R-R-T) are
-heavy-tailed and read about half their closed form (DL-465). The ball-lens
+heavy-tailed and read about half their closed form (DL-466). The ball-lens
 deficit the row also recorded did not survive more salts (n 192: 0.9998 +/-
 0.0018); its n 8 reading was a skewed small sample.

@@ -311,7 +311,7 @@ namespace
         // estimator A's rediscovery identity (fixed; slab-closed gates it);
         // it now reads -0.5 % +/- 0.14 % against depth-8 VCM (n 288), the
         // heavy-tailed 4+-vertex corner/TRRT chains reading about half
-        // their closed form (DL-465).
+        // their closed form (DL-466).
         const Light cases[]={
             {"spot",kSpot,{"uniform","snell","extended","bdpt8","vcm"},"extended","uniform",0.005},
             {"omni",kOmni,{"uniform:0","extended:0","bdpt16","vcm"},"extended:0","uniform:0",0.01},
