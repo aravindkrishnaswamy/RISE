@@ -16,6 +16,15 @@ finite-area controls were 0.443173 / 0.443129 / 0.446933. Finishing this
 requires a BDPT design for the missing camera strategy. The guard and transient test were
 withdrawn; only the ledger disposition was committed.
 
+**Superseded 2026-10-08 (`debt-dl311`, DL-311 closed):** the camera-strategy
+loss above came from excluding the plane INSIDE `LightSampler` while it
+stayed on the luminaries list, so BDPT's s=0 vertex never set
+`lightSamplingStrategyAbsent` and its phantom NEE term stayed in the MIS
+denominator.  The shipped fix makes `InfinitePlaneGeometry::CanBeAreaLight()`
+return false, so `LuminaryManager` refuses the plane and every integrator
+takes its existing non-NEE-sampleable path; no BDPT design change was needed
+(`tests/InfinitePlaneLuminaireTest.cpp`).
+
 ## DL-332 initial slice calibration (superseded budgets below)
 
 Part B now uses explicit, independent Sobol salts on the two sides of
@@ -494,7 +503,7 @@ triggered. No reserved implementation file was changed.
 
 | Item | Implementation / test / fixture files |
 |---|---|
-| DL-311 stopped | docs/DEBT_LEDGER.md; this validation record. LightSampler guard and transient test withdrawn. |
+| DL-311 stopped | docs/DEBT_LEDGER.md; this validation record. LightSampler guard and transient test withdrawn. (Closed later, 2026-10-08, by `debt-dl311`; see above.) |
 | DL-332 | tests/SSSExteriorIndexInvarianceTest.cpp; shared records. DL-392 helper experiment withdrawn. |
 | DL-355 / 390 | tests/WeaveGapShadowTransmittanceTest.cpp; docs/DL294_NARROW_FOV_SPLAT.md; shared records. |
 | DL-340 | src/Library/Shaders/PathTracingIntegrator.cpp; tests/SMSMediumAnchorTest.cpp; tests/SMSRenderTestSupport.h; shared records. |
@@ -1034,7 +1043,7 @@ OidnConfig and all rasterizer/Job/API callers, plus the Exterior, SSS,
 Weave, OIDN and SMS test families. No new solver tolerance was introduced.
 
 Review is against master115aee62e plus the completed integration tree.
-Known user-directed design stops remain open: DL-311, DL-353 remainder,
+Known user-directed design stops remain open: DL-311 (closed later, 2026-10-08), DL-353 remainder,
 DL-391, DL-396 and DL-398. DL-331's printed photon residual is also open.
 At this pre-DL-435 checkpoint, the ledger's thirteen strikes and dated
 recount are prospective on this branch; they take effect on master only after zero-P1 review and no-ff

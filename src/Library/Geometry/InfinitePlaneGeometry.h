@@ -49,6 +49,19 @@ namespace RISE
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
 			Scalar GetArea( ) const;
 
+			// DL-311: an infinite plane has no finite uniform area density --
+			// GetArea() is the RISE_INFINITY sentinel and UniformRandomPoint()
+			// lands at ~1e308 -- so it cannot honour the area-sampling contract
+			// (IGeometry::CanBeAreaLight).  Declining it keeps an emissive
+			// infinite plane off the luminaries list: no light-selection weight,
+			// no pdfPosition, no photon budget, no BDPT/VCM light subpaths.  Its
+			// emission is reached only by camera / BSDF-sampled hits, which every
+			// integrator weights 1 (no partner strategy exists; BDPT's
+			// lightSamplingStrategyAbsent, VCM's zero competing light pdf, PT's
+			// non-NEE-sampleable gate).  Before this, power = exitance * DBL_MAX
+			// overflowed to inf above scale 1 and poisoned the alias table.
+			bool CanBeAreaLight() const { return false; }
+
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
 
 			//! IGeometry::DistanceToSurface -- EXACT: the plane is z = 0, so the answer is |z|
