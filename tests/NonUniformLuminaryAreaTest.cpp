@@ -57,6 +57,9 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Interfaces/ITransformable.h"
+#include "../src/Library/Interfaces/IGeometry.h"
+#include "../src/Library/Interfaces/IAnimator.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -173,7 +176,57 @@ static double EllipsoidArea( double a, double b, double c, double zThresh = -1, 
 	return total;
 }
 
-static void CheckArea( const IObject* o, double expected, const char* label )
+//! The object's linear map, read back from its own final transform as the
+//! images of the basis vectors (convention-free): world = origin + A s.
+struct LinearMap { double A[3][3]; double o[3]; bool ok; };
+static LinearMap MapOf( const IObject* obj )
+{
+	LinearMap m{}; m.ok = false;
+	const ITransformable* t = dynamic_cast<const ITransformable*>( obj );
+	if( !t ) return m;
+	const Matrix4 M = t->GetFinalTransformMatrix();
+	const Point3 o = Point3Ops::Transform( M, Point3( 0, 0, 0 ) );
+	m.o[0] = o.x; m.o[1] = o.y; m.o[2] = o.z;
+	for( int c = 0; c < 3; c++ ) {
+		const Point3 e = Point3Ops::Transform( M, Point3( c == 0, c == 1, c == 2 ) );
+		m.A[0][c] = e.x - o.x; m.A[1][c] = e.y - o.y; m.A[2][c] = e.z - o.z;
+	}
+	m.ok = true;
+	return m;
+}
+
+//! World area of the unit sphere under A (and of its part where `pred`
+//! holds on the world point relative to the origin), by a (theta, phi)
+//! midpoint quadrature of |A s_theta x A s_phi|.
+template<class Pred>
+static double MappedSphereArea( const LinearMap& m, Pred pred, double* region )
+{
+	const int N = 1200;
+	double total = 0, reg = 0;
+	for( int j = 0; j < N; j++ ) for( int i = 0; i < N; i++ ) {
+		const double th = kPi * ( i + 0.5 ) / N, ph = 2 * kPi * ( j + 0.5 ) / N;
+		const double st = std::sin( th ), ct = std::cos( th ), sp = std::sin( ph ), cp = std::cos( ph );
+		const double s[3] = { st*cp, st*sp, ct }, dt[3] = { ct*cp, ct*sp, -st }, dp[3] = { -st*sp, st*cp, 0 };
+		double x[3], a[3], b[3];
+		for( int r = 0; r < 3; r++ ) {
+			x[r] = m.A[r][0]*s[0] + m.A[r][1]*s[1] + m.A[r][2]*s[2];
+			a[r] = m.A[r][0]*dt[0] + m.A[r][1]*dt[1] + m.A[r][2]*dt[2];
+			b[r] = m.A[r][0]*dp[0] + m.A[r][1]*dp[1] + m.A[r][2]*dp[2];
+		}
+		const double cx = a[1]*b[2]-a[2]*b[1], cy = a[2]*b[0]-a[0]*b[2], cz = a[0]*b[1]-a[1]*b[0];
+		const double dA = std::sqrt( cx*cx + cy*cy + cz*cz ) * ( kPi / N ) * ( 2 * kPi / N );
+		total += dA;
+		if( pred( x ) ) reg += dA;
+	}
+	if( region ) *region = reg;
+	return total;
+}
+
+//! A sheared, rotated, non-uniformly scaled map (column-major 4x4 for the
+//! standard_object `matrix` parameter).
+static const char* kShearMatrix = "1.2 0.7 0.1 0   -0.3 0.6 0.4 0   0.2 -0.5 0.25 0   0 0 0 1";
+
+static void CheckArea( const IObject* o, double expected, const std::string& label )
 {
 	const double got = o ? double( o->GetArea() ) : -1;
 	std::cout << "  A " << label << ": GetArea " << got << " expected " << expected
@@ -223,9 +276,17 @@ static void TestAreas()
 		CylinderScaled( "cylell", 1, 2, 2, 1, 1 ),
 		TorusScaled( "tor", 1, 0.3, 1, 0.2, 1 ),
 		DiskScaled( "dsk", 1, 2, 0.5, 7 ),
+		Shape{ "rot", "sphere_geometry\n{\n\tname geo_rot\n\tradius 1\n}\n\n", "\tscale 2 1 0.5\n\torientation 30 40 50\n" },
+		Shape{ "shr", "sphere_geometry\n{\n\tname geo_shr\n\tradius 1\n}\n\n", std::string( "\tmatrix " ) + kShearMatrix + "\n" },
 	};
 	for( const Shape& s : shapes ) text += ObjectText( s, "lum", "0 0 0" );
 	Fixture f( text );
+	for( const char* n : { "rot", "shr" } ) {
+		const LinearMap m = MapOf( f.Object( n ) );
+		Check( m.ok, std::string( "DL-448 map readable: " ) + n );
+		if( m.ok ) CheckArea( f.Object( n ), MappedSphereArea( m, []( const double* ) { return false; }, nullptr ),
+			std::string( n ) == "rot" ? "sphere scale (2,1,0.5) x orientation (30,40,50)" : "sphere under a shear matrix" );
+	}
 
 	CheckArea( f.Object( "sph" ), EllipsoidArea( 2, 1, 0.5 ), "sphere r1 scale (2,1,0.5) = ellipsoid quadrature" );
 	CheckArea( f.Object( "ell" ), EllipsoidArea( 2, 1, 0.5 ), "ellipsoid_geometry (2,1,0.5) unscaled" );
@@ -263,7 +324,7 @@ static double SampleFraction( const IObject* o, Pred inRegion, unsigned N )
 	return double( hits ) / N;
 }
 
-static void CheckFraction( double got, double expected, unsigned N, const char* label )
+static void CheckFraction( double got, double expected, unsigned N, const std::string& label )
 {
 	const double sigma = std::sqrt( expected * ( 1 - expected ) / N );
 	std::cout << "  B " << label << ": sample fraction " << got << " area fraction " << expected
@@ -280,8 +341,45 @@ static void TestUniformity()
 	text += ObjectText( EllipsoidScaled( "ellsq", 1.5, 1, 0.5, 0.5, 2, 1 ), "lum", "0 0 0" );
 	text += ObjectText( CylinderScaled( "cyl", 1, 2, 0.5, 0.5, 3 ), "lum", "0 0 0" );
 	text += ObjectText( TorusScaled( "tor", 1, 0.3, 1, 0.2, 1 ), "lum", "0 0 0" );
+	text += ObjectText( Shape{ "rot", "sphere_geometry\n{\n\tname geo_rot\n\tradius 1\n}\n\n", "\tscale 2 1 0.5\n\torientation 30 40 50\n" }, "lum", "0 0 0" );
+	text += ObjectText( Shape{ "shr", "sphere_geometry\n{\n\tname geo_shr\n\tradius 1\n}\n\n", std::string( "\tmatrix " ) + kShearMatrix + "\n" }, "lum", "0 0 0" );
+	text += ObjectText( EllipsoidScaled( "tip", 100, 1, 1, 1, 10, 10 ), "lum", "0 0 0" );
 	Fixture f( text );
 	const unsigned N = 40000;
+	{
+		// A needle whose tips sweep normals a coarse tessellation cannot
+		// resolve: a tessellation-maximum stretch bound read 35.5 against
+		// the true supremum 99.6 here and under-sampled the tips ~2.8x.
+		LinearMap m{}; m.ok = true;
+		m.A[0][0] = 100; m.A[1][1] = 10; m.A[2][2] = 10;
+		auto tip = []( const double* x ) { return std::fabs( x[0] ) > 90.0; };
+		double reg = 0;
+		const double tot = MappedSphereArea( m, tip, &reg );
+		const IObject* o = f.Object( "tip" );
+		CheckFraction( SampleFraction( o, []( const Point3& p, const Vector3& ) { return std::fabs( p.x ) > 90.0; }, N ),
+			reg / tot, N, "ellipsoid (100,1,1) scale (1,10,10), tip |x|>90" );
+		if( o && o->GetGeometry() ) {
+			// sigma1*sigma2 of diag(1,10,10) is 100; acceptance = E[J]/100.
+			std::cout << "    rejection acceptance (rigorous bound) "
+				<< o->GetArea() / o->GetGeometry()->GetArea() / 100.0 << "\n";
+		}
+	}
+	for( const char* n : { "rot", "shr" } ) {
+		const LinearMap m = MapOf( f.Object( n ) );
+		if( !m.ok ) { Check( false, std::string( "DL-448 map readable: " ) + n ); continue; }
+		// Region: the world points within 0.35 of the surface's own x-extent
+		// end (|x| > 0.65 max|x|), a band whose area share the old
+		// object-uniform sampler gets wrong.
+		double xmax = 0;
+		for( int c = 0; c < 3; c++ ) xmax += m.A[0][c] * m.A[0][c];
+		xmax = std::sqrt( xmax );
+		auto inBand = [xmax]( const double* x ) { return std::fabs( x[0] ) > 0.65 * xmax; };
+		double reg = 0;
+		const double tot = MappedSphereArea( m, inBand, &reg );
+		CheckFraction( SampleFraction( f.Object( n ), [&]( const Point3& p, const Vector3& ) {
+			const double x[3] = { p.x - m.o[0], p.y - m.o[1], p.z - m.o[2] }; return inBand( x ); }, N ),
+			reg / tot, N, std::string( n ) == "rot" ? "sphere scale (2,1,0.5) x orientation, |x| band" : "sphere under a shear, |x| band" );
+	}
 
 	double reg = 0;
 	double tot = EllipsoidArea( 2, 1, 0.5, 0.9, &reg );
@@ -328,7 +426,7 @@ public:
 	}
 };
 
-static bool RenderOnce( const std::string& sceneText, double& mean )
+static bool RenderOnce( const std::string& sceneText, double& mean, const bool animation = false )
 {
 	const std::string path = TempPath( "render" );
 	{ std::ofstream ofs( path ); ofs << sceneText; }
@@ -342,7 +440,7 @@ static bool RenderOnce( const std::string& sceneText, double& mean )
 			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( g_seedBase + g_renderIndex, 0x448u ) );
 			std::srand( g_seedBase + g_renderIndex++ );
-			const bool bRendered = pJob->Rasterize();
+			const bool bRendered = animation ? pJob->RasterizeAnimation( 0.0, 1.0, 1, false, false ) : pJob->Rasterize();
 			SobolSamplerTestHooks::ValueSalt().store( 0u );
 			if( bRendered && !pCap->pixels.empty() ) {
 				double sum = 0; ok = true;
@@ -364,13 +462,13 @@ static bool RenderOnce( const std::string& sceneText, double& mean )
 
 struct Stat { double mean, se; bool ok; };
 
-static Stat RenderN( const std::string& text, int n )
+static Stat RenderN( const std::string& text, int n, const bool animation = false )
 {
 	Stat s{ 0, 0, true };
 	std::vector<double> v;
 	for( int i = 0; i < n; i++ ) {
 		double m = 0;
-		if( !RenderOnce( text, m ) ) { s.ok = false; return s; }
+		if( !RenderOnce( text, m, animation ) ) { s.ok = false; return s; }
 		v.push_back( m );
 	}
 	for( double x : v ) s.mean += x;
@@ -384,11 +482,11 @@ static Stat RenderN( const std::string& text, int n )
 //! Floor (rho 0.5) at z = 0 seen by an orthographic camera at z = 1
 //! looking down; the emitter hangs above the camera, so only
 //! emitter -> floor -> camera transport is imaged.
-static std::string RenderScene( const Shape& emitter, const char* position, const std::string& rasterizer )
+static std::string RenderScene( const Shape& emitter, const char* position, const std::string& rasterizer, const std::string& extra = "", const double exposure = 0 )
 {
 	return std::string( "RISE ASCII SCENE 7\n\n" ) +
 		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
-		"orthographic_camera\n{\n\tlocation 0 0 1\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 4 4\n}\n\n"
+		+ Fmt( "orthographic_camera\n{\n\tlocation 0 0 1\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 4 4\n\texposure %g\n}\n\n", exposure ) +
 		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n"
 		"uniformcolor_painter\n{\n\tname grey\n\tcolor 0.5 0.5 0.5\n}\n\n"
 		"lambertian_material\n{\n\tname floor_mat\n\treflectance grey\n}\n\n"
@@ -396,7 +494,7 @@ static std::string RenderScene( const Shape& emitter, const char* position, cons
 		"clippedplane_geometry\n{\n\tname geo_floor\n\tpta -200 -200 0\n\tptb 200 -200 0\n\tptc 200 200 0\n\tptd -200 200 0\n\tdoublesided FALSE\n}\n\n"
 		"standard_object\n{\n\tname floor\n\tgeometry geo_floor\n\tmaterial floor_mat\n}\n\n"
 		+ ObjectText( emitter, "lum", position ) +
-		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" + rasterizer;
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" + extra + rasterizer;
 }
 
 static int g_spp = 256;
@@ -463,11 +561,105 @@ static void TestRenders()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// D: animation
+//////////////////////////////////////////////////////////////////////
+static std::string Timeline( const char* type, const char* element, const char* param, const char* v0, const char* v1 )
+{
+	return Fmt( "timeline\n{\n\telement_type %s\n\telement %s\n\tparam %s\n\tinterpolator linear\n\ttime 0\n\tvalue %s\n\ttime 1\n\tvalue %s\n}\n\n",
+		type, element, param, v0, v1 );
+}
+
+static void TestAnimation()
+{
+	std::cout << "D: animation\n";
+	// D1: motion blur (camera exposure 1 -> every sample calls
+	// EvaluateAtTime on a render worker, re-finalizing the transform while
+	// other workers sample the luminary).  The orientation keyframe moves a
+	// NON-uniformly scaled sphere rigidly (one cached metric); the reference
+	// is the same world surface authored as an ellipsoid_geometry (a
+	// similarity transform).  PT only: RasterizeAnimation under BDPT reads
+	// ~1e-3 of PT in this harness even with no timeline and exposure 0, for
+	// the authored ellipsoid as well -- not a DL-448 path.
+	{
+		const Shape s = SphereScaled( "e", 1.2, 0.6, 0.15 );
+		const Shape a = EllipsoidScaled( "e", 1.2, 0.6, 0.15, 1, 1, 1 );
+		const std::string tl = Timeline( "object", "e", "orientation", "0 0 0", "0 0 90" );
+		std::cout << "  D1 motion-blurred rotation of a scaled sphere\n";
+		const Stat pt  = RenderN( RenderScene( s, "0.3 0 2.6", RasPT(), tl, 1.0 ), g_repeats, true );
+		const Stat ref = RenderN( RenderScene( a, "0.3 0 2.6", RasPT(), tl, 1.0 ), g_repeats, true );
+		Report( "scaled PT  ", pt ); Report( "authored PT", ref );
+		Check( pt.ok && ref.ok && pt.mean > 0, "DL-448 motion-blur renders complete" );
+		Check( Agree( pt, ref ), "DL-448 motion blur: rotating scaled sphere vs authored ellipsoid" );
+	}
+	// D1b: an ANIMATED non-uniform scale under motion blur -- every sample
+	// is a new metric, the keyed cache fills after kMaxWorldAreaEntries,
+	// and the sphere then evaluates its world area per call from its normal
+	// histogram.  Reference: the same motion blur of an authored
+	// ellipsoid_geometry whose RADII are keyframed identically (a geometry
+	// keyframe under a similarity transform -- the pre-existing path).
+	// SHRINKING only: the top-level acceleration is built once per frame
+	// and not refit per temporal sample, so a surface that grows past its
+	// t = 0 bounds loses BSDF-sampled emitter hits under any geometry.
+	// NOT the reference: the time-average of static renders.  A blurred
+	// animated luminary reads far from it on the PRE-EXISTING path too (a
+	// uniformly scaled sphere 1 -> 0.5: blurred 0.133 vs time-average
+	// 0.088, DL-457) -- not a DL-448 effect.
+	{
+		const Shape s = SphereScaled( "e", 1.2, 0.6, 0.15 );
+		const Shape a = EllipsoidScaled( "e", 1.2, 0.6, 0.15, 1, 1, 1 );
+		const std::string tl  = Timeline( "object", "e", "scale", "1.2 0.6 0.15", "0.6 0.3 0.15" );
+		const std::string tla = Timeline( "geometry", "geo_e", "radii", "1.2 0.6 0.15", "0.6 0.3 0.15" );
+		std::cout << "  D1b motion-blurred animated non-uniform scale (exhausted cache)\n";
+		const Stat pt  = RenderN( RenderScene( s, "0.3 0 2.6", RasPT(), tl, 1.0 ), g_repeats, true );
+		const Stat ref = RenderN( RenderScene( a, "0.3 0 2.6", RasPT(), tla, 1.0 ), g_repeats, true );
+		Report( "scaled PT  ", pt ); Report( "authored PT", ref );
+		Check( pt.ok && ref.ok && pt.mean > 0, "DL-448 animated-scale motion blur renders (no crash, finite)" );
+		Check( Agree( pt, ref ), "DL-448 animated-scale motion blur: scaled sphere vs radii-keyframed ellipsoid" );
+	}
+	// D2: a keyframed GEOMETRY parameter must re-key the world-area entry.
+	{
+		std::string text = kFixtureHeader;
+		text += ObjectText( SphereScaled( "sph", 2, 1, 0.5 ), "lum", "0 0 0" );
+		text += ObjectText( Shape{ "box", "box_geometry\n{\n\tname geo_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n", "\tscale 2 1 0.5\n" }, "lum", "0 0 0" );
+		text += Timeline( "geometry", "geo_sph", "radius", "1", "2" );
+		text += Timeline( "geometry", "geo_box", "width", "1", "3" );
+		Fixture f( text );
+		IScene* scene = f.job ? f.job->GetScene() : nullptr;
+		for( const double t : { 0.0, 1.0, 0.5, 0.0 } ) {
+			if( !scene ) break;
+			scene->GetAnimator()->EvaluateAtTime( t );
+			scene->GetObjects()->PrepareForRendering();
+			const double r = 1 + t, w = 1 + 2 * t;
+			char label[128];
+			std::snprintf( label, sizeof( label ), "keyframed sphere radius %g, scale (2,1,0.5)", r );
+			CheckArea( f.Object( "sph" ), EllipsoidArea( 2 * r, r, 0.5 * r ), label );
+			// Box w x 1 x 1 scaled (2,1,0.5): faces 2w x 1, 2w x 0.5, 1 x 0.5.
+			std::snprintf( label, sizeof( label ), "keyframed box width %g, scale (2,1,0.5)", w );
+			CheckArea( f.Object( "box" ), 2 * ( 2*w*1 + 2*w*0.5 + 1*0.5 ), label );
+			// Samples lie on the CURRENT box (not a stale triangle CDF).
+			bool onBox = true;
+			for( unsigned i = 0; i < 256; i++ ) {
+				Point3 p; Vector3 n;
+				f.Object( "box" )->UniformRandomPoint( &p, &n, nullptr, Point3( ( i + 0.5 ) / 256, RadInv( 3, i ), RadInv( 5, i ) ) );
+				const double ex = std::fabs( std::fabs( p.x ) - w ), ey = std::fabs( std::fabs( p.y ) - 0.5 ), ez = std::fabs( std::fabs( p.z ) - 0.25 );
+				const bool inside = std::fabs( p.x ) <= w + 1e-9 && std::fabs( p.y ) <= 0.5 + 1e-9 && std::fabs( p.z ) <= 0.25 + 1e-9;
+				if( !inside || std::min( ex, std::min( ey, ez ) ) > 1e-9 ) onBox = false;
+			}
+			std::snprintf( label, sizeof( label ), "DL-448 keyframed box samples lie on the width-%g box", w );
+			Check( onBox, label );
+		}
+	}
+}
+
 //! H: under a SIMILARITY transform the new sampling path is not taken, so
 //! GetArea() and every UniformRandomPoint() output must be bit-identical to
 //! the pre-DL-448 build (EllipsoidGeometry excepted: its own sampler and
-//! area were deliberately fixed).  Prints one FNV hash per shape over the
-//! area and 4096 samples, for an A/B between builds.
+//! area were deliberately fixed).  GATED within the build: the object's
+//! area must equal objArea * |det|^(2/3) and every sampled world point and
+//! UV must equal the geometry's own sample pushed through the object's
+//! matrix, bit for bit.  Also prints one FNV hash per shape for an A/B
+//! between builds (identical to 932f7c0a0's).
 static void PrintSimilarityHashes()
 {
 	std::cout << "H: similarity-transform sampler hashes (compare across builds)\n";
@@ -486,6 +678,22 @@ static void PrintSimilarityHashes()
 		const IObject* o = f.Object( s.name );
 		unsigned long long h = 1469598103934665603ULL;
 		auto mix = [&h]( double v ) { const unsigned char* b = reinterpret_cast<const unsigned char*>( &v ); for( std::size_t k = 0; k < sizeof( v ); k++ ) { h ^= b[k]; h *= 1099511628211ULL; } };
+		bool identical = o && o->GetGeometry();
+		if( identical ) {
+			const Matrix4 M = dynamic_cast<const ITransformable*>( o )->GetFinalTransformMatrix();
+			const double det = std::fabs( Matrix4Ops::Determinant( M ) );
+			const double expectArea = o->GetGeometry()->GetArea() * std::pow( det, 2.0 / 3.0 );
+			identical = std::memcmp( &expectArea, &static_cast<const double&>( o->GetArea() ), sizeof( double ) ) == 0;
+			for( unsigned i = 0; identical && i < 4096; i++ ) {
+				const Point3 pr( ( i + 0.5 ) / 4096, RadInv( 3, i ), RadInv( 5, i ) );
+				Point3 p, pg; Vector3 n, ng; Point2 c, cg;
+				o->UniformRandomPoint( &p, &n, &c, pr );
+				o->GetGeometry()->UniformRandomPoint( &pg, &ng, &cg, pr );
+				pg = Point3Ops::Transform( M, pg );
+				identical = p.x == pg.x && p.y == pg.y && p.z == pg.z && c.x == cg.x && c.y == cg.y;
+			}
+		}
+		Check( identical, std::string( "DL-448 similarity transform takes the unchanged path, bit for bit: " ) + s.name );
 		if( o ) {
 			mix( o->GetArea() );
 			for( unsigned i = 0; i < 4096; i++ ) {
@@ -508,7 +716,8 @@ int main( int argc, char** argv )
 	if( only == "all" || only == "A" ) TestAreas();
 	if( only == "all" || only == "B" ) TestUniformity();
 	if( only == "all" || only == "C" ) TestRenders();
-	if( only == "H" ) PrintSimilarityHashes();
+	if( only == "all" || only == "D" ) TestAnimation();
+	if( only == "all" || only == "H" ) PrintSimilarityHashes();
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";
 	return failCount == 0 ? 0 : 1;
 }

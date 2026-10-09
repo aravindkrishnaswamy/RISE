@@ -40,7 +40,8 @@ namespace RISE
 			// (Nanson) -- acceptance >= 1/2.  The old marginal-theta CDF with
 			// uniform phi was area-uniform only for a == b, and GetArea()
 			// was a ~1 % approximation (Thomsen) the sampler never matched.
-			// m_dArea is the exact area by a 512 x 512 midpoint quadrature.
+			// m_dArea is the area by a 256 x 64 midpoint quadrature (~1e-5;
+			// periodic in phi, so phi converges spectrally).
 			Scalar			m_dArea;
 			Scalar			m_dJacobianMax;
 

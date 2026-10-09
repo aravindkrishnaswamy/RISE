@@ -582,8 +582,8 @@ void EllipsoidGeometry::RegenerateData( )
 	const Scalar b = m_vRadius.y;
 	const Scalar c = m_vRadius.z;
 	const Scalar a2 = a*a, b2 = b*b, c2 = c*c;
-	static const unsigned int THETA_STEPS = 512;
-	static const unsigned int PHI_STEPS = 512;
+	static const unsigned int THETA_STEPS = 256;
+	static const unsigned int PHI_STEPS = 64;
 	Scalar cos2P[PHI_STEPS], sin2P[PHI_STEPS];
 	for( unsigned int j = 0; j < PHI_STEPS; j++ ) {
 		const Scalar phi = TWO_PI * (j + 0.5) / Scalar(PHI_STEPS);

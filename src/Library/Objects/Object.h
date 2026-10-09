@@ -27,6 +27,8 @@
 #include <atomic>	// the two one-shot proximity diagnostic latches below
 #include <typeinfo>	// DescribeKind names the geometry's own type
 #include <memory>	// DL-448 lazily built world-area sampling cache
+#include <mutex>
+#include <vector>
 
 namespace RISE
 {
@@ -136,36 +138,77 @@ namespace RISE
 			//! transform.  Object-space-uniform samples pushed through a
 			//! non-uniform map are NOT uniform in world area: the local
 			//! area stretch is J(n) = |det L| * |L^-T n| (n the object-space
-			//! unit geometric normal).  Two exact constructions, built
-			//! LAZILY (only luminaries / point-set SSS objects ever sample or
-			//! ask for area, and the build can cost milliseconds):
-			//!  - triangle surfaces (meshes, box, displaced): a per-instance
-			//!    world-area CDF over the exact triangles;
+			//! unit geometric normal).  Two exact constructions:
+			//!  - triangle surfaces (meshes, box, displaced): a world-area
+			//!    CDF over the exact triangles;
 			//!  - every other (curved) shape: rejection of the geometry's own
 			//!    object-uniform sample with probability J/Jbound, so the
-			//!    accepted density is world-uniform, with the world area
-			//!    A_obj * E[J] from a deterministic 2^16-point Halton
-			//!    quadrature of the same sampler.
+			//!    accepted density is world-uniform; world area = object area
+			//!    x a Richardson-extrapolated tessellation world/object ratio.
 			//! Either way pdfPosition = 1/GetArea() stays exact, so no
-			//! consumer changes.  Per instance: geometry can be shared by
-			//! objects with different transforms.  Immutable once built.
+			//! consumer changes.
+			//!
+			//! KEYING.  Everything here depends on the transform only through
+			//! the metric G = L^T L (rotation-invariant), and on the geometry
+			//! (pointer, area, bounding box -- a keyframed geometry parameter
+			//! changes one of them).  An entry is built LAZILY at first use
+			//! (only luminaries / point-set SSS objects sample or ask for
+			//! area) and matched by that key, so rigid motion blur
+			//! (EvaluateAtTime per sample, on render workers) re-uses one
+			//! entry.  OWNERSHIP: entries are retained by the object for its
+			//! whole life (never freed while a render could hold one); the
+			//! hot path reads the current entry through an acquire-loaded
+			//! raw pointer and takes no lock on a hit.  At most
+			//! kMaxWorldAreaEntries keys are built; past that (an animated
+			//! non-uniform SCALE under motion blur) a CURVED shape evaluates
+			//! its world area per call from a stored area-weighted normal
+			//! histogram (sqrt(n^T adj(G) n) summed over 64x64 octahedral
+			//! bins, a few microseconds) with the rigorous stretch bound, and
+			//! a triangle shape falls back to |det|^(2/3) with a warning.
+			struct WorldAreaKey
+			{
+				const IGeometry*		geometry = 0;
+				Scalar					geomArea = 0;
+				Point3					bbll, bbur;
+				Scalar					G[6] = { 0, 0, 0, 0, 0, 0 };	//!< 00 11 22 01 02 12
+				bool SameGeometry( const WorldAreaKey& o ) const;
+				bool Matches( const WorldAreaKey& o ) const;
+			};
 			struct WorldAreaSampling
 			{
+				WorldAreaKey			key;
 				Scalar					worldAreaScale = 0;		//!< world area / object area
-				TriangleListType		triangles;				//!< triangle path (object space)
+				std::shared_ptr<const TriangleListType>	triangles;	//!< triangle path (object space)
 				std::vector<Scalar>		cdf;					//!< normalized world-area CDF
 				bool					rejection = false;		//!< curved path, J varies
-				Scalar					jacobianBound = 0;		//!< >= max J (curved path)
+				Scalar					jacobianBound = 0;		//!< >= sup J (curved path)
+				Scalar					acceptance = 1;			//!< E[J]/jacobianBound (diagnostic)
+				//! Curved shapes: area-weighted object normal histogram (geometry-only, shared).
+				struct NormalBins { std::vector<Vector3> n; std::vector<Scalar> w; Scalar wSum = 0; };
+				std::shared_ptr<const NormalBins>	normalBins;
 			};
+			//! What a sampling call needs, by value (no ownership traffic).
+			struct WorldAreaView
+			{
+				Scalar					worldAreaScale = 0;
+				const TriangleListType*	triangles = 0;
+				const std::vector<Scalar>*	cdf = 0;
+				bool					rejection = false;
+				Scalar					jacobianBound = 0;
+			};
+			static const std::size_t kMaxWorldAreaEntries = 16;
 			void ResetWorldAreaSampling();
-			const WorldAreaSampling& GetWorldAreaSampling() const;
-			std::shared_ptr<const WorldAreaSampling> BuildWorldAreaSampling() const;
+			void ComputeWorldAreaKey( WorldAreaKey& key ) const;
+			//! The sampling view for the CURRENT geometry/transform; false
+			//! when none can be had (caller takes the |det|^(2/3) path).
+			bool AcquireWorldAreaView( WorldAreaView& view ) const;
+			std::shared_ptr<const WorldAreaSampling> BuildWorldAreaSampling( const WorldAreaKey& key ) const;
 			Scalar SurfaceAreaJacobian( const Vector3& objNormal ) const;
 			bool m_needsWorldAreaSampling;
-			//! Lazily built; read/written only through std::atomic_load /
-			//! std::atomic_store (a memoized pure function of the immutable
-			//! geometry + transform, reset when either changes).
-			mutable std::shared_ptr<const WorldAreaSampling> m_worldAreaSampling;
+			mutable std::atomic<const WorldAreaSampling*> m_currentWorldArea;
+			mutable std::atomic<bool> m_worldAreaCacheFull;
+			mutable std::mutex m_worldAreaMutex;
+			mutable std::vector<std::shared_ptr<const WorldAreaSampling>> m_worldAreaEntries;	//!< guarded by m_worldAreaMutex
 
 			//! World-LINEAR scaling of the transform's linear part,
 			//! |det|^(1/3) -- the length-measure sibling of
