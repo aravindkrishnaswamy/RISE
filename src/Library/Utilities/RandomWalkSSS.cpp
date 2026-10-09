@@ -25,6 +25,25 @@
 
 using namespace RISE;
 
+Scalar RandomWalkSSS::EntryFacing( const RayIntersectionGeometric& ri,
+	const IObject* object, const Vector3& wo )
+{
+	// The incoming segment contains no earlier hit on this body. Its
+	// midpoint is strictly on the arrival side, without a surface epsilon.
+	// A certified mesh signs this point by parity, independent of winding.
+	if( object && !ri.bOpenSheet && ri.HasTrueGeomSide() && ri.range > 0 ) {
+		const Point3 probe = Point3Ops::mkPoint3( ri.ray.origin,
+			ri.ray.Dir() * ( ri.range * Scalar( 0.5 ) ) );
+		Scalar distance = 0;
+		bool exact = false;
+		if( object->SignedDistanceLower( probe, Scalar( 1e-3 ), distance, exact ) && distance != 0 ) {
+			const Scalar cosine = fabs( Vector3Ops::Dot( ri.vGeomNormal, wo ) );
+			return distance > 0 ? cosine : -cosine;
+		}
+	}
+	return ri.BSSRDFEntryFacing( wo );
+}
+
 BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 	const RayIntersectionGeometric& ri,
 	const IObject* pObject,

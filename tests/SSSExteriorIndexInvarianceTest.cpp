@@ -1944,10 +1944,8 @@ namespace
 	//! duplicate, so certified watertight.  The walk must not cross into
 	//! B from outside it, whatever B's winding: round 2's true-facing test
 	//! read an inward-wound B inside-out (variant 1: master 0.9989 ->
-	//! 0.8225; variant 2: 0.7658 -> 0.6640).  Variant 2 reads 0.766 on
-	//! master already (a random-walk mesh wound inward, an authoring error,
-	//! loses energy at its own entry gate), so it is pinned at that value
-	//! (filed as DL-414).
+	//! 0.8225; variant 2: 0.7658 -> 0.6640).  DL-414 removes the certified inward mesh entry loss: every
+	//! variant must conserve energy in the uniform environment.
 	std::string BuildWindingScene( int variant, unsigned int samples )
 	{
 		std::ostringstream s;
@@ -2038,7 +2036,7 @@ namespace
 		std::cout << "F4: non-touching random-walk mesh neighbour, both windings (DL-370), n=" << trials << std::endl;
 		const char* names[4] = { "outward uncertified neighbour", "inward uncertified neighbour", "inward certified neighbour",
 			"inward uncertified two-box neighbour, walker between" };
-		const double expected[4] = { 1.0, 1.0, 0.7658, 1.0 };
+		const double expected[4] = { 1.0, 1.0, 1.0, 1.0 };
 		unsigned int seed = 37300;
 		for( int v = 0; v < 4; ++v ) {
 			const std::string label = std::string( "F4: random_walk/PT " ) + names[v];
@@ -2056,9 +2054,10 @@ namespace
 			Check( allValid, label + ": every render finite and non-black" );
 			if( !allValid ) continue;
 			const Stats st = Summarize( m );
+			const double band = std::fmax( 0.005, 3.0 * st.sd );
 			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=64: image mean " << st.mean << " +/- " << st.sd
-				<< " (sd of one render; expected " << expected[v] << ", band 0.01)" << std::endl;
-			Check( std::fabs( st.mean - expected[v] ) < 0.01, label + ": image mean within band of its expected value" );
+				<< " (sd of one render; expected " << expected[v] << ", band " << band << ")" << std::endl;
+			Check( std::fabs( st.mean - expected[v] ) < band, label + ": image mean within band of its expected value" );
 		}
 	}
 
