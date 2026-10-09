@@ -188,10 +188,6 @@ namespace RISE
 		ScatteredRay* RandomlySelectDiffuse( double random, bool bNM, Scalar* selectedProbability ) const;
 	};
 
-	//! Represents the Scattering Probability Function
-	//! The SPF describes how light is scattered.  It typically returns some reflected
-	//! and transimitted rays.  The SPF is constructed based on a Probability Distribution
-	//! Function for such a surface. 
 	//! DL-406.  The angular law of the WARP an SPF applies to its
 	//! DELTA-TAGGED transmission (ISPF::DeltaTransmissionWarp): the polar
 	//! cosine mu = cos(alpha) of the perturbation about the transmission's
@@ -270,6 +266,10 @@ namespace RISE
 		}
 	};
 
+	//! Represents the Scattering Probability Function
+	//! The SPF describes how light is scattered.  It typically returns some reflected
+	//! and transimitted rays.  The SPF is constructed based on a Probability Distribution
+	//! Function for such a surface. 
 	class ISPF : public virtual IReference
 	{
 	protected:
