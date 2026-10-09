@@ -44,6 +44,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Animation/KeyframableHelper.h"
+#include <atomic>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -146,6 +147,7 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	if( !h.bHit ) {
 		return;
 	}
+	RemapToPositiveSheet( h.u, h.v );	// DL-460: a folded dart's hit on its folded sheet
 
 	// Analytic normal at (u, v) on the bilinear surface.
 	const Vector3 dpdu = GeometricUtilities::BilinearTangentU(
@@ -247,6 +249,7 @@ bool ClippedPlaneGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const 
 	if( h.dRange <= 0.0 || h.dRange > dHowFar ) {
 		return false;
 	}
+	RemapToPositiveSheet( h.u, h.v );	// DL-460: same sheet IntersectRay reports
 
 	// Cull the same way IntersectRay does so a shadow ray sees the
 	// same surface as a primary ray.
@@ -351,17 +354,45 @@ BoundingBox ClippedPlaneGeometry::GenerateBoundingBox() const
 
 void ClippedPlaneGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	// Stratified (u, v) sampling on the bilinear surface.  Samples are
-	// uniform in the (u, v) parameter square, which is uniform on the
-	// surface for parallelogram quads and approximately uniform for
-	// nearby shapes.  For genuinely twisted / non-parallelogram quads
-	// the surface-area density varies with |dpdu × dpdv|; rendering
-	// code that needs strict surface-uniform sampling should weight by
-	// the local Jacobian (TODO: expose an area-density helper).  This
-	// is consistent with the prior implementation, which also assumed
-	// a parallelogram parametrisation.
-	const Scalar u = prand.x;
-	const Scalar v = prand.y;
+	// DL-460: AREA-UNIFORM on the traced bilinear surface, with density
+	// exactly 1/GetArea().  A parallelogram (rectangles included) has a
+	// constant area element, so uniform (u, v) is exact and this keeps the
+	// pre-DL-460 arithmetic (bit-identical).  Any other quad draws a cell
+	// from the bound-weighted CDF (prand.z), a point uniform in it
+	// (prand.x, prand.y) and accepts with integrand / bound; the accept
+	// variates and retries come from a stream seeded by prand's bits, so
+	// the map stays a pure function of prand and an accepted first
+	// candidate keeps prand's stratification.  See the header.
+	Scalar u = prand.x;
+	Scalar v = prand.y;
+	const AreaMode mode = nAreaMode;
+	const bool hasTable = bHasCellTable;
+	if( mode == eAreaGeneral && hasTable ) {
+		GeometricUtilities::PrandStream stream( prand, 0x434C50 /*'CLP'*/ );
+		Scalar cz = prand.z, cx = prand.x, cy = prand.y;
+		static const int kMaxCandidates = 4096;
+		bool accepted = false;
+		for( int attempt = 0; attempt < kMaxCandidates && !accepted; ++attempt ) {
+			const auto it =
+				std::upper_bound( vCellCdf.begin(), vCellCdf.end(), cz );
+			const std::size_t cell = std::min( std::size_t( it - vCellCdf.begin() ), vCellCdf.size() - std::size_t( 1 ) );
+			const unsigned int ci = static_cast<unsigned int>( cell % nAreaCells );
+			const unsigned int cj = static_cast<unsigned int>( cell / nAreaCells );
+			u = ( Scalar( ci ) + cx ) / Scalar( nAreaCells );
+			v = ( Scalar( cj ) + cy ) / Scalar( nAreaCells );
+			accepted = stream.Next() * vCellBound[cell] < AreaIntegrand( u, v );
+			if( !accepted ) {
+				cz = stream.Next(); cx = stream.Next(); cy = stream.Next();
+			}
+		}
+		if( !accepted ) {
+			static std::atomic<bool> warned{ false };
+			bool expected = false;
+			if( warned.compare_exchange_strong( expected, true ) ) {
+				GlobalLog()->PrintEasyWarning( "ClippedPlaneGeometry:: area sampler exhausted its rejection candidates (DL-460); that sample is not area-uniform" );
+			}
+		}
+	}
 
 	Point3 pt = GeometricUtilities::BilinearForward(
 		vP[0], vP[1], vP[2], vP[3], u, v );
@@ -468,13 +499,233 @@ SurfaceDerivatives ClippedPlaneGeometry::ComputeSurfaceDerivatives( const Point3
 
 Scalar ClippedPlaneGeometry::GetArea( ) const
 {
-	// Edge-magnitude product |edgeA[0]| * |edgeB[1]|: exact for RECTANGLES
-	// only (the dominant use case).  A non-rectangular parallelogram
-	// needs |edgeA[0] x edgeB[1]| (the product over-states it by
-	// 1/sin(angle)), and a general quad over-estimates for trapezoids and
-	// under-estimates for re-entrant shapes (DL-460).  TODO: integrate |dpdu × dpdv| over (u, v) for an exact
-	// bilinear surface area when this matters for light sampling pdfs.
-	return (Vector3Ops::Magnitude(vEdgesA[0]) * Vector3Ops::Magnitude(vEdgesB[1]));
+	// DL-460: the area of the traced surface, measured by the SAME
+	// integrand UniformRandomPoint samples, so 1/GetArea() is its density.
+	// A rectangle keeps the legacy |edgeA0| |edgeB1| product (bit-identical
+	// for every rect_light and panel); a parallelogram is |e0 x e1|; any
+	// other quad is the exact integral built in BuildAreaData.
+	switch( nAreaMode ) {
+	case eAreaRectangle:
+		return (Vector3Ops::Magnitude(vEdgesA[0]) * Vector3Ops::Magnitude(vEdgesB[1]));
+	case eAreaParallelogram:
+		return Vector3Ops::Magnitude( vJacA );
+	default:
+		return dArea;
+	}
+}
+
+Scalar ClippedPlaneGeometry::AreaIntegrand( const Scalar u, const Scalar v ) const
+{
+	const Vector3 w = vJacA + vJacB * u + vJacC * v;
+	if( nJacPlanar == 0 ) {
+		return Vector3Ops::Magnitude( w );
+	}
+	const Scalar s = dJacSign * Vector3Ops::Dot( vPlaneNormal, w );
+	if( nJacPlanar == 2 ) {
+		return std::fabs( s );
+	}
+	return s > Scalar( 0 ) ? s : Scalar( 0 );
+}
+
+namespace
+{
+	//! Exact integral of max(0, a + b u + c v) over [0,1]^2: clip the
+	//! square by the half-plane and integrate the linear function over
+	//! the clipped convex polygon by fan triangles (area x vertex mean is
+	//! exact for a linear integrand).
+	Scalar IntegratePositivePartOfLinear( const Scalar a, const Scalar b, const Scalar c )
+	{
+		const Scalar sq[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+		Scalar poly[8][2];
+		int n = 0;
+		for( int i = 0; i < 4; ++i ) {
+			const Scalar* p = sq[i];
+			const Scalar* q = sq[( i + 1 ) & 3];
+			const Scalar fp = a + b * p[0] + c * p[1];
+			const Scalar fq = a + b * q[0] + c * q[1];
+			if( fp >= 0 ) {
+				poly[n][0] = p[0]; poly[n][1] = p[1]; ++n;
+			}
+			if( ( fp >= 0 ) != ( fq >= 0 ) ) {
+				const Scalar t = fp / ( fp - fq );
+				poly[n][0] = p[0] + t * ( q[0] - p[0] );
+				poly[n][1] = p[1] + t * ( q[1] - p[1] );
+				++n;
+			}
+		}
+		Scalar total = 0;
+		for( int i = 1; i + 1 < n; ++i ) {
+			const Scalar* p0 = poly[0];
+			const Scalar* p1 = poly[i];
+			const Scalar* p2 = poly[i + 1];
+			const Scalar area = Scalar( 0.5 ) * std::fabs(
+				( p1[0] - p0[0] ) * ( p2[1] - p0[1] ) - ( p1[1] - p0[1] ) * ( p2[0] - p0[0] ) );
+			const Scalar f0 = a + b * p0[0] + c * p0[1];
+			const Scalar f1 = a + b * p1[0] + c * p1[1];
+			const Scalar f2 = a + b * p2[0] + c * p2[1];
+			total += area * ( f0 + f1 + f2 ) / Scalar( 3 );
+		}
+		return total;
+	}
+}
+
+void ClippedPlaneGeometry::BuildAreaData()
+{
+	// w(u,v) = dpdu(v) x dpdv(u) with dpdu = (v1-v0) + v D, dpdv = (v3-v0) + u D,
+	// D = v2 - v3 - v1 + v0:  w = A + u B + v C, the u v term D x D = 0.
+	const Vector3 e1 = Vector3Ops::mkVector3( vP[1], vP[0] );
+	const Vector3 e3 = Vector3Ops::mkVector3( vP[3], vP[0] );
+	const Vector3 D(
+		vP[2].x - vP[3].x - vP[1].x + vP[0].x,
+		vP[2].y - vP[3].y - vP[1].y + vP[0].y,
+		vP[2].z - vP[3].z - vP[1].z + vP[0].z );
+	vJacA = Vector3Ops::Cross( e1, e3 );
+	vJacB = Vector3Ops::Cross( e1, D );
+	vJacC = Vector3Ops::Cross( D, e3 );
+	nJacPlanar = 0;
+	dJacSign = 1;
+	dArea = 0;
+	bHasCellTable = false;
+	bFolded = false;
+
+	const Scalar l1 = Vector3Ops::Magnitude( e1 );
+	const Scalar l3 = Vector3Ops::Magnitude( e3 );
+	const Scalar scale = std::max( l1, std::max( l3, Vector3Ops::Magnitude( Vector3Ops::mkVector3( vP[2], vP[0] ) ) ) );
+	static const Scalar kTol = Scalar( 1e-9 );
+	if( Vector3Ops::Magnitude( D ) <= kTol * scale ) {
+		// Parallelogram: constant area element.  A RECTANGLE keeps the
+		// legacy product so every pre-DL-460 quad light is bit-identical.
+		nAreaMode = ( std::fabs( Vector3Ops::Dot( e1, e3 ) ) <= kTol * l1 * l3 )
+			? eAreaRectangle : eAreaParallelogram;
+		dArea = ( nAreaMode == eAreaRectangle ) ? l1 * Vector3Ops::Magnitude( vEdgesB[1] ) : Vector3Ops::Magnitude( vJacA );
+		return;
+	}
+	nAreaMode = eAreaGeneral;
+
+	if( bCornersCoplanar ) {
+		// Polygon orientation = sign of the signed area integral n.(A + B/2 + C/2).
+		const Scalar a = Vector3Ops::Dot( vPlaneNormal, vJacA );
+		const Scalar b = Vector3Ops::Dot( vPlaneNormal, vJacB );
+		const Scalar c = Vector3Ops::Dot( vPlaneNormal, vJacC );
+		dJacSign = ( a + Scalar( 0.5 ) * ( b + c ) >= 0 ) ? Scalar( 1 ) : Scalar( -1 );
+		// Bow-tie: the turns at the four corners split two and two.
+		int npos = 0, nneg = 0;
+		for( int i = 0; i < 4; ++i ) {
+			const Vector3 ea = Vector3Ops::mkVector3( vP[( i + 1 ) & 3], vP[i] );
+			const Vector3 eb = Vector3Ops::mkVector3( vP[( i + 2 ) & 3], vP[( i + 1 ) & 3] );
+			const Scalar t = Vector3Ops::Dot( vPlaneNormal, Vector3Ops::Cross( ea, eb ) );
+			if( t > 0 ) ++npos; else if( t < 0 ) ++nneg;
+		}
+		nJacPlanar = ( npos == 2 && nneg == 2 ) ? 2 : 1;
+		// Folded: the (affine) area element is negative at some corner.
+		if( nJacPlanar == 1 ) {
+			const Scalar s00 = dJacSign * a, s10 = dJacSign * ( a + b ), s01 = dJacSign * ( a + c ), s11 = dJacSign * ( a + b + c );
+			bFolded = std::min( std::min( s00, s10 ), std::min( s01, s11 ) ) < 0;
+		}
+		dArea = IntegratePositivePartOfLinear( dJacSign * a, dJacSign * b, dJacSign * c );
+		if( nJacPlanar == 2 ) {
+			dArea += IntegratePositivePartOfLinear( -dJacSign * a, -dJacSign * b, -dJacSign * c );
+		}
+	} else {
+		// Non-coplanar: |w| is smooth (a twisted bilinear patch has no
+		// fold), so tensor Gauss-Legendre per cell converges fast.
+		static const Scalar xg[5] = { -0.9061798459386640, -0.5384693101056831, 0.0, 0.5384693101056831, 0.9061798459386640 };
+		static const Scalar wg[5] = { 0.2369268850561891, 0.4786286704993665, 0.5688888888888889, 0.4786286704993665, 0.2369268850561891 };
+		const Scalar h = Scalar( 1 ) / Scalar( nAreaCells );
+		Scalar total = 0;
+		for( unsigned int cj = 0; cj < nAreaCells; ++cj ) {
+			for( unsigned int ci = 0; ci < nAreaCells; ++ci ) {
+				Scalar cellSum = 0;
+				for( int a = 0; a < 5; ++a ) {
+					const Scalar u = h * ( Scalar( ci ) + Scalar( 0.5 ) * ( xg[a] + 1 ) );
+					for( int b = 0; b < 5; ++b ) {
+						const Scalar v = h * ( Scalar( cj ) + Scalar( 0.5 ) * ( xg[b] + 1 ) );
+						cellSum += wg[a] * wg[b] * AreaIntegrand( u, v );
+					}
+				}
+				total += cellSum * Scalar( 0.25 ) * h * h;
+			}
+		}
+		dArea = total;
+	}
+
+	// Cell bounds: every integrand above is CONVEX in (u, v) (a norm or a
+	// positive part of an affine map), so its maximum over a cell is at a
+	// corner -- a rigorous bound.
+	Scalar acc = 0;
+	for( unsigned int cj = 0; cj < nAreaCells; ++cj ) {
+		for( unsigned int ci = 0; ci < nAreaCells; ++ci ) {
+			const Scalar u0 = Scalar( ci ) / Scalar( nAreaCells ), u1 = Scalar( ci + 1 ) / Scalar( nAreaCells );
+			const Scalar v0 = Scalar( cj ) / Scalar( nAreaCells ), v1 = Scalar( cj + 1 ) / Scalar( nAreaCells );
+			const Scalar bound = std::max( std::max( AreaIntegrand( u0, v0 ), AreaIntegrand( u1, v0 ) ),
+			                               std::max( AreaIntegrand( u0, v1 ), AreaIntegrand( u1, v1 ) ) );
+			vCellBound[cj * nAreaCells + ci] = bound;
+			acc += bound;
+			vCellCdf[cj * nAreaCells + ci] = acc;
+		}
+	}
+	if( acc > 0 ) {
+		for( Scalar& c : vCellCdf ) c /= acc;
+		vCellCdf.back() = 1;
+		bHasCellTable = true;
+	}
+}
+
+void ClippedPlaneGeometry::RemapToPositiveSheet( Scalar& u, Scalar& v ) const
+{
+	// Only a folded coplanar quad, and only a hit on the negative sheet.
+	// On a plane the two sheets meet the ray at the same distance, so which
+	// root RayBilinearPatchIntersection returns is decided by rounding; the
+	// luminary (and its sampler) is the positive sheet, so take the other
+	// preimage of the same point when it exists.
+	if( !bFolded || AreaIntegrand( u, v ) > Scalar( 0 ) ) {
+		return;
+	}
+	const Point3 x = GeometricUtilities::BilinearForward( vP[0], vP[1], vP[2], vP[3], u, v );
+	// 2-D bilinear inverse in the plane's basis: q = u e + v f + u v D, so
+	// (e + v D) is parallel to (q - v f): cross(e + vD, q - vf) = 0, a
+	// quadratic in v.
+	const Vector3 dq = Vector3Ops::mkVector3( x, vP[0] );
+	const Vector3 de = Vector3Ops::mkVector3( vP[1], vP[0] );
+	const Vector3 df = Vector3Ops::mkVector3( vP[3], vP[0] );
+	const Vector3 dD( vP[2].x - vP[3].x - vP[1].x + vP[0].x, vP[2].y - vP[3].y - vP[1].y + vP[0].y, vP[2].z - vP[3].z - vP[1].z + vP[0].z );
+	const Scalar q[2] = { Vector3Ops::Dot( dq, vPlaneU ), Vector3Ops::Dot( dq, vPlaneV ) };
+	const Scalar e[2] = { Vector3Ops::Dot( de, vPlaneU ), Vector3Ops::Dot( de, vPlaneV ) };
+	const Scalar f[2] = { Vector3Ops::Dot( df, vPlaneU ), Vector3Ops::Dot( df, vPlaneV ) };
+	const Scalar D[2] = { Vector3Ops::Dot( dD, vPlaneU ), Vector3Ops::Dot( dD, vPlaneV ) };
+	auto cr = []( const Scalar* a, const Scalar* b ) { return a[0]*b[1] - a[1]*b[0]; };
+	const Scalar A = -cr( D, f );
+	const Scalar B = cr( D, q ) - cr( e, f );
+	const Scalar C = cr( e, q );
+	Scalar roots[2];
+	int n = 0;
+	const Scalar scale = std::fabs( A ) + std::fabs( B ) + std::fabs( C );
+	if( std::fabs( A ) <= Scalar( 1e-12 ) * scale ) {
+		if( std::fabs( B ) > 0 ) roots[n++] = -C / B;
+	} else {
+		const Scalar disc = B*B - 4*A*C;
+		if( disc >= 0 ) {
+			const Scalar sq = std::sqrt( disc );
+			const Scalar t = -0.5 * ( B + ( B >= 0 ? sq : -sq ) );	// stable form
+			if( t != 0 ) { roots[n++] = t / A; roots[n++] = C / t; }
+			else { roots[n++] = 0; }
+		}
+	}
+	static const Scalar kSlack = Scalar( 1e-9 );
+	Scalar best = Scalar( 0 );
+	for( int i = 0; i < n; ++i ) {
+		const Scalar vv = roots[i];
+		if( vv < -kSlack || vv > 1 + kSlack ) continue;
+		const Scalar g[2] = { e[0] + vv * D[0], e[1] + vv * D[1] };
+		const Scalar gg = g[0]*g[0] + g[1]*g[1];
+		if( !( gg > 0 ) ) continue;
+		const Scalar uu = ( ( q[0] - vv * f[0] ) * g[0] + ( q[1] - vv * f[1] ) * g[1] ) / gg;
+		if( uu < -kSlack || uu > 1 + kSlack ) continue;
+		const Scalar uc = std::min( Scalar( 1 ), std::max( Scalar( 0 ), uu ) );
+		const Scalar vc = std::min( Scalar( 1 ), std::max( Scalar( 0 ), vv ) );
+		const Scalar sPos = AreaIntegrand( uc, vc );
+		if( sPos > best ) { best = sPos; u = uc; v = vc; }
+	}
 }
 
 static const unsigned int PTA_ID = 100;
@@ -533,7 +784,7 @@ void ClippedPlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 void ClippedPlaneGeometry::RegenerateData( )
 {
 	// vEdgesA / vEdgesB / vNormalA / vNormalB / vNormal are kept for
-	// GetArea (parallelogram approximation) and any external readers
+	// the legacy rectangle GetArea (DL-460) and any external readers
 	// of the legacy "average plane normal" — IntersectRay,
 	// IntersectRay_IntersectionOnly, UniformRandomPoint, and
 	// ComputeSurfaceDerivatives all use the analytical bilinear
@@ -593,13 +844,13 @@ void ClippedPlaneGeometry::RegenerateData( )
 				// bijection from [0,1]^2 onto the quad -- and the closed form
 				// is exact.  For a coplanar NON-convex one (a dart: one
 				// corner inside the triangle of the other three) they do not:
-				// the bilinear image is a proper subset of the polygon, so a
-				// point over the polygon's reflex lobe is reported at |h|
-				// while the real surface is further away.  That is an
-				// UNDER-report -- the forbidden direction, contact painted
-				// where there is none -- and the outside branch is wrong in
-				// the other direction for the same reason.  So a dart
-				// REFUSES, exactly as a non-coplanar quad does.
+				// the patch FOLDS, and its image is the polygon PLUS a folded
+				// overshoot outside it (DL-460's degree argument, see
+				// BuildAreaData), so over the overshoot the point-to-polygon
+				// form reports the distance to the polygon's edge while the
+				// real surface is nearer.  That error is an over-report, but
+				// the form is no longer exact, so a dart REFUSES, exactly as
+				// a non-coplanar quad does.
 				//
 				// The test is the standard one: the four cross products of
 				// consecutive edges, taken in the plane's own basis, must all
@@ -639,6 +890,8 @@ void ClippedPlaneGeometry::RegenerateData( )
 			}
 		}
 	}
+
+	BuildAreaData();
 }
 
 bool ClippedPlaneGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const

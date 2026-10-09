@@ -21,6 +21,8 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/stl_utils.h"
 #include "../Utilities/SurfaceCurvature.h"
+#include <algorithm>
+#include <atomic>
 
 
 using namespace RISE;
@@ -245,7 +247,9 @@ BezierPatchGeometry::BezierPatchGeometry(
   pOctree( 0 ),
   nMaxPerOctantNode( max_patches_per_node ),
   nMaxRecursionLevel( max_recursion_level ),
-  bUseBSP( bUseBSP_ )
+  bUseBSP( bUseBSP_ ),
+  m_areaOnce( new std::once_flag ),
+  m_area( 0 )
 {
 }
 
@@ -258,6 +262,7 @@ BezierPatchGeometry::~BezierPatchGeometry( )
 void BezierPatchGeometry::AddPatch( const BezierPatch& patch )
 {
 	patches.push_back( patch );
+	m_areaOnce.reset( new std::once_flag );	// DL-459: the area table is stale
 }
 
 void BezierPatchGeometry::Prepare()
@@ -265,6 +270,7 @@ void BezierPatchGeometry::Prepare()
 	// Prepare for rendering
 	// Optimize the patch container
 	stl_utils::container_optimize< BezierPatchList >( patches );
+	m_areaOnce.reset( new std::once_flag );	// DL-459: rebuilt lazily on first surface sample
 
 	// First create the pointer patches list
 	BezierPatchPtrList		patchptrs;
@@ -430,59 +436,158 @@ BoundingBox BezierPatchGeometry::GenerateBoundingBox() const
 	return BoundingBox();
 }
 
+namespace
+{
+	//! Blossom of a cubic Bezier segment at (t1, t2, t3).
+	inline Point3 Blossom3( const Point3 P[4], const Scalar t1, const Scalar t2, const Scalar t3 )
+	{
+		Point3 a[3], b[2];
+		for( int k = 0; k < 3; ++k ) a[k] = Point3Ops::WeightedAverage2( P[k+1], P[k], t1 );
+		for( int k = 0; k < 2; ++k ) b[k] = Point3Ops::WeightedAverage2( a[k+1], a[k], t2 );
+		return Point3Ops::WeightedAverage2( b[1], b[0], t3 );
+	}
+
+	//! Control points of the cubic restricted to [s0, s1].
+	inline void SubSegment( const Point3 P[4], const Scalar s0, const Scalar s1, Point3 Q[4] )
+	{
+		Q[0] = Blossom3( P, s0, s0, s0 );
+		Q[1] = Blossom3( P, s0, s0, s1 );
+		Q[2] = Blossom3( P, s0, s1, s1 );
+		Q[3] = Blossom3( P, s1, s1, s1 );
+	}
+
+	//! RIGOROUS upper bound of |dP/du x dP/dv| over [u0,u1] x [v0,v1]: the
+	//! cross product of the sub-patch's tangents is a bidegree-(5,5)
+	//! polynomial whose Bernstein coefficients are combinations of the
+	//! difference vectors' cross products; by the convex-hull property its
+	//! norm is at most the largest coefficient norm.
+	Scalar CellJacobianBound( const BezierPatch& p, const Scalar u0, const Scalar u1, const Scalar v0, const Scalar v1 )
+	{
+		static const Scalar C2[3] = { 1, 2, 1 };
+		static const Scalar C3[4] = { 1, 3, 3, 1 };
+		static const Scalar C5[6] = { 1, 5, 10, 10, 5, 1 };
+		Point3 R[4][4], Q[4][4];
+		for( int i = 0; i < 4; ++i ) {
+			SubSegment( p.c[i].pts, v0, v1, R[i] );			// restrict v (index j)
+		}
+		for( int l = 0; l < 4; ++l ) {
+			const Point3 col[4] = { R[0][l], R[1][l], R[2][l], R[3][l] };
+			Point3 sub[4];
+			SubSegment( col, u0, u1, sub );					// restrict u (index i)
+			for( int k = 0; k < 4; ++k ) Q[k][l] = sub[k];
+		}
+		Vector3 du[3][4], dv[4][3];
+		for( int i = 0; i < 3; ++i ) for( int j = 0; j < 4; ++j ) du[i][j] = Vector3Ops::mkVector3( Q[i+1][j], Q[i][j] );
+		for( int k = 0; k < 4; ++k ) for( int l = 0; l < 3; ++l ) dv[k][l] = Vector3Ops::mkVector3( Q[k][l+1], Q[k][l] );
+		Vector3 c[6][6];
+		for( int a = 0; a < 6; ++a ) for( int b = 0; b < 6; ++b ) c[a][b] = Vector3( 0, 0, 0 );
+		for( int i = 0; i < 3; ++i ) for( int j = 0; j < 4; ++j )
+		for( int k = 0; k < 4; ++k ) for( int l = 0; l < 3; ++l ) {
+			const Scalar w = ( C2[i] * C3[k] / C5[i+k] ) * ( C3[j] * C2[l] / C5[j+l] );
+			c[i+k][j+l] = c[i+k][j+l] + Vector3Ops::Cross( du[i][j], dv[k][l] ) * w;
+		}
+		Scalar m = 0;
+		for( int a = 0; a < 6; ++a ) for( int b = 0; b < 6; ++b ) m = std::max( m, Vector3Ops::Magnitude( c[a][b] ) );
+		// d/ds = 3 sum du B2 B3 per local axis; d/du = (1/(u1-u0)) d/ds.
+		return Scalar( 9 ) * m / ( ( u1 - u0 ) * ( v1 - v0 ) );
+	}
+
+	inline Scalar PatchJacobian( const BezierPatch& p, const Scalar u, const Scalar v )
+	{
+		return Vector3Ops::Magnitude( Vector3Ops::Cross(
+			GeometricUtilities::BezierPatchTangentU( p, u, v ),
+			GeometricUtilities::BezierPatchTangentV( p, u, v ) ) );
+	}
+}
+
+void BezierPatchGeometry::EnsureAreaTable() const
+{
+	std::call_once( *m_areaOnce, [this]() {
+		static const Scalar xg[5] = { -0.9061798459386640, -0.5384693101056831, 0.0, 0.5384693101056831, 0.9061798459386640 };
+		static const Scalar wg[5] = { 0.2369268850561891, 0.4786286704993665, 0.5688888888888889, 0.4786286704993665, 0.2369268850561891 };
+		const Scalar h = Scalar( 1 ) / Scalar( nAreaCells );
+		m_cellCdf.clear();
+		m_cellBound.clear();
+		m_cellCdf.reserve( patches.size() * nAreaCells * nAreaCells );
+		m_cellBound.reserve( patches.size() * nAreaCells * nAreaCells );
+		Scalar area = 0, acc = 0;
+		for( const BezierPatch& p : patches ) {
+			for( unsigned int cj = 0; cj < nAreaCells; ++cj ) {
+				for( unsigned int ci = 0; ci < nAreaCells; ++ci ) {
+					const Scalar u0 = h * Scalar( ci ), v0 = h * Scalar( cj );
+					Scalar cellSum = 0;
+					for( int a = 0; a < 5; ++a ) {
+						const Scalar u = u0 + h * Scalar( 0.5 ) * ( xg[a] + 1 );
+						for( int b = 0; b < 5; ++b ) {
+							const Scalar v = v0 + h * Scalar( 0.5 ) * ( xg[b] + 1 );
+							cellSum += wg[a] * wg[b] * PatchJacobian( p, u, v );
+						}
+					}
+					area += cellSum * Scalar( 0.25 ) * h * h;
+					const Scalar bound = CellJacobianBound( p, u0, u0 + h, v0, v0 + h );
+					m_cellBound.push_back( bound );
+					acc += bound;
+					m_cellCdf.push_back( acc );
+				}
+			}
+		}
+		if( acc > 0 ) {
+			for( Scalar& c : m_cellCdf ) c /= acc;
+			m_cellCdf.back() = 1;
+		} else {
+			m_cellCdf.clear();
+			m_cellBound.clear();
+		}
+		m_area = area;
+	} );
+}
+
 void BezierPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	// Area-weighted surface sampling.  Required path: SSS + photon-emission
-	// paths ask the geometry for uniformly-distributed surface samples.
-	//
-	// Per-patch area is approximated by the Jacobian magnitude |dP/du x dP/dv|
-	// evaluated at the patch centre (u=v=0.5).  This is one-point quadrature
-	// of the true surface integral A_i = integral_{[0,1]^2} |T_u x T_v| du dv
-	// and is exact for bilinear patches and smooth for bicubics of bounded
-	// curvature — the order-of-magnitude accuracy we need here for weighted
-	// selection.  If a future scene proves it undersamples high-curvature
-	// patches (e.g., the teapot spout bulge), swap in 2x2 Gauss-Legendre
-	// (4-point) — same shape, 4x the evaluations.
-	//
-	// (u, v) is then drawn uniformly in [0,1]^2 within the selected patch.
-	// This is uniform in parameter space, NOT uniform in surface area — a
-	// Jacobian-weighted rejection loop would fix that, but for the SSS use
-	// case (where points then enter a dipole/BSSRDF integrator that weights
-	// by cosine anyway) single-patch parameter-space uniformity is adequate.
-	if( patches.empty() ) {
+	// DL-459: AREA-UNIFORM, density exactly 1/GetArea().  A cell of some
+	// patch is drawn from the bound-weighted CDF (prand.z), a point uniform
+	// in its (u, v) square (prand.x, prand.y), and accepted with
+	// probability J / bound (J = |dP/du x dP/dv|, bound rigorous -- see the
+	// header); accept variates and retries come from a stream seeded by
+	// prand's bits.  Pre-DL-459 this picked a patch by J at its midpoint
+	// and drew (u, v) uniformly -- uniform in area only for a parallelogram.
+	EnsureAreaTable();
+	if( patches.empty() || m_cellCdf.empty() ) {
 		if( point )  *point  = Point3( 0, 0, 0 );
 		if( normal ) *normal = Vector3( 0, 1, 0 );
 		if( coord )  *coord  = Point2( 0, 0 );
 		return;
 	}
 
-	// Build area CDF across all patches.  Doing this per call is O(N) and
-	// N is ~32 for the teapot / ~tens for the f16 and aphrodite — cheaper
-	// than threading a cache invalidation through Prepare()/AddPatch()/etc.
-	// Revisit if a scene pushes N into the thousands.
-	Scalar total = 0.0;
-	std::vector<Scalar> cdf;
-	cdf.reserve( patches.size() );
-	for( BezierPatchList::const_iterator it = patches.begin(); it != patches.end(); ++it ) {
-		const Vector3 Tu = GeometricUtilities::BezierPatchTangentU( *it, 0.5, 0.5 );
-		const Vector3 Tv = GeometricUtilities::BezierPatchTangentV( *it, 0.5, 0.5 );
-		Scalar a = Vector3Ops::Magnitude( Vector3Ops::Cross( Tu, Tv ) );
-		if( a < 1e-20 ) a = 1e-20;    // avoid zero-weight degenerate patches collapsing the CDF
-		total += a;
-		cdf.push_back( total );
+	const unsigned int cellsPerPatch = nAreaCells * nAreaCells;
+	GeometricUtilities::PrandStream stream( prand, 0x42455A /*'BEZ'*/ );
+	Scalar cz = prand.z, cx = prand.x, cy = prand.y;
+	std::size_t cell = 0;
+	Scalar u = 0, v = 0;
+	static const int kMaxCandidates = 4096;
+	bool accepted = false;
+	for( int attempt = 0; attempt < kMaxCandidates && !accepted; ++attempt ) {
+		const std::vector<Scalar>::const_iterator it =
+			std::upper_bound( m_cellCdf.begin(), m_cellCdf.end(), cz );
+		cell = std::min( std::size_t( it - m_cellCdf.begin() ), m_cellCdf.size() - 1 );
+		const unsigned int local = static_cast<unsigned int>( cell % cellsPerPatch );
+		const Scalar h = Scalar( 1 ) / Scalar( nAreaCells );
+		u = h * ( Scalar( local % nAreaCells ) + r_min( r_max( cx, Scalar( 0 ) ), Scalar( 1 ) ) );
+		v = h * ( Scalar( local / nAreaCells ) + r_min( r_max( cy, Scalar( 0 ) ), Scalar( 1 ) ) );
+		accepted = stream.Next() * m_cellBound[cell] < PatchJacobian( patches[cell / cellsPerPatch], u, v );
+		if( !accepted ) {
+			cz = stream.Next(); cx = stream.Next(); cy = stream.Next();
+		}
+	}
+	if( !accepted ) {
+		static std::atomic<bool> warned{ false };
+		bool expected = false;
+		if( warned.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEasyWarning( "BezierPatchGeometry:: area sampler exhausted its rejection candidates (DL-459); that sample is not area-uniform" );
+		}
 	}
 
-	// Draw patch via CDF search.  Linear scan is fine for ~32 patches.
-	const Scalar target = prand.x * total;
-	unsigned int pIdx = 0;
-	while( pIdx + 1 < cdf.size() && cdf[pIdx] < target ) pIdx++;
-
-	const BezierPatch& p = patches[pIdx];
-	Scalar u = prand.y;
-	Scalar v = prand.z;
-	if( u < 0.0 ) u = 0.0; else if( u > 1.0 ) u = 1.0;
-	if( v < 0.0 ) v = 0.0; else if( v > 1.0 ) v = 1.0;
-
+	const BezierPatch& p = patches[cell / cellsPerPatch];
 	if( point )  *point  = GeometricUtilities::EvaluateBezierPatchAt( p, u, v );
 	if( normal ) {
 		Vector3 N = GeometricUtilities::BezierPatchNormalAt( p, u, v );
@@ -514,17 +619,12 @@ SurfaceDerivatives BezierPatchGeometry::ComputeSurfaceDerivatives( const Point3&
 
 Scalar BezierPatchGeometry::GetArea( ) const
 {
-	// Sum of per-patch area approximations, same one-point quadrature as
-	// UniformRandomPoint uses so that (1 / area) matches the implicit pdf
-	// of the sampler.  Returning 1.0 (the pre-2026 placeholder) broke any
-	// path that divided radiance by area — notably SSS dipole sampling —
-	// because the sampler's pdf was area-weighted but the consumer's
-	// inverse-area factor was hardcoded-to-unit.
-	Scalar total = 0.0;
-	for( BezierPatchList::const_iterator it = patches.begin(); it != patches.end(); ++it ) {
-		const Vector3 Tu = GeometricUtilities::BezierPatchTangentU( *it, 0.5, 0.5 );
-		const Vector3 Tv = GeometricUtilities::BezierPatchTangentV( *it, 0.5, 0.5 );
-		total += Vector3Ops::Magnitude( Vector3Ops::Cross( Tu, Tv ) );
-	}
-	return total > 0.0 ? total : 1.0;
+	// DL-459: the Gauss-Legendre integral of the SAME area element
+	// UniformRandomPoint samples exactly (5x5 nodes on each of nAreaCells^2
+	// cells per patch: converged to rounding for a bicubic patch with a
+	// non-vanishing Jacobian), so 1/GetArea() is its density.  Pre-DL-459
+	// this was a one-point midpoint estimate.  An empty or degenerate set
+	// keeps the legacy 1.0 placeholder.
+	EnsureAreaTable();
+	return m_area > 0.0 ? m_area : 1.0;
 }
