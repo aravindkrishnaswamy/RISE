@@ -2968,9 +2968,11 @@ namespace RISE
 		// keep the reported side, which on a double-sided sheet presented
 		// the top on both faces while the plain dielectric twin followed
 		// the face rule; since DL-382 every flat consistently wound
-		// triangle mesh is such a sheet too.  Every other composite (an
-		// opaque one, or one with a non-delta translucent layer) presents
-		// its top on either face (below): its back face is a card's other
+		// triangle mesh is such a sheet too.  A composite with a live
+		// translucent-bottom transmission term (DL-296) also follows the
+		// face rule, its back arrival priced by the mirrored model.  Every
+		// other composite (an opaque one, or one with another non-delta
+		// translucent layer) presents its top on either face (below): its back face is a card's other
 		// side (D7 / D8 / D10), and a from-below walk there is
 		// delta-tagged, invisible to NEE (DL-472).
 		if( faceRule && ri.bGeomNormalOrientedToRay ) {

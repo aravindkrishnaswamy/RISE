@@ -1462,7 +1462,7 @@ static void SectionD9()
 	for( const Mode& m : modes ) {
 		for( const MatCfg& c : cfgs ) {
 			for( int r = 0; r < 3; ++r ) {
-				const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
+				std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
 					"film\n{\n\twidth 32\n\theight 16\n}\n\n"
 					"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" +
 					mats + WindingBox( "bg", std::vector<int>() ) + WindingBox( "bw", m.faces ) +
@@ -2992,7 +2992,7 @@ static void SectionX()
 				if( L.area && r != 0 ) continue;
 				if( envProbe && r >= 3 ) continue;		// the spectral helper has no environment
 				const int spp = L.area ? 1024 : 256;
-				const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
+				std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
 					"film\n{\n\twidth 32\n\theight 16\n}\n\n"
 					"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" +
 					mats + MatrixQuad( "q_comp", -3.9, -0.1, 0.0, 0, true ) +
@@ -3003,7 +3003,7 @@ static void SectionX()
 					( r == 0 ? PtRasterizer( envProbe, spp ) : r == 1 ? BdptRasterizer( envProbe, spp, 12 ) : r == 2 ? VcmRasterizer( envProbe, spp, 12 )
 					  : PtSpectralRasterizer( r == 4, spp ) );
 				if( const char* ld = std::getenv( "DL296_LIGHT_DEPTH" ) ) {	// opt-in diagnosis: cap the light subpath
-					std::string& sc = const_cast<std::string&>( scene );
+					std::string& sc = scene;
 					const size_t at = sc.find( "max_light_depth 12" );
 					if( at != std::string::npos ) sc.replace( at, 18, std::string( "max_light_depth " ) + ld );
 				}
