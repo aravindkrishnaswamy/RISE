@@ -63,7 +63,7 @@ PSSMLTSampler::PSSMLTSampler(
   largeStepProb( largeStepProb_ ),
   isLargeStep( true ),
   lastLargeStepIteration( 0 ),
-  rng( seed )
+  rng( PSSMLTSamplerTestHooks::Salted( seed ) )
 {
 }
 
@@ -79,7 +79,7 @@ PSSMLTSampler::PSSMLTSampler(
   largeStepProb( largeStepProb_ ),
   isLargeStep( true ),
   lastLargeStepIteration( 0 ),
-  rng( seed )
+  rng( PSSMLTSamplerTestHooks::Salted( seed ) )
 {
 }
 

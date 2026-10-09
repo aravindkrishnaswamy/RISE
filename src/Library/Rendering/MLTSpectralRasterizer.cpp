@@ -812,7 +812,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	for( unsigned int c = 0; c < effectiveChains; c++ )
 	{
 		// Select initial state from bootstrap CDF
-		RandomNumberGenerator selRNG( c * 31337 );
+		RandomNumberGenerator selRNG( PSSMLTSamplerTestHooks::Salted( c * 31337 ) );
 		const Scalar u = selRNG.CanonicalRandom();
 		const unsigned int bootstrapIdx = SelectFromCDF( cdf, u );
 		const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];
@@ -828,7 +828,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 		const unsigned int chainSeed    = seed.seed * 2654435761u + c;
 		const unsigned int proposalSeed = chainSeed ^ 0xA55A5AA5u;
 		chainStates[c].pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
-		chainStates[c].chainRNG = RandomNumberGenerator( chainSeed );
+		chainStates[c].chainRNG = RandomNumberGenerator( PSSMLTSamplerTestHooks::Salted( chainSeed ) );
 
 		// Phase 1: reproduce the bootstrap path
 		chainStates[c].pSampler->StartIteration();

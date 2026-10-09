@@ -1705,9 +1705,13 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 // itself (type CAMERA, pdfFwd=1, throughput=1), subsequent vertices
 // are surface intersections.
 //
-// The camera's directional PDF (BDPTCameraUtilities::PdfDirection)
-// is used as pdfFwdPrev for the first surface vertex.  For pinhole
-// cameras this is 1/cos^3(theta) * focaldist^2 (Veach eq. 8.10).
+// The camera's WHOLE-FILM directional PDF (BDPTCameraUtilities::
+// PdfDirectionMIS, DL-402) is used as pdfFwdPrev for the first surface
+// vertex: the one-pixel density PdfDirection (for a pinhole,
+// d^2 / (A_pixel cos^3(theta)), Veach eq. 8.10) divided by W * H, i.e.
+// d^2 / (A_film cos^3(theta)) -- the light-tracing strategies splat
+// anywhere on the film, so the eye side's competing density must be the
+// whole film's too.
 //////////////////////////////////////////////////////////////////////
 
 namespace {
@@ -1984,7 +1988,16 @@ namespace {
 		vertices[0].emissionPdfW = cameraIsDeltaDirection ? Scalar( 0 ) : pdfCamDir;
 		vertices[0].cosAtGen = 1.0;
 
+		// DL-402: the MIS input is the WHOLE-FILM density (one light
+		// subpath per eye sample, splatted anywhere on the film); see
+		// BDPTCameraUtilities::PdfDirectionMIS.  The t == 1 cases use
+		// the same function for the light endpoint's pdfRev, so the
+		// partition stays exact.  `emissionPdfW` above keeps the
+		// per-pixel density: VCM divides by its own light-path count.
 		Scalar pdfFwdPrev = pdfCamDir;
+		if( pCamera && !cameraIsDeltaDirection ) {
+			pdfFwdPrev = BDPTCameraUtilities::PdfDirectionMIS( *pCamera, cameraRay );
+		}
 		IORStack iorStack( 1.0 );
 		// Seed from the camera position: if the camera sits inside a
 		// dielectric (submerged camera, camera inside a medium volume),
@@ -4464,7 +4477,7 @@ ConnectAndEvaluateImplCore(
 		const Scalar savedLightPdfRev = lightEnd.pdfRev;
 		{
 			Ray camRayToLight( camPos, -dirToCam );
-			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirectionMIS( camera, camRayToLight );
 			if( lightIsMedium_t0 ) {
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( camPdfDir, lightEnd.sigma_t_scalar, distSq );
@@ -4566,7 +4579,7 @@ ConnectAndEvaluateImplCore(
 		const Scalar savedLightPdfRev = lightEnd.pdfRev;
 		{
 			Ray camRayToLight( camPos, -dirToCam );
-			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirectionMIS( camera, camRayToLight );
 			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
 		}
@@ -4612,9 +4625,12 @@ ConnectAndEvaluateImplCore(
 	// MISWeight(0, 2) (the camera ray hitting the same emitter) still
 	// counted it in its denominator: a directly visible emitter lost the
 	// (1,1) share of its energy, r^2 / (1 + r^2) with r the light's area
-	// density over the per-pixel camera density at the emitter point --
-	// 40 % at 100 x 75 on `sms_k2_flatslab`'s 0.08-unit luminaire, falling
-	// as 1/(W H)^2 with resolution.  It is now evaluated by the t == 1
+	// density over the camera density at the emitter point -- 40 % at
+	// 100 x 75 on `sms_k2_flatslab`'s 0.08-unit luminaire, falling as
+	// 1/(W H)^2 with resolution while that density was the PER-PIXEL one
+	// (since DL-402 MISWeight uses the whole-film density, PdfDirectionMIS,
+	// so the (1,1) share no longer shrinks with resolution).  It is now
+	// evaluated by the t == 1
 	// case below, whose LIGHT-vertex branch was written for it and was
 	// unreachable.
 	if( s == 1 && t >= 2 )
@@ -5194,7 +5210,7 @@ ConnectAndEvaluateImplCore(
 
 			{
 				Ray camRayToLight( camPos, -dirToCam );
-				const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+				const Scalar camPdfDir = BDPTCameraUtilities::PdfDirectionMIS( camera, camRayToLight );
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
 			}
@@ -5248,7 +5264,7 @@ ConnectAndEvaluateImplCore(
 		// Medium vertices: sigma_t/dist^2 replaces |cos|/dist^2
 		{
 			Ray camRayToLight( camPos, -dirToCam );
-			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirectionMIS( camera, camRayToLight );
 			if( lightIsMedium_t1 ) {
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( camPdfDir, lightEnd.sigma_t_scalar, distSq );
@@ -6325,6 +6341,44 @@ Scalar BDPTIntegrator::MISWeight(
 		}
 	}
 
+	// DL-351: the subpath DEPTH CAPS bound which strategies exist.  A
+	// strategy (s', t') of this path is generated only if the eye walk
+	// can produce its t'-vertex eye part (at most `max_eye_depth`
+	// surface hits and `WalkIterationBudget(max_eye_depth,
+	// max_volume_bounce)` iterations -- one per surface hit, medium
+	// scatter or escape) and the light walk its s'-vertex light part (at
+	// most `max_light_depth` surface hits, same iteration budget).  A
+	// strategy past a cap has density ZERO in Veach's sum; reserving
+	// denominator mass for it (as this function did before DL-351) lost
+	// that mass from the strategies that do exist -- the env-lit fog box
+	// read 0.674 of PT at max_light_depth 0.  Both walks below extend one
+	// subpath monotonically, so the first term past a cap ends the walk
+	// (`break`), like DL-375's barrier.  Counting is DL-380's
+	// (BDPTUtilities::CountsAsSurfaceHit): the camera, a light root and a
+	// subsurface ENTRY do not count; an area-light root joining the EYE
+	// part is the eye's hit on the emitter and counts, an environment
+	// root is an escape iteration.  Per-type caps (`max_diffuse_bounce`
+	// & co.) are NOT modelled: a connection endpoint has no sampled lobe
+	// type, so whether the alternative walk's scatter there would have
+	// exceeded a per-type cap is undefined (DL-467).
+	const BDPTUtilities::EyeWalkCaps misEyeCaps = BDPTUtilities::MakeEyeWalkCaps(
+		GetMaxEyeDepth(), GetStabilityConfig().maxVolumeBounce );
+	const long long misLightSurfCap = static_cast<long long>( GetMaxLightDepth() );
+	const long long misLightIterCap = static_cast<long long>( BDPTUtilities::WalkIterationBudget(
+		GetMaxLightDepth(), GetStabilityConfig().maxVolumeBounce ) );
+	long long misEyeSurf = 0, misEyeVol = 0;
+	bool misEyeEscape = false;
+	for( unsigned int q = 1; q < t && q < eyeVerts.size(); q++ ) {
+		if( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[q] ) ) misEyeSurf++;
+		else if( eyeVerts[q].type == BDPTVertex::MEDIUM ) misEyeVol++;
+		else if( eyeVerts[q].type == BDPTVertex::LIGHT ) misEyeEscape = true;
+	}
+	long long misLightSurf = 0, misLightVol = 0;
+	for( unsigned int q = 1; q < s && q < lightVerts.size(); q++ ) {
+		if( BDPTUtilities::CountsAsSurfaceHit( lightVerts[q] ) ) misLightSurf++;
+		else if( lightVerts[q].type == BDPTVertex::MEDIUM ) misLightVol++;
+	}
+
 	//
 	// Walk along the light subpath (decreasing s, increasing t)
 	// This computes ratios for strategies (s-1, t+1), (s-2, t+2), etc.
@@ -6360,6 +6414,24 @@ Scalar BDPTIntegrator::MISWeight(
 			// the walk ends here.  (It used to pass through on remap0 and
 			// reserve that mass with pdfs measured across the jump.)
 			if( vi.isBSSRDFEntry ) {
+				break;
+			}
+
+			// DL-351: the term at i is strategy (i, s+t-i), whose EYE part
+			// gains vi; past the eye walk's caps it (and every later term)
+			// does not exist.
+			if( i == 0 ) {
+				if( vi.type == BDPTVertex::LIGHT && vi.pEnvLight ) {
+					misEyeEscape = true;
+				} else {
+					misEyeSurf++;
+				}
+			} else if( BDPTUtilities::CountsAsSurfaceHit( vi ) ) {
+				misEyeSurf++;
+			} else if( vi.type == BDPTVertex::MEDIUM ) {
+				misEyeVol++;
+			}
+			if( !BDPTUtilities::EyeWalkCanGenerate( misEyeSurf, misEyeVol, misEyeEscape, misEyeCaps ) ) {
 				break;
 			}
 
@@ -6533,6 +6605,22 @@ Scalar BDPTIntegrator::MISWeight(
 			// to eyeVerts[j-1], the hit where the eye went in, across the
 			// jump; it and everything beyond it do not exist.
 			if( vj.isBSSRDFEntry ) {
+				break;
+			}
+
+			// DL-351: the term at j is strategy (s+t-j, j), whose LIGHT
+			// part gains vj (the light ROOT when s == 0 at j == t-1, which
+			// the light walk does not count); past the light walk's caps it
+			// (and every later term) does not exist.
+			if( !( s == 0 && static_cast<unsigned int>(j) + 1 == t ) ) {
+				if( BDPTUtilities::CountsAsSurfaceHit( vj ) ) {
+					misLightSurf++;
+				} else if( vj.type == BDPTVertex::MEDIUM ) {
+					misLightVol++;
+				}
+			}
+			if( misLightSurf > misLightSurfCap ||
+				misLightSurf + misLightVol > misLightIterCap ) {
 				break;
 			}
 
