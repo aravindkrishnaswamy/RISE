@@ -1298,9 +1298,12 @@ public:
 	}
 };
 
-//! Mean of max-channel radiance (composited over black) over columns
-//! [x0, x1) and all rows except a 2-pixel border.  Returns -1 on a
-//! failed or nonfinite render.
+//! Mean of the channel-mean radiance (r+g+b)/3 (composited over black) over
+//! columns [x0, x1) and all rows except a 2-pixel border.  Returns -1 on a
+//! failed or nonfinite render.  (DL-433: this used to average each pixel's
+//! MAX(r,g,b), which is biased UPWARD by the per-pixel chroma noise of a
+//! spectral render and so reads high by an spp-dependent amount; the
+//! channel mean is linear in the pixel, hence unbiased.)
 static double RegionMean( const CapturingRasterizerOutput& cap, unsigned x0, unsigned x1 )
 {
 	if( cap.pixels.empty() ) return -1;
@@ -1308,7 +1311,7 @@ static double RegionMean( const CapturingRasterizerOutput& cap, unsigned x0, uns
 	for( unsigned y = 2; y + 2 < cap.height; ++y ) {
 		for( unsigned x = x0; x < x1; ++x ) {
 			const RISEColor& c = cap.pixels[y * cap.width + x];
-			const double v = std::max( c.base.r, std::max( c.base.g, c.base.b ) ) * c.a;
+			const double v = ( c.base.r + c.base.g + c.base.b ) * ( 1.0 / 3.0 ) * c.a;
 			if( !std::isfinite( v ) ) return -1;
 			sum += v; n++;
 		}
