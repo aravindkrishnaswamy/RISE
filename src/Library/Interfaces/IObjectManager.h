@@ -86,6 +86,33 @@ namespace RISE
 		//! this to rebuild with current transforms.
 		virtual void InvalidateSpatialStructure() const = 0;
 
+		// ---- Motion blur (DL-457)
+		//
+		// Under camera exposure every pixel sample moves the scene to its own
+		// time, but the spatial structure is built once per frame.  It must
+		// therefore bound each object over the whole SHUTTER, not at the
+		// frame's nominal time, or a ray that meets an object outside its
+		// nominal-time leaf box never tests it.  The frame driver samples the
+		// animator across the shutter, calling AccumulateMotionBounds() after
+		// each sample, and the next build uses the swept boxes.  All three run
+		// single-threaded between passes, like InvalidateSpatialStructure.
+
+		//! Forgets every swept box: the next build uses each object's
+		//! current bounding box (the static, non-motion-blurred case).
+		virtual void ClearMotionBounds() const {}
+
+		//! Unions every object's CURRENT world bounding box into its swept
+		//! box.  Call once per shutter sample, after the animator has been
+		//! evaluated (and RecomposeAnimatedHierarchy() has run) at that time.
+		virtual void AccumulateMotionBounds() const {}
+
+		//! Re-composes parented objects against their parents' CURRENT world
+		//! transforms after the animator moved them, without touching the
+		//! spatial structure.  PrepareForRendering does this once per frame;
+		//! a motion-blur sample evaluates the animator mid-frame and needs it
+		//! too, or a child of an animated parent stays at the frame pose.
+		virtual void RecomposeAnimatedHierarchy() const {}
+
 		// ---- Authored scene graph (docs/agentic-redesign/87-recursive-scene-graph.md)
 		//
 		// TWO REPRESENTATIONS, SEPARATE JOBS.  The manager's item map is the

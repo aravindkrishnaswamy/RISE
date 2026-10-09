@@ -254,6 +254,7 @@ namespace RISE
                     if (temporal) {
                         const Scalar dt = exposure/strata;
                         pScene->GetAnimator()->EvaluateAtTime(time-exposure*.5+(stratum+random.CanonicalRandom())*dt);
+                        pScene->GetObjects()->RecomposeAnimatedHierarchy(); // DL-457: carry parented objects along
                     }
                     // Each equal-width time stratum has equal integral weight,
                     // even when integer attempt counts differ by one.

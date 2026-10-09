@@ -67,21 +67,21 @@ Two subsurface scattering shader ops lazily build per-object point set octrees o
 
 These use `mutable PointSetMap pointsets` guarded by a mutex with double-checked locking. The lazy pattern is necessary because octree construction requires ray tracing the scene (evaluating irradiance at sample points), making pre-build during the prepare phase impractical. The mutex serialization makes this thread-safe.
 
-### Animation / Temporal Sampling (pre-existing data race)
+### Animation / Temporal Sampling (motion blur)
 
-`IAnimator::EvaluateAtTime()` mutates keyframed scene elements (camera transform, object transforms, painter values) through stored pointers. During temporal sampling with motion blur, rasterizers call `EvaluateAtTime()` per-sample from multiple threads (`PixelBasedPelRasterizer`, `BDPTPelRasterizer`, etc.). This is a **pre-existing data race** that predates the immutability work.
+`IAnimator::EvaluateAtTime()` mutates keyframed scene elements (camera transform, object transforms, painter values) through stored pointers. Under camera exposure (motion blur) the pixel rasterizers call it once per pixel SAMPLE, through `PixelBasedRasterizerHelper::AnimateSceneToSampleTime`, which also re-composes parented objects (`IObjectManager::RecomposeAnimatedHierarchy`) so a child of an animated parent moves with it.
 
-`IScene::GetAnimator()` intentionally returns non-const `IAnimator*` to make this mutation visible rather than hiding it behind `const`. A proper fix would require per-thread interpolated state snapshots, which is a significant architectural change.
+This is NOT a data race: `RenderFrameOfAnimationPass` renders a frame with `exposure > 0` on the calling thread only (its multithreaded branch requires `exposure == 0`), and a still `RasterizeScene` never samples time. (Earlier revisions of this section called it a pre-existing race; checked 2026-10-08, DL-457.) The cost is that a motion-blurred frame renders single-threaded. `IScene::GetAnimator()` still returns non-const `IAnimator*` to keep the mutation visible.
 
-**Impact**: In practice, temporal sampling with multi-threaded animation is rarely used in production scenes. When it is used, the race condition typically manifests as minor temporal jitter rather than crashes, because the mutations are simple scalar writes to transform/camera parameters.
+`IAnimator::EvaluateAtTime()` is also called per time stratum by the photon tracers (single-threaded) and per frame by the frame drivers.
 
 ### Spatial Acceleration and Animation
 
 The top-level BVH / octree in `ObjectManager` is built from world-space bounding boxes (`Object::getBoundingBox()` applies `m_mxFinalTrans` to geometry bounds). When objects have keyframed transforms, animation evaluation recomputes these transforms via `RegenerateData()` → `FinalizeTransformations()`, which can move objects outside their tree node placement.
 
-**Per-frame animation** (`RasterizeAnimation`): The spatial structure is invalidated via `InvalidateSpatialStructure()` and rebuilt via `PrepareForRendering()` after each frame's `EvaluateAtTime()` + `SetSceneTime()`, before multi-threaded rendering begins. This ensures the top-level BVH/octree reflects current transforms for each frame.
+**Per-frame animation** (`RasterizeAnimation`): `PixelBasedRasterizerHelper::PrepareSceneForFrame` evaluates the frame time, invalidates the spatial structure (when anything is keyframed) and rebuilds it with `PrepareForRendering()`, before multi-threaded rendering begins and before `SetSceneTime` regenerates photon maps.
 
-**Per-sample temporal sampling** (motion blur within a single frame): `EvaluateAtTime()` is called per-sample from within threaded pixel rasterizers. Rebuilding the spatial structure per-sample is prohibitively expensive, so the BVH is built once for the frame's base time. This means per-sample object transform variations are not reflected in the spatial structure — a pre-existing limitation. In practice, the motion blur exposure window is typically small enough that objects don't move far outside their base-time bounds.
+**Per-sample temporal sampling** (motion blur within a single frame, DL-457): the structure is still built once per frame, but over the whole SHUTTER. `PrepareSceneForFrame` samples the animator at 33 times across the frame's shutter interval (`FrameShutterInterval`: exposure plus any scanning / pixel rate) and calls `IObjectManager::AccumulateMotionBounds()` after each; every build then uses each object's swept box (padded by half the largest change between consecutive samples, which covers curved motion between them). `InvalidateSpatialStructure()` drops the swept boxes, so every other rebuild path builds from current boxes. Before DL-457 the structure bounded each object at the frame's nominal time only, and a ray that met an object outside that box never tested it (an occluder moving out of its frame-time box read 1.7 % bright; one growing past it 2 %). The miss needs the ray to avoid the stale LEAF box entirely, which is why scenes whose moving object shares a leaf with a large object (a floor) never showed it.
 
 ### Top-Level Acceleration (TLAS) — BVH default since 2026-05
 

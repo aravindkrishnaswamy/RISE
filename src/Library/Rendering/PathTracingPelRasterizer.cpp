@@ -398,7 +398,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 			weights += weight;
 
 			if( temporal_samples ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 
 			// For ZSobol, remap the sample index via Morton code for

@@ -107,6 +107,25 @@ namespace RISE
 			mutable Octree<const IObjectPriv*>* pOctree;
 			mutable unsigned long long          mSpatialGen;   //!< advanced on every InvalidateSpatialStructure (see IObjectManager)
 
+			//! DL-457 swept (shutter) bounds, keyed by object.  `box` is the
+			//! union of the object's box over the accumulated shutter samples;
+			//! `pad` the largest per-axis change of any box face between two
+			//! consecutive samples, half of which is added on every side so
+			//! curved motion between samples (a rotation) stays inside.
+			//! Written only between passes (AccumulateMotionBounds /
+			//! ClearMotionBounds), read only by the single-threaded builds.
+			struct MotionBox
+			{
+				BoundingBox box;
+				BoundingBox last;
+				Vector3 pad;
+			};
+			mutable std::map<const IObjectPriv*, MotionBox> motionBounds;
+
+			//! The box every spatial build uses for `elem`: its swept box when
+			//! one was accumulated, else its current box.
+			BoundingBox ElementBounds( const IObjectPriv* elem ) const;
+
 			bool bUseBSPtree;
 			bool bUseOctree;
 			const unsigned int nMaxObjectsPerNode;
@@ -540,6 +559,9 @@ namespace RISE
             bool HasRejectedTransmissiveCaster() const { return smsRejectedTransmissiveCaster || smsUncertainNormalOrientation; }
 
 			void InvalidateSpatialStructure() const;
+			void ClearMotionBounds() const;
+			void AccumulateMotionBounds() const;
+			void RecomposeAnimatedHierarchy() const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }
 		};
 	}

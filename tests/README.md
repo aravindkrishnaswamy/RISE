@@ -1302,7 +1302,8 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   world-area fraction of samples in a normal/position region (5 sigma); C:
   floor renders under an orthographic camera, scaled vs directly authored
   surface and PT vs BDPT vs VCM (8 salted renders x 256 spp, 4 combined se);
-  D: motion blur (`RasterizeAnimation`, camera exposure 1, multithreaded) of a
+  D: motion blur (`RasterizeAnimation`, camera exposure 1; an exposure > 0
+  frame renders on the calling thread) of a
   rotating and of an animated-scale non-uniform sphere against authored
   ellipsoids, and a 24-frame loop (EvaluateAtTime + PrepareForRendering) of
   keyframed geometry and animated non-uniform scale -- red without the
@@ -1310,6 +1311,16 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   bit-for-bit gate that similarity transforms take the unchanged path (plus
   hashes for a cross-build A/B). Includes rotation x scale and shear rows. Red
   on `932f7c0a0` (sections A-C): 11/22; green 59/0 (all sections; B includes a thin-in-object-space mesh stretched along its thin axis).
+
+- `MotionBlurTimeAverageTest` (DL-457): a motion-blurred frame (camera
+  exposure 1 at frame time 0.5, so the CENTRED shutter is the timelines'
+  [0, 1]) equals the mean of static renders at 8 or 32 midpoints of that
+  same shutter, PT and BDPT (VCM with `DL457_VCM`), 3 combined se: a scaled
+  luminary, a black occluder growing past / moving out of its frame-time
+  bounds and one carried by an animated parent (white environment, forty
+  out-of-view spheres so the TLAS gives the occluder its own leaf), a moving
+  omni light, a moving luminary. Red on `c73078dc2`: growing +2.0 % (z +142),
+  moving +1.7 % (z +105), parented -1.7 % (z -1513); green 24/0.
 
 - `EmitterAverageExitanceTest` (DL-431): the luminary's average exitance
   (light-selection weight, photon power / budget) over its own surface points.

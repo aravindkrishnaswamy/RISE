@@ -1562,6 +1562,82 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 	}
 }
 
+bool PixelBasedRasterizerHelper::FrameShutterInterval(
+	const ICamera& cam,
+	const Scalar time,
+	const unsigned int width,
+	const unsigned int height,
+	Scalar& t0,
+	Scalar& t1
+	)
+{
+	const Scalar exposure = cam.GetExposureTime();
+	if( !( exposure > 0 ) ) {
+		return false;
+	}
+	const Scalar scanningRate = cam.GetScanningRate();
+	const Scalar pixelRate = cam.GetPixelRate();
+
+	// The same base time RenderFrameOfAnimation computes, and the same
+	// per-pixel start SPRasterizeSingleBlockOfAnimation adds to it; each
+	// sample then draws its time in [start, start + exposure].
+	Scalar base = time - exposure*0.5;
+	if( pixelRate ) {
+		base = time - (height/2*scanningRate) - (width/2*pixelRate);
+	} else if( scanningRate ) {
+		base = time - (height/2*scanningRate);
+	}
+	const Scalar ySpan = ( pixelRate || scanningRate ) ? scanningRate*Scalar( height ? height-1 : 0 ) : 0;
+	const Scalar xSpan = pixelRate ? pixelRate*Scalar( width ? width-1 : 0 ) : 0;
+	t0 = base + r_min( Scalar( 0 ), ySpan ) + r_min( Scalar( 0 ), xSpan );
+	t1 = base + r_max( Scalar( 0 ), ySpan ) + r_max( Scalar( 0 ), xSpan ) + exposure;
+	return true;
+}
+
+void PixelBasedRasterizerHelper::PrepareSceneForFrame(
+	const IScene& pScene,
+	const Scalar time,
+	const bool bHasKeyframedObjects,
+	const unsigned int width,
+	const unsigned int height
+	) const
+{
+	IAnimator* pAnimator = pScene.GetAnimator();
+	const IObjectManager* pObjects = pScene.GetObjects();
+
+	pAnimator->EvaluateAtTime( time );
+	pObjects->ClearMotionBounds();
+
+	if( bHasKeyframedObjects ) {
+		// Rebuild spatial structure after transforms update but before
+		// SetSceneTime, which regenerates photon maps via ray tracing.
+		// (Invalidating also drops any swept boxes, so do it first.)
+		pObjects->InvalidateSpatialStructure();
+
+		// DL-457: under exposure every pixel sample moves the scene to its
+		// own time in the shutter, but the spatial structure is built once,
+		// here.  Bound every object over the whole shutter: sample the
+		// animator across it and union each object's box.  The object
+		// manager pads each box by half the largest change between two
+		// consecutive samples, which covers motion that curves between
+		// them (a rotation); linear motion is covered exactly.
+		const ICamera* pCam = pScene.GetCamera();
+		Scalar t0 = time, t1 = time;
+		if( pCam && FrameShutterInterval( *pCam, time, width, height, t0, t1 ) ) {
+			static const unsigned int kShutterSamples = 32;
+			for( unsigned int k = 0; k <= kShutterSamples; k++ ) {
+				AnimateSceneToSampleTime( pScene, t0 + ( t1 - t0 ) * Scalar( k ) / Scalar( kShutterSamples ) );
+				pObjects->AccumulateMotionBounds();
+			}
+			// Back to the nominal pose, hierarchy included, so the re-bake
+			// inside PrepareForRendering sees nothing move (a move there
+			// would invalidate, and with it drop the swept boxes).
+			AnimateSceneToSampleTime( pScene, time );
+		}
+	}
+	pObjects->PrepareForRendering();
+}
+
 void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const IScene& pScene,
 	const Rect* pRect,
@@ -2104,13 +2180,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			Scalar curtime_lower = curtime_upper + step_size/2;
 
 			// Upper field
-			pScene.GetAnimator()->EvaluateAtTime( curtime_upper );
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
-			if( bHasKeyframedObjects ) {
-				pScene.GetObjects()->InvalidateSpatialStructure();
-			}
-			pScene.GetObjects()->PrepareForRendering();
+			PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height );
 			pScene.SetSceneTime( curtime_upper );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
@@ -2136,11 +2208,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					// Restore the deterministic nominal field state before the bounded
 					// fallback. The fallback deliberately does not replay the beauty
 					// pass's temporal sample distribution (AGENT_PERCEPTION.md).
-					pScene.GetAnimator()->EvaluateAtTime( curtime_upper );
-					if( bHasKeyframedObjects ) {
-						pScene.GetObjects()->InvalidateSpatialStructure();
-					}
-					pScene.GetObjects()->PrepareForRendering();
+					PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height );
 					pScene.SetSceneTime( curtime_upper );
 					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
 					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
@@ -2150,11 +2218,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			}
 
 			// Lower field
-			pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
-			if( bHasKeyframedObjects ) {
-				pScene.GetObjects()->InvalidateSpatialStructure();
-			}
-			pScene.GetObjects()->PrepareForRendering();
+			PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height );
 			pScene.SetSceneTime( curtime_lower );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
@@ -2163,11 +2227,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			if( pAOVBuffers && interlacedFallbackPlan.Any() ) {
 				// RenderFrameOfAnimation may leave the animator at its final
 				// exposure sample. Re-establish the nominal lower-field state.
-				pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
-				if( bHasKeyframedObjects ) {
-					pScene.GetObjects()->InvalidateSpatialStructure();
-				}
-				pScene.GetObjects()->PrepareForRendering();
+				PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height );
 				pScene.SetSceneTime( curtime_lower );
 				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
 				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
@@ -2178,13 +2238,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Render to frames
 			const Scalar curtime = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
 			fallbackNominalTime = curtime;
-			pScene.GetAnimator()->EvaluateAtTime( curtime );
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
-			if( bHasKeyframedObjects ) {
-				pScene.GetObjects()->InvalidateSpatialStructure();
-			}
-			pScene.GetObjects()->PrepareForRendering();
+			PrepareSceneForFrame( pScene, curtime, bHasKeyframedObjects, width, height );
 			pScene.SetSceneTime( curtime );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 
@@ -2221,11 +2277,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				// As with fields above, motion-blur/scanning samples can leave the
 				// animator at an arbitrary sample time. The bounded fallback is a
 				// deterministic nominal-frame approximation, not temporal replay.
-				pScene.GetAnimator()->EvaluateAtTime( fallbackNominalTime );
-				if( bHasKeyframedObjects ) {
-					pScene.GetObjects()->InvalidateSpatialStructure();
-				}
-				pScene.GetObjects()->PrepareForRendering();
+				PrepareSceneForFrame( pScene, fallbackNominalTime, bHasKeyframedObjects, width, height );
 				pScene.SetSceneTime( fallbackNominalTime );
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter, pRect );
