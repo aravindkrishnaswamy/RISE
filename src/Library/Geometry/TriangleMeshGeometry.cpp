@@ -135,6 +135,10 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 		// RayIntersectionGeometric::bOpenSheet's doc comment.
 		ri.bOpenSheet = true;
 	}
+	// DL-382: see TriangleMeshGeometryIndexed::IntersectRay.
+	if( ri.bHit && m_bProvablyOpenSheet ) {
+		ri.bProvablyNoInterior = true;
+	}
 }
 
 bool TriangleMeshGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
@@ -167,6 +171,7 @@ Scalar TriangleMeshGeometry::GetArea( ) const
 void TriangleMeshGeometry::BeginTriangles( )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	safe_release( pPolygonsBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -175,6 +180,7 @@ void TriangleMeshGeometry::BeginTriangles( )
 void TriangleMeshGeometry::AddTriangle( const Triangle& tri )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	// Add the triangle, precompute the stuff that needs to be precompute
 	polygons.push_back( tri );
 }
@@ -221,6 +227,11 @@ void TriangleMeshGeometry::ComputeAreas()
 			areasCDF.push_back( sum );
 		}
 	}
+
+	// DL-382: see TriangleMeshGeometryIndexed::ComputeAreas.
+	m_bProvablyOpenSheet = !smsUncertainNormalOrientation &&
+		GeometricUtilities::IsPlanarConsistentlyWoundSheet( polygons.size(),
+			[this]( size_t t, int k ) -> const Point3& { return polygons[t].vertices[k]; } );
 }
 
 void TriangleMeshGeometry::DoneTriangles( )

@@ -663,3 +663,13 @@ bool DisplacedGeometry::HasUncertainSMSNormalOrientation() const
     const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
     return !mesh || mesh->HasUncertainSMSNormalOrientation();
 }
+
+bool DisplacedGeometry::HasUncertifiedOpenness() const
+{
+    if( m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad() ) {
+        return false;
+    }
+    Realize();
+    const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
+    return mesh && !mesh->IsCertifiedWatertight() && !mesh->IsProvablyOpenSheet();
+}

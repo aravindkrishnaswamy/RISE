@@ -183,6 +183,26 @@ bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
         return mesh->HasUncertainSMSNormalOrientation();
     return false;
 }
+// DL-382: a clear transmissive surface whose geometry is neither certified
+// closed nor certified open (a non-planar open mesh, a slab authored as one
+// open mesh, a mesh with stray boundary edges) is crossed by the IOR-stack
+// rule, which is non-reciprocal on genuinely open sheets (DL-345).  Only
+// the inline/imported mesh classes carry the certificates; Bezier/bilinear
+// patch sets and CSG are not reported (no certificate either way).
+bool ObjectHasUncertifiedOpenTransmissiveMesh(const IObject& object)
+{
+    const IMaterial* material = object.GetMaterial();
+    const ISPF* spf = material ? material->GetSPF() : nullptr;
+    if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) return false;
+    const IGeometry* geometry = object.GetGeometry();
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
+        return !mesh->IsCertifiedWatertight() && !mesh->IsProvablyOpenSheet();
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
+        return !mesh->IsProvablyOpenSheet();
+    if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(geometry))
+        return displaced->HasUncertifiedOpenness();
+    return false;
+}
 bool ObjectWrapsComposite(const IObject& object)
 {
     if(WrapsComposite(object.GetMaterial())) return true;
@@ -2255,6 +2275,24 @@ void ObjectManager::PrepareForRendering() const
         GlobalLog()->PrintEx(eLog_Warning,
             "Extended SMS is inert for this prepared scene: composite object '%s'; using legacy SMS and suppression.",
             smsFirstCompositeObject.c_str());
+    }
+    // DL-382: one warning per preparation, naming the first offender.
+    {
+        unsigned int nUncertified = 0;
+        const char* first = nullptr;
+        for(const auto& item : items) {
+            if(item.second.first->IsWorldVisible() && ObjectHasUncertifiedOpenTransmissiveMesh(*item.second.first)) {
+                if(!first) first = item.first.c_str();
+                ++nUncertified;
+            }
+        }
+        if(first) {
+            GlobalLog()->PrintEx(eLog_Warning,
+                "ObjectManager: %u transmissive mesh object(s) (first '%s') are neither certified closed nor a single planar sheet; "
+                "they are refracted by the IOR-stack rule, which is right for a closed solid with stray boundary edges but not reciprocal on a genuinely OPEN surface (PT/BDPT/VCM can disagree). "
+                "Author glass as a closed solid, or an open sheet as one planar mesh / clipped plane per sheet (docs/SCENE_CONVENTIONS.md, DL-382).",
+                nUncertified, first);
+        }
     }
 
 	// 87 step 2: RE-BAKE the hierarchy, every frame.  This is the whole of

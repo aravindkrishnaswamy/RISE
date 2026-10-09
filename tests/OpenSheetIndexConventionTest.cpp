@@ -25,9 +25,15 @@
 //            against the SAME slab as one closed box, with the camera
 //            below it (receiver seen directly) and above it (receiver
 //            seen through the slab): each integrator open / closed ~ 1.
+//    mesh    DL-382: the same sheets as planar `indexedmesh_geometry`
+//            quads (certified open by `IsProvablyOpenSheet`), both
+//            windings: mesh == clipped plane, every integrator agrees,
+//            two-mesh slab == closed box.  Red (certification off):
+//            7 passed / 9 failed (PT 0.44 of the plane; slab 0.59-0.63).
+//            A slab authored as ONE two-sheet mesh is recorded, not gated.
 //
 //  argv[1]: seed base (default 1000).  OPEN_SHEET_N (env): repeats per
-//  config (default 4).
+//  config (default 4).  OPEN_SHEET_MESH_ONLY (env): run only the mesh rows.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -193,7 +199,8 @@ static std::string Rasterizer( Integrator which )
 // refractor, 8 x 8.  A clipped plane wound (-x,+z) -> (+x,+z) -> (+x,-z)
 // faces UP (+y); the reverse winding faces DOWN.
 //////////////////////////////////////////////////////////////////////
-enum Glass { kSingleSheet, kOpenSlab, kDisplacedSlab, kClosedSlab, kOpenStacked, kClosedStacked };
+enum Glass { kSingleSheet, kOpenSlab, kDisplacedSlab, kClosedSlab, kOpenStacked, kClosedStacked,
+	kSingleSheetDown, kMeshSingle, kMeshSingleDown, kMeshSlab, kMeshSlabOneObject };
 enum Camera { kBelow, kAbove };
 
 static std::string PlaneChunk( const char* name, double y, bool up )
@@ -206,6 +213,30 @@ static std::string PlaneChunk( const char* name, double y, bool up )
 		ss << "\tpta -4 " << y << " -4\n\tptb 4 " << y << " -4\n\tptc 4 " << y << " 4\n\tptd -4 " << y << " 4\n";
 	}
 	ss << "\tdoublesided TRUE\n}\n\n";
+	return ss.str();
+}
+
+//! DL-382: the same 8 x 8 sheet as an inline indexed mesh (two
+//! triangles, same corner order as PlaneChunk, so the same facing).
+//! `twoSheets` puts a second, down-facing copy at `y2` into the SAME
+//! mesh (a slab authored as one open mesh -- never certified).
+static std::string MeshChunk( const char* name, double y, bool up,
+	bool twoSheets = false, double y2 = 0.0 )
+{
+	std::ostringstream ss;
+	ss << "indexedmesh_geometry\n{\n\tname " << name << "\n";
+	auto quad = [&ss]( double yy, bool u ) {
+		if( u ) {
+			ss << "\tvertex -4 " << yy << " 4\n\tvertex 4 " << yy << " 4\n\tvertex 4 " << yy << " -4\n\tvertex -4 " << yy << " -4\n";
+		} else {
+			ss << "\tvertex -4 " << yy << " -4\n\tvertex 4 " << yy << " -4\n\tvertex 4 " << yy << " 4\n\tvertex -4 " << yy << " 4\n";
+		}
+	};
+	quad( y, up );
+	if( twoSheets ) quad( y2, !up );
+	ss << "\ttriangle 0 1 2\n\ttriangle 0 2 3\n";
+	if( twoSheets ) ss << "\ttriangle 4 5 6\n\ttriangle 4 6 7\n";
+	ss << "\tdouble_sided TRUE\n}\n\n";
 	return ss.str();
 }
 
@@ -236,6 +267,24 @@ static std::string Scene( Glass glass, Camera cam, bool omni = false )
 	case kSingleSheet:
 		ss << PlaneChunk( "geo_sheet", 2.0, true )
 		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
+		break;
+	case kSingleSheetDown:
+		ss << PlaneChunk( "geo_sheet", 2.0, false )
+		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
+		break;
+	case kMeshSingle:
+	case kMeshSingleDown:
+		ss << MeshChunk( "geo_sheet", 2.0, glass == kMeshSingle )
+		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
+		break;
+	case kMeshSlab:
+		ss << MeshChunk( "geo_top", 2.1, true ) << MeshChunk( "geo_bot", 1.9, false )
+		   << "standard_object\n{\n\tname obj_top\n\tgeometry geo_top\n\tmaterial mat_glass\n}\n\n"
+		      "standard_object\n{\n\tname obj_bot\n\tgeometry geo_bot\n\tmaterial mat_glass\n}\n\n";
+		break;
+	case kMeshSlabOneObject:
+		ss << MeshChunk( "geo_slab", 2.1, true, true, 1.9 )
+		   << "standard_object\n{\n\tname obj_slab\n\tgeometry geo_slab\n\tmaterial mat_glass\n}\n\n";
 		break;
 	case kOpenSlab:
 		ss << PlaneChunk( "geo_top", 2.1, true ) << PlaneChunk( "geo_bot", 1.9, false )
@@ -336,6 +385,9 @@ int main( int argc, char** argv )
 	}
 	std::cout << "OpenSheetIndexConventionTest (DL-345 / DL-339 (b))   seed base = " << g_seedBase << "   n = " << n << std::endl;
 
+	const char* camName[2] = { "camera below (direct)", "camera above (through slab)" };
+	const bool meshOnly = std::getenv( "OPEN_SHEET_MESH_ONLY" ) != nullptr;
+	if( !meshOnly ) {
 	// single: every integrator against PT.
 	std::cout << "single open sheet, receiver seen directly (DL-339 (b))" << std::endl;
 	Stat single[kNumIntegrators];
@@ -348,7 +400,6 @@ int main( int argc, char** argv )
 	}
 
 	// slab: open (flat, displaced) / closed, per integrator and camera.
-	const char* camName[2] = { "camera below (direct)", "camera above (through slab)" };
 	for( int c = 0; c < 2; c++ ) {
 		std::cout << "slab, " << camName[c] << std::endl;
 		for( int i = 0; i < kNumIntegrators; i++ ) {
@@ -381,6 +432,44 @@ int main( int argc, char** argv )
 		const Stat disp = Measure( kPTTransparentShadows, kDisplacedSlab, kBelow, n, true );
 		RatioRow( "transparent shadows open slab / closed box", open, closed, 0.01 );
 		RatioRow( "transparent shadows displaced open slab / closed box", disp, closed, 0.01 );
+	}
+	}
+
+	// DL-382: an open sheet built as a PLANAR, consistently wound indexed
+	// mesh is certified (`bProvablyNoInterior`) and crossed by its face
+	// exactly like the clipped plane: same image as the plane, every
+	// integrator agrees, and a two-mesh slab equals the closed box.
+	std::cout << "DL-382: open sheets built as indexed meshes" << std::endl;
+	for( int w = 0; w < 2; w++ ) {
+		const Glass meshG = w == 0 ? kMeshSingle : kMeshSingleDown;
+		const Glass planeG = w == 0 ? kSingleSheet : kSingleSheetDown;
+		const char* wn = w == 0 ? "up-wound" : "down-wound";
+		Stat mesh[kNumIntegrators];
+		for( int i = 0; i < kNumIntegrators; i++ ) {
+			mesh[i] = Measure( Integrator( i ), meshG, kBelow, n );
+		}
+		const Stat plane = Measure( kPT, planeG, kBelow, n );
+		std::string l0 = std::string( "single mesh sheet (" ) + wn + ") PT / clipped plane PT";
+		RatioRow( l0.c_str(), mesh[kPT], plane, 0.05 );
+		for( int i = 1; i < kNumIntegrators; i++ ) {
+			std::string l = std::string( "single mesh sheet (" ) + wn + ") " + kIntegratorName[i] + " / PT";
+			RatioRow( l.c_str(), mesh[i], mesh[kPT], 0.05 );
+		}
+	}
+	for( int c = 0; c < 2; c++ ) {
+		std::cout << "mesh slab, " << camName[c] << std::endl;
+		for( int i = 0; i < kNumIntegrators; i++ ) {
+			const Stat closed = Measure( Integrator( i ), kClosedSlab, Camera( c ), n );
+			const Stat open = Measure( Integrator( i ), kMeshSlab, Camera( c ), n );
+			std::string l1 = std::string( "two-mesh open slab / closed box " ) + kIntegratorName[i] + ", " + camName[c];
+			RatioRow( l1.c_str(), open, closed, 0.05 );
+			// Recorded, not gated: a slab authored as ONE open mesh (two
+			// sheets in one geometry) is a collection and is never
+			// certified, so it keeps the stack rule (DL-382 residual).
+			const Stat one = Measure( Integrator( i ), kMeshSlabOneObject, Camera( c ), n );
+			std::printf( "  [recorded] one-mesh open slab / closed box %s, %s: %.4f\n",
+				kIntegratorName[i], camName[c], one.mean / closed.mean );
+		}
 	}
 
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

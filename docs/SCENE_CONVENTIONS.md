@@ -1219,10 +1219,19 @@ integrator and in SMS (DL-345, 2026-10-02,
   lone sheet sees the walk's stack, which is air when the walk was seeded
   behind the sheet (an ior-1.5 sphere under a water sheet reads ~10 % low
   in PT/BDPT/VCM against the closed-water twin; DL-382 (4)).
-- only provably open surfaces get this rule: an open triangle MESH, a
-  Bezier patch set or a CSG of sheets is not certified open and keeps the
-  stack-based ("entering unless already inside") convention, which is not
-  reciprocal on open sheets (DL-382).
+- only provably open surfaces get this rule.  Since DL-382 (2026-10-08) that
+  includes a triangle mesh (`indexedmesh_geometry`, `rawmesh_geometry`, an
+  imported mesh) that is ONE planar sheet with consistent winding and
+  authored normals agreeing with it -- a window pane imported as a quad.
+  Anything else -- a non-planar open mesh, a slab authored as ONE mesh
+  holding both sheets, a Bezier patch set, a CSG of sheets -- is not
+  certified open and keeps the stack-based ("entering unless already
+  inside") convention, which is right for a closed solid but not reciprocal
+  on open sheets.  A slab built as ONE two-sheet mesh still renders right
+  (both crossings key on one object); a slab built from two separate
+  NON-planar open meshes does not.  `ObjectManager` logs one warning per
+  render naming the first transmissive mesh that is neither certified
+  closed nor a planar sheet.
 
 ## 9. Sanity-check workflow
 

@@ -172,6 +172,7 @@
 #include <vector>
 
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/EllipsoidGeometry.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
@@ -1560,6 +1561,155 @@ static bool BuildWeldedUVSphere( const Scalar R, const unsigned int n, const uns
 	return true;
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-382: `TriangleMeshGeometryIndexed::IsProvablyOpenSheet` -- the
+// certification behind the open-sheet face rule for meshes.  ONLY a
+// single planar, consistently wound sheet with certain normal
+// orientation is certified; "has a boundary" (not certified closed) is
+// NOT "certified open".
+//////////////////////////////////////////////////////////////////////
+static TriangleMeshGeometryIndexed* BuildFaceNormalMesh(
+	const std::vector<Point3>& corners, const IndexTriangleListType& tris,
+	const bool bFaceNormals = true, const Vector3 authoredNormal = Vector3( 0, 0, 1 ) )
+{
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( true, bFaceNormals );
+	mesh->addref();
+	VerticesListType vertices( corners.begin(), corners.end() );
+	NormalsListType normals( corners.size(), authoredNormal );
+	TexCoordsListType coords( corners.size(), Point2( 0, 0 ) );
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+	return mesh;
+}
+
+static void TestProvablyOpenSheetCertification()
+{
+	std::cout << "DL-382: provably-open-sheet certification" << std::endl;
+	auto quad = []( std::vector<Point3>& v, IndexTriangleListType& t, Scalar z, bool up, unsigned int base ) {
+		if( up ) {
+			v.push_back( Point3( -1, -1, z ) ); v.push_back( Point3( 1, -1, z ) );
+			v.push_back( Point3( 1, 1, z ) );   v.push_back( Point3( -1, 1, z ) );
+		} else {
+			v.push_back( Point3( -1, 1, z ) );  v.push_back( Point3( 1, 1, z ) );
+			v.push_back( Point3( 1, -1, z ) );  v.push_back( Point3( -1, -1, z ) );
+		}
+		AddTri( t, base + 0, base + 1, base + 2 );
+		AddTri( t, base + 0, base + 2, base + 3 );
+	};
+
+	// (a) one planar quad: certified, and every hit (front and back) is
+	// stamped bProvablyNoInterior.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.5, true, 0 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( m->IsProvablyOpenSheet(), "planar quad (face normals) is certified open" );
+		for( int side = 0; side < 2; ++side ) {
+			RayIntersectionGeometric ri( Ray( Point3( 0.1, 0.2, side ? -3.0 : 3.0 ), Vector3( 0, 0, side ? 1.0 : -1.0 ) ), nullRasterizerState );
+			m->IntersectRay( ri, true, true, false );
+			Check( ri.bHit && ri.bProvablyNoInterior,
+				side ? "planar quad: back-face hit stamped bProvablyNoInterior" : "planar quad: front-face hit stamped bProvablyNoInterior" );
+		}
+		// UpdateVertices moving one corner off the plane withdraws it.
+		VerticesListType moved( v.begin(), v.end() );
+		moved[2] = Point3( 1, 1, 0.9 );
+		m->UpdateVertices( moved, NormalsListType() );
+		Check( !m->IsProvablyOpenSheet(), "planar quad bent by UpdateVertices loses certification" );
+		safe_release( m );
+	}
+	// (b) authored vertex normals agreeing with the winding: certified;
+	// opposing it (geometric normal follows the shading normal, so the
+	// face cannot be read off the winding): refused.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		TriangleMeshGeometryIndexed* agree = BuildFaceNormalMesh( v, t, false, Vector3( 0, 0, 1 ) );
+		TriangleMeshGeometryIndexed* oppose = BuildFaceNormalMesh( v, t, false, Vector3( 0, 0, -1 ) );
+		Check( agree->IsProvablyOpenSheet(), "planar quad, authored normals agree with winding: certified" );
+		Check( !oppose->IsProvablyOpenSheet(), "planar quad, authored normals oppose winding: refused" );
+		safe_release( agree );
+		safe_release( oppose );
+	}
+	// (c) planar but MIXED winding: no single front side -> refused.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		std::swap( t[1].iVertices[1], t[1].iVertices[2] );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "planar quad with one triangle wound the other way: refused" );
+		safe_release( m );
+	}
+	// (d) the closed cube, and the cube missing its top (OPEN, has a
+	// boundary -- but not certified open): both refused.
+	for( int drop = 0; drop < 2; ++drop ) {
+		std::vector<Point3> v; IndexTriangleListType t;
+		CubeCorners( 1.0, v );
+		CubeTriangles( t, drop == 1 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), drop ? "open cube (top missing, has boundary): NOT certified open" : "closed cube: not certified open" );
+		safe_release( m );
+	}
+	// (e) a slab authored as two open sheets in ONE mesh: a collection,
+	// never certified (N sheets can bound a volume).
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.1, true, 0 );
+		quad( v, t, -0.1, false, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "two parallel sheets in one mesh: refused" );
+		safe_release( m );
+	}
+	// (f) a closed box flattened to 1e-9 of its width (inside the weld
+	// tolerance): its top and bottom are wound opposite ways, so refused.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		CubeCorners( 1.0, v );
+		for( Point3& p : v ) p.z *= 1e-9;
+		CubeTriangles( t, false );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "closed box flattened inside the weld tolerance: refused" );
+		safe_release( m );
+	}
+	// (g) planarity tolerance: a corner lifted 1e-3 x width is refused,
+	// 1e-9 x width (float noise) is certified.
+	for( int k = 0; k < 2; ++k ) {
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		v[2].z = k ? 2e-9 : 2e-3;
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( k ? m->IsProvablyOpenSheet() : !m->IsProvablyOpenSheet(),
+			k ? "quad with a 1e-9-relative corner lift: certified" : "quad with a 1e-3-relative corner lift: refused" );
+		safe_release( m );
+	}
+	// (h) the non-indexed mesh class (rawmesh) shares the predicate:
+	// one quad certified, two parallel quads refused.
+	for( int two = 0; two < 2; ++two ) {
+		TriangleMeshGeometry* m = new TriangleMeshGeometry( true );
+		m->addref();
+		m->BeginTriangles();
+		for( int q = 0; q <= two; ++q ) {
+			const Scalar z = q ? -0.1 : 0.1;
+			const Vector3 n = q ? Vector3( 0, 0, -1 ) : Vector3( 0, 0, 1 );
+			const Point3 a( -1, -1, z ), b( 1, -1, z ), c( 1, 1, z ), d( -1, 1, z );
+			Triangle t1, t2;
+			t1.vertices[0] = a; t1.vertices[1] = q ? c : b; t1.vertices[2] = q ? b : c;
+			t2.vertices[0] = a; t2.vertices[1] = q ? d : c; t2.vertices[2] = q ? c : d;
+			for( int k = 0; k < 3; ++k ) { t1.normals[k] = n; t2.normals[k] = n; }
+			m->AddTriangle( t1 );
+			m->AddTriangle( t2 );
+		}
+		m->DoneTriangles();
+		Check( two ? !m->IsProvablyOpenSheet() : m->IsProvablyOpenSheet(),
+			two ? "rawmesh: two parallel quads refused" : "rawmesh: one planar quad certified" );
+		safe_release( m );
+	}
+}
+
+
 //! (d) COST.  A ~10k-triangle watertight sphere, timed over many random
 //! interior/exterior queries.  Reported, not gated -- wall clock is
 //! machine-dependent -- but printed in the same ns/query unit the
@@ -1678,6 +1828,7 @@ int main()
 	TestWedgeSharpCreaseCertifiesAtEveryAngle();
 	TestFlatShadedCubeWithRealNormalsCertifies();
 	TestThinButValidSolidThickerThanEpsCertifies();
+	TestProvablyOpenSheetCertification();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

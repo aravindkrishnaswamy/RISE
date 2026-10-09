@@ -213,3 +213,22 @@ This is a LOOK change of a shipped scene; the user accepted it (2026-10-02).
 See the DL-345 row and DL-382.  Not measured here: MLT (shares BDPT's
 walks) and the spectral / HWSS integrators (the SPF NM paths carry the same
 rule; no spectral row was rendered).
+
+## 7. DL-382 (2026-10-08): planar meshes are certified too
+
+A triangle mesh (`TriangleMeshGeometryIndexed`, `TriangleMeshGeometry`) is
+now a provably open sheet when it is ONE planar sheet: every corner within
+the DL-143 weld epsilon (`max(1e-9, 1e-6 x bbox diagonal)`) of one plane,
+every non-degenerate triangle wound to the same side, and its authored
+normals agreeing with the winding (the mesh orients its geometric normal to
+the shading normal, so only then is the face readable off the winding).
+`GeometricUtilities::IsPlanarConsistentlyWoundSheet` carries the argument:
+a planar set encloses nothing, and a constant field has zero flux through a
+closed oriented surface, so one whose winding normals all point the same
+way has no closed component (a closed box flattened inside the tolerance is
+refused).  Boundary edges are NOT a certificate ("not certified closed" is
+not "certified open"), and two sheets in one mesh are refused (a
+collection).  Measured in `OpenSheetIndexConventionTest`'s mesh rows (red
+7/9 -> green 16/0, figures in the DL-382 row).  Everything else that is
+open and transmissive keeps the stack rule and, for meshes, now triggers
+one `ObjectManager` warning per render.

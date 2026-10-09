@@ -217,6 +217,14 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 		// consumer (the BSSRDF front-face gate) that reads this.
 		ri.bOpenSheet = !m_bWatertight;
 	}
+	// DL-382: a planar, consistently wound mesh is a certified open sheet
+	// (see m_bProvablyOpenSheet), so the transmissive SPFs cross it by its
+	// FACE exactly as they cross a clipped plane (DL-345).  Stamped on
+	// every hit, front or back, like ClippedPlaneGeometry; any other mesh
+	// leaves the record's `false`.
+	if( ri.bHit && m_bProvablyOpenSheet ) {
+		ri.bProvablyNoInterior = true;
+	}
 }
 
 bool TriangleMeshGeometryIndexed::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
@@ -256,6 +264,7 @@ Scalar TriangleMeshGeometryIndexed::GetArea( ) const
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -274,12 +283,14 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 void TriangleMeshGeometryIndexed::AddVertex( const Point3& point )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	pPoints.push_back( point );
 }
 
 void TriangleMeshGeometryIndexed::AddNormal( const Vector3& normal )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	if( !bUseFaceNormals ) {
 		pNormals.push_back( normal );
 	}
@@ -293,12 +304,14 @@ void TriangleMeshGeometryIndexed::AddTexCoord( const Point2& coord )
 void TriangleMeshGeometryIndexed::AddVertices( const VerticesListType& points )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	pPoints.insert( pPoints.end(), points.begin(), points.end() );
 }
 
 void TriangleMeshGeometryIndexed::AddNormals( const NormalsListType& normals )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	if( !bUseFaceNormals ) {
 		pNormals.insert( pNormals.end(), normals.begin(), normals.end() );
 	}
@@ -351,12 +364,14 @@ void TriangleMeshGeometryIndexed::AddTexCoords1( const TexCoordsListType& coords
 void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	indexedtris.push_back( tri );
 }
 
 void TriangleMeshGeometryIndexed::AddIndexedTriangles( const IndexTriangleListType& tris )
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	indexedtris.insert( indexedtris.end(), tris.begin(), tris.end() );
 }
 
@@ -520,6 +535,12 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 			areasCDF.push_back( sum );
 		}
 	}
+
+	// DL-382: refreshed with the winding audit just above, at every real
+	// mutation (DoneIndexedTriangles, UpdateVertices, deserialize).
+	m_bProvablyOpenSheet = !smsUncertainNormalOrientation &&
+		GeometricUtilities::IsPlanarConsistentlyWoundSheet( ptr_polygons.size(),
+			[this]( size_t t, int k ) -> const Point3& { return *ptr_polygons[t].pVertices[k]; } );
 }
 
 void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
@@ -1959,6 +1980,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 void TriangleMeshGeometryIndexed::ComputeVertexNormals()
 {
     smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );
