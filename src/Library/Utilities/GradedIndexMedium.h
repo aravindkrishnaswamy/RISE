@@ -168,9 +168,56 @@ namespace RISE
 		//! untouched) otherwise -- including a non-positive or non-finite
 		//! painter value, which a scene can author and which must degrade to
 		//! "no factor", never to an infinite or zero throughput.
-		inline bool Advance( IORStack& stack, const Point3& p, const TransportMode mode, Scalar& scale )
+		//! DL-335: re-record every graded medium BELOW the stack's top at
+		//! `p`, with NO factor.  While a nested object is innermost, an
+		//! enclosing graded medium's tracked index would otherwise stay at
+		//! the nested object's ENTRY point, so its EXIT refracted (Snell,
+		//! Fresnel, TIR) into n(entry) instead of n(exit) -- and the eye walk
+		//! (which enters where the light walk exits) and the light walk used
+		//! different indices at the same interface: a non-reciprocal model
+		//! that VCM's merges (the only strategy built on a light walk through
+		//! a delta object) read 0.50x of PT's eye walk through a nested glass
+		//! ball (GradedIndexInteriorFactorTest row Q).
+		//!
+		//! WHY NO FACTOR IS OWED.  The re-recorded value is read next either
+		//! by the exit crossing (a radiance walk's RadianceEtaScale, or an
+		//! importance walk's refraction Jacobian through its Snell indices)
+		//! or, once it is the top again, by the next Advance -- both are
+		//! RELATIVE to the stored value, so the entry factor
+		//! (n_entry/n_nested)^2 times the exit factor (n_nested/n_exit)^2
+		//! supplies exactly the straight-graded-segment factor the moved
+		//! value would otherwise owe.  The product telescopes either way.
+		//! A walk that prices NO interfaces (ShadowSegmentTrack) must not
+		//! call this: its nested through-trip telescopes only on the
+		//! unchanged entry value.
+		inline void RecordEnclosingAt( IORStack& stack, const Point3& p )
+		{
+			const std::size_t depth = stack.Depth();
+			if( depth < 3 ) {
+				return;		// environment + innermost only: nothing enclosing
+			}
+			for( std::size_t i = 1; i + 1 < depth; i++ ) {
+				const IScalarPainter* pField = FieldOf( stack.ObjectAt( i ) );
+				if( !pField ) {
+					continue;
+				}
+				const Scalar n = EvalAt( *pField, p );
+				if( IsUsableIOR( n ) ) {
+					stack.SetIORAt( i, n );
+				}
+			}
+		}
+
+		inline bool Advance( IORStack& stack, const Point3& p, const TransportMode mode, Scalar& scale,
+			const bool bRecordEnclosing = true )
 		{
 			scale = Scalar( 1 );
+			if( !GradedIndexDemand::Any() ) {
+				return false;
+			}
+			if( bRecordEnclosing ) {
+				RecordEnclosingAt( stack, p );
+			}
 			const IScalarPainter* pField = TopField( stack );
 			if( !pField ) {
 				return false;
@@ -324,7 +371,7 @@ namespace RISE
 			void Crossing( const Point3& p, const IObject* pObj, const bool bEntering, const Scalar mediumIOR )
 			{
 				Scalar s;
-				if( Advance( stack, p, eRadiance, s ) ) {
+				if( Advance( stack, p, eRadiance, s, false ) ) {
 					scale *= s;
 				}
 				if( !pObj ) {
@@ -342,7 +389,7 @@ namespace RISE
 			void Finish( const Point3& lightPoint )
 			{
 				Scalar s;
-				if( Advance( stack, lightPoint, eRadiance, s ) ) {
+				if( Advance( stack, lightPoint, eRadiance, s, false ) ) {
 					scale *= s;
 				}
 				walked = true;

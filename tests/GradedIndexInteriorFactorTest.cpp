@@ -52,6 +52,8 @@
 //         the transmittance value (J weave gap, K nested slab, L exit into
 //         an index-matched enclosure), RayCaster's own volume walk (M),
 //         the legacy shader-op chain (N), composite / refused ior forms (O).
+//      T  DL-335: VCM / PT through a glass ball nested in the graded box
+//         (4 salted replicates) -- the nested exit's enclosing index.
 //
 //    Replicas: every render is split into 16 tiles; where the view is a
 //    uniformly lit floor (rows A-C, F, G scene A) the tiles are independent
@@ -79,6 +81,7 @@
 #include <sstream>
 #include <vector>
 #include <cmath>
+#include <algorithm>
 #include <string>
 #ifdef _WIN32
 	#include <process.h>
@@ -1344,6 +1347,60 @@ static void RunSMSSplitRow()
 
 
 //////////////////////////////////////////////////////////////////////
+// Row T (DL-335, gated): row Q's glass ball nested in the graded box,
+// VCM / PT.  Through a delta object only VCM's merges reach the floor
+// from the LIGHT walk; PT and BDPT reach it from the eye walk alone.  The
+// enclosing graded medium's tracked index used to stay at the ball's
+// ENTRY point, so the ball's exit refracted into n(entry) -- the eye walk
+// (entering at the bottom) and the light walk (entering at the top) used
+// different exit indices, a non-reciprocal model: VCM/PT read 0.50 here
+// against 1.00 for the constant-index control.  GradedIndexMedium::
+// RecordEnclosingAt re-records the enclosing entry at every vertex.
+// Four salted replicates; gate |mean - 1| within 3 sd of the mean (plus a
+// 2 % floor for the merge radius bias the constant control shows).
+//////////////////////////////////////////////////////////////////////
+static void RunNestedBallVCMRow()
+{
+	std::cout << std::endl << "-- Row T (DL-335): VCM / PT through a glass ball nested in the graded box --" << std::endl;
+	auto build = [&]( bool graded ) {
+		std::string s = ReadFile( kSeededScene );
+		if( !graded ) s = ReplaceSpan( s, "MEDIUM", UniformBox( 1.4 ) );
+		s = ReplaceOnce( s, "\tpta -28 -28 1.0\n\tptb -28 28 1.0\n\tptc 28 28 1.0\n\tptd 28 -28 1.0\n",
+			"\tpta 0.5 -0.1 1.0\n\tptb 0.5 0.1 1.0\n\tptc 0.7 0.1 1.0\n\tptd 0.7 -0.1 1.0\n" );
+		s = ReplaceOnce( s, "\tscale 1.0\n", "\tscale 40.0\n" );
+		return ReplaceOnce( s, kEmitterObject, kEmitterObject +
+			"\ndielectric_material\n{\n\tname mat_ball\n\tior 1.5\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.15\n}\n\n"
+			"standard_object\n{\n\tname ball\n\tgeometry geo_ball\n\tmaterial mat_ball\n\tposition 0.3 0 0.55\n}\n" );
+	};
+	g_saltRenders = true;
+	const int n = 4;
+	for( int graded = 1; graded >= 0; graded-- ) {
+		std::vector<double> q;
+		for( int i = 0; i < n; i++ ) {
+			const std::string base = build( graded != 0 );
+			const Stat p = RenderStat( ReplaceSpan( base, "RASTERIZER", RasterizerPT( 1024 ) ), "ball_pt" );
+			const Stat v = RenderStat( ReplaceSpan( base, "RASTERIZER", RasterizerVCM( 512 ) ), "ball_vcm" );
+			q.push_back( ( p.ok && v.ok && p.mean > 0 ) ? v.mean / p.mean : -1.0 );
+		}
+		double m = 0;
+		for( double x : q ) m += x;
+		m /= double( n );
+		double sd = 0;
+		for( double x : q ) sd += ( x - m ) * ( x - m );
+		sd = std::sqrt( sd / double( n - 1 ) );
+		const double tol = std::max( 3.0 * sd / std::sqrt( double( n ) ), 0.02 );
+		char buf[256];
+		std::snprintf( buf, sizeof(buf), "row T %s: VCM/PT = %.5f +/- %.5f (n %d, salted), |mean-1| <= %.4f",
+			graded ? "graded" : "constant", m, sd, n, tol );
+		std::cout << "    " << buf << std::endl;
+		Check( std::fabs( m - 1.0 ) <= tol, buf );
+	}
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Row R (DL-292, OPT-IN: GRADED_ROWS must name R explicitly; prints, does
 // not gate).  The two L-sized residuals the row leaves open, measured:
 //   R1  a ROUGH graded dielectric (`scattering 3`, a non-delta
@@ -1441,6 +1498,7 @@ int main( int argc, char** argv )
 	if( on( 'N' ) ) RunLegacyChainRow( closedB, preB );
 	if( on( 'O' ) ) RunIorFormRows( closedA );
 	if( on( 'P' ) ) RunPhotonMapRow();
+	if( on( 'T' ) ) RunNestedBallVCMRow();
 	// Opt-in measurement row (named explicitly, never in the default run).
 	if( on( 'S' ) ) RunSMSSplitRow();
 	if( rowsEnv && std::strchr( rowsEnv, 'Q' ) ) RunSMSMeasurementRow();

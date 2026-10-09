@@ -472,7 +472,7 @@ track's exit from a constant object nested in the graded medium uses the
 stale parent index, DL-293's pattern on the NEE side (consistent with the
 BSDF arm, no partition break); VCM through a glass sphere nested in the graded box
 reads VCM/PT **0.5009** vs 0.9982 constant while BDPT reads 1.0078 --
-filed as **DL-335**; a connection through a graded object's own rough
+filed as **DL-335** (closed 2026-10-08: the eye and light walks refracted out of the ball into DIFFERENT stale enclosing indices -- n at their own entry points -- and only VCM merges trace a light walk through a delta object; `GradedIndexMedium::RecordEnclosingAt` now re-records every graded entry below the stack top at each walk vertex, no factor, and gated row T reads VCM/PT 1.004 +/- 0.012 against 0.487 on the base); a connection through a graded object's own rough
 surface with one endpoint outside (row R1, BDPT/PT 1.0001, VCM/PT 0.9991)
 and BDPT t==1 at a thin-lens point across a lateral gradient (row R2,
 1.0001) measure at noise on their fixtures.
