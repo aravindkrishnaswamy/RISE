@@ -307,12 +307,30 @@ namespace RISE
 				ISampler* pSampler
 				) const;
 
-			/// Computes MIS weight using the balance heuristic (power=1).
+			/// DL-424/425: the see-through s = 1 connection (DL-330) as an
+			/// MIS strategy.  `live`: the scene's delta pass-through shadow
+			/// walk is active (RayCaster::DeltaPassThroughShadowsActive), so
+			/// a light-tracing strategy whose light prefix is a delta root
+			/// followed by a straight chain of gap draws counts the
+			/// see-through connection that could generate its path.
+			/// `gaps` > 0: THIS call weights the see-through connection
+			/// itself (s == 1), whose eye endpoint's pdfRev already carries
+			/// the gap pseudo-probability product; the light-tracing terms
+			/// beyond the light walk's depth caps are then left out.
+			struct SeeThroughMIS
+			{
+				bool			live;
+				unsigned int	gaps;
+				SeeThroughMIS() : live( false ), gaps( 0 ) {}
+			};
+
+			/// Computes the MIS weight (power heuristic, exponent 2).
 			Scalar MISWeight(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<BDPTVertex>& eyeVerts,
 				unsigned int s,
-				unsigned int t
+				unsigned int t,
+				const SeeThroughMIS* pSeeThrough = 0
 				) const;
 
 			//////////////////////////////////////////////////////////////////

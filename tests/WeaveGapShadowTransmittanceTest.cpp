@@ -119,6 +119,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -903,6 +904,8 @@ static void TestQueryMatchesSampler()
 //////////////////////////////////////////////////////////////////////
 // closed: omni light overhead.
 //////////////////////////////////////////////////////////////////////
+static std::string RastBDPTSpectral( unsigned int spp, bool hwss );	// defined below
+
 static void TestClosedFormOmni()
 {
 	std::cout << "=== closed: receiver under ONE gapped weave sheet, omni light overhead ===" << std::endl;
@@ -923,6 +926,13 @@ static void TestClosedFormOmni()
 	rows.push_back( { "PT RGB", RastPT( 16 ), 0.02, kTight } );
 	rows.push_back( { "PT spectral hwss=false", RastPTSpectral( 64, false ), 0.03, kTight } );
 	rows.push_back( { "PT spectral hwss=true", RastPTSpectral( 64, true ), 0.03, kTight } );
+	// DL-425: the curtain case.  The see-through connection (DL-330) used
+	// to take MIS weight 0 here -- light tracing covers the path -- so the
+	// directly seen receiver was left to t = 1 splats alone: 0.0001 /
+	// 2.20 (sd 4.07) / 0.0003 of g*L0 at 16 / 64 / 256 spp (n = 8,
+	// salted).  MIS-weighted, it reads g*L0 to 0.04 % at 64 spp.
+	rows.push_back( { "BDPT RGB (DL-425)", RastBDPT( 64 ), 0.02, kTight } );
+	rows.push_back( { "BDPT spectral hwss=true (DL-425)", RastBDPTSpectral( 64, true ), 0.03, kTight } );
 	RunReceiverRows( "closed omni", kOmni, rows, gaps, 2 );
 
 	// The bidirectional rows under the spot twin (see ReceiverScene's
@@ -2406,6 +2416,43 @@ static void MeasureDL330( unsigned int nRepeats )
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
+//! Opt-in (WEAVE_GAP_FILTER=dl425, argv[2] = n): DL-425's curtain case --
+//! the `closed` receiver under ONE gapped sheet (gap 0.3, kTight camera)
+//! lit by the OMNI light, seen directly.  BDPT RGB at several spp, n
+//! salted renders each: mean L/L0, per-render sd of L/L0, wall seconds
+//! per render.  L0 is the no-sheet PT render (n-averaged).  Before DL-425
+//! the see-through connection took weight 0 here (light tracing covers
+//! the path), leaving the receiver to t = 1 splats alone.
+static void MeasureDL425( unsigned int n )
+{
+	const double g = 0.3;
+	std::cout << "=== dl425: curtain, omni, gap 0.3, BDPT RGB (n = " << n << ") ===" << std::endl;
+	std::vector<double> l0v;
+	for( unsigned int i = 0; i < n; i++ ) {
+		l0v.push_back( RenderSalted( Assemble( RastPT( 64 ), ReceiverScene( kOmni, false, 0.0, kTight ) ),
+			"d425_l0", SobolSequence::HashCombine( 0xD425u, i ) ) );
+	}
+	double L0, sL0;
+	MeanSd( l0v, L0, sL0 );
+	std::cout << "  PT L0 = " << L0 << " +/- " << sL0 << " (sd)" << std::endl;
+	const unsigned int spps[] = { 16, 64, 256 };
+	for( unsigned int spp : spps ) {
+		std::vector<double> rs, secs;
+		for( unsigned int i = 0; i < n; i++ ) {
+			const auto t0 = std::chrono::steady_clock::now();
+			const double L = RenderSalted( Assemble( RastBDPT( spp ), ReceiverScene( kOmni, true, g, kTight ) ),
+				"d425_l", SobolSequence::HashCombine( 0xD4251u + spp, i ) );
+			const auto t1 = std::chrono::steady_clock::now();
+			secs.push_back( std::chrono::duration<double>( t1 - t0 ).count() );
+			rs.push_back( L / L0 / g );
+		}
+		double m, sd, ms, ss;
+		MeanSd( rs, m, sd ); MeanSd( secs, ms, ss );
+		std::printf( "  BDPT %4u spp: (L/L0)/g = %.4f  per-render sd %.4f  se %.4f  (%.2f s/render)\n",
+			spp, m, sd, sd / std::sqrt( double( n ) ), ms );
+	}
+}
+
 static void MeasureDesignDocTable( unsigned int nRepeats )
 {
 	std::cout << "=== table: docs/CLOTH_FABRIC_DESIGN.md section 15 item 27 (24x24, 512 spp, n = "
@@ -2835,6 +2882,15 @@ int main( int argc, char** argv )
 			if( v > 0 ) n = (unsigned int)v;
 		}
 		MeasureDL330( n );
+		return 0;
+	}
+	if( filter && std::strstr( filter, "dl425" ) ) {
+		unsigned int n = 8;
+		if( argc > 2 ) {
+			const long v = std::strtol( argv[2], nullptr, 10 );
+			if( v > 0 ) n = (unsigned int)v;
+		}
+		MeasureDL425( n );
 		return 0;
 	}
 	if( filter && std::strstr( filter, "table" ) ) {

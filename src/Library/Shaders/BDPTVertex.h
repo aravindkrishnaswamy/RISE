@@ -305,6 +305,17 @@ namespace RISE
 		/// contract above does not apply.  0 elsewhere.
 		Scalar					bssrdfJumpDistance;
 		Scalar					bssrdfExitCos;
+		/// DL-424/425: on a LIGHT-subpath vertex where the walk drew a
+		/// thin-weave delta PASS-THROUGH (the undeviated gap ray), the
+		/// gap's MIS pseudo-probability: the per-crossing factor
+		/// `RayCaster::CastShadowRayAutoSampled` accumulates into its
+		/// pass-through probability product (MaxValue of
+		/// ISPF::DeltaPassThroughTransmittance in RGB, the NM value at the
+		/// hero wavelength in spectral) -- the true gap draw probability
+		/// for a bare weave.  BDPT's see-through s = 1 connection and the
+		/// light-tracing strategies sharing its path MIS-weight against
+		/// each other through it (BDPTIntegrator::MISWeight).  0 elsewhere.
+		Scalar					passThroughProb;
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
 		bool					insideObject;	///< True if the current object was already in the IOR stack
 		/// DL-341 review round 2 (2026-10-02): the hit's SURFACE-IDENTITY
@@ -424,6 +435,7 @@ namespace RISE
 		isBSSRDFEntry( false ),
 		bssrdfJumpDistance( 0 ),
 		bssrdfExitCos( 0 ),
+		passThroughProb( 0 ),
 		mediumIOR( 1.0 ),
 		insideObject( false ),
 		bGeomNormalOrientedToRay( false ),
