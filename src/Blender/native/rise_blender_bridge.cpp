@@ -2657,6 +2657,7 @@ namespace
 		sms_config.useLevenbergMarquardt = settings.sms_use_levenberg_marquardt != 0;
 		sms_config.seedingMode = sms_seeding_mode_from_int( settings.sms_seeding_mode );
 		sms_config.targetBounces = settings.sms_target_bounces;
+		sms_config.extended = settings.sms_extended != 0;
 	}
 
 	void build_path_guiding_config( const rise_blender_render_settings& settings, RISE::PathGuidingConfig& guiding_config )

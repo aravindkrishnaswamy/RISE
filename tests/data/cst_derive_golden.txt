@@ -317,6 +317,7 @@ scenes/Tests/SMS/sms_k2_flatslab_ref.RISEscene  bdb1218ed3948634267e4b983349a078
 scenes/Tests/SMS/sms_k2_glassblock.RISEscene  bdb1218ed3948634267e4b983349a078ec07b8c13e10c48fdfadea4e11402a53  1857  36
 scenes/Tests/SMS/sms_k2_glassblock_ref.RISEscene  bdb1218ed3948634267e4b983349a078ec07b8c13e10c48fdfadea4e11402a53  1857  36
 scenes/Tests/SMS/sms_k2_glasssphere.RISEscene  ab7db59402a8e3e2c267601e2c2d508ed3b2e54f36b79ae10229e2dcd9c15c9b  1317  30
+scenes/Tests/SMS/sms_k2_glasssphere_extended.RISEscene  ab7db59402a8e3e2c267601e2c2d508ed3b2e54f36b79ae10229e2dcd9c15c9b  1317  30
 scenes/Tests/SMS/sms_k2_glasssphere_ref.RISEscene  ab7db59402a8e3e2c267601e2c2d508ed3b2e54f36b79ae10229e2dcd9c15c9b  1317  30
 scenes/Tests/SMS/sms_k2_glasssphere_tess.RISEscene  c170a913b40b0dc6f1c36029f50a984205477c6ad0ce3ac28cffc105f3e62d6e  1331  31
 scenes/Tests/SMS/sms_k2_glasssphere_tess_disp.RISEscene  afb8d3ef4a94975ee125e6e8e28c2d10bc104dc19bbbe9496e714d5e2cf03411  1660  34

@@ -212,6 +212,10 @@ namespace RISE
 			//! value coherently with the surface boundary.
 			inline const IScalarPainter& GetIOR() const { return *pIORPainter; }
 			inline void SetIOR( const IScalarPainter& v ) {
+				if( !v.IsPositionIndependent() ) {
+					GlobalLog()->PrintSourceError( "randomwalk_sss_material (DL-314): ior rebinding requires a position-independent painter; keeping the previous ior", __FILE__, __LINE__ );
+					return;
+				}
 				v.addref();
 				safe_release( pIORPainter );
 				pIORPainter = &v;

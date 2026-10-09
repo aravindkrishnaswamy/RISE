@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 16
+_EXPECTED_API_VERSION = 17
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -304,6 +304,7 @@ class _RenderSettings(ctypes.Structure):
         ("sms_use_levenberg_marquardt", ctypes.c_int),
         ("sms_seeding_mode", ctypes.c_uint32),
         ("sms_target_bounces", ctypes.c_uint32),
+        ("sms_extended", ctypes.c_int),  # ABI v17
         ("adaptive_max_samples", ctypes.c_uint32),
         ("adaptive_threshold", ctypes.c_float),
         ("adaptive_show_map", ctypes.c_int),
@@ -900,6 +901,7 @@ class _SceneHandle:
         payload.sms_use_levenberg_marquardt = int(settings.sms_use_levenberg_marquardt)
         payload.sms_seeding_mode = int(settings.sms_seeding_mode)
         payload.sms_target_bounces = int(settings.sms_target_bounces)
+        payload.sms_extended = int(settings.sms_extended)
         payload.adaptive_max_samples = int(settings.adaptive_max_samples)
         payload.adaptive_threshold = float(settings.adaptive_threshold)
         payload.adaptive_show_map = int(settings.adaptive_show_map)
