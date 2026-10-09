@@ -53,7 +53,7 @@ void LambertianEmitter::RefreshAverages()
 	// the 0.1-UV pitch.  The determinism is required for a reproducible parse (the v6->v7 cutover gate).
 	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
 		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
-		averageRadEx = averageRadEx + pRadEx->GetColor(rig);
+		averageRadEx = averageRadEx + pRadEx->GetRadianceColor(rig);
 		// Sampled through GetRadianceNM, NOT GetSpectrum (Stage C slice 2).
 		// `averageSpectrum` is the per-wavelength EMITTED power that
 		// SpectralPhotonTracer turns into photon energy; it has to carry the
@@ -89,7 +89,7 @@ RISEPel LambertianEmitter::emittedRadiance( const RayIntersectionGeometric& ri, 
 	if( Vector3Ops::Dot( out, N ) <= 0 ) {
 		return RISEPel( 0, 0, 0 );
 	}
-	return (pRadEx->GetColor( ri ) * INV_PI * scale);
+	return (pRadEx->GetRadianceColor( ri ) * INV_PI * scale);
 }
 
 Scalar LambertianEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm ) const
@@ -118,7 +118,7 @@ Scalar LambertianEmitter::averageRadiantExitanceNM( const Scalar nm ) const
 
 RISEPel LambertianEmitter::radiantExitanceAt( const RayIntersectionGeometric& ri ) const
 {
-	return pRadEx->GetColor( ri ) * scale;
+	return pRadEx->GetRadianceColor( ri ) * scale;
 }
 
 Scalar LambertianEmitter::radiantExitanceAtNM( const RayIntersectionGeometric& ri, const Scalar nm ) const

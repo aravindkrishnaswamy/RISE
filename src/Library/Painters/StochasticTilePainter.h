@@ -138,6 +138,12 @@ namespace RISE
 			//! as the per-sample values being combined: reflectance-shaped
 			//! for GetColorNM, illuminant-shaped for GetRadianceNM.
 			const RGBIlluminantSpectrum	meanRadSpec;
+			//! RGB twin of `meanRadSpec` (DL-396): the mean in the SOURCE
+			//! view `GetRadianceColor` combines in.  An RGB-authored
+			//! illuminant resolves through the film to its own triple, so
+			//! this is `mean` clamped non-negative exactly as `meanRadSpec`
+			//! was built.
+			const RISEPel				meanRad;
 			const Scalar				blendGamma;
 
 			virtual ~StochasticTilePainter();
@@ -170,9 +176,11 @@ namespace RISE
 			//! `GetRadianceNM` (about its illuminant-shaped mean) rather
 			//! than letting the generic composed-`GetColor` default
 			//! re-uplift -- which would discard a physical SPD behind the
-			//! tiling, and emit BLACK for a `piecewise_linear_function`-
-			//! backed source.
+			//! tiling and replace it with its RGB projection.
 			Scalar			GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! DL-396: RGB twin of GetRadianceNM -- the source's
+			//! `GetRadianceColor` about `meanRad`.
+			RISEPel			GetRadianceColor( const RayIntersectionGeometric& ri ) const;
 			SpectralPacket	GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetAlpha( const RayIntersectionGeometric& ri ) const;
 

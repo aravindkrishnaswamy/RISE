@@ -15,6 +15,8 @@
 #include "pch.h"
 #include "Painter.h"
 #include "../Utilities/Color/RGBSpectra.h"
+#include "../Utilities/Color/ColorUtils.h"
+#include "Function1DSpectralPainter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -68,4 +70,27 @@ Scalar Painter::Evaluate( const Scalar x, const Scalar y ) const
 	const RISEPel&	c = GetColor( r );
 
 	return c[0];
+}
+
+RISEPel RISE::Implementation::ProjectPhysicalSpectrumToRGB( const IFunction1D& f, const bool bAsRadiance )
+{
+	// 1 nm Riemann sums; numerator and denominator share the grid, so the
+	// step cancels.  The reflectance view weights by the Y-normalised D65
+	// (Int D65n ybar == Int ybar), so the denominator is Int ybar in both.
+	XYZPel sum( 0, 0, 0 );
+	double ySum = 0.0;
+	for( int nm = 380; nm <= 780; nm++ ) {
+		XYZPel cmf( 0, 0, 0 );
+		if( !ColorUtils::XYZFromNM( cmf, Scalar( nm ) ) ) {
+			continue;
+		}
+		ySum += double( cmf.Y );
+		const Scalar w = bAsRadiance ? Scalar( 1 ) :
+			RGBIlluminantSpectrum::ReferenceIlluminant( Scalar( nm ) );
+		sum = sum + cmf * ( f.Evaluate( Scalar( nm ) ) * w );
+	}
+	if( !( ySum > 0.0 ) ) {
+		return RISEPel( 0, 0, 0 );
+	}
+	return ColorUtils::XYZtoRec709RGB( sum * Scalar( 1.0 / ySum ) );
 }

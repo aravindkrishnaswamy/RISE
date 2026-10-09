@@ -110,3 +110,9 @@ void LinesPainter::RegenerateData( )
 }
 
 
+
+RISEPel LinesPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: the RGB twin of GetRadianceNM -- forward to the selected child.
+	return ComputeWhich(ri).GetRadianceColor(ri);
+}

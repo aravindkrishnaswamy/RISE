@@ -207,6 +207,7 @@ namespace RISE
 			//! See the implementation comment for why the generic
 			//! composed-GetColor default is wrong here.
 			Scalar			GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel			GetRadianceColor( const RayIntersectionGeometric& ri ) const;	//!< DL-396: RGB twin of GetRadianceNM
 			SpectralPacket	GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetAlpha( const RayIntersectionGeometric& ri ) const;
 

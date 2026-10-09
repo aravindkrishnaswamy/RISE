@@ -237,6 +237,21 @@ Scalar ScatterPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const 
 	return ComposeOverColor( sc, hi.alpha, bg, bgA, ComposeOverAlpha( hi.alpha, bgA ) );
 }
 
+RISEPel ScatterPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: RGB twin of GetRadianceNM -- identical structure.
+	// Coverage compose over the two sources' RADIANCE -- see the header
+	// declaration's comment.  Structurally identical to GetColorNM; only
+	// the per-source call changes.
+	const HitInfo hi = Resolve( ri );
+	if( !hi.found || hi.alpha <= Scalar( 0 ) ) return background.GetRadianceColor( ri );
+	const RISEPel sc = source.GetRadianceColor( hi.ri2 );
+	if( hi.alpha >= Scalar( 1 ) ) return sc;
+	const RISEPel bg = background.GetRadianceColor( ri );
+	const Scalar bgA = background.GetAlpha( ri );
+	return ComposeOverColor( sc, hi.alpha, bg, bgA, ComposeOverAlpha( hi.alpha, bgA ) );
+}
+
 SpectralPacket ScatterPainter::GetSpectrum( const RayIntersectionGeometric& ri ) const
 {
 	const HitInfo hi = Resolve( ri );
