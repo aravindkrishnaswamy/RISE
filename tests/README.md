@@ -1301,8 +1301,12 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   world-area fraction of samples in a normal/position region (5 sigma); C:
   floor renders under an orthographic camera, scaled vs directly authored
   surface and PT vs BDPT vs VCM (8 salted renders x 256 spp, 4 combined se);
-  `H` (argv[2]) prints similarity-transform sampler hashes for a bit-identity
-  A/B. Red on `932f7c0a0`: 11/22; green 33/0.
+  D: motion blur (`RasterizeAnimation`, camera exposure 1, multithreaded) of a
+  rotating and of an animated-scale non-uniform sphere against authored
+  ellipsoids, and keyframed geometry parameters re-keying the area; H: a
+  bit-for-bit gate that similarity transforms take the unchanged path (plus
+  hashes for a cross-build A/B). Includes rotation x scale and shear rows. Red
+  on `932f7c0a0` (sections A-C): 11/22; green 64/0 (all sections).
 
 - `EmitterAverageExitanceTest` (DL-431): the luminary's average exitance
   (light-selection weight, photon power / budget) over its own surface points.
