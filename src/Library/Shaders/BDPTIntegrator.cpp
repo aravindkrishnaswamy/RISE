@@ -6360,7 +6360,7 @@ Scalar BDPTIntegrator::MISWeight(
 	// root is an escape iteration.  Per-type caps (`max_diffuse_bounce`
 	// & co.) are NOT modelled: a connection endpoint has no sampled lobe
 	// type, so whether the alternative walk's scatter there would have
-	// exceeded a per-type cap is undefined (DL-467).
+	// exceeded a per-type cap is undefined (DL-471).
 	const BDPTUtilities::EyeWalkCaps misEyeCaps = BDPTUtilities::MakeEyeWalkCaps(
 		GetMaxEyeDepth(), GetStabilityConfig().maxVolumeBounce );
 	const long long misLightSurfCap = static_cast<long long>( GetMaxLightDepth() );

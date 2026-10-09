@@ -92,6 +92,9 @@ namespace RISE
 													///< BDPTUtilities::LightJumpPartition
 			unsigned short		jumpCoverVolume;	///< DL-380 (when kLVF_JumpCover): medium vertices of this light
 													///< prefix past the witness split, volumeBounces - VL(w-1)
+			unsigned short		lightSurface;		///< DL-467: light-walk surface count of the light subpath up to and
+													///< including this vertex (BDPTUtilities::CountsAsSurfaceHit), for
+													///< the merge's depth-cap window
 
 			Vector3				normal;			///< Shading normal at the vertex (BSDF-frame; merge-time BSDF eval)
 			Vector3				geomNormal;		///< Geometric flat-face normal at the vertex.
@@ -120,7 +123,8 @@ namespace RISE
 			///< two sites in the future MUST rebuild this alongside it.
 			RGBIlluminantSpectrum throughputSpectrum;
 
-			VCMMisQuantities	mis;			///< dVCM/dVC/dVM at this vertex after the geometric update
+			VCMMisCore			mis;			///< dVCM/dVC/dVM at this vertex after the geometric update (the subpath's
+												///< DL-467 steps are not kept: they are only replayed within one subpath)
 
 			//! Per-vertex color interpolated by the geometry at hit time
 			//! (linear Rec.709 RGB; see RISEPel).  Written once, at store
@@ -146,6 +150,7 @@ namespace RISE
 				volumeBounces( 0 ),
 				jumpCoverSurface( 0 ),
 				jumpCoverVolume( 0 ),
+				lightSurface( 0 ),
 				normal( 0, 0, 1 ),
 				geomNormal( 0, 0, 1 ),
 				wi( 0, 0, 0 ),
