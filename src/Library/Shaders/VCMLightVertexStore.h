@@ -133,7 +133,8 @@ namespace RISE
 			Scalar ComputeBBoxSurfaceArea() const;
 
 			/// DL-380: number of stored vertices NOT flagged
-			/// `kLVF_JumpCover` (see ComputeBBoxSurfaceArea).
+			/// `kLVF_JumpCover` (see ComputeBBoxSurfaceArea), nor
+			/// `kLVF_IsMedium` (DL-469's volume-merge vertices).
 			std::size_t CountOrdinaryVertices() const;
 
 			/// Clamp outlier throughputs to suppress photon-mapping
@@ -158,9 +159,18 @@ namespace RISE
 			/// modifying throughputs after the tree balance does not
 			/// invalidate the spatial index, but doing it before is
 			/// simpler and avoids re-linearizing the array.
+			///
+			/// DL-469: a volume-merge vertex (kLVF_IsMedium) is stored
+			/// with probability q and carries throughput / q; it is
+			/// compared and capped on its PHYSICAL (un-thinned)
+			/// throughput, q * stored, so the clamp means the same thing
+			/// at every q (comparing the stored value would cap a medium
+			/// vertex at threshold * q -- a bias growing as q falls).
+			/// `mediumStoreProbability` is that q.
 			void ClampOutlierThroughputs(
 				const Scalar percentile,
-				const Scalar multiplier
+				const Scalar multiplier,
+				const Scalar mediumStoreProbability = 1
 				);
 
 		private:

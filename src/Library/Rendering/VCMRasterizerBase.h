@@ -31,6 +31,7 @@
 
 #include "BidirectionalRasterizerBase.h"
 #include "../Shaders/VCMIntegrator.h"
+#include <atomic>
 #include "../Shaders/VCMLightVertexStore.h"
 
 namespace RISE
@@ -63,6 +64,22 @@ namespace RISE
 			mutable Scalar mMergeRadiusFloor;			///< Adaptive lower bound on r_n (recomputed per pass)
 			mutable Scalar mGeometricRadiusFloor;		///< Scene-derived safety floor (0.001 * medianSegment)
 			mutable unsigned int mMergeRadiusPassCount;	///< n in the Hachisuka shrinkage formula
+
+			// DL-469: volume-merge radius (3-D kernel, see
+			// VCMIntegrator.cpp "volume merging"), sized from the density
+			// of eligible medium light vertices and shrunk per pass like
+			// the surface radius (cube-root factor).  0 = off.
+			mutable Scalar mBaseVolumeRadius;
+			mutable Scalar mCurrentVolumeRadius;
+			mutable unsigned int mVolumeRadiusPassCount;
+			mutable Scalar mVolumeStoreProbability;		///< q: medium light vertices stored with this probability
+			mutable unsigned int mVolumeThinSeed;		///< the current pass's thinning seed
+
+		public:
+			/// DL-469 test hook: when > 0, forces the medium-vertex store
+			/// probability q (the MIS partition must not depend on it).
+			static std::atomic<double>& TestVolumeStoreProbabilityOverride();
+		protected:
 
 			// Tunable constants (exposed via scene params in a later step).
 			Scalar mRadiusShrinkAlpha;			///< Hachisuka alpha; 2/3 gives optimal rate

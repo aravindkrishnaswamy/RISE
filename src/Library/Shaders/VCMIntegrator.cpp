@@ -20,6 +20,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <cstring>
 #include "../Utilities/IndependentSampler.h"
 #include "VCMIntegrator.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): zero the s=0 competing light pdf for non-NEE-sampleable emitters
@@ -249,6 +250,105 @@ namespace
 	inline bool MergingActive( const VCMNormalization& norm )
 	{
 		return norm.mEnableVM && norm.mMergeRadiusSq > 0 && norm.mVmNormalization > 0;
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// DL-469: volume merging.
+	//
+	// VCM used to merge on SURFACES only, while its MIS recurrence
+	// (ApplyBsdfSamplingUpdate at a medium vertex, and the endpoint
+	// weights of NEE / splat / connections) counted a merge at every
+	// MEDIUM vertex too, with the surface factor.  Two defects followed:
+	//   - that phantom strategy took MIS mass from the strategies that
+	//     do run (multiple scattering in fog read ~5 % low whenever a
+	//     mergeable surface turned surface merging on), and
+	//   - a path whose only connectible vertex is a medium scatter
+	//     sandwiched between delta surfaces -- L  S...S  M  S...S  E with
+	//     a delta-position light, e.g. fog behind an index-matched glass
+	//     wall lit by a point light and seen through it -- had NO
+	//     strategy at all (fog box: VCM 0.80 of PT, the deficit equal to
+	//     PT's single-scatter share; BDPT loses it too).
+	// Both close by making the counted strategy real: a merge at medium
+	// vertices (eye vertex M_e, stored light vertex M_l, |M_l - M_e| < r_v,
+	// uniform 3-D ball kernel), whose MIS factor eta_v = N 4/3 pi r_v^3
+	// enters the recurrence in place of the surface factor at medium
+	// vertices (VertexMergeFactorVC / VM).  Its weight is SmallVCM's merge
+	// weight with eta_v: dVM == dVC / eta_s, so
+	//     wLight = ( dVCM_l + dVC_l * p_eye(M -> l) ) / eta_v
+	//     wCamera = ( dVCM_e + dVC_e * p_l(M -> e) ) / eta_v
+	// For the sandwiched class every other strategy is absent, the
+	// running quantities are 0 behind the delta surfaces, and the weight
+	// is 1.
+	//
+	// Both stored throughputs carry the scattering coefficient at their
+	// own vertex (BDPTIntegrator's ComputeMediumScatterWeight), and the
+	// path has it once, so the estimate divides it out at the eye vertex:
+	//     T_e * p(wi, wo) / sigma_s(M_e) * T_l / eta_v  * w
+	// Memory: medium light vertices are stored with probability q
+	// (VolumeStoreAccepted; the rasterizer picks q per render from a
+	// stored-vertex budget) and carry T_l / q, so the merge stays
+	// unbiased and its sampling density is q times the unthinned one:
+	// the MIS factor is q eta_v (mMisVolumeWeightFactor) everywhere it
+	// appears -- the recurrence, every endpoint weight and the merge
+	// weight above (read "/ eta_v" in the weights as "/ (q eta_v)").
+	// A merge only pairs vertices of the same medium object.
+	// The radius is sized by the rasterizer (VCMRasterizerBase,
+	// "volume-merge radius") and shrinks per pass.
+	//////////////////////////////////////////////////////////////////
+
+	/// DL-469: the medium-vertex thinning draw, Bernoulli(q).  A hash of
+	/// the vertex position, its index i along the light subpath and the
+	/// pass seed: the
+	/// position is itself a continuous random variable of the light
+	/// walk, so the hashed uniform is independent of the integrand.
+	inline bool VolumeStoreAccepted( const Point3& p, const unsigned int index, const VCMNormalization& norm )
+	{
+		const Scalar q = norm.mVolumeStoreProbability;
+		if( !( q < 1 ) ) {
+			return true;
+		}
+		uint64_t h = 0x9E3779B97F4A7C15ull ^ ( static_cast<uint64_t>( norm.mVolumeThinSeed ) << 32 ) ^ index;
+		const double c[3] = { p.x, p.y, p.z };
+		for( int k = 0; k < 3; k++ ) {
+			uint64_t bits = 0;
+			std::memcpy( &bits, &c[k], sizeof( bits ) );
+			h ^= bits + 0x9E3779B97F4A7C15ull + ( h << 6 ) + ( h >> 2 );
+			// splitmix64 finalizer
+			h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ull;
+			h ^= h >> 27; h *= 0x94D049BB133111EBull;
+			h ^= h >> 31;
+		}
+		const Scalar u = static_cast<Scalar>( h >> 11 ) * ( Scalar( 1 ) / Scalar( 9007199254740992.0 ) );
+		return u < q;
+	}
+
+	/// 1 / sigma_s at a medium vertex (per channel; 0 where sigma_s is 0,
+	/// where both stored throughputs are 0 too).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	InverseScatteringAt( const BDPTVertex& v, const Tag& tag );
+
+	template<>
+	inline RISEPel InverseScatteringAt<PelTag>( const BDPTVertex& v, const PelTag& )
+	{
+		RISEPel inv( 0, 0, 0 );
+		if( v.pMediumVol ) {
+			const MediumCoefficients c = v.pMediumVol->GetCoefficients( v.position );
+			for( int k = 0; k < 3; k++ ) {
+				inv[k] = c.sigma_s[k] > 0 ? Scalar( 1 ) / c.sigma_s[k] : Scalar( 0 );
+			}
+		}
+		return inv;
+	}
+
+	template<>
+	inline Scalar InverseScatteringAt<NMTag>( const BDPTVertex& v, const NMTag& tag )
+	{
+		if( !v.pMediumVol ) {
+			return 0;
+		}
+		const MediumCoefficientsNM c = v.pMediumVol->GetCoefficientsNM( v.position, tag.nm );
+		return c.sigma_s > 0 ? Scalar( 1 ) / c.sigma_s : Scalar( 0 );
 	}
 
 	/// DL-317 / DL-380: whether the LIGHT family keeps a strategy whose
@@ -1010,8 +1110,8 @@ void VCMIntegrator::ConvertLightSubpath(
 		// MEDIUM vertices ARE propagated through both the geometric
 		// update (using sigma_t_scalar in place of |cos|) and the
 		// phase-function sampling update (using AreaToSolidAngleFactor
-		// on adjacent vertices for pdf inversion).  They are NOT
-		// stored in the light vertex store (surface-only merging).
+		// on adjacent vertices for pdf inversion).  Since DL-469 they
+		// are stored (flagged kLVF_IsMedium) for the volume merge.
 		//
 		// IMPORTANT: we DO NOT skip on `pdfFwd <= 0`.  BDPT sets
 		// `pdfFwd = 0` as the Veach "delta transparency" marker on
@@ -1087,12 +1187,51 @@ void VCMIntegrator::ConvertLightSubpath(
 		xfer.StampAndRestart( mis );
 		if( outMis ) (*outMis)[i] = mis;
 
-		// Medium vertices: geometric update applied above.
-		// Skip store append (surface-only merging) but DO apply
-		// the phase-function sampling update so dVCM/dVC/dVM are
-		// correct at the next vertex.  Phase functions are never
-		// delta, so we always use the non-specular branch.
+		// Medium vertices: geometric update applied above.  Store for
+		// the volume merge (DL-469) and apply the phase-function
+		// sampling update so dVCM/dVC/dVM are correct at the next
+		// vertex.  Phase functions are never delta, so we always use
+		// the non-specular branch.
 		if( isMedium ) {
+			// DL-469: stored for the volume merge (no other merge reads it),
+			// with probability q (memory bound; throughput / q below, and
+			// the MIS factor carries q -- VCMNormalization).
+			if( norm.mVolumeNormalization > 0 && v.isConnectible &&
+				VolumeStoreAccepted( v.position, static_cast<unsigned int>( i ), norm ) )
+			{
+				LightVertex lv;
+				lv.ptPosition = v.position;
+				lv.plane      = 0;
+				lv.flags      = kLVF_IsConnectible | kLVF_IsMedium;
+				lv.pathLength = static_cast<unsigned short>( i );
+				lv.volumeBounces = v.volumeBounces;
+				{
+					const unsigned int ls = partition.SurfaceCount( i );
+					lv.lightSurface = static_cast<unsigned short>( ls > 65535u ? 65535u : ls );
+				}
+				{
+					// DL-380: as at a surface vertex (below).
+					const BDPTUtilities::LightJumpCover& c = partition.Cover( i );
+					if( c.exists ) {
+						lv.flags |= kLVF_JumpCover;
+						if( c.escape ) lv.flags |= kLVF_JumpCoverEscape;
+						const long long need = static_cast<long long>( partition.SurfaceCount( i ) ) - 1 - c.surfaceBefore;
+						lv.jumpCoverSurface = static_cast<unsigned short>( need < 0 ? 0 : ( need > 65535 ? 65535 : need ) );
+						const unsigned int vol = v.volumeBounces >= c.volumeBefore ? v.volumeBounces - c.volumeBefore : 0u;
+						lv.jumpCoverVolume = static_cast<unsigned short>( vol > 65535u ? 65535u : vol );
+					}
+				}
+				lv.normal     = v.normal;
+				lv.geomNormal = v.geomNormal;
+				lv.wi = step * ( Scalar( 1 ) / std::sqrt( distSq ) );
+				lv.pMaterial  = 0;
+				lv.pObject    = v.pMediumObject;
+				lv.throughput = v.throughput * ( Scalar( 1 ) / norm.mVolumeStoreProbability );
+				lv.throughputSpectrum = LightThroughputSpectrum( lv.throughput );
+				lv.vColor     = RISEPel( 0, 0, 0 );
+				lv.mis        = mis;
+				out.push_back( lv );
+			}
 			if( i + 1 < n )
 			{
 				const BDPTVertex& next = verts[i + 1];
@@ -1114,10 +1253,11 @@ void VCMIntegrator::ConvertLightSubpath(
 					const Scalar bsdfRevPdfW = ( prev.pdfRev > 0 && prevFactor > 0 )
 						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
-					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, norm );
+					// DL-469: the merge at a medium vertex is the volume merge.
+					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, norm, true );
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
-						false, norm );
+						false, norm, true );
 				}
 			}
 			continue;
@@ -1981,7 +2121,7 @@ namespace
 				const Scalar camFactor =
 					( (envCaseVCM ? ls.pdfPosition : emissionDirPdfSA / distSq) * ( eyeIsMedium_vcm ? v.sigma_t_scalar : cosAtEye ) );
 				wCamera = camFactor * (
-					norm.mMisVmWeightFactor
+					VertexMergeFactorVC( norm, eyeIsMedium_vcm )	// DL-469
 					+ neeEyeWin.mis.dVCM
 					+ neeEyeWin.mis.dVC * bsdfRevPdfW );
 			}
@@ -2340,7 +2480,8 @@ namespace
 				LightHandedCount( lightVerts, LightPrefixCount( lightVerts, i ), i, false ) );
 			const Scalar wLight = ( v.isBSSRDFEntry || splatWin.none ) ? Scalar( 0 ) :
 				( cameraPdfA / norm.mLightSubPathCount ) *
-				( norm.mMisVmWeightFactor + splatWin.mis.dVCM + splatWin.mis.dVC * bsdfRevPdfW );
+				( VertexMergeFactorVC( norm, lightIsMedium_t1 )	// DL-469
+				  + splatWin.mis.dVCM + splatWin.mis.dVC * bsdfRevPdfW );
 			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) );
 
 			// Media-aware connection transmittance — Pre-Phase-1
@@ -2616,12 +2757,13 @@ namespace
 				const VCMWindowed eyeWin = EyeSideWindow(
 					eyeVerts, eyeMis, j, lightCount, false, depthCaps,
 					EyeHandedCount( eyeCount, j, false ) );
+				// DL-469: a medium endpoint's merge is the volume merge.
 				const Scalar wLight = ( lv.isBSSRDFEntry || lightWin.none ) ? Scalar( 0 ) : cameraBsdfDirPdfA
-					* ( norm.mMisVmWeightFactor
+					* ( VertexMergeFactorVC( norm, lightIsMedium )
 					    + lightWin.mis.dVCM
 					    + lightWin.mis.dVC * lightBsdfRevPdfW );
 				const Scalar wCamera = eyeWin.none ? Scalar( 0 ) : lightBsdfDirPdfA
-					* ( norm.mMisVmWeightFactor
+					* ( VertexMergeFactorVC( norm, eyeIsMedium )
 					    + eyeWin.mis.dVCM
 					    + eyeWin.mis.dVC * cameraBsdfRevPdfW );
 				const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
@@ -2801,10 +2943,11 @@ void VCMIntegrator::ConvertEyeSubpath(
 						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
 					// Eye side ungated — see top-of-function comment.
-					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, norm );
+					// DL-469: the merge at a medium vertex is the volume merge.
+					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, norm, true );
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
-						false, norm );
+						false, norm, true );
 				}
 			}
 			continue;
@@ -2903,7 +3046,9 @@ namespace
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
-		if( !norm.mEnableVM || norm.mMergeRadiusSq <= 0 || norm.mVmNormalization <= 0 ) {
+		const bool surfaceMerging = MergingActive( norm );
+		const bool volumeMerging = norm.mVolumeNormalization > 0;	// DL-469
+		if( !surfaceMerging && !volumeMerging ) {
 			return total;
 		}
 		if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
@@ -2933,7 +3078,75 @@ namespace
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
-			if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+
+			// DL-469: volume merge at a medium eye vertex (see "volume
+			// merging" near the top of this file).
+			if( v.type == BDPTVertex::MEDIUM ) {
+				if( !volumeMerging || !v.pPhaseFunc || !v.isConnectible ) {
+					continue;
+				}
+				Vector3 woM = Vector3Ops::mkVector3( eyeVerts[i - 1].position, v.position );
+				const Scalar woMDist = Vector3Ops::Magnitude( woM );
+				if( woMDist < VCM_RAY_EPSILON ) {
+					continue;
+				}
+				woM = woM * ( Scalar( 1 ) / woMDist );
+				candidates.clear();
+				store.Query( v.position, norm.mVolumeMergeRadiusSq, candidates );
+				if( candidates.empty() ) {
+					continue;
+				}
+				const Scalar kernel = norm.mVolumeNormalization;			// 1 / eta_v
+				const Scalar invMisV = Scalar( 1 ) / norm.mMisVolumeWeightFactor;	// 1 / (q eta_v)
+				typename Traits::value_type volumeMerge = Traits::zero();
+				for( std::size_t k = 0; k < candidates.size(); k++ )
+				{
+					const LightVertex& lv = candidates[k];
+					if( ( lv.flags & kLVF_IsMedium ) == 0 ) {
+						continue;
+					}
+					// Never merge across media (a light vertex in another
+					// medium inside the ball is a different volume).
+					if( lv.pObject != v.pMediumObject ) {
+						continue;
+					}
+					// M is counted by both walks.
+					if( lv.volumeBounces + v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce + 1 ) {
+						continue;
+					}
+					// DL-317 / DL-380: as for a surface merge (below).
+					if( ( lv.flags & kLVF_JumpCover ) &&
+						BDPTUtilities::EyeWalkCanGenerate(
+							static_cast<long long>( eyeSurface[i] ) + lv.jumpCoverSurface,
+							static_cast<long long>( v.volumeBounces ) + lv.jumpCoverVolume,
+							( lv.flags & kLVF_JumpCoverEscape ) != 0, eyeCaps ) )
+					{
+						continue;
+					}
+					const Vector3 wiAtEye = -lv.wi;
+					const typename Traits::value_type phase =
+						RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtEye, woM, tag );
+					if( PositiveMagnitude( phase ) <= 0 ) {
+						continue;
+					}
+					const Scalar phaseDirPdfW = RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, woM, wiAtEye, tag );
+					const Scalar phaseRevPdfW = RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, wiAtEye, woM, tag );
+					VCMWalkCount lightBase;
+					lightBase.surface = lv.lightSurface;
+					lightBase.volume = lv.volumeBounces;
+					const VCMWindowed eyeWin = EyeSideWindow( eyeVerts, eyeMis, i, lightBase, true, depthCaps,
+						EyeHandedCount( mergeEyeCount, i, true ) );
+					const Scalar wLight = ( lv.mis.dVCM + lv.mis.dVC * phaseDirPdfW ) * invMisV;
+					const Scalar wCamera = ( eyeWin.mis.dVCM + eyeWin.mis.dVC * phaseRevPdfW ) * invMisV;
+					const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
+					volumeMerge = volumeMerge + phase * LightVertexThroughput<Tag>( lv, tag ) * weight;
+				}
+				total = total + VertexThroughput<Tag>( v, tag ) * InverseScatteringAt<Tag>( v, tag ) *
+					volumeMerge * kernel;
+				continue;
+			}
+
+			if( !surfaceMerging || v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
 				continue;
 			}
 			if( !v.isConnectible ) {
@@ -2960,7 +3173,7 @@ namespace
 			{
 				const LightVertex& lv = candidates[k];
 
-				if( ( lv.flags & kLVF_IsConnectible ) == 0 ) {
+				if( ( lv.flags & kLVF_IsConnectible ) == 0 || ( lv.flags & kLVF_IsMedium ) ) {
 					continue;
 				}
 

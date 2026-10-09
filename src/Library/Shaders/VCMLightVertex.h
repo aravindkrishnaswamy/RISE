@@ -73,6 +73,8 @@ namespace RISE
 			kLVF_IsBSSRDFEntry	= 1 << 2,	///< Skip: non-analytic PDF, recurrence terminates here
 			kLVF_JumpCover		= 1 << 4,	///< DL-380: a light-side subsurface jump before this vertex has an eye-family witness (jumpCover* below)
 			kLVF_JumpCoverEscape	= 1 << 5,	///< DL-380: that witness is the eye escaping to an environment root (one extra eye-walk iteration)
+			kLVF_IsMedium		= 1 << 6,	///< DL-469: a MEDIUM scatter vertex, stored for the volume merge only
+										///< (VCMIntegrator.cpp, "volume merging"); surface merges skip it.
 			kLVF_HasVertexColor	= 1 << 3	///< Set when vColor was populated from a colored mesh hit at store time. No merge-path reader exists (verified 2026-09-11: `lv.vColor` / this bit have exactly one write site, VCMIntegrator.cpp's ConvertLightSubpath, and no reader anywhere in tree) -- the light side's material response is already folded into `throughput` by the time it reaches the store. Kept for the KD-tree layout and any future consumer.
 		};
 

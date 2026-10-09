@@ -13,7 +13,9 @@
 //    A  the ledger's fog box: a Lambertian sphere inside an index-1.0
 //       refractor box filled with isotropic fog, omni outside.
 //       PT+SMS / PT (`transparent_shadows TRUE`, so the walk carries the
-//       fog) gated against 1; VCM / PT printed.
+//       fog) gated against 1; VCM / PT printed (0.76-0.81 before DL-469,
+//       which added VCM's volume merge; ~1.0 after, heavy-tailed --
+//       tests/VCMVolumeMergeTest.cpp gates it).
 //    B  a slab caustic (ior 1.5, 0.2 thick) on a floor lit only through
 //       the slab by an omni directly overhead; the camera sits under the
 //       slab and sees a few-degree patch under the light, so every chain

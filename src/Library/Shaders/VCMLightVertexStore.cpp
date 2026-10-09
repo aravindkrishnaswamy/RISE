@@ -577,7 +577,7 @@ std::size_t LightVertexStore::CountOrdinaryVertices() const
 {
 	std::size_t c = 0;
 	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
-		if( !( mVertices[i].flags & kLVF_JumpCover ) ) {
+		if( !( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) ) {	// DL-469: and the volume-merge vertices
 			c++;
 		}
 	}
@@ -595,7 +595,7 @@ Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
 	Point3 mn( 0, 0, 0 );
 	Point3 mx = mn;
 	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
-		if( mVertices[i].flags & kLVF_JumpCover ) {
+		if( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
 			continue;
 		}
 		const Point3& p = mVertices[i].ptPosition;
@@ -636,7 +636,8 @@ namespace
 
 void LightVertexStore::ClampOutlierThroughputs(
 	const Scalar percentile,
-	const Scalar multiplier
+	const Scalar multiplier,
+	const Scalar mediumStoreProbability
 	)
 {
 	if( mVertices.empty() ) {
@@ -658,7 +659,7 @@ void LightVertexStore::ClampOutlierThroughputs(
 	std::vector<Scalar> lums;
 	lums.reserve( n );
 	for( std::size_t i = 0; i < n; i++ ) {
-		if( mVertices[i].flags & kLVF_JumpCover ) {
+		if( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
 			continue;
 		}
 		lums.push_back( LightVertexLuminance( mVertices[i].throughput ) );
@@ -687,7 +688,11 @@ void LightVertexStore::ClampOutlierThroughputs(
 	// scale) so chromaticity stays the same; only the magnitude is
 	// capped.  Vertices already at or below threshold are untouched.
 	for( std::size_t i = 0; i < n; i++ ) {
-		const Scalar lum = LightVertexLuminance( mVertices[i].throughput );
+		// DL-469: a thinned medium vertex is judged on its physical
+		// throughput, q * stored (see the header).
+		const Scalar q = ( ( mVertices[i].flags & kLVF_IsMedium ) && mediumStoreProbability > 0 )
+			? mediumStoreProbability : Scalar( 1 );
+		const Scalar lum = q * LightVertexLuminance( mVertices[i].throughput );
 		if( lum > threshold ) {
 			const Scalar scale = threshold / lum;
 			mVertices[i].throughput = mVertices[i].throughput * scale;

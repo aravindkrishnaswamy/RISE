@@ -105,6 +105,22 @@ namespace RISE
 			Scalar	mMergeRadiusSq;			///< mMergeRadius * mMergeRadius (KD-tree query uses squared distance)
 			bool	mEnableVC;
 			bool	mEnableVM;
+			/// DL-469: the volume merge at MEDIUM vertices
+			/// (VCMIntegrator.cpp, "volume merging") -- a 3-D ball kernel
+			/// of its own radius r_v.  Its MIS factor eta_v plays the role
+			/// mMisVmWeightFactor plays at a surface vertex (see
+			/// VertexMergeFactorVC / VM).  All 0 = off.
+			Scalar	mVolumeMergeRadius;
+			Scalar	mVolumeMergeRadiusSq;
+			Scalar	mVolumeNormalization;		///< kernel: 1 / (count * 4/3 pi r_v^3)
+			/// MIS factor of the volume merge: q * count * 4/3 pi r_v^3.
+			/// Medium light vertices are stored with probability q
+			/// (mVolumeStoreProbability, a memory bound) and their
+			/// throughput divided by q, so the merge's density is q times
+			/// the unthinned one and the MIS factor carries the q.
+			Scalar	mMisVolumeWeightFactor;
+			Scalar	mVolumeStoreProbability;	///< q in (0, 1]
+			unsigned int mVolumeThinSeed;		///< per pass, decorrelates the thinning hash
 
 			VCMNormalization() :
 				mLightSubPathCount( 0 ),
@@ -114,9 +130,38 @@ namespace RISE
 				mMergeRadius( 0 ),
 				mMergeRadiusSq( 0 ),
 				mEnableVC( true ),
-				mEnableVM( true )
+				mEnableVM( true ),
+				mVolumeMergeRadius( 0 ),
+				mVolumeMergeRadiusSq( 0 ),
+				mVolumeNormalization( 0 ),
+				mMisVolumeWeightFactor( 0 ),
+				mVolumeStoreProbability( 1 ),
+				mVolumeThinSeed( 0 )
 			{}
 		};
+
+		/// DL-469: the merge strategy AT a vertex, as the recurrence
+		/// counts it.  A surface vertex merges with the surface kernel
+		/// (mMisVmWeightFactor); a MEDIUM vertex with the volume kernel
+		/// (mMisVolumeWeightFactor, 0 when the volume merge is off --
+		/// it then has no merge, and counting the surface factor there,
+		/// as RISE did before DL-469, reserved MIS mass for a strategy
+		/// that never ran: ~5 % low on multiple scattering).
+		///   VC: the term the vertex adds to dVC (absolute eta).
+		///   VM: the term it adds to dVM, which is dVC / eta_s (SmallVCM's
+		///       dVM == dVC * mMisVcWeightFactor identity): 1 at a
+		///       surface, eta_v / eta_s at a medium vertex.
+		inline Scalar VertexMergeFactorVC( const VCMNormalization& n, const bool medium )
+		{
+			return medium ? n.mMisVolumeWeightFactor : n.mMisVmWeightFactor;
+		}
+		inline Scalar VertexMergeFactorVM( const VCMNormalization& n, const bool medium )
+		{
+			if( !medium ) {
+				return Scalar( 1 );
+			}
+			return n.mMisVmWeightFactor > 0 ? n.mMisVolumeWeightFactor / n.mMisVmWeightFactor : Scalar( 0 );
+		}
 
 		/// DL-467: accumulates the affine (dVC, dVM) step between two
 		/// records while the recurrence runs.  Each Compose* mirrors the
@@ -161,7 +206,8 @@ namespace RISE
 				const Scalar bsdfDirPdfW,
 				const Scalar bsdfRevPdfW,
 				const bool specular,
-				const VCMNormalization& norm
+				const VCMNormalization& norm,
+				const bool medium = false
 				)
 			{
 				if( specular ) {
@@ -179,8 +225,8 @@ namespace RISE
 				const Scalar factor = cosThetaOut * ( Scalar( 1 ) / bsdfDirPdfW );
 				const Scalar mul = factor * bsdfRevPdfW;
 				f *= mul;
-				gVC = mul * gVC + factor * ( qBefore.dVCM + norm.mMisVmWeightFactor );
-				gVM = mul * gVM + factor * ( qBefore.dVCM * norm.mMisVcWeightFactor + Scalar( 1 ) );
+				gVC = mul * gVC + factor * ( qBefore.dVCM + VertexMergeFactorVC( norm, medium ) );
+				gVM = mul * gVM + factor * ( qBefore.dVCM * norm.mMisVcWeightFactor + VertexMergeFactorVM( norm, medium ) );
 			}
 
 			/// Write the accumulated step into a record and start over.
@@ -225,6 +271,16 @@ namespace RISE
 			const bool enableVM,
 			const Scalar effectiveLightSubpathCount
 			);
+
+		/// DL-469: set the volume-merge radius on `n` (after
+		/// ComputeNormalization, against n.mLightSubPathCount).  A
+		/// non-positive radius, or VC or VM disabled, turns the volume
+		/// merge off (its weights rely on SmallVCM's dVM == dVC / eta_s
+		/// identity, which needs both).  `storeProbability` is the
+		/// medium-vertex thinning probability q (see
+		/// mMisVolumeWeightFactor), `thinSeed` the pass's hash seed.
+		void SetVolumeMergeRadius( VCMNormalization& n, const Scalar volumeRadius,
+			const Scalar storeProbability = 1, const unsigned int thinSeed = 0 );
 
 		/// Initialize (dVCM, dVC, dVM) at the first vertex of a light
 		/// subpath.  directPdfA is the light's area PDF of selecting
@@ -281,13 +337,18 @@ namespace RISE
 		/// opposite direction).  cosThetaOut is the outgoing cosine.
 		/// Specular vertices take a simpler branch because their
 		/// delta BSDF has no finite solid-angle PDF.
+		///
+		/// `medium` (DL-469): the scattering vertex is a MEDIUM vertex,
+		/// whose merge (if any) is the volume merge -- see
+		/// VertexMergeFactorVC / VM.
 		VCMMisQuantities ApplyBsdfSamplingUpdate(
 			const VCMMisQuantities& q,
 			const Scalar cosThetaOut,
 			const Scalar bsdfDirPdfW,
 			const Scalar bsdfRevPdfW,
 			const bool specular,
-			const VCMNormalization& norm
+			const VCMNormalization& norm,
+			const bool medium = false
 			);
 	}
 }
