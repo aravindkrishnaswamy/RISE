@@ -2898,6 +2898,8 @@ static void SectionX()
 		{ "weave",       "weave_material\n{\n\tname mat_b\n\tfabric custom\n\ttransmission thin\n\tgap 0\n\twarp_transmit 0.4\n\tweft_transmit 0.4\n}\n\n", 0.02 },
 	};
 	struct Light { const char* name; std::string text; bool area; };
+	const bool envProbe = std::getenv( "DL296_X_ENV" ) != 0;	// opt-in measurement: white furnace instead of the lights
+	const Light envLights[] = { { "white furnace", "uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n", false } };
 	const Light lights[] = {
 		{ "omni (delta)", "omni_light\n{\n\tname lgt\n\tposition 0 0 -3\n\tcolor 1.0 1.0 1.0\n\tpower 40.0\n}\n\n", false },
 		{ "area quad",    std::string( "clippedplane_geometry\n{\n\tname g_em\n\tpta -0.5 -0.5 -3\n\tptb 0.5 -0.5 -3\n\tptc 0.5 0.5 -3\n\tptd -0.5 0.5 -3\n\tdoublesided FALSE\n}\n\n"
@@ -2907,7 +2909,7 @@ static void SectionX()
 	for( const Bottom& B : bottoms ) {
 		const std::string mats = common + B.text +
 			"composite_material\n{\n\tname mat_comp\n\ttop mat_glass\n\tbottom mat_b\n\tthickness 0\n\textinction 0.0\n}\n\n";
-		for( const Light& L : lights ) {
+		for( const Light& L : ( envProbe ? std::vector<Light>( envLights, envLights + 1 ) : std::vector<Light>( lights, lights + 2 ) ) ) {
 			double ptComposite = -1;
 			for( int r = 0; r < 5; ++r ) {
 				if( L.area && r != 0 ) continue;
@@ -2920,7 +2922,7 @@ static void SectionX()
 					"standard_object\n{\n\tname C\n\tgeometry q_comp\n\tmaterial mat_comp\n}\n\n"
 					"standard_object\n{\n\tname G\n\tgeometry q_glass\n\tmaterial mat_glass\n}\n\n"
 					"standard_object\n{\n\tname T\n\tgeometry q_b\n\tmaterial mat_b\n}\n\n" + L.text +
-					( r == 0 ? PtRasterizer( false, spp ) : r == 1 ? BdptRasterizer( false, spp, 12 ) : r == 2 ? VcmRasterizer( false, spp, 12 )
+					( r == 0 ? PtRasterizer( envProbe, spp ) : r == 1 ? BdptRasterizer( envProbe, spp, 12 ) : r == 2 ? VcmRasterizer( envProbe, spp, 12 )
 					  : PtSpectralRasterizer( r == 4, spp ) );
 				const int kReps = 3;
 				double mL = 0, mR = 0, rMin = 1e30, rMax = -1e30;

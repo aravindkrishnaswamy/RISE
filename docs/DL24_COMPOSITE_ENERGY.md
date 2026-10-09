@@ -97,7 +97,8 @@ the authoritative description; this section summarises it.
   CoatedSPF's substrate proposal).
 * **WALKER.**  Everything else: all-delta walks, a delta event after the
   last non-delta event, layers with no BSDF, transmission out through the
-  BOTTOM, and entries from below.  An unbiased single-path walk samples
+  BOTTOM (except, since DL-296, a non-delta exit through a bottom whose
+  own BSDF transmits -- term (c), section 10), and entries from below.  An unbiased single-path walk samples
   these and emits them DELTA-TAGGED.  No NEE or connection strategy
   partners them, so the MIS partition stays exact.  The walker keeps a
   floor share (0.05 of the walked mass, or 0.5 when a one-path probe finds
@@ -155,7 +156,9 @@ emissions with, so for every emitted non-delta ray:
 This holds pointwise (section C: 0 mismatches over 65 857 rays, RGB and NM).
 The pre-DL-24 top-wins BSDF is gone.  `CompositeMaterial::ScattersFullSphere()`
 is now **false**: the layered value has no below-horizon support, and
-transmission through the stack is WALKER-only (DL-296).  That supersedes
+transmission through the stack is WALKER-only (DL-296).  **Superseded for
+transmitting bottoms by section 10 (2026-10-09):** term (c) gives the
+value a below-horizon part and the capability is claimed exactly then.  That supersedes
 DL-157 P2-1's forwarding rule.  `composite { top = translucent }` used to
 forward the capability, which lit back faces of opaque-bottomed
 composites.  DL-126's null-BSDF composition still works: a composite with
@@ -459,8 +462,9 @@ warnings**.
 
 ## 5. Residuals
 
-* **DL-296 — WALKER-class transport is invisible to NEE and to
-  connections.**  This covers transmission out through a transmitting
+* **DL-296 — FIXED 2026-10-09 for a bottom that transmits through its own
+  BSDF (section 10); the rest is DL-472.  Historical record: WALKER-class
+  transport is invisible to NEE and to connections.**  This covers transmission out through a transmitting
   bottom, entries from below, null-BSDF layers and all-delta chains.  All
   of it is delta-tagged by design, so the MIS partition is exact.  The
   cost: a delta light (point/spot/directional) contributes nothing through
@@ -1261,3 +1265,194 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
 * **DL-422** (filed review round 5) -- a composite with an SSS / random-walk
   layer drops all subsurface transport (no BSSRDF forwarding): ~0.017-0.045
   in a white furnace; pre-existing on master.
+
+## 10. DL-296 (slice `debt-dl296`, 2026-10-09): transmission out through the bottom
+
+Branched from `master` `638591364`.  **Status: implemented for a bottom
+that transmits through its OWN BSDF (`translucent_material`, a
+thin-transmission `weave_material`) on a provably open sheet; PT is
+fixed; NOT closed, because BDPT / VCM are inconsistent on an open sheet
+lit from both sides (section 10.6), and Section M's `--sheets-only`
+reads 104/4.**  The rest of the walker class is DL-472.
+
+### 10.1 The defect
+
+A walk entered from above that left DOWN through the bottom was WALKER
+transport: delta-tagged, so no NEE arm and no BDPT/VCM connection priced
+it, and `CompositeMaterial::ScattersFullSphere()` was false.  A delta light
+behind a `composite{glass/translucent}` sheet therefore lit nothing through
+it under any integrator, and an area light reached it only by BSDF-sampled
+hits (high variance).
+
+### 10.2 The fix -- term (c)
+
+The mirror of term (b), at the other layer: at every bottom visit of the
+evaluator's recorded walk, CONNECT to a below-horizon exit `wOut` through
+the bottom's own BSDF,
+
+    f_c(wOut) = sum_i beta_i * f_bottom(wOut | visit i) * E,
+
+with no Jacobian (nothing refracts after the bottom event) and `E` the
+radiance-mode eta^2 of the exit.  Everything else follows from DL-24's
+three-class partition:
+
+* **Who owns the class.**  `CompositeSPF::bBottomTransmits` = the bottom
+  MATERIAL claims `ScattersFullSphere()` AND has a BSDF (passed in by
+  `CompositeMaterial`; a direct `CompositeSPF` construction defaults to
+  false, so every test/tool building one keeps its old behaviour).  The
+  walker then leaves a non-delta down-going bottom exit, after a covered
+  entry, on the far geometric side, to the covered sampler (`Walker`'s
+  bottom-exit branch); delta bottom exits and every other walk stay walker.
+  The probe's `walkerPossible` no longer fires on such an exit.
+* **Sampling.**  The covered mixture gains `w5`, a cosine hemisphere BELOW
+  (about `-n`), and `w3` (the bottom's own sampler at the outer record) now
+  also emits its below-horizon non-delta draws.  The covered budget splits
+  `0.35 / 0.45 / 0.2` (`w2` / `w3` / `w5`) when the bottom transmits, else
+  `0.5 / 0.5` as before.  `Pdf` below the horizon is
+  `w5 |cos|/pi + w3 bottom.Pdf(w)` on the far geometric side (no DIRECT
+  term: the top's own down lobes are the walk's entry, not exits), so it is
+  still the exact density of what `Scatter` emits.
+* **The eta^2 contract.**  The emitted covered ray carries the BELOW stack
+  (`BelowExternalStack`: OUT plus O at `BelowMediumIOR`, exactly the
+  walker's `ToExternal` form for a non-refracting bottom), so a radiance
+  walk applies `RadianceEtaScale` to it as it does to every transmitting
+  SPF's ray (ISPF.h): its kray EXCLUDES the factor.  NEE and BDPT eye
+  connections have no stack change of their own, so the VALUE includes it
+  (`BelowEtaScale`).  Hence `kray * Pdf * E == value * cos` (section C,
+  new row C4), and the HWSS companion weight (`EvaluateLobeFNM`) of a
+  below ray is the value WITHOUT `E`.
+* **Only on an open sheet.**  Term (c), the `w5` / below-`w3` proposals
+  and the walker's hand-off are LIVE only at a record whose surface
+  provably encloses no volume (`RayIntersectionGeometric::
+  bProvablyNoInterior`: a clipped plane, a flat consistently wound mesh
+  sheet since DL-382; mirrored onto BDPT's rebuilt records).  The flag is
+  read off the CALLER's record at each public entry point and held in a
+  thread-local guard (`LiveGuard`), because `CompositeLayerFrame` hands the
+  walk a record with the flag cleared.  Why: on a surface that may bound
+  an interior, the composite's frame for an arrival from INSIDE is decided
+  by the IOR stack, which BDPT / VCM's reverse-density queries (built from
+  the forward arrival's stack) and an unseeded walk inside a closed
+  composite (DL-407 (1)) do not reproduce.  With term (c) live on a closed
+  `composite{glass/translucent}` box the bidirectional MIS partition broke
+  (opt-in probe `--dl296-probe`, 3 salted 1024-spp renders): emitter INSIDE
+  the box PT 0.152 / BDPT 0.435 / VCM 0.417 (master 0.150 / 0.150 / 0.150),
+  emitter OUTSIDE behind it PT 0.0525 / BDPT 0.0102 / VCM 0.0071 (master
+  0.0502 / 0.0535 / 0.0511).  With the open-sheet rule: inside 0.152 /
+  0.148 / 0.155, outside 0.0487 / 0.0497 / 0.0496 (three further salt sets
+  0.053 / 0.050 / 0.052, 0.053 / 0.058 / 0.047, 0.057 / 0.054 / 0.054 --
+  that estimator's own ~10 % spread).  Closed objects are DL-472.
+* **Capability.**  `CompositeMaterial::ScattersFullSphere()` =
+  `HasTransmissionValue()` (material-level, so also on closed objects,
+  where the value below is 0 and the claim costs NEE samples only; the
+  same over a top that transmits nothing).  `TranslucentLobeConsistencyTest`
+  gate 6 re-ruled: open-sheet record prices the far side, a possibly
+  closed record does not.
+
+### 10.3 Evidence
+
+`CompositeEnergyConservationTest --dl296-only` (section X): left half the
+composite (thickness 0) on an open quad, right half the equivalent pair of
+SEPARATE sheets (glass at z = 0, the bottom material 0.002 below), camera
+in front, the only light behind; mean of 3 salted renders, 32 x 16.
+
+| bottom, light, integrator | pre-fix (`638591364` lib) composite / pair | post-fix composite / pair (ratio) |
+|---|---|---|
+| translucent, omni, PT | **0** / 0.43342 | 0.43268 / 0.43343 (0.998) |
+| translucent, omni, BDPT | **0** / 0.43426 | 0.43531 / 0.43428 (1.002) |
+| translucent, omni, VCM | **0** / 0.43389 | 0.44807 / 0.43391 (1.033) |
+| translucent, omni, PT spectral | -- | 0.43236 / 0.43245 (1.000) |
+| translucent, omni, PT spectral `hwss TRUE` | -- | 0.43318 / 0.43330 (1.000) |
+| translucent, area, PT | 0.11667 / 0.11899 (per-render 0.963 .. 1.012) | 0.11876 / 0.11883 (per-render 0.998 .. 1.001) |
+| weave, omni, PT | **0** / 0.17694 | 0.17628 / 0.17695 (0.996) |
+| weave, omni, BDPT | **0** / 0.17694 | 0.17651 / 0.17680 (0.998) |
+| weave, omni, VCM | **0** / 0.17702 | 0.17666 / 0.17728 (0.996) |
+| weave, omni, PT spectral | -- | 0.17546 / 0.17570 (0.999) |
+| weave, omni, PT spectral `hwss TRUE` | -- | 0.17629 / 0.17678 (0.997) |
+| weave, area, PT | 0.05117 / 0.04749 (per-render 0.947 .. 1.221) | 0.04738 / 0.04750 (per-render 0.997 .. 0.998) |
+
+Post-fix numbers are the final (open-sheet-gated) build; the translucent
+PT / BDPT / VCM rows of that build read 0.43305 / 0.43607 / 0.44735
+against pairs 0.43342 / 0.43425 / 0.43370 (0.999 / 1.004 / 1.032).  Red
+9/7 (pre-fix library, the PT/BDPT/VCM rows; the spectral rows were added
+after) -> green 28/0.  The area rows were already unbiased pre-fix -- the
+walker reached the emitter by BSDF sampling -- and now converge: the
+per-render spread of the composite / pair ratio shrinks ~20x.
+
+**The translucent VCM +3 % is not term (c).**  Two controls separate it:
+(1) with a RECIPROCAL transmitting bottom (the weave rows) PT, BDPT and
+VCM agree on the composite to 0.4 %; (2) with `composite{translucent /
+translucent}` the SEPARATE translucent pair alone reads PT 0.584 / BDPT
+0.625 / VCM 0.664 -- `translucent_material` is not reciprocal (DL-223),
+and an open composite sheet presents its TOP to a light arriving from
+behind (DL-407 (2), "top on either face"), so BDPT/VCM's light-side
+strategies price a different layer order than the eye side.  Banded at
+5 % for the translucent BDPT/VCM rows, 2 % elsewhere.
+
+Pointwise (section C, new row C4 `dielectric/translucent, t 0.2, ext
+0.3`): 10 735 non-delta rays per pipe, 5 518 of them below the stack,
+`kray * Pdf * E == value * cos` with 0 mismatches, RGB and NM.  Full-sphere
+furnace F5 (dielectric / lossless translucent): 0.9954 +- 0.0107 /
+0.9999 +- 0.0057 at 0 / 60 deg.
+
+### 10.4 What is NOT covered (DL-472)
+
+* **Closed (or not provably open) surfaces**: term (c) is off there
+  (section 10.2), so transmission INTO a closed composite object stays
+  walker-only -- a delta light reaching the camera only through a closed
+  composite shell still contributes nothing.  Needs the reverse-density
+  and seeding consistency named in 10.2 (DL-407 (1)).
+* Walks entered FROM BELOW and arrivals behind a tilted shading normal
+  (the natural walks): still delta-tagged.  So a delta light seen through
+  the back face of a composite sheet, or through a CLOSED composite
+  object (the second wall is crossed from inside, i.e. from below), still
+  contributes nothing under PT.
+* A bottom whose transmission is DELTA-tagged -- a rough dielectric
+  (`dielectric_material` with finite `scattering`: a Phong-warped delta
+  transmission, no BSDF).  DL-297's adjoint-warp connection would extend
+  to it; not done.
+* Null-BSDF layers (skin / tissue): no evaluator at all.
+* All-delta chains stay delta by design (a caustic class: SMS / merging).
+
+### 10.5 Gates
+
+`CompositeEnergyConservationTest` (final build): `--dl296-only` 28/0,
+`--sheets-only` **104/4** (section 10.6), `--no-render` 481/0.  On the earlier both-faces / any-surface build: `--no-render`
+481/0, `--stack-only --render` 498/1 (one open-sheet VCM twin cell,
+1.021 against a 2 % band).  `TranslucentLobeConsistencyTest`
+1228/0, `LayeredWhiteFurnaceTest` 0 of 63 failed, `CompositeExtinctionTest`
+pass, `SPFBSDFConsistencyTest` pass, `SPFPdfConsistencyTest` pass,
+`HWSSCompanionKrayTest` 204/0, `WeaveGapShadowTransmittanceTest` query
+81/0 and composite 2/0.  No shipped scene binds a composite with a
+transmitting bottom (`composite_material.RISEscene`'s bottoms are
+Lambertian / emissive / a nested opaque composite), so no shipped render
+moves.
+
+### 10.6 Blocker: the composite is not reciprocal on an open sheet
+
+A non-face-rule composite presents its TOP on either face of an open sheet
+(DL-407 (2)).  So `f(a -> b)` evaluated from an arrival on side `a` and
+`f(b -> a)` from side `b` model different layer orders, and a BDPT / VCM
+connection at the sheet combines the eye-side model with the light-side
+one.  Before term (c) that never mattered for transmission (the class was
+delta on both sides).  With it:
+
+| fixture | PT | BDPT | VCM |
+|---|---|---|---|
+| X, white furnace, glass/translucent: composite / separate pair | 0.999 | 1.064 | 1.167 |
+| X, white furnace, glass/weave: composite / separate pair | 1.010 | 1.025 | 1.044 |
+| M open sheet furnace, glass/translucent, outward twin (absolute) | 0.534 | 0.607 | 0.750 |
+| M open sheet furnace, same, `mixed` quad (uncertified: term off) | 0.53 | 0.53 | 0.54 |
+
+(The separate pairs agree across integrators to 0.4 %, so the integrators
+are not the issue.)  Gating the term to FRONT-face arrivals fails the
+other way: BDPT / VCM read 0.97x / 0.86x PT under the omni light even for
+the reciprocal weave, whether the face is judged from the query's ray or
+from a rebuilt record's replayed arrival facing -- a connection then
+evaluates a nonzero eye-side `f(x)` against a zero light-side `f(x)`
+while the MIS weights still reserve the light-tracing strategy's mass.
+Only a reciprocal two-sided model closes it: DL-345's face rule for
+non-delta composites (front = top, back = bottom) plus a from-below
+covered evaluator (DL-472 (1)), so a back arrival prices the same
+transport, mirrored.  The slice's commits carry the open-sheet, both-faces
+version (`TransmissionLive`); the four failing Section M cells and the
+furnace rows above are its known state.
