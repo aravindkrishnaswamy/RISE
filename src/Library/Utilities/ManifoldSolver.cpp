@@ -6315,6 +6315,27 @@ RISEPel ManifoldSolver::EvaluateVertexFresnelRGB( const ManifoldVertex& v,
 }
 
 namespace {
+    // DL-398: geometry is solved with the seeded indices, but texture
+    // attenuation is priced at the converged hit coordinates. Spatial IOR
+    // gradients remain outside the legacy Newton formulation.
+    void RefreshLegacyRootTint(ManifoldVertex& vertex,const Vector3& wi,Scalar nm) {
+        if(!vertex.pMaterial || Vector3Ops::SquaredModulus(vertex.normal)<=NEARZERO) return;
+        Scalar etaI,etaT;GetEffectiveEtas(vertex,etaI,etaT);
+        RayIntersectionGeometric hit(Ray(vertex.position,-wi),nullRasterizerState);
+        hit.bHit=true;hit.ptIntersection=vertex.position;hit.ptObjIntersec=vertex.objectPosition;
+        hit.ptCoord=vertex.uv;hit.vNormal=vertex.normal;hit.vGeomNormal=vertex.geomNormal;
+        hit.onb.CreateFromW(vertex.normal);hit.ambientIOR=etaI;
+        IORStack stack(vertex.isExiting?etaT:etaI);
+        stack.SetCurrentObject(vertex.pObject);
+        if(vertex.isExiting) stack.push(etaI);
+        const auto info=nm>0?vertex.pMaterial->GetSpecularInfoNM(hit,stack,nm)
+            :vertex.pMaterial->GetSpecularInfo(hit,stack);
+        if(!info.valid) return;
+        vertex.attenuation=info.attenuation;vertex.attenuationNM=info.attenuationNM;
+        vertex.attenuationAppliesToReflection=info.attenuationAppliesToReflection;
+        vertex.attenuationIsInteriorTransmittance=info.attenuationIsInteriorTransmittance;
+        vertex.hasCustomSpecularFresnel=info.hasCustomSpecularFresnel;
+    }
     // A polished coat has a delta reflection but no delta transmission.
     // Its SPF prices both mesh windings from the surrounding medium, rather
     // than interpreting a back-facing sheet as a glass-to-air crossing.
@@ -6355,13 +6376,14 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 
 	for( unsigned int i = 0; i < k; i++ )
 	{
-		const ManifoldVertex& v = chain[i];
+		ManifoldVertex v = chain[i];
 
 		// Compute incoming direction at this vertex
 		const Point3 prevPos = (i == 0) ? startPoint : chain[i-1].position;
 
 		Vector3 wi = Vector3Ops::mkVector3( prevPos, v.position );
 		wi = Vector3Ops::Normalize( wi );
+        RefreshLegacyRootTint(v,wi,0);
 
 		// Exact dielectric Fresnel reflectance.  Use the chain-topological
 		// flag `v.isExiting` (set by BuildSeedChain's IOR-stack bookkeeping)
@@ -6496,11 +6518,12 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 
 	for( unsigned int i = 0; i < k; i++ )
 	{
-		const ManifoldVertex& v = chain[i];
+		ManifoldVertex v = chain[i];
 
 		const Point3 prevPos = (i == 0) ? startPoint : chain[i-1].position;
 		Vector3 wi = Vector3Ops::mkVector3( prevPos, v.position );
 		wi = Vector3Ops::Normalize( wi );
+        RefreshLegacyRootTint(v,wi,nm);
 
 		// Exact dielectric Fresnel reflectance — use the chain-topological
 		// flag (see EvaluateChainThroughput RGB variant for full comment).
