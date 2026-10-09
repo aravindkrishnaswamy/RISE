@@ -956,10 +956,17 @@ static void GateCompositeFullSphere()
 		UniformScalarPainter* sc = new UniformScalarPainter( 10000.0 ); sc->addref();
 		DielectricMaterial* gl = new DielectricMaterial( *one, *i15, *sc, false ); gl->addref();
 		CompositeMaterial* glTr = new CompositeMaterial( *gl, *tr, 4, 2, 2, 2, 2, 0.1, *z ); glTr->addref();
-		const double vBelow = glTr->GetBSDF() ? ColorMath::MaxValue( glTr->GetBSDF()->value( below, ri ) ) : -1;
-		std::cout << "    composite{dielectric/translucent}: value(below)=" << vBelow
+		// Term (c) is live only where the surface provably encloses no
+		// volume (an open sheet); on a possibly closed surface the class
+		// stays walker-only (DL-472).
+		RayIntersectionGeometric riOpen( ri );
+		riOpen.bProvablyNoInterior = true;
+		const double vBelow = glTr->GetBSDF() ? ColorMath::MaxValue( glTr->GetBSDF()->value( below, riOpen ) ) : -1;
+		const double vBelowClosed = glTr->GetBSDF() ? ColorMath::MaxValue( glTr->GetBSDF()->value( below, ri ) ) : -1;
+		std::cout << "    composite{dielectric/translucent}: value(below) open sheet=" << vBelow << " possibly-closed=" << vBelowClosed
 		          << "  ScattersFullSphere=" << ( glTr->ScattersFullSphere() ? "true" : "false" ) << std::endl;
-		EXPECT( vBelow > 0, "[G] composite{dielectric/translucent} prices the far side (DL-296)" );
+		EXPECT( vBelow > 0, "[G] composite{dielectric/translucent} prices the far side of an open sheet (DL-296)" );
+		EXPECT( vBelowClosed == 0, "[G] composite{dielectric/translucent} prices nothing below a possibly closed surface (DL-472)" );
 		EXPECT( glTr->ScattersFullSphere(), "[G] composite{dielectric/translucent} claims the full-sphere capability (DL-296)" );
 		glTr->release(); gl->release(); sc->release(); i15->release(); one->release();
 	}

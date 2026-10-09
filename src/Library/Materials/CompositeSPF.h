@@ -32,7 +32,9 @@
 //                material ScattersFullSphere -- translucent_material, a
 //                thin-transmission weave), COVERED also holds a non-delta
 //                exit DOWN through the bottom after a walk entered from
-//                above: every bottom visit connects to a below-horizon
+//                above, at a record on a surface that provably encloses
+//                no volume (an open sheet; elsewhere the class stays
+//                WALKER, DL-472): every bottom visit connects to a below-horizon
 //                direction through the bottom's BSDF (term c, no
 //                Jacobian), and the layered value carries the radiance
 //                eta^2 of that exit (BelowEtaScale) while the emitted
@@ -338,9 +340,10 @@ namespace RISE
 			//! CompositeBSDF exactly when this is true.
 			bool HasLayeredValue() const { return pTopBSDF || pBottomBSDF; }
 
-			//! DL-296: true when the layered value has a below-horizon term
-			//! (transmission out through the bottom, term (c)), so the
-			//! composite's BSDF scatters over the full sphere.
+			//! DL-296: true when the layered value can have a below-horizon
+			//! term (transmission out through the bottom, term (c), live at
+			//! records with bProvablyNoInterior), so the composite's BSDF
+			//! scatters over the full sphere.
 			bool HasTransmissionValue() const { return bBottomTransmits; }
 
 			//! DL-407 (2): the index of the medium BELOW this

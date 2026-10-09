@@ -479,7 +479,10 @@ static void SectionC( Fixtures& f )
 			int checked = 0, bad = 0, below = 0;
 			double worst = 0;
 			for( int t = 0; t < 3; ++t ) {
-				const RayIntersectionGeometric ri = MakeIntersection( kThetas[t] * kPi / 180.0 );
+				RayIntersectionGeometric ri = MakeIntersection( kThetas[t] * kPi / 180.0 );
+				// DL-296: term (c) is live only on a surface that provably
+				// encloses no volume (an open sheet); C4 is that case.
+				ri.bProvablyNoInterior = c.m->ScattersFullSphere();
 				IORStack stack = MakeTestIORStack( g_stub );
 				RandomNumberGenerator rng( 555u + t );
 				IndependentSampler sampler( rng );
@@ -2954,6 +2957,56 @@ static void SectionX()
 	}
 }
 
+//! Opt-in measurement (--dl296-probe, no assertions): a composite
+//! {glass/translucent} closed box with an emitter INSIDE it (Section M's
+//! "light inside" cell, double-sided outward), composite half only, PT /
+//! BDPT / VCM, 3 salted renders each.  The emitter is unseeded (DL-407 (1)),
+//! so light-side walks meet the wall's top from inside.  DL296_PROBE_OUT=1
+//! moves the emitter outside, behind the box; DL296_PROBE_SEED offsets the
+//! salts.  This is the configuration that showed term (c) must stay off on
+//! a surface that may bound an interior: with it live there BDPT / VCM
+//! read 0.435 / 0.417 against PT 0.152 (light inside) and 0.0102 / 0.0071
+//! against 0.0525 (light outside); master and the shipped (open-sheet-only)
+//! rule agree across PT / BDPT / VCM within the renders' noise.
+static void ProbeLightInside()
+{
+	std::cout << "\n[probe] composite{glass/translucent} box, light inside\n";
+	const std::string scene0 = std::string( "RISE ASCII SCENE 7\n" ) +
+		"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_e\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_e\n\tscale 20.0\n\tmaterial none\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n" +
+		WindingBox( "bT", std::vector<int>(), true ) +
+		"standard_object\n{\n\tname L\n\tgeometry bT\n\tposition -2 0 0\n\tmaterial mat_gtr\n}\n\n"
+		"sphere_geometry\n{\n\tname sg\n\tradius 0.3\n}\n\n"
+		"clippedplane_geometry\n{\n\tname fq\n\tpta -6 -3.5 -4\n\tptb -6 -3.5 4\n\tptc 6 -3.5 4\n\tptd 6 -3.5 -4\n}\n\n"
+		+ ( std::getenv( "DL296_PROBE_OUT" ) ? "standard_object\n{\n\tname eL\n\tgeometry sg\n\tposition -2 0 -2.5\n\tmaterial mat_emit\n}\n\n"
+		                                   : "standard_object\n{\n\tname eL\n\tgeometry sg\n\tposition -2 0 0\n\tmaterial mat_emit\n}\n\n" ) +
+		"standard_object\n{\n\tname F\n\tgeometry fq\n\tmaterial mat_l8\n}\n\n";
+	unsigned seed = 296500u + ( std::getenv( "DL296_PROBE_SEED" ) ? (unsigned)std::atoi( std::getenv( "DL296_PROBE_SEED" ) ) : 0u );
+	for( int r = 0; r < 3; ++r ) {
+		const std::string scene = scene0 + ( r == 0 ? PtRasterizer( false, 1024 ) : r == 1 ? BdptRasterizer( false, 1024, 12 ) : VcmRasterizer( false, 1024, 12 ) );
+		double m = 0;
+		for( int k = 0; k < 3; ++k ) {
+			CapturingRasterizerOutput* cap = 0;
+			SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * seed + 0x85EBCA6Bu );
+			const bool ok = Render( scene, "dl296probe", cap, seed++ );
+			SobolSamplerTestHooks::ValueSalt().store( 0u );
+			const double l = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			if( cap ) safe_release( cap );
+			m += l / 3;
+		}
+		std::cout << "    " << ( r == 0 ? "PT  " : r == 1 ? "BDPT" : "VCM " ) << ": " << std::setprecision(5) << m << "\n";
+	}
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "CompositeEnergyConservationTest (DL-24 / DL-221)" << std::endl;
@@ -2984,6 +3037,10 @@ int main( int argc, char** argv )
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) { SectionD(); SectionD10(); }
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--dl296-probe" ) {
+		ProbeLightInside();
+		return 0;
 	}
 	if( argc > 1 && std::string( argv[1] ) == "--dl296-only" ) {
 		SectionX();

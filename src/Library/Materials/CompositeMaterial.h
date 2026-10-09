@@ -118,7 +118,10 @@ namespace RISE
 					// VCM connections price, and the capability is that
 					// term's.  A light BEHIND such a sheet (a point light
 					// especially) used to reach the camera only through
-					// delta-tagged walker rays, i.e. not at all.
+					// delta-tagged walker rays, i.e. not at all.  The term is
+					// live only at records on a surface that provably
+					// encloses no volume (CompositeSPF.cpp TransmissionLive),
+					// so on a closed object the claim costs NEE samples only.
 					bScattersFullSphere = pComposite->HasTransmissionValue();
 				} else {
 					// Only one layer can scatter: that layer IS the
