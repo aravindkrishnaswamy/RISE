@@ -1313,6 +1313,12 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   sit within 3 % of it (4 salted renders each, half-mean sd <= 0.0006). Red on
   `388907e94` and again on `e64d2f5f2`: BDPT null SPF 0.0039x on both halves, BDPT half SPF 0.592x /
   0.411x, 11/4; green 15/0. VCM and PT read 1.000 in both builds.
+  A second fixture puts the null-SPF hole behind the SECOND eye vertex (the
+  visible floor is lit only via a Lambertian side wall that sees the hole
+  wall below the floor plane) so the eye-walk break is reached; BDPT and VCM
+  must match PT on the same material within 10 %. With only the eye-walk
+  break disabled BDPT reads 0.00038x / 0.00008x; the `e64d2f5f2` library
+  reads 14/6 overall, the branch 20/0.
 
 ## Blender tangent producers (DL-213)
 
