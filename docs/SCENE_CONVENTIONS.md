@@ -1277,7 +1277,7 @@ integrator since DL-247).
 | Setting | PT | BDPT / MLT | VCM |
 |---|---|---|---|
 | surface depth | no scene knob: a fixed 128-vertex loop | `max_eye_depth` / `max_light_depth` bound SURFACE hits per SUBPATH; since DL-351 the MIS weights know it, so the render estimates exactly the paths that have at least one CONNECTIBLE split (eye part <= `max_eye_depth`, light part <= `max_light_depth`, joined at non-delta, connectible vertices); in an all-diffuse scene that is **K <= max_eye_depth + max_light_depth** and only the sum matters | same path set; since DL-467 its recurrence MIS drops every connection / merge strategy past the caps too (closed box at (1,1): 0.0643 -> 0.0845, BDPT 0.0839), including, since DL-470, a MERGE's light-side levels (the connections / merges whose eye part would cover the light subpath behind the merge point past `max_eye_depth`) |
-| `max_diffuse_bounce` & co. | per PATH: at most N continuations of that type; NEE at the last vertex is free, so N = 0 is direct lighting; since DL-467 a non-delta continuation past the cap is traced for its MIS-weighted EMISSION only (as PBRT-v4 / Cycles do), so the last vertex's direct light keeps its full MIS partition -- in an all-diffuse scene `max_diffuse_bounce N` = BDPT's (N+1, 0) | per SUBPATH: each walk may take N continuations of that type, so a joined path can carry up to about 2N + 2 such vertices; the MIS weights ignore these caps -- a connection endpoint has no sampled lobe type, so whether the alternative walk's scatter there would exceed the cap is undefined without a per-lobe-type split of the BSDF (DL-471) | as BDPT |
+| `max_diffuse_bounce` & co. | per PATH: at most N continuations of that type; NEE at the last vertex is free, so N = 0 is direct lighting; since DL-467 a non-delta continuation past the cap is traced for its MIS-weighted EMISSION only (as PBRT-v4 / Cycles do), so the last vertex's direct light keeps its full MIS partition -- in an all-diffuse scene `max_diffuse_bounce N` = BDPT's (N+1, 0); a DELTA continuation past the cap is cut (the vertex next to the light counts when its scatter is delta) | per PATH since DL-471, the same paths as PT: every strategy counts the lobe types of the JOINED path's x_1 .. x_{K-1} (x_K, the vertex next to the light, free unless its scatter is delta or it has no BSDF); only caps below `max_eye_depth + max_light_depth` can bind and the others are ignored; a connection endpoint counts its material's lobe type when it has one possible type (Lambertian, Oren-Nayar, data-driven) or none of its types is capped (GGX under `max_translucent_bounce`), and otherwise the strategy is dropped from the estimate AND every MIS denominator -- which LOSES a path no other strategy reaches, e.g. a point-light caustic onto a GGX floor under `max_glossy_bounce 0` (DL-481). MLT has no per-type cap parameters | as BDPT, except that a path with such a vertex at a counted position is estimated by the emitter hit and NEE alone (VCM's running-sum weights cannot drop one strategy); the same caustic is lost (DL-481) |
 
 Consequences for authors:
 
@@ -1290,9 +1290,19 @@ Consequences for authors:
   reached at (2, 0) but missed by (1, 1) and (0, 2).
 - A medium shell's two crossings count: an env-lit fog box needs
   `max_eye_depth + max_light_depth >= 2` before anything inside is lit.
-- Do not use per-type caps to compare integrators -- the same
-  `max_diffuse_bounce` admits more paths under BDPT/VCM than under PT
-  (open corner at `max_diffuse_bounce 0`: BDPT +2.97 % over PT).
+- Per-type caps mean the same paths in PT, BDPT and VCM since DL-471
+  (before it BDPT/VCM capped each SUBPATH: an open Lambertian corner at
+  `max_diffuse_bounce 0` read BDPT +5.4 % / VCM +3.3 % over PT, a GGX
+  corner at `max_glossy_bounce 0` +3.6 % / +3.1 %).  A cap at or above
+  `max_eye_depth + max_light_depth` cannot bind and changes nothing.  A
+  binding cap on a lobe type of a multi-lobe material (GGX & co.) drops
+  the BDPT/VCM strategies that connect at it, so a path only they reach
+  -- a point-light caustic onto such a surface -- goes dark (DL-481).
+  Further exceptions, open debts: paths through a SUBSURFACE material (PT counts the
+  jump as a translucent bounce, the bidirectional walks do not -- DL-482)
+  and a DL-330 see-through connection or a guided continuation (the
+  strategies of one path count its delta gaps / guide draws differently
+  -- DL-483).
 - A capped scene can change brightness when `auto_rasterizer` changes
   its route.
 

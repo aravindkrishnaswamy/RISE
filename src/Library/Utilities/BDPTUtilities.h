@@ -30,6 +30,7 @@
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IRayCaster.h"		// kShadowWalkMaxCrossings (DL-330)
 #include <vector>
+#include <climits>
 
 namespace RISE
 {
@@ -517,6 +518,292 @@ namespace RISE
 		inline bool CountsAsSurfaceHit( const BDPTVertex& v )
 		{
 			return v.type == BDPTVertex::SURFACE && !v.isBSSRDFEntry;
+		}
+
+		//////////////////////////////////////////////////////////////////
+		// DL-471: per-type bounce caps (`max_diffuse_bounce`,
+		// `max_glossy_bounce`, `max_transmission_bounce`,
+		// `max_translucent_bounce`) are a property of the JOINED PATH, the
+		// contract PT implements (docs/SCENE_CONVENTIONS.md section 8.10).
+		//
+		// Number a path's scattering vertices x_1 .. x_K from the camera, x_K
+		// the one adjacent to the light (the root of the light subpath, the
+		// emitter the eye walk hit, or the environment).  The cap counts the
+		// lobe type of the scatter at every x_1 .. x_{K-1}, and at x_K only
+		// when that scatter is a DELTA lobe or x_K has no BSDF: PT's NEE at
+		// x_K is free and so is its BSDF-sampled continuation to the light
+		// (DL-467, traced for emission only), while a delta / BSDF-less x_K
+		// keeps the plain cut.  Medium scatters and subsurface jumps count
+		// nothing here (`max_volume_bounce` bounds the former; the jump's
+		// translucent count is DL-482).
+		//
+		// With lobe labels this is a restriction of the INTEGRAND, not of
+		// which strategies exist: a strategy's expected contribution at an
+		// unlabelled path x is the sum over its sampled interior labels times
+		// the allowed part of its endpoints' BSDFs -- exactly f_cap(x) -- as
+		// long as (a) every walk truncation discards only labellings that
+		// are over the cap anyway (the light walk does not count its free
+		// first vertex; the eye walk traces a free x_K's over-cap
+		// continuation for its emitter hit, mirroring PT) and (b) a counted
+		// connection endpoint has a defined type.  (b) holds when the
+		// endpoint material's possible non-delta lobe types
+		// (IMaterial::ConnectionScatterTypes) are a single type, or include
+		// no type whose cap can bind; otherwise the strategy is EXCLUDED
+		// from the estimate and from every MIS denominator (BDPT / MLT) and
+		// VCM estimates the path with S0 + NEE only.  That keeps the MIS
+		// partition exact over the strategies that remain, but it is NOT
+		// unbiased in general: a path whose only strategies have such an
+		// endpoint (a point-light caustic onto a multi-lobe receiver, which
+		// neither S0 nor NEE can reach) loses its energy under a cap that
+		// can bind -- DL-481.
+		//
+		// A cap that cannot bind is dropped here: a path the bidirectional
+		// walks can generate has at most max_eye_depth + max_light_depth
+		// scattering SURFACES (each walk's surface cap; an emitter hit is
+		// the eye walk's, a medium vertex or subsurface jump counts no
+		// type), and the counted vertices are a subset of them, so a cap
+		// N >= max_eye_depth + max_light_depth never rejects a path and the
+		// walks never reach it (each counts at most its own surface cap).
+		// A render whose caps cannot bind is therefore the cap-free one.
+		//////////////////////////////////////////////////////////////////
+
+		struct BounceTypeCaps
+		{
+			unsigned int	cap[4];		///< diffuse, glossy (reflection), transmission (refraction), translucent; UINT_MAX = cannot bind
+			unsigned int	boundMask;	///< bit (1 << t) for every ScatRayType t whose cap can bind
+			bool			active;		///< any cap can bind
+
+			BounceTypeCaps() : boundMask( 0 ), active( false ) { cap[0] = cap[1] = cap[2] = cap[3] = UINT_MAX; }
+		};
+
+		/// The caps that can BIND on a path the walks generate (see above:
+		/// N < max_eye_depth + max_light_depth); the others become UINT_MAX.
+		inline BounceTypeCaps MakeBounceTypeCaps(
+			const unsigned int maxDiffuse,
+			const unsigned int maxGlossy,
+			const unsigned int maxTransmission,
+			const unsigned int maxTranslucent,
+			const unsigned int maxEyeDepth,
+			const unsigned int maxLightDepth
+			)
+		{
+			const unsigned long long surfaces =
+				static_cast<unsigned long long>( maxEyeDepth ) + static_cast<unsigned long long>( maxLightDepth );
+			const unsigned int in[4] = { maxDiffuse, maxGlossy, maxTransmission, maxTranslucent };
+			BounceTypeCaps c;
+			for( int k = 0; k < 4; k++ ) {
+				if( static_cast<unsigned long long>( in[k] ) < surfaces ) {
+					c.cap[k] = in[k];
+					c.boundMask |= 1u << ( k + 1 );
+					c.active = true;
+				}
+			}
+			return c;
+		}
+
+		/// Counter slot of a scatter type, -1 for a type no cap counts.
+		inline int BounceTypeSlot( const unsigned int type )
+		{
+			return ( type >= ScatteredRay::eRayDiffuse && type <= ScatteredRay::eRayTranslucent ) ?
+				static_cast<int>( type ) - 1 : -1;
+		}
+
+		struct BounceTypeCounts
+		{
+			unsigned int	n[4];
+
+			BounceTypeCounts() { n[0] = n[1] = n[2] = n[3] = 0; }
+			void Add( const unsigned int type )
+			{
+				const int k = BounceTypeSlot( type );
+				if( k >= 0 ) n[k]++;
+			}
+			bool Within( const BounceTypeCaps& caps ) const
+			{
+				return n[0] <= caps.cap[0] && n[1] <= caps.cap[1] &&
+					n[2] <= caps.cap[2] && n[3] <= caps.cap[3];
+			}
+		};
+
+		enum TypeCapStatus
+		{
+			eTypeCapOK = 0,			///< within every cap
+			eTypeCapOver,			///< some type over its cap: the path is not in the estimate
+			eTypeCapNeedsSplit		///< a counted connection endpoint has no defined type
+		};
+
+		/// The type a CONNECTION ENDPOINT contributes when it is counted.
+		/// From the material's possible non-delta lobe types
+		/// (IMaterial::ConnectionScatterTypes): none of them capped (this
+		/// includes a subsurface material's empty set, DL-482) -> counts
+		/// nothing; exactly one -> that type; otherwise undefined (false).
+		/// Medium vertices, subsurface entries and roots contribute no type.
+		/// A property of the material and the caps only, never of a sampled
+		/// lobe, so every strategy of a path agrees on it.
+		inline bool EndpointBounceType( const BDPTVertex& v, const BounceTypeCaps& caps, unsigned int& type )
+		{
+			type = 0;
+			if( v.type != BDPTVertex::SURFACE || v.isBSSRDFEntry || !v.pMaterial ) {
+				return true;
+			}
+			const unsigned int mask = v.pMaterial->ConnectionScatterTypes();
+			if( ( mask & caps.boundMask ) == 0 ) {
+				return true;
+			}
+			if( ( mask & ( mask - 1u ) ) != 0 ) {
+				return false;
+			}
+			for( unsigned int t = ScatteredRay::eRayDiffuse; t <= ScatteredRay::eRayTranslucent; t++ ) {
+				if( mask == ( 1u << t ) ) {
+					type = t;
+				}
+			}
+			return true;
+		}
+
+		/// Does a counted connection endpoint at `v` need a per-lobe-type
+		/// split the material does not provide?  (False when no cap is
+		/// set.)  A MATERIAL property of a connectible surface vertex --
+		/// never of its sampled lobe -- so every strategy of a path agrees
+		/// on it.
+		inline bool EndpointNeedsTypeSplit( const BDPTVertex& v, const BounceTypeCaps& caps )
+		{
+			if( !caps.active || !v.isConnectible ) {
+				return false;
+			}
+			unsigned int type = 0;
+			return !EndpointBounceType( v, caps, type );
+		}
+
+		/// VCM (DL-471): does any of verts[from .. to] (path positions >= 2,
+		/// i.e. counted) need a type split?  VCM's recurrence MIS cannot drop
+		/// the individual strategies at such a vertex, so a path that has one
+		/// is estimated by the s = 0 and s = 1 strategies alone, which never
+		/// have a counted endpoint (VCMIntegrator.cpp, "DL-471").
+		inline bool AnyNeedsTypeSplit(
+			const BDPTVertex* verts,
+			const unsigned int from,
+			const unsigned int to,
+			const BounceTypeCaps& caps
+			)
+		{
+			if( !caps.active ) {
+				return false;
+			}
+			for( unsigned int q = from; q <= to; q++ ) {
+				if( EndpointNeedsTypeSplit( verts[q], caps ) ) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/// Per-type cap status of strategy (s, t): the path is
+		/// lightVerts[0 .. s-1] followed by eyeVerts[t-1 .. 0] (BDPT's
+		/// MISWeight numbering; lightVerts is not read when s <= 1 and
+		/// eyeVerts[0], the camera, is never read).  Its position q from the
+		/// light root is the x_{K+1-q} above: q = 1 is x_K.  Interior
+		/// vertices count the type their walk counted (`capType`), x_K is
+		/// free unless its own scatter was a delta lobe or it has no BSDF,
+		/// and the two connection endpoints count their material's type
+		/// unless they ARE x_K.
+		inline TypeCapStatus JoinedTypeCapStatus(
+			const BDPTVertex* lightVerts,
+			const BDPTVertex* eyeVerts,
+			const unsigned int s,
+			const unsigned int t,
+			const BounceTypeCaps& caps
+			)
+		{
+			if( !caps.active || s + t < 3 ) {
+				return eTypeCapOK;
+			}
+			const unsigned int n = s + t;
+			BounceTypeCounts counts;
+			for( unsigned int q = 1; q + 1 < n; q++ )
+			{
+				const BDPTVertex& v = ( q < s ) ? lightVerts[q] : eyeVerts[n - 1 - q];
+				const bool endpoint = s >= 1 && ( q + 1 == s || q == s );
+				if( q == 1 ) {
+					if( endpoint || ( !v.isDelta && v.isConnectible ) ) {
+						continue;
+					}
+					counts.Add( v.capType );
+					continue;
+				}
+				if( endpoint ) {
+					unsigned int type = 0;
+					if( !EndpointBounceType( v, caps, type ) ) {
+						return eTypeCapNeedsSplit;
+					}
+					counts.Add( type );
+				} else {
+					counts.Add( v.capType );
+				}
+			}
+			return counts.Within( caps ) ? eTypeCapOK : eTypeCapOver;
+		}
+
+		/// Light-subpath prefix counts for a stored light vertex: the types
+		/// the light walk counted at lightVerts[1 .. k-1] (its free first
+		/// vertex already uncounted), i.e. everything a MERGE at
+		/// lightVerts[k] keeps of the light subpath.  Saturates at 255 (a
+		/// count above every finite cap the walk could have reached).
+		inline void LightPrefixTypeCounts(
+			const BDPTVertex* lightVerts,
+			const unsigned int k,
+			unsigned char out[4]
+			)
+		{
+			BounceTypeCounts c;
+			for( unsigned int q = 1; q < k; q++ ) {
+				c.Add( lightVerts[q].capType );
+			}
+			for( int j = 0; j < 4; j++ ) {
+				out[j] = static_cast<unsigned char>( c.n[j] > 255u ? 255u : c.n[j] );
+			}
+		}
+
+		/// Does a light subpath have a vertex needing a type split at
+		/// positions 2 .. k-1 -- what a MERGE at lightVerts[k] keeps of it
+		/// (stored on the LightVertex)?
+		inline bool LightPrefixNeedsTypeSplit( const BDPTVertex* lightVerts, const unsigned int k, const BounceTypeCaps& caps )
+		{
+			return k >= 3 && AnyNeedsTypeSplit( lightVerts, 2, k - 1, caps );
+		}
+
+		/// Per-type cap status of a MERGE of eye vertex eyeVerts[i] with
+		/// the stored light vertex lightVerts[k] (prefix counts from
+		/// LightPrefixTypeCounts): the path is camera, eyeVerts[1 .. i]
+		/// (the merge point, priced by the EYE vertex's BSDF), then
+		/// lightVerts[k-1 .. 1] and the root.  The merge point is x_K, and
+		/// free, when k == 1.
+		inline TypeCapStatus MergeTypeCapStatus(
+			const BDPTVertex* eyeVerts,
+			const unsigned int i,
+			const unsigned char lightPrefix[4],
+			const unsigned int k,
+			const BounceTypeCaps& caps
+			)
+		{
+			if( !caps.active ) {
+				return eTypeCapOK;
+			}
+			BounceTypeCounts counts;
+			for( int j = 0; j < 4; j++ ) {
+				counts.n[j] = lightPrefix[j];
+			}
+			for( unsigned int q = 1; q < i; q++ ) {
+				counts.Add( eyeVerts[q].capType );
+			}
+			if( k >= 2 ) {
+				unsigned int type = 0;
+				if( !EndpointBounceType( eyeVerts[i], caps, type ) ) {
+					return eTypeCapNeedsSplit;
+				}
+				counts.Add( type );
+			}
+			return counts.Within( caps ) ? eTypeCapOK : eTypeCapOver;
 		}
 
 		/// DL-330 (review P1).  Is verts[1..j-1] a straight chain of delta

@@ -415,6 +415,33 @@ namespace
 		return c;
 	}
 
+	//////////////////////////////////////////////////////////////////
+	// DL-471: the per-type bounce caps, applied per PATH at every strategy
+	// (BDPTUtilities::JoinedTypeCapStatus / MergeTypeCapStatus; see the
+	// contract there).  A counted connection endpoint whose material
+	// has more than one possible lobe type, one of them capped
+	// (IMaterial::ConnectionScatterTypes), cannot price a path.  BDPT's MISWeight drops exactly
+	// those strategies; VCM's recurrence weights are running sums that
+	// cannot drop one strategy (DL-481), so a path that HAS such a vertex
+	// at a counted position (BDPTUtilities::AnyNeedsTypeSplit -- a
+	// property of the path, so every strategy agrees) is estimated by the
+	// s = 0 (emitter hit) and s = 1 (NEE) strategies alone, weighted
+	// against each other only: every other strategy skips it, S0 keeps
+	// only the NEE term of wCamera, NEE drops wCamera.  Neither strategy
+	// ever has a counted endpoint, so the weights still partition the
+	// strategies that remain -- but a path S0 / NEE cannot reach (a
+	// point-light caustic onto such a receiver) is LOST under a cap that
+	// can bind (DL-481).  Inert unless some cap can bind
+	// (BDPTUtilities::MakeBounceTypeCaps).
+	//////////////////////////////////////////////////////////////////
+	inline BDPTUtilities::BounceTypeCaps VCMBounceTypeCaps( const BDPTIntegrator& bdpt )
+	{
+		const StabilityConfig& c = bdpt.GetStabilityConfig();
+		return BDPTUtilities::MakeBounceTypeCaps(
+			c.maxDiffuseBounce, c.maxGlossyBounce, c.maxTransmissionBounce, c.maxTranslucentBounce,
+			bdpt.GetMaxEyeDepth(), bdpt.GetMaxLightDepth() );
+	}
+
 	/// A walk's counts toward its caps.
 	struct VCMWalkCount
 	{
@@ -1077,9 +1104,14 @@ void VCMIntegrator::ConvertLightSubpath(
 	std::vector<LightVertex>& out,
 	std::vector<VCMMisQuantities>* outMisArg,
 	const bool seeThroughLive,
-	std::vector<VCMStep>* outSteps
+	std::vector<VCMStep>* outSteps,
+	const BDPTIntegrator* pTypeCapSource
 	)
 {
+	// DL-471: the merge data for per-type caps, stamped only when a cap can
+	// bind (it is O(k) per stored vertex).
+	const BDPTUtilities::BounceTypeCaps typeCaps = pTypeCapSource ?
+		VCMBounceTypeCaps( *pTypeCapSource ) : BDPTUtilities::BounceTypeCaps();
 	const std::size_t n = verts.size();
 	if( n == 0 ) {
 		return;
@@ -1254,6 +1286,12 @@ void VCMIntegrator::ConvertLightSubpath(
 				lv.plane      = 0;
 				lv.flags      = kLVF_IsConnectible | kLVF_IsMedium;
 				lv.pathLength = static_cast<unsigned short>( i );
+				if( typeCaps.active ) {	// DL-471
+					BDPTUtilities::LightPrefixTypeCounts( verts.data(), static_cast<unsigned int>( i ), lv.capCounts );
+					if( BDPTUtilities::LightPrefixNeedsTypeSplit( verts.data(), static_cast<unsigned int>( i ), typeCaps ) ) {
+						lv.flags |= kLVF_TypeSplitPrefix;
+					}
+				}
 				lv.volumeBounces = v.volumeBounces;
 				{
 					const unsigned int ls = partition.SurfaceCount( i );
@@ -1343,6 +1381,12 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( v.isBSSRDFEntry    ) lv.flags |= kLVF_IsBSSRDFEntry;
 			if( v.bHasVertexColor  ) lv.flags |= kLVF_HasVertexColor;
 			lv.pathLength = static_cast<unsigned short>( i );
+			if( typeCaps.active ) {	// DL-471
+				BDPTUtilities::LightPrefixTypeCounts( verts.data(), static_cast<unsigned int>( i ), lv.capCounts );
+				if( BDPTUtilities::LightPrefixNeedsTypeSplit( verts.data(), static_cast<unsigned int>( i ), typeCaps ) ) {
+					lv.flags |= kLVF_TypeSplitPrefix;
+				}
+			}
 			lv.volumeBounces = v.volumeBounces;
 			{
 				const unsigned int ls = partition.SurfaceCount( i );
@@ -1606,6 +1650,7 @@ namespace
 		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
 		static thread_local std::vector<VCMWalkCount> s0EyeCount;
 		EyePrefixCounts( eyeVerts, s0EyeCount );
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
 
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
@@ -1613,6 +1658,20 @@ namespace
 			if( v.volumeBounces > maxVolumeBounce ) {
 				continue;
 			}
+			// DL-471: the eye prefix must be within the per-path per-type
+			// caps (the vertex before the emitter is the free x_K), and a
+			// path with an undeclared-type vertex at a counted position
+			// keeps only the NEE term of wCamera (see "DL-471" above).
+			if( typeCaps.active && BDPTUtilities::JoinedTypeCapStatus(
+					nullptr, eyeVerts.data(), 0, static_cast<unsigned int>( i + 1 ), typeCaps ) !=
+					BDPTUtilities::eTypeCapOK ) {
+				continue;
+			}
+			// (A separate branch below, not a 0/1 factor: under -ffast-math a
+			// factor changes the FMA contraction of the unrestricted
+			// expression, and a cap-free render must stay bit-identical.)
+			const bool s0OnlyNEE = i >= 3 && BDPTUtilities::AnyNeedsTypeSplit(
+				eyeVerts.data(), 1, static_cast<unsigned int>( i - 2 ), typeCaps );
 
 			// Env-light escape vertex (Path B, VCM side).  Shares
 			// BDPT's GenerateEyeSubpath so the synthetic env vertex
@@ -1662,7 +1721,8 @@ namespace
 					// deeper levels hand eye vertices to the light walk.
 					const VCMWindowed envWin = EyeSideWindow( eyeVerts, eyeMis, i, VCMWalkCount(), true, depthCaps,
 						EyeHandedCount( s0EyeCount, i, true ) );
-					const Scalar wCameraEnvJoint =
+					const Scalar wCameraEnvJoint = s0OnlyNEE ?
+						directPdfA * envWin.mis.dVCM :
 						directPdfA * envWin.mis.dVCM +
 						emissionPdfW * envWin.mis.dVC;
 					const Scalar wCameraEnv = ( envSelProb > 0 ) ?
@@ -1779,7 +1839,8 @@ namespace
 				// DL-467: see the environment branch above.
 				const VCMWindowed s0Win = EyeSideWindow( eyeVerts, eyeMis, i, VCMWalkCount(), true, depthCaps,
 					EyeHandedCount( s0EyeCount, i, true ) );
-				const Scalar wCameraJoint =
+				const Scalar wCameraJoint = s0OnlyNEE ?
+					directPdfA * s0Win.mis.dVCM :
 					directPdfA * s0Win.mis.dVCM + emissionPdfW * s0Win.mis.dVC;
 				const Scalar wCamera = ( pdfSelect > 0 ) ?
 					wCameraJoint : Scalar( 0 );
@@ -1872,6 +1933,7 @@ namespace
 		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
 		static thread_local std::vector<VCMWalkCount> neeEyeCount;	// eye-walk counts of eyeVerts[1..i]
 		EyePrefixCounts( eyeVerts, neeEyeCount );
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
 
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
@@ -1879,6 +1941,17 @@ namespace
 			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
 				continue;
 			}
+			// DL-471: s = 1, the eye endpoint is the free x_K.  A path with
+			// an undeclared-type vertex at a counted position competes
+			// with the emitter hit only (wCamera, including the merge at
+			// this vertex, dropped; see "DL-471").
+			if( typeCaps.active && BDPTUtilities::JoinedTypeCapStatus(
+					nullptr, eyeVerts.data(), 1, static_cast<unsigned int>( i + 1 ), typeCaps ) !=
+					BDPTUtilities::eTypeCapOK ) {
+				continue;
+			}
+			const bool neeDropCamera = i >= 2 && BDPTUtilities::AnyNeedsTypeSplit(
+				eyeVerts.data(), 1, static_cast<unsigned int>( i - 1 ), typeCaps );
 			if( v.type != BDPTVertex::SURFACE && v.type != BDPTVertex::MEDIUM ) {
 				continue;
 			}
@@ -2216,6 +2289,9 @@ namespace
 					+ neeEyeWin.mis.dVCM
 					+ neeEyeWin.mis.dVC * bsdfRevPdfW );
 			}
+			if( neeDropCamera ) {
+				wCamera = 0;
+			}
 			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 
 			Scalar invLightPdfArea = ls.pdfSelect * ls.pdfPosition;
@@ -2415,8 +2491,17 @@ namespace
 		partition.Build( lightVerts, MergingActive( norm ), VCMIntegrator::SeeThroughLive( caster ) );	// DL-424: the see-through NEE is an eye-family witness
 		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
 		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
 		for( std::size_t i = 0; i < lightVerts.size(); i++ )
 		{
+			// DL-471: t = 1, light endpoint lightVerts[i]; a path with an
+			// undeclared-type vertex at a counted position is S0 / NEE's.
+			if( typeCaps.active && ( BDPTUtilities::JoinedTypeCapStatus(
+					lightVerts.data(), nullptr, static_cast<unsigned int>( i + 1 ), 1, typeCaps ) !=
+					BDPTUtilities::eTypeCapOK ||
+				( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( lightVerts.data(), 2, static_cast<unsigned int>( i ), typeCaps ) ) ) ) {
+				continue;
+			}
 			const BDPTVertex& v = lightVerts[i];
 
 			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
@@ -2721,6 +2806,7 @@ namespace
 		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
 		static thread_local std::vector<VCMWalkCount> eyeCount;	// eye-walk counts of eyeVerts[1..j]
 		EyePrefixCounts( eyeVerts, eyeCount );
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
 		for( std::size_t i = 1; i < lightVerts.size(); i++ )
 		{
 			const BDPTVertex& lv = lightVerts[i];
@@ -2762,6 +2848,16 @@ namespace
 					continue;
 				}
 				if( !partition.Keeps( i, eyeSurface[j], lv.volumeBounces + ev.volumeBounces, eyeCaps ) ) {
+					continue;
+				}
+				// DL-471: per-path per-type caps of strategy (i+1, j+1); a
+				// path with an undeclared-type vertex at a counted position is
+				// S0 / NEE's.
+				if( typeCaps.active && ( BDPTUtilities::JoinedTypeCapStatus(
+						lightVerts.data(), eyeVerts.data(), static_cast<unsigned int>( i + 1 ),
+						static_cast<unsigned int>( j + 1 ), typeCaps ) != BDPTUtilities::eTypeCapOK ||
+					( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( lightVerts.data(), 2, static_cast<unsigned int>( i ), typeCaps ) ) ||
+					BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( j ), typeCaps ) ) ) {
 					continue;
 				}
 				const bool eyeIsMedium = ( ev.type == BDPTVertex::MEDIUM );
@@ -3160,6 +3256,7 @@ namespace
 		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
 		static thread_local std::vector<VCMWalkCount> mergeEyeCount;
 		EyePrefixCounts( eyeVerts, mergeEyeCount );
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
 		static thread_local std::vector<unsigned int> eyeSurface;
 		eyeSurface.assign( eyeVerts.size(), 0u );
 		for( std::size_t j = 1; j < eyeVerts.size(); j++ ) {
@@ -3203,6 +3300,15 @@ namespace
 					}
 					// M is counted by both walks.
 					if( lv.volumeBounces + v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce + 1 ) {
+						continue;
+					}
+					// DL-471: per-path per-type caps (the medium merge point
+					// counts no type); a path with an undeclared-type vertex at a
+					// counted position is S0 / NEE's.
+					if( typeCaps.active && ( BDPTUtilities::MergeTypeCapStatus( eyeVerts.data(),
+							static_cast<unsigned int>( i ), lv.capCounts, lv.pathLength, typeCaps ) !=
+							BDPTUtilities::eTypeCapOK || ( lv.flags & kLVF_TypeSplitPrefix ) ||
+						( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( i - 1 ), typeCaps ) ) ) ) {
 						continue;
 					}
 					// DL-317 / DL-380: as for a surface merge (below).
@@ -3272,6 +3378,18 @@ namespace
 				}
 
 				if( lv.volumeBounces + v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				// DL-471: per-path per-type caps (the merge point is priced
+				// by the eye vertex's BSDF and counts its type unless it is
+				// the free x_K, i.e. lv.pathLength == 1).
+				// A path with an undeclared-type vertex at a counted position
+				// (the merge point counts when lv.pathLength >= 2) is S0 / NEE's.
+				if( typeCaps.active && ( BDPTUtilities::MergeTypeCapStatus( eyeVerts.data(),
+						static_cast<unsigned int>( i ), lv.capCounts, lv.pathLength, typeCaps ) !=
+						BDPTUtilities::eTypeCapOK || ( lv.flags & kLVF_TypeSplitPrefix ) ||
+					( lv.pathLength >= 2 && BDPTUtilities::EndpointNeedsTypeSplit( v, typeCaps ) ) ||
+					( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( i - 1 ), typeCaps ) ) ) ) {
 					continue;
 				}
 				// DL-317 / DL-380: a light vertex past an eye-coverable

@@ -1036,7 +1036,8 @@ medium vertices.
 same paths in PT and BDPT/VCM.**  PT has no scene-level surface-depth
 setting (its path cap is a fixed 128), and BDPT's `max_eye_depth` /
 `max_light_depth` have no PT counterpart.  The shared per-type caps
-(`max_diffuse_bounce` etc.) are applied per PATH by PT and per SUBPATH by
+(`max_diffuse_bounce` etc.) are applied per PATH by PT and (before DL-471,
+2026-10-09, which made them per PATH everywhere) per SUBPATH by
 BDPT/VCM, and `BDPTIntegrator::MISWeight` accounts for no subpath cap
 (only `max_volume_bounce` is per-path, since DL-247).  Review numbers
 (open Lambertian corner, sphere emitter, n = 3): `max_diffuse_bounce 0`

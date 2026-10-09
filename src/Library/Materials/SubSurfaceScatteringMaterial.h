@@ -94,6 +94,9 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const {			return pSPF; };
 
+			//! DL-471 (IMaterial::ConnectionScatterTypes): a subsurface material counts nothing at a connection endpoint (DL-482).
+			inline unsigned int ConnectionScatterTypes() const { return 0u; }
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
 
