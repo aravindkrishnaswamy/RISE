@@ -8448,6 +8448,17 @@ void ManifoldSolver::ExtendedEmitterHitOwnedRGB(const SMSChainRecord& rec,const 
     }
 }
 
+bool ManifoldSolver::SameRediscoveredRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance)
+{
+    // DL-455: estimator A's rediscovery test compares two converged solves
+    // of one root from different seeds -- exactly the partition's case
+    // below. The last-correction band does not bound their separation, so
+    // the resolution-limited identity failed ~0.4 % of genuine
+    // rediscoveries on the glass-slab side-TIR chains, every failure one
+    // extra trial in K: the omni slab read +1.08 % (paired, 29 sigma).
+    return SameExtendedRoot(a,b,tolerance,true);
+}
+
 bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance,
     bool partitionBand)
 {
@@ -8716,7 +8727,7 @@ RISEPel ManifoldSolver::EvaluateExtendedDelta(const Point3& pos, const Vector3& 
         }
         const Scalar tolerance = std::sqrt(std::numeric_limits<Scalar>::epsilon()) * root.scale;
         const Scalar reciprocal = SMSRootReference::Reciprocal(root,retry.sampler,propose,
-            [tolerance](const SMSDomainRoot& a, const SMSDomainRoot& b) { return SameExtendedRoot(a,b,tolerance); },
+            [tolerance](const SMSDomainRoot& a, const SMSDomainRoot& b) { return SameRediscoveredRoot(a,b,tolerance); },
             config.maxBernoulliTrials,true,config.referenceCounters);
         total[component] += SMSRootReference::Deposit(physical,reciprocal,nm > 0 ? Scalar(1) : Scalar(1)/3,
             light.pdfSelect,trials);
