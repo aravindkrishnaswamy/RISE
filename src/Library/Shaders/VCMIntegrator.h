@@ -115,7 +115,10 @@ namespace RISE
 				const VCMNormalization& norm,
 				std::vector<LightVertex>& out,
 				std::vector<VCMMisQuantities>* outMis = 0,
-				const bool seeThroughLive = false	///< DL-424: SeeThroughLive( caster )
+				const bool seeThroughLive = false,	///< DL-424: SeeThroughLive( caster )
+				std::vector<VCMStep>* outSteps = 0	///< DL-470: append the subpath's step records (records
+													///< 0..deepest stored vertex) and point the new vertices'
+													///< stepBase at them; 0 = keep none (merges unwindowed)
 				);
 
 			/// DL-424: is the see-through NEE (an eye vertex connecting to

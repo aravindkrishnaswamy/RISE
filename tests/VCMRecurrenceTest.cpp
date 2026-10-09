@@ -523,6 +523,129 @@ static void TestVolumeMergePartition( const Scalar q )
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 9 (DL-470): the MERGE's light-side depth-cap window.
+//
+// Test 8's light subpath, now with the DL-467 affine steps stamped the
+// way ConvertLightSubpath stamps them (VCMTransfer: geometric update,
+// stamp, BSDF update -> step of the NEXT record), and the stored-pool
+// replay ReplayStepWindow keeping levels 1..K.  Level L of a merge at
+// x_i is the connection whose eye part covers x_{i-L+1}..x_i and the
+// merge at x_{i-L+1} (level 1: the connection ending at x_i; the merge
+// at x_i is the strategy itself).  For every K the windowed wLight must
+// equal the brute-force sum over exactly the strategies of level <= K
+// -- i.e. a cut drops exactly the strategies whose eye walk is too
+// long, and nothing else.
+//////////////////////////////////////////////////////////////////////
+static void TestMergeWindowPartition( const Scalar q )
+{
+	printf( "Test 9: merge light-side window partition, q = %g\n", (double)q );
+	VCMNormalization norm = ComputeNormalization( 100, 100, 0.05, true, true );
+	SetVolumeMergeRadius( norm, 0.2, q, 0 );
+	const Scalar etaS = norm.mMisVmWeightFactor;
+	const Scalar etaV = norm.mMisVolumeWeightFactor;
+
+	const Scalar directPdfA = 0.3, emissionPdfW = 0.12, cosLight = 0.7;
+	const Scalar d2[5] = { 0, 1.3, 0.8, 0.45, 2.1 };
+	const Scalar c1 = 0.6, sig2 = 1.7, sig3 = 1.7, c4 = 0.9;
+	const Scalar cosOut1 = 0.55;
+	const Scalar dir1 = 0.4, rev1 = 0.35;
+	const Scalar dir2 = 0.0796, rev2 = 0.0796;
+	const Scalar dir3 = 0.0796, rev3 = 0.0796;
+	const Scalar rev4 = 0.31;
+	const Scalar rev3m = 0.0796;
+
+	// Records 0..4 with their stamped steps, mirroring ConvertLightSubpath.
+	VCMMisQuantities rec[5];
+	VCMTransfer xfer;
+	VCMMisQuantities m = InitLight( directPdfA, emissionPdfW, cosLight, true, false, norm );
+	xfer.StampAndRestart( m ); rec[0] = m;
+	const Scalar cosFix[5] = { 0, c1, sig2, sig3, c4 };
+	const Scalar outCos[4] = { 0, cosOut1, sig2, sig3 };
+	const Scalar dirs[4] = { 0, dir1, dir2, dir3 };
+	const Scalar revs[4] = { 0, rev1, rev2, rev3 };
+	const bool medium[5] = { false, false, true, true, false };
+	for( int i = 1; i <= 4; i++ ) {
+		m = ApplyGeometricUpdate( m, d2[i], cosFix[i], true );
+		xfer.ComposeGeometric( cosFix[i] );
+		xfer.StampAndRestart( m ); rec[i] = m;
+		if( i < 4 ) {
+			xfer.ComposeBsdf( m, outCos[i], dirs[i], revs[i], false, norm, medium[i] );
+			m = ApplyBsdfSamplingUpdate( m, outCos[i], dirs[i], revs[i], false, norm, medium[i] );
+		}
+	}
+	VCMStep steps[5];
+	for( int i = 0; i < 5; i++ ) {
+		steps[i].xf = static_cast<float>( rec[i].xf );
+		steps[i].xgVC = static_cast<float>( rec[i].xgVC );
+		steps[i].xgVM = static_cast<float>( rec[i].xgVM );
+	}
+
+	Scalar f[5], r[4];
+	f[0] = directPdfA;
+	f[1] = ( emissionPdfW / directPdfA ) * c1 / d2[1];
+	f[2] = dir1 * sig2 / d2[2];
+	f[3] = dir2 * sig3 / d2[3];
+	f[4] = dir3 * c4 / d2[4];
+	r[0] = rev1 * cosLight / d2[1];
+	r[1] = rev2 * cosOut1 / d2[2];
+	r[2] = rev3 * sig2 / d2[3];
+	r[3] = rev4 * sig3 / d2[4];
+	const Scalar eta[5] = { 0, etaS, etaV, etaV, etaS };
+
+	// Strategies of level <= K only: index mm >= i - K + 1.
+	auto brute = [&]( const int i, const Scalar rLast, const int K ) {
+		Scalar rr[4] = { r[0], r[1], r[2], r[3] };
+		rr[i - 1] = rLast;
+		const int lo = i - K + 1;
+		Scalar sum = 0;
+		for( int mm = 1; mm < i; mm++ ) {
+			if( mm < lo ) continue;
+			Scalar t = eta[mm] / eta[i];
+			for( int l = mm; l <= i - 1; l++ ) t *= rr[l];
+			for( int l = mm + 1; l <= i; l++ ) t /= f[l];
+			sum += t;
+		}
+		for( int mm = 0; mm <= i; mm++ ) {
+			if( mm < lo ) continue;
+			Scalar t = Scalar( 1 ) / eta[i];
+			for( int l = mm; l <= i - 1; l++ ) t *= rr[l];
+			for( int l = mm; l <= i; l++ ) t /= f[l];
+			sum += t;
+		}
+		return sum;
+	};
+
+	char label[160];
+	// K <= k: a cut (ReplayStepWindow is only called with kept <= k; at
+	// K = k + 1 nothing is cut and the stored record is used verbatim).
+	for( int K = 1; K <= 3; K++ ) {
+		Scalar dVC, dVM;
+		ReplayStepWindow( steps, 3, static_cast<std::size_t>( K ), dVC, dVM );
+		const Scalar w3 = ( rec[3].dVCM + dVC * rev3m ) / etaV;
+		snprintf( label, sizeof(label), "volume merge at x3, levels <= %d: window == brute force", K );
+		CheckClose( w3 / brute( 3, rev3m * sig2 / d2[3], K ), 1.0, 1e-6, label );	// float records
+	}
+	for( int K = 1; K <= 4; K++ ) {
+		Scalar dVC, dVM;
+		ReplayStepWindow( steps, 4, static_cast<std::size_t>( K ), dVC, dVM );
+		const Scalar w4 = rec[4].dVCM * norm.mMisVcWeightFactor + dVM * rev4;
+		snprintf( label, sizeof(label), "surface merge at x4, levels <= %d: window == brute force", K );
+		CheckClose( w4 / brute( 4, r[3], K ), 1.0, 1e-6, label );	// float records
+	}
+	// K = k + 1 (no cut): the stored record is the full sum.
+	CheckClose( ( ( rec[3].dVCM + rec[3].dVC * rev3m ) / etaV ) / brute( 3, rev3m * sig2 / d2[3], 4 ), 1.0, 1e-10,
+		"volume merge at x3, no cut: stored record == brute force" );
+	CheckClose( ( rec[4].dVCM * norm.mMisVcWeightFactor + rec[4].dVM * rev4 ) / brute( 4, r[3], 5 ), 1.0, 1e-10,
+		"surface merge at x4, no cut: stored record == brute force" );
+	// A cut changes the weight (the s = 0 / deep strategies are real terms).
+	{
+		Scalar dVC, dVM;
+		ReplayStepWindow( steps, 4, 4, dVC, dVM );
+		Check( dVM < rec[4].dVM, "cutting level 5 (the eye hitting the light) lowers dVM" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // Main
 //////////////////////////////////////////////////////////////////////
 int main()
@@ -538,6 +661,8 @@ int main()
 	TestSpecularChainIndependence();
 	TestVolumeMergePartition( 1.0 );
 	TestVolumeMergePartition( 0.1 );
+	TestMergeWindowPartition( 1.0 );
+	TestMergeWindowPartition( 0.1 );
 
 	printf( "\nPassed: %d\nFailed: %d\n", g_pass, g_fail );
 	if( g_fail > 0 ) {

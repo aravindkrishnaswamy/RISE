@@ -37,6 +37,7 @@
 #define VCM_RECURRENCE_
 
 #include "../Utilities/Math3D/Math3D.h"
+#include <cstddef>
 
 namespace RISE
 {
@@ -91,6 +92,68 @@ namespace RISE
 
 			VCMMisQuantities() : VCMMisCore(), xf( 0 ), xgVC( 0 ), xgVM( 0 ) {}
 		};
+
+		/// DL-470: one record of a light subpath as a stored light vertex
+		/// needs it for the merge's light-side depth-cap window: the DL-467
+		/// affine step (xf, xgVC, xgVM) of that record, and how the EYE
+		/// walk would count the record's vertex if a strategy handed it to
+		/// the eye (VCMStepKind).  Kept per light subpath in the store's
+		/// step pool (LightVertexStore), shared by every vertex of the
+		/// subpath that was stored.
+		enum VCMStepKind
+		{
+			kVCMStepSurface	= 1 << 0,	///< BDPTUtilities::CountsAsSurfaceHit, or a non-environment root
+			kVCMStepMedium	= 1 << 1,	///< a MEDIUM vertex (one eye-walk iteration)
+			kVCMStepEscape	= 1 << 2,	///< an environment root (the eye walk's escape)
+			kVCMStepEntry	= 1 << 3	///< a BSSRDF entry: the window scan stops (DL-317 zeroes past it)
+		};
+
+		struct VCMStep
+		{
+			// Single precision: a fog subpath keeps several records per
+			// stored vertex, so the record size is the pool's memory.  The
+			// replay runs in double; a cut weight is then accurate to
+			// ~1e-7 relative (a cut-free merge never reads the records).
+			// ConvertLightSubpath keeps a subpath's records only when every
+			// value is a normal float (or 0), else its vertices merge
+			// unwindowed.
+			float xf;
+			float xgVC;
+			float xgVM;
+			unsigned char kind;		///< VCMStepKind bits
+
+			VCMStep() : xf( 0 ), xgVC( 0 ), xgVM( 0 ), kind( 0 ) {}
+		};
+
+		/// DL-470: is `x` stored in a VCMStep without overflow, underflow or
+		/// loss of more than float's relative precision?
+		inline bool VCMStepRepresentable( const Scalar x )
+		{
+			const Scalar a = x < 0 ? -x : x;
+			return a == 0 || ( a >= Scalar( 1.17549435e-38 ) && a <= Scalar( 3.40282347e+38 ) );
+		}
+
+		/// DL-470: (dVC, dVM) of record `k` with every level past `kept`
+		/// (>= 1) removed, from the subpath's records `steps[0..k]` -- the
+		/// stored-pool twin of VCMIntegrator.cpp's ReplayWindow (which
+		/// reads the in-memory subpath array).  dVCM is never windowed
+		/// (it is level 1).
+		inline void ReplayStepWindow(
+			const VCMStep* steps,
+			const std::size_t k,
+			const std::size_t kept,
+			Scalar& dVC,
+			Scalar& dVM
+			)
+		{
+			const std::size_t j = k + 1 - kept;
+			dVC = 0;
+			dVM = 0;
+			for( std::size_t i = j + 1; i <= k; i++ ) {
+				dVC = Scalar( steps[i].xf ) * dVC + Scalar( steps[i].xgVC );
+				dVM = Scalar( steps[i].xf ) * dVM + Scalar( steps[i].xgVM );
+			}
+		}
 
 		/// Per-iteration constants shared by all subpaths.  Derived
 		/// from the image resolution, the merge radius, and which

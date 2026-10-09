@@ -618,6 +618,50 @@ namespace
 		return r;
 	}
 
+	/// DL-470: wLight's window for a merge AT the stored light vertex
+	/// `lv` (level 1 is free: the merging eye walk already holds the
+	/// merge point), read from the store's step pool -- LightSideWindow
+	/// with firstFree, without the subpath array.  `eyeBase` is the
+	/// merging eye prefix's count (merge vertex included).  Returns the
+	/// (dVC, dVM) to use in place of lv.mis's; dVCM (level 1) is never
+	/// cut.  No cut -> lv.mis's values verbatim.
+	inline void MergeLightSideWindow(
+		const LightVertex& lv,
+		const VCMStep* steps,		///< LightVertexStore::StepsOf( lv )
+		VCMWalkCount eyeBase,
+		const VCMDepthCaps& caps,
+		Scalar& dVC,
+		Scalar& dVM
+		)
+	{
+		dVC = lv.mis.dVC;
+		dVM = lv.mis.dVM;
+		if( !steps ) {
+			return;
+		}
+		const std::size_t k = lv.pathLength;
+		// Fast exit: the levels hand at most the k vertices y_0..y_{k-1},
+		// each adding at most one to the eye walk's surface count and one
+		// to its iteration count (the merging prefix has not escaped).
+		if( BDPTUtilities::EyeWalkCanGenerate( eyeBase.surface + static_cast<long long>( k ),
+				eyeBase.volume, false, caps.eye ) ) {
+			return;
+		}
+		for( std::size_t m = 2; m <= k + 1; m++ ) {
+			const unsigned char kind = steps[k + 1 - m].kind;
+			if( kind & kVCMStepEntry ) {
+				return;
+			}
+			if( kind & kVCMStepSurface ) eyeBase.surface++;
+			else if( kind & kVCMStepMedium ) eyeBase.volume++;
+			else if( kind & kVCMStepEscape ) eyeBase.escape = true;
+			if( !BDPTUtilities::EyeWalkCanGenerate( eyeBase.surface, eyeBase.volume, eyeBase.escape, caps.eye ) ) {
+				ReplayStepWindow( steps, k, m - 1, dVC, dVM );
+				return;
+			}
+		}
+	}
+
 	/// DL-317: running quantities for the vertex AFTER a KEPT light-side
 	/// entry `verts[i]` (whose own state is zero).  Only the connection
 	/// with the light ending AT the entry exists (a connectible diffusion
@@ -1031,14 +1075,20 @@ void VCMIntegrator::ConvertLightSubpath(
 	const std::vector<BDPTVertex>& verts,
 	const VCMNormalization& norm,
 	std::vector<LightVertex>& out,
-	std::vector<VCMMisQuantities>* outMis,
-	const bool seeThroughLive
+	std::vector<VCMMisQuantities>* outMisArg,
+	const bool seeThroughLive,
+	std::vector<VCMStep>* outSteps
 	)
 {
 	const std::size_t n = verts.size();
 	if( n == 0 ) {
 		return;
 	}
+	// DL-470: the step records are read from the per-record array, so
+	// keep one even when the caller did not ask for it.
+	static thread_local std::vector<VCMMisQuantities> stepScratchMis;
+	std::vector<VCMMisQuantities>* outMis = outMisArg ? outMisArg : ( outSteps ? &stepScratchMis : 0 );
+	const std::size_t outStart = out.size();
 	if( outMis ) {
 		outMis->assign( n, VCMMisQuantities() );
 	}
@@ -1444,6 +1494,47 @@ void VCMIntegrator::ConvertLightSubpath(
 				bsdfRevPdfW_out,
 				false,
 				norm );
+		}
+	}
+
+	// DL-470: keep the subpath's records 0..kmax (kmax = the deepest
+	// vertex stored from it) for the merge's light-side window
+	// (EvaluateMergesImpl, MergeLightSideWindow).
+	if( outSteps && outMis && outMis->size() == n && out.size() > outStart ) {
+		std::size_t kmax = 0;
+		for( std::size_t q = outStart; q < out.size(); q++ ) {
+			kmax = std::max<std::size_t>( kmax, out[q].pathLength );
+		}
+		const std::size_t base = outSteps->size();
+		bool representable = kmax < n && base < static_cast<std::size_t>( kLightVertexNoSteps );
+		for( std::size_t q = 0; representable && q <= kmax; q++ ) {
+			const VCMMisQuantities& r = (*outMis)[q];
+			representable = VCMStepRepresentable( r.xf ) && VCMStepRepresentable( r.xgVC ) &&
+				VCMStepRepresentable( r.xgVM );
+		}
+		if( representable ) {
+			for( std::size_t q = 0; q <= kmax; q++ ) {
+				VCMStep st;
+				st.xf = static_cast<float>( (*outMis)[q].xf );
+				st.xgVC = static_cast<float>( (*outMis)[q].xgVC );
+				st.xgVM = static_cast<float>( (*outMis)[q].xgVM );
+				const BDPTVertex& vq = verts[q];
+				if( q == 0 ) {
+					st.kind = ( vq.type == BDPTVertex::LIGHT && vq.pEnvLight )
+						? static_cast<unsigned char>( kVCMStepEscape ) : static_cast<unsigned char>( kVCMStepSurface );
+				} else if( BDPTUtilities::CountsAsSurfaceHit( vq ) ) {
+					st.kind = kVCMStepSurface;
+				} else if( vq.type == BDPTVertex::MEDIUM ) {
+					st.kind = kVCMStepMedium;
+				}
+				if( q > 0 && vq.isBSSRDFEntry ) {
+					st.kind |= kVCMStepEntry;
+				}
+				outSteps->push_back( st );
+			}
+			for( std::size_t q = outStart; q < out.size(); q++ ) {
+				out[q].stepBase = static_cast<unsigned int>( base );
+			}
 		}
 	}
 }
@@ -3136,7 +3227,10 @@ namespace
 					lightBase.volume = lv.volumeBounces;
 					const VCMWindowed eyeWin = EyeSideWindow( eyeVerts, eyeMis, i, lightBase, true, depthCaps,
 						EyeHandedCount( mergeEyeCount, i, true ) );
-					const Scalar wLight = ( lv.mis.dVCM + lv.mis.dVC * phaseDirPdfW ) * invMisV;
+					// DL-470: wLight's levels past the eye walk's caps removed.
+					VCMMisCore lvMis = lv.mis;
+					MergeLightSideWindow( lv, store.StepsOf( lv ), mergeEyeCount[i], depthCaps, lvMis.dVC, lvMis.dVM );
+					const Scalar wLight = ( lvMis.dVCM + lvMis.dVC * phaseDirPdfW ) * invMisV;
 					const Scalar wCamera = ( eyeWin.mis.dVCM + eyeWin.mis.dVC * phaseRevPdfW ) * invMisV;
 					const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 					volumeMerge = volumeMerge + phase * LightVertexThroughput<Tag>( lv, tag ) * weight;
@@ -3206,14 +3300,21 @@ namespace
 				const Scalar cameraBsdfRevPdfW =
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
 
+				// DL-470: wLight's deeper levels (the eye walk covering the
+				// light subpath behind the merge) exist only while that walk
+				// stays within its caps; the stored vertex's step records
+				// (store.StepsOf) window them like LightSideWindow.
+				// (Read through a VCMMisCore copy, the form the weight had
+				// before DL-470: a render where no window cuts stays
+				// bit-identical -- the code generation of the multiply-add
+				// otherwise moved one sample by an ulp under -ffast-math.)
+				VCMMisCore lvMis = lv.mis;
+				MergeLightSideWindow( lv, store.StepsOf( lv ), mergeEyeCount[i], depthCaps, lvMis.dVC, lvMis.dVM );
 				const Scalar wLight =
-					lv.mis.dVCM * norm.mMisVcWeightFactor
-					+ lv.mis.dVM * cameraBsdfDirPdfW;
+					lvMis.dVCM * norm.mMisVcWeightFactor
+					+ lvMis.dVM * cameraBsdfDirPdfW;
 				// DL-467: the light walk already reached the merge vertex
 				// (level 1 is free); deeper levels hand eye vertices to it.
-				// wLight's deeper levels (the eye walk covering the light
-				// subpath behind the merge) are NOT windowed: a stored
-				// light vertex does not keep its subpath (DL-470).
 				VCMWalkCount mergeLightBase;
 				mergeLightBase.surface = lv.lightSurface;
 				mergeLightBase.volume = lv.volumeBounces;
