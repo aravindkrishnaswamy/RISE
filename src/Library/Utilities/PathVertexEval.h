@@ -385,6 +385,8 @@ namespace RISE
 			BuildVertexIORStack( vertex, vertexStack );
 
 			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			// DL-472 (1): a light-subpath vertex is an IMPORTANCE query.
+			const BSDFImportanceScope transportMode( vertex.isLightSubpathVertex );
 			return pBSDF->valueStateful( evalDir, ri, &vertexStack );
 		}
 
@@ -646,6 +648,7 @@ namespace RISE
 			BuildVertexIORStack( vertex, vertexStack );
 
 			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			const BSDFImportanceScope transportMode( vertex.isLightSubpathVertex );
 			return pBSDF->valueStatefulNM( evalDir, ri, nm, &vertexStack );
 		}
 
