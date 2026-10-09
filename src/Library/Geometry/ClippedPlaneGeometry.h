@@ -17,6 +17,7 @@
 
 #include "Geometry.h"
 #include <algorithm>		// std::max (SelfHitRootFloor over the four corners)
+#include <vector>
 
 namespace RISE
 {
@@ -77,6 +78,46 @@ namespace RISE
 			Vector3	vPlaneNormal;
 			Vector3	vPlaneU;
 			Vector3	vPlaneV;
+
+			//! DL-460: AREA AND AREA-UNIFORM SAMPLING of the traced bilinear
+			//! surface, decided in RegenerateData.  The area element is
+			//! |w(u,v)| with w = dpdu x dpdv = vJacA + u vJacB + v vJacC
+			//! (AFFINE in (u, v): the uv term D x D vanishes), so it is
+			//! constant exactly for a parallelogram.
+			//!   eAreaRectangle     -- the legacy |e0| |e1| product and the
+			//!                         uniform-(u,v) sampler, bit-identical to
+			//!                         every pre-DL-460 rect_light / panel.
+			//!   eAreaParallelogram -- |e0 x e1|, uniform (u, v) (exact).
+			//!   eAreaGeneral       -- exact integral of the area integrand
+			//!                         (closed form when coplanar, Gauss-
+			//!                         Legendre otherwise) and an exact
+			//!                         area-proportional sampler: a cell CDF
+			//!                         over a nAreaCells^2 grid weighted by a
+			//!                         RIGOROUS per-cell bound (the integrand
+			//!                         is convex, so its maximum is at a cell
+			//!                         corner) plus rejection against it.
+			//! A COPLANAR NON-CONVEX quad (a dart) folds: the area element
+			//! changes sign across a line in (u, v), the folded sheet maps
+			//! OUTSIDE the polygon onto points the positive sheet already
+			//! covers (degree argument: the planar inverse has at most two
+			//! roots), and the intersector reports such a point once.  So the
+			//! luminary surface is the positive sheet alone: integrand
+			//! max(0, sgn n.w), sgn the polygon orientation, and the area is
+			//! the IMAGE area.  A coplanar self-intersecting (bow-tie) quad
+			//! keeps |n.w| (both lobes), documented as approximate where the
+			//! sheets overlap.
+			enum AreaMode { eAreaRectangle = 0, eAreaParallelogram = 1, eAreaGeneral = 2 };
+			AreaMode nAreaMode;
+			Scalar	dArea;
+			Vector3	vJacA, vJacB, vJacC;
+			int		nJacPlanar;			//!< 0: |w|;  1: max(0, dJacSign n.w);  2: |n.w| (bow-tie)
+			Scalar	dJacSign;
+			static const unsigned int nAreaCells = 16;
+			std::vector<Scalar>	vCellCdf;	//!< normalized cumulative of cell bound weights
+			std::vector<Scalar>	vCellBound;	//!< per-cell rigorous bound of the integrand
+
+			Scalar	AreaIntegrand( const Scalar u, const Scalar v ) const;
+			void	BuildAreaData();
 
 		public:
 			ClippedPlaneGeometry( const Point3 (&vP_)[4], const bool bDoubleSided_ );
