@@ -1310,7 +1310,7 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   Direct-only scene, so PT on the plain Lambertian floor is exact; each image
   half of PT / BDPT / VCM on both materials (and BDPT on the plain floor) must
   sit within 3 % of it (4 salted renders each, half-mean sd <= 0.0006). Red on
-  `388907e94`: BDPT null SPF 0.0039x on both halves, BDPT half SPF 0.592x /
+  `388907e94` and again on `e64d2f5f2`: BDPT null SPF 0.0039x on both halves, BDPT half SPF 0.592x /
   0.411x, 11/4; green 15/0. VCM and PT read 1.000 in both builds.
 
 ## Blender tangent producers (DL-213)
