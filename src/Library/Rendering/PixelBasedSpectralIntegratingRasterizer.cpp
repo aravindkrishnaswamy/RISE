@@ -219,7 +219,7 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
 	for( unsigned int s = 0; s < nSpectralSamples; s++ )
 	{
 		const Scalar u = rc.random.CanonicalRandom();
-		SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+		SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
 		Scalar cHWSS[SampledWavelengths::N] = {0};
 		IRayCaster::RAY_STATE rs;

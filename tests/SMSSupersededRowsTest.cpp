@@ -142,7 +142,7 @@ namespace
         // an unrefreshed nested exterior breaks it; extended replays the stack.
         struct Case { const char* label; double nb, ne; unsigned nw; bool hwss; };
         for( const Case& c : { Case{"450nm",450,450.01,1,false}, Case{"650nm",650,650.01,1,false},
-                               Case{"hwss-vs-nohwss 450-650 nw4 (UNMATCHED quadrature, DL-456 contrast)",450,650,4,true},
+                               Case{"hwss-vs-nohwss 450-650 nw4 (coarse quadrature, DL-456 contrast)",450,650,4,true},
                                Case{"hwss-vs-nohwss 450-650 nw160 (matched quadrature)",450,650,160,true} } ) {
             if( hwssOnly && !c.hwss ) continue;
             if(!hwssOnly && c.hwss) continue;
@@ -179,8 +179,11 @@ namespace
                     for(unsigned c=0;c<3;++c) flatChannel[c].v.push_back(channelBand(q,c));
                 }
                 Report(std::string("DL-391 ")+c.label+" "+mode+(mono?" dispersive vs constant-n(L) band":" hwss TRUE vs hwss FALSE band"),disp,flat);
-                for(unsigned channel=0;channel<3;++channel)
+                for(unsigned channel=0;channel<3;++channel) {
                     Report(std::string("DL-391 ")+c.label+" "+mode+" channel "+std::to_string(channel),dispChannel[channel],flatChannel[channel]);
+                    if(matchedOnly) Check(Agree3(dispChannel[channel],flatChannel[channel]),
+                        std::string("DL-391 matched quadrature ")+mode+" channel "+std::to_string(channel));
+                }
                 if( mono && std::string(mode)=="extended" ) Check(Agree3(disp,flat),std::string("DL-391 ")+c.label+": extended dispersive outer = constant n(L) outer");
             }
         }

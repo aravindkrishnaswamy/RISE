@@ -74,12 +74,14 @@ namespace RISE
 		/// @param u        Uniform random number in [0, 1) for hero placement.
 		/// @param lambda_min  Start of wavelength range (nm), e.g. 380.
 		/// @param lambda_max  End of wavelength range (nm), e.g. 780.
+		/// @param numWavelengths  Rasterizer grid size; >=10000 keeps continuous sampling.
 		/// @return A SampledWavelengths with hero at index 0 and 3 companions
 		///         at equidistant spectral offsets with wrap-around.
 		static SampledWavelengths SampleEquidistant(
 			const Scalar u,
 			const Scalar lambda_min,
-			const Scalar lambda_max
+			const Scalar lambda_max,
+			const unsigned int numWavelengths = 10000
 			)
 		{
 			SampledWavelengths swl;
@@ -102,6 +104,18 @@ namespace RISE
 				swl.terminated[i] = false;
 			}
 
+            // DL-391: rasterizers use a left-endpoint discrete quadrature when
+            // num_wavelengths < 10000. Snap EACH continuous lane, rather than
+            // snapping the hero before shifting: each marginal stays uniform
+            // even when the grid size is not a multiple of the bundle size.
+            if(numWavelengths > 0 && numWavelengths < 10000) {
+                const Scalar step = range / Scalar(numWavelengths);
+                for(unsigned int i=0;i<N;++i) {
+                    const unsigned int bin = static_cast<unsigned int>(
+                        (swl.lambda[i]-lambda_min)/range * Scalar(numWavelengths));
+                    swl.lambda[i] = lambda_min + Scalar(bin < numWavelengths ? bin : numWavelengths-1)*step;
+                }
+            }
 			return swl;
 		}
 

@@ -147,7 +147,7 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
 			const Scalar u = rc.random.CanonicalRandom();
-			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
 			Scalar result[SampledWavelengths::N] = {0};
 			pIntegrator->IntegrateRayHWSS(

@@ -305,7 +305,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 				SampledWavelengths swl;
 				if( bUseHWSS ) {
 					const Scalar u = rc.random.CanonicalRandom();
-					swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+					swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 					heroNM = swl.HeroLambda();
 				} else {
 					heroNM = ( num_wavelengths < 10000 )

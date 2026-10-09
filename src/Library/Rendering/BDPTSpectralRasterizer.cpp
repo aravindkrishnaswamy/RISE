@@ -261,7 +261,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
 			const Scalar u = rc.random.CanonicalRandom();
-			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
 			const Scalar heroNM = swl.HeroLambda();
 
