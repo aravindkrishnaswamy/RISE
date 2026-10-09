@@ -5028,10 +5028,11 @@ namespace {
 					if( pGeom && !pGeom->CanBeAreaLight() ) {
 						GlobalLog()->PrintEx( eLog_Warning,
 							"ManifoldSolver:: a specular caster's geometry cannot be uniformly "
-							"surface-sampled (CanBeAreaLight() == false -- empty sampling mesh or "
-							"provably missed surface).  It is refused as an SMS seeding caster: its "
-							"caustics will not be SMS-seeded.  Raise the SDF's sampling_detail to "
-							"restore coverage." );
+							"surface-sampled (CanBeAreaLight() == false -- an infinite plane, which has "
+							"no finite area density, or an SDF with an empty sampling mesh or provably "
+							"missed surface).  It is refused as an SMS seeding caster: its caustics "
+							"will not be SMS-seeded.  For an SDF, raise sampling_detail to restore "
+							"coverage; for an infinite plane, use a bounded plane or mesh." );
 						break;   // refused; don't probe further
 					}
 					out.push_back( &obj );
