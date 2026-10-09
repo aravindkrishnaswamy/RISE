@@ -266,7 +266,8 @@ namespace
 
 							tl.tmpConverted.clear();
 							VCMIntegrator::ConvertLightSubpath(
-								tl.tmpLightVerts, norm, tl.tmpConverted, &tl.tmpLightMis );
+								tl.tmpLightVerts, norm, tl.tmpConverted, &tl.tmpLightMis,
+								VCMIntegrator::SeeThroughLive( caster ) );
 							for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
 								out.push_back( tl.tmpConverted[m] );
 								tl.storedCount++;

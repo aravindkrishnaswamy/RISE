@@ -3775,81 +3775,39 @@ inline bool ConnectionIsVisible( const IRayCaster& caster, const Point3& p1, con
 }
 
 //////////////////////////////////////////////////////////////////////
-// DL-330: the s == 1 connection to a DELTA light THROUGH thin-weave
-// delta pass-throughs (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md
-// section 10).
+// DL-330 / DL-425: the s == 1 connection to a DELTA light THROUGH
+// thin-weave delta pass-throughs (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md
+// sections 10 and 11).
 //
 // A delta pass-through (a `transmission thin` weave's gap) is a DELTA
 // subpath vertex, so in the expanded path space the gap vertices on a
 // straight segment from a point light L to an eye vertex D make every
 // edge of  L - S1 .. Sk - D  non-connectible: the standard s = 1
 // connection D -> L is blocked (binary shadow), and light tracing must
-// pass the gaps and then connect from D or a later vertex.  When the eye
-// side offers no connectible edge either -- the classic case is
-// L - S - D - S - E, the camera seeing through a gap a surface lit only
-// through another gap -- NO BDPT strategy generates the path (no BSDF
-// sample can hit a point light), while PT reaches it with DL-05's
-// see-through NEE and VCM by merging.  Measured on the closed weave
-// sphere: BDPT 6-7 % under PT and VCM.
+// pass the gaps and then connect from D or a later vertex.  The
+// see-through connection walks the gaps (`CastShadowRayAutoSampled`) and
+// is a strategy of its own: eye subpath to D, light root L, the gaps
+// crossed with their expected transmittance.
 //
-// The fix adds the missing strategy WITHOUT a new MIS term: the
-// see-through connection takes MIS weight 1 on paths no standard
-// strategy can generate and 0 on every other (it is skipped there, so it
-// costs nothing), and the standard strategies' weights -- which never
-// counted it -- already sum to 1 on the paths they cover.  A valid
-// partition: weights that depend only on the path and sum to 1 over the
-// techniques that can produce it.
-//
-// "Can generate" is exactly what MISWeight counts: a split at the eye
-// edge (e_j, e_{j-1}) with both ends connectible and non-delta (the
-// camera counts as connectible unless it is a delta-direction camera),
-// not past an eye-side BSSRDF entry, AND within the light walk's depth
-// caps -- that strategy's light subpath is L, S1..Sk, D .. e_j, which the
-// light walk must reach in <= max_light_depth surface hits (each gap
-// counts) and <= WalkIterationBudget iterations (DL-380's lesson: a
-// covering strategy past a cap does not exist).  The light-side edges
-// (L, S1) .. (Sk, D) are never connectible.
+// DL-330 gave it MIS weight 1 on paths no standard strategy generates
+// and 0 elsewhere (a valid partition, but the common curtain case -- a
+// directly seen receiver under a point light behind a gap -- was then
+// left to light tracing alone: DL-425).  It is now MIS-weighted like any
+// other strategy.  Its density relative to the light-tracing strategy
+// whose light subpath ends at D is  pdfRev(D) / pdfFwdThrough(D),  with
+// pdfFwdThrough(D) the light's emission density toward D times the
+// product of the gaps' pseudo-probabilities (BDPTVertex::passThroughProb
+// on the light walk; the walk's own product here -- one function of the
+// path), converted to area at D over |L - D|.  The s == 1 case below puts
+// it in the eye endpoint's pdfRev; MISWeight adds the matching term to
+// every light-tracing strategy of such a path.  Any consistent positive
+// pseudo-density keeps the partition exact; for a bare weave it is the
+// true gap-draw probability.  Depth caps: the see-through's own
+// denominator leaves out light-tracing strategies the light walk cannot
+// reach (DL-380's lesson); the light-tracing terms count it only where
+// the eye walk can reach D.  At a path no standard strategy covers the
+// weight is therefore 1, as before.
 //////////////////////////////////////////////////////////////////////
-//! Returns the largest k (number of gaps on the L -> D segment) for which
-//! a standard strategy covers the path, or -1 when none does at any k.
-//! Covered(k) iff k <= the return value: the first connectible eye split
-//! (largest j) needs the fewest light-walk surface hits and iterations,
-//! and both counts only grow toward the camera.
-inline int DeltaPassThroughCoverSlack(
-	const std::vector<BDPTVertex>& eyeVerts,
-	const unsigned int t,
-	const unsigned int maxLightDepth,
-	const unsigned int lightIterationBudget )
-{
-	long long surface = 0;
-	long long volume = 0;
-	for( unsigned int j = t - 1; j > 0; j-- )
-	{
-		const BDPTVertex& ej = eyeVerts[j];
-		if( ej.isBSSRDFEntry ) {
-			return -1;
-		}
-		if( ej.type == BDPTVertex::SURFACE ) {
-			surface++;
-		} else if( ej.type == BDPTVertex::MEDIUM ) {
-			volume++;
-		}
-		// D = eyeVerts[t-1] is the connection's own endpoint: its
-		// `isDelta` records the eye walk's CONTINUATION past it, which is
-		// not part of this path (MISWeight clears it for an endpoint the
-		// same way).  Every interior vertex's `isDelta` is the path's own
-		// scatter there.
-		const BDPTVertex& prev = eyeVerts[j - 1];
-		const bool ejUsable = ej.isConnectible && ( j == t - 1 || !ej.isDelta );
-		if( ejUsable && prev.isConnectible && !prev.isDelta ) {
-			const long long bySurface = static_cast<long long>( maxLightDepth ) - surface;
-			const long long byIterations = static_cast<long long>( lightIterationBudget ) - surface - volume;
-			const long long slack = bySurface < byIterations ? bySurface : byIterations;
-			return slack < 0 ? -1 : static_cast<int>( slack > 1000000 ? 1000000 : slack );
-		}
-	}
-	return -1;
-}
 
 // Connection-edge transmittance dispatch -> the public (F1-templatized)
 // member overloads.  pt/pt and ray/maxDist forms.
@@ -4043,6 +4001,14 @@ ConnectAndEvaluateImplCore(
 		result.s = s;
 	}
 
+	// DL-425: every strategy weighs the see-through s = 1 connection
+	// where it can generate the same path (BDPTIntegrator::MISWeight).
+	BDPTIntegrator::SeeThroughMIS seeThroughMIS;
+	{
+		const RayCaster* pRCst = dynamic_cast<const RayCaster*>( &caster );
+		seeThroughMIS.live = pRCst && pRCst->DeltaPassThroughShadowsActive();
+	}
+
 	// Validate: s <= lightVerts.size(), t <= eyeVerts.size(), s+t >= 2
 	if( s > lightVerts.size() || t > eyeVerts.size() ) {
 		return result;
@@ -4131,7 +4097,7 @@ ConnectAndEvaluateImplCore(
 					? Scalar(1) : fabs(Vector3Ops::Dot(eyePred.geomNormal, wiSky));
 				const_cast<BDPTVertex&>( eyePred ).pdfRev = projectedPdf * targetJacobian;
 			}
-			result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+			result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t, &seeThroughMIS );
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
 			const_cast<BDPTVertex&>( eyePred ).pdfRev = savedEyePredPdfRev;
 			return result;
@@ -4344,7 +4310,7 @@ ConnectAndEvaluateImplCore(
 			}
 		}
 
-		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t, &seeThroughMIS );
 
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
 		// Restored unconditionally alongside pdfRev (the set above is inside
@@ -4496,7 +4462,7 @@ ConnectAndEvaluateImplCore(
 			}
 		}
 
-		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t, &seeThroughMIS );
 
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		if( hasLightPred_t0 ) {
@@ -4583,7 +4549,7 @@ ConnectAndEvaluateImplCore(
 				lightPred.pEnvLight ? pdfPredSA : BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
 		}
 
-		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t, &seeThroughMIS );
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		if( hasLightPredNM_t0 ) {
 			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRevNM_t0;
@@ -4659,6 +4625,9 @@ ConnectAndEvaluateImplCore(
 		// distance point to reuse the ConnectionIsVisible(p,q) helper.
 		bool seeThroughDeltaLight = false;		// DL-330
 		V seeThroughTr = TrOne<Tag>();
+		unsigned int seeThroughGaps = 0;		// DL-425
+		Scalar seeThroughProb = 1;
+		const RayCaster* pRCst = dynamic_cast<const RayCaster*>( &caster );
 		{
 			Point3 visTarget = lightStart.position;
 			if( envCase_s1 ) {
@@ -4669,24 +4638,15 @@ ConnectAndEvaluateImplCore(
 					eyeEnd.position.z + wiForLight.z * kVisFar );
 			}
 			if( !ConnectionIsVisible( caster, eyeEnd.position, visTarget, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
-				// DL-330: a delta light behind delta pass-throughs only,
-				// on a path no standard strategy can generate (see
-				// DeltaPassThroughCoverSlack).
+				// DL-330: a delta light behind delta pass-throughs only.
+				// DL-425: the connection is evaluated on every such path and
+				// MIS-weighted against the light-tracing strategies that
+				// share it (MISWeight; the gaps' pseudo-probability product
+				// enters the light side's density of the eye endpoint).
 				if( envCase_s1 || !lightStart.isDelta || !lightStart.pLight ) {
 					return result;
 				}
-				const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
-				if( !pRC || !pRC->DeltaPassThroughShadowsActive() ) {
-					return result;
-				}
-				const unsigned int lightBudget = BDPTUtilities::WalkIterationBudget(
-					self.GetMaxLightDepth(), self.GetStabilityConfig().maxVolumeBounce );
-				const int coverSlack = DeltaPassThroughCoverSlack( eyeVerts, t, self.GetMaxLightDepth(), lightBudget );
-				// A walk that reaches the light crossed at most
-				// kShadowWalkMaxCrossings (31) surfaces (IRayCaster.h), so
-				// a slack that large is covered whatever k turns out to
-				// be: skip the walk.
-				if( coverSlack >= static_cast<int>( kShadowWalkMaxCrossings ) ) {
+				if( !seeThroughMIS.live ) {
 					return result;
 				}
 				Scalar walkNM = 0;
@@ -4695,15 +4655,15 @@ ConnectAndEvaluateImplCore(
 				}
 				RISEPel walkT( 1, 1, 1 );
 				unsigned int k = 0;
+				Scalar walkProb = 1;
 				const Ray walkRay( eyeEnd.position, dirToLight );
-				if( pRC->CastShadowRayAutoSampled( walkRay, dist - BDPT_RAY_EPSILON, Traits::is_nm, walkNM, walkT,
+				if( pRCst->CastShadowRayAutoSampled( walkRay, dist - BDPT_RAY_EPSILON, Traits::is_nm, walkNM, walkT,
 						true, sampler, (sceneAlpha ? &boundaryHits : nullptr), dist, BDPT_RAY_EPSILON,
-						0, 0, false, &k ) || k == 0 ) {
+						0, 0, false, &k, &walkProb ) || k == 0 || !( walkProb > 0 ) ) {
 					return result;
 				}
-				if( static_cast<int>( k ) <= coverSlack ) {
-					return result;	// a standard strategy generates this path
-				}
+				seeThroughGaps = k;
+				seeThroughProb = walkProb;
 				seeThroughDeltaLight = true;
 				if constexpr( Traits::is_pel ) {
 					seeThroughTr = walkT;
@@ -4909,14 +4869,6 @@ ConnectAndEvaluateImplCore(
 			}
 		}
 
-		// DL-330: the see-through connection owns its path outright (no
-		// standard strategy generates it -- see DeltaPassThroughCoverSlack),
-		// so its weight is 1 and the pdfRev bookkeeping below is not needed.
-		if( seeThroughDeltaLight ) {
-			result.misWeight = 1.0;
-			return result;
-		}
-
 		// --- Update pdfRev at connection vertices for correct MIS ---
 		const Scalar distSq_conn = dist * dist;
 		const Scalar savedLightPdfRev = lightStart.pdfRev;
@@ -4953,6 +4905,11 @@ ConnectAndEvaluateImplCore(
 					lightStart.geomNormal, -dirToLight );
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
+				// DL-425: the light-tracing strategies reach the eye
+				// endpoint only through the gaps' draws (MISWeight's twin).
+				if( seeThroughDeltaLight ) {
+					emissionPdfDir *= seeThroughProb;
+				}
 			} else if( envCase_s1 ) {
 				// Conditioned on the sampled sky direction, emitted rays
 				// are parallel. Their first target density is p_disc*J,
@@ -5008,7 +4965,11 @@ ConnectAndEvaluateImplCore(
 			}
 		}
 
-		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+		BDPTIntegrator::SeeThroughMIS seeThroughSelf = seeThroughMIS;
+		if( seeThroughDeltaLight ) {
+			seeThroughSelf.gaps = seeThroughGaps;
+		}
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t, &seeThroughSelf );
 
 		const_cast<BDPTVertex&>( lightStart ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
@@ -5209,7 +5170,7 @@ ConnectAndEvaluateImplCore(
 					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distSq );
 			}
 
-			result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+			result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t, &seeThroughMIS );
 			const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRev;
 			return result;
@@ -5294,7 +5255,7 @@ ConnectAndEvaluateImplCore(
 			}
 		}
 
-		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t, &seeThroughMIS );
 
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRev;
@@ -5533,7 +5494,7 @@ ConnectAndEvaluateImplCore(
 			}
 		}
 
-		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t, &seeThroughMIS );
 
 		// Restore original values
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
@@ -6183,7 +6144,8 @@ Scalar BDPTIntegrator::MISWeight(
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<BDPTVertex>& eyeVerts,
 	unsigned int s,
-	unsigned int t
+	unsigned int t,
+	const SeeThroughMIS* pSeeThrough
 	) const
 {
 	if( s + t < 2 ) {
@@ -6232,6 +6194,73 @@ Scalar BDPTIntegrator::MISWeight(
 		savedEyeEndDelta = eyeVerts[t-1].isDelta;
 		if( eyeVerts[t-1].isConnectible ) {
 			const_cast<BDPTVertex&>( eyeVerts[t-1] ).isDelta = false;
+		}
+	}
+
+	// DL-425: the see-through s = 1 connection (DL-330) as a competing
+	// strategy of a light-tracing strategy (s, t).  When the light prefix
+	// is a delta-position root L followed by a straight chain of gap draws
+	// S1..Sk (k >= 1) and then a vertex D = lightVerts[m], m = k + 1 <= s-1,
+	// the eye walk can reach D and connect to L through the gaps: that
+	// strategy's density relative to the light-tracing strategy with light
+	// subpath L..D is  pdfRev(D) / pdfFwdThrough(D),  pdfFwdThrough(D) the
+	// light's emission density toward D times the gaps' pseudo-
+	// probabilities (BDPTVertex::passThroughProb), converted to area at D
+	// over the WHOLE distance |L - D| -- the stored pdfFwd(D) is the delta
+	// convention's 0, useless here.  The see-through side
+	// (ConnectAndEvaluateImplCore's s == 1 case) puts the same
+	// pdfFwdThrough(D) in its eye endpoint's pdfRev, so both directions of
+	// the ratio walk evaluate one function of the path.  It is counted only
+	// where the see-through connection is evaluated: the walk live, D a
+	// connectible non-delta surface (with material) or medium vertex, and
+	// D within the EYE walk's depth caps.
+	unsigned int seeThroughM = 0;			// m; 0 = no see-through term
+	Scalar seeThroughFwdArea = 0;			// pdfFwdThrough(D)
+	if( pSeeThrough && pSeeThrough->live && pSeeThrough->gaps == 0 && s >= 3 &&
+		lightVerts[0].type == BDPTVertex::LIGHT && lightVerts[0].isDelta &&
+		lightVerts[0].pLight && !lightVerts[0].pEnvLight )
+	{
+		unsigned int m = 1;
+		while( m + 1 < s && lightVerts[m].type == BDPTVertex::SURFACE &&
+			lightVerts[m].isDelta && lightVerts[m].passThroughProb > 0 ) {
+			m++;
+		}
+		const BDPTVertex& D = lightVerts[m];
+		const bool dShape = ( D.type == BDPTVertex::SURFACE && D.pMaterial ) || D.type == BDPTVertex::MEDIUM;
+		if( m >= 2 && dShape && D.isConnectible && !D.isDelta && !D.isBSSRDFEntry &&
+			BDPTUtilities::DeltaPassThroughChainToRoot( lightVerts, m ) )
+		{
+			// Eye caps: the eye walk covers eyeVerts[0..t-1] and
+			// lightVerts[m..s-1].
+			long long eyeSurf = 0, eyeVol = 0;
+			for( unsigned int q = 1; q < t; q++ ) {
+				if( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[q] ) ) eyeSurf++;
+				else if( eyeVerts[q].type == BDPTVertex::MEDIUM ) eyeVol++;
+			}
+			for( unsigned int q = m; q < s; q++ ) {
+				if( BDPTUtilities::CountsAsSurfaceHit( lightVerts[q] ) ) eyeSurf++;
+				else if( lightVerts[q].type == BDPTVertex::MEDIUM ) eyeVol++;
+			}
+			const BDPTUtilities::EyeWalkCaps eyeCaps = BDPTUtilities::MakeEyeWalkCaps(
+				GetMaxEyeDepth(), GetStabilityConfig().maxVolumeBounce );
+			if( BDPTUtilities::EyeWalkCanGenerate( eyeSurf, eyeVol, false, eyeCaps ) ) {
+				Scalar prob = 1;
+				for( unsigned int q = 1; q < m; q++ ) {
+					prob *= lightVerts[q].passThroughProb;
+				}
+				const Vector3 dL = Vector3Ops::mkVector3( D.position, lightVerts[0].position );
+				const Scalar dist2 = Vector3Ops::SquaredModulus( dL );
+				if( dist2 > 0 ) {
+					const Vector3 dir = dL * ( Scalar( 1 ) / sqrt( dist2 ) );
+					const Scalar pdfDir = lightVerts[0].pLight->pdfDirection( dir ) * prob;
+					seeThroughFwdArea = ( D.type == BDPTVertex::MEDIUM )
+						? BDPTUtilities::SolidAngleToAreaMedium( pdfDir, D.sigma_t_scalar, dist2 )
+						: BDPTUtilities::SolidAngleToArea( pdfDir, fabs( Vector3Ops::Dot( D.geomNormal, dir ) ), dist2 );
+					if( seeThroughFwdArea > 0 ) {
+						seeThroughM = m;
+					}
+				}
+			}
 		}
 	}
 
@@ -6315,6 +6344,18 @@ Scalar BDPTIntegrator::MISWeight(
 				}
 			}
 
+			// DL-425: the see-through strategy whose eye covers D = vi
+			// (see above); `ri` is still the density of the strategy whose
+			// light subpath ends at D, relative to (s, t).
+			if( seeThroughM != 0 && static_cast<unsigned int>(i) == seeThroughM && vi.pdfRev > 0 ) {
+				const Scalar rST = ri * vi.pdfRev / seeThroughFwdArea;
+				#if MISWEIGHT_BALANCE_HEURISTIC
+				sumWeights += rST;
+				#else
+				sumWeights += rST * rST;
+				#endif
+			}
+
 			// Compute the ratio: pdfRev / pdfFwd at this vertex.
 			// Use remap0 (Veach/PBRT convention): map zero PDFs to 1
 			// so that the ratio chain propagates through delta vertices.
@@ -6395,12 +6436,36 @@ Scalar BDPTIntegrator::MISWeight(
 	//
 	{
 		Scalar ri = 1.0;
+		// DL-425: weighting the see-through connection itself.  The term
+		// at j is the light-tracing strategy whose light subpath is
+		// L, S1..Sk, eyeVerts[t-1..j]; it exists only within the LIGHT
+		// walk's depth caps (k gaps plus those surfaces / medium vertices
+		// -- every surface and medium vertex counts), and every later
+		// term needs a longer light walk, so the walk stops at the first
+		// one past a cap.  Leaving a non-evaluated strategy out of this one
+		// denominator cannot over-count (the others keep it).
+		const unsigned int stGaps = pSeeThrough ? pSeeThrough->gaps : 0u;
+		const unsigned int stLightBudget = stGaps ? BDPTUtilities::WalkIterationBudget(
+			GetMaxLightDepth(), GetStabilityConfig().maxVolumeBounce ) : 0u;
+		long long stSurf = stGaps, stVol = 0;
 
 		for( int j = static_cast<int>(t) - 1; j > 0; j-- )
 		{
 			// Vertex at position j in the eye subpath
 			const BDPTVertex& vj = (static_cast<unsigned int>(j) < eyeVerts.size()) ?
 				eyeVerts[j] : lightVerts[0];
+
+			if( stGaps ) {
+				if( vj.type == BDPTVertex::SURFACE ) {
+					stSurf++;
+				} else if( vj.type == BDPTVertex::MEDIUM ) {
+					stVol++;
+				}
+				if( stSurf > static_cast<long long>( GetMaxLightDepth() ) ||
+					stSurf + stVol > static_cast<long long>( stLightBudget ) ) {
+					break;
+				}
+			}
 
 			// DL-375: the eye-side twin of the barrier above -- the term
 			// at an EYE-side entry vj makes the light cover vj and connect
@@ -7724,6 +7789,23 @@ unsigned int GenerateLightSubpathImpl(
 		const Scalar deltaGuideScale = 1;
 #endif
 		if( pScat->isDelta ) {
+			// DL-424/425: a thin-weave gap draw (the undeviated delta
+			// pass-through) records its MIS pseudo-probability, the same
+			// per-crossing factor the see-through connection's shadow walk
+			// accumulates (RayCaster::WalkShadowSegment), so BDPT's
+			// see-through s = 1 strategy and the light-tracing strategies
+			// that share its path can weight against each other.
+			if( pScat->type == ScatteredRay::eRayRefraction && pSPF &&
+				ri.pMaterial->HasDeltaPassThrough() )
+			{
+				if constexpr( Traits::is_nm ) {
+					vertices.back().passThroughProb =
+						pSPF->DeltaPassThroughTransmittanceNM( ri.geometric, tag.nm );
+				} else {
+					vertices.back().passThroughProb =
+						ColorMath::MaxValue( pSPF->DeltaPassThroughTransmittance( ri.geometric ) );
+				}
+			}
 			// For delta scattering, kray already incorporates the right factor
 			// but must be divided by the lobe selection probability.
 			beta = beta * KrayValue<Tag>( *pScat ) * (bssrdfReflectCompensation * deltaGuideScale / selectProb);
