@@ -497,6 +497,11 @@ namespace RISE
 			/// \return The unified light sampler for the current scene
 			const LightSampler* GetLightSampler() const { return pLightSampler; };
 
+			//! DL-463: per-frame / motion-sweep refresh of the light sampler's
+			//! tables, in place (see IRayCaster).
+			void AccumulateLightMotionSample();
+			void RefreshLightSamplers();
+
 			/// Diagnostic: process-wide count of LightSampler rebuilds
 			/// performed inside AttachScene (the first build on a fresh
 			/// scene-pointer attach PLUS any same-pointer rebuild driven by
@@ -507,10 +512,6 @@ namespace RISE
 			/// pattern as Scene::GetPhotonShootCount.  Single-threaded —
 			/// AttachScene runs at the pre-parallel scene-setup seam.
 			static unsigned int GetSamplerRebuildCount();
-
-			//! DL-463 (IRayCaster).
-			void AccumulateLightMotionSample();
-			void RefreshLightSamplers();
 			static void         ResetSamplerRebuildCount();
 
 			/// Sets the number of RIS candidates for spatially-aware

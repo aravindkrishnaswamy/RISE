@@ -137,6 +137,7 @@ namespace RISE
 			unsigned int	lightIndex;		///< Leaf: index into lightEntries.  Interior: unused.
 			unsigned int	nLights;		///< Number of lights in subtree (1 = leaf)
 			unsigned int	bvhStart;		///< Start index in BVH-order permutation
+			bool			motion = false;	///< DL-463: subtree holds a light with a shutter-swept box (orientation bound widened by the box's subtended angle)
 		};
 
 		/// Light BVH for importance-weighted many-light sampling.
@@ -215,6 +216,7 @@ namespace RISE
 				Scalar			power;
 				Point3			centroid;
 				unsigned int	origIndex;	///< Index into lightEntries
+				bool			motion = false;	///< DL-463: swept box / cone
 			};
 
 			/// Recursive build helper.

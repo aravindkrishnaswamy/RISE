@@ -779,6 +779,22 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
 
+	// DL-463: a motion-blurred frame that will trace each pass at its own
+	// shutter time (WantsPerPassShutterTime: merging on, radius > 0) has
+	// its pass-0 store rebuilt by OnProgressivePassBegin; tracing it here
+	// at the frame time would be thrown away.
+	if( mPerPassShutterTimeCandidate && effectiveMergeRadius > 0 ) {
+		mSplatTotalSamples = 1.0;
+		if( pSampling ) {
+			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		}
+		mSplatTotalSamples *= GetSplatSampleScale();
+		GlobalLog()->PrintEx( eLog_Info,
+			"VCMRasterizerBase::PreRenderSetup:: per-pass shutter time -- "
+			"the light store is traced at each pass's time" );
+		return;
+	}
+
 	// Parallel light pass — generates K × W × H light subpaths using
 	// distinct Sobol sample indices [0 .. K-1] for super-iteration 0.
 	// Per-thread local buffers are concat'd into the shared store in

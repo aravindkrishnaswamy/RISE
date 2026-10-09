@@ -41,6 +41,11 @@
 //         floor on the time-average (0.0075, dim light only).
 //      q  the same light authored lit (a frame-time-only table drops it).
 //      m  two moving luminaries under the light BVH (a guard).
+//      w  (review P1) adaptive VCM with an occluder entering late in the
+//         shutter: passes taking the strata IN ORDER read +10.5 % (t +94),
+//         a converged pixel having seen only the shutter's start.
+//      t  (review P2-1) a spot light translating along its axis: the swept
+//         light-BVH box must widen the orientation bound.
 //
 //    PT and BDPT (VCM too with DL457_VCM set) unless a row names its own.  The gate is 3 combined
 //    standard errors (8 salted renders for the blurred frame; 4 per static
@@ -296,7 +301,9 @@ static std::string RasPT( const bool env ) { return "pathtracing_pel_rasterizer\
 static std::string RasBDPT( const bool env ) { return "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( env ) + "}\n\n"; }
 //! `mergeRadius` > 0 forces vertex merging on (DL-463 a) with the same
 //! radius schedule for the blurred frame and every static reference.
-static std::string RasVCM( const bool env, const double mergeRadius ) { return "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + ( mergeRadius > 0 ? Fmt( "\tmerge_radius %g\n", mergeRadius ) : std::string() ) + Env( env ) + "}\n\n"; }
+//! `adaptiveMax` > 0 turns on adaptive sampling (DL-463 P1: a pixel that
+//! converges early stops after a PREFIX of the passes).
+static std::string RasVCM( const bool env, const double mergeRadius, const int adaptiveMax = 0 ) { return "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + ( mergeRadius > 0 ? Fmt( "\tmerge_radius %g\n", mergeRadius ) : std::string() ) + ( adaptiveMax > 0 ? Fmt( "\tadaptive_max_samples %d\n\tadaptive_threshold 0.3\n", adaptiveMax ) : std::string() ) + Env( env ) + "}\n\n"; }
 
 enum { kPT = 1, kBDPT = 2, kVCM = 4 };
 
@@ -307,7 +314,7 @@ static int IntegratorMask( const int mask )
 }
 
 static void RunCase( const char* label, const std::string& body, const bool floor = true, const int times = 8, const int mask = 0, const double mergeRadius = 0,
-	const bool crossCheck = false, const double refFloor = 0 )
+	const bool crossCheck = false, const double refFloor = 0, const int adaptiveMax = 0 )
 {
 	std::vector<std::pair<const char*, Stat> > blurred;
 	const double kFrame = 0.5, kExposure = 1.0;
@@ -316,7 +323,7 @@ static void RunCase( const char* label, const std::string& body, const bool floo
 	const int m = IntegratorMask( mask );
 	if( m & kPT ) integrators.push_back( { "PT", RasPT( !floor ) } );
 	if( m & kBDPT ) integrators.push_back( { "BDPT", RasBDPT( !floor ) } );
-	if( m & kVCM ) integrators.push_back( { "VCM", RasVCM( !floor, mergeRadius ) } );
+	if( m & kVCM ) integrators.push_back( { "VCM", RasVCM( !floor, mergeRadius, adaptiveMax ) } );
 	for( const auto& ig : integrators ) {
 		const Stat blur = RenderN( Scene( body, ig.ras, kExposure, floor ), kFrame, g_blurRepeats );
 		const int refRepeats = times >= 32 ? 2 : g_repeats;
@@ -386,6 +393,7 @@ struct Case
 	double mergeRadius;		//!< VCM merge radius (> 0 forces VM on)
 	bool crossCheck = false;	//!< also compare the integrators' blurred frames
 	double refFloor = 0;		//!< > 0: the time-average must exceed this
+	int adaptiveMax = 0;		//!< > 0: VCM adaptive_max_samples
 };
 
 int main( int argc, char** argv )
@@ -439,6 +447,16 @@ int main( int argc, char** argv )
 			Sphere( "ball", "glass", "-6 0 0.55", "0.4 0.4 0.4" ) +
 			Timeline( "object", "ball", "position", "-6 0 0.55", "6 0 0.55" ) +
 			Sphere( "e", "lum", "0 0 3", "0.15 0.15 0.15" ), true, 32, kVCM, 0.05 },
+		// DL-463 review P1: adaptive VCM (merging forced on, so the
+		// per-pass shutter time engages; up to 256 passes) with a flat black
+		// occluder that sweeps into view only in the last ~30 % of the
+		// shutter.  Directly lit floor pixels converge after ~32 passes; with
+		// the passes' strata IN ORDER they would have seen only the
+		// shutter's first eighth and never the occluder.
+		{ "w", "w: adaptive VCM, occluder entering late (VM)",
+			Sphere( "occ", "black_mat", "-12 0 0.5", "1.5 1.5 0.2" ) +
+			Timeline( "object", "occ", "position", "-12 0 0.5", "0 0 0.5" ) +
+			Sphere( "e", "lum", "0 0 3", "0.15 0.15 0.15" ), true, 32, kVCM, 0.05, false, 0, 256 },
 		// DL-463 (b): a spot light that points UP at the frame time (and as
 		// authored) and down at both ends of the shutter.  A light BVH built
 		// at the frame time culls it (zero orientation importance) at every
@@ -447,6 +465,17 @@ int main( int argc, char** argv )
 			std::string( "spot_light\n{\n\tname spot\n\tposition 0 0 2\n\ttarget 0 1 4\n\tcolor 1 1 1\n\tpower 40\n\tinner 30\n\touter 40\n}\n\n" ) +
 			Timeline3( "light", "spot", "target", "0 1 0", "0 1 4", "0 1 0" ) +
 			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT | kVCM, 0, true },
+		// DL-463 review P2-1: a spot light aimed along +x, TRANSLATING
+		// from x = -10 to 10 just above the floor.  Its swept light-BVH box
+		// is centred at x = 0, so from a floor point at x < 0 the box
+		// CENTRE lies ahead of the cone (> 90 deg off-axis after the cone's
+		// half-angle) while the light, earlier in the shutter, sat behind
+		// the point and lit it.  The orientation bound must widen by the
+		// angle the box subtends.
+		{ "t", "t: spot light translating along its axis (light BVH)",
+			std::string( "spot_light\n{\n\tname spot\n\tposition -10 0 0.3\n\ttarget 1000 0 0.3\n\tcolor 1 1 1\n\tpower 200\n\tinner 80\n\touter 90\n}\n\n" ) +
+			Timeline( "light", "spot", "position", "-10 0 0.3", "10 0 0.3" ) +
+			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT, 0, true },
 		// DL-463 (b): an omni light whose energy is ZERO at the frame time
 		// AND as authored, positive at both ends of the shutter.  A light
 		// table built once at attach (base) dropped it from every frame,
@@ -470,6 +499,20 @@ int main( int argc, char** argv )
 			Sphere( "e2", "lum", "1.5 1 2.6", "0.3 0.3 0.3" ) +
 			Timeline( "object", "e2", "position", "1.5 1 2.6", "-1.5 -1 2.6" ), true, 32, kPT | kBDPT | kVCM, 0, true },
 	};
+
+	if( only == "dbg" ) {
+		// Not a gate: static PT means of a row body at a few times.
+		const char* key = argc > 5 ? argv[5] : "w";
+		for( const Case& c : cases ) {
+			if( std::string( c.key ) != key ) continue;
+			for( double t : { 0.1, 0.5, 0.8, 0.9, 0.99 } ) {
+				double m = 0;
+				RenderOnce( Scene( c.body, RasPT( !c.floor ), 0.0, c.floor ), t, m );
+				std::printf( "  dbg %s t=%.2f mean %.6f\n", key, t, m );
+			}
+		}
+		return 0;
+	}
 
 	if( only == "perf2" ) {
 		// Not a gate (DL-463 d): the same 400 static links PLUS an animated
@@ -526,7 +569,7 @@ int main( int argc, char** argv )
 	}
 	if( g_comparisons == 0 ) g_comparisons = 1;
 	for( const Case& c : cases ) {
-		if( only == "all" || only.find( c.key ) != std::string::npos ) RunCase( c.label, c.body, c.floor, c.times, c.mask, c.mergeRadius, c.crossCheck, c.refFloor );
+		if( only == "all" || only.find( c.key ) != std::string::npos ) RunCase( c.label, c.body, c.floor, c.times, c.mask, c.mergeRadius, c.crossCheck, c.refFloor, c.adaptiveMax );
 	}
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";
 	return failCount == 0 ? 0 : 1;

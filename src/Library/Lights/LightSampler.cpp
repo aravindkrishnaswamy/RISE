@@ -1315,15 +1315,22 @@ void LightSampler::ApplySweptBounds( LightEntry& entry, const MotionSweepRecord&
 		return;
 	}
 	entry.hasMotionBounds = true;
+	// Padded by half the largest change between consecutive samples (the
+	// TLAS sweep's rule): exact for motion linear between samples, and it
+	// covers a light that curves between them by up to that much.
 	entry.motionBounds = rec.bounds;
+	entry.motionBounds.ll = Point3( rec.bounds.ll.x - rec.boxPad[0], rec.bounds.ll.y - rec.boxPad[1], rec.bounds.ll.z - rec.boxPad[2] );
+	entry.motionBounds.ur = Point3( rec.bounds.ur.x + rec.boxPad[0], rec.bounds.ur.y + rec.boxPad[1], rec.bounds.ur.z + rec.boxPad[2] );
 	entry.motionConeAxis = rec.coneAxis;
-	entry.motionConeHalfAngle = rec.coneHalfAngle;
+	entry.motionConeHalfAngle = rec.coneHalfAngle >= PI ? rec.coneHalfAngle :
+		r_min( Scalar( PI ), rec.coneHalfAngle + rec.anglePad );
 }
 
 void LightSampler::ClearMotionSweep()
 {
 	sweptLights.clear();
 	sweptLuminaries.clear();
+	sweptSceneBoxValid = false;
 	bMotionSweep = false;
 }
 
@@ -1343,11 +1350,24 @@ namespace
 		rec.samples++;
 		if( rec.boundsValid ) {
 			rec.bounds.Include( box );
+			const Scalar cur[6] = { box.ll.x, box.ll.y, box.ll.z, box.ur.x, box.ur.y, box.ur.z };
+			const Scalar last[6] = { rec.lastBox.ll.x, rec.lastBox.ll.y, rec.lastBox.ll.z, rec.lastBox.ur.x, rec.lastBox.ur.y, rec.lastBox.ur.z };
+			for( int a = 0; a < 6; a++ ) {
+				const Scalar d = std::fabs( cur[a] - last[a] );
+				// A non-finite or huge corner (an infinite luminary) is not
+				// padded: its box already spans the axis.
+				if( std::isfinite( d ) && d < RISE_INFINITY*0.25 ) {
+					rec.boxPad[a % 3] = r_max( rec.boxPad[a % 3], Scalar( 0.5 ) * d );
+				}
+			}
 		} else {
 			rec.bounds = box;
 			rec.boundsValid = true;
 		}
+		rec.lastBox = box;
 		if( rec.coneValid ) {
+			const Scalar c = r_max( Scalar( -1 ), r_min( Scalar( 1 ), Vector3Ops::Dot( rec.lastAxis, cone.axis ) ) );
+			rec.anglePad = r_max( rec.anglePad, Scalar( 0.5 ) * std::acos( c ) );
 			OrientationCone prev;
 			prev.axis = rec.coneAxis;
 			prev.halfAngle = rec.coneHalfAngle;
@@ -1359,6 +1379,7 @@ namespace
 			rec.coneHalfAngle = cone.halfAngle;
 			rec.coneValid = true;
 		}
+		rec.lastAxis = cone.axis;
 	}
 }
 
@@ -1373,6 +1394,7 @@ void LightSampler::AccumulateMotionSample(
 		sweptLights.assign( nLights, MotionSweepRecord() );
 		sweptLuminaries.assign( luminaries.size(), MotionSweepRecord() );
 		bMotionSweep = true;
+		sweptSceneBoxValid = false;
 	}
 
 	if( pLightMgr ) {
@@ -1389,6 +1411,12 @@ void LightSampler::AccumulateMotionSample(
 		}
 	}
 
+	// The per-sample luminary weight costs AverageLuminaryExitance (100
+	// surface points) per luminary per sweep sample; past a modest count
+	// it is skipped -- the frame-time weight (or the floor, below) is an
+	// equally unbiased pmf, only the shutter mean's variance benefit is lost.
+	static const std::size_t kMaxSweptLuminaryWeights = 64;
+	const bool bWeighLuminaries = luminaries.size() <= kMaxSweptLuminaryWeights;
 	for( std::size_t li = 0; li < luminaries.size(); li++ ) {
 		const IObject* pLum = luminaries[li].pLum;
 		if( !pLum->GetMaterial() || !pLum->GetMaterial()->GetEmitter() ) {
@@ -1396,7 +1424,34 @@ void LightSampler::AccumulateMotionSample(
 		}
 		BoundingBox box = pLum->getBoundingBox();
 		box.EnsureBoxHasVolume();
-		AccumulateSweepRecord( sweptLuminaries[li], LuminarySelectionWeight( pLum ), box, OrientationCone::FullSphere() );
+		AccumulateSweepRecord( sweptLuminaries[li], bWeighLuminaries ? LuminarySelectionWeight( pLum ) : Scalar( 0 ),
+			box, OrientationCone::FullSphere() );
+	}
+
+	// The env-emission disc encloses the scene over the whole shutter.
+	struct SceneBoxScan : public IEnumCallback<IObject>
+	{
+		BoundingBox& box;
+		bool& valid;
+		SceneBoxScan( BoundingBox& b, bool& v ) : box( b ), valid( v ) {}
+		bool operator()( const IObject& obj )
+		{
+			if( obj.IsWorldVisible() ) {
+				const BoundingBox b = obj.getBoundingBox();
+				if( valid ) {
+					box.Include( b.ll );
+					box.Include( b.ur );
+				} else {
+					box = b;
+					valid = true;
+				}
+			}
+			return true;
+		}
+	};
+	if( scene.GetObjects() ) {
+		SceneBoxScan scan( sweptSceneBox, sweptSceneBoxValid );
+		scene.GetObjects()->EnumerateObjects( scan );
 	}
 }
 
@@ -1432,7 +1487,11 @@ void LightSampler::Prepare(
 			if( pSwept ) {
 				exitance = SweptSelectionWeight( *pSwept, exitance );
 			}
-			if( exitance > 0 )
+			// DL-463: under a sweep a positional light dark at every sample
+			// may still shine BETWEEN them (an interpolator's overshoot);
+			// keep it at a floor weight (set below) rather than pmf 0.
+			const bool bFloor = pSwept && !( exitance > 0 ) && l->IsPositionalLight();
+			if( exitance > 0 || bFloor )
 			{
 				LightEntry entry;
 				entry.pLight = l;
@@ -1482,7 +1541,8 @@ void LightSampler::Prepare(
 			if( pSwept ) {
 				exitance = SweptSelectionWeight( *pSwept, exitance );
 			}
-			if( exitance > 0 )
+			const bool bFloor = pSwept && !( exitance > 0 );
+			if( exitance > 0 || bFloor )
 			{
 				LightEntry entry;
 				entry.pLight = 0;
@@ -1502,6 +1562,26 @@ void LightSampler::Prepare(
 				entry.position = repPos;
 
 				lightEntries.push_back( entry );
+			}
+		}
+	}
+
+	// DL-463: the floor weight of swept lights that read dark at every
+	// sample: 1e-3 of the mean positive weight (1 when none is positive) --
+	// any positive weight is an unbiased pmf; this one costs ~nothing.
+	{
+		Scalar sum = 0;
+		unsigned int n = 0;
+		for( std::size_t i = 0; i < lightEntries.size(); i++ ) {
+			if( lightEntries[i].exitance > 0 ) {
+				sum += lightEntries[i].exitance;
+				n++;
+			}
+		}
+		const Scalar floorWeight = n > 0 ? Scalar( 1e-3 ) * sum / Scalar( n ) : Scalar( 1 );
+		for( std::size_t i = 0; i < lightEntries.size(); i++ ) {
+			if( !( lightEntries[i].exitance > 0 ) ) {
+				lightEntries[i].exitance = floorWeight;
 			}
 		}
 	}
@@ -1613,6 +1693,12 @@ void LightSampler::Prepare(
 		};
 		SceneBBoxScan scan;
 		scene.GetObjects()->EnumerateObjects( scan );
+		if( bMotionSweep && sweptSceneBoxValid ) {
+			// DL-463: the env-emission disc must enclose every pose of the shutter.
+			scan.bbox.Include( sweptSceneBox.ll );
+			scan.bbox.Include( sweptSceneBox.ur );
+			scan.seen = true;
+		}
 		if( scan.seen ) {
 			cachedSceneCenter = scan.bbox.GetCenter();
 			const Vector3 extents = scan.bbox.GetExtents();

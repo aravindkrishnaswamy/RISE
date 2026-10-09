@@ -1784,6 +1784,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			ContinuationFlag( bool& flag, bool v ) : f( flag ) { f = v; }
 			~ContinuationFlag() { f = false; }
 		} continuation( mContinuingInterlacedFrame, !resetAOVs );
+		// DL-463: tell the hook a per-pass shutter time is possible for
+		// this frame, so a store pass 0 would rebuild anyway is not traced
+		// at the frame time first.
+		ContinuationFlag perPassCandidate( mPerPassShutterTimeCandidate,
+			framedata.exposure > 0 && framedata.pixelRate == 0 && framedata.scanningRate == 0 );
 		PreRenderSetup( pScene, pRect );
 	}
 
@@ -1908,10 +1913,16 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		// DL-463 (a): per-pass shutter time.  A rasterizer whose passes
 		// share a light store across all eye samples (VCM with merging)
 		// traces each pass -- store and eye samples alike -- at ONE time of
-		// the shutter: pass k draws its time uniformly in the k-th of
-		// numPasses equal strata, so the pass average is an unbiased
-		// estimate of the shutter average and merges never pair light and
-		// eye vertices from different times.  The scene is static within a
+		// the shutter: pass k draws its time uniformly in stratum pi(k) of
+		// numPasses equal strata, pi a random permutation drawn per frame,
+		// so the pass average is an unbiased estimate of the shutter
+		// average and merges never pair light and eye vertices from
+		// different times.  The permutation is load-bearing: adaptive
+		// sampling stops a converged pixel after a PREFIX of the passes
+		// (and the merge radius shrinks with the pass index), and any
+		// prefix of a random permutation is uniform over the shutter --
+		// strata in order would give an early-converging pixel the
+		// shutter's start only.  The scene is static within a
 		// pass, so the pass renders with exposure 0 (multi-threaded, no
 		// per-sample re-pose).  Per-pixel scanning / pixel rates give every
 		// pixel its own shutter, which one scene time cannot serve: those
@@ -1919,6 +1930,10 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		const bool perPassTime = framedata.exposure > 0 &&
 			framedata.pixelRate == 0 && framedata.scanningRate == 0 &&
 			WantsPerPassShutterTime();
+		if( framedata.exposure > 0 && !perPassTime && WantsPerPassShutterTime() ) {
+			GlobalLog()->PrintEasyWarning( "RenderFrameOfAnimation:: motion blur with a scanning / pixel rate keeps "
+				"per-sample times; the merging light store is traced at the frame time (DL-465)" );
+		}
 		AnimFrameData passFrameData = framedata;
 		if( perPassTime ) {
 			passFrameData.exposure = 0;
@@ -1928,6 +1943,17 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			PerPassFlag( bool& flag, bool v ) : f( flag ) { f = v; }
 			~PerPassFlag() { f = false; }
 		} perPassFlag( mPerPassShutterTime, perPassTime );
+		std::vector<unsigned int> passStratum;
+		if( perPassTime ) {
+			passStratum.resize( numPasses );
+			for( unsigned int k = 0; k < numPasses; k++ ) {
+				passStratum[k] = k;
+			}
+			for( unsigned int k = numPasses; k > 1; k-- ) {
+				const unsigned int j = r_min( k - 1, static_cast<unsigned int>( GlobalRNG().CanonicalRandom() * k ) );
+				std::swap( passStratum[k - 1], passStratum[j] );
+			}
+		}
 
 		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
 		{
@@ -1940,7 +1966,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			if( perPassTime ) {
 				const Scalar u = GlobalRNG().CanonicalRandom();
 				AnimateSceneToSampleTime( pScene,
-					framedata.base_cur_time + framedata.exposure * ( Scalar( passIdx ) + u ) / Scalar( numPasses ) );
+					framedata.base_cur_time + framedata.exposure * ( Scalar( passStratum[passIdx] ) + u ) / Scalar( numPasses ) );
 			}
 
 			OnProgressivePassBegin( pScene, passIdx );

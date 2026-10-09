@@ -246,6 +246,11 @@ namespace RISE
 			//! (VCM's light vertex store) must be rebuilt for EVERY pass,
 			//! pass 0 included.
 			mutable bool				mPerPassShutterTime = false;
+			//! DL-463: true only while PreRenderSetup runs for a frame that
+			//! MAY render with a per-pass shutter time (exposure, no scanning
+			//! / pixel rate).  A hook whose pass-0 state the per-pass loop
+			//! would rebuild anyway may skip building it at the frame time.
+			mutable bool				mPerPassShutterTimeCandidate = false;
 
 			mutable AOVBuffers*		pAOVBuffers;		///< Planned first-hit AOV sidecar (OIDN and/or FrameStore consumers)
 

@@ -472,6 +472,13 @@ namespace RISE
 				Vector3			coneAxis;
 				Scalar			coneHalfAngle = 0;
 				bool			coneValid = false;
+				// Padding for motion between samples, the ObjectManager
+				// rule: half the largest change between consecutive samples
+				// (box corners per axis; the cone axis's angle).
+				BoundingBox		lastBox;
+				Vector3			lastAxis;
+				Scalar			boxPad[3] = { 0, 0, 0 };
+				Scalar			anglePad = 0;
 			};
 		protected:
 			virtual ~LightSampler();
@@ -490,6 +497,8 @@ namespace RISE
 			bool bSceneHasAlphaCoverage = false;
             bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
 
+			BoundingBox						sweptSceneBox;		///< Union of world-visible objects' boxes over the sweep (env emission disc)
+			bool							sweptSceneBoxValid = false;
 			std::vector<MotionSweepRecord>	sweptLights;
 			std::vector<MotionSweepRecord>	sweptLuminaries;
 			bool							bMotionSweep = false;
