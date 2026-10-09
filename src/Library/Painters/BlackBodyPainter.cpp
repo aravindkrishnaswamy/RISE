@@ -71,6 +71,7 @@ BlackBodyPainter::BlackBodyPainter(
 		const Scalar scale_ ) : 
   temperature( temp ),
   scale( scale_ ),
+  effectiveScale( scale_ ),
   lambda_begin( lambda_begin_ ),
   lambda_end( lambda_end_ ),
   numfreq( numfreq_ ),
@@ -90,9 +91,14 @@ BlackBodyPainter::~BlackBodyPainter( )
 {
 }
 
-RISEPel BlackBodyPainter::GetColor( const RayIntersectionGeometric& ri  ) const
+RISEPel BlackBodyPainter::GetColor( const RayIntersectionGeometric& ) const
 {
-	return color;
+	return reflectanceRGB;
+}
+
+RISEPel BlackBodyPainter::GetRadianceColor( const RayIntersectionGeometric& ) const
+{
+	return radianceRGB;
 }
 
 SpectralPacket BlackBodyPainter::GetSpectrum( const RayIntersectionGeometric& ri ) const
@@ -102,7 +108,7 @@ SpectralPacket BlackBodyPainter::GetSpectrum( const RayIntersectionGeometric& ri
 
 Scalar BlackBodyPainter::GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	return IntensityForWavelength(temperature, nm*NM_to_M) * scale;
+	return IntensityForWavelength(temperature, nm*NM_to_M) * effectiveScale;
 }
 
 
@@ -143,8 +149,34 @@ void BlackBodyPainter::SetIntermediateValue( const IKeyframeParameter& val )
 	}
 }
 
+namespace
+{
+	struct PlanckCtx
+	{
+		Scalar T;
+		Scalar s;
+	};
+}
+
+static Scalar EvalPlanck( const void* ctx, const Scalar nm )
+{
+	const PlanckCtx* c = static_cast<const PlanckCtx*>( ctx );
+	return BlackBodyPainter::SpectralExitance( c->T, nm*NM_to_M ) * c->s;
+}
+
 void BlackBodyPainter::RegenerateData( )
 {
+	// DL-464: the normalisation is recomputed from the AUTHORED scale every
+	// time (this used to divide `scale` in place, so each keyframed
+	// RegenerateData divided it by the peak again).
+	effectiveScale = scale;
+	if( normalize ) {
+		const Scalar maxima = IntensityForWavelength( temperature, PeakNMFromTemperature( temperature ) );
+		if( maxima > 0 ) {
+			effectiveScale = scale / maxima;
+		}
+	}
+
 	// Using planck's formula
 	PiecewiseLinearFunction1D* pFunc = new PiecewiseLinearFunction1D();
 	GlobalLog()->PrintNew( pFunc, __FILE__, __LINE__, "piecewise linear function 1D" );
@@ -153,19 +185,15 @@ void BlackBodyPainter::RegenerateData( )
 	Scalar freq = lambda_begin;
 
 	for( unsigned int i=0; i<numfreq; i++, freq += delta ) {
-		pFunc->addControlPoint( std::make_pair( freq, IntensityForWavelength(temperature, freq*NM_to_M) * scale ) );
+		pFunc->addControlPoint( std::make_pair( freq, IntensityForWavelength(temperature, freq*NM_to_M) * effectiveScale ) );
 	}
 
 	spectrum = SpectralPacket( lambda_begin, lambda_end, numfreq, pFunc );
-	XYZPel cxyz = spectrum.GetXYZ();
-	color = cxyz;
-
-	// If we are to normalize, rescale the scale
-	if( normalize ) {
-		const Scalar maxima = IntensityForWavelength( temperature, PeakNMFromTemperature( temperature ) );
-		scale /= maxima;
-		ColorMath::Scale(color);
-	}
-
 	safe_release( pFunc );
+
+	// The RGB views project exactly what GetColorNM returns (continuous
+	// Planck, not the binned packet).
+	const PlanckCtx ctx = { temperature, effectiveScale };
+	reflectanceRGB = ProjectPhysicalSpectrumToRGB( &EvalPlanck, &ctx, false );
+	radianceRGB = ProjectPhysicalSpectrumToRGB( &EvalPlanck, &ctx, true );
 }
