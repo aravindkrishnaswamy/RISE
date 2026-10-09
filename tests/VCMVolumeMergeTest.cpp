@@ -18,6 +18,8 @@
 //       other surface, omni light outside, camera outside.
 //    B  a global absorbing/scattering medium over a Lambertian floor,
 //       omni light, VCM with merge_radius 0.05 (surface merging on).
+//    D  A with medium light vertices stored with probability 0.2 (the
+//       memory thinning): unchanged within the same band.
 //    C  the ledger scene (tests/SMSMediumTransmittanceTest.cpp row A: a
 //       Lambertian sphere inside A's box) -- printed only: its VCM
 //       variance is heavy-tailed (the sphere's light reaches it only by
@@ -53,6 +55,7 @@
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Interfaces/ILog.h"
 #include "../src/Library/RISE_API.h"
+#include "../src/Library/Rendering/VCMRasterizerBase.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -250,6 +253,15 @@ int main( int argc, char** argv )
 	// B: pre-fix 0.977 (phantom medium merge in the MIS denominators).
 	RatioRow( "B: global fog, forced surface merging, VCM / PT",
 		GlobalFogScene( true, 64 ), GlobalFogScene( false, 128 ), 1.0, 0.015, trials, seed, only );
+	// D: A's scene with medium light vertices stored with probability
+	// q = 0.2 (the memory thinning; DL-469 review P1).  Throughput / q and
+	// the MIS factor q eta_v keep the estimator and the partition exact,
+	// so the ratio must not move.
+	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.2 );
+	RatioRow( "D: fog box, store probability 0.2, VCM / PT",
+		FogBoxScene( true, 512, false ), FogBoxScene( false, 64, false ), 1.0, 0.06, trials, seed, only );
+	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.0 );
+
 	// C: the ledger row; pre-fix 0.80 (printed: heavy-tailed, see header).
 	RatioRow( "C: ledger fog box with sphere, VCM / PT (printed)",
 		FogBoxScene( true, 1024, true ), FogBoxScene( false, 64, true ), 1.0, 0.0, trials, seed, only );

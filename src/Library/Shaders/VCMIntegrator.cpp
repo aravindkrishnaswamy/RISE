@@ -20,6 +20,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <cstring>
 #include "../Utilities/IndependentSampler.h"
 #include "VCMIntegrator.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): zero the s=0 competing light pdf for non-NEE-sampleable emitters
@@ -283,9 +284,42 @@ namespace
 	// own vertex (BDPTIntegrator's ComputeMediumScatterWeight), and the
 	// path has it once, so the estimate divides it out at the eye vertex:
 	//     T_e * p(wi, wo) / sigma_s(M_e) * T_l / eta_v  * w
+	// Memory: medium light vertices are stored with probability q
+	// (VolumeStoreAccepted; the rasterizer picks q per render from a
+	// stored-vertex budget) and carry T_l / q, so the merge stays
+	// unbiased and its sampling density is q times the unthinned one:
+	// the MIS factor is q eta_v (mMisVolumeWeightFactor) everywhere it
+	// appears -- the recurrence, every endpoint weight and the merge
+	// weight above (read "/ eta_v" in the weights as "/ (q eta_v)").
+	// A merge only pairs vertices of the same medium object.
 	// The radius is sized by the rasterizer (VCMRasterizerBase,
 	// "volume-merge radius") and shrinks per pass.
 	//////////////////////////////////////////////////////////////////
+
+	/// DL-469: the medium-vertex thinning draw, Bernoulli(q).  A hash of
+	/// the vertex position, its subpath index and the pass seed: the
+	/// position is itself a continuous random variable of the light
+	/// walk, so the hashed uniform is independent of the integrand.
+	inline bool VolumeStoreAccepted( const Point3& p, const unsigned int index, const VCMNormalization& norm )
+	{
+		const Scalar q = norm.mVolumeStoreProbability;
+		if( !( q < 1 ) ) {
+			return true;
+		}
+		uint64_t h = 0x9E3779B97F4A7C15ull ^ ( static_cast<uint64_t>( norm.mVolumeThinSeed ) << 32 ) ^ index;
+		const double c[3] = { p.x, p.y, p.z };
+		for( int k = 0; k < 3; k++ ) {
+			uint64_t bits = 0;
+			std::memcpy( &bits, &c[k], sizeof( bits ) );
+			h ^= bits + 0x9E3779B97F4A7C15ull + ( h << 6 ) + ( h >> 2 );
+			// splitmix64 finalizer
+			h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ull;
+			h ^= h >> 27; h *= 0x94D049BB133111EBull;
+			h ^= h >> 31;
+		}
+		const Scalar u = static_cast<Scalar>( h >> 11 ) * ( Scalar( 1 ) / Scalar( 9007199254740992.0 ) );
+		return u < q;
+	}
 
 	/// 1 / sigma_s at a medium vertex (per channel; 0 where sigma_s is 0,
 	/// where both stored throughputs are 0 too).
@@ -1158,8 +1192,11 @@ void VCMIntegrator::ConvertLightSubpath(
 		// vertex.  Phase functions are never delta, so we always use
 		// the non-specular branch.
 		if( isMedium ) {
-			// DL-469: stored for the volume merge (no other merge reads it).
-			if( norm.mVolumeNormalization > 0 && v.isConnectible )
+			// DL-469: stored for the volume merge (no other merge reads it),
+			// with probability q (memory bound; throughput / q below, and
+			// the MIS factor carries q -- VCMNormalization).
+			if( norm.mVolumeNormalization > 0 && v.isConnectible &&
+				VolumeStoreAccepted( v.position, static_cast<unsigned int>( i ), norm ) )
 			{
 				LightVertex lv;
 				lv.ptPosition = v.position;
@@ -1188,7 +1225,7 @@ void VCMIntegrator::ConvertLightSubpath(
 				lv.wi = step * ( Scalar( 1 ) / std::sqrt( distSq ) );
 				lv.pMaterial  = 0;
 				lv.pObject    = v.pMediumObject;
-				lv.throughput = v.throughput;
+				lv.throughput = v.throughput * ( Scalar( 1 ) / norm.mVolumeStoreProbability );
 				lv.throughputSpectrum = LightThroughputSpectrum( lv.throughput );
 				lv.vColor     = RISEPel( 0, 0, 0 );
 				lv.mis        = mis;
@@ -3058,12 +3095,18 @@ namespace
 				if( candidates.empty() ) {
 					continue;
 				}
-				const Scalar invEtaV = norm.mVolumeNormalization;
+				const Scalar kernel = norm.mVolumeNormalization;			// 1 / eta_v
+				const Scalar invMisV = Scalar( 1 ) / norm.mMisVolumeWeightFactor;	// 1 / (q eta_v)
 				typename Traits::value_type volumeMerge = Traits::zero();
 				for( std::size_t k = 0; k < candidates.size(); k++ )
 				{
 					const LightVertex& lv = candidates[k];
 					if( ( lv.flags & kLVF_IsMedium ) == 0 ) {
+						continue;
+					}
+					// Never merge across media (a light vertex in another
+					// medium inside the ball is a different volume).
+					if( lv.pObject != v.pMediumObject ) {
 						continue;
 					}
 					// M is counted by both walks.
@@ -3092,13 +3135,13 @@ namespace
 					lightBase.volume = lv.volumeBounces;
 					const VCMWindowed eyeWin = EyeSideWindow( eyeVerts, eyeMis, i, lightBase, true, depthCaps,
 						EyeHandedCount( mergeEyeCount, i, true ) );
-					const Scalar wLight = ( lv.mis.dVCM + lv.mis.dVC * phaseDirPdfW ) * invEtaV;
-					const Scalar wCamera = ( eyeWin.mis.dVCM + eyeWin.mis.dVC * phaseRevPdfW ) * invEtaV;
+					const Scalar wLight = ( lv.mis.dVCM + lv.mis.dVC * phaseDirPdfW ) * invMisV;
+					const Scalar wCamera = ( eyeWin.mis.dVCM + eyeWin.mis.dVC * phaseRevPdfW ) * invMisV;
 					const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 					volumeMerge = volumeMerge + phase * LightVertexThroughput<Tag>( lv, tag ) * weight;
 				}
 				total = total + VertexThroughput<Tag>( v, tag ) * InverseScatteringAt<Tag>( v, tag ) *
-					volumeMerge * invEtaV;
+					volumeMerge * kernel;
 				continue;
 			}
 

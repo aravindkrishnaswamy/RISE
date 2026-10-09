@@ -112,8 +112,15 @@ namespace RISE
 			/// VertexMergeFactorVC / VM).  All 0 = off.
 			Scalar	mVolumeMergeRadius;
 			Scalar	mVolumeMergeRadiusSq;
-			Scalar	mVolumeNormalization;		///< 1 / eta_v
-			Scalar	mMisVolumeWeightFactor;		///< eta_v = count * 4/3 pi r_v^3
+			Scalar	mVolumeNormalization;		///< kernel: 1 / (count * 4/3 pi r_v^3)
+			/// MIS factor of the volume merge: q * count * 4/3 pi r_v^3.
+			/// Medium light vertices are stored with probability q
+			/// (mVolumeStoreProbability, a memory bound) and their
+			/// throughput divided by q, so the merge's density is q times
+			/// the unthinned one and the MIS factor carries the q.
+			Scalar	mMisVolumeWeightFactor;
+			Scalar	mVolumeStoreProbability;	///< q in (0, 1]
+			unsigned int mVolumeThinSeed;		///< per pass, decorrelates the thinning hash
 
 			VCMNormalization() :
 				mLightSubPathCount( 0 ),
@@ -127,7 +134,9 @@ namespace RISE
 				mVolumeMergeRadius( 0 ),
 				mVolumeMergeRadiusSq( 0 ),
 				mVolumeNormalization( 0 ),
-				mMisVolumeWeightFactor( 0 )
+				mMisVolumeWeightFactor( 0 ),
+				mVolumeStoreProbability( 1 ),
+				mVolumeThinSeed( 0 )
 			{}
 		};
 
@@ -267,8 +276,11 @@ namespace RISE
 		/// ComputeNormalization, against n.mLightSubPathCount).  A
 		/// non-positive radius, or VC or VM disabled, turns the volume
 		/// merge off (its weights rely on SmallVCM's dVM == dVC / eta_s
-		/// identity, which needs both).
-		void SetVolumeMergeRadius( VCMNormalization& n, const Scalar volumeRadius );
+		/// identity, which needs both).  `storeProbability` is the
+		/// medium-vertex thinning probability q (see
+		/// mMisVolumeWeightFactor), `thinSeed` the pass's hash seed.
+		void SetVolumeMergeRadius( VCMNormalization& n, const Scalar volumeRadius,
+			const Scalar storeProbability = 1, const unsigned int thinSeed = 0 );
 
 		/// Initialize (dVCM, dVC, dVM) at the first vertex of a light
 		/// subpath.  directPdfA is the light's area PDF of selecting

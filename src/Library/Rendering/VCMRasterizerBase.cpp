@@ -51,6 +51,8 @@
 #include "../Lights/LightSampler.h"
 #include "../Shaders/BDPTIntegrator.h"
 #include "../Shaders/BDPTVertex.h"
+#include "../Interfaces/IObject.h"
+#include "../Interfaces/IObjectManager.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"
 #include "../Interfaces/ILog.h"
@@ -85,6 +87,8 @@ VCMRasterizerBase::VCMRasterizerBase(
 	mBaseVolumeRadius( 0 ),
 	mCurrentVolumeRadius( 0 ),
 	mVolumeRadiusPassCount( 0 ),
+	mVolumeStoreProbability( 1 ),
+	mVolumeThinSeed( 0 ),
 	mRadiusShrinkAlpha( Scalar( 2.0 ) / Scalar( 3.0 ) ),
 	mTargetPhotonsPerQuery( Scalar( 20 ) ),
 	// `vcm_disable_progressive_radius=true` in global.options (or via
@@ -343,6 +347,36 @@ namespace
 //////////////////////////////////////////////////////////////////////
 namespace
 {
+	//! DL-469: does the scene have any participating medium (a global
+	//! one, or an object's interior medium)?  Gates the volume merge's
+	//! pre-pass so a scene without media renders exactly as before.
+	bool SceneHasMedium( const IScene& scene )
+	{
+		if( scene.GetGlobalMedium() ) {
+			return true;
+		}
+		struct MediumScan : public IEnumCallback<IObject>
+		{
+			bool found;
+			MediumScan() : found( false ) {}
+			bool operator()( const IObject& obj )
+			{
+				if( obj.GetInteriorMedium() ) {
+					found = true;
+					return false;
+				}
+				return true;
+			}
+		};
+		const IObjectManager* objs = scene.GetObjects();
+		if( !objs ) {
+			return false;
+		}
+		MediumScan scan;
+		objs->EnumerateObjects( scan );
+		return scan.found;
+	}
+
 	struct EyeMergeFootprint
 	{
 		std::size_t	samples = 0;		///< eye rays traced
@@ -545,7 +579,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			Scalar( 0 ),
 			pIntegrator->GetEnableVC(),
 			false );
-		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
 
 		mSplatTotalSamples = 1.0;
 		if( pSampling ) {
@@ -586,6 +620,9 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	mBaseVolumeRadius = 0;
 	mCurrentVolumeRadius = 0;
 	mVolumeRadiusPassCount = 0;
+	mVolumeStoreProbability = 1;
+	mVolumeThinSeed = 0;
+	const bool sceneHasMedium = SceneHasMedium( pScene );
 	std::size_t mediumCount = 0;
 	Point3 mediumMin( 0, 0, 0 ), mediumMax( 0, 0, 0 );
 	auto accumulateMediumVertices = [&]( const std::vector<BDPTVertex>& verts ) {
@@ -607,7 +644,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	// With a user radius the pre-pass below does not run; shoot its
 	// subpaths here instead (one per pixel, sample index 0 -- the same
 	// ones the pre-pass shoots).
-	if( pIntegrator->GetRequestedMergeRadius() > 0 ) {
+	if( sceneHasMedium && pIntegrator->GetRequestedMergeRadius() > 0 ) {
 		for( unsigned int y = 0; y < height; y++ ) {
 			for( unsigned int x = 0; x < width; x++ ) {
 				SobolSampler sampler( 0, y * width + x );
@@ -647,7 +684,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 					// segment-length median isn't skewed by branch-crossing
 					// prefix-copy boundaries (which are not real segments).
 					pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, tmpLightSubpathStarts2, rc.random );
-					if( s == 0 ) {
+					if( s == 0 && sceneHasMedium ) {
 						accumulateMediumVertices( tmpLightVerts );	// DL-469
 					}
 					for( std::size_t k = 1; k < tmpLightVerts.size(); k++ ) {
@@ -739,7 +776,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			mVCMNormalization = ComputeNormalization(
 				width, height, Scalar( 0 ),
 				pIntegrator->GetEnableVC(), false );
-			SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
+			SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
 
 			mSplatTotalSamples = 1.0;
 			if( pSampling ) {
@@ -834,32 +871,57 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	}
 
 	// DL-469: the volume-merge radius from the medium vertices collected
-	// above.
+	// above, and the store probability q bounding their memory: the
+	// pre-pass shot one subpath per pixel, i.e. one pass's worth, so
+	// mediumCount estimates the vertices a pass would store; q keeps the
+	// expected stored count at vcm_volume_merge_max_vertices (each stored
+	// vertex costs ~1.2 KB with its share of the KD-tree), and the
+	// radius is sized against the THINNED density.
 	if( mediumCount >= 8 ) {
 		const Scalar dx = mediumMax.x - mediumMin.x, dy = mediumMax.y - mediumMin.y, dz = mediumMax.z - mediumMin.z;
 		const Scalar ext = std::max( dx, std::max( dy, dz ) );
 		const Scalar minExt = Scalar( 1e-3 ) * ext;
 		const Scalar volume = std::max( dx, minExt ) * std::max( dy, minExt ) * std::max( dz, minExt );
 		const Scalar kVolumeTargetNeighbours = Scalar( GlobalOptions().ReadDouble( "vcm_volume_merge_neighbours", 0.01 ) );
+		const Scalar kMaxStored = Scalar( GlobalOptions().ReadDouble( "vcm_volume_merge_max_vertices", 250000.0 ) );
+		Scalar q = ( kMaxStored > 0 && static_cast<Scalar>( mediumCount ) > kMaxStored )
+			? kMaxStored / static_cast<Scalar>( mediumCount ) : Scalar( 1 );
+		const double qOverride = TestVolumeStoreProbabilityOverride().load();
+		if( qOverride > 0 && qOverride <= 1 ) {
+			q = static_cast<Scalar>( qOverride );
+		}
 		if( volume > 0 && kVolumeTargetNeighbours > 0 ) {
 			const Scalar rDensity = std::cbrt( Scalar( 3 ) * kVolumeTargetNeighbours * volume /
-				( Scalar( 4 ) * PI * static_cast<Scalar>( mediumCount ) ) );
+				( Scalar( 4 ) * PI * q * static_cast<Scalar>( mediumCount ) ) );
 			// The bounding volume over-states where the vertices are (a
 			// global medium's light walks run far past anything the
 			// camera sees), so the radius is also clipped to what the
 			// image resolves: kVolumeFootprints pixel footprints at the
-			// first medium vertex the eye reaches.
+			// first medium vertex the eye reaches -- or, when no eye ray
+			// reaches a medium vertex first, at its first mergeable
+			// surface -- and never past 5 % of the vertices' extent.
 			const Scalar kVolumeFootprints = Scalar( GlobalOptions().ReadDouble( "vcm_volume_merge_footprints", 2.0 ) );
 			const EyeMergeFootprint eye = EstimateEyeMergeFootprint(
 				pScene, *pCaster, *pCamera, *pGen, rc, width, height );
-			const Scalar rEye = kVolumeFootprints * eye.medianMediumFootprint;
-			mBaseVolumeRadius = ( eye.medium > 0 && rEye > 0 && rEye < rDensity ) ? rEye : rDensity;
-			mCurrentVolumeRadius = mBaseVolumeRadius;
+			Scalar rEye = 0;
+			if( eye.medium > 0 ) {
+				rEye = kVolumeFootprints * eye.medianMediumFootprint;
+			} else if( eye.mergeable > 0 ) {
+				rEye = kVolumeFootprints * eye.medianFootprint;
+			}
+			Scalar r = rDensity;
+			if( rEye > 0 && rEye < r ) {
+				r = rEye;
+			}
+			r = std::min( r, Scalar( 0.05 ) * ext );
+			mBaseVolumeRadius = r;
+			mCurrentVolumeRadius = r;
+			mVolumeStoreProbability = q;
 			GlobalLog()->PrintEx( eLog_Event,
 				"VCMRasterizerBase::PreRenderSetup:: volume merge (DL-469): %zu medium "
-				"light vertices per pass, density radius %g, eye radius %g (%zu of %zu eye samples), "
-				"radius %g", mediumCount, (double)rDensity, (double)rEye, eye.medium, eye.samples,
-				(double)mBaseVolumeRadius );
+				"light vertices per pass, store probability %g, density radius %g, eye radius %g "
+				"(%zu medium / %zu surface of %zu eye samples), radius %g", mediumCount, (double)q,
+				(double)rDensity, (double)rEye, eye.medium, eye.mergeable, eye.samples, (double)r );
 		}
 	}
 
@@ -883,7 +945,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		effectiveMergeRadius,
 		pIntegrator->GetEnableVC(),
 		pIntegrator->GetEnableVM() );
-	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
+	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
@@ -934,7 +996,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			pIntegrator->GetEnableVC(),
 			pIntegrator->GetEnableVM(),
 			static_cast<Scalar>( pathsShot ) );
-		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
 	}
 
 	// Throughput clamping (kept as secondary safeguard).
@@ -1086,6 +1148,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		const Scalar rClamped = std::max( rShrunk, mMergeRadiusFloor );
 		mCurrentMergeRadius = rClamped;
 	}
+	mVolumeThinSeed = passIdx;	// DL-469: a fresh thinning draw per pass
 	// DL-469: the volume radius shrinks as r^3 ~ (n + alpha) / (n + 1)
 	// (the 3-D analogue of the r^2 rule above), floored at a tenth of r_0.
 	if( passIdx > 0 && mProgressiveRadiusEnabled && mBaseVolumeRadius > 0 )
@@ -1111,7 +1174,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		width, height, mCurrentMergeRadius,
 		pIntegrator->GetEnableVC(),
 		pIntegrator->GetEnableVM() );
-	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
+	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
@@ -1139,7 +1202,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 			pIntegrator->GetEnableVC(),
 			pIntegrator->GetEnableVM(),
 			static_cast<Scalar>( pathsShot ) );
-		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius );	// DL-469
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
 	}
 
 	// Cap outlier photon throughputs before tree balance.  The biased
@@ -1205,3 +1268,9 @@ bool VCMRasterizerBase::WantsPerPassShutterTime() const
 // animation frames (PixelBasedRasterizerHelper::RasterizeSceneAnimation)
 // composite their t==1 splats exactly like a still render.
 
+
+std::atomic<double>& VCMRasterizerBase::TestVolumeStoreProbabilityOverride()
+{
+	static std::atomic<double> override_( 0.0 );
+	return override_;
+}

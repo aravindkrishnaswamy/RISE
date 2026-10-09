@@ -117,20 +117,27 @@ VCMNormalization RISE::Implementation::ComputeNormalization(
 //////////////////////////////////////////////////////////////////////
 void RISE::Implementation::SetVolumeMergeRadius(
 	VCMNormalization& n,
-	const Scalar volumeRadius
+	const Scalar volumeRadius,
+	const Scalar storeProbability,
+	const unsigned int thinSeed
 	)
 {
+	const Scalar q = ( storeProbability > 0 && storeProbability < 1 ) ? storeProbability : Scalar( 1 );
+	n.mVolumeThinSeed = thinSeed;
 	if( volumeRadius > 0 && n.mLightSubPathCount > 0 && n.mEnableVC && n.mEnableVM ) {
 		n.mVolumeMergeRadius = volumeRadius;
 		n.mVolumeMergeRadiusSq = volumeRadius * volumeRadius;
-		n.mMisVolumeWeightFactor =
+		const Scalar etaV =
 			n.mLightSubPathCount * ( Scalar( 4 ) / Scalar( 3 ) ) * PI * volumeRadius * n.mVolumeMergeRadiusSq;
-		n.mVolumeNormalization = Scalar( 1 ) / n.mMisVolumeWeightFactor;
+		n.mVolumeNormalization = Scalar( 1 ) / etaV;
+		n.mVolumeStoreProbability = q;
+		n.mMisVolumeWeightFactor = q * etaV;
 	} else {
 		n.mVolumeMergeRadius = 0;
 		n.mVolumeMergeRadiusSq = 0;
 		n.mVolumeNormalization = 0;
 		n.mMisVolumeWeightFactor = 0;
+		n.mVolumeStoreProbability = 1;
 	}
 }
 
