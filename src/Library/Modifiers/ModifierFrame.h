@@ -89,6 +89,19 @@ namespace RISE
 	{
 		namespace ModifierFrame
 		{
+			//! DL-302: remember the frame before the FIRST normal-perturbing
+			//! modifier touches this hit (first call wins; a stack's later
+			//! members see the flag already set).  Called at the top of every
+			//! normal-perturbing Modify.  A hit with an independent
+			//! shader-direction UV frame (bHasNormalMapFrame) already keeps
+			//! its original frame and needs no copy.
+			inline void RecordPreModifierFrame( RayIntersectionGeometric& ri )
+			{
+				if( ri.bHasCoatDecodeOnb || ri.bHasNormalMapFrame ) return;
+				ri.coatDecodeOnb = ri.onb;
+				ri.bHasCoatDecodeOnb = true;
+			}
+
             //! Promote independent shader direction; save the normal-map UV frame
             //! before replacing anisotropy ONB. Never fold chart or instance parity
             //! into world-normal Rodrigues rotation. Called at every nesting level.

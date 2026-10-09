@@ -190,6 +190,7 @@ void GlintModifier::Modify( RayIntersectionGeometric& ri ) const
 	if( !facet.found ) {
 		return;
 	}
+	ModifierFrame::RecordPreModifierFrame( ri );	// DL-302
 
 	// Express the facet tilt in the hit's smooth shading frame.  The
 	// tilt angles are frame-independent facet properties; the frame

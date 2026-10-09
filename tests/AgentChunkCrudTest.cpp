@@ -5464,13 +5464,13 @@ static void TestMaterialScaffoldFamilies()
 		// (they were cooktorrance / ward_anisotropic, both deprecated since
 		// DL-323); the facet field now binds alphax AND alphay.
 		// rough_stone: rd (colour, worley pebble) + alphax/alphay (scalar,
-		// band [0.07, 0.30] at wear=0.6 -> span ~0.23).  FOUR chunks since
+		// band [0.07, 0.30] at wear=0.6 -> span ~0.23).  FIVE chunks (DL-415 adds the F0 tint painter; FOUR since
 		// 88 S5: the facet field is ONE scalar_painter{expression} reading
 		// `P` at the pebble frequency, replacing the UV-only
 		// expression_function2d + scalar_painter{function2d} pair -- same
 		// band, one fewer chunk, and now in the same world-space domain as
 		// the pebble field it is supposed to track.
-		{ "rough_stone",     "ggx_material",                     4, 0.01,  0.01  },
+		{ "rough_stone",     "ggx_material",                     5, 0.01,  0.01  },
 		// brushed_metal: alphax/alphay (scalar only) -- the NARROWEST
 		// amplitude family by design (alphax span ~0.02 at wear=0.6).
 		{ "brushed_metal",   "ggx_material",                     5, 0.0,   0.002 },

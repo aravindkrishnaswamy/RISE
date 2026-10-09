@@ -13495,7 +13495,7 @@ namespace RISE
 			}
 
 			//! `extinction` (empty = leave the descriptor default 3.45) matters only in
-			//! `conductor` mode; the rough_stone / aged_bronze recipes pass the value
+			//! `conductor` mode; the aged_bronze recipe passes the value
 			//! `cooktorrance_material` defaulted to (1) so the metal's Fresnel is
 			//! unchanged by the DL-400 move off the deprecated chunk.
 			std::string ScaffoldGGXText( const std::string& name, const std::string& rd, const std::string& rs,
@@ -13613,7 +13613,7 @@ namespace RISE
 				return out;
 			}
 
-			//! rough_stone: ggx_material (conductor; was cooktorrance_material until DL-400), rd bound to a worley3d
+			//! rough_stone: ggx_material (schlick_f0, 0.04 dielectric F0 tint since DL-415; was cooktorrance_material until DL-400), rd bound to a worley3d
 			//! pebble/cell field (colora=tone, colorb="none"), facets bound
 			//! to ONE `scalar_painter { expression ... }` fbm wear field.
 			//! `wear` widens and raises the facet band; `scale` sets the
@@ -13658,12 +13658,16 @@ namespace RISE
 						ScaffoldJitterRange( name, "stone_wearcontrast", 1.3, 2.1 ),
 						ScaffoldJitterRange( name, "stone_wearseed", 0.0, 100.0 ), false ) } );
 
-				// DL-400: ggx_material (conductor Fresnel, ior default 2.45 as
-				// cooktorrance_material had it, extinction 1 = cooktorrance's own
-				// default -- GGX's would be 3.45), the facet field driving BOTH axes
+				// DL-400: ggx_material, the facet field driving BOTH axes
 				// (cooktorrance's single `facets` was an isotropic GGX alpha).
+				// DL-415: stone is a DIELECTRIC -- `schlick_f0` with a ~0.04 grey
+				// F0 tint (the old black `rs none` made the facet field drive a
+				// lobe that carried no energy, so the roughness variation was
+				// invisible).
+				const std::string nSpec = "tmpl_" + name + "_spec";
+				out.chunks.push_back( { "uniformcolor_painter", nSpec, ScaffoldUniformColorText( nSpec, 0.04, 0.04, 0.04 ) } );
 				out.chunks.push_back( { "ggx_material", nMat,
-					ScaffoldGGXText( nMat, nPebble, "none", nFacets, nFacets, "conductor", "1" ) } );
+					ScaffoldGGXText( nMat, nPebble, nSpec, nFacets, nFacets, "schlick_f0" ) } );
 				out.materialName = nMat;
 				out.materialKind = "ggx_material";
 				out.boundSlots.push_back( { "alphax", nFacets } );

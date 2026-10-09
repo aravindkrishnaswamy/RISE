@@ -897,6 +897,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
     SMSRecordObjectIntersection();
     ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
     ri.geometric.bHasShaderDirection=ri.geometric.bHasNormalMapFrame=false;
+    ri.geometric.bHasCoatDecodeOnb=false;
 	// NULL-GEOMETRY GUARD: see getBoundingBox()'s comment above.  Reachable as
 	// of 87 for a CONTAINER node, though the world-visible gate in
 	// ObjectManager::RayElementIntersection means no ray reaches a container

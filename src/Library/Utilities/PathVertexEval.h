@@ -242,6 +242,9 @@ namespace RISE
 			// live hit's arrival facing is replayed rather than re-derived.
 			ri.arrivalGeomFacing        = vertex.bGeomNormalOpposesArrival ? -1 : 1;
 			ri.onb             = vertex.onb;
+			// DL-302: the coat normal decodes from the same frame as the live hit.
+			ri.bHasCoatDecodeOnb = vertex.bHasCoatDecodeOnb;
+			if( vertex.bHasCoatDecodeOnb ) ri.coatDecodeOnb = vertex.coatDecodeOnb;
 			ri.ptCoord         = vertex.ptCoord;
 			ri.ptCoord1        = vertex.ptCoord1;
 			ri.bHasTexCoord1   = vertex.bHasTexCoord1;

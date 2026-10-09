@@ -89,7 +89,7 @@ void Case(const float* directions,const float* matrix,const RISE::Vector3& expec
   Verify(NearV(modified.vNormal,controlModified.vNormal),"base normal decode independent");
   if(coat&&!nested&&matrix[0]==1&&matrix[5]==1) {
    Verify(NearV(coat->ResolveCoatFrame(modified,modified.onb).w(),Vector3(.6,0,.8*side)),"independently authored coat normal unaffected by base normal modifier");
-   Verify(NearV(coat->ResolveCoatFrame(controlModified,controlModified.onb).w(),Vector3(.96,0,.28*side)),"legacy noattribute layering explicitly preserved");
+   Verify(NearV(coat->ResolveCoatFrame(controlModified,controlModified.onb).w(),Vector3(.6,0,.8*side)),"legacy noattribute coat normal independent of base normal modifier (DL-302; was composed (.96,0,.28*side))");
   }
   const Vector3 raw=rawDirection?*rawDirection:expectedT; const Vector3 projected=Vector3Ops::Normalize(raw-modified.vNormal*Vector3Ops::Dot(raw,modified.vNormal));Verify(NearV(modified.onb.u(),projected),"normal perturbation preserves shader direction");
   Consumers(*ggx,modified,projected);

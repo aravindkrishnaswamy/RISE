@@ -54,6 +54,8 @@
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Utilities/Color/ColorMath.h"
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/Math3D/VectorsOps.h"
@@ -326,6 +328,89 @@ void TestCoatNormalMovesSpecularPeak()
 		"for the coat_normal material than for the flat one (DL-100 frame-trap consistency)" );
 }
 
+//! DL-302: an independently authored Coat Normal must tilt the coat lobe
+//! from the ORIGINAL frame, not compose with a base NormalMap modifier
+//! that already tilted the shading frame.  The base map here is the real
+//! production NormalMap::Modify run on the probe record (30 degrees
+//! toward +Y, orthogonal to the coat tilt plane); the coat's own tilt is
+//! 20 degrees toward +X.  The coat peak must sit at the coat-map-alone
+//! mirror direction; the composed direction (reflection about
+//! tilt_coat applied on top of the base-tilted frame) must NOT.
+void TestCoatNormalIndependentOfBaseNormalMap()
+{
+	std::cout << "Test: coat normal decodes from the original frame, not the base-normal-map-tilted one (DL-302)" << std::endl;
+
+	JobHolder job;
+	char err[256];
+
+	const RISE::Vector3 viewDir = RISE::Vector3Ops::Normalize( RISE::Vector3( 0.25, 0.0, 1.0 ) );
+	const double pi = 3.14159265358979323846;
+	const double coatTilt = 20.0 * pi / 180.0;
+	const double baseTilt = 30.0 * pi / 180.0;
+	const RISE::Vector3 coatWorld( std::sin( coatTilt ), 0.0, std::cos( coatTilt ) );
+
+	// MakeProbe's frame is U=(-1,0,0), V=(0,-1,0), W=(0,0,1): world = (-nx,-ny,nz).
+	double coatColor[3] = { ( -coatWorld.x + 1.0 ) / 2.0, ( -coatWorld.y + 1.0 ) / 2.0, 1.0 };
+	// Base map tilts the shading normal toward world +Y by baseTilt: ny = -sin.
+	double baseColor[3] = { 0.5, ( -std::sin( baseTilt ) + 1.0 ) / 2.0, 1.0 };
+	Check( (*job).AddUniformColorPainter( "dl302_coat_tex", coatColor, "Rec709RGB_Linear" ), "coat map painter" );
+	Check( (*job).AddUniformColorPainter( "dl302_base_tex", baseColor, "Rec709RGB_Linear" ), "base map painter" );
+
+	rise_blender_material mat = PbrFixture( *job, "dl302" );
+	mat.coat_weight = 1.0;
+	mat.coat_roughness = 0.08;
+	mat.coat_ior = 1.5;
+	mat.coat_normal_painter_name = "dl302_coat_tex";
+	mat.coat_normal_scale = 1.0;
+	Check( add_material( *job, mat, err, sizeof( err ) ), std::string( "material registered: " ) + err );
+
+	RISE::IMaterial* m = (*job).GetMaterials()->GetItem( "dl302" );
+	const RISE::IPainter* basePainter = (*job).GetPainters()->GetItem( "dl302_base_tex" );
+	Check( m && m->GetBSDF() && basePainter, "material and base painter resolve" );
+	if( !m || !m->GetBSDF() || !basePainter ) return;
+
+	RISE::IRayIntersectionModifier* pNmap = 0;
+	Check( RISE::RISE_API_CreateNormalMapModifier( &pNmap, *basePainter, 1.0 ) && pNmap, "NormalMap modifier created" );
+	if( !pNmap ) return;
+	RISE::IRayIntersectionModifier& nmap = *pNmap;
+
+	auto resp = [&]( const bool withBaseMap, const RISE::Vector3& l ) {
+		RISE::RayIntersectionGeometric ri = MakeProbe( viewDir );
+		if( withBaseMap ) nmap.Modify( ri );
+		return RISE::ColorMath::MaxValue( m->GetBSDF()->value( l, ri ) );
+	};
+
+	// Sanity: the base map really tilted the frame.
+	{
+		RISE::RayIntersectionGeometric ri = MakeProbe( viewDir );
+		nmap.Modify( ri );
+		Check( ri.vNormal.y > 0.4, "base NormalMap tilted the shading normal toward +Y" );
+		Check( ri.bHasCoatDecodeOnb, "pre-modifier frame was recorded" );
+	}
+
+	// Composed (pre-fix) coat normal: coat tilt applied about the
+	// base-tilted frame, decoded with its (rebuilt) axes.
+	RISE::RayIntersectionGeometric riMod = MakeProbe( viewDir );
+	nmap.Modify( riMod );
+	const RISE::Vector3 composedN = RISE::Vector3Ops::Normalize(
+		riMod.onb.u() * ( -coatWorld.x ) + riMod.onb.v() * ( -coatWorld.y ) + riMod.onb.w() * coatWorld.z );
+
+	const RISE::Vector3 lAlone    = Reflect( viewDir, coatWorld );
+	const RISE::Vector3 lComposed = Reflect( viewDir, composedN );
+	Check( RISE::Vector3Ops::Dot( lAlone, lComposed ) < 0.97, "composed and independent mirror directions are genuinely distinct" );
+
+	const double aloneAtAlone   = resp( false, lAlone );
+	const double baseAtAlone    = resp( true,  lAlone );
+	const double baseAtComposed = resp( true,  lComposed );
+	std::cout << "  coat alone @alone=" << aloneAtAlone << "  with base map @alone=" << baseAtAlone
+	          << "  @composed=" << baseAtComposed << std::endl;
+	Check( baseAtAlone > baseAtComposed * 1.5,
+		"with a base normal map, the coat peak stays at the coat-map-alone mirror direction (not the composed one)" );
+	Check( baseAtAlone > aloneAtAlone * 0.8 && baseAtAlone < aloneAtAlone * 1.25,
+		"the coat peak magnitude with the base map matches the coat-alone peak" );
+	pNmap->release();
+}
+
 int main()
 {
 	std::cout << "=== Blender bridge Coat Normal test (DL-192) ===" << std::endl;
@@ -333,6 +418,7 @@ int main()
 	TestAbiVersionAndCoatNormalFields();
 	TestNoCoatNormalUnaffected();
 	TestCoatNormalMovesSpecularPeak();
+	TestCoatNormalIndependentOfBaseNormalMap();
 
 	std::cout << "----------------------------------------" << std::endl;
 	std::cout << "checks: " << g_checks << "   failures: " << g_failures << std::endl;

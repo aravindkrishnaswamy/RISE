@@ -239,7 +239,7 @@ namespace
 		const Scalar nzSqr = Scalar(1) - nx*nx - ny*ny;
 		const Scalar nz = ( nzSqr > 0 ) ? std::sqrt( nzSqr ) : Scalar(0);
 
-		OrthonormalBasis3D decodeFrame=ri.bHasNormalMapFrame ? ri.normalMapOnb : baseOnb;
+		OrthonormalBasis3D decodeFrame=ri.bHasNormalMapFrame ? ri.normalMapOnb : ( ri.bHasCoatDecodeOnb ? ri.coatDecodeOnb : baseOnb );
         if (Vector3Ops::Dot(decodeFrame.w(),baseOnb.w())<0) decodeFrame.FlipW();
         return Vector3Ops::Normalize(decodeFrame.u()*nx+decodeFrame.v()*ny+decodeFrame.w()*nz);
 	}
