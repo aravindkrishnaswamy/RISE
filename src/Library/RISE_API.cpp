@@ -4343,6 +4343,18 @@ namespace RISE
 			return false;
 		}
 
+		// DL-314: these models freeze volume parameters / diffusion tables.
+		// Wavelength dependence is supported; dependence on a hit is not.
+		const IScalarPainter* const painters[] = { &ior, &absorption, &scattering };
+		const char* const slots[] = { "ior", "absorption", "scattering" };
+		for( unsigned int slot = 0; slot < 3; ++slot ) {
+			if( !painters[slot]->IsPositionIndependent() ) {
+				*ppi = 0;
+				GlobalLog()->PrintEx( eLog_Error, "randomwalk_sss_material (DL-314): `%s` must be position-independent; spatial painters are unsupported by the frozen subsurface model", slots[slot] );
+				return false;
+			}
+		}
+
 		(*ppi) = new RandomWalkSSSMaterial( ior, absorption, scattering, g, roughness, maxBounces );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "random walk SSS material" );
 		return true;
@@ -4510,6 +4522,18 @@ namespace RISE
 	{
 		if( !ppi ) {
 			return false;
+		}
+
+		// DL-314: these models freeze volume parameters / diffusion tables.
+		// Wavelength dependence is supported; dependence on a hit is not.
+		const IScalarPainter* const painters[] = { &melanin_fraction_, &melanin_blend_, &hemoglobin_epidermis_, &carotene_fraction_, &hemoglobin_dermis_, &epidermis_thickness_, &ior_epidermis_, &ior_dermis_, &blood_oxygenation_ };
+		const char* const slots[] = { "melanin_fraction", "melanin_blend", "hemoglobin_epidermis", "carotene_fraction", "hemoglobin_dermis", "epidermis_thickness", "ior_epidermis", "ior_dermis", "blood_oxygenation" };
+		for( unsigned int slot = 0; slot < 9; ++slot ) {
+			if( !painters[slot]->IsPositionIndependent() ) {
+				*ppi = 0;
+				GlobalLog()->PrintEx( eLog_Error, "donner_jensen_skin_bssrdf_material (DL-314): `%s` must be position-independent; spatial painters are unsupported by the frozen subsurface model", slots[slot] );
+				return false;
+			}
 		}
 
 		(*ppi) = new DonnerJensenSkinBSSRDFMaterial(
