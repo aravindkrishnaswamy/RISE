@@ -104,6 +104,7 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	if( !( dScale != Scalar(0) ) || !std::isfinite( dScale ) ) {
 		return;
 	}
+	ModifierFrame::RecordPreModifierFrame( ri );	// DL-302
 
 	// The frame the material will shade in.  On a hit that carries a
 	// geometry-supplied coherent tangent this IS that tangent (Object::

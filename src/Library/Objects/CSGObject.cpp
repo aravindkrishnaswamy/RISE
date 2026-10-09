@@ -339,6 +339,7 @@ namespace
 		dst.bHasShadingTangent = src.bHasShadingTangent;
         dst.vShaderDirection=src.vShaderDirection; dst.bHasShaderDirection=src.bHasShaderDirection;
         dst.normalMapOnb=src.normalMapOnb; dst.bHasNormalMapFrame=src.bHasNormalMapFrame;
+        dst.coatDecodeOnb=src.coatDecodeOnb; dst.bHasCoatDecodeOnb=src.bHasCoatDecodeOnb;
 
 		// Wireframe view-mode edge info is per-surface payload too (GUI
 		// render modes P1): the closest-edge point belongs to the SAME
@@ -819,6 +820,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
     SMSRecordObjectIntersection();
     ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
     ri.geometric.bHasShaderDirection=ri.geometric.bHasNormalMapFrame=false;
+    ri.geometric.bHasCoatDecodeOnb=false;
 	// The hitting of front and back faces are IGNORED for CSG objects!
 
 	if( !pObjectA || !pObjectB ) {

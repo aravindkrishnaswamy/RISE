@@ -59,6 +59,7 @@ namespace
 
 void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 {
+	ModifierFrame::RecordPreModifierFrame( ri );	// DL-302
 	// Sample the normal map at the hit's primary UV.  The painter is
 	// expected to be backed by an image loaded with NO color-matrix
 	// conversion -- post Stage B colour-space migration that means
