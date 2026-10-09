@@ -123,7 +123,8 @@ namespace RISE
 			///< two sites in the future MUST rebuild this alongside it.
 			RGBIlluminantSpectrum throughputSpectrum;
 
-			VCMMisQuantities	mis;			///< dVCM/dVC/dVM at this vertex after the geometric update
+			VCMMisCore			mis;			///< dVCM/dVC/dVM at this vertex after the geometric update (the subpath's
+												///< DL-467 steps are not kept: they are only replayed within one subpath)
 
 			//! Per-vertex color interpolated by the geometry at hit time
 			//! (linear Rec.709 RGB; see RISEPel).  Written once, at store

@@ -61,12 +61,19 @@ namespace RISE
 		/// The three per-vertex running MIS scalars from the
 		/// SmallVCM formulation.  dVCM participates in both VC and
 		/// VM strategies; dVC only in VC; dVM only in VM.
-		struct VCMMisQuantities
+		/// The three running scalars alone -- what a stored light vertex
+		/// keeps (VCMLightVertex.h), without VCMMisQuantities' DL-467 step.
+		struct VCMMisCore
 		{
 			Scalar dVCM;
 			Scalar dVC;
 			Scalar dVM;
 
+			VCMMisCore() : dVCM( 0 ), dVC( 0 ), dVM( 0 ) {}
+		};
+
+		struct VCMMisQuantities : public VCMMisCore
+		{
 			/// DL-467: the affine step that produced THIS record's (dVC,
 			/// dVM) from the PREVIOUS record of the same subpath array
 			/// (ConvertLightSubpath / ConvertEyeSubpath stamp every
@@ -82,7 +89,7 @@ namespace RISE
 			Scalar xgVC;
 			Scalar xgVM;
 
-			VCMMisQuantities() : dVCM( 0 ), dVC( 0 ), dVM( 0 ), xf( 0 ), xgVC( 0 ), xgVM( 0 ) {}
+			VCMMisQuantities() : VCMMisCore(), xf( 0 ), xgVC( 0 ), xgVM( 0 ) {}
 		};
 
 		/// Per-iteration constants shared by all subpaths.  Derived
