@@ -120,8 +120,8 @@ namespace RISE
 		//! Unions every object's CURRENT world bounding box into its swept
 		//! box.  Call once per shutter sample, after the animator has been
 		//! evaluated (and RecomposeAnimatedHierarchy() has run) at that time.
-		//! Axes on which an object's box is not finite (an infinite plane)
-		//! are not swept; builds read them from the current box.
+		//! Axes on which an object's box is not finite in some sample (an
+		//! infinite plane) are not swept; builds use the full extent there.
 		virtual void AccumulateMotionBounds() const {}
 
 		//! Ends a sweep.  If no parented object moved between its samples,

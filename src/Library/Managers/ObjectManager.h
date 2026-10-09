@@ -112,10 +112,11 @@ namespace RISE
 			//! `pad` the largest per-axis change of any box face between two
 			//! consecutive samples, half of which is added on every side so
 			//! motion that curves between samples stays inside.  An axis on
-			//! which any sample's box is non-finite (an infinite plane, whose
-			//! +-DBL_MAX box overflows under a rotation) is NOT swept: the
-			//! build reads that axis from the object's current box, because
-			//! inf - inf is NaN and BoundingBox::Include ignores NaN.
+			//! which any sample's box is non-finite or at least DBL_MAX/4 (an
+			//! infinite plane, whose +-DBL_MAX box overflows under a rotation)
+			//! is NOT swept: the build uses the full +-RISE_INFINITY extent on
+			//! that axis, because inf - inf is NaN (BoundingBox::Include
+			//! ignores NaN) and the nominal box could under-cover.
 			//! Written only between passes (BeginMotionSweep /
 			//! AccumulateMotionBounds / EndMotionSweep / ClearMotionBounds),
 			//! read only by the single-threaded builds.

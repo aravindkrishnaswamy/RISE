@@ -427,11 +427,8 @@ BoundingBox ObjectManager::ElementBounds( const IObjectPriv* elem ) const
 		const std::map<const IObjectPriv*, MotionBox>::const_iterator it = motionBounds.find( elem );
 		if( it != motionBounds.end() ) {
 			const MotionBox& m = it->second;
-			const BoundingBox cur = elem->getBoundingBox();
 			const Scalar mll[3] = { m.box.ll.x, m.box.ll.y, m.box.ll.z };
 			const Scalar mur[3] = { m.box.ur.x, m.box.ur.y, m.box.ur.z };
-			const Scalar cll[3] = { cur.ll.x, cur.ll.y, cur.ll.z };
-			const Scalar cur3[3] = { cur.ur.x, cur.ur.y, cur.ur.z };
 			const Scalar pad[3] = { m.pad.x, m.pad.y, m.pad.z };
 			Scalar ll[3], ur[3];
 			for( int a = 0; a < 3; a++ ) {
@@ -439,8 +436,11 @@ BoundingBox ObjectManager::ElementBounds( const IObjectPriv* elem ) const
 					ll[a] = mll[a] - 0.5*pad[a];
 					ur[a] = mur[a] + 0.5*pad[a];
 				} else {
-					ll[a] = cll[a];
-					ur[a] = cur3[a];
+					// Non-finite (or near-overflow) in SOME shutter sample:
+					// the full extent, not the nominal box, which may be
+					// finite at the nominal pose and still under-cover.
+					ll[a] = -RISE_INFINITY;
+					ur[a] = RISE_INFINITY;
 				}
 			}
 			return BoundingBox( Point3( ll[0], ll[1], ll[2] ), Point3( ur[0], ur[1], ur[2] ) );
@@ -482,7 +482,11 @@ void ObjectManager::AccumulateMotionBounds() const
 		const Scalar bur[3] = { b.ur.x, b.ur.y, b.ur.z };
 		bool finite[3];
 		for( int a = 0; a < 3; a++ ) {
-			finite[a] = std::isfinite( bll[a] ) && std::isfinite( bur[a] );
+			// |v| >= DBL_MAX/4 counts as non-finite too: a finite axis then
+			// has |coordinate| < DBL_MAX/4 and |pad| < DBL_MAX/2, so the
+			// padded box ElementBounds forms cannot overflow to +-inf.
+			finite[a] = std::isfinite( bll[a] ) && std::isfinite( bur[a] ) &&
+				std::fabs( bll[a] ) < RISE_INFINITY*0.25 && std::fabs( bur[a] ) < RISE_INFINITY*0.25;
 		}
 		std::map<const IObjectPriv*, MotionBox>::iterator it = motionBounds.find( o );
 		if( it == motionBounds.end() ) {
