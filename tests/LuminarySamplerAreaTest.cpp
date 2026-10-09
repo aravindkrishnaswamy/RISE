@@ -339,7 +339,7 @@ static void TestAreas()
 		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
 			Point3( 0, 0, 0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 1.0, 0, 0, 0 ) );
 		SDFGeometry* g = new SDFGeometry( parts, 512, Scalar( 1e-5 ), detail );
-		CheckRel( g->GetArea(), 4*kPi, detail == 8 ? 5e-3 : 2e-4, Fmt( "DL-459 SDF sphere area, sampling_detail %u", detail ) );
+		CheckRel( g->GetArea(), 4*kPi, detail == 8 ? 1e-3 : 3e-5, Fmt( "DL-459 SDF sphere area, sampling_detail %u", detail ) );
 		safe_release( g );
 	}
 }
@@ -413,7 +413,7 @@ static void TestUniformity()
 			Point3( 0, 0, 0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 1.0, 0, 0, 0 ) );
 		SDFGeometry* g = new SDFGeometry( parts, 512, Scalar( 1e-5 ), 8 );
 		const int NZ = 24, NP = 48;
-		const unsigned M = 1500000;
+		const unsigned M = getenv( "DL459_SDF_M" ) ? unsigned( atoi( getenv( "DL459_SDF_M" ) ) ) : 48000000u;
 		std::vector<double> cnt( NZ * NP, 0 );
 		unsigned cap = 0;
 		// Independent pseudo-random variates: a chi-square needs iid
