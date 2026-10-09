@@ -431,6 +431,7 @@ namespace RISE
 			static const uint64_t kSaltEvaluate = 0x5A17C0DE00000004ull;
 			static const uint64_t kSaltEvaluateExit = 0x5A17C0DE00000005ull;
 			static const uint64_t kSaltGapBelow = 0x5A17C0DE00000006ull;
+			static const uint64_t kSaltBackWalk = 0x5A17C0DE00000007ull;
 			static const int      kGapBelowDraws    = 16;
 			static const int      kPerBranchProbes  = 8;
 
@@ -707,25 +708,81 @@ namespace RISE
 			//! inside the walk.  A nested composite layer installs its own
 			//! guard (with that cleared record -- term (c) is not live for a
 			//! nested bottom) and restores this one on return.
+			//!
+			//! DL-472 (1), TWO-SIDED MODE: where term (c) is live and the
+			//! caller has a stack (so DL-345's face rule applies -- see
+			//! FollowsOpenSheetFaceRule), the sheet is presented by its TRUE
+			//! face: a FRONT arrival meets the top first (the from-above
+			//! model), a BACK arrival meets the bottom first and is priced
+			//! by the exact mirror (the "from below" evaluator, mixture and
+			//! walker below).  Both sides of a BDPT / VCM connection then
+			//! evaluate one two-sided model.  Without it a non-face-rule
+			//! composite showed its TOP to either face (DL-407 (2)) and
+			//! the eye-side and light-side models of one physical path
+			//! disagreed (white furnace BDPT / VCM 1.06x / 1.17x PT).
 			static thread_local const CompositeSPF* tLiveOwner;
 			static thread_local bool tLive;
+			static thread_local bool tTwoSided;
 
 			struct LiveGuard
 			{
 				const CompositeSPF* prevOwner;
 				bool prevLive;
-				LiveGuard( const CompositeSPF& s, const RayIntersectionGeometric& riIn ) :
-				  prevOwner( tLiveOwner ), prevLive( tLive )
+				bool prevTwoSided;
+				LiveGuard( const CompositeSPF& s, const RayIntersectionGeometric& riIn, const bool faceRule ) :
+				  prevOwner( tLiveOwner ), prevLive( tLive ), prevTwoSided( tTwoSided )
 				{
 					tLiveOwner = &s;
 					tLive = s.bBottomTransmits && riIn.bProvablyNoInterior;
+					tTwoSided = tLive && faceRule;
 				}
-				~LiveGuard() { tLiveOwner = prevOwner; tLive = prevLive; }
+				~LiveGuard() { tLiveOwner = prevOwner; tLive = prevLive; tTwoSided = prevTwoSided; }
 			};
 
 			static inline bool TransmissionLive( const CompositeSPF& s, const RayIntersectionGeometric& )
 			{
 				return tLiveOwner == &s && tLive;
+			}
+
+			static inline bool TwoSided( const CompositeSPF& s )
+			{
+				return tLiveOwner == &s && tTwoSided;
+			}
+
+			//! Two-sided mode: the arrival is on the BACK face (the frame
+			//! is the true winding normal there, CompositeLayerFrame with
+			//! the face rule).  Judged from the query's own ray, so a BDPT
+			//! reverse-density query from the other side is priced by that
+			//! side's model.
+			static inline bool TwoSidedBack( const CompositeSPF& s, const RayIntersectionGeometric& ri )
+			{
+				return TwoSided( s ) && !EnteredFromAbove( ri );
+			}
+
+			//! Two-sided mode, side tests against the frame's TRUE normal.
+			static inline Vector3 FrameGeomNormal( const RayIntersectionGeometric& ri )
+			{
+				return ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar( 1e-12 ) ) ? ri.vGeomNormal : ri.onb.w();
+			}
+			static inline bool FrontSide( const RayIntersectionGeometric& ri, const Vector3& w )
+			{
+				return Vector3Ops::Dot( w, ri.onb.w() ) > 0 && Vector3Ops::Dot( w, FrameGeomNormal( ri ) ) > 0;
+			}
+			static inline bool BackSide( const RayIntersectionGeometric& ri, const Vector3& w )
+			{
+				return Vector3Ops::Dot( w, ri.onb.w() ) < 0 && Vector3Ops::Dot( w, FrameGeomNormal( ri ) ) < 0;
+			}
+
+			//! Two-sided mode, FRONT arrival: the entry stack without this
+			//! object's entry (a front arrival is outside the sheet's
+			//! below medium whatever a rebuilt record's stack says).
+			static inline const IORStack& FrontStack( const CompositeSPF& s, const IORStack& S, std::optional<IORStack>& store )
+			{
+				if( TwoSided( s ) && S.currentObject() && S.containsCurrent() ) {
+					store.emplace( OutsideOf( S ) );
+					return *store;
+				}
+				return S;
 			}
 
 			//! DL-296: the EXTERNAL stack of a ray that leaves the stack
@@ -1482,10 +1539,13 @@ namespace RISE
 				std::vector<Vector3>   wTop;
 				std::vector<Scalar>    LTop;
 				std::vector<IORStack>  gapTop;		//!< gap stack the top sees at that visit
-				WalkPath() : entered( false ), out( Scalar( 1 ) ), gap0( Scalar( 1 ) ) {}
+				bool                   fromBelow;		//!< DL-472 (1): a back-face walk (BuildWalkFromBelow)
+				IORStack               entryStack;		//!< ... the stack the bottom saw at the entry event
+				WalkPath() : entered( false ), out( Scalar( 1 ) ), gap0( Scalar( 1 ) ), fromBelow( false ), entryStack( Scalar( 1 ) ) {}
 				void Clear()
 				{
 					entered = false;
+					fromBelow = false;
 					betaBot.clear(); wBot.clear(); LBot.clear(); gapBot.clear();
 					betaTop.clear(); wTop.clear(); LTop.clear(); gapTop.clear();
 				}
@@ -1703,7 +1763,7 @@ namespace RISE
 
 				// Term (a): every bottom visit connects to wOut through the
 				// top's delta transmission at u.
-				if( s.pBottomBSDF && !path.betaBot.empty() && s.top.DeltaTransmissionIsRefraction() ) {
+				if( s.pBottomBSDF && ( !path.betaBot.empty() || path.fromBelow ) && s.top.DeltaTransmissionIsRefraction() ) {
 					const Scalar nOut = path.out.top();
 					const Scalar nGap = path.gap0.top();
 					const Scalar eta = ( nOut > 0 && nGap > 0 ) ? ( nGap / nOut ) : Scalar( 1 );
@@ -1747,6 +1807,11 @@ namespace RISE
 						}
 						if( P::MaxOf( W ) > 0 && adj > 0 ) {
 							const T aFactor = P::Scaled( P::Mul( W, P::GapAtt( s.extinction, ri, nm, Lx ) ), adj / ( eta * eta ) );
+							// DL-472 (1): a back-face walk's ENTRY event at the
+							// bottom (arriving from below, beta 1) connects too.
+							if( path.fromBelow ) {
+								f = f + P::Mul( P::Value( *s.pBottomBSDF, ux, ri, nm, &path.entryStack ), aFactor );
+							}
 							for( size_t i = 0; i < path.betaBot.size(); i++ ) {
 								SetLayerRay( rec, ri, path.wBot[i], path.LBot[i] );
 								f = f + P::Mul( P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, ux, rec, nm, &path.gapBot[i] ) ), aFactor );
@@ -1787,17 +1852,19 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const Vector3& wOut,
 				const IORStack& outside,
-				const Scalar nm
+				const Scalar nm,
+				const bool fromBelow = false
 				)
 			{
 				struct Entry
 				{
 					bool               valid;
+					bool               below;
 					unsigned long long id;
 					Scalar             nm;
 					Scalar             key[kProbeKeySize];
 					WalkPath<P>        path;
-					Entry() : valid( false ), id( 0 ), nm( 0 ) {}
+					Entry() : valid( false ), below( false ), id( 0 ), nm( 0 ) {}
 				};
 				static const int kWalkCacheSize = 4;
 				thread_local Entry cache[kWalkCacheSize];
@@ -1807,7 +1874,11 @@ namespace RISE
 				EvaluateDepthGuard guard;
 				if( !outermost ) {
 					WalkPath<P> local;
-					BuildWalk<P>( s, ri, outside, nm, local );
+					if( fromBelow ) {
+						BuildWalkFromBelow<P>( s, ri, outside, nm, local );
+					} else {
+						BuildWalk<P>( s, ri, outside, nm, local );
+					}
 					return EvaluateFromWalk<P>( s, ri, wOut, nm, local );
 				}
 
@@ -1815,7 +1886,7 @@ namespace RISE
 				ProbeKey( ri, outside, key );
 				for( int i = 0; i < kWalkCacheSize; i++ ) {
 					const Entry& e = cache[i];
-					if( e.valid && e.id == s.instanceId && e.nm == nm &&
+					if( e.valid && e.id == s.instanceId && e.nm == nm && e.below == fromBelow &&
 						std::memcmp( e.key, key, sizeof( key ) ) == 0 ) {
 						return EvaluateFromWalk<P>( s, ri, wOut, nm, e.path );
 					}
@@ -1823,7 +1894,12 @@ namespace RISE
 				Entry& e = cache[next];
 				next = ( next + 1 ) % kWalkCacheSize;
 				e.valid = false;
-				BuildWalk<P>( s, ri, outside, nm, e.path );
+				if( fromBelow ) {
+					BuildWalkFromBelow<P>( s, ri, outside, nm, e.path );
+				} else {
+					BuildWalk<P>( s, ri, outside, nm, e.path );
+				}
+				e.below = fromBelow;
 				e.id = s.instanceId;
 				e.nm = nm;
 				std::memcpy( e.key, key, sizeof( key ) );
@@ -1846,8 +1922,16 @@ namespace RISE
 			{
 				direct = P::Zero();
 				walked = P::Zero();
+				if( pStack && TwoSidedBack( s, ri ) ) {
+					EvaluateBackParts<P>( s, vLightIn, ri, *pStack, nm, direct, walked, includeBelowEta );
+					return;
+				}
 				if( !CoveredEntry( ri ) ) {
 					return;
+				}
+				std::optional<IORStack> frontStore;
+				if( pStack ) {
+					pStack = &FrontStack( s, *pStack, frontStore );
 				}
 				const Vector3 w = Vector3Ops::Normalize( vLightIn );
 				if( !( Vector3Ops::Dot( w, ri.onb.w() ) > 0 ) ) {
@@ -1904,7 +1988,8 @@ namespace RISE
 			{
 				eStartCoveredTop,		//!< the WALKER branch of a covered entry: conditional entry transmission, covered exits not emitted
 				eStartNaturalTop,		//!< from above but behind a tilted shading normal: natural walk from the top, every exit emitted
-				eStartNaturalBottom		//!< from below: natural walk from the bottom, every exit emitted
+				eStartNaturalBottom,		//!< from below: natural walk from the bottom, every exit emitted
+				eStartCoveredBottom		//!< DL-472 (1): the WALKER branch of a two-sided BACK arrival: conditional entry (toward the top) at the bottom, covered exits not emitted
 			};
 
 			//! DL-341: the GAP stack a walk entered from BELOW starts its
@@ -1981,7 +2066,7 @@ namespace RISE
 				const Vector3 n = ri.onb.w();
 				const IObject* const kB = BottomKey( s );
 				// OUT: popped only for a walk from below (OutRef).
-				const IORStack out = ( start == eStartNaturalBottom ) ? OutsideOf( entry ) : entry;
+				const IORStack out = ( start == eStartNaturalBottom || start == eStartCoveredBottom ) ? OutsideOf( entry ) : entry;
 
 				// ONE internal stack (DL-341): the bottom is called with its
 				// own key, the top with O; refreshed after every crossing.
@@ -2014,7 +2099,7 @@ namespace RISE
 					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, L ) );
 					SetLayerRay( cur, ri, w, L );
 					atBottom = true;
-				} else if( start == eStartNaturalBottom ) {
+				} else if( start == eStartNaturalBottom || start == eStartCoveredBottom ) {
 					// From below: the ray is in the BELOW medium (the
 					// entry stack's top -- O's index when the stack holds
 					// O, the medium the ray is in when it does not).
@@ -2040,7 +2125,11 @@ namespace RISE
 					}
 					P::Scatter( atBottom ? s.bottom : s.top, cur, sampler, nm, c, st );
 					Scalar q = 0;
-					auto any = []( const ScatteredRay& ) { return true; };
+					// DL-472 (1): the covered back-face walker's entry is
+					// the bottom's conditional selection TOWARD the top (its
+					// back-side lobes are the DIRECT class).
+					const bool conditionalUp = ( start == eStartCoveredBottom && ev == 0 );
+					auto any = [conditionalUp, &n]( const ScatteredRay& rr ) { return !conditionalUp || Vector3Ops::Dot( rr.ray.Dir(), n ) > 0; };
 					const int kSel = SelectCarried<P>( c, any, beta, sampler.Get1D(), q );
 					if( kSel < 0 || !( q > 0 ) ) {
 						return;
@@ -2056,8 +2145,10 @@ namespace RISE
 							// covered sampler -- when it is a non-delta
 							// lobe of a bottom whose BSDF transmits, on the
 							// far geometric side, after a covered entry.
-							const bool covered = ( start == eStartCoveredTop ) && !r->isDelta &&
-								TransmissionLive( s, ri ) && PassesBelowGate( ri, Vector3Ops::Normalize( r->ray.Dir() ) );
+							const bool covered = ( ( start == eStartCoveredTop ) && !r->isDelta &&
+								TransmissionLive( s, ri ) && PassesBelowGate( ri, Vector3Ops::Normalize( r->ray.Dir() ) ) ) ||
+								( ( start == eStartCoveredBottom ) && !r->isDelta && s.bBottomTransmits &&
+								BackSide( ri, Vector3Ops::Normalize( r->ray.Dir() ) ) );
 							if( !covered ) {
 								P::SetKray( *r, P::Mul( beta, P::Scaled( P::Kray( *r ), Scalar( 1 ) / q ) ) );
 								r->isDelta = true;
@@ -2076,7 +2167,7 @@ namespace RISE
 							// top whose delta transmission is a refraction --
 							// ISPF::DeltaTransmissionIsRefraction; a nested
 							// composite's exits are whole walks, DL-341).
-							const bool covered = ( start == eStartCoveredTop ) && (
+							const bool covered = ( start == eStartCoveredTop || start == eStartCoveredBottom ) && (
 								( !r->isDelta && s.pTopBSDF ) ||
 								( r->isDelta && lastBottomEvaluable && s.top.DeltaTransmissionIsRefraction() ) );
 							if( !covered ) {
@@ -2157,6 +2248,429 @@ namespace RISE
 				Emit( scattered, out );
 			}
 
+			// -----------------------------------------------------------
+			//  DL-472 (1): THE BACK-FACE (FROM BELOW) MODEL, two-sided mode.
+			//
+			//  The exact mirror of the from-above model with the layers'
+			//  roles swapped: the arrival meets the BOTTOM first.  Classes:
+			//    DIRECT   the bottom's own lobes back toward the back side
+			//             at the entry vertex (w1, priced by the bottom's
+			//             BSDF -- the mirror of the top's direct lobes);
+			//    COVERED  exits through the top after a non-delta bottom
+			//             event (term (a), now including the ENTRY event)
+			//             or through the top's BSDF (term (b)); exits back
+			//             through the bottom after a top reflection
+			//             (term (c)).  Sampled from a cosine toward the
+			//             front (w2), the bottom's own sampler at the entry
+			//             (w3, both sides) and a cosine toward the back (w5);
+			//    WALKER   everything else (eStartCoveredBottom).
+			//  Stacks follow the natural from-below walker exactly: OUT is
+			//  the medium in front, the entry is at the below medium's
+			//  index with the bottom's own key, and an exit through the
+			//  top carries the radiance factor (n_below / n_out)^2 at the
+			//  consumer (RestoreOpenSheetStacks' crossing index), which the
+			//  VALUE includes and the kray does not; an exit back through
+			//  the bottom stays in the below medium (factor 1).
+			// -----------------------------------------------------------
+			struct BackStacks
+			{
+				IORStack out;			//!< the medium in front of the sheet (OUT)
+				IORStack entry;			//!< what the bottom sees at the entry event
+				Scalar   below;			//!< the below medium's index
+				Scalar   etaUp;			//!< radiance eta^2 of an exit through the top
+				BackStacks() : out( Scalar( 1 ) ), entry( Scalar( 1 ) ), below( 1 ), etaUp( 1 ) {}
+			};
+
+			template<class P>
+			static BackStacks MakeBackStacks(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const IORStack& S,
+				const Scalar nm
+				)
+			{
+				BackStacks b;
+				b.out = OutsideOf( S );
+				b.below = s.BelowMediumIOR( ri, b.out, nm, b.out.top() );
+				b.entry = GapStackForBelow<P>( s, ri, b.out, nm );
+				b.entry.SetCurrentObject( BottomKey( s ) );
+				b.entry.push( b.below );
+				const Scalar no = b.out.top();
+				b.etaUp = ( b.out.currentObject() && no > 0 && b.below > 0 && no != b.below )
+					? ( b.below / no ) * ( b.below / no ) : Scalar( 1 );
+				return b;
+			}
+
+			//! The back-face walk: the from-above BuildWalk's loop entered
+			//! at its other half.  The entry event at the bottom (arriving
+			//! from below) selects conditionally TOWARD the top; the walk
+			//! then visits the top's underside, the bottom from above, ...
+			template<class P>
+			static void BuildWalkFromBelow(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const IORStack& S,
+				const Scalar nm,
+				WalkPath<P>& path
+				)
+			{
+				typedef typename P::T T;
+				path.Clear();
+				path.fromBelow = true;
+				const Vector3 n = ri.onb.w();
+				auto isUp      = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) > 0; };
+				auto isDownTop = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) < 0; };
+				const BackStacks bs = MakeBackStacks<P>( s, ri, S, nm );
+				path.out = bs.out;
+				path.entryStack = bs.entry;
+				const IObject* const kB = BottomKey( s );
+
+				HashedSampler hs( HashPoint( HashVector( kSaltEvaluate ^ kSaltBackWalk, ri.ray.Dir() ), ri.ptIntersection ) );
+
+				ScatteredRayContainer c0;
+				P::Scatter( s.bottom, ri, hs, nm, c0, bs.entry );
+				Scalar q = 0;
+				int k = SelectSubset<P>( c0, isUp, hs.Get1D(), q );
+				if( k < 0 ) {
+					return;
+				}
+				T beta = P::Scaled( P::Kray( c0[k] ), Scalar( 1 ) / q );
+				Vector3 w = Vector3Ops::Normalize( c0[k].ray.Dir() );
+				IORStack gap( c0[k].ior_stack ? *c0[k].ior_stack : bs.entry );
+				if( bs.out.currentObject() ) {
+					gap.SetCurrentObject( bs.out.currentObject() );
+				}
+				if( !Roulette<P>( s, beta, c0[k].type, 0, hs ) ) {
+					return;
+				}
+				path.entered = true;
+				path.gap0 = gap;
+
+				RayIntersectionGeometric rec( ri );
+				unsigned int steps = 1;
+				for( unsigned int ev = 0; ev < CompositeSPF::kMaxWalkEvents; ev += 2 )
+				{
+					// Up across the gap to the top's underside.
+					const Scalar Lu = CompositeSPF::GapPathLength( w, n, s.thickness );
+					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, Lu ) );
+					if( !( P::MaxOf( beta ) > 0 ) ) {
+						return;
+					}
+					path.betaTop.push_back( beta );
+					path.wTop.push_back( w );
+					path.LTop.push_back( Lu );
+					path.gapTop.push_back( gap );
+					SetLayerRay( rec, ri, w, Lu );
+					ScatteredRayContainer ct;
+					P::Scatter( s.top, rec, hs, nm, ct, gap );
+					k = SelectCarried<P>( ct, isDownTop, beta, hs.Get1D(), q );
+					if( k < 0 ) {
+						return;
+					}
+					beta = P::Mul( beta, P::Scaled( P::Kray( ct[k] ), Scalar( 1 ) / q ) );
+					w = Vector3Ops::Normalize( ct[k].ray.Dir() );
+					if( ct[k].ior_stack ) {
+						gap = *ct[k].ior_stack;
+					}
+					if( !Roulette<P>( s, beta, ct[k].type, steps, hs ) ) {
+						return;
+					}
+					steps++;
+
+					// Down across the gap to the bottom.
+					const Scalar Ld = CompositeSPF::GapPathLength( w, n, s.thickness );
+					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, Ld ) );
+					if( !( P::MaxOf( beta ) > 0 ) ) {
+						return;
+					}
+					path.betaBot.push_back( beta );
+					path.wBot.push_back( w );
+					path.LBot.push_back( Ld );
+					path.gapBot.push_back( Keyed( gap, kB ) );
+					SetLayerRay( rec, ri, w, Ld );
+					ScatteredRayContainer cb;
+					P::Scatter( s.bottom, rec, hs, nm, cb, path.gapBot.back() );
+					k = SelectCarried<P>( cb, isUp, beta, hs.Get1D(), q );
+					if( k < 0 ) {
+						return;
+					}
+					beta = P::Mul( beta, P::Scaled( P::Kray( cb[k] ), Scalar( 1 ) / q ) );
+					w = Vector3Ops::Normalize( cb[k].ray.Dir() );
+					if( cb[k].ior_stack ) {
+						gap = KeyedTop( *cb[k].ior_stack, bs.out );
+					}
+					if( !Roulette<P>( s, beta, cb[k].type, steps, hs ) ) {
+						return;
+					}
+					steps++;
+				}
+				if( P::MaxOf( beta ) > 0 ) {
+					NoteCompositeWalkCapReached();
+				}
+			}
+
+			//! Back-face direct + covered response toward `vLightIn`.
+			template<class P>
+			static void EvaluateBackParts(
+				const CompositeSPF& s,
+				const Vector3& vLightIn,
+				const RayIntersectionGeometric& ri,
+				const IORStack& S,
+				const Scalar nm,
+				typename P::T& direct,
+				typename P::T& walked,
+				const bool includeEta
+				)
+			{
+				direct = P::Zero();
+				walked = P::Zero();
+				const Vector3 w = Vector3Ops::Normalize( vLightIn );
+				if( FrontSide( ri, w ) ) {
+					walked = EvaluateWalked<P>( s, ri, w, S, nm, true );
+					if( includeEta ) {
+						walked = P::Scaled( walked, MakeBackStacks<P>( s, ri, S, nm ).etaUp );
+					}
+				} else if( BackSide( ri, w ) ) {
+					const BackStacks bs = MakeBackStacks<P>( s, ri, S, nm );
+					direct = P::Value( *s.pBottomBSDF, vLightIn, ri, nm, &bs.entry );
+					walked = EvaluateWalked<P>( s, ri, w, S, nm, true );
+				}
+			}
+
+			struct BackProbe
+			{
+				Scalar Qdir;		// natural mass of the bottom's back-side lobes at the entry (DIRECT)
+				Scalar Qin;			// ... of its lobes toward the top
+				bool   det;
+			};
+
+			template<class P>
+			static BackProbe ComputeBackProbe(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const BackStacks& bs,
+				const Scalar nm
+				)
+			{
+				const Vector3 n = ri.onb.w();
+				auto isIn   = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) > 0; };
+				auto isBack = [&n]( const ScatteredRay& r ) { return !( Vector3Ops::Dot( r.ray.Dir(), n ) > 0 ); };
+				const uint64_t seed = HashPoint( HashVector( 0x243F6A8885A308D3ull ^ kSaltBackWalk, ri.ray.Dir() ), ri.ptIntersection );
+				BackProbe pr;
+				pr.det = s.bottom.SelectionMassIsDeterministic( ri, nm );
+				const int nProbes = pr.det ? 1 : kPerBranchProbes;
+				Scalar dirSum = 0, inSum = 0;
+				for( int i = 0; i < nProbes; i++ ) {
+					ScatteredRayContainer c;
+					HashedSampler hs( seed ^ ( kSaltProbeA + uint64_t( i ) * 0x9E3779B97F4A7C15ull ) );
+					P::Scatter( s.bottom, ri, hs, nm, c, bs.entry );
+					dirSum += SubsetMass<P>( c, isBack );
+					inSum  += SubsetMass<P>( c, isIn );
+				}
+				pr.Qdir = dirSum / Scalar( nProbes );
+				pr.Qin  = inSum / Scalar( nProbes );
+				return pr;
+			}
+
+			//! Back-face branch weights: w1 DIRECT, w2 cosine front, w3
+			//! the bottom's sampler, w5 cosine back, w4 WALKER; normalised.
+			static Weights BackWeights( const CompositeSPF& s, const BackProbe& pr, bool& any )
+			{
+				Weights W;
+				W.w1 = W.w2 = W.w3 = W.w4 = W.w5 = 0;
+				W.aggregate = pr.det;
+				Scalar dir = pr.Qdir, in = pr.Qin;
+				if( !pr.det ) {
+					dir = r_max( dir, kShareFloor );
+					in = r_max( in, kShareFloor );
+					const Scalar t = dir + in;
+					dir /= t;
+					in /= t;
+				}
+				W.w1 = dir;
+				if( in > 0 ) {
+					const bool walkerPossible = !( s.top.DeltaTransmissionIsRefraction() || s.pTopBSDF );
+					W.w4 = in * ( walkerPossible ? kWalkerShareIfPossible : kWalkerShareFloor );
+					const Scalar e = in - W.w4;
+					W.w2 = Scalar( 0.35 ) * e;
+					W.w3 = Scalar( 0.45 ) * e;
+					W.w5 = Scalar( 0.2 ) * e;
+				}
+				const Scalar total = W.w1 + W.w2 + W.w3 + W.w4 + W.w5;
+				any = ( total > 0 );
+				if( any ) {
+					W.w1 /= total; W.w2 /= total; W.w3 /= total; W.w4 /= total; W.w5 /= total;
+				}
+				return W;
+			}
+
+			//! Density of the back-face NON-DELTA emissions at `w`.
+			template<class P>
+			static Scalar BackMixturePdf(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const Vector3& w,
+				const BackStacks& bs,
+				const Scalar nm,
+				const BackProbe& pr,
+				const Weights& W,
+				Scalar* pWalkedOnly
+				)
+			{
+				const Scalar cosN = Vector3Ops::Dot( w, ri.onb.w() );
+				Scalar walked = 0, p = 0;
+				if( FrontSide( ri, w ) ) {
+					walked = W.w2 * cosN * INV_PI;
+					if( W.w3 > 0 ) {
+						walked += W.w3 * P::Pdf( s.bottom, ri, w, nm, bs.entry );
+					}
+					p = walked;
+				} else if( BackSide( ri, w ) ) {
+					const Scalar pB = P::Pdf( s.bottom, ri, w, nm, bs.entry );
+					walked = W.w5 * ( -cosN ) * INV_PI + W.w3 * pB;
+					p = walked;
+					if( W.w1 > 0 && pr.Qdir > 0 ) {
+						p += W.w1 * pB / pr.Qdir;
+					}
+				}
+				if( pWalkedOnly ) {
+					*pWalkedOnly = walked;
+				}
+				return p;
+			}
+
+			template<class P>
+			static void EmitBack(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const Scalar nm,
+				ScatteredRayContainer& scattered,
+				const IORStack& S,
+				const BackStacks& bs,
+				const BackProbe& pr,
+				const Weights& W,
+				const Vector3& w,
+				const ScatteredRay::ScatRayType type,
+				const bool walkedOnly
+				)
+			{
+				Scalar walkedPdf = 0;
+				const Scalar pdf = BackMixturePdf<P>( s, ri, w, bs, nm, pr, W, &walkedPdf );
+				typename P::T direct, walked;
+				EvaluateBackParts<P>( s, w, ri, S, nm, direct, walked, false );
+				const Scalar cosO = fabs( Vector3Ops::Dot( w, ri.vNormal ) );
+				ScatteredRay out;
+				out.type = type;
+				out.isDelta = false;
+				out.ray.Set( ri.ptIntersection, w );
+				if( FrontSide( ri, w ) ) {
+					// Out through the top into the front medium; the
+					// crossing index carries the radiance eta^2 (the value
+					// includes it, the kray does not).
+					out.ior_stack = new IORStack( bs.out );
+					GlobalLog()->PrintNew( out.ior_stack, __FILE__, __LINE__, "ior stack" );
+					if( bs.below != bs.out.top() ) {
+						out.ior_stack->SetCrossingEtaFrom( bs.below );
+					}
+					out.delete_stack = true;
+				}
+				if( walkedOnly ) {
+					if( !( walkedPdf > 0 ) ) {
+						return;
+					}
+					out.pdf = walkedPdf;
+					P::SetKray( out, P::Scaled( walked, cosO / walkedPdf ) );
+				} else {
+					if( !( pdf > 0 ) ) {
+						return;
+					}
+					out.pdf = pdf;
+					P::SetKray( out, P::Scaled( direct + walked, cosO / pdf ) );
+				}
+				Emit( scattered, out );
+			}
+
+			template<class P>
+			static void ScatterBack(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				ISampler& sampler,
+				const Scalar nm,
+				ScatteredRayContainer& scattered,
+				const IORStack& S
+				)
+			{
+				const BackStacks bs = MakeBackStacks<P>( s, ri, S, nm );
+				const BackProbe pr = ComputeBackProbe<P>( s, ri, bs, nm );
+				bool any = false;
+				const Weights W = BackWeights( s, pr, any );
+				if( !any ) {
+					return;
+				}
+				const Vector3 n = ri.onb.w();
+				const Scalar u = sampler.Get1D();
+				if( u < W.w1 ) {
+					auto isBack = [&n]( const ScatteredRay& r ) { return !( Vector3Ops::Dot( r.ray.Dir(), n ) > 0 ); };
+					ScatteredRayContainer c;
+					P::Scatter( s.bottom, ri, sampler, nm, c, bs.entry );
+					Scalar q = 0;
+					const int k = SelectSubset<P>( c, isBack, sampler.Get1D(), q );
+					if( k >= 0 ) {
+						ScatteredRay& r = c[k];
+						if( r.isDelta || !W.aggregate ) {
+							P::SetKray( r, P::Scaled( P::Kray( r ), Scalar( 1 ) / ( q * W.w1 ) ) );
+							const IORStack after( r.ior_stack ? *r.ior_stack : bs.entry );
+							SetExternalStack( s, r, after, bs.out );
+							Emit( scattered, r );
+						} else {
+							EmitBack<P>( s, ri, nm, scattered, S, bs, pr, W, Vector3Ops::Normalize( r.ray.Dir() ), r.type, false );
+						}
+					}
+				} else if( u < W.w1 + W.w2 ) {
+					const Vector3 w = GeometricUtilities::CreateDiffuseVector( ri.onb, sampler.Get2D() );
+					if( FrontSide( ri, w ) ) {
+						EmitBack<P>( s, ri, nm, scattered, S, bs, pr, W, w, ScatteredRay::eRayTranslucent, !W.aggregate );
+					}
+				} else if( u < W.w1 + W.w2 + W.w3 ) {
+					ScatteredRayContainer c;
+					P::Scatter( s.bottom, ri, sampler, nm, c, bs.entry );
+					Scalar q = 0;
+					const ScatteredRay* r = c.RandomlySelect( sampler.Get1D(), P::kNM, &q );
+					if( r && !r->isDelta ) {
+						const Vector3 w = Vector3Ops::Normalize( r->ray.Dir() );
+						if( FrontSide( ri, w ) || BackSide( ri, w ) ) {
+							EmitBack<P>( s, ri, nm, scattered, S, bs, pr, W, w, r->type, !W.aggregate );
+						}
+					}
+				} else if( u < W.w1 + W.w2 + W.w3 + W.w5 ) {
+					const Vector3 w = -GeometricUtilities::CreateDiffuseVector( ri.onb, sampler.Get2D() );
+					if( BackSide( ri, w ) ) {
+						EmitBack<P>( s, ri, nm, scattered, S, bs, pr, W, w, ScatteredRay::eRayDiffuse, !W.aggregate );
+					}
+				} else if( W.w4 > 0 ) {
+					Walker<P>( s, ri, sampler, nm, scattered, S, Scalar( 1 ) / W.w4, eStartCoveredBottom );
+				}
+			}
+
+			template<class P>
+			static Scalar PdfBack(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const Vector3& wo,
+				const Scalar nm,
+				const IORStack& S
+				)
+			{
+				const BackStacks bs = MakeBackStacks<P>( s, ri, S, nm );
+				const BackProbe pr = ComputeBackProbe<P>( s, ri, bs, nm );
+				bool any = false;
+				const Weights W = BackWeights( s, pr, any );
+				if( !any ) {
+					return 0;
+				}
+				return BackMixturePdf<P>( s, ri, Vector3Ops::Normalize( wo ), bs, nm, pr, W, 0 );
+			}
+
 			template<class P>
 			static void ScatterImpl(
 				const CompositeSPF& s,
@@ -2172,7 +2686,13 @@ namespace RISE
 				// shading normal, is walked naturally from the layer it
 				// meets first and delta-tagged (the evaluator does not price
 				// it).  See "THE STACK CONVENTION".
-				if( !EnteredFromAbove( ri ) ) {
+				if( TwoSidedBack( s, ri ) ) {
+					ScatterBack<P>( s, ri, sampler, nm, scattered, ior_stack );
+				} else if( TwoSided( s ) && EnteredFromAbove( ri ) && CoveredEntry( ri ) && ior_stack.currentObject() && ior_stack.containsCurrent() ) {
+					// A front arrival: outside the sheet's below medium.
+					ScatterImpl<P>( s, ri, sampler, nm, scattered, OutsideOf( ior_stack ) );
+					return;
+				} else if( !EnteredFromAbove( ri ) ) {
 					Walker<P>( s, ri, sampler, nm, scattered, ior_stack, Scalar( 1 ), eStartNaturalBottom );
 				} else if( !CoveredEntry( ri ) ) {
 					Walker<P>( s, ri, sampler, nm, scattered, ior_stack, Scalar( 1 ), eStartNaturalTop );
@@ -2261,12 +2781,17 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const Vector3& wo,
 				const Scalar nm,
-				const IORStack& ior_stack
+				const IORStack& ior_stackIn
 				)
 			{
+				if( TwoSidedBack( s, ri ) ) {
+					return PdfBack<P>( s, ri, wo, nm, ior_stackIn );
+				}
 				if( !CoveredEntry( ri ) ) {
 					return 0;
 				}
+				std::optional<IORStack> frontStore;
+				const IORStack& ior_stack = FrontStack( s, ior_stackIn, frontStore );
 				const Vector3 w = Vector3Ops::Normalize( wo );
 				if( !( Vector3Ops::Dot( w, ri.onb.w() ) > 0 ) && !TransmissionLive( s, ri ) ) {
 					return 0;
@@ -2285,6 +2810,7 @@ namespace RISE
 		thread_local int CompositeSPFImpl::tEvaluateDepth = 0;
 		thread_local const CompositeSPF* CompositeSPFImpl::tLiveOwner = 0;
 		thread_local bool CompositeSPFImpl::tLive = false;
+		thread_local bool CompositeSPFImpl::tTwoSided = false;
 		const Scalar CompositeSPFImpl::kShareFloor            = Scalar( 0.02 );
 		const Scalar CompositeSPFImpl::kWalkerShareIfPossible = Scalar( 0.5 );
 		const Scalar CompositeSPFImpl::kWalkerShareFloor      = Scalar( 0.05 );
@@ -2493,8 +3019,12 @@ namespace RISE
 		const Scalar nm
 		)
 	{
+		// DL-472 (1): a composite whose bottom transmits through its own
+		// BSDF (term (c)) follows the face rule too -- its two-sided
+		// model presents the BOTTOM to a back arrival (CompositeSPFImpl,
+		// "THE BACK-FACE MODEL").
 		return pStack && pStack->currentObject() && riIn.bProvablyNoInterior && riIn.HasTrueGeomSide() &&
-			s.TransmitsThrough( riIn, *pStack, nm );
+			( s.TransmitsThrough( riIn, *pStack, nm ) || s.HasTransmissionValue() );
 	}
 
 	//! DL-407 (2): the stack a walk on a provably open sheet starts
@@ -2607,7 +3137,7 @@ RISEPel CompositeSPF::DeltaPassThroughTransmittance(
 {
 	std::optional<RayIntersectionGeometric> layerStore;
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, 0 );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, false );
 
 	const Vector3 dir = ri.ray.Dir();
 	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
@@ -2642,7 +3172,7 @@ Scalar CompositeSPF::DeltaPassThroughTransmittanceNM(
 {
 	std::optional<RayIntersectionGeometric> layerStore;
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, 0 );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, false );
 
 	const Vector3 dir = ri.ray.Dir();
 	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
@@ -2683,7 +3213,7 @@ void CompositeSPF::Scatter(
 	bool faceRule = false;
 	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, Scalar( -1 ), sheetStore, sheetBelow, faceRule );
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, faceRule );
 
 	const unsigned int firstRay = scattered.Count();
 	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeRGB>( *this, ri, sampler, Scalar( -1 ), scattered, walkStack );
@@ -2706,7 +3236,7 @@ void CompositeSPF::ScatterNM(
 	bool faceRule = false;
 	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, nm, sheetStore, sheetBelow, faceRule );
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, faceRule );
 
 	const unsigned int firstRay = scattered.Count();
 	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeNM>( *this, ri, sampler, nm, scattered, walkStack );
@@ -2727,7 +3257,7 @@ Scalar CompositeSPF::Pdf(
 	bool faceRule = false;
 	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, Scalar( -1 ), sheetStore, sheetBelow, faceRule );
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, faceRule );
 
 	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeRGB>( *this, ri, wo, Scalar( -1 ), walkStack );
 }
@@ -2745,9 +3275,42 @@ Scalar CompositeSPF::PdfNM(
 	bool faceRule = false;
 	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, nm, sheetStore, sheetBelow, faceRule );
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, faceRule );
 
 	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeNM>( *this, ri, wo, nm, walkStack );
+}
+
+//! DL-472 (1): an IMPORTANCE query (a BDPT / VCM light-subpath
+//! connection: the record's ray arrives from the light, `vLightIn` points
+//! at the eye) of a composite whose term (c) can be live is answered as
+//! the ADJOINT -- the radiance value of the swapped query (arrival from the
+//! eye side, light toward the original arrival).  Both ends of a
+//! connection then price the path with ONE function, exactly what the
+//! eye side evaluates.  Without the swap the light end evaluated the
+//! other side's layered model: the radiance eta^2 of the index step
+//! (BDPT / VCM 1.03x / 1.17x PT on a reciprocal bottom), and, for a
+//! non-reciprocal bottom (translucent with N != 1 or tau != 1, DL-223),
+//! the bottom's other-side lobes.  The record is re-aimed, so its
+//! replayed arrival facing (DL-412) is reset: the swapped ray is a new
+//! query, and two-sided mode reads its side from it.
+static bool ImportanceSwap(
+	const CompositeSPF& s,
+	const Vector3& vLightIn,
+	const RayIntersectionGeometric& riIn,
+	std::optional<RayIntersectionGeometric>& store,
+	Vector3& lightOut
+	)
+{
+	if( !BSDFImportanceModeFlag() || !s.HasTransmissionValue() || !riIn.bProvablyNoInterior ) {
+		return false;
+	}
+	const Vector3 L = Vector3Ops::Normalize( vLightIn );
+	store.emplace( riIn );
+	store->ray.origin = Point3( riIn.ptIntersection.x + L.x, riIn.ptIntersection.y + L.y, riIn.ptIntersection.z + L.z );
+	store->ray.SetDir( -L );
+	store->arrivalGeomFacing = 0;
+	lightOut = -riIn.ray.Dir();
+	return true;
 }
 
 RISEPel CompositeSPF::EvaluateLayered(
@@ -2756,13 +3319,21 @@ RISEPel CompositeSPF::EvaluateLayered(
 	const IORStack* pStack
 	) const
 {
+	{
+		std::optional<RayIntersectionGeometric> swapStore;
+		Vector3 lightOut;
+		if( ImportanceSwap( *this, vLightIn, riIn, swapStore, lightOut ) ) {
+			const BSDFImportanceScope radiance( false );
+			return EvaluateLayered( lightOut, *swapStore, pStack );
+		}
+	}
 	std::optional<RayIntersectionGeometric> layerStore;
 	std::optional<IORStack> sheetStore;
 	Scalar sheetBelow = 0;
 	bool faceRule = false;
 	const IORStack* pWalkStack = OpenSheetWalkStack( *this, riIn, pStack, Scalar( -1 ), sheetStore, sheetBelow, faceRule );
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, pWalkStack, faceRule );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, faceRule );
 
 	RISEPel direct, walked;
 	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeRGB>( *this, vLightIn, ri, pWalkStack, Scalar( -1 ), direct, walked );
@@ -2776,13 +3347,21 @@ Scalar CompositeSPF::EvaluateLayeredNM(
 	const IORStack* pStack
 	) const
 {
+	{
+		std::optional<RayIntersectionGeometric> swapStore;
+		Vector3 lightOut;
+		if( ImportanceSwap( *this, vLightIn, riIn, swapStore, lightOut ) ) {
+			const BSDFImportanceScope radiance( false );
+			return EvaluateLayeredNM( lightOut, *swapStore, nm, pStack );
+		}
+	}
 	std::optional<RayIntersectionGeometric> layerStore;
 	std::optional<IORStack> sheetStore;
 	Scalar sheetBelow = 0;
 	bool faceRule = false;
 	const IORStack* pWalkStack = OpenSheetWalkStack( *this, riIn, pStack, nm, sheetStore, sheetBelow, faceRule );
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, pWalkStack, faceRule );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, faceRule );
 
 	Scalar direct = 0, walked = 0;
 	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeNM>( *this, vLightIn, ri, pWalkStack, nm, direct, walked );
@@ -2803,7 +3382,7 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 	bool faceRule = false;
 	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, nm, sheetStore, sheetBelow, faceRule );
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, faceRule );
 
 	// Every non-delta emission in AGGREGATE mode is priced
 	// value(dir) * cos / Pdf(dir) with the deterministic layered value, so
@@ -2811,6 +3390,17 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 	// the ISPF default's 6-argument EvaluateKrayNM supplies the cos and the
 	// division.  PER-BRANCH mode (a top whose selection is itself random)
 	// prices each branch's own class instead, which this cannot recover.
+	if( CompositeSPFImpl::TwoSidedBack( *this, ri ) ) {
+		// DL-472 (1): the back-face model's companion weight, the
+		// layered value without its radiance eta^2 (the ray's stack
+		// carries it), when the bottom's selection is deterministic.
+		if( !bottom.SelectionMassIsDeterministic( ri, nm ) ) {
+			return -1;
+		}
+		Scalar direct = 0, walked = 0;
+		CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeNM>( *this, outDir, ri, &walkStack, nm, direct, walked, false );
+		return direct + walked;
+	}
 	if( !CompositeSPFImpl::CoveredEntry( ri ) ) {
 		return -1;
 	}
@@ -2843,7 +3433,7 @@ Scalar CompositeSPF::EvaluateKrayNM(
 	bool faceRule = false;
 	const IORStack& walkStack = *OpenSheetWalkStack( *this, riIn, &ior_stack, nm, sheetStore, sheetBelow, faceRule );
 	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &walkStack, faceRule );
-	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn );
+	const CompositeSPFImpl::LiveGuard liveGuard( *this, riIn, faceRule );
 
 	// Reached for DELTA rays (the HWSS ladders pass pdfHero = -1 for them).
 	// A DIRECT delta ray is the top's own delta up-going REFLECTION,
