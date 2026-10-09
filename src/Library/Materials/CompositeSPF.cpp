@@ -492,6 +492,16 @@ namespace RISE
 				static Scalar MaxOf( const T& v ) { return ColorMath::MaxValue( v ); }
 				static T Scaled( const T& v, const Scalar s ) { return v * s; }
 				static T Mul( const T& a, const T& b ) { return a * b; }
+				//! DL-406: channel `ch` of `v` alone (all of it for ch < 0).
+				static T Mask( const T& v, const int ch )
+				{
+					if( ch < 0 || ch > 2 ) {
+						return v;
+					}
+					RISEPel m( 0, 0, 0 );
+					m[ch] = v[ch];
+					return m;
+				}
 				static void Scatter( const ISPF& spf, const RayIntersectionGeometric& ri, ISampler& s, const Scalar, ScatteredRayContainer& c, const IORStack& st )
 				{
 					spf.Scatter( ri, s, c, st );
@@ -522,6 +532,7 @@ namespace RISE
 				static Scalar MaxOf( const T& v ) { return v; }
 				static T Scaled( const T& v, const Scalar s ) { return v * s; }
 				static T Mul( const T& a, const T& b ) { return a * b; }
+				static T Mask( const T& v, const int ) { return v; }
 				static void Scatter( const ISPF& spf, const RayIntersectionGeometric& ri, ISampler& s, const Scalar nm, ScatteredRayContainer& c, const IORStack& st )
 				{
 					spf.ScatterNM( ri, s, nm, c, st );
@@ -1502,9 +1513,13 @@ namespace RISE
 			//      NON-DELTA exit lobes.
 			//  The walk continues by CONDITIONAL selection (reflections only
 			//  at each layer); exits are accounted by (a)/(b), never
-			//  sampled.  A Henyey-Greenstein warp (which also keeps a delta
-			//  part) and a per-channel RGB warp have no single-density form
-			//  and are still priced as ideal (DL-297's residual).  A top
+			//  sampled.  DL-406: a Henyey-Greenstein warp keeps a DELTA part
+			//  (its draws with cos(alpha) <= 0 stay on the Snell axis), so
+			//  term (a) is that part's ideal connection scaled by its weight
+			//  F_HG(0) plus the perturbed part through the adjoint draw
+			//  above (ConnectThroughTop); a per-channel RGB top (dispersion,
+			//  per-channel scattering, an AR stack) is connected once per
+			//  channel through that channel's own warp.  A top
 			//  whose delta-tagged transmissions are not refractions at all
 			//  (a nested composite: they are whole walks) has no term (a);
 			//  the walker carries that class (DL-341).
@@ -1662,19 +1677,22 @@ namespace RISE
 				}
 			}
 
-			//! DL-297: one draw of the ADJOINT of a cos^N warp -- the lobe
-			//! about `w`, clipped to the exit hemisphere `t . n > 0` (the
-			//! Snell image of any internal direction lies there) -- and
-			//! its exact density.  Where the shading normal is TILTED off
-			//! the geometric one the forward warp may be re-derived about
-			//! the true surface (DL-111), so its support is not guaranteed
-			//! to lie inside this lobe's: a cosine-hemisphere component
-			//! (`kAdjointCosineShare`) then keeps every exit direction
-			//! reachable.  Returns false (no sample) on a degenerate arc.
+			//! DL-297 / DL-406: one draw of the ADJOINT of a warp's
+			//! PERTURBED part -- the same polar law about `w` (Phong cos^N,
+			//! or the Henyey-Greenstein marginal restricted to cos > 0 and
+			//! renormalized), clipped to the exit hemisphere `t . n > 0`
+			//! (the Snell image of any internal direction lies there) --
+			//! and its exact density.  Where the shading normal is TILTED
+			//! off the geometric one the forward warp may be re-derived
+			//! about the true surface (DL-111), so its support is not
+			//! guaranteed to lie inside this lobe's: a cosine-hemisphere
+			//! component (`kAdjointCosineShare`) then keeps every exit
+			//! direction reachable.  Returns false (no sample) on a
+			//! degenerate arc.
 			static bool SampleAdjointWarp(
 				const Vector3& w,
 				const Vector3& n,
-				const Scalar N,
+				const DeltaTransmissionWarpLaw& law,
 				const bool tilted,
 				const OrthonormalBasis3D& onb,
 				ISampler& smp,
@@ -1683,31 +1701,38 @@ namespace RISE
 				)
 			{
 				const Scalar eps = tilted ? kAdjointCosineShare : Scalar( 0 );
+				// The perturbed part's mass: the polar density below is a
+				// sub-density of that mass, so it is renormalized by it.
+				const Scalar mass = Scalar( 1 ) - law.DeltaFraction();
+				if( !( mass > 0 ) ) {
+					return false;
+				}
 				const Scalar uSel = smp.Get1D();
 				const Point2 u2 = smp.Get2D();
-				Scalar pPhong = 0;
-				bool havePhong = false;
+				Scalar pLobe = 0;
+				bool haveLobe = false;
 				if( uSel < eps ) {
 					t = GeometricUtilities::CreateDiffuseVector( onb, u2 );
 				} else {
-					// The lobe's own draw: polar cosine u^(1/(N+1)), azimuth
-					// on the valid arc -- its density is known from the draw.
-					const Scalar c = r_min( Scalar( 1 ), pow( u2.x, Scalar( 1 ) / ( N + Scalar( 1 ) ) ) );
+					// The lobe's own draw: polar cosine by inversion,
+					// azimuth on the valid arc -- its density is known from
+					// the draw.
+					const Scalar c = law.SampleWarpedPolar( u2.x );
 					Scalar half = PI;
 					t = ( c < Scalar( 1 ) ) ? GeometricUtilities::PerturbClipped( w, acos( c ), n, u2.y, &half ) : w;
 					if( !( half > 0 ) ) {
 						return false;
 					}
-					pPhong = ( N + Scalar( 1 ) ) * pow( c, N ) / ( Scalar( 2 ) * half );
-					havePhong = true;
+					pLobe = law.PolarDensity( c ) / ( mass * Scalar( 2 ) * half );
+					haveLobe = true;
 				}
 				t = Vector3Ops::Normalize( t );
 				const Scalar cn = Vector3Ops::Dot( t, n );
 				if( !( cn > 0 ) ) {
 					return false;
 				}
-				if( !havePhong ) {
-					// A cosine draw: evaluate the Phong component at it.
+				if( !haveLobe ) {
+					// A cosine draw: evaluate the lobe component at it.
 					const Scalar ct = Vector3Ops::Dot( t, w );
 					if( ct > 0 ) {
 						Scalar half = PI;
@@ -1715,11 +1740,11 @@ namespace RISE
 							GeometricUtilities::PerturbClipped( w, acos( ct ), n, Scalar( 0.5 ), &half );
 						}
 						if( half > 0 ) {
-							pPhong = ( N + Scalar( 1 ) ) * pow( ct, N ) / ( Scalar( 2 ) * half );
+							pLobe = law.PolarDensity( r_min( Scalar( 1 ), ct ) ) / ( mass * Scalar( 2 ) * half );
 						}
 					}
 				}
-				pdf = ( Scalar( 1 ) - eps ) * pPhong + eps * cn * INV_PI;
+				pdf = ( Scalar( 1 ) - eps ) * pLobe + eps * cn * INV_PI;
 				return pdf > 0;
 			}
 
@@ -1732,6 +1757,104 @@ namespace RISE
 				}
 				const Scalar c = fabs( Vector3Ops::Dot( Vector3Ops::Normalize( ri.vGeomNormal ), ri.onb.w() ) );
 				return c < Scalar( 1 ) - Scalar( 1e-12 );
+			}
+
+			//! Term (a) for one warp law of the top's delta transmission
+			//! (`channel` -1, or the RGB channel whose transmission it is).
+			//!
+			//!   * The DELTA part (weight DeltaFraction: 1 for an ideal
+			//!     transmission, F_HG(0) for a Henyey-Greenstein warp, 0
+			//!     for Phong) lands exactly on the Snell image of u, so it
+			//!     is the ideal connection at u = inverse Snell(wOut),
+			//!     scaled by that weight.
+			//!   * The PERTURBED part (DL-297, DL-406) lands at wOut with
+			//!     the top's own sub-density q(wOut | u) and is connected
+			//!     through one adjoint draw t of that law about wOut:
+			//!         g(u(t)) q cos(t) / ( p(t) cos(wOut) ),
+			//!     g = beta f_bottom W Tr / eta^2.
+			//!
+			//! W is the transmission's weight wherever its warp happened to
+			//! land on the top's Scatter draw (identified by TYPE, not by
+			//! direction) whenever the law is warped; the ideal path keeps
+			//! its pre-DL-297 direction test.
+			template<class P>
+			static typename P::T ConnectThroughTop(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const Vector3& wOut,
+				const Scalar nm,
+				const WalkPath<P>& path,
+				const DeltaTransmissionWarpLaw& law,
+				const int channel,
+				const Scalar eta,
+				ISampler& hx
+				)
+			{
+				typedef typename P::T T;
+				T f = P::Zero();
+				const Vector3 n = ri.onb.w();
+				RayIntersectionGeometric rec( ri );
+				const bool warped = law.IsWarped();
+
+				// One connection: internal direction ux, its weight `adj`.
+				auto connect = [&]( const Vector3& ux, const Scalar Lx, const T& W, const Scalar adj ) {
+					if( !( P::MaxOf( W ) > 0 ) || !( adj > 0 ) ) {
+						return;
+					}
+					const T aFactor = P::Scaled( P::Mul( W, P::GapAtt( s.extinction, ri, nm, Lx ) ), adj / ( eta * eta ) );
+					// DL-472 (1): a back-face walk's ENTRY event at the
+					// bottom (arriving from below, beta 1) connects too.
+					if( path.fromBelow ) {
+						f = f + P::Mul( P::Value( *s.pBottomBSDF, ux, ri, nm, &path.entryStack ), aFactor );
+					}
+					for( size_t i = 0; i < path.betaBot.size(); i++ ) {
+						SetLayerRay( rec, ri, path.wBot[i], path.LBot[i] );
+						f = f + P::Mul( P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, ux, rec, nm, &path.gapBot[i] ) ), aFactor );
+					}
+				};
+				// The top's delta transmission weight out along ux.
+				auto transmission = [&]( const Vector3& ux, const Scalar Lx ) -> T {
+					SetLayerRay( rec, ri, ux, Lx );
+					ScatteredRayContainer cx;
+					P::Scatter( s.top, rec, hx, nm, cx, path.gap0 );
+					T W = P::Zero();
+					for( unsigned int i = 0; i < cx.Count(); i++ ) {
+						if( warped ? ( cx[i].isDelta && cx[i].type == ScatteredRay::eRayRefraction )
+							: ( cx[i].isDelta && Vector3Ops::Dot( cx[i].ray.Dir(), n ) >= 0 ) ) {
+							W = W + P::Kray( cx[i] );
+						}
+					}
+					return W;
+				};
+
+				// The delta part.
+				const Scalar pd = law.DeltaFraction();
+				if( pd > 0 ) {
+					Vector3 ux( 0, 0, 1 );
+					if( InternalDirectionForExit( wOut, n, eta, ux ) ) {
+						const Scalar Lx = CompositeSPF::GapPathLength( ux, n, s.thickness );
+						const T W = transmission( ux, Lx );
+						connect( ux, Lx, W, pd );
+					}
+				}
+
+				// The perturbed part.
+				if( warped && pd < Scalar( 1 ) ) {
+					Vector3 t = wOut;
+					Scalar pT = 0;
+					Vector3 ux( 0, 0, 1 );
+					if( SampleAdjointWarp( wOut, n, law, ShadingTilted( ri ), ri.onb, hx, t, pT ) &&
+						InternalDirectionForExit( t, n, eta, ux ) ) {
+						const Scalar Lx = CompositeSPF::GapPathLength( ux, n, s.thickness );
+						const T W = transmission( ux, Lx );
+						// `rec` still holds the record the top was scattered at.
+						const Scalar q = s.top.DeltaTransmissionWarpPdf( rec, wOut, nm, path.gap0, channel );
+						const Scalar cOut = Vector3Ops::Dot( wOut, n );
+						const Scalar adj = ( q > 0 && cOut > 0 ) ? q * Vector3Ops::Dot( t, n ) / ( pT * cOut ) : Scalar( 0 );
+						connect( ux, Lx, W, adj );
+					}
+				}
+				return f;
 			}
 
 			//! The connection terms against a recorded walk.
@@ -1777,54 +1900,26 @@ namespace RISE
 					const Scalar eta = ( nOut > 0 && nGap > 0 ) ? ( nGap / nOut ) : Scalar( 1 );
 					HashedSampler hx( HashPoint( HashVector( HashVector( kSaltEvaluateExit, ri.ray.Dir() ), wOut ), ri.ptIntersection ) );
 
-					// DL-297: a WARPED delta transmission is connected
-					// through an adjoint draw of its warp (see above).
-					const Scalar warpN = s.top.DeltaTransmissionWarpExponent( ri, nm );
-					Vector3 t = wOut;
-					Scalar pT = 0;
-					bool ok = true;
-					if( warpN >= 0 ) {
-						ok = SampleAdjointWarp( wOut, n, warpN, ShadingTilted( ri ), ri.onb, hx, t, pT );
+					// DL-406: an RGB top that emits one transmission PER
+					// CHANNEL (dispersion, per-channel `scattering`, an AR
+					// stack) is connected channel by channel, each through
+					// its own warp -- unless no channel warps, where the one
+					// ideal connection prices all three (the pre-DL-406
+					// path, unchanged).
+					bool perChannel = false;
+					DeltaTransmissionWarpLaw laws[3];
+					if( !P::kNM && s.top.DeltaTransmissionWarpIsPerChannel( ri ) ) {
+						for( int ch = 0; ch < 3; ch++ ) {
+							laws[ch] = s.top.DeltaTransmissionWarp( ri, nm, ch );
+							perChannel = perChannel || laws[ch].IsWarped();
+						}
 					}
-					Vector3 ux( 0, 0, 1 );
-					if( ok && InternalDirectionForExit( t, n, eta, ux ) ) {
-						const Scalar Lx = CompositeSPF::GapPathLength( ux, n, s.thickness );
-						SetLayerRay( rec, ri, ux, Lx );
-						ScatteredRayContainer cx;
-						P::Scatter( s.top, rec, hx, nm, cx, path.gap0 );
-						T W = P::Zero();
-						Scalar adj = 1;
-						if( warpN >= 0 ) {
-							// The transmission's weight wherever its warp
-							// happened to land on this draw (its density is
-							// q, below): identified by type, not direction.
-							for( unsigned int i = 0; i < cx.Count(); i++ ) {
-								if( cx[i].isDelta && cx[i].type == ScatteredRay::eRayRefraction ) {
-									W = W + P::Kray( cx[i] );
-								}
-							}
-							const Scalar q = s.top.DeltaTransmissionWarpPdf( rec, wOut, nm, path.gap0 );
-							const Scalar cOut = Vector3Ops::Dot( wOut, n );
-							adj = ( q > 0 && cOut > 0 ) ? q * Vector3Ops::Dot( t, n ) / ( pT * cOut ) : Scalar( 0 );
-						} else {
-							for( unsigned int i = 0; i < cx.Count(); i++ ) {
-								if( cx[i].isDelta && Vector3Ops::Dot( cx[i].ray.Dir(), n ) >= 0 ) {
-									W = W + P::Kray( cx[i] );
-								}
-							}
+					if( perChannel ) {
+						for( int ch = 0; ch < 3; ch++ ) {
+							f = f + P::Mask( ConnectThroughTop<P>( s, ri, wOut, nm, path, laws[ch], ch, eta, hx ), ch );
 						}
-						if( P::MaxOf( W ) > 0 && adj > 0 ) {
-							const T aFactor = P::Scaled( P::Mul( W, P::GapAtt( s.extinction, ri, nm, Lx ) ), adj / ( eta * eta ) );
-							// DL-472 (1): a back-face walk's ENTRY event at the
-							// bottom (arriving from below, beta 1) connects too.
-							if( path.fromBelow ) {
-								f = f + P::Mul( P::Value( *s.pBottomBSDF, ux, ri, nm, &path.entryStack ), aFactor );
-							}
-							for( size_t i = 0; i < path.betaBot.size(); i++ ) {
-								SetLayerRay( rec, ri, path.wBot[i], path.LBot[i] );
-								f = f + P::Mul( P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, ux, rec, nm, &path.gapBot[i] ) ), aFactor );
-							}
-						}
+					} else {
+						f = f + ConnectThroughTop<P>( s, ri, wOut, nm, path, s.top.DeltaTransmissionWarp( ri, nm, -1 ), -1, eta, hx );
 					}
 				}
 

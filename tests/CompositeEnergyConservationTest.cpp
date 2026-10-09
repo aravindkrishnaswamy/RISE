@@ -75,6 +75,7 @@
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/DielectricMaterial.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
@@ -1124,6 +1125,155 @@ static void SectionW( Fixtures& f )
 }
 
 //////////////////////////////////////////////////////////////////////
+//  Section W2 -- DL-406: Section W for the warps DL-297 left ideal.
+//
+//  A Henyey-Greenstein `dielectric_material` (`hg TRUE`, `scattering` =
+//  g) warps its delta-tagged transmission by the HG polar marginal about
+//  the Snell axis -- but only for the draws with cos(alpha) > 0; the rest
+//  stay ON the axis, a delta part of weight F_HG(0).  A per-channel RGB
+//  top (per-channel `scattering`, per-channel `ior` = dispersion) emits
+//  one transmitted ray per channel, each with its own warp (and, under
+//  dispersion, its own axis).  Same protocol as Section W, binned per
+//  CHANNEL (a dispersive top's walk carries one channel per path), plus
+//  one NM row (the composite's ScatterNM at 550 nm against the RGB walk;
+//  every painter is uniform, so the two describe one distribution).
+//  Pre-fix term (a) put all of it in the ideal-Snell direction.
+//////////////////////////////////////////////////////////////////////
+static void WarpHistogramChannels( const ISPF* composite, const ISPF* top, const ISPF* bot, double thDeg,
+	int batches, int perBatch, unsigned seedBase, bool nm, double mean[3][kWarpBins], double sem[3][kWarpBins] )
+{
+	std::vector<double> per[3][kWarpBins];
+	for( int b = 0; b < batches; ++b ) {
+		RandomNumberGenerator rng( seedBase + 7919u * (unsigned)b );
+		IndependentSampler smp( rng );
+		double acc[3][kWarpBins] = { { 0 } };
+		for( int i = 0; i < perBatch; ++i ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			const RayIntersectionGeometric ri = MakeTiltedIntersection( thDeg, p, 0.0 );
+			if( composite ) {
+				IORStack st = MakeTestIORStack( g_stub );
+				ScatteredRayContainer sc;
+				if( nm ) {
+					composite->ScatterNM( ri, smp, 550.0, sc, st );
+				} else {
+					composite->Scatter( ri, smp, sc, st );
+				}
+				for( unsigned j = 0; j < sc.Count(); ++j ) {
+					const Vector3 d = Vector3Ops::Normalize( sc[j].ray.Dir() );
+					if( d.z <= 0 ) continue;
+					const int bin = std::min( kWarpBins - 1, (int)( d.z * kWarpBins ) );
+					for( int ch = 0; ch < 3; ++ch ) {
+						acc[ch][bin] += nm ? sc[j].krayNM : sc[j].kray[ch];
+					}
+				}
+			} else {
+				Vector3 d( 0, 0, 0 );
+				const RISEPel v = ReferenceLayerWalk( *top, *bot, ri, smp, &d );
+				d = Vector3Ops::Normalize( d );
+				if( d.z > 0 ) {
+					const int bin = std::min( kWarpBins - 1, (int)( d.z * kWarpBins ) );
+					for( int ch = 0; ch < 3; ++ch ) {
+						acc[ch][bin] += v[ch];
+					}
+				}
+			}
+		}
+		for( int ch = 0; ch < 3; ++ch ) {
+			for( int k = 0; k < kWarpBins; ++k ) per[ch][k].push_back( acc[ch][k] / perBatch );
+		}
+	}
+	for( int ch = 0; ch < 3; ++ch ) {
+		for( int k = 0; k < kWarpBins; ++k ) {
+			double m = 0; for( double v : per[ch][k] ) m += v; m /= per[ch][k].size();
+			double var = 0; for( double v : per[ch][k] ) var += ( v - m ) * ( v - m );
+			var /= std::max<size_t>( 1, per[ch][k].size() - 1 );
+			mean[ch][k] = m; sem[ch][k] = std::sqrt( var / per[ch][k].size() );
+		}
+	}
+}
+
+static void SectionW2( Fixtures& f )
+{
+	std::cout << "\n[W2] DL-406: exit-energy histogram per channel, HG and per-channel RGB warped coats vs the independent layer walk (16 x 20000 each)\n";
+	UniformScalarPainter* g06  = new UniformScalarPainter( 0.6 );   g06->addref();
+	UniformScalarPainter* gm03 = new UniformScalarPainter( -0.3 );  gm03->addref();
+	RGBScalarPainter* scatRGB  = new RGBScalarPainter( 0.0, 5.0, 10000.0 );  scatRGB->addref();
+	RGBScalarPainter* iorRGB   = new RGBScalarPainter( 1.45, 1.5, 1.6 );     iorRGB->addref();
+	RGBScalarPainter* gRGB     = new RGBScalarPainter( 0.3, 0.6, 0.85 );     gRGB->addref();
+	DielectricMaterial* hg06   = new DielectricMaterial( *f.s1, *f.s15, *g06, true );    hg06->addref();
+	DielectricMaterial* hgm03  = new DielectricMaterial( *f.s1, *f.s15, *gm03, true );   hgm03->addref();
+	DielectricMaterial* scatCh = new DielectricMaterial( *f.s1, *f.s15, *scatRGB, false );  scatCh->addref();
+	DielectricMaterial* disp   = new DielectricMaterial( *f.s1, *iorRGB, *f.s0, false );    disp->addref();
+	DielectricMaterial* dispHG = new DielectricMaterial( *f.s1, *iorRGB, *gRGB, true );     dispHG->addref();
+	// The per-channel references.  DielectricSPF's dispersive loop runs
+	// channel i through exactly the code a UNIFORM top with that channel's
+	// ior and scattering runs for every channel (no AR stack here, so the
+	// per-channel wavelength is unused), and transport through a white
+	// bottom does not mix channels, so channel i of the dispersive
+	// composite must equal channel i of the walk through that uniform top.
+	// That walk carries full RGB throughput and is far quieter than the
+	// dispersive walk (whose per-channel selections multiply its weights
+	// by ~3 at every top event and give it a heavy tail the batch sem does
+	// not resolve).
+	UniformScalarPainter* s145 = new UniformScalarPainter( 1.45 );  s145->addref();
+	UniformScalarPainter* s16  = new UniformScalarPainter( 1.6 );   s16->addref();
+	UniformScalarPainter* g03  = new UniformScalarPainter( 0.3 );   g03->addref();
+	UniformScalarPainter* g085 = new UniformScalarPainter( 0.85 );  g085->addref();
+	UniformScalarPainter* s5   = new UniformScalarPainter( 5.0 );   s5->addref();
+	DielectricMaterial* eqScat5  = new DielectricMaterial( *f.s1, *f.s15, *s5, false );    eqScat5->addref();
+	DielectricMaterial* eq145    = new DielectricMaterial( *f.s1, *s145, *f.s0, false );   eq145->addref();
+	DielectricMaterial* eq16     = new DielectricMaterial( *f.s1, *s16, *f.s0, false );    eq16->addref();
+	DielectricMaterial* eqHg145  = new DielectricMaterial( *f.s1, *s145, *g03, true );     eqHg145->addref();
+	DielectricMaterial* eqHg16   = new DielectricMaterial( *f.s1, *s16, *g085, true );     eqHg16->addref();
+	struct Row { const IMaterial* top; const char* name; bool nm; const IMaterial* eq[3]; };
+	const Row rows[] = {
+		{ hg06,   "HG g 0.6",                                false, { 0, 0, 0 } },
+		{ hg06,   "HG g 0.6 (NM pipe, 550 nm)",              true,  { 0, 0, 0 } },
+		{ hgm03,  "HG g -0.3 (mostly delta)",                false, { 0, 0, 0 } },
+		{ scatCh, "per-channel scattering 0 / 5 / 10000",     false, { f.dScat0, eqScat5, f.dSmooth } },
+		{ disp,   "dispersive ior 1.45 / 1.5 / 1.6, scattering 0", false, { eq145, f.dScat0, eq16 } },
+		{ dispHG, "dispersive ior + per-channel HG g 0.3 / 0.6 / 0.85", false, { eqHg145, hg06, eqHg16 } },
+	};
+	for( int r = 0; r < (int)( sizeof( rows ) / sizeof( rows[0] ) ); ++r ) {
+		CompositeMaterial* m = MakeComposite( *rows[r].top, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+		for( const double th : { 0.0, 45.0 } ) {
+			double am[3][kWarpBins], as[3][kWarpBins], rm[3][kWarpBins], rs[3][kWarpBins];
+			WarpHistogramChannels( m->GetSPF(), 0, 0, th, 16, 20000, 5501u + (unsigned)th + 41u * (unsigned)r, rows[r].nm, am, as );
+			if( rows[r].eq[0] ) {
+				for( int ch = 0; ch < 3; ++ch ) {
+					double em[3][kWarpBins], es[3][kWarpBins];
+					WarpHistogramChannels( 0, rows[r].eq[ch]->GetSPF(), f.lamb->GetSPF(), th, 16, 20000, 6607u + (unsigned)th + 43u * (unsigned)r + 101u * (unsigned)ch, false, em, es );
+					for( int b = 0; b < kWarpBins; ++b ) { rm[ch][b] = em[ch][b]; rs[ch][b] = es[ch][b]; }
+				}
+			} else {
+				WarpHistogramChannels( 0, rows[r].top->GetSPF(), f.lamb->GetSPF(), th, 16, 20000, 6607u + (unsigned)th + 43u * (unsigned)r, false, rm, rs );
+			}
+			const int nch = rows[r].nm ? 1 : 3;
+			for( int ch = 0; ch < nch; ++ch ) {
+				std::cout << "    " << rows[r].name << ", theta " << th << ", channel " << ch << "\n      composite:";
+				for( int b = 0; b < kWarpBins; ++b ) std::cout << " " << std::fixed << std::setprecision( 4 ) << am[ch][b];
+				std::cout << "\n      walk     :";
+				for( int b = 0; b < kWarpBins; ++b ) std::cout << " " << std::fixed << std::setprecision( 4 ) << rm[ch][b];
+				std::cout << "\n      z        :";
+				for( int b = 0; b < kWarpBins; ++b ) {
+					const double sig = std::sqrt( as[ch][b] * as[ch][b] + rs[ch][b] * rs[ch][b] );
+					std::cout << " " << std::setprecision( 2 ) << ( am[ch][b] - rm[ch][b] ) / std::max( 1e-12, sig );
+					Check( std::fabs( am[ch][b] - rm[ch][b] ) <= 0.002 + 5.0 * sig,
+						std::string( "[W2] DL-406 warped-coat exit histogram == independent walk, " ) + rows[r].name +
+						" theta " + std::to_string( (int)th ) + " channel " + std::to_string( ch ) + " bin " + std::to_string( b ) );
+				}
+				std::cout << "\n";
+			}
+		}
+		m->release();
+	}
+	eqScat5->release(); eq145->release(); eq16->release(); eqHg145->release(); eqHg16->release();
+	s145->release(); s16->release(); g03->release(); g085->release(); s5->release();
+	hg06->release(); hgm03->release(); scatCh->release(); disp->release(); dispHG->release();
+	g06->release(); gm03->release(); scatRGB->release(); iorRGB->release(); gRGB->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 //  Section F -- sibling table.  Full-sphere furnace (reflection +
 //  transmission through the stack), RGB, theta 0 and 60.  Lossless
 //  configurations are gated at 1; the rest are printed as a record.
@@ -1608,6 +1758,10 @@ static void SectionM()
 		"dielectric_material\n{\n\tname mat_glassS\n\ttau 1\n\tior 1.5\n\tscattering 1000000\n}\n\n"
 		"dielectric_material\n{\n\tname mat_glass2S\n\ttau 1\n\tior 1.5\n\tscattering 1000000\n}\n\n"
 		"composite_material\n{\n\tname mat_ggS\n\ttop mat_glassS\n\tbottom mat_glass2S\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		// DL-406: a WARPED top (the parser-default `scattering` 10000) over a
+		// delta-sharp bottom -- the composite's inner interface is index-
+		// matched and sharp, so this is exactly plain warped glass.
+		"composite_material\n{\n\tname mat_ggW\n\ttop mat_glass\n\tbottom mat_glass2S\n\tthickness 0\n\textinction 0.0\n}\n\n"
 		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n";
 	const std::string head = std::string( "RISE ASCII SCENE 7\n" ) +
 		"film\n{\n\twidth 32\n\theight 16\n}\n\n"
@@ -1742,8 +1896,9 @@ static void SectionM()
 	const std::string mirror =
 		"clippedplane_geometry\n{\n\tname mq\n\tpta -6 -4 -2\n\tptb 6 -4 -2\n\tptc 6 4 -2\n\tptd -6 4 -2\n}\n\n"
 		"standard_object\n{\n\tname M\n\tgeometry mq\n\tmaterial mat_mir\n}\n\n";
-	for( int fam = 0; fam < 3; ++fam ) {
-		const char* fName = ( fam == 0 ) ? "two panes, one object" : ( fam == 1 ) ? "two panes, separate objects" : "sheet over a mirror";
+	for( int fam = 0; fam < 4; ++fam ) {
+		const char* fName = ( fam == 0 ) ? "two panes, one object" : ( fam == 1 ) ? "two panes, separate objects" :
+			( fam == 2 ) ? "sheet over a mirror" : "two panes, separate objects, warped top";
 		for( int ds = 0; ds < 2; ++ds ) {
 			for( int w = 0; w < 3; ++w ) {
 				std::string geo, objs;
@@ -1769,6 +1924,23 @@ static void SectionM()
 					// family tests.
 					objs = obj( "La", "aL", "mat_ggS", 0 ) + obj( "Lb", "bL", "mat_ggS", 0 ) +
 					       obj( "Ra", "aR", "mat_glassS", 0 ) + obj( "Rb", "bR", "mat_glassS", 0 );
+				} else if( fam == 3 ) {
+					// DL-406 (re-covers DL-407 (2)'s warped separate panes):
+					// family 1 with the parser-default WARPED glass.  The
+					// composite is {warped glass / sharp glass}: its inner
+					// interface is index-matched and delta-sharp, a no-op,
+					// so each pane is one warped glass interface exactly
+					// like the plain-glass twin -- including at family 1's
+					// TIR edge, which the composite now blurs ONCE.  (A
+					// {warped / warped} pair blurs twice: each layer warps
+					// its own transmission by definition, -0.3 % against
+					// plain glass at that edge; that is the composite's
+					// model, the equivalent pair of separate warped
+					// surfaces, not a defect.)
+					geo = MatrixQuad( "aL", -4, 0, 0.3, w, ds == 1 ) + MatrixQuad( "bL", -4, 0, -0.3, w, ds == 1 ) +
+					      MatrixQuad( "aR", 0, 4, 0.3, w, ds == 1 ) + MatrixQuad( "bR", 0, 4, -0.3, w, ds == 1 );
+					objs = obj( "La", "aL", "mat_ggW", 0 ) + obj( "Lb", "bL", "mat_ggW", 0 ) +
+					       obj( "Ra", "aR", "mat_glass", 0 ) + obj( "Rb", "bR", "mat_glass", 0 );
 				} else {
 					geo = MatrixQuad( "qL", -4, 0, 0, w, ds == 1 ) + MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) + mirror;
 					objs = obj( "L", "qL", "mat_gg", 0 ) + obj( "Rr", "qR", "mat_glass", 0 );
@@ -1789,7 +1961,9 @@ static void SectionM()
 					// noise: ratio sd ~0.08 % over 12 salted renders, mean
 					// -0.06 % (the frame's left / right offset).  0.5 %,
 					// against the pre-fix 0.94 / 0.47 vs 4.64 this family pins.
-					const double famBand = ( fam == 2 || ( fam == 1 && w == 1 ) ) ? 0.005 : 0.002;
+					// DL-406: the warped panes (family 3) are not zero-variance
+					// (the warp draws a direction per transmission): 0.5 %.
+					const double famBand = ( fam == 2 || fam == 3 || ( fam == 1 && w == 1 ) ) ? 0.005 : 0.002;
 					gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= famBand,
 						std::string( "[M] glass/glass == plain glass, " ) + fName + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + " (" + inName[r] + ")" );
 				}
@@ -3236,7 +3410,14 @@ int main( int argc, char** argv )
 		SectionH( f );
 		SectionT( f );
 		SectionW( f );
+		SectionW2( f );
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) { SectionD(); SectionD10(); }
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--dl406-only" ) {
+		SectionW( f );
+		SectionW2( f );
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -3291,6 +3472,7 @@ int main( int argc, char** argv )
 	SectionH( f );
 	SectionT( f );
 	SectionW( f );
+	SectionW2( f );
 	SectionG( f );
 	SectionK( f );
 	SectionK8( f );
