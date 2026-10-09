@@ -13495,7 +13495,7 @@ namespace RISE
 			}
 
 			//! `extinction` (empty = leave the descriptor default 3.45) matters only in
-			//! `conductor` mode; the rough_stone / aged_bronze recipes pass the value
+			//! `conductor` mode; the aged_bronze recipe passes the value
 			//! `cooktorrance_material` defaulted to (1) so the metal's Fresnel is
 			//! unchanged by the DL-400 move off the deprecated chunk.
 			std::string ScaffoldGGXText( const std::string& name, const std::string& rd, const std::string& rs,
@@ -13613,7 +13613,7 @@ namespace RISE
 				return out;
 			}
 
-			//! rough_stone: ggx_material (conductor; was cooktorrance_material until DL-400), rd bound to a worley3d
+			//! rough_stone: ggx_material (schlick_f0, 0.04 dielectric F0 tint since DL-415; was cooktorrance_material until DL-400), rd bound to a worley3d
 			//! pebble/cell field (colora=tone, colorb="none"), facets bound
 			//! to ONE `scalar_painter { expression ... }` fbm wear field.
 			//! `wear` widens and raises the facet band; `scale` sets the

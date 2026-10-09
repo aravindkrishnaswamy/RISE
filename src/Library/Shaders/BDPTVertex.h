@@ -113,6 +113,8 @@ namespace RISE
 												///< (DL-224). Even an analytic primitive differs from `normal`
 												///< after a relief, glint or normal-map modifier.
 		OrthonormalBasis3D		onb;
+		OrthonormalBasis3D		coatDecodeOnb;	///< DL-302: frame the coat normal decodes in (the independent shader-direction UV frame, else the pre-modifier frame); valid iff bHasCoatDecodeOnb
+		bool					bHasCoatDecodeOnb;
 		Point2					ptCoord;		///< Texture coordinate at intersection (for painter evaluation)
 		Point2					ptCoord1;		///< Secondary texture coordinate (TEXCOORD_1 from glTF; mirrors RayIntersectionGeometric::ptCoord1)
 		bool					bHasTexCoord1;	///< True iff this vertex came from a mesh that carried a TEXCOORD_1 array (gates TexCoord1Painter)
@@ -399,6 +401,7 @@ namespace RISE
 
 		BDPTVertex() :
 		type( SURFACE ),
+		bHasCoatDecodeOnb( false ),
 		ptCoord( Point2( 0, 0 ) ),
 		ptCoord1( Point2( 0, 0 ) ),
 		bHasTexCoord1( false ),

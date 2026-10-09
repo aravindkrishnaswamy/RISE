@@ -360,7 +360,7 @@ namespace RISE
 					"material costs one tool call instead of hand-typing a scalar/painter graph and "
 					"choosing which slot takes a painter yourself. Families: \"weathered_wood\" "
 					"(pbr_metallic_roughness, base_color AND roughness both bound to a domainwarp3d wood-"
-					"grain painter), \"rough_stone\" (ggx conductor, rd bound to a worley3d pebble field, "
+					"grain painter), \"rough_stone\" (ggx with fresnel_mode schlick_f0 and a 0.04 dielectric F0 tint, rd bound to a worley3d pebble field, "
 					"alphax/alphay both bound to a spatially-varying scalar field), \"brushed_metal\" "
 					"(ggx with fresnel_mode schlick_f0, alphax/alphay both bound to a spatially-varying scalar field at "
 					"different scale for the anisotropic groove), \"aged_bronze\" (ggx conductor, rd bound "
