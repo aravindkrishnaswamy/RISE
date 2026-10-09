@@ -333,10 +333,13 @@ namespace RISE
 				const Scalar outerIOR
 				) const;
 
-			//! DL-407 (2): true when light can cross the whole stack (each
-			//! layer a clear dielectric / perfect refractor, a translucent
-			//! layer, or a composite that transmits) -- the composites to
-			//! which DL-345's open-sheet face rule applies.
+			//! DL-407 (2): true when light can cross the whole stack by
+			//! DELTA events only (each layer a clear dielectric / perfect
+			//! refractor, or a nested composite that does) -- the
+			//! composites to which DL-345's open-sheet face rule applies.
+			//! A translucent (non-delta) layer is excluded: a from-below
+			//! walk is delta-tagged and invisible to NEE (DL-296), so a
+			//! delta light would contribute nothing to the back face.
 			bool TransmitsThrough(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack,

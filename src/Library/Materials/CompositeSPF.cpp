@@ -15,7 +15,6 @@
 
 #include "pch.h"
 #include "CompositeSPF.h"
-#include "TranslucentSPF.h"
 #include <optional>
 #include "../Interfaces/ILog.h"
 
@@ -2221,7 +2220,7 @@ namespace RISE
 			const bool opposes = ri.bGeomNormalOrientedToRay || ri.GeomNormalOpposesArrival();
 			flip = pStack->containsCurrent() ? opposes : !opposes;
 		}
-		// DL-407 (2) (2026-10-08): a TRANSMITTING composite on a PROVABLY
+		// DL-407 (2) (2026-10-08): an ALL-DELTA TRANSMITTING composite on a PROVABLY
 		// open sheet (`faceRule`, FollowsOpenSheetFaceRule) follows
 		// DL-345's FACE rule -- its back side IS the composite's below
 		// medium -- so the frame is the TRUE winding normal: a front
@@ -2230,11 +2229,21 @@ namespace RISE
 		// keep the reported side, which on a double-sided sheet presented
 		// the top on both faces while the plain dielectric twin followed
 		// the face rule; since DL-382 every flat consistently wound
-		// triangle mesh is such a sheet too.  An OPAQUE composite (nothing
-		// below to be in) keeps the reported side: its back face is a
-		// card's other side (D7 / D8), and a from-below walk there is
+		// triangle mesh is such a sheet too.  Every other composite (an
+		// opaque one, or one with a non-delta translucent layer) presents
+		// its top on either face (below): its back face is a card's other
+		// side (D7 / D8 / D10), and a from-below walk there is
 		// delta-tagged, invisible to NEE (DL-296).
 		if( faceRule && ri.bGeomNormalOrientedToRay ) {
+			flip = true;
+		}
+		// Review (P2-1): every OTHER composite on a provably open sheet
+		// presents its TOP to the arriving ray on either face, whatever
+		// the sidedness.  A double-sided sheet already reports a
+		// ray-facing normal; a SINGLE-sided certified mesh hit from
+		// behind does not (no flip flag), and was walked from below --
+		// delta-tagged, so a delta light read 0 there.
+		if( !faceRule && ri.bProvablyNoInterior && ri.HasTrueGeomSide() && !ri.GeomNormalOpposesArrival() ) {
 			flip = true;
 		}
 		if( !ri.bProvablyNoInterior && !ri.bGeomNormalOrientedToRay && !flip && ri.arrivalGeomFacing == 0 ) {
@@ -2282,15 +2291,12 @@ namespace RISE
 		return !trueOpposes;
 	}
 
-	//! DL-407 (2): the stack a walk on a provably open sheet starts
-	//! from.  Struck from behind by a walk that never crossed the sheet
-	//! (the stack lacks O), the walk is IN the below medium by the face
-	//! rule: O is pushed at BelowMediumIOR and the walk proceeds as from
-	//! inside a closed composite.  Every other case returns @a pStack.
 	//! DL-407 (2): does this hit follow DL-345's face rule?  A provably
-	//! open sheet, a stateful caller, and a composite that TRANSMITS
+	//! open sheet, a stateful caller whose stack carries the object, and
+	//! a composite that TRANSMITS by delta events only
 	//! (CompositeSPF::TransmitsThrough) -- only then is there a below
-	//! medium for the back side to be.
+	//! medium for the back side to be, and a walk from below that the
+	//! integrators can price (all-delta, so NEE owes it nothing).
 	static inline bool FollowsOpenSheetFaceRule(
 		const CompositeSPF& s,
 		const RayIntersectionGeometric& riIn,
@@ -2298,9 +2304,15 @@ namespace RISE
 		const Scalar nm
 		)
 	{
-		return pStack && riIn.bProvablyNoInterior && riIn.HasTrueGeomSide() && s.TransmitsThrough( riIn, *pStack, nm );
+		return pStack && pStack->currentObject() && riIn.bProvablyNoInterior && riIn.HasTrueGeomSide() &&
+			s.TransmitsThrough( riIn, *pStack, nm );
 	}
 
+	//! DL-407 (2): the stack a walk on a provably open sheet starts
+	//! from.  Struck from behind by a walk that never crossed the sheet
+	//! (the stack lacks O), the walk is IN the below medium by the face
+	//! rule: O is pushed at BelowMediumIOR and the walk proceeds as from
+	//! inside a closed composite.  Every other case returns @a pStack.
 	static inline const IORStack* OpenSheetWalkStack(
 		const CompositeSPF& s,
 		const RayIntersectionGeometric& riIn,
@@ -2312,7 +2324,7 @@ namespace RISE
 		)
 	{
 		faceRule = FollowsOpenSheetFaceRule( s, riIn, pStack, nm );
-		if( !faceRule || !pStack->currentObject() || pStack->containsCurrent() || !OpenSheetBackArrival( riIn ) ) {
+		if( !faceRule || pStack->containsCurrent() || !OpenSheetBackArrival( riIn ) ) {
 			return pStack;
 		}
 		below = s.BelowMediumIOR( riIn, *pStack, nm, pStack->top() );
@@ -2393,9 +2405,6 @@ bool CompositeSPF::TransmitsThrough(
 	auto layer = [&]( const ISPF& L ) -> bool {
 		if( const CompositeSPF* pc = dynamic_cast<const CompositeSPF*>( &L ) ) {
 			return pc->TransmitsThrough( ri, ior_stack, nm );
-		}
-		if( dynamic_cast<const TranslucentSPF*>( &L ) ) {
-			return true;
 		}
 		const SpecularInfo si = ( nm > 0 ) ? L.GetSpecularInfoNM( ri, ior_stack, nm ) : L.GetSpecularInfo( ri, ior_stack );
 		return si.valid && si.clearTransmission;

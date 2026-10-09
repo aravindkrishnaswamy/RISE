@@ -1515,12 +1515,14 @@ static void SectionD9()
 //
 //  EVERY cell follows the plain dielectric's convention.  Since DL-382 the
 //  outward and inward quads are PROVABLY open sheets, so on them that is
-//  DL-345's FACE rule (DL-407 (2): the composite follows it too, see
-//  CompositeSPF's OpenSheetWalkStack): the back side is the below medium,
-//  so an INWARD sheet seen from the camera is viewed from inside glass --
-//  glass/glass and plain glass both read F + (1 - F) eta^2 = 2.20, the
-//  translucent / nested twins keep the cell's winding, and the separate
-//  inward panes read ~4.6.  The mixed quad is not certified (stack rule).  Bands (every render salted, so each cell
+//  DL-345's FACE rule (DL-407 (2): an ALL-DELTA transmitting composite
+//  follows it too, see CompositeSPF's OpenSheetWalkStack): the back side
+//  is the below medium, so an INWARD sheet seen from the camera is viewed
+//  from inside glass -- glass/glass and plain glass both read
+//  F + (1 - F) eta^2 = 2.20, the nested twin keeps the cell's winding, and
+//  the separate inward panes read ~4.6.  glass/translucent (non-delta)
+//  presents its top on either face.  The mixed quad is not certified
+//  (stack rule).  Bands (every render salted, so each cell
 //  is an independent replicate): zero-variance all-delta cells 0.2 %
 //  (glass/glass, plain glass; furnace and sheets); glass/translucent
 //  furnace / sheet 2 % (256 spp); nested 5 % (1024 spp, per-branch
@@ -1661,15 +1663,17 @@ static void SectionM()
 						objs = obj( "L", "bT", c.mat, -2 ) + obj( "Rr", "bR", twinMat, 2 );
 					} else {
 						// DL-407 (2): a flat consistently wound quad (outward or
-						// inward) is a PROVABLY open sheet since DL-382, and
-						// DL-345's face rule makes its WINDING physical (the
-						// back side is the composite's below medium), so the
-						// translucent / nested twin keeps the cell's winding
-						// and varies only the sidedness.  The mixed quad is
-						// not certified (stack rule): its twin stays the
-						// double-sided outward sheet.
+						// inward) is a PROVABLY open sheet since DL-382.  An
+						// all-delta transmitting composite (nested) follows
+						// DL-345's face rule there, which makes its WINDING
+						// physical (the back side is the below medium): its
+						// twin keeps the cell's winding and varies only the
+						// sidedness.  glass/translucent (a non-delta layer)
+						// presents its top on either face, so winding must not
+						// matter: double-sided outward twin.  The mixed quad is
+						// not certified (stack rule): outward twin.
 						geo = MatrixQuad( "qT", -4, 0, 0, w, ds == 1 ) +
-						      ( c.kind == 0 ? MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) : MatrixQuad( "qR", 0, 4, 0, ( w == 2 ) ? 0 : w, true ) );
+						      ( c.kind == 0 ? MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) : MatrixQuad( "qR", 0, 4, 0, ( c.kind == 2 && w != 2 ) ? w : 0, true ) );
 						objs = obj( "L", "qT", c.mat, 0 ) + obj( "Rr", "qR", twinMat, 0 );
 					}
 					const char* gName = ( g == 0 ) ? "closed box, furnace" : ( g == 1 ) ? "closed box, light inside" : "open sheet, furnace";
@@ -1762,6 +1766,67 @@ static void SectionM()
 		}
 	}
 	std::cout << "    M summary: " << ( cells - cellsBad ) << " of " << cells << " matrix checks pass\n";
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//  D10 (DL-407 (2) review, 2026-10-08): a composite that is NOT face-ruled
+//  (a non-delta translucent layer, or an opaque one) on a provably open
+//  sheet presents its TOP on either face, so seen from BEHIND under a
+//  DELTA light on the camera side it is lit exactly as seen from the
+//  front (mirrored scene).  Walking it from below delta-tags every exit,
+//  which NEE cannot see (DL-296): the back read 0.  Rows: glass/translucent
+//  on a double-sided clipped plane (P1: the first revision face-ruled every
+//  translucent stack) and a coat over Lambertian on a SINGLE-sided flat
+//  mesh (P2-1: no flip flag on a single-sided back hit, walked from below
+//  since DL-382 certified the mesh).
+//////////////////////////////////////////////////////////////////////
+static void SectionD10()
+{
+	std::cout << "\n[D10] Non-face-ruled composite on an open sheet, back == front under an omni light\n";
+	const std::string mats =
+		"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n"
+		"composite_material\n{\n\tname mat_cc\n\ttop mat_glass\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n";
+	struct Row { const char* name; const char* mat; bool singleSidedMesh; };
+	const Row rows[] = {
+		{ "glass/translucent, double-sided clipped plane", "mat_gtr", false },
+		{ "coat over Lambertian 0.8, single-sided flat mesh", "mat_cc", true },
+	};
+	for( const Row& row : rows ) {
+		// The sheet's normal is +z (clipped plane pta..ptd, mesh wound +z).
+		const std::string geo = row.singleSidedMesh
+			? std::string( "indexedmesh_geometry\n{\n\tname q\n\tvertex -4 -3 0\n\tvertex 4 -3 0\n\tvertex 4 3 0\n\tvertex -4 3 0\n"
+			               "\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided FALSE\n\tface_normals TRUE\n}\n\n" )
+			: std::string( "clippedplane_geometry\n{\n\tname q\n\tpta -4 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd -4 3 0\n}\n\n" );
+		for( int r = 0; r < 2; ++r ) {
+			double side[2] = { -1, -1 };	// 0: front (camera +z), 1: back (camera -z)
+			for( int b = 0; b < 2; ++b ) {
+				const double z = b ? -1.0 : 1.0;
+				std::ostringstream sc;
+				sc << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 16\n}\n\n"
+				   << "pinhole_camera\n{\n\tlocation 0 0 " << 7.0 * z << "\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+				   << mats << geo
+				   << "standard_object\n{\n\tname S\n\tgeometry q\n\tmaterial " << row.mat << "\n}\n\n"
+				   << "omni_light\n{\n\tname ol\n\tpower 200\n\tcolor 1 1 1\n\tposition 0 0 " << 5.0 * z << "\n}\n\n"
+				   << ( r == 0 ? PtRasterizer( false, 256 ) : BdptRasterizer( false, 256 ) );
+				CapturingRasterizerOutput* cap = 0;
+				const bool ok = Render( sc.str(), "d10", cap, 91000u + 7u * (unsigned)( 2 * r + b ) );
+				side[b] = ok ? RegionMean( *cap, 2, cap->width - 2 ) : -1;
+				if( cap ) safe_release( cap );
+			}
+			const char* in = ( r == 0 ) ? "PT  " : "BDPT";
+			std::cout << "    D10 " << row.name << ", " << in << ": front " << std::setprecision(5) << side[0]
+			          << " back " << side[1] << ", ratio " << ( side[0] > 0 ? side[1] / side[0] : -1 ) << "\n";
+			Check( side[0] > 0 && side[1] > 0 && std::fabs( side[1] / side[0] - 1.0 ) <= 0.03,
+				std::string( "[D10] back == front under an omni light, " ) + row.name + " (" + in + ")" );
+		}
+	}
 }
 
 static void SectionD()
@@ -2127,7 +2192,7 @@ static void SectionD()
 				// both faces (a card's other side), so its rows still pair.
 				if( g == 1 && std::string( c.mat ) == "mat_gg" ) {
 					Check( ok && std::fabs( mM / 0.4667 - 1.0 ) <= 0.03,
-						std::string( "[D7] open " ) + gname + " sheet from behind == F + (1-F)/eta^2 (stack rule), " + c.name + " (" + in + ")" );
+						std::string( "[D7] open " ) + gname + " sheet from behind == F + (1-F)/eta^2 (stack rule; DL-382 (1) KNOWN-DEFECT pin: an uncertified Bezier sheet is not face-ruled), " + c.name + " (" + in + ")" );
 					Check( ok && std::fabs( mC / 2.198 - 1.0 ) <= 0.03,
 						std::string( "[D7] clipped plane from behind == F + (1-F) eta^2 (face rule), " ) + c.name + " (" + in + ")" );
 				} else {
@@ -2785,7 +2850,12 @@ int main( int argc, char** argv )
 		SectionH( f );
 		SectionT( f );
 		SectionW( f );
-		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
+		if( argc > 2 && std::string( argv[2] ) == "--render" ) { SectionD(); SectionD10(); }
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--d10-only" ) {
+		SectionD10();
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -2826,6 +2896,7 @@ int main( int argc, char** argv )
 	SectionK8( f );
 	if( !skipRender ) {
 		SectionD();
+		SectionD10();
 	}
 
 	std::cout << "\n================================================" << std::endl;
