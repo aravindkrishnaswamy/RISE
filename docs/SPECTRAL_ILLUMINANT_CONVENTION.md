@@ -275,7 +275,8 @@ path. Without the override the default would discard the measured spectrum and r
 its RGB projection. Two distinct failure modes, and it matters which is which:
 
 * **Re-uplift (wrong spectrum, not zero).** `SpectralColorPainter::GetColor` returns the
-  spectrum's own integrated XYZ (`SpectralColorPainter.cpp`, ctor), so it is **non-black**.
+  spectrum's own RGB projection (`SpectralColorPainter.cpp`, ctor; since DL-464 the D65
+  reflectance view of `scale * F`, with `GetRadianceColor` the source view), so it is **non-black**.
   The classic physically-authored spectral Cornell box
   (`scenes/Tests/Spectral/cornellbox_spectral.RISEscene`) binds `spectral_painter`
   straight to a luminaire's `exitance`, and that is this case: without the override it

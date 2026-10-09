@@ -1361,7 +1361,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "nmbegin"; p.kind = ValueKind::Double;   p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
 						{ auto& p = P(); p.name = "nmend";   p.kind = ValueKind::Double;   p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
-						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;   p.description = "Overall amplitude scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;   p.description = "Multiplies the spectrum on every path (spectral samples and the RGB projections alike, DL-464); as a reflectance, a scaled spectrum above 1 is an energy gain"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength,amplitude sample (repeatable)"; }
 						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Spectrum text file (pairs)"; }
 						{ auto& p = P(); p.name = "nmfile";  p.kind = ValueKind::Filename; p.description = "Wavelength list file"; }
@@ -3288,8 +3288,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "nmbegin";      p.kind = ValueKind::Double; p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
 						{ auto& p = P(); p.name = "nmend";        p.kind = ValueKind::Double; p.description = "End wavelength (nm)";   p.defaultValueHint = "700"; }
 						{ auto& p = P(); p.name = "numfreq";      p.kind = ValueKind::UInt;   p.description = "Sample count";          p.defaultValueHint = "30"; }
-						{ auto& p = P(); p.name = "normalize";    p.kind = ValueKind::Bool;   p.description = "Normalize peak to 1";   p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::Double; p.description = "Overall amplitude";     p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "normalize";    p.kind = ValueKind::Bool;   p.description = "Divide Planck's spectral exitance by its value at the Wien peak, so the curve's peak (possibly outside the visible band) equals `scale`; FALSE keeps absolute W m^-2 per metre of wavelength (~1e13 in the visible)";   p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::Double; p.description = "Multiplies the spectrum on every path (spectral samples and the RGB projections alike, DL-464)";     p.defaultValueHint = "1.0"; }
 						return cd;
 					}();
 					return d;
