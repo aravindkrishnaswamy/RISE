@@ -338,11 +338,10 @@ namespace
 		// still AND the animation (e.g. the splat film composited in a
 		// shared Flush* override); PT has no splat layer.  5% band: the
 		// integrators agree to ~0.3% on this scene, while losing BDPT's /
-		// VCM's t==1 splat layer or NEE costs 15-99%.  MLT-spectral is
-		// excluded: it renders this scene at ~0.26x of every other
-		// rasterizer in BOTH paths (missing spectral integral
-		// normalization, DL-459 -- not an animation defect).
-		if( std::string( rc.label ) != "MLT-spectral" ) {
+		// VCM's t==1 splat layer or NEE costs 15-99%.  Every rasterizer,
+		// MLT-spectral included since DL-461 (it used to render at ~0.26x
+		// in both paths: missing spectral integral normalization).
+		{
 			static Stat ptRef;
 			static bool havePT = false;
 			if( !havePT ) {
