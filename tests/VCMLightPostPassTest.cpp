@@ -308,6 +308,62 @@ static void TestDeltaVertexInMiddle()
 
 	Check( ( out[0].flags & kLVF_IsDelta ) == 0, "delta: v[1] not flagged delta" );
 	Check( ( out[1].flags & kLVF_IsDelta ) == 0, "delta: v[3] not flagged delta" );
+
+	// DL-470: without a step pool nothing points into one.
+	Check( out[0].stepBase == kLightVertexNoSteps && out[1].stepBase == kLightVertexNoSteps,
+		"steps: no pool -> stepBase is the sentinel" );
+
+	// DL-470: with a pool, records 0..3 (the deepest stored vertex) are
+	// appended, carry the recurrence's own stamped steps, and every stored
+	// vertex points at record 0 of its subpath (here after one record a
+	// previous subpath left in the same pool).
+	{
+		std::vector<LightVertex> out2;
+		std::vector<VCMMisQuantities> mis2;
+		std::vector<VCMStep> pool( 1 );
+		VCMIntegrator::ConvertLightSubpath( verts, norm, out2, &mis2, false, &pool );
+		Check( out2.size() == 2 && pool.size() == 5, "steps: records 0..3 appended" );
+		if( out2.size() == 2 && pool.size() == 5 && mis2.size() == 4 ) {
+			Check( out2[0].stepBase == 1 && out2[1].stepBase == 1, "steps: stepBase = the subpath's record 0" );
+			bool same = true;
+			for( int q = 0; q < 4; q++ ) {
+				same = same && pool[1 + q].xf == static_cast<float>( mis2[q].xf ) &&
+					pool[1 + q].xgVC == static_cast<float>( mis2[q].xgVC ) &&
+					pool[1 + q].xgVM == static_cast<float>( mis2[q].xgVM );
+			}
+			Check( same, "steps: records carry the stamped (xf, xgVC, xgVM)" );
+			Check( pool[1].kind == kVCMStepSurface, "steps: an area-light root counts as an eye-walk surface hit" );
+			Check( pool[2].kind == kVCMStepSurface && pool[3].kind == kVCMStepSurface &&
+				pool[4].kind == kVCMStepSurface, "steps: surface vertices (delta included) count as surface hits" );
+			// The stored record at v[3] replays exactly from record 0 with the
+			// root's dVC kept, i.e. the stamped steps reproduce the stored dVC.
+			Scalar dVC = mis2[0].dVC, dVM = mis2[0].dVM;
+			for( int q = 1; q <= 3; q++ ) {
+				dVC = mis2[q].xf * dVC + mis2[q].xgVC;
+				dVM = mis2[q].xf * dVM + mis2[q].xgVM;
+			}
+			CheckClose( dVC, out2[1].mis.dVC, 1e-12 * ( 1 + std::fabs( dVC ) ), "steps: replay from record 0 reproduces v[3]'s dVC" );
+		}
+
+		// LightVertexStore::Concat adopts each buffer's records as a chunk.
+		LightVertexStore store;
+		std::vector<LightVertex> a = out2, b = out2;
+		std::vector< std::vector<VCMStep> > pa( 1, pool ), pb( 1, pool );
+		store.Concat( std::move( a ), std::move( pa ) );
+		store.Concat( std::move( b ), std::move( pb ) );
+		Check( store.StepCount() == 10 && store.Size() == 4, "store: both pools concatenated" );
+		if( store.Size() == 4 ) {
+			Check( store.Get( 0 ).stepChunk == 0 && store.Get( 2 ).stepChunk == 1 && store.Get( 2 ).stepBase == 1,
+				"store: each buffer's vertices point into their own chunk" );
+			const VCMStep* st = store.StepsOf( store.Get( 2 ) );
+			Check( st && st[3].xf == static_cast<float>( mis2[3].xf ) && st[3].xgVM == static_cast<float>( mis2[3].xgVM ),
+				"store: StepsOf reaches the subpath's records" );
+		}
+		store.Clear();
+		Check( store.StepCount() == 0, "store: Clear drops the pool" );
+		LightVertex none;
+		Check( store.StepsOf( none ) == 0, "store: no records -> StepsOf is null" );
+	}
 }
 
 //

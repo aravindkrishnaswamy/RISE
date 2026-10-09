@@ -549,16 +549,196 @@ static void RowD()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// Row E (DL-470): the MERGE's light-side window.  A glass sphere under
+// a small one-sided area light casts a caustic (L S S D E) on a
+// Lambertian floor; the camera sees the caustic and nothing of the
+// sphere.  Strategies for the caustic: the t = 1 splat (light walk 3
+// surfaces), the merge at the floor, and the eye hitting the light
+// through the sphere (s = 0, eye walk 4 surfaces) -- so at
+// max_eye_depth 1 / 2 / 3 the s = 0 strategy cannot be generated, and
+// every merge there is at i <= max_eye_depth.  Before DL-470 the merge's
+// wLight still reserved the s = 0 level (only its wCamera was windowed),
+// so the caustic lost that share.  BDPT at the SAME caps estimates the
+// same path set (VCM's merges reach no path its connections cannot here:
+// the camera sees no specular surface), so it is the reference.
+//   E2: three index-matched delta slabs in front of the lens make the
+//   floor the eye's 7th surface: at the DEFAULT caps (8, 8) the merge at
+//   i = 7 is the only caustic strategy (s = 0 needs 10, the splat is
+//   blocked by the slabs), at (12, 8) s = 0 joins it -- same paths, so
+//   VCM (8,8) == VCM (12,8) == PT (uncapped, s = 0 only).
+//////////////////////////////////////////////////////////////////////
+static std::string CausticScene( const std::string& rasterizerChunk, const bool slabs )
+{
+	std::string s =
+		"RISE ASCII SCENE 7\n"
+		"film\n"
+		"{\n"
+		"\twidth 48\n"
+		"\theight 48\n"
+		"}\n"
+		"\n"
+		"pinhole_camera\n"
+		"{\n"
+		"\tlocation 1.3 2.0 1.2\n"
+		"\tlookat 1.0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tfov 30.0\n"
+		"}\n"
+		"\n"
+		"standard_shader\n"
+		"{\n"
+		"\tname global\n"
+		"\tshaderop DefaultPathTracing\n"
+		"}\n"
+		"\n"
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_floor\n"
+		"\tcolor 0.8 0.8 0.8\n"
+		"}\n"
+		"\n"
+		"lambertian_material\n"
+		"{\n"
+		"\tname mat_floor\n"
+		"\treflectance pnt_floor\n"
+		"}\n"
+		"\n"
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_lum\n"
+		"\tcolor 30.0 30.0 30.0\n"
+		"}\n"
+		"\n"
+		"lambertian_luminaire_material\n"
+		"{\n"
+		"\tname mat_lum\n"
+		"\texitance pnt_lum\n"
+		"\tscale 1.0\n"
+		"\tmaterial none\n"
+		"}\n"
+		"\n"
+		"dielectric_material\n"
+		"{\n"
+		"\tname glass\n"
+		"\ttau 1.0 1.0 1.0\n"
+		"\tior 1.5\n"
+		"\tscattering 1000000.0\n"
+		"}\n"
+		"\n"
+		"clippedplane_geometry\n"
+		"{\n"
+		"\tname floor_g\n"
+		"\tpta -3 0 -3\n"
+		"\tptb -3 0 3\n"
+		"\tptc 3 0 3\n"
+		"\tptd 3 0 -3\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname floor\n"
+		"\tgeometry floor_g\n"
+		"\tmaterial mat_floor\n"
+		"}\n"
+		"\n"
+		"sphere_geometry\n"
+		"{\n"
+		"\tname sph_g\n"
+		"\tradius 0.6\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname sph\n"
+		"\tgeometry sph_g\n"
+		"\tmaterial glass\n"
+		"\tposition 0 1.0 0\n"
+		"}\n"
+		"\n"
+		"clippedplane_geometry\n"
+		"{\n"
+		"\tname lum_g\n"
+		"\tpta -1.5 3 -0.5\n"
+		"\tptb -0.5 3 -0.5\n"
+		"\tptc -0.5 3 0.5\n"
+		"\tptd -1.5 3 0.5\n"
+		"\tdoublesided FALSE\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname lum\n"
+		"\tgeometry lum_g\n"
+		"\tmaterial mat_lum\n"
+		"}\n"
+		"\n"
+		"\n";
+	if( slabs ) {
+		s += "dielectric_material\n{\n\tname slabmat\n\ttau 1.0 1.0 1.0\n\tior 1.0\n\tscattering 1000000.0\n}\n\n";
+		const double ys[3] = { 1.95, 1.90, 1.85 };
+		for( int k = 0; k < 3; k++ ) {
+			char buf[512];
+			std::snprintf( buf, sizeof(buf),
+				"box_geometry\n{\n\tname slab%d_g\n\twidth 0.8\n\theight 0.02\n\tdepth 0.8\n}\n\n"
+				"standard_object\n{\n\tname slab%d\n\tgeometry slab%d_g\n\tmaterial slabmat\n\tposition 1.27 %.2f 1.02\n}\n\n",
+				k, k, k, ys[k] );
+			s += buf;
+		}
+	}
+	s += rasterizerChunk;
+	return s;
+}
+
+static void RowE()
+{
+	std::cout << "--- Row E: caustic box, VCM merge window (DL-470) ---" << std::endl;
+	const int n = Repeats();
+	const unsigned int spp = 64;
+	unsigned int seed = 4700u;
+	const unsigned int eyeCaps[] = { 1, 2, 3, 8 };
+	for( unsigned int a : eyeCaps ) {
+		char lb[64], lv[64];
+		std::snprintf( lb, sizeof(lb), "BDPT (%u,8)", a );
+		std::snprintf( lv, sizeof(lv), "VCM (%u,8)", a );
+		const Stats b = RenderStatsSalted( CausticScene( BDPTChunk( a, 8, spp ), false ), n, seed );
+		seed += 100u;
+		const Stats v = RenderStatsSalted( CausticScene( VCMChunk( a, 8, spp ), false ), n, seed );
+		seed += 100u;
+		Print( lb, b );
+		Print( lv, v );
+		std::printf( "    VCM/BDPT %.4f\n", b.mean > 0 ? v.mean / b.mean : 0.0 );
+		Check( b.ok && v.ok, std::string( lv ) + ": rendered" );
+		Check( b.ok && v.ok && Agree( v, b, 4.0, 0.02 ), std::string( lv ) + " agrees with " + lb );
+	}
+
+	// E2: default caps with the floor at eye depth 7.
+	const Stats v8 = RenderStatsSalted( CausticScene( VCMChunk( 8, 8, spp ), true ), n, seed );
+	seed += 100u;
+	const Stats v12 = RenderStatsSalted( CausticScene( VCMChunk( 12, 8, spp ), true ), n, seed );
+	seed += 100u;
+	const Stats pt = RenderStatsSalted( CausticScene(
+		"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", true ), n, seed );
+	Print( "slabs VCM (8,8)", v8 );
+	Print( "slabs VCM (12,8)", v12 );
+	Print( "slabs PT", pt );
+	std::printf( "    VCM(8,8)/PT %.4f  VCM(12,8)/PT %.4f\n", pt.mean > 0 ? v8.mean / pt.mean : 0.0, pt.mean > 0 ? v12.mean / pt.mean : 0.0 );
+	Check( v8.ok && v12.ok && pt.ok, "slabs: rendered" );
+	Check( v8.ok && v12.ok && Agree( v8, v12, 4.0, 0.02 ), "slabs: VCM (8,8) agrees with VCM (12,8)" );
+	Check( v8.ok && pt.ok && Agree( v8, pt, 4.0, 0.02 ), "slabs: VCM (8,8) agrees with PT" );
+}
+
 int main()
 {
-	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467)" << std::endl;
+	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467, DL-470)" << std::endl;
 	// RISE_DL351_ROWS (e.g. "CD") runs a subset; default all.
 	const char* rows = std::getenv( "RISE_DL351_ROWS" );
-	const std::string sel = rows ? rows : "ABCD";
+	const std::string sel = rows ? rows : "ABCDE";
 	if( sel.find( 'A' ) != std::string::npos ) RowA();
 	if( sel.find( 'B' ) != std::string::npos ) RowB();
 	if( sel.find( 'C' ) != std::string::npos ) RowC();
 	if( sel.find( 'D' ) != std::string::npos ) RowD();
+	if( sel.find( 'E' ) != std::string::npos ) RowE();
 	std::cout << std::endl << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;
 }

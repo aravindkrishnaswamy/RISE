@@ -157,12 +157,19 @@ namespace
 
 		// Per-thread output buffers (one per worker).
 		std::vector<std::vector<LightVertex>>	perThreadOutput;
+		// DL-470: each worker's light-subpath step records, in fixed-size
+		// blocks (a subpath's records never straddle two) so the light pass
+		// carries at most one block of growth slack per worker; adopted by
+		// the store as chunks (LightVertexStore::Concat).
+		std::vector<std::vector<std::vector<VCMStep>>>	perThreadStepBlocks;
+		static constexpr std::size_t kStepBlockRecords = 65536;	// 2 MB
 		std::vector<unsigned long long>			perThreadPathsShot;
 
 		struct ThreadLocal {
 			std::vector<BDPTVertex>			tmpLightVerts;
 			std::vector<LightVertex>		tmpConverted;
 			std::vector<VCMMisQuantities>	tmpLightMis;
+			std::vector<VCMStep>			tmpSteps;		// DL-470: one subpath's records
 			unsigned long long				pathsShot = 0;
 			unsigned long long				storedCount = 0;
 		};
@@ -190,6 +197,7 @@ namespace
 			samplesPerSuperIter( std::max( 1u, samplesPerSuperIter_ ) ),
 			nextTile( 0 ),
 			perThreadOutput( numWorkers ),
+			perThreadStepBlocks( numWorkers ),
 			perThreadPathsShot( numWorkers, 0 )
 		{
 			// Block the pixel grid into tiles.  Tile size adapts to
@@ -272,9 +280,31 @@ namespace
                             }
 
 							tl.tmpConverted.clear();
+							tl.tmpSteps.clear();
 							VCMIntegrator::ConvertLightSubpath(
 								tl.tmpLightVerts, norm, tl.tmpConverted, &tl.tmpLightMis,
-								VCMIntegrator::SeeThroughLive( caster ) );
+								VCMIntegrator::SeeThroughLive( caster ), &tl.tmpSteps );
+							// DL-470: move the subpath's records into the worker's
+							// current block; the vertices index (block, offset).
+							if( !tl.tmpSteps.empty() ) {
+								std::vector<std::vector<VCMStep>>& blocks = perThreadStepBlocks[workerIdx];
+								if( blocks.empty() ||
+									blocks.back().size() + tl.tmpSteps.size() > blocks.back().capacity() ) {
+									blocks.emplace_back();
+									blocks.back().reserve( std::max( kStepBlockRecords, tl.tmpSteps.size() ) );
+								}
+								const std::size_t off = blocks.back().size();
+								blocks.back().insert( blocks.back().end(), tl.tmpSteps.begin(), tl.tmpSteps.end() );
+								for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
+									LightVertex& lv = tl.tmpConverted[m];
+									if( lv.stepBase != kLightVertexNoSteps && blocks.size() <= 0xFFFFu ) {
+										lv.stepBase += static_cast<unsigned int>( off );
+										lv.stepChunk = static_cast<unsigned short>( blocks.size() - 1 );
+									} else {
+										lv.stepBase = kLightVertexNoSteps;
+									}
+								}
+							}
 							for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
 								out.push_back( tl.tmpConverted[m] );
 								tl.storedCount++;
@@ -984,7 +1014,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		for( unsigned int i = 0; i < numWorkers; i++ ) {
 			const std::vector<LightVertex>& localBuf = dispatcher.perThreadOutput[i];
 			totalStored += localBuf.size();
-			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ) );
+			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ), std::move( dispatcher.perThreadStepBlocks[i] ) );
 		}
 	}
 
@@ -1196,7 +1226,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 
 		for( unsigned int i = 0; i < numWorkers; i++ ) {
 			totalStored += dispatcher.perThreadOutput[i].size();
-			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ) );
+			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ), std::move( dispatcher.perThreadStepBlocks[i] ) );
 		}
 	}
 
@@ -1253,8 +1283,8 @@ void VCMRasterizerBase::OnProgressivePassBegin(
     
 	GlobalLog()->PrintEx( eLog_Info,
 		"VCMRasterizerBase::OnProgressivePassBegin:: iteration %u — "
-		"rebuilt store with %llu light vertices (K=%u, r=%g, floor=%g, r/r_0=%.3f)",
-		passIdx, totalStored, samplesPerSuperIter,
+		"rebuilt store with %llu light vertices, %zu step records (K=%u, r=%g, floor=%g, r/r_0=%.3f)",
+		passIdx, totalStored, pLightVertexStore->StepCount(), samplesPerSuperIter,
 		(double)mCurrentMergeRadius, (double)mMergeRadiusFloor,
 		(double)( mBaseMergeRadius > 0 ? mCurrentMergeRadius / mBaseMergeRadius : 1.0 ) );
 }

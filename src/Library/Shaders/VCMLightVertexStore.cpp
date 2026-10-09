@@ -216,6 +216,7 @@ LightVertexStore::~LightVertexStore()
 void LightVertexStore::Clear()
 {
 	mVertices.clear();
+	mStepChunks.clear();
 	mBuilt = false;
 }
 
@@ -260,6 +261,32 @@ void LightVertexStore::Concat( std::vector<LightVertex>&& localBuffer )
 		std::make_move_iterator( localBuffer.end() ) );
 	localBuffer.clear();
 	mBuilt = false;
+}
+
+void LightVertexStore::Concat( std::vector<LightVertex>&& localBuffer, std::vector< std::vector<VCMStep> >&& localBlocks )
+{
+	// DL-470: adopt the blocks as chunks (no copy into a shared array; the
+	// last block is trimmed of its unused reserve).  A chunk index past 16
+	// bits drops the records; those vertices then merge unwindowed
+	// (pre-DL-470 behaviour).
+	const std::size_t base = mStepChunks.size();
+	if( base + localBlocks.size() > 0xFFFFu ) {
+		for( std::size_t k = 0; k < localBuffer.size(); k++ ) {
+			localBuffer[k].stepBase = kLightVertexNoSteps;
+		}
+	} else {
+		for( std::size_t k = 0; k < localBuffer.size(); k++ ) {
+			if( localBuffer[k].stepBase != kLightVertexNoSteps ) {
+				localBuffer[k].stepChunk = static_cast<unsigned short>( localBuffer[k].stepChunk + base );
+			}
+		}
+		for( std::size_t b = 0; b < localBlocks.size(); b++ ) {
+			localBlocks[b].shrink_to_fit();
+			mStepChunks.push_back( std::move( localBlocks[b] ) );
+		}
+	}
+	localBlocks = std::vector< std::vector<VCMStep> >();
+	Concat( std::move( localBuffer ) );
 }
 
 void LightVertexStore::BuildKDTree()

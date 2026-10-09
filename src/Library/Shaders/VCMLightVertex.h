@@ -78,6 +78,9 @@ namespace RISE
 			kLVF_HasVertexColor	= 1 << 3	///< Set when vColor was populated from a colored mesh hit at store time. No merge-path reader exists (verified 2026-09-11: `lv.vColor` / this bit have exactly one write site, VCMIntegrator.cpp's ConvertLightSubpath, and no reader anywhere in tree) -- the light side's material response is already folded into `throughput` by the time it reaches the store. Kept for the KD-tree layout and any future consumer.
 		};
 
+		/// DL-470: LightVertex::stepBase when no step records were kept.
+		static const unsigned int kLightVertexNoSteps = 0xFFFFFFFFu;
+
 		/// Compact per-vertex record stored in the VCM light vertex
 		/// KD-tree.  The first two fields must match the layout the
 		/// cloned KD-tree template expects.
@@ -97,6 +100,14 @@ namespace RISE
 			unsigned short		lightSurface;		///< DL-467: light-walk surface count of the light subpath up to and
 													///< including this vertex (BDPTUtilities::CountsAsSurfaceHit), for
 													///< the merge's depth-cap window
+			unsigned short		stepChunk;			///< DL-470: which chunk of the store's step pool
+													///< (LightVertexStore::StepsOf) holds this vertex's
+													///< light-subpath records (fits the padding above)
+			unsigned int		stepBase;			///< DL-470: index, within that chunk, of record 0 of
+													///< this vertex's light subpath; its own record is
+													///< stepBase + pathLength.  kLightVertexNoSteps when
+													///< the subpath's records were not kept (the merge
+													///< then uses `mis` unwindowed)
 
 			Vector3				normal;			///< Shading normal at the vertex (BSDF-frame; merge-time BSDF eval)
 			Vector3				geomNormal;		///< Geometric flat-face normal at the vertex.
@@ -126,7 +137,7 @@ namespace RISE
 			RGBIlluminantSpectrum throughputSpectrum;
 
 			VCMMisCore			mis;			///< dVCM/dVC/dVM at this vertex after the geometric update (the subpath's
-												///< DL-467 steps are not kept: they are only replayed within one subpath)
+												///< DL-467 steps live in the store's step pool, DL-470: stepBase)
 
 			//! Per-vertex color interpolated by the geometry at hit time
 			//! (linear Rec.709 RGB; see RISEPel).  Written once, at store
@@ -153,6 +164,8 @@ namespace RISE
 				jumpCoverSurface( 0 ),
 				jumpCoverVolume( 0 ),
 				lightSurface( 0 ),
+				stepChunk( 0 ),
+				stepBase( kLightVertexNoSteps ),
 				normal( 0, 0, 1 ),
 				geomNormal( 0, 0, 1 ),
 				wi( 0, 0, 0 ),
