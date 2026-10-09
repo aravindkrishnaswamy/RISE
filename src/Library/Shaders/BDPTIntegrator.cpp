@@ -55,6 +55,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <atomic>
 #include "pch.h"
 #include "BDPTIntegrator.h"
 #include "../Utilities/FiniteMath.h"
@@ -3754,6 +3755,48 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 namespace {
 
+// DL-424/425 review follow-up: the concrete RayCaster behind an
+// IRayCaster (the see-through walk needs `CastShadowRayAutoSampled`, and
+// every strategy's MIS weight needs `DeltaPassThroughShadowsActive`) is
+// resolved ONCE per subpath pair by EvaluateAllStrategiesImpl, through a
+// scoped thread-local, instead of one dynamic_cast per (s,t) connection.
+// The cache is keyed on the caster's address and only lives for the
+// scope (restored on exit), so it can never outlive the caster it
+// describes; a connection evaluated outside such a scope, or with a
+// different caster, resolves directly.
+struct ResolvedRayCaster
+{
+	const IRayCaster*	key = nullptr;
+	const RayCaster*	rc = nullptr;
+	bool				seeThroughLive = false;
+};
+thread_local ResolvedRayCaster tlsResolvedRayCaster;
+
+inline ResolvedRayCaster ResolveRayCaster( const IRayCaster& caster )
+{
+	if( tlsResolvedRayCaster.key == &caster ) {
+		return tlsResolvedRayCaster;
+	}
+	ResolvedRayCaster r;
+	r.key = &caster;
+	r.rc = dynamic_cast<const RayCaster*>( &caster );
+	r.seeThroughLive = r.rc && r.rc->DeltaPassThroughShadowsActive();
+	return r;
+}
+
+struct ResolvedRayCasterScope
+{
+	ResolvedRayCaster saved;
+	explicit ResolvedRayCasterScope( const IRayCaster& caster )
+		: saved( tlsResolvedRayCaster )
+	{
+		tlsResolvedRayCaster = ResolveRayCaster( caster );
+	}
+	~ResolvedRayCasterScope() { tlsResolvedRayCaster = saved; }
+	ResolvedRayCasterScope( const ResolvedRayCasterScope& ) = delete;
+	ResolvedRayCasterScope& operator=( const ResolvedRayCasterScope& ) = delete;
+};
+
 // Return-type mapping: ConnectionResult (Pel) / ConnectionResultNM (NM).
 template<class Tag> struct ConnectionResultFor;
 template<> struct ConnectionResultFor<PelTag> { typedef BDPTIntegrator::ConnectionResult   type; };
@@ -4004,10 +4047,8 @@ ConnectAndEvaluateImplCore(
 	// DL-425: every strategy weighs the see-through s = 1 connection
 	// where it can generate the same path (BDPTIntegrator::MISWeight).
 	BDPTIntegrator::SeeThroughMIS seeThroughMIS;
-	{
-		const RayCaster* pRCst = dynamic_cast<const RayCaster*>( &caster );
-		seeThroughMIS.live = pRCst && pRCst->DeltaPassThroughShadowsActive();
-	}
+	const ResolvedRayCaster resolvedCaster = ResolveRayCaster( caster );
+	seeThroughMIS.live = resolvedCaster.seeThroughLive;
 
 	// Validate: s <= lightVerts.size(), t <= eyeVerts.size(), s+t >= 2
 	if( s > lightVerts.size() || t > eyeVerts.size() ) {
@@ -4627,7 +4668,7 @@ ConnectAndEvaluateImplCore(
 		V seeThroughTr = TrOne<Tag>();
 		unsigned int seeThroughGaps = 0;		// DL-425
 		Scalar seeThroughProb = 1;
-		const RayCaster* pRCst = dynamic_cast<const RayCaster*>( &caster );
+		const RayCaster* pRCst = resolvedCaster.rc;
 		{
 			Point3 visTarget = lightStart.position;
 			if( envCase_s1 ) {
@@ -5664,11 +5705,10 @@ EvaluateAllStrategiesImpl(
 	// pass-through shadow walk is live (BDPTUtilities::
 	// LightSegmentEyeWitness); without it both families counted the path.
 	static thread_local BDPTUtilities::LightJumpPartition partition;
-	{
-		const RayCaster* pRCPartition = dynamic_cast<const RayCaster*>( &caster );
-		partition.Build( lightVerts, false,
-			pRCPartition && pRCPartition->DeltaPassThroughShadowsActive() );
-	}
+	// One RayCaster resolution for the whole subpath pair; every (s,t)
+	// connection below reads it (ResolveRayCaster).
+	const ResolvedRayCasterScope resolvedCasterScope( caster );
+	partition.Build( lightVerts, false, tlsResolvedRayCaster.seeThroughLive );
 	const BDPTUtilities::EyeWalkCaps eyeCaps = BDPTUtilities::MakeEyeWalkCaps(
 		self.GetMaxEyeDepth(), self.GetStabilityConfig().maxVolumeBounce );
 	// Eye-walk surface count of eyeVerts[0..t-1], t = 0..nEye.
@@ -6224,6 +6264,25 @@ Scalar BDPTIntegrator::MISWeight(
 		while( m + 1 < s && lightVerts[m].type == BDPTVertex::SURFACE &&
 			lightVerts[m].isDelta && lightVerts[m].passThroughProb > 0 ) {
 			m++;
+		}
+		// Pairing guard (see the light walk's gap-draw recording): a
+		// straight delta pass-through on the light prefix that did NOT
+		// record its pseudo-probability would end the chain here while the
+		// see-through connection (DeltaPassThroughChainToRoot) still
+		// recognises the longer chain -- a double count.
+		// Diagnostic only (never abort a render: release builds keep asserts
+		// live, and the position-derived direction can differ from the traced
+		// ray right at the straightness tolerance).
+		if( m + 1 < s && lightVerts[m].type == BDPTVertex::SURFACE &&
+			lightVerts[m].isDelta && lightVerts[m].pMaterial &&
+			lightVerts[m].pMaterial->HasDeltaPassThrough() &&
+			BDPTUtilities::IsStraightContinuation(
+				Vector3Ops::mkVector3( lightVerts[m].position, lightVerts[m - 1].position ),
+				Vector3Ops::mkVector3( lightVerts[m + 1].position, lightVerts[m].position ) ) ) {
+			static std::atomic<bool> warned( false );
+			if( !warned.exchange( true, std::memory_order_relaxed ) ) {
+				GlobalLog()->PrintEasyWarning( "BDPT MISWeight: straight delta pass-through vertex without a recorded passThroughProb (see-through MIS pairing); possible double count" );
+			}
 		}
 		const BDPTVertex& D = lightVerts[m];
 		const bool dShape = ( D.type == BDPTVertex::SURFACE && D.pMaterial ) || D.type == BDPTVertex::MEDIUM;
@@ -7795,8 +7854,20 @@ unsigned int GenerateLightSubpathImpl(
 			// accumulates (RayCaster::WalkShadowSegment), so BDPT's
 			// see-through s = 1 strategy and the light-tracing strategies
 			// that share its path can weight against each other.
-			if( pScat->type == ScatteredRay::eRayRefraction && pSPF &&
-				ri.pMaterial->HasDeltaPassThrough() )
+			//
+			// GUARD (DL-424/425 review): the gap draw is identified by WHAT
+			// the see-through side keys on -- a delta lobe of a
+			// HasDeltaPassThrough material that continues the incoming ray
+			// UNDEVIATED (BDPTUtilities::DeltaPassThroughChainToRoot's
+			// straightness test, same tolerance) -- never by the ray TYPE a
+			// particular SPF happens to stamp on it.  A wrapper that emitted
+			// its gap ray as anything but eRayRefraction would otherwise
+			// leave passThroughProb 0 here while the see-through connection
+			// still counts the light-tracing strategies in its own
+			// denominator: the two weights would then sum above 1 (a double
+			// count).  MISWeight asserts the pairing.
+			if( pSPF && ri.pMaterial->HasDeltaPassThrough() &&
+				BDPTUtilities::IsStraightContinuation( ri.geometric.ray.Dir(), pScat->ray.Dir() ) )
 			{
 				if constexpr( Traits::is_nm ) {
 					vertices.back().passThroughProb =

@@ -230,6 +230,15 @@ namespace RISE
 			mutable double				mProgressWeight;	///< Work units per tile in this pass (= passSPP)
 			mutable double				mProgressTotal;		///< Total work units across all passes
 
+			//! True only while PreRenderSetup runs for the SECOND field of an
+			//! interlaced animation frame (RenderFrameOfAnimation with
+			//! resetAOVs == false).  Both fields render into ONE image that is
+			//! flushed once, so per-frame accumulators shared across the frame
+			//! (BDPT/VCM splat film, adaptive sample counter) must survive the
+			//! second field's setup (DL-462).  Per-field state (light vertex
+			//! store, light sampler) is still rebuilt at the field's time.
+			mutable bool				mContinuingInterlacedFrame;
+
 			mutable AOVBuffers*		pAOVBuffers;		///< Planned first-hit AOV sidecar (OIDN and/or FrameStore consumers)
 
 			//! Allocate/reset only the float planes required by the current

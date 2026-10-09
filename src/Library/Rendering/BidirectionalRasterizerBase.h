@@ -101,6 +101,17 @@ namespace RISE
 			/// Scratch buffer is lazily allocated on first call.
 			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const override;
 
+			/// Final flush: composite the t==1 splat film onto the
+			/// image before forwarding to the outputs.  Shared by VCM
+			/// and BDPT (DL-458) so still renders and every animation
+			/// frame (PixelBasedRasterizerHelper::RasterizeSceneAnimation)
+			/// compose splats identically.  With OIDN, the pre-denoised
+			/// flush resolves then UN-resolves (OIDN must not see
+			/// splats) and the denoised flush adds them on top.
+			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+
 			/// Copy `src` into the scratch buffer and resolve the splat
 			/// film on top.  Shared body for the Flush* overrides that
 			/// both algorithms use.  Caller must verify `pSplatFilm` is

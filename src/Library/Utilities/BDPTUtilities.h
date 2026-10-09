@@ -529,6 +529,20 @@ namespace RISE
 		/// a function of the path: each gap draw continues the incoming ray
 		/// undeviated, so the segment directions must all equal
 		/// root -> verts[j].
+		/// Does `out` continue `in` undeviated?  The straightness test
+		/// DeltaPassThroughChainToRoot applies to every segment of a gap
+		/// chain, shared with the light walk's gap-draw recording
+		/// (BDPTVertex::passThroughProb) so the two sides cannot disagree
+		/// on which delta draws are pass-throughs.  Unnormalized inputs.
+		inline bool IsStraightContinuation( const Vector3& in, const Vector3& out )
+		{
+			const Scalar l2 = Vector3Ops::SquaredModulus( in ) * Vector3Ops::SquaredModulus( out );
+			if( !( l2 > 0 ) ) {
+				return false;
+			}
+			return Vector3Ops::Dot( in, out ) >= ( Scalar( 1 ) - Scalar( 1e-9 ) ) * sqrt( l2 );
+		}
+
 		inline bool DeltaPassThroughChainToRoot(
 			const std::vector<BDPTVertex>& verts,
 			const std::size_t j

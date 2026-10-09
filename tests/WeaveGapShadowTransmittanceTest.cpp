@@ -76,6 +76,11 @@
 //             one.  NO weave anywhere in this section; a general
 //             RayCaster regression found while building the DL-05 walk,
 //             not a DL-05 mechanism.
+//    wrapcurtain  DL-424/425 review: the omni curtain through a fabric /
+//             coated wrapper over a black-yarn gapped weave, BDPT and VCM
+//             L/L0 against PT's (3 %).
+//    curtaincaps  DL-424/425 review: the `closed` omni curtain under BDPT
+//             at max_light_depth 1 and at max_eye_depth 1 (closed form g).
 //    layers   The design-doc topology: a closed two-layer weave box
 //             (and its free-standing two-plane twin) with the omni
 //             light OUTSIDE.  PT/BDPT/VCM within 8%.
@@ -947,6 +952,79 @@ static void TestClosedFormOmni()
 	spotRows.push_back( { "BDPT RGB", RastBDPT( 1024 ), 0.02, kWide } );
 	spotRows.push_back( { "VCM RGB", RastVCM( 1024 ), 0.02, kWide } );
 	RunReceiverRows( "closed spot", kSpot, spotRows, gaps, 2 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// wrapcurtain (DL-424/425 review follow-up): the curtain case through
+// the DL-05 forwarding WRAPPERS.  A `fabric_material` / `coated_material`
+// over a black-yarn gapped weave between the omni light and the directly
+// seen receiver: BDPT's see-through s = 1 strategy and VCM's see-through
+// NEE walk the wrapper's re-priced gap, and the light walks record the
+// wrapper gap draw's pseudo-probability, so both sides of the MIS share
+// one function.  Reference: PT, whose delta-light NEE arm prices the
+// same gap through `DeltaPassThroughTransmittance` exactly (the `closed`
+// PT rows).  Each rasterizer's L / L0 (its own no-sheet render) against
+// PT's.
+//////////////////////////////////////////////////////////////////////
+static std::string FabricOverWeaveSheet();
+static std::string CoatedOverWeaveSheet();
+
+static void TestWrapperCurtain()
+{
+	std::cout << "=== wrapcurtain: receiver under a fabric / coated wrapper over a gapped weave, omni light ===" << std::endl;
+	struct W { const char* label; std::string sheet; };
+	const W wraps[] = {
+		{ "fabric over weave", FabricOverWeaveSheet() },
+		{ "coated over weave", CoatedOverWeaveSheet() },
+	};
+	struct R { const char* label; std::string rast; double tol; };
+	const R rows[] = {
+		{ "BDPT RGB", RastBDPT( 64 ), 0.03 },
+		{ "VCM RGB",  RastVCM( 64 ),  0.03 },
+	};
+	const unsigned int n = 4;
+	for( const W& w : wraps )
+	{
+		const double ptL0 = RenderMeanN( Assemble( RastPT( 16 ), ReceiverScene( kOmni, false, 0.0, kTight ) ), "wc_pt_l0", n );
+		const double ptL  = RenderMeanN( Assemble( RastPT( 16 ), ReceiverScene( kOmni, true, 0.3, kTight, false, w.sheet ) ), "wc_pt_lg", n );
+		const double ref = ptL0 > 0 ? ptL / ptL0 : -1.0;
+		std::cout << "  wrapcurtain " << w.label << ": PT L/L0 = " << ref << std::endl;
+		Check( ref > 0.01, std::string( "wrapcurtain " ) + w.label + ": PT reference transmits through the wrapper's gap" );
+		for( const R& r : rows )
+		{
+			const double L0 = RenderMeanN( Assemble( r.rast, ReceiverScene( kOmni, false, 0.0, kTight ) ), "wc_l0", n );
+			const double L  = RenderMeanN( Assemble( r.rast, ReceiverScene( kOmni, true, 0.3, kTight, false, w.sheet ) ), "wc_lg", n );
+			const double ratio = L0 > 0 ? L / L0 : -1.0;
+			char buf[320];
+			std::snprintf( buf, sizeof(buf), "wrapcurtain %s %s: L/L0 = %.5f  (PT %.5f, rel err %+.3f%%)",
+				w.label, r.label, ratio, ref, 100.0 * ( ratio / ref - 1.0 ) );
+			std::cout << "  " << buf << std::endl;
+			Check( ref > 0 && ratio > 0 && std::fabs( ratio / ref - 1.0 ) <= r.tol, buf );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// curtaincaps (DL-424/425 review follow-up): the `closed` omni curtain
+// (closed form L = g * L0) under BDPT with one walk capped at depth 1.
+//   max_light_depth 1: the light walk stops AT the gap, so no
+//     light-tracing strategy reaches the receiver; the see-through's own
+//     denominator must leave those strategies out (weight 1).
+//   max_eye_depth 1: the eye walk still reaches the receiver, so the
+//     see-through exists and light tracing (t = 1, eye depth 0) competes.
+// A see-through that kept phantom light-tracing mass under the light cap
+// would read low; one that over-counted would read high.
+//////////////////////////////////////////////////////////////////////
+static std::string RastBDPTDepth( unsigned int spp, unsigned int eyeDepth, unsigned int lightDepth );
+
+static void TestCurtainCaps()
+{
+	std::cout << "=== curtaincaps: closed omni curtain under BDPT with a depth-1 cap ===" << std::endl;
+	const double gaps[] = { 0.3, 0.1 };
+	std::vector<RowSpec> rows;
+	rows.push_back( { "BDPT RGB max_light_depth 1", RastBDPTDepth( 64, 8, 1 ), 0.02, kTight } );
+	rows.push_back( { "BDPT RGB max_eye_depth 1",   RastBDPTDepth( 64, 1, 8 ), 0.02, kTight } );
+	RunReceiverRows( "curtaincaps", kOmni, rows, gaps, 2 );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2967,6 +3045,8 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "query" ) )       TestQueryMatchesSampler();
 	if( !filter || std::strstr( filter, "closed" ) )      TestClosedFormOmni();
 	if( !filter || std::strstr( filter, "composite" ) )   TestClosedFormComposite();
+	if( !filter || std::strstr( filter, "wrapcurtain" ) ) TestWrapperCurtain();
+	if( !filter || std::strstr( filter, "curtaincaps" ) ) TestCurtainCaps();
 	if( !filter || std::strstr( filter, "directional" ) ) TestClosedFormDirectional();
 	if( !filter || std::strstr( filter, "area" ) )        TestAreaPartitionGuard();
 	if( !filter || std::strstr( filter, "hwssgap" ) )     TestHWSSGapContinuation();

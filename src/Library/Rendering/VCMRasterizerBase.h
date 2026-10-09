@@ -105,18 +105,9 @@ namespace RISE
 			const IScene& pScene,
 			const unsigned int passIdx ) const;
 
-		/// Override the final flush to resolve the splat film
-			/// into a scratch copy of the primary image before
-			/// forwarding to the rasterizer outputs.  Mirrors BDPT's
-			/// final-flush splat resolve.
-			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-
-			/// When OIDN denoising is enabled, RasterizeScene routes
-			/// the main flush through FlushPreDenoisedToOutputs and
-			/// FlushDenoisedToOutputs instead of FlushToOutputs.
-			/// Both overrides apply the same splat-resolve composition.
-			virtual void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-			virtual void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+		// FlushToOutputs / FlushPreDenoisedToOutputs /
+		// FlushDenoisedToOutputs (splat composition) are inherited from
+		// BidirectionalRasterizerBase (DL-458).
 
 		public:
 			VCMRasterizerBase(

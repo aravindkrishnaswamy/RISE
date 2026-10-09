@@ -121,8 +121,20 @@ MLTSpectralRasterizer::MLTSpectralRasterizer(
   lambda_begin( lambda_begin_ ),
   lambda_end( lambda_end_ ),
   nSpectralSamples( nSpectralSamples_ ),
-  bUseHWSS( useHWSS_ )
+  bUseHWSS( useHWSS_ ),
+  yNormalization( 1.0 )
 {
+	// DL-461.  A uniformly sampled wavelength makes (1/N) sum xbar(l) L(l)
+	// the AVERAGE of the colour-matching integrand over the band; (b - a)
+	// turns it into the integral and 1/k_y makes a unit spectrum resolve to
+	// Y = 1 -- exactly PixelBasedSpectralIntegratingRasterizer's
+	// `mYNormalization`, which PT/BDPT/VCM spectral (pixel AND splat paths,
+	// DL-217) all apply.  This rasterizer averaged over wavelengths only, so
+	// it rendered at 1/3.74 of every other rasterizer.
+	const Scalar k_y = ColorUtils::CIE_Y_Integral( lambda_begin_, lambda_end_ );
+	if( k_y > 0 ) {
+		yNormalization = ( lambda_end_ - lambda_begin_ ) / k_y;
+	}
 }
 
 MLTSpectralRasterizer::~MLTSpectralRasterizer()
@@ -601,7 +613,11 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 		? ( activeWavelengthCount > 0 ? activeWavelengthCount : 1 )
 		: nSpectralSamples;
 
-	const Scalar invWavelengths = 1.0 / static_cast<Scalar>( totalWavelengths );
+	// DL-461: the wavelength average times the spectral integral
+	// normalization (see the constructor).  Applied to the colour AND the
+	// MLT luminance alike, so the Metropolis target, the bootstrap
+	// normalization b and the splats stay in one measure.
+	const Scalar invWavelengths = yNormalization / static_cast<Scalar>( totalWavelengths );
 
 	// Build final MLTSample splats from accumulated strategy XYZ
 	Scalar totalLuminance = 0;
@@ -610,7 +626,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	{
 		const StrategyXYZ& sxyz = allStrategyXYZ[i];
 
-		// Scale by 1/totalWavelengths for proper averaging
+		// Scale by yNormalization/totalWavelengths (DL-461)
 		XYZPel scaled = sxyz.color * invWavelengths;
 
 		// Luminance = Y component of XYZ
