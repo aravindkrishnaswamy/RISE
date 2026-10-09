@@ -6305,9 +6305,12 @@ Scalar BDPTIntegrator::MISWeight(
 			// DL-430: a zero `pdfRev` is a Dirac surrogate ONLY when the
 			// vertex that generates it -- the next one toward the eye,
 			// `lightVerts[i+1]`, or the eye endpoint at i == s-1 -- is a
-			// delta / black-box vertex (`isDelta || !isConnectible`; the
-			// connection endpoints' isDelta was cleared above exactly when
-			// their pdfRev was recomputed from the full non-delta Pdf).
+			// delta / black-box vertex (`isDelta || !isConnectible`).  The
+			// two connection endpoints had `isDelta` cleared above whenever
+			// they are connectible, which is consistent because the caller's
+			// connection code (not this function) recomputed the pdfRev each
+			// endpoint generates -- the opposite endpoint's and its own
+			// predecessor's -- from the endpoint's full aggregate `Pdf`.
 			// Then the strategies through it share that Dirac and remap0
 			// below is right.  From a non-delta, connectible generator the
 			// zero is a genuine zero: that vertex's sampler has no density
@@ -6322,6 +6325,17 @@ Scalar BDPTIntegrator::MISWeight(
 			// 4.8e-5).  pdfFwd keeps remap0 unconditionally: it is the
 			// density the path was actually sampled with, zero only by the
 			// delta / null-BSDF transparency convention.
+			//
+			// EXACTNESS PREMISE: the break is exact only if a non-delta SPF's
+			// aggregate `Pdf` has the same support as its sampler.  The two
+			// fields are not symmetric there: the subpath generators give
+			// `pdfFwd` a fallback to the drawn lobe's own density where the
+			// aggregate reads <= NEARZERO, while `pdfRev` has no such
+			// fallback.  An SPF whose `Pdf` misses directions its `Scatter`
+			// really draws (the DL-41 class -- no known production
+			// inhabitant since DL-41 closed) would therefore now have the
+			// strategy that DOES draw them dropped from the denominator,
+			// an over-count, where remap0 used to give an under-count.
 			if( vi.pdfRev == 0 ) {
 				const BDPTVertex* pGen = ( static_cast<unsigned int>(i) + 1 < s ) ?
 					&lightVerts[i + 1] : ( t > 0 ? &eyeVerts[t - 1] : nullptr );

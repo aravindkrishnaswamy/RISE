@@ -119,7 +119,20 @@ do exist (`datadriven_material` before DL-325: eye-NEE weight 4.8e-5).
 and so does the s = 0 emitter endpoint, whose generator is the light
 sampler (`lightSamplingStrategyAbsent`).  VCM's recurrence has no remap
 — a zero `prev.pdfRev` already becomes `bsdfRevPdfW = 0` — so it needed
-no change.  Pinned by `tests/BDPTZeroDensityConnectibleTest.cpp`.
+no change.  Pinned by `tests/BDPTZeroDensityConnectibleTest.cpp`
+(light-walk break: a one-bounce floor; eye-walk break: a three-bounce
+fixture whose hole sits behind the second eye vertex -- at the first eye
+vertex the phantom term is negligible, because its `pdfFwd` is the
+camera's per-pixel area density).
+
+*Exactness premise.*  The break is exact only when a non-delta SPF's
+aggregate `Pdf` has the same support as its sampler.  `pdfFwd` and
+`pdfRev` differ there: the subpath generators fall back to the drawn
+lobe's own density for `pdfFwd` where the aggregate reads <= NEARZERO,
+but `pdfRev` has no fallback.  An SPF whose `Pdf` misses directions its
+`Scatter` really draws (the DL-41 class; none known in production since
+DL-41 closed) would now OVER-count -- the strategy that does draw those
+directions is dropped from the denominator -- where remap0 under-counted.
 
 The `MISWeight` function temporarily clears `isDelta` on the two
 **connection** vertices (lines 4448-4464 / 4562-4568).  Connection
