@@ -469,19 +469,34 @@ s = 0 emitter hit only) and (b) a COUNTED connection endpoint has a defined
 type.  So the MIS densities are unchanged; every strategy just evaluates the
 joined-path check (`BDPTUtilities::JoinedTypeCapStatus`).
 
-(b) holds when the endpoint's material declares one lobe type
-(`IMaterial::ConnectionScatterType`).  Otherwise the strategy cannot price
-the path: BDPT/MLT drop it from the estimate and from every denominator
-(`MISWeight`), and VCM -- whose running sums cannot drop one strategy --
-estimates a path that has such a vertex at a counted position with s = 0 and
-s = 1 alone, weighted against each other only.  Both are exact: the s = 0 /
-s = 1 strategies never have a counted endpoint, so every path PT reaches
-keeps a strategy.  The cost is variance on those paths (DL-481).  Pinned by
-`BDPTDepthCapMISTest` rows F (Lambertian corner), G (GGX corner) and P (a
-brute-force partition: MISWeight over the strategies that evaluate sums to 1
-within the caps and 0 over them, for declared, undeclared and delta
-vertices).  Subsurface paths (DL-482) and see-through / guided
-continuations (DL-483) are outside this.
+(b) holds when the endpoint material's possible non-delta lobe types
+(`IMaterial::ConnectionScatterTypes`, conservative: every type unless a
+material narrows it) are one type, or include no type whose cap can bind.
+Otherwise the strategy cannot price the path: BDPT/MLT drop it from the
+estimate and from every denominator (`MISWeight`), and VCM -- whose running
+sums cannot drop one strategy -- estimates a path that has such a vertex at
+a counted position with s = 0 and s = 1 alone, weighted against each other
+only.  The weights then still partition the strategies that REMAIN, but
+this is not unbiased in general: a path whose only strategies have such an
+endpoint -- a point-light caustic onto a GGX floor, which neither the
+emitter hit nor NEE can reach -- loses its energy whenever a cap on one of
+the receiver's lobe types can bind (`max_glossy_bounce 0` on that floor:
+whole frame 0.71 of the no-cap image under BDPT and VCM).  That is DL-481,
+a physics bias, not a variance cost.
+
+Two gates keep it from firing where it cannot matter.  A cap that cannot
+bind is dropped (`BDPTUtilities::MakeBounceTypeCaps`): a path the walks
+generate has at most `max_eye_depth + max_light_depth` scattering surfaces
+and the counted vertices are a subset, so N >= that sum never rejects
+anything and a render with only such caps is the cap-free render.  And an
+endpoint needs a split only if its material's lobe types meet a cap that
+can bind (`max_translucent_bounce 0` never touches a GGX receiver).  Pinned
+by `BDPTDepthCapMISTest` rows F (Lambertian corner), G (GGX corners), H
+(point-light caustic: non-binding caps equal the no-cap image; the binding
+glossy cap's loss pinned as DL-481) and P (a brute-force partition over the
+strategies that evaluate, including the point-light caustic cases).
+Subsurface paths (DL-482) and see-through / guided continuations (DL-483)
+are outside this.
 
 ### 5. SMS — no per-strategy MIS reweight
 

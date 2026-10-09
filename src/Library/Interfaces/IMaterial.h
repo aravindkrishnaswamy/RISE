@@ -284,21 +284,22 @@ namespace RISE
 		//! pre-DL-05 binary shadow (an under-read, never a double count).
 		virtual bool HasDeltaPassThrough() const { return false; }
 
-		//! DL-471.  The scatter type (a `ScatteredRay::ScatRayType` value:
-		//! 1 diffuse, 2 reflection, 3 refraction, 4 translucent) shared by
-		//! EVERY NON-DELTA lobe this material's SPF can emit, or 0 when the
-		//! non-delta lobes have more than one type or the type is not
-		//! declared.  A connection (BDPT / VCM / MLT) evaluates the
-		//! aggregate `IBSDF::value`, which has no sampled lobe; under a
-		//! per-type bounce cap (`max_diffuse_bounce` & co.) the joined path
-		//! must count the endpoint's scatter by type, which is defined
-		//! from an aggregate value only when all of its non-delta lobes
-		//! share one type.  0 is always SAFE: BDPT/MLT then drop the
-		//! strategies that would need the type (the s = 0 and s = 1
-		//! strategies never do), so declare a type ONLY when `value()` is
-		//! a sum of lobes of exactly that type.  A wrapper whose
+		//! DL-471.  The set of scatter types (bit (1 << t) for each
+		//! `ScatteredRay::ScatRayType` t: 1 diffuse, 2 reflection,
+		//! 3 refraction, 4 translucent) of the NON-DELTA lobes this
+		//! material's SPF can emit -- i.e. of the lobes a connection's
+		//! aggregate `IBSDF::value` sums.  Under a per-type bounce cap a
+		//! connection endpoint must count the type of its lobe; that is
+		//! defined from an aggregate value only when the set has one
+		//! member or none of its members is capped, so BDPT/MLT drop (and
+		//! VCM routes to S0 + NEE) a path whose counted endpoint needs a
+		//! split (BDPTUtilities::EndpointBounceType).  The default, every
+		//! type, is always SAFE (conservative); a subclass narrows it only
+		//! to the types it really emits.  0 means "counts nothing" and is
+		//! reserved for the subsurface materials (DL-482).  A wrapper whose
 		//! `GetBSDF()` / `GetSPF()` forward a base material forwards this.
-		virtual unsigned int ConnectionScatterType() const { return 0; }
+		static const unsigned int kAllConnectionScatterTypes = ( 1u << 1 ) | ( 1u << 2 ) | ( 1u << 3 ) | ( 1u << 4 );
+		virtual unsigned int ConnectionScatterTypes() const { return kAllConnectionScatterTypes; }
 
 		//! Rescales this material's emission.  Default is a no-op that
 		//! REJECTS the change (returns false) so non-emissive materials

@@ -64,7 +64,7 @@ namespace RISE
 			//! (IMaterial::HasDeltaPassThrough).
 			inline bool HasDeltaPassThrough() const { return pMaterial.HasDeltaPassThrough(); }
 			//! DL-471: GetBSDF()/GetSPF() forward the base material verbatim.
-			inline unsigned int ConnectionScatterType() const { return pMaterial.ConnectionScatterType(); }
+			inline unsigned int ConnectionScatterTypes() const { return pMaterial.ConnectionScatterTypes(); }
 
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter

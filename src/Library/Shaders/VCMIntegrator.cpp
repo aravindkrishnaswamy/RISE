@@ -419,8 +419,8 @@ namespace
 	// DL-471: the per-type bounce caps, applied per PATH at every strategy
 	// (BDPTUtilities::JoinedTypeCapStatus / MergeTypeCapStatus; see the
 	// contract there).  A counted connection endpoint whose material
-	// declares no single lobe type (IMaterial::ConnectionScatterType)
-	// cannot price a path under a cap.  BDPT's MISWeight drops exactly
+	// has more than one possible lobe type, one of them capped
+	// (IMaterial::ConnectionScatterTypes), cannot price a path.  BDPT's MISWeight drops exactly
 	// those strategies; VCM's recurrence weights are running sums that
 	// cannot drop one strategy (DL-481), so a path that HAS such a vertex
 	// at a counted position (BDPTUtilities::AnyNeedsTypeSplit -- a
@@ -428,14 +428,18 @@ namespace
 	// s = 0 (emitter hit) and s = 1 (NEE) strategies alone, weighted
 	// against each other only: every other strategy skips it, S0 keeps
 	// only the NEE term of wCamera, NEE drops wCamera.  Neither strategy
-	// ever has a counted endpoint, so this is exact (PT's estimator for
-	// that path), at PT's variance.  Inert when no per-type cap is set.
+	// ever has a counted endpoint, so the weights still partition the
+	// strategies that remain -- but a path S0 / NEE cannot reach (a
+	// point-light caustic onto such a receiver) is LOST under a cap that
+	// can bind (DL-481).  Inert unless some cap can bind
+	// (BDPTUtilities::MakeBounceTypeCaps).
 	//////////////////////////////////////////////////////////////////
 	inline BDPTUtilities::BounceTypeCaps VCMBounceTypeCaps( const BDPTIntegrator& bdpt )
 	{
 		const StabilityConfig& c = bdpt.GetStabilityConfig();
 		return BDPTUtilities::MakeBounceTypeCaps(
-			c.maxDiffuseBounce, c.maxGlossyBounce, c.maxTransmissionBounce, c.maxTranslucentBounce );
+			c.maxDiffuseBounce, c.maxGlossyBounce, c.maxTransmissionBounce, c.maxTranslucentBounce,
+			bdpt.GetMaxEyeDepth(), bdpt.GetMaxLightDepth() );
 	}
 
 	/// A walk's counts toward its caps.
@@ -1100,9 +1104,14 @@ void VCMIntegrator::ConvertLightSubpath(
 	std::vector<LightVertex>& out,
 	std::vector<VCMMisQuantities>* outMisArg,
 	const bool seeThroughLive,
-	std::vector<VCMStep>* outSteps
+	std::vector<VCMStep>* outSteps,
+	const BDPTIntegrator* pTypeCapSource
 	)
 {
+	// DL-471: the merge data for per-type caps, stamped only when a cap can
+	// bind (it is O(k) per stored vertex).
+	const BDPTUtilities::BounceTypeCaps typeCaps = pTypeCapSource ?
+		VCMBounceTypeCaps( *pTypeCapSource ) : BDPTUtilities::BounceTypeCaps();
 	const std::size_t n = verts.size();
 	if( n == 0 ) {
 		return;
@@ -1277,9 +1286,11 @@ void VCMIntegrator::ConvertLightSubpath(
 				lv.plane      = 0;
 				lv.flags      = kLVF_IsConnectible | kLVF_IsMedium;
 				lv.pathLength = static_cast<unsigned short>( i );
-				BDPTUtilities::LightPrefixTypeCounts( verts.data(), static_cast<unsigned int>( i ), lv.capCounts );	// DL-471
-				if( BDPTUtilities::LightPrefixNeedsTypeSplit( verts.data(), static_cast<unsigned int>( i ) ) ) {
-					lv.flags |= kLVF_TypeSplitPrefix;
+				if( typeCaps.active ) {	// DL-471
+					BDPTUtilities::LightPrefixTypeCounts( verts.data(), static_cast<unsigned int>( i ), lv.capCounts );
+					if( BDPTUtilities::LightPrefixNeedsTypeSplit( verts.data(), static_cast<unsigned int>( i ), typeCaps ) ) {
+						lv.flags |= kLVF_TypeSplitPrefix;
+					}
 				}
 				lv.volumeBounces = v.volumeBounces;
 				{
@@ -1370,9 +1381,11 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( v.isBSSRDFEntry    ) lv.flags |= kLVF_IsBSSRDFEntry;
 			if( v.bHasVertexColor  ) lv.flags |= kLVF_HasVertexColor;
 			lv.pathLength = static_cast<unsigned short>( i );
-			BDPTUtilities::LightPrefixTypeCounts( verts.data(), static_cast<unsigned int>( i ), lv.capCounts );	// DL-471
-			if( BDPTUtilities::LightPrefixNeedsTypeSplit( verts.data(), static_cast<unsigned int>( i ) ) ) {
-				lv.flags |= kLVF_TypeSplitPrefix;
+			if( typeCaps.active ) {	// DL-471
+				BDPTUtilities::LightPrefixTypeCounts( verts.data(), static_cast<unsigned int>( i ), lv.capCounts );
+				if( BDPTUtilities::LightPrefixNeedsTypeSplit( verts.data(), static_cast<unsigned int>( i ), typeCaps ) ) {
+					lv.flags |= kLVF_TypeSplitPrefix;
+				}
 			}
 			lv.volumeBounces = v.volumeBounces;
 			{

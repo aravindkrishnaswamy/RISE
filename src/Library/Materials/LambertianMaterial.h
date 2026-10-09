@@ -53,8 +53,8 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const {			return pSPF; };
 
-			//! DL-471: every lobe is the diffuse one (IMaterial::ConnectionScatterType).
-			inline unsigned int ConnectionScatterType() const { return ScatteredRay::eRayDiffuse; }
+			//! DL-471: every lobe is the diffuse one (IMaterial::ConnectionScatterTypes).
+			inline unsigned int ConnectionScatterTypes() const { return 1u << ScatteredRay::eRayDiffuse; }
 
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter

@@ -5915,7 +5915,8 @@ EvaluateAllStrategiesImpl(
 	// one; skipping it here only saves the connection's cost).
 	const BDPTUtilities::BounceTypeCaps typeCaps = BDPTUtilities::MakeBounceTypeCaps(
 		self.GetStabilityConfig().maxDiffuseBounce, self.GetStabilityConfig().maxGlossyBounce,
-		self.GetStabilityConfig().maxTransmissionBounce, self.GetStabilityConfig().maxTranslucentBounce );
+		self.GetStabilityConfig().maxTransmissionBounce, self.GetStabilityConfig().maxTranslucentBounce,
+		self.GetMaxEyeDepth(), self.GetMaxLightDepth() );
 	if( !useCompletePathStrategySelection )
 	{
 		// Iterate over all valid (s,t) combinations where s + t >= 2.
@@ -6255,11 +6256,14 @@ Scalar BDPTIntegrator::MISWeight(
 	// DL-471: per-type bounce caps are a property of the JOINED path
 	// (BDPTUtilities::JoinedTypeCapStatus).  A path over a cap is not in
 	// the estimate (weight 0), and a strategy whose counted connection
-	// endpoint has no declared lobe type cannot price the path; it is
-	// dropped here and from every other strategy's denominator below.
+	// endpoint has more than one possible lobe type, one of them capped,
+	// cannot price the path; it is dropped here and from every other
+	// strategy's denominator below (a path left with no strategy loses its
+	// energy: DL-481).  Only caps that can bind count (MakeBounceTypeCaps).
 	const BDPTUtilities::BounceTypeCaps typeCaps = BDPTUtilities::MakeBounceTypeCaps(
 		GetStabilityConfig().maxDiffuseBounce, GetStabilityConfig().maxGlossyBounce,
-		GetStabilityConfig().maxTransmissionBounce, GetStabilityConfig().maxTranslucentBounce );
+		GetStabilityConfig().maxTransmissionBounce, GetStabilityConfig().maxTranslucentBounce,
+		GetMaxEyeDepth(), GetMaxLightDepth() );
 	if( typeCaps.active &&
 		BDPTUtilities::JoinedTypeCapStatus( lightVerts.data(), eyeVerts.data(), s, t, typeCaps ) !=
 			BDPTUtilities::eTypeCapOK ) {

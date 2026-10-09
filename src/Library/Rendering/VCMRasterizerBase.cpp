@@ -283,7 +283,7 @@ namespace
 							tl.tmpSteps.clear();
 							VCMIntegrator::ConvertLightSubpath(
 								tl.tmpLightVerts, norm, tl.tmpConverted, &tl.tmpLightMis,
-								VCMIntegrator::SeeThroughLive( caster ), &tl.tmpSteps );
+								VCMIntegrator::SeeThroughLive( caster ), &tl.tmpSteps, pGen );
 							// DL-470: move the subpath's records into the worker's
 							// current block; the vertices index (block, offset).
 							if( !tl.tmpSteps.empty() ) {
