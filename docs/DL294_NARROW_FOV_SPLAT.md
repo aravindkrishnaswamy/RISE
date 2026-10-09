@@ -592,3 +592,14 @@ counts strategies the capped walks cannot generate, and how much of a
 long path's weight lands on those phantom strategies depends on the
 heuristic's inputs -- moving weight toward t == 1 moves the (pre-existing)
 truncation loss.  It disappears when DL-351 lands.
+
+**Suites.**  BDPTStrategyBalanceTest 370/0, VCMStrategyBalanceTest 165/0,
+PixelCenterConventionTest 48/0, CameraImportanceTest 984/0,
+BDPTSeeThroughMISPartitionTest 8/0, SpectralSplatIntegralNormalizationTest
+21/0, WeaveGapShadowTransmittanceTest 281/0, CstDeriveGoldenTest 459 MATCH.
+AnimationRasterizerParityTest reads 101/1: its MLT-spectral D row gates ONE
+deterministic MLT realization (the per-render salts do not reach MLT's
+chain RNG).  Varying only `bootstrap_samples` 20000..20010, the pre-change
+build reads mean 0.940 and fails 8 of 11; this change reads mean 0.964
+(0.924 .. 1.008), but its realization at the shipped 20000 is 0.924.
+Recorded as DL-468, not widened here.
