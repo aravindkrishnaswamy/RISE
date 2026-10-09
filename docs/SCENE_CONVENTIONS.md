@@ -635,18 +635,10 @@ standard_object
   animate the assembly, not each part.  The children need no timeline of their
   own, and a container (a transform with no `geometry`) is keyframable exactly
   like any other object.
-- The one place hierarchy is **not** re-composed is a per-sample motion-blur
-  sample.  Those read the frame's base-time bake: sub-frame motion of a leaf
-  blurs as before, but sub-frame motion of a **parent** does not reach its
-  children, so within one shutter an assembly visibly separates — a body smears
-  away from its wheels.  This is related to the stale-TLAS limitation
-  ([docs/ARCHITECTURE.md](ARCHITECTURE.md)) but is **not** the same shape, and
-  it is worth being precise: the TLAS one is *uniform* (every object's bound is
-  equally stale), this one is *differential between objects*.  No energy or PDF
-  consequence — each object's area scale and emitter sampling stay
-  self-consistent with its own current matrix — but if you are blurring a
-  hierarchy, expect it to come apart.  Animate the leaf, or accept the
-  separation.
+- Per-sample motion blur re-composes the hierarchy too (DL-457): every
+  motion-blur sample carries a child along with its animated parent, so a
+  blurred assembly stays together.  Only the subtrees the frame's shutter
+  sweep saw move are re-composed per sample (DL-463).
 - **`rect_light` and `shape_light` take a `parent` too.**  Each synthesizes an
   ordinary scene-graph object, so a lamp can be carried by an assembly: parent
   it to the fixture and the fixture's transform moves the light with it.  Their
@@ -1093,12 +1085,25 @@ draws its own time in `[t - exposure/2, t + exposure/2]` around the frame time
 interval (DL-457 was filed against one that did not).  `scanning_rate` /
 `pixel_rate` shift each scanline's / pixel's window further.
 
-Two consequences worth knowing: an animation frame with `exposure > 0`
-renders SINGLE-THREADED (per-sample scene evaluation mutates the scene, so
-the frame runs on the calling thread), and the top-level acceleration bounds
-each object over the whole shutter -- exactly for motion linear between
-keyframes, approximately for rotations (see `IObjectManager.h`, "Motion
-blur").
+Consequences worth knowing:
+
+- An animation frame with `exposure > 0` renders SINGLE-THREADED for PT,
+  BDPT, MLT and the legacy rasterizers (per-sample scene evaluation mutates
+  the scene, so the frame runs on the calling thread).
+- VCM with vertex merging instead traces each progressive pass at ONE
+  shutter time (the scene moves once per pass; pass k draws its time in the
+  k-th of N equal strata), so its light store and the eye samples merged
+  against it share a time; those frames render multi-threaded (DL-463).  At
+  low pass counts the blur is a set of N superimposed poses rather than
+  per-pixel noise.  A camera with `scanning_rate` / `pixel_rate` keeps the
+  per-sample path (and a frame-time light store).
+- The top-level acceleration bounds each object over the whole shutter --
+  exactly for motion linear between keyframes, approximately for rotations
+  (see `IObjectManager.h`, "Motion blur").
+- The light-selection tables (alias weights, light BVH boxes and cones) are
+  rebuilt every animation frame and, under exposure, cover the whole shutter:
+  a light dark, turned away or elsewhere at the frame time stays selectable
+  (DL-463).
 
 
 

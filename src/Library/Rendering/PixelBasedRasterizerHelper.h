@@ -239,6 +239,14 @@ namespace RISE
 			//! store, light sampler) is still rebuilt at the field's time.
 			mutable bool				mContinuingInterlacedFrame;
 
+			//! DL-463 (a): true while a motion-blurred animation frame runs
+			//! its progressive passes at ONE shutter time per pass (see
+			//! WantsPerPassShutterTime): the scene has been moved to the
+			//! pass's time before OnProgressivePassBegin, so per-pass state
+			//! (VCM's light vertex store) must be rebuilt for EVERY pass,
+			//! pass 0 included.
+			mutable bool				mPerPassShutterTime = false;
+
 			mutable AOVBuffers*		pAOVBuffers;		///< Planned first-hit AOV sidecar (OIDN and/or FrameStore consumers)
 
 			//! Allocate/reset only the float planes required by the current
@@ -537,6 +545,19 @@ namespace RISE
 		virtual void OnProgressivePassBegin(
 			const IScene& pScene,
 			const unsigned int passIdx ) const {}
+
+		/// DL-463 (a): true when this rasterizer's progressive passes
+		/// share state ACROSS pixel samples that must be traced at the
+		/// samples' own time -- VCM's vertex-merging light store, which
+		/// every eye sample of a pass merges against.  A motion-blurred
+		/// animation frame (exposure, no scanning / pixel rate) then
+		/// moves the whole scene to one shutter time per pass (stratified
+		/// across the passes, jittered within each stratum) and renders
+		/// the pass's light store and all its eye samples at that time,
+		/// instead of a per-sample time against a frame-time store.  The
+		/// progressive film's average over passes is the shutter average.
+		/// Queried after PreRenderSetup.  Default false.
+		virtual bool WantsPerPassShutterTime() const { return false; }
 
 		/// When true, per-block intermediate output is skipped during
 		/// the block dispatch.  The end-of-pass flush still runs.

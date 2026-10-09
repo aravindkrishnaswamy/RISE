@@ -1654,6 +1654,11 @@ void PixelBasedRasterizerHelper::PrepareSceneForFrame(
 		for( std::size_t k = 0; k < times.size(); k++ ) {
 			AnimateSceneToSampleTime( pScene, times[k] );
 			pObjects->AccumulateMotionBounds();
+			// DL-463 (b): the light tables too -- a light dark, turned away
+			// or elsewhere at the frame time must stay selectable.
+			if( pCaster ) {
+				pCaster->AccumulateLightMotionSample();
+			}
 		}
 		// Back to the nominal pose, hierarchy included, so the re-bake
 		// inside PrepareForRendering sees nothing move (a move there
@@ -1662,6 +1667,16 @@ void PixelBasedRasterizerHelper::PrepareSceneForFrame(
 		pObjects->EndMotionSweep();
 	}
 	pObjects->PrepareForRendering();
+
+	// DL-463 (b): the RayCaster's light-selection tables (alias weights,
+	// light BVH boxes / cones, the set of lights kept at all) were built
+	// once, at attach; rebuild them for this frame -- from the swept
+	// samples above under exposure -- so a moving, turning or dimming
+	// light is not culled or dropped.  (Static scenes keep the attach-time
+	// tables: nothing animates, so nothing could change.)
+	if( pCaster ) {
+		pCaster->RefreshLightSamplers();
+	}
 }
 
 void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
@@ -1890,6 +1905,30 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 
 		PreviewScheduler previewScheduler( 7.5 );
 
+		// DL-463 (a): per-pass shutter time.  A rasterizer whose passes
+		// share a light store across all eye samples (VCM with merging)
+		// traces each pass -- store and eye samples alike -- at ONE time of
+		// the shutter: pass k draws its time uniformly in the k-th of
+		// numPasses equal strata, so the pass average is an unbiased
+		// estimate of the shutter average and merges never pair light and
+		// eye vertices from different times.  The scene is static within a
+		// pass, so the pass renders with exposure 0 (multi-threaded, no
+		// per-sample re-pose).  Per-pixel scanning / pixel rates give every
+		// pixel its own shutter, which one scene time cannot serve: those
+		// keep the per-sample path (DL-463 residual).
+		const bool perPassTime = framedata.exposure > 0 &&
+			framedata.pixelRate == 0 && framedata.scanningRate == 0 &&
+			WantsPerPassShutterTime();
+		AnimFrameData passFrameData = framedata;
+		if( perPassTime ) {
+			passFrameData.exposure = 0;
+		}
+		struct PerPassFlag {
+			bool& f;
+			PerPassFlag( bool& flag, bool v ) : f( flag ) { f = v; }
+			~PerPassFlag() { f = false; }
+		} perPassFlag( mPerPassShutterTime, perPassTime );
+
 		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
 		{
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
@@ -1897,6 +1936,12 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			ISampling2D* pPassSampling = pSavedSampling->Clone();
 			pPassSampling->SetNumSamples( passSPP );
 			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+
+			if( perPassTime ) {
+				const Scalar u = GlobalRNG().CanonicalRandom();
+				AnimateSceneToSampleTime( pScene,
+					framedata.base_cur_time + framedata.exposure * ( Scalar( passIdx ) + u ) / Scalar( numPasses ) );
+			}
 
 			OnProgressivePassBegin( pScene, passIdx );
 
@@ -1917,7 +1962,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			mProgressWeight = static_cast<double>( passSPP );
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdgeAnim );
-			RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, framedata );
+			RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, passFrameData );
 			safe_release( pPassSeq );
 
 			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;

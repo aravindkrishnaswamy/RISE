@@ -400,6 +400,19 @@ namespace RISE
         //! distance; without records the extra extent does no work.
         virtual bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const
         { (void)sampler; (void)boundaries; (void)physicalDistance; Ray shifted=ray; shifted.Advance(occlusionStart); return CastShadowRay(shifted, distance-occlusionStart); }
+
+		//! DL-463: per-frame refresh of the light-selection tables.  An
+		//! animation frame moves lights and luminaries; the tables
+		//! (alias weights, light BVH boxes / cones, the lights kept at
+		//! all) are rebuilt from the scene's CURRENT state, folding in
+		//! every AccumulateLightMotionSample since the last refresh (the
+		//! scene at each motion-blur sample time of the frame's shutter),
+		//! so no light that emits during the shutter is culled or dropped.
+		//! In place: the LightSampler object (which integrators hold by
+		//! pointer) survives.  Single-threaded, between render passes.
+		//! Defaults are no-ops for casters without a light sampler.
+		virtual void AccumulateLightMotionSample() {}
+		virtual void RefreshLightSamplers() {}
     };
 }
 

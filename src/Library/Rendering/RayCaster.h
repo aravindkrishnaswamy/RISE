@@ -507,6 +507,10 @@ namespace RISE
 			/// pattern as Scene::GetPhotonShootCount.  Single-threaded —
 			/// AttachScene runs at the pre-parallel scene-setup seam.
 			static unsigned int GetSamplerRebuildCount();
+
+			//! DL-463 (IRayCaster).
+			void AccumulateLightMotionSample();
+			void RefreshLightSamplers();
 			static void         ResetSamplerRebuildCount();
 
 			/// Sets the number of RIS candidates for spatially-aware

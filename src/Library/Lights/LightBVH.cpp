@@ -270,6 +270,18 @@ void LightBVH::Build(
 			prim.cone = OrientationCone::FullSphere();
 		}
 
+		// DL-463: under motion blur the entry carries its box and cone
+		// over the whole shutter; a frame-time cone or box would cull a
+		// light that has since turned or moved (zero importance = never
+		// selected while it shines).
+		if( entry.hasMotionBounds )
+		{
+			prim.bounds = entry.motionBounds;
+			prim.bounds.EnsureBoxHasVolume();
+			prim.cone.axis = entry.motionConeAxis;
+			prim.cone.halfAngle = entry.motionConeHalfAngle;
+		}
+
 		prim.centroid = prim.bounds.GetCenter();
 	}
 

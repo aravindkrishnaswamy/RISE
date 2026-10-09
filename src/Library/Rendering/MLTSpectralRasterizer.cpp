@@ -1179,6 +1179,11 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 			pScene.GetObjects()->InvalidateSpatialStructure();
 		}
 		pScene.GetObjects()->PrepareForRendering();
+		// DL-463 (b): rebuild the light-selection tables for this frame's
+		// light poses / powers (in place: the integrator's pointer stays).
+		if( bHasKeyframedObjects ) {
+			pCaster->RefreshLightSamplers();
+		}
 		pScene.SetSceneTime( curtime );
 
 		GlobalLog()->PrintEx( eLog_Event,

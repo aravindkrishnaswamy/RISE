@@ -454,6 +454,8 @@ void ObjectManager::ClearMotionBounds() const
 	motionBounds.clear();
 	motionSweepActive = false;
 	recomposePerSample = true;
+	motionSweepMovedNames.clear();
+	recomposeList.clear();
 }
 
 void ObjectManager::BeginMotionSweep() const
@@ -462,12 +464,79 @@ void ObjectManager::BeginMotionSweep() const
 	motionSweepActive = true;
 	motionSweepSamples = 0;
 	motionSweepMovedHierarchy = false;
+	motionSweepMovedNames.clear();
+	recomposeList.clear();
 }
 
 void ObjectManager::EndMotionSweep() const
 {
 	motionSweepActive = false;
 	recomposePerSample = motionSweepMovedHierarchy;
+	recomposeList.clear();
+	if( recomposePerSample ) {
+		BuildRecomposeList();
+	}
+	motionSweepMovedNames.clear();
+}
+
+void ObjectManager::BuildRecomposeList() const
+{
+	// DL-463 (d): the roots of the hierarchies the sweep saw move.  Climb
+	// each moved node's parent links to the top (bounded: a cycle that
+	// evaded SetObjectParent's guard stops the climb at its first repeat).
+	std::set<String> roots;
+	for( std::set<String>::const_iterator m = motionSweepMovedNames.begin(); m != motionSweepMovedNames.end(); ++m ) {
+		String cur = *m;
+		std::set<String> seen;
+		while( seen.insert( cur ).second ) {
+			const std::map<String,String>::const_iterator link = parentByName.find( cur );
+			if( link == parentByName.end() || items.find( link->second ) == items.end() ) {
+				break;
+			}
+			cur = link->second;
+		}
+		roots.insert( cur );
+	}
+	if( roots.empty() ) {
+		return;
+	}
+
+	// Children in registration-serial order, as RebakeHierarchy walks them.
+	std::map<String, std::vector<std::pair<unsigned long long, String> > > childrenOf;
+	for( std::map<String,String>::const_iterator it = parentByName.begin(); it != parentByName.end(); ++it ) {
+		if( items.find( it->first ) == items.end() || items.find( it->second ) == items.end() ) {
+			continue;
+		}
+		childrenOf[it->second].push_back( std::make_pair( GetItemSerial( it->first.c_str() ), it->first ) );
+	}
+	for( std::map<String, std::vector<std::pair<unsigned long long, String> > >::iterator c = childrenOf.begin();
+		c != childrenOf.end(); ++c ) {
+		std::sort( c->second.begin(), c->second.end() );
+	}
+
+	std::vector<String> stack( roots.rbegin(), roots.rend() );
+	std::set<String> visited;
+	while( !stack.empty() ) {
+		const String name = stack.back();
+		stack.pop_back();
+		if( !visited.insert( name ).second ) continue;
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator ni = items.find( name );
+		if( ni == items.end() || !ni->second.first ) continue;
+		IObjectPriv* parent = 0;
+		const std::map<String,String>::const_iterator link = parentByName.find( name );
+		if( link != parentByName.end() ) {
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator pi = items.find( link->second );
+			if( pi != items.end() ) parent = pi->second.first;
+		}
+		recomposeList.push_back( std::make_pair( ni->second.first, parent ) );
+		const std::map<String, std::vector<std::pair<unsigned long long, String> > >::const_iterator kids = childrenOf.find( name );
+		if( kids != childrenOf.end() ) {
+			for( std::vector<std::pair<unsigned long long, String> >::const_reverse_iterator k = kids->second.rbegin();
+				k != kids->second.rend(); ++k ) {
+				stack.push_back( k->second );
+			}
+		}
+	}
 }
 
 void ObjectManager::AccumulateMotionBounds() const
@@ -528,14 +597,38 @@ void ObjectManager::RecomposeAnimatedHierarchy() const
 	if( motionSweepActive ) {
 		// The first sample's walk also undoes whatever pose the scene was
 		// left in before the sweep, so only later samples count as motion.
-		const bool moved = RebakeHierarchy();
+		const bool moved = RebakeHierarchy( motionSweepSamples > 0 ? &motionSweepMovedNames : 0 );
 		if( moved && motionSweepSamples > 0 ) {
 			motionSweepMovedHierarchy = true;
 		}
 		return;
 	}
-	if( recomposePerSample ) {
+	if( !recomposePerSample ) {
+		return;
+	}
+	if( recomposeList.empty() ) {
 		RebakeHierarchy();
+		return;
+	}
+	// DL-463 (d): only the subtrees the sweep saw move.  Every other node
+	// keeps the composed transform the sweep's last (nominal) walk left,
+	// which no per-sample animator evaluation changes (that is what "the
+	// sweep saw it not move" means).  Same per-node work as RebakeHierarchy.
+	for( std::size_t k = 0; k < recomposeList.size(); k++ ) {
+		IObjectPriv* node = recomposeList[k].first;
+		const Matrix4 parentWorld = recomposeList[k].second ?
+			recomposeList[k].second->GetFinalTransformMatrix() : Matrix4Ops::Identity();
+		const Matrix4 before = node->GetFinalTransformMatrix();
+		node->FinalizeTransformations( parentWorld );
+		const Matrix4 after = node->GetFinalTransformMatrix();
+		const Scalar* b = &before._00;
+		const Scalar* a2 = &after._00;
+		for( int j = 0; j < 16; ++j ) {
+			if( b[j] != a2[j] ) {
+				node->ResetRuntimeData();
+				break;
+			}
+		}
 	}
 }
 
@@ -2058,7 +2151,7 @@ const char* ObjectManager::GetObjectParent( const char* child ) const
 	return ( i == parentByName.end() ) ? "" : i->second.c_str();
 }
 
-bool ObjectManager::RebakeHierarchy() const
+bool ObjectManager::RebakeHierarchy( std::set<String>* pChangedNames ) const
 {
 	// See the header for why this exists next to ComposeWorldTransforms.
 	if( parentByName.empty() ) return false;
@@ -2142,6 +2235,7 @@ bool ObjectManager::RebakeHierarchy() const
 			if( b[k] != a2[k] ) {
 				anyChanged = true;
 				node->ResetRuntimeData();   // the caches this node's new matrix invalidates
+				if( pChangedNames ) pChangedNames->insert( name );   // DL-463 (d)
 				break;
 			}
 		}
@@ -2627,6 +2721,7 @@ void ObjectManager::InvalidateSpatialStructure() const
 	motionBounds.clear();
 	motionSweepActive = false;
 	recomposePerSample = true;
+	recomposeList.clear();
 	treeCreationMutex.unlock();
 	// Shadow cache slots are reset but not freed — the array persists.
 	if( shadowCache ) {

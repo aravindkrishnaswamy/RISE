@@ -141,6 +141,18 @@ namespace RISE
 			mutable bool motionSweepMovedHierarchy;
 			mutable bool recomposePerSample;
 
+			//! DL-463 (d): the hierarchy nodes a sweep saw move (after its
+			//! first sample), and -- built at EndMotionSweep -- the
+			//! parent-before-child list of every node in the subtrees under
+			//! their hierarchy roots, with each node's parent (null: a root
+			//! or a dangling link, composed against identity).  The
+			//! per-sample re-compose walks only this list instead of every
+			//! link.  Empty whenever no sweep has decided it (the full walk
+			//! then runs, as before).
+			mutable std::set<String> motionSweepMovedNames;
+			mutable std::vector<std::pair<IObjectPriv*, IObjectPriv*> > recomposeList;
+			void BuildRecomposeList() const;
+
 			//! The box every spatial build uses for `elem`: its swept box when
 			//! one was accumulated, else its current box.
 			BoundingBox ElementBounds( const IObjectPriv* elem ) const;
@@ -548,7 +560,7 @@ namespace RISE
 			//! ComposeWorldTransforms: a detach removes the ex-child from the link
 			//! map, so this walk can no longer see it, and it is the full walk that
 			//! puts it back on identity.
-			bool RebakeHierarchy() const;
+			bool RebakeHierarchy( std::set<String>* pChangedNames = 0 ) const;
 
 			//! Removing an object also retires its place in the authored graph:
 			//! its own parent link goes, and any object that named it as parent

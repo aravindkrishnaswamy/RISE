@@ -126,7 +126,9 @@ namespace RISE
 
 		//! Ends a sweep.  If no parented object moved between its samples,
 		//! RecomposeAnimatedHierarchy() becomes a no-op until the next
-		//! sweep, ClearMotionBounds() or InvalidateSpatialStructure().
+		//! sweep, ClearMotionBounds() or InvalidateSpatialStructure();
+		//! otherwise it re-composes only the subtrees under the hierarchy
+		//! roots of the objects that moved (DL-463).
 		virtual void EndMotionSweep() const {}
 
 		//! Re-composes parented objects against their parents' CURRENT world

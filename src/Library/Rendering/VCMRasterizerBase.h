@@ -96,6 +96,11 @@ namespace RISE
 		/// one progress update per iteration.
 		bool SkipPerBlockIntermediateOutput() const { return true; }
 
+		/// DL-463 (a): with merging on, the light store is shared by every
+		/// eye sample of a pass, so a motion-blurred frame traces each
+		/// pass at one shutter time (PixelBasedRasterizerHelper).
+		bool WantsPerPassShutterTime() const;
+
 		/// Rebuild the light vertex store at each progressive pass
 		/// so merge-query noise averages across passes instead of
 		/// persisting from a single fixed store.  Uses passIdx as

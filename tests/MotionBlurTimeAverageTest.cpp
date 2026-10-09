@@ -27,12 +27,27 @@
 //    base for b and e (stale nominal-time TLAS: +2 % / +1.7 % bright) and
 //    f (child frozen at the frame pose: -1.7 %).
 //
-//    PT and BDPT (VCM too with DL457_VCM set).  The gate is 3 combined
+//    DL-463 rows (VCM always included):
+//      v  a glass ball lens sweeping under a small luminary; the caustic is
+//         reached only by vertex merging (VCM, merge_radius forced).  Red on
+//         the base (light store traced at the frame time while eye samples
+//         moved: -4.4 %, t -19.5).
+//      s  a spot light pointing up at the frame time and as authored, down
+//         at the shutter ends: a light BVH built from either culls it.  Red
+//         on the base through the PT-vs-BDPT cross-check (0.0094 vs 0.0329).
+//      p  an omni light dark as authored and at the frame time, lit at the
+//         shutter ends: a light table built at attach dropped it from every
+//         frame, statics included.  Red on the base through the absolute
+//         floor on the time-average (0.0075, dim light only).
+//      q  the same light authored lit (a frame-time-only table drops it).
+//      m  two moving luminaries under the light BVH (a guard).
+//
+//    PT and BDPT (VCM too with DL457_VCM set) unless a row names its own.  The gate is 3 combined
 //    standard errors (8 salted renders for the blurred frame; 4 per static
 //    time for the reference, 2 per time where 32 times keep the time
 //    quadrature below the noise).
 //
-//    Usage: MotionBlurTimeAverageTest [seed] [a|b|c|d|e|f|all] [spp] [repeats]
+//    Usage: MotionBlurTimeAverageTest [seed] [all|<row letters>|perf|perf2] [spp] [repeats]
 //
 //  Author: Claude (debt-dl457)
 //  Tabs: 4
@@ -251,6 +266,13 @@ static std::string Timeline( const char* type, const char* element, const char* 
 		type, element, param, v0, v1 );
 }
 
+//! Three keys at t = 0, 0.5, 1: the frame time (0.5) sits on the middle one.
+static std::string Timeline3( const char* type, const char* element, const char* param, const char* v0, const char* vMid, const char* v1 )
+{
+	return Fmt( "timeline\n{\n\telement_type %s\n\telement %s\n\tparam %s\n\tinterpolator linear\n\ttime 0\n\tvalue %s\n\ttime 0.5\n\tvalue %s\n\ttime 1\n\tvalue %s\n}\n\n",
+		type, element, param, v0, vMid, v1 );
+}
+
 //! Forty small spheres out of view: they push the object count past
 //! ObjectManager's linear-loop threshold (4) so a top-level BVH is built,
 //! and keep the moving object out of their leaves.
@@ -272,16 +294,29 @@ static std::string Padding()
 static std::string Env( const bool env ) { return env ? "\tradiance_map white\n\tradiance_scale 1.0\n\tradiance_background TRUE\n" : ""; }
 static std::string RasPT( const bool env ) { return "pathtracing_pel_rasterizer\n{\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( env ) + "}\n\n"; }
 static std::string RasBDPT( const bool env ) { return "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( env ) + "}\n\n"; }
+//! `mergeRadius` > 0 forces vertex merging on (DL-463 a) with the same
+//! radius schedule for the blurred frame and every static reference.
+static std::string RasVCM( const bool env, const double mergeRadius ) { return "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + ( mergeRadius > 0 ? Fmt( "\tmerge_radius %g\n", mergeRadius ) : std::string() ) + Env( env ) + "}\n\n"; }
+
+enum { kPT = 1, kBDPT = 2, kVCM = 4 };
 
 //! `floor` FALSE replaces the floor by a white environment background.
-static void RunCase( const char* label, const std::string& body, const bool floor = true, const int times = 8 )
+static int IntegratorMask( const int mask )
 {
+	return mask ? mask : ( kPT | kBDPT | ( std::getenv( "DL457_VCM" ) ? kVCM : 0 ) );
+}
+
+static void RunCase( const char* label, const std::string& body, const bool floor = true, const int times = 8, const int mask = 0, const double mergeRadius = 0,
+	const bool crossCheck = false, const double refFloor = 0 )
+{
+	std::vector<std::pair<const char*, Stat> > blurred;
 	const double kFrame = 0.5, kExposure = 1.0;
 	struct Integrator { const char* name; std::string ras; };
-	std::vector<Integrator> integrators = { { "PT", RasPT( !floor ) }, { "BDPT", RasBDPT( !floor ) } };
-	if( std::getenv( "DL457_VCM" ) ) {
-		integrators.push_back( { "VCM", "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( !floor ) + "}\n\n" } );
-	}
+	std::vector<Integrator> integrators;
+	const int m = IntegratorMask( mask );
+	if( m & kPT ) integrators.push_back( { "PT", RasPT( !floor ) } );
+	if( m & kBDPT ) integrators.push_back( { "BDPT", RasBDPT( !floor ) } );
+	if( m & kVCM ) integrators.push_back( { "VCM", RasVCM( !floor, mergeRadius ) } );
 	for( const auto& ig : integrators ) {
 		const Stat blur = RenderN( Scene( body, ig.ras, kExposure, floor ), kFrame, g_blurRepeats );
 		const int refRepeats = times >= 32 ? 2 : g_repeats;
@@ -310,6 +345,33 @@ static void RunCase( const char* label, const std::string& body, const bool floo
 		Check( ok && blur.mean > 0, std::string( "DL-457 renders complete: " ) + ig.name + " " + label );
 		Check( ok && std::fabs( blur.mean - refMean ) <= crit * se + 1e-12,
 			std::string( "DL-457 motion blur = time average of static renders: " ) + ig.name + " " + label );
+		if( refFloor > 0 ) {
+			// DL-463: a light dark at the frame time (and as authored) but lit
+			// during the shutter must reach the statics too (a light table
+			// built once, at attach, dropped it from every frame).
+			Check( ok && refMean > refFloor,
+				Fmt( "DL-463 time-average sees the light lit during the shutter (%.6f > %.6f): %s %s", refMean, refFloor, ig.name, label ) );
+		}
+		blurred.push_back( std::make_pair( ig.name, blur ) );
+	}
+	if( crossCheck ) {
+		// DL-463: integrators agree on the blurred frame (a reference-free
+		// check: the light BVH drives PT's NEE only, so a culled light
+		// shows up as PT against BDPT / VCM).
+		for( std::size_t i = 1; i < blurred.size(); i++ ) {
+			const Stat& a = blurred[0].second;
+			const Stat& b = blurred[i].second;
+			const double va = a.se * a.se, vb = b.se * b.se;
+			const double se = std::sqrt( va + vb );
+			const double dofDen = va * va / ( g_blurRepeats - 1 ) + vb * vb / ( g_blurRepeats - 1 );
+			const double dof = dofDen > 0 ? ( va + vb ) * ( va + vb ) / dofDen : 1e6;
+			const double z = se > 0 ? ( a.mean - b.mean ) / se : 0;
+			const double crit = CriticalT( kFamilyAlpha / g_comparisons, dof );
+			std::printf( "  %s vs %s %-44s %.6f vs %.6f  ratio %.4f  t %+.2f (crit %.2f)\n", blurred[0].first, blurred[i].first, label,
+				a.mean, b.mean, b.mean > 0 ? a.mean / b.mean : 0.0, z, crit );
+			Check( a.ok && b.ok && std::fabs( a.mean - b.mean ) <= crit * se + 1e-12,
+				std::string( "DL-463 blurred frame agrees across integrators: " ) + blurred[0].first + " vs " + blurred[i].first + " " + label );
+		}
 	}
 }
 
@@ -320,6 +382,10 @@ struct Case
 	std::string body;
 	bool floor;
 	int times;
+	int mask;				//!< kPT | kBDPT | kVCM; 0 = PT + BDPT (+ VCM with DL457_VCM)
+	double mergeRadius;		//!< VCM merge radius (> 0 forces VM on)
+	bool crossCheck = false;	//!< also compare the integrators' blurred frames
+	double refFloor = 0;		//!< > 0: the time-average must exceed this
 };
 
 int main( int argc, char** argv )
@@ -338,23 +404,23 @@ int main( int argc, char** argv )
 	const Case cases[] = {
 		{ "a", "a: luminary sphere scale 1 -> 0.5",
 			Sphere( "e", "lum", "0.3 0 2.6", "1 1 1" ) +
-			Timeline( "object", "e", "scale", "1 1 1", "0.5 0.5 0.5" ), true, 8 },
+			Timeline( "object", "e", "scale", "1 1 1", "0.5 0.5 0.5" ), true, 8, 0, 0 },
 		{ "b", "b: occluder grows 0.1 -> 0.9 past its bounds",
 			Sphere( "occ", "black_mat", "0 0 0", "0.1 0.1 0.1" ) +
-			Timeline( "object", "occ", "scale", "0.1 0.1 0.1", "0.9 0.9 0.9" ) + Padding(), false, 32 },
+			Timeline( "object", "occ", "scale", "0.1 0.1 0.1", "0.9 0.9 0.9" ) + Padding(), false, 32, 0, 0 },
 		{ "c", "c: moving omni light",
 			"omni_light\n{\n\tname l_omni\n\tpower 20.0\n\tcolor 1.0 1.0 1.0\n\tposition -1.5 0 2\n}\n\n" +
-			Timeline( "light", "l_omni", "position", "-1.5 0 2", "1.5 0 2" ), true, 32 },
+			Timeline( "light", "l_omni", "position", "-1.5 0 2", "1.5 0 2" ), true, 32, 0, 0 },
 		{ "e", "e: moving occluder",
 			Sphere( "occ", "black_mat", "-3 0 0", "0.5 0.5 0.5" ) +
-			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32 },
+			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32, 0, 0 },
 		{ "f", "f: occluder carried by a moving parent",
 			std::string( "standard_object\n{\n\tname rig\n\tposition -3 0 0\n}\n\n" ) +
 			"standard_object\n{\n\tname occ\n\tparent rig\n\tgeometry geo_unit\n\tmaterial black_mat\n\tposition 0 0 0\n\tscale 0.5 0.5 0.5\n}\n\n" +
-			Timeline( "object", "rig", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32 },
+			Timeline( "object", "rig", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32, 0, 0 },
 		{ "d", "d: moving luminary sphere",
 			Sphere( "e", "lum", "-1.5 0 2.6", "0.5 0.5 0.5" ) +
-			Timeline( "object", "e", "position", "-1.5 0 2.6", "1.5 0 2.6" ) + Padding(), true, 32 },
+			Timeline( "object", "e", "position", "-1.5 0 2.6", "1.5 0 2.6" ) + Padding(), true, 32, 0, 0 },
 		// An infinite plane's box is +-DBL_MAX; any rotation overflows it
 		// to inf, and a naive sweep turned inf - inf into a NaN box that
 		// BoundingBox::Include ignores, dropping the floor from the TLAS.
@@ -362,9 +428,72 @@ int main( int argc, char** argv )
 			std::string( "infiniteplane_geometry\n{\n\tname geo_inf\n}\n\n" ) +
 			"standard_object\n{\n\tname inffloor\n\tgeometry geo_inf\n\tmaterial floor_mat\n\tposition 0 0 -0.6\n\torientation 0 0 90\n}\n\n" +
 			Sphere( "occ", "black_mat", "-3 0 0", "0.5 0.5 0.5" ) +
-			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32 },
-		{ "h", "h: rotating rod occluder (0 -> 90 deg)", rodOccluder + Padding(), false, 32 },
+			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32, 0, 0 },
+		{ "h", "h: rotating rod occluder (0 -> 90 deg)", rodOccluder + Padding(), false, 32, 0, 0 },
+		// DL-463 (a): a glass ball lens sweeping across the view, focusing
+		// a small overhead luminary onto the floor; the caustic is reached
+		// only by vertex merging.  The light store must be traced at the
+		// time of the eye samples it is merged with.
+		{ "v", "v: VCM caustic of a moving glass ball (VM)",
+			std::string( "dielectric_material\n{\n\tname glass\n\ttau 1 1 1\n\tior 1.5\n\tscattering 1000000\n}\n\n" ) +
+			Sphere( "ball", "glass", "-6 0 0.55", "0.4 0.4 0.4" ) +
+			Timeline( "object", "ball", "position", "-6 0 0.55", "6 0 0.55" ) +
+			Sphere( "e", "lum", "0 0 3", "0.15 0.15 0.15" ), true, 32, kVCM, 0.05 },
+		// DL-463 (b): a spot light that points UP at the frame time (and as
+		// authored) and down at both ends of the shutter.  A light BVH built
+		// at the frame time culls it (zero orientation importance) at every
+		// floor point below it.  A static omni light makes the BVH (2+ lights).
+		{ "s", "s: spot light swinging down/up/down (light BVH)",
+			std::string( "spot_light\n{\n\tname spot\n\tposition 0 0 2\n\ttarget 0 1 4\n\tcolor 1 1 1\n\tpower 40\n\tinner 30\n\touter 40\n}\n\n" ) +
+			Timeline3( "light", "spot", "target", "0 1 0", "0 1 4", "0 1 0" ) +
+			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT | kVCM, 0, true },
+		// DL-463 (b): an omni light whose energy is ZERO at the frame time
+		// AND as authored, positive at both ends of the shutter.  A light
+		// table built once at attach (base) dropped it from every frame,
+		// statics included; one built at the frame time alone drops it
+		// from the blurred frame.
+		{ "p", "p: omni light fading 20 -> 0 -> 20 (authored 0)",
+			std::string( "omni_light\n{\n\tname l_fade\n\tpower 0.0\n\tcolor 1.0 1.0 1.0\n\tposition 0.5 0 2\n}\n\n" ) +
+			Timeline3( "light", "l_fade", "energy", "20", "0", "20" ) +
+			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT | kVCM, 0, false, 0.015 },
+		// The same light authored ON: the attach-time table keeps it, a
+		// frame-time-only table (no shutter sweep) drops it.
+		{ "q", "q: omni light fading 20 -> 0 -> 20 (authored 20)",
+			std::string( "omni_light\n{\n\tname l_fade\n\tpower 20.0\n\tcolor 1.0 1.0 1.0\n\tposition 0.5 0 2\n}\n\n" ) +
+			Timeline3( "light", "l_fade", "energy", "20", "0", "20" ) +
+			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT | kVCM, 0, true, 0.015 },
+		// DL-463 (b): two luminaries moving in opposite directions under the
+		// light BVH (a guard: mesh luminaries carry full-sphere cones).
+		{ "m", "m: two moving luminaries (light BVH)",
+			Sphere( "e1", "lum", "-1.5 0 2.6", "0.4 0.4 0.4" ) +
+			Timeline( "object", "e1", "position", "-1.5 0 2.6", "1.5 0 2.6" ) +
+			Sphere( "e2", "lum", "1.5 1 2.6", "0.3 0.3 0.3" ) +
+			Timeline( "object", "e2", "position", "1.5 1 2.6", "-1.5 -1 2.6" ), true, 32, kPT | kBDPT | kVCM, 0, true },
 	};
+
+	if( only == "perf2" ) {
+		// Not a gate (DL-463 d): the same 400 static links PLUS an animated
+		// parented subtree (a moving rig carrying the occluder), so every
+		// pixel sample re-composes -- only the animated subtree since
+		// DL-463, every link before.  Compare across builds.
+		std::string body;
+		for( int i = 0; i < 400; i++ ) {
+			body += Fmt( "standard_object\n{\n\tname rig%d\n\tposition %g %g -5\n}\n\n", i, -40.0 + 0.2 * ( i % 20 ), -40.0 + 0.2 * ( i / 20 ) );
+			body += Fmt( "standard_object\n{\n\tname kid%d\n\tparent rig%d\n\tgeometry geo_unit\n\tmaterial floor_mat\n\tscale 0.05 0.05 0.05\n}\n\n", i, i );
+		}
+		body += std::string( "standard_object\n{\n\tname mover\n\tposition -3 0 0\n}\n\n" ) +
+			"standard_object\n{\n\tname occ\n\tparent mover\n\tgeometry geo_unit\n\tmaterial black_mat\n\tscale 0.5 0.5 0.5\n}\n\n" +
+			Timeline( "object", "mover", "position", "-3 0 0", "0 0 0" );
+		const std::string text = Scene( body, RasPT( true ), 1.0, false );
+		for( int r = 0; r < 3; r++ ) {
+			double m = 0;
+			const auto t0 = std::chrono::steady_clock::now();
+			RenderOnce( text, 0.5, m );
+			const double sec = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
+			std::printf( "  perf2: blurred frame %.3f s (mean %.6f)\n", sec, m );
+		}
+		return 0;
+	}
 
 	if( only == "perf" ) {
 		// Not a gate: wall time of a motion-blurred PT frame whose scene has
@@ -387,14 +516,17 @@ int main( int argc, char** argv )
 		return 0;
 	}
 
-	const int nIntegrators = std::getenv( "DL457_VCM" ) ? 3 : 2;
 	g_comparisons = 0;
 	for( const Case& c : cases ) {
-		if( only == "all" || only == c.key ) g_comparisons += nIntegrators;
+		if( only == "all" || only.find( c.key ) != std::string::npos ) {
+			const int m = IntegratorMask( c.mask );
+			const int n = ( m & kPT ? 1 : 0 ) + ( m & kBDPT ? 1 : 0 ) + ( m & kVCM ? 1 : 0 );
+			g_comparisons += n + ( c.crossCheck ? n - 1 : 0 );
+		}
 	}
 	if( g_comparisons == 0 ) g_comparisons = 1;
 	for( const Case& c : cases ) {
-		if( only == "all" || only == c.key ) RunCase( c.label, c.body, c.floor, c.times );
+		if( only == "all" || only.find( c.key ) != std::string::npos ) RunCase( c.label, c.body, c.floor, c.times, c.mask, c.mergeRadius, c.crossCheck, c.refFloor );
 	}
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";
 	return failCount == 0 ? 0 : 1;
