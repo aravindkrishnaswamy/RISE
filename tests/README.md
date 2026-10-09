@@ -1337,6 +1337,19 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   directly (P-keyed 9.9, UV-keyed equals the old grid, constant is verbatim,
   composite local exitance). Red on `388907e94`: PT 0.0011 / BDPT 0.0001 of the
   closed form, photon flux 0 and 150x, 18/12; green 37/0.
+- `SpectralOnlyEmitterTest` (DL-396): an area emitter whose exitance is a
+  `piecewise_linear_function` (a physical SPD with no RGB authoring). Row A
+  lights a grey wall with a chromatic ramp SPD (Lambertian and Phong N=2) under
+  PT / BDPT RGB and PT / BDPT / VCM / MLT spectral, hwss FALSE / TRUE, against
+  the closed-form wall luminance; row B pairs an RGB emitter with a
+  spectral-only one (plus an all-RGB control) to check the selection pmf
+  partition; row C swaps `sms_k1_refract`'s light for a spectral-only SPD equal
+  to the white RGB control's own radiance spectrum (Y-normalised D65) and
+  compares snell / uniform / extended SMS, spectral and RGB. 4 salted renders
+  per row; `A`, `B` or `C` as the first argument runs one row. Red (the
+  painter's RGB black): PT / BDPT / MLT spectral 0.0001-0.0011 of the closed
+  form, RGB 0, mixed 0.37, snell SMS 0.46 of the control (RGB 0), 39/40;
+  green 87/0.
 
 - `BDPTSeeThroughMISPartitionTest` (DL-424/425 review): synthetic
   `L - gap(s) - D - [D2] - E` paths split per strategy from one set of

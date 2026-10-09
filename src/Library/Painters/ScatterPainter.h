@@ -195,6 +195,7 @@ namespace RISE
 			//! sum of two illuminant-shaped spectra, which stays
 			//! illuminant-shaped.
 			Scalar			GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel			GetRadianceColor( const RayIntersectionGeometric& ri ) const;	//!< DL-396: RGB twin of GetRadianceNM
 			SpectralPacket	GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetAlpha( const RayIntersectionGeometric& ri ) const;
 

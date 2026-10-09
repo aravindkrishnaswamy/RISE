@@ -52,7 +52,7 @@ void PhongEmitter::RefreshAverages()
 	// the 0.1-UV pitch.  The determinism is required for a reproducible parse (the v6->v7 cutover gate).
 	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
 		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
-		averageRadEx = averageRadEx + pRadEx->GetColor(rig);
+		averageRadEx = averageRadEx + pRadEx->GetRadianceColor(rig);
 		// GetRadianceNM per bin, not GetSpectrum -- see the twin comment in
 		// LambertianEmitter::RefreshAverages (Stage C slice 2).
 		VisibleSpectralPacket radSp;
@@ -95,7 +95,7 @@ RISEPel PhongEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const
 	const ScalarTriple pN_t = pPhongN->GetValuesAt( ri );
 	const RISEPel	pN( pN_t.v[0], pN_t.v[1], pN_t.v[2] );
 	const RISEPel	k = (pN + 1) * pow(co,pN) * (1.0 / TWO_PI);
-	return (pRadEx->GetColor(ri) * k * scale);
+	return (pRadEx->GetRadianceColor(ri) * k * scale);
 }
 
 Scalar PhongEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm) const
@@ -126,7 +126,7 @@ Scalar PhongEmitter::averageRadiantExitanceNM( const Scalar nm ) const
 
 RISEPel PhongEmitter::radiantExitanceAt( const RayIntersectionGeometric& ri ) const
 {
-	return pRadEx->GetColor( ri ) * scale;
+	return pRadEx->GetRadianceColor( ri ) * scale;
 }
 
 Scalar PhongEmitter::radiantExitanceAtNM( const RayIntersectionGeometric& ri, const Scalar nm ) const

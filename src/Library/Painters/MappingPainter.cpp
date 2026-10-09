@@ -249,6 +249,49 @@ Scalar MappingPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const 
 	}
 }
 
+RISEPel MappingPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: RGB twin of GetRadianceNM -- identical structure.
+	switch( projection ) {
+		case Proj_UV: {
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptCoord = ApplyUV( ri.ptCoord );
+			// P1-B fix: stale-footprint rationale, see GetColor's Proj_UV
+			// case above.
+			ri2.txFootprint.valid = false;
+			return source.GetRadianceColor( ri2 );
+		}
+		case Proj_World: {
+			// world/object leave ptCoord untouched -- footprint stays valid.
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptIntersection = Apply3D( ri.ptIntersection );
+			return source.GetRadianceColor( ri2 );
+		}
+		case Proj_Object: {
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptObjIntersec = Apply3D( ri.ptObjIntersec );
+			return source.GetRadianceColor( ri2 );
+		}
+		case Proj_Triplanar:
+		default: {
+			Scalar w[3];
+			Point2 uv2[3];
+			ComputeTriplanar( ri, w, uv2 );
+			RayIntersectionGeometric ri2 = ri;
+			// P1-B fix: stale-footprint rationale, see GetColor's
+			// Proj_Triplanar case above.
+			ri2.txFootprint.valid = false;
+			RISEPel sum( 0, 0, 0 );
+			for( int k = 0; k < 3; ++k ) {
+				if( w[k] <= Scalar(0) ) continue;
+				ri2.ptCoord = uv2[k];
+				sum = sum + source.GetRadianceColor( ri2 ) * w[k];
+			}
+			return sum;
+		}
+	}
+}
+
 SpectralPacket MappingPainter::GetSpectrum( const RayIntersectionGeometric& ri ) const
 {
 	switch( projection ) {

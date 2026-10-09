@@ -116,6 +116,30 @@ namespace RISE
 			) const;
 
 		//!
+		//! RGB twin of `GetRadianceNM`: this painter's colour when it is
+		//! used as a RADIANCE SOURCE in an RGB render (DL-396).
+		//!
+		//! For every painter authored in RGB the two RGB views coincide --
+		//! the authored triple IS the colour the source has -- so the
+		//! default forwards to `GetColor` and every such emitter renders
+		//! bit-identically.  They differ only for a painter that carries a
+		//! PHYSICAL spectrum F(lambda) used verbatim in both roles (the
+		//! `GetColorNM == GetRadianceNM` painters): as a reflectance its
+		//! RGB is F viewed under D65, `M (Int F D65 cmf) / (Int D65 ybar)`,
+		//! while as a source the film sees F itself,
+		//! `M (Int F cmf) / (Int ybar)` -- an equal-energy F is white in
+		//! the first and (1.20, 0.95, 0.91) in the second.  Emitters,
+		//! radiance maps and radiance shader ops call this one, mirroring
+		//! their spectral `GetRadianceNM` calls; reflectance slots keep
+		//! `GetColor`.  Painters that SELECT one child per sample forward
+		//! it to that child, exactly as they forward `GetRadianceNM`.
+		//!
+		/// \return The emitted colour (linear Rec.709)
+		virtual RISEPel GetRadianceColor(
+			const RayIntersectionGeometric& ri					///< [in] Geometric intersection details
+			) const { return GetColor( ri ); }
+
+		//!
 		//! This function is also similar to the above ones, however it returns the entire spectrum
 		//! rather than just the value at the particular wavelength
 		//!
@@ -146,8 +170,8 @@ namespace RISE
 		//! (`spectral_painter`), `BlackBodyPainter` (`blackbody_painter`),
 		//! and `Function1DSpectralPainter` (a `piecewise_linear_function`'s
 		//! dual-registration into the colour-painter manager; its own
-		//! `GetColor` returns pure BLACK -- the RGB view is not merely
-		//! lossy for this one, it is empty) -- and, since DL-203, true
+		//! `GetColor` returned pure BLACK until DL-396 and is now the
+		//! spectrum's D65 reflectance projection) -- and, since DL-203, true
 		//! TRANSITIVELY through any composite/wrapping painter whose own
 		//! `GetColorNM` forwards to a child's REAL `GetColorNM` (not just
 		//! its `GetColor`) and that child is itself spectrally defined:
@@ -172,13 +196,17 @@ namespace RISE
 		//! would not also lose, so they correctly keep the base `false` with
 		//! NO override.
 		//!
-		//! Consulted ONLY by the expression VM's `sample(name)` builtin
+		//! DL-396: also consulted by `GuardedGetColorNM` (below), which must
+		//! never replace a physical spectrum's samples by 1 just because
+		//! its RGB projection reads white.
+		//!
+		//! Otherwise consulted by the expression VM's `sample(name)` builtin
 		//! (ExpressionPainter.h's `BuildExpressionProgramFromChunkFields`,
 		//! at ATTACH time) to REFUSE binding a spectrally-defined painter --
 		//! `sample()` reads `GetColor()` only, so binding one here would
 		//! silently collapse its real SPD to RGB and then re-uplift a
 		//! DIFFERENT curve through whatever spectral consumer the
-		//! expression feeds. Not consulted anywhere else; a painter with no
+		//! expression feeds. Consulted nowhere else; a painter with no
 		//! opinion (the default) is assumed RGB-defined, which is correct
 		//! for every LEAF painter kind in this codebase except the three
 		//! above, and for every composite kind except the ones that override
@@ -230,7 +258,12 @@ namespace RISE
 	//! assumption and must not be done without revisiting the guard.
 	inline Scalar GuardedGetColorNM( const IPainter& p, const RayIntersectionGeometric& ri, const Scalar nm )
 	{
-		if( IsUntintedWhite( p.GetColor( ri ) ) ) {
+		// DL-396: a PHYSICAL spectrum is never "authored white" -- its RGB
+		// is only a projection (a bright SPD can project to min channel
+		// >= 1 while its samples are anything but 1), so the guard must
+		// not replace its samples.  IsSpectrallyDefined is evaluated only
+		// after the cheap white test passes.
+		if( IsUntintedWhite( p.GetColor( ri ) ) && !p.IsSpectrallyDefined() ) {
 			return Scalar(1);
 		}
 		return p.GetColorNM( ri, nm );

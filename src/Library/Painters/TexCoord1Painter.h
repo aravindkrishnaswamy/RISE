@@ -115,6 +115,16 @@ namespace RISE
 				return source.GetRadianceNM( ri2, nm );
 			}
 
+			//! DL-396: RGB twin of GetRadianceNM, same forwarding.
+			RISEPel GetRadianceColor( const RayIntersectionGeometric& ri ) const
+			{
+				if( !ri.bHasTexCoord1 ) return source.GetRadianceColor( ri );
+				RayIntersectionGeometric ri2 = ri;
+				ri2.ptCoord = ri.ptCoord1;
+				ri2.txFootprint.valid = false;
+				return source.GetRadianceColor( ri2 );
+			}
+
 			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const
 			{
 				// Spectral counterpart of GetColor / GetColorNM.  Without

@@ -110,3 +110,9 @@ void CheckerPainter::SetIntermediateValue( const IKeyframeParameter& val )
 void CheckerPainter::RegenerateData( )
 {
 }
+
+RISEPel CheckerPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: the RGB twin of GetRadianceNM -- forward to the selected child.
+	return ComputeWhich(ri).GetRadianceColor(ri);
+}

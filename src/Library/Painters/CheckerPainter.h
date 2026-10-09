@@ -48,6 +48,7 @@ namespace RISE
 			//! re-uplift its RGB projection -- and emit BLACK for a
 			//! `piecewise_linear_function`-backed child).
 			Scalar							GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel							GetRadianceColor( const RayIntersectionGeometric& ri ) const;	//!< DL-396: forwards like GetRadianceNM
 
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
