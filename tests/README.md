@@ -1321,8 +1321,10 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   dome as luminaries over a floor, PT vs BDPT vs VCM and vs an exactly
   sampled mesh twin (4 salted renders x 1024 spp, 3 combined se); H: sampler
   and area hashes of a rectangle and a parallelogram for a cross-build A/B.
-  Red 9/25 on `c73078dc2`; green 34/0. Optional args: seed, section
-  (A/B/C/H), spp, repeats; `DL459_SDF_M` overrides the chi-square count.
+  B also intersects a single-sided dart from above and below (positive-sheet
+  hits only). Red 9/25 on `c73078dc2`; green 38/0. Optional args: seed,
+  section (A/B/C/H; T prints SDF sampler ns/sample, not a gate), spp,
+  repeats; `DL459_SDF_M` overrides the chi-square count.
 
 - `EmitterAverageExitanceTest` (DL-431): the luminary's average exitance
   (light-selection weight, photon power / budget) over its own surface points.

@@ -18,6 +18,7 @@
 #include "Geometry.h"
 #include <algorithm>		// std::max (SelfHitRootFloor over the four corners)
 #include <vector>
+#include <array>
 
 namespace RISE
 {
@@ -59,12 +60,13 @@ namespace RISE
 			//! is the bilinear patch through the four corners, and only for
 			//! a coplanar CONVEX quad is that patch's image the polygon the
 			//! corners outline.  For a coplanar DART (one corner inside the
-			//! triangle of the other three) the image is a proper subset of
-			//! the polygon, so the point-to-polygon form UNDER-reports over
-			//! the reflex lobe -- contact painted where there is none, the
-			//! one direction this signal must never fail in -- and
-			//! over-reports outside.  A dart therefore REFUSES, exactly as
-			//! a non-coplanar quad does.  Meaningful only when
+			//! triangle of the other three) the patch FOLDS: its image is the
+			//! polygon PLUS a folded overshoot outside it (DL-460: a degree
+			//! argument -- see the area-mode comment below), so the
+			//! point-to-polygon form is not the patch's distance there.  It
+			//! errs only toward over-reporting (it misses the overshoot), but
+			//! "exact" is this function's contract, so a dart REFUSES,
+			//! exactly as a non-coplanar quad does.  Meaningful only when
 			//! `bCornersCoplanar` (the test needs the plane basis).
 			//!
 			//! Every `rect_light` and every hand-authored panel is a convex
@@ -113,8 +115,24 @@ namespace RISE
 			int		nJacPlanar;			//!< 0: |w|;  1: max(0, dJacSign n.w);  2: |n.w| (bow-tie)
 			Scalar	dJacSign;
 			static const unsigned int nAreaCells = 16;
-			std::vector<Scalar>	vCellCdf;	//!< normalized cumulative of cell bound weights
-			std::vector<Scalar>	vCellBound;	//!< per-cell rigorous bound of the integrand
+			//! FIXED-SIZE storage (never reallocated, never empty): temporal
+			//! sampling may run EvaluateAtTime -> RegenerateData on one render
+			//! worker while another samples, so the worst a race can produce
+			//! is a torn value, never an out-of-bounds read.  `bHasCellTable`
+			//! says whether the table is usable (false: degenerate quad).
+			std::array<Scalar, nAreaCells * nAreaCells>	vCellCdf;	//!< normalized cumulative of cell bound weights
+			std::array<Scalar, nAreaCells * nAreaCells>	vCellBound;	//!< per-cell rigorous bound of the integrand
+			bool	bHasCellTable;
+			//! A coplanar quad whose area element changes sign (a dart): the
+			//! intersector re-maps a hit on the folded sheet to its preimage
+			//! on the positive sheet (see RemapToPositiveSheet).
+			bool	bFolded;
+
+			//! DL-460: for a folded coplanar quad, re-map (u, v) on the
+			//! negative (folded) sheet to the positive-sheet preimage of the
+			//! same point, so culling, normals and texture coordinates agree
+			//! with the luminary (the positive sheet) the sampler draws.
+			void	RemapToPositiveSheet( Scalar& u, Scalar& v ) const;
 
 			Scalar	AreaIntegrand( const Scalar u, const Scalar v ) const;
 			void	BuildAreaData();

@@ -2771,8 +2771,12 @@ void SDFGeometry::EnsureSamplingStructure() const
 		// mean weighting (which left the within-triangle Jacobian variation
 		// as a density distortion and omitted the tilt factor), is GetArea.
 		// The bound is the largest J at the 3 vertices, 3 edge midpoints and
-		// the centroid with 2 % headroom (J - 1 is O((h k)^2), far below
-		// it); a sample above it is accepted and counted in the diagnostic.
+		// the centroid with 2 % headroom.  It is NOT rigorous: on a smooth
+		// surface J - 1 is O((h k)^2), far inside the headroom, but at a
+		// crease (where the finite-difference curvature spikes and J hits
+		// its [0.5, 2] clamp) an interior J can exceed it.  Such a candidate
+		// is simply accepted (probability 1), i.e. that spot is slightly
+		// under-sampled; nothing counts it.
 		unsigned int jClamped = 0;
 		auto jacobianAt = [this, &jClamped]( const Point3& x, const Vector3& m ) -> Scalar {
 			Point3 y; Vector3 n; bool c = false;

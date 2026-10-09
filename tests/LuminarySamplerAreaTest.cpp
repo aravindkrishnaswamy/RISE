@@ -46,6 +46,7 @@
 #include <cmath>
 #include <string>
 #include <functional>
+#include <chrono>
 #include <random>
 #include <unistd.h>
 
@@ -62,6 +63,7 @@
 #include "../src/Library/Geometry/BezierPatchGeometry.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -385,6 +387,60 @@ static void TestUniformity()
 		safe_release( g );
 	}
 	{
+		// The INTERSECTOR on a folded dart: over the overshoot the two
+		// sheets meet a ray at the same distance, so the reported root must
+		// be the positive one (the luminary the sampler draws) -- otherwise
+		// a single-sided dart culls / shows the wrong face there and a
+		// textured one reads the folded (u, v).  Rays straight down on a
+		// grid: every hit must carry a positive-sheet (u, v) and the +z
+		// normal, the hit area must be the image area, and rays straight
+		// up must all be culled.
+		const Point3 v[4] = { kDart[0], kDart[1], kDart[2], kDart[3] };
+		ClippedPlaneGeometry* g = new ClippedPlaneGeometry( v, false );
+		double out = 0;
+		const double img = ImageAreaByOccupancy( kDart, &out );
+		const int R = 600;
+		const double px = 2.0 / R;
+		// Grid points that land EXACTLY on the fold line (area element 0,
+		// both preimages coincide; measure zero) are skipped: neither sheet
+		// is preferred there and the normal degenerates.
+		auto onFold = [&]( const Point2& uv ) {
+			const Vector3 tu = GeometricUtilities::BilinearTangentU( kDart[0], kDart[1], kDart[2], kDart[3], uv.y );
+			const Vector3 tv = GeometricUtilities::BilinearTangentV( kDart[0], kDart[1], kDart[2], kDart[3], uv.x );
+			return std::fabs( Vector3Ops::Cross( tu, tv ).z ) < 1e-12;
+		};
+		unsigned down = 0, up = 0, wrong = 0, downOut = 0;
+		for( int iy = 0; iy < R; iy++ ) for( int ix = 0; ix < R; ix++ ) {
+			const double X = ( ix + 0.5 ) * px, Y = ( iy + 0.5 ) * px;
+			RayIntersectionGeometric rd( Ray( Point3( X, Y, 1 ), Vector3( 0, 0, -1 ) ), nullRasterizerState );
+			g->IntersectRay( rd, true, true, false );
+			if( rd.bHit ) {
+				down++;
+				if( !InPolygon( kDart, X, Y ) ) downOut++;
+				const Vector3 tu = GeometricUtilities::BilinearTangentU( kDart[0], kDart[1], kDart[2], kDart[3], rd.ptCoord.y );
+				const Vector3 tv = GeometricUtilities::BilinearTangentV( kDart[0], kDart[1], kDart[2], kDart[3], rd.ptCoord.x );
+				if( !onFold( rd.ptCoord ) && ( !( Vector3Ops::Cross( tu, tv ).z > 0 ) || !( rd.vNormal.z > 0 ) ) ) {
+					if( getenv( "DL460_DEBUG" ) ) std::printf( "    wrong X=%.6f Y=%.6f uv=(%.9f %.9f) Jz=%g nz=%g\n", X, Y, rd.ptCoord.x, rd.ptCoord.y, Vector3Ops::Cross( tu, tv ).z, rd.vNormal.z );
+					wrong++;
+				}
+			}
+			RayIntersectionGeometric ru( Ray( Point3( X, Y, -1 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
+			g->IntersectRay( ru, true, true, false );
+			if( ru.bHit && !onFold( ru.ptCoord ) ) {
+				if( getenv( "DL460_DEBUG" ) ) std::printf( "    up X=%.6f Y=%.6f uv=(%.9f %.9f)\n", X, Y, ru.ptCoord.x, ru.ptCoord.y );
+				up++;
+			}
+		}
+		const double hitArea = down * px * px, outArea = downOut * px * px;
+		std::cout << "  B DL-460 single-sided dart hits from above: area " << hitArea << " (image " << img << "), outside polygon "
+			<< outArea << " (" << out << "), wrong-sheet hits " << wrong << ", hits from below " << up << "\n";
+		Check( std::fabs( hitArea - img ) < 0.01 * img, "DL-460 single-sided dart: front hits cover the image" );
+		Check( std::fabs( outArea - out ) < 0.05 * out, "DL-460 single-sided dart: front hits cover the overshoot" );
+		Check( wrong == 0, "DL-460 dart hits report the positive sheet's (u, v) and normal" );
+		Check( up == 0, "DL-460 single-sided dart: rays from behind are culled" );
+		safe_release( g );
+	}
+	{
 		BezierPatchGeometry* g = new BezierPatchGeometry( 2, 8, false );
 		g->AddPatch( WarpedSquarePatch() );
 		g->Prepare();
@@ -644,6 +700,43 @@ static void PrintHashes()
 	}
 }
 
+//! T: per-sample UniformRandomPoint cost of an SDF luminary (not a gate;
+//! compare across builds).
+static void PrintSdfCost()
+{
+	std::cout << "T: SDF UniformRandomPoint cost (ns per sample)\n";
+	struct Case { const char* name; std::vector<SDFGeometry::Part> parts; };
+	std::vector<Case> cases;
+	{
+		Case c{ "sphere r1", {} };
+		c.parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0, Point3( 0, 0, 0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 1.0, 0, 0, 0 ) );
+		cases.push_back( c );
+	}
+	{
+		Case c{ "smin blob of 3 + box", {} };
+		c.parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0, Point3( 0, 0, 0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 1.0, 0, 0, 0 ) );
+		c.parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpSmin, 0.3, Point3( 1.2, 0, 0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 0.7, 0, 0, 0 ) );
+		c.parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpSmin, 0.3, Point3( 0, 1.1, 0.3 ), 0, 0, 0, Vector3( 1, 1, 1 ), 0.6, 0, 0, 0 ) );
+		c.parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpSubtract, 0.1, Point3( 0, -0.8, 0 ), 20, 0, 10, Vector3( 1, 1, 1 ), 0.5, 0.3, 0.5, 0 ) );
+		cases.push_back( c );
+	}
+	for( const Case& c : cases ) {
+		SDFGeometry* g = new SDFGeometry( c.parts, 512, Scalar( 0 ), 64 );
+		g->GetArea();	// build the sampling structure outside the timing
+		const unsigned M = 400000;
+		double sink = 0;
+		const auto t0 = std::chrono::steady_clock::now();
+		for( unsigned i = 0; i < M; i++ ) {
+			Point3 p; Vector3 n;
+			g->UniformRandomPoint( &p, &n, nullptr, Prand( i, M ) );
+			sink += p.x + n.y;
+		}
+		const double ns = std::chrono::duration<double, std::nano>( std::chrono::steady_clock::now() - t0 ).count() / M;
+		std::printf( "  T %s: %.0f ns/sample (checksum %g)\n", c.name, ns, sink );
+		safe_release( g );
+	}
+}
+
 int main( int argc, char** argv )
 {
 	std::setvbuf( stdout, nullptr, _IONBF, 0 );
@@ -656,6 +749,7 @@ int main( int argc, char** argv )
 	if( only == "all" || only == "B" ) TestUniformity();
 	if( only == "all" || only == "C" ) TestRenders();
 	if( only == "all" || only == "H" ) PrintHashes();
+	if( only == "T" ) PrintSdfCost();
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";
 	return failCount == 0 ? 0 : 1;
 }

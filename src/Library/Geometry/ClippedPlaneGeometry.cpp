@@ -147,6 +147,7 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	if( !h.bHit ) {
 		return;
 	}
+	RemapToPositiveSheet( h.u, h.v );	// DL-460: a folded dart's hit on its folded sheet
 
 	// Analytic normal at (u, v) on the bilinear surface.
 	const Vector3 dpdu = GeometricUtilities::BilinearTangentU(
@@ -248,6 +249,7 @@ bool ClippedPlaneGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const 
 	if( h.dRange <= 0.0 || h.dRange > dHowFar ) {
 		return false;
 	}
+	RemapToPositiveSheet( h.u, h.v );	// DL-460: same sheet IntersectRay reports
 
 	// Cull the same way IntersectRay does so a shadow ray sees the
 	// same surface as a primary ray.
@@ -363,15 +365,17 @@ void ClippedPlaneGeometry::UniformRandomPoint( Point3* point, Vector3* normal, P
 	// candidate keeps prand's stratification.  See the header.
 	Scalar u = prand.x;
 	Scalar v = prand.y;
-	if( nAreaMode == eAreaGeneral && !vCellCdf.empty() ) {
+	const AreaMode mode = nAreaMode;
+	const bool hasTable = bHasCellTable;
+	if( mode == eAreaGeneral && hasTable ) {
 		GeometricUtilities::PrandStream stream( prand, 0x434C50 /*'CLP'*/ );
 		Scalar cz = prand.z, cx = prand.x, cy = prand.y;
 		static const int kMaxCandidates = 4096;
 		bool accepted = false;
 		for( int attempt = 0; attempt < kMaxCandidates && !accepted; ++attempt ) {
-			const std::vector<Scalar>::const_iterator it =
+			const auto it =
 				std::upper_bound( vCellCdf.begin(), vCellCdf.end(), cz );
-			const std::size_t cell = std::min( std::size_t( it - vCellCdf.begin() ), vCellCdf.size() - 1 );
+			const std::size_t cell = std::min( std::size_t( it - vCellCdf.begin() ), vCellCdf.size() - std::size_t( 1 ) );
 			const unsigned int ci = static_cast<unsigned int>( cell % nAreaCells );
 			const unsigned int cj = static_cast<unsigned int>( cell / nAreaCells );
 			u = ( Scalar( ci ) + cx ) / Scalar( nAreaCells );
@@ -581,8 +585,8 @@ void ClippedPlaneGeometry::BuildAreaData()
 	nJacPlanar = 0;
 	dJacSign = 1;
 	dArea = 0;
-	vCellCdf.clear();
-	vCellBound.clear();
+	bHasCellTable = false;
+	bFolded = false;
 
 	const Scalar l1 = Vector3Ops::Magnitude( e1 );
 	const Scalar l3 = Vector3Ops::Magnitude( e3 );
@@ -613,6 +617,11 @@ void ClippedPlaneGeometry::BuildAreaData()
 			if( t > 0 ) ++npos; else if( t < 0 ) ++nneg;
 		}
 		nJacPlanar = ( npos == 2 && nneg == 2 ) ? 2 : 1;
+		// Folded: the (affine) area element is negative at some corner.
+		if( nJacPlanar == 1 ) {
+			const Scalar s00 = dJacSign * a, s10 = dJacSign * ( a + b ), s01 = dJacSign * ( a + c ), s11 = dJacSign * ( a + b + c );
+			bFolded = std::min( std::min( s00, s10 ), std::min( s01, s11 ) ) < 0;
+		}
 		dArea = IntegratePositivePartOfLinear( dJacSign * a, dJacSign * b, dJacSign * c );
 		if( nJacPlanar == 2 ) {
 			dArea += IntegratePositivePartOfLinear( -dJacSign * a, -dJacSign * b, -dJacSign * c );
@@ -643,8 +652,6 @@ void ClippedPlaneGeometry::BuildAreaData()
 	// Cell bounds: every integrand above is CONVEX in (u, v) (a norm or a
 	// positive part of an affine map), so its maximum over a cell is at a
 	// corner -- a rigorous bound.
-	vCellBound.resize( nAreaCells * nAreaCells );
-	vCellCdf.resize( nAreaCells * nAreaCells );
 	Scalar acc = 0;
 	for( unsigned int cj = 0; cj < nAreaCells; ++cj ) {
 		for( unsigned int ci = 0; ci < nAreaCells; ++ci ) {
@@ -660,9 +667,64 @@ void ClippedPlaneGeometry::BuildAreaData()
 	if( acc > 0 ) {
 		for( Scalar& c : vCellCdf ) c /= acc;
 		vCellCdf.back() = 1;
+		bHasCellTable = true;
+	}
+}
+
+void ClippedPlaneGeometry::RemapToPositiveSheet( Scalar& u, Scalar& v ) const
+{
+	// Only a folded coplanar quad, and only a hit on the negative sheet.
+	// On a plane the two sheets meet the ray at the same distance, so which
+	// root RayBilinearPatchIntersection returns is decided by rounding; the
+	// luminary (and its sampler) is the positive sheet, so take the other
+	// preimage of the same point when it exists.
+	if( !bFolded || AreaIntegrand( u, v ) > Scalar( 0 ) ) {
+		return;
+	}
+	const Point3 x = GeometricUtilities::BilinearForward( vP[0], vP[1], vP[2], vP[3], u, v );
+	// 2-D bilinear inverse in the plane's basis: q = u e + v f + u v D, so
+	// (e + v D) is parallel to (q - v f): cross(e + vD, q - vf) = 0, a
+	// quadratic in v.
+	const Vector3 dq = Vector3Ops::mkVector3( x, vP[0] );
+	const Vector3 de = Vector3Ops::mkVector3( vP[1], vP[0] );
+	const Vector3 df = Vector3Ops::mkVector3( vP[3], vP[0] );
+	const Vector3 dD( vP[2].x - vP[3].x - vP[1].x + vP[0].x, vP[2].y - vP[3].y - vP[1].y + vP[0].y, vP[2].z - vP[3].z - vP[1].z + vP[0].z );
+	const Scalar q[2] = { Vector3Ops::Dot( dq, vPlaneU ), Vector3Ops::Dot( dq, vPlaneV ) };
+	const Scalar e[2] = { Vector3Ops::Dot( de, vPlaneU ), Vector3Ops::Dot( de, vPlaneV ) };
+	const Scalar f[2] = { Vector3Ops::Dot( df, vPlaneU ), Vector3Ops::Dot( df, vPlaneV ) };
+	const Scalar D[2] = { Vector3Ops::Dot( dD, vPlaneU ), Vector3Ops::Dot( dD, vPlaneV ) };
+	auto cr = []( const Scalar* a, const Scalar* b ) { return a[0]*b[1] - a[1]*b[0]; };
+	const Scalar A = -cr( D, f );
+	const Scalar B = cr( D, q ) - cr( e, f );
+	const Scalar C = cr( e, q );
+	Scalar roots[2];
+	int n = 0;
+	const Scalar scale = std::fabs( A ) + std::fabs( B ) + std::fabs( C );
+	if( std::fabs( A ) <= Scalar( 1e-12 ) * scale ) {
+		if( std::fabs( B ) > 0 ) roots[n++] = -C / B;
 	} else {
-		vCellCdf.clear();
-		vCellBound.clear();
+		const Scalar disc = B*B - 4*A*C;
+		if( disc >= 0 ) {
+			const Scalar sq = std::sqrt( disc );
+			const Scalar t = -0.5 * ( B + ( B >= 0 ? sq : -sq ) );	// stable form
+			if( t != 0 ) { roots[n++] = t / A; roots[n++] = C / t; }
+			else { roots[n++] = 0; }
+		}
+	}
+	static const Scalar kSlack = Scalar( 1e-9 );
+	Scalar best = Scalar( 0 );
+	for( int i = 0; i < n; ++i ) {
+		const Scalar vv = roots[i];
+		if( vv < -kSlack || vv > 1 + kSlack ) continue;
+		const Scalar g[2] = { e[0] + vv * D[0], e[1] + vv * D[1] };
+		const Scalar gg = g[0]*g[0] + g[1]*g[1];
+		if( !( gg > 0 ) ) continue;
+		const Scalar uu = ( ( q[0] - vv * f[0] ) * g[0] + ( q[1] - vv * f[1] ) * g[1] ) / gg;
+		if( uu < -kSlack || uu > 1 + kSlack ) continue;
+		const Scalar uc = std::min( Scalar( 1 ), std::max( Scalar( 0 ), uu ) );
+		const Scalar vc = std::min( Scalar( 1 ), std::max( Scalar( 0 ), vv ) );
+		const Scalar sPos = AreaIntegrand( uc, vc );
+		if( sPos > best ) { best = sPos; u = uc; v = vc; }
 	}
 }
 
@@ -782,13 +844,13 @@ void ClippedPlaneGeometry::RegenerateData( )
 				// bijection from [0,1]^2 onto the quad -- and the closed form
 				// is exact.  For a coplanar NON-convex one (a dart: one
 				// corner inside the triangle of the other three) they do not:
-				// the bilinear image is a proper subset of the polygon, so a
-				// point over the polygon's reflex lobe is reported at |h|
-				// while the real surface is further away.  That is an
-				// UNDER-report -- the forbidden direction, contact painted
-				// where there is none -- and the outside branch is wrong in
-				// the other direction for the same reason.  So a dart
-				// REFUSES, exactly as a non-coplanar quad does.
+				// the patch FOLDS, and its image is the polygon PLUS a folded
+				// overshoot outside it (DL-460's degree argument, see
+				// BuildAreaData), so over the overshoot the point-to-polygon
+				// form reports the distance to the polygon's edge while the
+				// real surface is nearer.  That error is an over-report, but
+				// the form is no longer exact, so a dart REFUSES, exactly as
+				// a non-coplanar quad does.
 				//
 				// The test is the standard one: the four cross products of
 				// consecutive edges, taken in the plane's own basis, must all
