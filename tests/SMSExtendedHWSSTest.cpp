@@ -409,7 +409,12 @@ namespace
     //    SMS-owned = PT-owned, HWSS = NM, owned = NM owned, closed form)
     //    with Student-t critical values at the Welch-Satterthwaite df and a
     //    Bonferroni split of a two-sided 0.0027 (the Gaussian 3-sigma
-    //    level) over the case's m equality checks;
+    //    level) over EVERY gated equality the run evaluates (all cases
+    //    and sections together; evaluated once at the end of main).  A
+    //    per-case split bounds each case at 0.0027 but the hard gate (~30
+    //    families) at ~8 % per run: the 2026-10-08 master gate failed on a
+    //    single |d|/se = 4.54 at a correct build (DL-446 follow-up: the
+    //    same check over 31 salt bases has z mean -0.01, sd 0.97);
     //  - DETECTION checks (an effect must be resolved: SMS owns a share,
     //    estimator A delivers light, lanes differ) at the one-sided t
     //    quantile of the Gaussian 3-sigma level, no Bonferroni (a family
@@ -471,26 +476,39 @@ namespace
         }
         void Exact(bool ok,const std::string& label) { exact.push_back({ok,label}); }
         bool reportOnly=false;   // a known-residual band: equalities printed, not gated
-        void Commit() const {
+        void Commit() const;
+    };
+    // Gated equalities of the whole run, judged together at the end.
+    std::vector<Stage::Equality> g_deferredEqualities;
+    void Stage::Commit() const {
+        if(reportOnly) {
+            // Known-residual bands keep the per-case split: printed only.
             const double perCheck=kThreeSigmaTwoSided/double(std::max<std::size_t>(1,equalities.size()));
             for(const auto& e:equalities) {
                 const double t=StudentQuantileUpper(perCheck/2,std::max(1.0,e.df));
                 const bool ok=std::isfinite(e.diff)&&std::fabs(e.diff)<=t*e.se+e.tolerance;
-                if(reportOnly) {
-                    std::cout<<"  REPORTED (known residual, not gated) "<<e.label<<": d/se="<<e.diff/e.se
-                        <<" critical "<<t<<(ok?" inside":" OUTSIDE")<<"\n";
-                    continue;
-                }
-                if(!ok) std::cout<<"  equality |d|="<<std::fabs(e.diff)<<" > t("<<e.df<<")="<<t<<" x se="<<e.se<<"\n";
-                Check(ok,e.label+" [Welch t, Bonferroni over "+std::to_string(equalities.size())+"]");
+                std::cout<<"  REPORTED (known residual, not gated) "<<e.label<<": d/se="<<e.diff/e.se
+                    <<" critical "<<t<<(ok?" inside":" OUTSIDE")<<"\n";
             }
-            for(const auto& d:detections) {
-                const double t=StudentQuantileUpper(kThreeSigmaTwoSided/2,std::max(1.0,d.df));
-                Check(d.mean>0 && d.mean>t*d.se,d.label+" [t one-sided 3-sigma level]");
-            }
-            for(const auto& e:exact) Check(e.first,e.second);
+        } else g_deferredEqualities.insert(g_deferredEqualities.end(),equalities.begin(),equalities.end());
+        for(const auto& d:detections) {
+            const double t=StudentQuantileUpper(kThreeSigmaTwoSided/2,std::max(1.0,d.df));
+            Check(d.mean>0 && d.mean>t*d.se,d.label+" [t one-sided 3-sigma level]");
         }
-    };
+        for(const auto& e:exact) Check(e.first,e.second);
+    }
+    void CommitDeferredEqualities() {
+        const std::size_t m=std::max<std::size_t>(1,g_deferredEqualities.size());
+        const double perCheck=kThreeSigmaTwoSided/double(m);
+        std::cout<<"=== equalities (Welch t, Bonferroni over the run's "<<m<<") ===\n";
+        for(const auto& e:g_deferredEqualities) {
+            const double t=StudentQuantileUpper(perCheck/2,std::max(1.0,e.df));
+            const bool ok=std::isfinite(e.diff)&&std::fabs(e.diff)<=t*e.se+e.tolerance;
+            if(!ok) std::cout<<"  equality |d|="<<std::fabs(e.diff)<<" > t("<<e.df<<")="<<t<<" x se="<<e.se<<"\n";
+            Check(ok,e.label+" [Welch t, Bonferroni over the run's "+std::to_string(m)+"]");
+        }
+        g_deferredEqualities.clear();
+    }
     template<class Body> void Gated(const std::string&,Body body,bool reportOnly=false) {
         Stage stage;stage.reportOnly=reportOnly;body(stage,0u);stage.Commit();
     }
@@ -1015,6 +1033,7 @@ int main(int argc,char** argv)
     if(section=="cost") {std::cout<<"=== cost ===\n";CostSection();}
     if(section=="nmprobe") {std::cout<<"=== nmprobe ===\n";NMProbeSection();}
     if(section=="samplerbias") {std::cout<<"=== samplerbias ===\n";SamplerBiasSection();}
+    CommitDeferredEqualities();
     std::cout<<passCount<<" passed, "<<failCount<<" failed"<<std::endl;
     return failCount?1:0;
 }
