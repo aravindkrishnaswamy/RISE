@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Interfaces/ISPF.h"
 #include "SchlickBRDF.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Optics.h"
@@ -341,4 +342,193 @@ RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		result[ch]=r_max(Scalar(0),r_min(Scalar(1),reflected));
 	}
 	return result;
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// DL-481: verbatim copies of the helpers above for valueByScatterType
+// alone.  A second caller of a helper value() calls once changed how LTO
+// inlines it into value(), moving cap-free renders by ~1e-15; with its
+// own copies value()'s code generation is the pre-DL-481 one.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	//! Returns false (zero BRDF) outside either hemisphere or below the
+	//! geometric horizon.
+	bool SchlickPairSplit(
+		const Vector3& vLightIn,
+		const RayIntersectionGeometric& ri,
+		const OrthonormalBasis3D& onb,
+		SchlickPairGeometry& g
+		)
+	{
+		const Vector3& n = onb.w();
+		const Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
+		const Vector3 v = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
+
+		g.nv = Vector3Ops::Dot(n,v);
+		g.nl = Vector3Ops::Dot(n,l);
+
+		if( (g.nv < NEARZERO) || (g.nl < NEARZERO) ) {
+			return false;
+		}
+
+		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+		// validate light/view directions that are still below the true
+		// geometric surface.  This is a DEFENSIVE check (a valid exterior hit
+		// already satisfies it) rather than a literal sampler-consistency one
+		// -- NEE's light direction isn't sampler-drawn -- but it guards
+		// against the same tilt pathology.  Degenerate vGeomNormal falls
+		// back to the shading normal (gate is a no-op).
+		// (v is tautologically inside the gate: v = -ri.ray.Dir() and geomN is
+		// ray-anchored, so Dot(v,geomN) > 0 always holds -- see LambertianBRDF.cpp:57-60.)
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( v, geomN ) <= 0 ) {
+			return false;
+		}
+
+		const Vector3 h = Vector3Ops::Normalize(l+v);
+		g.t = Vector3Ops::Dot(n,h);
+		const Scalar hl = Vector3Ops::Dot(h,l);
+		g.fresnel = ::pow(1-hl,5);
+		g.w = Vector3Ops::Dot(onb.v(),Vector3Ops::Normalize(h-(g.t*n)));
+		g.vx = Vector3Ops::Dot(v,onb.u());
+		g.vy = Vector3Ops::Dot(v,onb.v());
+		g.lx = Vector3Ops::Dot(l,onb.u());
+		g.ly = Vector3Ops::Dot(l,onb.v());
+		return true;
+	}
+
+	//! Z A m(v) m(l) / (4 pi nv nl) for ONE lane.
+	//!
+	//! DL-178 introduced Schlick 1994 Eq.31, G(c) = c/(r+(1-r)c), with
+	//! nl*nv cancelled analytically.  DL-225: Eq.31 alone lets rho_d
+	//! exceed 1 near grazing at low roughness (5.6 at r .005); the masking
+	//! is now min(Eq.31, the Smith projected-area bound of Schlick's own
+	//! Z*A distribution), which is exactly Eq.31 wherever Eq.31 is already
+	//! inside that bound -- see SchlickMasking.h.  The masking enters as
+	//! its denominators c/m(c) so the grazing limit stays finite.
+	Scalar SchlickLaneFactorSplit( const SchlickPairGeometry& g, const Scalar r, const Scalar p )
+	{
+		const Scalar sqr_t = g.t*g.t;
+		const Scalar zdem = (r*sqr_t + 1.0) - sqr_t;
+		const Scalar Z = r / (zdem*zdem);
+
+		const Scalar sqr_p = p*p;
+		const Scalar sqr_w = g.w*g.w;
+		const Scalar A = sqrt(p/(sqr_p-sqr_p*sqr_w+sqr_w));
+
+		SchlickMasking::Lane lane;
+		SchlickMasking::Prepare( lane, r, p );
+		const Scalar dv = SchlickMasking::MaskDen( lane, g.nv, g.vx, g.vy );
+		const Scalar dl = SchlickMasking::MaskDen( lane, g.nl, g.lx, g.ly );
+		return (Z*A)/(4.0*PI*dv*dl);
+	}
+
+	//! DL-310: the coupled diffuse reflectance per channel,
+	//! min(Rd, 1 - A(v), 1 - A(l)), A the specular lobe's own directional
+	//! albedo (SchlickDirectionalAlbedo.h), each distinct (r, p) lane
+	//! prepared once.  Rd itself, bit for bit, wherever a lane cannot clip.
+	RISEPel SchlickCoupledDiffuseSplit( const SchlickPairGeometry& g, const RISEPel& rd, const RISEPel& rho,
+		const RISEPel& r, const RISEPel& p )
+	{
+		RISEPel out;
+		SchlickDirectionalAlbedo::Lane lanes[3];
+		for( int ch = 0; ch < 3; ch++ ) {
+			int reuse = -1;
+			for( int prev = 0; prev < ch; prev++ ) {
+				if( r[prev] == r[ch] && p[prev] == p[ch] ) { reuse = prev; break; }
+			}
+			if( reuse >= 0 ) {
+				lanes[ch] = lanes[reuse];
+			} else {
+				SchlickDirectionalAlbedo::PrepareLane( lanes[ch], r[ch], p[ch] );
+			}
+			out[ch] = SchlickDirectionalAlbedo::CoupledDiffuseAt( lanes[ch], rho[ch], rd[ch], g.nv, g.nl );
+		}
+		return out;
+	}
+
+	//! Per-channel factor, evaluating each distinct (r, p) lane once.
+	RISEPel SchlickChannelFactorsSplit( const SchlickPairGeometry& g, const RISEPel& r, const RISEPel& p )
+	{
+		RISEPel out;
+		for( int ch = 0; ch < 3; ch++ ) {
+			int reuse = -1;
+			for( int prev = 0; prev < ch; prev++ ) {
+				if( r[prev] == r[ch] && p[prev] == p[ch] ) { reuse = prev; break; }
+			}
+			out[ch] = ( reuse >= 0 ) ? out[reuse] : SchlickLaneFactorSplit( g, r[ch], p[ch] );
+		}
+		return out;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-481 (IBSDF::valueByScatterType): the connection value split by the
+// SPF's lobe labels -- the diffuse lobe eRayDiffuse, the glossy lobe
+// eRayReflection, each priced by its own f cos / p weight in the SPF.
+// value() is left untouched (its code generation is what cap-free
+// renders are bit-identical to); this re-evaluates the same two terms.
+//////////////////////////////////////////////////////////////////////
+
+bool SchlickBRDF::valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* /*pIORStack*/, RISEPel out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = RISEPel( 0, 0, 0 );
+	ScalarTriple rt = pRoughness->GetValuesAt(ri);
+	const ScalarTriple it = pIsotropy->GetValuesAt(ri);
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			rt.v[ch] = r_min( rt.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
+	const RISEPel rPel( rt.v[0], rt.v[1], rt.v[2] );
+	const RISEPel iPel( it.v[0], it.v[1], it.v[2] );
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	SchlickPairGeometry g;
+	if( !SchlickPairSplit( vLightIn, ri, myonb, g ) ) {
+		return true;
+	}
+	const RISEPel factor = SchlickChannelFactorsSplit( g, rPel, iPel );
+	if( ColorMath::MaxValue(factor) > 0 ) {
+		const RISEPel rho = ReflectanceColor( *pSpecular, ri );
+		const RISEPel rdCoupled = SchlickCoupledDiffuseSplit( g, ReflectanceColor( *pDiffuse, ri ), rho, rPel, iPel );
+		out[ScatteredRay::eRayDiffuse] = rdCoupled*INV_PI;
+		out[ScatteredRay::eRayReflection] = (rho + (RISEPel(1.0,1.0,1.0)-rho)*g.fresnel) * factor;
+	}
+	return true;
+}
+
+bool SchlickBRDF::valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* /*pIORStack*/, Scalar out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = 0;
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	Scalar roughnessNM = pRoughness->GetValueAtNM(ri,nm);
+	if( ri.glossyFilterWidth > 0 ) {
+		roughnessNM = r_min( roughnessNM + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+	SchlickPairGeometry g;
+	if( !SchlickPairSplit( vLightIn, ri, myonb, g ) ) {
+		return true;
+	}
+	const Scalar isotropyNM = pIsotropy->GetValueAtNM(ri,nm);
+	const Scalar factor = SchlickLaneFactorSplit( g, roughnessNM, isotropyNM );
+	if( factor > 0 ) {
+		const Scalar rho = ReflectanceColorNM( *pSpecular, ri, nm );
+		SchlickDirectionalAlbedo::Lane lane;
+		SchlickDirectionalAlbedo::PrepareLane( lane, roughnessNM, isotropyNM );
+		const Scalar rdCoupled = SchlickDirectionalAlbedo::CoupledDiffuseAt(
+			lane, rho, ReflectanceColorNM( *pDiffuse, ri, nm ), g.nv, g.nl );
+		out[ScatteredRay::eRayDiffuse] = rdCoupled*INV_PI;
+		out[ScatteredRay::eRayReflection] = (rho + (1.0-rho)*g.fresnel) * factor;
+	}
+	return true;
 }

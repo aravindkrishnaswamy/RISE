@@ -301,6 +301,17 @@ namespace RISE
 		static const unsigned int kAllConnectionScatterTypes = ( 1u << 1 ) | ( 1u << 2 ) | ( 1u << 3 ) | ( 1u << 4 );
 		virtual unsigned int ConnectionScatterTypes() const { return kAllConnectionScatterTypes; }
 
+		//! DL-481.  True when `GetBSDF()->valueByScatterType{,NM}` splits
+		//! the connection value by exactly the labels this material's SPF
+		//! stamps (see IBSDF::valueByScatterType), so a counted connection
+		//! / merge endpoint with several possible lobe types can keep only
+		//! the types a per-type cap allows instead of being excluded.  A
+		//! material declares it only for the BSDF/SPF pair it builds; a
+		//! wrapper whose `GetBSDF()` / `GetSPF()` forward a base material
+		//! forwards this.  Default false: the endpoint stays excluded
+		//! (BDPTUtilities::EndpointNeedsTypeSplit).
+		virtual bool HasConnectionTypeSplit() const { return false; }
+
 		//! Rescales this material's emission.  Default is a no-op that
 		//! REJECTS the change (returns false) so non-emissive materials
 		//! safely decline — only luminaire materials (e.g.

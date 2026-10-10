@@ -134,6 +134,47 @@ namespace RISE
 			return valueNM( vLightIn, ri, nm );
 		}
 
+		/// DL-481: the same value split by the `ScatteredRay::ScatRayType`
+		/// label the material's SPF stamps on the lobe that generates each
+		/// part.  `out[t]` (t = 1 diffuse, 2 reflection, 3 refraction,
+		/// 4 translucent; `out[0]` unused, always 0) is the part of
+		/// `valueStateful( vLightIn, ri, pIORStack )` whose label is t, in
+		/// the sense the per-type bounce caps need: for every direction
+		/// function g, the expectation of the SPF's sampled weight times
+		/// [type == t] times g(wo) equals the integral of out[t] cos g.
+		/// For RISE's SPFs that is each lobe's OWN BSDF term, because their
+		/// per-lobe weight is that lobe's f cos / p (multi-emit SPFs:
+		/// `kray_I / q_I` after `RandomlySelect`; single-emit internally
+		/// selected ones such as GGXSPF: `f_I cos / (p_I pSelect_I)`).
+		/// The parts sum to `valueStateful` up to rounding.  Returns false
+		/// (and leaves `out` unspecified) when the BSDF does not provide a
+		/// split; the caller must then not use one.  Used only at a
+		/// connection / merge endpoint of BDPT / VCM / MLT when a
+		/// per-type cap can bind (BDPTUtilities::JoinedTypeCapPlan), and
+		/// only for a material whose `IMaterial::HasConnectionTypeSplit`
+		/// says the split matches its SPF's labels.
+		virtual bool valueByScatterType(
+			const Vector3& /*vLightIn*/,
+			const RayIntersectionGeometric& /*ri*/,
+			const IORStack* /*pIORStack*/,
+			RISEPel /*out*/[5]
+			) const
+		{
+			return false;
+		}
+
+		/// Spectral twin of `valueByScatterType`.
+		virtual bool valueByScatterTypeNM(
+			const Vector3& /*vLightIn*/,
+			const RayIntersectionGeometric& /*ri*/,
+			const Scalar /*nm*/,
+			const IORStack* /*pIORStack*/,
+			Scalar /*out*/[5]
+			) const
+		{
+			return false;
+		}
+
 		/// Approximate directional-hemispherical reflectance at the
 		/// outgoing direction implied by `ri.ray` — i.e., the fraction
 		/// of incident energy reflected back toward the camera under

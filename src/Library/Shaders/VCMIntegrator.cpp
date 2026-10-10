@@ -420,9 +420,15 @@ namespace
 	// (BDPTUtilities::JoinedTypeCapStatus / MergeTypeCapStatus; see the
 	// contract there).  A counted connection endpoint whose material
 	// has more than one possible lobe type, one of them capped
-	// (IMaterial::ConnectionScatterTypes), cannot price a path.  BDPT's MISWeight drops exactly
+	// (IMaterial::ConnectionScatterTypes), is priced -- since DL-481 -- by
+	// the sum over its ALLOWED lobe labels when the material splits its
+	// value by label (JoinedTypeCapPlan / MergeTypeCapPlan +
+	// AllowedTypeProduct at the splat, connection and surface-merge sites
+	// below; the recurrence's densities are the aggregate ones and stay
+	// untouched).  Only a material with NO split cannot price the path.
+	// BDPT's MISWeight drops exactly
 	// those strategies; VCM's recurrence weights are running sums that
-	// cannot drop one strategy (DL-481), so a path that HAS such a vertex
+	// cannot drop one strategy (DL-502), so a path that HAS such a vertex
 	// at a counted position (BDPTUtilities::AnyNeedsTypeSplit -- a
 	// property of the path, so every strategy agrees) is estimated by the
 	// s = 0 (emitter hit) and s = 1 (NEE) strategies alone, weighted
@@ -431,7 +437,7 @@ namespace
 	// ever has a counted endpoint, so the weights still partition the
 	// strategies that remain -- but a path S0 / NEE cannot reach (a
 	// point-light caustic onto such a receiver) is LOST under a cap that
-	// can bind (DL-481).  Inert unless some cap can bind
+	// can bind (DL-502).  Inert unless some cap can bind
 	// (BDPTUtilities::MakeBounceTypeCaps).
 	//////////////////////////////////////////////////////////////////
 	inline BDPTUtilities::BounceTypeCaps VCMBounceTypeCaps( const BDPTIntegrator& bdpt )
@@ -2496,9 +2502,11 @@ namespace
 		{
 			// DL-471: t = 1, light endpoint lightVerts[i]; a path with an
 			// undeclared-type vertex at a counted position is S0 / NEE's.
-			if( typeCaps.active && ( BDPTUtilities::JoinedTypeCapStatus(
-					lightVerts.data(), nullptr, static_cast<unsigned int>( i + 1 ), 1, typeCaps ) !=
-					BDPTUtilities::eTypeCapOK ||
+			// DL-481: a counted endpoint with a split is priced by its
+			// allowed lobe types (splatPlan, applied below).
+			BDPTUtilities::TypeCapPlan splatPlan;
+			if( typeCaps.active && ( !BDPTUtilities::TypeCapAdmits( BDPTUtilities::JoinedTypeCapPlan(
+					lightVerts.data(), nullptr, static_cast<unsigned int>( i + 1 ), 1, typeCaps, splatPlan ) ) ||
 				( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( lightVerts.data(), 2, static_cast<unsigned int>( i ), typeCaps ) ) ) ) {
 				continue;
 			}
@@ -2624,10 +2632,21 @@ namespace
 				// direction it LEAVES toward the camera; the arrival
 				// "direction" from the hit where the light went in is the
 				// jump, not a ray, so it must not be the Sw argument.
-				const typename Traits::value_type fLight =
+				typename Traits::value_type fLight =
 					RISE::PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
+				}
+				// DL-481: only the lobe types the per-type caps allow.
+				if( splatPlan.splitLight ) {
+					typename Traits::value_type fl[5];
+					if( !RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( v, wiAtLight, dirToCam, tag, fl ) ) {
+						continue;
+					}
+					fLight = BDPTUtilities::AllowedTypeProduct<typename Traits::value_type>( splatPlan, typeCaps, fl, fl );
+					if( PositiveMagnitude( fLight ) <= 0 ) {
+						continue;
+					}
 				}
 
 				bsdfRevPdfW =
@@ -2853,9 +2872,10 @@ namespace
 				// DL-471: per-path per-type caps of strategy (i+1, j+1); a
 				// path with an undeclared-type vertex at a counted position is
 				// S0 / NEE's.
-				if( typeCaps.active && ( BDPTUtilities::JoinedTypeCapStatus(
+				BDPTUtilities::TypeCapPlan connPlan;	// DL-481: split endpoints, applied below
+				if( typeCaps.active && ( !BDPTUtilities::TypeCapAdmits( BDPTUtilities::JoinedTypeCapPlan(
 						lightVerts.data(), eyeVerts.data(), static_cast<unsigned int>( i + 1 ),
-						static_cast<unsigned int>( j + 1 ), typeCaps ) != BDPTUtilities::eTypeCapOK ||
+						static_cast<unsigned int>( j + 1 ), typeCaps, connPlan ) ) ||
 					( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( lightVerts.data(), 2, static_cast<unsigned int>( i ), typeCaps ) ) ||
 					BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( j ), typeCaps ) ) ) {
 					continue;
@@ -2884,15 +2904,41 @@ namespace
 
 				// DL-317: Sw at a kept light-side entry is evaluated in the
 				// direction it leaves toward the eye (see the splat twin).
-				const typename Traits::value_type fLight =
+				typename Traits::value_type fLight =
 					RISE::PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
-				const typename Traits::value_type fEye =
+				typename Traits::value_type fEye =
 					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
 				if( PositiveMagnitude( fEye ) <= 0 ) {
 					continue;
+				}
+				// DL-481: only the lobe types the per-type caps allow at a
+				// split endpoint.
+				if( connPlan.splitLight || connPlan.splitEye ) {
+					typedef typename Traits::value_type VV;
+					VV fl[5], fe[5];
+					if( connPlan.splitLight &&
+						!RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( lv, wiAtLight, lightToEye, tag, fl ) ) {
+						continue;
+					}
+					if( connPlan.splitEye &&
+						!RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( ev, -lightToEye, woAtEye, tag, fe ) ) {
+						continue;
+					}
+					const VV P = BDPTUtilities::AllowedTypeProduct<VV>( connPlan, typeCaps, fl, fe );
+					if( PositiveMagnitude( P ) <= 0 ) {
+						continue;
+					}
+					if( connPlan.splitLight ) {
+						fLight = P;
+						if( connPlan.splitEye ) {
+							fEye = VV( 1 );
+						}
+					} else {
+						fEye = P;
+					}
 				}
 
 				// Merge geometry term: GEOMETRIC normals on both sides
@@ -3305,9 +3351,9 @@ namespace
 					// DL-471: per-path per-type caps (the medium merge point
 					// counts no type); a path with an undeclared-type vertex at a
 					// counted position is S0 / NEE's.
-					if( typeCaps.active && ( BDPTUtilities::MergeTypeCapStatus( eyeVerts.data(),
-							static_cast<unsigned int>( i ), lv.capCounts, lv.pathLength, typeCaps ) !=
-							BDPTUtilities::eTypeCapOK || ( lv.flags & kLVF_TypeSplitPrefix ) ||
+					if( typeCaps.active && ( !BDPTUtilities::TypeCapAdmits( BDPTUtilities::MergeTypeCapStatus( eyeVerts.data(),
+							static_cast<unsigned int>( i ), lv.capCounts, lv.pathLength, typeCaps ) ) ||
+							( lv.flags & kLVF_TypeSplitPrefix ) ||
 						( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( i - 1 ), typeCaps ) ) ) ) {
 						continue;
 					}
@@ -3385,9 +3431,10 @@ namespace
 				// the free x_K, i.e. lv.pathLength == 1).
 				// A path with an undeclared-type vertex at a counted position
 				// (the merge point counts when lv.pathLength >= 2) is S0 / NEE's.
-				if( typeCaps.active && ( BDPTUtilities::MergeTypeCapStatus( eyeVerts.data(),
-						static_cast<unsigned int>( i ), lv.capCounts, lv.pathLength, typeCaps ) !=
-						BDPTUtilities::eTypeCapOK || ( lv.flags & kLVF_TypeSplitPrefix ) ||
+				BDPTUtilities::TypeCapPlan mergePlan;	// DL-481: a split merge point, applied below
+				if( typeCaps.active && ( !BDPTUtilities::TypeCapAdmits( BDPTUtilities::MergeTypeCapPlan( eyeVerts.data(),
+						static_cast<unsigned int>( i ), lv.capCounts, lv.pathLength, typeCaps, mergePlan ) ) ||
+					( lv.flags & kLVF_TypeSplitPrefix ) ||
 					( lv.pathLength >= 2 && BDPTUtilities::EndpointNeedsTypeSplit( v, typeCaps ) ) ||
 					( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( i - 1 ), typeCaps ) ) ) ) {
 					continue;
@@ -3408,10 +3455,22 @@ namespace
 
 				const Vector3 wiAtEye = -lv.wi;
 
-				const typename Traits::value_type cameraBsdf =
+				typename Traits::value_type cameraBsdf =
 					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
 				if( PositiveMagnitude( cameraBsdf ) <= 0 ) {
 					continue;
+				}
+				// DL-481: the merge point keeps only the lobe types the
+				// per-type caps allow.
+				if( mergePlan.splitEye ) {
+					typename Traits::value_type fe[5];
+					if( !RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( v, wiAtEye, woAtEye, tag, fe ) ) {
+						continue;
+					}
+					cameraBsdf = BDPTUtilities::AllowedTypeProduct<typename Traits::value_type>( mergePlan, typeCaps, fe, fe );
+					if( PositiveMagnitude( cameraBsdf ) <= 0 ) {
+						continue;
+					}
 				}
 				const Scalar cameraBsdfDirPdfW =
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, woAtEye, wiAtEye, tag );

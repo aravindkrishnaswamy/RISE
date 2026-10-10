@@ -1073,9 +1073,13 @@ BDPTIntegrator::BDPTIntegrator(
   guidingTrainingStats()
 #endif
 {
-	// DL-481: say once, when the integrator is built for a render (BDPT,
-	// VCM and MLT all build one), that a per-type cap which can bind may
-	// lose paths only light tracing / connections / merges reach.
+	// DL-471 / DL-481: say once, when the integrator is built for a render
+	// (BDPT, VCM and MLT all build one), that a per-type cap which can bind
+	// may lose paths only light tracing / connections / merges reach at a
+	// receiver whose material declares no per-type split (DL-481 gave one
+	// to GGX, Cook-Torrance, Schlick, Ward, Phong, Ashikhmin, polished and
+	// translucent; coated, composite, fabric, weave, hair, ... keep the
+	// exclusion).
 	const BDPTUtilities::BounceTypeCaps typeCaps = BDPTUtilities::MakeBounceTypeCaps(
 		stabilityConfig.maxDiffuseBounce, stabilityConfig.maxGlossyBounce,
 		stabilityConfig.maxTransmissionBounce, stabilityConfig.maxTranslucentBounce,
@@ -1084,8 +1088,9 @@ BDPTIntegrator::BDPTIntegrator(
 		GlobalLog()->PrintEx( eLog_Warning,
 			"BDPT/VCM/MLT: a per-type bounce cap can bind (diffuse %u, glossy %u, transmission %u, translucent %u "
 			"against max_eye_depth %u + max_light_depth %u; UINT_MAX = cannot bind).  Under it, light-traced, "
-			"connected or merged paths through a receiver with several lobe types (GGX, coated, ...) can be LOST "
-			"-- e.g. a point-light caustic onto a GGX floor -- see DL-481 (docs/DEBT_LEDGER.md)",
+			"connected or merged paths through a receiver with several lobe types and no per-type split "
+			"(coated, composite, fabric, weave, hair, ...) can be LOST -- e.g. a point-light caustic onto a "
+			"coated floor -- see DL-481 (docs/DEBT_LEDGER.md)",
 			typeCaps.cap[0], typeCaps.cap[1], typeCaps.cap[2], typeCaps.cap[3], maxEyeDepth, maxLightDepth );
 	}
 }
@@ -5717,6 +5722,83 @@ DispatchConnectAndEvaluate(
 	}
 }
 
+// DL-481: re-price a connection under per-type bounce caps.  When strategy
+// (s, t) has a counted endpoint with several possible lobe types, one of
+// them capped, and that endpoint's material splits its value by lobe label
+// (BDPTUtilities::JoinedTypeCapPlan returned Split), the connection value
+// must be the sum over the ALLOWED label combinations of the split
+// endpoints' per-label values (BDPTUtilities::AllowedTypeProduct) instead
+// of the product of their aggregate values.  ConnectAndEvaluate priced the
+// aggregate; this scales its contribution (and the guiding copy) by
+// AllowedTypeProduct / (product of the split endpoints' aggregates), per
+// channel, recomputing both at the same directions.  Done here rather
+// than inside ConnectAndEvaluateImplCore so that function -- and with it
+// every cap-free render -- keeps its exact code generation (any edit there
+// moved BDPT renders by ~1e-15 under -ffast-math + LTO).  A channel whose
+// aggregate product is 0 has a 0 contribution already; the allowed part of
+// a nonnegative sum is then 0 too.  Returns false when nothing is allowed.
+template<class Tag>
+bool RescaleTypeCapSplit(
+	const std::vector<BDPTVertex>& lightVerts,
+	const std::vector<BDPTVertex>& eyeVerts,
+	const unsigned int s,
+	const unsigned int t,
+	const BDPTUtilities::TypeCapPlan& plan,
+	const BDPTUtilities::BounceTypeCaps& caps,
+	const ICamera& camera,
+	const Point2& cameraLensSample,
+	const Tag& tag,
+	typename ConnectionResultFor<Tag>::type& cr )
+{
+	typedef typename SpectralValueTraits<Tag>::value_type V;
+	if( s < 2 || t < 1 ) {
+		return false;
+	}
+	const BDPTVertex& lightEnd = lightVerts[s - 1];
+	const Vector3 wiL = Vector3Ops::Normalize(
+		Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position ) );
+	Vector3 woL, wiE, woE;
+	if( t == 1 ) {
+		const Point3 camPos = BDPTCameraUtilities::SampleAperture( camera, cameraLensSample ).point;
+		woL = Vector3Ops::Normalize( Vector3Ops::mkVector3( camPos, lightEnd.position ) );
+	} else {
+		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
+		const Vector3 dConnect = Vector3Ops::Normalize(
+			Vector3Ops::mkVector3( lightEnd.position, eyeEnd.position ) );
+		woL = -dConnect;
+		wiE = dConnect;
+		woE = Vector3Ops::Normalize( Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position ) );
+	}
+	V fl[5], fe[5];
+	V denom = TrOne<Tag>();
+	if( plan.splitLight ) {
+		if( !PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( lightEnd, wiL, woL, tag, fl ) ) {
+			return false;
+		}
+		denom = denom * PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiL, woL, tag );
+	}
+	if( plan.splitEye ) {
+		if( t < 2 || !PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( eyeVerts[t - 1], wiE, woE, tag, fe ) ) {
+			return false;
+		}
+		denom = denom * PathValueOps::EvalAreaBSDFAtVertex<Tag>( eyeVerts[t - 1], wiE, woE, tag );
+	}
+	const V P = BDPTUtilities::AllowedTypeProduct<V>( plan, caps, fl, fe );
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		RISEPel r( 0, 0, 0 );
+		for( int c = 0; c < 3; c++ ) {
+			r[c] = denom[c] > 0 ? P[c] / denom[c] : Scalar( 0 );
+		}
+		cr.contribution = cr.contribution * r;
+		cr.guidingLocalContribution = cr.guidingLocalContribution * r;
+		return ColorMath::MaxValue( r ) > 0;
+	} else {
+		const Scalar r = denom > 0 ? P / denom : Scalar( 0 );
+		cr.contribution = cr.contribution * r;
+		return r > 0;
+	}
+}
+
 template<class Tag>
 std::vector<typename ConnectionResultFor<Tag>::type>
 EvaluateAllStrategiesImpl(
@@ -5912,6 +5994,23 @@ EvaluateAllStrategiesImpl(
 					camera,
 					cameraLensSample, &sampler );
 
+				// DL-481: a split endpoint keeps only its allowed lobe types
+				// (MISWeight already weights an over-cap / unsplit path 0).
+				{
+					const BDPTUtilities::BounceTypeCaps selCaps = BDPTUtilities::MakeBounceTypeCaps(
+						self.GetStabilityConfig().maxDiffuseBounce, self.GetStabilityConfig().maxGlossyBounce,
+						self.GetStabilityConfig().maxTransmissionBounce, self.GetStabilityConfig().maxTranslucentBounce,
+						self.GetMaxEyeDepth(), self.GetMaxLightDepth() );
+					BDPTUtilities::TypeCapPlan selPlan;
+					if( selCaps.active && cr.valid &&
+						BDPTUtilities::JoinedTypeCapPlan( lightVerts.data(), eyeVerts.data(),
+							candidate.s, candidate.t, selCaps, selPlan ) == BDPTUtilities::eTypeCapSplit &&
+						!RescaleTypeCapSplit<Tag>( lightVerts, eyeVerts, candidate.s, candidate.t, selPlan, selCaps,
+							camera, cameraLensSample, tag, cr ) ) {
+						cr.valid = false;
+					}
+				}
+
 				cr.s = candidate.s;
 				cr.t = candidate.t;
 
@@ -5952,14 +6051,22 @@ EvaluateAllStrategiesImpl(
 				if( !lightFamilyKeeps( s, t, volBounces ) ) {
 					continue;
 				}
-				if( typeCaps.active &&
-					BDPTUtilities::JoinedTypeCapStatus( lightVerts.data(), eyeVerts.data(), s, t, typeCaps ) !=
-						BDPTUtilities::eTypeCapOK ) {
+				BDPTUtilities::TypeCapPlan capPlan;
+				const BDPTUtilities::TypeCapStatus capStatus = typeCaps.active ?
+					BDPTUtilities::JoinedTypeCapPlan( lightVerts.data(), eyeVerts.data(), s, t, typeCaps, capPlan ) :
+					BDPTUtilities::eTypeCapOK;
+				if( !BDPTUtilities::TypeCapAdmits( capStatus ) ) {
 					continue;
 				}
 
 				CR cr = DispatchConnectAndEvaluate<Tag>(
 					self, lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, tag, sampler );
+				// DL-481: a split endpoint keeps only its allowed lobe types.
+				if( capStatus == BDPTUtilities::eTypeCapSplit && cr.valid &&
+					!RescaleTypeCapSplit<Tag>( lightVerts, eyeVerts, s, t, capPlan, typeCaps,
+						camera, cameraLensSample, tag, cr ) ) {
+					continue;
+				}
 				if constexpr( Traits::is_pel ) {
 					cr.s = s;
 					cr.t = t;
@@ -6003,8 +6110,8 @@ EvaluateAllStrategiesImpl(
 					// DL-471: the eye endpoint is the free x_K; the eye
 					// prefix must be within the per-path per-type caps.
 					if( typeCaps.active &&
-						BDPTUtilities::JoinedTypeCapStatus( nullptr, eyeVerts.data(), 1, t, typeCaps ) !=
-							BDPTUtilities::eTypeCapOK ) continue;
+						!BDPTUtilities::TypeCapAdmits(
+							BDPTUtilities::JoinedTypeCapStatus( nullptr, eyeVerts.data(), 1, t, typeCaps ) ) ) continue;
 
 					// DL-207: a BSSRDF entry vertex (`isBSSRDFEntry`, spawned
 					// by the eye subpath's own BSSRDF-sampling block above
@@ -6270,18 +6377,21 @@ Scalar BDPTIntegrator::MISWeight(
 
 	// DL-471: per-type bounce caps are a property of the JOINED path
 	// (BDPTUtilities::JoinedTypeCapStatus).  A path over a cap is not in
-	// the estimate (weight 0), and a strategy whose counted connection
+	// the estimate (weight 0).  A strategy whose counted connection
 	// endpoint has more than one possible lobe type, one of them capped,
-	// cannot price the path; it is dropped here and from every other
-	// strategy's denominator below (a path left with no strategy loses its
-	// energy: DL-481).  Only caps that can bind count (MakeBounceTypeCaps).
+	// prices only the endpoint's allowed lobe labels when the material
+	// splits its value by label (DL-481: status Split, weighted here like
+	// any other, its contribution re-priced by RescaleTypeCapSplit);
+	// without a split it cannot price the path and is dropped here and
+	// from every other strategy's denominator below (a path left with no
+	// strategy loses its energy: DL-502).  Only caps that can bind count.
 	const BDPTUtilities::BounceTypeCaps typeCaps = BDPTUtilities::MakeBounceTypeCaps(
 		GetStabilityConfig().maxDiffuseBounce, GetStabilityConfig().maxGlossyBounce,
 		GetStabilityConfig().maxTransmissionBounce, GetStabilityConfig().maxTranslucentBounce,
 		GetMaxEyeDepth(), GetMaxLightDepth() );
 	if( typeCaps.active &&
-		BDPTUtilities::JoinedTypeCapStatus( lightVerts.data(), eyeVerts.data(), s, t, typeCaps ) !=
-			BDPTUtilities::eTypeCapOK ) {
+		!BDPTUtilities::TypeCapAdmits(
+			BDPTUtilities::JoinedTypeCapStatus( lightVerts.data(), eyeVerts.data(), s, t, typeCaps ) ) ) {
 		return 0;
 	}
 

@@ -390,6 +390,66 @@ namespace RISE
 			return pBSDF->valueStateful( evalDir, ri, &vertexStack );
 		}
 
+		/// DL-481: `EvalBSDFAtVertex`'s surface value split by the lobe
+		/// label the material's SPF stamps (IBSDF::valueByScatterType),
+		/// for a connection / merge endpoint under a per-type bounce cap.
+		/// Same record, stack and transport mode as `EvalBSDFAtVertex`.
+		/// False (out all zero) unless the vertex is a plain surface vertex
+		/// whose material declares the split (IMaterial::HasConnectionTypeSplit).
+		inline bool EvalBSDFByTypeAtVertex(
+			const BDPTVertex& vertex,
+			const Vector3& wi,
+			const Vector3& wo,
+			RISEPel out[5]
+			)
+		{
+			for( int k = 0; k < 5; k++ ) out[k] = RISEPel( 0, 0, 0 );
+			if( vertex.type != BDPTVertex::SURFACE || vertex.isBSSRDFEntry || !vertex.pMaterial ||
+				!vertex.pMaterial->HasConnectionTypeSplit() ) {
+				return false;
+			}
+			const IBSDF* pBSDF = vertex.pMaterial->GetBSDF();
+			if( !pBSDF ) {
+				return false;
+			}
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
+			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
+			PopulateRIGFromVertex( vertex, ri );
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			const BSDFImportanceScope transportMode( vertex.isLightSubpathVertex );
+			return pBSDF->valueByScatterType( evalDir, ri, &vertexStack, out );
+		}
+
+		/// Spectral twin of `EvalBSDFByTypeAtVertex`.
+		inline bool EvalBSDFByTypeAtVertexNM(
+			const BDPTVertex& vertex,
+			const Vector3& wi,
+			const Vector3& wo,
+			const Scalar nm,
+			Scalar out[5]
+			)
+		{
+			for( int k = 0; k < 5; k++ ) out[k] = 0;
+			if( vertex.type != BDPTVertex::SURFACE || vertex.isBSSRDFEntry || !vertex.pMaterial ||
+				!vertex.pMaterial->HasConnectionTypeSplit() ) {
+				return false;
+			}
+			const IBSDF* pBSDF = vertex.pMaterial->GetBSDF();
+			if( !pBSDF ) {
+				return false;
+			}
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
+			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
+			PopulateRIGFromVertex( vertex, ri );
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			const BSDFImportanceScope transportMode( vertex.isLightSubpathVertex );
+			return pBSDF->valueByScatterTypeNM( evalDir, ri, nm, &vertexStack, out );
+		}
+
 		//////////////////////////////////////////////////////////////////////
 		// VertexPdfContext
 		//

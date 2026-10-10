@@ -548,14 +548,19 @@ namespace RISE
 		// connection endpoint has a defined type.  (b) holds when the
 		// endpoint material's possible non-delta lobe types
 		// (IMaterial::ConnectionScatterTypes) are a single type, or include
-		// no type whose cap can bind; otherwise the strategy is EXCLUDED
-		// from the estimate and from every MIS denominator (BDPT / MLT) and
-		// VCM estimates the path with S0 + NEE only.  That keeps the MIS
-		// partition exact over the strategies that remain, but it is NOT
-		// unbiased in general: a path whose only strategies have such an
-		// endpoint (a point-light caustic onto a multi-lobe receiver, which
-		// neither S0 nor NEE can reach) loses its energy under a cap that
-		// can bind -- DL-481.
+		// no type whose cap can bind.  Otherwise (DL-481) a material that
+		// splits its value by lobe label (IMaterial::HasConnectionTypeSplit,
+		// IBSDF::valueByScatterType) is priced by the sum over its ALLOWED
+		// labels (JoinedTypeCapPlan / AllowedTypeProduct) -- the integrand
+		// restriction itself, so the strategy stays in the estimate and
+		// every denominator and the MIS densities are untouched.  Only a
+		// material with several types and NO split keeps the old rule: the
+		// strategy is EXCLUDED from the estimate and from every MIS
+		// denominator (BDPT / MLT) and VCM estimates the path with S0 + NEE
+		// only -- exact over the strategies that remain, but a path whose
+		// only strategies have such an endpoint (a point-light caustic onto
+		// a coated receiver) loses its energy under a cap that can bind
+		// (DL-502).
 		//
 		// A cap that cannot bind is dropped here: a path the bidirectional
 		// walks can generate has at most max_eye_depth + max_light_depth
@@ -629,8 +634,101 @@ namespace RISE
 		{
 			eTypeCapOK = 0,			///< within every cap
 			eTypeCapOver,			///< some type over its cap: the path is not in the estimate
-			eTypeCapNeedsSplit		///< a counted connection endpoint has no defined type
+			eTypeCapNeedsSplit,		///< a counted connection endpoint has no defined type and no split (strategy excluded)
+			eTypeCapSplit			///< DL-481: a counted endpoint has several types and a split; the caps allow only SOME of them, so the connection must be priced by AllowedTypeProduct
 		};
+
+		/// DL-481: the strategy prices the path (OK or Split); Over and
+		/// NeedsSplit do not.
+		inline bool TypeCapAdmits( const TypeCapStatus s )
+		{
+			return s == eTypeCapOK || s == eTypeCapSplit;
+		}
+
+		/// DL-481: an endpoint whose material has several possible
+		/// non-delta lobe types, one of them capped, but declares a split
+		/// of its connection value by lobe label
+		/// (IMaterial::HasConnectionTypeSplit).
+		inline bool EndpointHasTypeSplit( const BDPTVertex& v )
+		{
+			return v.type == BDPTVertex::SURFACE && !v.isBSSRDFEntry && v.pMaterial &&
+				v.pMaterial->HasConnectionTypeSplit();
+		}
+
+		/// DL-481: what a strategy's per-type cap check leaves to price.
+		/// `base` counts every counted vertex whose type is defined (its
+		/// walk's label, or the endpoint material's single type); the up
+		/// to two split endpoints (`light` = the light-side endpoint,
+		/// `eye` = the eye-side one) each contribute exactly one of the
+		/// types in their mask -- the label of the lobe that scatters
+		/// there -- and the connection value is the sum over the allowed
+		/// combinations of the per-label values (AllowedTypeProduct).
+		struct TypeCapPlan
+		{
+			BounceTypeCounts	base;
+			bool				splitLight;
+			bool				splitEye;
+			unsigned int		maskLight;
+			unsigned int		maskEye;
+			TypeCapPlan() : splitLight( false ), splitEye( false ), maskLight( 0 ), maskEye( 0 ) {}
+		};
+
+		/// Is `base` plus one count of type tl (0 = none) and one of te
+		/// within the caps?
+		inline bool TypeComboWithin( const BounceTypeCounts& base, const unsigned int tl, const unsigned int te,
+			const BounceTypeCaps& caps )
+		{
+			BounceTypeCounts c = base;
+			if( tl ) c.Add( tl );
+			if( te ) c.Add( te );
+			return c.Within( caps );
+		}
+
+		/// Resolve a plan whose endpoints are recorded: Over when no
+		/// combination is allowed, OK when every one is (the aggregate
+		/// value is then exact), Split otherwise.
+		inline TypeCapStatus ResolveTypeCapPlan( const TypeCapPlan& plan, const BounceTypeCaps& caps )
+		{
+			if( !plan.base.Within( caps ) ) {
+				return eTypeCapOver;
+			}
+			if( !plan.splitLight && !plan.splitEye ) {
+				return eTypeCapOK;
+			}
+			bool any = false, all = true;
+			for( unsigned int tl = 0; tl <= ScatteredRay::eRayTranslucent; tl++ ) {
+				if( plan.splitLight ? !( plan.maskLight & ( 1u << tl ) ) : tl != 0 ) continue;
+				for( unsigned int te = 0; te <= ScatteredRay::eRayTranslucent; te++ ) {
+					if( plan.splitEye ? !( plan.maskEye & ( 1u << te ) ) : te != 0 ) continue;
+					if( TypeComboWithin( plan.base, tl, te, caps ) ) any = true; else all = false;
+				}
+			}
+			return !any ? eTypeCapOver : ( all ? eTypeCapOK : eTypeCapSplit );
+		}
+
+		/// DL-481: the connection value of a Split strategy -- the sum over
+		/// the allowed label combinations of the split endpoints' per-label
+		/// values (IBSDF::valueByScatterType, area measure).  `fl` / `fe`
+		/// are read only for a split endpoint; the caller multiplies the
+		/// result in place of the split endpoints' aggregate values (an
+		/// unsplit endpoint keeps its aggregate value, its type is in
+		/// `base`).
+		template<class V>
+		inline V AllowedTypeProduct( const TypeCapPlan& plan, const BounceTypeCaps& caps, const V fl[5], const V fe[5] )
+		{
+			V sum = V( Scalar( 0 ) );
+			for( unsigned int tl = 0; tl <= ScatteredRay::eRayTranslucent; tl++ ) {
+				if( plan.splitLight ? !( plan.maskLight & ( 1u << tl ) ) : tl != 0 ) continue;
+				for( unsigned int te = 0; te <= ScatteredRay::eRayTranslucent; te++ ) {
+					if( plan.splitEye ? !( plan.maskEye & ( 1u << te ) ) : te != 0 ) continue;
+					if( !TypeComboWithin( plan.base, tl, te, caps ) ) continue;
+					const V a = plan.splitLight ? fl[tl] : V( Scalar( 1 ) );
+					const V b = plan.splitEye ? fe[te] : V( Scalar( 1 ) );
+					sum = sum + a * b;
+				}
+			}
+			return sum;
+		}
 
 		/// The type a CONNECTION ENDPOINT contributes when it is counted.
 		/// From the material's possible non-delta lobe types
@@ -672,7 +770,7 @@ namespace RISE
 				return false;
 			}
 			unsigned int type = 0;
-			return !EndpointBounceType( v, caps, type );
+			return !EndpointBounceType( v, caps, type ) && !EndpointHasTypeSplit( v );
 		}
 
 		/// VCM (DL-471): does any of verts[from .. to] (path positions >= 2,
@@ -707,19 +805,20 @@ namespace RISE
 		/// free unless its own scatter was a delta lobe or it has no BSDF,
 		/// and the two connection endpoints count their material's type
 		/// unless they ARE x_K.
-		inline TypeCapStatus JoinedTypeCapStatus(
+		inline TypeCapStatus JoinedTypeCapPlan(
 			const BDPTVertex* lightVerts,
 			const BDPTVertex* eyeVerts,
 			const unsigned int s,
 			const unsigned int t,
-			const BounceTypeCaps& caps
+			const BounceTypeCaps& caps,
+			TypeCapPlan& plan
 			)
 		{
+			plan = TypeCapPlan();
 			if( !caps.active || s + t < 3 ) {
 				return eTypeCapOK;
 			}
 			const unsigned int n = s + t;
-			BounceTypeCounts counts;
 			for( unsigned int q = 1; q + 1 < n; q++ )
 			{
 				const BDPTVertex& v = ( q < s ) ? lightVerts[q] : eyeVerts[n - 1 - q];
@@ -728,20 +827,45 @@ namespace RISE
 					if( endpoint || ( !v.isDelta && v.isConnectible ) ) {
 						continue;
 					}
-					counts.Add( v.capType );
+					plan.base.Add( v.capType );
 					continue;
 				}
 				if( endpoint ) {
 					unsigned int type = 0;
 					if( !EndpointBounceType( v, caps, type ) ) {
-						return eTypeCapNeedsSplit;
+						// DL-481: several possible types, one of them capped.
+						if( !EndpointHasTypeSplit( v ) ) {
+							return eTypeCapNeedsSplit;
+						}
+						if( q + 1 == s ) {
+							plan.splitLight = true;
+							plan.maskLight = v.pMaterial->ConnectionScatterTypes();
+						} else {
+							plan.splitEye = true;
+							plan.maskEye = v.pMaterial->ConnectionScatterTypes();
+						}
+						continue;
 					}
-					counts.Add( type );
+					plan.base.Add( type );
 				} else {
-					counts.Add( v.capType );
+					plan.base.Add( v.capType );
 				}
 			}
-			return counts.Within( caps ) ? eTypeCapOK : eTypeCapOver;
+			return ResolveTypeCapPlan( plan, caps );
+		}
+
+		/// The status alone (see JoinedTypeCapPlan; Split admits the
+		/// strategy, priced by AllowedTypeProduct).
+		inline TypeCapStatus JoinedTypeCapStatus(
+			const BDPTVertex* lightVerts,
+			const BDPTVertex* eyeVerts,
+			const unsigned int s,
+			const unsigned int t,
+			const BounceTypeCaps& caps
+			)
+		{
+			TypeCapPlan plan;
+			return JoinedTypeCapPlan( lightVerts, eyeVerts, s, t, caps, plan );
 		}
 
 		/// Light-subpath prefix counts for a stored light vertex: the types
@@ -778,6 +902,42 @@ namespace RISE
 		/// (the merge point, priced by the EYE vertex's BSDF), then
 		/// lightVerts[k-1 .. 1] and the root.  The merge point is x_K, and
 		/// free, when k == 1.
+		inline TypeCapStatus MergeTypeCapPlan(
+			const BDPTVertex* eyeVerts,
+			const unsigned int i,
+			const unsigned char lightPrefix[4],
+			const unsigned int k,
+			const BounceTypeCaps& caps,
+			TypeCapPlan& plan
+			)
+		{
+			plan = TypeCapPlan();
+			if( !caps.active ) {
+				return eTypeCapOK;
+			}
+			for( int j = 0; j < 4; j++ ) {
+				plan.base.n[j] = lightPrefix[j];
+			}
+			for( unsigned int q = 1; q < i; q++ ) {
+				plan.base.Add( eyeVerts[q].capType );
+			}
+			if( k >= 2 ) {
+				unsigned int type = 0;
+				if( !EndpointBounceType( eyeVerts[i], caps, type ) ) {
+					// DL-481: the merge point is priced by the EYE vertex's
+					// BSDF -- the eye-side endpoint of the plan.
+					if( !EndpointHasTypeSplit( eyeVerts[i] ) ) {
+						return eTypeCapNeedsSplit;
+					}
+					plan.splitEye = true;
+					plan.maskEye = eyeVerts[i].pMaterial->ConnectionScatterTypes();
+				} else {
+					plan.base.Add( type );
+				}
+			}
+			return ResolveTypeCapPlan( plan, caps );
+		}
+
 		inline TypeCapStatus MergeTypeCapStatus(
 			const BDPTVertex* eyeVerts,
 			const unsigned int i,
@@ -786,24 +946,8 @@ namespace RISE
 			const BounceTypeCaps& caps
 			)
 		{
-			if( !caps.active ) {
-				return eTypeCapOK;
-			}
-			BounceTypeCounts counts;
-			for( int j = 0; j < 4; j++ ) {
-				counts.n[j] = lightPrefix[j];
-			}
-			for( unsigned int q = 1; q < i; q++ ) {
-				counts.Add( eyeVerts[q].capType );
-			}
-			if( k >= 2 ) {
-				unsigned int type = 0;
-				if( !EndpointBounceType( eyeVerts[i], caps, type ) ) {
-					return eTypeCapNeedsSplit;
-				}
-				counts.Add( type );
-			}
-			return counts.Within( caps ) ? eTypeCapOK : eTypeCapOver;
+			TypeCapPlan plan;
+			return MergeTypeCapPlan( eyeVerts, i, lightPrefix, k, caps, plan );
 		}
 
 		/// DL-330 (review P1).  Is verts[1..j-1] a straight chain of delta
