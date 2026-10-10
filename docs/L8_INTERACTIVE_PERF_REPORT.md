@@ -48,7 +48,7 @@ Seven scenes covering six distinct rasterizer types:
 | `scenes/Tests/Geometry/shapes.RISEscene` | `pixelpel_rasterizer` | Sample scene, direct illum |
 | `scenes/Tests/Bench/bench_pt_bigmesh.RISEscene` | `pathtracing_pel_rasterizer` | Mesh-heavy PT bench |
 | `scenes/Tests/Bench/bench_pt.RISEscene` | `pathtracing_pel_rasterizer` | Standard PT bench |
-| `scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene` | `mlt_rasterizer` | Cornell box, 50 mut/pix, 256² |
+| `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene` | `mlt_rasterizer` | Cornell box, 50 mut/pix, 256² |
 | `scenes/Tests/Bench/bench_bdpt.RISEscene` | `bdpt_pel_rasterizer` | BDPT bench |
 | `scenes/Tests/Bench/bench_vcm.RISEscene` | `vcm_pel_rasterizer` | VCM bench |
 | `scenes/Tests/BDPT/cornellbox_bdpt_spectral.RISEscene` | `bdpt_spectral_rasterizer` | Spectral BDPT |

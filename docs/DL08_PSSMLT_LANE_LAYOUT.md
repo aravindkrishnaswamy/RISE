@@ -190,7 +190,7 @@ existed.  This section supplies that demonstration anyway, on a
 purpose-built deep-volume MLT scene, and reports the result honestly
 whichever way it came out.
 
-**Scene**: `scenes/Tests/MLT/mlt_deep_fog.RISEscene` (RGB,
+**Scene**: `scenes/Tests/Legacy/mlt_deep_fog.RISEscene` (RGB,
 `mlt_rasterizer`) and its spectral twin `mlt_deep_fog_spectral.RISEscene`
 (`mlt_spectral_rasterizer`).  A small (80-unit) closed Lambertian box,
 entirely filled with a dense isotropic-scattering `homogeneous_medium`
@@ -402,7 +402,7 @@ After 6 draws on reserved stream: Slots=22529 Bytes=540696
 vs 294 slots (~6.9 KB) before `d7ebd453` (kNumStreams=49, reserved
 stream=48, `idx = 48 + 49*5 = 293`). `MLTRasterizer.cpp`'s bootstrap
 phase constructs and destroys ONE `PSSMLTSampler` PER bootstrap sample
-(100,000 by default on `scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene`),
+(100,000 by default on `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene`),
 so this cost was paid 100,000 times over on every bootstrap pass of
 every shipped MLT scene. Measured bootstrap wall time on that scene (3
 runs each, this worktree, `RISE_MEDIA_PATH` set, `printf "render\nquit\n"
@@ -505,7 +505,7 @@ at any magnitude); it now exists purely to catch a programming error
 
 Confirmed independently. `grep -rl "mlt_rasterizer\|mlt_spectral_rasterizer"
 scenes/` finds 10 shipped MLT scenes (`scenes/FeatureBased/MLT/*.RISEscene`
-x4, `scenes/Tests/MLT/*.RISEscene` x3, `scenes/Tests/Spectral/
+x4, `scenes/Tests/MLT/*.RISEscene` x3 (BDPT since legacy-deprecation slice B2; the MLT originals of two are in `scenes/Tests/Legacy/`), `scenes/Tests/Spectral/
 hwss_mlt_spectral_cornellbox.RISEscene`, `scenes/Tests/Samplers/
 cornell_mlt.RISEscene`, plus two incidental substring matches that are not
 actually MLT scenes). Every one sets `max_eye_depth` <= 12

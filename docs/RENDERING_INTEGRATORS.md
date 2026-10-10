@@ -976,8 +976,8 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   cost scale with `streamIndex * kNumStreams` — 6 draws on the new
   reserved stream (2048) alone materialised 22529 `PrimarySample` slots,
   a measured ~3.9x bootstrap-time regression on
-  `scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene` (the MLT original is in
-  `scenes/Tests/Legacy/` since slice B2).  Fixed by two-tier
+  `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene` (the MLT original; the
+  `scenes/Tests/MLT/` copy renders with BDPT since legacy-deprecation slice B2).  Fixed by two-tier
   storage (the ORIGINAL 49-wide flat vector for `streamIndex < 49`,
   bit-identical to the pre-DL-08 base commit; a small linearly-scanned
   association list for `streamIndex >= 49`, costing exactly one slot per

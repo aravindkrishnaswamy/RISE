@@ -1620,14 +1620,17 @@ verbatim in `scenes/Tests/Legacy/`.
 2026-10-10): `tools/migrate_scenes_legacy_families.py --family
 materials|iridescent|ambient|mlt|all [--mlt-integrator bdpt|vcm] [--dry-run]`
 (the docstring states every mapping).  The seven legacy materials follow the
-table in section 11.5; `iridescent_painter` becomes the thin-film
+table in section 11.5 (a per-channel roughness is refused unless
+`--collapse-per-channel` takes its luminance-weighted mean: `ggx_material` reads only the
+first channel of `alphax` / `alphay` under the RGB rasterizers); `iridescent_painter` becomes the thin-film
 `ggx_material` (`fresnel_mode thinfilm`, a TiO2 film whose thickness matches
 the painter's normal-incidence hue: over titanium for a mirror, over a 1.5
 dielectric -- pearlescent -- for a diffuse body, whose `rd` becomes the
 painter's projected-area mean colour); `ambient_light` becomes a uniform
 `radiance_map` of radiance `color x power / pi` (that is what lights an
 unoccluded Lambertian surface as the ambient light did) with
-`radiance_background FALSE`; MLT becomes BDPT (VCM for SDS caustics) with
+`radiance_background FALSE` (an existing uniform sky gets a NEW `<sky>_with_ambient`
+painter, since the sky painter may be shared); MLT becomes BDPT (VCM for SDS caustics) with
 `mutations_per_pixel` -> `samples`.  Owner rulings 2026-10-10: `FeatureBased/Animation/translucent_bunny`
 keeps the deprecated `iridescent_painter` (`translucent_material` has no thin film; the tool's
 `KEEP` list), and both teapots use a 125 nm film (`FILM_OVERRIDE`) to keep their purple look.
