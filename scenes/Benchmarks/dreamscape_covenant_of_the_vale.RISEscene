@@ -358,7 +358,7 @@ scalar_painter
 	file				colors/thinfilm/oxides/TiO2.k
 }
 
-# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_dragon` -> pearlescent ggx: rd = mean blend w 0.714, TiO2 film 190 nm over a 1.5 dielectric (alpha 0.3), thickness matching colora's hue.
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_dragon` -> pearlescent ggx: rd = mean blend w 0.714, TiO2 film 190 nm over a 1.5 dielectric (alpha 0.3), thickness matching colora (colorb is not a uniform colour).
 ggx_material
 {
 	name				mat_dragon
@@ -450,7 +450,7 @@ uniformcolor_painter
 	colorspace			Rec709RGB_Linear
 }
 
-# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_wing` -> pearlescent ggx: rd = mean colour 0.0956 0.284 0.452 (w 0.757), TiO2 film 135 nm over a 1.5 dielectric (alpha 0.3), thickness matching colorb's hue.
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_wing` -> pearlescent ggx: rd = mean colour 0.0956 0.284 0.452 (w 0.757), TiO2 film 135 nm over a 1.5 dielectric (alpha 0.3), thickness matching its normal-incidence colour 0.03 0.35 0.42.
 ggx_material
 {
 	name				mat_wing

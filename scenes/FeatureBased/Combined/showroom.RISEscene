@@ -336,7 +336,7 @@ scalar_painter
 }
 
 # Iridescent material for the torus knot
-# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_iridescent` -> pearlescent ggx: rd = mean colour 0.757 0.307 0.522 (w 0.928), TiO2 film 300 nm over a 1.5 dielectric (alpha 0.3), thickness matching colorb's hue.
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_iridescent` -> pearlescent ggx: rd = mean colour 0.757 0.307 0.522 (w 0.928), TiO2 film 300 nm over a 1.5 dielectric (alpha 0.3), thickness matching its normal-incidence colour 0.8 0.3 0.5.
 ggx_material
 {
 	name				iridescent_mat

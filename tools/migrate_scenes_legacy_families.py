@@ -44,14 +44,17 @@ FAMILIES
                     alphax / alphay carried.
                 polished_material -> coated_material over a
                     lambertian_material `<name>_base` with the same
-                    reflectance; coat_ior = ior (CLAMPED to coated's [1, 3],
-                    reported); coat_roughness = 1/sqrt(2 scattering + 1)
+                    reflectance; coat_ior = ior; coat_roughness = 1/sqrt(2 scattering + 1)
                     (cos^N about the reflection vector, the Phong rule), 1e-3
                     for the delta case (scattering >= 1e6);
                     coat_weight = tau (an `r g b` tau -> its Rec.709
                     luminance, reported: tau multiplies only the coat
                     reflection and has no exact equivalent); tau 0 (no coat)
-                    -> a plain lambertian_material.  A scattering bound to a
+                    -> a plain lambertian_material.  An ior above
+                    coated_material's range (3) makes the coat a near-total
+                    reflector (ior 10000: F0 0.9996), so that case becomes
+                    ggx_material schlick_f0 with F0 = tau ((n-1)/(n+1))^2,
+                    rd = reflectance and alpha = the coat roughness.  A scattering bound to a
                     single-expression `scalar_painter` (the wetness scenes)
                     is rewritten in place to the same 1/sqrt(2n+1) of its
                     expression, provided nothing else binds that painter.
@@ -70,15 +73,16 @@ FAMILIES
                     (TiO2 film over a 1.5 dielectric, i.e. TiO2-coated mica,
                     alpha 0.3, a soft sheen) whose diffuse rd is the
                     painter's projected-area mean colour (see below);
-                translucent_material.ref / .tau -> the painter's mean
-                    colour (translucent stays supported; the angular colour
-                    shift is lost, reported).
+                translucent_material.ref / .tau, and the diffuse rd of a
+                    ggx_material (a polished mirror coat converted above)
+                    -> the painter's mean colour (the angular colour shift
+                    is lost there, reported).
               The film thickness is the one whose NORMAL-incidence RGB
               reflectance (ThinFilm::ReflectanceConductorRGBSpectral, the
               renderer's own RGB thin-film integral; table below, 30-300
-              nm) has the chromaticity closest to the painter's
-              normal-incidence colour `colorb` (or `colora` when colorb is
-              not a uniform colour).  Thin-film interference shifts the
+              nm) has the chromaticity closest to the painter's own
+              normal-incidence colour lerp(colora, colorb, clamp(1 + bias,
+              0, 1)) (colora when colorb is not a uniform colour).  Thin-film interference shifts the
               hue toward thinner-film colours at grazing incidence, which
               is what the painter faked with colora.
               The mean colour: the painter returns lerp(colora, colorb, t),
@@ -103,7 +107,10 @@ FAMILIES
               radiance_map that is a uniformcolor_painter, the ambient term
               is added to that painter's colour (in linear Rec.709,
               divided by the existing radiance_scale); any other existing
-              map is REFUSED.  The environment is occluded, so creases and
+              map is REFUSED, and so is a scene whose `hosek_wilkie_skylight`
+              already installs the environment unless --ambient-with-sky
+              drop is given, which deletes the ambient fill (the sky is
+              already its occluded, physical version).  The environment is occluded, so creases and
               interiors get darker (accepted by the ruling).  VCM renders
               no ambient_light but does render a radiance_map, so a VCM
               scene GAINS the ambient term.
@@ -128,7 +135,8 @@ edited chunk by chunk.
 
 Usage:
     python3 tools/migrate_scenes_legacy_families.py --family materials|iridescent|ambient|mlt|all
-                                    [--mlt-integrator bdpt|vcm] [--dry-run] [-v] [paths...]
+                                    [--mlt-integrator bdpt|vcm] [--ambient-with-sky drop]
+                                    [--dry-run] [-v] [paths...]
     python3 tools/migrate_scenes_legacy_families.py --selftest
 Paths default to `scenes/`.  Exit status is 0 unless a file could not be read
 or parsed.
@@ -293,6 +301,10 @@ THINFILM_DATA = (
 )
 
 # MLT parameters with no bidirectional equivalent (dropped, reported).
+# Chunks that install the global environment themselves (a rasterizer
+# radiance_map would replace it).
+ENV_CHUNKS = {'hosek_wilkie_skylight'}
+
 MLT_DROPPED = {'bootstrap_samples', 'chains', 'large_step_prob'}
 MLT_TARGETS = {
     'bdpt': {'mlt_rasterizer': 'bdpt_pel_rasterizer', 'mlt_spectral_rasterizer': 'bdpt_spectral_rasterizer'},
@@ -591,17 +603,14 @@ def migrate_materials(text, report):
             wv = min(1.0, max(0.0, wv))
             weight = fmt_num(round(wv, 4))
             wdesc = 'coat_weight = tau %s%s' % (fmt_list(tau), ' (Rec.709 luminance; the tint is dropped)' if len(tau) == 3 else '')
-            if len(tau) == 3 and len(set(tau)) > 1:
-                report.append('`%s`: tau %s tints only the coat reflection; coat_weight %s is its luminance' % (
-                    name, fmt_list(tau), weight))
         iv = literal_list(ior_toks)
         if iv is None or len(iv) != 1:
             return None, 'REFUSED: `%s` ior `%s` is not a single literal' % (name, ' '.join(ior_toks))
         coat_ior = min(COAT_IOR_MAX, max(1.0, iv[0]))
         idesc = 'coat_ior %s' % fmt_num(coat_ior)
-        if coat_ior != iv[0]:
-            idesc += ' (ior %s clamped to coated_material\'s [1, 3])' % fmt_num(iv[0])
-            report.append('`%s`: ior %s clamped to %s (coated_material range)' % (name, fmt_num(iv[0]), fmt_num(coat_ior)))
+        if iv[0] < 1.0:
+            idesc += ' (ior %s raised to coated_material\'s minimum 1)' % fmt_num(iv[0])
+            report.append('`%s`: ior %s raised to 1 (coated_material range)' % (name, fmt_num(iv[0])))
         sv = literal_list(sc_toks)
         if sv is not None:
             if len(sv) != 1:
@@ -636,6 +645,31 @@ def migrate_materials(text, report):
         else:
             return None, 'REFUSED: `%s` scattering `%s` is neither a literal nor a single-expression scalar_painter' % (
                 name, ' '.join(sc_toks))
+        if iv[0] > COAT_IOR_MAX:
+            # Outside coated_material's index range the coat is a near-total
+            # reflector (ior 10000: F0 = 0.9996), so the faithful translation
+            # is a Schlick-F0 GGX lobe of F0 = tau ((n-1)/(n+1))^2 over the
+            # substrate colour (its diffuse is coupled by (1-A(i))(1-A(o)),
+            # which, like the polished coat, hides the substrate as F0 -> 1).
+            if tau is None or sv is None:
+                return None, 'REFUSED: `%s` ior %s > 3 with painter-bound tau/scattering' % (name, fmt_num(iv[0]))
+            f0 = ((iv[0] - 1.0) / (iv[0] + 1.0)) ** 2
+            t3 = tau * 3 if len(tau) == 1 else tau
+            f0c = [min(1.0, t * f0) for t in t3]
+            pn = unique_name(ed, created, name + '_f0')
+            ensure_painter(ed, created, pn, f0c, c.kw_line, ind,
+                           '%s: F0 of `%s` = tau x ((ior-1)/(ior+1))^2.' % (STAMP, name))
+            cmt = ['%s: was polished_material with ior %s, beyond coated_material\'s [1, 3] range: the coat is a' % (STAMP, fmt_num(iv[0])),
+                   'near-total reflector, so -> ggx_material schlick_f0 with F0 = tau x ((n-1)/(n+1))^2 = %s, rd = reflectance,' % fmt_list(f0c, 4),
+                   'alpha = %s (SCENE_CONVENTIONS 11.5 roughness rule).' % rdesc]
+            ed.replace(c, chunk_lines('ggx_material', [('name', name), ('rd', refl), ('rs', pn), ('alphax', rough_s),
+                                                       ('alphay', rough_s), ('fresnel_mode', 'schlick_f0')], cmt, ind))
+            done.append('polished_material `%s` (ior %s) -> ggx_material' % (name, fmt_num(iv[0])))
+            report.append('`%s`: polished ior %s > 3 -> ggx schlick_f0, F0 %s, %s' % (name, fmt_num(iv[0]), fmt_list(f0c, 4), rdesc))
+            continue
+        if tau is not None and len(tau) == 3 and len(set(tau)) > 1:
+            report.append('`%s`: tau %s tints only the coat reflection; coat_weight %s is its luminance' % (
+                name, fmt_list(tau), weight))
         base = unique_name(ed, created, name + '_base')
         created.add(base)
         cmt = ['%s: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->' % STAMP,
@@ -713,14 +747,22 @@ def migrate_iridescent(text, report):
         for d, _, slot in users:
             ok = (d.kw == 'perfectreflector_material' and slot == 'reflectance') or \
                  (d.kw == 'lambertian_material' and slot == 'reflectance') or \
-                 (d.kw == 'translucent_material' and slot in ('ref', 'tau'))
+                 (d.kw == 'translucent_material' and slot in ('ref', 'tau')) or \
+                 (d.kw == 'ggx_material' and slot == 'rd')
             if not ok:
                 return None, 'REFUSED: iridescent_painter `%s` is bound to %s.%s, which has no thin-film translation' % (
                     pname, d.kw, slot)
-        target = b_rgb if b_rgb is not None else a_rgb
-        if target is None:
-            return None, 'REFUSED: iridescent_painter `%s`: neither colour is a literal uniform painter' % pname
-        hue_src = 'colorb' if b_rgb is not None else 'colora'
+        # The painter's own NORMAL-incidence colour: t = clamp(1 + bias, 0, 1).
+        t1 = min(1.0, max(0.0, 1.0 + bias))
+        if a_rgb is not None and b_rgb is not None:
+            target = [(1 - t1) * x + t1 * y for x, y in zip(a_rgb, b_rgb)]
+            hue_src = 'its normal-incidence colour %s' % fmt_list(target, 3)
+        elif b_rgb is not None and t1 >= 1.0:
+            target, hue_src = b_rgb, 'colorb'
+        elif a_rgb is not None:
+            target, hue_src = a_rgb, 'colora (colorb is not a uniform colour)'
+        else:
+            return None, 'REFUSED: iridescent_painter `%s`: no literal uniform colour to match a film to' % pname
         # Mean colour painter, replacing the iridescent painter in place.
         avg = pname
         if a_rgb is not None and b_rgb is not None:
@@ -743,10 +785,10 @@ def migrate_iridescent(text, report):
             mdesc = 'mean blend w %.3f' % w
         for d, idx, slot in users:
             dind = body_indent(ed, d)
-            if d.kw == 'translucent_material':
-                report.append('`%s`.%s: iridescent `%s` -> %s; the angular colour shift is LOST (translucent has no thin film)' % (
+            if d.kw in ('translucent_material', 'ggx_material'):
+                report.append('`%s`.%s: iridescent `%s` -> %s; the angular colour shift is LOST there' % (
                     d.name(), slot, pname, mdesc))
-                done.append('translucent `%s` keeps the mean colour' % d.name())
+                done.append('%s `%s` keeps the mean colour' % (d.kw, d.name()))
                 continue
             if d.kw_line in ed.repl:
                 continue   # already rewritten (bound twice)
@@ -763,7 +805,7 @@ def migrate_iridescent(text, report):
                           ('extinction', 'tf_Ti_k'), ('film_ior', 'tf_TiO2_n'), ('film_extinction', 'tf_TiO2_k'),
                           ('film_thickness', str(th))]
                 desc = ('perfectreflector with iridescent `%s` -> near-mirror (alpha %s) TiO2 film %d nm over titanium, '
-                        'thickness matching %s\'s hue' % (pname, fmt_num(IRID_MIRROR_ALPHA), th, hue_src))
+                        'thickness matching %s' % (pname, fmt_num(IRID_MIRROR_ALPHA), th, hue_src))
             else:
                 th = match_thickness(target, _TF_DIEL)
                 params = [('name', d.name()), ('rd', avg), ('rs', white), ('alphax', fmt_num(IRID_PEARL_ALPHA)),
@@ -771,7 +813,7 @@ def migrate_iridescent(text, report):
                           ('ior', fmt_num(IRID_PEARL_IOR)), ('extinction', '0'), ('film_ior', 'tf_TiO2_n'),
                           ('film_extinction', 'tf_TiO2_k'), ('film_thickness', str(th))]
                 desc = ('lambertian with iridescent `%s` -> pearlescent ggx: rd = %s, TiO2 film %d nm over a %s dielectric '
-                        '(alpha %s), thickness matching %s\'s hue' % (pname, mdesc, th, fmt_num(IRID_PEARL_IOR),
+                        '(alpha %s), thickness matching %s' % (pname, mdesc, th, fmt_num(IRID_PEARL_IOR),
                                                                        fmt_num(IRID_PEARL_ALPHA), hue_src))
             ed.replace(d, chunk_lines('ggx_material', params, ['%s: was %s; %s.' % (STAMP, d.kw, desc)], dind))
             report.append('`%s`: %s' % (d.name(), desc))
@@ -783,7 +825,7 @@ def migrate_iridescent(text, report):
 # Family: ambient_light
 # --------------------------------------------------------------------------
 
-def migrate_ambient(text, report):
+def migrate_ambient(text, report, drop_with_sky=False):
     ed = Editor(text)
     amb = [c for c in ed.chunks if c.kw == 'ambient_light']
     if not amb:
@@ -795,6 +837,15 @@ def migrate_ambient(text, report):
     if R.kw.startswith('pixel') or R.kw.startswith('mlt'):
         return None, 'REFUSED: rasterizer `%s` is frozen (migrate it first)' % R.kw
     named = ed.named()
+    skies = [c for c in ed.chunks if c.kw in ENV_CHUNKS]
+    if skies:
+        if not drop_with_sky:
+            return None, ('REFUSED: `%s` already installs the environment, which a radiance_map would replace '
+                          '(--ambient-with-sky drop deletes the ambient fill instead)' % skies[0].kw)
+        for a in amb:
+            ed.delete(a)
+        report.append('ambient_light dropped: `%s` already supplies the (occluded) sky light the ambient faked' % skies[0].kw)
+        return ed.text(), 'MIGRATED (ambient): %d ambient_light dropped (scene has %s)' % (len(amb), skies[0].kw)
     total = [0.0, 0.0, 0.0]
     for a in amb:
         if a.get('position') or a.get('direction'):
@@ -900,7 +951,7 @@ def migrate_mlt(text, report, integrator='bdpt'):
 FAMILIES = ('materials', 'iridescent', 'ambient', 'mlt')
 
 
-def run(families, paths, dry_run, verbose, mlt_integrator):
+def run(families, paths, dry_run, verbose, mlt_integrator, ambient_with_sky=None):
     counts = {'migrated': 0, 'refused': 0, 'unchanged': 0, 'held': 0}
     rc = 0
     for f in collect(paths):
@@ -925,6 +976,8 @@ def run(families, paths, dry_run, verbose, mlt_integrator):
                       'ambient': migrate_ambient}.get(fam)
                 if fam == 'mlt':
                     new, st = migrate_mlt(cur, notes, mlt_integrator)
+                elif fam == 'ambient':
+                    new, st = migrate_ambient(cur, notes, ambient_with_sky == 'drop')
                 else:
                     new, st = fn(cur, notes)
                 if new is None:
@@ -1004,6 +1057,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--family', action='append', choices=FAMILIES + ('all',))
     ap.add_argument('--mlt-integrator', choices=('bdpt', 'vcm'), default='bdpt')
+    ap.add_argument('--ambient-with-sky', choices=('drop',),
+                    help='ambient: when a hosek_wilkie_skylight already installs the environment, delete the '
+                         'ambient fill (the sky is the occluded version of it) instead of refusing')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('-v', '--verbose', action='store_true')
     ap.add_argument('--selftest', action='store_true')
@@ -1014,7 +1070,7 @@ def main():
     if not a.family:
         ap.error('--family is required')
     fams = FAMILIES if 'all' in a.family else tuple(f for f in FAMILIES if f in a.family)
-    return run(fams, a.paths, a.dry_run, a.verbose, a.mlt_integrator)
+    return run(fams, a.paths, a.dry_run, a.verbose, a.mlt_integrator, a.ambient_with_sky)
 
 
 if __name__ == '__main__':

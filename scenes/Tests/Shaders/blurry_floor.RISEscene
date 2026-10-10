@@ -229,22 +229,25 @@ lambertian_material
 	reflectance			myyel
 }
 
-# Legacy phase 2 slice B2: substrate of `polished` (was polished_material reflectance).
-lambertian_material
+# Legacy phase 2 slice B2: F0 of `polished` = tau x ((ior-1)/(ior+1))^2.
+uniformcolor_painter
 {
-	name				polished_base
-	reflectance			color_white
+	name				polished_f0
+	color				0.9996 0.9996 0.9996
+	colorspace			Rec709RGB_Linear
 }
 
-# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
-# coated_material over `polished_base`; coat_weight = tau 1, coat_ior 3 (ior 10000 clamped to coated_material's [1, 3]), coat_roughness 1/sqrt(2*1000+1) = 0.02236 (SCENE_CONVENTIONS 11.5).
-coated_material
+# Legacy phase 2 slice B2: was polished_material with ior 10000, beyond coated_material's [1, 3] range: the coat is a
+# near-total reflector, so -> ggx_material schlick_f0 with F0 = tau x ((n-1)/(n+1))^2 = 0.9996, rd = reflectance,
+# alpha = coat_roughness 1/sqrt(2*1000+1) = 0.02236 (SCENE_CONVENTIONS 11.5 roughness rule).
+ggx_material
 {
 	name				polished
-	base				polished_base
-	coat_weight			1
-	coat_ior			3
-	coat_roughness		0.02236
+	rd					color_white
+	rs					polished_f0
+	alphax				0.02236
+	alphay				0.02236
+	fresnel_mode		schlick_f0
 }
 
 # Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 128 -> alpha 1/sqrt(2N+1) = 0.06238, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
