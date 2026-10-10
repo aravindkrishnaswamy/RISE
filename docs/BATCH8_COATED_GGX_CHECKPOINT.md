@@ -1,0 +1,7 @@
+# Batch 8 DL-423 checkpoint
+
+No production change. Current strict `CoatedGGXAccuracyTest --gate` returns 1: 8 of 19 independent-reference comparisons fail. Eight independent seeded SPF-walk replicates, 20000 draws each (not image renders); sample SD is SE times sqrt(8). The explicit layer walk is the existing independent reference; its frozen implementation is unchanged.
+
+At alpha .05, theta 70, zero extinction: total coated .855899737 (SD .00393035), reference .803372164 (SD .0253962), ratio 1.06538386, absolute 3SE .0272574058. Off-mirror (>30 degrees): coated .239064521 (SD .00640170), reference .0707910608 (SD .00386638), absolute 3SE .00793233292. The angular error is much larger than uncertainty. A scalar total-energy correction would leave this failure, so the residual still needs a full polar/azimuth return operator. No clamp, recentering, threshold relaxation or production patch.
+
+Named builds: `make -C build/make/rise -j8 build-test/<Name>`; actual rc0, no compiler warnings. Positive related guards: CoatedMaterialChunkTest 85/0, LayeredWhiteFurnaceTest 63/0, ConnectionTypeSplitTest --dl502-only 55459/0, all run rc0. The strict energy check is intentionally rc1 and is not credited as green. Ignored logs: `.claude/logs/codex8/423-valid-*`. An initial nonexistent CoatedReciprocityTest build target returned rc2 before any tests; it was replaced by the existing chunk suite and supplies no gate result.
