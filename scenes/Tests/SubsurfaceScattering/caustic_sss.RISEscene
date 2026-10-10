@@ -36,13 +36,16 @@ uniformcolor_painter
 	colorspace			Rec709RGB_Linear
 }
 
+# Legacy phase 2 slice B2: radiance_scale 0.159155 x 0.00171.  The ambient_light this replaces contributed 1.2% of the legacy
+# image (slice B1 measurement; B1 retuned the spot to the legacy mean without it); a uniform environment lights the SSS
+# block from every direction (8x the ambient term), so its scale is set to add that same 1.2%.
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator vcm, legacy-deprecation Phase 2).
 # NOTE: VCM renders neither ambient_light nor directional_light, so this scene's ambient_light `ambient` contributes nothing here.
 vcm_pel_rasterizer
 {
 	samples				64
 	radiance_map			pnt_ambient_env
-	radiance_scale			0.159155
+	radiance_scale			0.000272155
 	radiance_background		FALSE
 
 }

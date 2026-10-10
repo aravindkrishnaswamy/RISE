@@ -5478,46 +5478,51 @@ coated_material
 # Lights
 ##################################################
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): omni powers x1.273 restore the legacy mean: polished_material kept its full substrate albedo under the coat (white-furnace albedo of a 0.5 substrate: 0.526 polished vs 0.327 coated).
 omni_light
 {
 	name				key_light
-	power				2100.0
+	power				2673.3
 	color				1.0 0.88 0.76
 	colorspace			sRGB
 	position			-9.0 6.5 8.2
 }
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): see the first light above.
 omni_light
 {
 	name				fill_light
-	power				1200.0
+	power				1527.6
 	color				0.66 0.88 1.0
 	colorspace			sRGB
 	position			7.4 3.6 8.6
 }
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): see the first light above.
 omni_light
 {
 	name				rim_light
-	power				800.0
+	power				1018.4
 	color				1.0 0.54 0.42
 	colorspace			sRGB
 	position			0.8 6.8 -1.8
 }
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): see the first light above.
 omni_light
 {
 	name				front_fill
-	power				400.0
+	power				509.2
 	color				1.0 0.98 0.95
 	colorspace			sRGB
 	position			-1.2 2.5 11.0
 }
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): see the first light above.
 omni_light
 {
 	name				back_accent
-	power				500.0
+	power				636.5
 	color				0.88 0.72 1.0
 	colorspace			sRGB
 	position			-4.4 4.8 -0.8

@@ -66,10 +66,11 @@ pinhole_camera
 # Lighting
 ##################################################
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): power x2 (12 -> 24) restores the legacy whole-image mean (1.273): the deprecated ambient_light lit every point inside the cloud unshadowed; its uniform-environment replacement is occluded by the cloud itself.
 directional_light
 {
 	name				sun
-	power				12.0
+	power				24
 	color				1.0 0.95 0.85
 	colorspace			sRGB
 	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
