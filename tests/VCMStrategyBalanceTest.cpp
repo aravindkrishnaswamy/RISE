@@ -29,7 +29,7 @@
 //        delta-light handling incorrectly into eye-side MIS terms.
 //
 //    APPROACH: render minimal direct-lighting scenes with both
-//    pixelpel_rasterizer (PT, the trusted reference) and
+//    pathtracing_pel_rasterizer (PT, the trusted reference) and
 //    vcm_pel_rasterizer (VC+VM enabled).  Capture the rendered
 //    radiance buffer in memory via a custom IRasterizerOutput,
 //    compute mean / median / p99 / max, and assert agreement within
@@ -505,25 +505,24 @@ static const char* kSceneCommon =
 	"\tmaterial mat_diffuse\n"
 	"}\n";
 
-// CAVEAT (reviewer, debt-26 sibling sweep, 2026-09-05): reference is the
-// legacy pixelpel_rasterizer with a DefaultDirectLighting-only chain,
-// valid ONLY while every topology is single-bounce direct lighting on a
-// flat quad (no scattered ray can carry energy); any topology with a
-// transmissive / reflective material or a second SCATTERING surface must switch the
-// reference to pathtracing_pel_rasterizer first -- CLOTH_FABRIC_DESIGN.md
-// 15 debt 26.
+// REFERENCE (legacy-deprecation Phase 2, 2026-10-10): the modern
+// pathtracing_pel_rasterizer.  Until then it was the FROZEN legacy
+// pixelpel_rasterizer with a DefaultDirectLighting-only chain, which was
+// valid only while every topology is single-bounce direct lighting on a
+// flat quad (CLOTH_FABRIC_DESIGN.md 15 debt 26); on these topologies the
+// full path tracer carries the same energy, so the switch moves no band.
+// Topologies that need a real path tracer for other reasons keep their own
+// named references below.
 static const char* kRasterizerPT =
 	"standard_shader\n"
 	"{\n"
 	"\tname global\n"
-	"\tshaderop DefaultDirectLighting\n"
+	"\tshaderop DefaultPathTracing\n"
 	"}\n"
 	"\n"
-	"pixelpel_rasterizer\n"
+	"pathtracing_pel_rasterizer\n"
 	"{\n"
-	"\tmax_recursion 2\n"
 	"\tsamples 32\n"
-	"\tlum_samples 1\n"
 	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
@@ -817,17 +816,15 @@ static void TestMixedLights()
 // full weight, so the same 1/(cos(theta)*A_lens) inflation shows up
 // roughly 60x larger in the VCM mean.
 //
-// The reference stays this file's legacy `pixelpel_rasterizer`: both
-// topologies are single-bounce direct lighting on one flat quad with a
-// non-scattering luminaire, so the direct-lighting-only shader chain
-// carries all the energy (the caveat above `kRasterizerPT` is
-// satisfied), and a thin lens changes only which ray each film sample
-// generates -- which the legacy rasterizer draws from
-// `ICamera::GenerateRay` exactly as the modern one does, so PT here has
-// the SAME defocus blur as VCM.  CROSS-CHECKED against
-// `pathtracing_pel_rasterizer` at the same 512 spp: focused 0.0462
-// legacy vs 0.0452 modern (+2.2%), defocused 0.0440 vs 0.0449 (-2.0%),
-// both comfortably inside the 8% band.
+// The reference is `pathtracing_pel_rasterizer` at 512 spp (the legacy
+// `pixelpel_rasterizer` until legacy-deprecation Phase 2, 2026-10-10):
+// both topologies are single-bounce direct lighting on one flat quad with
+// a non-scattering luminaire, and a thin lens changes only which ray each
+// film sample generates (`ICamera::GenerateRay`), so PT here has the SAME
+// defocus blur as VCM.  When the legacy reference was in use it was
+// CROSS-CHECKED against this modern one at the same 512 spp: focused
+// 0.0462 legacy vs 0.0452 modern (+2.2%), defocused 0.0440 vs 0.0449
+// (-2.0%), both comfortably inside the 8% band.
 //
 // 512 spp, not this file's usual 32: at 32 spp the defocused row's mean
 // swings ~5% run to run (per-pixel sigma/mu 156% against the focused
@@ -946,14 +943,12 @@ static const char* kRasterizerPT512 =
 	"standard_shader\n"
 	"{\n"
 	"\tname global\n"
-	"\tshaderop DefaultDirectLighting\n"
+	"\tshaderop DefaultPathTracing\n"
 	"}\n"
 	"\n"
-	"pixelpel_rasterizer\n"
+	"pathtracing_pel_rasterizer\n"
 	"{\n"
-	"\tmax_recursion 2\n"
 	"\tsamples 512\n"
-	"\tlum_samples 1\n"
 	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
@@ -1114,9 +1109,9 @@ static void TestOrthographicCamera()
 //
 // REFERENCE.  `kRasterizerPTSubmerged` below, NOT the file's shared
 // `kRasterizerPT`: this is the exact topology the caveat above
-// kRasterizerPT warns about (a transmissive material in the scene), so
-// the legacy pixelpel + DefaultDirectLighting reference is invalid
-// here and a real path tracer is required.
+// kRasterizerPT used to warn about (a transmissive material in the scene,
+// which the legacy pixelpel + DefaultDirectLighting reference could not
+// carry); it keeps its own named reference.
 //
 // TOLERANCES.  The mean stays at the strict 8%.  p99 and max are
 // loosened to 60% / 4x: with only BSDF sampling able to find a
@@ -2001,13 +1996,12 @@ static void TestPolishedAB()
 // unmodified) pricing `BioSpecSkinSPF::Scatter`'s `kray = 1`,
 // `.pdf == 0` re-emission -- exactly the DL-126 pattern.  Pre-fix,
 // VCM's eye AND light subpaths both `break` at this vertex's first
-// non-delta scatter and the render goes BLACK; PT is unaffected.  This
-// file's default `kRasterizerPT` is the LEGACY `pixelpel_rasterizer` +
-// `DefaultDirectLighting`, which never calls `ISPF::Scatter` at all
-// (see `BDPTStrategyBalanceTest.cpp`'s own comment on why it replaced
-// that reference) and would read pure black for BOTH pre- and post-fix
-// VCM here, masking the very defect this topology exists to catch -- so
-// this topology pairs a modern-PT reference (`pathtracing_pel_rasterizer`,
+// non-delta scatter and the render goes BLACK; PT is unaffected.  When
+// this topology was added, this file's default `kRasterizerPT` was the
+// LEGACY `pixelpel_rasterizer` + `DefaultDirectLighting`, which never
+// calls `ISPF::Scatter` at all and would have read pure black for BOTH
+// pre- and post-fix VCM here -- so this topology pairs a modern-PT
+// reference (`pathtracing_pel_rasterizer`,
 // mirroring `BDPTStrategyBalanceTest.cpp`'s `kRasterizerPT`) with the
 // existing `kRasterizerVCM` (already `DefaultPathTracing`-driven).
 //////////////////////////////////////////////////////////////////////
