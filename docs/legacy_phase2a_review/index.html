@@ -1,0 +1,570 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Legacy Phase 2a Review</title><style>
+:root{--bg:#fafaf8;--fg:#1d1d1b;--mut:#6b6b66;--line:#e2e1dc;--hl:#fff3d6;--big:#b4441c;--card:#fff}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#171716;--fg:#ecebe6;--mut:#a3a29c;--line:#34332f;--hl:#3a2f17;--big:#ff8a5c;--card:#1f1f1d}}
+:root[data-theme="dark"]{--bg:#171716;--fg:#ecebe6;--mut:#a3a29c;--line:#34332f;--hl:#3a2f17;--big:#ff8a5c;--card:#1f1f1d}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,system-ui,sans-serif;margin:0;padding:24px 16px;max-width:1280px;margin:auto}
+h1{font-size:22px;margin:0 0 6px} h2{font-size:17px;margin:28px 0 4px} .blurb,.lead{color:var(--mut);max-width:900px}
+.tw{overflow-x:auto} table{border-collapse:collapse;width:100%;background:var(--card)}
+th,td{border-bottom:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}
+th{font-size:12px;color:var(--mut);font-weight:600;position:sticky;top:0;background:var(--card)}
+td.im img{width:220px;max-width:40vw;height:auto;image-rendering:pixelated;display:block;border:1px solid var(--line)}
+td.n{font-variant-numeric:tabular-nums;white-space:nowrap} .sd{color:var(--mut);font-size:11px}
+.meta{color:var(--mut);font-size:11px;max-width:300px} code{font-size:12px}
+tr.hl{background:var(--hl)} .big{color:var(--big);font-weight:700} .na{color:var(--mut)}
+</style></head><body>
+<h1>Legacy deprecation Phase 2a: look review</h1>
+<p class="lead">107 scenes moved off <code>pixelpel_rasterizer</code> / <code>pixelintegratingspectral_rasterizer</code> by <code>tools/migrate_scenes_legacy_rasterizer.py</code>. "Before" is the scene at master <code>6ff502457</code>; "after" is the migrated scene. Both are rendered at reduced resolution (long side 160 px) with the shipped sample counts, three Sobol' value salts each; the thumbnail is salt 1, the PRE-denoise image composited over black (RGB &times; coverage alpha: the legacy pixel rasterizers store surface RGB plus coverage alpha, so raw RGB differs at silhouettes), linear Rec.709 clamped to [0,1] and sRGB-encoded identically on both sides. Mean Y is the Rec.709 luminance of that composited raw image, mean over the three salts (&plusmn; is the salt-to-salt standard deviation). <b>5</b> scenes change by more than 10%. Path-tracing chains (<code>--mode pt</code>) should match up to noise; direct-lighting chains (<code>--mode direct</code>, owner ruling #3a, <code>max_diffuse_bounce 0</code>) are expected to change: specular paths and MIS-weighted emitter hits now contribute.</p>
+<h2>What the large changes are</h2><ul class="lead">
+<li><b>spectral_skinmodel, spectral_skin_fast (+961%, +571%)</b>: both set <code>show_luminaires FALSE</code>. The legacy shader-dispatch path hid the emitter from EVERY ray, not just camera rays, so the skin (a BSDF-less material lit only by BSDF-sampled continuations hitting the emitter) received almost no light. Cross-check: the legacy render with <code>show_luminaires TRUE</code> reads 1.1505 against the path tracer's 1.1504 with FALSE. The migrated image is the correct one.</li>
+<li><b>dielectrics_changing_ior / _scat (exactly -50%)</b>: their <code>advanced_shader</code> runs two path-tracing ops over overlapping depth ranges (<code>0 1 +</code> and <code>1 10 +</code>), which the legacy chain summed: a double count. The path tracer counts once. The tool reports this as a look change.</li>
+<li><b>gltf_import_damaged_helmet_spectral (+97%)</b> and <b>gltf_import_damaged_helmet</b>: firefly-dominated at 16 spp (salt-to-salt sd 23% / 9%); individual 256-spp renders of the same scene swing from 0.033 to 0.47. Not a measurable change. Separately, its <code>ambient_light</code>-only contribution reads about 2x higher under the legacy chain than under the path tracer (ambient_light is deprecated and moves to a radiance_map in slice B).</li>
+<li>Everything else is within 10%. Direct-lighting scenes typically move a few percent (max_diffuse_bounce 0 still adds specular paths and MIS-weighted emitter hits); a direct-only scene of Lambertian spheres under a directional light (Tests/Painters/blackbodyradiator) renders with an identical mean. An earlier pass of this gallery compared RAW RGB and showed spurious 10-33% drops: the legacy pixel rasterizers store surface RGB plus coverage alpha, so only the composite over black is comparable.</li>
+</ul>
+<h2>FeatureBased showcases (9)</h2><p class="blurb">Every migrated showcase, largest change first.</p>
+<div class="tw"><table><thead><tr><th>Scene</th><th>Before (master, legacy)</th><th>After (migrated)</th><th>Mean Y before</th><th>Mean Y after</th><th>Change</th><th>Flag</th></tr></thead><tbody>
+<tr><td class="nm"><code>FeatureBased/Combined/pavilion_colonnade.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Combined__pavilion_colonnade_before.png" alt="before scenes/FeatureBased/Combined/pavilion_colonnade.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Combined__pavilion_colonnade_after.png" alt="after scenes/FeatureBased/Combined/pavilion_colonnade.RISEscene"></td>
+<td class="n">0.09227<div class="sd">&plusmn;3.6e-05</div></td><td class="n">0.0975<div class="sd">&plusmn;1.8e-05</div></td>
+<td class="n">+5.7%</td><td></td></tr>
+<tr><td class="nm"><code>FeatureBased/Textures/oxidized_copper.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Textures__oxidized_copper_before.png" alt="before scenes/FeatureBased/Textures/oxidized_copper.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Textures__oxidized_copper_after.png" alt="after scenes/FeatureBased/Textures/oxidized_copper.RISEscene"></td>
+<td class="n">0.21534<div class="sd">&plusmn;0.00011</div></td><td class="n">0.20358<div class="sd">&plusmn;1.2e-05</div></td>
+<td class="n">-5.5%</td><td></td></tr>
+<tr><td class="nm"><code>FeatureBased/Textures/weathered_workbench.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Textures__weathered_workbench_before.png" alt="before scenes/FeatureBased/Textures/weathered_workbench.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Textures__weathered_workbench_after.png" alt="after scenes/FeatureBased/Textures/weathered_workbench.RISEscene"></td>
+<td class="n">0.32784<div class="sd">&plusmn;0.00036</div></td><td class="n">0.31506<div class="sd">&plusmn;0.00014</div></td>
+<td class="n">-3.9%</td><td></td></tr>
+<tr><td class="nm"><code>FeatureBased/Geometry/f16.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Geometry__f16_before.png" alt="before scenes/FeatureBased/Geometry/f16.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Geometry__f16_after.png" alt="after scenes/FeatureBased/Geometry/f16.RISEscene"></td>
+<td class="n">0.048317<div class="sd">&plusmn;8.7e-05</div></td><td class="n">0.048399<div class="sd">&plusmn;3.9e-05</div></td>
+<td class="n">+0.2%</td><td></td></tr>
+<tr><td class="nm"><code>FeatureBased/Parser/sombrero.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Parser__sombrero_before.png" alt="before scenes/FeatureBased/Parser/sombrero.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Parser__sombrero_after.png" alt="after scenes/FeatureBased/Parser/sombrero.RISEscene"></td>
+<td class="n">0.13805<div class="sd">&plusmn;0.00015</div></td><td class="n">0.13818<div class="sd">&plusmn;0.00028</div></td>
+<td class="n">+0.1%</td><td></td></tr>
+<tr><td class="nm"><code>FeatureBased/Combined/sculptors_studio.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Combined__sculptors_studio_before.png" alt="before scenes/FeatureBased/Combined/sculptors_studio.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Combined__sculptors_studio_after.png" alt="after scenes/FeatureBased/Combined/sculptors_studio.RISEscene"></td>
+<td class="n">0.17555<div class="sd">&plusmn;0.00063</div></td><td class="n">0.17547<div class="sd">&plusmn;0.00048</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>FeatureBased/Combined/planetary_survey.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Combined__planetary_survey_before.png" alt="before scenes/FeatureBased/Combined/planetary_survey.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Combined__planetary_survey_after.png" alt="after scenes/FeatureBased/Combined/planetary_survey.RISEscene"></td>
+<td class="n">1.2826<div class="sd">&plusmn;0.00022</div></td><td class="n">1.2827<div class="sd">&plusmn;0.0016</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>FeatureBased/Geometry/aphrodite.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Geometry__aphrodite_before.png" alt="before scenes/FeatureBased/Geometry/aphrodite.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Geometry__aphrodite_after.png" alt="after scenes/FeatureBased/Geometry/aphrodite.RISEscene"></td>
+<td class="n">0.19924<div class="sd">&plusmn;3.3e-05</div></td><td class="n">0.19922<div class="sd">&plusmn;8.3e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>FeatureBased/Textures/receding_pier.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Textures__receding_pier_before.png" alt="before scenes/FeatureBased/Textures/receding_pier.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__FeatureBased__Textures__receding_pier_after.png" alt="after scenes/FeatureBased/Textures/receding_pier.RISEscene"></td>
+<td class="n">0.44167<div class="sd">&plusmn;0.00011</div></td><td class="n">0.44164<div class="sd">&plusmn;1.5e-06</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+</tbody></table></div>
+<h2>Tests: path-tracing chains (24)</h2><p class="blurb">Legacy spelling of a path tracer; expected to match up to Monte-Carlo noise.</p>
+<div class="tw"><table><thead><tr><th>Scene</th><th>Before (master, legacy)</th><th>After (migrated)</th><th>Mean Y before</th><th>Mean Y after</th><th>Change</th><th>Flag</th></tr></thead><tbody>
+<tr class="hl"><td class="nm"><code>Tests/Materials/spectral_skinmodel.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__spectral_skinmodel_before.png" alt="before scenes/Tests/Materials/spectral_skinmodel.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__spectral_skinmodel_after.png" alt="after scenes/Tests/Materials/spectral_skinmodel.RISEscene"></td>
+<td class="n">0.14436<div class="sd">&plusmn;3.5e-05</div></td><td class="n">1.5318<div class="sd">&plusmn;8.3e-05</div></td>
+<td class="n">+961.1%</td><td><span class="big">&gt;10%</span></td></tr>
+<tr class="hl"><td class="nm"><code>Tests/Materials/spectral_skin_fast.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__spectral_skin_fast_before.png" alt="before scenes/Tests/Materials/spectral_skin_fast.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__spectral_skin_fast_after.png" alt="after scenes/Tests/Materials/spectral_skin_fast.RISEscene"></td>
+<td class="n">0.16876<div class="sd">&plusmn;0.00017</div></td><td class="n">1.1332<div class="sd">&plusmn;0.00017</div></td>
+<td class="n">+571.5%</td><td><span class="big">&gt;10%</span></td></tr>
+<tr class="hl"><td class="nm"><code>Tests/Importers/gltf_import_damaged_helmet_spectral.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_damaged_helmet_spectral_before.png" alt="before scenes/Tests/Importers/gltf_import_damaged_helmet_spectral.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_damaged_helmet_spectral_after.png" alt="after scenes/Tests/Importers/gltf_import_damaged_helmet_spectral.RISEscene"></td>
+<td class="n">0.030107<div class="sd">&plusmn;0.0069</div></td><td class="n">0.059402<div class="sd">&plusmn;0.0039</div></td>
+<td class="n">+97.3%</td><td><span class="big">&gt;10%</span> <span class="na">noisy (salt sd 23%)</span></td></tr>
+<tr class="hl"><td class="nm"><code>Tests/Materials/dielectrics_changing_scat.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel<br>LOOK CHANGE: shader `global` runs 2 path-tracing ops at the same depth; the legacy chain summed them (a double count), the path tracer counts once</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__dielectrics_changing_scat_before.png" alt="before scenes/Tests/Materials/dielectrics_changing_scat.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__dielectrics_changing_scat_after.png" alt="after scenes/Tests/Materials/dielectrics_changing_scat.RISEscene"></td>
+<td class="n">0.44845<div class="sd">&plusmn;6.6e-05</div></td><td class="n">0.22416<div class="sd">&plusmn;0.0011</div></td>
+<td class="n">-50.0%</td><td><span class="big">&gt;10%</span></td></tr>
+<tr class="hl"><td class="nm"><code>Tests/Materials/dielectrics_changing_ior.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel<br>LOOK CHANGE: shader `global` runs 2 path-tracing ops at the same depth; the legacy chain summed them (a double count), the path tracer counts once</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__dielectrics_changing_ior_before.png" alt="before scenes/Tests/Materials/dielectrics_changing_ior.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__dielectrics_changing_ior_after.png" alt="after scenes/Tests/Materials/dielectrics_changing_ior.RISEscene"></td>
+<td class="n">0.47746<div class="sd">&plusmn;0.00088</div></td><td class="n">0.23896<div class="sd">&plusmn;0.00025</div></td>
+<td class="n">-50.0%</td><td><span class="big">&gt;10%</span></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/perf_avocado_rgb.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__perf_avocado_rgb_before.png" alt="before scenes/Tests/Spectral/perf_avocado_rgb.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__perf_avocado_rgb_after.png" alt="after scenes/Tests/Spectral/perf_avocado_rgb.RISEscene"></td>
+<td class="n">0.066824<div class="sd">&plusmn;1.5e-05</div></td><td class="n">0.06873<div class="sd">&plusmn;6.8e-06</div></td>
+<td class="n">+2.9%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Importers/gltf_import_avocado_spectral.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_avocado_spectral_before.png" alt="before scenes/Tests/Importers/gltf_import_avocado_spectral.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_avocado_spectral_after.png" alt="after scenes/Tests/Importers/gltf_import_avocado_spectral.RISEscene"></td>
+<td class="n">0.066797<div class="sd">&plusmn;0.00024</div></td><td class="n">0.068688<div class="sd">&plusmn;0.00036</div></td>
+<td class="n">+2.8%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/perf_avocado_spectral.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__perf_avocado_spectral_before.png" alt="before scenes/Tests/Spectral/perf_avocado_spectral.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__perf_avocado_spectral_after.png" alt="after scenes/Tests/Spectral/perf_avocado_spectral.RISEscene"></td>
+<td class="n">0.066994<div class="sd">&plusmn;0.00025</div></td><td class="n">0.068328<div class="sd">&plusmn;0.00024</div></td>
+<td class="n">+2.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/spectral_dispersive_caustic_pt_sms.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral<br>SMS settings of pathtracing_shaderop `mis_pt` copied to the rasterizer</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__spectral_dispersive_caustic_pt_sms_before.png" alt="before scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__spectral_dispersive_caustic_pt_sms_after.png" alt="after scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms.RISEscene"></td>
+<td class="n">1.5874<div class="sd">&plusmn;0.0031</div></td><td class="n">1.5941<div class="sd">&plusmn;0.0015</div></td>
+<td class="n">+0.4%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/uniform_green_spectral.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__uniform_green_spectral_before.png" alt="before scenes/Tests/Spectral/uniform_green_spectral.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__uniform_green_spectral_after.png" alt="after scenes/Tests/Spectral/uniform_green_spectral.RISEscene"></td>
+<td class="n">0.34873<div class="sd">&plusmn;0.00066</div></td><td class="n">0.34982<div class="sd">&plusmn;0.0014</div></td>
+<td class="n">+0.3%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/cornellbox_spectral.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__cornellbox_spectral_before.png" alt="before scenes/Tests/Spectral/cornellbox_spectral.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__cornellbox_spectral_after.png" alt="after scenes/Tests/Spectral/cornellbox_spectral.RISEscene"></td>
+<td class="n">3.6896<div class="sd">&plusmn;0.021</div></td><td class="n">3.6956<div class="sd">&plusmn;0.017</div></td>
+<td class="n">+0.2%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/aov_through_glass_pt_spectral.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__aov_through_glass_pt_spectral_before.png" alt="before scenes/Tests/Spectral/aov_through_glass_pt_spectral.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__aov_through_glass_pt_spectral_after.png" alt="after scenes/Tests/Spectral/aov_through_glass_pt_spectral.RISEscene"></td>
+<td class="n">0.051429<div class="sd">&plusmn;0.00025</div></td><td class="n">0.051352<div class="sd">&plusmn;0.00032</div></td>
+<td class="n">-0.2%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/spectral_gold_sphere.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__spectral_gold_sphere_before.png" alt="before scenes/Tests/Materials/spectral_gold_sphere.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__spectral_gold_sphere_after.png" alt="after scenes/Tests/Materials/spectral_gold_sphere.RISEscene"></td>
+<td class="n">0.23522<div class="sd">&plusmn;0.0015</div></td><td class="n">0.23552<div class="sd">&plusmn;0.00094</div></td>
+<td class="n">+0.1%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/hwss_cornellbox_pt_ref.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_cornellbox_pt_ref_before.png" alt="before scenes/Tests/Spectral/hwss_cornellbox_pt_ref.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_cornellbox_pt_ref_after.png" alt="after scenes/Tests/Spectral/hwss_cornellbox_pt_ref.RISEscene"></td>
+<td class="n">3.6938<div class="sd">&plusmn;0.008</div></td><td class="n">3.6904<div class="sd">&plusmn;0.026</div></td>
+<td class="n">-0.1%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Lights/hosek_wilkie_sky_lab.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Lights__hosek_wilkie_sky_lab_before.png" alt="before scenes/Tests/Lights/hosek_wilkie_sky_lab.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Lights__hosek_wilkie_sky_lab_after.png" alt="after scenes/Tests/Lights/hosek_wilkie_sky_lab.RISEscene"></td>
+<td class="n">1.2588<div class="sd">&plusmn;0.001</div></td><td class="n">1.2596<div class="sd">&plusmn;0.00036</div></td>
+<td class="n">+0.1%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/hwss_cornellbox_pt_1samp.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_cornellbox_pt_1samp_before.png" alt="before scenes/Tests/Spectral/hwss_cornellbox_pt_1samp.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_cornellbox_pt_1samp_after.png" alt="after scenes/Tests/Spectral/hwss_cornellbox_pt_1samp.RISEscene"></td>
+<td class="n">3.6946<div class="sd">&plusmn;0.0026</div></td><td class="n">3.6929<div class="sd">&plusmn;0.00024</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/hwss_cornellbox_pt_4samp_ref.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_cornellbox_pt_4samp_ref_before.png" alt="before scenes/Tests/Spectral/hwss_cornellbox_pt_4samp_ref.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_cornellbox_pt_4samp_ref_after.png" alt="after scenes/Tests/Spectral/hwss_cornellbox_pt_4samp_ref.RISEscene"></td>
+<td class="n">3.6875<div class="sd">&plusmn;0.004</div></td><td class="n">3.6892<div class="sd">&plusmn;0.0088</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/chromaticity_test_spectral.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__chromaticity_test_spectral_before.png" alt="before scenes/Tests/Spectral/chromaticity_test_spectral.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__chromaticity_test_spectral_after.png" alt="after scenes/Tests/Spectral/chromaticity_test_spectral.RISEscene"></td>
+<td class="n">0.0070257<div class="sd">&plusmn;8.9e-06</div></td><td class="n">0.0070285<div class="sd">&plusmn;5.5e-05</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/hwss_prism_dispersion_pt.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_prism_dispersion_pt_before.png" alt="before scenes/Tests/Spectral/hwss_prism_dispersion_pt.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_prism_dispersion_pt_after.png" alt="after scenes/Tests/Spectral/hwss_prism_dispersion_pt.RISEscene"></td>
+<td class="n">2.9652<div class="sd">&plusmn;0.0021</div></td><td class="n">2.9643<div class="sd">&plusmn;0.00071</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/hwss_cornellbox_pt.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_cornellbox_pt_before.png" alt="before scenes/Tests/Spectral/hwss_cornellbox_pt.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__hwss_cornellbox_pt_after.png" alt="after scenes/Tests/Spectral/hwss_cornellbox_pt.RISEscene"></td>
+<td class="n">3.6942<div class="sd">&plusmn;0.00026</div></td><td class="n">3.6931<div class="sd">&plusmn;0.00012</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/sms_through_glass_emitter_pt_sms_ref.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__sms_through_glass_emitter_pt_sms_ref_before.png" alt="before scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms_ref.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__sms_through_glass_emitter_pt_sms_ref_after.png" alt="after scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms_ref.RISEscene"></td>
+<td class="n">2.8934<div class="sd">&plusmn;0.0029</div></td><td class="n">2.8929<div class="sd">&plusmn;0.0038</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral<br>SMS settings of pathtracing_shaderop `mis_pt` copied to the rasterizer</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__sms_through_glass_emitter_pt_sms_before.png" alt="before scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__sms_through_glass_emitter_pt_sms_after.png" alt="after scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene"></td>
+<td class="n">2.8928<div class="sd">&plusmn;0.003</div></td><td class="n">2.8925<div class="sd">&plusmn;0.0034</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/chromaticity_test_rgb.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__chromaticity_test_rgb_before.png" alt="before scenes/Tests/Spectral/chromaticity_test_rgb.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__chromaticity_test_rgb_after.png" alt="after scenes/Tests/Spectral/chromaticity_test_rgb.RISEscene"></td>
+<td class="n">0.0069697<div class="sd">&plusmn;2.2e-06</div></td><td class="n">0.0069703<div class="sd">&plusmn;1.1e-06</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Spectral/cornellbox_pointlight_spectral.RISEscene</code><div class="meta">pixelintegratingspectral &rarr; pathtracing_spectral</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__cornellbox_pointlight_spectral_before.png" alt="before scenes/Tests/Spectral/cornellbox_pointlight_spectral.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Spectral__cornellbox_pointlight_spectral_after.png" alt="after scenes/Tests/Spectral/cornellbox_pointlight_spectral.RISEscene"></td>
+<td class="n">0.3222<div class="sd">&plusmn;0.00081</div></td><td class="n">0.3222<div class="sd">&plusmn;0.00018</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+</tbody></table></div>
+<h2>Tests: direct-lighting chains (74)</h2><p class="blurb">Direct-lighting-only chains moved to the path tracer with max_diffuse_bounce 0.</p>
+<div class="tw"><table><thead><tr><th>Scene</th><th>Before (master, legacy)</th><th>After (migrated)</th><th>Mean Y before</th><th>Mean Y after</th><th>Change</th><th>Flag</th></tr></thead><tbody>
+<tr><td class="nm"><code>Tests/Materials/materials.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__materials_before.png" alt="before scenes/Tests/Materials/materials.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__materials_after.png" alt="after scenes/Tests/Materials/materials.RISEscene"></td>
+<td class="n">0.1294<div class="sd">&plusmn;0.00084</div></td><td class="n">0.14082<div class="sd">&plusmn;0.00073</div></td>
+<td class="n">+8.8%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Importers/gltf_import_damaged_helmet.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_damaged_helmet_before.png" alt="before scenes/Tests/Importers/gltf_import_damaged_helmet.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_damaged_helmet_after.png" alt="after scenes/Tests/Importers/gltf_import_damaged_helmet.RISEscene"></td>
+<td class="n">0.061873<div class="sd">&plusmn;0.0047</div></td><td class="n">0.06579<div class="sd">&plusmn;0.0055</div></td>
+<td class="n">+6.3%</td><td> <span class="na">noisy (salt sd 9%)</span></td></tr>
+<tr><td class="nm"><code>Tests/GUI/panel_stress_params.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__GUI__panel_stress_params_before.png" alt="before scenes/Tests/GUI/panel_stress_params.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__GUI__panel_stress_params_after.png" alt="after scenes/Tests/GUI/panel_stress_params.RISEscene"></td>
+<td class="n">0.24026<div class="sd">&plusmn;5.7e-05</div></td><td class="n">0.25369<div class="sd">&plusmn;0.00023</div></td>
+<td class="n">+5.6%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/GUI/graph_stress_wide.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__GUI__graph_stress_wide_before.png" alt="before scenes/Tests/GUI/graph_stress_wide.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__GUI__graph_stress_wide_after.png" alt="after scenes/Tests/GUI/graph_stress_wide.RISEscene"></td>
+<td class="n">0.021611<div class="sd">&plusmn;9.4e-05</div></td><td class="n">0.022471<div class="sd">&plusmn;0.00019</div></td>
+<td class="n">+4.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Importers/gltf_import_metalrough_spheres.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_metalrough_spheres_before.png" alt="before scenes/Tests/Importers/gltf_import_metalrough_spheres.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_metalrough_spheres_after.png" alt="after scenes/Tests/Importers/gltf_import_metalrough_spheres.RISEscene"></td>
+<td class="n">0.080673<div class="sd">&plusmn;9.2e-05</div></td><td class="n">0.083854<div class="sd">&plusmn;0.0002</div></td>
+<td class="n">+3.9%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Shaders/transparency_shaderop.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel<br>LOOK CHANGE: transparency_shaderop `trans` one_sided has no material-coverage equivalent (coverage applies to both faces); transparency_shaderop `trans` -&gt; alpha_coverage 0.5 / alpha_mode blend on its materials (op chunk removed)</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Shaders__transparency_shaderop_before.png" alt="before scenes/Tests/Shaders/transparency_shaderop.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Shaders__transparency_shaderop_after.png" alt="after scenes/Tests/Shaders/transparency_shaderop.RISEscene"></td>
+<td class="n">0.01052<div class="sd">&plusmn;0</div></td><td class="n">0.010288<div class="sd">&plusmn;3.3e-06</div></td>
+<td class="n">-2.2%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Importers/gltf_import_alpha_blend.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_alpha_blend_before.png" alt="before scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_alpha_blend_after.png" alt="after scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene"></td>
+<td class="n">0.32976<div class="sd">&plusmn;4.5e-06</div></td><td class="n">0.33275<div class="sd">&plusmn;5e-05</div></td>
+<td class="n">+0.9%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/csg_comprehensive.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__csg_comprehensive_before.png" alt="before scenes/Tests/Geometry/csg_comprehensive.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__csg_comprehensive_after.png" alt="after scenes/Tests/Geometry/csg_comprehensive.RISEscene"></td>
+<td class="n">0.0088995<div class="sd">&plusmn;4e-05</div></td><td class="n">0.0089439<div class="sd">&plusmn;4.2e-05</div></td>
+<td class="n">+0.5%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/ggx_diffuse_transmission.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__ggx_diffuse_transmission_before.png" alt="before scenes/Tests/Materials/ggx_diffuse_transmission.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__ggx_diffuse_transmission_after.png" alt="after scenes/Tests/Materials/ggx_diffuse_transmission.RISEscene"></td>
+<td class="n">0.012199<div class="sd">&plusmn;2.5e-05</div></td><td class="n">0.012248<div class="sd">&plusmn;9.1e-06</div></td>
+<td class="n">+0.4%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/pbr_specular_anisotropy.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__pbr_specular_anisotropy_before.png" alt="before scenes/Tests/Materials/pbr_specular_anisotropy.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__pbr_specular_anisotropy_after.png" alt="after scenes/Tests/Materials/pbr_specular_anisotropy.RISEscene"></td>
+<td class="n">0.01496<div class="sd">&plusmn;1.1e-05</div></td><td class="n">0.015007<div class="sd">&plusmn;1.5e-05</div></td>
+<td class="n">+0.3%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/pbr_metallic_roughness.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__pbr_metallic_roughness_before.png" alt="before scenes/Tests/Materials/pbr_metallic_roughness.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__pbr_metallic_roughness_after.png" alt="after scenes/Tests/Materials/pbr_metallic_roughness.RISEscene"></td>
+<td class="n">0.013727<div class="sd">&plusmn;2.4e-05</div></td><td class="n">0.013768<div class="sd">&plusmn;8.4e-05</div></td>
+<td class="n">+0.3%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/fabric_presets.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__fabric_presets_before.png" alt="before scenes/Tests/Materials/fabric_presets.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__fabric_presets_after.png" alt="after scenes/Tests/Materials/fabric_presets.RISEscene"></td>
+<td class="n">0.048875<div class="sd">&plusmn;2.9e-05</div></td><td class="n">0.049013<div class="sd">&plusmn;4.1e-05</div></td>
+<td class="n">+0.3%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/scenegraph_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__scenegraph_stress_before.png" alt="before scenes/Tests/Geometry/scenegraph_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__scenegraph_stress_after.png" alt="after scenes/Tests/Geometry/scenegraph_stress.RISEscene"></td>
+<td class="n">0.14179<div class="sd">&plusmn;0.00023</div></td><td class="n">0.14148<div class="sd">&plusmn;0.00021</div></td>
+<td class="n">-0.2%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/sweep_loop.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__sweep_loop_before.png" alt="before scenes/Tests/Geometry/sweep_loop.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__sweep_loop_after.png" alt="after scenes/Tests/Geometry/sweep_loop.RISEscene"></td>
+<td class="n">0.059467<div class="sd">&plusmn;0.00011</div></td><td class="n">0.059578<div class="sd">&plusmn;0.00016</div></td>
+<td class="n">+0.2%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/anisotropic_uv_tangent.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__anisotropic_uv_tangent_before.png" alt="before scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__anisotropic_uv_tangent_after.png" alt="after scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene"></td>
+<td class="n">0.0016539<div class="sd">&plusmn;2.2e-07</div></td><td class="n">0.0016569<div class="sd">&plusmn;2.4e-07</div></td>
+<td class="n">+0.2%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/csg.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__csg_before.png" alt="before scenes/Tests/Geometry/csg.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__csg_after.png" alt="after scenes/Tests/Geometry/csg.RISEscene"></td>
+<td class="n">0.0003296<div class="sd">&plusmn;6.7e-07</div></td><td class="n">0.00032909<div class="sd">&plusmn;5.4e-07</div></td>
+<td class="n">-0.2%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Importers/gltf_import_avocado.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_avocado_before.png" alt="before scenes/Tests/Importers/gltf_import_avocado.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_import_avocado_after.png" alt="after scenes/Tests/Importers/gltf_import_avocado.RISEscene"></td>
+<td class="n">0.068186<div class="sd">&plusmn;7.6e-06</div></td><td class="n">0.068255<div class="sd">&plusmn;8.5e-06</div></td>
+<td class="n">+0.1%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/skin_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__skin_stress_before.png" alt="before scenes/Tests/Geometry/skin_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__skin_stress_after.png" alt="after scenes/Tests/Geometry/skin_stress.RISEscene"></td>
+<td class="n">0.29205<div class="sd">&plusmn;0.00033</div></td><td class="n">0.29179<div class="sd">&plusmn;0.00084</div></td>
+<td class="n">-0.1%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/sweep_instances.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__sweep_instances_before.png" alt="before scenes/Tests/Geometry/sweep_instances.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__sweep_instances_after.png" alt="after scenes/Tests/Geometry/sweep_instances.RISEscene"></td>
+<td class="n">0.067186<div class="sd">&plusmn;7.1e-05</div></td><td class="n">0.067129<div class="sd">&plusmn;0.00016</div></td>
+<td class="n">-0.1%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/GUI/graph_stress_editing.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__GUI__graph_stress_editing_before.png" alt="before scenes/Tests/GUI/graph_stress_editing.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__GUI__graph_stress_editing_after.png" alt="after scenes/Tests/GUI/graph_stress_editing.RISEscene"></td>
+<td class="n">0.26178<div class="sd">&plusmn;1.3e-05</div></td><td class="n">0.262<div class="sd">&plusmn;1.5e-05</div></td>
+<td class="n">+0.1%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Animation/animation_temporal_scanning.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Animation__animation_temporal_scanning_before.png" alt="before scenes/Tests/Animation/animation_temporal_scanning.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Animation__animation_temporal_scanning_after.png" alt="after scenes/Tests/Animation/animation_temporal_scanning.RISEscene"></td>
+<td class="n">1.3043<div class="sd">&plusmn;0.00026</div></td><td class="n">1.3051<div class="sd">&plusmn;0.00056</div></td>
+<td class="n">+0.1%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/sweep_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__sweep_stress_before.png" alt="before scenes/Tests/Geometry/sweep_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__sweep_stress_after.png" alt="after scenes/Tests/Geometry/sweep_stress.RISEscene"></td>
+<td class="n">0.4964<div class="sd">&plusmn;0.00011</div></td><td class="n">0.49616<div class="sd">&plusmn;0.00022</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/displaced_procedural.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_procedural_before.png" alt="before scenes/Tests/Geometry/displaced_procedural.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_procedural_after.png" alt="after scenes/Tests/Geometry/displaced_procedural.RISEscene"></td>
+<td class="n">0.10251<div class="sd">&plusmn;0.0001</div></td><td class="n">0.10246<div class="sd">&plusmn;1.8e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/gltf_normal_mapped.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__gltf_normal_mapped_before.png" alt="before scenes/Tests/Geometry/gltf_normal_mapped.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__gltf_normal_mapped_after.png" alt="after scenes/Tests/Geometry/gltf_normal_mapped.RISEscene"></td>
+<td class="n">0.020868<div class="sd">&plusmn;1.6e-05</div></td><td class="n">0.020858<div class="sd">&plusmn;1.2e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/lathe_basic.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__lathe_basic_before.png" alt="before scenes/Tests/Geometry/lathe_basic.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__lathe_basic_after.png" alt="after scenes/Tests/Geometry/lathe_basic.RISEscene"></td>
+<td class="n">0.24038<div class="sd">&plusmn;5.8e-05</div></td><td class="n">0.24049<div class="sd">&plusmn;0.00011</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/stochastic_scatter.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__stochastic_scatter_before.png" alt="before scenes/Tests/Painters/stochastic_scatter.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__stochastic_scatter_after.png" alt="after scenes/Tests/Painters/stochastic_scatter.RISEscene"></td>
+<td class="n">0.019429<div class="sd">&plusmn;7.3e-05</div></td><td class="n">0.019419<div class="sd">&plusmn;6.5e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/SDF/sdf_arealight.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__SDF__sdf_arealight_before.png" alt="before scenes/Tests/SDF/sdf_arealight.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__SDF__sdf_arealight_after.png" alt="after scenes/Tests/SDF/sdf_arealight.RISEscene"></td>
+<td class="n">0.47388<div class="sd">&plusmn;0.00092</div></td><td class="n">0.47409<div class="sd">&plusmn;0.00018</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/unlit.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__unlit_before.png" alt="before scenes/Tests/Materials/unlit.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__unlit_after.png" alt="after scenes/Tests/Materials/unlit.RISEscene"></td>
+<td class="n">0.022926<div class="sd">&plusmn;1.8e-05</div></td><td class="n">0.022916<div class="sd">&plusmn;5.7e-06</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/skeleton_basic.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__skeleton_basic_before.png" alt="before scenes/Tests/Geometry/skeleton_basic.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__skeleton_basic_after.png" alt="after scenes/Tests/Geometry/skeleton_basic.RISEscene"></td>
+<td class="n">0.67271<div class="sd">&plusmn;0.00014</div></td><td class="n">0.67245<div class="sd">&plusmn;9.8e-06</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/gltf_box.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__gltf_box_before.png" alt="before scenes/Tests/Geometry/gltf_box.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__gltf_box_after.png" alt="after scenes/Tests/Geometry/gltf_box.RISEscene"></td>
+<td class="n">0.093647<div class="sd">&plusmn;2.2e-05</div></td><td class="n">0.093612<div class="sd">&plusmn;8.8e-06</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/lathe_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__lathe_stress_before.png" alt="before scenes/Tests/Geometry/lathe_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__lathe_stress_after.png" alt="after scenes/Tests/Geometry/lathe_stress.RISEscene"></td>
+<td class="n">0.48665<div class="sd">&plusmn;0.00031</div></td><td class="n">0.48648<div class="sd">&plusmn;0.00033</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/textureaccessors.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__textureaccessors_before.png" alt="before scenes/Tests/Painters/textureaccessors.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__textureaccessors_after.png" alt="after scenes/Tests/Painters/textureaccessors.RISEscene"></td>
+<td class="n">0.036627<div class="sd">&plusmn;1.2e-05</div></td><td class="n">0.036616<div class="sd">&plusmn;2.3e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/loft_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__loft_stress_before.png" alt="before scenes/Tests/Geometry/loft_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__loft_stress_after.png" alt="after scenes/Tests/Geometry/loft_stress.RISEscene"></td>
+<td class="n">0.5538<div class="sd">&plusmn;0.00028</div></td><td class="n">0.55363<div class="sd">&plusmn;5.6e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/displaced_shapes.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_shapes_before.png" alt="before scenes/Tests/Geometry/displaced_shapes.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_shapes_after.png" alt="after scenes/Tests/Geometry/displaced_shapes.RISEscene"></td>
+<td class="n">0.13136<div class="sd">&plusmn;9.8e-05</div></td><td class="n">0.1314<div class="sd">&plusmn;0.00021</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/fractal.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__fractal_before.png" alt="before scenes/Tests/Painters/fractal.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__fractal_after.png" alt="after scenes/Tests/Painters/fractal.RISEscene"></td>
+<td class="n">0.15109<div class="sd">&plusmn;4.9e-05</div></td><td class="n">0.15106<div class="sd">&plusmn;8.5e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/expression_painter_marble.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__expression_painter_marble_before.png" alt="before scenes/Tests/Painters/expression_painter_marble.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__expression_painter_marble_after.png" alt="after scenes/Tests/Painters/expression_painter_marble.RISEscene"></td>
+<td class="n">0.10415<div class="sd">&plusmn;2.2e-05</div></td><td class="n">0.10413<div class="sd">&plusmn;2.5e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/skeleton_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__skeleton_stress_before.png" alt="before scenes/Tests/Geometry/skeleton_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__skeleton_stress_after.png" alt="after scenes/Tests/Geometry/skeleton_stress.RISEscene"></td>
+<td class="n">0.53605<div class="sd">&plusmn;0.00027</div></td><td class="n">0.53594<div class="sd">&plusmn;0.00025</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Animation/named_animations.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Animation__named_animations_before.png" alt="before scenes/Tests/Animation/named_animations.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Animation__named_animations_after.png" alt="after scenes/Tests/Animation/named_animations.RISEscene"></td>
+<td class="n">6.8848<div class="sd">&plusmn;0.008</div></td><td class="n">6.886<div class="sd">&plusmn;0.0076</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/displaced_self_shadow.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_self_shadow_before.png" alt="before scenes/Tests/Geometry/displaced_self_shadow.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_self_shadow_after.png" alt="after scenes/Tests/Geometry/displaced_self_shadow.RISEscene"></td>
+<td class="n">0.14125<div class="sd">&plusmn;3.1e-05</div></td><td class="n">0.14122<div class="sd">&plusmn;6.1e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/superellipsoid_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__superellipsoid_stress_before.png" alt="before scenes/Tests/Geometry/superellipsoid_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__superellipsoid_stress_after.png" alt="after scenes/Tests/Geometry/superellipsoid_stress.RISEscene"></td>
+<td class="n">0.4745<div class="sd">&plusmn;0.00064</div></td><td class="n">0.47444<div class="sd">&plusmn;0.00031</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/displaced_torus.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_torus_before.png" alt="before scenes/Tests/Geometry/displaced_torus.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_torus_after.png" alt="after scenes/Tests/Geometry/displaced_torus.RISEscene"></td>
+<td class="n">0.20731<div class="sd">&plusmn;2.1e-05</div></td><td class="n">0.20732<div class="sd">&plusmn;2.4e-05</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/displaced_box.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_box_before.png" alt="before scenes/Tests/Geometry/displaced_box.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_box_after.png" alt="after scenes/Tests/Geometry/displaced_box.RISEscene"></td>
+<td class="n">0.24266<div class="sd">&plusmn;7.3e-05</div></td><td class="n">0.24265<div class="sd">&plusmn;6.2e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Camera/physical_exposure.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Camera__physical_exposure_before.png" alt="before scenes/Tests/Camera/physical_exposure.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Camera__physical_exposure_after.png" alt="after scenes/Tests/Camera/physical_exposure.RISEscene"></td>
+<td class="n">0.008146<div class="sd">&plusmn;8.9e-07</div></td><td class="n">0.0081454<div class="sd">&plusmn;4.5e-07</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/aphrodite_mesh.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__aphrodite_mesh_before.png" alt="before scenes/Tests/Geometry/aphrodite_mesh.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__aphrodite_mesh_after.png" alt="after scenes/Tests/Geometry/aphrodite_mesh.RISEscene"></td>
+<td class="n">0.19921<div class="sd">&plusmn;0.00012</div></td><td class="n">0.19919<div class="sd">&plusmn;8.8e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/displaced_builders_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_builders_stress_before.png" alt="before scenes/Tests/Geometry/displaced_builders_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_builders_stress_after.png" alt="after scenes/Tests/Geometry/displaced_builders_stress.RISEscene"></td>
+<td class="n">0.30525<div class="sd">&plusmn;0.00039</div></td><td class="n">0.30527<div class="sd">&plusmn;0.00011</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Cameras/thinlens.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__thinlens_before.png" alt="before scenes/Tests/Cameras/thinlens.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__thinlens_after.png" alt="after scenes/Tests/Cameras/thinlens.RISEscene"></td>
+<td class="n">0.10411<div class="sd">&plusmn;7.3e-06</div></td><td class="n">0.10411<div class="sd">&plusmn;5.8e-06</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/misc_geometry_stress.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__misc_geometry_stress_before.png" alt="before scenes/Tests/Geometry/misc_geometry_stress.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__misc_geometry_stress_after.png" alt="after scenes/Tests/Geometry/misc_geometry_stress.RISEscene"></td>
+<td class="n">0.50926<div class="sd">&plusmn;0.00021</div></td><td class="n">0.50929<div class="sd">&plusmn;0.00014</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/sheen.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__sheen_before.png" alt="before scenes/Tests/Materials/sheen.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__sheen_after.png" alt="after scenes/Tests/Materials/sheen.RISEscene"></td>
+<td class="n">0.0069084<div class="sd">&plusmn;8.1e-06</div></td><td class="n">0.0069087<div class="sd">&plusmn;1.5e-05</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Cameras/thinlens_tiltshift.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__thinlens_tiltshift_before.png" alt="before scenes/Tests/Cameras/thinlens_tiltshift.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__thinlens_tiltshift_after.png" alt="after scenes/Tests/Cameras/thinlens_tiltshift.RISEscene"></td>
+<td class="n">0.41632<div class="sd">&plusmn;0.00033</div></td><td class="n">0.4163<div class="sd">&plusmn;0.00016</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/displaced_zero_scale.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_zero_scale_before.png" alt="before scenes/Tests/Geometry/displaced_zero_scale.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_zero_scale_after.png" alt="after scenes/Tests/Geometry/displaced_zero_scale.RISEscene"></td>
+<td class="n">0.27774<div class="sd">&plusmn;2.1e-05</div></td><td class="n">0.27775<div class="sd">&plusmn;1.7e-05</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/scalar_painter_expression_roughness.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__scalar_painter_expression_roughness_before.png" alt="before scenes/Tests/Painters/scalar_painter_expression_roughness.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__scalar_painter_expression_roughness_after.png" alt="after scenes/Tests/Painters/scalar_painter_expression_roughness.RISEscene"></td>
+<td class="n">0.21243<div class="sd">&plusmn;1e-05</div></td><td class="n">0.21244<div class="sd">&plusmn;2.8e-06</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Cameras/multiple_cameras.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__multiple_cameras_before.png" alt="before scenes/Tests/Cameras/multiple_cameras.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__multiple_cameras_after.png" alt="after scenes/Tests/Cameras/multiple_cameras.RISEscene"></td>
+<td class="n">0.11849<div class="sd">&plusmn;8.7e-06</div></td><td class="n">0.11849<div class="sd">&plusmn;3.1e-06</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/ramp_painter_terrain.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__ramp_painter_terrain_before.png" alt="before scenes/Tests/Painters/ramp_painter_terrain.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__ramp_painter_terrain_after.png" alt="after scenes/Tests/Painters/ramp_painter_terrain.RISEscene"></td>
+<td class="n">0.25905<div class="sd">&plusmn;2.4e-05</div></td><td class="n">0.25904<div class="sd">&plusmn;1.6e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Cameras/camera_defaults.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__camera_defaults_before.png" alt="before scenes/Tests/Cameras/camera_defaults.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__camera_defaults_after.png" alt="after scenes/Tests/Cameras/camera_defaults.RISEscene"></td>
+<td class="n">0.48722<div class="sd">&plusmn;7e-05</div></td><td class="n">0.48724<div class="sd">&plusmn;3.7e-05</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/gltf_duck.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__gltf_duck_before.png" alt="before scenes/Tests/Geometry/gltf_duck.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__gltf_duck_after.png" alt="after scenes/Tests/Geometry/gltf_duck.RISEscene"></td>
+<td class="n">0.12882<div class="sd">&plusmn;2.1e-05</div></td><td class="n">0.12883<div class="sd">&plusmn;3.4e-05</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/mapping_triplanar.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__mapping_triplanar_before.png" alt="before scenes/Tests/Painters/mapping_triplanar.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__mapping_triplanar_after.png" alt="after scenes/Tests/Painters/mapping_triplanar.RISEscene"></td>
+<td class="n">0.22318<div class="sd">&plusmn;1.9e-05</div></td><td class="n">0.22318<div class="sd">&plusmn;2.3e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/SDF/sdf_shadows.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__SDF__sdf_shadows_before.png" alt="before scenes/Tests/SDF/sdf_shadows.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__SDF__sdf_shadows_after.png" alt="after scenes/Tests/SDF/sdf_shadows.RISEscene"></td>
+<td class="n">0.32643<div class="sd">&plusmn;5.1e-06</div></td><td class="n">0.32643<div class="sd">&plusmn;5.6e-06</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/gerstner_plane.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__gerstner_plane_before.png" alt="before scenes/Tests/Geometry/gerstner_plane.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__gerstner_plane_after.png" alt="after scenes/Tests/Geometry/gerstner_plane.RISEscene"></td>
+<td class="n">0.34783<div class="sd">&plusmn;5.3e-05</div></td><td class="n">0.34784<div class="sd">&plusmn;6.3e-05</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/displaced_sphere.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_sphere_before.png" alt="before scenes/Tests/Geometry/displaced_sphere.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__displaced_sphere_after.png" alt="after scenes/Tests/Geometry/displaced_sphere.RISEscene"></td>
+<td class="n">0.28767<div class="sd">&plusmn;2e-05</div></td><td class="n">0.28767<div class="sd">&plusmn;2.8e-05</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Importers/gltf_helmet_light_control.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_helmet_light_control_before.png" alt="before scenes/Tests/Importers/gltf_helmet_light_control.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Importers__gltf_helmet_light_control_after.png" alt="after scenes/Tests/Importers/gltf_helmet_light_control.RISEscene"></td>
+<td class="n">0.1779<div class="sd">&plusmn;7.8e-06</div></td><td class="n">0.1779<div class="sd">&plusmn;1.1e-05</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/vertex_colors_quad.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__vertex_colors_quad_before.png" alt="before scenes/Tests/Geometry/vertex_colors_quad.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__vertex_colors_quad_after.png" alt="after scenes/Tests/Geometry/vertex_colors_quad.RISEscene"></td>
+<td class="n">0.017933<div class="sd">&plusmn;8.8e-08</div></td><td class="n">0.017933<div class="sd">&plusmn;1.2e-07</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Animation/animation_exposure.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Animation__animation_exposure_before.png" alt="before scenes/Tests/Animation/animation_exposure.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Animation__animation_exposure_after.png" alt="after scenes/Tests/Animation/animation_exposure.RISEscene"></td>
+<td class="n">6.316<div class="sd">&plusmn;0.00026</div></td><td class="n">6.316<div class="sd">&plusmn;0.00025</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Lighting/pb_units_validation.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Lighting__pb_units_validation_before.png" alt="before scenes/Tests/Lighting/pb_units_validation.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Lighting__pb_units_validation_after.png" alt="after scenes/Tests/Lighting/pb_units_validation.RISEscene"></td>
+<td class="n">5877.7<div class="sd">&plusmn;0.018</div></td><td class="n">5877.6<div class="sd">&plusmn;0.033</div></td>
+<td class="n">-0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Cameras/realistic.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__realistic_before.png" alt="before scenes/Tests/Cameras/realistic.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Cameras__realistic_after.png" alt="after scenes/Tests/Cameras/realistic.RISEscene"></td>
+<td class="n">0.06996<div class="sd">&plusmn;2.5e-06</div></td><td class="n">0.06996<div class="sd">&plusmn;4.8e-06</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Animation/basic_animation.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Animation__basic_animation_before.png" alt="before scenes/Tests/Animation/basic_animation.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Animation__basic_animation_after.png" alt="after scenes/Tests/Animation/basic_animation.RISEscene"></td>
+<td class="n">6.3154<div class="sd">&plusmn;0</div></td><td class="n">6.3154<div class="sd">&plusmn;0</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/bilinear_patch.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__bilinear_patch_before.png" alt="before scenes/Tests/Geometry/bilinear_patch.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__bilinear_patch_after.png" alt="after scenes/Tests/Geometry/bilinear_patch.RISEscene"></td>
+<td class="n">0.008128<div class="sd">&plusmn;0</div></td><td class="n">0.008128<div class="sd">&plusmn;0</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/csg_positioned_operands.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__csg_positioned_operands_before.png" alt="before scenes/Tests/Geometry/csg_positioned_operands.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__csg_positioned_operands_after.png" alt="after scenes/Tests/Geometry/csg_positioned_operands.RISEscene"></td>
+<td class="n">0.035412<div class="sd">&plusmn;0</div></td><td class="n">0.035412<div class="sd">&plusmn;0</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Geometry/ellipsoid.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__ellipsoid_before.png" alt="before scenes/Tests/Geometry/ellipsoid.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Geometry__ellipsoid_after.png" alt="after scenes/Tests/Geometry/ellipsoid.RISEscene"></td>
+<td class="n">5.1918e-05<div class="sd">&plusmn;0</div></td><td class="n">5.1918e-05<div class="sd">&plusmn;0</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Materials/authored_mesh_tangent.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__authored_mesh_tangent_before.png" alt="before scenes/Tests/Materials/authored_mesh_tangent.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Materials__authored_mesh_tangent_after.png" alt="after scenes/Tests/Materials/authored_mesh_tangent.RISEscene"></td>
+<td class="n">0.94375<div class="sd">&plusmn;0</div></td><td class="n">0.94375<div class="sd">&plusmn;0</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/blackbodyradiator.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__blackbodyradiator_before.png" alt="before scenes/Tests/Painters/blackbodyradiator.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__blackbodyradiator_after.png" alt="after scenes/Tests/Painters/blackbodyradiator.RISEscene"></td>
+<td class="n">0.025756<div class="sd">&plusmn;0.00028</div></td><td class="n">0.025756<div class="sd">&plusmn;0.00028</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Painters/jpg_painter.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__jpg_painter_before.png" alt="before scenes/Tests/Painters/jpg_painter.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Painters__jpg_painter_after.png" alt="after scenes/Tests/Painters/jpg_painter.RISEscene"></td>
+<td class="n">0.27732<div class="sd">&plusmn;0</div></td><td class="n">0.27732<div class="sd">&plusmn;0</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Parser/loops.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel</div></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Parser__loops_before.png" alt="before scenes/Tests/Parser/loops.RISEscene"></td>
+<td class="im"><img loading="lazy" src="img/scenes__Tests__Parser__loops_after.png" alt="after scenes/Tests/Parser/loops.RISEscene"></td>
+<td class="n">8.0925<div class="sd">&plusmn;0</div></td><td class="n">8.0925<div class="sd">&plusmn;0</div></td>
+<td class="n">+0.0%</td><td></td></tr>
+<tr><td class="nm"><code>Tests/Cameras/film_chunk.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel<br><span class="na">ChunkParser:: parameter `color` in `omni_light` expects finite numeric value(s); got `white` (nan/inf and non-numeric tokens are rejected)
+Job::LoadAsciiSceneVi</span></div></td>
+<td class="im">&mdash;</td>
+<td class="im">&mdash;</td>
+<td class="n">&mdash;<div class="sd">&plusmn;&mdash;</div></td><td class="n">&mdash;<div class="sd">&plusmn;&mdash;</div></td>
+<td class="n">&mdash;</td><td><span class="na">no render</span></td></tr>
+<tr><td class="nm"><code>Tests/Parser/thinlens_retired_keys.RISEscene</code><div class="meta">pixelpel &rarr; pathtracing_pel<br><span class="na">ChunkParser:: Failed to parse parameter name `fov` (not declared in `thinlens_camera` descriptor)
+Job::LoadAsciiSceneViaCst:: derive diagnostic: thinlens_camera</span></div></td>
+<td class="im">&mdash;</td>
+<td class="im">&mdash;</td>
+<td class="n">&mdash;<div class="sd">&plusmn;&mdash;</div></td><td class="n">&mdash;<div class="sd">&plusmn;&mdash;</div></td>
+<td class="n">&mdash;</td><td><span class="na">no render</span></td></tr>
+</tbody></table></div>
+</body></html>

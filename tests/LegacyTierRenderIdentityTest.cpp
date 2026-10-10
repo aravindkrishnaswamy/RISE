@@ -23,6 +23,12 @@
 //  any tier code) by building that commit's library and running this
 //  very file against it with --print.
 //
+//  Legacy-deprecation Phase 2 (2026-10-10) migrated four of these scenes'
+//  shipped copies off the frozen pixel rasterizers; the cases now point at
+//  VERBATIM copies of the originals in scenes/Tests/Legacy/ (the
+//  frozen-feature regression corpus, see its README), so the parent hashes
+//  are unchanged.
+//
 //  Determinism: one render per PROCESS (render-global RNG state carries
 //  over between in-process renders), so the default mode re-executes
 //  itself once per scene with --hash.  Each child forces ONE render
@@ -80,19 +86,19 @@ namespace RISE
 struct IdentityCase { const char* scene; const char* families; unsigned long long parentHash; };
 static const IdentityCase kCases[] = {
 	{ "scenes/Tests/Shaders/arealight_shaderop.RISEscene",                 "pixelpel_rasterizer, arealight_shaderop",                      0x93e83b7e2a654a25ull },
-	{ "scenes/Tests/Spectral/uniform_green_spectral.RISEscene",            "pixelintegratingspectral_rasterizer",                          0xa04a111006083383ull },
+	{ "scenes/Tests/Legacy/uniform_green_spectral.RISEscene",              "pixelintegratingspectral_rasterizer",                          0xa04a111006083383ull },
 	{ "scenes/Tests/Materials/dielectric_dispersion.RISEscene",            "distributiontracing_shaderop",                                 0x66f9ef03248c7df6ull },
 	{ "scenes/Tests/GlobalIllumination/cornellbox_fg.RISEscene",           "finalgather_shaderop, global photon map",                      0x37e78f37d18c1a38ull },
 	{ "scenes/Tests/SubsurfaceScattering/sss_ibl.RISEscene",               "simple_sss_shaderop, ambientocclusion_shaderop",               0x63dccf2811bd3196ull },
 	{ "scenes/Tests/SubsurfaceScattering/sss.RISEscene",                   "diffusion_approximation_sss_shaderop",                         0xd1caa85dfbf4ea61ull },
-	{ "scenes/Tests/Shaders/transparency_shaderop.RISEscene",              "transparency_shaderop",                                        0x418bd9f01d1c0b81ull },
+	{ "scenes/Tests/Legacy/transparency_shaderop.RISEscene",               "transparency_shaderop",                                        0x418bd9f01d1c0b81ull },
 	{ "scenes/Tests/Caustics/rgb_dispersive_caustic.RISEscene",            "caustic_pel_photonmap / gather",                               0xb898fe392a08ef1eull },
 	{ "scenes/FeatureBased/Combined/showroom.RISEscene",                   "irradiance_cache, iridescent_painter, polished_material",      0x7c020159f47bb489ull },
 	{ "scenes/Tests/Materials/composite_material.RISEscene",               "composite_material",                                           0x04c301c05241164dull },
 	{ "scenes/FeatureBased/Shaders/visiblehuman.RISEscene",                "directvolumerendering_shader",                                 0x7df386e9e94b9a43ull },
-	{ "scenes/Tests/Geometry/gltf_box.RISEscene",                          "ambient_light",                                                0xf20722df16b8a405ull },
+	{ "scenes/Tests/Legacy/gltf_box.RISEscene",                            "ambient_light",                                                0xf20722df16b8a405ull },
 	{ "scenes/FeatureBased/Animation/translucent_bunny.RISEscene",         "directlighting_shaderop, iridescent_painter",                  0x1513c77a209e3928ull },
-	{ "scenes/Tests/Materials/materials.RISEscene",                        "cooktorrance, schlick, ward x2, ashikminshirley materials",   0x01ae464015b8402eull },
+	{ "scenes/Tests/Legacy/materials.RISEscene",                           "cooktorrance, schlick, ward x2, ashikminshirley materials",   0x01ae464015b8402eull },
 	{ "scenes/Tests/Shaders/blurry_floor.RISEscene",                       "isotropic_phong_material",                                     0xf8dba1adcd1f03a9ull },
 	{ "scenes/FeatureBased/Geometry/teapot.RISEscene",                     "polished_material, bezierpatch_geometry",                      0x747dd21312bf8410ull },
 };
