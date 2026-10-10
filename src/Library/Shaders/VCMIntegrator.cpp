@@ -32,6 +32,9 @@
 #include "../Interfaces/IEmitter.h"
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/IObject.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Geometry/SphereGeometry.h"
+#include "../Geometry/BoxGeometry.h"
 #include "../Lights/LightSampler.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Utilities/PathVertexEval.h"
@@ -52,6 +55,102 @@ using namespace RISE::Implementation;
 using RISE::SpectralDispatch::PelTag;
 using RISE::SpectralDispatch::NMTag;
 using RISE::SpectralDispatch::SpectralValueTraits;
+
+// Correct a certified single cut of the volume ball. Keeping its radius
+// avoids the arbitrarily small kernels and unbounded boundary variance of a
+// distance clamp. Multiple/unknown cuts keep the legacy kernel (DL-474 residual).
+VCMNormalization VCMIntegrator::BoundaryVolumeNormalization(
+    const VCMNormalization& norm, const BDPTVertex& vertex )
+{
+    if (vertex.type != BDPTVertex::MEDIUM || !norm.mVolumeObjects ||
+        !(norm.mVolumeMergeRadius > 0)) return norm;
+    struct Fraction final : IEnumCallback<IObject> {
+        const BDPTVertex& v;
+        const Scalar r;
+        Scalar fraction = 1;
+        unsigned cuts = 0;
+        bool certified = true;
+        bool ownSeen;
+        Fraction(const BDPTVertex& vv, Scalar radius) : v(vv), r(radius), ownSeen(!vv.pMediumObject) {}
+        bool operator()(const IObject& object) override {
+            if (!object.IsWorldVisible()) return true;
+            const bool own = &object == v.pMediumObject;
+            if (own) ownSeen = true;
+            const BoundingBox bounds = object.getBoundingBox();
+            const Scalar dx=std::max(std::max(bounds.ll.x-v.position.x, v.position.x-bounds.ur.x), Scalar(0));
+            const Scalar dy=std::max(std::max(bounds.ll.y-v.position.y, v.position.y-bounds.ur.y), Scalar(0));
+            const Scalar dz=std::max(std::max(bounds.ll.z-v.position.z, v.position.z-bounds.ur.z), Scalar(0));
+            const Scalar boxDistance=std::sqrt(dx*dx+dy*dy+dz*dz);
+            if (!own && boxDistance >= r) return true;
+            Scalar d=0;
+            bool exact=false;
+            const bool signedKnown=object.SignedDistanceLower(v.position,r,d,exact) && std::isfinite(d) && d!=0;
+            if (own && (!signedKnown || !(d<0))) { certified=false; return true; }
+            if (signedKnown && std::fabs(d) >= r) return true;
+            // Zero carries no information (notably at CSG seams). A lower
+            // bound can reject a cut, but only an exact primitive can price it.
+            if (!signedKnown || !exact || (own && !(d<0))) { certified=false; return true; }
+            const IGeometry* geometry=object.GetGeometry();
+            if (!geometry) { certified=false; return true; }
+            const Matrix4 world=object.GetFinalTransformMatrix();
+            const Scalar scale=Vector3Ops::Magnitude(Vector3Ops::Transform(world,Vector3(1,0,0)));
+            if (!(scale>0) || !std::isfinite(scale)) { certified=false; return true; }
+            Scalar phi=1;
+            if (typeid(*geometry)==typeid(BoxGeometry)) {
+                const BoundingBox local=geometry->GenerateBoundingBox();
+                const Point3 p=Point3Ops::Transform(object.GetFinalInverseTransformMatrix(),v.position);
+                const Scalar distances[6]={(p.x-local.ll.x)*scale,(local.ur.x-p.x)*scale,
+                    (p.y-local.ll.y)*scale,(local.ur.y-p.y)*scale,
+                    (p.z-local.ll.z)*scale,(local.ur.z-p.z)*scale};
+                unsigned faces=0, face=0;
+                for(unsigned j=0;j<6;++j) if(std::fabs(distances[j])<r) { ++faces; face=j; }
+                if(faces!=1) { certified=false; return true; }
+                for(unsigned j=0;j<6;++j) if(j!=face && !(distances[j]>=r)) { certified=false; return true; }
+                // The current medium is inside its box. Another box must be
+                // opaque or a different explicit medium; its excluded side is
+                // inside, so the eye point must be outside it.
+                if ((!own && (!(d>0) || (object.GetMaterial() && object.GetMaterial()->CouldLightPassThrough() && !object.GetInteriorMedium()))) ||
+                    (own && !(distances[face]>0))) { certified=false; return true; }
+                const Scalar a=std::fabs(distances[face])/r;
+                phi=Scalar(.5)+Scalar(.75)*a-Scalar(.25)*a*a*a;
+            } else if (typeid(*geometry)==typeid(SphereGeometry) && !own && d>0 &&
+                (!object.GetMaterial() || !object.GetMaterial()->CouldLightPassThrough() || object.GetInteriorMedium())) {
+                Point3 center;
+                Scalar localRadius=0;
+                geometry->GenerateBoundingSphere(center,localRadius);
+                const Scalar R=localRadius*scale;
+                if (!(R>0) || !std::isfinite(R)) { certified=false; return true; }
+                Scalar excluded=0;
+                if(r>=Scalar(2)*R+d) {
+                    const Scalar a=R/r;
+                    excluded=a*a*a;
+                } else {
+                    // Two spherical caps; factor the heights to avoid
+                    // subtracting nearly equal squared radii at a large R/r.
+                    const Scalar hR=(r-d)*(r+d)/(Scalar(2)*(R+d));
+                    const Scalar hr=(r-d)*(Scalar(2)*R+d-r)/(Scalar(2)*(R+d));
+                    const Scalar a=hr/r, b=hR/r;
+                    excluded=Scalar(.75)*(a*a*(Scalar(1)-a/Scalar(3))+
+                        b*b*(R/r-b/Scalar(3)));
+                }
+                // For an outside centre, a convex sphere excludes at most
+                // half of the ball. This is a geometric bound, not an epsilon.
+                if (!std::isfinite(excluded)) { certified=false; return true; }
+                phi=Scalar(1)-std::max(Scalar(0),std::min(Scalar(.5),excluded));
+            } else { certified=false; return true; }
+            if (!(phi>=Scalar(.5)) || !(phi<=Scalar(1)) || !std::isfinite(phi)) { certified=false; return true; }
+            ++cuts;
+            fraction=phi;
+            return true;
+        }
+    } f(vertex,norm.mVolumeMergeRadius);
+    norm.mVolumeObjects->EnumerateObjects(f);
+    if (!f.certified || !f.ownSeen || f.cuts!=1 || f.fraction==Scalar(1)) return norm;
+    VCMNormalization local=norm;
+    local.mVolumeNormalization /= f.fraction;
+    local.mMisVolumeWeightFactor *= f.fraction;
+    return local;
+}
 
 static inline Scalar AreaToSolidAngleFactor(
 	const BDPTVertex& v,
@@ -1348,10 +1447,11 @@ void VCMIntegrator::ConvertLightSubpath(
 						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
 					// DL-469: the merge at a medium vertex is the volume merge.
-					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, norm, true );
+					const VCMNormalization localNorm = VCMIntegrator::BoundaryVolumeNormalization(norm, v);
+					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, localNorm, true );
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
-						false, norm, true );
+						false, localNorm, true );
 				}
 			}
 			continue;
@@ -2291,7 +2391,7 @@ namespace
 				const Scalar camFactor =
 					( (envCaseVCM ? ls.pdfPosition : emissionDirPdfSA / distSq) * ( eyeIsMedium_vcm ? v.sigma_t_scalar : cosAtEye ) );
 				wCamera = camFactor * (
-					VertexMergeFactorVC( norm, eyeIsMedium_vcm )	// DL-469
+					VertexMergeFactorVC( VCMIntegrator::BoundaryVolumeNormalization(norm, v), eyeIsMedium_vcm )	// DL-469
 					+ neeEyeWin.mis.dVCM
 					+ neeEyeWin.mis.dVC * bsdfRevPdfW );
 			}
@@ -2675,7 +2775,7 @@ namespace
 				LightHandedCount( lightVerts, LightPrefixCount( lightVerts, i ), i, false ) );
 			const Scalar wLight = ( v.isBSSRDFEntry || splatWin.none ) ? Scalar( 0 ) :
 				( cameraPdfA / norm.mLightSubPathCount ) *
-				( VertexMergeFactorVC( norm, lightIsMedium_t1 )	// DL-469
+				( VertexMergeFactorVC( VCMIntegrator::BoundaryVolumeNormalization(norm, v), lightIsMedium_t1 )	// DL-469
 				  + splatWin.mis.dVCM + splatWin.mis.dVC * bsdfRevPdfW );
 			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) );
 
@@ -2992,11 +3092,11 @@ namespace
 					EyeHandedCount( eyeCount, j, false ) );
 				// DL-469: a medium endpoint's merge is the volume merge.
 				const Scalar wLight = ( lv.isBSSRDFEntry || lightWin.none ) ? Scalar( 0 ) : cameraBsdfDirPdfA
-					* ( VertexMergeFactorVC( norm, lightIsMedium )
+					* ( VertexMergeFactorVC( VCMIntegrator::BoundaryVolumeNormalization(norm, lv), lightIsMedium )
 					    + lightWin.mis.dVCM
 					    + lightWin.mis.dVC * lightBsdfRevPdfW );
 				const Scalar wCamera = eyeWin.none ? Scalar( 0 ) : lightBsdfDirPdfA
-					* ( VertexMergeFactorVC( norm, eyeIsMedium )
+					* ( VertexMergeFactorVC( VCMIntegrator::BoundaryVolumeNormalization(norm, ev), eyeIsMedium )
 					    + eyeWin.mis.dVCM
 					    + eyeWin.mis.dVC * cameraBsdfRevPdfW );
 				const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
@@ -3177,10 +3277,11 @@ void VCMIntegrator::ConvertEyeSubpath(
 
 					// Eye side ungated — see top-of-function comment.
 					// DL-469: the merge at a medium vertex is the volume merge.
-					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, norm, true );
+					const VCMNormalization localNorm = VCMIntegrator::BoundaryVolumeNormalization(norm, v);
+					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, localNorm, true );
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
-						false, norm, true );
+						false, localNorm, true );
 				}
 			}
 			continue;
@@ -3326,12 +3427,13 @@ namespace
 				}
 				woM = woM * ( Scalar( 1 ) / woMDist );
 				candidates.clear();
-				store.Query( v.position, norm.mVolumeMergeRadiusSq, candidates );
+				const VCMNormalization localNorm = VCMIntegrator::BoundaryVolumeNormalization(norm, v);
+				store.Query( v.position, localNorm.mVolumeMergeRadiusSq, candidates );
 				if( candidates.empty() ) {
 					continue;
 				}
-				const Scalar kernel = norm.mVolumeNormalization;			// 1 / eta_v
-				const Scalar invMisV = Scalar( 1 ) / norm.mMisVolumeWeightFactor;	// 1 / (q eta_v)
+				const Scalar kernel = localNorm.mVolumeNormalization;			// 1 / (eta_v phi)
+				const Scalar invMisV = Scalar( 1 ) / localNorm.mMisVolumeWeightFactor;	// 1 / (q eta_v phi)
 				typename Traits::value_type volumeMerge = Traits::zero();
 				for( std::size_t k = 0; k < candidates.size(); k++ )
 				{

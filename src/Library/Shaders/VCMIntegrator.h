@@ -88,6 +88,11 @@ namespace RISE
 				const StabilityConfig& stabilityConfig_
 				);
 
+			/// DL-474: normalize a certified single sphere/box cut of the ball.
+            /// Unknown or multiple cuts retain the legacy kernel (row residual).
+            static VCMNormalization BoundaryVolumeNormalization(
+                const VCMNormalization& norm, const BDPTVertex& vertex );
+
 			void SetLightSampler( const LightSampler* pLS );
 
 			BDPTIntegrator* GetGenerator() const { return pGenerator; }

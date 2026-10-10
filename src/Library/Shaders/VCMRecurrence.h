@@ -13,8 +13,8 @@
 //      dVM  — used by vertex merging only
 //
 //    This header is intentionally standalone: it depends only on
-//    RISE's Scalar type and has no renderer / scene / sampler
-//    dependencies so it can be covered by a synthetic-path unit
+//    RISE's Scalar type and includes no renderer / scene / sampler headers
+//    (normalization carries an opaque borrowed object-manager pointer) so it can be covered by a synthetic-path unit
 //    test and diffed line-for-line against SmallVCM's vertexcm.hxx.
 //
 //    Step 0 ships the interface and zero-initialized returns so the
@@ -41,6 +41,7 @@
 
 namespace RISE
 {
+	class IObjectManager;
 	namespace Implementation
 	{
 		/// MIS heuristic function applied to accumulated weight terms
@@ -175,7 +176,7 @@ namespace RISE
 			/// VertexMergeFactorVC / VM).  All 0 = off.
 			Scalar	mVolumeMergeRadius;
 			Scalar	mVolumeMergeRadiusSq;
-			Scalar	mVolumeNormalization;		///< kernel: 1 / (count * 4/3 pi r_v^3)
+			Scalar	mVolumeNormalization;		///< global kernel: 1 / (count * 4/3 pi r_v^3); local copies divide by a certified fraction
 			/// MIS factor of the volume merge: q * count * 4/3 pi r_v^3.
 			/// Medium light vertices are stored with probability q
 			/// (mVolumeStoreProbability, a memory bound) and their
@@ -183,6 +184,7 @@ namespace RISE
 			/// the unthinned one and the MIS factor carries the q.
 			Scalar	mMisVolumeWeightFactor;
 			Scalar	mVolumeStoreProbability;	///< q in (0, 1]
+			const IObjectManager* mVolumeObjects; ///< borrowed scene geometry for certified ball fractions
 			unsigned int mVolumeThinSeed;		///< per pass, decorrelates the thinning hash
 
 			VCMNormalization() :
@@ -199,6 +201,7 @@ namespace RISE
 				mVolumeNormalization( 0 ),
 				mMisVolumeWeightFactor( 0 ),
 				mVolumeStoreProbability( 1 ),
+				mVolumeObjects( nullptr ),
 				mVolumeThinSeed( 0 )
 			{}
 		};
