@@ -396,6 +396,33 @@ def migrate_rasterizer(text, mode, report):
         additions.append(ind + 'samples\t\t\t\t1')
         notes.append('samples 1 written (legacy default 1, path-tracer default 32)')
 
+    # A chain that runs two path-tracing ops at the same depth ADDS them (a
+    # standard_shader runs every op; an advanced_shader op with `+` adds over
+    # its [min, max] depth range), so the legacy render counted the path
+    # tracer twice there.  The migrated scene counts it once: report it.
+    if mode == 'pt':
+        for c, ops in chains:
+            pt_lines = [(idx, opn) for idx, opn in ops
+                        if classify_op(opn, named) == 'pathtracing_shaderop']
+            if len(pt_lines) < 2:
+                continue
+            if c.kw == 'standard_shader':
+                overlap = True
+            else:
+                spans = []
+                for idx, _ in pt_lines:
+                    toks = code[idx].split()
+                    try:
+                        spans.append((int(toks[2]), int(toks[3])))
+                    except (IndexError, ValueError):
+                        spans.append((0, 1 << 30))
+                overlap = any(a[0] <= b[1] and b[0] <= a[1]
+                              for i, a in enumerate(spans) for b in spans[i + 1:])
+            if overlap:
+                notes.append('LOOK CHANGE: shader `%s` runs %d path-tracing ops at the same '
+                             'depth; the legacy chain summed them (a double count), the '
+                             'path tracer counts once' % (c.name(), len(pt_lines)))
+
     # SMS on a referenced pathtracing_shaderop moves to the rasterizer.
     if mode == 'pt':
         referenced = set(opn for _, ops in chains for _, opn in ops)
