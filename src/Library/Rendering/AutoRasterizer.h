@@ -279,6 +279,12 @@ namespace RISE
 				return ReadProbeConfig();
 			}
 
+			//! Test-only: repeatable salted, single-thread probe frames and equal
+			//! sample-work costs instead of wall-clock costs. Caller must force one
+			//! render thread and the owned Mersenne backend. Seeds C rand() without
+			//! restoring it. Production routing remains variance times wall time.
+			void ForTest_UseFixedProbeWork() { mForTestFixedProbeWork = true; }
+
 		private:
 
 			//! Integrator selection.  Tier 0: an explicit author pin always
@@ -405,6 +411,7 @@ namespace RISE
 			// SelectIntegrator and surfaced in the resolution log line for
 			// diagnostics + the future UI "Auto -> VCM: <reason>" display.
 			mutable std::string				mResolveReason;
+			bool mForTestFixedProbeWork = false;
 		};
 	}
 }

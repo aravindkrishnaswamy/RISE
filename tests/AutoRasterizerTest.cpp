@@ -231,6 +231,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	// at the first RasterizeScene).
 	IRasterizer* pRast = pJob->GetRasterizer();
 
+	if( auto* dispatcher = dynamic_cast<AutoRasterizer*>(pRast) ) dispatcher->ForTest_UseFixedProbeWork();
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -245,6 +246,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 		result.wasAuto = true;
 		result.resolved = pAuto->ResolvedIntegrator();
 		result.resolvedName = pAuto->ResolvedIntegratorName();
+		std::cout << "    route-reason: " << pAuto->ResolveReason() << std::endl;
 		result.queryApiOK = pAuto->IsAutoDispatcher() && pAuto->ResolveReason()[0] != '\0';
 	}
 
@@ -885,18 +887,9 @@ static void CheckProbeRoute(
 // documented invariant is "a VCM gate correctly kept VCM OUT" and whose
 // PT-vs-BDPT fallthrough tail is the design-acknowledged noise band.
 //
-// Used for jewel_vault (the §6.2 transport-reach over-fire lock).  Its
-// σ²·T ratio was measured over 50 runs at 0.07..1.07 with occasional
-// spikes past τ_bdpt=1.35 (a genuine BDPT resolution seen in the wild) —
-// because jewel_vault is documented as "the NOISIEST PT" at probe spp
-// (AutoRasterizer.cpp §6.2) and the σ² signal is multi-thread float-
-// accumulation nondeterminism (no seed to pin).  The stable, meaningful
-// lock is the WINSORIZED reach gate keeping VCM out (raw VCM mean spiked
-// past 1.50 ~2.6% of the time pre-fix); the PT-vs-BDPT tail is not a
-// stable decision the probe promises at spp 4.  Contrast the stable
-// strict cases kept on CheckProbeRoute: gi_spheres (ratio 11..32, big
-// BDPT win), ggx_showcase (0.11..0.38), env_only (0.00), corridor
-// (0.00..0.12) — all far from τ, none flaky.
+// Historically the production wall-time/parallel-variance fallthrough was
+// marginal on jewel_vault. This test locks transport reach (never VCM),
+// retaining that invariant under DL-546's deterministic fixed-work hook.
 static void CheckProbeRouteNotVCM(
 	const char* label, const char* corpusPath, const char* tag )
 {
@@ -1006,19 +999,9 @@ static std::string MakeAutoSpectralProbeScene(
 // refraction history -- since Stage C its throughput is projected as
 // an illuminant spectrum rather than the old luminance proxy, which
 // fixes the merge's CHROMA but adds no dispersion energy;
-// SPECTRAL_PARITY_AUDIT §3, design doc §6.2.2).  After the reach gate rejects VCM, the general σ²·T
-// PT-vs-BDPT fallthrough reads right in the "marginal, not cheaply
-// separable, low-stakes" band the probe is DESIGNED to treat as noise
-// (see AutoRasterizer::RunProbe's τ_bdpt comment: marginal ~1.5× BDPT
-// wins collapse to ~1.1× at probe spp and correctly stay PT).  At the
-// test's deliberately-cheap probe config (spp 4, quarter-res, 2
-// variance renders) that reading straddles τ_bdpt run-to-run, because
-// the σ² signal is multi-thread float-accumulation nondeterminism BY
-// DESIGN (the QMC stream itself is deterministic -- there is no seed to
-// pin).  So an exact-PT assertion here is an assertion on noise; assert
-// the real invariant (never VCM) instead, which faithfully guards the
-// VCM-spectral-can't-reach regression without depending on the coin-flip
-// tail the probe intentionally leaves marginal.
+// SPECTRAL_PARITY_AUDIT §3, design doc §6.2.2). The historically marginal
+// production PT-vs-BDPT fallthrough is not this assertion's subject.
+// DL-546 supplies deterministic fixed-work probes; keep the reach invariant.
 //////////////////////////////////////////////////////////////////////
 static void CheckSpectralProbeRouteNotVCM(
 	const char* label, const char* corpusPath, const char* specParams,
@@ -1221,20 +1204,22 @@ static void TestAutoParamPassThrough()
 	std::remove( p.c_str() );
 }
 
-int main()
+int main(int argc, char** argv)
 {
 	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
 	// pointing GlobalOptions at a temp file that drops the activation gate
-	// to 1 and sets a cheap probe (spp 4, half-res).  MUST be set before any
+	// to 1 and sets a cheap probe (spp 4, quarter-res).  MUST be set before any
 	// GlobalOptions() access (it is a lazy singleton read once) — i.e. before
-	// the first render.  Phase-1/2 scenes carry no `probe` line, so the
+	// the first render. The fixed-work hook makes candidate frames single-threaded
+	// and salted, independent of machine load. Phase-1/2 scenes carry no `probe` line, so the
 	// lowered activation gate never reaches them (probe defaults off).
 	{
 		char optPath[256];
 		std::snprintf( optPath, sizeof(optPath),
 			"/tmp/auto_probe_test_opts_%d.txt", static_cast<int>(::getpid()) );
 		std::ofstream ofs( optPath );
-		ofs << "auto_probe_activation_spp 1\n"
+		ofs << "force_number_of_threads 1\nrender_thread_reserve_count 0\n"
+		    << "auto_probe_activation_spp 1\n"
 		    << "auto_probe_spp 4\n"
 		    << "auto_probe_scale 4\n"          // §6.2 default (quarter-res)
 		    << "auto_probe_tau_caustic 1.30\n"
@@ -1251,6 +1236,15 @@ int main()
 	}
 
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
+    if (argc == 2 && std::string(argv[1]) == "--dl546-only") {
+        CheckProbeRoute("ggx_showcase -> BDPT (fixed-work variance policy)",
+            "scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::BDPT);
+        CheckProbeRoute("corridor_100lights -> PT (fixed-work variance policy)",
+            "scenes/Tests/LightBVH/corridor_100lights_bvh.RISEscene", "p4_corridor", AutoIntegratorChoice::PT);
+        std::cout << "Passed: " << passCount << " Failed: " << failCount << std::endl;
+        return failCount ? 1 : 0;
+    }
+
 
 	// Pinned delegations: auto(X) must resolve to X and match X_pel_rasterizer.
 	CheckDelegation( "pin pt   -> pathtracing_pel", kAutoPT,   "auto_pt",   kRefPT,   "ref_pt",   AutoIntegratorChoice::PT );
@@ -1331,7 +1325,7 @@ int main()
 	// (d) Strong-indirect, purely area-lit (a gi_spheres analog) -> PT in
 	//     the static tier.  BDPT is NOT statically separable from the
 	//     PT-efficient glossy/diffuse bulk (design §5: gi_spheres is
-	//     byte-identical in cheap signals to the PT-winning ggx_showcase);
+	//     byte-identical in cheap signals to ggx_showcase);
 	//     the Phase-4 probe is what would pick BDPT.  Asserting PT
 	//     locks the conservative behavior.  (BDPT via an explicit pin is
 	//     covered by the delegation test above.)
@@ -1339,16 +1333,19 @@ int main()
 		kAutoAuto, kSceneAreaLitOnly, "p2_strongind", AutoIntegratorChoice::PT );
 
 	// --- Phase 4: Tier-2 render-time probe (active) on REAL scenes ---
-	// The probe corrects the static tier on the cases it provably can't see.
+	// DL-546: the opt-in hook uses salted single-thread candidate frames
+	// and equal pixel-sample work costs. These assertions test the routing
+	// policy deterministically; they do not predict the production wall-time
+	// efficiency winner. In particular GGX now takes BDPT under this metric.
 	// Each scene's rasterizer chunk is swapped for `auto_rasterizer{probe
-	// true}` at a shrunk film; the probe (spp 4, half-res) renders candidate
+	// true}` at a shrunk film; the probe (spp 4, quarter-res) renders candidate
 	// integrators in-process and routes per-scene.  Decisions verified by the
 	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
-	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
-	//   ggx_showcase   -> PT    (σ²·T ~0.26× — the glossy blind-spot partner)
+	//   gi_spheres     -> BDPT  (salted fixed-work variance policy)
+	//   ggx_showcase   -> BDPT  (fixed-work salted variance ratio ~1.8×)
 	//   glass_pavilion -> not VCM (DL-154, 2026-09-17: see below — was VCM pre-debt28
 	//                    thin-lens fix (c3c37e08), NOT debt30-eta2; falls through to
-	//                    PT/BDPT, same coin-flip tail as jewel_vault)
+	//                    the PT/BDPT fallthrough; only its reach is asserted)
 	//   jewel_vault    -> PT    (median-lum ~2.6-3.1× fires, but reach ~1.0× < 1.50 -> NOT a
 	//                            caustic; the over-fire fixed by the transport-reach gate, §6.2)
 	//   env_only       -> PT    (env-IBL gate kills the +63% VCM env-bias confound)
@@ -1358,8 +1355,8 @@ int main()
 
 	CheckProbeRoute( "gi_spheres -> BDPT (diffuse-GI blind spot)",
 		"scenes/FeatureBased/Combined/gi_spheres.RISEscene", "p4_gi", AutoIntegratorChoice::BDPT );
-	CheckProbeRoute( "ggx_showcase -> PT (glossy blind-spot partner)",
-		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::PT );
+	CheckProbeRoute( "ggx_showcase -> BDPT (fixed-work variance policy)",
+		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::BDPT );
 	// DL-154 (2026-09-17, corrected post-review): this fixture asserted VCM
 	// from Phase 4's original authoring (§6.2.1, 2026-06-05), calibrated
 	// against a meanRatio(VCM/PT) of 20-32x. That gap was ALMOST ENTIRELY a
@@ -1426,11 +1423,9 @@ int main()
 	// through to the sigma2T PT-vs-BDPT gate, and measured across repeated
 	// runs on this branch it occasionally resolves BDPT instead of PT (5-run
 	// spot check: 4 PT, 1 BDPT) -- the same multi-thread float-accumulation
-	// nondeterminism documented for jewel_vault's σ²·T reading at cheap probe
-	// spp. Asserting exact PT was a coin flip on that tail; CheckProbeRouteNotVCM
-	// (never VCM) is the stable, meaningful invariant this fixture protects.
-	// DL-167: diamond_teapot_pour is an RMSE-truth VCM caustic scene (UNIFIED_INTEGRATOR_BASELINES.md §5).
-	// With the merge-flux reach gate (vcmMergeShare > 0.10), it correctly routes to VCM.
+	// Historical production probe tails do not define these deterministic
+	// test winners; the caustic reach assertions below remain unchanged.
+
 	CheckProbeRoute( "diamond_teapot_pour -> VCM (refractive caustic)",
 		"scenes/FeatureBased/Combined/diamond_teapot_pour.RISEscene", "p4_teapot", AutoIntegratorChoice::VCM );
 
@@ -1451,14 +1446,9 @@ int main()
 	// (c3c37e08) and no longer holds -- see DL-154's note on the
 	// glass_pavilion fixture above.)
 	//
-	// Assertion is "never VCM", not "exactly PT": after the reach gate rejects
-	// VCM the decision falls through to the σ²·T PT-vs-BDPT gate, and
-	// jewel_vault (documented as the NOISIEST PT at probe spp, §6.2) reads a
-	// σ²·T ratio that straddles τ_bdpt=1.35 run-to-run (measured 0.07..1.07,
-	// spikes past τ in the wild -> a genuine BDPT resolution), because that
-	// signal is multi-thread float-accumulation nondeterminism.  Asserting
-	// exact PT was a coin flip; "never VCM" is the stable over-fire lock.  See
-	// CheckProbeRouteNotVCM's header.
+	// Keep the transport-reach invariant, rather than prescribing the
+	// production efficiency winner from this fixed-work routing test.
+
 	CheckProbeRouteNotVCM( "jewel_vault -> not VCM (over-fire rejected by transport-reach gate)",
 		"scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene", "p4_jewel" );
 	CheckProbeRoute( "env_only -> PT (env-IBL gate rejects VCM env-bias)",
@@ -1501,14 +1491,9 @@ int main()
 	// This LOCKS that behavior (a regression guard); closing it to VCM needs
 	// per-wavelength VCM photons (out of scope).
 	//
-	// The assertion is "never VCM", not "exactly PT": once the reach gate
-	// rejects VCM the decision falls through to the general σ²·T PT-vs-BDPT
-	// gate, whose reading for this scene sits in the marginal band the probe
-	// is DESIGNED to treat as noise (RunProbe's τ_bdpt comment), so at the
-	// cheap test probe config it straddles τ_bdpt run-to-run (the σ² signal
-	// is multi-thread float-accumulation nondeterminism — there is no seed to
-	// pin).  Asserting exact PT was a coin flip; "never VCM" is the real,
-	// stable invariant.  See CheckSpectralProbeRouteNotVCM's header.
+	// The reach assertion is independent of the fixed-work PT/BDPT
+	// fallthrough used by this deterministic test.
+
 	CheckSpectralProbeRouteNotVCM( "spectral_caustic -> not VCM (reach gate defeats VCM-spectral merge; documented)",
 		"scenes/Tests/Spectral/spectral_dispersive_caustic.RISEscene",
 		"\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 8\n", "as_probe_caustic" );
