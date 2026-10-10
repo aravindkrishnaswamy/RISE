@@ -2400,6 +2400,14 @@ namespace RISE
 		//! kAgentBlockedRasterizers_), so a rasterizer insert keeps exactly one
 		//! refusal text.  Loading and EDITING an existing frozen chunk is never
 		//! refused.
+		//! Legacy Phase 1 follow-up: TEST SEAM for the (now dormant on the live
+		//! insert path) unresolved-reference warning.  Runs exactly what
+		//! InsertChunk runs after a successful insert: given `r` with
+		//! applied/kind/name set, attributes `doc`'s dangling references from
+		//! that chunk to r.issues and r.message.  See AgentSession.cpp.
+		void AttachChunkIssueWarningsForTest( AgentChunkResult& r, const RISE::Cst::Document& doc,
+		                                      const std::string& chunkText );
+
 		std::string CheckFrozenChunkBanForInsert( const std::string& chunkText,
 		                                          std::string* outKind = nullptr,
 		                                          std::string* outName = nullptr );

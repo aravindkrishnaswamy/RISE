@@ -55,8 +55,8 @@ further debt work: bugs are won't-fix); **remove** (after migrating the scenes);
 | R5 | Photon maps + gathers (caustic/global/translucent/shadow, Pel/Spectral), `irradiance_cache`, `finalgather_shaderop` | LEGACY | VCM (caustics), PT/BDPT + OIDN (GI) | 26 scenes in total (7 FB showcases) | 29 | none open | freeze → migrate (removal on hold) | **yes** (D4) |
 | R6 | Point-cloud SSS shader ops: `simple_sss_`, `diffusion_approximation_sss_`, `donner_jensen_skin_sss_shaderop` | LEGACY | `subsurfacescattering_material` / `randomwalk_sss_material` under PT | 9 scenes in total (simple 6/3, DA 1/1, DJ 0/0) | 4 | — | freeze (removal on hold) | light |
 | R7 | `ambientocclusion_shaderop` | LEGACY-NR | none as a render mode (draft preview AO; the `occlusion` painter signal) | 2/2 | 2 | — | keep-for-now or freeze | **yes** (D6) |
-| R8 | `alpha_test_shaderop`, `transparency_shaderop` | LEGACY | material `alpha_coverage` (DL-214), honoured by every integrator | 1 (coverage) + 1/0 | 4 | — | deprecate-warn (removal on hold) | light |
-| R9 | `sms_shaderop` | LEGACY | `pathtracing_*_rasterizer` `sms_*` parameters | 1 (coverage) | 0 | DL-451 | freeze (removal on hold) | no |
+| R8 | `alpha_test_shaderop`, `transparency_shaderop` | LEGACY | material `alpha_coverage` (DL-214), honoured by every integrator | 1 (coverage) + 1/0 | 4 | — | **frozen** in Phase 1 (they run only under the frozen pixel rasterizers; removal on hold) | light |
+| R9 | `sms_shaderop` | LEGACY | `pathtracing_*_rasterizer` `sms_*` parameters | 1 (coverage) | 0 | DL-451 (closed won't-fix) | **deprecated** (warn) in Phase 1, per §12 #18 (removal on hold) | no |
 | R10 | `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` (medical volume rendering) | LEGACY-NR | none | 0/1 (`visiblehuman`) | 2 / 1 | — | keep-for-now (freeze) | **yes** (D7) |
 | R11 | `ambient_light` | LEGACY | uniform environment `radiance_map` | 52/2/0 | 10 | none (historical DL-207) | deprecate-warn → migrate (removal on hold) | **yes** (D5, look change) |
 | R12 | `mlt_rasterizer`, `mlt_spectral_rasterizer` | LEGACY (declared so in `UNIFIED_INTEGRATOR_DECISION.md`, not in code) | BDPT / VCM / auto | 15 scenes in total (6/6 + 3/0) | 30 | DL-465, DL-475, DL-481..483 (shared with BDPT) | freeze (removal on hold) | **yes** (D8) |
@@ -463,6 +463,11 @@ declared ABI break, because the vtable manifest is append-only).
    `CstDeriveGoldenTest` with no drift. Because nothing renders differently, this phase is
    safe to land first.
 
+**Phase 1 as landed (2026-10-09):** the chunk-level FROZEN tier, the agent insert ban, the
+warning text, the schema flag and palette sorting / badging.  **DEFERRED:** the parameter-level
+`ParameterDescriptor::deprecated` flag and the GUI "show legacy" filter (Phase 1 sorts and
+badges only).
+
 **Phase 2 — migrate shipped content (several slices; look changes are reviewed).**
 Order by risk, lowest first:
 1. Pure renames with no look change: `mis_pathtracing_shaderop` alias, `onb_pinhole_camera`,
@@ -564,6 +569,11 @@ Explicit rulings:
   make configs stay in the tree, marked frozen exactly like `src/DRISE` / `src/PRISE` (a
   README note / file header).  Every "freeze then remove" default below and in §1 / §11
   now reads "freeze (removal on hold)", and Phase 3 is not scheduled.
+
+- **Phase 1 scope as landed:** the parameter-level deprecation flag and the GUI "show legacy"
+  filter of §10.1 are DEFERRED; Phase 1 sorts and badges legacy chunk types only.  The alpha ops
+  (R8) were frozen (they run only under the frozen pixel rasterizers) and `sms_shaderop` (R9) was
+  deprecated, per the brief, not frozen.
 
 Taken at the recommended default (the owner did not object; any can be overridden):
 #1 freeze the shader-op pipeline now (removing its chunks in Phase 3 is on hold); #2 custom shader-op

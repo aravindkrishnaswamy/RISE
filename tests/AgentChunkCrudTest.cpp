@@ -2144,6 +2144,39 @@ static void TestUnresolvedReferenceWarning()
 				if( u.chunkKeyword == "directlighting_shaderop" && u.param == "bsdf" && u.value == "uniform_wall_pink" ) sawBsdf = true;
 			Check( sawBsdf, "U1(a) the shared resolver still reports the dangling bsdf reference" );
 		}
+		// Legacy Phase 1 follow-up (P2-1): exercise the warning ITSELF through
+		// its seam on a document whose landed chunk carries a dangling ref --
+		// what InsertChunk would attach had the (now frozen) insert applied.
+		{
+			const RISE::Cst::Document withDl = RISE::Cst::ParseToCst( sess->ReadDocument() + "\n" + dlText + "\n" );
+			Agent::AgentChunkResult fake;
+			fake.applied = true;
+			fake.status  = "applied";
+			fake.kind    = "directlighting_shaderop";
+			fake.name    = "dlop_test";
+			Agent::AttachChunkIssueWarningsForTest( fake, withDl, dlText );
+			Check( fake.applied && fake.status == "applied", "U1(a-seam) the warning never flips applied/status" );
+			Check( fake.issues.size() == 1, "U1(a-seam) exactly ONE issue" );
+			if( fake.issues.size() == 1 ) {
+				const Agent::AgentChunkIssue& u = fake.issues[0];
+				Check( u.param == "bsdf" && u.value == "uniform_wall_pink" && u.reason == "unresolved_reference",
+				       "U1(a-seam) issue names bsdf='uniform_wall_pink' as unresolved_reference" );
+				bool sawIt = false;
+				for( const std::string& sg : u.suggestions ) if( sg == "_wall_pink" ) sawIt = true;
+				Check( sawIt, "U1(a-seam) suggestions include the ACTUAL material name '_wall_pink'" );
+			}
+			Check( fake.message.find( "WARNING: unresolved reference" ) != std::string::npos &&
+			       fake.message.find( "bsdf" ) != std::string::npos, "U1(a-seam) message carries the warning and names the param" );
+			// Scoping: an unapplied result is left alone; a different chunk gets nothing.
+			Agent::AgentChunkResult notApplied;
+			notApplied.kind = "directlighting_shaderop"; notApplied.name = "dlop_test";
+			Agent::AttachChunkIssueWarningsForTest( notApplied, withDl, dlText );
+			Check( notApplied.issues.empty(), "U1(a-seam) an unapplied result gets no issues" );
+			Agent::AgentChunkResult other;
+			other.applied = true; other.kind = "lambertian_material"; other.name = "_wall_pink";
+			Agent::AttachChunkIssueWarningsForTest( other, withDl, "lambertian_material\n{\n\tname _wall_pink\n\treflectance pnt_albedo\n}" );
+			Check( other.issues.empty(), "U1(a-seam) another chunk's dangling ref is not attributed to this one" );
+		}
 
 		sess.reset();
 		pJob->release();

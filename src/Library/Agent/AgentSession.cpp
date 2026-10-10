@@ -11610,7 +11610,16 @@ namespace RISE
 			//! see AgentChunkIssue's doc for why a forward reference (the painter
 			//! comes in a later call) must stay a WARNING, never a rejection:
 			//! refusing it would make normal declare-after-use scene building
-			//! impossible. No-op unless `r.applied` is already true -- InsertChunk's
+			//! impossible. (DORMANT-PATH NOTE, 2026-10-09: that rationale is about
+			//! the reference graph, not the derive.  Today every SUPPORTED chunk's
+			//! Reference param hard-fails Job::ApplyCstInsertChunk's dry-run derive on
+			//! a name that does not resolve -- so a forward reference is REFUSED by
+			//! the derive before this runs, and declare-after-use is not actually
+			//! possible through insert_chunk.  The one chunk that reached here with a
+			//! dangling name, `directlighting_shaderop` (`bsdf` is unvalidated), is
+			//! FROZEN, so the agent refuses it.  This function is therefore dormant on
+			//! the live path; AttachChunkIssueWarningsForTest keeps it tested.)
+			//! No-op unless `r.applied` is already true -- InsertChunk's
 			//! two success paths (LIVE-controller and headless) both call this at
 			//! their own success point, after r.kind/r.name are filled in from the
 			//! commit.
@@ -12329,6 +12338,18 @@ namespace RISE
 				return " ACTIONABLE: " + clauses + ".";
 			}
 
+		}
+
+		// Legacy-deprecation Phase 1 follow-up (2026-10-09): a direct seam for
+		// AttachChunkIssueWarnings.  Its only insertable vehicle
+		// (`directlighting_shaderop.bsdf`) is now FROZEN, and every SUPPORTED
+		// Reference param probed hard-fails the dry-run derive on a dangling
+		// name, so no applied insert_chunk reaches the warning today; this lets
+		// AgentChunkCrudTest exercise it on a document with a dangling reference.
+		void AttachChunkIssueWarningsForTest( AgentChunkResult& r, const RISE::Cst::Document& doc,
+		                                      const std::string& chunkText )
+		{
+			AttachChunkIssueWarnings( r, doc, chunkText );
 		}
 
 		std::vector<AgentPatchResult> AgentSession::ProposePatches( const std::vector<AgentSetPatch>& patches,

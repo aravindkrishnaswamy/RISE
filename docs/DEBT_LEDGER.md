@@ -67,7 +67,24 @@ bit-identically but is unsupported.  Removal is ON HOLD by owner ruling (2026-10
   and data loss (owner ruling #16).
 - Sibling audits (`audit-by-bug-pattern`) stop at frozen code.  Frozen-feature tests keep running
   and are RE-PINNED, not fixed, when a supported change turns them red (owner ruling #17).
-- **Known issues in frozen code:** none recorded yet.
+- **Deferred in Phase 1:** a parameter-level flag (`ParameterDescriptor::deprecated`, e.g. for
+  `ggx_material.tangent_rotation`) and the GUI "show legacy" filter.  Phase 1 only sorts and
+  badges legacy chunk types in the palettes.
+- **Dormant test path:** the agent's unresolved-reference insert warning
+  (`AttachChunkIssueWarnings`, `AgentSession.cpp`) lost its only insertable vehicle --
+  `directlighting_shaderop.bsdf` is unvalidated but the chunk is now frozen, and every supported
+  Reference param probed hard-fails the dry-run derive on a dangling name -- so it does not fire
+  on the live insert path.  It is tested directly through `AttachChunkIssueWarningsForTest`
+  (`AgentChunkCrudTest` U1); its doc comment's "declare-after-use" rationale is corrected.
+- **Known issues in frozen code:**
+  - `DeprecatedMaterialRenderIdentityTest` (an inline 40x16 scene binding the seven legacy BRDF
+    materials plus `translucent_material` / `ggx_material` / `lambertian_material` controls,
+    `pathtracing_pel_rasterizer` 16 spp) was RE-PINNED 2026-10-09 under owner ruling #17: its
+    hash `13c3910b9964ab63` (mean luminance 0.607364, measured on `f03359223`) no longer
+    matched on `master` `4694f511c`, which reads `a4e972d01879f63c` (mean 0.666687, +9.8 %),
+    identical to the Phase 1 build.  The drift predates Phase 1 and is UNATTRIBUTED (somewhere
+    in `f03359223..4694f511c`; it may come from a supported control or shared code, not only
+    the frozen materials).
 
 ## Table
 
