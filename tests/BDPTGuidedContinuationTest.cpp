@@ -192,7 +192,7 @@ struct Fixture
 //! are all DELTA -- mass only the BSDF technique can reach (review P1-A).
 enum MaterialKind { kSchlick, kTranslucent, kLambertian,
 	kSchlickBlackDiffuse, kLambertianTilted, kSchlickTilted,
-	kWardIso, kWardAniso, kPhong, kAshikmin, kSmoothSSS };
+	kWardIso, kWardAniso, kPhong, kAshikmin, kSmoothSSS, kHair };
 
 static const char* MaterialName( MaterialKind k )
 {
@@ -229,6 +229,7 @@ static std::string TiltModifier()
 static std::string MaterialChunk( MaterialKind k )
 {
 	switch( k ) {
+        case kHair: return "hair_material\n{\n name mat_under_test\n sigma_a 0.1\n beta_m 0.3\n beta_n 0.3\n}\n";
 		case kSchlickBlackDiffuse:
 			return
 				"uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0 0 0\n}\n"
@@ -689,9 +690,49 @@ static void RunDeltaLobeFurnace( const unsigned int fixtureIndex )
 	guide->release();
 }
 
-int main()
+// DL-483: actual trained-field eye generators, not hard-coded metadata.
+static void RunHairCapLabels()
+{
+    Fixture fx;
+    Check(fx.Build(EyeScene(kHair),"hair_cap"),"DL483 hair fixture builds");
+    if(!fx.pScene || !fx.pCaster) return;
+    PathGuidingField* guide=BuildField(Vector3(0,0,1),10);
+    const Vector3 d=Incidence();
+    const Ray ray(Point3(-d.x,-d.y,-d.z),d);
+    for(bool nm:{false,true}) for(const auto& mode:kModes) {
+        StabilityConfig sc; sc.maxDiffuseBounce=0; sc.maxGlossyBounce=8;
+        auto* guided=new BDPTIntegrator(3,3,sc);
+        auto* plain=new BDPTIntegrator(3,3,sc);
+        guided->SetLightSampler(fx.pCaster->GetLightSampler());
+        plain->SetLightSampler(fx.pCaster->GetLightSampler());
+        guided->SetGuidingField(guide,0,mode.alpha,4,0,mode.type,2);
+        unsigned checked=0,wrong=0,changed=0;
+        for(unsigned i=0;i<512;++i) {
+            std::vector<BDPTVertex> a,b; std::vector<uint32_t> starts;
+            auto trace=[&](BDPTIntegrator* integrator,std::vector<BDPTVertex>& v) {
+                RandomNumberGenerator rng(483000+i); IndependentSampler sampler(rng);
+                RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+                if(nm) integrator->GenerateEyeSubpathNM(rc,ray,Point2(0,0),*fx.pScene,*fx.pCaster,sampler,v,starts,550,0);
+                else integrator->GenerateEyeSubpath(rc,ray,Point2(0,0),*fx.pScene,*fx.pCaster,sampler,v,starts);
+            };
+            trace(guided,a);starts.clear();trace(plain,b);
+            if(a.size()>1) { ++checked; if(a[1].capType!=ScatteredRay::eRayReflection) ++wrong; }
+            if(a.size()>2 && b.size()>2 && Vector3Ops::Magnitude(Vector3Ops::mkVector3(a[2].position,b[2].position))>1e-8) ++changed;
+        }
+        std::cout<<"DL483 hair "<<mode.name<<" nm="<<nm<<" checked="<<checked<<" wrong="<<wrong<<" changed outgoing="<<changed<<std::endl;
+        Check(checked>=128,"DL483 enough production hair stamps");
+        Check(wrong==0,"DL483 guide preserves single reflection label under diffuse cap zero");
+        Check(changed>=16,"DL483 trained guide substitutes actual outgoing directions");
+        guided->release();plain->release();
+    }
+    guide->release();
+}
+
+int main(int argc,char** argv)
 {
 	GlobalLog();
+    if(argc==2 && std::string(argv[1])=="--dl483-only") { RunHairCapLabels();std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0; }
+    RunHairCapLabels();
 	unsigned int fixture = 0;
 	RunEyeFurnace( kLambertian, fixture++ );
 	RunEyeFurnace( kSchlick, fixture++ );

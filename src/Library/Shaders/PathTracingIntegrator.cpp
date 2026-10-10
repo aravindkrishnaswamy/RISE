@@ -4094,7 +4094,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// continues on (a guide draw is a non-delta event of its own,
 			// not the selected lobe's).
 			ScatteredRay guideTemplateRay;
-			guideTemplateRay.type = ScatteredRay::eRayDiffuse;
+			guideTemplateRay.type = guidedVertex ? PathTransportUtilities::GuidedSingleLabelType(ri.pMaterial) : ScatteredRay::eRayDiffuse;
 			guideTemplateRay.isDelta = false;
 			guideTemplateRay.ray = Ray( ri.geometric.ptIntersection, ri.geometric.vNormal );
 			const bool hasLobe = ( pS != 0 && selectProb > 0 );

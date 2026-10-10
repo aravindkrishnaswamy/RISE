@@ -142,6 +142,7 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Shaders/BDPTVertex.h"
 #include "../src/Library/Utilities/BDPTUtilities.h"
+#include "../src/Library/Utilities/PathTransportUtilities.h"
 #include "../src/Library/Utilities/StabilityConfig.h"
 
 using namespace RISE;
@@ -1226,7 +1227,7 @@ static void RowM()
     const auto gapStatus=BDPTUtilities::JoinedTypeCapPlan(gapLight,gapEye,4,1,gapCaps,gapPlan);
     std::printf("DL483 gap metadata: transmission=%u expected=0 status=%d expected-ok=%d (n=1 sd=0)\n",gapPlan.base.n[2],int(gapStatus),int(BDPTUtilities::eTypeCapOK));
     Check(gapStatus==BDPTUtilities::eTypeCapOK,"DL483 gap pass-through does not consume transmission cap zero");
-    // Separate exact label inconsistency pin for the guide-template draw.
+    // Single-label guide-template regression; mixed-label guide draws remain open.
     // It tests the current metadata convention, not a trained-field render.
     UniformScalarPainter* rough=new UniformScalarPainter(0.3);
     UniformScalarPainter* eta=new UniformScalarPainter(1.55);
@@ -1239,7 +1240,7 @@ static void RowM()
     for(int i=1;i<4;++i) {eye[i].type=BDPTVertex::SURFACE;eye[i].isConnectible=true;}
     eye[1].pMaterial=eye[2].pMaterial=hair;
     eye[1].capType=ScatteredRay::eRayReflection;
-    eye[2].capType=ScatteredRay::eRayDiffuse; // guideTemplateRay's label
+    eye[2].capType=PathTransportUtilities::GuidedSingleLabelType(hair); // production template label
     eye[3].capType=ScatteredRay::eRayDiffuse; // free x_K
     for(int i=0;i<3;++i) light[i]=eye[4-i];
     const auto caps=BDPTUtilities::MakeBounceTypeCaps(0,UINT_MAX,UINT_MAX,UINT_MAX,16,16);
@@ -1247,7 +1248,7 @@ static void RowM()
     const auto a=BDPTUtilities::JoinedTypeCapPlan(nullptr,eye,0,5,caps,walk);
     const auto b=BDPTUtilities::JoinedTypeCapPlan(light,eye,3,2,caps,connection);
     std::printf("DL483 guide metadata: walk diffuse=%u status=%d connection diffuse=%u status=%d (n=1 sd=0)\n",walk.base.n[0],int(a),connection.base.n[0],int(b));
-    Check(a==b,"DL483 guided interior and connection endpoint have the same cap status");
+    Check(a==BDPTUtilities::eTypeCapOK && b==BDPTUtilities::eTypeCapOK,"DL483 single-label guided interior and endpoint both admit the path");
     hair->release();
 }
 
