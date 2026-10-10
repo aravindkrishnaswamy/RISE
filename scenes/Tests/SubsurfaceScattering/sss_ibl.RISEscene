@@ -22,44 +22,19 @@ hdr_painter
 # We do the incident lighting calculation using ambient occlusion, which is smart enough
 # to also figure out that there is a radiance map.  We use ambient occlusion because it has
 # an optimized path in the rendering system
-ambientocclusion_shaderop
-{
-	name		ambocc
-	numtheta	5
-	numphi		12
-}
-
 # Shader by which we compute incident illuminatin
-standard_shader
-{
-	name		sss_irrad
-	shaderop	ambocc
-}
-
 # Note: You may have to increase the number of points to get adequate results
-simple_sss_shaderop
-{
-	name				sss
-	numpoints			100000
-	irrad_scale			100
-	geometric_scale 	0.35
-	error				0.01
-
-	shader				sss_irrad
-}
-
 # Now setup the default 'global' shader for the object itself
 standard_shader
 {
 	name		global
-	shaderop	sss
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				1
-	lum_samples			1
+	samples				64
 	radiance_map		pnt_rad
 	radiance_background	TRUE
 }
@@ -258,12 +233,23 @@ bezierpatch_geometry
 	center_object		TRUE
 }
 
+# Converted from simple_sss_shaderop `sss` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
+#   Christensen-Burley match: albedo 0.95 0.444444 0.0493827 (material `white` x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 0.35 = 7 10.5 31.5 per unit.
+subsurfacescattering_material
+{
+	name			sss_sss_white
+	ior			1.3
+	absorption	1.02066 9.22011 23.5005
+	scattering	19.3925 7.37609 1.22081
+	g			0
+}
+
 standard_object
 {
 	name				teapot
 	geometry			teapotgeom
 	orientation			20 -20 0
-	material			white
+	material			sss_sss_white
 	casts_shadows		FALSE
 	receives_shadows	FALSE
 	shader				global

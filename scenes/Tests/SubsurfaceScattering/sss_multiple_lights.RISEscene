@@ -16,14 +16,13 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name		global
-	shaderop	DefaultEmission
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				4
-	lum_samples			4
+	samples				64
 }
 
 file_rasterizeroutput
@@ -269,32 +268,26 @@ rawmesh_geometry
 
 standard_shader
 {
-	name				sss_irrad
-	shaderop			DefaultDirectLighting
-}
-
-simple_sss_shaderop
-{
-	name				sss
-	numpoints			10000
-	irrad_scale			3000
-	geometric_scale 		3.5
-	extinction			0.001 0.001 0.001
-
-	shader				sss_irrad
-}
-
-standard_shader
-{
 	name		sss
-	shaderop	sss
+	shaderop		DefaultPathTracing
+}
+
+# Converted from simple_sss_shaderop `sss` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
+#   Christensen-Burley match: albedo 0.95 0.95 0.95 (material `translucent` x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 3.5 = 3.5 3.5 3.5 per unit.
+subsurfacescattering_material
+{
+	name			sss_sss_translucent
+	ior			1.3
+	absorption	0.510328 0.510328 0.510328
+	scattering	9.69623 9.69623 9.69623
+	g			0
 }
 
 standard_object
 {
 	name				venus
 	geometry			venusgeom
-	material			translucent
+	material			sss_sss_translucent
 	orientation			-90 0 0
 	shader				sss
 }

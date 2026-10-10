@@ -13,27 +13,17 @@ RISE ASCII SCENE 7
 # Setup a renderer
 ##################################################
 
-finalgather_shaderop
-{
-	name			fg
-	cachegradients TRUE
-	min_effective_contributors 2
-	high_variation_reuse_scale 0.25
-	samples 1024
-}
-
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	fg
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		3
-	samples				10
-	lum_samples			16
+	samples				160
+	show_luminaires		FALSE
 }
 
 file_rasterizeroutput
@@ -434,31 +424,6 @@ standard_object
 	name				shortblock
 	geometry			shortblockgeom
 	material			white
-}
-
-global_pel_photonmap
-{
-	num					10000
-	max_recursion		5
-	min_importance		0.01
-	branch				FALSE
-}
-
-global_pel_gather
-{
-	max_photons			100
-	radius				10
-	ellipse_ratio		0.05
-}
-
-irradiance_cache
-{
-	size				2000
-	tolerance			0.08
-	min_spacing		3
-	max_spacing    100
-	query_threshold_scale 0.5
-	neighbor_spacing_scale 2.0
 }
 
 

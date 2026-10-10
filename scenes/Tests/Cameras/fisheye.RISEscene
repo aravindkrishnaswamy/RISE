@@ -22,18 +22,19 @@ hdr_painter
 standard_shader
 {
 	name			global
-	shaderop		DefaultReflection
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples			64
+	samples				64
 	pixel_filter		tent
 	pixel_filter_width	2
 	pixel_filter_height	2
 	radiance_map		pnt_rad
 	radiance_background	TRUE
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput

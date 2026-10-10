@@ -28,32 +28,22 @@ RISE ASCII SCENE 7
 # because they need color_white from the colors script.
 ##################################################
 
-distributiontracing_shaderop
-{
-	name				dt
-	samples				4
-	diffuse				false
-	reflections			TRUE
-}
-
 standard_shader
 {
 	name		floor_shader
-	shaderop	dt
-	shaderop	DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		4
 	samples				64
-	lum_samples			1
 }
 
 file_rasterizeroutput
@@ -283,60 +273,24 @@ lambertian_material
 	reflectance			color_white
 }
 
-directlighting_shaderop
-{
-	name				sss_dl
-	bsdf				sss_white
-}
-
-standard_shader
-{
-	name		sss_irrad
-	shaderop	sss_dl
-}
-
 # Simple SSS for the dragon (~6 units tall after 10x scale)
 # geometric_scale converts scene meters to mm for extinction:
 #   r_mm = r_meters * 1000 * geometric_scale
 # At 0.1, a 0.3m thick section gives exp(-0.05 * 300 * 0.1) = exp(-1.5) ≈ 0.22
 # which produces visible colored translucency without going fully opaque or white.
-simple_sss_shaderop
-{
-	name				sss_simple
-	numpoints			200000
-	irrad_scale			100
-	geometric_scale		1.5
-	shader				sss_irrad
-}
-
 # Diffusion approximation SSS for the bunny (~6 units tall after 30x scale)
 # At 0.05, the diffusion profile spreads a few cm in scene units,
 # giving a visible waxy glow without being fully transparent.
-diffusion_approximation_sss_shaderop
-{
-	name				sss_wax
-	numpoints			200000
-	irrad_scale			50000
-	geometric_scale		0.05
-
-	scattering			0.74 0.88 1.01
-	absorption			0.032 0.17 0.48
-	ior					1.3
-	g					0.8
-
-	shader				sss_irrad
-}
-
 standard_shader
 {
 	name		dragon_shader
-	shaderop	sss_simple
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
 	name		bunny_shader
-	shaderop	sss_wax
+	shaderop		DefaultPathTracing
 }
 
 ##################################################
@@ -437,6 +391,17 @@ risemesh_geometry
 	file				models/risemesh/dragon_small.risemesh
 }
 
+# Converted from simple_sss_shaderop `sss_simple` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
+#   Christensen-Burley match: albedo 0.15 0.111111 0.01 (material `jade` x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 1.5 = 30 45 135 per unit.
+subsurfacescattering_material
+{
+	name			sss_simple_sss_jade
+	ior			1.3
+	absorption	23.6934 34.7839 98.4083
+	scattering	4.18118 4.34798 0.994024
+	g			0
+}
+
 standard_object
 {
 	name				dragon
@@ -444,7 +409,7 @@ standard_object
 	position			-4 -1.5 3
 	orientation			0 30 0
 	scale				30 30 30
-	material			jade
+	material			sss_simple_sss_jade
 	shader				dragon_shader
 }
 
@@ -456,6 +421,17 @@ risemesh_geometry
 	file				models/risemesh/bunny.risemesh
 }
 
+# Converted from diffusion_approximation_sss_shaderop `sss_wax` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
+#   the op's own sigma_s / sigma_a (per mm) x 1000 x geometric_scale 0.05, ior 1.3, g 0.8.
+subsurfacescattering_material
+{
+	name			sss_wax_sss_wax
+	ior			1.3
+	absorption	1.6 8.5 24
+	scattering	37 44 50.5
+	g			0.8
+}
+
 standard_object
 {
 	name				bunny
@@ -463,7 +439,7 @@ standard_object
 	position			4 -1.2 2
 	orientation			0 20 0
 	scale				30 30 30
-	material			wax
+	material			sss_wax_sss_wax
 	shader				bunny_shader
 }
 
@@ -495,7 +471,7 @@ standard_object
 	name				center_sphere
 	geometry			spheregeom
 	position			0 3.2 -2
-	material			wax
+	material			sss_wax_sss_wax
 	shader				bunny_shader
 }
 

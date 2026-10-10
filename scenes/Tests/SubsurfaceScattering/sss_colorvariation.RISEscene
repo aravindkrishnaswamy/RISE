@@ -15,37 +15,14 @@ RISE ASCII SCENE 7
 
 standard_shader
 {
-	name		sss_irrad
-	shaderop	DefaultDirectLighting
-}
-
-simple_sss_shaderop
-{
-	name				sss
-	numpoints			10000
-	irrad_scale			1000
-	geometric_scale			1
-	multiplybsdf		true
-
-	extinction			0.005 0.005 0.005
-
-	shader				sss_irrad
-
-	cache				true
-}
-
-standard_shader
-{
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	sss
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				4
-	lum_samples			1
+	samples				64
 
 }
 

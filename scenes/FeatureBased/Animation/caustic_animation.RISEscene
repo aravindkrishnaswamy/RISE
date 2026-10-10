@@ -16,18 +16,14 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
-	shaderop		DefaultCausticPelPhotonMap
-	shaderop		DefaultReflection
-	shaderop		DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator vcm, legacy-deprecation Phase 2).
+vcm_pel_rasterizer
 {
-	max_recursion		5
-	samples				1
-	lum_samples			1
+	samples				64
 }
 
 file_rasterizeroutput
@@ -307,22 +303,6 @@ timeline
 
 	time		1.0
 	value		180 180 0
-}
-
-caustic_pel_photonmap
-{
-	num					10000
-	max_recursion		5
-	min_importance		0.001
-	branch				TRUE
-	reflect				FALSE
-	refract				TRUE
-	shootFromNonMeshLights		TRUE
-}
-
-caustic_pel_gather
-{
-	max_photons			150
 }
 
 
