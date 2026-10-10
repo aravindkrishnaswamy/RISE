@@ -2002,7 +2002,8 @@ static void SectionD10()
 	// DL-472 (1): glass/translucent now follows the face rule on an open
 	// sheet (a back arrival meets the bottom first), so back != front by
 	// design.  Gates: the composite reads the same under PT / BDPT / VCM
-	// from each side (2 %), and from the FRONT it equals the equivalent
+	// from each side (2 % and three combined SE), with four salted
+	// replicates per comparison. From the FRONT it equals the equivalent
 	// pair of SEPARATE sheets (glass at z = 0, translucent 0.002 behind it)
 	// under PT (3 %).  From the BACK the pair is printed only: the
 	// separate pair is itself not consistent there (PT 0.0351 against
@@ -2010,7 +2011,7 @@ static void SectionD10()
 	// reciprocal, DL-223, and the light reaches it through a delta glass
 	// sheet), while the composite reads 0.0376 under all three.
 	{
-		double compRef[2] = { -1, -1 };
+		double compRef[2] = { -1, -1 }, compSd[2] = { 0, 0 };
 		const std::string pairGeo =
 			"clippedplane_geometry\n{\n\tname qg\n\tpta -4 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd -4 3 0\n}\n\n"
 			"clippedplane_geometry\n{\n\tname qt\n\tpta -4 -3 -0.002\n\tptb 4 -3 -0.002\n\tptc 4 3 -0.002\n\tptd -4 3 -0.002\n}\n\n";
@@ -2019,7 +2020,7 @@ static void SectionD10()
 		for( int r = 0; r < 3; ++r ) {
 			for( int b = 0; b < 2; ++b ) {
 				const double z = b ? -1.0 : 1.0;
-				double v[2] = { -1, -1 };
+				double v[2] = { -1, -1 }, sd[2] = { 0, 0 };
 				for( int k = 0; k < 2; ++k ) {
 					std::ostringstream sc;
 					sc << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 16\n}\n\n"
@@ -2037,23 +2038,34 @@ static void SectionD10()
 					   << "clippedplane_geometry\n{\n\tname gem\n\tpta -1.5 2 " << 4.0 * z << "\n\tptb 1.5 2 " << 4.0 * z << "\n\tptc 1.5 3.5 " << 4.0 * z << "\n\tptd -1.5 3.5 " << 4.0 * z << "\n}\n\n"
 					   << "standard_object\n{\n\tname E\n\tgeometry gem\n\tmaterial mat_em\n}\n\n"
 					   << ( r == 0 ? PtRasterizer( false, 1024 ) : r == 1 ? BdptRasterizer( false, 1024, 12 ) : VcmRasterizer( false, 1024, 12 ) );
-					CapturingRasterizerOutput* cap = 0;
-					SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * ( 91100u + 13u * (unsigned)( 4 * r + 2 * b + k ) ) + 0x85EBCA6Bu );
-					const bool ok = Render( sc.str(), "d10p", cap, 91100u + 13u * (unsigned)( 4 * r + 2 * b + k ) );
-					SobolSamplerTestHooks::ValueSalt().store( 0u );
-					v[k] = ok ? RegionMean( *cap, 2, cap->width - 2 ) : -1;
-					if( cap ) safe_release( cap );
+					std::vector<double> replicates;
+					for( unsigned rep = 0; rep < 4; ++rep ) {
+						CapturingRasterizerOutput* cap = 0;
+						const unsigned seed = 91100u + 13u * (unsigned)( 4 * r + 2 * b + k ) + 7919u * rep;
+						SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * seed + 0x85EBCA6Bu );
+						const bool ok = Render( sc.str(), "d10p", cap, seed );
+						SobolSamplerTestHooks::ValueSalt().store( 0u );
+						Check( ok, "[D10] salted replicate rendered" );
+						replicates.push_back( ok ? RegionMean( *cap, 2, cap->width - 2 ) : -1 );
+						if( cap ) safe_release( cap );
+					}
+					v[k] = 0; for( double x : replicates ) v[k] += x / 4;
+					double ss = 0; for( double x : replicates ) ss += ( x - v[k] ) * ( x - v[k] );
+					sd[k] = std::sqrt( ss / 3 );
 				}
 				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
 				std::cout << "    D10 glass/translucent (thickness 0) vs separate pair, " << ( b ? "BACK " : "FRONT" ) << ", " << in << ": composite "
-				          << std::setprecision(5) << v[0] << " pair " << v[1] << ", ratio " << ( v[1] > 0 ? v[0] / v[1] : -1 ) << "\n";
+				          << std::setprecision(5) << v[0] << " sd " << sd[0] << " pair " << v[1] << " sd " << sd[1] << " n 4, ratio " << ( v[1] > 0 ? v[0] / v[1] : -1 ) << "\n";
 				if( r == 0 ) {
-					compRef[b] = v[0];
+					compRef[b] = v[0]; compSd[b] = sd[0];
 					if( b == 0 ) {
 						Check( v[0] > 0 && v[1] > 0 && std::fabs( v[0] / v[1] - 1.0 ) <= 0.03,
 							"[D10] glass/translucent == separate pair, front view (PT)" );
 					}
 				} else {
+					const double se = std::hypot( sd[0], compSd[b] ) / 2;
+					std::cout << "      composite / PT " << v[0] / compRef[b] << ", combined SE " << se << ", z " << ( v[0] - compRef[b] ) / se << "\n";
+					Check( std::fabs( v[0] - compRef[b] ) <= 3 * se, "[D10] composite agrees with independent PT within three combined SE" );
 					Check( v[0] > 0 && compRef[b] > 0 && std::fabs( v[0] / compRef[b] - 1.0 ) <= 0.02,
 						std::string( "[D10] glass/translucent composite agrees with PT, " ) + ( b ? "back" : "front" ) + " view (" + in + ")" );
 				}
@@ -2274,8 +2286,9 @@ static void SectionD()
 	// plain glass (a control that must read 1 too).  D6: a NESTED
 	// composite{composite{glass/glass}/glass} box_geometry box beside a
 	// glass box (base 0.971; round 0 1.0056, a gain).  Every path is
-	// lossless and all-delta, so each sample is exactly the env radiance
-	// and the band only absorbs rounding.
+	// lossless and all-delta. The flat D5 estimator is zero-variance;
+	// the nested D6 estimator has per-branch sampling variance and needs
+	// independent salted replicates to resolve the furnace mean.
 	{
 		const std::string mesh =
 			"indexedmesh_geometry\n{\n\tname mb\n"
@@ -2316,10 +2329,10 @@ static void SectionD()
 		for( int sc = 0; sc < 3; ++sc ) {
 			for( int r = 0; r < 2; ++r ) {
 				// D5 is zero-variance (one render); D6's nested top runs the
-				// per-branch estimator, so it is n = 4 SALTED renders
+				// per-branch estimator, so it is n = 8 SALTED renders
 				// (independent randomized-QMC replicates) and gated on
 				// mean +- sem, a band that resolves 0.5 %.
-				const int nRep = ( sc == 1 ) ? 4 : 1;
+				const int nRep = ( sc == 1 ) ? 8 : 1;
 				std::vector<double> L, Rr;
 				bool ok = true;
 				for( int k = 0; k < nRep; ++k ) {
@@ -2348,7 +2361,7 @@ static void SectionD()
 				Check( ok && std::fabs( mR - 1.0 ) <= 0.002,
 					std::string( "[D5/D6] " ) + tag + ": glass control == 1 (" + ( r == 0 ? "PT" : "BDPT" ) + ")" );
 				if( sc == 1 ) {
-					Check( semL < 0.00125, std::string( "[D6] the salted band resolves 0.5 % (5 sem < 0.5 %), " ) + ( r == 0 ? "PT" : "BDPT" ) );
+					Check( semL < 0.00125, std::string( "[D6] the salted band resolves 0.5 % (4 sem < 0.5 %), " ) + ( r == 0 ? "PT" : "BDPT" ) );
 				}
 			}
 		}

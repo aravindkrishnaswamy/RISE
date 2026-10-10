@@ -480,6 +480,21 @@ namespace RISE
 			// -----------------------------------------------------------
 			//  Pipes.
 			// -----------------------------------------------------------
+			//! DL-490: native layer queries read ambientIOR as well as the
+			//! stack. Synthetic entries and auxiliary PDF/value calls must
+			//! agree with their live stack, just like recorded gap vertices.
+			static const RayIntersectionGeometric& LiveLayerRecord(
+				const RayIntersectionGeometric& ri, const IORStack* st,
+				std::optional<RayIntersectionGeometric>& store )
+			{
+				if( st && ri.ambientIOR != st->top() ) {
+					store.emplace( ri );
+					store->ambientIOR = st->top();
+					return *store;
+				}
+				return ri;
+			}
+
 			struct PipeRGB
 			{
 				typedef RISEPel T;
@@ -504,15 +519,18 @@ namespace RISE
 				}
 				static void Scatter( const ISPF& spf, const RayIntersectionGeometric& ri, ISampler& s, const Scalar, ScatteredRayContainer& c, const IORStack& st )
 				{
-					spf.Scatter( ri, s, c, st );
+					std::optional<RayIntersectionGeometric> store;
+					spf.Scatter( LiveLayerRecord( ri, &st, store ), s, c, st );
 				}
 				static Scalar Pdf( const ISPF& spf, const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar, const IORStack& st )
 				{
-					return spf.Pdf( ri, wo, st );
+					std::optional<RayIntersectionGeometric> store;
+					return spf.Pdf( LiveLayerRecord( ri, &st, store ), wo, st );
 				}
 				static T Value( const IBSDF& b, const Vector3& v, const RayIntersectionGeometric& ri, const Scalar, const IORStack* st )
 				{
-					return b.valueStateful( v, ri, st );
+					std::optional<RayIntersectionGeometric> store;
+					return b.valueStateful( v, LiveLayerRecord( ri, st, store ), st );
 				}
 				static T GapAtt( const IScalarPainter& ext, const RayIntersectionGeometric& ri, const Scalar, const Scalar pathLength )
 				{
@@ -535,15 +553,18 @@ namespace RISE
 				static T Mask( const T& v, const int ) { return v; }
 				static void Scatter( const ISPF& spf, const RayIntersectionGeometric& ri, ISampler& s, const Scalar nm, ScatteredRayContainer& c, const IORStack& st )
 				{
-					spf.ScatterNM( ri, s, nm, c, st );
+					std::optional<RayIntersectionGeometric> store;
+					spf.ScatterNM( LiveLayerRecord( ri, &st, store ), s, nm, c, st );
 				}
 				static Scalar Pdf( const ISPF& spf, const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& st )
 				{
-					return spf.PdfNM( ri, wo, nm, st );
+					std::optional<RayIntersectionGeometric> store;
+					return spf.PdfNM( LiveLayerRecord( ri, &st, store ), wo, nm, st );
 				}
 				static T Value( const IBSDF& b, const Vector3& v, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* st )
 				{
-					return b.valueStatefulNM( v, ri, nm, st );
+					std::optional<RayIntersectionGeometric> store;
+					return b.valueStatefulNM( v, LiveLayerRecord( ri, st, store ), nm, st );
 				}
 				static T GapAtt( const IScalarPainter& ext, const RayIntersectionGeometric& ri, const Scalar nm, const Scalar pathLength )
 				{
@@ -839,31 +860,35 @@ namespace RISE
 			//! point, a ray along `dir` whose origin is advanced by the gap
 			//! crossing's slant length so a layer that reads its own
 			//! absorption off `|ray.origin - ptIntersection|` sees the
-			//! distance actually travelled (see GapPathLength).
+			//! distance actually travelled (see GapPathLength), and the live
+			//! incident index from the stack at that event (DL-490).
 			static inline RayIntersectionGeometric LayerRecord(
 				const RayIntersectionGeometric& ri,
 				const Vector3& dir,
-				const Scalar pathLength
+				const Scalar pathLength,
+				const IORStack& liveStack
 				)
 			{
 				RayIntersectionGeometric r( ri );
-				SetLayerRay( r, ri, dir, pathLength );
+				SetLayerRay( r, ri, dir, pathLength, liveStack );
 				return r;
 			}
 
 			//! In-place form of LayerRecord for the walks, which re-aim ONE
 			//! record at every event instead of copying the (~1 KB) record
-			//! each time: only the ray differs between a walk's events.
+			//! each time: the ray and live incident index change per event.
 			static inline void SetLayerRay(
 				RayIntersectionGeometric& r,
 				const RayIntersectionGeometric& ri,
 				const Vector3& dir,
-				const Scalar pathLength
+				const Scalar pathLength,
+				const IORStack& liveStack
 				)
 			{
 				r.ray.origin = ri.ptIntersection;
 				r.ray.SetDir( dir );
 				r.ray.Advance( pathLength );
+				r.ambientIOR = liveStack.top();
 			}
 
 			//! The internal UP-going direction that a Snell refraction out
@@ -1188,7 +1213,7 @@ namespace RISE
 				}
 				const Vector3 wd = Vector3Ops::Normalize( src[best].ray.Dir() );
 				const IORStack gap( src[best].ior_stack ? *src[best].ior_stack : outside );
-				const RayIntersectionGeometric rb = LayerRecord( ri, wd, CompositeSPF::GapPathLength( wd, n, s.thickness ) );
+				const RayIntersectionGeometric rb = LayerRecord( ri, wd, CompositeSPF::GapPathLength( wd, n, s.thickness ), gap );
 
 				HashedSampler hs( seed ^ kSaltProbeC );
 				ScatteredRayContainer cb;
@@ -1218,9 +1243,10 @@ namespace RISE
 					return pr;
 				}
 				const Vector3 wu = Vector3Ops::Normalize( cb[bestUp].ray.Dir() );
-				const RayIntersectionGeometric rt = LayerRecord( ri, wu, CompositeSPF::GapPathLength( wu, n, s.thickness ) );
+				const IORStack topGap = cb[bestUp].ior_stack ? KeyedTop( *cb[bestUp].ior_stack, outside ) : gap;
+				const RayIntersectionGeometric rt = LayerRecord( ri, wu, CompositeSPF::GapPathLength( wu, n, s.thickness ), topGap );
 				ScatteredRayContainer ct;
-				P::Scatter( s.top, rt, hs, nm, ct, cb[bestUp].ior_stack ? KeyedTop( *cb[bestUp].ior_stack, outside ) : gap );
+				P::Scatter( s.top, rt, hs, nm, ct, topGap );
 				for( unsigned int i = 0; i < ct.Count(); i++ ) {
 					const ScatteredRay& r = ct[i];
 					if( Vector3Ops::Dot( r.ray.Dir(), n ) >= 0 &&
@@ -1628,7 +1654,7 @@ namespace RISE
 					path.wBot.push_back( w );
 					path.LBot.push_back( Ld );
 					path.gapBot.push_back( Keyed( gap, kB ) );
-					SetLayerRay( rec, ri, w, Ld );
+					SetLayerRay( rec, ri, w, Ld, path.gapBot.back() );
 					ScatteredRayContainer cb;
 					P::Scatter( s.bottom, rec, hs, nm, cb, path.gapBot.back() );
 					k = SelectCarried<P>( cb, isUpBottom, beta, hs.Get1D(), q );
@@ -1655,7 +1681,7 @@ namespace RISE
 					path.wTop.push_back( w );
 					path.LTop.push_back( Lu );
 					path.gapTop.push_back( gap );
-					SetLayerRay( rec, ri, w, Lu );
+					SetLayerRay( rec, ri, w, Lu, gap );
 					ScatteredRayContainer ct;
 					P::Scatter( s.top, rec, hs, nm, ct, gap );
 					k = SelectCarried<P>( ct, isDownTop, beta, hs.Get1D(), q );
@@ -1808,13 +1834,13 @@ namespace RISE
 						f = f + P::Mul( P::Value( *s.pBottomBSDF, ux, ri, nm, &path.entryStack ), aFactor );
 					}
 					for( size_t i = 0; i < path.betaBot.size(); i++ ) {
-						SetLayerRay( rec, ri, path.wBot[i], path.LBot[i] );
+						SetLayerRay( rec, ri, path.wBot[i], path.LBot[i], path.gapBot[i] );
 						f = f + P::Mul( P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, ux, rec, nm, &path.gapBot[i] ) ), aFactor );
 					}
 				};
 				// The top's delta transmission weight out along ux.
 				auto transmission = [&]( const Vector3& ux, const Scalar Lx ) -> T {
-					SetLayerRay( rec, ri, ux, Lx );
+					SetLayerRay( rec, ri, ux, Lx, path.gap0 );
 					ScatteredRayContainer cx;
 					P::Scatter( s.top, rec, hx, nm, cx, path.gap0 );
 					T W = P::Zero();
@@ -1885,7 +1911,7 @@ namespace RISE
 				if( !( Vector3Ops::Dot( wOut, n ) > 0 ) ) {
 					if( s.bBottomTransmits ) {
 						for( size_t i = 0; i < path.betaBot.size(); i++ ) {
-							SetLayerRay( rec, ri, path.wBot[i], path.LBot[i] );
+							SetLayerRay( rec, ri, path.wBot[i], path.LBot[i], path.gapBot[i] );
 							f = f + P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, wOut, rec, nm, &path.gapBot[i] ) );
 						}
 					}
@@ -1927,7 +1953,7 @@ namespace RISE
 				// own BSDF.
 				if( s.pTopBSDF ) {
 					for( size_t j = 0; j < path.betaTop.size(); j++ ) {
-						SetLayerRay( rec, ri, path.wTop[j], path.LTop[j] );
+						SetLayerRay( rec, ri, path.wTop[j], path.LTop[j], path.gapTop[j] );
 						f = f + P::Mul( path.betaTop[j], P::Value( *s.pTopBSDF, wOut, rec, nm, &path.gapTop[j] ) );
 					}
 				}
@@ -2200,7 +2226,7 @@ namespace RISE
 					steps = 1;
 					const Scalar L = CompositeSPF::GapPathLength( w, n, s.thickness );
 					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, L ) );
-					SetLayerRay( cur, ri, w, L );
+					SetLayerRay( cur, ri, w, L, st );
 					atBottom = true;
 				} else if( start == eStartCoveredBottom ) {
 					// DL-472 (1): the two-sided model's stacks (MakeBackStacks).
@@ -2300,7 +2326,7 @@ namespace RISE
 					steps++;
 					const Scalar L = CompositeSPF::GapPathLength( w, n, s.thickness );
 					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, L ) );
-					SetLayerRay( cur, ri, w, L );
+					SetLayerRay( cur, ri, w, L, st );
 					atBottom = !atBottom;
 				}
 				if( P::MaxOf( beta ) > 0 ) {
@@ -2479,7 +2505,7 @@ namespace RISE
 					path.wTop.push_back( w );
 					path.LTop.push_back( Lu );
 					path.gapTop.push_back( gap );
-					SetLayerRay( rec, ri, w, Lu );
+					SetLayerRay( rec, ri, w, Lu, gap );
 					ScatteredRayContainer ct;
 					P::Scatter( s.top, rec, hs, nm, ct, gap );
 					k = SelectCarried<P>( ct, isDownTop, beta, hs.Get1D(), q );
@@ -2506,7 +2532,7 @@ namespace RISE
 					path.wBot.push_back( w );
 					path.LBot.push_back( Ld );
 					path.gapBot.push_back( Keyed( gap, kB ) );
-					SetLayerRay( rec, ri, w, Ld );
+					SetLayerRay( rec, ri, w, Ld, path.gapBot.back() );
 					ScatteredRayContainer cb;
 					P::Scatter( s.bottom, rec, hs, nm, cb, path.gapBot.back() );
 					k = SelectCarried<P>( cb, isUp, beta, hs.Get1D(), q );
