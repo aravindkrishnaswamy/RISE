@@ -32,7 +32,6 @@ pathtracing_pel_rasterizer
 	pixel_filter			tent
 	pixel_filter_width		1.7
 	pixel_filter_height		1.7
-
 	max_diffuse_bounce		0
 }
 

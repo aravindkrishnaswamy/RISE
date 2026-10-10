@@ -40,7 +40,7 @@ standard_shader
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
 pathtracing_pel_rasterizer
 {
-	samples				256
+	samples				64
 	radiance_map		pnt_env
 	radiance_background	TRUE
 }

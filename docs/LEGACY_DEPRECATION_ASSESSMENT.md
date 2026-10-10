@@ -592,7 +592,10 @@ pixel-rasterizer families):**
   `max_diffuse_bounce 0` (the ruling #3a rule); any indirect op gets full GI.
   `samples` = legacy samples x the largest per-op sample count (arealight `samples`,
   DT / FG hemisphere samples, AO numtheta x numphi -- what set the legacy noise floor),
-  floored 16 (direct) / 64 (indirect), capped 1024 (`lum_samples` is inert).  Every
+  floored 16 (direct) / 64 (indirect), capped 1024.  Not counted: `lum_samples` (inert),
+  a CACHED gather (FG `cache`, default TRUE; DT `irradiance_caching`; AO
+  `irradiance_cache`), which samples only at sparse records, and an op that only feeds a
+  point-cloud SSS op's irradiance shader (it runs per build point, not per pixel).  Every
   shader becomes one `DefaultPathTracing` op; op chunks, photon maps, gathers,
   irradiance caches and unreferenced shaders are deleted, with their attached comments
   and emptied section banners.  `--integrator vcm` refuses a scene with an
@@ -602,7 +605,9 @@ pixel-rasterizer families):**
   `geometric_scale`); `simple_sss_shaderop` -> a Christensen-Burley
   `subsurfacescattering_material` whose albedo is the op's colour (the object's base
   colour only where the legacy op applied it: `multiplybsdf TRUE` or an irradiance shader
-  shading with the object's BSDF; otherwise untinted) times the op's 1/extinction^2
+  shading with the object's BSDF -- direct lighting with no or `none` override bsdf, PT /
+  FG / DT / photon-map ops, AO with multiplybrdf; an override bsdf gives its literal
+  colour; otherwise untinted) times the op's 1/extinction^2
   channel weights and whose profile tail falls off at the op's rate
   (checked in a white furnace: albedo 0.15/0.25/0.15 reads 0.163/0.261/0.164 including
   Fresnel); `arealight_shaderop` -> `rect_light` of exitance `power`.  Chosen over
