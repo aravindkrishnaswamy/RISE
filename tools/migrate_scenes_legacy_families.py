@@ -145,8 +145,7 @@ Kept by owner ruling (KEEP below): FeatureBased/Animation/translucent_bunny keep
 its iridescent_painter (2026-10-10).
 
 Never touched: scenes/Tests/Legacy/ (the frozen-feature regression corpus),
-scenes/Tests/ChunkCoverage/, and the scenes held for slice C (Android
-catalogue / quickstart sample, HELD below).  Idempotent: a migrated scene has
+and scenes/Tests/ChunkCoverage/.  Idempotent: a migrated scene has
 none of the family's chunks and is reported `unchanged`.  Structure is read
 from a comment-stripped view; the bytes written back are the originals,
 edited chunk by chunk.
@@ -170,20 +169,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from migrate_scenes_legacy_rasterizer import (  # noqa: E402
     strip_comments, parse_chunks, ParseError, is_literal_number, indent_of, fmt_num,
-    collect, repo_rel, LEGACY_CORPUS, COVERAGE_CORPUS, TARGET_PARAMS)
+    collect, repo_rel, LEGACY_CORPUS, COVERAGE_CORPUS, TARGET_PARAMS, rasterizer_flag)
 
 LEGACY_MATERIALS = (
     'cooktorrance_material', 'isotropic_phong_material',
     'ashikminshirley_anisotropicphong_material', 'schlick_material',
     'ward_isotropic_material', 'ward_anisotropic_material', 'polished_material')
 
-# Reserved for slice C (Phase 2 step 6): the Android catalogue and the
-# CLAUDE.md / README quickstart sample.  Repo-relative.
+# Scenes deliberately left as written.  (The four slice-C scenes -- the Android
+# catalogue and the quickstart sample -- were held here until slice C migrated
+# them, 2026-10-10.)  Repo-relative.
 HELD = {
-    'scenes/Tests/Geometry/shapes.RISEscene': 'quickstart sample and Android catalogue scene (slice C)',
-    'scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene': 'Android catalogue scene (slice C)',
-    'scenes/FeatureBased/Combined/tidepools.RISEscene': 'Android catalogue scene (slice C)',
-    'scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene': 'Android catalogue scene (slice C)',
     # No .RISEscene extension, so directory walks never collect it; HELD when
     # passed explicitly.  It is a recorded agent-benchmark run's output (cited
     # in AgentSession.cpp), kept as the agent wrote it, iridescent_painters
@@ -913,7 +909,8 @@ def migrate_ambient(text, report, drop_with_sky=False):
         return None, 'unchanged (no ambient_light)'
     rasters = [c for c in ed.chunks if c.kw.endswith('_rasterizer')]
     if len(rasters) != 1:
-        return None, 'REFUSED: %d rasterizer chunks' % len(rasters)
+        return None, ('REFUSED: %d rasterizer chunks (%s); only the last declared (`%s`) renders' % (
+            len(rasters), ', '.join(c.kw for c in rasters), rasters[-1].kw))
     R = rasters[0]
     if R.kw.startswith('pixel') or R.kw.startswith('mlt'):
         return None, 'REFUSED: rasterizer `%s` is frozen (migrate it first)' % R.kw
@@ -1010,7 +1007,8 @@ def migrate_mlt(text, report, integrator='bdpt'):
     if not mlt:
         return None, 'unchanged (no MLT rasterizer)'
     if len(rasters) != 1:
-        return None, 'REFUSED: %d rasterizer chunks' % len(rasters)
+        return None, ('REFUSED: %d rasterizer chunks (%s); only the last declared (`%s`) renders -- '
+                      'remove the others first' % (len(rasters), ', '.join(c.kw for c in rasters), rasters[-1].kw))
     R = mlt[0]
     target = MLT_TARGETS[integrator][R.kw]
     accepted = TARGET_PARAMS[target]
@@ -1059,6 +1057,11 @@ def run(families, paths, dry_run, verbose, mlt_integrator, ambient_with_sky=None
             print('ERROR     %s: %s' % (rel, e))
             rc = 1
             continue
+        flag = rasterizer_flag(rel, text)
+        if flag:
+            # More than one live rasterizer (only the last renders) or a
+            # frozen ACTIVE rasterizer: reported whatever the family.
+            print(flag)
         cur = text
         statuses = []
         notes = []

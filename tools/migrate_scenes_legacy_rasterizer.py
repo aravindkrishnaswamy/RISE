@@ -154,8 +154,7 @@ translucent / shadow photon maps, direct volume rendering, MLT, scenes
 declaring more than one rasterizer, and an OBJECT-level `radiance_map` (only
 the legacy chain honours it; the supported integrators read only the
 rasterizer's map; per-object radiance_map is frozen and its one scene,
-different_rmaps, lives unmigrated in scenes/Tests/Legacy/).  Scenes in HELD below are reserved
-for a later slice (Android catalogue / quickstart sample), and
+different_rmaps, lives unmigrated in scenes/Tests/Legacy/).
 scenes/Tests/Legacy/ (the frozen-feature regression corpus) and
 scenes/Tests/ChunkCoverage/ (one-chunk parser coverage) are never touched.
 
@@ -170,7 +169,12 @@ Usage:
     python3 tools/migrate_scenes_legacy_rasterizer.py --mode pt     [--dry-run] [paths...]
     python3 tools/migrate_scenes_legacy_rasterizer.py --mode direct [--dry-run] [paths...]
     python3 tools/migrate_scenes_legacy_rasterizer.py --mode renames [--dry-run] [paths...]
+    python3 tools/migrate_scenes_legacy_rasterizer.py --audit [paths...]
     python3 tools/migrate_scenes_legacy_rasterizer.py --selftest
+Every mode also prints a FLAG line for a scene with more than one live
+rasterizer chunk (unnamed rasterizers derive last-wins, so only the LAST one
+renders) or whose active rasterizer is frozen.  --audit sweeps for exactly
+that, plus frozen rasterizers left inside comments.
 Paths default to `scenes/`; directories are walked for *.RISEscene.  Exit
 status is 0 unless a file could not be read or parsed.
 """
@@ -185,6 +189,83 @@ LEGACY_RASTERIZERS = {
     'pixelpel_rasterizer': 'pathtracing_pel_rasterizer',
     'pixelintegratingspectral_rasterizer': 'pathtracing_spectral_rasterizer',
 }
+
+# Every FROZEN rasterizer chunk (legacy pixel rasterizers + MLT).
+FROZEN_RASTERIZERS = frozenset(('pixelpel_rasterizer', 'pixelintegratingspectral_rasterizer',
+                                'mlt_rasterizer', 'mlt_spectral_rasterizer'))
+
+RAW_RASTERIZER_RE = re.compile(r'^\s*([A-Za-z0-9_]+_rasterizer)\s*\{?\s*$')
+
+
+def rasterizer_audit(text):
+    """(active, declared, commented_frozen) for a scene.  `declared` lists the
+    LIVE rasterizer chunks in file order; unnamed rasterizer chunks derive
+    last-wins (Job::Set*Rasterizer replaces the previous one), so the ACTIVE
+    rasterizer is the last declared one (None if there is none).
+    `commented_frozen` lists frozen rasterizer keywords that appear only inside
+    comments (inert, reported for cleanup)."""
+    lines = text.split('\n')
+    code = strip_comments(lines)
+    declared = [c.kw for c in parse_chunks(code) if c.kw.endswith('_rasterizer')]
+    raw = []
+    for ln in lines:
+        m = RAW_RASTERIZER_RE.match(ln.lstrip('#').lstrip('/*'))
+        if m:
+            raw.append(m.group(1))
+    commented = [k for k in raw if k in FROZEN_RASTERIZERS and raw.count(k) > declared.count(k)]
+    return (declared[-1] if declared else None), declared, sorted(set(commented))
+
+
+def rasterizer_flag(rel, text):
+    """A FLAG line when a scene declares more than one live rasterizer chunk
+    (only the last one renders) or its ACTIVE rasterizer is frozen; else None."""
+    try:
+        active, declared, _ = rasterizer_audit(text)
+    except ParseError:
+        return None
+    msgs = []
+    if len(declared) > 1:
+        msgs.append('%d rasterizer chunks (%s); the ACTIVE one is the last declared, `%s`' % (
+            len(declared), ', '.join(declared), active))
+    if active in FROZEN_RASTERIZERS:
+        msgs.append('the active rasterizer `%s` is FROZEN' % active)
+    return ('FLAG      %s: %s' % (rel, '; '.join(msgs))) if msgs else None
+
+
+def audit(paths):
+    """--audit: report every scene whose ACTIVE (last-declared) rasterizer is
+    frozen, every scene with more than one live rasterizer chunk, and every
+    scene that carries a frozen rasterizer only inside a comment.  The
+    frozen-feature corpus (scenes/Tests/Legacy/) is listed separately; it is
+    frozen on purpose."""
+    rc = 0
+    n = {'frozen': 0, 'multi': 0, 'commented': 0, 'corpus': 0}
+    for f in collect(paths):
+        rel = repo_rel(f)
+        try:
+            with open(f, 'r', encoding='utf-8', newline='') as fh:
+                text = fh.read()
+            active, declared, commented = rasterizer_audit(text)
+        except (IOError, UnicodeDecodeError, ParseError) as e:
+            print('ERROR     %s: %s' % (rel, e))
+            rc = 1
+            continue
+        corpus = rel.startswith(LEGACY_CORPUS) or rel.startswith(COVERAGE_CORPUS)
+        if active in FROZEN_RASTERIZERS:
+            if corpus:
+                n['corpus'] += 1
+            else:
+                n['frozen'] += 1
+                print('FROZEN    %s: active rasterizer `%s` is frozen' % (rel, active))
+        if len(declared) > 1:
+            n['multi'] += 1
+            print('MULTI     %s: %s; active (last-declared) `%s`' % (rel, ', '.join(declared), active))
+        if commented and not corpus:
+            n['commented'] += 1
+            print('COMMENTED %s: frozen %s only inside a comment (inert)' % (rel, ', '.join(commented)))
+    print('audit: %d active-frozen (plus %d in the frozen corpus), %d multi-rasterizer, '
+          '%d with a commented-out frozen rasterizer' % (n['frozen'], n['corpus'], n['multi'], n['commented']))
+    return rc
 
 # Parameters each target accepts (from the chunk descriptors,
 # src/Library/Parsers/ChunkParserRegistry.cpp, 2026-10-10).
@@ -278,16 +359,10 @@ OUT_OF_SCOPE_CHUNKS = {
     'spectraldirectvolumerendering_shader': 'direct volume rendering',
 }
 
-# Reserved for a later slice (Phase 2 step 6): Android catalogue + the
-# CLAUDE.md / README quickstart sample.  Paths are repo-relative.
-HELD = {
-    'scenes/Tests/Geometry/shapes.RISEscene':
-        'quickstart sample render and Android catalogue scene (Phase 2 step 6)',
-    'scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene':
-        'Android catalogue scene (Phase 2 step 6)',
-    'scenes/FeatureBased/Combined/tidepools.RISEscene':
-        'Android catalogue scene (Phase 2 step 6)',
-}
+# Scenes reserved for a later slice.  Empty since slice C (Phase 2 step 6,
+# 2026-10-10) migrated the Android catalogue scenes and the quickstart sample
+# (shapes, kaleidoscope_atrium, tidepools) that were held here.
+HELD = {}
 
 # The frozen-feature regression corpus (owner ruling #17): originals kept
 # so frozen chunks stay rendered and derived.  Never migrated.
@@ -532,8 +607,8 @@ def migrate_rasterizer(text, mode, report):
     if not legacy:
         return None, 'unchanged (no legacy pixel rasterizer)'
     if len(rasters) != 1:
-        return None, 'REFUSED: %d rasterizer chunks (%s); the active one is ambiguous' % (
-            len(rasters), ', '.join(c.kw for c in rasters))
+        return None, ('REFUSED: %d rasterizer chunks (%s); only the last declared (`%s`) renders -- '
+                      'remove the others first' % (len(rasters), ', '.join(c.kw for c in rasters), rasters[-1].kw))
     for c in chunks:
         if c.kw in OUT_OF_SCOPE_CHUNKS:
             return None, 'REFUSED: uses %s (`%s`), a later slice' % (OUT_OF_SCOPE_CHUNKS[c.kw], c.kw)
@@ -975,8 +1050,8 @@ def migrate_full(text, integrator, report, sss_albedo=None, sss_keep=False, sms=
     if not legacy:
         return None, 'unchanged (no legacy pixel rasterizer)'
     if len(rasters) != 1:
-        return None, 'REFUSED: %d rasterizer chunks (%s); the active one is ambiguous' % (
-            len(rasters), ', '.join(c.kw for c in rasters))
+        return None, ('REFUSED: %d rasterizer chunks (%s); only the last declared (`%s`) renders -- '
+                      'remove the others first' % (len(rasters), ', '.join(c.kw for c in rasters), rasters[-1].kw))
     for c in chunks:
         if c.kw in ('mlt_rasterizer', 'mlt_spectral_rasterizer', 'directvolumerendering_shader',
                     'spectraldirectvolumerendering_shader'):
@@ -1544,6 +1619,9 @@ def run(mode, paths, dry_run, verbose, integrator='pt', sss_albedo=None, sss_kee
             rc = 1
             continue
         held = HELD.get(rel)
+        flag = rasterizer_flag(rel, text)
+        if flag and not (rel.startswith(LEGACY_CORPUS) or rel.startswith(COVERAGE_CORPUS)):
+            print(flag)
         if rel.startswith(LEGACY_CORPUS) or rel.startswith(COVERAGE_CORPUS):
             counts['held'] += 1
             if verbose:
@@ -1692,6 +1770,15 @@ def selftest():
     assert 'samples\t\t\t\t1024' in migrate_full(fg.replace('samples 512', 'samples 512\n\tcache false'), 'pt', [])[0]
     new, st = sss_case('distributiontracing_shaderop\n{\n\tname dt\n\tsamples 500\n}\n', '\tshaderop dt\n')
     assert 'samples\t\t\t\t64' in new, new
+    # Active rasterizer = the LAST declared one; commented-out frozen chunks are inert.
+    two = ('bdpt_pel_rasterizer\n{\n}\nmlt_rasterizer\n{\n}\n/*\npixelpel_rasterizer\n{\n}\n*/\n')
+    act, decl, com = rasterizer_audit(two)
+    assert act == 'mlt_rasterizer' and decl == ['bdpt_pel_rasterizer', 'mlt_rasterizer'], (act, decl)
+    assert com == ['pixelpel_rasterizer'], com
+    fl = rasterizer_flag('x', two)
+    assert 'ACTIVE one is the last declared, `mlt_rasterizer`' in fl and 'is FROZEN' in fl, fl
+    assert rasterizer_flag('x', 'pathtracing_pel_rasterizer\n{\n}\n/*\nmlt_rasterizer\n{\n}\n*/\n') is None
+    assert rasterizer_audit('/*\nmlt_rasterizer\n{\n}\n*/\nbdpt_pel_rasterizer\n{\n}\n')[2] == ['mlt_rasterizer']
     print('selftest: OK')
     return 0
 
@@ -1716,10 +1803,15 @@ def main():
     ap.add_argument('--dry-run', action='store_true', help='report only, write nothing')
     ap.add_argument('-v', '--verbose', action='store_true', help='also list unchanged files')
     ap.add_argument('--selftest', action='store_true')
+    ap.add_argument('--audit', action='store_true',
+                    help='report scenes whose ACTIVE (last-declared) rasterizer is frozen, scenes with more '
+                         'than one rasterizer chunk, and commented-out frozen rasterizers; writes nothing')
     ap.add_argument('paths', nargs='*', default=['scenes'])
     a = ap.parse_args()
     if a.selftest:
         return selftest()
+    if a.audit:
+        return audit(a.paths)
     if not a.mode:
         ap.error('--mode is required')
     return run(a.mode, a.paths, a.dry_run, a.verbose, a.integrator, a.sss_albedo, a.sss_keep_material, a.sms,
