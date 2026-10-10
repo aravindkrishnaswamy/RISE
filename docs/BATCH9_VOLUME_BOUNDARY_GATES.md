@@ -91,3 +91,9 @@ sample SD .0325077, within unchanged 3SE .0243807: 2/0, rc0. This is a noisy
 agreement gate, not proof that the unsupported floor/corner bias is gone.
 All final named builds return rc0 with no warnings. Fresh review is required
 on the committed state before merge.
+
+Fresh independent reviews found zero P1. P2 coverage: transformed primitives,
+anisotropic/transparent/multiple-object refusals and a ball containing the
+whole excluded sphere need direct unit cases. The no-boundary hash comparison
+currently relies on the saved external comparison artifact; a committed
+comparison wrapper would preserve that gate automatically.
