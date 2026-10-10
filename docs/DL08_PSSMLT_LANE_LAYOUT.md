@@ -503,12 +503,14 @@ at any magnitude); it now exists purely to catch a programming error
 
 ### Reproducing the reviewer's "no shipped scene reaches depth 32" finding
 
-Confirmed independently. `grep -rl "mlt_rasterizer\|mlt_spectral_rasterizer"
-scenes/` finds 10 shipped MLT scenes (`scenes/FeatureBased/MLT/*.RISEscene`
-x4, `scenes/Tests/MLT/*.RISEscene` x3 (BDPT since legacy-deprecation slice B2; the MLT originals of two are in `scenes/Tests/Legacy/`), `scenes/Tests/Spectral/
-hwss_mlt_spectral_cornellbox.RISEscene`, `scenes/Tests/Samplers/
-cornell_mlt.RISEscene`, plus two incidental substring matches that are not
-actually MLT scenes). Every one sets `max_eye_depth` <= 12
+Confirmed independently. `grep -rlE "^mlt(_spectral)?_rasterizer" scenes/` (an MLT chunk keyword at
+line start) now finds 6 shipped MLT scenes after legacy-deprecation slice B2
+moved the rest to BDPT: `scenes/Tests/Legacy/` x3 (`cornellbox_mlt_fast`,
+`mlt_deep_fog`, `mlt_deep_fog_spectral`), `scenes/Tests/Materials/spectral_skinmodel`,
+`scenes/Tests/SubsurfaceScattering/rwsss_bdpt` and
+`scenes/FeatureBased/BDPT/bdpt_torus_chain_atrium`.  The original review
+(10 scenes, pre-B2) read as follows; the same-named scenes that now render
+with BDPT keep their `max_eye_depth`. Every one set `max_eye_depth` <= 12
 (`mlt_veach_egg.RISEscene`: 4; `cornellbox_mlt_fast.RISEscene` /
 `cornellbox_mlt.RISEscene`: 4; `hwss_mlt_spectral_cornellbox.RISEscene` /
 `cornell_mlt.RISEscene`: 5; `mlt_keyhole.RISEscene`: 8;

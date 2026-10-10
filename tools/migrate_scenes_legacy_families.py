@@ -877,16 +877,20 @@ def migrate_iridescent(text, report, rel=None):
                     ed.insert_before(d.kw_line, chunk_lines('scalar_painter', [('name', nm_), ('file', fn)], None, dind) + [''])
             if d.kw == 'perfectreflector_material':
                 th = match_thickness(target, _TF_TI)
+                th_matched = th
                 ov = FILM_OVERRIDE.get(rel, {}).get(pname)
+                override_note = ''
                 if ov is not None:
-                    hue_src += '; OVERRIDDEN to %d nm by owner ruling 2026-10-10 (keeps the purple look; FILM_OVERRIDE)' % ov
                     th = ov
+                    override_note = ('; OVERRIDDEN to %d nm by owner ruling 2026-10-10 (keeps the purple look; '
+                                     'FILM_OVERRIDE)' % ov)
                 params = [('name', d.name()), ('rd', 'none'), ('rs', white), ('alphax', fmt_num(IRID_MIRROR_ALPHA)),
                           ('alphay', fmt_num(IRID_MIRROR_ALPHA)), ('fresnel_mode', 'thinfilm'), ('ior', 'tf_Ti_n'),
                           ('extinction', 'tf_Ti_k'), ('film_ior', 'tf_TiO2_n'), ('film_extinction', 'tf_TiO2_k'),
                           ('film_thickness', str(th))]
-                desc = ('perfectreflector with iridescent `%s` -> near-mirror (alpha %s) TiO2 film %d nm over titanium, '
-                        'thickness matching %s' % (pname, fmt_num(IRID_MIRROR_ALPHA), th, hue_src))
+                desc = ('perfectreflector with iridescent `%s` -> near-mirror (alpha %s) TiO2 film over titanium, '
+                        'thickness %d nm matching %s%s' % (pname, fmt_num(IRID_MIRROR_ALPHA), th_matched, hue_src,
+                                                           override_note))
             else:
                 th = match_thickness(target, _TF_DIEL)
                 params = [('name', d.name()), ('rd', avg), ('rs', white), ('alphax', fmt_num(IRID_PEARL_ALPHA)),
