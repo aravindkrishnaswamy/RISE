@@ -4736,6 +4736,24 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     # for any sky type we can read parameters from.
     lights.extend(_synthesise_world_lights(scene, state))
 
+    # A world that does not use nodes renders its viewport colour as a
+    # uniform background in Cycles.  `_world_radiance_map` returns None for
+    # it, so without this the world was simply dropped unless the deprecated
+    # `use_world_ambient` approximation was on.  With that toggle OFF (the
+    # default; legacy-deprecation Phase 2 slice C, owner ruling #5) the world
+    # colour becomes a uniform environment light -- the same
+    # `world_radiance_uniform` painter a node-based uniform Background gets.
+    # A .blend that explicitly enabled `use_world_ambient` keeps the ambient
+    # approximation below, unchanged.
+    if (world_radiance_painter is None and not render_settings.use_world_ambient
+            and scene.world is not None and not scene.world.use_nodes):
+        world_rgb = _float_color3(scene.world.color)
+        if any(c > 0.0 for c in world_rgb):
+            world_radiance_painter = _add_uniform_painter(state, "world_radiance_uniform", world_rgb)
+            world_radiance_scale = 1.0
+            world_radiance_orientation = (0.0, 0.0, 0.0)
+            world_radiance_is_background = True
+
     world_color = (0.0, 0.0, 0.0)
     world_strength = 0.0
     if world_radiance_painter is None and render_settings.use_world_ambient and scene.world is not None:

@@ -951,6 +951,56 @@ class ExporterCoatNormalAlphaTangentGatingTest(unittest.TestCase):
         self.assertIn("tangent_attribute=", self.source)
 
 
+class LegacyDefaultsTest(unittest.TestCase):
+    """Legacy-deprecation Phase 2 slice C: the add-on's defaults must be
+    supported paths.  The frozen integrators (Pixel Rasterizer, MLT) stay
+    selectable but are labelled legacy and are never the default, the
+    deprecated `use_world_ambient` approximation defaults OFF, and with it
+    OFF a world that does not use nodes exports its colour as a uniform
+    environment light (`world_radiance_uniform`) instead of being dropped.
+    Source level, because `properties.py` and `export_scene` import bpy."""
+
+    @classmethod
+    def setUpClass(cls):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "properties.py"), "r", encoding="utf-8") as handle:
+            cls.props = handle.read()
+        with open(_EXPORTER_SOURCE, "r", encoding="utf-8") as handle:
+            cls.exporter = handle.read()
+
+    def _prop_block(self, name):
+        start = self.props.index(f"    {name}: bpy.props.")
+        end = self.props.index("\n    )\n", start)
+        return self.props[start:end]
+
+    def test_default_rasterizer_is_supported(self):
+        block = self._prop_block("rasterizer_type")
+        default = re.search(r'default="(\d+)"', block).group(1)
+        items = dict(re.findall(r'\("(\d+)",\s*"([^"]+)"', block))
+        self.assertIn(default, items)
+        self.assertNotIn("legacy", items[default].lower())
+        self.assertNotIn(default, ("0", "7", "8"))
+
+    def test_frozen_rasterizers_remain_selectable_and_labelled_legacy(self):
+        items = dict(re.findall(r'\("(\d+)",\s*"([^"]+)"', self._prop_block("rasterizer_type")))
+        for key in ("0", "7", "8"):
+            self.assertIn(key, items)
+            self.assertIn("[legacy]", items[key])
+
+    def test_world_ambient_defaults_off(self):
+        self.assertIn("default=False", self._prop_block("use_world_ambient"))
+
+    def test_non_node_world_exports_as_uniform_environment(self):
+        start = self.exporter.index("def export_scene(")
+        end = self.exporter.find("\ndef ", start + 1)
+        body = self.exporter[start:end if end >= 0 else len(self.exporter)]
+        gate = body.index("world_radiance_painter is None and not render_settings.use_world_ambient")
+        self.assertIn("not scene.world.use_nodes", body[gate:gate + 200])
+        self.assertIn('_add_uniform_painter(state, "world_radiance_uniform", world_rgb)', body[gate:])
+        # The explicitly-enabled ambient path is unchanged.
+        self.assertIn("world_radiance_painter is None and render_settings.use_world_ambient", body)
+
+
 class _StubHairMaterial:
     """The subset of `exporter.HairMaterialData` the bridge marshals.
     Deliberately a stand-in rather than the real dataclass: importing
