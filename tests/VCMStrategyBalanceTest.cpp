@@ -2161,14 +2161,14 @@ static const char* kSceneRoughSSSU =
 
 static const char* kRasterizerPTRoughSSSU =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 2048\n\trr_min_depth 8\n\tmax_diffuse_bounce 5\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2048\n\tprogressive_samples_per_pass 1\n\trr_min_depth 8\n\tmax_diffuse_bounce 5\n"
 		"\tmax_glossy_bounce 5\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
 	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_pt_unused\n\ttype EXR\n\tbpp 32\n"
 		"\tcolor_space Rec709RGB_Linear\n}\n";
 
 static const char* kRasterizerVCMRoughSSSU =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 5\n\tmax_light_depth 5\n\tsamples 2048\n\tmerge_radius 0.0\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 5\n\tmax_light_depth 5\n\tsamples 2048\n\tprogressive_samples_per_pass 1\n\tmerge_radius 0.0\n"
 		"\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
 	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_vcm_unused\n\ttype EXR\n\tbpp 32\n"
 		"\tcolor_space Rec709RGB_Linear\n}\n";
@@ -2182,6 +2182,10 @@ static void TestRoughSSSEmptyContainerU()
 // DL-367 measurement: distinguish sample-count drift from salt noise without
 // changing transport. The default gate uses n=8 at its original 2048 spp.
 // Independent SMS-free PT reference; original +/-0.8% physical limit retained.
+// Match PT and merging-off to VM-on’s forced one sample per pass. The old
+// 32-sample reference changes the finite-budget mean; --dl367-unmatched-only
+// retains that strict red comparator. This isolates the reference confound,
+// not the still-unattributed native batching dependence (DL-367 remains open).
 static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool strict, bool unmatched) {
  const unsigned savedSeed=g_seedBase, savedIndex=g_renderIndex;
  auto replace=[](std::string s,const std::string& a,const std::string& b){auto p=s.find(a);if(p!=std::string::npos)s.replace(p,a.size(),b);return s;};
