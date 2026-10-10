@@ -43,7 +43,7 @@
 //  `ReflectionShaderOp` directly and sums their `PerformOperation`
 //  outputs -- exactly what `StandardShader::Shade` does internally.  A
 //  scene-language chunk DOES exist for a bare distribution-tracing op
-//  (`distributiontracing_shaderop`, e.g. `scenes/Tests/Shaders/
+//  (`distributiontracing_shaderop`, e.g. `scenes/Tests/Legacy/
 //  blurry_floor.RISEscene`'s `shaderop dt` + `shaderop
 //  DefaultDirectLighting` pairing) and `DefaultReflection`/
 //  `DefaultRefraction` presets exist too (`Job::InitializeContainers`)
@@ -58,12 +58,14 @@
 //  wherever it stamps a non-delta partner, but `DistributionTracingShaderOp`
 //  has no way to know whether its OWN shader's op list actually
 //  contains a `DirectLightingShaderOp` -- each op is independent, with
-//  no back-reference to its shader.  Every shipped scene that uses
-//  `distributiontracing_shaderop` pairs it with `DefaultDirectLighting`
-//  in the SAME `standard_shader` (`blurry_floor`, `blurry_glass`,
-//  `dielectric_dispersion`, `pillow`, `showroom`, `spotlight_drama`,
-//  `different_rmaps`) EXCEPT ONE: `scenes/Tests/Shaders/
-//  dt_with_irrcache.RISEscene`'s `dist` shader is `[dist,
+//  no back-reference to its shader.  Every shipped scene that used
+//  `distributiontracing_shaderop` (before legacy-deprecation Phase 2 slice
+//  B1 moved all but `different_rmaps` to the path tracer; the originals
+//  this paragraph cites are kept in `scenes/Tests/Legacy/`) paired it
+//  with `DefaultDirectLighting` in the SAME `standard_shader`
+//  (`blurry_floor`, `blurry_glass`, `dielectric_dispersion`, `pillow`,
+//  `showroom`, `spotlight_drama`, `different_rmaps`) EXCEPT ONE:
+//  `scenes/Tests/Legacy/dt_with_irrcache.RISEscene`'s `dist` shader is `[dist,
 //  DefaultEmission]` with NO NEE at all, relying on
 //  `force_check_emitters TRUE` for a pure BSDF-sampling-only indirect
 //  gather onto its `refsphere` receiver -- exactly the configuration
@@ -537,7 +539,7 @@ static void RunDirectLightingAloneRow()
 // chain with NO DirectLightingShaderOp sibling has no NEE to partition
 // against -- its continuation's partner must be 0 (full, unweighted
 // credit), closing DL-209's own shape
-// (scenes/Tests/Shaders/dt_with_irrcache.RISEscene's `[dist,
+// (scenes/Tests/Legacy/dt_with_irrcache.RISEscene's `[dist,
 // DefaultEmission]`).  `chainHasNEEOp = true` reproduces the DL-171-v1
 // (pre-this-ruling) behaviour that DL-209 was filed against.
 //////////////////////////////////////////////////////////////////////

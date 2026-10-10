@@ -23,11 +23,14 @@
 //  any tier code) by building that commit's library and running this
 //  very file against it with --print.
 //
-//  Legacy-deprecation Phase 2 (2026-10-10) migrated four of these scenes'
-//  shipped copies off the frozen pixel rasterizers; the cases now point at
-//  VERBATIM copies of the originals in scenes/Tests/Legacy/ (the
-//  frozen-feature regression corpus, see its README), so the parent hashes
-//  are unchanged.
+//  Legacy-deprecation Phase 2 (slice A 2026-10-10: four scenes; slice B1
+//  2026-10-10: ten more) migrated the shipped copies of these scenes off the
+//  frozen pixel rasterizers; the cases now point at copies of the originals
+//  in scenes/Tests/Legacy/ (the frozen-feature regression corpus, see its
+//  README), identical except for their output file names (`rendered/
+//  legacy_<name>`, which the hash never sees), so the parent hashes are
+//  unchanged.  Only visiblehuman (direct volume rendering, kept frozen) and
+//  composite_material still render from their shipped locations.
 //
 //  Determinism: one render per PROCESS (render-global RNG state carries
 //  over between in-process renders), so the default mode re-executes
@@ -82,25 +85,34 @@ namespace RISE
 	bool RISE_CreateJobPriv( IJobPriv** ppi );
 }
 
-//! One shipped scene per legacy family, with the hash measured on 4694f511c.
+//! One shipped scene per legacy family, with the hash measured on 4694f511c
+//! (the last two rows: on 83aa86d2f, see their comment).
 struct IdentityCase { const char* scene; const char* families; unsigned long long parentHash; };
 static const IdentityCase kCases[] = {
-	{ "scenes/Tests/Shaders/arealight_shaderop.RISEscene",                 "pixelpel_rasterizer, arealight_shaderop",                      0x93e83b7e2a654a25ull },
-	{ "scenes/Tests/Legacy/uniform_green_spectral.RISEscene",              "pixelintegratingspectral_rasterizer",                          0xa04a111006083383ull },
-	{ "scenes/Tests/Materials/dielectric_dispersion.RISEscene",            "distributiontracing_shaderop",                                 0x66f9ef03248c7df6ull },
-	{ "scenes/Tests/GlobalIllumination/cornellbox_fg.RISEscene",           "finalgather_shaderop, global photon map",                      0x37e78f37d18c1a38ull },
-	{ "scenes/Tests/SubsurfaceScattering/sss_ibl.RISEscene",               "simple_sss_shaderop, ambientocclusion_shaderop",               0x63dccf2811bd3196ull },
-	{ "scenes/Tests/SubsurfaceScattering/sss.RISEscene",                   "diffusion_approximation_sss_shaderop",                         0xd1caa85dfbf4ea61ull },
-	{ "scenes/Tests/Legacy/transparency_shaderop.RISEscene",               "transparency_shaderop",                                        0x418bd9f01d1c0b81ull },
-	{ "scenes/Tests/Caustics/rgb_dispersive_caustic.RISEscene",            "caustic_pel_photonmap / gather",                               0xb898fe392a08ef1eull },
-	{ "scenes/FeatureBased/Combined/showroom.RISEscene",                   "irradiance_cache, iridescent_painter, polished_material",      0x7c020159f47bb489ull },
-	{ "scenes/Tests/Materials/composite_material.RISEscene",               "composite_material",                                           0x04c301c05241164dull },
-	{ "scenes/FeatureBased/Shaders/visiblehuman.RISEscene",                "directvolumerendering_shader",                                 0x7df386e9e94b9a43ull },
-	{ "scenes/Tests/Legacy/gltf_box.RISEscene",                            "ambient_light",                                                0xf20722df16b8a405ull },
-	{ "scenes/FeatureBased/Animation/translucent_bunny.RISEscene",         "directlighting_shaderop, iridescent_painter",                  0x1513c77a209e3928ull },
-	{ "scenes/Tests/Legacy/materials.RISEscene",                           "cooktorrance, schlick, ward x2, ashikminshirley materials",   0x01ae464015b8402eull },
-	{ "scenes/Tests/Shaders/blurry_floor.RISEscene",                       "isotropic_phong_material",                                     0xf8dba1adcd1f03a9ull },
-	{ "scenes/FeatureBased/Geometry/teapot.RISEscene",                     "polished_material, bezierpatch_geometry",                      0x747dd21312bf8410ull },
+	{ "scenes/Tests/Legacy/arealight_shaderop.RISEscene",                     "pixelpel_rasterizer, arealight_shaderop",                      0x93e83b7e2a654a25ull },
+	{ "scenes/Tests/Legacy/uniform_green_spectral.RISEscene",                 "pixelintegratingspectral_rasterizer",                          0xa04a111006083383ull },
+	{ "scenes/Tests/Legacy/dielectric_dispersion.RISEscene",                  "distributiontracing_shaderop",                                 0x66f9ef03248c7df6ull },
+	{ "scenes/Tests/Legacy/cornellbox_fg.RISEscene",                          "finalgather_shaderop, global photon map",                      0x37e78f37d18c1a38ull },
+	{ "scenes/Tests/Legacy/sss_ibl.RISEscene",                                "simple_sss_shaderop, ambientocclusion_shaderop",               0x63dccf2811bd3196ull },
+	{ "scenes/Tests/Legacy/sss.RISEscene",                                    "diffusion_approximation_sss_shaderop",                         0xd1caa85dfbf4ea61ull },
+	{ "scenes/Tests/Legacy/transparency_shaderop.RISEscene",                  "transparency_shaderop",                                        0x418bd9f01d1c0b81ull },
+	{ "scenes/Tests/Legacy/rgb_dispersive_caustic.RISEscene",                 "caustic_pel_photonmap / gather",                               0xb898fe392a08ef1eull },
+	{ "scenes/Tests/Legacy/showroom.RISEscene",                               "irradiance_cache, iridescent_painter, polished_material",      0x7c020159f47bb489ull },
+	{ "scenes/Tests/Materials/composite_material.RISEscene",                  "composite_material",                                           0x04c301c05241164dull },
+	{ "scenes/FeatureBased/Shaders/visiblehuman.RISEscene",                   "directvolumerendering_shader",                                 0x7df386e9e94b9a43ull },
+	{ "scenes/Tests/Legacy/gltf_box.RISEscene",                               "ambient_light",                                                0xf20722df16b8a405ull },
+	{ "scenes/Tests/Legacy/translucent_bunny.RISEscene",                      "directlighting_shaderop, iridescent_painter",                  0x1513c77a209e3928ull },
+	{ "scenes/Tests/Legacy/materials.RISEscene",                              "cooktorrance, schlick, ward x2, ashikminshirley materials",    0x01ae464015b8402eull },
+	{ "scenes/Tests/Legacy/blurry_floor.RISEscene",                           "isotropic_phong_material",                                     0xf8dba1adcd1f03a9ull },
+	{ "scenes/Tests/Legacy/teapot.RISEscene",                                 "polished_material, bezierpatch_geometry",                      0x747dd21312bf8410ull },
+	// Added by Phase 2 slice B1 (2026-10-10): the last shipped renders of the
+	// spectral caustic photon map and of a distribution-tracing chain with
+	// irradiance caching and no direct-lighting sibling (DL-209's shape) moved
+	// to the path tracer, so their originals are pinned here too.  These two
+	// hashes were measured on master 83aa86d2f (slice B1 changes no engine
+	// code), not on 4694f511c.
+	{ "scenes/Tests/Legacy/spectral_dispersive_caustic.RISEscene",            "caustic_spectral_photonmap / gather",                          0xde3e541aabc6683cull },
+	{ "scenes/Tests/Legacy/dt_with_irrcache.RISEscene",                       "distributiontracing_shaderop irradiance_caching",              0xe4cb2784e62547a4ull },
 };
 
 static int g_pass = 0, g_fail = 0;
@@ -260,7 +272,7 @@ int main( int argc, char** argv )
 		if( printOnly ) { std::printf( "  { \"%s\", 0x%016llxull },\n", c.scene, h ); continue; }
 		Check( got, std::string( c.scene ) + " renders (" + c.families + ")" );
 		char msg[512];
-		std::snprintf( msg, sizeof( msg ), "%s [%s] hash %016llx == parent 4694f511c's %016llx", c.scene, c.families, h, c.parentHash );
+		std::snprintf( msg, sizeof( msg ), "%s [%s] hash %016llx == pinned parent hash %016llx", c.scene, c.families, h, c.parentHash );
 		Check( got && h == c.parentHash, msg );
 	}
 	if( printOnly ) return 0;

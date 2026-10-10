@@ -1,0 +1,352 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           dielectric_dispersion.RISEscene                                                         #
+#   Description:    Demonstrates RGB dispersion with a dielectric, as well as R,G,B independent scattering  #
+#                     values for incoherent scattering                                                      #
+#   Author:         Really simple dispersion                                                                #
+#   Birthdate:      March 2, 2005                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/legacy_dielectric_dispersion
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+distributiontracing_shaderop
+{
+	name			dt
+	samples			4
+	reflections		false
+}
+
+advanced_shader
+{
+	name				adv
+	shaderop			DefaultRefraction			2		100			+
+	shaderop			dt							1		1			+
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			600
+	height			300
+}
+
+pinhole_camera
+{
+	location			0 0 0.45
+	lookat				0 0 0
+	up					0 1 0
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_cream
+	color		0.7 0.7 0.7
+}
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+checker_painter
+{
+	name				pnt_checker
+	colora				color_black
+	colorb				color_cream
+	size				0.05
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				checker
+	reflectance			pnt_checker
+}
+
+
+
+dielectric_material
+{
+	name				funkya
+	tau			1
+	ior			1.33 1.57 2.57
+	scattering			10000
+}
+
+dielectric_material
+{
+	name				funkyb
+	tau			1
+	ior					1.33
+	scattering			500 5000 1e+09
+}
+
+
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.1
+}
+
+cylinder_geometry
+{
+	name				cylgeom
+	axis				y
+	radius				0.005
+	height				0.24
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.4
+	ytile				0.4
+}
+
+standard_object
+{
+	name				spherea
+	geometry			spheregeom
+	material			funkya
+	orientation			0 0 0
+	position			-0.11 0 0
+	shader				adv
+}
+
+standard_object
+{
+	name				sphereb
+	geometry			spheregeom
+	material			funkyb
+	orientation			0 0 0
+	position			0.11 0 0
+	shader				adv
+}
+
+standard_object
+{
+	name				cylindera
+	geometry			cylgeom
+	material			white
+	orientation			0 0 15
+	position			-0.11 0 0
+	receives_shadows	FALSE
+}
+
+standard_object
+{
+	name				cylinderb
+	geometry			cylgeom
+	material			white
+	orientation			0 0 15
+	position			0.11 0 0
+	receives_shadows	FALSE
+}
+
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.2 0.2 -0.3
+	material			checker
+	receives_shadows	FALSE
+}
+
+omni_light
+{
+	name		lightA
+	power		3.14
+	color		1.0 1.0 1.0
+	position	0.0 0.0 0.65
+}
+
+
