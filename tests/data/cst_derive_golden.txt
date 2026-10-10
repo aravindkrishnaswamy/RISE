@@ -21,7 +21,7 @@ scenes/FeatureBased/Combined/pavilion_colonnade.RISEscene  4c184052a33fa7243b5d1
 scenes/FeatureBased/Combined/planetary_survey.RISEscene  628fc339d9920cfe332209ab98ee8ff5098a91a3abd192230847325ff0eaabf9  6242  74
 scenes/FeatureBased/Combined/sculptors_studio.RISEscene  081726c690923b7018958569f4f92c2b46776f9b1563649845535492ee59ceb2  5946  63
 scenes/FeatureBased/Combined/showroom.RISEscene  1bd891be4784e99876a45cd1495dc1a1f4a5d3f2b28942411771f54cbe8b93fd  3910  54
-scenes/FeatureBased/Combined/spotlight_drama.RISEscene  0a6ec96e69d3b95ff025e7ca38b48ed24919720fb393ae6275017efb664d5365  3372  49
+scenes/FeatureBased/Combined/spotlight_drama.RISEscene  a40ac097c7bb4716ef207d95dd7b0eea9a88a51c3aec137e4227d930446335f1  3597  50
 scenes/FeatureBased/Combined/tidepools.RISEscene  56c2f5a784988f4f526d424fdf3e45d6a5c3f4d99e8a9ded10973feb115c1a1b  5655  63
 scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene  f37ba3f60b7085d0d500b8e5db22007f144d4f8520bac26a758818d93f5edc04  11543  126
 scenes/FeatureBased/Geometry/aphrodite.RISEscene  0789f39995e8e7bd2cb0d4ab57beb4f39efb8d6846c82ea28b97886f85d23ee5  1139  27

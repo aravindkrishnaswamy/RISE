@@ -648,11 +648,12 @@ pixel-rasterizer families):**
   firefly-dominated (salt sd 12%, standard error 0.008), so the retune target (a 3-salt 0.2198)
   is within the legacy noise and was not chased further.
   `spotlight_drama`'s dragon was re-authored as green jade (Christensen-Burley SSS with the
-  authored jade colour 0.15 0.25 0.15 as albedo, 10-per-unit falloff) and every light
-  scaled (spots x0.2904, backlight x0.29); whole image 1.010 vs legacy 1.010, dragon region 0.41 vs 0.074 (5.6x, from
-  84x migrated).  Under the scene's red and blue spots the jade reads lavender-pink, not
-  green (median dragon pixel 0.74 0.27 0.34); a green read needs a whiter key on the dragon,
-  which is a lighting-design call.
+  authored jade colour 0.15 0.25 0.15 as albedo, 10-per-unit falloff) and, by owner option (b),
+  given a soft white key (`dragon_key`, spot from the camera side above it, power 900); the red
+  spot now lights the backdrop behind the dragon (power 7100), the blue spot's cone narrows to
+  20/40 on the bunny (power 24800) and the amber spot's to 15/30 on the pedestal (power 6534).
+  Whole image 1.013 vs legacy 1.010; the dragon (masked) reads 0.247 vs legacy 0.087 (2.9x, from
+  6.4x as migrated) with a green-dominant median pixel (0.099 0.159 0.109).
 - **Per-object `radiance_map` FROZEN (owner-approved 2026-10-10):** its subject scene
   `different_rmaps` moved unmigrated to `scenes/Tests/Legacy/` (output
   `rendered/legacy_different_rmaps`, render hash pinned in `LegacyTierRenderIdentityTest`),

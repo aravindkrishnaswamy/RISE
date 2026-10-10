@@ -476,16 +476,16 @@ standard_object
 # Lights - Colored spot lights for dramatic effect
 ##################################################
 
-# Red spot from upper left - illuminates the dragon
+# Red spot from upper left - lights the backdrop behind the dragon
 spot_light
 {
 	name				spot_red
 	position			-7 10 6
-	target				-4 3 1
+	target				-4 4 -8
 	color				1.0 0.2 0.15
 	colorspace			sRGB
-	# Phase 2 slice B1 retune (owner-approved): power 20000.0 -> 5808; with the jade dragon re-authored, x0.2904 on the three spots (x0.29 on the backlight) restores the legacy whole-image mean (the legacy SSS ops' irrad_scale fudge had set its brightness)
-	power				5808
+	# Phase 2 slice B1 (owner-approved, option b): re-aimed from the dragon to the backdrop behind it (target -4 3 1 -> -4 4 -8), power 20000 -> 7100, so the jade dragon is no longer drowned in red and the red stays as the dramatic backdrop
+	power				7100
 	inner				30
 	outer				80
 }
@@ -498,10 +498,10 @@ spot_light
 	target				4 3 2
 	color				0.2 0.3 1.0
 	colorspace			sRGB
-	# Phase 2 slice B1 retune (owner-approved): power 30000.0 -> 8712; with the jade dragon re-authored, x0.2904 on the three spots (x0.29 on the backlight) restores the legacy whole-image mean (the legacy SSS ops' irrad_scale fudge had set its brightness)
-	power				8712
-	inner				30
-	outer				80
+	# Phase 2 slice B1 (owner-approved, option b): cone narrowed 30/80 -> 20/40 so it stays on the bunny instead of tinting the dragon, power 30000 -> 24800 to keep the whole-image mean
+	power				24800
+	inner				20
+	outer				40
 }
 
 # Warm amber spot from directly above center
@@ -512,21 +512,36 @@ spot_light
 	target				0 2 -2
 	color				1.0 0.8 0.4
 	colorspace			sRGB
-	# Phase 2 slice B1 retune (owner-approved): power 15000.0 -> 4356; with the jade dragon re-authored, x0.2904 on the three spots (x0.29 on the backlight) restores the legacy whole-image mean (the legacy SSS ops' irrad_scale fudge had set its brightness)
-	power				4356
-	inner				30
-	outer				80
+	# Phase 2 slice B1 (owner-approved, option b): cone narrowed 30/80 -> 15/30 so it lights the centre pedestal, not the dragon, power 15000 -> 6534
+	power				6534
+	inner				15
+	outer				30
 }
 
 # Subtle cool rim light from behind
 directional_light
 {
 	name				backlight
-	# Phase 2 slice B1 retune (owner-approved): power 30.0 -> 8.7; with the jade dragon re-authored, x0.29 on the backlight (x0.2904 on the three spots) restores the legacy whole-image mean (the legacy SSS ops' irrad_scale fudge had set its brightness)
+	# Phase 2 slice B1 (owner-approved, option b): power 30 -> 8.7
 	power				8.7
 	color				0.6 0.65 0.8
 	colorspace			sRGB
 	direction			0 -0.3 1
+}
+
+# Soft white key on the jade dragon from the camera side, above it (legacy-deprecation Phase 2
+# slice B1, owner-approved option b): the white light is what lets the authored jade colour read
+# as green against the coloured spots (whole image 1.013 vs legacy 1.010; dragon 2.9x the legacy
+# dragon, median pixel green-dominant)
+spot_light
+{
+	name				dragon_key
+	position			-1 10 15
+	target				-3.5 2.5 3
+	color				1 1 1
+	power				900
+	inner				20
+	outer				35
 }
 
 
