@@ -626,44 +626,58 @@ pixel-rasterizer families):**
   objects of seven scenes converted to `subsurfacescattering_material`; `translucent_bunny`
   (iridescent) and `sss_colorvariation` (checker) keep their `translucent_material`,
   because a uniform-coefficient SSS material cannot carry a spatially or angularly
-  varying colour.  26 scenes change by under 10% (`blurry_floor` and `pillow`, whose DT ops
+  varying colour.  As migrated (before the retunes below), 26 scenes changed by under 10% (`blurry_floor` and `pillow`, whose DT ops
   are glossy-only, reproduce the legacy mean at bounce 0); the 18 larger changes each carry a
   MEASURED cause in the gallery: fudge factors removed (`irrad_scale`, `power_scale`;
   doubling a scene's `irrad_scale` moves its legacy mean linearly), indirect light the
   legacy chain did not have or truncated (checked by PT at `max_diffuse_bounce` 0/1/2 vs
   the legacy image, e.g. `ambocc_ibl` matches the legacy mean exactly at bounce 0), the dropped AO term (`showroom`), and chains with no direct
-  lighting (`diacaustic`, `motion_blurred_caustic`).  **No lighting was retuned**; the
-  gallery lists, per showcase, the measured knob that restores the legacy mean.
-  `photon_cloister` renders blown out and should get its proposed retune before merge
-  (ceiling luminaire scales 12000 / 10000 -> 29 / 24: the one-sided disks face the
-  ceiling 8 cm above them, and the legacy chain's global photon map read that bounce
-  ~150x below PT's converged value).
-- **Held:** `Tests/Shaders/different_rmaps` -- its subject is per-OBJECT `radiance_map`,
-  which only the legacy shader-op chain honours (the ops forward
-  `RayIntersection::pRadianceMap`; PT, BDPT and VCM read only the rasterizer's map), so
-  the tool now refuses an object-level `radiance_map`.  Owner decision needed: implement
-  per-object maps in PT, freeze the parameter, or accept losing it.
+  lighting (`diacaustic`, `motion_blurred_caustic`).
+- **Owner-approved retunes (2026-10-10)** bring twelve scenes back within 1% of their
+  legacy means (each carries a comment naming the retune and why); the six remaining
+  changes over 10% (`diacaustic`, `motion_blurred_caustic`, `rgb_dispersive_caustic`,
+  `triplecaustic`, `cornellbox_fg`, `ambocc_ibl`) are test scenes whose legacy image was
+  biased (no direct light, a truncated or missing indirect bounce) and stay as rendered: `glass_pavilion` omni 15 / 25 -> 5.6 / 9.3,
+  `sss_gi_dragon` light scale 8.2 -> 3.8, `showroom` `radiance_scale` 1.75 (measured),
+  `pool_caustics` spots x0.75, `translucent_bunny` omni 2.0 -> 2.9, `crystal_lens`
+  `radiance_scale` 0.85 (measured), `sss` omni 500000 -> 280, `sss_different_bsdf` omni
+  x11.4, `sss_ibl` `radiance_scale` 0.78, `caustic_sss` spot x18.  `photon_cloister`'s
+  one-sided ceiling disks, which faced the ceiling 8 cm above them, were FLIPPED to emit
+  into the room and their scales set to 5.5 / 4.58 (from 12000 / 10000).
+  `spotlight_drama`'s dragon was re-authored as green jade (Christensen-Burley SSS with the
+  authored jade colour 0.15 0.25 0.15 as albedo, 10-per-unit falloff) and every light
+  scaled x0.29; whole image 1.010 vs legacy 1.010, dragon region 0.41 vs 0.074 (5.6x, from
+  84x migrated).  Under the scene's red and blue spots the jade reads lavender-pink, not
+  green (median dragon pixel 0.74 0.27 0.34); a green read needs a whiter key on the dragon,
+  which is a lighting-design call.
+- **Per-object `radiance_map` FROZEN (owner-approved 2026-10-10):** its subject scene
+  `different_rmaps` moved unmigrated to `scenes/Tests/Legacy/` (output
+  `rendered/legacy_different_rmaps`, render hash pinned in `LegacyTierRenderIdentityTest`),
+  because only the legacy shader-op chain honours an object's own `radiance_map` (the ops
+  forward `RayIntersection::pRadianceMap`; PT, BDPT and VCM read only the rasterizer's map).
+  The tool refuses an object-level `radiance_map`, and `DeriveToJob` logs one warning when a
+  scene sets one under a supported rasterizer (no render change; SCENE_CONVENTIONS 11.4).
 - **Coverage kept (ruling #17):** `scenes/Tests/Legacy/` gains the originals of
   `arealight_shaderop`, `dielectric_dispersion`, `cornellbox_fg`, `sss_ibl`, `sss`,
   `rgb_dispersive_caustic`, `showroom`, `translucent_bunny`, `blurry_floor`, `teapot`
   (the `LegacyTierRenderIdentityTest` cases, parent hashes unchanged),
   `spectral_dispersive_caustic` and `dt_with_irrcache` (newly pinned, hashes measured on
   83aa86d2f).  After B1 the only shipped scenes still on a legacy pixel rasterizer are
-  `visiblehuman` (frozen DVR), `shapes` and `kaleidoscope_atrium` (slice C) and
-  `different_rmaps` (held).
+  `visiblehuman` (frozen DVR) and `shapes` and `kaleidoscope_atrium` (slice C).
 - **Found, not fixed:** VCM renders neither `ambient_light` nor directional lights (the
   tool now refuses such a migration unless told to drop them), so `caustic_sss`'s ambient
   term (1.2% of its legacy image) is gone until B2 moves ambient to a `radiance_map`;
-  `scenes/pr.RISEscene` (the CLI performance-rating scene) moved to PT, so ratings are not
-  comparable across this change.  `AutoRasterizerTest` is a PRE-EXISTING flaky test: the
+  `scenes/pr.RISEscene` (the CLI performance-rating scene, `DoPerformanceRating`) moved to
+  PT, so performance ratings from this change on are not comparable with earlier ones (the
+  scene header says so).  `AutoRasterizerTest` is a PRE-EXISTING flaky test: the
   slice review reproduced 153/4, 155/2 and 150/7 at load ~5 on the slice's base, master
   and this branch alike (the failures are `ggx_showcase` / `corridor_100lights` probe
   routing, scenes this slice does not touch); it is filed separately.  Its checks on the
   migrated `gi_spheres`, `glass_pavilion` and `spectral_dispersive_caustic` pass.
 - **Left for slice B2:** the step-5 families inside scenes on supported rasterizers (R13
   materials, R11 `ambient_light` -- including the five `PixelFilters` scenes and
-  `caustic_sss` migrated here, R14 `iridescent_painter`, R12 MLT), and the owner's call on
-  the proposed showcase retunes.  **Slice C** unchanged.
+  `caustic_sss` migrated here (whose spot retune assumed the ambient term stays dropped),
+  R14 `iridescent_painter`, R12 MLT).  **Slice C** unchanged.
 
 **Phase 3 — remove: ON HOLD by owner ruling (2026-10-09); nothing below is scheduled.** (Original plan: several slices; each slice must update all five build projects per
 CLAUDE.md).** Order from least coupled:

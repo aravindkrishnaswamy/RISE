@@ -795,7 +795,8 @@ spot_light
 	target				0 -2 -0.5
 	color				1.0 0.96 0.86
 	colorspace			sRGB
-	power				100.0
+	# Phase 2 slice B1 retune (owner-approved): power 100.0 -> 75; the legacy photon-map caustic was dimmer than the physical one VCM renders (scene mean +34%)
+	power				75
 	inner				22
 	outer				55
 }
@@ -807,7 +808,8 @@ spot_light
 	target				0 0 0
 	color				1.0 0.96 0.92
 	colorspace			sRGB
-	power				150.0
+	# Phase 2 slice B1 retune (owner-approved): power 150.0 -> 112.5; the legacy photon-map caustic was dimmer than the physical one VCM renders (scene mean +34%)
+	power				112.5
 	inner				70
 	outer				120
 	shootphotons	    FALSE

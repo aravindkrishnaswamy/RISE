@@ -636,7 +636,8 @@ standard_object
 omni_light
 {
 	name				ceiling_light
-	power				15.0
+	# Phase 2 slice B1 retune (owner-approved): power 15.0 -> 5.6; the legacy chain shaded the walls with direct light only, and path-traced indirect light brightened the room 2.7x
+	power				5.6
 	color				1.0 0.98 0.92
 	colorspace			sRGB
 	position			0 4.5 0
@@ -645,7 +646,8 @@ omni_light
 omni_light
 {
 	name				fill_light
-	power				25
+	# Phase 2 slice B1 retune (owner-approved): power 25 -> 9.3; the legacy chain shaded the walls with direct light only, and path-traced indirect light brightened the room 2.7x
+	power				9.3
 	color				0.9 0.92 1.0
 	colorspace			sRGB
 	position			3 3 4
