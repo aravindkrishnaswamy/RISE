@@ -2172,35 +2172,21 @@ static const char* kRasterizerVCMRoughSSSU =
 	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_vcm_unused\n\ttype EXR\n\tbpp 32\n"
 		"\tcolor_space Rec709RGB_Linear\n}\n";
 
+static void MeasureRoughSSSU(unsigned samples, bool gate=false);
 static void TestRoughSSSEmptyContainerU()
 {
-	std::cout << "Testing PT-vs-VCM: topology U, rough subsurfacescattering_material sheets (DL-307 / DL-317)" << std::endl;
-	const std::string ptScene  = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerPTRoughSSSU  + kSceneRoughSSSU;
-	const std::string vcmScene = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerVCMRoughSSSU + kSceneRoughSSSU;
-	const std::string ptPath  = WriteSceneToTempFile( ptScene.c_str(),  "pt_sss"  );
-	const std::string vcmPath = WriteSceneToTempFile( vcmScene.c_str(), "vcm_sss" );
-	const ImageStats pt  = ptPath.empty()  ? ImageStats{} : RenderAndComputeStats( ptPath.c_str() );
-	const ImageStats vcm = vcmPath.empty() ? ImageStats{} : RenderAndComputeStats( vcmPath.c_str() );
-	if( !ptPath.empty() )  std::remove( ptPath.c_str() );
-	if( !vcmPath.empty() ) std::remove( vcmPath.c_str() );
-	Check( pt.valid && vcm.valid, "DL-307 topology U renders produced output" );
-	if( !pt.valid || !vcm.valid ) return;
-	const double mPT  = ( pt.mean[0]  + pt.mean[1]  + pt.mean[2]  ) / 3.0;
-	const double mVCM = ( vcm.mean[0] + vcm.mean[1] + vcm.mean[2] ) / 3.0;
-	const double rel = mVCM / mPT - 1.0;
-	std::printf( "    PT %.7f  VCM %.7f  VCM/PT %+.3f%%  (band +/- 0.8%%)\n",
-		mPT, mVCM, 100.0 * rel );
-	Check( std::isfinite( rel ) && std::fabs( rel ) <= 0.008,
-		"DL-307 / DL-317 topology U: VCM/PT within +/- 0.8% (pre-DL-317 -5.2%, pre-DL-307 -6.1%)" );
+    MeasureRoughSSSU(2048,true);
 }
 
 // DL-367 measurement: distinguish sample-count drift from salt noise without
-// changing the parity gate or the transport. Independent SMS-free PT reference.
-static void MeasureRoughSSSU(unsigned samples) {
+// changing transport. The default gate uses n=8 at its original 2048 spp.
+// Independent SMS-free PT reference; original +/-0.8% physical limit retained.
+static void MeasureRoughSSSU(unsigned samples, bool gate) {
+ const unsigned savedSeed=g_seedBase, savedIndex=g_renderIndex;
  auto replace=[](std::string s,const std::string& a,const std::string& b){auto p=s.find(a);if(p!=std::string::npos)s.replace(p,a.size(),b);return s;};
  std::vector<double> pt,on,off;
  for(unsigned i=0;i<8;++i) {
-  g_seedBase=367001+101*i;
+  g_seedBase=367001+101*i; g_renderIndex=0;
   auto render=[&](const char* raster,bool merging){
    std::string r=replace(raster,"samples 2048","samples "+std::to_string(samples));
    if(!merging)r=replace(r,"vm_enabled true","vm_enabled false");
@@ -2213,9 +2199,16 @@ static void MeasureRoughSSSU(unsigned samples) {
   on.push_back(render(kRasterizerVCMRoughSSSU,true));
   off.push_back(render(kRasterizerVCMRoughSSSU,false));
  }
+ g_seedBase=savedSeed;g_renderIndex=savedIndex;
  auto stat=[](const std::vector<double>& v){double m=0,ss=0;for(double x:v)m+=x;m/=v.size();for(double x:v)ss+=(x-m)*(x-m);return std::make_pair(m,std::sqrt(ss/(v.size()-1)/v.size()));};
  auto p=stat(pt),a=stat(on),b=stat(off);
  std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
+ if(gate) {
+  const double ratio=a.first/p.first, uncertainty=3*std::hypot(a.second,p.second)/p.first;
+  std::printf("DL367 default n=8 PT sd=%.9g on sd=%.9g off sd=%.9g ratio3SE=%.9g physical band=0.008\n",p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.),uncertainty);
+  Check(std::isfinite(ratio)&&std::fabs(ratio-1)<=.008,"topology U salted mean retains +/-0.8% parity limit");
+  Check(uncertainty<=.008,"topology U salted mean resolves the 0.8% precision budget");
+ }
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2715,11 +2708,53 @@ static void TestDepthCappedWallDL380()
 		kLightSpotDL317, 16, 1, 2048, n, ptSpot, 0.035 );
 }
 
+// Eight fixed salted triples keep F1 independent of earlier suite renders.
+// Ratio SD is measured across complete renders, not across correlated pixels.
+static void TestFurnaceF1Salted()
+{
+    const unsigned savedSeed=g_seedBase, savedIndex=g_renderIndex;
+    std::vector<double> values[3];
+    bool valid=true;
+    for(unsigned rep=0;rep<8;++rep) {
+        g_seedBase=savedSeed+317001+101*rep; g_renderIndex=0;
+        for(int mode=0;mode<3;++mode) {
+            double value=0;
+            const char* kind=mode==0?"pt":mode==1?"vcm":"vcmnovm";
+            const bool ok=RenderMeanDL317(std::string(kMatFurnaceRandomWalkDL317)+kSceneFurnaceHeadDL317,
+                RasterizerDL317(kind,256,"pnt_env_f"),1,value);
+            Check(ok,"F1 salted render produces finite output"); valid=valid&&ok;
+            values[mode].push_back(value);
+        }
+    }
+    g_seedBase=savedSeed; g_renderIndex=savedIndex;
+    if(!valid) return;
+    auto stats=[](const std::vector<double>& v) {
+        double mean=0,ss=0;for(double x:v) mean+=x;mean/=v.size();
+        for(double x:v) ss+=(x-mean)*(x-mean);
+        return std::make_pair(mean,std::sqrt(ss/(v.size()-1)));
+    };
+    for(int mode=0;mode<3;++mode) {
+        const auto st=stats(values[mode]);
+        std::printf("F1 mode=%d n=8 mean=%.9g sd=%.9g\n",mode,st.first,st.second);
+        Check(st.first>=.99,"F1 salted conservative furnace >= 0.99");
+    }
+    const int numerator[3]={1,2,1},denominator[3]={0,0,2};
+    for(int comparison=0;comparison<3;++comparison) {
+        std::vector<double> ratios;
+        for(unsigned rep=0;rep<8;++rep) ratios.push_back(values[numerator[comparison]][rep]/values[denominator[comparison]][rep]);
+        const auto st=stats(ratios);
+        const double band=3*st.second/std::sqrt(8.0)+1e-6;
+        unsigned oldFailures=0;for(double ratio:ratios) if(std::fabs(ratio-1)>.0025) ++oldFailures;
+        std::printf("F1 comparison=%d n=8 ratio=%.9g sd=%.9g 3SE=%.9g old-single-failures=%u\n",comparison,st.first,st.second,band,oldFailures);
+        Check(band<=.0025,"F1 salted ratio resolves the existing 0.25% precision budget");
+        Check(std::fabs(st.first-1)<=band,"F1 salted ratio includes parity in three measured SE");
+        Check(std::fabs(st.first-1)<=.0025,"F1 salted mean retains strict 0.25% physical limit");
+    }
+}
+
 static void TestSSSBarrierDL317()
 {
-	RunSSSBarrierRowDL317( "F1 white furnace, conservative random walk (roughness 0.3)",
-		std::string( kMatFurnaceRandomWalkDL317 ) + kSceneFurnaceHeadDL317, "pnt_env_f",
-		256, 1, 0.0025, 0.99 );
+	TestFurnaceF1Salted();
 	RunSSSBarrierRowDL317( "F2 white furnace, smooth diffusion (parity only)",
 		std::string( kMatFurnaceDiffusionDL317 ) + kSceneFurnaceHeadDL317, "pnt_env_f",
 		256, 1, 0.0125, 0 );
@@ -3188,6 +3223,17 @@ int main( int argc, char** argv )
 		}
 	};
 
+ if(argc>=2 && std::strcmp(argv[1],"--f1-salts")==0) {
+  ApplySeedOverride(2);TestFurnaceF1Salted();
+  std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+ }
+ if(argc>=2 && std::strcmp(argv[1],"--u-salted-only")==0) {
+  const unsigned seed=g_seedBase,index=g_renderIndex;
+  TestRoughSSSEmptyContainerU();
+  Check(g_seedBase==seed,"topology U preserves the caller's salt base");
+  Check(g_renderIndex==index,"topology U preserves the caller's render salt index");
+  std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+ }
  if(argc>=3 && std::strcmp(argv[1],"--dl367-only")==0) {MeasureRoughSSSU(std::strtoul(argv[2],nullptr,10));return failCount?1:0;}
 
 	// DL-317: the delta-lit random-walk wall rows (D1/D2) alone.
