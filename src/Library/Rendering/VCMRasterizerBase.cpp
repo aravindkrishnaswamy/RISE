@@ -610,6 +610,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			pIntegrator->GetEnableVC(),
 			false );
 		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+		mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 
 		mSplatTotalSamples = 1.0;
 		if( pSampling ) {
@@ -807,6 +808,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 				width, height, Scalar( 0 ),
 				pIntegrator->GetEnableVC(), false );
 			SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+			mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 
 			mSplatTotalSamples = 1.0;
 			if( pSampling ) {
@@ -976,6 +978,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		pIntegrator->GetEnableVC(),
 		pIntegrator->GetEnableVM() );
 	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+	mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
@@ -1027,6 +1030,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			pIntegrator->GetEnableVM(),
 			static_cast<Scalar>( pathsShot ) );
 		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+		mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 	}
 
 	// Throughput clamping (kept as secondary safeguard).
@@ -1210,6 +1214,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		pIntegrator->GetEnableVC(),
 		pIntegrator->GetEnableVM() );
 	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+	mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
@@ -1238,6 +1243,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 			pIntegrator->GetEnableVM(),
 			static_cast<Scalar>( pathsShot ) );
 		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+		mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 	}
 
 	// Cap outlier photon throughputs before tree balance.  The biased

@@ -62,6 +62,7 @@
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Interfaces/ILog.h"
 #include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/IOptions.h"
 #include "../src/Library/Rendering/VCMRasterizerBase.h"
 
 using namespace RISE;
@@ -238,7 +239,7 @@ namespace
 		double qTest = -1, double qRef = -1 )
 	{
 		if( !only.empty() && label.find( only ) == std::string::npos ) return -1;
-		std::vector<double> tv, rv, ratios;
+		std::vector<double> tv, rv, ratios, differences;
 		bool valid = true;
 		for( unsigned int t = 0; t < trials; ++t ) {
 			const unsigned int s = seed++;
@@ -249,7 +250,7 @@ namespace
 			if( qRef >= 0 ) VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( qRef );
 			const double b = RenderMean( ref, s );
 			if( !( a > 0 ) || !( b > 0 ) ) valid = false;
-			tv.push_back( a ); rv.push_back( b ); ratios.push_back( a / b );
+			tv.push_back( a ); rv.push_back( b ); ratios.push_back( a / b ); differences.push_back(a - expected*b);
 		}
 		Check( valid, label + ": every render finite and non-black" );
 		if( !valid ) return -1;
@@ -258,14 +259,36 @@ namespace
 		std::cout << std::setprecision( 6 ) << "  " << label << ": test " << st.mean << " +/- " << st.sd
 			<< "  ref " << sr.mean << " +/- " << sr.sd << "  ratio " << ratio << " (expected " << expected
 			<< ", per-pair sd " << sq.sd << ", band " << band << ")" << std::endl;
-		if( band > 0 ) Check( std::fabs( ratio - expected ) < band, label + ": ratio within band" );
+		if (band < 0) {
+            const Stats diff = Summarize(differences);
+            const double se = diff.sd / std::sqrt(double(trials));
+            std::cout << "  paired difference " << diff.mean << " sd " << diff.sd << " n " << trials << " 3SE " << 3*se << std::endl;
+            Check(std::fabs(diff.mean) <= 3*se, label + ": paired difference within 3SE");
+        }
+        if( band > 0 ) Check( std::fabs( ratio - expected ) < band, label + ": ratio within band" );
 		return ratio;
 	}
 }
 
 int main( int argc, char** argv )
 {
-	unsigned int trials = 8;
+	bool boundaryOnly = false, thinningPTOnly = false;
+    for(int i=1;i<argc;++i) if(std::string(argv[i])=="--dl474-boundary-only") boundaryOnly=true;
+    for(int i=1;i<argc;++i) if(std::string(argv[i])=="--dl474-thinning-pt-only") thinningPTOnly=true;
+    std::string boundaryOptions;
+    if(boundaryOnly || thinningPTOnly) {
+        boundaryOptions=WriteScene(std::string("force_number_of_threads 1\nrender_thread_reserve_count 0\n") +
+            (boundaryOnly ? "vcm_volume_merge_neighbours 1\nvcm_volume_merge_footprints 64\n" : ""), "opts");
+        #ifdef _WIN32
+        _putenv_s("RISE_OPTIONS_FILE",boundaryOptions.c_str());
+#else
+        setenv("RISE_OPTIONS_FILE",boundaryOptions.c_str(),1);
+#endif
+        if((boundaryOnly && (GlobalOptions().ReadDouble("vcm_volume_merge_neighbours",0.01)!=1 ||
+           GlobalOptions().ReadDouble("vcm_volume_merge_footprints",2)!=64)) ||
+           GlobalOptions().ReadInt("force_number_of_threads",0)!=1) return 2;
+    }
+    unsigned int trials = 8;
 	for( int i = 1; i < argc; ++i ) {
 		const std::string a( argv[i] );
 		if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
@@ -278,6 +301,27 @@ int main( int argc, char** argv )
 		if( std::string( argv[i] ) == "--only" && i + 1 < argc ) only = argv[++i];
 	}
 
+    if(boundaryOnly) {
+        std::string blackVCM=FogBoxScene(true,512,true), blackPT=FogBoxScene(false,512,true);
+        const std::string white="\treflectance white";
+        for(auto* scene : {&blackVCM,&blackPT}) {
+            scene->insert(scene->find("lambertian_material"), "uniformcolor_painter\n{\n\tname black\n\tcolor 0 0 0\n\tcolorspace Rec709RGB_Linear\n}\n\n");
+            scene->replace(scene->find(white),white.size(),"\treflectance black");
+        }
+        RatioRow("F: black-sphere fog box K1/64-footprint VCM / PT",blackVCM,blackPT,1.0,-1.0,trials,seed,"");
+        std::remove(boundaryOptions.c_str());
+        std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+        return failCount ? 1 : 0;
+    }
+    if(thinningPTOnly) {
+        VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store(.01);
+        RatioRow("E-PT: fog floor box q.01 VCM / PT",FogFloorBoxScene(true,512),
+                 FogFloorBoxScene(false,512),1.0,-1.0,std::max(16u,trials),seed,"");
+        VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store(0);
+        std::remove(boundaryOptions.c_str());
+        std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+        return failCount ? 1 : 0;
+    }
 	// A: pre-fix 0.58 (the single-scatter share had no strategy).
 	RatioRow( "A: fog box, VCM / PT",
 		FogBoxScene( true, 512, false ), FogBoxScene( false, 64, false ), 1.0, 0.06, trials, seed, only );
