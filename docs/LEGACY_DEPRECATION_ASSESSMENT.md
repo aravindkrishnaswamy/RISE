@@ -576,6 +576,81 @@ Order by risk, lowest first:
   Android / Blender defaults.  `FB/Combined/tidepools` (Android) already renders with
   `pathtracing_pel_rasterizer` (its `pixelpel` chunk is commented out).
 
+**Phase 2 slice B1 as landed (2026-10-10, branch `legacy-phase2b`, step 5 for the legacy
+pixel-rasterizer families):**
+- **Slice A review fixes:** the SMS op -> rasterizer translation writes the op's effective
+  values (the op's `sms_max_chain_depth` default is 10, the rasterizer's 30) and refuses
+  disagreeing ops; `lum_samples` / `luminary_sampler` are documented as inert
+  (`LuminaryManager` stores the sampler and never reads it) and dropped; the alpha
+  conversion reports that coverage also makes shadows transmissive; the pixel-rasterizer
+  deprecation hint no longer suggests turning OIDN off; stale comments fixed; every
+  `scenes/Tests/Legacy/` copy writes `rendered/legacy_<name>`.
+- **Tool:** `--mode full [--integrator pt|bdpt|vcm] [--sms] [--sss-albedo R G B |
+  --sss-keep-material]` (docstring has the rules).  A chain of only direct lighting /
+  emission / Whitted / area-light ops becomes PT with `max_diffuse_bounce 0` (the ruling
+  #3a rule); any indirect op gets full GI.  `samples` = legacy samples x `lum_samples`,
+  floored 16 (direct) / 64 (indirect), capped 1024, because the legacy chain did its
+  light / DT / FG / gather sampling inside each pixel sample.  Every shader becomes one
+  `DefaultPathTracing` op; op chunks, photon maps, gathers, irradiance caches and
+  unreferenced shaders are deleted.  `diffusion_approximation_sss_shaderop` ->
+  `subsurfacescattering_material` with the op's own coefficients (per mm x 1000 x
+  `geometric_scale`); `simple_sss_shaderop` -> a Christensen-Burley
+  `subsurfacescattering_material` whose albedo is the object's base colour times the op's
+  1/extinction^2 channel weights and whose profile tail falls off at the op's rate
+  (checked in a white furnace: albedo 0.15/0.25/0.15 reads 0.163/0.261/0.164 including
+  Fresnel); `arealight_shaderop` -> `rect_light` of exitance `power`.  Chosen over
+  `randomwalk_sss_material` because the ops are dipole (diffusion) models.
+- **44 scenes migrated** (gallery: `docs/legacy_phase2b_review/index.html`).
+  Integrators: VCM for the caustic photon-map scenes (`caustic_animation`,
+  `pool_caustics`, `motion_blurred_caustic`, `diacaustic`, `rgb_dispersive_caustic`,
+  `triplecaustic`, `sdf_caustic`, `sms_slab_close_photonmap`, `caustic_sss`; spectral
+  `spectral_dispersive_caustic`); PT + SMS for the two env-lit caustic showcases
+  (`crystal_lens`, `photon_cloister`: VCM has a measured env-light bias, and their
+  caustics come from spot lights through smooth glass); BDPT for the two strong-indirect
+  final-gather showcases (`gi_spheres` -- the AutoRasterizer's measured BDPT case --
+  and `irradiance_cache_torture`); PT for everything else.  Point-cloud SSS: the SSS
+  objects of seven scenes converted to `subsurfacescattering_material`; `translucent_bunny`
+  (iridescent) and `sss_colorvariation` (checker) keep their `translucent_material`,
+  because a uniform-coefficient SSS material cannot carry a spatially or angularly
+  varying colour.  25 scenes change by under 10%; the 19 larger changes each carry a
+  MEASURED cause in the gallery: fudge factors removed (`irrad_scale`, `power_scale`;
+  doubling a scene's `irrad_scale` moves its legacy mean linearly), indirect light the
+  legacy chain did not have or truncated (checked by PT at `max_diffuse_bounce` 0/1/2 vs
+  the legacy image, e.g. `blurry_floor` and `ambocc_ibl` match the legacy mean to 4-5
+  digits at bounce 0), the dropped AO term (`showroom`), and chains with no direct
+  lighting (`diacaustic`, `motion_blurred_caustic`).  **No lighting was retuned**; the
+  gallery lists, per showcase, the measured knob that restores the legacy mean.
+  `photon_cloister` renders blown out and should get its proposed retune before merge
+  (ceiling luminaire scales 12000 / 10000 -> 29 / 24: the one-sided disks face the
+  ceiling 8 cm above them, and the legacy chain's global photon map read that bounce
+  ~150x below PT's converged value).
+- **Held:** `Tests/Shaders/different_rmaps` -- its subject is per-OBJECT `radiance_map`,
+  which only the legacy shader-op chain honours (the ops forward
+  `RayIntersection::pRadianceMap`; PT, BDPT and VCM read only the rasterizer's map), so
+  the tool now refuses an object-level `radiance_map`.  Owner decision needed: implement
+  per-object maps in PT, freeze the parameter, or accept losing it.
+- **Coverage kept (ruling #17):** `scenes/Tests/Legacy/` gains the originals of
+  `arealight_shaderop`, `dielectric_dispersion`, `cornellbox_fg`, `sss_ibl`, `sss`,
+  `rgb_dispersive_caustic`, `showroom`, `translucent_bunny`, `blurry_floor`, `teapot`
+  (the `LegacyTierRenderIdentityTest` cases, parent hashes unchanged),
+  `spectral_dispersive_caustic` and `dt_with_irrcache` (newly pinned, hashes measured on
+  83aa86d2f).  After B1 the only shipped scenes still on a legacy pixel rasterizer are
+  `visiblehuman` (frozen DVR), `shapes` and `kaleidoscope_atrium` (slice C) and
+  `different_rmaps` (held).
+- **Found, not fixed:** VCM ignores `ambient_light` (and directional lights), so
+  `caustic_sss`'s ambient term is gone until B2 moves ambient to a `radiance_map`;
+  `scenes/pr.RISEscene` (the CLI performance-rating scene) moved to PT, so ratings are not
+  comparable across this change.  `AutoRasterizerTest` fails 4 checks (153/4) on
+  `ggx_showcase` and `corridor_100lights` routing to BDPT instead of PT -- scenes this
+  slice does not touch (the slice's only compiled change is a hint string), measured
+  twice at load average ~20 from concurrent worktrees; its time-normalized probe is
+  load-sensitive.  The checks on the migrated `gi_spheres`, `glass_pavilion` and
+  `spectral_dispersive_caustic` pass.
+- **Left for slice B2:** the step-5 families inside scenes on supported rasterizers (R13
+  materials, R11 `ambient_light` -- including the five `PixelFilters` scenes and
+  `caustic_sss` migrated here, R14 `iridescent_painter`, R12 MLT), and the owner's call on
+  the proposed showcase retunes.  **Slice C** unchanged.
+
 **Phase 3 — remove: ON HOLD by owner ruling (2026-10-09); nothing below is scheduled.** (Original plan: several slices; each slice must update all five build projects per
 CLAUDE.md).** Order from least coupled:
 1. Point-cloud SSS ops + `PointSetOctree` (R6).
