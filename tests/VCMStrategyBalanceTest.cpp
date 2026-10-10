@@ -2172,7 +2172,7 @@ static const char* kRasterizerVCMRoughSSSU =
 	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_vcm_unused\n\ttype EXR\n\tbpp 32\n"
 		"\tcolor_space Rec709RGB_Linear\n}\n";
 
-static void MeasureRoughSSSU(unsigned samples, bool gate=false);
+static void MeasureRoughSSSU(unsigned samples, bool gate=false, double radius=-1);
 static void TestRoughSSSEmptyContainerU()
 {
     MeasureRoughSSSU(2048,true);
@@ -2181,7 +2181,7 @@ static void TestRoughSSSEmptyContainerU()
 // DL-367 measurement: distinguish sample-count drift from salt noise without
 // changing transport. The default gate uses n=8 at its original 2048 spp.
 // Independent SMS-free PT reference; original +/-0.8% physical limit retained.
-static void MeasureRoughSSSU(unsigned samples, bool gate) {
+static void MeasureRoughSSSU(unsigned samples, bool gate, double radius) {
  const unsigned savedSeed=g_seedBase, savedIndex=g_renderIndex;
  auto replace=[](std::string s,const std::string& a,const std::string& b){auto p=s.find(a);if(p!=std::string::npos)s.replace(p,a.size(),b);return s;};
  std::vector<double> pt,on,off;
@@ -2189,6 +2189,10 @@ static void MeasureRoughSSSU(unsigned samples, bool gate) {
   g_seedBase=367001+101*i; g_renderIndex=0;
   auto render=[&](const char* raster,bool merging){
    std::string r=replace(raster,"samples 2048","samples "+std::to_string(samples));
+   if(radius>=0) {
+    char text[64];std::snprintf(text,sizeof(text),"%.17g",radius);
+    r=replace(r,"merge_radius 0.0","merge_radius "+std::string(text));
+   }
    if(!merging)r=replace(r,"vm_enabled true","vm_enabled false");
    auto path=WriteSceneToTempFile((std::string("RISE ASCII SCENE 7\n")+r+kSceneRoughSSSU).c_str(),"dl367");
    auto stats=RenderAndComputeStats(path.c_str());std::remove(path.c_str());
@@ -2202,6 +2206,7 @@ static void MeasureRoughSSSU(unsigned samples, bool gate) {
  g_seedBase=savedSeed;g_renderIndex=savedIndex;
  auto stat=[](const std::vector<double>& v){double m=0,ss=0;for(double x:v)m+=x;m/=v.size();for(double x:v)ss+=(x-m)*(x-m);return std::make_pair(m,std::sqrt(ss/(v.size()-1)/v.size()));};
  auto p=stat(pt),a=stat(on),b=stat(off);
+ std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g off-sd=%.9g\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.));
  std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
  if(gate) {
   const double ratio=a.first/p.first, uncertainty=3*std::hypot(a.second,p.second)/p.first;
@@ -3233,6 +3238,21 @@ int main( int argc, char** argv )
   Check(g_seedBase==seed,"topology U preserves the caller's salt base");
   Check(g_renderIndex==index,"topology U preserves the caller's render salt index");
   std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+ }
+ // Diagnostic sweep only: disable the progressive schedule in RISE_OPTIONS_FILE
+ // to hold this authored radius fixed across every pass/sample budget.
+ if(argc>=2 && std::strcmp(argv[1],"--dl367-radius-only")==0) {
+  Check(argc==4,"DL367 fixed-radius probe requires sample budget and radius arguments");
+  if(argc!=4)return 1;
+  char *sampleEnd=nullptr,*radiusEnd=nullptr;
+  const unsigned long samples=std::strtoul(argv[2],&sampleEnd,10);
+  const double radius=std::strtod(argv[3],&radiusEnd);
+  const bool valid=samples>0 && samples<=std::numeric_limits<unsigned>::max()
+   && sampleEnd && *sampleEnd=='\0' && radiusEnd && *radiusEnd=='\0'
+   && std::isfinite(radius) && radius>0;
+  Check(valid,"DL367 fixed-radius probe requires positive finite radius and sample budget");
+  if(valid)MeasureRoughSSSU(static_cast<unsigned>(samples),false,radius);
+  return failCount?1:0;
  }
  if(argc>=3 && std::strcmp(argv[1],"--dl367-only")==0) {MeasureRoughSSSU(std::strtoul(argv[2],nullptr,10));return failCount?1:0;}
 
