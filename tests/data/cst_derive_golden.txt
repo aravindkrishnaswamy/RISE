@@ -11,7 +11,7 @@ scenes/FeatureBased/BDPT/bdpt_cloister.RISEscene  aa9801b759e8d78e140600f10c3a28
 scenes/FeatureBased/BDPT/bdpt_crystal_garden.RISEscene  092779c98038ed3bf35435584391d67309a0e235bdc94dabdf9dd30265b2b7b1  8310  97
 scenes/FeatureBased/BDPT/bdpt_torus_chain_atrium.RISEscene  b0c5ebb973ae1ea298bfe75e026f83d931388caa17cc4749a7c57c2994a4c266  12201  122
 scenes/FeatureBased/Caustics/pool_caustics.RISEscene  0a4e25dd9bd96924959d099ac4ad4e93ed4cba02c515163600b6cf1a2f8956a8  6418  82
-scenes/FeatureBased/Combined/cloud_showcase.RISEscene  64536fc29796d3ab12af2bb3629171effc9ca5f75cc4c98afb56593caeeea45f  2607  39
+scenes/FeatureBased/Combined/cloud_showcase.RISEscene  c7dc4002e01e791235f9163ec5f6f485ed1cbe29da39fb448638edacc8d08e51  2722  40
 scenes/FeatureBased/Combined/composite_wacky_creature.RISEscene  9d10cdc9c69dd3723e7e0fe1eee654651f298161cc9d981a0702aab8b4973664  9566  86
 scenes/FeatureBased/Combined/crystal_lens.RISEscene  2ba963fcf13cd440bd6e1808f6900706ad4c2698f85233f488851384367d9482  3482  47
 scenes/FeatureBased/Combined/diamond_teapot_pour.RISEscene  ec00a9996989e29a0af5b0cc28bfc26419233dbe94c2a171e94f23ada0a8cd36  8084  73
@@ -259,7 +259,7 @@ scenes/Tests/Materials/Enamel/enamel_swatch_silver.RISEscene  6cdf2234bca5dd8c03
 scenes/Tests/Materials/Enamel/silver_reference.RISEscene  456971d71f37be52f9dc17d5619d0978eb065daa2f1f839e6ac65a6985d8a3c5  1810  28
 scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene  da170cf1b8819a2dbb70888a720ff1e5aea77673213725a06e3eb2e7ec93f3b4  1566  31
 scenes/Tests/Materials/authored_mesh_tangent.RISEscene  c807e270d309a88cf09063bef8f3164ce0456be13d32c71b1024edf4e31d8d6e  848  24
-scenes/Tests/Materials/coated_material.RISEscene  936de9c4553a5689b5d7be5e823c0d1bec4b61ff779ba9a2a430fce7c4fba6ca  2057  36
+scenes/Tests/Materials/coated_material.RISEscene  81186b82e3c54809748f6bcd500d16dc57d16fcf9c42775a50ebfe01260f022c  2181  37
 scenes/Tests/Materials/composite_material.RISEscene  eab6c20eaa7a47fb4d25279e4ed1d0c083105361e4fce7182d67835df9adaa8f  5085  67
 scenes/Tests/Materials/dielectric_dispersion.RISEscene  474dfc394f2b2db465954f1ea0b7b1573b71c25ffb9d31e9e8102f46da75278a  2002  35
 scenes/Tests/Materials/dielectrics_changing_ior.RISEscene  85019633d2644f1ea563242ec6ab02e69dc0eb4dec57c48ebb918a4d7975f779  1976  39

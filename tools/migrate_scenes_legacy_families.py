@@ -31,13 +31,16 @@ FAMILIES
                     vector).
                 schlick_material -> ggx_material (schlick_f0): alpha =
                     sqrt(roughness) (Schlick's Z(t) is the GGX D with r =
-                    alpha^2).  isotropy p < 1 has no exact translation;
-                    Schlick's azimuthal factor A(phi) runs from sqrt(p)
-                    along the tangent to 1/sqrt(p) across it, so the tool
-                    keeps the geometric-mean width and stretches the lobe
-                    ACROSS the tangent: alphax = sqrt(r) p^(1/4), alphay =
-                    sqrt(r) p^(-1/4) (each clamped to 1) -- a heuristic,
-                    reported.
+                    alpha^2).  isotropy p < 1 has no exact translation.
+                    Schlick's azimuthal factor A(w) is a function of w =
+                    onb.v . h_t (SchlickBRDF.cpp): 1/sqrt(p) at w = 0 (half
+                    vectors along onb.u, the tangent) down to sqrt(p) at
+                    w = 1, so the facets spread along onb.u.  The tool keeps
+                    the geometric-mean width and stretches the GGX lobe
+                    along u: alphax = sqrt(r) p^(-1/4), alphay = sqrt(r)
+                    p^(1/4) (each clamped to 1) -- a heuristic, reported
+                    (rendered at p 0.1: Schlick's highlight x/y spread 1.67,
+                    this mapping 1.60).
                 ward_isotropic_material -> ggx_material (schlick_f0):
                     alpha -> alphax = alphay.
                 ward_anisotropic_material -> ggx_material (schlick_f0):
@@ -58,9 +61,16 @@ FAMILIES
                     single-expression `scalar_painter` (the wetness scenes)
                     is rewritten in place to the same 1/sqrt(2n+1) of its
                     expression, provided nothing else binds that painter.
-                Per-channel (`r g b`) scalar values convert per channel (GGX
-                alphax / alphay accept them).  Any other painter-bound
-                scalar is REFUSED.
+                Per-channel (`r g b`) roughness is REFUSED unless
+                --collapse-per-channel is given: the legacy models honoured
+                all three channels, but ggx_material reads only the FIRST
+                channel of alphax / alphay under the RGB rasterizers
+                (GGXBRDF.cpp / GGXSPF.cpp) while the spectral path
+                interpolates them per wavelength, so a per-channel alpha
+                would silently collapse.  With the flag the converted
+                alphas are replaced by their Rec.709-luminance-weighted
+                mean, reported and noted in the scene.  Any other
+                painter-bound scalar is REFUSED.
 
   iridescent  `iridescent_painter` (deprecated: a view-angle colour lerp,
               "a cheap look-alike only") -> the physical thin-film model,
@@ -104,9 +114,11 @@ FAMILIES
               `radiance_scale power/pi`, `radiance_background FALSE` (the
               ambient light was never visible to the camera).  Several
               ambient lights sum.  When the rasterizer already has a
-              radiance_map that is a uniformcolor_painter, the ambient term
-              is added to that painter's colour (in linear Rec.709,
-              divided by the existing radiance_scale); any other existing
+              radiance_map that is a uniformcolor_painter, the rasterizer is
+              pointed at a NEW painter `<sky>_with_ambient` holding the sky
+              plus the ambient term (in linear Rec.709, divided by the
+              existing radiance_scale) -- the sky painter itself may be
+              shared, e.g. by a luminaire's exitance; any other existing
               map is REFUSED, and so is a scene whose `hosek_wilkie_skylight`
               already installs the environment unless --ambient-with-sky
               drop is given, which deletes the ambient fill (the sky is
@@ -126,6 +138,9 @@ FAMILIES
               dropped.  Any other parameter the target does not accept is
               REFUSED.
 
+scenes/Benchmarks/sea_creatures (no .RISEscene extension: a recorded
+agent-benchmark run's output with two iridescent_painters) is HELD as written.
+
 Kept by owner ruling (KEEP below): FeatureBased/Animation/translucent_bunny keeps
 its iridescent_painter (2026-10-10).
 
@@ -139,6 +154,7 @@ edited chunk by chunk.
 Usage:
     python3 tools/migrate_scenes_legacy_families.py --family materials|iridescent|ambient|mlt|all
                                     [--mlt-integrator bdpt|vcm] [--ambient-with-sky drop]
+                                    [--collapse-per-channel]
                                     [--dry-run] [-v] [paths...]
     python3 tools/migrate_scenes_legacy_families.py --selftest
 Paths default to `scenes/`.  Exit status is 0 unless a file could not be read
@@ -168,6 +184,11 @@ HELD = {
     'scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene': 'Android catalogue scene (slice C)',
     'scenes/FeatureBased/Combined/tidepools.RISEscene': 'Android catalogue scene (slice C)',
     'scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene': 'Android catalogue scene (slice C)',
+    # No .RISEscene extension, so directory walks never collect it; HELD when
+    # passed explicitly.  It is a recorded agent-benchmark run's output (cited
+    # in AgentSession.cpp), kept as the agent wrote it, iridescent_painters
+    # included.
+    'scenes/Benchmarks/sea_creatures': 'recorded agent-benchmark output (no .RISEscene extension), kept as written',
 }
 
 # Families a scene deliberately keeps (owner rulings).  Repo-relative path ->
@@ -505,7 +526,27 @@ def _alpha_from(vals, fn):
     return [min(1.0, max(1e-4, fn(v))) for v in vals]
 
 
-def migrate_materials(text, report):
+def _per_channel(name, ax, ay, collapse, report):
+    """None when both alphas are single-valued; a refusal string, or (ax, ay,
+    description) collapsed to the Rec.709-luminance-weighted mean."""
+    def multi(v):
+        return len(v) == 3 and len(set(v)) > 1
+    if not (multi(ax) or multi(ay)):
+        return None
+    if not collapse:
+        return ('REFUSED: `%s` has per-channel roughness (alphax %s, alphay %s); ggx_material reads only the '
+                'first channel under RGB rasterizers, so it would collapse (--collapse-per-channel takes '
+                'the luminance-weighted mean)' % (name, fmt_list(ax, 4), fmt_list(ay, 4)))
+    cx = [luminance(ax) if len(ax) == 3 else ax[0]]
+    cy = [luminance(ay) if len(ay) == 3 else ay[0]]
+    d = ('PER-CHANNEL ROUGHNESS COLLAPSED: alphax %s alphay %s -> %s / %s (Rec.709-luminance-weighted mean; '
+         'ggx_material reads only the first channel under RGB)' % (fmt_list(ax, 4), fmt_list(ay, 4),
+                                                                   fmt_list(cx, 4), fmt_list(cy, 4)))
+    report.append('WARNING `%s`: %s' % (name, d))
+    return cx, cy, d
+
+
+def migrate_materials(text, report, collapse=False):
     ed = Editor(text)
     mats = [c for c in ed.chunks if c.kw in LEGACY_MATERIALS]
     if not mats:
@@ -535,11 +576,19 @@ def migrate_materials(text, report):
                 if fv is None:
                     return None, 'REFUSED: `%s` facets `%s` is not a literal' % (name, ' '.join(ft))
                 ax = ay = fv
+                pc = _per_channel(name, ax, ay, collapse, report)
+                if isinstance(pc, str):
+                    return None, pc
+                cdesc = ''
+                if pc:
+                    ax, ay, cdesc = pc
                 p += [('alphax', fmt_list(ax)), ('alphay', fmt_list(ay))]
                 p.append(('fresnel_mode', carry('fresnel_mode', 'conductor')))
                 p.append(('ior', carry('ior', '2.45')))
                 p.append(('extinction', carry('extinction', '1')))
                 desc = 'cooktorrance_material -> ggx_material conductor, alpha = facets %s' % fmt_list(fv)
+                if cdesc:
+                    desc += '; ' + cdesc
             else:
                 if kw == 'isotropic_phong_material':
                     nv, nt = _scal(c, 'N', '16.0')
@@ -565,8 +614,9 @@ def migrate_materials(text, report):
                         rv = rv * 3
                     if len(iv) == 1 and len(rv) == 3:
                         iv = iv * 3
-                    ax = [min(1.0, math.sqrt(r) * (i ** 0.25)) for r, i in zip(rv, iv)]
-                    ay = [min(1.0, math.sqrt(r) * (i ** -0.25)) for r, i in zip(rv, iv)]
+                    # A(w) peaks at w = 0, half vectors along onb.u: stretch alphax.
+                    ax = [min(1.0, math.sqrt(r) * (i ** -0.25)) for r, i in zip(rv, iv)]
+                    ay = [min(1.0, math.sqrt(r) * (i ** 0.25)) for r, i in zip(rv, iv)]
                     desc = 'schlick roughness %s -> alpha sqrt(r) = %s' % (
                         fmt_list(rv), fmt_list([math.sqrt(r) for r in rv], 4))
                     if any(abs(i - 1.0) > 1e-9 for i in iv):
@@ -587,6 +637,12 @@ def migrate_materials(text, report):
                         return None, 'REFUSED: `%s` alphax/alphay is not a literal' % name
                     ax, ay = axv, ayv
                     desc = 'ward_anisotropic alphax %s alphay %s carried' % (fmt_list(ax), fmt_list(ay))
+                pc = _per_channel(name, ax, ay, collapse, report)
+                if isinstance(pc, str):
+                    return None, pc
+                if pc:
+                    ax, ay, cdesc = pc
+                    desc += '; ' + cdesc
                 p += [('alphax', fmt_list(ax, 5)), ('alphay', fmt_list(ay, 5)),
                       ('fresnel_mode', 'schlick_f0')]
                 desc = desc + ', rs -> F0 (schlick_f0)'
@@ -897,16 +953,24 @@ def migrate_ambient(text, report, drop_with_sky=False):
         if sky is None:
             return None, 'REFUSED: radiance_map painter `%s` colour is not a literal' % mname
         scale = float(have['radiance_scale'][1][1]) if 'radiance_scale' in have else 1.0
-        new = [s + t / scale for s, t in zip(sky, total)]
-        mind = body_indent(ed, M)
-        ed.replace(M, chunk_lines('uniformcolor_painter',
-                                  [('name', mname), ('color', fmt_list(new, 5, False)), ('colorspace', 'Rec709RGB_Linear')],
-                                  ['%s: the uniform sky %s (linear) plus the former ambient_light term %s / radiance_scale %s' % (
-                                      STAMP, fmt_list(sky, 4), fmt_list(total, 4), fmt_num(scale)),
-                                   '(ambient color x power / pi: the uniform radiance that lights an unoccluded Lambertian surface',
-                                   'as the ambient light did; the environment is occluded, so creases darken).'], mind))
-        report.append('ambient %s (linear radiance) folded into the existing uniform radiance_map `%s` (now %s; also the background)' % (
-            fmt_list(total, 4), mname, fmt_list(new, 4)))
+        new = [s_ + t / scale for s_, t in zip(sky, total)]
+        # A NEW painter: the sky painter may be shared (e.g. a luminaire's
+        # exitance), which must not change.
+        pname = unique_name(ed, set(), mname + '_with_ambient')
+        ed.insert_before(R.kw_line, chunk_lines('uniformcolor_painter',
+                                                [('name', pname), ('color', fmt_list(new, 5, False)),
+                                                 ('colorspace', 'Rec709RGB_Linear')],
+                                                ['%s: the radiance_map `%s` %s (linear) plus the former ambient_light term %s' % (
+                                                    STAMP, mname, fmt_list(sky, 4), fmt_list(total, 4)),
+                                                 '/ radiance_scale %s (ambient color x power / pi: the uniform radiance that lights an' % fmt_num(scale),
+                                                 'unoccluded Lambertian surface as the ambient light did; the environment is occluded,',
+                                                 'so creases darken).  A new painter: `%s` itself is left as authored (other chunks may bind it).' % mname], ind) + [''])
+        idx = have['radiance_map'][0]
+        line = ed.lines[idx]
+        ed.repl[idx] = (idx, [line[:line.index('radiance_map')] + 'radiance_map' +
+                              line[line.index('radiance_map') + len('radiance_map'):].replace(mname, pname, 1)])
+        report.append('ambient %s (linear radiance) added to the uniform radiance_map `%s` as a NEW painter `%s` (%s; also the background)' % (
+            fmt_list(total, 4), mname, pname, fmt_list(new, 4)))
     else:
         for k in ('radiance_scale', 'radiance_background', 'radiance_orient'):
             if k in have:
@@ -976,13 +1040,17 @@ def migrate_mlt(text, report, integrator='bdpt'):
 FAMILIES = ('materials', 'iridescent', 'ambient', 'mlt')
 
 
-def run(families, paths, dry_run, verbose, mlt_integrator, ambient_with_sky=None):
+def run(families, paths, dry_run, verbose, mlt_integrator, ambient_with_sky=None, collapse=False):
     counts = {'migrated': 0, 'refused': 0, 'unchanged': 0, 'held': 0}
     rc = 0
     for f in collect(paths):
         rel = repo_rel(f)
         if rel.startswith(LEGACY_CORPUS) or rel.startswith(COVERAGE_CORPUS):
             counts['held'] += 1
+            continue
+        if rel in HELD:
+            counts['held'] += 1
+            print('HELD      %s: %s' % (rel, HELD[rel]))
             continue
         try:
             with open(f, 'r', encoding='utf-8', newline='') as fh:
@@ -1009,6 +1077,8 @@ def run(families, paths, dry_run, verbose, mlt_integrator, ambient_with_sky=None
                     new, st = migrate_mlt(cur, notes, mlt_integrator)
                 elif fam == 'ambient':
                     new, st = migrate_ambient(cur, notes, ambient_with_sky == 'drop')
+                elif fam == 'materials':
+                    new, st = migrate_materials(cur, notes, collapse)
                 else:
                     new, st = fn(cur, notes)
                 if new is None:
@@ -1080,6 +1150,26 @@ def selftest():
     new4, st4 = migrate_iridescent(ir, [])
     assert re.search(r'fresnel_mode\s+thinfilm', new4) and 'tf_Ti_n' in new4, new4
     assert migrate_iridescent(new4, [])[0] is None
+    # Schlick isotropy < 1: facets spread along onb.u, so alphax is the LARGER.
+    sch = 'schlick_material\n{\n\tname s\n\troughness 0.04\n\tisotropy 0.1\n}\n'
+    new5, _ = migrate_materials(sch, [])
+    axv = float(re.search(r'alphax\s+(\S+)', new5).group(1))
+    ayv = float(re.search(r'alphay\s+(\S+)', new5).group(1))
+    assert axv > ayv and abs(axv * ayv - 0.04) < 1e-4, new5        # 0.2 * 0.1^(-/+1/4)
+    # Per-channel roughness: refused by default, collapsed on request.
+    pcs = 'ward_isotropic_material\n{\n\tname w\n\talpha 0.1 0.2 0.3\n}\n'
+    assert migrate_materials(pcs, [])[0] is None and 'per-channel' in migrate_materials(pcs, [])[1]
+    rep = []
+    new6, _ = migrate_materials(pcs, rep, collapse=True)
+    assert re.search(r'alphax\s+0\.18596\n', new6) and any('COLLAPSED' in r for r in rep), new6
+    # Ambient into an existing uniform sky: a NEW painter, the sky untouched.
+    amb = ('uniformcolor_painter\n{\n\tname sky\n\tcolor 0.2 0.2 0.2\n}\n'
+           'lambertian_luminaire_material\n{\n\tname lum\n\texitance sky\n}\n'
+           'ambient_light\n{\n\tname a\n\tcolor 1 1 1\n\tpower 3.14159265\n}\n'
+           'pathtracing_pel_rasterizer\n{\n\tradiance_map sky\n\tradiance_scale 2\n}\n')
+    new7, _ = migrate_ambient(amb, [])
+    assert '\tcolor 0.2 0.2 0.2' in new7 and re.search(r'radiance_map\s+sky_with_ambient', new7), new7
+    assert re.search(r'name\s+sky_with_ambient\n\tcolor\s+0\.7 0\.7 0\.7', new7), new7
     print('selftest OK')
     return 0
 
@@ -1091,6 +1181,9 @@ def main():
     ap.add_argument('--ambient-with-sky', choices=('drop',),
                     help='ambient: when a hosek_wilkie_skylight already installs the environment, delete the '
                          'ambient fill (the sky is the occluded version of it) instead of refusing')
+    ap.add_argument('--collapse-per-channel', action='store_true',
+                    help='materials: collapse a per-channel roughness to its luminance-weighted mean '
+                         '(ggx_material reads only the first channel under RGB) instead of refusing')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('-v', '--verbose', action='store_true')
     ap.add_argument('--selftest', action='store_true')
@@ -1101,7 +1194,7 @@ def main():
     if not a.family:
         ap.error('--family is required')
     fams = FAMILIES if 'all' in a.family else tuple(f for f in FAMILIES if f in a.family)
-    return run(fams, a.paths, a.dry_run, a.verbose, a.mlt_integrator, a.ambient_with_sky)
+    return run(fams, a.paths, a.dry_run, a.verbose, a.mlt_integrator, a.ambient_with_sky, a.collapse_per_channel)
 
 
 if __name__ == '__main__':

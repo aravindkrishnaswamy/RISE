@@ -318,14 +318,14 @@ ggx_material
 }
 
 # 6. Schlick - anisotropic glossy
-# Legacy phase 2 slice B2: was schlick_material; schlick roughness 0.05 -> alpha sqrt(r) = 0.2236; isotropy 0.3 -> alphax 0.1655 alphay 0.3021 (heuristic: geometric-mean width kept, aspect 1/sqrt(isotropy)), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+# Legacy phase 2 slice B2: was schlick_material; schlick roughness 0.05 -> alpha sqrt(r) = 0.2236; isotropy 0.3 -> alphax 0.3021 alphay 0.1655 (heuristic: geometric-mean width kept, aspect 1/sqrt(isotropy)), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
 ggx_material
 {
 	name				mat_schlick
 	rd					pnt_grey
 	rs					color_white
-	alphax				0.16549
-	alphay				0.30214
+	alphax				0.30214
+	alphay				0.16549
 	fresnel_mode		schlick_f0
 }
 
