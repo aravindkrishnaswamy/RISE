@@ -1,5 +1,5 @@
 // DL-331: independent SMS-off PT energy reference and Snell coverage control.
-// Args: replicas (>=4), optional "air", optional photon count (default 200000), optional PT spp (default 128), optional seed budget, optional SMS spp, optional solver threshold.
+// Args: replicas (>=4), optional "air", optional photon count (default 200000), optional PT spp (default 128), optional seed budget, optional SMS spp, optional solver threshold, trailing --gate (photon/PT parity only; Snell is a printed control).
 #define main GradedIndexFixtureMain
 #include "GradedIndexInteriorFactorTest.cpp"
 #undef main
@@ -25,6 +25,9 @@ static void AttachSeedBudget(IJobPriv* job) {
  }
 }
 int main(int argc,char** argv) {
+ const bool gate=argc>1 && std::string(argv[argc-1])=="--gate";
+ if(gate) --argc;
+ bool failed=false;
  const unsigned repeats=argc>1?std::max(4, std::atoi(argv[1])):8;
  const unsigned photonCount=argc>3?std::max(1,std::atoi(argv[3])):200000;
  const unsigned ptSPP=argc>4?std::max(128,std::atoi(argv[4])):128;
@@ -71,8 +74,12 @@ int main(int argc,char** argv) {
   for(const auto& comparison: {std::make_pair("snell",y), std::make_pair("photon",z)}) {
    const auto q=comparison.second;
    const double band=3*std::hypot(x.second,q.second);
-   std::printf("DL331 mode=%d n=%u PT %.9g SE %.9g %s %.9g SE %.9g ratio %.7g combined3sigma %.9g within=%d\n",mode,repeats,x.first,x.second,comparison.first,q.first,q.second,q.first/x.first,band,std::abs(x.first-q.first)<=band);
+   const bool within=std::isfinite(x.first) && x.first>0 && std::isfinite(x.second) && x.second>=0
+       && std::isfinite(q.first) && q.first>=0 && std::isfinite(q.second) && q.second>=0
+       && std::abs(x.first-q.first)<=band;
+   std::printf("DL331 mode=%d n=%u PT %.9g SE %.9g SD %.9g %s %.9g SE %.9g SD %.9g ratio %.7g combined3sigma %.9g within=%d\n",mode,repeats,x.first,x.second,x.second*std::sqrt(repeats),comparison.first,q.first,q.second,q.second*std::sqrt(repeats),q.first/x.first,band,within);
+   if(gate && std::string(comparison.first)=="photon" && !within) failed=true;
   }
  }
- return 0;
+ return failed?1:0;
 }
