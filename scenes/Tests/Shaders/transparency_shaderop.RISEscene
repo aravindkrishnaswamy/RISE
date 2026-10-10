@@ -179,32 +179,25 @@ uniformcolor_painter
 
 
 
-transparency_shaderop
-{
-	name			trans
-	transparency	color_50pgrey
-	one_sided		true
-}
 
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
 advanced_shader
 {
 	name			trans
-	shaderop		DefaultDirectLighting		0 100	+
-	shaderop		trans						0 100	=
+	shaderop		DefaultPathTracing		0 100	+
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
 	samples				10
-	lum_samples			1
 	pixel_sampler		halton
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput
@@ -254,18 +247,24 @@ lambertian_material
 {
 	name				red
 	reflectance			color_red
+	alpha_coverage		0.5
+	alpha_mode			blend
 }
 
 lambertian_material
 {
 	name				green
 	reflectance			color_green
+	alpha_coverage		0.5
+	alpha_mode			blend
 }
 
 lambertian_material
 {
 	name				blue
 	reflectance			color_blue
+	alpha_coverage		0.5
+	alpha_mode			blend
 }
 
 lambertian_material

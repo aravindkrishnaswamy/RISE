@@ -29,7 +29,7 @@ static void FamilyPolicy()
         {"bdpt_spectral_rasterizer",0.6,false,true},{"vcm_spectral_rasterizer",0.6,false,true},
         {"mlt_rasterizer",0.4,true,false},{"mlt_spectral_rasterizer",1.6,true,false}};
     for(const auto& row : rows) for(bool adaptive : {false,true}) {
-        std::string scene=ReadScene("scenes/Tests/Materials/fabric_presets.RISEscene");
+        std::string scene=ReadScene("scenes/Tests/Legacy/fabric_presets.RISEscene");
         std::ostringstream chunk;
         chunk << row.type << "\n{\n " << (row.mlt ? "mutations_per_pixel" : "samples") << " 25\n oidn_denoise TRUE\n";
         if(adaptive && row.adaptive) chunk << " adaptive_max_samples 40\n";
@@ -181,8 +181,8 @@ int main(int argc,char** argv)
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
         return failCount ? 1 : 0;
     }
-    const std::string scene=ReadScene("scenes/Tests/Materials/fabric_presets.RISEscene");
-    Check(!scene.empty(),"shipped fabric_presets scene loaded");
+    const std::string scene=ReadScene("scenes/Tests/Legacy/fabric_presets.RISEscene");
+    Check(!scene.empty(),"fabric_presets (scenes/Tests/Legacy copy, frozen pixelpel family) loaded");
     // Legacy pixel family: 64 spp * policy weight 0.1 = 6.4 s/MP,
     // so Auto must equal an explicitly pinned Balanced render. This
     // also catches an old timer that happens to choose High on every run.

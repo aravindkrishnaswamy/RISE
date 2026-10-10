@@ -64,11 +64,10 @@ ambient_light
 	color		1.0 1.0 1.0
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
 	samples				64
-	lum_samples			1
-	max_recursion		5
 }
 
 file_rasterizeroutput

@@ -483,6 +483,99 @@ Order by risk, lowest first:
 6. Android catalogue, quickstart sample, and Blender defaults last, once the replacement
    scenes exist.
 
+**Phase 2 slice A as landed (2026-10-10, branch `legacy-phase2a`, steps 1-4):**
+- **Tool:** `tools/migrate_scenes_legacy_rasterizer.py --mode pt|direct|renames [--dry-run]`
+  (idempotent, per-scene report, refuses every family outside this slice by name, never
+  touches `scenes/Tests/Legacy/` or `scenes/Tests/ChunkCoverage/`, holds the Android /
+  quickstart scenes).  Two premises of the plan above were wrong and the tool follows the
+  code instead: the legacy pixel rasterizers **also default to OIDN on** (a default
+  `pixelpel_rasterizer` render logs "OIDN auto" and writes `_denoised`), so the tool
+  carries `oidn_denoise` as authored rather than writing `FALSE` (writing it would have
+  dropped the denoised output the scenes ship today); and their `samples` default is
+  **1** against PT's 32, so `samples` is written explicitly.
+- **Step 1 (renames): no shipped scene outside coverage.**  The alias,
+  `onb_pinhole_camera`, `3dsmesh_geometry` and `alpha_test_shaderop` appear only in their
+  own `cc_*` coverage scenes, which stay (ruling #17).  `--mode renames` is proven
+  look-neutral on synthetic scenes: the alias rename renders bit-identically, and
+  `onb_pinhole_camera` -> `pinhole_camera` renders bit-identically for `components`
+  UV / WU / WV / VU and to within sampling noise for UW (mean 0.348557 vs 0.348566; the
+  rebuilt basis differs in its last bits).  `components VW` is refused (the legacy
+  `CreateFromVW` builds a degenerate basis) and `3dsmesh_geometry` is refused (it needs
+  the mesh converted, not a rename).  The one real alpha-op scene,
+  `Tests/Shaders/transparency_shaderop`, is migrated in step 3 with its op turned into
+  material `alpha_coverage 0.5 / alpha_mode blend` (`one_sided` has no equivalent).
+- **Step 2: 25 scenes** (6 `pixelpel` + 19 `pixelintegratingspectral` with only
+  `pathtracing_shaderop` chains).  Refused: `Tests/Spectral/spectral_dispersive_caustic`
+  (photon map), `FB/Combined/glass_pavilion` and `FB/Parser/kaleidoscope_atrium` (mixed
+  Whitted + PT per-object chains), `Tests/Shaders/dt_with_irrcache` (irradiance cache).
+- **Step 3: 82 scenes** (80 direct-lighting-only + `FB/Combined/planetary_survey`
+  (DL + emission) + `transparency_shaderop`), `max_diffuse_bounce 0`, chains rewritten to
+  `DefaultPathTracing`.  The plan's "82" counted `Tests/Painters/painters`, whose
+  `pixelpel` chunk is commented out (it renders with BDPT); `Tests/Geometry/shapes` is
+  held for step 6.
+- **Step 4 (test harnesses):** moved to PT where the legacy rasterizer was only a harness:
+  `PTGuidingMISPartitionTest` (5 fixtures), `OptimalMISTrainingSitesTest` (4 of 5; the
+  5th is the DL-185 legacy-pixel-rasterizer NEE site, kept), `VCMStrategyBalanceTest`'s
+  PT reference, `ProximityInvalidationTest`, `AgentAddFuzzTest`, `AgentMakeFabricTest`,
+  `SceneEditorAnimationFramesTest`, and `tests/test_ris_regression.sh` (which had been
+  BROKEN on master: its `ior_stack` parameter is accepted by no rasterizer, so both renders
+  failed to load).  Kept, because they test a frozen feature, the shader-dispatch sites PT's
+  SSS continuation still uses (R4/D13), or a rasterizer matrix that includes the legacy
+  family: `RasterizerDefaultsConsistencyTest`, `AgentChunkCrudTest`,
+  `DeprecatedMaterialWarningTest`, `LegacyTierRenderIdentityTest`,
+  `LegacyChainMISPartnerTest`, `PhotonMapDeferralTest`, `FinalGatherSpectralTest`,
+  `CausticPhotonMapNormalizationTest`, `SSSBuildDeterminismTest`,
+  `SSSExteriorIndexInvarianceTest`, `SubsurfaceScatteringSpectralTest`,
+  `RayCasterVolumeAbsorptionTest`, `RayCasterEnvEscapeMISTest`,
+  `GradedIndexInteriorFactorTest` (row M), `RefractiveRadianceScalingTest`,
+  `CSGNullGeometryLuminaireCrashTest`, `BlenderBridgeAlphaTest`,
+  `SceneEditorSuggestionsTest`, `EnvironmentEditTest`, `OIDNAutoDeterminismTest`,
+  `PixelCenterConventionTest`, `ReliefBidirectionalConsistencyTest`,
+  `DoubleSidedEmitterTest`, `AgentFrameStoreIsolationTest`, `SMSLegacyModeTest`.
+  (`BDPTStrategyBalanceTest`, `FabricRenderTest`, `SignalIntegratorConsistencyTest` and
+  `PavilionColonnadeShowcaseTest` only mention it in comments.)
+- **Frozen-feature regression corpus:** `scenes/Tests/Legacy/` holds verbatim copies of
+  the five shipped scenes whose migration would have dropped a frozen chunk's only
+  regression render (`uniform_green_spectral`, `transparency_shaderop`, `gltf_box`,
+  `materials` for `LegacyTierRenderIdentityTest`, hashes unchanged; `fabric_presets` for
+  `OIDNAutoDeterminismTest`'s legacy OIDN policy family).
+- **CstDeriveGoldenTest** is blind to this migration: its `DumpJob` digest covers neither
+  the rasterizer, nor shader chains, nor material alpha, so all 107 migrated scenes keep
+  their digests (0 drift); the golden only gained the five `Legacy/` entries.
+- **Look review:** `docs/legacy_phase2a_review/index.html` (before/after for all 107).
+  Means are of the pre-denoise image composited over black (the legacy rasterizers store
+  surface RGB plus coverage alpha; comparing raw RGB showed spurious 10-33% drops).  The
+  nine FeatureBased showcases move -5.5% .. +5.7%; 102 of 107 scenes move under 10%.  The
+  five over 10% are all `--mode pt` and are explained: `Tests/Materials/spectral_skinmodel`
+  (+961%) and `spectral_skin_fast` (+571%) set `show_luminaires FALSE`, which the legacy
+  shader-dispatch path applied to EVERY ray, so the BSDF-less skin lost the emitter its
+  continuations hit (legacy with `show_luminaires TRUE` reads 1.1507 against PT's 1.1506 with
+  FALSE); `dielectrics_changing_ior` / `_scat` (exactly -50%) stack two path-tracing ops over
+  overlapping `advanced_shader` depth ranges, which the legacy chain summed (a double count;
+  the tool reports it); `gltf_import_damaged_helmet_spectral` (+97%) is firefly-dominated at
+  16 spp (salt sd 23%).  Known issue in frozen code (no fix, per 10.2): the legacy chain's
+  `show_luminaires FALSE` hides emitters from indirect rays.
+- **Left for slice B (step 5):** 46 scenes still on a legacy pixel rasterizer, all refused by the tool by name:
+  photon map / final gather / irradiance cache (19: FB `caustic_animation`, `pool_caustics`,
+  `crystal_lens`, `gi_spheres`, `showroom`, `irradiance_cache_torture`, `photon_cloister`,
+  `sss_gi_dragon`; Tests `motion_blurred_caustic`, `diacaustic`, `rgb_dispersive_caustic`,
+  `triplecaustic`, `cornellbox_fg`, `sdf_caustic`, `sms_slab_close_photonmap`, `ambocc_ibl`,
+  `dt_with_irrcache`, `spectral_dispersive_caustic`, `caustic_sss`); point-cloud SSS ops (7:
+  FB `translucent_bunny`, `spotlight_drama`; Tests `SubsurfaceScattering/sss`,
+  `sss_colorvariation`, `sss_different_bsdf`, `sss_ibl`, `sss_multiple_lights`); Whitted
+  `DefaultReflection` / `DefaultRefraction` chains (13: FB `glass_pavilion`, `teapot`; Tests
+  `Cameras/fisheye`, `Geometry/teapot_analytic`, `Materials/iorstack`, `texture_dispersion`,
+  the five `PixelFilters/*`, `Shaders/simple_dispersion`, and `scenes/pr.RISEscene`);
+  `distributiontracing_shaderop` chains (5: FB `pillow`; Tests `dielectric_dispersion`,
+  `blurry_floor`, `blurry_glass`, `different_rmaps`); `arealight_shaderop` (1); and
+  `FB/Shaders/visiblehuman` (direct volume rendering, frozen R10, may stay).  Plus the
+  step-5 families inside scenes that already use a supported rasterizer (R13 materials,
+  R11 `ambient_light`, R14 `iridescent_painter`, R12 MLT).
+- **Left for slice C (step 6):** `Tests/Geometry/shapes` (quickstart + Android),
+  `FB/Parser/kaleidoscope_atrium` (Android; also a mixed Whitted/PT chain), and the
+  Android / Blender defaults.  `FB/Combined/tidepools` (Android) already renders with
+  `pathtracing_pel_rasterizer` (its `pixelpel` chunk is commented out).
+
 **Phase 3 — remove: ON HOLD by owner ruling (2026-10-09); nothing below is scheduled.** (Original plan: several slices; each slice must update all five build projects per
 CLAUDE.md).** Order from least coupled:
 1. Point-cloud SSS ops + `PointSetOctree` (R6).
