@@ -2083,6 +2083,9 @@ namespace {
 		const unsigned int maxEyeTotalDepth =
 			BDPTUtilities::WalkIterationBudget( maxEyeDepth, stabilityConfig.maxVolumeBounce );
 
+		const IObject* pWalkContactTarget = 0;		// DL-408: pending contact launch
+		const IObject* pWalkContactSource = 0;
+		Point3 walkContactPoint;
 		for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
 		{
 			// Per-bounce stream on the eye subpath: 16 + depth for the
@@ -2093,8 +2096,26 @@ namespace {
 			sampler.StartStream( BDPTUtilities::EyeWalkStream( depth, sampler.HasFixedDimensionBudget() ) );
 
 			// Intersect the scene
+			// DL-408: a pending contact launch is cast against its target alone
+			// (from behind the shared face); one that does not meet it at the
+			// launch point falls back to the ordinary scene cast.
 			RayIntersection ri( currentRay, nullRasterizerState );
-			scene.GetObjects()->IntersectRaySampled( ri, sampler );
+			bool bWalkContactHit = false;
+			if( pWalkContactTarget ) {
+				bWalkContactHit = BSSRDFSampling::IntersectContact( *scene.GetObjects(),
+					pWalkContactTarget, pWalkContactSource, walkContactPoint, currentRay.Dir(),
+					nullRasterizerState, ri );
+				pWalkContactTarget = 0;
+				pWalkContactSource = 0;
+				if( !bWalkContactHit ) {
+					ri = RayIntersection( currentRay, nullRasterizerState );
+				}
+			}
+			if( bWalkContactHit ) {
+				currentRay = ri.geometric.ray;
+			} else {
+				scene.GetObjects()->IntersectRaySampled( ri, sampler );
+			}
 			if( depth == 0 ) CaptureBDPTPrimaryAOV( rc, ri, pPrimaryAOV );
 
 			// ----------------------------------------------------------------
@@ -2960,6 +2981,17 @@ namespace {
 
 							pdfFwdPrev = bssrdf.cosinePdf;
 							currentRay = bssrdf.scatteredRay;
+							// DL-408: an exit on a face shared with a touching body meets
+							// it at zero distance -- a contact launch from the boundary point.
+							{
+								const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
+								pWalkContactTarget = BSSRDFSampling::FindExitContact( *scene.GetObjects(),
+									bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
+								if( pWalkContactTarget ) {
+									pWalkContactSource = pSSSExitObject;
+									walkContactPoint = bssrdf.boundaryPoint;
+								}
+							}
 							continue;
 						}
 						break;
@@ -3110,6 +3142,17 @@ namespace {
 
 							pdfFwdPrev = bssrdf.cosinePdf;
 							currentRay = bssrdf.scatteredRay;
+							// DL-408: an exit on a face shared with a touching body meets
+							// it at zero distance -- a contact launch from the boundary point.
+							{
+								const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
+								pWalkContactTarget = BSSRDFSampling::FindExitContact( *scene.GetObjects(),
+									bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
+								if( pWalkContactTarget ) {
+									pWalkContactSource = pSSSExitObject;
+									walkContactPoint = bssrdf.boundaryPoint;
+								}
+							}
 							continue;
 						}
 						break;
@@ -3755,6 +3798,13 @@ namespace {
 			currentRay = pScat->ray;
 	#endif
 			currentRay.Advance( BDPT_RAY_EPSILON );
+			// DL-408: from a contact hit, a continuation back toward the
+			// arrival side meets the partner at zero distance.
+			pWalkContactTarget = BSSRDFSampling::ContactReturnTarget( ri, currentRay.Dir() );
+			if( pWalkContactTarget ) {
+				pWalkContactSource = ri.pObject;
+				walkContactPoint = ri.geometric.ptIntersection;
+			}
 			if( traceIorStack != &iorStack ) {
 				iorStack = *traceIorStack;
 			}
@@ -7278,6 +7328,9 @@ unsigned int GenerateLightSubpathImpl(
 	const unsigned int maxLightTotalDepth =
 		BDPTUtilities::WalkIterationBudget( maxLightDepth, stabilityConfig.maxVolumeBounce );
 
+	const IObject* pWalkContactTarget = 0;		// DL-408: pending contact launch
+	const IObject* pWalkContactSource = 0;
+	Point3 walkContactPoint;
 	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
 	{
 		// Per-bounce stream on the light subpath: 1 + depth for the
@@ -7287,8 +7340,26 @@ unsigned int GenerateLightSubpathImpl(
 		sampler.StartStream( BDPTUtilities::LightWalkStream( depth, sampler.HasFixedDimensionBudget() ) );
 
 		// Intersect the scene
+		// DL-408: a pending contact launch is cast against its target alone
+		// (from behind the shared face); one that does not meet it at the
+		// launch point falls back to the ordinary scene cast.
 		RayIntersection ri( currentRay, nullRasterizerState );
-		scene.GetObjects()->IntersectRaySampled( ri, sampler );
+		bool bWalkContactHit = false;
+		if( pWalkContactTarget ) {
+			bWalkContactHit = BSSRDFSampling::IntersectContact( *scene.GetObjects(),
+				pWalkContactTarget, pWalkContactSource, walkContactPoint, currentRay.Dir(),
+				nullRasterizerState, ri );
+			pWalkContactTarget = 0;
+			pWalkContactSource = 0;
+			if( !bWalkContactHit ) {
+				ri = RayIntersection( currentRay, nullRasterizerState );
+			}
+		}
+		if( bWalkContactHit ) {
+			currentRay = ri.geometric.ray;
+		} else {
+			scene.GetObjects()->IntersectRaySampled( ri, sampler );
+		}
 
 		// ----------------------------------------------------------------
 		// Participating media: free-flight distance sampling (light subpath).
@@ -7834,6 +7905,17 @@ unsigned int GenerateLightSubpathImpl(
 
 						pdfFwdPrev = bssrdf.cosinePdf;
 						currentRay = bssrdf.scatteredRay;
+						// DL-408: an exit on a face shared with a touching body meets
+						// it at zero distance -- a contact launch from the boundary point.
+						{
+							const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
+							pWalkContactTarget = BSSRDFSampling::FindExitContact( *scene.GetObjects(),
+								bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
+							if( pWalkContactTarget ) {
+								pWalkContactSource = pSSSExitObject;
+								walkContactPoint = bssrdf.boundaryPoint;
+							}
+						}
 						continue;
 					}
 					// Probe failed → no valid subsurface sample, terminate
@@ -8004,6 +8086,17 @@ unsigned int GenerateLightSubpathImpl(
 
 						pdfFwdPrev = bssrdf.cosinePdf;
 						currentRay = bssrdf.scatteredRay;
+						// DL-408: an exit on a face shared with a touching body meets
+						// it at zero distance -- a contact launch from the boundary point.
+						{
+							const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
+							pWalkContactTarget = BSSRDFSampling::FindExitContact( *scene.GetObjects(),
+								bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
+							if( pWalkContactTarget ) {
+								pWalkContactSource = pSSSExitObject;
+								walkContactPoint = bssrdf.boundaryPoint;
+							}
+						}
 						continue;
 					}
 					break;
@@ -8521,6 +8614,13 @@ unsigned int GenerateLightSubpathImpl(
 		currentRay = pScat->ray;
 #endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		// DL-408: from a contact hit, a continuation back toward the
+		// arrival side meets the partner at zero distance.
+		pWalkContactTarget = BSSRDFSampling::ContactReturnTarget( ri, currentRay.Dir() );
+		if( pWalkContactTarget ) {
+			pWalkContactSource = ri.pObject;
+			walkContactPoint = ri.geometric.ptIntersection;
+		}
 		if( traceIorStack != &iorStack ) {
 			iorStack = *traceIorStack;
 		}

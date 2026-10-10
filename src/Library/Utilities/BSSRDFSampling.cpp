@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "BSSRDFSampling.h"
+#include "../Interfaces/IObjectManager.h"
 
 using namespace RISE;
 
@@ -540,6 +541,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	// ray direction) ensures adequate clearance even for near-grazing
 	// directions, and keeps the ray origin consistent with the stored
 	// vertex position used by BDPT geometric terms.
+	result.boundaryPoint = entryPoint;
 	result.entryPoint = Point3Ops::mkPoint3( entryPoint,
 		entryNormal * BSSRDF_RAY_EPSILON );
 	result.entryNormal = entryNormal;
@@ -563,4 +565,75 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	result.valid = true;
 
 	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-408: contact launches -- see BSSRDFSampling.h and
+// docs/DL408_SSS_CONTACT_CONTINUATION.md.
+//////////////////////////////////////////////////////////////////////
+
+bool BSSRDFSampling::IntersectContactRay(
+	const IObjectManager& objects,
+	const IObject* pTarget,
+	const IObject* pSource,
+	RayIntersection& ri
+	)
+{
+	const Ray ray = ri.geometric.ray;
+	const RasterizerState rast = ri.geometric.rast;
+	const Scalar glossyFilterWidth = ri.geometric.glossyFilterWidth;
+	const bool bWantsWireEdgeInfo = ri.geometric.bWantsWireEdgeInfo;
+	if( !pTarget ) {
+		return false;
+	}
+	objects.IntersectSingleObject( ri, pTarget );
+	if( ri.geometric.bHit ) {
+		const Point3& o = ray.origin;
+		const Scalar s = r_max( r_max( fabs( o.x ), fabs( o.y ) ), fabs( o.z ) );
+		const Scalar delta = BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
+		const Scalar cosHit = fabs( Vector3Ops::Dot( ray.Dir(), ri.geometric.vGeomNormal ) );
+		const Scalar reach = Scalar( 4 ) * BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s ) /
+			r_max( cosHit, Scalar( 0.05 ) );
+		const Scalar t = ri.geometric.range;
+		if( t >= Scalar( 0.5 ) * delta && t <= delta + reach ) {
+			ri.pContactPartner = pSource;
+			return true;
+		}
+	}
+	ri = RayIntersection( ray, rast );
+	ri.geometric.glossyFilterWidth = glossyFilterWidth;
+	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+	return false;
+}
+
+bool BSSRDFSampling::IntersectContact(
+	const IObjectManager& objects,
+	const IObject* pTarget,
+	const IObject* pSource,
+	const Point3& p,
+	const Vector3& dir,
+	const RasterizerState& rast,
+	RayIntersection& ri
+	)
+{
+	ri = RayIntersection( ContactRay( p, dir ), rast );
+	return IntersectContactRay( objects, pTarget, pSource, ri );
+}
+
+const IObject* BSSRDFSampling::FindExitContact(
+	const IObjectManager& objects,
+	const SampleResult& r,
+	const IObject* pExitObject,
+	const Vector3& dir
+	)
+{
+	if( !r.valid ) {
+		return 0;
+	}
+	const IObject* pTarget = objects.SolidObjectContaining( r.entryPoint, r.entryNormal, pExitObject );
+	if( !pTarget ) {
+		return 0;
+	}
+	RayIntersection probe( ContactRay( r.boundaryPoint, dir ), nullRasterizerState );
+	return IntersectContactRay( objects, pTarget, pExitObject, probe ) ? pTarget : 0;
 }

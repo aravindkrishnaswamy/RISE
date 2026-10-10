@@ -49,6 +49,14 @@ namespace RISE
             return hasBoundaryRange ? geometric.ray.PointAtLength(boundaryRange) : geometric.ptIntersection;
         }
         Scalar acceptedAlphaCoverage = 1; // Exact acceptance probability, never re-evaluated for deposits.
+        //! DL-408: set only on a CONTACT hit -- one found by
+        //! `BSSRDFSampling::IntersectContact`, a cast restricted to the
+        //! body known to share the launch point's face.  It names the body
+        //! the ray LEFT (on the arrival side of this hit, at zero
+        //! distance).  A continuation from this hit back toward the arrival
+        //! side meets that body at the same point and must itself be a
+        //! contact launch restricted to it.  Null on every ordinary hit.
+        const IObject* pContactPartner = 0;
 
 		RayIntersection( const Ray& ray, const RasterizerState& rast ) : 
 		  geometric( ray, rast ),
@@ -77,7 +85,8 @@ namespace RISE
 		  pRadianceMap( r.pRadianceMap )
 		{ acceptedAlphaCoverage = r.acceptedAlphaCoverage;
           hasBoundaryRange = r.hasBoundaryRange; hasBoundaryRange2 = r.hasBoundaryRange2;
-          boundaryRange = r.boundaryRange; boundaryRange2 = r.boundaryRange2; }
+          boundaryRange = r.boundaryRange; boundaryRange2 = r.boundaryRange2;
+          pContactPartner = r.pContactPartner; }
 	};
 	// Accepted medium boundaries from one sampled visibility segment.
 	// Each record retains its world point and true geometric side; no replay.

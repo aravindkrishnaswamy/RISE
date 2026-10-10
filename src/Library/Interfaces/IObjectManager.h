@@ -518,6 +518,30 @@ namespace RISE
 			const Vector3& probeDir,					///< [in] Unit direction of the containment ray
 			const IObject* self							///< [in] Never counts.  May be null
 			) const = 0;
+
+		//! DL-408: `RandomWalkObjectContaining` without the random-walk
+		//! material filter -- the world-visible object OTHER than `self`,
+		//! with a material, whose interior contains `ptWorld`, by the same
+		//! candidate source and the same per-candidate rule (signed distance
+		//! where the candidate answers, else two-way crossing parity along
+		//! `probeDir`; winding-independent; `bProvablyNoInterior` refuses).
+		//! Asked at an SSS exit's offset point to find a body the exit is in
+		//! CONTACT with.  Appended at the interface tail.
+		virtual const IObject* SolidObjectContaining(
+			const Point3& ptWorld,						///< [in] The world-space point to test
+			const Vector3& probeDir,					///< [in] Unit direction of the containment ray
+			const IObject* self							///< [in] Never counts.  May be null
+			) const = 0;
+
+		//! DL-408: intersect ONE object (`pObject`, which must belong to this
+		//! manager's scene) with `ri.geometric.ray`, both faces, and complete
+		//! the cross-object shading signals exactly as a scene cast does.
+		//! The contact launch's restricted cast
+		//! (`BSSRDFSampling::IntersectContact`).  Appended at the interface tail.
+		virtual void IntersectSingleObject(
+			RayIntersection& ri,						///< [in/out] The ray in, the hit (if any) out
+			const IObject* pObject						///< [in] The only object tested
+			) const = 0;
         //! Coverage-aware transport traversal. Skips are not path vertices;
         //! the published ray and range still describe the complete segment.
         //! With records, traversal spans [startDistance,maxDistance); only

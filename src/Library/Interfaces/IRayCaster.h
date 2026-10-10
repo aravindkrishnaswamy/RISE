@@ -30,6 +30,7 @@ namespace RISE
 	class ILuminaryManager;
 	class IScene;
 	class IORStack;
+	class IObject;
 	struct RuntimeContext;
 
 	namespace Implementation { class LightSampler; }
@@ -196,13 +197,26 @@ namespace RISE
 			//! field or is not itself wrapped by that roulette.
 			Scalar castRRCompensation;
 
+			//! DL-408: a CONTACT LAUNCH.  When `pContactTarget` is set, the
+			//! cast's ray was built by `BSSRDFSampling::FindExitContact` (its
+			//! origin backed off INTO the launching body), and the cast is
+			//! restricted to that one object (`BSSRDFSampling::IntersectContact`):
+			//! the target shares the launch point's face, so the hit lies at
+			//! zero distance where no whole-scene cast can resolve it.  The
+			//! hit records `pContactSource` (the launching body) as its
+			//! `RayIntersection::pContactPartner`.  Both null on every other
+			//! cast.  Set only by PT's SSS exit continuations.
+			const IObject* pContactTarget;
+			const IObject* pContactSource;
+
 			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
 				bsdfMisPdf( -1 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
 				glossyFilterWidth( 0 ), volumeBounces( 0 ),
 				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
 				chainHasNEEOp( true ), chainHasBsdfContinuationOp( true ),
-				castRRCompensation( 1.0 ) {}
+				castRRCompensation( 1.0 ),
+				pContactTarget( 0 ), pContactSource( 0 ) {}
 
 			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.
 			Scalar MisPartnerPdf() const

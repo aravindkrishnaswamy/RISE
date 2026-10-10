@@ -32,6 +32,7 @@
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Optics.h"
+#include "../Utilities/BSSRDFSampling.h"
 #include "../Utilities/ExpressionMemo.h"
 #include "../Utilities/Threads/Threads.h"
 #include "../Interfaces/IObject.h"
@@ -990,7 +991,12 @@ bool RayCaster::CastRay(
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
-    pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
+	// DL-408: a contact launch is cast against its target alone; a launch
+	// that does not meet it at the launch point falls back to the scene.
+	if( !( rs.pContactTarget && BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, ri ) ) ) {
+		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
+	}
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
@@ -1694,6 +1700,10 @@ bool RayCaster::CastRay(
 		// `RAY_STATE::castRRCompensation`'s doc.  Never affects the
 		// returned radiance `c`.
 		RAY_STATE rsForShade( rs );
+		// DL-408: the contact launch was THIS cast's; the hit carries its
+		// partner, and nothing the shader casts may inherit it.
+		rsForShade.pContactTarget = 0;
+		rsForShade.pContactSource = 0;
 		rsForShade.castRRCompensation = rrCompensation;
 
 		// Apply shade by calling the appropriate shader
@@ -1854,7 +1864,12 @@ bool RayCaster::CastRayNM(
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
-    pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
+	// DL-408: a contact launch is cast against its target alone; a launch
+	// that does not meet it at the launch point falls back to the scene.
+	if( !( rs.pContactTarget && BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, ri ) ) ) {
+		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
+	}
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
@@ -2329,6 +2344,10 @@ bool RayCaster::CastRayNM(
 
 		// DL-185 -- see the RGB CastRay's identical call site above.
 		RAY_STATE rsForShade( rs );
+		// DL-408: the contact launch was THIS cast's; the hit carries its
+		// partner, and nothing the shader casts may inherit it.
+		rsForShade.pContactTarget = 0;
+		rsForShade.pContactSource = 0;
 		rsForShade.castRRCompensation = rrCompensation;
 
 		// Apply shade by calling the appropriate shader
@@ -3287,7 +3306,12 @@ bool RayCaster::CastRayHWSS(
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
-    pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
+	// DL-408: a contact launch is cast against its target alone; a launch
+	// that does not meet it at the launch point falls back to the scene.
+	if( !( rs.pContactTarget && BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, ri ) ) ) {
+		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
+	}
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
@@ -3342,6 +3366,10 @@ bool RayCaster::CastRayHWSS(
 		// per-wavelength medium fallback above already delegates to
 		// CastRayNM, which applies its own copy of this fix.)
 		RAY_STATE rsForShade( rs );
+		// DL-408: the contact launch was THIS cast's; the hit carries its
+		// partner, and nothing the shader casts may inherit it.
+		rsForShade.pContactTarget = 0;
+		rsForShade.pContactSource = 0;
 		rsForShade.castRRCompensation = rrCompensation;
 
 		// Dispatch to ShadeHWSS — this routes through

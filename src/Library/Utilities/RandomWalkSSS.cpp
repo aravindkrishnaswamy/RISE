@@ -441,7 +441,9 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// lying on it) does not contain it and is never reported.  Only
 			// random-walk neighbours are crossed into; any other body the
 			// offset point lies inside (a diffusion body, an opaque surface)
-			// keeps the old behaviour (DL-408).  Residuals: shells of the
+			// is met by the integrator's CONTACT LAUNCH after the walk
+			// returns (DL-408, BSSRDFSampling::FindExitContact, from
+			// `result.boundaryPoint`).  Residuals: shells of the
 			// walker's OWN object (the neighbour must be another object), a
 			// point between two disjoint open sheets of one object reads
 			// inside, the walk keeps the entry body's boundaryFilter / maxBounces /
@@ -622,6 +624,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// ray direction) ensures clearance even for near-
 			// grazing directions, and keeps the ray origin
 			// consistent with the stored BDPT vertex position.
+			result.boundaryPoint = exitPoint;
 			result.entryPoint = Point3Ops::mkPoint3( exitPoint,
 				exitNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
 			result.entryNormal = exitNormal;

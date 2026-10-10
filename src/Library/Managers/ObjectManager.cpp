@@ -1793,16 +1793,38 @@ static bool OddCrossings( const IObjectPriv* obj, const Point3& pt, const Vector
 
 const IObject* ObjectManager::RandomWalkObjectContaining( const Point3& ptWorld, const Vector3& probeDir, const IObject* self ) const
 {
+	return ObjectContaining_( ptWorld, probeDir, self, true );
+}
+
+const IObject* ObjectManager::SolidObjectContaining( const Point3& ptWorld, const Vector3& probeDir, const IObject* self ) const
+{
+	return ObjectContaining_( ptWorld, probeDir, self, false );
+}
+
+void ObjectManager::IntersectSingleObject( RayIntersection& ri, const IObject* pObject ) const
+{
+	ri.geometric.bHit = false;
+	ri.geometric.range = RISE_INFINITY;
+	if( !pObject ) {
+		return;
+	}
+	pObject->IntersectRay( ri, RISE_INFINITY, true, true, false );
+	CompleteShadingSignals( ri.geometric, ri.pObject );
+}
+
+const IObject* ObjectManager::ObjectContaining_( const Point3& ptWorld, const Vector3& probeDir, const IObject* self, const bool bRandomWalkOnly ) const
+{
 	// DL-370; see the interface comment.  The box walk is the cheap gate
-	// (a point no other random-walk box contains costs no ray at all);
-	// the per-object ray decides containment.
+	// (a point no other candidate box contains costs no ray at all);
+	// the per-object ray decides containment.  DL-408 shares it without
+	// the random-walk filter.
 	const IObject* found = 0;
 	auto test = [&]( const IObjectPriv* obj ) {
 		if( found || !obj || obj == self || !obj->IsWorldVisible() ) {
 			return;
 		}
 		const IMaterial* pMat = obj->GetMaterial();
-		if( !pMat || !pMat->GetRandomWalkSSSParams() ) {
+		if( !pMat || ( bRandomWalkOnly && !pMat->GetRandomWalkSSSParams() ) ) {
 			return;
 		}
 		// (1) A body that can sign a distance answers containment exactly

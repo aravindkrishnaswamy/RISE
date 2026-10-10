@@ -1848,6 +1848,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	Ray currentRay = ri.geometric.ray;
 	IORStack iorStack = initialIorStack;
 	bool needsIntersection = false;
+	// DL-408: a pending CONTACT LAUNCH -- set by PART 3 when the
+	// continuation from a contact hit goes back to its arrival side
+	// (BSSRDFSampling::ContactReturnTarget), consumed by the next
+	// intersection.
+	const IObject* pLoopContactTarget = 0;
+	const IObject* pLoopContactSource = 0;
+	Point3 loopContactPoint;
 
 	// Firefly tracing: assigns a monotonically increasing per-pixel sample
 	// ID so the output log can be grouped by sample.  Only enabled when
@@ -2023,9 +2030,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
 		if( needsIntersection )
 		{
-			ri = RayIntersection( currentRay, rast );
-			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRaySampled( ri, sampler );
+			// DL-408: a contact launch is cast against its target alone
+			// (from behind the shared face); one that does not meet it at
+			// the launch point falls back to the ordinary scene cast.
+			bool bContactHit = false;
+			if( pLoopContactTarget ) {
+				ri = RayIntersection( BSSRDFSampling::ContactRay( loopContactPoint, currentRay.Dir() ), rast );
+				ri.geometric.glossyFilterWidth = glossyFilterWidth;
+				bContactHit = BSSRDFSampling::IntersectContactRay(
+					*scene.GetObjects(), pLoopContactTarget, pLoopContactSource, ri );
+				pLoopContactTarget = 0;
+				pLoopContactSource = 0;
+			}
+			if( bContactHit ) {
+				currentRay = ri.geometric.ray;
+			} else {
+				ri = RayIntersection( currentRay, rast );
+				ri.geometric.glossyFilterWidth = glossyFilterWidth;
+				scene.GetObjects()->IntersectRaySampled( ri, sampler );
+			}
 
 			bool bHit = ri.geometric.bHit;
 
@@ -3242,6 +3265,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										continuationRay.Advance( 1e-8 );
 
 										IRayCaster::RAY_STATE rs2;
+										// DL-408: an exit on a face shared with a
+										// touching body meets that body at zero
+										// distance -- a contact launch, cast against
+										// it alone from behind the shared face.
+										{
+											const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
+											const IObject* pContact = BSSRDFSampling::FindExitContact(
+												*scene.GetObjects(), bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
+											if( pContact ) {
+												continuationRay = BSSRDFSampling::ContactRay(
+													bssrdf.boundaryPoint, bssrdf.scatteredRay.Dir() );
+												rs2.pContactTarget = pContact;
+												rs2.pContactSource = pSSSExitObject;
+											}
+										}
 										rs2.depth = depth + 2;
 										rs2.considerEmission = true;
 										rs2.importance = importance * PTSurvivalMagnitude( sssThroughput );
@@ -3505,6 +3543,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										continuationRay.Advance( 1e-8 );
 
 										IRayCaster::RAY_STATE rs2;
+										// DL-408: an exit on a face shared with a
+										// touching body meets that body at zero
+										// distance -- a contact launch, cast against
+										// it alone from behind the shared face.
+										{
+											const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
+											const IObject* pContact = BSSRDFSampling::FindExitContact(
+												*scene.GetObjects(), bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
+											if( pContact ) {
+												continuationRay = BSSRDFSampling::ContactRay(
+													bssrdf.boundaryPoint, bssrdf.scatteredRay.Dir() );
+												rs2.pContactTarget = pContact;
+												rs2.pContactSource = pSSSExitObject;
+											}
+										}
 										rs2.depth = depth + 2;
 										rs2.considerEmission = true;
 										rs2.importance = importance * PTSurvivalMagnitude( sssThroughput );
@@ -4743,6 +4796,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			currentRay = traceRay;
 			currentRay.Advance( 1e-8 );
+
+			// DL-408: from a contact hit, a continuation back toward the
+			// arrival side meets the partner at zero distance.
+			pLoopContactTarget = BSSRDFSampling::ContactReturnTarget( ri, traceRay.Dir() );
+			if( pLoopContactTarget ) {
+				pLoopContactSource = ri.pObject;
+				loopContactPoint = ri.geometric.ptIntersection;
+			}
 
 			if( traceIorStack != &iorStack ) {
 				iorStack = *traceIorStack;
