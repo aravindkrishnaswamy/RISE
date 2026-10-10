@@ -41,6 +41,18 @@ namespace RISE
 		{
 		};
 
+        // Reset the existing generator in place; retain its object identity.
+        inline void Reseed( unsigned int seed )
+        {
+#if defined DRAND48
+            srand48(seed);
+#elif defined MERSENNE53 || defined MERSENNE
+            mt.init_genrand(seed);
+#else
+            srand(seed);
+#endif
+        }
+
 		inline double CanonicalRandom() const
 		{
 			#if defined DRAND48

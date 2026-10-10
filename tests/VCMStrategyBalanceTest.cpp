@@ -135,21 +135,15 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-//! DL-365: per-render Sobol VALUE salt, DL-308's template
-//! (tests/RefractiveRadianceScalingTest.cpp).  Without it, every render
-//! of one scene reuses the IDENTICAL Sobol' points (the pixel seed is a
-//! function of the pixel alone) -- `std::srand` alone only perturbs libc
-//! `rand()`, which this file's renders never consult for pixel sampling,
-//! so two "independent" runs of the same topology were bit-identical
-//! draws from one QMC point set and their spread understated the true
-//! render-to-render variance by omitting the QMC error entirely (the
-//! mechanism that let topology H flip red/green with the unsalted
-//! pattern: DL-365).  `g_seedBase` is overridable via argv[1] so a
-//! caller can request an independent salted sample of the whole suite,
-//! exactly as RefractiveRadianceScalingTest's `main` does.
+//! DL-365: per-render Sobol transport VALUE salt. The pixel seed alone is
+//! fixed, so an advancing camera RNG does not decorrelate transport QMC.
+//! DL-367 additionally resets camera randomness in topology U and its replay
+//! probe. Other topology probes retain their existing advancing camera RNG.
+//! The command-line seed base selects the transport salt sequence.
 static const unsigned int kDefaultSeedBase = 1729u;
 static unsigned int g_seedBase = kDefaultSeedBase;
 static unsigned int g_renderIndex = 0;
+static bool g_dl367CompleteRenderSeed = false;
 static const uint32_t kSaltTag = 0x365u;
 
 namespace RISE
@@ -311,7 +305,7 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 	return std::string( path );
 }
 
-static ImageStats RenderAndComputeStats( const char* scenePath )
+static ImageStats RenderAndComputeStats( const char* scenePath, uint64_t* pixelHash = nullptr )
 {
 	ImageStats result{};
 
@@ -334,12 +328,15 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	// worker-thread scheduling still makes float summation order
 	// non-bit-reproducible, but that noise is orders of magnitude
 	// smaller than the QMC error a real independent sample carries.  The
-	// salt makes every render here an independent randomized-QMC
-	// replicate, exactly as tests/RefractiveRadianceScalingTest.cpp and
-	// tests/MediumInsideOutsideInvariantTest.cpp already do.
+	// salt randomizes the transport QMC stream. Camera sampling also
+	// consumes GlobalRNG: DL-367 complete-render probes reset it below;
+	// older topology measurements leave that stream advancing.
 	const uint32_t salt = SobolSequence::HashCombine( g_seedBase + g_renderIndex, kSaltTag );
 	SobolSamplerTestHooks::ValueSalt().store( salt );
-	std::srand( g_seedBase + g_renderIndex++ );
+	const unsigned renderSeed=g_seedBase+g_renderIndex++;
+    std::srand(renderSeed);
+// DL-367: camera scrambling draws from GlobalRNG, not libc rand.
+    if(g_dl367CompleteRenderSeed) GlobalRNG().Reseed(renderSeed);
 	const bool bRendered = pJob->Rasterize();
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	if( !bRendered ) {
@@ -349,6 +346,14 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	}
 
 	result = ComputeStats( *pCap );
+    if(pixelHash) {
+        uint64_t h=14695981039346656037ull;
+        for(const auto& color:pCap->pixels) for(double component:{color.base.r,color.base.g,color.base.b,color.a}) {
+            uint64_t bits; std::memcpy(&bits,&component,sizeof(bits));
+            for(unsigned j=0;j<8;++j) {h^=(bits>>(8*j))&255u;h*=1099511628211ull;}
+        }
+        *pixelHash=h;
+    }
 
 	safe_release( pCap );
 	safe_release( pJob );
@@ -2180,8 +2185,38 @@ static void TestRoughSSSEmptyContainerU()
 // 32-sample reference changes the finite-budget mean; --dl367-unmatched-only
 // retains that strict red comparator. This isolates the reference confound,
 // not the still-unattributed native batching dependence (DL-367 remains open).
+// DL-367: a value salt must identify a complete render, including camera RNG.
+// Single-thread replay is exact; different salts must still change the image.
+static void TestRoughSSSReplay(unsigned repeats) {
+ const unsigned savedSeed=g_seedBase,savedIndex=g_renderIndex;
+ const uint32_t savedSalt=SobolSamplerTestHooks::ValueSalt().load();
+ const bool savedComplete=g_dl367CompleteRenderSeed;g_dl367CompleteRenderSeed=true;
+ for(const char* raster:{kRasterizerPTRoughSSSU,kRasterizerVCMRoughSSSU}) {
+  std::string r=raster;auto pos=r.find("samples 2048");r.replace(pos,12,"samples 64");
+  auto path=WriteSceneToTempFile((std::string("RISE ASCII SCENE 7\n")+r+kSceneRoughSSSU).c_str(),"dl367_replay");
+  Check(!path.empty(),"DL367 replay fixture writes");if(path.empty())continue;
+  uint64_t previous=0;unsigned mismatches=0;double squared=0,sum=0;
+  for(unsigned i=0;i<repeats;++i) {
+   uint64_t a=0,b=0;g_seedBase=367800+101*i;g_renderIndex=0;
+   const auto first=RenderAndComputeStats(path.c_str(),&a);
+   g_renderIndex=0;const auto second=RenderAndComputeStats(path.c_str(),&b);
+   Check(first.valid&&second.valid,"DL367 replay pair finite");
+   Check(a==b,"DL367 identical complete-render seed reproduces all pixels");
+   if(a!=b)++mismatches;
+   const double diff=first.mean[0]-second.mean[0];squared+=diff*diff;sum+=diff;
+   if(i)Check(a!=previous,"DL367 distinct salts produce distinct pixels");
+   previous=a;
+  }
+  std::printf("DL367 replay %s n=%u pairs mismatches=%u mean_delta=%.9g sd_delta=%.9g\n",raster==kRasterizerPTRoughSSSU?"PT":"VCM-on",repeats,mismatches,sum/repeats,std::sqrt(std::max(0.,(squared-sum*sum/repeats)/(repeats-1))));
+  std::remove(path.c_str());
+ }
+ g_seedBase=savedSeed;g_renderIndex=savedIndex;g_dl367CompleteRenderSeed=savedComplete;
+ SobolSamplerTestHooks::ValueSalt().store(savedSalt);
+}
+
 static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool strict, bool unmatched) {
  const unsigned savedSeed=g_seedBase, savedIndex=g_renderIndex;
+ const bool savedComplete=g_dl367CompleteRenderSeed;g_dl367CompleteRenderSeed=true;
  auto replace=[](std::string s,const std::string& a,const std::string& b){auto p=s.find(a);if(p!=std::string::npos)s.replace(p,a.size(),b);return s;};
  std::vector<double> pt,on,off;
  for(unsigned i=0;i<8;++i) {
@@ -2203,7 +2238,7 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool st
   on.push_back(render(kRasterizerVCMRoughSSSU,true));
   off.push_back(render(kRasterizerVCMRoughSSSU,false));
  }
- g_seedBase=savedSeed;g_renderIndex=savedIndex;
+ g_seedBase=savedSeed;g_renderIndex=savedIndex;g_dl367CompleteRenderSeed=savedComplete;
  auto stat=[](const std::vector<double>& v){double m=0,ss=0;for(double x:v)m+=x;m/=v.size();for(double x:v)ss+=(x-m)*(x-m);return std::make_pair(m,std::sqrt(ss/(v.size()-1)/v.size()));};
  auto p=stat(pt),a=stat(on),b=stat(off);
  std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g off-sd=%.9g\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.));
@@ -3235,6 +3270,12 @@ int main( int argc, char** argv )
  if(argc>=2 && std::strcmp(argv[1],"--f1-salts")==0) {
   ApplySeedOverride(2);TestFurnaceF1Salted();
   std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+ }
+ if(argc>=2 && std::strcmp(argv[1],"--dl367-replay-only")==0) {
+  if(argc!=2 || GlobalOptions().ReadInt("force_number_of_threads",0)!=1) {
+   std::cerr<<"DL367 replay takes no arguments and requires force_number_of_threads 1\n";return 1;
+  }
+  TestRoughSSSReplay(8);std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
  }
  if(argc>=2 && std::strcmp(argv[1],"--u-salted-only")==0) {
   const unsigned seed=g_seedBase,index=g_renderIndex;
