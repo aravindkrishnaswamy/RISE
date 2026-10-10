@@ -22,47 +22,29 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name				global
-	shaderop			DefaultDirectLighting
-}
-
-/*
-distributiontracing_shaderop
-{
-	name				dt
-	samples				6
-	diffuse				false
-	reflections			TRUE
-}
-*/
-
-pathtracing_shaderop
-{
-	name				pt
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
-	# pathtracing_shaderop already does NEE direct lighting via MIS;
-	# stacking DefaultDirectLighting on top double-counts every direct
-	# illumination contribution.  Job::CreateStandardShader() emits a
-	# warning about this combination -- keep the shader stack lean.
+	# Since the slice-C migration every shader is the plain path tracer
+	# (the scene used to mix Whitted, direct-lighting and path-tracing
+	# chains under the legacy pixel rasterizer); the three shader names
+	# are kept so the loop-generated objects below stay unchanged.
 	name				glossy_shader
-	shaderop			pt
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
 	name				glass_shader
-	shaderop			DefaultDirectLighting
-	shaderop			DefaultReflection
-	shaderop			DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		6
-	samples				16
-	lum_samples			1
+	samples				64
 	adaptive_max_samples	512
 	adaptive_threshold	0.05
 }
@@ -295,13 +277,22 @@ uniformcolor_painter
 # Materials
 ##################################################
 
-polished_material
+# Legacy phase 2 slice C: substrate of `floor_mat` (was polished_material reflectance).
+lambertian_material
+{
+	name				floor_mat_base
+	reflectance			pnt_floor
+}
+
+# Legacy phase 2 slice C: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `floor_mat_base`; coat_weight = tau 1, coat_ior 1.45, coat_roughness 1/sqrt(2*250+1) = 0.04468 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				floor_mat
-	reflectance			pnt_floor
-	tau			1
-	ior					1.45
-	scattering			250.0
+	base				floor_mat_base
+	coat_weight			1
+	coat_ior			1.45
+	coat_roughness		0.04468
 }
 
 lambertian_material
@@ -310,23 +301,28 @@ lambertian_material
 	reflectance			pnt_wall
 }
 
-cooktorrance_material
+# Legacy phase 2 slice C: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.12 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ring_mat
 	rd					pnt_ring
 	rs					pnt_ring_spec
-	facets				0.12
+	alphax				0.12
+	alphay				0.12
+	fresnel_mode		conductor
 	ior					2.4
 	extinction			1.6
 }
 
-ward_anisotropic_material
+# Legacy phase 2 slice C: was ward_anisotropic_material; ward_anisotropic alphax 0.03 alphay 0.22 carried, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				pillar_mat
 	rd					pnt_metal
 	rs					pnt_metal_spec
 	alphax				0.03
-	alphay			0.22
+	alphay				0.22
+	fresnel_mode		schlick_f0
 }
 
 dielectric_material
@@ -3077,7 +3073,7 @@ standard_object
 
 
 ##################################################
-# Cook-Torrance torus ring
+# GGX conductor torus ring (was Cook-Torrance)
 ##################################################
 
 

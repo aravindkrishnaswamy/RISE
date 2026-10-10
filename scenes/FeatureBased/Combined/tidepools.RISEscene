@@ -22,34 +22,6 @@ hdr_painter
 	name				pnt_env
 	file				lightprobes/uffizi_probe.hdr
 }
-/*
-ambientocclusion_shaderop
-{
-	name				ambocc
-	multiplybrdf		true
-	numphi				32
-	numtheta			12
-	irradiance_cache	true
-}
-
-standard_shader
-{
-	name			global
-	shaderop		DefaultDirectLighting
-	shaderop		ambocc
-	shaderop		DefaultReflection
-	shaderop		DefaultRefraction
-}
-
-pixelpel_rasterizer
-{
-	max_recursion		4
-	samples				25
-	lum_samples			1
-	radiance_map		pnt_env
-	radiance_background	TRUE
-}
-*/
 standard_shader
 {
 	name		global
@@ -368,12 +340,14 @@ uniformcolor_painter
 	color				0.7 0.4 0.5
 }
 
-iridescent_painter
+# Legacy phase 2 slice C: was iridescent_painter (colora `pnt_shell_blue`, colorb `pnt_shell_pink`, bias 0.5); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.9583; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
 	name				pnt_shell
-	colora				pnt_shell_blue
-	colorb				pnt_shell_pink
-	bias				0.5
+	color				0.68333 0.40417 0.50833
+	colorspace			Rec709RGB_Linear
 }
 
 ##################################################
@@ -397,24 +371,34 @@ dielectric_material
 	scattering			5000.0
 }
 
-# Wet pebbles - polished with Perlin texture.  Tau is locked to unity
+# Wet pebbles - a clear coat over a Perlin-textured base.  The coat weight
+# (polished `tau` before the slice-C migration) is locked to unity
 # here as an authoring choice (a uniform coat coverage), not because
 # the engine can't vary it: scalar_painter has since gained a `painter`
 # form (the P2.1 any-painter bridge, docs/WETNESS_COAT_DESIGN.md §3.6) that
 # binds ANY colour painter with a channel select, so
-# `scalar_painter { painter pnt_rock channel R }` bound to `tau` would let
+# `scalar_painter { painter pnt_rock channel R }` bound to `coat_weight` would let
 # the coat coverage follow the same perlin field driving `reflectance`
 # below.  (An earlier version of this comment said scalar_painter had no
 # way to read a spatial painter at all; that stopped being true once the
 # `painter` bridge landed.)  The spatial colour variation still lives in
 # the perlin painter via `reflectance`.
-polished_material
+# Legacy phase 2 slice C: substrate of `wet_rock` (was polished_material reflectance).
+lambertian_material
+{
+	name				wet_rock_base
+	reflectance			pnt_rock
+}
+
+# Legacy phase 2 slice C: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `wet_rock_base`; coat_weight = tau 1, coat_ior 1.45, coat_roughness 1/sqrt(2*800+1) = 0.02499 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				wet_rock
-	reflectance			pnt_rock
-	tau					1.0
-	ior					1.45
-	scattering			800.0
+	base				wet_rock_base
+	coat_weight			1
+	coat_ior			1.45
+	coat_roughness		0.02499
 }
 
 # Moss-covered rock - Oren-Nayar
@@ -425,11 +409,53 @@ orennayar_material
 	roughness			0.95
 }
 
-# Shell-like iridescent material
-lambertian_material
+# Legacy phase 2 slice C: white F0 tint for the thin-film materials.
+uniformcolor_painter
+{
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				tf_Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				tf_Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Shell-like iridescent material (a thin-film GGX since slice C)
+# Legacy phase 2 slice C: was lambertian_material; lambertian with iridescent `pnt_shell` -> pearlescent ggx: rd = mean colour 0.683 0.404 0.508 (w 0.958), TiO2 film 280 nm over a 1.5 dielectric (alpha 0.3), thickness matching its normal-incidence colour 0.7 0.4 0.5.
+ggx_material
 {
 	name				shell
-	reflectance			pnt_shell
+	rd					pnt_shell
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		280
 }
 
 ##################################################
@@ -618,13 +644,4 @@ spot_light
 	inner				20
 	outer				50
 }
-/*
-irradiance_cache
-{
-	size				500
-	tolerance			0.3
-	min_spacing			8
-	max_spacing			100
-}
-*/
 
