@@ -126,6 +126,9 @@ FAMILIES
               dropped.  Any other parameter the target does not accept is
               REFUSED.
 
+Kept by owner ruling (KEEP below): FeatureBased/Animation/translucent_bunny keeps
+its iridescent_painter (2026-10-10).
+
 Never touched: scenes/Tests/Legacy/ (the frozen-feature regression corpus),
 scenes/Tests/ChunkCoverage/, and the scenes held for slice C (Android
 catalogue / quickstart sample, HELD below).  Idempotent: a migrated scene has
@@ -165,6 +168,24 @@ HELD = {
     'scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene': 'Android catalogue scene (slice C)',
     'scenes/FeatureBased/Combined/tidepools.RISEscene': 'Android catalogue scene (slice C)',
     'scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene': 'Android catalogue scene (slice C)',
+}
+
+# Families a scene deliberately keeps (owner rulings).  Repo-relative path ->
+# {family: reason}; the other families still migrate.
+KEEP = {
+    'scenes/FeatureBased/Animation/translucent_bunny.RISEscene': {
+        'iridescent': 'owner ruling 2026-10-10: keeps the deprecated iridescent_painter '
+                      '(translucent_material has no thin-film model)'},
+}
+
+# Per-scene film thickness overrides (owner rulings), repo-relative path ->
+# {iridescent painter name: nm}.  The hue rule matches the painter's
+# normal-incidence colour; on the two teapots (bias -0.5) most of the visible
+# surface showed the purple end instead, and 125 nm (magenta-purple titanium
+# anodizing, _TF_TI row 125) keeps that look.
+FILM_OVERRIDE = {
+    'scenes/FeatureBased/Geometry/teapot.RISEscene': {'pnt_iri': 125},
+    'scenes/Tests/Geometry/teapot_analytic.RISEscene': {'pnt_iri': 125},
 }
 
 POLISHED_DELTA = 1e6          # kPhongDeltaThreshold
@@ -715,7 +736,7 @@ def match_thickness(rgb, table):
     return best[1]
 
 
-def migrate_iridescent(text, report):
+def migrate_iridescent(text, report, rel=None):
     ed = Editor(text)
     iris = [c for c in ed.chunks if c.kw == 'iridescent_painter']
     if not iris:
@@ -800,6 +821,10 @@ def migrate_iridescent(text, report):
                     ed.insert_before(d.kw_line, chunk_lines('scalar_painter', [('name', nm_), ('file', fn)], None, dind) + [''])
             if d.kw == 'perfectreflector_material':
                 th = match_thickness(target, _TF_TI)
+                ov = FILM_OVERRIDE.get(rel, {}).get(pname)
+                if ov is not None:
+                    hue_src += '; OVERRIDDEN to %d nm by owner ruling 2026-10-10 (keeps the purple look; FILM_OVERRIDE)' % ov
+                    th = ov
                 params = [('name', d.name()), ('rd', 'none'), ('rs', white), ('alphax', fmt_num(IRID_MIRROR_ALPHA)),
                           ('alphay', fmt_num(IRID_MIRROR_ALPHA)), ('fresnel_mode', 'thinfilm'), ('ior', 'tf_Ti_n'),
                           ('extinction', 'tf_Ti_k'), ('film_ior', 'tf_TiO2_n'), ('film_extinction', 'tf_TiO2_k'),
@@ -972,9 +997,15 @@ def run(families, paths, dry_run, verbose, mlt_integrator, ambient_with_sky=None
         refused = None
         try:
             for fam in families:
+                if fam in KEEP.get(rel, {}):
+                    if verbose:
+                        print('KEPT      %s: %s family -- %s' % (rel, fam, KEEP[rel][fam]))
+                    continue
                 fn = {'materials': migrate_materials, 'iridescent': migrate_iridescent,
                       'ambient': migrate_ambient}.get(fam)
-                if fam == 'mlt':
+                if fam == 'iridescent':
+                    new, st = migrate_iridescent(cur, notes, rel)
+                elif fam == 'mlt':
                     new, st = migrate_mlt(cur, notes, mlt_integrator)
                 elif fam == 'ambient':
                     new, st = migrate_ambient(cur, notes, ambient_with_sky == 'drop')

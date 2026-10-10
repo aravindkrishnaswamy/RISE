@@ -721,7 +721,7 @@ families inside scenes already on supported rasterizers):**
   the ambient light were already covered there (`materials`, `blurry_floor`, `teapot`,
   `showroom`, `translucent_bunny`, `gltf_box`, ...).
 - **Look review:** `docs/legacy_phase2b2_review/index.html` (101 scenes, 3 salts at
-  long side 160).  84 of them move under 10%.  Measured causes of the large ones: the
+  long side 160).  85 of them move under 10%.  Measured causes of the large ones: the
   legacy models invent energy (white furnace, uniform radiance 1: Phong 0.5/white/N60
   reads 1.246; the glass_pavilion Cook-Torrance bronze RGB 1.18/0.86/0.55 against GGX
   0.66/0.56/0.42; `polished_material` over a 0.5 substrate 0.526 against `coated` 0.327,
@@ -736,13 +736,18 @@ families inside scenes already on supported rasterizers):**
   omni x1.273, and the test `caustic_sss` radiance_scale x0.00171 (so the environment
   adds the 1.2% of the legacy image its ambient added; VCM never rendered the ambient
   and B1's spot retune assumed it stays out).  All within 0.5% of the legacy mean.
-- **Authored intent flagged, NOT applied (owner call):** `translucent_bunny` (the
-  pearly white-blue iridescent bunny becomes flat purple: translucent has no thin film;
-  options: mean colour as migrated, the normal-incidence colour (measured -47%), or keep
-  the deprecated -- not frozen -- painter on this one showcase); `teapot` (the purple
-  iridescent mirror becomes light-blue titanium, +43%; a 125 nm film keeps the purple,
-  measured +24%).  Also proposed: `wetness_prelude_validation`'s Phase-1 `pow(base, k)`
-  darkening now stacks with the coat's own (set `k` 1).
+- **Owner rulings 2026-10-10 on the two authored-intent losses (applied):**
+  `translucent_bunny` KEEPS the deprecated (not frozen) `iridescent_painter`, because
+  `translucent_material` has no thin-film model (its mean colour turned the pearly bunny
+  flat purple, -78%); the scene is the pre-B2 scene plus a comment (legacy look, +0.0%)
+  and the tool's `KEEP` list skips its iridescent family.  Both teapots (`FeatureBased/
+  Geometry/teapot`, `Tests/Geometry/teapot_analytic`, which share the material) use a
+  125 nm titanium film (the tool's `FILM_OVERRIDE`), which keeps the purple look:
+  +25.0% / +55.1%.  No light retune: with the film swapped back for a constant
+  mean-colour mirror the showcase reads -2.1%, so the gain is the film's physical
+  Fresnel rise at grazing incidence, not a legacy energy bias (the B1 precedent's
+  condition).  `wetness_prelude_validation`'s -11.6% (the coat's own darkening now
+  stacks with the Phase-1 `pow(base, k)` recipe) is accepted as is.
 - **Gates:** CstDeriveGoldenTest regenerated (480 MATCH, 0 DRIFT; every changed entry a
   migrated, moved or new Legacy scene), LegacyTierRenderIdentityTest 38/0,
   DeprecatedMaterialRenderIdentityTest 3/0, DeprecatedMaterialWarningTest 376/0,

@@ -1628,7 +1628,9 @@ painter's projected-area mean colour); `ambient_light` becomes a uniform
 `radiance_map` of radiance `color x power / pi` (that is what lights an
 unoccluded Lambertian surface as the ambient light did) with
 `radiance_background FALSE`; MLT becomes BDPT (VCM for SDS caustics) with
-`mutations_per_pixel` -> `samples`.
+`mutations_per_pixel` -> `samples`.  Owner rulings 2026-10-10: `FeatureBased/Animation/translucent_bunny`
+keeps the deprecated `iridescent_painter` (`translucent_material` has no thin film; the tool's
+`KEEP` list), and both teapots use a 125 nm film (`FILM_OVERRIDE`) to keep their purple look.
 
 ## 11.5. Deprecated materials (DL-323 follow-through, 2026-10-02)
 

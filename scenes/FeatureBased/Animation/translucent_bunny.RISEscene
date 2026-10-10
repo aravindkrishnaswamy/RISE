@@ -226,14 +226,16 @@ animation_options
 # Materials
 ##################################################
 
-# Legacy phase 2 slice B2: was iridescent_painter (colora `color_darkpurple`, colorb `color_slateblue`, bias -0.5); now its
-# projected-area mean colour (1-w) colora + w colorb, w = 0.2083; the view-dependent
-# colour shift moved to the thin-film ggx_material(s) that bind it.
-uniformcolor_painter
+# Kept by owner ruling 2026-10-10 (legacy-deprecation Phase 2 slice B2): this showcase keeps the
+# DEPRECATED (not frozen) iridescent_painter, because translucent_material has no thin-film model to
+# carry the pearly view-dependent colour (the painter's mean colour turned the bunny flat purple, -78%).
+# tools/migrate_scenes_legacy_families.py skips this scene's iridescent family (KEEP).
+iridescent_painter
 {
 	name				pnt_iri
-	color				0.41958 0.19876 0.58042
-	colorspace			Rec709RGB_Linear
+	colora				color_darkpurple
+	colorb				color_slateblue
+	bias				-0.5
 }
 
 translucent_material
