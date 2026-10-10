@@ -48,7 +48,11 @@ MODES (pick one with --mode; every mode refuses what it does not handle):
                 (arealight `samples`, DT / FG hemisphere samples, AO numtheta
                 x numphi: what the legacy op took per shading point and what
                 set its noise floor), floored at 16 (direct) / 64 (indirect),
-                capped 1024 (`lum_samples` is inert and does not count);
+                capped 1024 (`lum_samples` is inert and does not count; nor
+                does a CACHED gather -- FG `cache`, default TRUE, DT
+                `irradiance_caching`, AO `irradiance_cache` -- or an op that
+                only feeds a point-cloud SSS op's irradiance shader, which
+                runs per build point, not per pixel);
               * `--integrator vcm` REFUSES a scene with an `ambient_light` or
                 `directional_light` (VCM renders neither) unless
                 `--vcm-drop-unsupported-lights` is given, which reports the
@@ -77,9 +81,12 @@ MODES (pick one with --mode; every mode refuses what it does not handle):
                 The op's colour is the object material's uniform base colour
                 only where the legacy op applied it (`multiplybsdf TRUE`, or
                 an irradiance shader that shades with the object's own BSDF:
-                DefaultDirectLighting, a photon-map op, AO with multiplybrdf);
-                an irradiance shader with an override `bsdf` takes that
-                material's colour, and otherwise it is untinted (0.95 grey);
+                DefaultDirectLighting or a directlighting_shaderop with no /
+                `none` bsdf, path-tracing / final-gather / distribution-
+                tracing / photon-map ops, AO with multiplybrdf); a direct-
+                lighting op with an override `bsdf` takes that material's
+                literal colour (non-literal: refused), and otherwise it is
+                untinted (0.95 grey);
                 a base colour that is not a literal
                 uniform painter is REFUSED unless `--sss-albedo R G B` gives
                 one or `--sss-keep-material` keeps the authored material;
@@ -860,7 +867,9 @@ def _material_base_color(chunks, mat):
 def per_op_samples(c):
     """Samples a legacy op takes per shading point, or 1 (None: non-literal).
     Defaults from ChunkParserRegistry.cpp: DT 16, FG theta 15 x phi 47 (or
-    `samples`), AO numtheta 5 x numphi 15 (or `samples`), arealight 9."""
+    `samples`), AO numtheta 5 x numphi 15 (or `samples`), arealight 9.  A
+    cached gather (FG `cache`, default TRUE; DT `irradiance_caching`; AO
+    `irradiance_cache`) counts 1."""
     def num(name, d):
         v = c.get(name)
         if v is None:
@@ -868,14 +877,23 @@ def per_op_samples(c):
         return int(float(v[0])) if is_literal_number(v[0]) else None
     if c.kw == 'arealight_shaderop':
         return num('samples', 9)
+    def flag(name, d):
+        v = c.get(name)
+        return d if v is None else v[0].upper() in ('TRUE', '1')
+    # A CACHED gather samples only at sparse cache records, which the
+    # interpolation smooths: it does not set the per-pixel noise floor.
     if c.kw == 'distributiontracing_shaderop':
-        return num('samples', 16)
+        return 1 if flag('irradiance_caching', False) else num('samples', 16)
     if c.kw == 'finalgather_shaderop':
+        if flag('cache', True):
+            return 1
         if c.get('samples') is not None:
             return num('samples', 0)
         t, ph = num('theta_samples', 15), num('phi_samples', 47)
         return None if t is None or ph is None else t * ph
     if c.kw == 'ambientocclusion_shaderop':
+        if flag('irradiance_cache', False):
+            return 1
         if c.get('samples') is not None:
             return num('samples', 0)
         t, ph = num('numtheta', 5), num('numphi', 15)
@@ -886,13 +904,20 @@ def per_op_samples(c):
 def sss_tint_source(oc, chunks, mat):
     """Where a simple_sss_shaderop's colour came from.  The op sums the
     irradiance its `shader` computed at the sample points, shaded by that
-    shader's ops: DefaultDirectLighting / photon-map ops use the OBJECT's own
-    BSDF (tinting by its base colour), a directlighting_shaderop with `bsdf X`
-    uses material X instead, and an AO op tints only with multiplybrdf
-    (default TRUE).  `multiplybsdf TRUE` multiplies the result by the object's
-    BSDF again.  Returns 'base' (tint by the object's base colour), 'none'
-    (untinted: only the op's extinction sets the hue), or an RGB list (an
-    override material's colour)."""
+    shader's ops.  Returns 'base' (tinted by the object's base colour), 'none'
+    (untinted: only the op's extinction sets the hue), an RGB list (an
+    override material's colour), or ('refuse', reason).
+      * `multiplybsdf TRUE` multiplies the result by the object's BSDF: 'base'.
+      * A direct-lighting op must be present for rule (a): DefaultDirectLighting,
+        or a directlighting_shaderop with no `bsdf` or `bsdf none`, shades with
+        the OBJECT's BSDF (the parser turns `none` into a null override and
+        DirectLightingShaderOp falls back to the object's material): 'base';
+        with `bsdf X` it shades with X: X's colour (a non-literal colour is
+        refused).
+      * Path-tracing, final-gather, distribution-tracing and photon-map ops
+        shade with the object's BSDF: 'base'.
+      * AO tints only with multiplybrdf (default TRUE): 'base'.
+    Any 'base' wins; several different override colours are refused."""
     mb = oc.get('multiplybsdf')
     if mb and mb[0].upper() in ('TRUE', '1'):
         return 'base'
@@ -901,29 +926,42 @@ def sss_tint_source(oc, chunks, mat):
     if sh is None:
         return 'none'
     named = {c.name(): c for c in chunks if c.kw.endswith('_shaderop') and c.name()}
+    tints = []
     for idx, toks in sh.params:
         if toks[0] != 'shaderop' or len(toks) < 2:
             continue
         op = named.get(toks[1])
         if op is None:
-            if toks[1] in ('DefaultDirectLighting',) or 'PhotonMap' in toks[1]:
-                return 'base'
+            if toks[1] in ('DefaultDirectLighting', 'DefaultPathTracing') or 'PhotonMap' in toks[1]:
+                tints.append('base')
             continue
         if op.kw == 'directlighting_shaderop':
             b = op.get('bsdf')
-            if not b:
-                return 'base'
-            if b[0] == 'none':
-                return 'none'
+            if not b or b[0] == 'none':
+                tints.append('base')
+                continue
             m = next((c for c in chunks if c.kw.endswith('_material') and c.name() == b[0]), None)
             col = _material_base_color(chunks, m) if m else None
-            return col if col is not None else 'base'
-        if op.kw == 'ambientocclusion_shaderop':
+            if col is None:
+                return ('refuse', 'directlighting_shaderop `%s` override bsdf `%s` has no literal uniform '
+                        'colour' % (op.name(), b[0]))
+            tints.append(col)
+        elif op.kw in ('pathtracing_shaderop', 'mis_pathtracing_shaderop', 'finalgather_shaderop',
+                       'distributiontracing_shaderop'):
+            tints.append('base')
+        elif op.kw == 'ambientocclusion_shaderop':
             v = op.get('multiplybrdf')
             if not (v and v[0].upper() in ('FALSE', '0')):
-                return 'base'
-    return 'none'
-
+                tints.append('base')
+    if 'base' in tints:
+        return 'base'
+    cols = []
+    for t in tints:
+        if t not in cols:
+            cols.append(t)
+    if len(cols) > 1:
+        return ('refuse', 'irradiance shader `%s` mixes override BSDFs of different colours' % shname)
+    return cols[0] if cols else 'none'
 
 def migrate_full(text, integrator, report, sss_albedo=None, sss_keep=False, sms=False,
                  vcm_drop_lights=False):
@@ -998,7 +1036,7 @@ def migrate_full(text, integrator, report, sss_albedo=None, sss_keep=False, sms=
             notes.append('LOOK CHANGE (LIGHT DROPPED): VCM does not render %s; their light is gone '
                          '(--vcm-drop-unsupported-lights)' % names)
             dropped_light_comment = ('# NOTE: VCM renders neither ambient_light nor directional_light, so this '
-                                     'scene\'s %s contribute nothing here.' % names)
+                                     'scene\'s %s %s nothing here.' % (names, 'contributes' if len(unseen) == 1 else 'contribute'))
         else:
             dropped_light_comment = None
     else:
@@ -1055,9 +1093,13 @@ def migrate_full(text, integrator, report, sss_albedo=None, sss_keep=False, sms=
     spp = ival('samples', 1)
     if spp is None:
         return None, 'REFUSED: samples is not a literal number'
+    # Ops that only appear in a point-cloud SSS op's irradiance shader run
+    # once per BUILD point, not per pixel, and do not set the pixel noise.
+    sss_irr_shaders = set((c.get('shader') or ['none'])[0] for c in chunks if c.kw in SSS_OPS)
+    pixel_ops = set(opn for c, ops in chains if c.name() not in sss_irr_shaders for _, opn in ops)
     op_samples, op_from = 1, None
     for c in chunks:
-        if c.kw.endswith('_shaderop') and c.name() in referenced_ops:
+        if c.kw.endswith('_shaderop') and c.name() in pixel_ops:
             n = per_op_samples(c)
             if n is None:
                 return None, 'REFUSED: `%s` `%s` has a non-literal sample count' % (c.kw, c.name())
@@ -1123,6 +1165,12 @@ def migrate_full(text, integrator, report, sss_albedo=None, sss_keep=False, sms=
                        ([indent_of(kl) + dropped_light_comment] if dropped_light_comment else []) + [
                         kl.replace(r.kw, target, 1)]
     edits[r.close_line] = additions + [lines[r.close_line]]
+    # Appended lines go just before the brace: drop blank lines that would
+    # otherwise separate them from the chunk's other parameters.
+    k = r.close_line - 1
+    while additions and k > r.kw_line and k not in edits and lines[k].strip() == '':
+        edits[k] = []
+        k -= 1
 
     default_shader = (have['defaultshader'][1][1] if 'defaultshader' in have else 'global').strip('"')
     objects = [c for c in chunks if c.kw.endswith('_object')]
@@ -1174,6 +1222,8 @@ def migrate_full(text, integrator, report, sss_albedo=None, sss_keep=False, sms=
                     ext = oc.get('extinction') or ['0.02', '0.03', '0.09']
                     tr = [float(x) * k for x in ext]
                     tint = sss_tint_source(oc, chunks, mat)
+                    if isinstance(tint, tuple):
+                        return None, 'REFUSED: simple_sss_shaderop `%s`: %s' % (opn, tint[1])
                     if tint == 'none':
                         alb, src = [0.95, 0.95, 0.95], 'untinted (multiplybsdf FALSE, irradiance shader with no surface colour)'
                     elif isinstance(tint, list):
@@ -1600,19 +1650,47 @@ def selftest():
     notes = []
     assert migrate_full(amb, 'vcm', notes, vcm_drop_lights=True)[0] is not None
     assert any('LIGHT DROPPED' in n for n in notes), notes
-    # simple SSS, multiplybsdf FALSE, irradiance shader with a white override
-    # BSDF: untinted -- the hue comes from the extinction only.
-    st_ = ('uniformcolor_painter\n{\n\tname g\n\tcolor 0.1 0.8 0.1\n}\n'
-           'lambertian_material\n{\n\tname m\n\treflectance g\n}\n'
-           'directlighting_shaderop\n{\n\tname dl\n\tbsdf none\n}\n'
-           'standard_shader\n{\n\tname irr\n\tshaderop dl\n}\n'
-           'simple_sss_shaderop\n{\n\tname s\n\textinction 0.01 0.02 0.04\n\tshader irr\n}\n'
-           'standard_shader\n{\n\tname global\n\tshaderop s\n}\npixelpel_rasterizer\n{\n}\n'
-           'standard_object\n{\n\tname o\n\tmaterial m\n}\n')
-    new, st = migrate_full(st_, 'pt', [])
-    assert 'albedo 0.95 0.2375 0.059375 (colour untinted' in new, new
-    new, st = migrate_full(st_.replace('\tshader irr', '\tshader irr\n\tmultiplybsdf TRUE'), 'pt', [])
-    assert 'albedo 0.1 0.2 0.01 (colour material `m`' in new, new
+    # simple SSS tint sources.  `bsdf none` is a NULL override: the op shades
+    # with the object's own BSDF, so the base colour tints (rule (a)).
+    base_ = ('uniformcolor_painter\n{\n\tname g\n\tcolor 0.1 0.8 0.1\n}\n'
+             'uniformcolor_painter\n{\n\tname w\n\tcolor 0.7 0.7 0.7\n}\n'
+             'lambertian_material\n{\n\tname m\n\treflectance g\n}\n'
+             'lambertian_material\n{\n\tname wm\n\treflectance w\n}\n'
+             '@OPS@'
+             'standard_shader\n{\n\tname irr\n@IRR@}\n'
+             'simple_sss_shaderop\n{\n\tname s\n\textinction 0.01 0.02 0.04\n\tshader irr\n@MB@}\n'
+             'standard_shader\n{\n\tname global\n\tshaderop s\n}\npixelpel_rasterizer\n{\n}\n'
+             'standard_object\n{\n\tname o\n\tmaterial m\n}\n')
+    def sss_case(ops, irr, mb=''):
+        return migrate_full(base_.replace('@OPS@', ops).replace('@IRR@', irr).replace('@MB@', mb), 'pt', [])
+    dl_none = 'directlighting_shaderop\n{\n\tname dl\n\tbsdf none\n}\n'
+    new, st = sss_case(dl_none, '\tshaderop dl\n')
+    assert 'albedo 0.1 0.2 0.01 (colour material `m`' in new, new                 # bsdf none -> base
+    new, st = sss_case('directlighting_shaderop\n{\n\tname dl\n\tbsdf wm\n}\n', '\tshaderop dl\n')
+    assert "albedo 0.7 0.175 0.04375 (colour the irradiance shader's override" in new, new  # override colour
+    new, st = sss_case('', '\tshaderop DefaultDirectLighting\n')
+    assert '(colour material `m`' in new, new                                     # default DL -> base
+    new, st = sss_case('finalgather_shaderop\n{\n\tname fg\n}\n', '\tshaderop fg\n')
+    assert '(colour material `m`' in new, new                                     # FG uses the object BSDF
+    new, st = sss_case('', '\tshaderop DefaultPathTracing\n')
+    assert '(colour material `m`' in new, new                                     # PT uses the object BSDF
+    new, st = sss_case('ambientocclusion_shaderop\n{\n\tname ao\n\tmultiplybrdf false\n}\n', '\tshaderop ao\n')
+    assert 'albedo 0.95 0.2375 0.059375 (colour untinted' in new, new             # no tinting op
+    new, st = sss_case('directlighting_shaderop\n{\n\tname dl\n\tbsdf wm\n}\n', '\tshaderop dl\n', '\tmultiplybsdf TRUE\n')
+    assert '(colour material `m`' in new, new                                     # multiplybsdf -> base
+    bad = base_.replace('@OPS@', 'checker_painter\n{\n\tname ck\n\tcolora g\n\tcolorb w\n}\n'
+                        'lambertian_material\n{\n\tname cm\n\treflectance ck\n}\n'
+                        'directlighting_shaderop\n{\n\tname dl\n\tbsdf cm\n}\n').replace('@IRR@', '\tshaderop dl\n').replace('@MB@', '')
+    assert 'no literal uniform colour' in migrate_full(bad, 'pt', [])[1]          # non-literal override refused
+    # Samples: a CACHED final gather and an op that only feeds an SSS
+    # irradiance shader do not set the per-pixel spp.
+    fg = ('finalgather_shaderop\n{\n\tname fg\n\tsamples 512\n}\n'
+          'standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n\tshaderop fg\n}\n'
+          'pixelpel_rasterizer\n{\n\tsamples 4\n}\n')
+    assert 'samples\t\t\t\t64' in migrate_full(fg, 'pt', [])[0]
+    assert 'samples\t\t\t\t1024' in migrate_full(fg.replace('samples 512', 'samples 512\n\tcache false'), 'pt', [])[0]
+    new, st = sss_case('distributiontracing_shaderop\n{\n\tname dt\n\tsamples 500\n}\n', '\tshaderop dt\n')
+    assert 'samples\t\t\t\t64' in new, new
     print('selftest: OK')
     return 0
 
