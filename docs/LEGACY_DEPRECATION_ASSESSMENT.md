@@ -481,7 +481,7 @@ Order by risk, lowest first:
    using the §11.5 table, as a tool), R11 ambient (54), R5 photon/FG (26 → VCM/PT),
    R6 point-cloud SSS (9), R14 iridescent (13), R12 MLT (15).
 6. Android catalogue, quickstart sample, and Blender defaults last, once the replacement
-   scenes exist.
+   scenes exist.  (Done in slice C, below.)
 
 **Phase 2 slice A as landed (2026-10-10, branch `legacy-phase2a`, steps 1-4):**
 - **Tool:** `tools/migrate_scenes_legacy_rasterizer.py --mode pt|direct|renames [--dry-run]`
@@ -768,6 +768,49 @@ families inside scenes already on supported rasterizers):**
 - **Left for slice C:** unchanged (`shapes`, `kaleidoscope_atrium`, `tidepools`,
   `pt_jewel_vault`, Android / quickstart / Blender defaults -- including the Blender
   `use_world_ambient` toggle and MLT enum items).  `visiblehuman` stays frozen.
+
+**Phase 2 slice C as landed (2026-10-10, branch `legacy-phase2c`, step 6 -- the last
+migration slice):**
+- **Tools:** both tools drop their slice-C `HELD` entries.  Unnamed rasterizer chunks derive
+  LAST-WINS, so the rasterizer tool gains `rasterizer_audit()` / `rasterizer_flag()` and
+  `--audit`: every mode of both tools prints a `FLAG` line for a scene with more than one
+  live rasterizer chunk or a frozen ACTIVE (last-declared) rasterizer, refusals name the
+  active chunk, and `--audit` also lists frozen rasterizers left inside comments.  Sweep of
+  `scenes/`: the only frozen ACTIVE rasterizers are the 21 `scenes/Tests/Legacy/` scenes and
+  `visiblehuman` (frozen DVR); the only live two-rasterizer scene is
+  `FeatureBased/VCM/vcm_sdf_luminaire_jellyfish` (PT then VCM, VCM active, documented on
+  purpose).  The MLT chunks reported in `spectral_skinmodel`, `rwsss_bdpt` and
+  `bdpt_torus_chain_atrium` (and `painters`' pixelpel) were inside `/* */` -- inert; the
+  blocks were removed anyway (zero render change, digests unchanged).
+- **Scenes:** `Tests/Geometry/shapes` (quickstart + Android smoke test) `--mode direct` ->
+  PT `max_diffuse_bounce 0`, 4 spp: -0.12%, CLI render 0.63-0.66 s (legacy 0.60-0.64 s) and
+  no frozen-rasterizer warning.  `FB/Parser/kaleidoscope_atrium` `--mode full` (mixed
+  Whitted / direct / PT chains -> PT full GI, 64 spp) + materials (polished -> coated,
+  Cook-Torrance -> GGX conductor, Ward anisotropic -> GGX): +5.2% as migrated, decomposed
+  into ~+16% indirect light the legacy chains never computed and -5.5% invented material
+  energy, both legacy biases, so its lights were RETUNED x0.951 (B1/B2 precedent):
+  -0.01%.  `FB/Combined/tidepools` (already PT; polished -> coated, iridescent shell ->
+  thin-film GGX, dead commented AO / pixelpel / irradiance-cache blocks removed): -1.3%,
+  not retuned (proposal x1.013).  `FB/PathTracing/pt_jewel_vault` (Ward / Ashikhmin ->
+  GGX): -0.01%.  Gallery: `docs/legacy_phase2c_review/index.html`.
+- **Android:** `SceneCatalog.kt` bundles the in-tree scene files (scraped by
+  `app/build.gradle.kts`), so the migrated scenes ship with no separate copies; the
+  smoke-test comment was updated.  No Android build was run (unverified on device).
+- **Blender:** the defaults were already supported (rasterizer `Auto (Pel)`, Pixel / MLT
+  labelled `[legacy]` and selectable, `use_world_ambient` OFF).  With the toggle OFF a
+  world that does not use nodes used to be DROPPED; it now exports as the same uniform
+  `world_radiance_uniform` radiance map a node-based uniform Background gets.  A `.blend`
+  that enabled `use_world_ambient` is unchanged.  Found, not fixed: selecting `Pixel
+  Rasterizer [legacy]` with the (default-on) back-compat "Path Tracing" box renders PT,
+  not the legacy rasterizer (`rise_blender_bridge.cpp` maps kind 0 + `use_path_tracing`
+  to PT-pel, the v4 behaviour).
+- **GUIs:** the Mac and Qt new-scene template (`scenes/Templates/empty_starter`, also the
+  Mac app resource) is already PT; no sample menu or editor template defaults to a frozen
+  chunk.  Nothing changed.
+- **Left on legacy in the shipped tree:** `scenes/Tests/Legacy/` (the frozen corpus),
+  `scenes/Tests/ChunkCoverage/cc_*` (one-chunk coverage), `FB/Shaders/visiblehuman` (frozen
+  DVR), `translucent_bunny`'s owner-kept `iridescent_painter`, and
+  `scenes/Benchmarks/sea_creatures` (recorded agent output).  Phase 2 is complete.
 
 **Phase 3 — remove: ON HOLD by owner ruling (2026-10-09); nothing below is scheduled.** (Original plan: several slices; each slice must update all five build projects per
 CLAUDE.md).** Order from least coupled:
