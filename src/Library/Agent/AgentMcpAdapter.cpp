@@ -722,9 +722,9 @@ namespace RISE
 						"`bdpt_spectral_rasterizer`, `mlt_rasterizer`, `mlt_spectral_rasterizer`, "
 						"`auto_rasterizer` and `auto_spectral_rasterizer` are SPECIALIZED and are "
 						"refused, with no override parameter -- only the USER selects those (in the "
-						"GUI, or by authoring the chunk into the scene file). The utility rasterizers "
-						"`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are NOT "
-						"gated. A scene that ALREADY contains a blocked rasterizer stays fully "
+						"GUI, or by authoring the chunk into the scene file). The frozen legacy rasterizers "
+						"`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are refused "
+						"too (material alpha works under PT and VCM). A scene that ALREADY contains a blocked rasterizer stays fully "
 						"editable, including that chunk's own parameters." );
 					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}

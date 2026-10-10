@@ -41,7 +41,7 @@ all of them; the decision map below is the shortcut.
 | Brushed metal, wood fibre, fur flow, scratch fields | `gabor3d_painter` | The only DIRECTIONAL noise -- `orientation` + `frequency`. |
 | Clouds, foam, moss | `perlinworley3d_painter` | Billowy but clumpy. |
 | Smoke, marbled paper, whorls | `curlnoise3d_painter` | Divergence-free -- filaments, not blobs. |
-| Iridescence: soap film, beetle shell, oil slick | `iridescent_painter` | View-angle blend, NOT a physical thin film.  For real heat-tint / anodizing use `ggx_material` with `fresnel_mode thinfilm`. |
+| Iridescence: soap film, beetle shell, oil slick | `ggx_material` with `fresnel_mode thinfilm` | The physical thin film.  `iridescent_painter` (a view-angle colour blend) is DEPRECATED -- it still works but a load warns. |
 | Water surface | `gerstnerwave_painter` | Best as a `displaced_geometry` displacement (real waves) with the colour reading trough-vs-crest. |
 | Break up the regularity of any of the above | `domainwarp3d_painter` | Noise whose input coordinates are themselves noise-displaced.  The cheapest way to stop fBm reading as "noise" -- and by itself the best marble. |
 | Art-directed cells (mosaic, tile, terrazzo) | `voronoi2d_painter` / `voronoi3d_painter` | Each `gen` line seeds ONE cell with its OWN painter -- placed, not random. |

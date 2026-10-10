@@ -55,9 +55,10 @@ class RISERenderSettings(bpy.types.PropertyGroup):
             "lighting through small openings.  VCM adds photon "
             "merging on top of BDPT — handles caustics and through-"
             "glass cases (water-with-pebbles, glass spheres) that "
-            "PT/BDPT can't connect.  MLT mutates entire paths via "
-            "Markov chains and excels with very hard-to-find light "
-            "sources / caustics, at the cost of correlated noise."
+            "PT/BDPT can't connect.  MLT and the Pixel Rasterizer are "
+            "FROZEN legacy integrators (unsupported since 2026-10-09: "
+            "they still render as before but receive no fixes) -- use "
+            "BDPT / VCM / Auto instead."
         ),
         items=(
             ("1", "Path Tracing (Pel)",      "Pure path tracing, RGB radiance — default"),
@@ -66,11 +67,11 @@ class RISERenderSettings(bpy.types.PropertyGroup):
             ("4", "BDPT (Spectral)",         "Bidirectional path tracing, spectral"),
             ("5", "VCM (Pel)",               "Vertex Connection & Merging, RGB — recovers caustics"),
             ("6", "VCM (Spectral)",          "Vertex Connection & Merging, spectral"),
-            ("7", "MLT (Pel)",               "Metropolis Light Transport / PSSMLT, RGB"),
-            ("8", "MLT (Spectral)",          "Metropolis Light Transport / PSSMLT, spectral"),
+            ("7", "MLT (Pel) [legacy]",      "LEGACY, UNSUPPORTED (frozen): Metropolis Light Transport / PSSMLT, RGB -- use BDPT or VCM"),
+            ("8", "MLT (Spectral) [legacy]", "LEGACY, UNSUPPORTED (frozen): Metropolis Light Transport / PSSMLT, spectral -- use BDPT or VCM"),
             ("9", "Auto (Pel)",              "Auto-routing dispatcher (RGB) - picks PT / BDPT / VCM per scene"),
             ("10", "Auto (Spectral)",        "Auto-routing dispatcher, spectral"),
-            ("0", "Pixel Rasterizer",        "Legacy shader-op stack, no PT — fastest preview"),
+            ("0", "Pixel Rasterizer [legacy]", "LEGACY, UNSUPPORTED (frozen): shader-op stack, no PT -- use Path Tracing"),
         ),
         default="9",  # Auto (Pel) — the smart auto-routing dispatcher
     )
@@ -130,8 +131,8 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         default=0.0, min=0.0, max=1.0,
     )
     use_world_ambient: bpy.props.BoolProperty(
-        name="Approximate World",
-        description="Approximate the Blender world color as a simple ambient light",
+        name="Approximate World (deprecated)",
+        description="DEPRECATED: approximates the Blender world color as a simple ambient light (ambient_light is deprecated and unshadowed; the replacement is an environment light -- plug an Environment Texture into the world Background for image-based lighting)",
         default=False,
     )
     choose_one_light: bpy.props.BoolProperty(

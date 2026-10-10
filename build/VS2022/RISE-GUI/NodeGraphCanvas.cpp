@@ -794,13 +794,16 @@ private:
             // DL-401: a deprecated chunk type (already sorted after the modern
             // ones by the core) is badged; the keyword itself rides Qt::UserRole
             // so selectKeyword never parses the badge back out of the text.
+            // Legacy Phase 1: a FROZEN type (legacy, unsupported; sorted last) gets its own badge.
             const QString replacement = m_bridge ? m_bridge->paletteDeprecationReplacement(kw) : QString();
+            const bool frozen = m_bridge && m_bridge->paletteKeywordIsFrozen(kw);
             auto* item = new QListWidgetItem(replacement.isEmpty()
                 ? kw
-                : tr("%1  (deprecated \u2192 %2)").arg(kw, replacement.section(QLatin1Char(' '), 0, 0)));
+                : (frozen ? tr("%1  (legacy, unsupported \u2192 %2)") : tr("%1  (deprecated \u2192 %2)"))
+                      .arg(kw, replacement.section(QLatin1Char(' '), 0, 0)));
             item->setData(Qt::UserRole, kw);
             if (!replacement.isEmpty()) {
-                item->setToolTip(tr("Deprecated: use %1").arg(replacement));
+                item->setToolTip((frozen ? tr("Legacy, unsupported (frozen): use %1") : tr("Deprecated: use %1")).arg(replacement));
                 item->setForeground(palette().color(QPalette::Disabled, QPalette::Text));
             }
             m_keywordList->addItem(item);

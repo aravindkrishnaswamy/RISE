@@ -26,9 +26,11 @@ read_schema (only if unsure of a param) -> insert_chunk -> propose_patch
   ordinary metal/shiny asks -- and never reach for the legacy
   `cooktorrance_material` / `schlick_material` / `isotropic_phong_material` /
   `ashikminshirley_anisotropicphong_material` / `ward_*_material` /
-  `polished_material` chunks.**  Those seven are DEPRECATED (they still load
-  and render exactly as before, but a scene load logs a warning and
-  `read_schema` flags them `"deprecated":true` with the replacement);
+  `polished_material` chunks.**  Those seven are FROZEN -- legacy and
+  unsupported since 2026-10-09 (they still load and render exactly as
+  before and an existing one stays editable, but this surface REFUSES to
+  insert a new one, a scene load logs a warning, and `read_schema` flags
+  them `"frozen":true` with the replacement);
   `ggx_material`, `pbr_metallic_roughness_material` and `coated_material`
   cover every use (legacy -> modern table: docs/SCENE_CONVENTIONS.md
   "Deprecated materials").  Verified against the chunk parsers
@@ -192,7 +194,8 @@ scalar_painter
 #    microfacet roughness, ior/extinction = conductor Fresnel; the default
 #    fresnel_mode is conductor).  Both alphas are bound to the
 #    scalar_painter above instead of one constant.  (The legacy
-#    cooktorrance_material this replaces is deprecated; its `facets` is
+#    cooktorrance_material this replaces is FROZEN (legacy, unsupported --
+#    the agent cannot insert it); its `facets` is
 #    the same GGX alpha, so facets -> alphax + alphay is a close starting
 #    point, though not identical: G, the multiscatter LUT and the diffuse
 #    coupling differ.)
@@ -1074,7 +1077,8 @@ independent of the coat physics, the Phase-1 hand recipe (an
 under the damp mask, feeding a `polished_material`'s `reflectance`
 instead of a `coated_material` wrap) still works and is still the
 only route with an explicit, tunable exponent — but `polished_material`
-is DEPRECATED (a load warns; it renders unchanged), so prefer baking the
+is FROZEN (this surface refuses to insert one; an existing one still renders
+unchanged), so bake the
 darkened colour into a `coated_material`'s `base` — and be aware it is a
 DIFFERENT material shape from what `add_wetness` now emits, with the
 sec 6.9 caveats that come with `polished_material`'s own dry-NEE gap.

@@ -669,6 +669,16 @@ namespace RISE
 		//! "Deprecated materials" for the legacy -> modern mapping table.
 		bool                             deprecated = false;
 		std::string                      replacement;                            //!< human-readable replacement hint (names the modern keyword(s) + the parameter translation); non-empty iff `deprecated`
+
+		//! Legacy-deprecation Phase 1 (2026-10-09, docs/LEGACY_DEPRECATION_ASSESSMENT.md §10/§13):
+		//! the chunk TYPE is FROZEN -- legacy and UNSUPPORTED.  A frozen chunk is a stronger
+		//! deprecation: it still parses, derives and renders BIT-IDENTICALLY, but it receives no
+		//! further fixes (its ledger rows close as won't-fix), DeriveToJob's one-per-type warning
+		//! says so, the agent schema reports `"frozen":true`, the agent tool surface REFUSES to
+		//! insert a new one (editing / loading existing ones still works), and the GUI palettes
+		//! sort it last with a legacy badge.  `frozen` implies `deprecated` (MarkFrozen sets both),
+		//! so every consumer that only reads `deprecated` keeps treating it as legacy.
+		bool                             frozen = false;
 	};
 
 	inline void ParseStateBag::ValidateAccess(const std::string& key) const

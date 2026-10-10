@@ -41,7 +41,8 @@ historical design records.
 - `build/make/rise/`: current GNU make build
 - `textures/`, `models/`, `colors/`, `volume/`, `lightprobes/`, `media/`: scene data and media
 - `tools/`: helper utilities and scripts outside the core runtime
-- `src/DRISE/`, `src/PRISE/`, `src/3DSMax/`, `src/Blender/`: sidecar integrations and legacy surfaces
+- `src/Blender/`: Blender add-on and native bridge
+- `src/DRISE/`, `src/PRISE/`, `src/3DSMax/`, `build/VS2005/` and the SGI / Solaris make configs: FROZEN legacy surfaces (kept in the tree, unsupported, may not build; see each one's README / header and [docs/LEGACY_DEPRECATION_ASSESSMENT.md](docs/LEGACY_DEPRECATION_ASSESSMENT.md) §13)
 
 ## Main Flow
 
