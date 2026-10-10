@@ -117,6 +117,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <vector>
 #include <cmath>
 #include <string>
@@ -1113,6 +1114,64 @@ static void RowK()
     }
 }
 
+// DL-482 zero-cap gate and positive-cap strict residual. Reuses
+// SSSHWSSCompanionTest's sphere/material
+// topology with achromatic coefficients and native PT as the cap oracle.
+static std::string SubsurfaceCapScene(const char* kind, bool randomWalk, int cap, bool spectral=false)
+{
+    std::ostringstream s;
+    s << "RISE ASCII SCENE 7\nfilm\n{\n width 12\n height 12\n}\n"
+      << "pinhole_camera\n{\n location 0 0 3.5\n lookat 0 0 0\n up 0 1 0\n fov 30\n}\n"
+      << "uniformcolor_painter\n{\n name env\n color 1 1 1\n colorspace Rec709RGB_Linear\n}\n"
+      << (randomWalk?"randomwalk_sss_material":"subsurfacescattering_material")
+      << "\n{\n name subject\n ior 1.3\n absorption 0.1 0.1 0.1\n scattering 4\n g 0\n roughness 0\n";
+    if(randomWalk) s << " max_bounces 256\n";
+    s << "}\nsphere_geometry\n{\n name geo\n radius 0.8\n}\n"
+      << "standard_object\n{\n name subject_obj\n geometry geo\n material subject\n}\n"
+      << (cap>0?"standard_object\n{\n name second_subject\n geometry geo\n material subject\n position 0 0 -1.8\n}\n":"")
+      << "standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n"
+      << kind << (spectral?"_spectral_rasterizer":"_pel_rasterizer") << "\n{\n samples 128\n radiance_map env\n radiance_background FALSE\n max_translucent_bounce " << cap << "\n";
+    if(std::string(kind)=="pathtracing") s << " rr_min_depth 8\n";
+    else s << " max_eye_depth 16\n max_light_depth 16\n";
+    if(spectral) s << " hwss TRUE\n num_wavelengths 160\n";
+    s << " pixel_filter box\n oidn_denoise FALSE\n}\n";
+    return s.str();
+}
+static void RowL()
+{
+    const int n=Repeats();
+    for(bool spectral:{false,true}) for(bool rw:{false,true}) for(int cap:{0,1}) {
+        if(cap>0 && !std::getenv("RISE_DL482_POSITIVE_PIN")) continue;
+        const unsigned seed=48200+100*unsigned(rw)+10*unsigned(cap)+2000*unsigned(spectral);
+        const Stats pt=RenderStatsSalted(SubsurfaceCapScene("pathtracing",rw,cap,spectral),n,seed);
+        const std::string label=std::string(spectral?"HWSS ":"RGB ")+(rw?"random-walk":"diffusion")+" translucent cap "+std::to_string(cap);
+        Print((label+" PT").c_str(),pt);
+        for(const char* kind:{"bdpt","vcm"}) {
+            const Stats st=RenderStatsSalted(SubsurfaceCapScene(kind,rw,cap,spectral),n,seed+1000);
+            Print((label+" "+kind).c_str(),st);
+            Check(pt.ok && st.ok,label+" "+kind+": finite valid captures");
+            // Zero is repaired; the optional positive-cap probe stays strict.
+            Check(pt.ok && st.ok && Agree(pt,st,3,0),label+" "+kind+": DL482 agrees with PT at 3 combined SE");
+        }
+    }
+    if(std::getenv("RISE_DL482_POSITIVE_PIN")) {
+        // The production jump pair stores no capType at the hit and an
+        // isBSSRDFEntry at its nonlocal partner. Two such jumps consume
+        // two translucent bounces in PT, even when the final Sw is free.
+        BDPTVertex eye[6];
+        eye[0].type=BDPTVertex::CAMERA;eye[5].type=BDPTVertex::LIGHT;
+        for(int i=1;i<5;++i) { eye[i].type=BDPTVertex::SURFACE;eye[i].capType=ScatteredRay::eRayUnknown; }
+        eye[1].isDelta=eye[3].isDelta=true;
+        eye[2].isBSSRDFEntry=eye[4].isBSSRDFEntry=true;
+        eye[2].isConnectible=eye[4].isConnectible=true;
+        const auto caps=BDPTUtilities::MakeBounceTypeCaps(UINT_MAX,UINT_MAX,UINT_MAX,1,16,16);
+        BDPTUtilities::TypeCapPlan plan;
+        const auto status=BDPTUtilities::JoinedTypeCapPlan(nullptr,eye,0,6,caps,plan);
+        std::printf("DL482 positive-cap metadata: counted jumps=%u expected=2 status=%d expected-over=%d\n",plan.base.n[3],int(status),int(BDPTUtilities::eTypeCapOver));
+        Check(status==BDPTUtilities::eTypeCapOver,"DL482 positive-cap strict pin: two subsurface jumps exceed translucent cap one");
+    }
+}
+
 //////////////////////////////////////////////////////////////////////
 // Row J (DL-481): the split against PT.  A small spherical area emitter
 // inside a glass sphere over a GGX floor (Schlick F0 0.3, so the glossy
@@ -1373,7 +1432,7 @@ int main()
 	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467, DL-470, DL-471, DL-481)" << std::endl;
 	// RISE_DL351_ROWS (e.g. "CD") runs a subset; default all.
 	const char* rows = std::getenv( "RISE_DL351_ROWS" );
-	const std::string sel = rows ? rows : "ABCDEFGHIJKP";
+	const std::string sel = rows ? rows : "ABCDEFGHIJKLP";
 	if( sel.find( 'A' ) != std::string::npos ) RowA();
 	if( sel.find( 'B' ) != std::string::npos ) RowB();
 	if( sel.find( 'C' ) != std::string::npos ) RowC();
@@ -1385,6 +1444,7 @@ int main()
 	if( sel.find( 'I' ) != std::string::npos ) RowI();
 	if( sel.find( 'J' ) != std::string::npos ) RowJ();
 	if( sel.find( 'K' ) != std::string::npos ) RowK();
+	if( sel.find( 'L' ) != std::string::npos ) RowL();
 	if( sel.find( 'P' ) != std::string::npos ) RowP();
 	std::cout << std::endl << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;
