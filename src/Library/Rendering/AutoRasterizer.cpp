@@ -34,11 +34,14 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/Color/Color_Template.h"
+#include "../Utilities/RandomNumbers.h"
+#include "../Utilities/SobolSampler.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <vector>
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -507,7 +510,14 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	out.rasSeconds = 0.0;
 	out.vcmMergeShare = 0.0;
 
-	if( !scene || !mSamples ) {
+#if defined DRAND48 || (!defined MERSENNE && !defined MERSENNE53)
+    // The process-global C RNG backends cannot be restored by copying a generator.
+    // This test hook requires the owned Mersenne backend; ordinary probes still run.
+    if (mForTestFixedProbeWork) return out;
+#endif
+
+	if( !scene || !mSamples || (mForTestFixedProbeWork &&
+		GlobalOptions().ReadInt("force_number_of_threads", 0) != 1) ) {
 		return out;
 	}
 
@@ -555,7 +565,19 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	const PathGuidingConfig    probeGuiding;	// default = disabled
 	const AdaptiveSamplingConfig probeAdaptive;	// default maxSamples=0 = off
 
+	// The opt-in test mode isolates routing policy from scheduler/clock noise.
+	// Restore the Sobol salt and owned GlobalRNG after the candidate.
+	// This hook also seeds C rand() for constructors; that process-global
+	// stream is not restored. Production never enables the hook.
+	const uint32_t savedSalt = mForTestFixedProbeWork ? SobolSamplerTestHooks::ValueSalt().load() : 0;
+	std::unique_ptr<RandomNumberGenerator> savedRng;
+	if( mForTestFixedProbeWork ) savedRng.reset( new RandomNumberGenerator(GlobalRNG()) );
 	for( unsigned int r = 0; r < nRenders; ++r ) {
+		if( mForTestFixedProbeWork ) {
+			SobolSamplerTestHooks::ValueSalt().store( savedSalt ^ (0x9e3779b9u * (r + 1)) );
+			GlobalRNG().Reseed( 0x546000u + r );
+			std::srand( 0x546000u + r );
+		}
 		// Build a concrete probe delegate with the low-spp sampler and a
 		// NULL FrameStore — the candidate render lands in the delegate's own
 		// internal image (flushed to our capturing output) and never touches
@@ -570,10 +592,11 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "probe capture output" );
 		d->AddRasterizerOutput( cap );
 
-		// MUST be multi-threaded: the QMC sample stream is deterministic
+		// Production uses multi-threaded frames: the QMC sample stream is deterministic
 		// (HashCombine(x,y) seed), so the per-pixel variance signal comes
-		// solely from multi-threaded run-to-run non-determinism — exactly the
-		// Phase-3 inter-run proxy.  The default render path is multi-threaded.
+		// from multi-threaded run-to-run non-determinism — exactly the
+		// Phase-3 inter-run proxy. The opt-in test mode instead supplies
+		// distinct salts and forces one thread.
 		const auto t0 = std::chrono::steady_clock::now();
 		d->RasterizeScene( *scene, /*pRect*/ 0, /*pRasterSequence*/ 0 );
 		const auto t1 = std::chrono::steady_clock::now();
@@ -593,6 +616,11 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 
 		safe_release( cap );
 		safe_release( d );
+	}
+
+	if( mForTestFixedProbeWork ) {
+		SobolSamplerTestHooks::ValueSalt().store( savedSalt );
+		GlobalRNG() = *savedRng;
 	}
 
 	// Restore the production film dims (+ re-sync cameras) before returning,
@@ -775,8 +803,10 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 	account( pt, true );
 	account( bdpt, true );
 	if( pt.valid && bdpt.valid ) {
-		const double pe = pt.meanVar   * pt.rasSeconds;
-		const double be = bdpt.meanVar * bdpt.rasSeconds;
+		// Equal fixed pixel-sample budgets cancel in the test metric. Keep
+        // the real measured seconds for cost instrumentation.
+        const double pe = pt.meanVar * (mForTestFixedProbeWork ? 1.0 : pt.rasSeconds);
+        const double be = bdpt.meanVar * (mForTestFixedProbeWork ? 1.0 : bdpt.rasSeconds);
 		// σ²·T(PT) / σ²·T(BDPT) > τ_bdpt -> BDPT.  When BDPT reads
 		// noise-free at probe spp (be <= 0) it wins iff PT still carries
 		// noise — handled without forming an (UB under bare -ffast-math; fixed 2026-07-29, convention retained)
@@ -795,12 +825,14 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 					"probe -> bdpt: BDPT noise-free, PT sigma2T %.3g > 0", pe );
 			} else {
 				std::snprintf( reason, sizeof(reason),
+					mForTestFixedProbeWork ? "test probe -> bdpt: variance ratio %.3fx > %.2f" :
 					"probe -> bdpt: sigma2T %.1fx > %.2f", ratio, cfg.tauBdpt );
 			}
 			mResolveReason = reason;
 			return finish( AutoIntegratorChoice::BDPT );
 		}
 		std::snprintf( reason, sizeof(reason),
+			mForTestFixedProbeWork ? "test probe -> pt: variance ratio %.3fx <= %.2f" :
 			"probe -> pt: sigma2T %.2fx <= %.2f", ratio, cfg.tauBdpt );
 		mResolveReason = reason;
 		return finish( AutoIntegratorChoice::PT );
