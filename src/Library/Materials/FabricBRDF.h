@@ -277,6 +277,7 @@
 #define FABRIC_BRDF_
 
 #include "../Interfaces/IBSDF.h"
+#include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
 #include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
@@ -371,11 +372,28 @@ namespace RISE
 				//! Captured once: the only substrate that can set it is a
 				//! `weave_material`, whose `transmission` enum is not
 				//! rebindable, and `base` is not rebindable here either.
-				const bool baseScattersFullSphere
+				const bool baseScattersFullSphere,
+				const bool baseSingleDiffuseLabel = false
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar  valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+            // With a diffuse-only substrate both mixture branches carry the
+            // same label. Its density share is one, also under reversal.
+            bool SingleDiffuseLabel() const { return bSingleDiffuseLabel; }
+            bool valueByScatterType(const Vector3& wo,const RayIntersectionGeometric& ri,
+                const IORStack*,RISEPel out[5]) const {
+                if(!bSingleDiffuseLabel) return false;
+                for(int t=0;t<5;++t) out[t]=RISEPel(0,0,0);
+                out[ScatteredRay::eRayDiffuse]=value(wo,ri); return true;
+            }
+            bool valueByScatterTypeNM(const Vector3& wo,const RayIntersectionGeometric& ri,
+                Scalar nm,const IORStack*,Scalar out[5]) const {
+                if(!bSingleDiffuseLabel) return false;
+                for(int t=0;t<5;++t) out[t]=0;
+                out[ScatteredRay::eRayDiffuse]=valueNM(wo,ri,nm); return true;
+            }
+
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 			virtual bool    hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const;
 			virtual bool    hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const;
@@ -571,6 +589,7 @@ namespace RISE
 			const IPainter*			pSheenColor;
 			const IScalarPainter*	pSheenRoughness;
 			const IScalarPainter*	pWeaveRotation;
+			bool bSingleDiffuseLabel;
 			bool					bBaseFullSphere;	///< see the ctor parameter and the header's transmission section
 		};
 	}

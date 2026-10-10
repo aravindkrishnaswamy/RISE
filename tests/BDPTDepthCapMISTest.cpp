@@ -1008,6 +1008,10 @@ static std::string EnclosedPointScene( const std::string& rasterizerChunk, const
 		floorMat="mat_multi";
 	}
 
+	if(floorKind == 5) {
+		s += "uniformcolor_painter\n{\n name pnt_black\n color 0 0 0\n colorspace Rec709RGB_Linear\n}\n\nfabric_material\n{\n name mat_multi\n base mat_floor\n sheen_color pnt_black\n sheen_roughness 0.3\n weave_rotation 0\n}\n";
+		floorMat="mat_multi";
+	}
 	s += "dielectric_material\n{\n\tname mat_glass\n\ttau 1.0 1.0 1.0\n\tior 1.5\n\tscattering 1000000.0\n}\n\n"
 		"clippedplane_geometry\n{\n\tname floor_g\n\tpta -2 0 -2\n\tptb -2 0 2\n\tptc 2 0 2\n\tptd 2 0 -2\n}\n\n";
 	s += "standard_object\n{\n\tname floor\n\tgeometry floor_g\n\tmaterial " + floorMat + "\n}\n\n";
@@ -1113,6 +1117,29 @@ static void RowK()
             Check(free.ok && nonbinding.ok && free.hashes==nonbinding.hashes,std::string(kind)+": DL502 nonbinding cap pixel identity material "+std::to_string(f));
         }
 
+    }
+}
+
+// DL-502 reciprocal single-label fabric slice. Zero sheen is an independent
+// Lambertian twin; nonzero sheen is covered by the walk/quadrature unit gate.
+static void RowN()
+{
+    const unsigned n=8;
+    for(const char* kind:{"bdpt_pel","vcm_pel","bdpt_spectral","vcm_spectral"}) {
+        auto scene=[&](int floor,const char* cap) {
+            std::string s=EnclosedPointScene(EnclosedChunk(kind,cap),floor);
+            s.replace(s.find("ior 1.5"),7,"ior 1.0"); return s;
+        };
+        const Stats ref=RenderStatsSalted(scene(0,""),n,52000);
+        const Stats cap=RenderStatsSalted(scene(5,"\tmax_glossy_bounce 1\n"),n,52000);
+        Print((std::string(kind)+" fabric Lambertian twin").c_str(),ref);
+        Print((std::string(kind)+" fabric cap one").c_str(),cap);
+        Check(ref.ok && ref.mean>1e-3 && cap.ok && Agree(ref,cap,3.0,0),std::string(kind)+": fabric cap == Lambertian twin");
+        const Stats free=RenderStatsSalted(scene(5,""),n,52100);
+        const Stats nonbinding=RenderStatsSalted(scene(5,"\tmax_glossy_bounce 100\n"),n,52100);
+        Print((std::string(kind)+" fabric free identity").c_str(),free);
+        Print((std::string(kind)+" fabric nonbinding identity").c_str(),nonbinding);
+        Check(free.ok && nonbinding.ok && free.hashes==nonbinding.hashes,std::string(kind)+": fabric nonbinding pixel identity");
     }
 }
 
@@ -1487,6 +1514,7 @@ int main()
 	if( sel.find( 'I' ) != std::string::npos ) RowI();
 	if( sel.find( 'J' ) != std::string::npos ) RowJ();
 	if( sel.find( 'K' ) != std::string::npos ) RowK();
+	if( sel.find( 'N' ) != std::string::npos ) RowN();
 	if( sel.find( 'L' ) != std::string::npos ) RowL();
 	if( sel.find( 'M' ) != std::string::npos ) RowM();
 	if( sel.find( 'P' ) != std::string::npos ) RowP();

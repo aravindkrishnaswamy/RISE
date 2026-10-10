@@ -279,7 +279,8 @@ namespace RISE
 				// `weave_material`, whose `transmission` enum is
 				// explicitly not rebindable either (WeaveMaterial.h).
 				pBRDF = new FabricBRDF( *base.GetBSDF(), sheenColor, sheenRoughness, weaveRotation,
-				                        base.ScattersFullSphere() );
+				                        base.ScattersFullSphere(),
+				                        base.ConnectionScatterTypes() == (1u << ScatteredRay::eRayDiffuse) );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new FabricSPF( *pBRDF, *base.GetSPF() );
@@ -292,6 +293,12 @@ namespace RISE
 
 			/// \return The SPF for this material.  Never NULL.
 			inline ISPF* GetSPF() const { return pSPF; }
+
+            unsigned int ConnectionScatterTypes() const {
+                return pBRDF->SingleDiffuseLabel() ? (1u << ScatteredRay::eRayDiffuse)
+                    : IMaterial::ConnectionScatterTypes();
+            }
+            bool HasConnectionTypeSplit() const { return pBRDF->SingleDiffuseLabel(); }
 
 			/// \return NULL: fabric never emits (the allowlist refuses
 			///         emissive substrates).
