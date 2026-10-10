@@ -76,15 +76,38 @@
 using namespace RISE;
 
 MersenneTwister::MersenneTwister() : 
-	left( 1 ), initf( 0 )
+	left( 1 ), initf( 0 ), next( 0 )
 {
 }
 
 MersenneTwister::MersenneTwister( const unsigned int seed ) : 
-	left( 1 ), initf( 0 )
+	left( 1 ), initf( 0 ), next( 0 )
 {
 	// seed
 	init_genrand( seed );
+}
+
+// DL-536: state is owned, and the cursor must point into the copied state.
+// Before the first draw (or at a block boundary), next is not consumed:
+// genrand_int32 refreshes it through next_state when left reaches zero.
+MersenneTwister::MersenneTwister( const MersenneTwister& other ) :
+    left(1), initf(0), next(0)
+{
+    *this = other;
+}
+
+MersenneTwister& MersenneTwister::operator=( const MersenneTwister& other )
+{
+    if( this == &other ) return *this;
+    left = other.left;
+    initf = other.initf;
+    // An unseeded generator's state is indeterminate; its first draw will
+    // initialize the standard default seed, so do not read that array.
+    if( initf ) {
+        for( unsigned int i=0; i<state_vector_size; ++i ) state[i]=other.state[i];
+    }
+    next = initf && left>1 ? state + (other.next-other.state) : 0;
+    return *this;
 }
 
 MersenneTwister::~MersenneTwister()
