@@ -537,3 +537,33 @@ Reply by number. Each has a recommended default in brackets.
     `3dsmesh_geometry`, the `mis_pathtracing_shaderop` alias, and `sms_shaderop`; freeze
     `phong_luminaire_material`; keep `datadriven_material`, `bezierpatch_geometry`, both
     SSS material models, and the delta lights. [yes to all]
+
+## 13. Owner rulings (2026-10-09)
+
+Explicit rulings:
+
+- **#3 Direct-lighting-only renders:** (a) -- migrate the 82 scenes to PT with
+  `max_diffuse_bounce 0` and accept the look change. No `direct_only` flag;
+  `pixelpel` is not kept alive for them.
+- **#5 `ambient_light`:** deprecate and replace with a uniform environment light
+  (`radiance_map`); darker creases accepted; retire Blender's `use_world_ambient`.
+- **#9 The seven deprecated materials:** promote to frozen; migrate the 35 scenes; look
+  changes are acceptable.
+- **#10 `composite_material`:** freeze ("always an unproven test, never seriously used");
+  DL-221, DL-407 and DL-472 close as won't-fix under the frozen-feature ledger policy.
+- **#12 BioSpec skin / generic human tissue:** keep SUPPORTED (research models).
+- **#15 Legacy front-ends and build files:** nobody uses `src/3DSMax`, `build/VS2005` or the
+  SGI / Solaris configs -- remove them. `src/DRISE` and `src/PRISE` are KEPT in the tree but
+  frozen (may stop building/working); the owner intends a future state-of-the-art
+  distributed renderer.
+
+Taken at the recommended default (the owner did not object; any can be overridden):
+#1 freeze the shader-op pipeline now, remove its chunks in Phase 3; #2 custom shader-op
+composition is given up; #4 photon mapping / final gather / irradiance cache frozen then
+removed, showcases move to VCM or PT with looks reviewed; #6 `ambientocclusion_shaderop`
+removed with no replacement; #7 direct volume rendering kept frozen; #8 MLT frozen then
+removed and dropped from Blender; #11 `translucent_material` stays supported; #13 PT's SSS
+continuation rerouted to the integrator in Phase 3; #14 `rawmesh_geometry` loads into the
+indexed mesh class (with a render A/B); #16 frozen code still gets crash / hang / memory /
+security / data-loss fixes; #17 frozen-code tests keep running and are re-pinned rather
+than fixed; #18 the batch of smaller items as recommended.
