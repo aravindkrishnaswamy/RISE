@@ -96,7 +96,7 @@
 //             cannot bind or cannot apply to the floor's lobes equals the
 //             no-cap render (the first cut read 0.71); since DL-481 a
 //             binding glossy cap keeps the caustic (0.71 -> 0.97: the
-//             no-cap image less the floor's glossy share).
+//             no-cap image less glossy-labelled bounces: floor lobe + glass reflections).
 //      Row I  DL-481's exact red-proof: an omni light INSIDE a glass
 //             sphere over a Ward / Phong floor under max_glossy_bounce 0
 //             equals a Lambertian floor of the same rd under the same cap
@@ -921,8 +921,11 @@ static void RowH()
 				// DL-481: a binding cap on a floor lobe.  Light tracing and
 				// connections now price the floor with its allowed (diffuse)
 				// lobe only, so the caustic survives; the exact value is the
-				// no-cap image less the floor's GLOSSY share at counted floor
-				// vertices (rs 0.04: a few percent).  Before DL-481 the
+				// no-cap image less every glossy-labelled counted bounce:
+				// the floor's glossy lobe AND the glass sphere's own delta
+				// reflections, which are labelled reflection and so count
+				// against the glossy cap (review: GGX 0.9728 vs a Lambertian
+				// floor 0.9827 under the same cap).  Before DL-481 the
 				// strategies were excluded and the frame read ~0.71.  Row I
 				// is the exact reference for this mechanism.
 				const Stats st = RenderStatsSalted( PointCausticScene( PointCausticChunk( kind, "\tmax_glossy_bounce 0\n" ), true ), n, seed );
@@ -931,7 +934,7 @@ static void RowH()
 				std::snprintf( l, sizeof(l), "%s GGX max_glossy_bounce 0 (DL-481)", kind );
 				Print( l, st );
 				const double ratio = none.mean > 0 ? st.mean / none.mean : 0.0;
-				std::printf( "    ratio to no cap %.4f (the no-cap image less the floor's glossy share)\n", ratio );
+				std::printf( "    ratio to no cap %.4f (no-cap less glossy-labelled bounces: floor glossy lobe + glass reflections)\n", ratio );
 				Check( none.ok && st.ok && ratio > 0.93 && st.mean < none.mean,
 					std::string( l ) + ": the caustic survives (ratio in (0.93, 1))" );
 				if( kind == std::string( "bdpt" ) ) {

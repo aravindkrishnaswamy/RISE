@@ -515,7 +515,7 @@ point-light caustic onto a coated floor) loses its energy whenever a cap on
 one of the receiver's lobe types can bind.  Before DL-481 GGX was in this
 set: a point-light caustic onto a GGX floor under `max_glossy_bounce 0`
 read 0.714 (BDPT) / 0.710 (VCM) of the no-cap frame; it now reads 0.971 /
-0.970, the no-cap image less the floor's glossy share.
+0.970, the no-cap image less every glossy-labelled counted bounce -- the floor's glossy lobe and the glass sphere's own delta reflections (a Lambertian-floor control reads 0.983 under the same cap).
 
 BDPT keeps `ConnectAndEvaluateImplCore` untouched and re-prices a Split
 strategy in its caller (`RescaleTypeCapSplit`: scale by
