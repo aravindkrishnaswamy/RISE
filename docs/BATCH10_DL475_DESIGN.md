@@ -68,3 +68,5 @@ BDPTStrategyBalance370/0, VolumeEnvFurnace32/0, MediumInsideOutsideInvariant52/0
 AutoRasterizer157/0. The manual BDPT strict pin is the intentional rc1 residual.
 Master987b43824 was integrated before the pre-merge rebuild of all six named
 tests; that rebuild returned0. The routing row is rerun before local merge.
+
+Fresh independent correctness and evidence reviews of5f2aa481f found zero P1s. P2 coverage remaining: add a guard-specific spectral-routing assertion and direct hidden/opaque/no-positional-light controls. The shared selector and existing spectral delegation gates cover the code path, but the new red/green render witness is RGB only. These are disclosed coverage gaps, not claims of a completed transport strategy.
