@@ -711,6 +711,18 @@ namespace RISE
 				const Scalar nm
 				) const;
 
+            // Every HairSPF draw, including TT/TTs, carries reflection.
+            bool valueByScatterType(const Vector3& wo,const RayIntersectionGeometric& ri,
+                const IORStack*,RISEPel out[5]) const {
+                for(int t=0;t<5;++t) out[t]=RISEPel(0,0,0);
+                out[ScatteredRay::eRayReflection]=value(wo,ri);return true;
+            }
+            bool valueByScatterTypeNM(const Vector3& wo,const RayIntersectionGeometric& ri,
+                Scalar nm,const IORStack*,Scalar out[5]) const {
+                for(int t=0;t<5;++t) out[t]=0;
+                out[ScatteredRay::eRayReflection]=valueNM(wo,ri,nm);return true;
+            }
+
 			//! Closed-form multiple-scattering-averaged reflectance (see
 			//! `ReflectanceRGB`) for the OIDN albedo AOV -- noise-free by
 			//! construction.

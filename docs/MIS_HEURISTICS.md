@@ -493,18 +493,23 @@ of the lobes labelled t -- for GGX / Cook-Torrance the single-scatter
 specular term is `eRayReflection` and the diffuse lobe PLUS the
 Kulla-Conty multiscatter lobe are `eRayDiffuse`; not
 `f_agg pSel_T p_T / p_agg`, which is what a single-emit sampler whose
-weight were `f_agg cos / p_agg` would need (none in RISE is).
+weight were `f_agg cos / p_agg` would need. Coated, fabric and weave
+use that aggregate weighting and remain unresolved in DL-502: their
+forward label shares must also define the same capped integrand when a
+path is reversed. Hair is a single-label exception: every HairSPF draw
+(including TT/TTs) is reflection, so its complete RGB/NM value belongs
+to that label and its connection mask declares reflection alone.
 `tests/ConnectionTypeSplitTest.cpp` checks exactly this identity per type,
 channel, incidence and lane.  The MIS densities stay the aggregate ones --
 MIS is unbiased for any weights that partition, and every strategy's
 expectation is f_cap -- so VCM's recurrence is unchanged and only the
 connection, splat and merge CONTRIBUTIONS change.  Materials with a split
 (`IMaterial::HasConnectionTypeSplit`): GGX, Cook-Torrance, Schlick, both
-Ward, isotropic Phong, Ashikhmin-Shirley, polished, translucent (and the
+Ward, isotropic Phong, Ashikhmin-Shirley, polished, translucent, hair (and the
 luminaire wrappers over them).
 
 A material with several possible types and NO split (coated, composite,
-fabric, weave, hair and every material on the conservative all-types
+fabric, weave and every material on the conservative all-types
 default -- DL-502) still cannot price the path: BDPT/MLT drop such a
 strategy from the estimate and from every denominator (`MISWeight`), and
 VCM -- whose running sums cannot drop one strategy -- estimates a path that
