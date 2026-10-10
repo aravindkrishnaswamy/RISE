@@ -3,6 +3,8 @@
 //
 // Sections (all by default; `--section <name>` runs one; `--quick` lowers
 // the sample counts for a smoke run, never for the recorded gate):
+//   dl500-sample    one extended image, fingerprint/allocation/CPU/wall probe;
+//              optional --allocation-limit bounds ordinary C++ new/solve
 //   dl500-baseline  opt-in n=8 interleaved extended/SMS-off image timings;
 //              diagnostic only, no performance acceptance band
 //   synthetic  estimator B's expectation on a known topology distribution
@@ -50,8 +52,33 @@
 #include <map>
 #include <chrono>
 #include <regex>
+#include <new>
+#include <cstring>
+#include <ctime>
 #define PIN_RATIO 1.0556
 #define PIN_SE 0.0122
+
+// Opt-in cost probe: ordinary C++ allocations only (not Eigen's mallocs).
+// Only SMSExtendedAllocationTest interposes new; timing builds do not.
+static std::atomic<bool> g_countNew{false};
+static std::atomic<unsigned long long> g_newCalls{0};
+#ifdef RISE_DL500_COUNT_NEW
+static constexpr bool g_newAvailable=true;
+void* operator new(std::size_t bytes) {
+    if(void* p=std::malloc(bytes ? bytes : 1)) {
+        if(g_countNew.load(std::memory_order_relaxed)) g_newCalls.fetch_add(1,std::memory_order_relaxed);
+        return p;
+    }
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p,std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p,std::size_t) noexcept { std::free(p); }
+#else
+static constexpr bool g_newAvailable=false;
+#endif
 
 namespace
 {
@@ -946,7 +973,7 @@ namespace
     }
     // Mean of (r+g+b)/3 over the image, extended PT with an internal config.
     double ExtendedImage(const std::string& text,unsigned spp,unsigned salt,bool extended,bool drop,
-        SMSReferenceCounters* counters,unsigned trials=2,Scalar threshold=1e-4,bool smsEnabled=true) {
+        SMSReferenceCounters* counters,unsigned trials=2,Scalar threshold=1e-4,bool smsEnabled=true,std::uint64_t* fingerprint=nullptr) {
         Fixture fixture(text);
         if(!fixture.Ok()) return -1;
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
@@ -973,6 +1000,16 @@ namespace
             double sum=0;
             for(const auto& p:capture->pixels) sum+=(p.base.r+p.base.g+p.base.b)*p.a/3;
             if(!capture->pixels.empty()) mean=sum/double(capture->pixels.size());
+            if(fingerprint) {
+                *fingerprint=14695981039346656037ull;
+                for(const auto& p:capture->pixels) {
+                    const double values[4]={p.base.r,p.base.g,p.base.b,p.a};
+                    for(double value:values) {
+                        std::uint64_t bits;std::memcpy(&bits,&value,sizeof(bits));
+                        *fingerprint=(*fingerprint^bits)*1099511628211ull;
+                    }
+                }
+            }
             rasterizer->DetachFromScene(&fixture.Scene());
             capture->release();
         }
@@ -1077,16 +1114,49 @@ static void FixtureSection()
 
 int main(int argc,char** argv)
 {
-    std::string section="all";
+    std::string section="all",costScene="DL372";
+    unsigned costSalt=SobolSequence::HashCombine(500001,kSaltTag);
+    double allocationLimit=std::numeric_limits<double>::infinity();
     for(int i=1;i<argc;++i) {
         const std::string arg=argv[i];
         if(arg=="--section"&&i+1<argc) section=argv[++i];
         else if(arg=="--quick") g_quick=true;
+        else if(arg=="--cost-scene"&&i+1<argc) costScene=argv[++i];
+        else if(arg=="--cost-salt"&&i+1<argc) costSalt=std::strtoul(argv[++i],nullptr,10);
+        else if(arg=="--allocation-limit"&&i+1<argc) allocationLimit=std::strtod(argv[++i],nullptr);
     }
     Check(ConfigureTestWorker(),"partition test uses one configured worker");
 #ifndef RISE_SMS_EXTENDED_PARTITION
     std::cout<<"NOTE: RISE_SMS_EXTENDED_PARTITION absent: partition-API checks compiled out\n";
 #endif
+    if(section=="dl500-sample") {
+        Check(costScene=="DL372"||costScene=="shipped-sphere","DL-500 cost fixture is known");
+        std::string text=BallLensScene(false);
+        if(costScene=="shipped-sphere") {
+            std::ifstream input("scenes/Tests/SMS/sms_k2_glasssphere_extended.RISEscene");
+            text=std::string((std::istreambuf_iterator<char>(input)),{});
+            Check(!text.empty(),"DL-500 shipped scene is available");
+            text=std::regex_replace(text,std::regex("film\\s*\\{[^}]*\\}"),
+                "film\n{\n width 24\n height 18\n}\n");
+        }
+        std::srand(costSalt);GlobalRNG()=RandomNumberGenerator(costSalt);
+        SMSReferenceCounters counters;std::uint64_t fingerprint=0;
+        g_newCalls.store(0);g_countNew.store(true);
+        const auto start=std::chrono::steady_clock::now();const auto cpuStart=std::clock();
+        const double value=ExtendedImage(text,64,costSalt,true,false,&counters,2,1e-4,true,&fingerprint);
+        const double cpu=double(std::clock()-cpuStart)/CLOCKS_PER_SEC;
+        const double wall=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+        g_countNew.store(false);const auto allocations=g_newCalls.load();
+        const auto solves=counters.canonicalSolves.load();
+        const double perSolve=solves?double(allocations)/solves:std::numeric_limits<double>::infinity();
+        Check(value>=0&&std::isfinite(value)&&solves>0,"DL-500 instrumented extended image completes");
+        if(std::isfinite(allocationLimit))
+            Check(g_newAvailable&&perSolve<=allocationLimit,"DL-500 ordinary-new allocation budget per canonical solve");
+        std::cout<<std::setprecision(17)<<"DL500 sample scene="<<costScene<<" salt="<<costSalt
+            <<" mean="<<value<<" hash="<<fingerprint<<" wall="<<wall<<" cpu="<<cpu
+            <<" counting="<<g_newAvailable<<" new="<<allocations<<" perSolve="<<perSolve<<std::endl;
+        PrintCounters(costScene,counters);
+    }
     if(section=="dl500-baseline") {
         std::ifstream input("scenes/Tests/SMS/sms_k2_glasssphere_extended.RISEscene");
         const std::string shipped((std::istreambuf_iterator<char>(input)),{});
