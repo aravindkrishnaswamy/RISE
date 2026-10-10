@@ -19,3 +19,5 @@ Named builds and runs: VCMStrategyBalanceTest (modes above); VCMRecurrenceTest 1
 Self-review: the correction is scoped to U/replay; in-place reseeding sets Mersenne left=1 so the next draw refreshes its cursor; replay restores salt/base/index/mode hooks; no sampling density, MIS weight or throughput changes. The separate generator-copy cursor-ownership defect found during this audit was fixed and merged as DL-536 before this row. Native batching/spp dependence remains open. No performance claim.
 
 Final integration gates include DL-536 and supervisor scene migration master 39538f65a. Replay is still 48/0; recurrence/eye/light are 103/0, 38/0 and 72/0. The progressive-radius default-U table uses this post-integration run (28/0); its earlier VM mean was .0357018402. Fixed-radius matched data rerun unchanged (28/0). No causal attribution for the progressive-radius shift is claimed.
+
+P2 limits: replay is opt-in and assumes the fixture still contains `samples 2048`. It restores the salt/base/index/mode hooks, but leaves GlobalRNG in its consumed state; later topology probes retain their advancing-RNG policy and may see a different sequence.
