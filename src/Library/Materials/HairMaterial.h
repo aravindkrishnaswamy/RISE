@@ -10,7 +10,9 @@
 //  to every BDPT / VCM connection strategy, which is right for delta
 //  glass and wrong for a rough multi-lobe fibre BCSDF.
 //
-//  Every other IMaterial hook stays at its default:
+//  ConnectionScatterTypes declares reflection alone (the HairSPF label
+//  for every order), and HasConnectionTypeSplit exposes that partition.
+//  Other hooks listed below stay at their defaults:
 //    * GetEmitter()      -> 0     (no emissive fur; the geometry slice
 //                                  reports CanBeAreaLight() == false)
 //    * GetSpecularInfo() -> default non-specular.  Hair lobes are never
@@ -72,6 +74,9 @@ namespace RISE
 			inline IBSDF* GetBSDF() const {			return pBRDF; };
 
 			/// \return The SPF for this material.
+			// HairSPF labels every order (including TT/TTs) as reflection.
+			inline unsigned int ConnectionScatterTypes() const { return 1u << ScatteredRay::eRayReflection; }
+			inline bool HasConnectionTypeSplit() const { return true; }
 			inline ISPF* GetSPF() const {			return pSPF; };
 
 			/// \return NULL -- hair does not emit.

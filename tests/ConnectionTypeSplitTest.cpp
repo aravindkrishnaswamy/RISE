@@ -20,7 +20,8 @@
 //  every material that declares the split
 //  (IMaterial::HasConnectionTypeSplit): GGX (Schlick and conductor
 //  Fresnel), Cook-Torrance, Schlick, both Ward models, isotropic Phong,
-//  Ashikhmin-Shirley, polished and translucent (its entry side).  It also
+//  Ashikhmin-Shirley, polished, translucent (its entry side) and hair.
+//  --dl502-weave-pin retains the unresolved weave declaration checks.  It also
 //  checks that the parts sum to `valueStateful` at random directions.
 //
 //  Left: Monte-Carlo mean over the SPF's draws, with its standard error.
@@ -67,6 +68,8 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Utilities/MicrofacetEnergyLUT.h"
 #include "TestStubObject.h"
+#include "WeaveTestFixture.h"
+#include "../src/Library/Materials/HairMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -140,6 +143,7 @@ static void RunCase( const Case& c, double thetaDeg, int ch, Scalar nm, ISampler
 	tag << c.name << ( c.glossyFilterWidth > 0 ? " (gfw)" : "" ) << " theta " << thetaDeg << ( isNM ? " NM " : " RGB ch " ) << ( isNM ? nm : ch );
 
 	Check( c.mat->HasConnectionTypeSplit(), tag.str() + ": declares a split" );
+	if( !c.mat->HasConnectionTypeSplit() ) return; // Declined splits leave out[] unspecified.
 
 	// (1) the parts sum to valueStateful, at directions over the whole sphere.
 	{
@@ -365,8 +369,10 @@ static void RunIdentity( const std::string& name, IMaterial* mat, IdKind kind, d
 	Check( worstDiff <= 1.0, name + ": diffuse part == independently rebuilt multiscatter (1e-12 rel)" );
 }
 
-int main()
+int main(int argc, char** argv)
 {
+	const bool dl502Only = argc == 2 && std::string(argv[1]) == "--dl502-only";
+	const bool weavePin = argc == 2 && std::string(argv[1]) == "--dl502-weave-pin";
 	GlobalLog();
 	std::cout << "=== ConnectionTypeSplitTest (DL-481) ===" << std::endl;
 
@@ -432,10 +438,21 @@ int main()
 	cases.push_back( { "ggx conductor", new GGXMaterial( *rd, *rs, *a03, *a02, *iorAu, *extAu ), &iorStack, 0.15 } );
 	cases.push_back( { "schlick", new SchlickMaterial( *rd, *rs, *a02, *iso1 ), &iorStack, 0.15 } );
 	cases.push_back( { "cooktorrance", new CookTorranceMaterial( *rd, *rs, *a03, *ior15, *ext0 ), &iorStack, 0.15 } );
+	WeaveTest::PresetWeave weave("linen", 0.31, 0.37);
+	WeaveTest::PresetWeave thin("linen", 0.31, 0.37, false, true, 0.3, 0.5, 0.2);
+	// Strict residual: these splits remain unavailable; opt in to the red pin.
+	if(weavePin) {
+		cases.push_back({"DL502 weave", weave.Material(), &iorStack});
+		cases.push_back({"DL502 thin weave", thin.Material(), &iorStack});
+	}
+	HairPainters hp; hp.sigma_a=trExt; hp.beta_m=a03; hp.beta_n=a03; hp.alpha=iso1; hp.ior=ior15;
+	cases.push_back({"DL502 hair",new HairMaterial(hp),&iorStack});
 	for( Case& c : cases ) c.mat->addref();
 
 	const double thetas[] = { 0.0, 40.0, 70.0 };
 	for( const Case& c : cases ) {
+		if(dl502Only && c.name.find("DL502") != 0) continue;
+		if(weavePin && c.name.find("DL502") != 0) continue;
 		for( double th : thetas ) {
 			if( c.glossyFilterWidth > 0 && th != 40.0 ) continue;	// filter-width rows: one incidence
 			RunCase( c, th, 0, 0, sampler );
@@ -445,7 +462,7 @@ int main()
 	}
 
 	// Direct single-scatter identity (black diffuse; see RunIdentity).
-	{
+	if(!dl502Only && !weavePin) {
 		UniformColorPainter* black = new UniformColorPainter( RISEPel( 0, 0, 0 ) ); black->addref();
 		UniformColorPainter* rsG = new UniformColorPainter( RISEPel( 0.3, 0.3, 0.3 ) ); rsG->addref();
 		struct IdCase { std::string n; IMaterial* m; IdKind k; double ax, ay, ior, ext; const IScalarPainter* iorP; const IScalarPainter* extP; FresnelMode fm; };

@@ -112,6 +112,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <cstdio>
+#include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
@@ -190,6 +192,7 @@ struct Stats
 	double sd;		///< sd of ONE replicate
 	int n;
 	bool ok;
+	std::vector<std::uint64_t> hashes{};
 	double se() const { return n > 0 ? sd / std::sqrt( double( n ) ) : 0; }
 };
 
@@ -204,6 +207,8 @@ static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned in
 		if( !ofs.is_open() ) return st;
 		ofs << sceneText;
 	}
+	std::srand(seedBase);
+	GlobalRNG()=RandomNumberGenerator(seedBase);
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { std::remove( path ); return st; }
 	if( !pJob->LoadAsciiSceneViaCst( path ) ) { safe_release( pJob ); std::remove( path ); return st; }
@@ -219,9 +224,16 @@ static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned in
 		SobolSamplerTestHooks::ValueSalt().store(
 			SobolSequence::HashCombine( seedBase + unsigned(i), 0x351u ) );
 		std::srand( seedBase + unsigned(i) );
+		GlobalRNG()=RandomNumberGenerator(seedBase+unsigned(i));
 		if( !pJob->Rasterize() || pCap->pixels.empty() ) { ok = false; break; }
 		double sum = 0;
 		for( const RISEColor& c : pCap->pixels ) sum += ( c.base.r + c.base.g + c.base.b ) / 3.0;
+		std::uint64_t hash=14695981039346656037ull;
+		for(const RISEColor& c:pCap->pixels) for(double x:{c.base.r,c.base.g,c.base.b,c.a}) {
+			std::uint64_t bits;std::memcpy(&bits,&x,sizeof(bits));hash=(hash^bits)*1099511628211ull;
+		}
+		st.hashes.push_back(hash);
+		if(std::getenv("RISE_CAP_HASH")) std::printf("CAP_HASH seed=%u replicate=%d hash=%016llx\n",seedBase,i,static_cast<unsigned long long>(hash));
 		const double m = sum / double( pCap->pixels.size() );
 		if( !std::isfinite( m ) ) { ok = false; break; }
 		v.push_back( m );
@@ -981,10 +993,18 @@ static std::string EnclosedPointScene( const std::string& rasterizerChunk, const
 	} else if( floorKind == 1 ) {
 		s += "ward_isotropic_material\n{\n\tname mat_multi\n\trd pnt_d\n\trs pnt_rs\n\talpha 0.2\n}\n\n";
 		floorMat = "mat_multi";
-	} else {
+	} else if( floorKind == 2 ) {
 		s += "isotropic_phong_material\n{\n\tname mat_multi\n\trd pnt_d\n\trs pnt_rs\n\tN 20\n}\n\n";
 		floorMat = "mat_multi";
 	}
+	if(floorKind == 3) {
+		s += "weave_material\n{\n name mat_multi\n fabric linen\n warp_color pnt_d\n weft_color pnt_d\n gap 0\n transmission none\n}\n";
+		floorMat="mat_multi";
+	} else if(floorKind == 4) {
+		s += "hair_material\n{\n name mat_multi\n sigma_a 0.1\n beta_m 0.3\n beta_n 0.3\n}\n";
+		floorMat="mat_multi";
+	}
+
 	s += "dielectric_material\n{\n\tname mat_glass\n\ttau 1.0 1.0 1.0\n\tior 1.5\n\tscattering 1000000.0\n}\n\n"
 		"clippedplane_geometry\n{\n\tname floor_g\n\tpta -2 0 -2\n\tptb -2 0 2\n\tptc 2 0 2\n\tptd 2 0 -2\n}\n\n";
 	s += "standard_object\n{\n\tname floor\n\tgeometry floor_g\n\tmaterial " + floorMat + "\n}\n\n";
@@ -1031,6 +1051,66 @@ static void RowI()
 			Check( twin.ok && st.ok && Agree( st, twin, 4.0, 0.005 ), std::string( l ) + " under max_glossy_bounce 0 == the Lambertian twin" );
 		}
 	}
+}
+
+// DL-502: aggregate-weighted weave draws need a density-share split.
+// An area emitter inside the shell lets native PT price the cap by its
+// sampled labels, independently of the bidirectional endpoint split.
+static std::string WeaveAreaScene(const std::string& chunk) {
+    std::string text=EnclosedPointScene(chunk,3);
+    const auto begin=text.find("omni_light\n"), end=text.find("}\n\n",begin);
+    text.replace(begin,end+3-begin,
+        "sphere_geometry\n{\n name emitter_g\n radius 0.15\n}\n"
+        "uniformcolor_painter\n{\n name emission_p\n color 20 20 20\n colorspace Rec709RGB_Linear\n}\n"
+        "lambertian_luminaire_material\n{\n name emission\n exitance emission_p\n scale 1\n material none\n}\n"
+        "standard_object\n{\n name area_emitter\n geometry emitter_g\n material emission\n position 0 1 0\n}\n");
+    const auto glassIOR=text.find("ior 1.5");text.replace(glassIOR,7,"ior 1.0");
+    return text;
+}
+static void RowK()
+{
+    const int n=Repeats();
+    const bool weavePin=std::getenv("RISE_DL502_WEAVE_PIN") != nullptr;
+    if(weavePin) {
+    const Stats pt=RenderStatsSalted(WeaveAreaScene("pathtracing_pel_rasterizer\n{\n samples 1024\n max_glossy_bounce 0\n rr_min_depth 8\n pixel_filter box\n oidn_denoise FALSE\n}\n"),n,50200);
+    Print("DL502 weave PT glossy cap zero",pt);
+    for(const char* kind:{"bdpt_pel","vcm_pel","bdpt_spectral","vcm_spectral"}) {
+        const Stats weave=RenderStatsSalted(WeaveAreaScene(EnclosedChunk(kind,"\tmax_glossy_bounce 0\n")),n,50300);
+        Print((std::string(kind)+" DL502 weave").c_str(),weave);
+        // Pel PT is a reference for Pel; spectral lanes need their own PT
+        // reference because the dye's spectral uplift changes its energy.
+        const bool spectral=std::string(kind).find("spectral")!=std::string::npos;
+        const Stats refWeave=spectral?RenderStatsSalted(WeaveAreaScene("pathtracing_spectral_rasterizer\n{\n samples 1024\n hwss TRUE\n max_glossy_bounce 0\n rr_min_depth 8\n pixel_filter box\n oidn_denoise FALSE\n}\n"),n,50200):pt;
+        Print((std::string(kind)+" DL502 weave reference").c_str(),refWeave);
+        Check(refWeave.ok && refWeave.mean>1e-3 && weave.ok && Agree(weave,refWeave,3.0,0),std::string(kind)+": DL502 weave glossy cap zero == PT");
+        std::string weaveFree=EnclosedPointScene(EnclosedChunk(kind,""),3);
+        const auto weaveIOR=weaveFree.find("ior 1.5");weaveFree.replace(weaveIOR,7,"ior 1.0");
+        std::string weaveCap=weaveFree;weaveCap.insert(weaveCap.find("max_eye_depth"),"max_glossy_bounce 1\n\t");
+        const Stats wf=RenderStatsSalted(weaveFree,n,51100),wc=RenderStatsSalted(weaveCap,n,51200);
+        Print((std::string(kind)+" DL502 weave point free").c_str(),wf);
+        Print((std::string(kind)+" DL502 weave point cap").c_str(),wc);
+        Check(wf.ok && wf.mean>1e-3 && wc.ok && Agree(wf,wc,3.0,0),std::string(kind)+": DL502 weave point cap one == uncapped");
+    }
+    }
+    for(const char* kind:{"bdpt_pel","vcm_pel","bdpt_spectral","vcm_spectral"}) {
+        std::string hairFree=EnclosedPointScene(EnclosedChunk(kind,""),4);
+        const auto pos=hairFree.find("ior 1.5"); hairFree.replace(pos,7,"ior 1.0");
+        std::string hairCap=hairFree;
+        const auto capPos=hairCap.find("max_eye_depth"); hairCap.insert(capPos,"max_glossy_bounce 1\n\t");
+        // Common salts isolate the cap: this scene has at most one hair
+        // scatter and an index-matched delta shell, so the cap is non-truncating.
+        const Stats ref=RenderStatsSalted(hairFree,n,50400), capped=RenderStatsSalted(hairCap,n,50400);
+        Print((std::string(kind)+" DL502 hair free").c_str(),ref);
+        Print((std::string(kind)+" DL502 hair cap").c_str(),capped);
+        Check(ref.ok && ref.mean>1e-3 && capped.ok && Agree(ref,capped,3.0,0),std::string(kind)+": DL502 hair cap one == uncapped");
+        for(int f:{4}) {
+            const unsigned salt=50600+100*f;
+            const Stats free=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,""),f),n,salt);
+            const Stats nonbinding=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,"\tmax_glossy_bounce 100\n"),f),n,salt);
+            Check(free.ok && nonbinding.ok && free.hashes==nonbinding.hashes,std::string(kind)+": DL502 nonbinding cap pixel identity material "+std::to_string(f));
+        }
+
+    }
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1293,7 +1373,7 @@ int main()
 	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467, DL-470, DL-471, DL-481)" << std::endl;
 	// RISE_DL351_ROWS (e.g. "CD") runs a subset; default all.
 	const char* rows = std::getenv( "RISE_DL351_ROWS" );
-	const std::string sel = rows ? rows : "ABCDEFGHIJP";
+	const std::string sel = rows ? rows : "ABCDEFGHIJKP";
 	if( sel.find( 'A' ) != std::string::npos ) RowA();
 	if( sel.find( 'B' ) != std::string::npos ) RowB();
 	if( sel.find( 'C' ) != std::string::npos ) RowC();
@@ -1304,6 +1384,7 @@ int main()
 	if( sel.find( 'H' ) != std::string::npos ) RowH();
 	if( sel.find( 'I' ) != std::string::npos ) RowI();
 	if( sel.find( 'J' ) != std::string::npos ) RowJ();
+	if( sel.find( 'K' ) != std::string::npos ) RowK();
 	if( sel.find( 'P' ) != std::string::npos ) RowP();
 	std::cout << std::endl << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;
