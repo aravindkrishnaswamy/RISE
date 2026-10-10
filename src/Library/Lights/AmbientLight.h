@@ -20,6 +20,7 @@
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Utilities/Transformable.h"
 #include "../Animation/KeyframableHelper.h"
 
@@ -35,6 +36,10 @@ namespace RISE
 		protected:
 			Scalar		radiantEnergy;
 			RISEPel		cColor;
+
+			//! DL-465: time-indexed slot for a motion-blur pass (see
+			//! Animation/TimeIndexedView.h); -1 outside one.
+			TimeIndexed::TimeSlot	m_timeSlot;
 
 			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2).
 			//! See PointLight::cSpectrum for the convention and for the
@@ -59,6 +64,15 @@ namespace RISE
 			virtual ~AmbientLight( ){};
 
 		public:
+
+			//! DL-465: set / clear the time-indexed slot (calling thread only,
+			//! before the workers start and after they join).
+			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
+			inline int GetTimeSlot() const { return m_timeSlot.value; }
+
+			//! DL-465: a per-thread clone, exact copy of this light's state
+			//! (never itself slotted).
+			AmbientLight* CloneForTimeView() const { AmbientLight* c = new AmbientLight( *this ); CopyTransformMetadataTo( *c ); return c; }
 			AmbientLight( Scalar radiantEnergy_, const RISEPel& c  ) : radiantEnergy( radiantEnergy_ ), cColor( c )
 			{
 				RefreshSpectrum();
@@ -75,14 +89,14 @@ namespace RISE
 			}
 
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( AmbientLight, emittedRadiance( vLightOut ) );
 				return (cColor * radiantEnergy);
 			}
 
 			//! Spectral twin of `emittedRadiance` (Stage C slice 2): the
 			//! cached illuminant spectrum at `nm`, times the energy.
 			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( AmbientLight, emittedRadianceNM( Vector3( 0, 0, 0 ), nm ) );
 				return cSpectrum.Eval( nm ) * radiantEnergy;
 			}
 
@@ -91,8 +105,8 @@ namespace RISE
 				return Point3( 0, 0, 0 );
 			}
 
-			inline RISEPel   emissionColor() const override  { return cColor; }
-			inline Scalar    emissionEnergy() const override { return radiantEnergy; }
+			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( AmbientLight, emissionColor() ); return cColor; }
+			inline Scalar    emissionEnergy() const override { RISE_TIME_INDEXED_FORWARD( AmbientLight, emissionEnergy() ); return radiantEnergy; }
 			inline LightType lightType() const override      { return LightType::Ambient; }
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
@@ -130,8 +144,8 @@ namespace RISE
 			//! an accepted limitation of an ambient light, not a defect
 			//! this parameter can fix.  Part B of the same fix likewise
 			//! skips ambient: it is a constant with no ray to attenuate.
-			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount, const bool = false, const bool = false, const IORStack* pIORStack = 0 ) const override
-			{
+			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster& rc_, const IBSDF& brdf, const bool bShadows_, RISEPel& amount, const bool bFull_ = false, const bool bVol_ = false, const IORStack* pIORStack = 0 ) const override
+			{ RISE_TIME_INDEXED_FORWARD( AmbientLight, ComputeDirectLighting( ri, rc_, brdf, bShadows_, amount, bFull_, bVol_, pIORStack ) );
 				// DL-157 P1: a stateful BSDF prices a hit by which side of
 				// the surface the walk is on; null reproduces `value`.
 				amount = cColor * radiantEnergy * brdf.valueStateful( ri.vNormal, ri, pIORStack );
@@ -148,15 +162,15 @@ namespace RISE
 			//! so a coloured ambient is no longer spectrally grey.
 			inline Scalar ComputeDirectLightingNM(
 				const RayIntersectionGeometric& ri,
-				const IRayCaster&,
+				const IRayCaster& rc_,
 				const IBSDF& brdf,
-				const bool,
+				const bool bShadows_,
 				const Scalar nm,
-				const bool = false,				///< bFullSphereReceiver: no-op, see the RGB override above
-				const bool = false,				///< bVolumeReceiver: no-op, see the RGB override above
+				const bool bFull_ = false,		///< bFullSphereReceiver: no-op, see the RGB override above
+				const bool bVol_ = false,		///< bVolumeReceiver: no-op, see the RGB override above
 				const IORStack* pIORStack = 0	///< DL-157 P1: live stack for a stateful BSDF
 				) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( AmbientLight, ComputeDirectLightingNM( ri, rc_, brdf, bShadows_, nm, bFull_, bVol_, pIORStack ) );
 				return cSpectrum.Eval( nm ) * radiantEnergy * brdf.valueStatefulNM( ri.vNormal, ri, nm, pIORStack );
 			}
 

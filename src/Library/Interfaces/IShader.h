@@ -87,6 +87,14 @@ namespace RISE
 
 		//! Tells the shader to reset itself
 		virtual void ResetRuntimeData() const = 0;
+
+		//! DL-465: does this shader keep runtime data that ResetRuntimeData()
+		//! must drop when its object moves (a shader op's object-space point
+		//! cache)?  A time-indexed motion-blur pass cannot reset shared
+		//! shader state per thread and per sample, so an object that moves
+		//! with such a shader keeps the single-threaded path.  Conservative
+		//! default for an unknown shader: yes.
+		virtual bool HasRuntimeData() const { return true; }
 	};
 }
 

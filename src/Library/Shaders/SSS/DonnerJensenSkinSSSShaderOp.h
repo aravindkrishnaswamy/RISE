@@ -258,6 +258,7 @@ namespace RISE
 				) const;
 
 			void ResetRuntimeData() const;
+			bool HasRuntimeData() const { return true; }
 			bool RequireSPF() const { return false; }
 
 			// --- ISubSurfaceExtinctionFunction interface ---

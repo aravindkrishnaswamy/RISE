@@ -40,6 +40,7 @@
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Utilities/Transformable.h"
 
 namespace RISE
@@ -52,6 +53,10 @@ namespace RISE
 			Scalar		radiantEnergy;
 			RISEPel		cColor;
 			Vector3		vDirection;
+
+			//! DL-465: time-indexed slot for a motion-blur pass (see
+			//! Animation/TimeIndexedView.h); -1 outside one.
+			TimeIndexed::TimeSlot	m_timeSlot;
 
 			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2).
 			//! See PointLight::cSpectrum for the convention and for the
@@ -67,6 +72,15 @@ namespace RISE
 
 		public:
 
+			//! DL-465: set / clear the time-indexed slot (calling thread only,
+			//! before the workers start and after they join).
+			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
+			inline int GetTimeSlot() const { return m_timeSlot.value; }
+
+			//! DL-465: a per-thread clone, exact copy of this light's state
+			//! (never itself slotted).
+			DirectionalLight* CloneForTimeView() const { DirectionalLight* c = new DirectionalLight( *this ); CopyTransformMetadataTo( *c ); return c; }
+
 			inline bool CanGeneratePhotons() const
 			{
 				return false;
@@ -78,14 +92,14 @@ namespace RISE
 			}
 
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
-			{
+			{ RISE_TIME_INDEXED_FORWARD( DirectionalLight, emittedRadiance( vLightOut ) );
 				return (cColor * radiantEnergy);
 			}
 
 			//! Spectral twin of `emittedRadiance` (Stage C slice 2): the
 			//! cached illuminant spectrum at `nm`, times the energy.
 			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const
-			{
+			{ RISE_TIME_INDEXED_FORWARD( DirectionalLight, emittedRadianceNM( Vector3( 0, 0, 0 ), nm ) );
 				return cSpectrum.Eval( nm ) * radiantEnergy;
 			}
 
@@ -94,8 +108,8 @@ namespace RISE
 				return Point3( 0, 0, 0 );
 			}
 
-			inline RISEPel   emissionColor() const  { return cColor; }
-			inline Scalar    emissionEnergy() const { return radiantEnergy; }
+			inline RISEPel   emissionColor() const  { RISE_TIME_INDEXED_FORWARD( DirectionalLight, emissionColor() ); return cColor; }
+			inline Scalar    emissionEnergy() const { RISE_TIME_INDEXED_FORWARD( DirectionalLight, emissionEnergy() ); return radiantEnergy; }
 			inline LightType lightType() const      { return LightType::Directional; }
 			//! ILight's default `emissionDirection()` returns
 			//! `Vector3(0,1,0)`.  Without this override, the introspection
@@ -108,7 +122,7 @@ namespace RISE
 			//! checks; before this override the magnitude check passed
 			//! by coincidence (|(0,1,0)| = 1) while the components were
 			//! wrong.
-			inline Vector3   emissionDirection() const { return vDirection; }
+			inline Vector3   emissionDirection() const { RISE_TIME_INDEXED_FORWARD( DirectionalLight, emissionDirection() ); return vDirection; }
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{

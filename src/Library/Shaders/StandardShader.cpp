@@ -195,6 +195,18 @@ void StandardShader::ShadeHWSS(
 		c[i] = caccum[i];
 }
 
+//! DL-465: does any op keep runtime data (see IShader::HasRuntimeData)?
+bool StandardShader::HasRuntimeData() const
+{
+	std::vector<IShaderOp*>::const_iterator i, e;
+	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
+		if( (*i)->HasRuntimeData() ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 //! Tells the shader to reset itself
 void StandardShader::ResetRuntimeData() const
 {

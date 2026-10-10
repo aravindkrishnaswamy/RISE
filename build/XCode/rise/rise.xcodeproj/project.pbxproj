@@ -242,6 +242,7 @@
 		F24B71EE2F52A632008304C4 /* Keyframe.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F2069C428F0069C9E5 /* Keyframe.h */; };
 		F24B71EF2F52A632008304C4 /* Timeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F3069C428F0069C9E5 /* Timeline.cpp */; };
 		F24B71F02F52A632008304C4 /* Timeline.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F4069C428F0069C9E5 /* Timeline.h */; };
+		D46500000000000000000009 /* TimeIndexedView.h in Sources */ = {isa = PBXBuildFile; fileRef = D46500000000000000000007 /* TimeIndexedView.h */; };
 		F24B71F12F52A632008304C4 /* BSPTree.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F5069C428F0069C9E5 /* BSPTree.h */; };
 		F24B71F22F52A632008304C4 /* BSPTreeNode.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F6069C428F0069C9E5 /* BSPTreeNode.h */; };
 		F24B71F32F52A632008304C4 /* CameraCommon.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F8069C428F0069C9E5 /* CameraCommon.cpp */; };
@@ -651,6 +652,8 @@
 		F24B738E2F52A632008304C4 /* PixelBasedPelRasterizer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */; };
 		F24B73912F52A632008304C4 /* PixelBasedRasterizerHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */; };
 		F24B73922F52A632008304C4 /* PixelBasedRasterizerHelper.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */; };
+		D46500000000000000000003 /* TimeIndexedMotionBlur.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D46500000000000000000001 /* TimeIndexedMotionBlur.cpp */; };
+		D46500000000000000000006 /* TimeIndexedMotionBlur.h in Sources */ = {isa = PBXBuildFile; fileRef = D46500000000000000000004 /* TimeIndexedMotionBlur.h */; };
 		F24B73932F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */; };
 		F24B73942F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A5069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.h */; };
 		F24B73952F52A632008304C4 /* RadianceMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A8069C42900069C9E5 /* RadianceMap.h */; };
@@ -991,6 +994,7 @@
 		F27F0A62069C42910069C9E5 /* Keyframe.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F07F2069C428F0069C9E5 /* Keyframe.h */; };
 		F27F0A63069C42910069C9E5 /* Timeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F3069C428F0069C9E5 /* Timeline.cpp */; };
 		F27F0A64069C42910069C9E5 /* Timeline.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F07F4069C428F0069C9E5 /* Timeline.h */; };
+		D46500000000000000000008 /* TimeIndexedView.h in Headers */ = {isa = PBXBuildFile; fileRef = D46500000000000000000007 /* TimeIndexedView.h */; };
 		F27F0A65069C42910069C9E5 /* BSPTree.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F07F5069C428F0069C9E5 /* BSPTree.h */; };
 		F27F0A66069C42910069C9E5 /* BSPTreeNode.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F07F6069C428F0069C9E5 /* BSPTreeNode.h */; };
 		F27F0A67069C42910069C9E5 /* CameraCommon.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F8069C428F0069C9E5 /* CameraCommon.cpp */; };
@@ -1389,6 +1393,8 @@
 		F27F0BFF069C42910069C9E5 /* PixelBasedPelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */; };
 		F27F0C02069C42910069C9E5 /* PixelBasedRasterizerHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */; };
 		F27F0C03069C42910069C9E5 /* PixelBasedRasterizerHelper.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */; };
+		D46500000000000000000002 /* TimeIndexedMotionBlur.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D46500000000000000000001 /* TimeIndexedMotionBlur.cpp */; };
+		D46500000000000000000005 /* TimeIndexedMotionBlur.h in Headers */ = {isa = PBXBuildFile; fileRef = D46500000000000000000004 /* TimeIndexedMotionBlur.h */; };
 		F27F0C04069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */; };
 		F27F0C05069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09A5069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.h */; };
 		F27F0C08069C42910069C9E5 /* RadianceMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09A8069C42900069C9E5 /* RadianceMap.h */; };
@@ -2291,6 +2297,7 @@
 		F27F07F2069C428F0069C9E5 /* Keyframe.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Keyframe.h; sourceTree = "<group>"; };
 		F27F07F3069C428F0069C9E5 /* Timeline.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Timeline.cpp; sourceTree = "<group>"; };
 		F27F07F4069C428F0069C9E5 /* Timeline.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Timeline.h; sourceTree = "<group>"; };
+		D46500000000000000000007 /* TimeIndexedView.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TimeIndexedView.h; sourceTree = "<group>"; };
 		F27F07F5069C428F0069C9E5 /* BSPTree.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BSPTree.h; sourceTree = "<group>"; };
 		F27F07F6069C428F0069C9E5 /* BSPTreeNode.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BSPTreeNode.h; sourceTree = "<group>"; };
 		F27F07F8069C428F0069C9E5 /* CameraCommon.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CameraCommon.cpp; sourceTree = "<group>"; };
@@ -2689,6 +2696,8 @@
 		F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedPelRasterizer.h; sourceTree = "<group>"; };
 		F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedRasterizerHelper.cpp; sourceTree = "<group>"; };
 		F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedRasterizerHelper.h; sourceTree = "<group>"; };
+		D46500000000000000000001 /* TimeIndexedMotionBlur.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TimeIndexedMotionBlur.cpp; sourceTree = "<group>"; };
+		D46500000000000000000004 /* TimeIndexedMotionBlur.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TimeIndexedMotionBlur.h; sourceTree = "<group>"; };
 		F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedSpectralIntegratingRasterizer.cpp; sourceTree = "<group>"; };
 		F27F09A5069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedSpectralIntegratingRasterizer.h; sourceTree = "<group>"; };
 		F27F09A8069C42900069C9E5 /* RadianceMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RadianceMap.h; sourceTree = "<group>"; };
@@ -3370,6 +3379,7 @@
 				F27F07F2069C428F0069C9E5 /* Keyframe.h */,
 				F27F07F3069C428F0069C9E5 /* Timeline.cpp */,
 				F27F07F4069C428F0069C9E5 /* Timeline.h */,
+				D46500000000000000000007 /* TimeIndexedView.h */,
 			);
 			path = Animation;
 			sourceTree = "<group>";
@@ -4136,6 +4146,8 @@
 				F2EE001100000000000000A1 /* InteractivePelRasterizer.cpp */,
 				F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */,
 				F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */,
+				D46500000000000000000001 /* TimeIndexedMotionBlur.cpp */,
+				D46500000000000000000004 /* TimeIndexedMotionBlur.h */,
 				F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */,
 				F27F09A5069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.h */,
 				F27F09A8069C42900069C9E5 /* RadianceMap.h */,
@@ -4620,6 +4632,7 @@
 				F24C543E2F7C107E009AF16D /* BSSRDFSampling.h in Headers */,
 				D1291E0A0000000000000001 /* ExteriorIndexCache.h in Headers */,
 				F27F0A64069C42910069C9E5 /* Timeline.h in Headers */,
+				D46500000000000000000008 /* TimeIndexedView.h in Headers */,
 				F27F0A65069C42910069C9E5 /* BSPTree.h in Headers */,
 				F27F0A66069C42910069C9E5 /* BSPTreeNode.h in Headers */,
 				F27F0A68069C42910069C9E5 /* CameraCommon.h in Headers */,
@@ -5101,6 +5114,7 @@
 				F27F0BFD069C42910069C9E5 /* LuminaryManager.h in Headers */,
 				F27F0BFF069C42910069C9E5 /* PixelBasedPelRasterizer.h in Headers */,
 				F27F0C03069C42910069C9E5 /* PixelBasedRasterizerHelper.h in Headers */,
+				D46500000000000000000005 /* TimeIndexedMotionBlur.h in Headers */,
 				F27F0C05069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.h in Headers */,
 				F27F0C08069C42910069C9E5 /* RadianceMap.h in Headers */,
 				F27F0C0A069C42910069C9E5 /* Rasterizer.h in Headers */,
@@ -5677,6 +5691,7 @@
 				F27F0BFC069C42910069C9E5 /* LuminaryManager.cpp in Sources */,
 				F27F0BFE069C42910069C9E5 /* PixelBasedPelRasterizer.cpp in Sources */,
 				F27F0C02069C42910069C9E5 /* PixelBasedRasterizerHelper.cpp in Sources */,
+				D46500000000000000000002 /* TimeIndexedMotionBlur.cpp in Sources */,
 				F27F0C04069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */,
 				F27F0C09069C42910069C9E5 /* Rasterizer.cpp in Sources */,
 				F27F0C0B069C42910069C9E5 /* RayCaster.cpp in Sources */,
@@ -5820,6 +5835,7 @@
 				F24B71EE2F52A632008304C4 /* Keyframe.h in Sources */,
 				F24B71EF2F52A632008304C4 /* Timeline.cpp in Sources */,
 				F24B71F02F52A632008304C4 /* Timeline.h in Sources */,
+				D46500000000000000000009 /* TimeIndexedView.h in Sources */,
 				F24B71F12F52A632008304C4 /* BSPTree.h in Sources */,
 				F24B71F22F52A632008304C4 /* BSPTreeNode.h in Sources */,
 				F24B71F32F52A632008304C4 /* CameraCommon.cpp in Sources */,
@@ -6459,6 +6475,8 @@
 				F2A000000000000000000020 /* SMSPhotonMap.cpp in Sources */,
 				F24B73912F52A632008304C4 /* PixelBasedRasterizerHelper.cpp in Sources */,
 				F24B73922F52A632008304C4 /* PixelBasedRasterizerHelper.h in Sources */,
+				D46500000000000000000003 /* TimeIndexedMotionBlur.cpp in Sources */,
+				D46500000000000000000006 /* TimeIndexedMotionBlur.h in Sources */,
 				F24B73932F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */,
 				F24B73942F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.h in Sources */,
 				F24B73952F52A632008304C4 /* RadianceMap.h in Sources */,

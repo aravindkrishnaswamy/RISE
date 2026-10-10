@@ -23,6 +23,7 @@
 #include "../Utilities/Transformable.h"
 #include "../Utilities/RString.h"
 #include "../Utilities/Reference.h"
+#include "../Animation/TimeIndexedView.h"
 
 #include <atomic>	// the two one-shot proximity diagnostic latches below
 #include <typeinfo>	// DescribeKind names the geometry's own type
@@ -248,6 +249,10 @@ namespace RISE
 			//! Surface samples whose rejection loop hit its candidate cap
 			//! and fell back to an object-uniform point (diagnostic).
 			unsigned long long WorldAreaRejectionCapHits() const { return m_rejectionCapHits.load( std::memory_order_relaxed ); }
+			//! DL-465: fold a per-thread pose holder's cap hits back into the
+			//! shared object when the holder retires, so the shared count
+			//! covers time-indexed passes too.
+			void AccumulateWorldAreaRejectionCapHits( const unsigned long long n ) const { m_rejectionCapHits.fetch_add( n, std::memory_order_relaxed ); }
 		protected:
 
 			//! World-LINEAR scaling of the transform's linear part,
@@ -387,9 +392,37 @@ namespace RISE
 			//! transform state.  Does NOT touch geometry (set by the
 			//! subclass ctor) or CSG operands (set by CSGObject).  Shared by
 			//! Object::CloneSnapshot and CSGObject::CloneSnapshot.
-			void CopySnapshotStateInto( Object& dst ) const;
+			void CopySnapshotStateInto( Object& dst, const bool bCloneMaterial = true ) const;
+
+			//! DL-465: this object's time-indexed slot for the current
+			//! motion-blur pass, or -1 (always, outside such a pass, and for
+			//! every object that does not move).  See TimeIndexedView.h.
+			int												m_timeSlot = -1;
+
+			//! DL-465: the calling render thread's posed clone of this
+			//! object, or null (answer from this object).  One member
+			//! branch for a static object.
+			inline const Object* TimeClone() const { return m_timeSlot >= 0 ? TimeIndexed::Lookup<Object>( m_timeSlot ) : nullptr; }
 
 		public:
+			//! DL-465: set / clear the time-indexed slot.  Called only by the
+			//! frame's time-indexed view, on the rendering thread, before the
+			//! workers start and after they join.
+			inline void SetTimeSlot( const int slot ) { m_timeSlot = slot; }
+			inline int GetTimeSlot() const { return m_timeSlot; }
+
+			//! DL-465: a POSE HOLDER for one render thread: a fresh Object
+			//! sharing (addref) this object's geometry, material, modifier,
+			//! shader, radiance map, interior medium and UV generator, with
+			//! a copy of every flag and the full transform state (building
+			//! blocks, finalized matrices, parent world, world-area caches),
+			//! so re-posing it (SetIntermediateValue + RegenerateData, or a
+			//! parent-composed FinalizeTransformations) computes exactly what
+			//! the same calls on this object would.  Unlike CloneSnapshot the
+			//! material is SHARED, not cloned: the holder is a transform, not
+			//! an independent document snapshot.  Only for plain Objects;
+			//! CSGObject is not time-indexed.
+			Object* ClonePoseHolder() const;
 			Object( );
 			Object( const IGeometry* pGeometry_ );
 
@@ -598,6 +631,13 @@ namespace RISE
 			//! 2026-08-13).
 			void FinalizeTransformations( const Matrix4& parentWorld ) override;
 			using Transformable::FinalizeTransformations;   // keep the no-arg overload visible
+
+			//! DL-465: render-time readers of the world transform (the light
+			//! sampler, IOR-stack seeding, SMS) see the calling thread's pose.
+			Matrix4 const GetFinalTransformMatrix( ) const override
+				{ const Object* c = TimeClone(); return c ? c->m_mxFinalTrans : m_mxFinalTrans; }
+			Matrix4 const GetFinalInverseTransformMatrix( ) const override
+				{ const Object* c = TimeClone(); return c ? c->m_mxInvFinalTrans : m_mxInvFinalTrans; }
 		};
 	}
 }

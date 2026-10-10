@@ -61,12 +61,15 @@ void SpotLight::ComputeDirectLightingSampled(
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
 	RISEPel& amount,
-	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
+	const bool bFullSphereReceiver,	// no-op here; see the .h doc
 	const bool bVolumeReceiver,			// implemented; see the .h doc
 	const IORStack* pIORStack, // DL-157 P1: live stack for a stateful BSDF
     ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
+	// DL-465: this render thread's pose of the light, if it moves.
+	RISE_TIME_INDEXED_FORWARD( SpotLight, ComputeDirectLightingSampled( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver, pIORStack, sampler, boundaries ) );
+
 	//
 	// Computing direct lighting for spot lights
 	//
@@ -140,12 +143,15 @@ Scalar SpotLight::ComputeDirectLightingSampledNM(
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
 	const Scalar nm,
-	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
+	const bool bFullSphereReceiver,	// no-op here; see the .h doc
 	const bool bVolumeReceiver,			// implemented; see the .h doc
 	const IORStack* pIORStack, // DL-157 P1: live stack for a stateful BSDF
     ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
+	// DL-465: this render thread's pose of the light, if it moves.
+	RISE_TIME_INDEXED_FORWARD( SpotLight, ComputeDirectLightingSampledNM( ri, pCaster, brdf, bReceivesShadows, nm, bFullSphereReceiver, bVolumeReceiver, pIORStack, sampler, boundaries ) );
+
 	// Same geometry / cone falloff as the RGB ComputeDirectLighting; only the
 	// BSDF eval and the shadow Fresnel are per-wavelength (brdf.valueNM,
 	// CastShadowRayAuto bNM=true).  VOLUME RECEIVER: see the RGB overload.

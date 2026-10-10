@@ -109,30 +109,35 @@ void Timeline::GetTimeRange( Scalar& begin, Scalar& end )
 
 void Timeline::EvaluateAtTime( const Scalar time )
 {
+	EvaluateInto( time, *pElement );
+}
+
+void Timeline::EvaluateInto( const Scalar time, IKeyframable& target ) const
+{
 	// Use an interpolator and evaluate at the current time
 	// There is only one keyframe, which means we are asymptotic...
 	// We only render the one frame we are to render
 	if( start == end ) {
 		if( time == start ) {
-			pElement->SetIntermediateValue( (*keyframes.begin())->param );
+			target.SetIntermediateValue( (*keyframes.begin())->param );
 			return;
 		}
 	}
 
 	if( time <= start ) {
-		pElement->SetIntermediateValue( (*keyframes.begin())->param );
+		target.SetIntermediateValue( (*keyframes.begin())->param );
 		return;
 	}
 
 	if( time >= end ) {
-		pElement->SetIntermediateValue( (*(keyframes.end()-1))->param );
+		target.SetIntermediateValue( (*(keyframes.end()-1))->param );
 		return;
 	}
 
 	// Otherwise we need to find the two keyframes we are to interpolate
 	// and call the interpolator to interpolate them
-	KeyframesList::iterator	i, e;
-	RuntimeKeyframesList::iterator m=runtimekeyframes.begin();
+	KeyframesList::const_iterator	i, e;
+	RuntimeKeyframesList::const_iterator m=runtimekeyframes.begin();
 
 	for( i=keyframes.begin(), e=keyframes.end()-1; i!=e; i++, m++ )
 	{
@@ -153,10 +158,10 @@ void Timeline::EvaluateAtTime( const Scalar time )
 
 			if( before->pInterp ) {
 				KeyframeParameterDispatch result = before->pInterp->Interpolate2Values( runtimekeyframes, s, t, d );
-				pElement->SetIntermediateValue( result.GetParam() );
+				target.SetIntermediateValue( result.GetParam() );
 			} else {
 				KeyframeParameterDispatch result = pInterp->Interpolate2Values( runtimekeyframes, s, t, d );
-				pElement->SetIntermediateValue( result.GetParam() );
+				target.SetIntermediateValue( result.GetParam() );
 			}
 			return;
 		}

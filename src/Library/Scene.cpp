@@ -610,7 +610,9 @@ void Scene::SetSceneTime( const Scalar time ) const
 	// nothing would ever drop it.  Reaching that window needs a thread
 	// running concurrently with us.  No current path does: motion blur's
 	// mid-pass `EvaluateAtTime` runs on the rendering thread itself (an
-	// exposure > 0 frame is single-threaded, DL-457) and never calls this
+	// exposure > 0 frame that moves the shared scene is single-threaded,
+	// DL-457; the multi-threaded DL-465 path poses per-thread clones and
+	// writes no shared state) and never calls this
 	// function.  The guard is defence in depth.
 	//
 	// A SCOPE GUARD rather than a trailing statement, because every

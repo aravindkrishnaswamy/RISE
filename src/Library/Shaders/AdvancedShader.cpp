@@ -330,6 +330,18 @@ void AdvancedShader::ShadeHWSS(
 		c[i] = caccum[i];
 }
 
+//! DL-465: does any op keep runtime data (see IShader::HasRuntimeData)?
+bool AdvancedShader::HasRuntimeData() const
+{
+	ShadeOpListType::const_iterator i, e;
+	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
+		if( i->pShaderOp->HasRuntimeData() ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 //! Tells the shader to reset itself
 void AdvancedShader::ResetRuntimeData() const
 {

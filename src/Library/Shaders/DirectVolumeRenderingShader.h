@@ -104,6 +104,7 @@ namespace RISE
 
 			//! Tells the shader to reset itself
 			void ResetRuntimeData() const;
+			bool HasRuntimeData() const { return pISOShader ? pISOShader->HasRuntimeData() : false; }
 		};
 	}
 }

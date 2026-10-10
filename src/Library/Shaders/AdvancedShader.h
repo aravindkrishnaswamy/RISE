@@ -85,6 +85,7 @@ namespace RISE
 
 			//! Tells the shader to reset itself
 			void ResetRuntimeData() const;
+			bool HasRuntimeData() const;
 
 		protected:
 			//! DL-171/DL-209 (legacy shader-op chain, chain-aware MIS

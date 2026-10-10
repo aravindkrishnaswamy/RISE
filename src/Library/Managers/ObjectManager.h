@@ -600,6 +600,7 @@ namespace RISE
 			void AccumulateMotionBounds() const;
 			void EndMotionSweep() const;
 			void RecomposeAnimatedHierarchy() const;
+			bool GetPerSampleRecomposePlan( std::vector< std::pair<IObjectPriv*, IObjectPriv*> >& out ) const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }
 		};
 	}

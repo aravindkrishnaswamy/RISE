@@ -1482,10 +1482,39 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 	int threads = HowManyThreadsToSpawn();
 
-	// We can support multiprocessors if exposure is turned on, due to the way we do
-	// exposures.  For each pixel sample, the scene time is reset, this is bad for MP
+	// A motion-blurred frame (exposure > 0) gives every pixel sample its
+	// own scene time.  DL-465: when every animated element of the frame is
+	// time-indexable and the rasterizer supports it, each render thread
+	// poses its OWN clones of the moving elements at its samples' times
+	// (TimeIndexedMotionBlur.h), so the frame renders multi-threaded with
+	// exactly the per-sample look.  Otherwise the per-sample path moves the
+	// shared scene and must render on this one thread.
+	TimeIndexedFrame* pTimeFrame = 0;
+	if( framedata.exposure > 0 && pass == RuntimeContext::PASS_NORMAL &&
+		SupportsTimeIndexedMotionBlur() &&
+		GlobalOptions().ReadBool( "time_indexed_motion_blur", true ) )
+	{
+		std::string reason;
+		pTimeFrame = TimeIndexedFrame::TryCreate( pScene, reason );
+		if( !pTimeFrame && !mTimeIndexedFallbackLogged ) {
+			mTimeIndexedFallbackLogged = true;
+			GlobalLog()->PrintEx( eLog_Warning, "RenderFrameOfAnimationPass:: motion-blurred frame renders single-threaded "
+				"(per-sample scene time): %s cannot be time-indexed (DL-465)", reason.c_str() );
+		}
+	}
+	struct TimeFrameGuard {
+		TimeIndexedFrame*& f;
+		explicit TimeFrameGuard( TimeIndexedFrame*& frame ) : f( frame ) {}
+		~TimeFrameGuard() {
+			if( f ) {
+				GlobalLog()->PrintDelete( f, __FILE__, __LINE__ );
+				delete f;
+				f = 0;
+			}
+		}
+	} timeFrameGuard( pTimeFrame );
 
-	if( threads>1 && framedata.exposure==0 ) {
+	if( threads>1 && ( framedata.exposure==0 || pTimeFrame ) ) {
 
 		// Start the raster sequence
 		seq.Begin( startx, endx, starty, endy );
@@ -1494,7 +1523,7 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		RasterizeBlockAnimationDispatcher dispatcher(
 			pass, image, pScene, seq, *this, pProgressFunc, framedata,
-			mProgressBase, mProgressWeight, mProgressTotal );
+			mProgressBase, mProgressWeight, mProgressTotal, pTimeFrame );
 
 		ThreadPool& pool = GlobalThreadPool();
 		const unsigned int numWorkers = static_cast<unsigned int>( threads );
@@ -1521,6 +1550,11 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 		// Create a runtime context
 		RuntimeContext rc( GlobalRNG(), pass, false );
 		PrepareRuntimeContext( rc );
+
+		// DL-465: a single thread still poses its own clones when the frame
+		// is time-indexable (one thread available) -- same samples, same
+		// times, same random draws as moving the shared scene.
+		TimeIndexedThread timeView( pTimeFrame );
 
 		seq.Begin( startx, endx, starty, endy );
 		const unsigned int numseq = seq.NumRegions();
@@ -1757,6 +1791,8 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	} else if( scanningRate ) {
 		base_cur_time = time - (image.GetHeight()/2*scanningRate);
 	}
+
+	mTimeIndexedFallbackLogged = false;	// DL-465: one note per frame
 
 	AnimFrameData framedata;
 	framedata.base_cur_time = base_cur_time;

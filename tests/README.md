@@ -1317,6 +1317,24 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   hashes for a cross-build A/B). Includes rotation x scale and shear rows. Red
   on `932f7c0a0` (sections A-C): 11/22; green 59/0 (all sections; B includes a thin-in-object-space mesh stretched along its thin axis).
 
+- `TimeIndexedMotionBlurTest` (DL-465): a motion-blurred frame rendered
+  multi-threaded through per-thread time-indexed clones must be the same
+  estimator as the single-threaded shared-scene path.  Scene "combo" moves
+  the camera, a luminary, an occluder, a rotating parent with a child, an
+  omni and a spot light.  S: each timeline changes the render; A: ONE thread,
+  same salt -> identical pixel hashes for PT / BDPT / VCM (merging off), RGB
+  and spectral (red on any of four mutations that disable a clone kind or the
+  hierarchy replay); B: all threads vs the old path, n salted renders each,
+  whole-image and 4x4 region means by Welch t (family 0.01), on the 192x192
+  film (the 32x32 one is a single tile, one worker); A and B also run the
+  extended scene (thin lens, keyframed directional / ambient lights, a
+  non-uniformly scaling luminary, a keyframed matrix-authored object); C: a
+  keyframed painter keeps the old path; D (not a gate): wall / user / sys
+  time, including no / static / moving matrix-authored object.  Every render runs
+  in a child process (options are read once per process).  `--dump <scene>
+  <ras> <spp>` prints a scene for cross-build hashing.  Args: section
+  (all/S/A/B/C/D), spp (16), n (8).
+
 - `MotionBlurTimeAverageTest` (DL-457): a motion-blurred frame (camera
   exposure 1 at frame time 0.5, so the CENTRED shutter is the timelines'
   [0, 1]) equals the mean of static renders at 8 or 32 midpoints of that

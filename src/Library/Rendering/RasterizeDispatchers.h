@@ -173,6 +173,7 @@ namespace RISE
 		{
 		protected:
 			const PixelBasedRasterizerHelper::AnimFrameData& animData;
+			const TimeIndexedFrame* pTimeFrame;	//!< DL-465: per-thread time-indexed state, or null
 
 		public:
 
@@ -186,16 +187,23 @@ namespace RISE
 				const PixelBasedRasterizerHelper::AnimFrameData& animData_,
 				const double progressBase_,
 				const double progressWeight_,
-				const double progressTotal_
+				const double progressTotal_,
+				const TimeIndexedFrame* pTimeFrame_ = 0
 				) :
 			  RasterizeBlockDispatcher( pass_, image_, scene_, seq_, rasterizer_, pProgressFunc_, progressBase_, progressWeight_, progressTotal_ ),
-			  animData( animData_ )
+			  animData( animData_ ),
+			  pTimeFrame( pTimeFrame_ )
 			{
 			}
 
 			void DoAnimWork()
 			{
 				const unsigned int height = image.GetHeight();
+
+				// DL-465: this worker's clones of the moving elements, posed
+				// per sample by AnimateSceneToSampleTime.  A no-op when the
+				// frame is not motion-blurred (null frame).
+				TimeIndexedThread timeView( pTimeFrame );
 
 				// Create a runtime context for this thread
 				RandomNumberGenerator random;

@@ -489,7 +489,7 @@ IObjectPriv* Object::CloneGeometric()
 	return pMe;
 }
 
-void Object::CopySnapshotStateInto( Object& dst ) const
+void Object::CopySnapshotStateInto( Object& dst, const bool bCloneMaterial ) const
 {
 	// Shared by Object::CloneSnapshot and CSGObject::CloneSnapshot.  Copies
 	// every piece of mutable state EXCEPT the geometry (set by the subclass
@@ -503,7 +503,10 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	//     editor's SetMaterialProperty path) does NOT bleed into the
 	//     snapshot.  CloneMaterialForSnapshot hands back a reference the
 	//     caller owns; AssignMaterial addrefs it, so we release our own. ---
-	if( pMaterial ) {
+	if( pMaterial && !bCloneMaterial ) {
+		// DL-465 pose holder: the same material, shared.
+		dst.AssignMaterial( *pMaterial );
+	} else if( pMaterial ) {
 		const IMaterial* matClone = CloneMaterialForSnapshot( pMaterial );
 		if( matClone ) {
 			dst.AssignMaterial( *matClone );
@@ -619,6 +622,20 @@ Object* Object::CloneSnapshot() const
 
 	CopySnapshotStateInto( *pClone );
 
+	return pClone;
+}
+
+Object* Object::ClonePoseHolder() const
+{
+	// See Object.h.  Same container ctor selection as CloneSnapshot.
+	Object* pClone = pGeometry ? new Object( pGeometry ) : new Object();
+	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "time-indexed pose holder" );
+	CopySnapshotStateInto( *pClone, false );
+	// A warning the shared object already printed is not repeated per thread.
+	// (A first warning on a holder is still printed once per holder: at most
+	// once per render thread per pass.  Cap-hit COUNTS are folded back into
+	// the shared object by TimeIndexedThread when the holder retires.)
+	pClone->m_warnedAreaFallback.store( m_warnedAreaFallback.load() );
 	return pClone;
 }
 
@@ -769,6 +786,10 @@ bool Object::ComputeAnalyticalDerivatives(
 	Vector3&      outWorldDndv
 	) const
 {
+	if( const Object* c = TimeClone() ) {	// DL-465: this thread's pose
+		return c->ComputeAnalyticalDerivatives( uv, smoothing, outWorldPosition, outWorldNormal,
+			outWorldDpdu, outWorldDpdv, outWorldDndu, outWorldDndv );
+	}
 	if( !pGeometry ) return false;
 
 	// Object-space query
@@ -838,6 +859,9 @@ bool Object::ComputeAnalyticalDerivatives(
 
 const BoundingBox Object::getBoundingBox() const
 {
+	if( const Object* c = TimeClone() ) {	// DL-465: this thread's pose
+		return c->getBoundingBox();
+	}
 	// NULL-GEOMETRY GUARD.  This branch is REACHABLE as of 87 (recursive scene
 	// graph): a `standard_object` with no `geometry` is a CONTAINER node -- a
 	// pure transform other objects are parented to -- and Job::AddObject
@@ -894,6 +918,17 @@ const BoundingBox Object::getBoundingBox() const
 
 void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+	if( const Object* c = TimeClone() ) {
+		// DL-465: intersect this thread's pose of the object, then report
+		// the hit as THIS (shared) object: every identity consumer -- the
+		// IOR stack's keys, luminary lookups, SMS emitter tests -- keys on
+		// the object the scene and the light sampler hold.
+		c->IntersectRay( ri, dHowFar, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+		if( ri.pObject == c ) {
+			ri.pObject = this;
+		}
+		return;
+	}
     SMSRecordObjectIntersection();
     ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
     ri.geometric.bHasShaderDirection=ri.geometric.bHasNormalMapFrame=false;
@@ -1528,6 +1563,9 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 
 bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
+	if( const Object* c = TimeClone() ) {	// DL-465: this thread's pose
+		return c->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
+	}
 	// NULL-GEOMETRY GUARD: see getBoundingBox()'s comment above.  Reachable as
 	// of 87 for a CONTAINER node; the world-visible + casts-shadows gate in
 	// ObjectManager::RayElementIntersection_IntersectionOnly keeps shadow rays
@@ -1589,6 +1627,10 @@ bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar
 
 void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
+	if( const Object* c = TimeClone() ) {	// DL-465: this thread's pose
+		c->UniformRandomPoint( point, normal, coord, prand );
+		return;
+	}
 	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, caller list corrected
 	// fix round 3; 87: a geometry-less CONTAINER node is now a second source
 	// of a null pGeometry, and it reaches these callers no more than a
@@ -1721,6 +1763,9 @@ void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, 
 
 Scalar Object::GetArea( ) const
 {
+	if( const Object* c = TimeClone() ) {	// DL-465: this thread's pose
+		return c->GetArea();
+	}
 	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2): pGeometry is null for a
 	// CSGObject (its shape is synthesized from two operand objects rather
 	// than owned directly -- see CSGObject.h/.cpp, which overrides
@@ -1778,6 +1823,9 @@ Scalar Object::GetArea( ) const
 
 bool Object::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld, Scalar& outDist ) const
 {
+	if( const Object* c = TimeClone() ) {	// DL-465: this thread's pose
+		return c->DistanceToSurface( ptWorld, maxDistWorld, outDist );
+	}
 	if( !pGeometry ) {
 		return false;
 	}
@@ -1912,6 +1960,9 @@ bool Object::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld
 bool Object::SignedDistanceLower( const Point3& ptWorld, const Scalar maxDistWorld,
 	Scalar& outSigned, bool& outExact ) const
 {
+	if( const Object* c = TimeClone() ) {	// DL-465: this thread's pose
+		return c->SignedDistanceLower( ptWorld, maxDistWorld, outSigned, outExact );
+	}
 	outExact = false;
 	if( !pGeometry ) {
 		return false;

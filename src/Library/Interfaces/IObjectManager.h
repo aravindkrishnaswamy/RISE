@@ -19,6 +19,8 @@
 #include "IEnumCallback.h"
 #include "../Intersection/RayIntersection.h"
 #include <cstddef>
+#include <utility>
+#include <vector>
 
 namespace RISE
 {
@@ -137,6 +139,15 @@ namespace RISE
 		//! a motion-blur sample evaluates the animator mid-frame and needs it
 		//! too, or a child of an animated parent stays at the frame pose.
 		virtual void RecomposeAnimatedHierarchy() const {}
+
+		//! DL-465: the per-sample re-compose RecomposeAnimatedHierarchy()
+		//! would run, as parent-before-child (node, parent) pairs (parent
+		//! null for a hierarchy root), so a render thread can replay it on
+		//! its own clones.  Returns true with an empty list when the
+		//! per-sample re-compose is a no-op, and false when it is a full
+		//! walk no sweep has narrowed (the caller must then keep the
+		//! single-threaded path).
+		virtual bool GetPerSampleRecomposePlan( std::vector< std::pair<IObjectPriv*, IObjectPriv*> >& out ) const { out.clear(); return true; }
 
 		// ---- Authored scene graph (docs/agentic-redesign/87-recursive-scene-graph.md)
 		//

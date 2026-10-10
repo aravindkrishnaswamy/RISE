@@ -52,9 +52,11 @@ namespace RISE
 		//! Evaluates the ACTIVE animation at the given time.
 		//! WARNING: This mutates keyframed scene elements (camera, transforms,
 		//! painters) through stored pointers, so it must never run while other
-		//! threads render.  Motion blur calls it per pixel sample, which is
-		//! safe only because a frame with camera exposure renders on the
-		//! calling thread (PixelBasedRasterizerHelper::RenderFrameOfAnimationPass).
+		//! threads render.  Motion blur calls it per pixel sample only on the
+		//! single-threaded fallback path; a frame whose animated elements are
+		//! all time-indexable renders multi-threaded and poses per-thread
+		//! clones through EvaluateElementAtTimeInto instead (DL-465,
+		//! PixelBasedRasterizerHelper::RenderFrameOfAnimationPass).
 		virtual void EvaluateAtTime( const Scalar time ) = 0;
 
 		//! Tells us whether anything is keyframed
@@ -125,6 +127,29 @@ namespace RISE
 		//! keyframe between two uniform samples (a reversal, a short
 		//! excursion) is inside the swept bounds.
 		virtual void CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const { (void)t0; (void)t1; (void)out; }
+
+		//
+		// DL-465: read-only evaluation for per-thread time-indexed motion
+		// blur.  EvaluateAtTime() above writes the keyframed elements in
+		// place, so per-sample shutter times could only be served by one
+		// thread.  These two let every render thread evaluate the ACTIVE
+		// animation into its own private clones instead; they never write
+		// the animator or the keyframed elements, so they may be called
+		// concurrently.  (Additive, appended; defaults report nothing.)
+		//
+
+		//! Appends every element with timelines in the ACTIVE animation.
+		virtual void GetActiveAnimatedElements( std::vector<IKeyframable*>& out ) const { (void)out; }
+
+		//! Appends the parameter names `element` has keyframed in the ACTIVE
+		//! animation; false if it has none there.
+		virtual bool GetActiveAnimatedParameters( IKeyframable* element, std::vector<String>& out ) const { (void)element; (void)out; return false; }
+
+		//! Evaluates `element`'s ACTIVE-animation timelines at `time` into
+		//! `target` (exactly what EvaluateAtTime does to `element` itself),
+		//! then target.RegenerateData().  False, target untouched, if the
+		//! element has no timelines in the active animation.
+		virtual bool EvaluateElementAtTimeInto( IKeyframable* element, const Scalar time, IKeyframable& target ) const { (void)element; (void)time; (void)target; return false; }
 	};
 }
 

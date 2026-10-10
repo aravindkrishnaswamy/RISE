@@ -99,6 +99,10 @@ namespace RISE
 		//! Tells the ShaderOp to reset itself
 		virtual void ResetRuntimeData() const {};
 
+		//! DL-465: true if ResetRuntimeData() above drops real state (see
+		//! IShader::HasRuntimeData).
+		virtual bool HasRuntimeData() const { return false; }
+
 		//! Asks if the shader op needs SPF data
 		virtual bool RequireSPF() const = 0;
 
