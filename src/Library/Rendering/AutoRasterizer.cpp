@@ -139,6 +139,26 @@ namespace
 		return scan.found;
 	}
 
+    // DL-475: a conservative census of the proven C-S-M-S-L support gap.
+    // Do not infer topology or IOR from a dummy shading record. Mixed and
+    // absorption-only boundaries may over-route; a missing bound medium
+    // at a CSG root remains outside this census.
+    bool SceneHasTransmissiveInteriorMedium(const IScene& scene)
+    {
+        struct Scan final : IEnumCallback<IObject> {
+            bool found=false;
+            bool operator()(const IObject& obj) override {
+                const IMaterial* mat=obj.GetMaterial();
+                if(obj.IsWorldVisible() && obj.GetInteriorMedium() && mat && mat->CouldLightPassThrough()) {
+                    found=true; return false;
+                }
+                return true;
+            }
+        } scan;
+        if(const IObjectManager* objects=scene.GetObjects()) objects->EnumerateObjects(scan);
+        return scan.found;
+    }
+
 	//! Tier-1 signal: does the scene have at least one positional
 	//! (point / spot / omni) delta light?  These are the small / point
 	//! sources able to concentrate refracted energy into a sharp caustic;
@@ -413,6 +433,17 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	const bool hasTransmissive = SceneHasTransmissiveMaterial( *scene );
 	const bool hasPositional   = SceneHasPositionalLight( *scene );
 	const bool hasEnvIBL       = ( scene->GetGlobalRadianceMap() != 0 );
+
+    // A variance probe cannot detect absent support: an all-black BDPT
+    // candidate can even appear noise-free. Select a sampler that reaches
+    // the single-medium-scatter class before measuring candidate costs.
+    if(hasPositional && SceneHasTransmissiveInteriorMedium(*scene)) {
+        mResolveReason="DL-475: transmissive interior medium + positional light (support guard)";
+        GlobalLog()->PrintEx(eLog_Warning,
+            "AutoRasterizer:: DL-475: BDPT cannot sample a single medium scatter between delta walls under a positional light; conservatively selecting VCM before the probe. Explicit author pins remain honored.");
+        return AutoIntegratorChoice::VCM;
+    }
+
 
 	// Tier 2 — the render-time probe (Phase 4).  Gated twice: the author
 	// must opt in (`probe` on the chunk) AND the production sample count

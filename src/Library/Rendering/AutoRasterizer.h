@@ -288,7 +288,9 @@ namespace RISE
 		private:
 
 			//! Integrator selection.  Tier 0: an explicit author pin always
-			//! wins.  Tier 2 (Phase 4): when the probe is enabled and the
+			//! wins. DL-475 support guard: automatic scenes with a visible
+			//! transmissive interior medium and positional light select VCM.
+			//! Tier 2 (Phase 4): when the probe is enabled and the
 			//! production sample count clears the activation-spp gate, run
 			//! the gated/short-circuited render-time probe over the
 			//! assembled `scene` (RunProbe) and take its verdict.  Tier 1
