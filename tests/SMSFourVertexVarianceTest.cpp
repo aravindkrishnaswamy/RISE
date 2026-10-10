@@ -1,7 +1,8 @@
 // DL-466: broad slab versus a receiver patch separated from corner
 // coalescence and root-existence boundaries. Every render has a ValueSalt.
 // Default: 128 salts on the off-critical patch with a test-only retry budget
-// of 4096. Args: salts, narrow/broad/both, budget (0 uses production 100).
+// of 4096. Args: salts, narrow/broad/both, budget (0 uses production 100),
+// optional starting salt index (for disjoint repeat blocks).
 // `128 narrow 100` exposes the unresolved tail; do not loosen its band.
 #define main SupersededRowsMain
 #include "SMSSupersededRowsTest.cpp"
@@ -37,6 +38,7 @@ int main(int argc,char** argv) {
     const std::string scope=argc>2?argv[2]:"narrow";
     if(scope!="narrow" && scope!="broad" && scope!="both") return 1;
     probeBudget=argc>3?std::strtoul(argv[3],nullptr,10):4096;
+    const unsigned saltOffset=argc>4?std::strtoul(argv[4],nullptr,10):0;
     for(bool narrow:{false,true}) {
         if((scope=="narrow" && !narrow) || (scope=="broad" && narrow)) continue;
         const double cx=narrow?.5:0,cy=narrow?.15:0,half=narrow?.04:2;
@@ -51,7 +53,7 @@ int main(int argc,char** argv) {
         if(narrow) Check(margins[0]>1e-3 && margins[1]>1e-3,"DL-466 probe excludes sampled order/existence boundaries");
         Series values;
         for(unsigned salt=0;salt<n;++salt) {
-            g_renderIndex=salt;
+            g_renderIndex=salt+saltOffset;
             std::string scene=SlabScene(kOmni,SlabRaster("extd:4",64));
             if(narrow) {
                 const std::string old="location 0 0 -1.9\n lookat 0 0 -2\n up 0 1 0\n fov 174.275189547777";
@@ -63,7 +65,7 @@ int main(int argc,char** argv) {
             Check(diagnosticsAttached,"DL-466 diagnostics installed before render");
             Check(image.ok&&image.mean>=0,"DL-466 finite render");
             values.v.push_back(image.mean);
-            std::cout<<std::setprecision(10)<<"DL466 sample narrow="<<narrow<<" salt="<<salt<<" mean="<<image.mean<<std::endl;
+            std::cout<<std::setprecision(10)<<"DL466 sample narrow="<<narrow<<" salt="<<salt+saltOffset<<" mean="<<image.mean<<std::endl;
             if((salt+1)%32==0) std::cout<<"DL466 prefix narrow="<<narrow<<" n="<<salt+1<<" mean="<<values.mean()<<" SE="<<values.se()<<" truth="<<refined[2]<<std::endl;
         }
         g_beforeSMSRender=nullptr;counters=nullptr;
@@ -74,7 +76,9 @@ int main(int argc,char** argv) {
         double m3=0,total=0;for(double x:sorted){m3+=std::pow(x-values.mean(),3)/n;total+=x;}
         const double sd=values.se()*std::sqrt(double(n));
         std::cout<<std::setprecision(10)<<"DL466 narrow="<<narrow<<" budget="<<(probeBudget?probeBudget:100)<<" n="<<n<<" mean="<<values.mean()<<" SE="<<values.se()<<" truth="<<refined[2]
-            <<" ratio="<<values.mean()/refined[2]<<" skew="<<(sd>0?m3/std::pow(sd,3):0)<<" max/mean="<<sorted.back()/values.mean()<<" largest_fraction="<<sorted.back()/total<<std::endl;
+            <<" sd="<<sd<<" saltOffset="<<saltOffset
+            <<" ratio="<<values.mean()/refined[2]
+            <<" nominalRatio3SE=["<<(values.mean()-3*values.se())/refined[2]<<","<<(values.mean()+3*values.se())/refined[2]<<"]"<<" skew="<<(sd>0?m3/std::pow(sd,3):0)<<" max/mean="<<sorted.back()/values.mean()<<" largest_fraction="<<sorted.back()/total<<std::endl;
         // Broad-domain variance is the debt under investigation; do not gate
         // its finite-sample mean or widen a band to make it pass.
         if(narrow) Check(std::fabs(values.mean()-refined[2])<=3*values.se(),"DL-466 off-critical patch equals independent closed form at 3 sigma");
