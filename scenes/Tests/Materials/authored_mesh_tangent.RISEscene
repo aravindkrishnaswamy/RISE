@@ -71,14 +71,15 @@ directional_light
 standard_shader
 {
  name direct
- shaderop DefaultDirectLighting
+ shaderop DefaultPathTracing
 }
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
  defaultshader direct
  samples 1
  oidn_denoise FALSE
- max_recursion 1
+ max_diffuse_bounce		0
 }
 file_rasterizeroutput
 {

@@ -18,14 +18,14 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		4
 	samples				1
-	lum_samples			1
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput

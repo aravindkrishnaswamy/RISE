@@ -225,8 +225,8 @@ static std::string Preamble()
 {
 	return
 		"RISE ASCII SCENE 7\n"
-		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-		"pixelpel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise FALSE\n\tmax_diffuse_bounce 0\n}\n\n"
 		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
 		"pinhole_camera\n{\n\tlocation 0 2 9\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
 		"uniformcolor_painter\n{\n\tname dye\n\tcolor 0.42 0.28 0.14\n\tcolorspace Rec709RGB_Linear\n}\n\n"
@@ -1186,9 +1186,9 @@ static std::string SilhouetteScene( bool withFuzzShell, unsigned int samples )
 {
 	char buf[256];
 	std::string s = "RISE ASCII SCENE 7\n"
-		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n";
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 	std::snprintf( buf, sizeof( buf ),
-		"pixelpel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", samples );
+		"pathtracing_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n\tmax_diffuse_bounce 0\n}\n\n", samples );
 	s += buf;
 	s += "film\n{\n\twidth 32\n\theight 32\n}\n\n";
 	// The sphere is deliberately SMALL in frame (a modest angular radius,

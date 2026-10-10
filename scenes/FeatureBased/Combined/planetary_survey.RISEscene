@@ -26,17 +26,16 @@ uniformcolor_painter
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	DefaultEmission
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		4
 	samples				49
-	lum_samples			1
 	radiance_map		pnt_space
 	radiance_background	TRUE
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput

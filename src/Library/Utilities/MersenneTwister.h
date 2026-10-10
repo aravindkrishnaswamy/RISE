@@ -81,6 +81,8 @@ namespace RISE
 	public:
 		MersenneTwister();
 		MersenneTwister( const unsigned int seed );
+        MersenneTwister( const MersenneTwister& other );
+        MersenneTwister& operator=( const MersenneTwister& other );
 		virtual ~MersenneTwister();
 
 		void init_genrand(unsigned long s);

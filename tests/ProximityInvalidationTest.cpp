@@ -136,8 +136,8 @@ static std::string SceneText( const char* boxY, const char* timelineBlock )
 {
 	std::string s =
 		"RISE ASCII SCENE 7\n"
-		"standard_shader\n{\nname global\nshaderop DefaultDirectLighting\n}\n"
-		"pixelpel_rasterizer\n{\nsamples 1\noidn_denoise FALSE\n}\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+		"pathtracing_pel_rasterizer\n{\nsamples 1\noidn_denoise FALSE\nmax_diffuse_bounce 0\n}\n"
 		"film\n{\nwidth 8\nheight 8\n}\n"
 		"pinhole_camera\n{\nlocation 0 6 0.0001\nlookat 0 0 0\nup 0 1 0\nfov 12.0\n}\n"
 		"ambient_light\n{\nname amb\ncolor 1.0 1.0 1.0\npower 1.0\n}\n"
@@ -462,8 +462,8 @@ static void TestDemandGate()
 		{
 			std::string s =
 				"RISE ASCII SCENE 7\n"
-				"standard_shader\n{\nname global\nshaderop DefaultDirectLighting\n}\n"
-				"pixelpel_rasterizer\n{\nsamples 1\noidn_denoise FALSE\n}\n"
+				"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+				"pathtracing_pel_rasterizer\n{\nsamples 1\noidn_denoise FALSE\nmax_diffuse_bounce 0\n}\n"
 				"film\n{\nwidth 8\nheight 8\n}\n"
 				"pinhole_camera\n{\nlocation 0 6 0.0001\nlookat 0 0 0\nup 0 1 0\nfov 12.0\n}\n"
 				"ambient_light\n{\nname amb\ncolor 1.0 1.0 1.0\npower 1.0\n}\n"

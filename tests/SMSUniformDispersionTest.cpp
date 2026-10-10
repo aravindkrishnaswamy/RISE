@@ -265,8 +265,8 @@ int main( int argc, char** argv )
             ReplaceFirstChunk(scene,"film","film\n{\n width 16\n height 16\n}");
             if(uniform) ReplaceFirstChunk(scene,"pathtracing_spectral_rasterizer",
                 "pathtracing_spectral_rasterizer\n{\n samples 8\n spectral_samples 1\n num_wavelengths 4\n nmbegin 405\n nmend 705\n hwss TRUE\n oidn_denoise FALSE\n sms_enabled TRUE\n sms_seeding uniform\n sms_target_bounces 2\n sms_max_iterations 20\n sms_threshold 1e-5\n sms_max_chain_depth 10\n sms_biased TRUE\n}");
-            else ReplaceFirstChunk(scene,"pixelintegratingspectral_rasterizer",
-                "pixelintegratingspectral_rasterizer\n{\n samples 8\n lum_samples 1\n nmbegin 405\n nmend 705\n num_wavelengths 4\n max_recursion 3\n oidn_denoise FALSE\n}");
+            else ReplaceFirstChunk(scene,"pathtracing_spectral_rasterizer",
+                "pathtracing_spectral_rasterizer\n{\n samples 8\n nmbegin 405\n nmend 705\n num_wavelengths 4\n oidn_denoise FALSE\n sms_enabled TRUE\n sms_max_iterations 20\n sms_threshold 1e-5\n sms_max_chain_depth 10\n sms_biased TRUE\n}");
             std::vector<double> means;
             for(int i=0;i<4;++i) {
                 const auto r=Render(scene,"spectral_shipped");
