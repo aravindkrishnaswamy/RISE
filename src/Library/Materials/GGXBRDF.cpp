@@ -27,6 +27,7 @@
 #include "../Utilities/MicrofacetUtils.h"
 #include "../Utilities/MicrofacetEnergyLUT.h"
 #include "../Utilities/ThinFilm.h"
+#include "../Interfaces/ISPF.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -622,6 +623,302 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		GGXInterfaceFresnel::Transmission( interfaceFresnel.DirectionalNM(nv,nm), interfaceFresnel.DirectionalNM(nr,nm) );
 
 	return diffuse + specular;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-481: the connection value split by GGXSPF's lobe labels.  GGXSPF
+// stamps the single-scatter specular lobe eRayReflection and both the
+// diffuse lobe and the Kulla-Conty multiscatter lobe eRayDiffuse, each
+// with its own f cos / (p pSelect) weight, so the reflection part is
+// exactly value()'s single-scatter term and the diffuse part is the
+// rest.  The single-scatter term below is value()'s own code, copied
+// rather than shared so value() itself is untouched (its code
+// generation is what cap-free renders are bit-identical to).
+//////////////////////////////////////////////////////////////////////
+
+bool GGXBRDF::SingleScatterRGB( const Vector3& vLightIn, const RayIntersectionGeometric& ri, RISEPel& singleOut ) const
+{
+	// Flip to the ray-facing frame first, mirroring GGXSPF::Scatter's FlipW
+	// (same condition), so value() agrees with Scatter()/Pdf() on back-face
+	// hits.  Landing 8: apply anisotropy_rotation AFTER the flip -- same
+	// order as GGXSPF::ApplyTangentRotation -- so a rotated tangent frame on
+	// a back-face hit still matches the sampler's frame.  effOnb == ri.onb
+	// when no rotation painter is set and the hit is front-face.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const OrthonormalBasis3D effOnb = ResolveTangentONB( myonb, pTangentRotation, pTangentRotationScalar, ri );
+	const Vector3 n = effOnb.w();
+	const Vector3 v = Vector3Ops::Normalize( vLightIn );         // light direction (toward light)
+	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );    // view direction (toward viewer)
+
+	const Scalar nr = Vector3Ops::Dot( n, r );
+	const Scalar nv = Vector3Ops::Dot( n, v );
+
+	if( nr < NEARZERO || nv < NEARZERO ) {
+		return false;
+	}
+
+	// Geometric-horizon gate (mirrors GGXSPF::Scatter's sampler-side gate):
+	// a GlintModifier-tilted shading normal can validate light/view
+	// directions that are still below the true geometric surface.  This is
+	// a DEFENSIVE check (a valid exterior hit already satisfies it), not a
+	// literal sampler-consistency one -- NEE's light direction isn't
+	// sampler-drawn -- but it guards against the same tilt pathology.
+	// (r is tautologically inside this gate: r = -ri.ray.Dir() and geomN is
+	// anchored to ri.ray.Dir(), so Dot(r,geomN) > 0 always holds -- only v,
+	// the light half, can actually reject.  See LambertianBRDF.cpp:57-60.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+		return false;
+	}
+
+	// Read roughness parameters, clamped to avoid division-by-zero in NDF
+	Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
+	Scalar alphaY = r_max( pAlphaY->GetValuesAt(ri).v[0], Scalar(1e-4) );
+
+	// DL-62: widen by the same glossy-filter amount GGXSPF::Scatter/
+	// ScatterNM/Pdf/PdfNM already apply to their sampling/density
+	// roughness -- NEE evaluation and BSDF-sampled continuation must
+	// agree on which surface roughness is being rendered at this hit.
+	if( ri.glossyFilterWidth > 0 ) {
+		alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
+		alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+
+	// Half-vector and tangent-space projections
+	const Vector3 h = Vector3Ops::Normalize( v + r );
+	const Vector3 h_local(
+		Vector3Ops::Dot( h, effOnb.u() ),
+		Vector3Ops::Dot( h, effOnb.v() ),
+		Vector3Ops::Dot( h, effOnb.w() )
+	);
+	const Vector3 wi_local(
+		Vector3Ops::Dot( v, effOnb.u() ),
+		Vector3Ops::Dot( v, effOnb.v() ),
+		Vector3Ops::Dot( v, effOnb.w() )
+	);
+	const Vector3 wo_local(
+		Vector3Ops::Dot( r, effOnb.u() ),
+		Vector3Ops::Dot( r, effOnb.v() ),
+		Vector3Ops::Dot( r, effOnb.w() )
+	);
+
+	// Anisotropic GGX NDF
+	const Scalar D = MicrofacetUtils::GGX_D_Aniso<Scalar>( alphaX, alphaY, h_local );
+
+	// Height-correlated Smith G2
+	const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alphaX, alphaY, wi_local, wo_local );
+
+	// Single-scatter specular: D * G2 / (4 * cosWi * cosWo)
+	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
+
+	const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
+
+	RISEPel specular(0,0,0);
+
+	if( specFactor > 0 )
+	{
+		// Fresnel evaluated at microfacet normal (half-vector), not macrosurface normal
+		if( fresnelMode == eFresnelSchlickF0 )
+		{
+			// Schlick: F = F0 + (1-F0)*(1-cosθ_h)^5, where specColor is F0.
+			// cosθ_h = max(0, dot(wo, h)).
+			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
+			const RISEPel F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosWoH );
+			specular = F * specFactor;
+		}
+		else if( fresnelMode == eFresnelThinFilmConductor )
+		{
+			// Thin-film interference on the RGB (no-wavelength) path: the
+			// spectral interference R(λ) is pre-integrated against the CIE
+			// CMFs in the WHITE-NORMALIZED ALBEDO BASIS (illuminant-
+			// independent — docs/THIN_FILM_INTERFERENCE.md §8), so a perfect
+			// reflector → neutral white, NOT a D65-tinted colour.  This is
+			// PREVIEW-grade; the spectral path (valueNM) is authoritative.
+			// cosThetaI is the half-vector cosine dot(r,h), the same cosine
+			// the conductor branch consumes via fabs().  The film slots are
+			// sampled per-channel-agnostic (the substrate/film n,k use .v[0],
+			// matching the spectral path's single-scalar reads).
+			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
+			// Dispersion-correct RGB preview: the air/film/substrate complex
+			// indices are sampled per integration wavelength via GetValueAtNM (a
+			// file-based Ti/TiO2 stack varies n,k across the band; reading only the
+			// .v[0] 555 nm representative dropped that dispersion).  thickness is
+			// wavelength-independent (one representative read).  ThinFilm.h stays
+			// painter-free -- this functor is the template boundary.
+			const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
+			auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+				n0 = ri.ambientIOR; k0 = Scalar(0); // G6 ambient medium IOR (default 1.0 = air)
+				n1 = pFilmIOR->GetValueAtNM( ri, nm );
+				k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+				n2 = pIOR->GetValueAtNM( ri, nm );
+				k2 = pExtinction->GetValueAtNM( ri, nm );
+			};
+			const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGBSpectral(
+				cosWoH, thickness, stackAt );
+			specular = specColor * Rfilm * specFactor;
+		}
+		else
+		{
+			const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+			const ScalarTriple extT = pExtinction->GetValuesAt(ri);
+			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
+			// G6: ambient (incident) medium IOR from the hit context (default
+			// 1.0 = air; the surrounding dielectric's n when the conductor is
+			// buried, e.g. silver under enamel glass).  Consistent with
+			// GGXSPF::Scatter so sampling and NEE eval agree (MIS-correct).
+			const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR );
+			const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
+				ri.ray.Dir(), h, niPel, ior, ext );
+			specular = specColor * fresnel * specFactor;
+		}
+	}
+	singleOut = specular;
+	return true;
+}
+
+bool GGXBRDF::SingleScatterNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, Scalar& singleOut ) const
+{
+	// Same ray-facing flip (before the tangent rotation) as value() above.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const OrthonormalBasis3D effOnb = ResolveTangentONB( myonb, pTangentRotation, pTangentRotationScalar, ri );
+	const Vector3 n = effOnb.w();
+	const Vector3 v = Vector3Ops::Normalize( vLightIn );
+	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );
+
+	const Scalar nr = Vector3Ops::Dot( n, r );
+	const Scalar nv = Vector3Ops::Dot( n, v );
+
+	if( nr < NEARZERO || nv < NEARZERO ) {
+		return false;
+	}
+
+	// Geometric-horizon gate (mirrors GGXSPF::ScatterNM's sampler-side
+	// gate); see GGXBRDF::value for rationale.
+	// r is tautologically inside the gate here too (see value()'s note).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+		return false;
+	}
+
+	Scalar alphaX = r_max( pAlphaX->GetValueAtNM(ri,nm), Scalar(1e-4) );
+	Scalar alphaY = r_max( pAlphaY->GetValueAtNM(ri,nm), Scalar(1e-4) );
+
+	// DL-62: see the RGB value() path above -- keep in lockstep with
+	// GGXSPF::ScatterNM/PdfNM's widening.
+	if( ri.glossyFilterWidth > 0 ) {
+		alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
+		alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+
+	const Vector3 h = Vector3Ops::Normalize( v + r );
+	const Vector3 h_local(
+		Vector3Ops::Dot( h, effOnb.u() ),
+		Vector3Ops::Dot( h, effOnb.v() ),
+		Vector3Ops::Dot( h, effOnb.w() )
+	);
+	const Vector3 wi_local(
+		Vector3Ops::Dot( v, effOnb.u() ),
+		Vector3Ops::Dot( v, effOnb.v() ),
+		Vector3Ops::Dot( v, effOnb.w() )
+	);
+	const Vector3 wo_local(
+		Vector3Ops::Dot( r, effOnb.u() ),
+		Vector3Ops::Dot( r, effOnb.v() ),
+		Vector3Ops::Dot( r, effOnb.w() )
+	);
+
+	const Scalar D = MicrofacetUtils::GGX_D_Aniso<Scalar>( alphaX, alphaY, h_local );
+	const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alphaX, alphaY, wi_local, wo_local );
+	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
+
+	const Scalar specColor = ReflectanceColorNM( *pSpecular, ri, nm );
+
+	Scalar specular = 0;
+
+	if( specFactor > 0 )
+	{
+		// Fresnel evaluated at microfacet normal (half-vector)
+		if( fresnelMode == eFresnelSchlickF0 )
+		{
+			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
+			const Scalar F = Optics::CalculateFresnelReflectanceSchlick<Scalar>( specColor, cosWoH );
+			if( F > 0 ) {
+				specular = F * specFactor;
+			}
+		}
+		else if( fresnelMode == eFresnelThinFilmConductor )
+		{
+			// Thin-film interference at the hero wavelength.  This is the
+			// HWSS companion path for GGXSPF::ScatterNM (GGXSPF does NOT
+			// override EvaluateKrayNM, so companion wavelengths route here)
+			// — the thin-film term MUST be computed identically to
+			// ScatterNM (docs/THIN_FILM_INTERFERENCE.md §7; the RGB/NM-twin
+			// hazard, docs/skills/audit-by-bug-pattern.md).  cosThetaI is the
+			// half-vector cosine dot(r,h) == |dot(ri.ray.Dir(),h)|, the SAME
+			// cosine the conductor branch's CalculateConductorReflectance
+			// consumes via fabs().
+			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
+			const Scalar Rfilm = ThinFilm::ReflectanceConductor(
+				cosWoH, nm,
+				ri.ambientIOR, 0.0, // G6 ambient medium n(λ), k=0 (default 1.0 = air)
+				pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
+				pFilmThickness->GetValueAtNM(ri,nm),
+				pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
+			if( Rfilm > 0 ) {
+				specular = specColor * Rfilm * specFactor;
+			}
+		}
+		else
+		{
+			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
+			const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
+			// G6: ambient medium IOR from the hit context (per-wavelength n(λ) in NM; default 1.0 = air).
+			const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), h, ri.ambientIOR, iorVal, extVal );
+			if( fresnel > 0 ) {
+				specular = specColor * fresnel * specFactor;
+			}
+		}
+	}
+	singleOut = specular;
+	return true;
+}
+
+bool GGXBRDF::valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* /*pIORStack*/, RISEPel out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = RISEPel( 0, 0, 0 );
+	RISEPel single( 0, 0, 0 );
+	if( !SingleScatterRGB( vLightIn, ri, single ) ) {
+		return true;	// value() is 0 here too
+	}
+	const RISEPel total = value( vLightIn, ri );
+	out[ScatteredRay::eRayReflection] = single;
+	out[ScatteredRay::eRayDiffuse] = RISEPel( r_max( Scalar(0), total[0] - single[0] ),
+		r_max( Scalar(0), total[1] - single[1] ), r_max( Scalar(0), total[2] - single[2] ) );
+	return true;
+}
+
+bool GGXBRDF::valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* /*pIORStack*/, Scalar out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = 0;
+	Scalar single = 0;
+	if( !SingleScatterNM( vLightIn, ri, nm, single ) ) {
+		return true;
+	}
+	const Scalar total = valueNM( vLightIn, ri, nm );
+	out[ScatteredRay::eRayReflection] = single;
+	out[ScatteredRay::eRayDiffuse] = r_max( Scalar(0), total - single );
+	return true;
 }
 
 // Albedo guides retain a macro-interface approximation for specular energy.

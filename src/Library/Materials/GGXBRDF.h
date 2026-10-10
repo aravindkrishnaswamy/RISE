@@ -103,6 +103,10 @@ namespace RISE
 			const IScalarPainter*	pFilmExtinction;
 			const IScalarPainter*	pFilmThickness;
 
+		private:
+			bool SingleScatterRGB( const Vector3& vLightIn, const RayIntersectionGeometric& ri, RISEPel& singleOut ) const;
+			bool SingleScatterNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, Scalar& singleOut ) const;
+
 		public:
 			GGXBRDF(
 				const IPainter& diffuse,
@@ -121,6 +125,9 @@ namespace RISE
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! DL-481 (IBSDF::valueByScatterType): reflection = single-scatter specular, diffuse = diffuse + multiscatter.
+			virtual bool valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			virtual bool valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 			virtual bool hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const;
 			virtual bool hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const;

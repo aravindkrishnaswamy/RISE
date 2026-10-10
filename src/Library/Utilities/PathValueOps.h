@@ -139,6 +139,45 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////
+		// DL-481: the area-measure response split by lobe label
+		// (PathVertexEval::EvalBSDFByTypeAtVertex), with the same
+		// shading-normal factor and argument order as
+		// EvalAreaBSDFAtVertex / EvalLightEndAreaBSDFAtVertex.  A split
+		// endpoint is never a BSSRDF entry (it has no lobe type), so the
+		// light-end form needs no entry swap.  False when the vertex has
+		// no split.
+		//////////////////////////////////////////////////////////////
+
+		inline bool EvalBSDFByTypeAtVertexTag(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const PelTag& /*tag*/, RISEPel out[5] )
+		{
+			return PathVertexEval::EvalBSDFByTypeAtVertex( vertex, wi, wo, out );
+		}
+
+		inline bool EvalBSDFByTypeAtVertexTag(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const NMTag& tag, Scalar out[5] )
+		{
+			return PathVertexEval::EvalBSDFByTypeAtVertexNM( vertex, wi, wo, tag.nm, out );
+		}
+
+		template<class Tag>
+		inline bool EvalAreaBSDFByTypeAtVertex(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const Tag& tag, typename SpectralValueTraits<Tag>::value_type out[5] )
+		{
+			if( !EvalBSDFByTypeAtVertexTag( vertex, wi, wo, tag, out ) ) {
+				return false;
+			}
+			const Scalar k = PathVertexEval::RadianceShadingNormalFactor( vertex, wi );
+			for( int t = 0; t < 5; t++ ) {
+				out[t] = out[t] * k;
+			}
+			return true;
+		}
+
+		//////////////////////////////////////////////////////////////
 		// PDF evaluation at a path vertex.  PDFs are wavelength-
 		// independent in their return type (always Scalar) but the
 		// NM path may query wavelength-dependent IOR for SPF::PdfNM.

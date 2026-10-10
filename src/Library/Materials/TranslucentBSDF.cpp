@@ -140,3 +140,44 @@ RISEPel TranslucentBSDF::albedo( const RayIntersectionGeometric& ri ) const
 	// the surface, not via this BSDF's albedo AOV.
 	return ReflectanceColor( *pRefFront, ri );
 }
+
+//////////////////////////////////////////////////////////////////////
+// DL-481 (IBSDF::valueByScatterType): the same lobe set valueStateful
+// sums, by the label TranslucentSPF stamps on each lobe -- every clipped
+// cosine lobe (entry front reflection, interior diffuse exit)
+// eRayDiffuse, every clipped Phong lobe (entry transmission, interior
+// backscatter) eRayTranslucent.
+//////////////////////////////////////////////////////////////////////
+bool TranslucentBSDF::valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri,
+	const IORStack* pIORStack, RISEPel out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = RISEPel( 0, 0, 0 );
+	const Vector3 w = Vector3Ops::Normalize( vLightIn );
+	LobeSet set;
+	BuildLobeSet( *pRefFront, *pTrans, *pExtinction, *pExponent, *pScat,
+		ri, pIORStack, false, 0, set );
+	for( int i = 0; i < set.count; i++ ) {
+		Scalar pdf = 0, fOverKray = 0;
+		if( !EvalLobe( set.lobes[i], w, pdf, fOverKray ) ) continue;
+		const int t = set.lobes[i].isPhong ? ScatteredRay::eRayTranslucent : ScatteredRay::eRayDiffuse;
+		out[t] = out[t] + set.lobes[i].kray * fOverKray;
+	}
+	return true;
+}
+
+bool TranslucentBSDF::valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri,
+	const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = 0;
+	const Vector3 w = Vector3Ops::Normalize( vLightIn );
+	LobeSet set;
+	BuildLobeSet( *pRefFront, *pTrans, *pExtinction, *pExponent, *pScat,
+		ri, pIORStack, true, nm, set );
+	for( int i = 0; i < set.count; i++ ) {
+		Scalar pdf = 0, fOverKray = 0;
+		if( !EvalLobe( set.lobes[i], w, pdf, fOverKray ) ) continue;
+		const int t = set.lobes[i].isPhong ? ScatteredRay::eRayTranslucent : ScatteredRay::eRayDiffuse;
+		out[t] += set.lobes[i].krayNM * fOverKray;
+	}
+	return true;
+}

@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Interfaces/ISPF.h"
 #include "PolishedBRDF.h"
 #include "../Utilities/Optics.h"
 #include "../Interfaces/ILog.h"
@@ -576,5 +577,45 @@ bool PolishedBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, co
 	const Scalar outer = ri.ambientIOR > 0 ? ri.ambientIOR : 1.0;
 	const Scalar T = HemisphericalTransmittance( outer, pNt->GetValueAtNM( ri, nm ) );
 	out = pTau->GetValueAtNM( ri, nm ) * ( 1.0 - T ) + ReflectanceColorNM( *pRd, ri, nm ) * T;
+	return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-481 (IBSDF::valueByScatterType): PolishedSPF stamps its glossy coat
+// lobe eRayReflection and its substrate lobe eRayDiffuse, each priced by
+// its own f cos / p (DL-285), so the split is CoatF / SubstrateF -- the
+// two terms EvalRGB / EvalNM sum.
+//////////////////////////////////////////////////////////////////////
+bool PolishedBRDF::valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = RISEPel( 0, 0, 0 );
+	PolishedLobes L;
+	Resolve( ri, pIORStack ? pIORStack->top() : ri.ambientIOR, Scalar(-1), L );
+	if( !L.valid ) {
+		return true;
+	}
+	const Vector3 wo = Vector3Ops::Normalize( vLightIn );
+	Scalar fc[3], fs[3];
+	CoatF( L, wo, fc );
+	SubstrateF( L, wo, fs );
+	out[ScatteredRay::eRayReflection] = RISEPel( fc[0], fc[1], fc[2] );
+	out[ScatteredRay::eRayDiffuse] = RISEPel( fs[0], fs[1], fs[2] );
+	return true;
+}
+
+bool PolishedBRDF::valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = 0;
+	PolishedLobes L;
+	Resolve( ri, pIORStack ? pIORStack->top() : ri.ambientIOR, nm, L );
+	if( !L.valid ) {
+		return true;
+	}
+	const Vector3 wo = Vector3Ops::Normalize( vLightIn );
+	Scalar fc[3], fs[3];
+	CoatF( L, wo, fc );
+	SubstrateF( L, wo, fs );
+	out[ScatteredRay::eRayReflection] = fc[0];
+	out[ScatteredRay::eRayDiffuse] = fs[0];
 	return true;
 }

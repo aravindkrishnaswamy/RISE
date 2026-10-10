@@ -94,8 +94,15 @@
 //      Row H  a point-light caustic onto a GGX / Lambertian floor (only
 //             light tracing, connections and merges reach it): a cap that
 //             cannot bind or cannot apply to the floor's lobes equals the
-//             no-cap render (the first cut read 0.71); a binding glossy
-//             cap still loses it (DL-481, pinned).
+//             no-cap render (the first cut read 0.71); since DL-481 a
+//             binding glossy cap keeps the caustic (0.71 -> 0.97: the
+//             no-cap image less the floor's glossy share).
+//      Row I  DL-481's exact red-proof: an omni light INSIDE a glass
+//             sphere over a Ward / Phong floor under max_glossy_bounce 0
+//             equals a Lambertian floor of the same rd under the same cap
+//             (BDPT, VCM, RGB and hwss TRUE; 0 before DL-481).
+//      Row J  an area light inside glass over a GGX floor: BDPT / VCM ==
+//             PT under a binding glossy or diffuse cap (DL-481).
 //      Row P  a brute-force partition check on synthetic paths: with caps,
 //             MISWeight over every strategy that evaluates a nonzero
 //             contribution sums to exactly 1 for a path within the caps
@@ -832,7 +839,7 @@ static void RowF()
 
 static void RowG()
 {
-	std::cout << "--- Row G: GGX corner (no declared lobe type: BDPT drops strategies, VCM falls back to S0 + NEE) ---" << std::endl;
+	std::cout << "--- Row G: GGX corner (several lobe types: priced by the DL-481 per-label split) ---" << std::endl;
 	unsigned int seed = 47200u;
 	CornerRow( "G", 1, "max_glossy_bounce", 0, seed );
 	CornerRow( "G", 1, "max_glossy_bounce", 1, seed );
@@ -889,6 +896,7 @@ static void RowH()
 	const int n = Repeats();
 	unsigned int seed = 47300u;
 	const char* kinds[] = { "bdpt", "vcm" };
+	Stats glossy0Bdpt = { 0, 0, 0, false };
 	for( const char* kind : kinds ) {
 		for( int ggx = 1; ggx >= 0; ggx-- ) {
 			const Stats none = RenderStatsSalted( PointCausticScene( PointCausticChunk( kind, "" ), ggx != 0 ), n, seed );
@@ -910,17 +918,178 @@ static void RowH()
 				Check( none.ok && st.ok && Agree( st, none, 4.0, 0.01 ), std::string( l ) + " equals the no-cap render" );
 			}
 			if( ggx ) {
-				// DL-481 residual, pinned: a binding cap on a floor lobe.
+				// DL-481: a binding cap on a floor lobe.  Light tracing and
+				// connections now price the floor with its allowed (diffuse)
+				// lobe only, so the caustic survives; the exact value is the
+				// no-cap image less the floor's GLOSSY share at counted floor
+				// vertices (rs 0.04: a few percent).  Before DL-481 the
+				// strategies were excluded and the frame read ~0.71.  Row I
+				// is the exact reference for this mechanism.
 				const Stats st = RenderStatsSalted( PointCausticScene( PointCausticChunk( kind, "\tmax_glossy_bounce 0\n" ), true ), n, seed );
 				seed += 100u;
 				char l[128];
 				std::snprintf( l, sizeof(l), "%s GGX max_glossy_bounce 0 (DL-481)", kind );
 				Print( l, st );
-				std::printf( "    ratio to no cap %.4f (the caustic is lost; the exact value is the no-cap image less the floor's glossy share of it)\n",
-					none.mean > 0 ? st.mean / none.mean : 0.0 );
-				Check( none.ok && st.ok && st.mean < 0.9 * none.mean, std::string( l ) + ": DL-481 loss still present (pin)" );
+				const double ratio = none.mean > 0 ? st.mean / none.mean : 0.0;
+				std::printf( "    ratio to no cap %.4f (the no-cap image less the floor's glossy share)\n", ratio );
+				Check( none.ok && st.ok && ratio > 0.93 && st.mean < none.mean,
+					std::string( l ) + ": the caustic survives (ratio in (0.93, 1))" );
+				if( kind == std::string( "bdpt" ) ) {
+					glossy0Bdpt = st;
+				} else if( glossy0Bdpt.ok ) {
+					Check( st.ok && Agree( st, glossy0Bdpt, 4.0, 0.01 ),
+						std::string( l ) + ": VCM agrees with BDPT" );
+				}
 			}
 		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row I (DL-481): the exact red-proof.  An omni light INSIDE a glass
+// sphere over a floor: every path reaches the floor through the delta
+// glass, so the floor is never the free x_K and its lobe always counts.
+// Under max_glossy_bounce 0 the floor may scatter only through its
+// DIFFUSE lobe, so a floor whose diffuse-labelled lobe is exactly
+// rd / pi (ward_isotropic_material with rd + rs < 1 -- the DL-310
+// coupling min(rd, 1 - rs) is then rd -- and isotropic_phong_material,
+// both with no multiscatter lobe) must render EXACTLY like a
+// lambertian_material floor of reflectance rd under the SAME cap.  The
+// glass's own delta reflections (eRayReflection) are counted in both
+// renders alike, and the Lambertian floor has one declared type, so its
+// estimate does not use the DL-481 split at all: it is an independent
+// reference.  Light tracing, connections and merges are the only
+// strategies (the eye cannot hit a point light, NEE cannot see it
+// through the glass), so before DL-481 the multi-lobe floor read ~0.
+// RGB and HWSS spectral (companion wavelengths) alike.
+//////////////////////////////////////////////////////////////////////
+static std::string EnclosedPointScene( const std::string& rasterizerChunk, const int floorKind )
+{
+	std::string s = "RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"film\n{\n\twidth 40\n\theight 40\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 3 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_d\n\tcolor 0.7 0.5 0.3\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.2 0.2 0.2\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_d\n}\n\n";
+	std::string floorMat;
+	if( floorKind == 0 ) {
+		floorMat = "mat_floor";
+	} else if( floorKind == 1 ) {
+		s += "ward_isotropic_material\n{\n\tname mat_multi\n\trd pnt_d\n\trs pnt_rs\n\talpha 0.2\n}\n\n";
+		floorMat = "mat_multi";
+	} else {
+		s += "isotropic_phong_material\n{\n\tname mat_multi\n\trd pnt_d\n\trs pnt_rs\n\tN 20\n}\n\n";
+		floorMat = "mat_multi";
+	}
+	s += "dielectric_material\n{\n\tname mat_glass\n\ttau 1.0 1.0 1.0\n\tior 1.5\n\tscattering 1000000.0\n}\n\n"
+		"clippedplane_geometry\n{\n\tname floor_g\n\tpta -2 0 -2\n\tptb -2 0 2\n\tptc 2 0 2\n\tptd 2 0 -2\n}\n\n";
+	s += "standard_object\n{\n\tname floor\n\tgeometry floor_g\n\tmaterial " + floorMat + "\n}\n\n";
+	s += "sphere_geometry\n{\n\tname sph\n\tradius 0.5\n}\n\n"
+		"standard_object\n{\n\tname ball\n\tgeometry sph\n\tposition 0 1.0 0\n\tmaterial mat_glass\n}\n\n"
+		"omni_light\n{\n\tname key\n\tpower 50.0\n\tcolor 1 1 1\n\tposition 0 1.0 0\n}\n\n";
+	s += rasterizerChunk;
+	return s;
+}
+
+//! `kind`: "bdpt_pel", "vcm_pel", "bdpt_spectral", "vcm_spectral" (the
+//! spectral ones with hwss TRUE).
+static std::string EnclosedChunk( const std::string& kind, const std::string& capLine )
+{
+	const bool spectral = kind.find( "spectral" ) != std::string::npos;
+	char buf[640];
+	std::snprintf( buf, sizeof(buf), "%s_rasterizer\n{\n\tmax_eye_depth 10\n\tmax_light_depth 10\n"
+		"\tsamples %u\n%s%s\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", kind.c_str(), spectral ? 8u : 32u,
+		spectral ? "\thwss TRUE\n" : "", capLine.c_str() );
+	return buf;
+}
+
+static void RowI()
+{
+	std::cout << "--- Row I: omni light inside glass over a multi-lobe floor, max_glossy_bounce 0 == Lambertian twin (DL-481) ---" << std::endl;
+	const int n = Repeats() < 8 ? 8 : Repeats();
+	unsigned int seed = 48100u;
+	const char* kinds[] = { "bdpt_pel", "vcm_pel", "bdpt_spectral", "vcm_spectral" };
+	const char* floors[] = { "", "ward_isotropic", "isotropic_phong" };
+	for( const char* kind : kinds ) {
+		const Stats twin = RenderStatsSalted( EnclosedPointScene( EnclosedChunk( kind, "\tmax_glossy_bounce 0\n" ), 0 ), n, seed );
+		seed += 100u;
+		char lt[128];
+		std::snprintf( lt, sizeof(lt), "%s Lambertian twin", kind );
+		Print( lt, twin );
+		Check( twin.ok && twin.mean > 1e-3, std::string( lt ) + ": rendered and lit" );
+		for( int f = 1; f <= 2; f++ ) {
+			const Stats st = RenderStatsSalted( EnclosedPointScene( EnclosedChunk( kind, "\tmax_glossy_bounce 0\n" ), f ), n, seed );
+			seed += 100u;
+			char l[128];
+			std::snprintf( l, sizeof(l), "%s %s", kind, floors[f] );
+			Print( l, st );
+			std::printf( "    ratio to the Lambertian twin %.4f\n", twin.mean > 0 ? st.mean / twin.mean : 0.0 );
+			Check( twin.ok && st.ok && Agree( st, twin, 4.0, 0.005 ), std::string( l ) + " under max_glossy_bounce 0 == the Lambertian twin" );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row J (DL-481): the split against PT.  A small spherical area emitter
+// inside a glass sphere over a GGX floor (Schlick F0 0.3, so the glossy
+// lobe is a real share), the same open dark surround.  PT reaches the
+// emitter through the glass by BSDF sampling and applies the per-type
+// caps per path itself (DL-467), so it is a reference independent of the
+// split; BDPT and VCM, whose light tracing / connections / merges now
+// price the GGX floor through its allowed lobes, must agree with it under
+// a glossy cap and under a diffuse cap.  (S0 also reaches these paths, so
+// this row gates the split's bias, not the pre-fix loss -- Row I does.)
+//////////////////////////////////////////////////////////////////////
+static std::string EnclosedAreaScene( const std::string& rasterizerChunk )
+{
+	std::string s = "RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 3 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_d\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_lum\n\tcolor 20.0 20.0 20.0\n}\n\n"
+		"ggx_material\n{\n\tname mat_ggx\n\trd pnt_d\n\trs pnt_rs\n\talphax 0.3\n\talphay 0.3\n\tfresnel_mode schlick_f0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_lum\n\texitance pnt_lum\n\tscale 1.0\n\tmaterial none\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1.0 1.0 1.0\n\tior 1.5\n\tscattering 1000000.0\n}\n\n"
+		"clippedplane_geometry\n{\n\tname floor_g\n\tpta -2 0 -2\n\tptb -2 0 2\n\tptc 2 0 2\n\tptd 2 0 -2\n}\n\n"
+		"standard_object\n{\n\tname floor\n\tgeometry floor_g\n\tmaterial mat_ggx\n}\n\n"
+		"sphere_geometry\n{\n\tname sph\n\tradius 0.5\n}\n\n"
+		"standard_object\n{\n\tname ball\n\tgeometry sph\n\tposition 0 1.0 0\n\tmaterial mat_glass\n}\n\n"
+		"sphere_geometry\n{\n\tname lsph\n\tradius 0.25\n}\n\n"
+		"standard_object\n{\n\tname lum\n\tgeometry lsph\n\tposition 0 1.0 0\n\tmaterial mat_lum\n}\n\n";
+	s += rasterizerChunk;
+	return s;
+}
+
+static void RowJ()
+{
+	std::cout << "--- Row J: area light inside glass over a GGX floor, BDPT / VCM == PT under a binding cap (DL-481) ---" << std::endl;
+	const int n = Repeats() < 8 ? 8 : Repeats();
+	unsigned int seed = 48200u;
+	const char* caps[] = { "\tmax_glossy_bounce 0\n", "\tmax_diffuse_bounce 0\n" };
+	const char* capNames[] = { "max_glossy_bounce 0", "max_diffuse_bounce 0" };
+	for( int c = 0; c < 2; c++ ) {
+		char pt[384], bd[384], vc[384];
+		std::snprintf( pt, sizeof(pt), "pathtracing_pel_rasterizer\n{\n\tsamples 256\n%s\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", caps[c] );
+		std::snprintf( bd, sizeof(bd), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 10\n\tmax_light_depth 10\n\tsamples 64\n%s\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", caps[c] );
+		std::snprintf( vc, sizeof(vc), "vcm_pel_rasterizer\n{\n\tmax_eye_depth 10\n\tmax_light_depth 10\n\tsamples 64\n%s\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", caps[c] );
+		const Stats sp = RenderStatsSalted( EnclosedAreaScene( pt ), n, seed );
+		const Stats sb = RenderStatsSalted( EnclosedAreaScene( bd ), n, seed + 30u );
+		const Stats sv = RenderStatsSalted( EnclosedAreaScene( vc ), n, seed + 60u );
+		seed += 100u;
+		char lp[96], lb[96], lv[96];
+		std::snprintf( lp, sizeof(lp), "J PT %s", capNames[c] );
+		std::snprintf( lb, sizeof(lb), "J BDPT %s", capNames[c] );
+		std::snprintf( lv, sizeof(lv), "J VCM %s", capNames[c] );
+		Print( lp, sp );
+		Print( lb, sb );
+		Print( lv, sv );
+		std::printf( "    BDPT/PT %.4f  VCM/PT %.4f\n", sp.mean > 0 ? sb.mean / sp.mean : 0.0, sp.mean > 0 ? sv.mean / sp.mean : 0.0 );
+		Check( sp.ok && sp.mean > 1e-3, std::string( lp ) + ": rendered and lit" );
+		Check( sp.ok && sb.ok && Agree( sb, sp, 4.0, 0.01 ), std::string( lb ) + " agrees with PT" );
+		Check( sp.ok && sv.ok && Agree( sv, sp, 4.0, 0.01 ), std::string( lv ) + " agrees with PT" );
 	}
 }
 
@@ -932,14 +1101,18 @@ namespace
 	class TypedStubMaterial : public IMaterial, public Reference
 	{
 		unsigned int mask;
+		bool split;
 	protected:
 		virtual ~TypedStubMaterial() {}
 	public:
-		explicit TypedStubMaterial( unsigned int m ) : mask( m ) {}
+		explicit TypedStubMaterial( unsigned int m, bool split_ = false ) : mask( m ), split( split_ ) {}
 		IBSDF* GetBSDF() const override { return nullptr; }
 		ISPF* GetSPF() const override { return nullptr; }
 		IEmitter* GetEmitter() const override { return nullptr; }
 		unsigned int ConnectionScatterTypes() const override { return mask; }
+		//! DL-481: MISWeight only asks whether the split exists (the
+		//! values are read by ConnectAndEvaluate's caller, not here).
+		bool HasConnectionTypeSplit() const override { return split; }
 	};
 
 	struct PVert
@@ -974,8 +1147,8 @@ namespace
 	}
 
 	//! Sum of MISWeight over every strategy whose connection evaluates
-	//! (neither endpoint a delta vertex), with each walk's `capType`
-	//! stamped as the walks stamp it.
+	//! (neither endpoint a delta vertex) and that covers this labelling's
+	//! term, with each walk's `capType` stamped as the walks stamp it.
 	Scalar PartitionSum( const std::vector<PVert>& p, const StabilityConfig& stab )
 	{
 		BDPTIntegrator* integ = new BDPTIntegrator( 16, 16, stab );
@@ -1005,6 +1178,18 @@ namespace
 			// A connection through a delta endpoint evaluates nothing.
 			if( s >= 1 && lv[s - 1].type == BDPTVertex::SURFACE && lv[s - 1].isDelta ) continue;
 			if( t >= 1 && ev[t - 1].type == BDPTVertex::SURFACE && ev[t - 1].isDelta ) continue;
+			// DL-481: a strategy with a split endpoint prices only the
+			// endpoint labels its caps allow, so it covers THIS labelling's
+			// term only when the path's own labels at its split endpoints
+			// are an allowed combination.
+			const BDPTUtilities::BounceTypeCaps caps = BDPTUtilities::MakeBounceTypeCaps(
+				stab.maxDiffuseBounce, stab.maxGlossyBounce, stab.maxTransmissionBounce, stab.maxTranslucentBounce, 16, 16 );
+			BDPTUtilities::TypeCapPlan plan;
+			if( BDPTUtilities::JoinedTypeCapPlan( lv.data(), ev.data(), s, t, caps, plan ) == BDPTUtilities::eTypeCapSplit &&
+				!BDPTUtilities::TypeComboWithin( plan.base,
+					plan.splitLight ? p[s - 1].label : 0u, plan.splitEye ? p[s].label : 0u, caps ) ) {
+				continue;
+			}
 			sum += integ->MISWeight( lv, ev, s, t );
 		}
 		safe_release( integ );
@@ -1018,8 +1203,11 @@ static void RowP()
 	TypedStubMaterial* lam = new TypedStubMaterial( 1u << ScatteredRay::eRayDiffuse );
 	TypedStubMaterial* multi = new TypedStubMaterial( IMaterial::kAllConnectionScatterTypes );
 	TypedStubMaterial* mirror = new TypedStubMaterial( IMaterial::kAllConnectionScatterTypes );
-	// A GGX-like receiver: diffuse and glossy lobes, never transmission or translucency.
-	TypedStubMaterial* ggx = new TypedStubMaterial( ( 1u << ScatteredRay::eRayDiffuse ) | ( 1u << ScatteredRay::eRayReflection ) );
+	// A GGX-like receiver: diffuse and glossy lobes, never transmission or
+	// translucency, with a per-label split of its value (DL-481).
+	TypedStubMaterial* ggx = new TypedStubMaterial( ( 1u << ScatteredRay::eRayDiffuse ) | ( 1u << ScatteredRay::eRayReflection ), true );
+	// Every lobe type, WITH a split (DL-481).
+	TypedStubMaterial* multiSplit = new TypedStubMaterial( IMaterial::kAllConnectionScatterTypes, true );
 	const unsigned int T = ScatteredRay::eRayRefraction;
 	const unsigned int D = ScatteredRay::eRayDiffuse, G = ScatteredRay::eRayReflection;
 	auto root = []() { PVert v = { 0, nullptr, false, 0, 0.8, 0.6 }; return v; };
@@ -1053,10 +1241,22 @@ static void RowP()
 	// receiver, so its type mask cannot excuse it; the cap 100 is above
 	// max_eye_depth + max_light_depth = 32 and must be ignored.
 	cases.push_back( { "point caustic, all-types receiver, transmission cap 100 (depth bound only)", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( multi, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 1, 100, UINT_MAX } );
-	cases.push_back( { "DL-481: point caustic, undeclared receiver, transmission cap 1 -> lost", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( multi, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 0, 1, UINT_MAX } );
-	// DL-481 residual, pinned: a binding cap on one of the receiver's lobe
-	// types leaves the splat (the only strategy) excluded -- the path is lost.
-	cases.push_back( { "DL-481: point caustic, GGX-like receiver, glossy cap 0 -> lost", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( ggx, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, 0, 0 } );
+	// DL-481 residual, pinned: a receiver with several lobe types and NO
+	// split (coated, composite, fabric, ...) still has the splat excluded.
+	cases.push_back( { "DL-481 residual: point caustic, all-types receiver without a split, transmission cap 1 -> lost", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( multi, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 0, 1, UINT_MAX } );
+	// DL-481: with a split the splat prices the receiver's allowed lobes,
+	// so the path keeps its only strategy (was 0 before DL-481).
+	cases.push_back( { "DL-481: point caustic, all-types receiver with a split, transmission cap 1", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( multiSplit, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 1, 1, UINT_MAX } );
+	cases.push_back( { "DL-481: point caustic, GGX-like receiver, glossy cap 0", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( ggx, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, 0, 1 } );
+	// Both of the receiver's types capped at 0 (the glass is x_K and counts
+	// as transmission, uncapped): every labelling is over, so the path is
+	// correctly outside the estimate.
+	cases.push_back( { "DL-481: point caustic, GGX-like receiver, diffuse 0 + glossy 0 -> outside", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( ggx, false, D, 0.6, 2.2 ), cam() }, 0, 0, 0 } );
+	// A split endpoint in the middle of an area-light path, with the
+	// connection between two split endpoints (both counted).
+	cases.push_back( { "DL-481: two split receivers, glossy cap 0", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( ggx, false, D, 1.7, 0.4 ), surf( ggx, false, D, 0.2, 1.1 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, 0, 1 } );
+	cases.push_back( { "DL-481: two split receivers, diffuse cap 2 (labels D,G,D counted: 2 diffuse)", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( ggx, false, D, 1.7, 0.4 ), surf( ggx, false, G, 0.2, 1.1 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 2, UINT_MAX, 1 } );
+	cases.push_back( { "DL-481: two split receivers, diffuse cap 2 (labels D,D,D counted: 3 > 2)", { root(), surf( lam, false, D, 0.3, 0.9 ), surf( ggx, false, D, 1.7, 0.4 ), surf( ggx, false, D, 0.2, 1.1 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 2, UINT_MAX, 0 } );
 	cases.push_back( { "point caustic, Lambertian receiver, diffuse cap 1", { point(), surf( mirror, true, T, 1.3, 0.7 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, 1, UINT_MAX, 1 } );
 	cases.push_back( { "no caps (control)", { root(), surf( multi, false, D, 0.3, 0.9 ), surf( mirror, true, G, 1.3, 0.7 ), surf( lam, false, D, 0.6, 2.2 ), cam() }, UINT_MAX, UINT_MAX, 1 } );
 
@@ -1082,14 +1282,15 @@ static void RowP()
 	safe_release( multi );
 	safe_release( mirror );
 	safe_release( ggx );
+	safe_release( multiSplit );
 }
 
 int main()
 {
-	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467, DL-470, DL-471)" << std::endl;
+	std::cout << "BDPTDepthCapMISTest (DL-351, DL-467, DL-470, DL-471, DL-481)" << std::endl;
 	// RISE_DL351_ROWS (e.g. "CD") runs a subset; default all.
 	const char* rows = std::getenv( "RISE_DL351_ROWS" );
-	const std::string sel = rows ? rows : "ABCDEFGHP";
+	const std::string sel = rows ? rows : "ABCDEFGHIJP";
 	if( sel.find( 'A' ) != std::string::npos ) RowA();
 	if( sel.find( 'B' ) != std::string::npos ) RowB();
 	if( sel.find( 'C' ) != std::string::npos ) RowC();
@@ -1098,6 +1299,8 @@ int main()
 	if( sel.find( 'F' ) != std::string::npos ) RowF();
 	if( sel.find( 'G' ) != std::string::npos ) RowG();
 	if( sel.find( 'H' ) != std::string::npos ) RowH();
+	if( sel.find( 'I' ) != std::string::npos ) RowI();
+	if( sel.find( 'J' ) != std::string::npos ) RowJ();
 	if( sel.find( 'P' ) != std::string::npos ) RowP();
 	std::cout << std::endl << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

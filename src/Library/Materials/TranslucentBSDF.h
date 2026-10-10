@@ -61,6 +61,9 @@ namespace RISE
 				const IORStack* pIORStack ) const;
 			virtual Scalar valueStatefulNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri,
 				const Scalar nm, const IORStack* pIORStack ) const;
+			//! DL-481 (IBSDF::valueByScatterType): cosine lobes eRayDiffuse, Phong lobes eRayTranslucent (TranslucentSPF's labels).
+			virtual bool valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			virtual bool valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
 
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 

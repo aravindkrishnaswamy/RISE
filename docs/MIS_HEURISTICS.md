@@ -469,20 +469,61 @@ s = 0 emitter hit only) and (b) a COUNTED connection endpoint has a defined
 type.  So the MIS densities are unchanged; every strategy just evaluates the
 joined-path check (`BDPTUtilities::JoinedTypeCapStatus`).
 
-(b) holds when the endpoint material's possible non-delta lobe types
-(`IMaterial::ConnectionScatterTypes`, conservative: every type unless a
-material narrows it) are one type, or include no type whose cap can bind.
-Otherwise the strategy cannot price the path: BDPT/MLT drop it from the
-estimate and from every denominator (`MISWeight`), and VCM -- whose running
-sums cannot drop one strategy -- estimates a path that has such a vertex at
-a counted position with s = 0 and s = 1 alone, weighted against each other
-only.  The weights then still partition the strategies that REMAIN, but
-this is not unbiased in general: a path whose only strategies have such an
-endpoint -- a point-light caustic onto a GGX floor, which neither the
-emitter hit nor NEE can reach -- loses its energy whenever a cap on one of
-the receiver's lobe types can bind (`max_glossy_bounce 0` on that floor:
-whole frame 0.71 of the no-cap image under BDPT and VCM).  That is DL-481,
-a physics bias, not a variance cost.
+(b) holds trivially when the endpoint material's possible non-delta lobe
+types (`IMaterial::ConnectionScatterTypes`, conservative: every type unless
+a material narrows it) are one type, or include no type whose cap can bind.
+
+Otherwise (DL-481, 2026-10-09) the endpoint is priced by a **per-label
+split** of its connection value: `IBSDF::valueByScatterType{,NM}` returns
+`out[t]`, the part of the value whose lobe the SPF labels t, and the
+connection (or merge) uses the sum over the ALLOWED label combinations of
+its split endpoints, `sum_{ta, tb : base + ta + tb within caps} f_a[ta]
+f_b[tb]` (`BDPTUtilities::JoinedTypeCapPlan` / `MergeTypeCapPlan` +
+`AllowedTypeProduct`), where `base` counts the interior labels and the
+defined endpoint types.  Two endpoints are summed jointly, not separately:
+the caps couple them.  What `out[t]` must be is fixed by what the walk's
+label means: for every direction function g,
+`E[w [type == t] g(wo)] = integral out[t] |cos| g`, with w the walk's
+weight (multi-emit SPFs: `kray_I / q_I` after `RandomlySelect`; single-emit
+internally selected ones such as GGX / Cook-Torrance: `f_I cos /
+(p_I pSelect_I)`).  For every RISE SPF that has a split, each lobe's
+weight is that lobe's own `f_I cos / p_I` (DL-69 / DL-127 / DL-177 /
+DL-98 / DL-99 / DL-285 / DL-157), so `out[t]` is the sum of the BSDF terms
+of the lobes labelled t -- for GGX / Cook-Torrance the single-scatter
+specular term is `eRayReflection` and the diffuse lobe PLUS the
+Kulla-Conty multiscatter lobe are `eRayDiffuse`; not
+`f_agg pSel_T p_T / p_agg`, which is what a single-emit sampler whose
+weight were `f_agg cos / p_agg` would need (none in RISE is).
+`tests/ConnectionTypeSplitTest.cpp` checks exactly this identity per type,
+channel, incidence and lane.  The MIS densities stay the aggregate ones --
+MIS is unbiased for any weights that partition, and every strategy's
+expectation is f_cap -- so VCM's recurrence is unchanged and only the
+connection, splat and merge CONTRIBUTIONS change.  Materials with a split
+(`IMaterial::HasConnectionTypeSplit`): GGX, Cook-Torrance, Schlick, both
+Ward, isotropic Phong, Ashikhmin-Shirley, polished, translucent (and the
+luminaire wrappers over them).
+
+A material with several possible types and NO split (coated, composite,
+fabric, weave, hair and every material on the conservative all-types
+default -- DL-502) still cannot price the path: BDPT/MLT drop such a
+strategy from the estimate and from every denominator (`MISWeight`), and
+VCM -- whose running sums cannot drop one strategy -- estimates a path that
+has such a vertex at a counted position with s = 0 and s = 1 alone, weighted
+against each other only.  The weights then still partition the strategies
+that REMAIN, but a path whose only strategies have such an endpoint (a
+point-light caustic onto a coated floor) loses its energy whenever a cap on
+one of the receiver's lobe types can bind.  Before DL-481 GGX was in this
+set: a point-light caustic onto a GGX floor under `max_glossy_bounce 0`
+read 0.714 (BDPT) / 0.710 (VCM) of the no-cap frame; it now reads 0.971 /
+0.970, the no-cap image less the floor's glossy share.
+
+BDPT keeps `ConnectAndEvaluateImplCore` untouched and re-prices a Split
+strategy in its caller (`RescaleTypeCapSplit`: scale by
+`AllowedTypeProduct / product of the split endpoints' aggregates`), and
+every helper a BSDF's `value()` called once has its own copy in the split
+code: under -ffast-math + LTO, any edit to that function or a second caller
+of such a helper moved cap-free renders by ~1e-15.  Cap-free renders are
+bit-identical to the pre-DL-481 build.
 
 Two gates keep it from firing where it cannot matter.  A cap that cannot
 bind is dropped (`BDPTUtilities::MakeBounceTypeCaps`): a path the walks
@@ -493,8 +534,13 @@ endpoint needs a split only if its material's lobe types meet a cap that
 can bind (`max_translucent_bounce 0` never touches a GGX receiver).  Pinned
 by `BDPTDepthCapMISTest` rows F (Lambertian corner), G (GGX corners), H
 (point-light caustic: non-binding caps equal the no-cap image; the binding
-glossy cap's loss pinned as DL-481) and P (a brute-force partition over the
-strategies that evaluate, including the point-light caustic cases).
+glossy cap keeps the caustic since DL-481), I (DL-481's exact red-proof: an
+omni light inside a glass sphere over a Ward / Phong floor under
+`max_glossy_bounce 0` equals a Lambertian floor of the same rd -- 0.000
+before, 0.98-1.02 after, RGB and HWSS), J (an area light inside glass over
+a GGX floor: BDPT / VCM equal PT under a glossy or a diffuse cap) and P (a
+brute-force partition over the strategies that evaluate and cover the
+labelling, including split endpoints).
 Subsurface paths (DL-482) and see-through / guided continuations (DL-483)
 are outside this.
 

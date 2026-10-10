@@ -207,6 +207,9 @@ namespace RISE
 			Scalar  valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			RISEPel valueStateful( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack ) const;
 			Scalar  valueStatefulNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack ) const;
+			//! DL-481 (IBSDF::valueByScatterType): glossy coat eRayReflection, substrate eRayDiffuse (PolishedSPF's labels).
+			bool    valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			bool    valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
 			RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 			bool hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const;
 			bool hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const;

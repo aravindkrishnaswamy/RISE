@@ -38,6 +38,10 @@ namespace RISE
 			const IScalarPainter*	pIOR;
 			const IScalarPainter*	pExtinction;
 
+		private:
+			bool SingleScatterRGB( const Vector3& vLightIn, const RayIntersectionGeometric& ri, RISEPel& singleOut ) const;
+			bool SingleScatterNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, Scalar& singleOut ) const;
+
 		public:
 			CookTorranceBRDF(
 				const IPainter& diffuse,
@@ -67,6 +71,9 @@ namespace RISE
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! DL-481 (IBSDF::valueByScatterType): reflection = single-scatter specular, diffuse = Rd/pi + multiscatter (CookTorranceSPF's labels).
+			virtual bool valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			virtual bool valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 
 			//! Read-back + rebind for the interactive editor.
