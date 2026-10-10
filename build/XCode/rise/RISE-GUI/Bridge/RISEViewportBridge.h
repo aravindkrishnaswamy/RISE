@@ -1530,6 +1530,14 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 - (nullable NSString *)paletteDeprecationReplacementForKeyword:(NSString *)keyword
     NS_SWIFT_NAME(paletteDeprecationReplacement(forKeyword:));
 
+/// Legacy-deprecation Phase 1 (2026-10-09): YES when `keyword` is a FROZEN
+/// chunk type (legacy and UNSUPPORTED -- still loads and renders, receives no
+/// fixes). A frozen type is also deprecated, so
+/// `-paletteDeprecationReplacementForKeyword:` returns its hint too; the
+/// palette badges it "legacy, unsupported" instead of "deprecated".
+- (BOOL)paletteKeywordIsFrozen:(NSString *)keyword
+    NS_SWIFT_NAME(paletteKeywordIsFrozen(_:));
+
 #pragma mark - Environment / IBL section
 
 /// Read the current environment binding.  Returns nil only when there is

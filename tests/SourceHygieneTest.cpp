@@ -1333,9 +1333,10 @@ int main()
 		}
 
 		// ---- R1c: agent rasterizer allowlist, surface parity --------------
-		// GROUND TRUTH IS THE CODE.  The policy lives in three arrays in
+		// GROUND TRUTH IS THE CODE.  The policy lives in two arrays in
 		// AgentSession.cpp (kAgentAllowedRasterizers_ /
-		// kAgentUngatedUtilityRasterizers_ / kAgentBlockedRasterizers_) and is
+		// kAgentBlockedRasterizers_; the former ungated-utility set was retired
+		// by legacy-deprecation Phase 1, 2026-10-09) and is
 		// RESTATED, in prose, on the two hand-authored tool-description
 		// surfaces a model actually reads: the shared chat tool defs
 		// (AgentChatCodecs.cpp `kToolDefs`) and the MCP tools/list text
@@ -1349,10 +1350,9 @@ int main()
 		// The rule: EVERY keyword in the allowed set and EVERY keyword in the
 		// known-blocked set must appear verbatim in BOTH files.  Adding a
 		// fifth allowed rasterizer, or blocking a newly added kind, therefore
-		// cannot land without updating both surfaces.  (The two ungated
-		// utility rasterizers are checked as a pair rather than individually
-		// for the same reason -- an agent that is never told they are exempt
-		// will avoid pixelpel_rasterizer, which alpha-mask scenes require.)
+		// cannot land without updating both surfaces.  The frozen legacy pixel
+		// rasterizers are in the blocked set, so they are covered by the same
+		// per-keyword rule.
 		{
 			const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
 			const std::string sessionSrc = slurp( agentDir / "AgentSession.cpp" );
@@ -1377,12 +1377,12 @@ int main()
 			};
 
 			const std::vector<std::string> allowedKw = arrayKeywords( "Allowed" );
-			const std::vector<std::string> ungatedKw = arrayKeywords( "UngatedUtility" );
 			const std::vector<std::string> blockedKw = arrayKeywords( "Blocked" );
-			Check( allowedKw.size() == 4 && ungatedKw.size() == 2 && blockedKw.size() == 6,
-			       "R1c allowlist parity: parsed the THREE policy arrays out of AgentSession.cpp "
+			Check( allowedKw.size() == 4 && blockedKw.size() == 8 &&
+			       sessionSrc.find( "kAgentUngatedUtilityRasterizers_[] = {" ) == std::string::npos,
+			       "R1c allowlist parity: parsed the TWO policy arrays out of AgentSession.cpp, and the "
+			       "retired ungated-utility array is gone "
 			       "(allowed=" + std::to_string( allowedKw.size() ) +
-			       ", ungated=" + std::to_string( ungatedKw.size() ) +
 			       ", blocked=" + std::to_string( blockedKw.size() ) + ")" );
 
 			static const char* const kPolicySurfaces[] = { "AgentChatCodecs.cpp", "AgentMcpAdapter.cpp" };
@@ -1399,12 +1399,6 @@ int main()
 						policyProblems.push_back( std::string( fname ) + ": never names the BLOCKED "
 							"rasterizer `" + kw + "` -- a model reading this surface will try it and "
 							"be refused" );
-				bool anyUngated = false;
-				for( const std::string& kw : ungatedKw ) if( src.find( kw ) != std::string::npos ) anyUngated = true;
-				if( !anyUngated )
-					policyProblems.push_back( std::string( fname ) + ": never mentions the DELIBERATELY "
-						"UNGATED utility rasterizers -- a model will avoid pixelpel_rasterizer, which "
-						"alpha-mask scenes require" );
 			}
 			for( const std::string& p : policyProblems )
 				std::cout << "  R1C ALLOWLIST DRIFT: " << p << std::endl;

@@ -2300,6 +2300,13 @@ QString ViewportBridge::paletteDeprecationReplacement(const QString& keyword) co
     return QString::fromUtf8(buf);
 }
 
+bool ViewportBridge::paletteKeywordIsFrozen(const QString& keyword) const
+{
+    if (!m_controller || keyword.isEmpty()) return false;
+    const QByteArray kw = keyword.toUtf8();
+    return RISE_API_SceneEditController_PaletteKeywordFrozen(m_controller, kw.constData());
+}
+
 // ---- Environment / IBL section --------------------------------------
 
 bool ViewportBridge::environmentInfo(EnvironmentInfo* out) const

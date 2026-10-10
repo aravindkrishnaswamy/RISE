@@ -150,7 +150,10 @@ std::vector<CameraProperty> CstIntrospection::Inspect(
 		row.value        = keyword;
 		row.description  = String( typeRowDescription ? typeRowDescription : "Chunk keyword" );
 		// DL-323 follow-through: a deprecated chunk type says so on its identity row (it still works).
-		if( cd && cd->deprecated )
+		// Legacy Phase 1: a FROZEN type is labelled legacy / unsupported instead.
+		if( cd && cd->frozen )
+			row.description = String( ( std::string( row.description.c_str() ) + " -- LEGACY (unsupported; frozen 2026-10-09, still renders exactly as before): use " + cd->replacement ).c_str() );
+		else if( cd && cd->deprecated )
 			row.description = String( ( std::string( row.description.c_str() ) + " -- DEPRECATED (still renders exactly as before): use " + cd->replacement ).c_str() );
 		row.editable     = false;
 		out.push_back( row );

@@ -1,4 +1,8 @@
 ##################################################################################################
+#  FROZEN (legacy, unsupported) since 2026-10-09 -- owner ruling #15 in
+#  docs/LEGACY_DEPRECATION_ASSESSMENT.md section 13.  Nobody builds RISE for this platform;
+#  the file is kept (removal on hold) but receives no maintenance and is not expected to work.
+##################################################################################################
 #
 #  Config for Realistic Image Synthesis Engine (R.I.S.E) for Irix on an SGI
 #  Author: Aravind Krishnaswamy

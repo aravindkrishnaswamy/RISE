@@ -176,11 +176,17 @@ int main()
 
 		// Sorted, matching the descriptor-registry doc comment (a stable
 		// order a search palette can filter over without re-sorting).
+		// Legacy Phase 1 (2026-10-09): a deprecated painter (iridescent_painter)
+		// now sorts into the legacy tail, so "sorted" holds per GROUP: the
+		// supported keywords, then the legacy ones, each lexicographic.
 		bool sorted = true;
 		for( std::size_t i = 1; i < painters.size(); ++i ) {
-			if( std::strcmp( painters[i - 1].c_str(), painters[i].c_str() ) > 0 ) { sorted = false; break; }
+			const bool prevLegacy = !c.PaletteKeywordDeprecation( painters[i - 1] ).empty();
+			const bool curLegacy  = !c.PaletteKeywordDeprecation( painters[i] ).empty();
+			if( prevLegacy && !curLegacy ) { sorted = false; break; }
+			if( prevLegacy == curLegacy && std::strcmp( painters[i - 1].c_str(), painters[i].c_str() ) > 0 ) { sorted = false; break; }
 		}
-		Check( sorted, "PART1: Painter palette is lexicographically sorted" );
+		Check( sorted, "PART1: Painter palette is lexicographically sorted within its supported and legacy groups" );
 
 		// Cross-check against ChunkDescriptorRegistry directly -- the
 		// controller method must not silently diverge from what it wraps.
@@ -209,6 +215,26 @@ int main()
 			Check( !c.PaletteKeywordDeprecation( String( legacy ) ).empty(), std::string( "PART1(DL-401): `" ) + legacy + "` reports a replacement hint" );
 		}
 		Check( c.PaletteKeywordDeprecation( String( "ggx_material" ) ).empty(), "PART1(DL-401): ggx_material is not deprecated" );
+		// Legacy Phase 1: FROZEN keywords sort after every merely deprecated
+		// one, and the frozen accessor + its C ABI twin report them.
+		{
+			int lastDeprecatedOnly = -1, firstFrozen = int( materials.size() );
+			for( const String& kw : materials ) {
+				if( c.PaletteKeywordDeprecation( kw ).empty() ) continue;
+				const int i = indexOf( kw.c_str() );
+				if( c.PaletteKeywordIsFrozen( kw ) ) firstFrozen = std::min( firstFrozen, i ); else lastDeprecatedOnly = std::max( lastDeprecatedOnly, i );
+			}
+			Check( lastDeprecatedOnly < firstFrozen, "PART1(legacy): frozen material keywords sort after every merely deprecated one" );
+			Check( c.PaletteKeywordIsFrozen( String( "composite_material" ) ), "PART1(legacy): composite_material is frozen" );
+			Check( c.PaletteKeywordIsFrozen( String( "polished_material" ) ), "PART1(legacy): polished_material (promoted) is frozen" );
+			Check( !c.PaletteKeywordIsFrozen( String( "ggx_material" ) ), "PART1(legacy): ggx_material is not frozen" );
+			Check( !c.PaletteKeywordIsFrozen( String( "iridescent_painter" ) ) && !c.PaletteKeywordDeprecation( String( "iridescent_painter" ) ).empty(),
+			       "PART1(legacy): iridescent_painter is deprecated but not frozen" );
+			Check( RISE_API_SceneEditController_PaletteKeywordFrozen( &c, "composite_material" ) &&
+			       !RISE_API_SceneEditController_PaletteKeywordFrozen( &c, "ggx_material" ) &&
+			       !RISE_API_SceneEditController_PaletteKeywordFrozen( &c, "no_such_chunk" ),
+			       "PART1(legacy): the C ABI frozen query agrees" );
+		}
 		Check( c.PaletteKeywordDeprecation( String( "no_such_chunk" ) ).empty(), "PART1(DL-401): an unknown keyword is not deprecated" );
 		char rep[1024] = {0};
 		Check( RISE_API_SceneEditController_PaletteKeywordDeprecation( &c, "polished_material", rep, sizeof( rep ) ) &&

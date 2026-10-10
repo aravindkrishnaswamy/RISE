@@ -252,6 +252,26 @@ namespace RISE
 				cd.description = std::string( "DEPRECATED (still renders exactly as before): use " ) + replacement + "  " + cd.description;
 			}
 
+			// Legacy-deprecation Phase 1 (2026-10-09, docs/LEGACY_DEPRECATION_ASSESSMENT.md §10/§13):
+			// mark a chunk TYPE FROZEN -- legacy and UNSUPPORTED.  Strictly stronger than
+			// MarkDeprecated (it sets `deprecated` too, so every consumer that reads only that flag
+			// still sees a legacy chunk): the chunk keeps parsing, deriving and rendering
+			// bit-identically, but receives no fixes, and the agent surface refuses to insert a new
+			// one.  Idempotent over a descriptor MarkDeprecated already prefixed (its prefix is
+			// replaced, not stacked).
+			static void MarkFrozen( ChunkDescriptor& cd, const char* replacement )
+			{
+				if( cd.deprecated ) {
+					const std::string oldPrefix = std::string( "DEPRECATED (still renders exactly as before): use " ) + cd.replacement + "  ";
+					if( cd.description.compare( 0, oldPrefix.size(), oldPrefix ) == 0 )
+						cd.description = cd.description.substr( oldPrefix.size() );
+				}
+				cd.deprecated = true;
+				cd.frozen = true;
+				cd.replacement = replacement;
+				cd.description = std::string( "LEGACY, UNSUPPORTED (frozen 2026-10-09: still renders exactly as before but receives no fixes): use " ) + replacement + "  " + cd.description;
+			}
+
 			// Tracks uniform color painter values so that material parsers
 			// can validate energy conservation at scene-definition time.
 			struct PainterColor { double c[3]; };
@@ -3639,7 +3659,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "64"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
-						MarkDeprecated( cd, "coated_material over a lambertian_material (base = a lambertian_material with the same reflectance; coat_ior = ior; coat_roughness = 1/sqrt(2*scattering+1) (its lobe is cos^N about the reflection vector), the smallest coat_roughness (floored at 1e-3) for the delta case scattering >= 1e6; tau multiplies ONLY the coat reflection and has no coated_material equivalent -- tau 1 is a full coat, coat_weight is the nearest knob for less).  add_wetness already emits this shape." );
+						MarkFrozen( cd, "coated_material over a lambertian_material (base = a lambertian_material with the same reflectance; coat_ior = ior; coat_roughness = 1/sqrt(2*scattering+1) (its lobe is cos^N about the reflection vector), the smallest coat_roughness (floored at 1e-3) for the delta case scattering >= 1e6; tau multiplies ONLY the coat reflection and has no coated_material equivalent -- tau 1 is a full coat, coat_weight is the nearest knob for less).  add_wetness already emits this shape." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4274,7 +4294,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
-						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = sqrt(2/(nu+2)), alphay = sqrt(2/(nv+2)); steer the brush direction with tangent_rotation_scalar)." );
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = sqrt(2/(nu+2)), alphay = sqrt(2/(nv+2)); steer the brush direction with tangent_rotation_scalar)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4304,7 +4324,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
-						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = 1/sqrt(2N+1) from the Phong exponent N, because the Phong lobe is cos^N about the REFLECTION vector and the half-vector-equivalent exponent is 4N), or pbr_metallic_roughness_material." );
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = 1/sqrt(2N+1) from the Phong exponent N, because the Phong lobe is cos^N about the REFLECTION vector and the half-vector-equivalent exponent is 4N), or pbr_metallic_roughness_material." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4629,7 +4649,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rd";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "rs";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
-						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = alpha as a starting point -- GGX has heavier tails than a Gaussian lobe of the same width)." );
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = alpha as a starting point -- GGX has heavier tails than a Gaussian lobe of the same width)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4661,7 +4681,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
-						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax and alphay carry over as a starting point; steer the brush direction with tangent_rotation_scalar)." );
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax and alphay carry over as a starting point; steer the brush direction with tangent_rotation_scalar)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4889,7 +4909,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
-						MarkDeprecated( cd, "ggx_material with fresnel_mode conductor (rd, rs, ior, extinction carry over; alphax = alphay = facets -- the same GGX D, but G (separable vs height-correlated), the multiscatter LUT and the diffuse coupling differ, so a close starting point, not identical), or pbr_metallic_roughness_material for a glTF-style metal or dielectric." );
+						MarkFrozen( cd, "ggx_material with fresnel_mode conductor (rd, rs, ior, extinction carry over; alphax = alphay = facets -- the same GGX D, but G (separable vs height-correlated), the multiscatter LUT and the diffuse coupling differ, so a close starting point, not identical), or pbr_metallic_roughness_material for a glTF-style metal or dielectric." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4984,7 +5004,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
-						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = sqrt(roughness) because Schlick's roughness r is the GGX alpha squared; isotropy below 1 has no exact translation, pick alphax != alphay by eye), or pbr_metallic_roughness_material." );
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = sqrt(roughness) because Schlick's roughness r is the GGX alpha squared; isotropy below 1 has no exact translation, pick alphax != alphay by eye), or pbr_metallic_roughness_material." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -13875,6 +13895,122 @@ namespace RISE
         }
     };
 
+	//////////////////////////////////////////////////
+	// Legacy tiers (legacy-deprecation Phase 1, 2026-10-09)
+	//////////////////////////////////////////////////
+	//
+	// docs/LEGACY_DEPRECATION_ASSESSMENT.md §10 (policy) and §13 (owner rulings).
+	// ONE auditable table of every chunk type that is not SUPPORTED, applied
+	// centrally by CreateAllChunkParsers() through LegacyTierParser below so the
+	// per-chunk Describe() bodies stay untouched.  (The seven legacy BRDF
+	// materials carry their long translation hints in their own Describe() via
+	// MarkFrozen and are therefore NOT listed here.)  Two tiers:
+	//
+	//   * DEPRECATED -- parses and renders exactly as before; one warning per
+	//     type per load; the agent may still insert it.
+	//   * FROZEN     -- legacy and UNSUPPORTED: parses and renders exactly as
+	//     before, but receives no fixes (ledger rows close as won't-fix), the
+	//     warning says so, and the agent tool surface refuses to insert a new
+	//     one.  Removal is ON HOLD by owner ruling (2026-10-09).
+	//
+	// Phase 1 is a marking pass ONLY: a wrapper copies the descriptor, changes
+	// the flags / description, and forwards Finalize unchanged, so no frozen or
+	// deprecated chunk renders any differently.
+	namespace
+	{
+		struct LegacyTierEntry
+		{
+			const char* keyword;
+			bool        frozen;       // false = deprecated (warn) only
+			const char* replacement;  // non-empty: names the modern keyword(s) first
+		};
+
+		static const LegacyTierEntry kLegacyTierTable[] = {
+			// ---- R1/R2: legacy shader-op rasterizers ----------------------------------
+			{ "pixelpel_rasterizer",                  true,  "pathtracing_pel_rasterizer (set oidn_denoise FALSE to keep a raw look; for a direct-lighting-only render use max_diffuse_bounce 0)." },
+			{ "pixelintegratingspectral_rasterizer",  true,  "pathtracing_spectral_rasterizer (set oidn_denoise FALSE to keep a raw look)." },
+			// ---- R3: legacy shader-op chain ops (meaningful only under R1/R2) ---------
+			{ "distributiontracing_shaderop",         true,  "pathtracing_pel_rasterizer / pathtracing_spectral_rasterizer (the pure integrators do distribution ray tracing themselves)." },
+			{ "finalgather_shaderop",                 true,  "pathtracing_pel_rasterizer (with OIDN) for global illumination." },
+			{ "directlighting_shaderop",              true,  "pathtracing_pel_rasterizer (NEE is built in; max_diffuse_bounce 0 for a direct-only look)." },
+			{ "arealight_shaderop",                   true,  "rect_light or shape_light (or an emissive lambertian_luminaire_material object) under pathtracing_pel_rasterizer." },
+			// ---- R6: point-cloud SSS shader ops ---------------------------------------
+			{ "simple_sss_shaderop",                  true,  "subsurfacescattering_material or randomwalk_sss_material under pathtracing_pel_rasterizer." },
+			{ "diffusion_approximation_sss_shaderop", true,  "subsurfacescattering_material or randomwalk_sss_material under pathtracing_pel_rasterizer." },
+			{ "donner_jensen_skin_sss_shaderop",      true,  "donner_jensen_skin_bssrdf_material or randomwalk_sss_material under pathtracing_pel_rasterizer." },
+			// ---- R7: ambient occlusion op (owner ruling #6: no replacement) -----------
+			{ "ambientocclusion_shaderop",            true,  "nothing equivalent -- no state-of-the-art render mode produces an AO pass; painters can read the `occlusion` signal.  Planned for removal (on hold)." },
+			// ---- R8: alpha ops (legacy-pipeline-only) ---------------------------------
+			{ "alpha_test_shaderop",                  true,  "the material parameters alpha_coverage / alpha_mode mask / alpha_cutoff (DL-214), honoured by every integrator." },
+			{ "transparency_shaderop",                true,  "the material parameters alpha_coverage / alpha_mode blend (DL-214), honoured by every integrator." },
+			// ---- R5: photon mapping, gathers, irradiance cache ------------------------
+			{ "caustic_pel_photonmap",                true,  "vcm_pel_rasterizer for caustics." },
+			{ "caustic_spectral_photonmap",           true,  "vcm_spectral_rasterizer for caustics." },
+			{ "global_pel_photonmap",                 true,  "pathtracing_pel_rasterizer (with OIDN) or bdpt/vcm for global illumination." },
+			{ "global_spectral_photonmap",            true,  "pathtracing_spectral_rasterizer (with OIDN) for global illumination." },
+			{ "translucent_pel_photonmap",            true,  "pathtracing_pel_rasterizer with translucent_material / an SSS material." },
+			{ "shadow_photonmap",                     true,  "pathtracing_pel_rasterizer (shadows come from NEE)." },
+			{ "caustic_pel_gather",                   true,  "vcm_pel_rasterizer for caustics." },
+			{ "caustic_spectral_gather",              true,  "vcm_spectral_rasterizer for caustics." },
+			{ "global_pel_gather",                    true,  "pathtracing_pel_rasterizer (with OIDN) for global illumination." },
+			{ "global_spectral_gather",               true,  "pathtracing_spectral_rasterizer (with OIDN) for global illumination." },
+			{ "translucent_pel_gather",               true,  "pathtracing_pel_rasterizer with translucent_material / an SSS material." },
+			{ "shadow_gather",                        true,  "pathtracing_pel_rasterizer (shadows come from NEE)." },
+			{ "irradiance_cache",                     true,  "pathtracing_pel_rasterizer (with OIDN) for global illumination." },
+			// ---- R12: MLT -------------------------------------------------------------
+			{ "mlt_rasterizer",                       true,  "bdpt_pel_rasterizer or vcm_pel_rasterizer (or auto_rasterizer)." },
+			{ "mlt_spectral_rasterizer",              true,  "bdpt_spectral_rasterizer or vcm_spectral_rasterizer (or auto_spectral_rasterizer)." },
+			// ---- R15 (owner ruling #10), R17 (§12 #18) --------------------------------
+			{ "composite_material",                   true,  "coated_material (a coat over any base material) for layered looks." },
+			{ "phong_luminaire_material",             true,  "lambertian_luminaire_material (cosine emission); the cos^N emission profile has no modern equivalent." },
+			// ---- R10: direct volume rendering (owner ruling #7: kept frozen) ----------
+			{ "directvolumerendering_shader",         true,  "nothing equivalent -- a medical transfer-function renderer; heterogeneous_medium under pathtracing_pel_rasterizer is the physically based volume path." },
+			{ "spectraldirectvolumerendering_shader", true,  "nothing equivalent -- a medical transfer-function renderer; heterogeneous_medium under pathtracing_spectral_rasterizer is the physically based volume path." },
+			// ---- DEPRECATED (warn only) -----------------------------------------------
+			{ "ambient_light",                        false, "a uniform environment: the rasterizer's radiance_map (a uniformcolor_painter) -- unlike ambient_light it is occluded, so creases darken (owner ruling #5)." },
+			{ "iridescent_painter",                   false, "ggx_material with fresnel_mode thinfilm (the physical thin-film model; this painter is a view-angle colour look-alike)." },
+			{ "onb_pinhole_camera",                   false, "pinhole_camera (same projection, location/lookat/up parametrisation)." },
+			{ "3dsmesh_geometry",                     false, "plymesh_geometry or gltf_import." },
+			{ "sms_shaderop",                         false, "the sms_* parameters of pathtracing_pel_rasterizer / pathtracing_spectral_rasterizer." },
+		};
+
+		const LegacyTierEntry* FindLegacyTier( const std::string& keyword )
+		{
+			for( const LegacyTierEntry& e : kLegacyTierTable )
+				if( keyword == e.keyword ) return &e;
+			return nullptr;
+		}
+
+		//! Wraps a registered parser with a COPY of its descriptor carrying the
+		//! legacy tier.  Finalize forwards unchanged, so the derived scene (and
+		//! every render of it) is bit-identical to the unwrapped parser's.
+		class LegacyTierParser final : public IAsciiChunkParser
+		{
+			std::unique_ptr<IAsciiChunkParser> base_;
+			ChunkDescriptor descriptor_;
+		public:
+			LegacyTierParser( IAsciiChunkParser* base, const LegacyTierEntry& tier ) :
+				base_( base ), descriptor_( base->Describe() )
+			{
+				if( tier.frozen ) Implementation::ChunkParsers::MarkFrozen( descriptor_, tier.replacement );
+				else              Implementation::ChunkParsers::MarkDeprecated( descriptor_, tier.replacement );
+			}
+			const ChunkDescriptor& Describe() const override { return descriptor_; }
+			bool Finalize( const ParseStateBag& bag, IJob& job ) const override { return base_->Finalize( bag, job ); }
+		};
+	}
+
+	const char* DeprecatedChunkAliasReplacement( const std::string& keyword )
+	{
+		// R4: `mis_pathtracing_shaderop` is a legacy ALIAS registered with the SAME
+		// parser class as `pathtracing_shaderop` (which stays SUPPORTED: PT's SSS
+		// continuation shades through it), so the two must keep sharing one
+		// descriptor (SceneGrammar / SchemaGen dedupe by it).  The alias is
+		// therefore deprecated by its DISPATCH keyword, here, not by a flag.
+		if( keyword == "mis_pathtracing_shaderop" ) return "pathtracing_shaderop (same operation; rename the chunk keyword).";
+		return nullptr;
+	}
+
 	// Factory that creates one instance of every chunk parser the scene
 	// grammar supports.  Ownership transfers to the caller; when the
 	// returned vector goes out of scope all parsers are destroyed.  The
@@ -13889,8 +14025,12 @@ namespace RISE
 		auto add = [&entries]( const char* keyword, IAsciiChunkParser* parser ) {
 			ChunkParserEntry e;
 			e.keyword = keyword;
-			e.parser.reset( parser->Describe().category == ChunkCategory::Material
-                ? static_cast<IAsciiChunkParser*>(new AlphaMaterialParser(parser)) : parser );
+			IAsciiChunkParser* wrapped = parser->Describe().category == ChunkCategory::Material
+                ? static_cast<IAsciiChunkParser*>(new AlphaMaterialParser(parser)) : parser;
+			// Legacy-deprecation Phase 1: mark the chunk's tier (see kLegacyTierTable).
+			if( const LegacyTierEntry* tier = FindLegacyTier( keyword ) )
+				wrapped = new LegacyTierParser( wrapped, *tier );
+			e.parser.reset( wrapped );
 			entries.push_back( std::move(e) );
 		};
 
