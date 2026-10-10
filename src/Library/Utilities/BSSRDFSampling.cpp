@@ -586,11 +586,18 @@ bool BSSRDFSampling::IntersectContactRay(
 	if( !pTarget ) {
 		return false;
 	}
-	objects.IntersectSingleObject( ri, pTarget );
+	// The band, in ray range.  Its scale is the launch point's COORDINATE
+	// magnitude (as BSSRDF_RAY_EPSILON's offsets are), not the size of either
+	// body: a millimetre contact far from the origin gets a wider band than
+	// the same contact at the origin.  The cast itself stops at the band's
+	// widest possible far edge (the 0.05 cosine floor), so a large candidate
+	// does not pay a full closest-hit traversal (review round 2, P2-1).
+	const Point3& o = ray.origin;
+	const Scalar s = r_max( r_max( fabs( o.x ), fabs( o.y ) ), fabs( o.z ) );
+	const Scalar delta = BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
+	const Scalar reachMax = Scalar( 4 ) * BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s ) / Scalar( 0.05 );
+	objects.IntersectSingleObject( ri, pTarget, delta + reachMax );
 	if( ri.geometric.bHit ) {
-		const Point3& o = ray.origin;
-		const Scalar s = r_max( r_max( fabs( o.x ), fabs( o.y ) ), fabs( o.z ) );
-		const Scalar delta = BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
 		const Scalar cosHit = fabs( Vector3Ops::Dot( ray.Dir(), ri.geometric.vGeomNormal ) );
 		const Scalar reach = Scalar( 4 ) * BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s ) /
 			r_max( cosHit, Scalar( 0.05 ) );
@@ -618,6 +625,30 @@ bool BSSRDFSampling::IntersectContact(
 {
 	ri = RayIntersection( ContactRay( p, dir ), rast );
 	return IntersectContactRay( objects, pTarget, pSource, ri );
+}
+
+namespace
+{
+	//! Is box `a` inside box `b` padded by `pad`?
+	inline bool BoxInsidePadded( const BoundingBox& a, const BoundingBox& b, const Scalar pad )
+	{
+		return a.ll.x >= b.ll.x - pad && a.ll.y >= b.ll.y - pad && a.ll.z >= b.ll.z - pad &&
+			a.ur.x <= b.ur.x + pad && a.ur.y <= b.ur.y + pad && a.ur.z <= b.ur.z + pad;
+	}
+
+	//! DL-408 review round 2: given that candidate `pT` contains the
+	//! launch's backed-off origin (its interior overlaps the launching body
+	//! `pS` at the shared face), is `pS` nested inside `pT` (an enclosure)
+	//! rather than `pT` inside `pS` (an inset)?
+	bool EnclosesLauncher( const IObject* pT, const IObject* pS, const Scalar pad )
+	{
+		if( !pT || !pS ) {
+			return false;
+		}
+		const BoundingBox bT = pT->getBoundingBox();
+		const BoundingBox bS = pS->getBoundingBox();
+		return BoxInsidePadded( bS, bT, pad ) && !BoxInsidePadded( bT, bS, pad );
+	}
 }
 
 const IObject* BSSRDFSampling::FindExitContact(
@@ -658,11 +689,25 @@ const IObject* BSSRDFSampling::FindExitContact(
 		if( !( probe.geometric.range < bestT ) ) {
 			continue;
 		}
-		// A body coincident with the exit face on the LAUNCHING body's own
-		// side (an inset flush with the surface) also meets the cast at
-		// the launch point -- from inside itself.  It contains the
-		// backed-off origin; a body across the face does not.
-		if( objects.ObjectContainsPoint( cand[k], ray.origin, r.entryNormal ) ) {
+		// A candidate whose face is at the launch point AND whose interior
+		// overlaps the launching body there (it contains the backed-off
+		// origin) is one of two NESTED configurations, locally identical --
+		// both interiors on the same side of the shared face:
+		//   * an ENCLOSURE floor: S rests on the inside face of T (a closed
+		//     box room, a glass tank); T's surface is really there, and the
+		//     continuation must meet it (review round 2, P1);
+		//   * an INSET: T sits inside S, flush with S's face; the
+		//     continuation leaves both into whatever is outside S, and T's
+		//     surface is not a neighbour across the face.
+		// No local probe separates them (a point just outside S beside p is
+		// outside T in BOTH), so the test is the nesting itself: two closed
+		// bodies whose interiors overlap and whose boundaries only touch are
+		// nested, and nesting implies world-box nesting.  S inside T is an
+		// enclosure (accept); T inside S is an inset (refuse); boxes that do
+		// not tell (equal, or loose boxes from different transforms) keep
+		// the refusal.
+		if( objects.ObjectContainsPoint( cand[k], ray.origin, r.entryNormal ) &&
+			!EnclosesLauncher( cand[k], pExitObject, radius ) ) {
 			continue;
 		}
 		best = cand[k];

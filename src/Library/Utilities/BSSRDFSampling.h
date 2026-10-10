@@ -394,9 +394,11 @@ namespace RISE
 		/// band's reach of `r.boundaryPoint` (`ObjectsNearPoint`: touching
 		/// solids, open sheets such as a ground plane, enclosures); each is
 		/// asked by the contact cast, the band arbitrates, the nearest
-		/// accepted hit wins, and a candidate that contains the backed-off
-		/// origin (a body flush with the face on the launching side) is
-		/// refused.  Nothing draws from a sampler.
+		/// accepted hit wins.  A candidate that contains the backed-off
+		/// origin is nested with the launching body at the face: it is
+		/// accepted when it ENCLOSES that body (world-box nesting: a room
+		/// the body rests in) and refused otherwise (an inset flush with
+		/// the face on the launching side).  Nothing draws from a sampler.
 		const IObject* FindExitContact(
 			const IObjectManager& objects,
 			const SampleResult& r,

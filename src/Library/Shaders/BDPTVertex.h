@@ -313,6 +313,18 @@ namespace RISE
 		bool isLightSubpathVertex;
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
+		/// DL-408 (review round 2): on an SSS exit vertex whose continuation
+		/// is a CONTACT launch against a shadow-casting body, the whole
+		/// outward hemisphere is covered by that body's surface at zero
+		/// distance, so every connection with this vertex as an endpoint is
+		/// occluded (as the gap twin's is, by the body's near face).  The
+		/// vertex's own offset position can lie on the far side of that
+		/// surface (an exit resting on the inside floor of a closed room
+		/// sits 1e-6 BELOW the floor), where a visibility ray would wrongly
+		/// see past it; the strategies read this flag instead.  The MIS
+		/// structure is untouched (the vertex stays connectible).  No
+		/// RayIntersectionGeometric counterpart.
+		bool					contactCovered;
 		/// DL-357: on a DIFFUSION-profile BSSRDF entry vertex, the jump's
 		/// exit-to-entry distance and exit cosine (BSSRDFSampling::
 		/// SampleResult::jumpDistance / exitCos).  The exit hit is the
@@ -452,6 +464,7 @@ namespace RISE
 		isLightSubpathVertex( false ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),
+		contactCovered( false ),
 		bssrdfJumpDistance( 0 ),
 		bssrdfExitCos( 0 ),
 		passThroughProb( 0 ),

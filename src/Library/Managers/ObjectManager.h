@@ -487,7 +487,8 @@ namespace RISE
 			//! See IObjectManager::IntersectSingleObject (DL-408).
 			void IntersectSingleObject(
 				RayIntersection& ri,
-				const IObject* pObject
+				const IObject* pObject,
+				const Scalar dHowFar
 				) const;
 
 			//! DL-370 / DL-408: the shared containment walk; `bRandomWalkOnly`

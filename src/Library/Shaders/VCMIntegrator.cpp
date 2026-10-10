@@ -1944,6 +1944,9 @@ namespace
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
+			if( v.contactCovered ) {
+				continue;	// DL-408: a contact-covered SSS exit's connections are occluded (BDPTVertex::contactCovered).
+			}
 			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
 				continue;
 			}
@@ -2511,6 +2514,9 @@ namespace
 				continue;
 			}
 			const BDPTVertex& v = lightVerts[i];
+			if( v.contactCovered ) {
+				continue;	// DL-408: a contact-covered SSS exit's connections are occluded (BDPTVertex::contactCovered).
+			}
 
 			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
 				continue;
@@ -2829,6 +2835,9 @@ namespace
 		for( std::size_t i = 1; i < lightVerts.size(); i++ )
 		{
 			const BDPTVertex& lv = lightVerts[i];
+			if( lv.contactCovered ) {
+				continue;	// DL-408: a contact-covered SSS exit's connections are occluded (BDPTVertex::contactCovered).
+			}
 			const VCMWalkCount lightCount = LightPrefixCount( lightVerts, i );	// DL-467
 			const VCMWalkCount lightHanded = LightHandedCount( lightVerts, lightCount, i, false );
 			if( lv.type != BDPTVertex::SURFACE && lv.type != BDPTVertex::MEDIUM ) {
@@ -2853,6 +2862,9 @@ namespace
 			for( std::size_t j = 1; j < eyeVerts.size(); j++ )
 			{
 				const BDPTVertex& ev = eyeVerts[j];
+				if( ev.contactCovered ) {
+					continue;	// DL-408: a contact-covered SSS exit's connections are occluded (BDPTVertex::contactCovered).
+				}
 				if( ev.type != BDPTVertex::SURFACE && ev.type != BDPTVertex::MEDIUM ) {
 					continue;
 				}

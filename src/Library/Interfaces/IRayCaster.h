@@ -198,16 +198,22 @@ namespace RISE
 			Scalar castRRCompensation;
 
 			//! DL-408: a CONTACT LAUNCH.  When `pContactTarget` is set, the
-			//! cast's ray was built by `BSSRDFSampling::FindExitContact` (its
-			//! origin backed off INTO the launching body), and the cast is
-			//! restricted to that one object (`BSSRDFSampling::IntersectContact`):
-			//! the target shares the launch point's face, so the hit lies at
-			//! zero distance where no whole-scene cast can resolve it.  The
-			//! hit records `pContactSource` (the launching body) as its
-			//! `RayIntersection::pContactPartner`.  Both null on every other
-			//! cast.  Set only by PT's SSS exit continuations.
+			//! cast first tries the contact ray
+			//! `BSSRDFSampling::ContactRay( contactPoint, ray.Dir() )` (its
+			//! origin backed off INTO the launching body) restricted to that
+			//! one object (`BSSRDFSampling::IntersectContactRay`): the target
+			//! shares the launch point's face, so the hit lies at zero
+			//! distance where no whole-scene cast can resolve it.  The hit
+			//! records `pContactSource` (the launching body) as its
+			//! `RayIntersection::pContactPartner`.  If the restricted cast does
+			//! not land in the band, the cast falls back to the ORDINARY scene
+			//! cast of the ray it was given (the exit's own offset ray), never
+			//! from the backed-off origin, which lies inside the launching body
+			//! (review round 2).  All null / unused on every other cast.  Set
+			//! only by PT's SSS exit continuations.
 			const IObject* pContactTarget;
 			const IObject* pContactSource;
+			Point3 contactPoint;				///< DL-408: the launch's surface point (valid when pContactTarget)
 
 			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
 				bsdfMisPdf( -1 ),
@@ -216,7 +222,7 @@ namespace RISE
 				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
 				chainHasNEEOp( true ), chainHasBsdfContinuationOp( true ),
 				castRRCompensation( 1.0 ),
-				pContactTarget( 0 ), pContactSource( 0 ) {}
+				pContactTarget( 0 ), pContactSource( 0 ), contactPoint( 0, 0, 0 ) {}
 
 			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.
 			Scalar MisPartnerPdf() const

@@ -2725,6 +2725,10 @@ namespace {
 			StoreThroughput<Tag>( v, beta );
 			v.pdfRev = 0;
 			v.isDelta = false;
+			// DL-408 (review round 2): a contact hit lies against its partner
+			// at zero distance; its connections are covered by the partner
+			// (BDPTVertex::contactCovered).
+			v.contactCovered = ri.pContactPartner && ri.pContactPartner->DoesCastShadows();
 
 			// VCM post-pass input: the receiving-side cosine used to
 			// invert the area-measure pdfFwd back to solid angle at
@@ -2990,6 +2994,8 @@ namespace {
 								if( pWalkContactTarget ) {
 									pWalkContactSource = pSSSExitObject;
 									walkContactPoint = bssrdf.boundaryPoint;
+									// Review round 2: its connections are covered by the body.
+									vertices.back().contactCovered = pWalkContactTarget->DoesCastShadows();
 								}
 							}
 							continue;
@@ -3151,6 +3157,8 @@ namespace {
 								if( pWalkContactTarget ) {
 									pWalkContactSource = pSSSExitObject;
 									walkContactPoint = bssrdf.boundaryPoint;
+									// Review round 2: its connections are covered by the body.
+									vertices.back().contactCovered = pWalkContactTarget->DoesCastShadows();
 								}
 							}
 							continue;
@@ -4176,6 +4184,14 @@ ConnectAndEvaluateImplCore(
 	}
 
 	if( s + t < 2 ) {
+		return result;
+	}
+
+	// DL-408 (review round 2): a connection with a contact-covered SSS exit
+	// as an endpoint meets the covering body at zero distance -- occluded
+	// (BDPTVertex::contactCovered).  Its MIS weight is not touched.
+	if( ( s >= 1 && lightVerts[s - 1].contactCovered ) ||
+		( t >= 1 && eyeVerts[t - 1].contactCovered ) ) {
 		return result;
 	}
 
@@ -6165,6 +6181,7 @@ EvaluateAllStrategiesImpl(
 					if( eyeEnd.volumeBounces > self.GetStabilityConfig().maxVolumeBounce ) continue;
 					if( eyeEnd.type != BDPTVertex::SURFACE ) continue;
 					if( !eyeEnd.pMaterial ) continue;
+					if( eyeEnd.contactCovered ) continue;	// DL-408: covered at zero distance
 					// DL-471: the eye endpoint is the free x_K; the eye
 					// prefix must be within the per-path per-type caps.
 					if( typeCaps.active &&
@@ -7651,6 +7668,9 @@ unsigned int GenerateLightSubpathImpl(
 			? ls.pdfPosition * absCosIn
 			: BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
 		StoreThroughput<Tag>( v, beta );
+		// DL-408 (review round 2): a contact hit's connections are covered
+		// by its partner (BDPTVertex::contactCovered).
+		v.contactCovered = ri.pContactPartner && ri.pContactPartner->DoesCastShadows();
 		if constexpr( Traits::is_nm ) {
 			// NM broadcasts the scalar throughput into the RISEPel field so
 			// light-subpath guiding training (which stores RISEPel weights on
@@ -7914,6 +7934,8 @@ unsigned int GenerateLightSubpathImpl(
 							if( pWalkContactTarget ) {
 								pWalkContactSource = pSSSExitObject;
 								walkContactPoint = bssrdf.boundaryPoint;
+								// Review round 2: its connections are covered by the body.
+								vertices.back().contactCovered = pWalkContactTarget->DoesCastShadows();
 							}
 						}
 						continue;
@@ -8095,6 +8117,8 @@ unsigned int GenerateLightSubpathImpl(
 							if( pWalkContactTarget ) {
 								pWalkContactSource = pSSSExitObject;
 								walkContactPoint = bssrdf.boundaryPoint;
+								// Review round 2: its connections are covered by the body.
+								vertices.back().contactCovered = pWalkContactTarget->DoesCastShadows();
 							}
 						}
 						continue;

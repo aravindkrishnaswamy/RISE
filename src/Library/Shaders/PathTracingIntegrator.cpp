@@ -3173,6 +3173,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
+								// DL-408: the exit's contact (if any), found BEFORE the NEE
+								// below -- an exit covered by a shadow-casting body at zero
+								// distance has no visible light in its outward hemisphere
+								// (review round 2: its offset point can lie past that body's
+								// surface, e.g. 1e-6 below the inside floor of a closed room,
+								// where shadow rays would see the outside).
+								const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
+								const IObject* pContact = BSSRDFSampling::FindExitContact(
+									*scene.GetObjects(), bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
+								const bool bContactCovered = pContact && pContact->DoesCastShadows();
 								// NEE at BSSRDF entry point.  GUI render modes P2b
 								// `indirect` (review-p2c P2-c fix): this is the
 								// SSS analog of the surface NEE gate above --
@@ -3203,13 +3213,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
 										// DL-416: the exit shadow leg starts in the live exterior medium.
 										bssrdfSampler, ri.pObject, pCurrentMedium, false, pMediumObject, tag,
-										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
+										0, 0, ( bContactCovered ? Scalar( 0 ) : PTSurvivalMagnitude( bssrdfWeightSpatial ) ) *
 											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ),
 										// DL-292: the SAME stack the continuation below
 										// carries (its next hit Advances from this top, so
 										// the NEE segment must be priced from it too).
 										&iorStack );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
+									if( bContactCovered ) {
+										sssDirectContrib = Traits::zero();	// DL-408: evaluated for sampler lockstep, occluded
+									}
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
 									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
@@ -3270,12 +3283,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// distance -- a contact launch, cast against
 										// it alone from behind the shared face.
 										{
-											const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
-											const IObject* pContact = BSSRDFSampling::FindExitContact(
-												*scene.GetObjects(), bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
 											if( pContact ) {
-												continuationRay = BSSRDFSampling::ContactRay(
-													bssrdf.boundaryPoint, bssrdf.scatteredRay.Dir() );
+												rs2.contactPoint = bssrdf.boundaryPoint;
 												rs2.pContactTarget = pContact;
 												rs2.pContactSource = pSSSExitObject;
 											}
@@ -3456,6 +3465,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
+								// DL-408: the exit's contact (if any), found BEFORE the NEE
+								// below -- an exit covered by a shadow-casting body at zero
+								// distance has no visible light in its outward hemisphere
+								// (review round 2: its offset point can lie past that body's
+								// surface, e.g. 1e-6 below the inside floor of a closed room,
+								// where shadow rays would see the outside).
+								const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
+								const IObject* pContact = BSSRDFSampling::FindExitContact(
+									*scene.GetObjects(), bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
+								const bool bContactCovered = pContact && pContact->DoesCastShadows();
 								// GUI render modes P2b `indirect` (review-p2c
 								// P2-c fix): same SSS-analog-of-surface-NEE
 								// gate as the diffusion-profile site above.
@@ -3481,13 +3500,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
 										// DL-416: mirror the ordinary surface NEE medium binding.
 										bssrdfSampler, bssrdf.ExitObject( ri.pObject ), pCurrentMedium, false, pMediumObject, tag,
-										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
+										0, 0, ( bContactCovered ? Scalar( 0 ) : PTSurvivalMagnitude( bssrdfWeightSpatial ) ) *
 											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ),
 										// DL-292: the SAME stack the continuation below
 										// carries (its next hit Advances from this top, so
 										// the NEE segment must be priced from it too).
 										&iorStack );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
+									if( bContactCovered ) {
+										sssDirectContrib = Traits::zero();	// DL-408: evaluated for sampler lockstep, occluded
+									}
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
 									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
@@ -3548,12 +3570,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// distance -- a contact launch, cast against
 										// it alone from behind the shared face.
 										{
-											const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
-											const IObject* pContact = BSSRDFSampling::FindExitContact(
-												*scene.GetObjects(), bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
 											if( pContact ) {
-												continuationRay = BSSRDFSampling::ContactRay(
-													bssrdf.boundaryPoint, bssrdf.scatteredRay.Dir() );
+												rs2.contactPoint = bssrdf.boundaryPoint;
 												rs2.pContactTarget = pContact;
 												rs2.pContactSource = pSSSExitObject;
 											}

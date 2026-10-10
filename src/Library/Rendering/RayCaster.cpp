@@ -950,7 +950,7 @@ bool RayCaster::CastRay(
 bool RayCaster::CastRay(
 			const RuntimeContext& rc,							///< [in] The runtime context
 			const RasterizerState& rast,						///< [in] Current state of the rasterizer
-			const Ray& ray,										///< [in] Ray to cast
+			const Ray& rayIn,										///< [in] Ray to cast
 			RISEPel& c,											///< [out] RISEColor for the ray
 			const RAY_STATE& rs,								///< [in] The ray state
 			Scalar* distance,									///< [in] If there was a hit, how far?
@@ -986,17 +986,33 @@ bool RayCaster::CastRay(
 	bool bReturn = false;
 
 	// Cast the ray into the scene
-	RayIntersection	ri( ray, rast );
+	RayIntersection	ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
-	// DL-408: a contact launch is cast against its target alone; a launch
-	// that does not meet it at the launch point falls back to the scene.
-	if( !( rs.pContactTarget && BSSRDFSampling::IntersectContactRay(
-			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, ri ) ) ) {
+	// DL-408: a contact launch is first cast against its target alone, from
+	// behind the shared face; a launch that does not meet it at the launch
+	// point falls back to the ordinary scene cast of the GIVEN ray (the
+	// exit's own offset ray, outside the launching body), never from the
+	// backed-off origin.  `ray` below is whichever ray the hit lies on.
+	Ray contactRay;
+	bool bContactHit = false;
+	if( rs.pContactTarget ) {
+		contactRay = BSSRDFSampling::ContactRay( rs.contactPoint, rayIn.Dir() );
+		RayIntersection riContact( contactRay, rast );
+		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		bContactHit = BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact );
+		if( bContactHit ) {
+			ri = riContact;
+		}
+	}
+	if( !bContactHit ) {
 		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 	}
+	const Ray& ray = bContactHit ? contactRay : rayIn;
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
@@ -1825,7 +1841,7 @@ bool RayCaster::CastRayNM(
 bool RayCaster::CastRayNM(
     const RuntimeContext& rc,							///< [in] The runtime context
 	const RasterizerState& rast,						///< [in] Current state of the rasterizer
-	const Ray& ray,										///< [in] Ray to cast
+	const Ray& rayIn,										///< [in] Ray to cast
 	Scalar& c,											///< [out] Amplitude of spectral function for the given wavelength
 	const RAY_STATE& rs,								///< [in] The ray state
 	const Scalar nm,									///< [in] Wavelength to cast
@@ -1859,17 +1875,33 @@ bool RayCaster::CastRayNM(
 #endif
 
 	// Cast the ray into the scene
-	RayIntersection	ri( ray, rast );
+	RayIntersection	ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
-	// DL-408: a contact launch is cast against its target alone; a launch
-	// that does not meet it at the launch point falls back to the scene.
-	if( !( rs.pContactTarget && BSSRDFSampling::IntersectContactRay(
-			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, ri ) ) ) {
+	// DL-408: a contact launch is first cast against its target alone, from
+	// behind the shared face; a launch that does not meet it at the launch
+	// point falls back to the ordinary scene cast of the GIVEN ray (the
+	// exit's own offset ray, outside the launching body), never from the
+	// backed-off origin.  `ray` below is whichever ray the hit lies on.
+	Ray contactRay;
+	bool bContactHit = false;
+	if( rs.pContactTarget ) {
+		contactRay = BSSRDFSampling::ContactRay( rs.contactPoint, rayIn.Dir() );
+		RayIntersection riContact( contactRay, rast );
+		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		bContactHit = BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact );
+		if( bContactHit ) {
+			ri = riContact;
+		}
+	}
+	if( !bContactHit ) {
 		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 	}
+	const Ray& ray = bContactHit ? contactRay : rayIn;
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
@@ -3243,7 +3275,7 @@ void RayCaster::RestoreSoloState( const SoloStateSnapshot& snap )
 bool RayCaster::CastRayHWSS(
 	const RuntimeContext& rc,
 	const RasterizerState& rast,
-	const Ray& ray,
+	const Ray& rayIn,
 	Scalar c[SampledWavelengths::N],
 	const RAY_STATE& rs,
 	SampledWavelengths& swl,
@@ -3278,7 +3310,7 @@ bool RayCaster::CastRayHWSS(
 			c[i] = 0;
 			if( !swl.terminated[i] )
 			{
-				bool hit = CastRayNM( rc, rast, ray, c[i], rs,
+				bool hit = CastRayNM( rc, rast, rayIn, c[i], rs,
 					swl.lambda[i], distance, pRadianceMap, ior_stack );
 				if( hit ) anyHit = true;
 			}
@@ -3301,17 +3333,33 @@ bool RayCaster::CastRayHWSS(
 #endif
 
 	// Single scene intersection shared by all wavelengths
-	RayIntersection ri( ray, rast );
+	RayIntersection ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
-	// DL-408: a contact launch is cast against its target alone; a launch
-	// that does not meet it at the launch point falls back to the scene.
-	if( !( rs.pContactTarget && BSSRDFSampling::IntersectContactRay(
-			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, ri ) ) ) {
+	// DL-408: a contact launch is first cast against its target alone, from
+	// behind the shared face; a launch that does not meet it at the launch
+	// point falls back to the ordinary scene cast of the GIVEN ray (the
+	// exit's own offset ray, outside the launching body), never from the
+	// backed-off origin.  `ray` below is whichever ray the hit lies on.
+	Ray contactRay;
+	bool bContactHit = false;
+	if( rs.pContactTarget ) {
+		contactRay = BSSRDFSampling::ContactRay( rs.contactPoint, rayIn.Dir() );
+		RayIntersection riContact( contactRay, rast );
+		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		bContactHit = BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact );
+		if( bContactHit ) {
+			ri = riContact;
+		}
+	}
+	if( !bContactHit ) {
 		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 	}
+	const Ray& ray = bContactHit ? contactRay : rayIn;
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;

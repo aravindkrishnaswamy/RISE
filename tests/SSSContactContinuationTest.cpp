@@ -16,6 +16,7 @@
 #define main SSSExteriorSuiteMain
 #include "SSSExteriorIndexInvarianceTest.cpp"
 #undef main
+#include <cstdlib>
 #include <functional>
 
 namespace
@@ -268,6 +269,70 @@ namespace
 		return out;
 	}
 
+	//! Review round 2, P1: a random-walk cube resting on the INSIDE face of
+	//! a closed room (how Blender exports a room): `mesh` picks a closed
+	//! double-sided indexed mesh room over a box_geometry one.  Grey walls,
+	//! a luminaire panel under the ceiling, the camera inside.  Light the
+	//! exit sends into the floor's plane must be met by the floor; missing
+	//! it, the continuation escapes below the room and is lost.
+	std::string BuildRoom( bool mesh, Scalar gap, Rast r, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0.25 1.9\n\tlookat 0 0.25 0\n\tup 0 1 0\n\tviewport_scale 1.4 1.4\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname grey\n\tcolor 0.5 0.5 0.5\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "lambertian_material\n{\n\tname wall\n\treflectance grey\n}\n\n";
+		s << "lambertian_luminaire_material\n{\n\tname lum\n\texitance white\n\tscale 4\n\tmaterial none\n}\n\n";
+		s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		std::string roomGeo = "room_geo", roomScale;
+		if( mesh ) {
+			s << MeshCube( "room_geo", true, false, false );
+			roomScale = "\tscale 4 3 4\n";
+		} else {
+			s << "box_geometry\n{\n\tname room_geo\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n";
+		}
+		s << "clippedplane_geometry\n{\n\tname lum_geo\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n}\n\n";
+		s << "standard_object\n{\n\tname block\n\tgeometry block_geo\n\tmaterial block\n\tposition 0 " << gap << " 0\n}\n\n";
+		s << "standard_object\n{\n\tname room\n\tgeometry " << roomGeo << "\n\tmaterial wall\n\tposition 0 1 0\n" << roomScale << "}\n\n";
+		s << "standard_object\n{\n\tname panel\n\tgeometry lum_geo\n\tmaterial lum\n\tposition 0 2.4 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples 1\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl408_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		std::string out = s.str();
+		SetRasterizer( out, r, samples, 0.0 );
+		return out;
+	}
+
+	//! Review round 2: an INSET -- a white Lambertian slab nested inside a
+	//! random-walk cube, flush with the cube's top face (lowered by 2e-6 in
+	//! the gap twin).  The walk ignores the slab's interior, and an exit on
+	//! the top face leaves BOTH bodies into the air: the slab is not a
+	//! neighbour across the face, so the contact twin must match the gap
+	//! twin.  A consistency pin for the nesting rule's refusal half.
+	std::string BuildInset( Scalar gap, Rast r, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 2 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 1.8 1.8\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "lambertian_material\n{\n\tname slab\n\treflectance white\n}\n\n";
+		s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		s << "box_geometry\n{\n\tname slab_geo\n\twidth 0.6\n\theight 0.2\n\tdepth 0.6\n}\n\n";
+		s << "standard_object\n{\n\tname block\n\tgeometry block_geo\n\tmaterial block\n\tposition 0 0 0\n}\n\n";
+		s << "standard_object\n{\n\tname slab\n\tgeometry slab_geo\n\tmaterial slab\n\tposition 0 " << 0.4 - gap << " 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples 1\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl408_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		std::string out = s.str();
+		SetRasterizer( out, r, samples, 0.0 );
+		return out;
+	}
+
 	struct Row
 	{
 		std::string label;
@@ -281,11 +346,13 @@ int main( int argc, char** argv )
 {
 	bool gate = true;
 	std::string only;
+	double gapTwin = 2e-6;	// --gap: the separated twin's gap (measurement aid)
 	for( int i = 1; i < argc; ++i ) {
 		const std::string a = argv[i];
 		if( a == "--measure" ) gate = false;
 		else if( a == "--gate" ) gate = true;
 		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
+		else if( a == "--gap" && i + 1 < argc ) gapTwin = std::atof( argv[++i] );
 	}
 	const unsigned int kSalts = 8;
 	std::vector<Row> rows;
@@ -332,6 +399,16 @@ int main( int argc, char** argv )
 		const std::string k = kind;
 		rows.push_back( { "pair RW|diffusion right " + k + " PT", [=]( Scalar gap, std::string& sc ) { sc = BuildVariantPair( k, false, gap, Rast::PT, 256 ); return true; }, false } );
 	}
+	// Review round 2, P1: a cube on the inside floor of a closed room.
+	for( bool mesh : { false, true } ) {
+		for( Rast r : { Rast::PT, Rast::BDPT } ) {
+			std::ostringstream l;
+			l << "RW block on a closed " << ( mesh ? "mesh" : "box" ) << " room floor " << RastName( r );
+			const unsigned int spp = r == Rast::PT ? 256 : 64;
+			rows.push_back( { l.str(), [=]( Scalar gap, std::string& sc ) { sc = BuildRoom( mesh, gap, r, spp ); return true; }, false } );
+		}
+	}
+	rows.push_back( { "RW block with a flush Lambert inset PT", []( Scalar gap, std::string& sc ) { sc = BuildInset( gap, Rast::PT, 256 ); return true; }, false } );
 	rows.push_back( { "pair RW|diffusion PT-spectral hwss", []( Scalar gap, std::string& sc ) { sc = BuildVariantPair( "box", false, gap, Rast::HWSS, 256 ); return true; }, false } );
 	{
 		Row mlt{ "pair RW|diffusion MLT (sanity)", []( Scalar gap, std::string& sc ) { sc = BuildVariantPair( "box", false, gap, Rast::MLT, 64 ); return true; }, false };
@@ -348,7 +425,7 @@ int main( int argc, char** argv )
 		for( unsigned int t = 0; t < kSalts; ++t, ++salt ) {
 			for( bool separated : { false, true } ) {
 				std::string scene;
-				if( !row.build( separated ? 2e-6 : 0.0, scene ) ) { valid = false; break; }
+				if( !row.build( separated ? gapTwin : 0.0, scene ) ) { valid = false; break; }
 				const std::string path = WriteScene( scene, "dl408" );
 				const double mean = RenderFurnaceMean( path, salt );
 				std::remove( path.c_str() );

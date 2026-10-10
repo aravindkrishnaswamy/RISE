@@ -548,10 +548,14 @@ namespace RISE
 		//! manager's scene) with `ri.geometric.ray`, both faces, and complete
 		//! the cross-object shading signals exactly as a scene cast does.
 		//! The contact launch's restricted cast
-		//! (`BSSRDFSampling::IntersectContact`).  Appended at the interface tail.
+		//! (`BSSRDFSampling::IntersectContact`).  Only hits within `dHowFar`
+		//! of the ray origin are reported (the contact band's far edge, so a
+		//! large candidate does not pay a full closest-hit cast).  Appended
+		//! at the interface tail.
 		virtual void IntersectSingleObject(
 			RayIntersection& ri,						///< [in/out] The ray in, the hit (if any) out
-			const IObject* pObject						///< [in] The only object tested
+			const IObject* pObject,						///< [in] The only object tested
+			const Scalar dHowFar						///< [in] Farthest accepted range
 			) const = 0;
         //! Coverage-aware transport traversal. Skips are not path vertices;
         //! the published ray and range still describe the complete segment.

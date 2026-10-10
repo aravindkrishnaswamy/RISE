@@ -1854,14 +1854,17 @@ bool ObjectManager::ObjectContainsPoint( const IObject* pObject, const Point3& p
 	return pObject ? CandidateContainsPoint( pObject, ptWorld, probeDir ) : false;
 }
 
-void ObjectManager::IntersectSingleObject( RayIntersection& ri, const IObject* pObject ) const
+void ObjectManager::IntersectSingleObject( RayIntersection& ri, const IObject* pObject, const Scalar dHowFar ) const
 {
 	ri.geometric.bHit = false;
 	ri.geometric.range = RISE_INFINITY;
 	if( !pObject ) {
 		return;
 	}
-	pObject->IntersectRay( ri, RISE_INFINITY, true, true, false );
+	pObject->IntersectRay( ri, dHowFar, true, true, false );
+	if( !ri.geometric.bHit ) {
+		return;
+	}
 	CompleteShadingSignals( ri.geometric, ri.pObject );
 }
 

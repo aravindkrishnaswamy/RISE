@@ -68,13 +68,35 @@ Where T comes from:
   the exit lies on (a ground plane has no interior, so no containment test
   can see it), and any enclosure whose box merely contains p.  Each is
   asked by the restricted cast itself; the band is the arbiter and the
-  NEAREST accepted hit wins.  One refusal: a candidate that contains the
-  backed-off origin o (`IObjectManager::ObjectContainsPoint`, DL-370's
-  winding-independent sign / two-way-parity rule) lies on the LAUNCHING
-  side -- an inset flush with the exit face -- and is not a neighbour
-  across it.  DL-370's in-walk crossing between random-walk bodies is
+  NEAREST accepted hit wins.  A candidate whose interior overlaps the
+  launching body at the shared face (it contains the backed-off origin o:
+  `IObjectManager::ObjectContainsPoint`, DL-370's winding-independent
+  sign / two-way-parity rule) is one of two NESTED configurations that
+  look identical at p -- both interiors on the same side of the face:
+  an ENCLOSURE floor (S rests on the inside face of T: a closed box room,
+  a glass tank), whose surface really is there and must be met, and an
+  INSET (T inside S, flush with S's face), whose surface is not a
+  neighbour across the face (the continuation leaves both bodies).  No
+  local probe separates them -- a point just outside S beside p is
+  outside T in BOTH (the room's floor face is coincident with the
+  block's bottom) -- so the test is the nesting itself: two closed bodies
+  whose interiors overlap and whose boundaries only touch are nested, and
+  nesting implies world-box nesting.  S's box inside T's (padded by the
+  band radius) and not the reverse: an enclosure, accepted; otherwise
+  (an inset, or boxes that do not tell: equal, or loose boxes under
+  different transforms) the candidate is refused, as before.  DL-370's in-walk crossing between random-walk bodies is
   kept: it runs first, inside the walk, and a walk only reaches this test
   once it has really left to the exterior.
+
+  *Review round 2 (2026-10-10) changed the refusal.*  Round 1 refused
+  every candidate containing o, so a body resting on the INSIDE face of
+  its own closed room (how Blender exports a room) lost the floor again:
+  the reviewer's RW block on a closed `box_geometry` room's floor read
+  contact/gap 0.9602 on both the base and round 1, against 0.9998 for an
+  open-floor control.  Dropping the refusal was rejected: the inset is a
+  legitimate nested configuration (a flush slab inside a wax block), and
+  accepting it would reflect the exit back off a surface that is not
+  across the face.  Both cases are rows of the contact test.
 
   *Review round 1 (2026-10-10) changed this.*  The first version asked
   for the FIRST body containing the exit's offset point; inside any
@@ -109,19 +131,45 @@ Why this and not the alternatives the earlier passes weighed:
 
 ## 3. Transport consistency
 
-* **NEE.**  Unchanged and already consistent: from the SSS exit (offset
-  into B) and from B's contact hit (backed off into S), every shadow ray
-  into the covered hemisphere is occluded by the neighbour's far face,
-  exactly as in the gap twin it is occluded by the neighbour's near face
-  (shadow rays hit both faces).  Residual: an EMITTING neighbour seen from
-  a contact exit (section 5).
+* **NEE and connections at a contact (review round 2).**  At a contact
+  exit, and at a contact hit, the side facing the partner is covered by
+  the partner's surface at zero distance: in the gap twin every shadow
+  ray or connection into it is occluded by the partner's near face.  The
+  exit's own offset point (p + n BSSRDF_RAY_EPSILON) need NOT lie inside
+  the partner, though -- resting on the inside floor of a closed room it
+  lies 1e-6 BELOW the floor, outside the room, where a shadow ray sees
+  whatever is outside (round 1 relied on the partner occluding through
+  its far side, which a solid neighbour does and an enclosure floor does
+  not).  So the covering is now explicit, for every partner that casts
+  shadows: PT computes the exit's contact before its NEE and zeroes that
+  NEE (still evaluated, so the sampler stays in lockstep; its optimal-MIS
+  training scale is 0, a counted zero); BDPT, VCM and MLT mark the exit
+  vertex and every contact-hit vertex `BDPTVertex::contactCovered`, and
+  every connection with such a vertex as an endpoint returns zero (s = 1
+  NEE, t = 1 splat, interior connections, the zero-exitance sweep, VCM's
+  NEE / splat / connections).  The vertex stays connectible, so the MIS
+  denominators keep the gap twin's structure.  BDPT needed the contact
+  HIT gated too: the floor-contact vertex's predecessor (the exit) lies
+  1e-6 below it, so a direction rebuilt from positions put both of its
+  BSDF arguments below the floor and a Lambertian floor priced env light
+  from outside the room (BDPT contact/gap 1.020 with only the exit
+  gated).  PT is not affected by that (it uses the ray's own direction).
+  Residuals: an EMITTING neighbour seen from a contact exit, and a
+  partner with `casts_shadows FALSE` (section 5).
 * **PT MIS.**  The continuation's density is unchanged (the same sampled
   direction); a contact hit is an ordinary hit, so emission weighting,
   bsdfMisPdf and the optimal-MIS training are untouched.
 * **BDPT / VCM / MLT.**  The walk computes each new vertex's `pdfFwd` and
   the previous vertex's `pdfRev` from the RAY (direction and `range`), not
   from vertex positions, so a restricted cast's range delta enters exactly
-  where the gap twin's ~1e-6 range does.  Contact vertices are connectible
+  where the gap twin's ~1e-6 range does.  A strategy's ENDPOINT and its
+  predecessor are re-priced from POSITIONS, and across a contact edge
+  those can differ from the range by orders of magnitude (two vertices on
+  opposite sides of a shared face, ~1e-12 apart, against a range of
+  ~1e-6: a factor ~(1e-6/1e-12)^2 in an area density).  That re-pricing
+  only enters a strategy whose endpoint is a contact vertex, and those
+  contribute zero (above) unless the partner casts no shadows: DL-558,
+  documented, not fixed.  Contact vertices are connectible
   as usual; every connection from one into the covered hemisphere is
   occluded (as in the gap twin).  The SSS exit vertex is a subsurface-jump
   MIS barrier (DL-317 / DL-375), so no MIS walk evaluates the zero-length
@@ -136,14 +184,25 @@ Why this and not the alternatives the earlier passes weighed:
   scatter there has probability ~sigma_t * delta = sigma_t * 1e-6 (1+s),
   the same order as the gap twin's own ~1e-6 segment in the gap; it is not
   corrected.
-* **NEE through the partner.**  NEE from a contact exit (its offset point
-  lies inside the neighbour) and from a contact hit (backed off into the
-  launching body) relies on the partner OCCLUDING every shadow ray into the
-  covered hemisphere -- through its far side instead of its near face in
-  the gap twin.  That holds for every shadow-casting body; a partner with
-  `casts_shadows FALSE` behaves the same in both twins; the opt-in
-  transparent-shadow dielectric walk would count one interface where the
-  gap twin counts two (not measured).
+* **The band scales with COORDINATE magnitude, not object size.**  delta
+  and the reach are `BSSRDF_RAY_EPSILON (1+s)` with s the launch point's
+  largest absolute coordinate (the same scale every BSSRDF offset uses),
+  so a millimetre contact 100 units from the origin gets a band ~100x
+  wider than the same contact at the origin, and a large scene far from
+  the origin can admit a candidate whose surface is a few 1e-4 away.
+  The candidate radius (96 delta) scales the same way.
+* **The cast is bounded.**  The restricted cast stops at the band's widest
+  possible far edge (`delta + 80 BSSRDF_RAY_EPSILON (1+s)`, the 0.05 cosine
+  floor), so a large candidate never pays a full closest-hit traversal
+  (review round 2).
+* **Fallback.**  If a PT continuation's restricted cast does not land in
+  the band at cast time, `RayCaster::CastRay{,NM,HWSS}` fall back to the
+  ordinary scene cast of the ray they were given -- the exit's own offset
+  ray, never the backed-off origin inside the launching body (review
+  round 2; the contact ray is rebuilt there from `RAY_STATE::contactPoint`).
+  The PT loop and the BDPT walks already fell back from the walk's own
+  ray.  `FindExitContact` verified the identical cast, so the fallback is
+  reached only if the target's answer depends on rasterizer state.
 
 ## 4. Cost
 
@@ -155,7 +214,12 @@ lands in the band additionally pays the containment test at the backed-off
 origin (a closed-form signed distance, or two parity casts for an
 uncertified mesh).  An enclosure therefore costs one intersection per exit
 and NO parity casts.  Contact-hit scatters pay one single-object
-intersection.  Measured numbers: section 6.
+intersection.  Since review round 2 the single-object cast is bounded by
+the band's widest far edge, and a candidate that contains the backed-off
+origin additionally pays two bounding-box reads (the nesting test).
+Covering a contact's NEE costs nothing extra in PT (the exit's contact
+query moved ahead of the NEE; the NEE is still evaluated) and one flag
+test per strategy in BDPT / VCM.  Measured numbers: section 6.
 
 ## 5. Residuals (by design)
 
@@ -164,7 +228,25 @@ intersection.  Measured numbers: section 6.
   through its interior; the continuation (a contact launch) carries the
   emission at MIS weight ~1.  Unchanged by this slice.
 * Alpha coverage (DL-214) of the neighbour is not consulted by the
-  restricted cast (a cut-out contact face is treated as solid).
+  restricted cast: a cut-out contact face is treated as solid.  An
+  alpha-carded leaf or decal lying flat on an SSS body therefore reflects
+  the exit's continuation off its transparent texels too, and (since round
+  2) zeroes the exit's NEE there, where the gap twin's alpha-aware scene
+  cast and shadow rays would see through the cut-out.
+* A partner with `casts_shadows FALSE` is still met by the continuation
+  but does not cover: its exits keep their NEE and connections from the
+  offset point, which is correct for a solid neighbour (the offset point
+  is inside it and the gap twin's shadow rays pass it too) but leaks
+  past an enclosure floor that casts no shadows; and the DL-558 position
+  re-pricing applies there.
+* A contact HIT's connections are gated on BOTH sides.  For a reflecting
+  partner the far side carries zero BSDF anyway; a NON-DELTA TRANSMITTING
+  partner material (`translucent_material`, a rough dielectric) at a
+  contact loses its connections through itself (its continuation still
+  transmits).
+* The nesting test is a box test: an inset whose box is not inside the
+  launching body's (a flush inset under a different, loose transform), or
+  an enclosure whose box does not contain the body's, keeps the refusal.
 * The legacy shader-op chain (frozen) and the photon tracers keep the old
   launch; SMS is untouched.
 * Two touching shells of ONE object (the launching object is never a
@@ -285,3 +367,47 @@ The enclosure now costs one single-object cast per exit and NO parity
 casts (containment is asked only of a candidate whose cast lands in the
 band), so the uncertified-mesh container pays one mesh intersection per
 exit, not two parity walks.
+
+### 6.2 Review round 2 (2026-10-10): rooms, covering, bounded cast
+
+Contact/gap ratio, same harness (paired salts, n = 8), round 1 library
+`be32378f7` against this round.  The room rows put a white environment
+OUTSIDE the closed room, so light that leaks through the floor reads as a
+GAIN (the reviewer's room, lit only from inside, read the same defect as
+a loss: 0.9602).
+
+| row | `be32378f7` | this round |
+|---|---|---|
+| RW block on the inside floor of a closed `box_geometry` room, PT | 1.6851 | 1.0016 |
+| same, BDPT | 1.6837 | 0.9960 |
+| same room as a closed double-sided indexed mesh, PT | 1.6886 | 1.0002 |
+| same, BDPT | 1.6881 | 0.9986 |
+| flush Lambertian INSET in a RW block (refusal half; consistency) | 0.9997 | 0.9999 |
+| reviewer's harness, closed box room (no environment), PT | 0.9602 | 1.0002 |
+| reviewer's harness, open clipped-plane floor, PT | 0.9998 | 1.0000 |
+
+All inside their paired bands (BDPT room rows: band 2.6e-3 and 1.0e-3 on
+a mean of 0.10).  The intermediate states are informative: with only the
+nesting rule, PT read 1.033 and BDPT 1.054 (the exit's offset point lies
+below the floor); with the exit covered, PT read 1.000 and BDPT 1.020 (a
+Lambertian floor-contact vertex whose predecessor lies below it, both
+BSDF arguments rebuilt from positions on the wrong side).  Contact test
+38/0; every round-1 row still green.
+
+**Bit-identity** (single thread, salt 0, 8 spp, OIDN off, against a fresh
+`ba133dd38` build): 7 of 12 shipped SSS scenes identical.  `rwsss_sphere`
+and `rwsss_bdpt` differ as in round 1 (point contacts).
+`bdpt_sss_different_bsdf`, `bdpt_sss_dragon` and `vcm_sss_dragon` differ
+in 5619 / 435 / 12570 pixels by at most 5.1e-10 / 1.0e-9 / 1.3e-9
+relative, means identical to 12 digits: far below any transport change a
+contact launch makes, attributed to code generation of the gated
+connection code (not verified further).
+
+**Cost, P2-1** (user CPU, n = 4 interleaved): a wax ball inside four
+large tessellated index-1.0 glass shells (detail 96 each; every exit asks
+four meshes whose boxes contain it): master 5.130 +/- 0.071 s,
+`be32378f7` 5.135 +/- 0.118 s, this round 5.008 +/- 0.026 s -- equal
+within noise; the unbounded single-mesh casts were not a measurable cost
+there either, the bound removes the worst case for a candidate whose
+closest hit is far.
+
