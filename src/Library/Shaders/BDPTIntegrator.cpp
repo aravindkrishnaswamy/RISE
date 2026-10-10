@@ -2792,7 +2792,7 @@ namespace {
 			// placeholder into the subsurface branch, and terminates right
 			// after it if that branch does not continue the walk.
 			ScatteredRay guideTemplateRay;
-			guideTemplateRay.type = ScatteredRay::eRayDiffuse;
+			guideTemplateRay.type = guidedVertex ? PathTransportUtilities::GuidedSingleLabelType(ri.pMaterial) : ScatteredRay::eRayDiffuse;
 			guideTemplateRay.isDelta = false;
 			guideTemplateRay.ray = Ray( ri.geometric.ptIntersection, ri.geometric.vNormal );
 			const bool hasLobe = ( pScat != 0 );
@@ -7668,7 +7668,7 @@ unsigned int GenerateLightSubpathImpl(
 		// an un-guided subsurface vertex) with no selectable lobe, and is what
 		// a guide draw continues on.
 		ScatteredRay guideTemplateRay;
-		guideTemplateRay.type = ScatteredRay::eRayDiffuse;
+		guideTemplateRay.type = guidedVertex ? PathTransportUtilities::GuidedSingleLabelType(ri.pMaterial) : ScatteredRay::eRayDiffuse;
 		guideTemplateRay.isDelta = false;
 		guideTemplateRay.ray = Ray( ri.geometric.ptIntersection, ri.geometric.vNormal );
 		const bool hasLobe = ( pScat != 0 );

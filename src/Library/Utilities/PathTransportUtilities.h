@@ -61,6 +61,14 @@ namespace RISE
 {
 	namespace PathTransportUtilities
 	{
+        // A single-label BSDF keeps that label when the guide replaces its
+        // direction. Mixed-label aggregate guide draws retain the DL-483 pin.
+        inline ScatteredRay::ScatRayType GuidedSingleLabelType(const IMaterial* material)
+        {
+            return material && material->ConnectionScatterTypes() == (1u << ScatteredRay::eRayReflection)
+                ? ScatteredRay::eRayReflection : ScatteredRay::eRayDiffuse;
+        }
+
 		//////////////////////////////////////////////////////////////////////
 		// PTVolumeWalkStream (DL-247; moved here from PathTracingIntegrator.cpp
 		// by DL-283 so SobolDimensionBudgetTest Test G2 enumerates the real
