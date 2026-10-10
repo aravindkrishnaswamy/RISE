@@ -539,7 +539,7 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
 class DispatchSMSOp final : public PathTracingShaderOp {
 public:
     mutable unsigned nmCalls=0, nestedCalls=0, lostMode=0;
-    bool expectLegacy=true;
+    bool expectLegacy=true, expectExtended=false;
     DispatchSMSOp(const ManifoldSolverConfig& config,const StabilityConfig& stability)
         : PathTracingShaderOp(config,stability) { SetMaxPathDepth(12); }
     void Prepare(const IScene& scene) {
@@ -553,7 +553,7 @@ public:
         ++nmCalls;
         if(state.depth>1) ++nestedCalls;
 #ifdef RISE_SMS_SCENE_POLICY
-        if(expectLegacy&&!rc.smsForceLegacy) ++lostMode;
+        if((expectLegacy&&!rc.smsForceLegacy)||(expectExtended&&rc.smsForceLegacy)) ++lostMode;
 #endif
         return PathTracingShaderOp::PerformOperationNM(rc,hit,caster,state,accum,nm,stack,scat);
     }
@@ -578,13 +578,13 @@ static std::string DispatchScene(int kind,const std::string& compositeMaterial="
     return text;
 }
 static std::vector<Scalar> DispatchHWSS(LoadedScene& loaded,bool extended,unsigned salt,
-    unsigned& nmCalls,unsigned& nestedCalls,unsigned& lostMode,bool hwss=true)
+    unsigned& nmCalls,unsigned& nestedCalls,unsigned& lostMode,bool hwss=true,bool direct=false,bool wantExtended=false)
 {
     ManifoldSolverConfig config; config.enabled=true; config.extendedMode=extended;
     config.seedingMode=ManifoldSolverConfig::eSeedingUniform; config.targetBounces=1;
     config.biased=true; config.multiTrials=4; config.photonCount=1;
     StabilityConfig stability; stability.rrMinDepth=20;
-    auto* op=new DispatchSMSOp(config,stability); op->expectLegacy=hwss; op->Prepare(loaded.Scene());
+    auto* op=new DispatchSMSOp(config,stability); op->expectLegacy=hwss&&!wantExtended; op->expectExtended=wantExtended; op->Prepare(loaded.Scene());
     std::vector<IShaderOp*> ops{op}; IShader* shader=nullptr;
     Check(RISE_API_CreateStandardShader(&shader,ops),"dispatch HWSS shader created");
     if(!shader) { op->release(); return {}; }
@@ -599,7 +599,11 @@ static std::vector<Scalar> DispatchHWSS(LoadedScene& loaded,bool extended,unsign
         IORStack stack(1);
         const Ray ray(Point3(0,0,-0.9),Vector3(0,0,1));
         if(hwss) {
-            caster->CastRayHWSS(context,nullRasterizerState,ray,
+            if(direct) {
+                const auto hit=Hit(*loaded.Object("subject"),ray.origin,ray.Dir());
+                Scalar accum[SampledWavelengths::N]{};
+                op->PerformOperationHWSS(context,hit,*caster,state,accum,swl,stack,nullptr,result);
+            } else caster->CastRayHWSS(context,nullRasterizerState,ray,
                 result,state,swl,nullptr,nullptr,stack);
             for(Scalar lane:result) values.push_back(lane);
         } else {
@@ -616,6 +620,14 @@ static std::vector<Scalar> DispatchHWSS(LoadedScene& loaded,bool extended,unsign
     caster->release(); shader->release(); op->release();
     return values;
 }
+class HWSSPolicyLog final : public virtual ILogPrinter, public virtual Reference {
+public:
+    unsigned warnings=0;
+    void Print(const LogEvent& event) override {
+        if(std::string(event.szMessage).find("Extended SMS is ignored for HWSS inside a forced-legacy scope")!=std::string::npos) ++warnings;
+    }
+    void Flush() override {}
+};
 static void HWSSDispatchCases()
 {
     for(int kind=0;kind<3;++kind) {
@@ -647,6 +659,43 @@ static void HWSSDispatchCases()
         }
     }
 }
+// DL-451: direct shader-op calls must make the same explicit legacy
+// refusal as RayCaster, and log once per solver over 128 bundle calls.
+static void HWSSDirectRefusalCases()
+{
+    auto* log=new HWSSPolicyLog(); GlobalLogPriv()->AddPrinter(log);
+    LoadedScene loaded(DispatchScene(2));
+    for(unsigned trial=0;trial<4;++trial) {
+        unsigned a=0,b=0,lostOff=0,c=0,d=0,lostOn=0;
+        const unsigned salt=SobolSequence::HashCombine(451001+trial,0x48575353);
+        const auto off=DispatchHWSS(loaded,false,salt,a,b,lostOff,true,true);
+        GlobalLog()->FlushPrinters(); const unsigned before=log->warnings;
+        const auto on=DispatchHWSS(loaded,true,salt,c,d,lostOn,true,true);
+        GlobalLog()->FlushPrinters();
+        Check(c>0,"direct HWSS SSS shader call exercises NM continuations");
+        Check(lostOn==0,"direct HWSS shader call pins legacy mode on every NM continuation");
+        Check(log->warnings==before+1,"direct extended HWSS refusal warns exactly once over 128 calls");
+        Check(!off.empty()&&off.size()==on.size()&&std::memcmp(off.data(),on.data(),off.size()*sizeof(Scalar))==0,
+            "direct extended HWSS refusal is bit-identical to legacy control");
+        std::cout<<"DL451 direct salt="<<salt<<" NM="<<c<<" nested="<<d<<" lost="<<lostOn
+            <<" warnings="<<log->warnings-before<<" n=128 bundles\n";
+    }
+}
+
+// Strict opt-in feature pin: refusal is safe, but extended shader dispatch
+// remains unavailable. Keep this red until the per-lane route is implemented.
+static void HWSSExtendedDispatchPin()
+{
+    LoadedScene loaded(DispatchScene(2));
+    for(unsigned trial=0;trial<4;++trial) {
+        unsigned nm=0,nested=0,lost=0;
+        const unsigned salt=SobolSequence::HashCombine(451001+trial,0x48575353);
+        DispatchHWSS(loaded,true,salt,nm,nested,lost,true,true,true);
+        Check(nm>0&&lost==0,"DL-451 strict feature pin: every direct HWSS NM continuation uses extended mode");
+        std::cout<<"DL451 extended pin salt="<<salt<<" NM="<<nm<<" forced-legacy="<<lost<<"\n";
+    }
+}
+
 class CompositePolicyLog final : public virtual ILogPrinter, public virtual Reference {
 public:
     std::vector<std::string> messages;
@@ -941,8 +990,14 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    if(argc>1 && std::string(argv[1])=="--dl451-extended-only") {
+        HWSSExtendedDispatchPin();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
     if(argc>1 && std::string(argv[1])=="--hwss-dispatch-only") {
         HWSSDispatchCases();
+        HWSSDirectRefusalCases();
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
@@ -993,6 +1048,7 @@ int main(int argc,char** argv)
     PreparedCompositePolicyCases();
     EmptyCompositeNameCases();
     HWSSDispatchCases();
+        HWSSDirectRefusalCases();
     Check(domainCounters.attempts.load()==domainCounters.acceptedRoots.load()+domainCounters.rejectedRoots.load(),
         "every domain trial is accounted as accepted or rejected");
     std::cout << "DOMAIN counters attempts=" << domainCounters.attempts.load()

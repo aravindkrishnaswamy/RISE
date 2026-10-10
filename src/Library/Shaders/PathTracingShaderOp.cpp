@@ -25,6 +25,7 @@
 #include "PathTracingIntegrator.h"
 #include "../Rendering/AOVBuffers.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/RuntimeContext.h"
 #include "../Utilities/Color/Color.h"
 
 using namespace RISE;
@@ -213,6 +214,11 @@ void PathTracingShaderOp::PerformOperationHWSS(
 	const IScene* pScene = caster.GetAttachedScene();
 	if( !pScene ) return;
 
+	// DL-451: shader-op HWSS explicitly retains legacy SMS until the
+	// whole dispatch chain has a per-lane extended-domain contract. Keep
+	// direct callers consistent with CastRayHWSS; the integrator warns once
+	// per solver and the scope restores the caller's mode on return.
+	const SMSLegacyModeScope smsMode( rc, true );
 	IndependentSampler sampler( rc.random );
 	IORStack localIorStack( ior_stack );
 
