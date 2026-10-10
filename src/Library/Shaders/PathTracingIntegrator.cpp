@@ -3145,7 +3145,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							const unsigned int nextTranslucentBounces = translucentBounces + 1;
 							const bool skipSSS =
-								nextTranslucentBounces > stabilityConfig.maxTranslucentBounce;
+								nextTranslucentBounces > (rc.pNativePTSubsurfaceBounceCap ?
+                                    *rc.pNativePTSubsurfaceBounceCap : stabilityConfig.maxTranslucentBounce);
 
 							if( !skipSSS )
 							{
@@ -3412,7 +3413,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							const unsigned int nextTranslucentBounces = translucentBounces + 1;
 							const bool skipSSS =
-								nextTranslucentBounces > stabilityConfig.maxTranslucentBounce;
+								nextTranslucentBounces > (rc.pNativePTSubsurfaceBounceCap ?
+                                    *rc.pNativePTSubsurfaceBounceCap : stabilityConfig.maxTranslucentBounce);
 
 							if( !skipSSS )
 							{

@@ -1169,7 +1169,8 @@ static std::string SubsurfaceCapScene(const char* kind, bool randomWalk, int cap
 static void RowL()
 {
     const int n=Repeats();
-    for(bool spectral:{false,true}) for(bool rw:{false,true}) for(int cap:{0,1}) {
+    for(bool spectral:{false,true}) for(bool rw:{false,true}) for(int cap:{0,1,2}) {
+        if(std::getenv("RISE_DL482_METADATA_ONLY")) continue;
         if(cap>0 && !std::getenv("RISE_DL482_POSITIVE_PIN")) continue;
         const unsigned seed=48200+100*unsigned(rw)+10*unsigned(cap)+2000*unsigned(spectral);
         const Stats pt=RenderStatsSalted(SubsurfaceCapScene("pathtracing",rw,cap,spectral),n,seed);
@@ -1198,6 +1199,14 @@ static void RowL()
         const auto status=BDPTUtilities::JoinedTypeCapPlan(nullptr,eye,0,6,caps,plan);
         std::printf("DL482 positive-cap metadata: counted jumps=%u expected=2 status=%d expected-over=%d\n",plan.base.n[3],int(status),int(BDPTUtilities::eTypeCapOver));
         Check(status==BDPTUtilities::eTypeCapOver,"DL482 positive-cap strict pin: two subsurface jumps exceed translucent cap one");
+        Check(plan.base.n[3]==2,"DL482 exactly one charge per nonlocal jump");
+        const auto capTwo=BDPTUtilities::MakeBounceTypeCaps(UINT_MAX,UINT_MAX,UINT_MAX,2,16,16);
+        Check(BDPTUtilities::JoinedTypeCapPlan(nullptr,eye,0,6,capTwo,plan)==BDPTUtilities::eTypeCapOK && plan.base.n[3]==2,"DL482 cap two admits exactly two jumps");
+        unsigned char prefix[4];
+        BDPTUtilities::LightPrefixTypeCounts(eye,4,prefix);
+        Check(prefix[3]==2,"DL482 light merge prefix includes jump ending at merge vertex");
+        unsigned char emptyPrefix[4]={};
+        Check(BDPTUtilities::MergeTypeCapPlan(eye,4,emptyPrefix,1,caps,plan)==BDPTUtilities::eTypeCapOver && plan.base.n[3]==2,"DL482 eye merge counts nonlocal jumps including free angular endpoint");
     }
 }
 
