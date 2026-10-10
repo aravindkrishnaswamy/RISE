@@ -2884,6 +2884,10 @@ namespace {
 
 					if( Ft > NEARZERO && sampler.Get1D() < Ft )
 					{
+						// DL-482 zero-cap slice: reject the selected jump, preserving
+						// the Fresnel reflection branch and its sampling mass. Positive
+						// caps still require a per-path jump count across strategies.
+						if( stabilityConfig.maxTranslucentBounce == 0 ) break;
 						BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
 							ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ) );
 
@@ -3018,6 +3022,10 @@ namespace {
 
 					if( Ft > NEARZERO && sampler.Get1D() < Ft )
 					{
+						// DL-482 zero-cap slice: reject the selected jump, preserving
+						// the Fresnel reflection branch and its sampling mass. Positive
+						// caps still require a per-path jump count across strategies.
+						if( stabilityConfig.maxTranslucentBounce == 0 ) break;
 						// See RGB light subpath comment for rationale.
 						IndependentSampler walkSampler( rc.random );
 						ISampler& rwSampler = sampler.HasFixedDimensionBudget()
@@ -7754,6 +7762,10 @@ unsigned int GenerateLightSubpathImpl(
 
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
+					// DL-482 zero-cap slice: reject the selected jump, preserving
+					// the Fresnel reflection branch and its sampling mass. Positive
+					// caps still require a per-path jump count across strategies.
+					if( stabilityConfig.maxTranslucentBounce == 0 ) break;
 					// Chose subsurface transmission (probability Ft)
 					BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
 						ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ) );
@@ -7887,6 +7899,10 @@ unsigned int GenerateLightSubpathImpl(
 
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
+					// DL-482 zero-cap slice: reject the selected jump, preserving
+					// the Fresnel reflection branch and its sampling mass. Positive
+					// caps still require a per-path jump count across strategies.
+					if( stabilityConfig.maxTranslucentBounce == 0 ) break;
 					// The random walk consumes a variable number of
 					// dimensions (up to ~7 per scatter × maxBounces).
 					// Samplers with a fixed dimension budget (Sobol)
