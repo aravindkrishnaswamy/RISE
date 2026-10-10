@@ -15,6 +15,10 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+(That sample scene still uses the FROZEN legacy `pixelpel_rasterizer`; it renders
+and logs one "LEGACY and UNSUPPORTED" warning.  It moves to PT in legacy Phase 2.
+Tiers: [docs/SCENE_CONVENTIONS.md](docs/SCENE_CONVENTIONS.md) §11.4.)
+
 ### One-time setup: OIDN with GPU support (extlib submodule)
 
 OIDN is shipped as a git submodule at `extlib/oidn/source` so RISE

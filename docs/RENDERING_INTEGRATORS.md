@@ -16,6 +16,16 @@ algorithmic detail lives in [VCM.md](VCM.md), [SMS.md](SMS.md),
 [MIS_HEURISTICS.md](MIS_HEURISTICS.md), and the integrator headers
 themselves.
 
+> **Legacy tiers (2026-10-09, legacy-deprecation Phase 1):** `pixelpel_rasterizer`,
+> `pixelintegratingspectral_rasterizer`, the shader-op chain ops that only they run
+> (distribution tracing, final gather, direct lighting, area light, AO, alpha /
+> transparency, point-cloud SSS), photon maps / gathers / `irradiance_cache`, and
+> `mlt_rasterizer` / `mlt_spectral_rasterizer` are **FROZEN** -- legacy and unsupported:
+> they still load and render bit-identically, but receive no fixes, the agent will not
+> insert them, and their ledger rows close won't-fix.  Removal is on hold (owner ruling).
+> Use PT / BDPT / VCM / auto.  Tiers: [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) §11.4;
+> rulings: [LEGACY_DEPRECATION_ASSESSMENT.md](LEGACY_DEPRECATION_ASSESSMENT.md) §13.
+
 ## 1. Two render pipelines
 
 RISE has two coexisting render-loop architectures. New scenes should
@@ -23,7 +33,12 @@ use the **pure-integrator** pipeline whenever it covers the workload;
 the **shader-dispatch** pipeline is retained for the configurations
 only it supports.
 
-### 1.1 Shader-dispatch (legacy / extensible)
+### 1.1 Shader-dispatch (legacy / extensible) -- FROZEN 2026-10-09
+
+The user-facing chunks of this pipeline are frozen (see the banner above).  The
+`RayCaster` / shader dispatch itself stays supported INFRASTRUCTURE: PT's BSSRDF and
+random-walk continuations still shade their exit hit through the scene's default shader
+(`pathtracing_shaderop`), and `PathTracingPelRasterizer` derives from `PixelBasedPelRasterizer`.
 
 The classical RISE pipeline. The rasterizer drives a `RayCaster`,
 which evaluates a chain of `IShaderOp` operations attached to each
@@ -111,8 +126,8 @@ The ten rasterizer chunks, grouped by algorithm.
 
 | Chunk | Pipeline | Notes |
 |---|---|---|
-| `pixelpel_rasterizer` | shader-dispatch | RGB. Runs the `defaultshader` chain (PT shader-op + others) at every hit. The classic configuration. Use when composability matters more than raw PT throughput. |
-| `pixelintegratingspectral_rasterizer` | shader-dispatch | Spectral analogue of `pixelpel_rasterizer`. RGB→SPD conversion happens in the painter pipeline.  **Soft-deprecated** — modern features (path guiding, adaptive sampling, optimal MIS, full inline OIDN AOV) are not wired here; new scenes should prefer `pathtracing_spectral_rasterizer`.  Retained for custom spectral shader-op chains; no removal date.  See [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5. |
+| `pixelpel_rasterizer` | shader-dispatch | **FROZEN (legacy, unsupported) 2026-10-09.** RGB. Runs the `defaultshader` chain (PT shader-op + others) at every hit. Use `pathtracing_pel_rasterizer` (`max_diffuse_bounce 0` for a direct-only look). |
+| `pixelintegratingspectral_rasterizer` | shader-dispatch | **FROZEN (legacy, unsupported) 2026-10-09** (was soft-deprecated). Spectral analogue of `pixelpel_rasterizer`. RGB→SPD conversion happens in the painter pipeline.  Modern features (path guiding, adaptive sampling, optimal MIS, full inline OIDN AOV) are not wired here; new scenes should prefer `pathtracing_spectral_rasterizer`.  Still renders existing scenes; removal on hold.  See [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5. |
 | `pathtracing_pel_rasterizer` | pure integrator | RGB. Calls `PathTracingIntegrator` directly. Bypasses shader-op chain. **Default modern PT.** Wires OIDN with the filtered-film resolve correctly skipped (raw MC noise feeds OIDN). |
 | `pathtracing_spectral_rasterizer` | pure integrator | Spectral. NM and HWSS modes both available.  Inline OIDN AOV wired 2026-06-02 (audit §2.6) — both the pure-integrator path and the shader-dispatch `pixelintegratingspectral_rasterizer` allocate AOV buffers and accumulate Albedo/Normal per camera sample; the `CollectFirstHitAOVs` retrace fallback is now bypassed when inline data is present.  Through-glass scenes (the canonical retrace-misnames-glass-as-white case) now record the through-glass surface albedo. |
 
@@ -130,7 +145,10 @@ The ten rasterizer chunks, grouped by algorithm.
 | `vcm_pel_rasterizer` | pure integrator | RGB. BDPT connection strategies + photon merging in one MIS umbrella, MIS-weighted via the **balance heuristic (β=1)** — architecturally required by the Georgiev 2012 dVCM/dVC/dVM running-quantities recurrence; see [MIS_HEURISTICS.md](MIS_HEURISTICS.md). Adds `vc_enabled` / `vm_enabled` switches and `merge_radius` (0 = SPPM-style auto-radius reduction). The right pick whenever caustics carry meaningful energy. See [VCM.md](VCM.md). |
 | `vcm_spectral_rasterizer` | pure integrator | Spectral analogue. |
 
-### MLT (Metropolis light transport)
+### MLT (Metropolis light transport) -- FROZEN 2026-10-09
+
+Both MLT chunks are frozen (legacy, unsupported; [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)
+had already retired MLT).  Use BDPT / VCM / auto.
 
 | Chunk | Pipeline | Notes |
 |---|---|---|
@@ -323,7 +341,7 @@ when fewer than 8 light segments touch a mergeable surface; its
 warning now says whether the camera sees no mergeable surface at all
 or sees them but too few light paths land there.
 
-### 5.4 Pick MLT (`mlt_rasterizer`) when…
+### 5.4 Pick MLT (`mlt_rasterizer`) when… (FROZEN -- do not pick for new scenes)
 
 - BDPT and VCM both fail to find the important paths after long
   render times (paths are extremely sparse / narrow / occluded).
@@ -337,7 +355,11 @@ documents two MLT variants that shipped and were retired because the
 parameter regimes where they actually win are narrow. Read that
 postmortem before reaching for MLT.
 
-### 5.5 Pick `pixelpel_rasterizer` when…
+### 5.5 Pick `pixelpel_rasterizer` when… (FROZEN -- do not pick for new scenes)
+
+Since 2026-10-09 this rasterizer and its chain ops are frozen; custom shader-op
+composition is given up as a user feature (owner ruling #2).  The list below is
+historical.
 
 - You need a custom shader-op chain (AO + transparency + alpha test +
   PT, photon-map gather, final-gather, etc.).
