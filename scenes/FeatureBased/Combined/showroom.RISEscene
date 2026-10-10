@@ -313,18 +313,6 @@ uniformcolor_painter
 
 scalar_painter
 {
-	name				tf_Ti_n
-	file				colors/thinfilm/substrates/Ti.n
-}
-
-scalar_painter
-{
-	name				tf_Ti_k
-	file				colors/thinfilm/substrates/Ti.k
-}
-
-scalar_painter
-{
 	name				tf_TiO2_n
 	file				colors/thinfilm/oxides/TiO2.n
 }

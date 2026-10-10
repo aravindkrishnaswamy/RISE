@@ -868,6 +868,11 @@ def migrate_iridescent(text, report, rel=None):
             white = ensure_painter(ed, created, 'pnt_tf_white', [1, 1, 1], d.kw_line, dind,
                                    '%s: white F0 tint for the thin-film materials.' % STAMP)
             for nm_, fn in THINFILM_DATA:
+                # The titanium substrate tables are bound only by the mirror
+                # (perfectreflector) branch; a pearlescent body sits on a 1.5
+                # dielectric and would leave them declared but unused.
+                if nm_.startswith('tf_Ti_') and d.kw != 'perfectreflector_material':
+                    continue
                 if nm_ not in created and nm_ not in named:
                     created.add(nm_)
                     ed.insert_before(d.kw_line, chunk_lines('scalar_painter', [('name', nm_), ('file', fn)], None, dind) + [''])
@@ -1157,6 +1162,10 @@ def selftest():
     new4, st4 = migrate_iridescent(ir, [])
     assert re.search(r'fresnel_mode\s+thinfilm', new4) and 'tf_Ti_n' in new4, new4
     assert migrate_iridescent(new4, [])[0] is None
+    # A pearlescent (lambertian) body binds only the TiO2 film tables.
+    new4b, _ = migrate_iridescent(ir.replace('perfectreflector_material\n{\n\tname r\n\treflectance i',
+                                             'lambertian_material\n{\n\tname r\n\treflectance i'), [])
+    assert 'tf_TiO2_n' in new4b and 'tf_Ti_n' not in new4b and 'tf_Ti_k' not in new4b, new4b
     # Schlick isotropy < 1: facets spread along onb.u, so alphax is the LARGER.
     sch = 'schlick_material\n{\n\tname s\n\troughness 0.04\n\tisotropy 0.1\n}\n'
     new5, _ = migrate_materials(sch, [])
