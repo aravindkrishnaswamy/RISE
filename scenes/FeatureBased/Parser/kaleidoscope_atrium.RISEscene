@@ -3548,11 +3548,18 @@ standard_object
 # Loop-generated light rig
 #
 # Legacy phase 2 slice C retune (B1/B2 owner precedent): every light power
-# x0.951.  Moving off the legacy pixel rasterizer added the indirect light the
-# old direct-lighting / Whitted chains never computed (+16%, PT bounce 0 vs
-# full GI), and the GGX / coated materials dropped energy the legacy models
-# invented (-5.5%); net +5.2%.  Both are legacy biases, so the whole-image
-# mean is restored to the legacy image's (powers were 80 / 132 / 95 / 35).
+# x0.951 (powers were 80 / 132 / 95 / 35).  Under the legacy pixel rasterizer
+# the 14 glossy_shader objects (floor slab, rings, pillars) already path
+# traced (pathtracing_shaderop); only the 91 default-shader objects (back
+# wall, the 81 floor wave tiles, plinths, jade cores) were direct-lit, and the
+# 5 glass objects used the Whitted chain.  Path tracing them adds the
+# indirect light those chains never computed (the rasterizer change alone,
+# legacy materials kept, reads +11.8% whole image), and the GGX / coated
+# materials drop energy the legacy models invented (-5.5% alone); net +5.2%,
+# both legacy biases, so the whole-image mean is restored to the legacy
+# image's.  The retune does not restore the
+# distribution: against the legacy image the top half (back wall) reads
+# about +11% and the bottom half (floor) about -7%.
 ##################################################
 
 

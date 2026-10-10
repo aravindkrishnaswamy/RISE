@@ -209,7 +209,9 @@ def rasterizer_audit(text):
     declared = [c.kw for c in parse_chunks(code) if c.kw.endswith('_rasterizer')]
     raw = []
     for ln in lines:
-        m = RAW_RASTERIZER_RE.match(ln.lstrip('#').lstrip('/*'))
+        # Peel indentation and any comment markers (`\t# foo_rasterizer`,
+        # `#\tfoo_rasterizer`, `/* foo_rasterizer`) before matching.
+        m = RAW_RASTERIZER_RE.match(re.sub(r'^(?:\s|#|/\*)+', '', ln))
         if m:
             raw.append(m.group(1))
     commented = [k for k in raw if k in FROZEN_RASTERIZERS and raw.count(k) > declared.count(k)]
@@ -1779,6 +1781,8 @@ def selftest():
     assert 'ACTIVE one is the last declared, `mlt_rasterizer`' in fl and 'is FROZEN' in fl, fl
     assert rasterizer_flag('x', 'pathtracing_pel_rasterizer\n{\n}\n/*\nmlt_rasterizer\n{\n}\n*/\n') is None
     assert rasterizer_audit('/*\nmlt_rasterizer\n{\n}\n*/\nbdpt_pel_rasterizer\n{\n}\n')[2] == ['mlt_rasterizer']
+    assert rasterizer_audit('\t# mlt_rasterizer\n#\tpixelpel_rasterizer\nbdpt_pel_rasterizer\n{\n}\n')[2] == \
+        ['mlt_rasterizer', 'pixelpel_rasterizer']
     print('selftest: OK')
     return 0
 

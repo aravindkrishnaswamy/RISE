@@ -786,12 +786,24 @@ migration slice):**
   PT `max_diffuse_bounce 0`, 4 spp: -0.12%, CLI render 0.63-0.66 s (legacy 0.60-0.64 s) and
   no frozen-rasterizer warning.  `FB/Parser/kaleidoscope_atrium` `--mode full` (mixed
   Whitted / direct / PT chains -> PT full GI, 64 spp) + materials (polished -> coated,
-  Cook-Torrance -> GGX conductor, Ward anisotropic -> GGX): +5.2% as migrated, decomposed
-  into ~+16% indirect light the legacy chains never computed and -5.5% invented material
-  energy, both legacy biases, so its lights were RETUNED x0.951 (B1/B2 precedent):
-  -0.01%.  `FB/Combined/tidepools` (already PT; polished -> coated, iridescent shell ->
+  Cook-Torrance -> GGX conductor, Ward anisotropic -> GGX): +5.2% as migrated.  Its 14
+  `glossy_shader` objects (floor slab, rings, pillars) already path traced; only the 91
+  default-shader objects (back wall, the 81 floor wave tiles, plinths, jade cores) were
+  direct-lit and the 5 glass objects Whitted.  The rasterizer change alone (legacy
+  materials kept) reads +11.8% (the indirect light those chains never computed), the
+  material change alone -5.5% (invented energy), both legacy biases, so its lights were
+  RETUNED x0.951 (B1/B2 precedent): whole image -0.01%.  The retune restores the mean, not
+  the distribution: against the legacy image the top half (back wall) reads +11.3% and the
+  bottom half (floor) -7.2% (this slice's 3-salt, 160 px measurement; the slice review
+  measured +12.2% / -7.1%).  `FB/Combined/tidepools` (already PT; polished -> coated, iridescent shell ->
   thin-film GGX, dead commented AO / pixelpel / irradiance-cache blocks removed): -1.3%,
-  not retuned (proposal x1.013).  `FB/PathTracing/pt_jewel_vault` (Ward / Ashikhmin ->
+  not retuned (proposal x1.013).  Its thin-film shell reads `colors/thinfilm/` tables, so
+  the Android dependency walker now also follows `colors/` (`riseMediaPrefixes`); every
+  catalogue scene loads clean against a media tree holding only what the walker bundles.
+  The families tool no longer declares the unused titanium substrate tables (`tf_Ti_n` /
+  `tf_Ti_k`) for a pearlescent (dielectric-substrate) body; they were dropped from
+  tidepools and the five B2 scenes that carried them unbound (`showroom`, `painters`, the
+  three `dreamscape_*` benchmarks).  `FB/PathTracing/pt_jewel_vault` (Ward / Ashikhmin ->
   GGX): -0.01%.  Gallery: `docs/legacy_phase2c_review/index.html`.
 - **Android:** `SceneCatalog.kt` bundles the in-tree scene files (scraped by
   `app/build.gradle.kts`), so the migrated scenes ship with no separate copies; the
@@ -800,13 +812,17 @@ migration slice):**
   labelled `[legacy]` and selectable, `use_world_ambient` OFF).  With the toggle OFF a
   world that does not use nodes used to be DROPPED; it now exports as the same uniform
   `world_radiance_uniform` radiance map a node-based uniform Background gets.  A `.blend`
-  that enabled `use_world_ambient` is unchanged.  Found, not fixed: selecting `Pixel
-  Rasterizer [legacy]` with the (default-on) back-compat "Path Tracing" box renders PT,
-  not the legacy rasterizer (`rise_blender_bridge.cpp` maps kind 0 + `use_path_tracing`
-  to PT-pel, the v4 behaviour).
+  that enabled `use_world_ambient` is unchanged.  "Pixel Rasterizer [legacy]" could not be
+  reached: the native bridge maps kind 0 + `use_path_tracing` to PT-pel (the ABI-v4
+  behaviour) and that box defaults True and is not drawn.  `bridge.resolve_rasterizer_
+  selection` (called by `export_scene`) now sends `use_path_tracing` False for an explicit
+  kind 0; every other kind passes it through, so a `.blend` that never chose the pixel
+  rasterizer exports exactly as before.  No ABI change.
 - **GUIs:** the Mac and Qt new-scene template (`scenes/Templates/empty_starter`, also the
   Mac app resource) is already PT; no sample menu or editor template defaults to a frozen
   chunk.  Nothing changed.
+- **Docs:** SCENE_CONVENTIONS and the parser README now say that a later rasterizer chunk
+  replaces the active one and silently drops the `file_rasterizeroutput`s attached to it.
 - **Left on legacy in the shipped tree:** `scenes/Tests/Legacy/` (the frozen corpus),
   `scenes/Tests/ChunkCoverage/cc_*` (one-chunk coverage), `FB/Shaders/visiblehuman` (frozen
   DVR), `translucent_bunny`'s owner-kept `iridescent_painter`, and
