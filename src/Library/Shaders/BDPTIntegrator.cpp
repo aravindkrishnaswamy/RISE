@@ -1078,7 +1078,7 @@ BDPTIntegrator::BDPTIntegrator(
 	// may lose paths only light tracing / connections / merges reach at a
 	// receiver whose material declares no per-type split (DL-481 gave one
 	// to GGX, Cook-Torrance, Schlick, Ward, Phong, Ashikhmin, polished and
-	// translucent; coated, composite, fabric, weave, hair, ... keep the
+	// translucent (and DL-502 to hair); coated, composite, fabric, weave, ... keep the
 	// exclusion).
 	const BDPTUtilities::BounceTypeCaps typeCaps = BDPTUtilities::MakeBounceTypeCaps(
 		stabilityConfig.maxDiffuseBounce, stabilityConfig.maxGlossyBounce,
@@ -1089,7 +1089,7 @@ BDPTIntegrator::BDPTIntegrator(
 			"BDPT/VCM/MLT: a per-type bounce cap can bind (diffuse %u, glossy %u, transmission %u, translucent %u "
 			"against max_eye_depth %u + max_light_depth %u; UINT_MAX = cannot bind).  Under it, light-traced, "
 			"connected or merged paths through a receiver with several lobe types and no per-type split "
-			"(coated, composite, fabric, weave, hair, ...) can be LOST -- e.g. a point-light caustic onto a "
+			"(coated, composite, fabric, weave, ...) can be LOST -- e.g. a point-light caustic onto a "
 			"coated floor -- see DL-481 (docs/DEBT_LEDGER.md)",
 			typeCaps.cap[0], typeCaps.cap[1], typeCaps.cap[2], typeCaps.cap[3], maxEyeDepth, maxLightDepth );
 	}

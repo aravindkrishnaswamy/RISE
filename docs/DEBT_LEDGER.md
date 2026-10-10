@@ -1502,6 +1502,7 @@ debt-dl406 slice note (2026-10-09, branched from `master` `4ef05c006`; does NOT 
 
 **Authoritative totals on `master` (recount after each merge; per-slice notes
 below are each slice's own snapshot at its branch HEAD and do NOT sum):**
+- 2026-10-10 batch 7 DL-502/482 integration and DL-502 warning follow-through: **332 main rows: 22 open, 310 closed** (numeric identifier recount; both rows remain partial).
 - 2026-10-09 (`debt-codex6-367`): reference batching corrected; DL-367 remains partial with a strict unmatched pin. Numeric-ID recount for integration: **332 main rows: 22 open, 310 closed**.
 - 2026-10-09 master merge of debt-dl481 (review zero P1): DL-481 CLOSED (per-type value split at connection/merge endpoints); DL-503 CLOSED as BDPT's S-D-S coverage gap; DL-501 marked low priority (deprecated model); DL-502 open. **332 main rows: 27 open, 305 closed**.
 - 2026-10-09 user rulings recorded: DL-481 plan (a) (fix next), DL-465 plan (a) (per-thread scene state), DL-06/DL-221/DL-293/DL-398/DL-450/DL-60 PARKED, DL-449 stays opt-in with cost reduction filed as DL-500. **329 main rows: 27 open (6 parked), 302 closed**.
