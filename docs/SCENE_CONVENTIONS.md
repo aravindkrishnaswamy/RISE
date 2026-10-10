@@ -1573,6 +1573,24 @@ delta lights (`omni_light`, `spot_light`, `directional_light`),
 shader, D13), `standard_shader` / `advanced_shader`, and the `PixelBased*`
 rasterizer classes PT derives from.
 
+**Migrating a scene off the legacy pixel rasterizers** (Phase 2, 2026-10-10):
+`tools/migrate_scenes_legacy_rasterizer.py --mode pt|direct|renames [--dry-run]`.
+`--mode pt` handles a chain that is only path tracing (look kept up to noise);
+`--mode direct` handles a direct-lighting-only chain (plus `DefaultEmission` and
+uniform `transparency_shaderop` / `alpha_test_shaderop`, turned into material
+alpha) and writes `max_diffuse_bounce 0` (owner ruling #3a; the look changes:
+specular paths and MIS emitter hits now contribute); `--mode renames` renames
+the `mis_pathtracing_shaderop` alias and turns `onb_pinhole_camera` into
+`pinhole_camera`.  Things to know when doing it by hand: the path tracers do not
+accept `max_recursion`, `lum_samples`, `luminary_sampler*`, `filter_glossy`,
+`integrate_rgb` or `rgb_spd*`; the legacy `samples` default is **1** where the
+path tracers' is 32, so write `samples` explicitly; the legacy rasterizers ALSO
+denoise with OIDN by default, so leave `oidn_denoise` as it was; SMS settings on
+a `pathtracing_shaderop` move to the rasterizer's `sms_*` parameters; and point
+`defaultshader` at a `DefaultPathTracing` chain (PT's SSS continuation shades
+through it).  Scenes that keep a frozen chunk's only regression render live
+verbatim in `scenes/Tests/Legacy/`.
+
 ## 11.5. Deprecated materials (DL-323 follow-through, 2026-10-02)
 
 **Update 2026-10-09:** these seven chunks are now **FROZEN** (owner ruling
