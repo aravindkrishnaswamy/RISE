@@ -101,7 +101,7 @@ ggx_material
 - `scenes/Tests/Materials/ggx_roughness_sweep_bdpt.RISEscene` — BDPT variant
 - `scenes/Tests/Materials/ggx_anisotropy_sweep.RISEscene` — 3x3 aluminum grid, alpha_x vs alpha_y (PT)
 - `scenes/Tests/Materials/ggx_anisotropy_sweep_bdpt.RISEscene` — BDPT variant
-- `scenes/Tests/Materials/ggx_vs_cooktorrance.RISEscene` — Side-by-side comparison, 4 roughness levels
+- `scenes/Tests/Legacy/ggx_vs_cooktorrance.RISEscene` — Side-by-side comparison, 4 roughness levels
 - `scenes/FeatureBased/Materials/ggx_showcase.RISEscene` — Gold roughness sweep, brushed aluminum, copper/chromium accents
 
 ### Validation results

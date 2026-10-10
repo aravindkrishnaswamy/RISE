@@ -31,14 +31,12 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-mlt_rasterizer
+# Legacy phase 2 slice B2: was mlt_rasterizer (frozen) -> bdpt_pel_rasterizer; mutations_per_pixel -> samples, dropped bootstrap_samples 3000, chains 24, large_step_prob 0.3.
+bdpt_pel_rasterizer
 {
 	max_eye_depth		3
-	max_light_depth	3
-	bootstrap_samples	3000
-	chains				24
-	mutations_per_pixel	24
-	large_step_prob		0.3
+	max_light_depth		3
+	samples				24
 	oidn_denoise		FALSE
 	pixel_filter		box
 }

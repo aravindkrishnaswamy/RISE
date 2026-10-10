@@ -14,10 +14,24 @@ standard_shader
 	shaderop	pathtracer
 }
 
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
+{
+	name				pnt_ambient_env
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
 pathtracing_pel_rasterizer
 {
 	samples				256
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.31831
+	radiance_background		FALSE
 }
 
 file_rasterizeroutput
@@ -109,11 +123,4 @@ standard_object
 	geometry	sph
 	material	mat_blue
 	position	1.6 0 0
-}
-
-ambient_light
-{
-	name		amb
-	power		1.0
-	color		1.0 1.0 1.0
 }

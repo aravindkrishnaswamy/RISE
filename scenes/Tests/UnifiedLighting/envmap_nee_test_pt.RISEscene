@@ -127,12 +127,15 @@ perfectreflector_material
 }
 
 # 3. Cook-Torrance gold metallic (glossy)
-cooktorrance_material
+# Legacy phase 2 slice B2: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.08 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				mat_gold
 	rd					pnt_gold
 	rs					pnt_gold
-	facets				0.08
+	alphax				0.08
+	alphay				0.08
+	fresnel_mode		conductor
 	ior					2.5
 	extinction			3.0
 }
@@ -147,12 +150,15 @@ dielectric_material
 }
 
 # 5. Isotropic Phong - polished red
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 120 -> alpha 1/sqrt(2N+1) = 0.06442, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				mat_phong_red
 	rd					pnt_red
 	rs					pnt_white
-	N					120.0
+	alphax				0.064416
+	alphay				0.064416
+	fresnel_mode		schlick_f0
 }
 
 # Ground material: lambertian light gray

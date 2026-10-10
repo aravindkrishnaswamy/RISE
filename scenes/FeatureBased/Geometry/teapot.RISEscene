@@ -272,12 +272,14 @@ png_painter
 	file				textures/waterbump.png
 }
 
-iridescent_painter
+# Legacy phase 2 slice B2: was iridescent_painter (colora `color_darkpurple`, colorb `color_slateblue`, bias -0.5); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.2083; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
 	name				pnt_iri
-	colora				color_darkpurple
-	colorb				color_slateblue
-	bias				-0.5
+	color				0.41958 0.19876 0.58042
+	colorspace			Rec709RGB_Linear
 }
 
 mandelbrot_painter
@@ -292,12 +294,15 @@ mandelbrot_painter
 	exponent			12.0
 }
 
-cooktorrance_material
+# Legacy phase 2 slice B2: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.1 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ct
 	rd					color_black
 	rs					color_gold
-	facets				0.1
+	alphax				0.1
+	alphay				0.1
+	fresnel_mode		conductor
 	ior					1.8
 	extinction			0
 }
@@ -306,19 +311,80 @@ cooktorrance_material
 # Materials
 ##################################################
 
-polished_material
+# Legacy phase 2 slice B2: white F0 tint for the thin-film materials.
+uniformcolor_painter
 {
-	name				polished
-	reflectance			pnt_iri
-	tau					0.90 0.91 0.98
-	scattering			256.0
-	ior					10000
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
 }
 
-perfectreflector_material
+scalar_painter
+{
+	name				tf_Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				tf_Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Legacy phase 2 slice B2: substrate of `polished` (was polished_material reflectance).
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_iri` -> pearlescent ggx: rd = mean colour 0.42 0.199 0.58 (w 0.208), TiO2 film 120 nm over a 1.5 dielectric (alpha 0.3), thickness matching colorb's hue.
+ggx_material
+{
+	name				polished_base
+	rd					pnt_iri
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		120
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `polished_base`; coat_weight = tau 0.9 0.91 0.98 (Rec.709 luminance; the tint is dropped), coat_ior 3 (ior 10000 clamped to coated_material's [1, 3]), coat_roughness 1/sqrt(2*256+1) = 0.04415 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+	name				polished
+	base				polished_base
+	coat_weight			0.9129
+	coat_ior			3
+	coat_roughness		0.04415
+}
+
+# Legacy phase 2 slice B2: was perfectreflector_material; perfectreflector with iridescent `pnt_iri` -> near-mirror (alpha 0.01) TiO2 film 150 nm over titanium, thickness matching colorb's hue.
+ggx_material
 {
 	name				perf_ref
-	reflectance			pnt_iri
+	rd					none
+	rs					pnt_tf_white
+	alphax				0.01
+	alphay				0.01
+	fresnel_mode		thinfilm
+	ior					tf_Ti_n
+	extinction			tf_Ti_k
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		150
 }
 
 lambertian_material

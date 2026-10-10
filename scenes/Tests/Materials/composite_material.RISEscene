@@ -39,10 +39,24 @@ standard_shader
 	shaderop	pt
 }
 
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
+{
+	name				pnt_ambient_env
+	color				0.72888 0.72888 1
+	colorspace			Rec709RGB_Linear
+}
+
 pathtracing_pel_rasterizer
 {
 	samples 			64
 	defaultshader		global
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.0255874
+	radiance_background		FALSE
 }
 
 file_rasterizeroutput
@@ -645,15 +659,6 @@ directional_light
 	color				0.7 0.75 0.9
 	colorspace			sRGB
 	power				1.5
-}
-
-# Subtle ambient
-ambient_light
-{
-	name				ambientlight
-	color				0.3 0.3 0.35
-	colorspace			sRGB
-	power				0.8
 }
 
 

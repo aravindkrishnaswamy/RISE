@@ -229,21 +229,33 @@ lambertian_material
 	reflectance			myyel
 }
 
-polished_material
+# Legacy phase 2 slice B2: substrate of `polished` (was polished_material reflectance).
+lambertian_material
 {
-	name				polished
+	name				polished_base
 	reflectance			color_white
-	tau			1
-	ior					10000
-	scattering			1000.0
 }
 
-isotropic_phong_material
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `polished_base`; coat_weight = tau 1, coat_ior 3 (ior 10000 clamped to coated_material's [1, 3]), coat_roughness 1/sqrt(2*1000+1) = 0.02236 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+	name				polished
+	base				polished_base
+	coat_weight			1
+	coat_ior			3
+	coat_roughness		0.02236
+}
+
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 128 -> alpha 1/sqrt(2N+1) = 0.06238, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				glossy
 	rd					pnt_gray
 	rs					color_white
-	N					128.0
+	alphax				0.062378
+	alphay				0.062378
+	fresnel_mode		schlick_f0
 }
 
 perfectreflector_material

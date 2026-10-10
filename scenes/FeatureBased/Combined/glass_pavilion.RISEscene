@@ -263,13 +263,22 @@ uniformcolor_painter
 ##################################################
 
 # Polished marble floor
-polished_material
+# Legacy phase 2 slice B2: substrate of `polished_floor` (was polished_material reflectance).
+lambertian_material
+{
+	name				polished_floor_base
+	reflectance			pnt_floor_checker
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `polished_floor_base`; coat_weight = tau 1, coat_ior 1.5, coat_roughness 1/sqrt(2*600+1) = 0.02886 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				polished_floor
-	reflectance			pnt_floor_checker
-	tau					1.0
-	ior					1.5
-	scattering			600.0
+	base				polished_floor_base
+	coat_weight			1
+	coat_ior			1.5
+	coat_roughness		0.02886
 }
 
 # Column marble
@@ -296,12 +305,15 @@ dielectric_material
 }
 
 # Bronze material for the vase (Cook-Torrance)
-cooktorrance_material
+# Legacy phase 2 slice B2: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.15 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				bronze
 	rd					pnt_bronze
 	rs					pnt_bronze_spec
-	facets				0.15
+	alphax				0.15
+	alphay				0.15
+	fresnel_mode		conductor
 	ior					2.5
 	extinction			3.0
 }

@@ -55,19 +55,24 @@ hosek_wilkie_skylight
 	create_sun				true
 }
 
-# Fill light so the probes still show on the camera-facing side even
-# when the matched HW sun is positioned to leave them backlit.
-ambient_light
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
 {
-	name		fill
-	power		0.30
-	color		1.0 1.0 1.0
+	name				pnt_ambient_env
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
 }
 
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
 pathtracing_pel_rasterizer
 {
 	samples				64
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.095493
+	radiance_background		FALSE
 }
 
 file_rasterizeroutput

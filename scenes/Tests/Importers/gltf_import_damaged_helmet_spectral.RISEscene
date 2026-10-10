@@ -38,6 +38,17 @@ standard_shader
 	shaderop		pathtracer
 }
 
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
+{
+	name				pnt_ambient_env
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
 # 32 wavelengths over the full visible band, non-HWSS, gives reliable
 # chromatic output without the HWSS undersampling that washes colour
 # out at low N.  See uniform_green_spectral.RISEscene for the
@@ -50,6 +61,9 @@ pathtracing_spectral_rasterizer
 	nmend				780
 	num_wavelengths		32
 	hwss				false
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.0795775
+	radiance_background		FALSE
 }
 
 file_rasterizeroutput
@@ -86,11 +100,4 @@ directional_light
 	power		3.14
 	color		1.0 1.0 1.0
 	direction	0.4 0.4 0.7
-}
-
-ambient_light
-{
-	name		ambient
-	power		0.25
-	color		1.0 1.0 1.0
 }

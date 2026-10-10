@@ -377,12 +377,15 @@ uniformcolor_painter
 ##################################################
 
 # Floor: glossy dark polished stone
-ward_isotropic_material
+# Legacy phase 2 slice B2: was ward_isotropic_material; ward_isotropic alpha 0.07 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				floor_mat
 	rd					pnt_floor_checker
 	rs					pnt_floor_spec
-	alpha				0.07
+	alphax				0.07
+	alphay				0.07
+	fresnel_mode		schlick_f0
 }
 
 # Room surfaces
@@ -449,31 +452,39 @@ lambertian_material
 }
 
 # Copper: Ward isotropic, tight glossy
-ward_isotropic_material
+# Legacy phase 2 slice B2: was ward_isotropic_material; ward_isotropic alpha 0.05 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				copper_mat
 	rd					pnt_copper_diff
 	rs					pnt_copper_spec
-	alpha				0.05
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode		schlick_f0
 }
 
 # Gold: Ashikmin-Shirley anisotropic (stretched highlights)
-ashikminshirley_anisotropicphong_material
+# Legacy phase 2 slice B2: was ashikminshirley_anisotropicphong_material; ashikmin-shirley nu 250 nv 60 -> alphax 0.08909 alphay 0.1796 (sqrt(2/(n+2))), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				gold_mat
 	rd					pnt_gold_diff
 	rs					pnt_gold_spec
-	nu					250
-	nv					60
+	alphax				0.089087
+	alphay				0.17961
+	fresnel_mode		schlick_f0
 }
 
 # Bronze: Ward isotropic, slightly rougher
-ward_isotropic_material
+# Legacy phase 2 slice B2: was ward_isotropic_material; ward_isotropic alpha 0.1 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				bronze_mat
 	rd					pnt_bronze_diff
 	rs					pnt_bronze_spec
-	alpha				0.10
+	alphax				0.1
+	alphay				0.1
+	fresnel_mode		schlick_f0
 }
 
 # Clear glass

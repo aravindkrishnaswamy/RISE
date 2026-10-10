@@ -12,10 +12,14 @@ RISE ASCII SCENE 7
 # Sky painter for dome
 ##################################################
 
+# Legacy phase 2 slice B2: the uniform sky 0.22 0.4 0.78 (linear) plus the former ambient_light term 0.1006 0.1452 0.34 / radiance_scale 1.5
+# (ambient color x power / pi: the uniform radiance that lights an unoccluded Lambertian surface
+# as the ambient light did; the environment is occluded, so creases darken).
 uniformcolor_painter
 {
 	name				pnt_sky
-	color				0.22 0.40 0.78
+	color				0.28704 0.49678 1.0066
+	colorspace			Rec709RGB_Linear
 }
 
 standard_shader
@@ -70,14 +74,6 @@ directional_light
 	colorspace			sRGB
 	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
 	direction			0.3 0.5 -0.8
-}
-
-ambient_light
-{
-	name				sky_fill
-	color				0.55 0.65 0.95
-	colorspace			sRGB
-	power				1.2
 }
 
 ##################################################

@@ -38,6 +38,7 @@ image in memory and never see the file name).
 | `spectral_dispersive_caustic.RISEscene` | `scenes/Tests/Spectral/` | `caustic_spectral_photonmap` / gather under `pixelintegratingspectral_rasterizer` | `LegacyTierRenderIdentityTest` |
 | `different_rmaps.RISEscene` | `scenes/Tests/Shaders/` | per-object `radiance_map` (frozen: only the legacy chain honours it), `distributiontracing_shaderop`; MOVED here, not copied -- it was never migrated | `LegacyTierRenderIdentityTest` |
 | `dt_with_irrcache.RISEscene` | `scenes/Tests/Shaders/` | `distributiontracing_shaderop` with `irradiance_caching` and no direct-lighting sibling (DL-209's chain shape) | `LegacyTierRenderIdentityTest` |
+| `composite_material.RISEscene` | `scenes/Tests/Materials/` | `composite_material` (frozen) under an `ambient_light` (slice B2 moved the shipped copy's ambient to a uniform environment) | `LegacyTierRenderIdentityTest` |
 | `cooktorrance_multiscatter_test.RISEscene` | `scenes/Tests/Materials/` | `cooktorrance_material` multiscatter compensation (its subject); MOVED here, not copied | `CstDeriveGoldenTest` |
 | `cooktorrance_vndf_test.RISEscene` | `scenes/Tests/Materials/` | `cooktorrance_material` VNDF sampling (its subject); MOVED here, not copied | `CstDeriveGoldenTest` |
 | `ggx_vs_cooktorrance.RISEscene` | `scenes/Tests/Materials/` | `cooktorrance_material` beside `ggx_material` (a comparison that migration would make meaningless); MOVED here, not copied | `CstDeriveGoldenTest` |

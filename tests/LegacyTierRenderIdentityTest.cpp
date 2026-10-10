@@ -29,8 +29,10 @@
 //  in scenes/Tests/Legacy/ (the frozen-feature regression corpus, see its
 //  README), identical except for their output file names (`rendered/
 //  legacy_<name>`, which the hash never sees), so the parent hashes are
-//  unchanged.  Only visiblehuman (direct volume rendering, kept frozen) and
-//  composite_material still render from their shipped locations.
+//  unchanged.  Slice B2 (2026-10-10) moved the composite_material case to
+//  its Legacy/ copy too (the shipped scene's ambient_light became a uniform
+//  environment); only visiblehuman (direct volume rendering, kept frozen)
+//  still renders from its shipped location.
 //
 //  Determinism: one render per PROCESS (render-global RNG state carries
 //  over between in-process renders), so the default mode re-executes
@@ -98,7 +100,7 @@ static const IdentityCase kCases[] = {
 	{ "scenes/Tests/Legacy/transparency_shaderop.RISEscene",                  "transparency_shaderop",                                        0x418bd9f01d1c0b81ull },
 	{ "scenes/Tests/Legacy/rgb_dispersive_caustic.RISEscene",                 "caustic_pel_photonmap / gather",                               0xb898fe392a08ef1eull },
 	{ "scenes/Tests/Legacy/showroom.RISEscene",                               "irradiance_cache, iridescent_painter, polished_material",      0x7c020159f47bb489ull },
-	{ "scenes/Tests/Materials/composite_material.RISEscene",                  "composite_material",                                           0x04c301c05241164dull },
+	{ "scenes/Tests/Legacy/composite_material.RISEscene",                     "composite_material, ambient_light",                            0x04c301c05241164dull },
 	{ "scenes/FeatureBased/Shaders/visiblehuman.RISEscene",                   "directvolumerendering_shader",                                 0x7df386e9e94b9a43ull },
 	{ "scenes/Tests/Legacy/gltf_box.RISEscene",                               "ambient_light",                                                0xf20722df16b8a405ull },
 	{ "scenes/Tests/Legacy/translucent_bunny.RISEscene",                      "directlighting_shaderop, iridescent_painter",                  0x1513c77a209e3928ull },

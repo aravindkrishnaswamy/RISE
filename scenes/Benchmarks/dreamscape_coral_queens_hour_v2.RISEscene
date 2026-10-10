@@ -408,19 +408,71 @@ uniformcolor_painter
 	color	0.78 0.16 0.58
 }
 
-# Magenta sheen at grazing angles over the scale facets.
-iridescent_painter
+# Legacy phase 2 slice B2: constant blend weight 1-w for `pnt_tail`.
+uniformcolor_painter
 {
-	name	pnt_tail
-	colora	pnt_tail_magenta
-	colorb	pnt_scales
-	bias	0.05
+	name				pnt_tail_mask
+	color				0.28579 0.28579 0.28579
+	colorspace			Rec709RGB_Linear
 }
 
-lambertian_material
+# Magenta sheen at grazing angles over the scale facets.
+# Legacy phase 2 slice B2: was iridescent_painter (bias 0.05); now its projected-area mean
+# (1-w) colora + w colorb, w = 0.7142 (mask = 1-w selects colora).
+blend_painter
 {
-	name		mat_tail
-	reflectance	pnt_tail
+	name				pnt_tail
+	colora				pnt_tail_magenta
+	colorb				pnt_scales
+	mask				pnt_tail_mask
+}
+
+# Legacy phase 2 slice B2: white F0 tint for the thin-film materials.
+uniformcolor_painter
+{
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				tf_Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				tf_Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_tail` -> pearlescent ggx: rd = mean blend w 0.714, TiO2 film 190 nm over a 1.5 dielectric (alpha 0.3), thickness matching colora's hue.
+ggx_material
+{
+	name				mat_tail
+	rd					pnt_tail
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		190
 }
 
 sdf_geometry
@@ -972,18 +1024,30 @@ uniformcolor_painter
 	color	0.20 0.80 0.85
 }
 
-iridescent_painter
+# Legacy phase 2 slice B2: was iridescent_painter (colora `pnt_anem_cyan`, colorb `pnt_anem_magenta`, bias 0.1); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.7570; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
-	name	pnt_anemone
-	colora	pnt_anem_cyan
-	colorb	pnt_anem_magenta
-	bias	0.1
+	name				pnt_anemone
+	color				0.6542 0.30795 0.66075
+	colorspace			Rec709RGB_Linear
 }
 
-lambertian_material
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_anemone` -> pearlescent ggx: rd = mean colour 0.654 0.308 0.661 (w 0.757), TiO2 film 190 nm over a 1.5 dielectric (alpha 0.3), thickness matching colorb's hue.
+ggx_material
 {
-	name		mat_anemone
-	reflectance	pnt_anemone
+	name				mat_anemone
+	rd					pnt_anemone
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		190
 }
 
 sdf_geometry
@@ -1175,18 +1239,30 @@ uniformcolor_painter
 	color	0.06 0.14 0.30
 }
 
-iridescent_painter
+# Legacy phase 2 slice B2: was iridescent_painter (colora `pnt_fish_silver`, colorb `pnt_fish_blue`, bias 0.05); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.7142; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
-	name	pnt_fish
-	colora	pnt_fish_silver
-	colorb	pnt_fish_blue
-	bias	0.05
+	name				pnt_fish
+	color				0.27149 0.35149 0.48576
+	colorspace			Rec709RGB_Linear
 }
 
-lambertian_material
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_fish` -> pearlescent ggx: rd = mean colour 0.271 0.351 0.486 (w 0.714), TiO2 film 215 nm over a 1.5 dielectric (alpha 0.3), thickness matching colorb's hue.
+ggx_material
 {
-	name		mat_fish
-	reflectance	pnt_fish
+	name				mat_fish
+	rd					pnt_fish
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		215
 }
 
 sdf_geometry

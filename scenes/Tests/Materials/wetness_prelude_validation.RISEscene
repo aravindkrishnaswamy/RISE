@@ -168,7 +168,9 @@ scalar_painter
 	def			damp_raw    clamp(base_wetness + pooling + breakup - ridge, 0, 1)
 	def			damp        (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
 	def			wet         clamp(damp * film_amount, 0, damp)
-	expression		mix(film_gloss_lo, 200000.0, clamp(pooling * wet, 0, 1))
+	# Legacy phase 2 slice B2: this was polished_material `mat_wetbasin`'s Phong scattering exponent n; it is now coated_material's
+	# coat_roughness, 1/sqrt(2n+1) of the same expression (its `param` labels still describe n).
+	expression		1.0 / sqrt(2.0 * (mix(film_gloss_lo, 200000.0, clamp(pooling * wet, 0, 1))) + 1.0)
 }
 
 expression_painter
@@ -201,13 +203,22 @@ expression_painter
 	expr		mix( vec3(base_r, base_g, base_b), vec3( pow(base_r, k), pow(base_g, k), pow(base_b, k) ), damp )
 }
 
-polished_material
+# Legacy phase 2 slice B2: substrate of `mat_wetbasin` (was polished_material reflectance).
+lambertian_material
 {
-	name			mat_wetbasin
-	reflectance		basin_albedo
-	tau			basin_wet
-	ior			1.33
-	scattering		basin_gloss
+	name				mat_wetbasin_base
+	reflectance			basin_albedo
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `mat_wetbasin_base`; coat_weight = tau painter `basin_wet`, coat_ior 1.33, coat_roughness = 1/sqrt(2n+1) of scalar_painter `basin_gloss` (rewritten in place) (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+	name				mat_wetbasin
+	base				mat_wetbasin_base
+	coat_weight			basin_wet
+	coat_ior			1.33
+	coat_roughness		basin_gloss
 }
 
 standard_object

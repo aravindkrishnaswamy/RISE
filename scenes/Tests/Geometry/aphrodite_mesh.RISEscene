@@ -212,22 +212,66 @@ uniformcolor_painter
 
 
 
-iridescent_painter
+# Legacy phase 2 slice B2: was iridescent_painter (colora `color_darkpurple`, colorb `color_slateblue`, bias -0.5); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.2083; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
 	name				pnt_iri
-	colora				color_darkpurple
-	colorb				color_slateblue
-	bias				-0.5
+	color				0.41958 0.19876 0.58042
+	colorspace			Rec709RGB_Linear
 }
 
 ##################################################
 # Materials
 ##################################################
 
-perfectreflector_material
+# Legacy phase 2 slice B2: white F0 tint for the thin-film materials.
+uniformcolor_painter
+{
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				tf_Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				tf_Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Legacy phase 2 slice B2: was perfectreflector_material; perfectreflector with iridescent `pnt_iri` -> near-mirror (alpha 0.01) TiO2 film 150 nm over titanium, thickness matching colorb's hue.
+ggx_material
 {
 	name				perf_ref
-	reflectance			pnt_iri
+	rd					none
+	rs					pnt_tf_white
+	alphax				0.01
+	alphay				0.01
+	fresnel_mode		thinfilm
+	ior					tf_Ti_n
+	extinction			tf_Ti_k
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		150
 }
 
 lambertian_material

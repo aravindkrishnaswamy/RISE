@@ -226,12 +226,14 @@ animation_options
 # Materials
 ##################################################
 
-iridescent_painter
+# Legacy phase 2 slice B2: was iridescent_painter (colora `color_darkpurple`, colorb `color_slateblue`, bias -0.5); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.2083; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
 	name				pnt_iri
-	colora				color_darkpurple
-	colorb				color_slateblue
-	bias				-0.5
+	color				0.41958 0.19876 0.58042
+	colorspace			Rec709RGB_Linear
 }
 
 translucent_material

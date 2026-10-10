@@ -1328,7 +1328,8 @@ static void TestDeepEyeWalkAliasing()
 // unfixed library at commit 8080cd2a: "Slots=22529 Bytes=540696").
 // MLTRasterizer.cpp's bootstrap phase constructs and destroys ONE
 // PSSMLTSampler PER bootstrap sample (100,000 by default on
-// scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene), each paying this
+// scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene, whose MLT original lives
+// in scenes/Tests/Legacy/ since slice B2), each paying this
 // cost on its very first 6 draws -- measured bootstrap wall time (3
 // runs each, this worktree): base (e290fc64, pre-DL-08 entirely) ~2.0-
 // 2.8 s; 8080cd2a (post-collision-fix, pre-storage-fix) ~9.9-10.4 s;

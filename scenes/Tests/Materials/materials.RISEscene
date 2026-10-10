@@ -214,13 +214,15 @@ lambertian_material
 }
 
 
-ashikminshirley_anisotropicphong_material
+# Legacy phase 2 slice B2: was ashikminshirley_anisotropicphong_material; ashikmin-shirley nu 1 nv 100 200 400 -> alphax 0.8165 alphay 0.14 0.0995 0.07053 (sqrt(2/(n+2))), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				aniso
 	rd					50pgrey
 	rs					color_white
-	nu					1.0
-	nv			100 200 400
+	alphax				0.8165
+	alphay				0.14003 0.099504 0.070535
+	fresnel_mode		schlick_f0
 }
 
 uniformcolor_painter
@@ -230,12 +232,15 @@ uniformcolor_painter
 	color				0.1 0.15 0.3
 }
 
-cooktorrance_material
+# Legacy phase 2 slice B2: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.1 0.15 0.3 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ct
 	rd					50pgrey
 	rs					color_white
-	facets			0.1 0.15 0.3
+	alphax				0.1 0.15 0.3
+	alphay				0.1 0.15 0.3
+	fresnel_mode		conductor
 	ior					1.8
 	extinction			0
 }
@@ -247,13 +252,15 @@ uniformcolor_painter
 	color				0.1 0.2 0.3
 }
 
-ward_anisotropic_material
+# Legacy phase 2 slice B2: was ward_anisotropic_material; ward_anisotropic alphax 0.9 alphay 0.1 0.2 0.3 carried, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				wa
 	rd					50pgrey
 	rs					color_white
 	alphax				0.9
-	alphay			0.1 0.2 0.3
+	alphay				0.1 0.2 0.3
+	fresnel_mode		schlick_f0
 }
 
 uniformcolor_painter
@@ -263,13 +270,15 @@ uniformcolor_painter
 	color				0.01 0.2 0.1
 }
 
-schlick_material
+# Legacy phase 2 slice B2: was schlick_material; schlick roughness 0.01 -> alpha sqrt(r) = 0.1; isotropy 0.01 0.2 0.1 -> alphax 0.03162 0.06687 0.05623 alphay 0.3162 0.1495 0.1778 (heuristic: geometric-mean width kept, aspect 1/sqrt(isotropy)), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				sc
 	rd					50pgrey
 	rs					color_white
-	roughness			0.01
-	isotropy			0.01 0.2 0.1
+	alphax				0.031623 0.066874 0.056234
+	alphay				0.31623 0.14953 0.17783
+	fresnel_mode		schlick_f0
 }
 
 uniformcolor_painter
@@ -279,12 +288,15 @@ uniformcolor_painter
 	color				0.1 0.2 0.3
 }
 
-ward_isotropic_material
+# Legacy phase 2 slice B2: was ward_isotropic_material; ward_isotropic alpha 0.1 0.2 0.3 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				wi
 	rd					50pgrey
-	rs					color_white	
-	alpha			0.1 0.2 0.3
+	rs					color_white
+	alphax				0.1 0.2 0.3
+	alphay				0.1 0.2 0.3
+	fresnel_mode		schlick_f0
 }
 
 ##################################################

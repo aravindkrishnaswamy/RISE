@@ -250,22 +250,40 @@ lambertian_material
 	reflectance			pnt_back_b
 }
 
-polished_material
+# Legacy phase 2 slice B2: substrate of `support` (was polished_material reflectance).
+lambertian_material
 {
-	name				support
+	name				support_base
 	reflectance			pnt_support
-	tau			0.96 0.97 0.94
-	ior					1.45
-	scattering			260.0
 }
 
-polished_material
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `support_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.45, coat_roughness 1/sqrt(2*260+1) = 0.04381 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+	name				support
+	base				support_base
+	coat_weight			0.9657
+	coat_ior			1.45
+	coat_roughness		0.04381
+}
+
+# Legacy phase 2 slice B2: substrate of `support_pearl` (was polished_material reflectance).
+lambertian_material
+{
+	name				support_pearl_base
+	reflectance			pnt_support_pearl
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `support_pearl_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.45, coat_roughness 1/sqrt(2*320+1) = 0.0395 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				support_pearl
-	reflectance			pnt_support_pearl
-	tau			0.96 0.97 0.94
-	ior					1.45
-	scattering			320.0
+	base				support_pearl_base
+	coat_weight			0.9657
+	coat_ior			1.45
+	coat_roughness		0.0395
 }
 
 lambertian_material
@@ -381,14 +399,23 @@ standard_object
 			color			0.171611652352 0.337771301935 0.581569142147
 		}
 
-		polished_material
-		{
-			name			satin-2.000000000000-2.000000000000
-			reflectance		pnt_satin-2.000000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.000000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.000000000000-2.000000000000_base
+			reflectance			pnt_satin-2.000000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.000000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.000000000000-2.000000000000
+			base				satin-2.000000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -414,14 +441,23 @@ standard_object
 			color			0.195960947032 0.351130173424 0.580512499108
 		}
 
-		polished_material
-		{
-			name			satin-2.000000000000-1.600000000000
-			reflectance		pnt_satin-2.000000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.000000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.000000000000-1.600000000000_base
+			reflectance			pnt_satin-2.000000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.000000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.000000000000-1.600000000000
+			base				satin-2.000000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -447,14 +483,23 @@ standard_object
 			color			0.219113101314 0.362573620276 0.587082531587
 		}
 
-		polished_material
-		{
-			name			satin-2.000000000000-1.200000000000
-			reflectance		pnt_satin-2.000000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.000000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.000000000000-1.200000000000_base
+			reflectance			pnt_satin-2.000000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.000000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.000000000000-1.200000000000
+			base				satin-2.000000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -480,14 +525,23 @@ standard_object
 			color			0.240685439911 0.371489362030 0.600436919682
 		}
 
-		polished_material
-		{
-			name			satin-2.000000000000-0.800000000000
-			reflectance		pnt_satin-2.000000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.000000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.000000000000-0.800000000000_base
+			reflectance			pnt_satin-2.000000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.000000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.000000000000-0.800000000000
+			base				satin-2.000000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -513,14 +567,23 @@ standard_object
 			color			0.260262256080 0.377212267901 0.618863546003
 		}
 
-		polished_material
-		{
-			name			satin-2.000000000000-0.400000000000
-			reflectance		pnt_satin-2.000000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.000000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.000000000000-0.400000000000_base
+			reflectance			pnt_satin-2.000000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.000000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.000000000000-0.400000000000
+			base				satin-2.000000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -546,14 +609,23 @@ standard_object
 			color			0.277500000000 0.379192658173 0.640000000000
 		}
 
-		polished_material
-		{
-			name			satin-2.000000000000-0.000000000000
-			reflectance		pnt_satin-2.000000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.000000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.000000000000-0.000000000000_base
+			reflectance			pnt_satin-2.000000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.000000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.000000000000-0.000000000000
+			base				satin-2.000000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -579,14 +651,23 @@ standard_object
 			color			0.292262256080 0.377212267901 0.661136453997
 		}
 
-		polished_material
-		{
-			name			satin-2.0000000000000.400000000000
-			reflectance		pnt_satin-2.0000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.0000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.0000000000000.400000000000_base
+			reflectance			pnt_satin-2.0000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.0000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.0000000000000.400000000000
+			base				satin-2.0000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -612,14 +693,23 @@ standard_object
 			color			0.304685439911 0.371489362030 0.679563080318
 		}
 
-		polished_material
-		{
-			name			satin-2.0000000000000.800000000000
-			reflectance		pnt_satin-2.0000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.0000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.0000000000000.800000000000_base
+			reflectance			pnt_satin-2.0000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.0000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.0000000000000.800000000000
+			base				satin-2.0000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -645,14 +735,23 @@ standard_object
 			color			0.315113101314 0.362573620276 0.692917468413
 		}
 
-		polished_material
-		{
-			name			satin-2.0000000000001.200000000000
-			reflectance		pnt_satin-2.0000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.0000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.0000000000001.200000000000_base
+			reflectance			pnt_satin-2.0000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.0000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.0000000000001.200000000000
+			base				satin-2.0000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -678,14 +777,23 @@ standard_object
 			color			0.323960947032 0.351130173424 0.699487500892
 		}
 
-		polished_material
-		{
-			name			satin-2.0000000000001.600000000000
-			reflectance		pnt_satin-2.0000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.0000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.0000000000001.600000000000_base
+			reflectance			pnt_satin-2.0000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.0000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.0000000000001.600000000000
+			base				satin-2.0000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -711,14 +819,23 @@ standard_object
 			color			0.331611652352 0.337771301935 0.698430857853
 		}
 
-		polished_material
-		{
-			name			satin-2.0000000000002.000000000000
-			reflectance		pnt_satin-2.0000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-2.0000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-2.0000000000002.000000000000_base
+			reflectance			pnt_satin-2.0000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-2.0000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-2.0000000000002.000000000000
+			base				satin-2.0000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -744,14 +861,23 @@ standard_object
 			color			0.179960947032 0.370477539136 0.565569142147
 		}
 
-		polished_material
-		{
-			name			satin-1.600000000000-2.000000000000
-			reflectance		pnt_satin-1.600000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.600000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.600000000000-2.000000000000_base
+			reflectance			pnt_satin-1.600000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.600000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.600000000000-2.000000000000
+			base				satin-1.600000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -777,14 +903,23 @@ standard_object
 			color			0.205289321881 0.385402938895 0.564512499108
 		}
 
-		polished_material
-		{
-			name			satin-1.600000000000-1.600000000000
-			reflectance		pnt_satin-1.600000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.600000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.600000000000-1.600000000000_base
+			reflectance			pnt_satin-1.600000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.600000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.600000000000-1.600000000000
+			base				satin-1.600000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -810,14 +945,23 @@ standard_object
 			color			0.229500000000 0.398540023885 0.571082531587
 		}
 
-		polished_material
-		{
-			name			satin-1.600000000000-1.200000000000
-			reflectance		pnt_satin-1.600000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.600000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.600000000000-1.200000000000_base
+			reflectance			pnt_satin-1.600000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.600000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.600000000000-1.200000000000
+			base				satin-1.600000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -843,14 +987,23 @@ standard_object
 			color			0.252098300562 0.409097304785 0.584436919682
 		}
 
-		polished_material
-		{
-			name			satin-1.600000000000-0.800000000000
-			reflectance		pnt_satin-1.600000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.600000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.600000000000-0.800000000000_base
+			reflectance			pnt_satin-1.600000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.600000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.600000000000-0.800000000000
+			base				satin-1.600000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -876,14 +1029,23 @@ standard_object
 			color			0.272461179680 0.416077911373 0.602863546003
 		}
 
-		polished_material
-		{
-			name			satin-1.600000000000-0.400000000000
-			reflectance		pnt_satin-1.600000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.600000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.600000000000-0.400000000000_base
+			reflectance			pnt_satin-1.600000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.600000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.600000000000-0.400000000000
+			base				satin-1.600000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -909,14 +1071,23 @@ standard_object
 			color			0.290000000000 0.418540023885 0.624000000000
 		}
 
-		polished_material
-		{
-			name			satin-1.600000000000-0.000000000000
-			reflectance		pnt_satin-1.600000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.600000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.600000000000-0.000000000000_base
+			reflectance			pnt_satin-1.600000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.600000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.600000000000-0.000000000000
+			base				satin-1.600000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -942,14 +1113,23 @@ standard_object
 			color			0.304461179680 0.416077911373 0.645136453997
 		}
 
-		polished_material
-		{
-			name			satin-1.6000000000000.400000000000
-			reflectance		pnt_satin-1.6000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.6000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.6000000000000.400000000000_base
+			reflectance			pnt_satin-1.6000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.6000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.6000000000000.400000000000
+			base				satin-1.6000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -975,14 +1155,23 @@ standard_object
 			color			0.316098300562 0.409097304785 0.663563080318
 		}
 
-		polished_material
-		{
-			name			satin-1.6000000000000.800000000000
-			reflectance		pnt_satin-1.6000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.6000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.6000000000000.800000000000_base
+			reflectance			pnt_satin-1.6000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.6000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.6000000000000.800000000000
+			base				satin-1.6000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1008,14 +1197,23 @@ standard_object
 			color			0.325500000000 0.398540023885 0.676917468413
 		}
 
-		polished_material
-		{
-			name			satin-1.6000000000001.200000000000
-			reflectance		pnt_satin-1.6000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.6000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.6000000000001.200000000000_base
+			reflectance			pnt_satin-1.6000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.6000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.6000000000001.200000000000
+			base				satin-1.6000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1041,14 +1239,23 @@ standard_object
 			color			0.333289321881 0.385402938895 0.683487500892
 		}
 
-		polished_material
-		{
-			name			satin-1.6000000000001.600000000000
-			reflectance		pnt_satin-1.6000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.6000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.6000000000001.600000000000_base
+			reflectance			pnt_satin-1.6000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.6000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.6000000000001.600000000000
+			base				satin-1.6000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1074,14 +1281,23 @@ standard_object
 			color			0.339960947032 0.370477539136 0.682430857853
 		}
 
-		polished_material
-		{
-			name			satin-1.6000000000002.000000000000
-			reflectance		pnt_satin-1.6000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.6000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.6000000000002.000000000000_base
+			reflectance			pnt_satin-1.6000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.6000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.6000000000002.000000000000
+			base				satin-1.6000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1107,14 +1323,23 @@ standard_object
 			color			0.187113101314 0.401498849827 0.549569142147
 		}
 
-		polished_material
-		{
-			name			satin-1.200000000000-2.000000000000
-			reflectance		pnt_satin-1.200000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.200000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.200000000000-2.000000000000_base
+			reflectance			pnt_satin-1.200000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.200000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.200000000000-2.000000000000
+			base				satin-1.200000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1140,14 +1365,23 @@ standard_object
 			color			0.213500000000 0.418117887724 0.548512499108
 		}
 
-		polished_material
-		{
-			name			satin-1.200000000000-1.600000000000
-			reflectance		pnt_satin-1.200000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.200000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.200000000000-1.600000000000_base
+			reflectance			pnt_satin-1.200000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.200000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.200000000000-1.600000000000
+			base				satin-1.200000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1173,14 +1407,23 @@ standard_object
 			color			0.238966991411 0.433265073981 0.555082531587
 		}
 
-		polished_material
-		{
-			name			satin-1.200000000000-1.200000000000
-			reflectance		pnt_satin-1.200000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.200000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.200000000000-1.200000000000_base
+			reflectance			pnt_satin-1.200000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.200000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.200000000000-1.200000000000
+			base				satin-1.200000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1206,14 +1449,23 @@ standard_object
 			color			0.262930609057 0.446006862215 0.568436919682
 		}
 
-		polished_material
-		{
-			name			satin-1.200000000000-0.800000000000
-			reflectance		pnt_satin-1.200000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.200000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.200000000000-0.800000000000_base
+			reflectance			pnt_satin-1.200000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.200000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.200000000000-0.800000000000
+			base				satin-1.200000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1239,14 +1491,23 @@ standard_object
 			color			0.284471529248 0.454872334520 0.586863546003
 		}
 
-		polished_material
-		{
-			name			satin-1.200000000000-0.400000000000
-			reflectance		pnt_satin-1.200000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.200000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.200000000000-0.400000000000_base
+			reflectance			pnt_satin-1.200000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.200000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.200000000000-0.400000000000
+			base				satin-1.200000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1272,14 +1533,23 @@ standard_object
 			color			0.302500000000 0.458117887724 0.608000000000
 		}
 
-		polished_material
-		{
-			name			satin-1.200000000000-0.000000000000
-			reflectance		pnt_satin-1.200000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.200000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.200000000000-0.000000000000_base
+			reflectance			pnt_satin-1.200000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.200000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.200000000000-0.000000000000
+			base				satin-1.200000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1305,14 +1575,23 @@ standard_object
 			color			0.316471529248 0.454872334520 0.629136453997
 		}
 
-		polished_material
-		{
-			name			satin-1.2000000000000.400000000000
-			reflectance		pnt_satin-1.2000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.2000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.2000000000000.400000000000_base
+			reflectance			pnt_satin-1.2000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.2000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.2000000000000.400000000000
+			base				satin-1.2000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1338,14 +1617,23 @@ standard_object
 			color			0.326930609057 0.446006862215 0.647563080318
 		}
 
-		polished_material
-		{
-			name			satin-1.2000000000000.800000000000
-			reflectance		pnt_satin-1.2000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.2000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.2000000000000.800000000000_base
+			reflectance			pnt_satin-1.2000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.2000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.2000000000000.800000000000
+			base				satin-1.2000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1371,14 +1659,23 @@ standard_object
 			color			0.334966991411 0.433265073981 0.660917468413
 		}
 
-		polished_material
-		{
-			name			satin-1.2000000000001.200000000000
-			reflectance		pnt_satin-1.2000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.2000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.2000000000001.200000000000_base
+			reflectance			pnt_satin-1.2000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.2000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.2000000000001.200000000000
+			base				satin-1.2000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1404,14 +1701,23 @@ standard_object
 			color			0.341500000000 0.418117887724 0.667487500892
 		}
 
-		polished_material
-		{
-			name			satin-1.2000000000001.600000000000
-			reflectance		pnt_satin-1.2000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.2000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.2000000000001.600000000000_base
+			reflectance			pnt_satin-1.2000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.2000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.2000000000001.600000000000
+			base				satin-1.2000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1437,14 +1743,23 @@ standard_object
 			color			0.347113101314 0.401498849827 0.666430857853
 		}
 
-		polished_material
-		{
-			name			satin-1.2000000000002.000000000000
-			reflectance		pnt_satin-1.2000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-1.2000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-1.2000000000002.000000000000_base
+			reflectance			pnt_satin-1.2000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-1.2000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-1.2000000000002.000000000000
+			base				satin-1.2000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1470,14 +1785,23 @@ standard_object
 			color			0.192685439911 0.427132039325 0.533569142147
 		}
 
-		polished_material
-		{
-			name			satin-0.800000000000-2.000000000000
-			reflectance		pnt_satin-0.800000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.800000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.800000000000-2.000000000000_base
+			reflectance			pnt_satin-0.800000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.800000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.800000000000-2.000000000000
+			base				satin-0.800000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1503,14 +1827,23 @@ standard_object
 			color			0.220098300563 0.445392616367 0.532512499108
 		}
 
-		polished_material
-		{
-			name			satin-0.800000000000-1.600000000000
-			reflectance		pnt_satin-0.800000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.800000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.800000000000-1.600000000000_base
+			reflectance			pnt_satin-0.800000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.800000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.800000000000-1.600000000000
+			base				satin-0.800000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1536,14 +1869,23 @@ standard_object
 			color			0.246930609057 0.462724309958 0.539082531587
 		}
 
-		polished_material
-		{
-			name			satin-0.800000000000-1.200000000000
-			reflectance		pnt_satin-0.800000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.800000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.800000000000-1.200000000000_base
+			reflectance			pnt_satin-0.800000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.800000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.800000000000-1.200000000000
+			base				satin-0.800000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1569,14 +1911,23 @@ standard_object
 			color			0.272644660941 0.478266792972 0.552436919682
 		}
 
-		polished_material
-		{
-			name			satin-0.800000000000-0.800000000000
-			reflectance		pnt_satin-0.800000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.800000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.800000000000-0.800000000000_base
+			reflectance			pnt_satin-0.800000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.800000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.800000000000-0.800000000000
+			base				satin-0.800000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1602,14 +1953,23 @@ standard_object
 			color			0.296049150281 0.490113975917 0.570863546003
 		}
 
-		polished_material
-		{
-			name			satin-0.800000000000-0.400000000000
-			reflectance		pnt_satin-0.800000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.800000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.800000000000-0.400000000000_base
+			reflectance			pnt_satin-0.800000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.800000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.800000000000-0.400000000000
+			base				satin-0.800000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1635,14 +1995,23 @@ standard_object
 			color			0.315000000000 0.494835335467 0.592000000000
 		}
 
-		polished_material
-		{
-			name			satin-0.800000000000-0.000000000000
-			reflectance		pnt_satin-0.800000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.800000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.800000000000-0.000000000000_base
+			reflectance			pnt_satin-0.800000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.800000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.800000000000-0.000000000000
+			base				satin-0.800000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1668,14 +2037,23 @@ standard_object
 			color			0.328049150281 0.490113975917 0.613136453997
 		}
 
-		polished_material
-		{
-			name			satin-0.8000000000000.400000000000
-			reflectance		pnt_satin-0.8000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.8000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.8000000000000.400000000000_base
+			reflectance			pnt_satin-0.8000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.8000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.8000000000000.400000000000
+			base				satin-0.8000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1701,14 +2079,23 @@ standard_object
 			color			0.336644660941 0.478266792972 0.631563080318
 		}
 
-		polished_material
-		{
-			name			satin-0.8000000000000.800000000000
-			reflectance		pnt_satin-0.8000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.8000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.8000000000000.800000000000_base
+			reflectance			pnt_satin-0.8000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.8000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.8000000000000.800000000000
+			base				satin-0.8000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1734,14 +2121,23 @@ standard_object
 			color			0.342930609057 0.462724309958 0.644917468413
 		}
 
-		polished_material
-		{
-			name			satin-0.8000000000001.200000000000
-			reflectance		pnt_satin-0.8000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.8000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.8000000000001.200000000000_base
+			reflectance			pnt_satin-0.8000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.8000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.8000000000001.200000000000
+			base				satin-0.8000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1767,14 +2163,23 @@ standard_object
 			color			0.348098300563 0.445392616367 0.651487500892
 		}
 
-		polished_material
-		{
-			name			satin-0.8000000000001.600000000000
-			reflectance		pnt_satin-0.8000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.8000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.8000000000001.600000000000_base
+			reflectance			pnt_satin-0.8000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.8000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.8000000000001.600000000000
+			base				satin-0.8000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1800,14 +2205,23 @@ standard_object
 			color			0.352685439911 0.427132039325 0.650430857853
 		}
 
-		polished_material
-		{
-			name			satin-0.8000000000002.000000000000
-			reflectance		pnt_satin-0.8000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.8000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.8000000000002.000000000000_base
+			reflectance			pnt_satin-0.8000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.8000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.8000000000002.000000000000
+			base				satin-0.8000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1833,14 +2247,23 @@ standard_object
 			color			0.196262256080 0.444072659428 0.517569142147
 		}
 
-		polished_material
-		{
-			name			satin-0.400000000000-2.000000000000
-			reflectance		pnt_satin-0.400000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.400000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.400000000000-2.000000000000_base
+			reflectance			pnt_satin-0.400000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.400000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.400000000000-2.000000000000
+			base				satin-0.400000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1866,14 +2289,23 @@ standard_object
 			color			0.224461179680 0.463590937188 0.516512499108
 		}
 
-		polished_material
-		{
-			name			satin-0.400000000000-1.600000000000
-			reflectance		pnt_satin-0.400000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.400000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.400000000000-1.600000000000_base
+			reflectance			pnt_satin-0.400000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.400000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.400000000000-1.600000000000
+			base				satin-0.400000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1899,14 +2331,23 @@ standard_object
 			color			0.252471529248 0.482807496497 0.523082531587
 		}
 
-		polished_material
-		{
-			name			satin-0.400000000000-1.200000000000
-			reflectance		pnt_satin-0.400000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.400000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.400000000000-1.200000000000_base
+			reflectance			pnt_satin-0.400000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.400000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.400000000000-1.200000000000
+			base				satin-0.400000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1932,14 +2373,23 @@ standard_object
 			color			0.280049150281 0.501331690150 0.536436919682
 		}
 
-		polished_material
-		{
-			name			satin-0.400000000000-0.800000000000
-			reflectance		pnt_satin-0.400000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.400000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.400000000000-0.800000000000_base
+			reflectance			pnt_satin-0.400000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.400000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.400000000000-0.800000000000
+			base				satin-0.400000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1965,14 +2415,23 @@ standard_object
 			color			0.306322330470 0.517768778453 0.554863546003
 		}
 
-		polished_material
-		{
-			name			satin-0.400000000000-0.400000000000
-			reflectance		pnt_satin-0.400000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.400000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.400000000000-0.400000000000_base
+			reflectance			pnt_satin-0.400000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.400000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.400000000000-0.400000000000
+			base				satin-0.400000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -1998,14 +2457,23 @@ standard_object
 			color			0.327500000000 0.526053049700 0.576000000000
 		}
 
-		polished_material
-		{
-			name			satin-0.400000000000-0.000000000000
-			reflectance		pnt_satin-0.400000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.400000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.400000000000-0.000000000000_base
+			reflectance			pnt_satin-0.400000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.400000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.400000000000-0.000000000000
+			base				satin-0.400000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2031,14 +2499,23 @@ standard_object
 			color			0.338322330470 0.517768778453 0.597136453997
 		}
 
-		polished_material
-		{
-			name			satin-0.4000000000000.400000000000
-			reflectance		pnt_satin-0.4000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.4000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.4000000000000.400000000000_base
+			reflectance			pnt_satin-0.4000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.4000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.4000000000000.400000000000
+			base				satin-0.4000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2064,14 +2541,23 @@ standard_object
 			color			0.344049150281 0.501331690150 0.615563080318
 		}
 
-		polished_material
-		{
-			name			satin-0.4000000000000.800000000000
-			reflectance		pnt_satin-0.4000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.4000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.4000000000000.800000000000_base
+			reflectance			pnt_satin-0.4000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.4000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.4000000000000.800000000000
+			base				satin-0.4000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2097,14 +2583,23 @@ standard_object
 			color			0.348471529248 0.482807496497 0.628917468413
 		}
 
-		polished_material
-		{
-			name			satin-0.4000000000001.200000000000
-			reflectance		pnt_satin-0.4000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.4000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.4000000000001.200000000000_base
+			reflectance			pnt_satin-0.4000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.4000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.4000000000001.200000000000
+			base				satin-0.4000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2130,14 +2625,23 @@ standard_object
 			color			0.352461179680 0.463590937188 0.635487500892
 		}
 
-		polished_material
-		{
-			name			satin-0.4000000000001.600000000000
-			reflectance		pnt_satin-0.4000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.4000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.4000000000001.600000000000_base
+			reflectance			pnt_satin-0.4000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.4000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.4000000000001.600000000000
+			base				satin-0.4000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2163,14 +2667,23 @@ standard_object
 			color			0.356262256080 0.444072659428 0.634430857853
 		}
 
-		polished_material
-		{
-			name			satin-0.4000000000002.000000000000
-			reflectance		pnt_satin-0.4000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.4000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.4000000000002.000000000000_base
+			reflectance			pnt_satin-0.4000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.4000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.4000000000002.000000000000
+			base				satin-0.4000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2196,14 +2709,23 @@ standard_object
 			color			0.197500000000 0.450000000000 0.501569142147
 		}
 
-		polished_material
-		{
-			name			satin-0.000000000000-2.000000000000
-			reflectance		pnt_satin-0.000000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.000000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.000000000000-2.000000000000_base
+			reflectance			pnt_satin-0.000000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.000000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.000000000000-2.000000000000
+			base				satin-0.000000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2229,14 +2751,23 @@ standard_object
 			color			0.226000000000 0.470000000000 0.500512499108
 		}
 
-		polished_material
-		{
-			name			satin-0.000000000000-1.600000000000
-			reflectance		pnt_satin-0.000000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.000000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.000000000000-1.600000000000_base
+			reflectance			pnt_satin-0.000000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.000000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.000000000000-1.600000000000
+			base				satin-0.000000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2262,14 +2793,23 @@ standard_object
 			color			0.254500000000 0.490000000000 0.507082531587
 		}
 
-		polished_material
-		{
-			name			satin-0.000000000000-1.200000000000
-			reflectance		pnt_satin-0.000000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.000000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.000000000000-1.200000000000_base
+			reflectance			pnt_satin-0.000000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.000000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.000000000000-1.200000000000
+			base				satin-0.000000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2295,14 +2835,23 @@ standard_object
 			color			0.283000000000 0.510000000000 0.520436919682
 		}
 
-		polished_material
-		{
-			name			satin-0.000000000000-0.800000000000
-			reflectance		pnt_satin-0.000000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.000000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.000000000000-0.800000000000_base
+			reflectance			pnt_satin-0.000000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.000000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.000000000000-0.800000000000
+			base				satin-0.000000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2328,14 +2877,23 @@ standard_object
 			color			0.311500000000 0.530000000000 0.538863546003
 		}
 
-		polished_material
-		{
-			name			satin-0.000000000000-0.400000000000
-			reflectance		pnt_satin-0.000000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.000000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.000000000000-0.400000000000_base
+			reflectance			pnt_satin-0.000000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.000000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.000000000000-0.400000000000
+			base				satin-0.000000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2361,14 +2919,23 @@ standard_object
 			color			0.340000000000 0.550000000000 0.560000000000
 		}
 
-		polished_material
-		{
-			name			satin-0.000000000000-0.000000000000
-			reflectance		pnt_satin-0.000000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.000000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.000000000000-0.000000000000_base
+			reflectance			pnt_satin-0.000000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.000000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.000000000000-0.000000000000
+			base				satin-0.000000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2394,14 +2961,23 @@ standard_object
 			color			0.343500000000 0.530000000000 0.581136453997
 		}
 
-		polished_material
-		{
-			name			satin-0.0000000000000.400000000000
-			reflectance		pnt_satin-0.0000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.0000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.0000000000000.400000000000_base
+			reflectance			pnt_satin-0.0000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.0000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.0000000000000.400000000000
+			base				satin-0.0000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2427,14 +3003,23 @@ standard_object
 			color			0.347000000000 0.510000000000 0.599563080318
 		}
 
-		polished_material
-		{
-			name			satin-0.0000000000000.800000000000
-			reflectance		pnt_satin-0.0000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.0000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.0000000000000.800000000000_base
+			reflectance			pnt_satin-0.0000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.0000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.0000000000000.800000000000
+			base				satin-0.0000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2460,14 +3045,23 @@ standard_object
 			color			0.350500000000 0.490000000000 0.612917468413
 		}
 
-		polished_material
-		{
-			name			satin-0.0000000000001.200000000000
-			reflectance		pnt_satin-0.0000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.0000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.0000000000001.200000000000_base
+			reflectance			pnt_satin-0.0000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.0000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.0000000000001.200000000000
+			base				satin-0.0000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2493,14 +3087,23 @@ standard_object
 			color			0.354000000000 0.470000000000 0.619487500892
 		}
 
-		polished_material
-		{
-			name			satin-0.0000000000001.600000000000
-			reflectance		pnt_satin-0.0000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.0000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.0000000000001.600000000000_base
+			reflectance			pnt_satin-0.0000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.0000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.0000000000001.600000000000
+			base				satin-0.0000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2526,14 +3129,23 @@ standard_object
 			color			0.357500000000 0.450000000000 0.618430857853
 		}
 
-		polished_material
-		{
-			name			satin-0.0000000000002.000000000000
-			reflectance		pnt_satin-0.0000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin-0.0000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin-0.0000000000002.000000000000_base
+			reflectance			pnt_satin-0.0000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin-0.0000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin-0.0000000000002.000000000000
+			base				satin-0.0000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2559,14 +3171,23 @@ standard_object
 			color			0.196262256080 0.444072659428 0.485569142147
 		}
 
-		polished_material
-		{
-			name			satin0.400000000000-2.000000000000
-			reflectance		pnt_satin0.400000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.400000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.400000000000-2.000000000000_base
+			reflectance			pnt_satin0.400000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.400000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.400000000000-2.000000000000
+			base				satin0.400000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2592,14 +3213,23 @@ standard_object
 			color			0.224461179680 0.463590937188 0.484512499108
 		}
 
-		polished_material
-		{
-			name			satin0.400000000000-1.600000000000
-			reflectance		pnt_satin0.400000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.400000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.400000000000-1.600000000000_base
+			reflectance			pnt_satin0.400000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.400000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.400000000000-1.600000000000
+			base				satin0.400000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2625,14 +3255,23 @@ standard_object
 			color			0.252471529248 0.482807496497 0.491082531587
 		}
 
-		polished_material
-		{
-			name			satin0.400000000000-1.200000000000
-			reflectance		pnt_satin0.400000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.400000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.400000000000-1.200000000000_base
+			reflectance			pnt_satin0.400000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.400000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.400000000000-1.200000000000
+			base				satin0.400000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2658,14 +3297,23 @@ standard_object
 			color			0.280049150281 0.501331690150 0.504436919682
 		}
 
-		polished_material
-		{
-			name			satin0.400000000000-0.800000000000
-			reflectance		pnt_satin0.400000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.400000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.400000000000-0.800000000000_base
+			reflectance			pnt_satin0.400000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.400000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.400000000000-0.800000000000
+			base				satin0.400000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2691,14 +3339,23 @@ standard_object
 			color			0.306322330470 0.517768778453 0.522863546003
 		}
 
-		polished_material
-		{
-			name			satin0.400000000000-0.400000000000
-			reflectance		pnt_satin0.400000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.400000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.400000000000-0.400000000000_base
+			reflectance			pnt_satin0.400000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.400000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.400000000000-0.400000000000
+			base				satin0.400000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2724,14 +3381,23 @@ standard_object
 			color			0.327500000000 0.526053049700 0.544000000000
 		}
 
-		polished_material
-		{
-			name			satin0.400000000000-0.000000000000
-			reflectance		pnt_satin0.400000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.400000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.400000000000-0.000000000000_base
+			reflectance			pnt_satin0.400000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.400000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.400000000000-0.000000000000
+			base				satin0.400000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2757,14 +3423,23 @@ standard_object
 			color			0.338322330470 0.517768778453 0.565136453997
 		}
 
-		polished_material
-		{
-			name			satin0.4000000000000.400000000000
-			reflectance		pnt_satin0.4000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.4000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.4000000000000.400000000000_base
+			reflectance			pnt_satin0.4000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.4000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.4000000000000.400000000000
+			base				satin0.4000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2790,14 +3465,23 @@ standard_object
 			color			0.344049150281 0.501331690150 0.583563080318
 		}
 
-		polished_material
-		{
-			name			satin0.4000000000000.800000000000
-			reflectance		pnt_satin0.4000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.4000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.4000000000000.800000000000_base
+			reflectance			pnt_satin0.4000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.4000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.4000000000000.800000000000
+			base				satin0.4000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2823,14 +3507,23 @@ standard_object
 			color			0.348471529248 0.482807496497 0.596917468413
 		}
 
-		polished_material
-		{
-			name			satin0.4000000000001.200000000000
-			reflectance		pnt_satin0.4000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.4000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.4000000000001.200000000000_base
+			reflectance			pnt_satin0.4000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.4000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.4000000000001.200000000000
+			base				satin0.4000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2856,14 +3549,23 @@ standard_object
 			color			0.352461179680 0.463590937188 0.603487500892
 		}
 
-		polished_material
-		{
-			name			satin0.4000000000001.600000000000
-			reflectance		pnt_satin0.4000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.4000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.4000000000001.600000000000_base
+			reflectance			pnt_satin0.4000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.4000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.4000000000001.600000000000
+			base				satin0.4000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2889,14 +3591,23 @@ standard_object
 			color			0.356262256080 0.444072659428 0.602430857853
 		}
 
-		polished_material
-		{
-			name			satin0.4000000000002.000000000000
-			reflectance		pnt_satin0.4000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.4000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.4000000000002.000000000000_base
+			reflectance			pnt_satin0.4000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.4000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.4000000000002.000000000000
+			base				satin0.4000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2922,14 +3633,23 @@ standard_object
 			color			0.192685439911 0.427132039325 0.469569142147
 		}
 
-		polished_material
-		{
-			name			satin0.800000000000-2.000000000000
-			reflectance		pnt_satin0.800000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.800000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.800000000000-2.000000000000_base
+			reflectance			pnt_satin0.800000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.800000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.800000000000-2.000000000000
+			base				satin0.800000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2955,14 +3675,23 @@ standard_object
 			color			0.220098300563 0.445392616367 0.468512499108
 		}
 
-		polished_material
-		{
-			name			satin0.800000000000-1.600000000000
-			reflectance		pnt_satin0.800000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.800000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.800000000000-1.600000000000_base
+			reflectance			pnt_satin0.800000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.800000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.800000000000-1.600000000000
+			base				satin0.800000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -2988,14 +3717,23 @@ standard_object
 			color			0.246930609057 0.462724309958 0.475082531587
 		}
 
-		polished_material
-		{
-			name			satin0.800000000000-1.200000000000
-			reflectance		pnt_satin0.800000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.800000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.800000000000-1.200000000000_base
+			reflectance			pnt_satin0.800000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.800000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.800000000000-1.200000000000
+			base				satin0.800000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3021,14 +3759,23 @@ standard_object
 			color			0.272644660941 0.478266792972 0.488436919682
 		}
 
-		polished_material
-		{
-			name			satin0.800000000000-0.800000000000
-			reflectance		pnt_satin0.800000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.800000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.800000000000-0.800000000000_base
+			reflectance			pnt_satin0.800000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.800000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.800000000000-0.800000000000
+			base				satin0.800000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3054,14 +3801,23 @@ standard_object
 			color			0.296049150281 0.490113975917 0.506863546003
 		}
 
-		polished_material
-		{
-			name			satin0.800000000000-0.400000000000
-			reflectance		pnt_satin0.800000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.800000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.800000000000-0.400000000000_base
+			reflectance			pnt_satin0.800000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.800000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.800000000000-0.400000000000
+			base				satin0.800000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3087,14 +3843,23 @@ standard_object
 			color			0.315000000000 0.494835335467 0.528000000000
 		}
 
-		polished_material
-		{
-			name			satin0.800000000000-0.000000000000
-			reflectance		pnt_satin0.800000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.800000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.800000000000-0.000000000000_base
+			reflectance			pnt_satin0.800000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.800000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.800000000000-0.000000000000
+			base				satin0.800000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3120,14 +3885,23 @@ standard_object
 			color			0.328049150281 0.490113975917 0.549136453997
 		}
 
-		polished_material
-		{
-			name			satin0.8000000000000.400000000000
-			reflectance		pnt_satin0.8000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.8000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.8000000000000.400000000000_base
+			reflectance			pnt_satin0.8000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.8000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.8000000000000.400000000000
+			base				satin0.8000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3153,14 +3927,23 @@ standard_object
 			color			0.336644660941 0.478266792972 0.567563080318
 		}
 
-		polished_material
-		{
-			name			satin0.8000000000000.800000000000
-			reflectance		pnt_satin0.8000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.8000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.8000000000000.800000000000_base
+			reflectance			pnt_satin0.8000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.8000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.8000000000000.800000000000
+			base				satin0.8000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3186,14 +3969,23 @@ standard_object
 			color			0.342930609057 0.462724309958 0.580917468413
 		}
 
-		polished_material
-		{
-			name			satin0.8000000000001.200000000000
-			reflectance		pnt_satin0.8000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.8000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.8000000000001.200000000000_base
+			reflectance			pnt_satin0.8000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.8000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.8000000000001.200000000000
+			base				satin0.8000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3219,14 +4011,23 @@ standard_object
 			color			0.348098300563 0.445392616367 0.587487500892
 		}
 
-		polished_material
-		{
-			name			satin0.8000000000001.600000000000
-			reflectance		pnt_satin0.8000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.8000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.8000000000001.600000000000_base
+			reflectance			pnt_satin0.8000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.8000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.8000000000001.600000000000
+			base				satin0.8000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3252,14 +4053,23 @@ standard_object
 			color			0.352685439911 0.427132039325 0.586430857853
 		}
 
-		polished_material
-		{
-			name			satin0.8000000000002.000000000000
-			reflectance		pnt_satin0.8000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin0.8000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin0.8000000000002.000000000000_base
+			reflectance			pnt_satin0.8000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin0.8000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin0.8000000000002.000000000000
+			base				satin0.8000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3285,14 +4095,23 @@ standard_object
 			color			0.187113101314 0.401498849827 0.453569142147
 		}
 
-		polished_material
-		{
-			name			satin1.200000000000-2.000000000000
-			reflectance		pnt_satin1.200000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.200000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.200000000000-2.000000000000_base
+			reflectance			pnt_satin1.200000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.200000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.200000000000-2.000000000000
+			base				satin1.200000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3318,14 +4137,23 @@ standard_object
 			color			0.213500000000 0.418117887724 0.452512499108
 		}
 
-		polished_material
-		{
-			name			satin1.200000000000-1.600000000000
-			reflectance		pnt_satin1.200000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.200000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.200000000000-1.600000000000_base
+			reflectance			pnt_satin1.200000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.200000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.200000000000-1.600000000000
+			base				satin1.200000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3351,14 +4179,23 @@ standard_object
 			color			0.238966991411 0.433265073981 0.459082531587
 		}
 
-		polished_material
-		{
-			name			satin1.200000000000-1.200000000000
-			reflectance		pnt_satin1.200000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.200000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.200000000000-1.200000000000_base
+			reflectance			pnt_satin1.200000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.200000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.200000000000-1.200000000000
+			base				satin1.200000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3384,14 +4221,23 @@ standard_object
 			color			0.262930609057 0.446006862215 0.472436919682
 		}
 
-		polished_material
-		{
-			name			satin1.200000000000-0.800000000000
-			reflectance		pnt_satin1.200000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.200000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.200000000000-0.800000000000_base
+			reflectance			pnt_satin1.200000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.200000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.200000000000-0.800000000000
+			base				satin1.200000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3417,14 +4263,23 @@ standard_object
 			color			0.284471529248 0.454872334520 0.490863546003
 		}
 
-		polished_material
-		{
-			name			satin1.200000000000-0.400000000000
-			reflectance		pnt_satin1.200000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.200000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.200000000000-0.400000000000_base
+			reflectance			pnt_satin1.200000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.200000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.200000000000-0.400000000000
+			base				satin1.200000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3450,14 +4305,23 @@ standard_object
 			color			0.302500000000 0.458117887724 0.512000000000
 		}
 
-		polished_material
-		{
-			name			satin1.200000000000-0.000000000000
-			reflectance		pnt_satin1.200000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.200000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.200000000000-0.000000000000_base
+			reflectance			pnt_satin1.200000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.200000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.200000000000-0.000000000000
+			base				satin1.200000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3483,14 +4347,23 @@ standard_object
 			color			0.316471529248 0.454872334520 0.533136453997
 		}
 
-		polished_material
-		{
-			name			satin1.2000000000000.400000000000
-			reflectance		pnt_satin1.2000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.2000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.2000000000000.400000000000_base
+			reflectance			pnt_satin1.2000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.2000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.2000000000000.400000000000
+			base				satin1.2000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3516,14 +4389,23 @@ standard_object
 			color			0.326930609057 0.446006862215 0.551563080318
 		}
 
-		polished_material
-		{
-			name			satin1.2000000000000.800000000000
-			reflectance		pnt_satin1.2000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.2000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.2000000000000.800000000000_base
+			reflectance			pnt_satin1.2000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.2000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.2000000000000.800000000000
+			base				satin1.2000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3549,14 +4431,23 @@ standard_object
 			color			0.334966991411 0.433265073981 0.564917468413
 		}
 
-		polished_material
-		{
-			name			satin1.2000000000001.200000000000
-			reflectance		pnt_satin1.2000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.2000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.2000000000001.200000000000_base
+			reflectance			pnt_satin1.2000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.2000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.2000000000001.200000000000
+			base				satin1.2000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3582,14 +4473,23 @@ standard_object
 			color			0.341500000000 0.418117887724 0.571487500892
 		}
 
-		polished_material
-		{
-			name			satin1.2000000000001.600000000000
-			reflectance		pnt_satin1.2000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.2000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.2000000000001.600000000000_base
+			reflectance			pnt_satin1.2000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.2000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.2000000000001.600000000000
+			base				satin1.2000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3615,14 +4515,23 @@ standard_object
 			color			0.347113101314 0.401498849827 0.570430857853
 		}
 
-		polished_material
-		{
-			name			satin1.2000000000002.000000000000
-			reflectance		pnt_satin1.2000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.2000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.2000000000002.000000000000_base
+			reflectance			pnt_satin1.2000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.2000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.2000000000002.000000000000
+			base				satin1.2000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3648,14 +4557,23 @@ standard_object
 			color			0.179960947032 0.370477539136 0.437569142147
 		}
 
-		polished_material
-		{
-			name			satin1.600000000000-2.000000000000
-			reflectance		pnt_satin1.600000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.600000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.600000000000-2.000000000000_base
+			reflectance			pnt_satin1.600000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.600000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.600000000000-2.000000000000
+			base				satin1.600000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3681,14 +4599,23 @@ standard_object
 			color			0.205289321881 0.385402938895 0.436512499108
 		}
 
-		polished_material
-		{
-			name			satin1.600000000000-1.600000000000
-			reflectance		pnt_satin1.600000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.600000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.600000000000-1.600000000000_base
+			reflectance			pnt_satin1.600000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.600000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.600000000000-1.600000000000
+			base				satin1.600000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3714,14 +4641,23 @@ standard_object
 			color			0.229500000000 0.398540023885 0.443082531587
 		}
 
-		polished_material
-		{
-			name			satin1.600000000000-1.200000000000
-			reflectance		pnt_satin1.600000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.600000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.600000000000-1.200000000000_base
+			reflectance			pnt_satin1.600000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.600000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.600000000000-1.200000000000
+			base				satin1.600000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3747,14 +4683,23 @@ standard_object
 			color			0.252098300562 0.409097304785 0.456436919682
 		}
 
-		polished_material
-		{
-			name			satin1.600000000000-0.800000000000
-			reflectance		pnt_satin1.600000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.600000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.600000000000-0.800000000000_base
+			reflectance			pnt_satin1.600000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.600000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.600000000000-0.800000000000
+			base				satin1.600000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3780,14 +4725,23 @@ standard_object
 			color			0.272461179680 0.416077911373 0.474863546003
 		}
 
-		polished_material
-		{
-			name			satin1.600000000000-0.400000000000
-			reflectance		pnt_satin1.600000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.600000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.600000000000-0.400000000000_base
+			reflectance			pnt_satin1.600000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.600000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.600000000000-0.400000000000
+			base				satin1.600000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3813,14 +4767,23 @@ standard_object
 			color			0.290000000000 0.418540023885 0.496000000000
 		}
 
-		polished_material
-		{
-			name			satin1.600000000000-0.000000000000
-			reflectance		pnt_satin1.600000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.600000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.600000000000-0.000000000000_base
+			reflectance			pnt_satin1.600000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.600000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.600000000000-0.000000000000
+			base				satin1.600000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3846,14 +4809,23 @@ standard_object
 			color			0.304461179680 0.416077911373 0.517136453997
 		}
 
-		polished_material
-		{
-			name			satin1.6000000000000.400000000000
-			reflectance		pnt_satin1.6000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.6000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.6000000000000.400000000000_base
+			reflectance			pnt_satin1.6000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.6000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.6000000000000.400000000000
+			base				satin1.6000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3879,14 +4851,23 @@ standard_object
 			color			0.316098300562 0.409097304785 0.535563080318
 		}
 
-		polished_material
-		{
-			name			satin1.6000000000000.800000000000
-			reflectance		pnt_satin1.6000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.6000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.6000000000000.800000000000_base
+			reflectance			pnt_satin1.6000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.6000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.6000000000000.800000000000
+			base				satin1.6000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3912,14 +4893,23 @@ standard_object
 			color			0.325500000000 0.398540023885 0.548917468413
 		}
 
-		polished_material
-		{
-			name			satin1.6000000000001.200000000000
-			reflectance		pnt_satin1.6000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.6000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.6000000000001.200000000000_base
+			reflectance			pnt_satin1.6000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.6000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.6000000000001.200000000000
+			base				satin1.6000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3945,14 +4935,23 @@ standard_object
 			color			0.333289321881 0.385402938895 0.555487500892
 		}
 
-		polished_material
-		{
-			name			satin1.6000000000001.600000000000
-			reflectance		pnt_satin1.6000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.6000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.6000000000001.600000000000_base
+			reflectance			pnt_satin1.6000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.6000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.6000000000001.600000000000
+			base				satin1.6000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -3978,14 +4977,23 @@ standard_object
 			color			0.339960947032 0.370477539136 0.554430857853
 		}
 
-		polished_material
-		{
-			name			satin1.6000000000002.000000000000
-			reflectance		pnt_satin1.6000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin1.6000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin1.6000000000002.000000000000_base
+			reflectance			pnt_satin1.6000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin1.6000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin1.6000000000002.000000000000
+			base				satin1.6000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4011,14 +5019,23 @@ standard_object
 			color			0.171611652352 0.337771301935 0.421569142147
 		}
 
-		polished_material
-		{
-			name			satin2.000000000000-2.000000000000
-			reflectance		pnt_satin2.000000000000-2.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.000000000000-2.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.000000000000-2.000000000000_base
+			reflectance			pnt_satin2.000000000000-2.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.000000000000-2.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.000000000000-2.000000000000
+			base				satin2.000000000000-2.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4044,14 +5061,23 @@ standard_object
 			color			0.195960947032 0.351130173424 0.420512499108
 		}
 
-		polished_material
-		{
-			name			satin2.000000000000-1.600000000000
-			reflectance		pnt_satin2.000000000000-1.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.000000000000-1.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.000000000000-1.600000000000_base
+			reflectance			pnt_satin2.000000000000-1.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.000000000000-1.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.000000000000-1.600000000000
+			base				satin2.000000000000-1.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4077,14 +5103,23 @@ standard_object
 			color			0.219113101314 0.362573620276 0.427082531587
 		}
 
-		polished_material
-		{
-			name			satin2.000000000000-1.200000000000
-			reflectance		pnt_satin2.000000000000-1.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.000000000000-1.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.000000000000-1.200000000000_base
+			reflectance			pnt_satin2.000000000000-1.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.000000000000-1.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.000000000000-1.200000000000
+			base				satin2.000000000000-1.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4110,14 +5145,23 @@ standard_object
 			color			0.240685439911 0.371489362030 0.440436919682
 		}
 
-		polished_material
-		{
-			name			satin2.000000000000-0.800000000000
-			reflectance		pnt_satin2.000000000000-0.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.000000000000-0.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.000000000000-0.800000000000_base
+			reflectance			pnt_satin2.000000000000-0.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.000000000000-0.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.000000000000-0.800000000000
+			base				satin2.000000000000-0.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4143,14 +5187,23 @@ standard_object
 			color			0.260262256080 0.377212267901 0.458863546003
 		}
 
-		polished_material
-		{
-			name			satin2.000000000000-0.400000000000
-			reflectance		pnt_satin2.000000000000-0.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.000000000000-0.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.000000000000-0.400000000000_base
+			reflectance			pnt_satin2.000000000000-0.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.000000000000-0.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.000000000000-0.400000000000
+			base				satin2.000000000000-0.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4176,14 +5229,23 @@ standard_object
 			color			0.277500000000 0.379192658173 0.480000000000
 		}
 
-		polished_material
-		{
-			name			satin2.000000000000-0.000000000000
-			reflectance		pnt_satin2.000000000000-0.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.000000000000-0.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.000000000000-0.000000000000_base
+			reflectance			pnt_satin2.000000000000-0.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.000000000000-0.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.000000000000-0.000000000000
+			base				satin2.000000000000-0.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4209,14 +5271,23 @@ standard_object
 			color			0.292262256080 0.377212267901 0.501136453997
 		}
 
-		polished_material
-		{
-			name			satin2.0000000000000.400000000000
-			reflectance		pnt_satin2.0000000000000.400000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.0000000000000.400000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.0000000000000.400000000000_base
+			reflectance			pnt_satin2.0000000000000.400000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.0000000000000.400000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.0000000000000.400000000000
+			base				satin2.0000000000000.400000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4242,14 +5313,23 @@ standard_object
 			color			0.304685439911 0.371489362030 0.519563080318
 		}
 
-		polished_material
-		{
-			name			satin2.0000000000000.800000000000
-			reflectance		pnt_satin2.0000000000000.800000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.0000000000000.800000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.0000000000000.800000000000_base
+			reflectance			pnt_satin2.0000000000000.800000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.0000000000000.800000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.0000000000000.800000000000
+			base				satin2.0000000000000.800000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4275,14 +5355,23 @@ standard_object
 			color			0.315113101314 0.362573620276 0.532917468413
 		}
 
-		polished_material
-		{
-			name			satin2.0000000000001.200000000000
-			reflectance		pnt_satin2.0000000000001.200000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.0000000000001.200000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.0000000000001.200000000000_base
+			reflectance			pnt_satin2.0000000000001.200000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.0000000000001.200000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.0000000000001.200000000000
+			base				satin2.0000000000001.200000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4308,14 +5397,23 @@ standard_object
 			color			0.323960947032 0.351130173424 0.539487500892
 		}
 
-		polished_material
-		{
-			name			satin2.0000000000001.600000000000
-			reflectance		pnt_satin2.0000000000001.600000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.0000000000001.600000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.0000000000001.600000000000_base
+			reflectance			pnt_satin2.0000000000001.600000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.0000000000001.600000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.0000000000001.600000000000
+			base				satin2.0000000000001.600000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{
@@ -4341,14 +5439,23 @@ standard_object
 			color			0.331611652352 0.337771301935 0.538430857853
 		}
 
-		polished_material
-		{
-			name			satin2.0000000000002.000000000000
-			reflectance		pnt_satin2.0000000000002.000000000000
-			tau			0.96 0.97 0.94
-			ior				1.5
-			scattering		560.0
-		}
+# Legacy phase 2 slice B2: substrate of `satin2.0000000000002.000000000000` (was polished_material reflectance).
+lambertian_material
+{
+			name				satin2.0000000000002.000000000000_base
+			reflectance			pnt_satin2.0000000000002.000000000000
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `satin2.0000000000002.000000000000_base`; coat_weight = tau 0.96 0.97 0.94 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*560+1) = 0.02987 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+			name				satin2.0000000000002.000000000000
+			base				satin2.0000000000002.000000000000_base
+			coat_weight			0.9657
+			coat_ior			1.5
+			coat_roughness		0.02987
+}
 
 		sphere_geometry
 		{

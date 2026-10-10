@@ -269,13 +269,22 @@ uniformcolor_painter
 # Materials
 ##################################################
 
-polished_material
+# Legacy phase 2 slice B2: substrate of `marble_mat` (was polished_material reflectance).
+lambertian_material
+{
+	name				marble_mat_base
+	reflectance			pnt_marble
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `marble_mat_base`; coat_weight = tau 1, coat_ior 1.5, coat_roughness 1/sqrt(2*512+1) = 0.03123 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				marble_mat
-	reflectance			pnt_marble
-	tau			1
-	scattering			512.0
-	ior					1.5
+	base				marble_mat_base
+	coat_weight			1
+	coat_ior			1.5
+	coat_roughness		0.03123
 }
 
 dielectric_material

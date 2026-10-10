@@ -226,12 +226,14 @@ uniformcolor_painter
 	color				0.8 0.3 0.5
 }
 
-iridescent_painter
+# Legacy phase 2 slice B2: was iridescent_painter (colora `pnt_iri_blue`, colorb `pnt_iri_pink`, bias 0.4); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.9280; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
 	name				pnt_iridescent
-	colora				pnt_iri_blue
-	colorb				pnt_iri_pink
-	bias				0.4
+	color				0.7568 0.3072 0.5216
+	colorspace			Rec709RGB_Linear
 }
 
 # Lines painter for the display platform
@@ -301,21 +303,65 @@ uniformcolor_painter
 # Materials
 ##################################################
 
+# Legacy phase 2 slice B2: white F0 tint for the thin-film materials.
+uniformcolor_painter
+{
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				tf_Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				tf_Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
 # Iridescent material for the torus knot
-lambertian_material
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_iridescent` -> pearlescent ggx: rd = mean colour 0.757 0.307 0.522 (w 0.928), TiO2 film 300 nm over a 1.5 dielectric (alpha 0.3), thickness matching colorb's hue.
+ggx_material
 {
 	name				iridescent_mat
-	reflectance			pnt_iridescent
+	rd					pnt_iridescent
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		300
 }
 
 # Brushed metal cylinder - Ward anisotropic
-ward_anisotropic_material
+# Legacy phase 2 slice B2: was ward_anisotropic_material; ward_anisotropic alphax 0.01 alphay 0.3 carried, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				brushed_metal
 	rd					pnt_brushed_metal
 	rs					pnt_brushed_spec
-	alphax			0.01
-	alphay			0.3
+	alphax				0.01
+	alphay				0.3
+	fresnel_mode		schlick_f0
 }
 
 # Display platform - lines pattern
@@ -333,23 +379,27 @@ lambertian_material
 }
 
 # Ashikmin-Shirley anisotropic for a vase-like object
-ashikminshirley_anisotropicphong_material
+# Legacy phase 2 slice B2: was ashikminshirley_anisotropicphong_material; ashikmin-shirley nu 10 nv 500 -> alphax 0.4082 alphay 0.06312 (sqrt(2/(n+2))), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ashikmin_mat
 	rd					pnt_warm_white
 	rs					pnt_warm_white
-	nu			10
-	nv			500
+	alphax				0.40825
+	alphay				0.063119
+	fresnel_mode		schlick_f0
 }
 
 # Glossy ruby sphere - Schlick
-schlick_material
+# Legacy phase 2 slice B2: was schlick_material; schlick roughness 0.05 -> alpha sqrt(r) = 0.2236, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ruby
 	rd					pnt_ruby
 	rs					pnt_ruby_spec
-	roughness			0.05
-	isotropy			1.0
+	alphax				0.22361
+	alphay				0.22361
+	fresnel_mode		schlick_f0
 }
 
 ##################################################
