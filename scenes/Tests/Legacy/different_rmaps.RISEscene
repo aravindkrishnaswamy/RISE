@@ -71,7 +71,7 @@ pixelpel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/different_rmaps
+	pattern				rendered/legacy_different_rmaps
 	type				PNG
 	bpp					8
 	color_space			sRGB

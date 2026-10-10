@@ -86,7 +86,7 @@ namespace RISE
 }
 
 //! One shipped scene per legacy family, with the hash measured on 4694f511c
-//! (the last two rows: on 83aa86d2f, see their comment).
+//! (the last three rows: on 83aa86d2f, see their comment).
 struct IdentityCase { const char* scene; const char* families; unsigned long long parentHash; };
 static const IdentityCase kCases[] = {
 	{ "scenes/Tests/Legacy/arealight_shaderop.RISEscene",                     "pixelpel_rasterizer, arealight_shaderop",                      0x93e83b7e2a654a25ull },
@@ -106,12 +106,13 @@ static const IdentityCase kCases[] = {
 	{ "scenes/Tests/Legacy/blurry_floor.RISEscene",                           "isotropic_phong_material",                                     0xf8dba1adcd1f03a9ull },
 	{ "scenes/Tests/Legacy/teapot.RISEscene",                                 "polished_material, bezierpatch_geometry",                      0x747dd21312bf8410ull },
 	// Added by Phase 2 slice B1 (2026-10-10): the last shipped renders of the
-	// spectral caustic photon map and of a distribution-tracing chain with
-	// irradiance caching and no direct-lighting sibling (DL-209's shape) moved
-	// to the path tracer, so their originals are pinned here too.  These two
-	// hashes were measured on master 83aa86d2f (slice B1 changes no engine
-	// code), not on 4694f511c.
+	// spectral caustic photon map, of per-object radiance maps (honoured only by
+	// the legacy chain, so different_rmaps moved here unmigrated) and of a
+	// distribution-tracing chain with irradiance caching and no direct-lighting
+	// sibling (DL-209's shape), pinned with hashes measured on master
+	// 83aa86d2f's engine (slice B1 changes only a log warning), not 4694f511c.
 	{ "scenes/Tests/Legacy/spectral_dispersive_caustic.RISEscene",            "caustic_spectral_photonmap / gather",                          0xde3e541aabc6683cull },
+	{ "scenes/Tests/Legacy/different_rmaps.RISEscene",                        "per-object radiance_map (frozen; legacy chain only)",          0x7b7863ca4c19f454ull },
 	{ "scenes/Tests/Legacy/dt_with_irrcache.RISEscene",                       "distributiontracing_shaderop irradiance_caching",              0xe4cb2784e62547a4ull },
 };
 

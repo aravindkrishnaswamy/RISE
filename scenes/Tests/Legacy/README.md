@@ -36,6 +36,7 @@ image in memory and never see the file name).
 | `blurry_floor.RISEscene` | `scenes/Tests/Shaders/` | `distributiontracing_shaderop`, `isotropic_phong_material` | `LegacyTierRenderIdentityTest` |
 | `teapot.RISEscene` | `scenes/FeatureBased/Geometry/` | Whitted `DefaultReflection`, `polished_material`, `bezierpatch_geometry` | `LegacyTierRenderIdentityTest` |
 | `spectral_dispersive_caustic.RISEscene` | `scenes/Tests/Spectral/` | `caustic_spectral_photonmap` / gather under `pixelintegratingspectral_rasterizer` | `LegacyTierRenderIdentityTest` |
+| `different_rmaps.RISEscene` | `scenes/Tests/Shaders/` | per-object `radiance_map` (frozen: only the legacy chain honours it), `distributiontracing_shaderop`; MOVED here, not copied -- it was never migrated | `LegacyTierRenderIdentityTest` |
 | `dt_with_irrcache.RISEscene` | `scenes/Tests/Shaders/` | `distributiontracing_shaderop` with `irradiance_caching` and no direct-lighting sibling (DL-209's chain shape) | `LegacyTierRenderIdentityTest` |
 
 The ChunkCoverage `cc_*` scenes for frozen and deprecated chunks

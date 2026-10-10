@@ -208,6 +208,7 @@ scenes/Tests/Legacy/arealight_shaderop.RISEscene  57b62f94c44c4d2d6e3c23f69a4de0
 scenes/Tests/Legacy/blurry_floor.RISEscene  1cb192b0d33b02a06ef82e6ed8abc4226381b40a35f7941fbd0da2153c07f65c  1506  32
 scenes/Tests/Legacy/cornellbox_fg.RISEscene  a4f59862c7d23644245ffb8a576efaf3f7ab534a57977c2a12af7bbc864dba32  2940  49
 scenes/Tests/Legacy/dielectric_dispersion.RISEscene  474dfc394f2b2db465954f1ea0b7b1573b71c25ffb9d31e9e8102f46da75278a  2002  35
+scenes/Tests/Legacy/different_rmaps.RISEscene  a71bc08e73b5e0beb5fb2d3106784665f7675d6c50ccea1625a650bfb330696d  1932  35
 scenes/Tests/Legacy/dt_with_irrcache.RISEscene  e54416f466b4090963ae5c32e8fc1edba2297b22f0e28215710d348fcfc6f143  873  25
 scenes/Tests/Legacy/fabric_presets.RISEscene  8a76745cb6cef05d6ae40107e0f9446444c12273e4d86b63124048cafc8da836  3540  56
 scenes/Tests/Legacy/gltf_box.RISEscene  4cad5e0d4f2d89ed5852ebebd627fe58476482551c269b3ce5a727c286ff01ba  1027  24
@@ -370,7 +371,6 @@ scenes/Tests/Shaders/ambocc_ibl.RISEscene  5682947692d4e8aeb05769a0764980cdbd47c
 scenes/Tests/Shaders/arealight_shaderop.RISEscene  0269a2b870844033c0859c4e1eb66f38706f6c58f5b60b1e0f0e7909a10991b8  1346  29
 scenes/Tests/Shaders/blurry_floor.RISEscene  1cb192b0d33b02a06ef82e6ed8abc4226381b40a35f7941fbd0da2153c07f65c  1506  32
 scenes/Tests/Shaders/blurry_glass.RISEscene  f9a60f7020434e12461dbba799d2f3496dffb3677fec95a5db7f1e7fecf6f23d  1994  35
-scenes/Tests/Shaders/different_rmaps.RISEscene  a71bc08e73b5e0beb5fb2d3106784665f7675d6c50ccea1625a650bfb330696d  1932  35
 scenes/Tests/Shaders/dt_with_irrcache.RISEscene  e54416f466b4090963ae5c32e8fc1edba2297b22f0e28215710d348fcfc6f143  873  25
 scenes/Tests/Shaders/simple_dispersion.RISEscene  8eeae05fb38fbf6e1ed81f83c7f725c176eb0d05b63cbadc5ce8d6ca9860190b  1635  32
 scenes/Tests/Shaders/transparency_shaderop.RISEscene  775acee67a484d343b8050c0ac0cc27c8e0e7f9e014a49e4f2d7f0239f19869d  1981  36

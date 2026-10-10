@@ -1565,6 +1565,14 @@ unlike ambient it is occluded, so creases darken -- owner ruling #5],
 dispatch keyword, `DeprecatedChunkAliasReplacement`, because it shares the
 supported chunk's descriptor).
 
+**Frozen PARAMETER** (owner-approved 2026-10-10, legacy-deprecation Phase 2 slice B1): an
+OBJECT's own `radiance_map` (on `standard_object` and the other object chunks).  Only the frozen
+legacy shader-op chain honours it (its ops hand `RayIntersection::pRadianceMap` to the rays they
+cast); `pathtracing_*`, `bdpt_*` and `vcm_*` rasterizers ignore it and read only the rasterizer's
+own `radiance_map`.  A scene that sets one under a supported rasterizer logs ONE load warning saying
+so (pinned by `tests/DeprecatedMaterialWarningTest.cpp`); nothing renders differently.  Its one
+scene, `different_rmaps`, lives unmigrated in `scenes/Tests/Legacy/`.
+
 **Kept SUPPORTED** by ruling or as infrastructure: `translucent_material` (#11),
 `biospec_skin_material` / `generic_human_tissue_material` (#12),
 `datadriven_material`, `bezierpatch_geometry`, both SSS material models, the

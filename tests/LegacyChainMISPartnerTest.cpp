@@ -60,8 +60,9 @@
 //  contains a `DirectLightingShaderOp` -- each op is independent, with
 //  no back-reference to its shader.  Every shipped scene that used
 //  `distributiontracing_shaderop` (before legacy-deprecation Phase 2 slice
-//  B1 moved all but `different_rmaps` to the path tracer; the originals
-//  this paragraph cites are kept in `scenes/Tests/Legacy/`) paired it
+//  B1 moved them to the path tracer, and `different_rmaps` itself to
+//  `scenes/Tests/Legacy/`, where the originals this paragraph cites are
+//  kept) paired it
 //  with `DefaultDirectLighting` in the SAME `standard_shader`
 //  (`blurry_floor`, `blurry_glass`, `dielectric_dispersion`, `pillow`,
 //  `showroom`, `spotlight_drama`, `different_rmaps`) EXCEPT ONE:

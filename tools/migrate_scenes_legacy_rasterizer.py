@@ -153,7 +153,8 @@ Every mode refuses `sms_shaderop`, `donner_jensen_skin_sss_shaderop`, the
 translucent / shadow photon maps, direct volume rendering, MLT, scenes
 declaring more than one rasterizer, and an OBJECT-level `radiance_map` (only
 the legacy chain honours it; the supported integrators read only the
-rasterizer's map -- Tests/Shaders/different_rmaps is held on that).  Scenes in HELD below are reserved
+rasterizer's map; per-object radiance_map is frozen and its one scene,
+different_rmaps, lives unmigrated in scenes/Tests/Legacy/).  Scenes in HELD below are reserved
 for a later slice (Android catalogue / quickstart sample), and
 scenes/Tests/Legacy/ (the frozen-feature regression corpus) and
 scenes/Tests/ChunkCoverage/ (one-chunk parser coverage) are never touched.
