@@ -39,6 +39,11 @@ namespace RISE
 			//! by the DL-465 per-thread clones of cameras and lights.
 			Reference( const Reference& ) : IReference(), m_nRefcount( 1 ) {}
 
+			//! Assignment between reference-counted objects has no meaning (it
+			//! would copy the count and the mutex handle).  Deleted, so no
+			//! Reference subclass can be assigned by accident (DL-465 review).
+			Reference& operator=( const Reference& ) = delete;
+
 		public:
 			virtual void addref() const;
 			virtual bool release() const;

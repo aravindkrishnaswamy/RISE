@@ -29,6 +29,16 @@
 //  A static element's slot is -1, so its cost is one predictable branch on
 //  a member and nothing else -- static scenes are bit-identical.
 //
+//  ONE PASS PER SCENE AT A TIME.  The slots live on the SHARED elements and
+//  the camera override is per thread, so two time-indexed passes in flight
+//  over the same scene (two rasterizers rendering one scene concurrently,
+//  which the scene-immutability contract already forbids) would overwrite
+//  each other's slots, and a thread of one pass would read the other's
+//  table.  TimeIndexedFrame::TryCreate refuses an element that is still
+//  slotted, so the second pass falls back to the old path instead -- a guard
+//  for the sequential case (a leaked pass), not a lock: the slot write and
+//  read are not synchronised across two independent rendering threads.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////

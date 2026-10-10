@@ -249,6 +249,10 @@ namespace RISE
 			//! Surface samples whose rejection loop hit its candidate cap
 			//! and fell back to an object-uniform point (diagnostic).
 			unsigned long long WorldAreaRejectionCapHits() const { return m_rejectionCapHits.load( std::memory_order_relaxed ); }
+			//! DL-465: fold a per-thread pose holder's cap hits back into the
+			//! shared object when the holder retires, so the shared count
+			//! covers time-indexed passes too.
+			void AccumulateWorldAreaRejectionCapHits( const unsigned long long n ) const { m_rejectionCapHits.fetch_add( n, std::memory_order_relaxed ); }
 		protected:
 
 			//! World-LINEAR scaling of the transform's linear part,

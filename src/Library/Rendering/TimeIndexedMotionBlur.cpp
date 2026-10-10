@@ -68,6 +68,18 @@ TimeIndexedFrame::~TimeIndexedFrame()
 	}
 }
 
+int TimeIndexedFrame::SharedSlot( const Entry& e )
+{
+	switch( e.kind ) {
+	case kObject:			return dynamic_cast<Object*>( e.shared )->GetTimeSlot();
+	case kPointLight:		return dynamic_cast<PointLight*>( e.shared )->GetTimeSlot();
+	case kSpotLight:		return dynamic_cast<SpotLight*>( e.shared )->GetTimeSlot();
+	case kDirectionalLight:	return dynamic_cast<DirectionalLight*>( e.shared )->GetTimeSlot();
+	case kAmbientLight:		return dynamic_cast<AmbientLight*>( e.shared )->GetTimeSlot();
+	}
+	return -1;
+}
+
 void TimeIndexedFrame::SetSharedSlot( const Entry& e, const int slot )
 {
 	// Through the animator's own (non-const) element pointer.
@@ -121,6 +133,13 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 
 	std::vector<IKeyframable*> animated;
 	pAnimator->GetActiveAnimatedElements( animated );
+	// ONE time-indexed pass per scene at a time.  The slots live on the
+	// shared elements and the camera override is per thread, so a second
+	// pass over the same scene while one is in flight (two rasterizers
+	// rendering one scene concurrently -- which the scene-immutability
+	// contract already forbids) would overwrite the first pass's slots.  An
+	// element still slotted means exactly that: refuse and render the old
+	// way rather than corrupt the other pass.
 	for( std::size_t k = 0; k < animated.size(); k++ ) {
 		IKeyframable* elem = animated[k];
 		Entry e;
@@ -163,6 +182,9 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 			}
 			return Fail::Out( f, reason, why );
 		}
+		if( SharedSlot( e ) >= 0 ) {
+			return Fail::Out( f, reason, "an element already held by another time-indexed pass" );
+		}
 		f->entries.push_back( e );
 	}
 
@@ -187,6 +209,9 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 			e.shared = node;
 			e.typed = static_cast<const Object*>( node );
 			e.animated = false;
+			if( node->GetTimeSlot() >= 0 ) {
+				return Fail::Out( f, reason, "an element already held by another time-indexed pass" );
+			}
 			f->entries.push_back( e );
 			slot = static_cast<int>( f->entries.size() ) - 1;
 		}
@@ -297,6 +322,13 @@ TimeIndexedThread::~TimeIndexedThread()
 	}
 	TimeIndexed::tlsSlots = previousTable;
 	tlsCurrentThread = previousCurrent;
+	// Per-clone diagnostics back into the shared objects.
+	for( std::size_t i = 0; i < objects.size(); i++ ) {
+		if( objects[i] ) {
+			static_cast<const Object*>( frame->entries[i].typed )->AccumulateWorldAreaRejectionCapHits(
+				objects[i]->WorldAreaRejectionCapHits() );
+		}
+	}
 	for( std::size_t i = 0; i < owned.size(); i++ ) {
 		owned[i]->release();
 	}

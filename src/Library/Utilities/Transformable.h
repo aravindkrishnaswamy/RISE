@@ -91,6 +91,37 @@ namespace RISE
 			//! each with the input that defeats it.
 			bool		m_bParentWorldInvertible;
 
+			//! The authoritative-matrix metadata a matrix-authored transform
+			//! (SetFinalTransformMatrix / a V2 restore) carries, so later
+			//! absolute SetPosition / SetOrientation / SetScale / SetStretch
+			//! edit that matrix.  Inactive (the default) for a transform built
+			//! from components.  PER INSTANCE (DL-465 review P1): it used to
+			//! live in a process-wide locked registry, which serialised
+			//! multi-threaded per-sample posing.  Copied with the object (a
+			//! copy-constructed clone carries it; CopyTransformMetadataTo
+			//! copies it explicitly).
+			struct FinalMatrixMetadata
+			{
+				bool	active;
+				Matrix4	scaleBase;
+				Vector3	appliedStretch;
+				bool	scaleBaseValid;
+				size_t	authoritativeIndex;
+
+				FinalMatrixMetadata() :
+					active( false ),
+					scaleBase( Matrix4Ops::Identity() ),
+					appliedStretch( 1, 1, 1 ),
+					scaleBaseValid( false ),
+					authoritativeIndex( 0 )
+				{}
+			};
+			FinalMatrixMetadata	m_finalMetadata;
+
+			bool ReadFinalMetadata_( FinalMatrixMetadata& metadata ) const;	///< true iff active
+			void StoreFinalMetadata_( const FinalMatrixMetadata& metadata );
+			void ClearFinalMetadata_( );
+
 			Matrix4 CollapsedTransformStack_( ) const;
 			void ReplaceFinalStack_( const Matrix4& matrix );
 

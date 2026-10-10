@@ -17,10 +17,7 @@
 #include "../Interfaces/ILog.h"
 #include "FiniteMath.h"
 
-#include <atomic>
 #include <map>
-#include <mutex>
-#include <shared_mutex>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -120,79 +117,6 @@ Matrix4 ScaleFreeAffineBase_( const Matrix4& current )
 	return result;
 }
 
-struct FinalMatrixMetadata
-{
-	bool active;
-	Matrix4 scaleBase;
-	Vector3 appliedStretch;
-	bool scaleBaseValid;
-	size_t authoritativeIndex;
-
-	FinalMatrixMetadata() :
-		active( false ),
-		scaleBase( Matrix4Ops::Identity() ),
-		appliedStretch( 1, 1, 1 ),
-		scaleBaseValid( false ),
-		authoritativeIndex( 0 )
-	{}
-};
-
-struct FinalMetadataRegistry
-{
-	//! DL-465: a READER-writer lock plus an entry count.  Every keyframe
-	//! application (SetPosition / SetOrientation / SetStretch) reads this
-	//! registry, and a time-indexed motion-blur pass does that on every
-	//! render thread for every pixel sample; a plain mutex serialised the
-	//! whole pass on it.  Readers now share the lock, and when no
-	//! transformable in the process is matrix-authored (the registry is
-	//! empty -- the common case) they skip it altogether.  An entry for a
-	//! transformable is only ever written by the thread that owns that
-	//! transformable at the time, so a reader that sees the count at 0
-	//! cannot be missing an entry of its own.
-	std::shared_mutex mutex;
-	std::atomic<std::size_t> count;
-	std::map<const Transformable*, FinalMatrixMetadata> entries;
-	FinalMetadataRegistry() : count( 0 ) {}
-};
-
-// Process-lifetime sidecar avoids both public Transformable layout changes and
-// static-destruction-order hazards: an externally-owned static Transformable
-// may be destroyed after this translation unit's ordinary globals.
-FinalMetadataRegistry& FinalMetadataRegistry_()
-{
-	static FinalMetadataRegistry* registry = new FinalMetadataRegistry();
-	return *registry;
-}
-
-bool ReadFinalMetadata_( const Transformable* transformable, FinalMatrixMetadata& metadata )
-{
-	FinalMetadataRegistry& registry = FinalMetadataRegistry_();
-	if( registry.count.load( std::memory_order_acquire ) == 0 ) return false;
-	std::shared_lock<std::shared_mutex> lock( registry.mutex );
-	const std::map<const Transformable*, FinalMatrixMetadata>::const_iterator found =
-		registry.entries.find( transformable );
-	if( found == registry.entries.end() ) return false;
-	metadata = found->second;
-	return metadata.active;
-}
-
-void StoreFinalMetadata_( const Transformable* transformable, const FinalMatrixMetadata& metadata )
-{
-	FinalMetadataRegistry& registry = FinalMetadataRegistry_();
-	std::unique_lock<std::shared_mutex> lock( registry.mutex );
-	registry.entries[transformable] = metadata;
-	registry.count.store( registry.entries.size(), std::memory_order_release );
-}
-
-void ClearFinalMetadata_( const Transformable* transformable )
-{
-	FinalMetadataRegistry& registry = FinalMetadataRegistry_();
-	if( registry.count.load( std::memory_order_acquire ) == 0 ) return;
-	std::unique_lock<std::shared_mutex> lock( registry.mutex );
-	registry.entries.erase( transformable );
-	registry.count.store( registry.entries.size(), std::memory_order_release );
-}
-
 bool MatrixIsFinite_( const Matrix4& matrix )
 {
 	const Scalar* values = &matrix._00;
@@ -247,7 +171,30 @@ Transformable::Transformable( ) :
 
 Transformable::~Transformable( )
 {
-	ClearFinalMetadata_( this );
+}
+
+// DL-465 review P1: the authoritative-matrix metadata lives ON the instance
+// (m_finalMetadata), not in a process-wide registry.  Every keyframe
+// application reads it, and a time-indexed motion-blur pass applies
+// keyframes on every render thread for every pixel sample, each to its own
+// clone: a shared registry (even reader-locked; libc++'s shared_mutex takes
+// an internal mutex for readers too) serialised the pass, and a moving
+// matrix-authored clone wrote it under the exclusive lock every sample.
+// Per-instance data is touched only by the thread that owns the instance.
+bool Transformable::ReadFinalMetadata_( FinalMatrixMetadata& metadata ) const
+{
+	metadata = m_finalMetadata;
+	return metadata.active;
+}
+
+void Transformable::StoreFinalMetadata_( const FinalMatrixMetadata& metadata )
+{
+	m_finalMetadata = metadata;
+}
+
+void Transformable::ClearFinalMetadata_( )
+{
+	m_finalMetadata = FinalMatrixMetadata();
 }
 
 
@@ -255,9 +202,9 @@ void Transformable::PushTopTransStack( const Matrix4& mat )
 {
 	m_transformstack.push_front( mat );
 	FinalMatrixMetadata metadata;
-	if( ReadFinalMetadata_( this, metadata ) ) {
+	if( ReadFinalMetadata_( metadata ) ) {
 		++metadata.authoritativeIndex;
-		StoreFinalMetadata_( this, metadata );
+		StoreFinalMetadata_( metadata );
 	}
 }
 
@@ -270,16 +217,16 @@ void Transformable::PopTopTransStack( )
 {
 	if( m_transformstack.empty() ) return;
 	FinalMatrixMetadata metadata;
-	const bool active = ReadFinalMetadata_( this, metadata );
+	const bool active = ReadFinalMetadata_( metadata );
 	if( active && metadata.authoritativeIndex == 0 ) {
 		m_transformstack.pop_front();
-		ClearFinalMetadata_( this );
+		ClearFinalMetadata_();
 		return;
 	}
 	m_transformstack.pop_front( );
 	if( active ) {
 		--metadata.authoritativeIndex;
-		StoreFinalMetadata_( this, metadata );
+		StoreFinalMetadata_( metadata );
 	}
 }
 
@@ -287,10 +234,10 @@ void Transformable::PopBottomTransStack( )
 {
 	if( m_transformstack.empty() ) return;
 	FinalMatrixMetadata metadata;
-	const bool active = ReadFinalMetadata_( this, metadata );
+	const bool active = ReadFinalMetadata_( metadata );
 	if( active && metadata.authoritativeIndex + 1 == m_transformstack.size() ) {
 		m_transformstack.pop_back();
-		ClearFinalMetadata_( this );
+		ClearFinalMetadata_();
 		return;
 	}
 	m_transformstack.pop_back( );
@@ -316,7 +263,7 @@ void Transformable::ClearAllTransforms( )
 	// the same failure `parent` avoids by being re-issued unconditionally.
 	m_mxMirror = Matrix4Ops::Identity();
 	m_mirrorAxis = -1;
-	ClearFinalMetadata_( this );
+	ClearFinalMetadata_();
 	// Re-finalize rather than hand-assigning the two matrices: that also
 	// refreshes m_mxLocalTrans AND the subclass caches (Object's
 	// inverse-transpose / tangent sign / world-area Jacobian) through the
@@ -331,7 +278,7 @@ void Transformable::ClearAllTransforms( )
 void Transformable::ClearTransformStack( )
 {
 	m_transformstack.clear( );
-	ClearFinalMetadata_( this );
+	ClearFinalMetadata_();
 }
 
 void Transformable::TranslateObject( const Vector3& vec )
@@ -367,7 +314,7 @@ void Transformable::RotateObjectArbAxis( const Vector3& axis, const Scalar nAmou
 void Transformable::SetPosition( const Point3& pos )
 {
 	FinalMatrixMetadata metadata;
-	if( ReadFinalMetadata_( this, metadata ) ) {
+	if( ReadFinalMetadata_( metadata ) ) {
 		if( metadata.authoritativeIndex < m_transformstack.size() ) {
 			Matrix4& authoritative = m_transformstack[metadata.authoritativeIndex];
 			authoritative._30 = pos.x;
@@ -378,7 +325,7 @@ void Transformable::SetPosition( const Point3& pos )
 				metadata.scaleBase._31 = pos.y;
 				metadata.scaleBase._32 = pos.z;
 			}
-			StoreFinalMetadata_( this, metadata );
+			StoreFinalMetadata_( metadata );
 			return;
 		}
 	}
@@ -391,7 +338,7 @@ void Transformable::SetOrientation( const Vector3& orient )
 		Matrix4Ops::YRotation( orient.y ) * 
 		Matrix4Ops::ZRotation( orient.z );
 	FinalMatrixMetadata metadata;
-	if( ReadFinalMetadata_( this, metadata ) ) {
+	if( ReadFinalMetadata_( metadata ) ) {
 		if( metadata.authoritativeIndex < m_transformstack.size() ) {
 			Matrix4& authoritative = m_transformstack[metadata.authoritativeIndex];
 			const Matrix4 base = metadata.scaleBaseValid
@@ -404,7 +351,7 @@ void Transformable::SetOrientation( const Vector3& orient )
 			metadata.scaleBaseValid = true;
 			authoritative = metadata.scaleBase
 				* Matrix4Ops::Stretch( metadata.appliedStretch );
-			StoreFinalMetadata_( this, metadata );
+			StoreFinalMetadata_( metadata );
 			return;
 		}
 	}
@@ -414,7 +361,7 @@ void Transformable::SetOrientation( const Vector3& orient )
 void Transformable::SetScale( const Scalar nAmount )
 {
 	FinalMatrixMetadata metadata;
-	if( ReadFinalMetadata_( this, metadata ) ) {
+	if( ReadFinalMetadata_( metadata ) ) {
 		if( !metadata.scaleBaseValid ) {
 			const Matrix4 current = CollapsedTransformStack_();
 			metadata.scaleBase = ScaleFreeAffineBase_( current );
@@ -428,7 +375,7 @@ void Transformable::SetScale( const Scalar nAmount )
 			ReplaceFinalStack_( metadata.scaleBase * Matrix4Ops::Scale( nAmount ) );
 			metadata.authoritativeIndex = 0;
 		}
-		StoreFinalMetadata_( this, metadata );
+		StoreFinalMetadata_( metadata );
 		return;
 	}
 	m_mxScale = Matrix4Ops::Scale( nAmount );
@@ -437,7 +384,7 @@ void Transformable::SetScale( const Scalar nAmount )
 void Transformable::SetStretch( const Vector3& stretch )
 {
 	FinalMatrixMetadata metadata;
-	if( ReadFinalMetadata_( this, metadata ) ) {
+	if( ReadFinalMetadata_( metadata ) ) {
 		if( !metadata.scaleBaseValid ) {
 			const Matrix4 current = CollapsedTransformStack_();
 			metadata.scaleBase = ScaleFreeAffineBase_( current );
@@ -451,7 +398,7 @@ void Transformable::SetStretch( const Vector3& stretch )
 			ReplaceFinalStack_( metadata.scaleBase * Matrix4Ops::Stretch( stretch ) );
 			metadata.authoritativeIndex = 0;
 		}
-		StoreFinalMetadata_( this, metadata );
+		StoreFinalMetadata_( metadata );
 		return;
 	}
 	m_mxStretch = Matrix4Ops::Stretch( stretch );
@@ -469,7 +416,7 @@ void Transformable::SetFinalTransformMatrix( const Matrix4& matrix )
 		ColumnLength_( matrix, 2 ) );
 	metadata.scaleBaseValid = true;
 	metadata.authoritativeIndex = 0;
-	StoreFinalMetadata_( this, metadata );
+	StoreFinalMetadata_( metadata );
 }
 
 void Transformable::ReplaceFinalStack_( const Matrix4& matrix )
@@ -772,7 +719,7 @@ void Transformable::RestoreTransformState( const TransformState& st )
 	// Preserve the legacy API's exact historical component+stack behavior.
 	// The additive V2 sibling below restores authoritative-matrix metadata for
 	// in-tree editor snapshots without changing TransformState's ABI.
-	ClearFinalMetadata_( this );
+	ClearFinalMetadata_();
 	FinalizeTransformations();
 }
 
@@ -781,7 +728,7 @@ TransformStateV2 Transformable::CaptureTransformStateV2( ) const
 	TransformStateV2 state;
 	state.transform = CaptureTransformState();
 	FinalMatrixMetadata metadata;
-	state.finalMatrixOnStack = ReadFinalMetadata_( this, metadata );
+	state.finalMatrixOnStack = ReadFinalMetadata_( metadata );
 	state.finalScaleBase = metadata.scaleBase;
 	state.appliedStretch = metadata.appliedStretch;
 	state.finalScaleBaseValid = metadata.scaleBaseValid;
@@ -812,9 +759,9 @@ bool Transformable::RestoreTransformStateV2( const TransformStateV2& state )
 		metadata.appliedStretch = state.appliedStretch;
 		metadata.scaleBaseValid = state.finalScaleBaseValid;
 		metadata.authoritativeIndex = state.authoritativeStackIndex;
-		StoreFinalMetadata_( this, metadata );
+		StoreFinalMetadata_( metadata );
 	} else {
-		ClearFinalMetadata_( this );
+		ClearFinalMetadata_();
 	}
 	FinalizeTransformations();
 	return true;
@@ -823,10 +770,10 @@ bool Transformable::RestoreTransformStateV2( const TransformStateV2& state )
 void Transformable::CopyTransformMetadataTo( Transformable& destination ) const
 {
 	FinalMatrixMetadata metadata;
-	if( ReadFinalMetadata_( this, metadata ) ) {
-		StoreFinalMetadata_( &destination, metadata );
+	if( ReadFinalMetadata_( metadata ) ) {
+		destination.StoreFinalMetadata_( metadata );
 	} else {
-		ClearFinalMetadata_( &destination );
+		destination.ClearFinalMetadata_();
 	}
 }
 

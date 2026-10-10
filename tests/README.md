@@ -1325,8 +1325,12 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   same salt -> identical pixel hashes for PT / BDPT / VCM (merging off), RGB
   and spectral (red on any of four mutations that disable a clone kind or the
   hierarchy replay); B: all threads vs the old path, n salted renders each,
-  whole-image and 4x4 region means by Welch t (family 0.01); C: a keyframed
-  painter keeps the old path; D (not a gate): wall time.  Every render runs
+  whole-image and 4x4 region means by Welch t (family 0.01), on the 192x192
+  film (the 32x32 one is a single tile, one worker); A and B also run the
+  extended scene (thin lens, keyframed directional / ambient lights, a
+  non-uniformly scaling luminary, a keyframed matrix-authored object); C: a
+  keyframed painter keeps the old path; D (not a gate): wall / user / sys
+  time, including no / static / moving matrix-authored object.  Every render runs
   in a child process (options are read once per process).  `--dump <scene>
   <ras> <spp>` prints a scene for cross-build hashing.  Args: section
   (all/S/A/B/C/D), spp (16), n (8).

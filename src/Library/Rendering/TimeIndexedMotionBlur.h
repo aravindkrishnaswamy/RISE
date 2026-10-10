@@ -44,6 +44,13 @@
 //  evaluated -- a moving object's query costs one thread-local load and a
 //  forwarded call; a static object's costs one branch on its slot.
 //
+//  DIAGNOSTICS.  A pose holder counts its own world-area rejection-cap hits
+//  (DL-448); TimeIndexedThread folds them into the shared object when it
+//  retires, so `Object::WorldAreaRejectionCapHits` covers the pass.  A
+//  one-shot warning (area fallback, first cap hit) is printed at most once
+//  per holder -- once per render thread per pass -- unless the shared object
+//  had already printed it.
+//
 //  WHAT KEEPS THE SINGLE-THREADED PATH (logged once per frame, naming the
 //  element): any other keyframed element (geometry parameters, painters,
 //  materials, media, CSG composites and their operands, an object whose
@@ -118,6 +125,7 @@ namespace RISE
 
 			int SlotOf( const void* typed ) const;
 			static void SetSharedSlot( const Entry& e, const int slot );
+			static int SharedSlot( const Entry& e );
 
 			const IScene&				scene;
 			IAnimator*					pAnimator;

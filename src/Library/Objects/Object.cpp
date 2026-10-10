@@ -631,6 +631,11 @@ Object* Object::ClonePoseHolder() const
 	Object* pClone = pGeometry ? new Object( pGeometry ) : new Object();
 	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "time-indexed pose holder" );
 	CopySnapshotStateInto( *pClone, false );
+	// A warning the shared object already printed is not repeated per thread.
+	// (A first warning on a holder is still printed once per holder: at most
+	// once per render thread per pass.  Cap-hit COUNTS are folded back into
+	// the shared object by TimeIndexedThread when the holder retires.)
+	pClone->m_warnedAreaFallback.store( m_warnedAreaFallback.load() );
 	return pClone;
 }
 

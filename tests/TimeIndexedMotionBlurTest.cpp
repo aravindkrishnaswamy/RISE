@@ -31,6 +31,10 @@
 //
 //    S  (sanity) dropping any ONE timeline changes the render.
 //
+//    Scenes A and S run on combo and ext_combo (thin lens f/1.4, keyframed
+//    directional + ambient lights, a non-uniformly scaling luminary, a
+//    keyframed matrix-authored object); B on their 192x192 twins.
+//
 //    Usage: TimeIndexedMotionBlurTest [all|S|A|B|C|D] [spp] [n]
 //
 //  Author: Claude (debt-dl465)
@@ -55,6 +59,7 @@
 #include <random>
 #include <chrono>
 #include <unistd.h>
+#include <sys/resource.h>
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -127,16 +132,33 @@ static std::string Rasterizer( const std::string& kind, const int spp )
 	return "";
 }
 
-static std::string Scene( const std::string& key, const std::string& ras, const int spp )
+//! Scene keys: [ext_]<base>[_big], base one of
+//!   combo        everything below moves
+//!   no_<x>       combo without timeline <x> (section S)
+//!   static       combo with exposure 0 (no blur; the frame-time pose)
+//!   fallback     combo plus a keyframed painter (not time-indexable)
+//!   matmove      combo plus a MATRIX-authored object whose position is keyframed
+//!   matstatic    combo plus a static matrix-authored object
+//! "ext_" adds the review's extended variant: a thin-lens camera (f/1.4), a
+//! keyframed directional light (direction) and ambient light (energy), a
+//! luminary whose scale animates non-uniformly, and a keyframed matrix-
+//! authored object.  "_big": a 192x192 film (the 32x32 film is ONE
+//! FrameStore tile, so it never spreads across threads).
+static std::string Scene( const std::string& keyIn, const std::string& ras, const int spp )
 {
-	// "<key>_big": a 192x192 film for wall-time measurements (the 32x32
-	// film is ONE FrameStore tile, so it cannot spread across threads).
+	std::string key = keyIn;
 	const bool big = key.size() > 4 && key.compare( key.size() - 4, 4, "_big" ) == 0;
+	if( big ) key = key.substr( 0, key.size() - 4 );
+	const bool ext = key.compare( 0, 4, "ext_" ) == 0;
+	if( ext ) key = key.substr( 4 );
 	std::string s = "RISE ASCII SCENE 7\n\n";
 	s += Fmt( "film\n{\n\twidth %d\n\theight %d\n}\n\n", big ? 192 : kW, big ? 192 : kH );
-	// "static..." keys: exposure 0 (no motion blur; the frame-time pose).
-	const bool still = key.compare( 0, 6, "static" ) == 0;
-	s += Fmt( "pinhole_camera\n{\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55\n\texposure %d\n}\n\n", still ? 0 : 1 );
+	const bool still = key == "static";
+	if( ext ) {
+		s += Fmt( "thinlens_camera\n{\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tsensor_size 36\n\tfocal_length 35\n\tfstop 1.4\n\tfocus_distance 4\n\texposure %d\n}\n\n", still ? 0 : 1 );
+	} else {
+		s += Fmt( "pinhole_camera\n{\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55\n\texposure %d\n}\n\n", still ? 0 : 1 );
+	}
 	s += "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n"
 		"uniformcolor_painter\n{\n\tname grey\n\tcolor 0.5 0.5 0.5\n}\n\n"
 		"uniformcolor_painter\n{\n\tname black\n\tcolor 0 0 0\n}\n\n"
@@ -148,8 +170,6 @@ static std::string Scene( const std::string& key, const std::string& ras, const 
 		"standard_object\n{\n\tname floor\n\tgeometry geo_floor\n\tmaterial floor_mat\n}\n\n"
 		"sphere_geometry\n{\n\tname geo_unit\n\tradius 1\n}\n\n"
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
-	// Moving luminary, occluder, parented child, omni and spot lights, and
-	// the camera.  Key "no_<x>" drops one of those timelines (section S).
 	const bool all = key.compare( 0, 3, "no_" ) != 0;
 	auto keep = [&]( const char* x ) { return all || key != std::string( "no_" ) + x; };
 	s += Sphere( "lum_s", "lum", "-1 1 1.2", "0.25 0.25 0.25" );
@@ -164,6 +184,22 @@ static std::string Scene( const std::string& key, const std::string& ras, const 
 	s += "spot_light\n{\n\tname spot\n\tposition 0 2 2\n\ttarget 0 2 0\n\tcolor 0.6 0.8 1\n\tpower 30\n\tinner 30\n\touter 40\n}\n\n";
 	if( keep( "spot" ) ) s += Timeline( "light", "spot", "target", "0 2 0", "1 0 0" );
 	if( keep( "cam" ) ) s += Timeline( "camera", 0, "location", "0 0 5", "1 0.5 5" );
+	const bool matObject = ext || key == "matmove" || key == "matstatic";
+	const bool matMoves = ext || key == "matmove";
+	if( matObject ) {
+		// A MATRIX-authored object carries authoritative-matrix metadata, so
+		// every keyframe application on it goes through that metadata.
+		s += "standard_object\n{\n\tname matobj\n\tgeometry geo_unit\n\tmaterial white_mat\n\tmatrix 0.3 0 0 0 0 0.3 0 0 0 0 0.3 0 0.5 -1.2 1 1\n}\n\n";
+		if( matMoves && keep( "mat" ) ) s += Timeline( "object", "matobj", "position", "0.5 -1.2 1", "-0.5 -1.0 1" );
+	}
+	if( ext ) {
+		s += "directional_light\n{\n\tname l_dir\n\tpower 1.5\n\tcolor 1 1 1\n\tdirection 0.3 0.3 1\n}\n\n";
+		if( keep( "dir" ) ) s += Timeline( "light", "l_dir", "direction", "0.3 0.3 1", "-0.6 0.1 0.5" );
+		s += "ambient_light\n{\n\tname l_amb\n\tpower 0.05\n\tcolor 1 1 1\n}\n\n";
+		if( keep( "amb" ) ) s += Timeline( "light", "l_amb", "energy", "0.05", "0.3" );
+		s += Sphere( "lum2", "lum", "1 -1 1.0", "0.3 0.3 0.3" );
+		if( keep( "lum2" ) ) s += Timeline( "object", "lum2", "scale", "0.3 0.3 0.3", "0.6 0.1 0.3" );
+	}
 	if( key == "fallback" ) {
 		// A keyframed painter: not time-indexable.
 		s += "uniformcolor_painter\n{\n\tname pulse\n\tcolor 0.2 0.2 0.2\n}\n\n";
@@ -208,6 +244,7 @@ struct ChildResult
 	double mean = 0;
 	double regions[16] = {};
 	double seconds = 0;
+	double userCpu = 0, sysCpu = 0;	//!< the child's CPU time (getrusage of children)
 	unsigned long long frames = 0;
 };
 
@@ -291,7 +328,13 @@ static ChildResult RunChild( const std::string& scene, const std::string& ras, c
 	const std::string cmd = Fmt( "\"%s\" --child %s %s %d %d %u %d \"%s\" > /dev/null 2>&1",
 		g_self.c_str(), scene.c_str(), ras.c_str(), threads, ti ? 1 : 0, salt, spp, out.c_str() );
 	ChildResult r;
+	struct rusage before, after;
+	getrusage( RUSAGE_CHILDREN, &before );
 	const int rc = std::system( cmd.c_str() );
+	getrusage( RUSAGE_CHILDREN, &after );
+	auto sec = []( const struct timeval& t ) { return double( t.tv_sec ) + 1e-6 * double( t.tv_usec ); };
+	r.userCpu = sec( after.ru_utime ) - sec( before.ru_utime );
+	r.sysCpu = sec( after.ru_stime ) - sec( before.ru_stime );
 	std::ifstream in( out );
 	int ok = 0;
 	if( in >> ok >> r.hash >> r.mean >> r.seconds >> r.frames ) {
@@ -379,20 +422,22 @@ static const char* kRasterizers[] = { "pt", "pts", "bdpt", "bdpts", "vcm", "vcms
 static void SectionA( const int spp )
 {
 	std::cout << "\nA: one thread, TI clones vs moving the shared scene, same salt (exact)\n";
-	for( const char* ras : kRasterizers ) {
-		const unsigned int salt = 1000u + unsigned( std::strlen( ras ) );
-		const ChildResult old1 = RunChild( "combo", ras, 1, false, salt, spp );
-		const ChildResult old2 = RunChild( "combo", ras, 1, false, salt, spp );
-		const ChildResult ti = RunChild( "combo", ras, 1, true, salt, spp );
-		std::printf( "  %-6s OLD %016llx / %016llx  TI %016llx  (TI frames %llu, OLD frames %llu)  mean %.9f vs %.9f\n",
-			ras, old1.hash, old2.hash, ti.hash, ti.frames, old1.frames, old1.mean, ti.mean );
-		Check( old1.ok && old2.ok && ti.ok, Fmt( "A %s: all three renders succeed", ras ) );
-		Check( old1.frames == 0 && ti.frames > 0, Fmt( "A %s: OLD took the shared-scene path, TI the time-indexed one", ras ) );
-		if( old1.hash != old2.hash ) {
-			std::printf( "  %-6s OLD is not deterministic against itself at one thread; exactness not testable\n", ras );
-			continue;
+	for( const char* scene : { "combo", "ext_combo" } ) {
+		for( const char* ras : kRasterizers ) {
+			const unsigned int salt = 1000u + unsigned( std::strlen( ras ) );
+			const ChildResult old1 = RunChild( scene, ras, 1, false, salt, spp );
+			const ChildResult old2 = RunChild( scene, ras, 1, false, salt, spp );
+			const ChildResult ti = RunChild( scene, ras, 1, true, salt, spp );
+			std::printf( "  %-9s %-6s OLD %016llx / %016llx  TI %016llx  (TI frames %llu, OLD frames %llu)  mean %.9f vs %.9f\n",
+				scene, ras, old1.hash, old2.hash, ti.hash, ti.frames, old1.frames, old1.mean, ti.mean );
+			Check( old1.ok && old2.ok && ti.ok, Fmt( "A %s %s: all three renders succeed", scene, ras ) );
+			Check( old1.frames == 0 && ti.frames > 0, Fmt( "A %s %s: OLD took the shared-scene path, TI the time-indexed one", scene, ras ) );
+			if( old1.hash != old2.hash ) {
+				std::printf( "  %s %s: OLD is not deterministic against itself at one thread; exactness not testable\n", scene, ras );
+				continue;
+			}
+			Check( ti.hash == old1.hash, Fmt( "A %s %s: TI pixel hash == OLD pixel hash", scene, ras ) );
 		}
-		Check( ti.hash == old1.hash, Fmt( "A %s: TI pixel hash == OLD pixel hash", ras ) );
 	}
 }
 
@@ -401,54 +446,62 @@ static void SectionA( const int spp )
 //! element really is seen by the samples sections A and B compare.
 static void SectionS( const int spp )
 {
-	std::cout << "\nS: every timeline of the combo scene is visible in the render\n";
+	std::cout << "\nS: every timeline of the combo / ext_combo scenes is visible in the render\n";
 	const ChildResult full = RunChild( "combo", "pt", 1, false, 31337u, spp );
-	for( const char* x : { "cam", "lum", "occ", "rig", "omni", "spot" } ) {
-		const ChildResult r = RunChild( std::string( "no_" ) + x, "pt", 1, false, 31337u, spp );
+	const ChildResult fullExt = RunChild( "ext_combo", "pt", 1, false, 31337u, spp );
+	for( const char* x : { "cam", "lum", "occ", "rig", "omni", "spot", "dir", "amb", "lum2", "mat" } ) {
+		const bool extOnly = std::string( x ) == "dir" || std::string( x ) == "amb" || std::string( x ) == "lum2" || std::string( x ) == "mat";
+		const ChildResult r = RunChild( std::string( extOnly ? "ext_no_" : "no_" ) + x, "pt", 1, false, 31337u, spp );
+		const ChildResult& ref = extOnly ? fullExt : full;
 		double maxRel = 0;
 		for( int k = 0; k < 16; k++ ) {
-			const double d = std::fabs( r.regions[k] - full.regions[k] ) / ( std::fabs( full.regions[k] ) + 1e-6 );
+			const double d = std::fabs( r.regions[k] - ref.regions[k] ) / ( std::fabs( ref.regions[k] ) + 1e-6 );
 			if( d > maxRel ) maxRel = d;
 		}
-		std::printf( "  without the %-4s timeline: image mean %.6f vs %.6f, largest region change %.1f %%\n", x, r.mean, full.mean, 100 * maxRel );
-		Check( full.ok && r.ok && maxRel > 0.02, Fmt( "S: the %s timeline changes some region by > 2 %%", x ) );
+		std::printf( "  without the %-4s timeline: image mean %.6f vs %.6f, largest region change %.1f %%\n", x, r.mean, ref.mean, 100 * maxRel );
+		Check( ref.ok && r.ok && maxRel > 0.02, Fmt( "S: the %s timeline changes some region by > 2 %%", x ) );
 	}
 }
 
+//! On the 192x192 film: the 32x32 film is ONE FrameStore tile, which one
+//! worker renders alone, so only the big film exercises concurrent posing.
 static void SectionB( const int spp, const int n )
 {
-	std::cout << "\nB: all threads TI vs OLD (single-threaded), " << n << " salted renders each\n";
+	std::cout << "\nB: all threads TI vs OLD (single-threaded), 192x192, " << n << " salted renders each\n";
+	static const char* kScenes[] = { "combo_big", "ext_combo_big" };
 	const int nRas = int( sizeof( kRasterizers ) / sizeof( kRasterizers[0] ) );
-	const int family = nRas * 17;
+	const int family = 2 * nRas * 17;
 	const double alpha = 0.01 / family;
-	for( const char* ras : kRasterizers ) {
-		std::vector<double> tiMean, oldMean;
-		std::vector<std::vector<double> > tiReg( 16 ), oldReg( 16 );
-		bool ok = true, allTI = true;
-		for( int i = 0; i < n; i++ ) {
-			const unsigned int salt = 70000u + unsigned( i ) * 7919u + unsigned( std::strlen( ras ) );
-			const ChildResult a = RunChild( "combo", ras, 0, true, salt, spp );
-			const ChildResult b = RunChild( "combo", ras, 0, false, salt + 1u, spp );
-			ok = ok && a.ok && b.ok;
-			allTI = allTI && a.frames > 0 && b.frames == 0;
-			tiMean.push_back( a.mean ); oldMean.push_back( b.mean );
-			for( int k = 0; k < 16; k++ ) { tiReg[k].push_back( a.regions[k] ); oldReg[k].push_back( b.regions[k] ); }
+	for( const char* scene : kScenes ) {
+		for( const char* ras : kRasterizers ) {
+			std::vector<double> tiMean, oldMean;
+			std::vector<std::vector<double> > tiReg( 16 ), oldReg( 16 );
+			bool ok = true, allTI = true;
+			for( int i = 0; i < n; i++ ) {
+				const unsigned int salt = 70000u + unsigned( i ) * 7919u + unsigned( std::strlen( ras ) ) + unsigned( std::strlen( scene ) ) * 131u;
+				const ChildResult a = RunChild( scene, ras, 0, true, salt, spp );
+				const ChildResult b = RunChild( scene, ras, 0, false, salt + 1u, spp );
+				ok = ok && a.ok && b.ok;
+				allTI = allTI && a.frames > 0 && b.frames == 0;
+				tiMean.push_back( a.mean ); oldMean.push_back( b.mean );
+				for( int k = 0; k < 16; k++ ) { tiReg[k].push_back( a.regions[k] ); oldReg[k].push_back( b.regions[k] ); }
+			}
+			Check( ok, Fmt( "B %s %s: all renders succeed", scene, ras ) );
+			Check( allTI, Fmt( "B %s %s: TI renders took the time-indexed path, OLD did not", scene, ras ) );
+			double mt, st, mo, so;
+			MeanSd( tiMean, mt, st ); MeanSd( oldMean, mo, so );
+			const Welch w = WelchT( tiMean, oldMean );
+			std::printf( "  %-13s %-6s image mean TI %.6f sd %.6f | OLD %.6f sd %.6f | ratio %.5f t %+.2f p %.3g\n",
+				scene, ras, mt, st, mo, so, mo > 0 ? mt / mo : 0.0, w.t, w.p );
+			Check( w.p > alpha, Fmt( "B %s %s: image mean TI == OLD (Welch p %.3g > %.2g)", scene, ras, w.p, alpha ) );
+			double worstP = 1, worstT = 0; int worstK = -1;
+			for( int k = 0; k < 16; k++ ) {
+				const Welch r = WelchT( tiReg[k], oldReg[k] );
+				if( r.p < worstP ) { worstP = r.p; worstT = r.t; worstK = k; }
+			}
+			std::printf( "  %-13s %-6s worst of 16 regions: region %d t %+.2f p %.3g\n", scene, ras, worstK, worstT, worstP );
+			Check( worstP > alpha, Fmt( "B %s %s: every 4x4 region mean TI == OLD (worst p %.3g > %.2g)", scene, ras, worstP, alpha ) );
 		}
-		Check( ok, Fmt( "B %s: all renders succeed", ras ) );
-		Check( allTI, Fmt( "B %s: TI renders took the time-indexed path, OLD did not", ras ) );
-		double mt, st, mo, so;
-		MeanSd( tiMean, mt, st ); MeanSd( oldMean, mo, so );
-		const Welch w = WelchT( tiMean, oldMean );
-		std::printf( "  %-6s image mean TI %.6f sd %.6f | OLD %.6f sd %.6f | ratio %.5f t %+.2f p %.3g\n",
-			ras, mt, st, mo, so, mo > 0 ? mt / mo : 0.0, w.t, w.p );
-		Check( w.p > alpha, Fmt( "B %s: image mean TI == OLD (Welch p %.3g > %.2g)", ras, w.p, alpha ) );
-		double worstP = 1, worstT = 0; int worstK = -1;
-		for( int k = 0; k < 16; k++ ) {
-			const Welch r = WelchT( tiReg[k], oldReg[k] );
-			if( r.p < worstP ) { worstP = r.p; worstT = r.t; worstK = k; }
-		}
-		std::printf( "  %-6s worst of 16 regions: region %d t %+.2f p %.3g\n", ras, worstK, worstT, worstP );
-		Check( worstP > alpha, Fmt( "B %s: every 4x4 region mean TI == OLD (worst p %.3g > %.2g)", ras, worstP, alpha ) );
 	}
 }
 
@@ -463,6 +516,22 @@ static void SectionC( const int spp )
 static void SectionD( const int spp, const int n )
 {
 	std::cout << "\nD: wall time, all threads, interleaved (not a gate)\n";
+	// The review's three cases (PT, 192x192): no matrix-authored object, a
+	// static one, a moving one.  Wall, user and sys seconds of the child.
+	for( const char* scene : { "combo_big", "matstatic_big", "matmove_big" } ) {
+		std::vector<double> tw, tu, ts, ow, ou, os;
+		for( int i = 0; i < n; i++ ) {
+			const ChildResult a = RunChild( scene, "pt", 0, true, 8000u + i, spp );
+			const ChildResult b = RunChild( scene, "pt", 0, false, 8500u + i, spp );
+			tw.push_back( a.seconds ); tu.push_back( a.userCpu ); ts.push_back( a.sysCpu );
+			ow.push_back( b.seconds ); ou.push_back( b.userCpu ); os.push_back( b.sysCpu );
+		}
+		double m1, s1, m2, s2, m3, s3, m4, s4, m5, s5, m6, s6;
+		MeanSd( tw, m1, s1 ); MeanSd( tu, m2, s2 ); MeanSd( ts, m3, s3 );
+		MeanSd( ow, m4, s4 ); MeanSd( ou, m5, s5 ); MeanSd( os, m6, s6 );
+		std::printf( "  pt %-14s TI wall %.3f s sd %.3f (user %.2f sys %.2f) | OLD wall %.3f s sd %.3f (user %.2f sys %.2f) | speedup %.2fx (n=%d)\n",
+			scene, m1, s1, m2, m3, m4, s4, m5, m6, m4 / m1, n );
+	}
 	for( const char* ras : { "pt", "bdpt", "vcm" } ) {
 		std::vector<double> ti, old;
 		for( int i = 0; i < n; i++ ) {
