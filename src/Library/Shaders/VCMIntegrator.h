@@ -88,8 +88,9 @@ namespace RISE
 				const StabilityConfig& stabilityConfig_
 				);
 
-			/// DL-474: normalize a certified single sphere/box cut of the ball.
-            /// Unknown or multiple cuts retain the legacy kernel (row residual).
+			/// DL-474: normalize a certified sphere/box cut of the ball, including
+            /// conservative bounds for adjacent faces of one containing box.
+            /// Unknown geometry and independent multiple cuts retain the old kernel.
             static VCMNormalization BoundaryVolumeNormalization(
                 const VCMNormalization& norm, const BDPTVertex& vertex );
 

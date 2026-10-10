@@ -1,4 +1,4 @@
-// DL-474 exact single-boundary normalization; corner pin remains unimplemented.
+// DL-474 single-boundary exact and own-box corner conservative normalization.
 #define main VCMVolumeMergeRegressionMain
 #include "VCMVolumeMergeTest.cpp"
 #undef main
@@ -54,7 +54,29 @@ int main(int argc,char** argv) {
     Check(SameFactors(n,VCMIntegrator::BoundaryVolumeNormalization(n,v)),"no nearby cut factors bit-identical");
     SetVolumeMergeRadius(n,.2,1,17);n.mVolumeObjects=job->GetObjects();v.position=Point3(1.45,1.45,1.45);
     const VCMNormalization corner=VCMIntegrator::BoundaryVolumeNormalization(n,v);
-    Check(SameFactors(n,corner),"multiple box cuts retain legacy kernel (residual)");
+    Check(corner.mVolumeNormalization>n.mVolumeNormalization,"own-box corner receives missing-mass correction");
+    // Independent midpoint integration of the intersection of the unit ball
+    // with x,y,z >= -1/4. It is a numerical reference, not a certified bound.
+    double reference=0; constexpr unsigned grid=1024;
+    for(unsigned i=0;i<grid;++i) for(unsigned j=0;j<grid;++j) {
+        const double x=-.25+1.25*(i+.5)/grid, y=-.25+1.25*(j+.5)/grid;
+        const double h=std::sqrt(std::max(0.0,1-x*x-y*y));
+        if(h>0) reference+=h+std::min(.25,h);
+    }
+    reference*=1.25*1.25/(grid*grid)/((4.0/3)*PI);
+    const double bound=corner.mMisVolumeWeightFactor/n.mMisVolumeWeightFactor;
+    Check(bound>=reference && bound-reference<.002,"corner conservative upper fraction near independent integration");
+    Check(std::fabs(corner.mVolumeNormalization/n.mVolumeNormalization-1/bound)<1e-12,"corner kernel and MIS reciprocal");
+    SetVolumeMergeRadius(n,.2,1,17);n.mVolumeObjects=job->GetObjects();
+    v.position=Point3(1.5-1e-8,1.5-1e-8,0);
+    const auto edge=VCMIntegrator::BoundaryVolumeNormalization(n,v);
+    Check(std::fabs(edge.mMisVolumeWeightFactor/n.mMisVolumeWeightFactor-.25)<1e-6,"two-plane orthant limit");
+    v.position=Point3(1.5-1e-8,1.5-1e-8,1.5-1e-8);
+    const auto tip=VCMIntegrator::BoundaryVolumeNormalization(n,v);
+    Check(std::fabs(tip.mMisVolumeWeightFactor/n.mMisVolumeWeightFactor-.125)<1e-6,"three-plane orthant limit");
+    if(argc==2 && std::string(argv[1])=="--strict-exact-corner-pin")
+        Check(std::fabs(bound-reference)<1e-6,"strict exact corner normalization remains unimplemented");
+    std::cout << "corner fraction upper " << bound << " reference " << reference << "\n";
     if(argc==2 && std::string(argv[1])=="--strict-corner-pin")
         Check(corner.mVolumeNormalization>n.mVolumeNormalization,"strict corner missing-mass normalization");
     std::cout << "sphere phi " << phi << " plane phi " << planePhi << "\n" << passCount << " passed, " << failCount << " failed\n";
