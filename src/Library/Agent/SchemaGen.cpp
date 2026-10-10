@@ -229,6 +229,12 @@ namespace RISE
 					out += ",\"deprecated\":true,\"replacement\":";
 					AppendJsonString( out, d.replacement );
 				}
+				// Legacy-deprecation Phase 1 (2026-10-09): emitted ONLY when true.  A FROZEN chunk
+				// is legacy and UNSUPPORTED -- it still loads and renders, an existing one may be
+				// edited, but insert_chunk / insert_chunks / a param splice refuse to CREATE one.
+				if( d.frozen ) {
+					out += ",\"frozen\":true";
+				}
 				if( !d.description.empty() ) {
 					out += ",\"description\":";
 					AppendJsonString( out, d.description );

@@ -9,13 +9,17 @@
 //
 //  What it pins
 //  ------------
-//    [registry]  exactly the seven legacy chunk types are
-//                `ChunkDescriptor::deprecated`; each carries a non-empty
-//                replacement hint that names a registered NON-deprecated
-//                keyword; their descriptions are prefixed so every
-//                consumer of `description` shows the notice.  The legacy
-//                chunks that have NO real replacement (translucent,
-//                phong_luminaire) and every modern material are NOT
+//    [registry]  legacy-deprecation Phase 1 (2026-10-09): the FROZEN set
+//                (legacy, unsupported -- the seven legacy BRDF materials
+//                promoted, plus the shader-op pipeline, photon maps, MLT,
+//                composite, ...) and the DEPRECATED-only set are exactly
+//                kLegacyTierTable's; frozen implies deprecated; each
+//                carries a non-empty replacement hint (the seven materials'
+//                name a registered SUPPORTED material keyword); their
+//                descriptions are prefixed so every consumer of
+//                `description` shows the notice.  translucent, the SSS
+//                materials, the research skin models, datadriven, bezier
+//                patch, the delta lights and pathtracing_shaderop are NOT
 //                flagged.
 //    [warn]      DeriveToJob called with warnDeprecated=true (only
 //                Job::LoadAsciiSceneViaCst does) logs exactly ONE eLog_Warning per
@@ -43,6 +47,7 @@
 #include "../src/Library/Agent/SchemaGen.h"
 #include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
 #include "../src/Library/Parsers/ChunkDescriptor.h"
+#include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
 #include "../src/Library/Interfaces/ILogPrinter.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
@@ -69,7 +74,7 @@ using namespace RISE::Cst;
 static int g_pass = 0, g_fail = 0;
 static void Check( bool c, const std::string& w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); } }
 
-//! Records (severity, text) of every message containing "DEPRECATED".
+//! Records (severity, text) of every message containing "DEPRECATED" or "UNSUPPORTED" (frozen).
 class DeprecationLog : public virtual RISE::ILogPrinter, public virtual RISE::Implementation::Reference
 {
 public:
@@ -77,7 +82,7 @@ public:
 	void Print( const RISE::LogEvent& event ) override
 	{
 		const std::string msg( event.szMessage );
-		if( msg.find( "DEPRECATED" ) != std::string::npos ) {
+		if( msg.find( "DEPRECATED" ) != std::string::npos || msg.find( "UNSUPPORTED" ) != std::string::npos ) {
 			std::lock_guard<std::mutex> lk( mMutex );
 			mMsgs.push_back( msg );
 			mTypes.push_back( event.eType );
@@ -124,54 +129,75 @@ static std::string Scene( const std::string& body ) { return HDR +
 
 int main()
 {
-	std::printf( "DeprecatedMaterialWarningTest (DL-323 follow-through)\n" );
+	std::printf( "DeprecatedMaterialWarningTest (DL-323 follow-through + legacy Phase 1 tiers)\n" );
 
 	//----------------------------------------------------------------------
 	// [registry]
 	//----------------------------------------------------------------------
-	std::printf( "[registry] exactly the seven legacy chunk types are deprecated, each with a real replacement\n" );
-	const std::set<std::string> expected = {
+	std::printf( "[registry] the frozen and deprecated tiers are exactly the Phase 1 sets\n" );
+	const std::set<std::string> legacyMaterials = {
 		"cooktorrance_material", "isotropic_phong_material", "ashikminshirley_anisotropicphong_material",
 		"schlick_material", "ward_isotropic_material", "ward_anisotropic_material", "polished_material",
 	};
-	std::set<std::string> flagged;
-	std::vector<std::string> allKeywords;
-	for( ChunkCategory cat : { ChunkCategory::Painter, ChunkCategory::Material, ChunkCategory::Geometry, ChunkCategory::Object,
-	                           ChunkCategory::Light, ChunkCategory::Modifier } ) {
-		for( const String& kw : AllKeywordsForCategory( cat ) ) {
-			const ChunkDescriptor* d = DescriptorForKeyword( kw );
-			if( !d ) continue;
-			allKeywords.push_back( kw.c_str() );
-			if( d->deprecated ) flagged.insert( kw.c_str() );
-			else Check( d->replacement.empty(), std::string( kw.c_str() ) + ": a non-deprecated chunk carries no replacement hint" );
+	std::set<std::string> expectedFrozen = legacyMaterials;
+	for( const char* kw : { "pixelpel_rasterizer", "pixelintegratingspectral_rasterizer",
+	                        "distributiontracing_shaderop", "finalgather_shaderop", "directlighting_shaderop", "arealight_shaderop",
+	                        "simple_sss_shaderop", "diffusion_approximation_sss_shaderop", "donner_jensen_skin_sss_shaderop",
+	                        "ambientocclusion_shaderop", "alpha_test_shaderop", "transparency_shaderop",
+	                        "caustic_pel_photonmap", "caustic_spectral_photonmap", "global_pel_photonmap", "global_spectral_photonmap",
+	                        "translucent_pel_photonmap", "shadow_photonmap", "caustic_pel_gather", "caustic_spectral_gather",
+	                        "global_pel_gather", "global_spectral_gather", "translucent_pel_gather", "shadow_gather",
+	                        "irradiance_cache", "mlt_rasterizer", "mlt_spectral_rasterizer", "composite_material",
+	                        "phong_luminaire_material", "directvolumerendering_shader", "spectraldirectvolumerendering_shader" } )
+		expectedFrozen.insert( kw );
+	const std::set<std::string> expectedDeprecatedOnly = {
+		"ambient_light", "iridescent_painter", "onb_pinhole_camera", "3dsmesh_geometry", "sms_shaderop",
+	};
+	std::set<std::string> flaggedFrozen, flaggedDeprecatedOnly;
+	for( const RISE::ChunkParserEntry& e : RISE::CreateAllChunkParsers() ) {
+		const ChunkDescriptor& d = e.parser->Describe();
+		if( d.frozen ) {
+			flaggedFrozen.insert( e.keyword );
+			Check( d.deprecated, e.keyword + ": frozen implies deprecated" );
+			Check( d.description.compare( 0, 19, "LEGACY, UNSUPPORTED" ) == 0, e.keyword + ": frozen description is prefixed with the notice" );
+		} else if( d.deprecated ) {
+			flaggedDeprecatedOnly.insert( e.keyword );
+			Check( d.description.compare( 0, 10, "DEPRECATED" ) == 0, e.keyword + ": description is prefixed with the notice" );
+		} else {
+			Check( d.replacement.empty(), e.keyword + ": a supported chunk carries no replacement hint" );
 		}
+		if( d.deprecated ) Check( !d.replacement.empty(), e.keyword + ": has a replacement hint" );
 	}
-	Check( flagged == expected, "the deprecated set is exactly the seven legacy chunk types" );
-	for( const std::string& kw : expected ) {
+	Check( flaggedFrozen == expectedFrozen, "the FROZEN set is exactly the Phase 1 frozen chunk types" );
+	Check( flaggedDeprecatedOnly == expectedDeprecatedOnly, "the DEPRECATED-only set is exactly the Phase 1 deprecated chunk types" );
+	Check( RISE::DeprecatedChunkAliasReplacement( "mis_pathtracing_shaderop" ) != nullptr, "the mis_pathtracing_shaderop alias is deprecated by dispatch keyword" );
+	Check( RISE::DeprecatedChunkAliasReplacement( "pathtracing_shaderop" ) == nullptr, "pathtracing_shaderop (infrastructure) is not" );
+	for( const std::string& kw : legacyMaterials ) {
 		const ChunkDescriptor* d = DescriptorForKeyword( String( kw.c_str() ) );
 		Check( d != nullptr, kw + ": registered" );
 		if( !d ) continue;
 		Check( d->category == ChunkCategory::Material, kw + ": is a Material-category chunk" );
-		Check( !d->replacement.empty(), kw + ": has a replacement hint" );
-		Check( d->description.compare( 0, 10, "DEPRECATED" ) == 0, kw + ": description is prefixed with the notice" );
-		// The hint must name a registered, NON-deprecated Material keyword (a deprecated chunk must
-		// never point at another deprecated one, and never at nothing).
+		// The hint must name a registered, SUPPORTED Material keyword (a legacy chunk must
+		// never point at another legacy one, and never at nothing).
 		bool names = false;
 		for( const String& m : AllKeywordsForCategory( ChunkCategory::Material ) ) {
 			const ChunkDescriptor* md = DescriptorForKeyword( m );
 			if( md && !md->deprecated && d->replacement.find( m.c_str() ) != std::string::npos ) { names = true; break; }
 		}
-		Check( names, kw + ": the replacement hint names a registered non-deprecated material keyword" );
+		Check( names, kw + ": the replacement hint names a registered supported material keyword" );
 	}
-	// Legacy-looking chunks with NO real replacement, and the modern materials, are NOT flagged.
-	for( const char* kw : { "translucent_material", "phong_luminaire_material", "orennayar_material", "sheen_material",
-	                        "composite_material", "datadriven_material", "lambertian_material", "perfectreflector_material",
+	// Owner rulings: these stay SUPPORTED.
+	for( const char* kw : { "translucent_material", "orennayar_material", "sheen_material",
+	                        "datadriven_material", "lambertian_material", "perfectreflector_material",
 	                        "perfectrefractor_material", "dielectric_material", "ggx_material", "pbr_metallic_roughness_material",
 	                        "coated_material", "fabric_material", "weave_material", "hair_material", "subsurfacescattering_material",
-	                        "randomwalk_sss_material", "biospec_skin_material", "generic_human_tissue_material",
-	                        "lambertian_luminaire_material" } ) {
+	                        "randomwalk_sss_material", "donner_jensen_skin_bssrdf_material", "biospec_skin_material",
+	                        "generic_human_tissue_material", "lambertian_luminaire_material", "bezierpatch_geometry",
+	                        "omni_light", "spot_light", "directional_light", "pathtracing_shaderop", "standard_shader",
+	                        "advanced_shader", "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer",
+	                        "rawmesh_geometry" } ) {
 		const ChunkDescriptor* d = DescriptorForKeyword( String( kw ) );
-		Check( d && !d->deprecated, std::string( kw ) + ": NOT deprecated" );
+		Check( d && !d->deprecated && !d->frozen, std::string( kw ) + ": SUPPORTED (neither deprecated nor frozen)" );
 	}
 
 	//----------------------------------------------------------------------
@@ -189,7 +215,9 @@ int main()
 		"polished_material\n{\nname pm\nreflectance pnt\ntau 0.9\nior 1.5\n}\n"
 		"ggx_material\n{\nname gg\nrd pnt\nrs pnt\nalphax 0.2\nalphay 0.2\n}\n"
 		"translucent_material\n{\nname tr\nref pnt\ntau pnt_t\n}\n"
-		"lambertian_material\n{\nname lb\nreflectance pnt\n}\n" );
+		"lambertian_material\n{\nname lb\nreflectance pnt\n}\n"
+		"ambient_light\n{\nname amb\npower 0.1\ncolor 1 1 1\n}\n"
+		"mis_pathtracing_shaderop\n{\nname ptop\n}\n" );
 
 	for( int load = 0; load < 2; ++load ) {
 		log->Reset();
@@ -199,14 +227,17 @@ int main()
 		const int n = DeriveToJob( d, *j, &diags, nullptr, nullptr, /*warnDeprecated=*/true );
 		const std::string tag = std::string( "load " ) + std::to_string( load + 1 ) + ": ";
 		Check( n > 0 && diags.empty(), tag + "the scene loads cleanly with ZERO derive diagnostics (a deprecation is not a failure)" );
-		Check( log->Count( "`schlick_material` is DEPRECATED" ) == 1, tag + "schlick_material (2 chunks) warns exactly once" );
-		Check( log->First( "`schlick_material` is DEPRECATED" ).find( "2 chunk(s)" ) != std::string::npos, tag + "...and the warning counts both chunks" );
-		Check( log->Count( "`cooktorrance_material` is DEPRECATED" ) == 1, tag + "cooktorrance_material warns exactly once" );
-		Check( log->Count( "`polished_material` is DEPRECATED" ) == 1, tag + "polished_material warns exactly once" );
-		Check( log->Total() == 3, tag + "exactly three deprecation messages in total (no warning for ggx / translucent / lambertian)" );
+		Check( log->Count( "`schlick_material` is LEGACY and UNSUPPORTED" ) == 1, tag + "schlick_material (2 chunks) warns exactly once" );
+		Check( log->First( "`schlick_material` is LEGACY and UNSUPPORTED" ).find( "2 chunk(s)" ) != std::string::npos, tag + "...and the warning counts both chunks" );
+		Check( log->Count( "`cooktorrance_material` is LEGACY and UNSUPPORTED" ) == 1, tag + "cooktorrance_material warns exactly once" );
+		Check( log->Count( "`polished_material` is LEGACY and UNSUPPORTED" ) == 1, tag + "polished_material warns exactly once" );
+		Check( log->Count( "`ambient_light` is DEPRECATED" ) == 1, tag + "ambient_light (deprecated, not frozen) warns exactly once" );
+		Check( log->Count( "`mis_pathtracing_shaderop` is DEPRECATED" ) == 1, tag + "the mis_pathtracing_shaderop alias warns by its own keyword" );
+		Check( log->Count( "`pathtracing_shaderop` is" ) == 0, tag + "...and never as the supported pathtracing_shaderop" );
+		Check( log->Total() == 5, tag + "exactly five legacy messages in total (no warning for ggx / translucent / lambertian)" );
 		Check( log->AllWarnings(), tag + "every deprecation message is severity eLog_Warning" );
-		Check( log->First( "`cooktorrance_material` is DEPRECATED" ).find( "ggx_material" ) != std::string::npos, tag + "the cooktorrance warning names ggx_material" );
-		Check( log->First( "`polished_material` is DEPRECATED" ).find( "coated_material" ) != std::string::npos, tag + "the polished warning names coated_material" );
+		Check( log->First( "`cooktorrance_material` is LEGACY and UNSUPPORTED" ).find( "ggx_material" ) != std::string::npos, tag + "the cooktorrance warning names ggx_material" );
+		Check( log->First( "`polished_material` is LEGACY and UNSUPPORTED" ).find( "coated_material" ) != std::string::npos, tag + "the polished warning names coated_material" );
 		// [identity] deprecation changed no behaviour: every chunk is a real, resolvable material.
 		Check( j->GetMaterials()->GetItem( "s1" ) != nullptr && j->GetMaterials()->GetItem( "ct" ) != nullptr
 			&& j->GetMaterials()->GetItem( "pm" ) != nullptr, tag + "the deprecated chunks still derive into real materials" );
@@ -238,8 +269,8 @@ int main()
 		const bool ok = j->LoadAsciiSceneViaCst( path.c_str() );
 		std::remove( path.c_str() );
 		Check( ok, "[load] Job::LoadAsciiSceneViaCst of the deprecated-chunk scene succeeds" );
-		Check( log->Count( "`schlick_material` is DEPRECATED" ) == 1 && log->Count( "`cooktorrance_material` is DEPRECATED" ) == 1
-			&& log->Count( "`polished_material` is DEPRECATED" ) == 1 && log->Total() == 3,
+		Check( log->Count( "`schlick_material` is LEGACY and UNSUPPORTED" ) == 1 && log->Count( "`cooktorrance_material` is LEGACY and UNSUPPORTED" ) == 1
+			&& log->Count( "`polished_material` is LEGACY and UNSUPPORTED" ) == 1 && log->Total() == 5,
 			"[load] a real scene load warns exactly once per deprecated type" );
 		// A later staging derive on the SAME loaded Job's document is still silent (the notice was given at load).
 		log->Reset();
@@ -276,6 +307,14 @@ int main()
 		const std::string gg = RISE::Agent::SchemaGenForChunk( "ggx_material" );
 		Check( gg.find( "\"deprecated\":true" ) == std::string::npos && gg.find( "\"replacement\"" ) == std::string::npos,
 			"ggx_material schema carries neither key" );
+		Check( ct.find( "\"frozen\":true" ) != std::string::npos, "cooktorrance_material (promoted) schema has \"frozen\":true" );
+		const std::string pp = RISE::Agent::SchemaGenForChunk( "pixelpel_rasterizer" );
+		Check( pp.find( "\"frozen\":true" ) != std::string::npos && pp.find( "\"deprecated\":true" ) != std::string::npos,
+			"pixelpel_rasterizer schema is frozen (and deprecated)" );
+		const std::string am = RISE::Agent::SchemaGenForChunk( "ambient_light" );
+		Check( am.find( "\"deprecated\":true" ) != std::string::npos && am.find( "\"frozen\"" ) == std::string::npos,
+			"ambient_light schema is deprecated but NOT frozen" );
+		Check( gg.find( "\"frozen\"" ) == std::string::npos, "ggx_material schema is not frozen" );
 		const std::string tr = RISE::Agent::SchemaGenForChunk( "translucent_material" );
 		Check( tr.find( "\"deprecated\":true" ) == std::string::npos, "translucent_material (no replacement) schema is not flagged" );
 	}

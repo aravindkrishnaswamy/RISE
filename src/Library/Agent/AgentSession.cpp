@@ -2082,14 +2082,13 @@ namespace RISE
 				"vcm_spectral_rasterizer",
 			};
 
-			//! DELIBERATELY UNGATED (supervisor decision): these are not
-			//! integrator choices, and `pixelpel_rasterizer` is REQUIRED for
-			//! alpha-mask scenes (docs/SCENE_CONVENTIONS.md).  The directive
-			//! concerns which INTEGRATOR an agent reaches for.
-			const char* const kAgentUngatedUtilityRasterizers_[] = {
-				"pixelpel_rasterizer",
-				"pixelintegratingspectral_rasterizer",
-			};
+			//! (Legacy-deprecation Phase 1, 2026-10-09: the former
+			//! kAgentUngatedUtilityRasterizers_ set -- pixelpel_rasterizer and
+			//! pixelintegratingspectral_rasterizer, ungated on the premise that
+			//! pixelpel was "REQUIRED for alpha-mask scenes" -- is retired.  The
+			//! premise has been stale since DL-214 (material alpha coverage
+			//! works in every integrator) and both kinds are now FROZEN, so they
+			//! moved to kAgentBlockedRasterizers_ below.)
 
 			//! The rasterizer kinds this policy has EXPLICITLY considered and
 			//! blocked.  Runtime blocking does NOT read this list -- anything
@@ -2105,6 +2104,8 @@ namespace RISE
 				"mlt_spectral_rasterizer",
 				"auto_rasterizer",
 				"auto_spectral_rasterizer",
+				"pixelpel_rasterizer",
+				"pixelintegratingspectral_rasterizer",
 			};
 
 			//! Is `kw` a real rasterizer CHUNK?  Two conditions, both from the
@@ -2175,8 +2176,6 @@ namespace RISE
 			if( !IsRasterizerChunkKeyword_( keyword ) ) return AgentRasterizerPolicy::NotARasterizer;
 			for( const char* k : kAgentAllowedRasterizers_ )
 				if( keyword == k ) return AgentRasterizerPolicy::Allowed;
-			for( const char* k : kAgentUngatedUtilityRasterizers_ )
-				if( keyword == k ) return AgentRasterizerPolicy::UngatedUtility;
 			// ALLOWLIST semantics: a rasterizer kind nobody has classified is
 			// BLOCKED, not admitted.  See kAgentBlockedRasterizers_'s doc.
 			return AgentRasterizerPolicy::Blocked;
@@ -2185,7 +2184,6 @@ namespace RISE
 		bool AgentRasterizerKindIsExplicitlyClassified( const std::string& keyword )
 		{
 			for( const char* k : kAgentAllowedRasterizers_ )        if( keyword == k ) return true;
-			for( const char* k : kAgentUngatedUtilityRasterizers_ ) if( keyword == k ) return true;
 			for( const char* k : kAgentBlockedRasterizers_ )        if( keyword == k ) return true;
 			return false;
 		}
@@ -2206,15 +2204,21 @@ namespace RISE
 					allowed += kAgentAllowedRasterizers_[i];
 					allowed += "`";
 				}
-				return "`" + rejected + "` is a SPECIALIZED rasterizer that a scene-editing agent may not "
+				// Legacy Phase 1: a FROZEN kind says so (it is legacy and unsupported, not
+				// merely specialized).
+				const ChunkDescriptor* rd = DescriptorForKeyword( String( rejected.c_str() ) );
+				const bool frozen = rd && rd->frozen;
+				return "`" + rejected + "` is " +
+					std::string( frozen ? "a LEGACY, UNSUPPORTED (frozen 2026-10-09) rasterizer" : "a SPECIALIZED rasterizer" ) +
+					" that a scene-editing agent may not "
 					"select. The only rasterizers this surface may select are " + allowed + " -- PT for "
 					"general scenes, VCM for caustic / refractive / dispersive transport. There is NO "
 					"override parameter on this refusal: if the scene genuinely needs `" + rejected + "`, "
 					"the USER selects it themselves (the GUI's rasterizer accordion, or by authoring the "
 					"chunk into the scene file), and the agent then keeps editing the scene around it "
-					"normally. The non-integrator utility rasterizers `pixelpel_rasterizer` and "
-					"`pixelintegratingspectral_rasterizer` are NOT gated -- `pixelpel_rasterizer` is "
-					"required for alpha-mask scenes.";
+					"normally. The frozen legacy rasterizers `pixelpel_rasterizer` and "
+					"`pixelintegratingspectral_rasterizer` are refused too -- material alpha "
+					"(alpha_coverage / alpha_mode) works under PT and VCM.";
 			}
 
 			//! R1c round-3 FIX A (2026-08-09): the FULL accepted value domain
@@ -2839,6 +2843,118 @@ namespace RISE
 			if( CountAmbientLightChunks_( candidateAsBytes ) > CountAmbientLightChunks_( headDoc ) )
 				return DescribeAmbientLightBan();
 			return std::string();
+		}
+
+		//======================================================================
+		// LEGACY-DEPRECATION PHASE 1 (2026-10-09) -- THE FROZEN-CHUNK BAN.
+		//
+		// docs/LEGACY_DEPRECATION_ASSESSMENT.md §10.1: a FROZEN chunk type
+		// (ChunkDescriptor::frozen -- legacy and unsupported) still loads,
+		// renders and edits, but this surface does not CREATE one.  Keyed off
+		// the descriptor flag, so marking a further type frozen in
+		// ChunkParserRegistry.cpp's kLegacyTierTable extends the ban with no
+		// change here.  Frozen rasterizers are left to the R1c allowlist (they
+		// are all in kAgentBlockedRasterizers_).
+		//======================================================================
+		namespace
+		{
+			//! Is `kw` a frozen chunk this ban polices (i.e. not a rasterizer)?
+			bool IsBannedFrozenKeyword_( const std::string& kw, const ChunkDescriptor** outD = nullptr )
+			{
+				const ChunkDescriptor* d = DescriptorForKeyword( String( kw.c_str() ) );
+				if( !d || !d->frozen ) return false;
+				if( d->category == ChunkCategory::Rasterizer ) return false;
+				if( outD ) *outD = d;
+				return true;
+			}
+
+			//! The keywords this ban polices, for the cheap substring pre-filter.
+			const std::vector<std::string>& BannedFrozenKeywords_()
+			{
+				static const std::vector<std::string> kws = []{
+					std::vector<std::string> out;
+					for( const RISE::ChunkParserEntry& e : RISE::CreateAllChunkParsers() )
+						if( IsBannedFrozenKeyword_( e.keyword ) ) out.push_back( e.keyword );
+					return out;
+				}();
+				return kws;
+			}
+
+			bool MentionsBannedFrozenKeyword_( const std::string& text )
+			{
+				for( const std::string& kw : BannedFrozenKeywords_() )
+					if( text.find( kw ) != std::string::npos ) return true;
+				return false;
+			}
+
+			int CountBannedFrozenChunks_( const Document& doc )
+			{
+				int n = 0;
+				const int items = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < items; ++i ) {
+					const NodeRef it =
+						RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					if( IsBannedFrozenKeyword_( it->role ) ) ++n;
+				}
+				return n;
+			}
+
+			std::string DescribeFrozenChunkBan_( const std::string& kw, const ChunkDescriptor& d )
+			{
+				return "`" + kw + "` is LEGACY and UNSUPPORTED (frozen 2026-10-09), so this surface does not "
+				       "create a new one -- in any phase and whatever the build protocol is set to. A scene "
+				       "that already contains one still loads, renders exactly as before, and stays fully "
+				       "editable, including that chunk's own parameters. Use instead: " + d.replacement;
+			}
+		}
+
+		std::string CheckFrozenChunkBanForInsert( const std::string& chunkText,
+		                                          std::string* outKind, std::string* outName )
+		{
+			if( chunkText.empty() ) return std::string();
+			if( !MentionsBannedFrozenKeyword_( chunkText ) ) return std::string();
+			const Document doc = RISE::Cst::ParseToCst( chunkText );
+			const int n = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < n; ++i )
+			{
+				const NodeRef it =
+					RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				const ChunkDescriptor* d = nullptr;
+				if( !IsBannedFrozenKeyword_( it->role, &d ) ) continue;
+				if( outKind ) *outKind = it->role;
+				if( outName ) *outName = ChunkParamString_( it, "name" );
+				return DescribeFrozenChunkBan_( it->role, *d );
+			}
+			return std::string();
+		}
+
+		std::string CheckFrozenChunkBanForPatch( const std::string& headText,
+		                                         const std::string& target,
+		                                         const std::string& kind,
+		                                         const std::string& param,
+		                                         const std::string& value )
+		{
+			if( target.empty() && kind.empty() ) return std::string();
+			if( param.empty() )                  return std::string();
+			if( value.find( '}' ) == std::string::npos ) return std::string();
+			if( !MentionsBannedFrozenKeyword_( value ) ) return std::string();
+
+			const Document headDoc = RISE::Cst::ParseToCst( headText );
+			const RISE::Cst::NodeId id = ResolvePatchTargetChunk_( headDoc, target, kind );
+			if( !id ) return std::string();
+			if( !RISE::Cst::DocResolveNodeId( headDoc, id ) ) return std::string();
+			const Document candidateAsBytes = BuildPatchCandidateAsBytes_( headDoc, id, param, value );
+			if( CountBannedFrozenChunks_( candidateAsBytes ) <= CountBannedFrozenChunks_( headDoc ) )
+				return std::string();
+			// Name the first frozen keyword the value carries.
+			for( const std::string& kw : BannedFrozenKeywords_() ) {
+				if( value.find( kw ) == std::string::npos ) continue;
+				const ChunkDescriptor* d = nullptr;
+				if( IsBannedFrozenKeyword_( kw, &d ) ) return DescribeFrozenChunkBan_( kw, *d );
+			}
+			return "this edit would create a LEGACY, UNSUPPORTED (frozen) chunk, which this surface does not do.";
 		}
 
 		//======================================================================
@@ -10415,6 +10531,27 @@ namespace RISE
 				}
 			}
 
+			// Legacy-deprecation Phase 1 (2026-10-09): the FROZEN-chunk ban's
+			// PATCH arm -- the same value-splice hole, the same delta rule.
+			if( patch.value.find( '}' ) != std::string::npos )
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				const std::string clause = snap.hasDocument
+					? CheckFrozenChunkBanForPatch( snap.document, patch.target, patch.kind,
+					                               patch.param, patch.value )
+					: std::string();
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = snap.headVersion;
+					r.message     = "propose_patch refused: " + clause +
+					                " (this patch's value would have introduced a frozen chunk.)";
+					return r;
+				}
+			}
+
 			// ARC 83 SLICE 4 (2026-08-12): the ZERO-AREA LIGHT CONFIRMATION's PATCH
 			// arm, next, and it exists for the ban arm's exact reason -- a param
 			// value is spliced into the document as TEXT, so a confirmation with no
@@ -12338,6 +12475,25 @@ namespace RISE
 				}
 			}
 
+			// Legacy-deprecation Phase 1 (2026-10-09): the FROZEN-chunk ban, right
+			// after the ambient ban and for the same reason (an unconditional
+			// prohibition must not spend a phase refusal on its way).
+			{
+				std::string frozenKind, frozenName;
+				const std::string clause = CheckFrozenChunkBanForInsert( chunkText, &frozenKind, &frozenName );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.kind        = frozenKind;
+					r.name        = frozenName;
+					r.message     = "insert_chunk refused: " + clause;
+					return r;
+				}
+			}
+
 			// ARC 83 SLICE 4 (2026-08-12, house lighting policy): the ZERO-AREA
 			// LIGHT CONFIRMATION, immediately after the ambient ban and for the
 			// SAME ordering reason -- omni / spot / directional are Light chunks,
@@ -12916,6 +13072,8 @@ namespace RISE
 				std::string clause;
 				for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
 					clause = CheckAmbientLightBanForInsert( chunkTexts[i] );
+					// Legacy Phase 1: the frozen-chunk ban rides the same whole-batch scan.
+					if( clause.empty() ) clause = CheckFrozenChunkBanForInsert( chunkTexts[i] );
 					if( !clause.empty() ) { offender = i; break; }
 				}
 				if( offender < chunkTexts.size() ) {

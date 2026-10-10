@@ -2697,6 +2697,11 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     return [NSString stringWithUTF8String:buf];
 }
 
+- (BOOL)paletteKeywordIsFrozen:(NSString *)keyword {
+    if (!_controller || keyword.length == 0) return NO;
+    return RISE_API_SceneEditController_PaletteKeywordFrozen(_controller, keyword.UTF8String) ? YES : NO;
+}
+
 #pragma mark - Environment / IBL section
 
 - (nullable RISEEnvironmentInfo *)environmentInfo {

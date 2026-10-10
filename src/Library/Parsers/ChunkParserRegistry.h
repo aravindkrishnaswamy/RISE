@@ -52,6 +52,13 @@ namespace RISE
 	// scope all parsers are destroyed.
 	[[nodiscard]] std::vector<ChunkParserEntry> CreateAllChunkParsers();
 
+	// Legacy-deprecation Phase 1 (2026-10-09): a deprecated keyword ALIAS that
+	// shares its descriptor with a SUPPORTED canonical keyword (today only
+	// `mis_pathtracing_shaderop` -> `pathtracing_shaderop`) cannot carry the
+	// descriptor flag, so DeriveToJob asks here by DISPATCH keyword.  Returns the
+	// replacement hint, or nullptr for every other keyword.
+	[[nodiscard]] const char* DeprecatedChunkAliasReplacement( const std::string& keyword );
+
 	namespace Implementation
 	{
 		namespace ChunkParsers

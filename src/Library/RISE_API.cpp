@@ -12419,6 +12419,13 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_PaletteKeywordFrozen(
+		SceneEditController* p, const char* keyword )
+	{
+		if( !p || !keyword ) return false;
+		return p->PaletteKeywordIsFrozen( String( keyword ) );
+	}
+
 	bool RISE_API_SceneEditController_RemoveEntity(
 		SceneEditController* p, int category, const char* name,
 		char* outStatus, unsigned int outStatusLen,

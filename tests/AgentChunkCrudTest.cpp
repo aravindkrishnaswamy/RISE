@@ -2121,27 +2121,29 @@ static void TestUnresolvedReferenceWarning()
 		// (`uniform_wall_pink` -- the bug: guessing a name instead of using
 		// the one actually created). Job::AddDirectLightingShaderOp does
 		// NOT hard-validate `bsdf`, so this insert still lands.
-		Agent::AgentChunkResult rOp = sess->InsertChunk(
-			"directlighting_shaderop\n{\n\tname dlop_test\n\tbsdf uniform_wall_pink\n}" );
-		Check( rOp.applied, "U1(a) the shaderop insert STILL APPLIES (a warning, not a rejection)" );
-		Check( rOp.status == "applied", "U1(a) status stays \"applied\"" );
-		Check( rOp.issues.size() == 1, "U1(a) exactly ONE issue" );
-		if( rOp.issues.size() == 1 ) {
-			const Agent::AgentChunkIssue& u = rOp.issues[0];
-			Check( u.param == "bsdf", "U1(a) issue param is \"bsdf\"" );
-			Check( u.value == "uniform_wall_pink", "U1(a) issue value is the bad name" );
-			Check( u.reason == "unresolved_reference", "U1(a) issue reason is \"unresolved_reference\"" );
-			bool sawIt = false;
-			std::string suggList;
-			for( const std::string& s : u.suggestions ) {
-				if( s == "_wall_pink" ) sawIt = true;
-				suggList += "'" + s + "' ";
-			}
-			Check( sawIt, "U1(a) suggestions include the ACTUAL material name '_wall_pink'" );
-			std::printf( "  U1(a) suggestions for 'uniform_wall_pink': %s\n", suggList.c_str() );
+		// LEGACY PHASE 1 (2026-10-09) RE-PIN: `directlighting_shaderop` -- this
+		// test's only vehicle (see the VEHICLE NOTE) -- is now FROZEN, so the
+		// agent surface REFUSES to insert it at all.  No supported chunk has an
+		// unvalidated reference param (audited: standard_object shader /
+		// modifier / interior_medium, standard_shader shaderop, rasterizer
+		// radiance_map, luminaire material, global_medium, ggx tangent_rotation,
+		// coated coat_normal all hard-fail), so an APPLIED insert carrying an
+		// unresolved reference is no longer reachable through insert_chunk.  What
+		// stays pinned: the insert is refused as frozen, and the shared resolver
+		// the warning is built from still reports the dangling `bsdf`.
+		const std::string dlText = "directlighting_shaderop\n{\n\tname dlop_test\n\tbsdf uniform_wall_pink\n}";
+		Agent::AgentChunkResult rOp = sess->InsertChunk( dlText );
+		Check( !rOp.applied && rOp.status == "rejected", "U1(a) the (frozen) shaderop insert is REFUSED" );
+		Check( rOp.message.find( "LEGACY and UNSUPPORTED" ) != std::string::npos, "U1(a) ...as legacy and unsupported" );
+		{
+			RISE::Cst::Document parsed = RISE::Cst::ParseToCst( sess->ReadDocument() + "\n" + dlText + "\n" );
+			std::vector<RISE::Cst::UnresolvedReference> unresolved;
+			RISE::Cst::BuildReferenceGraph( parsed, nullptr, &unresolved );
+			bool sawBsdf = false;
+			for( const RISE::Cst::UnresolvedReference& u : unresolved )
+				if( u.chunkKeyword == "directlighting_shaderop" && u.param == "bsdf" && u.value == "uniform_wall_pink" ) sawBsdf = true;
+			Check( sawBsdf, "U1(a) the shared resolver still reports the dangling bsdf reference" );
 		}
-		Check( rOp.message.find( "bsdf" ) != std::string::npos,
-		       "U1(a) message names the offending param" );
 
 		sess.reset();
 		pJob->release();
@@ -2159,30 +2161,27 @@ static void TestUnresolvedReferenceWarning()
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 
+		// LEGACY PHASE 1 RE-PIN (see (a)): the frozen vehicle is refused; the
+		// forward-reference half below now checks the material insert alone.
 		Agent::AgentChunkResult rOp = sess->InsertChunk(
 			"directlighting_shaderop\n{\n\tname dlop_fwd\n\tbsdf mat_notyet\n}" );
-		Check( rOp.applied, "U1(b) forward-referencing shaderop insert APPLIES (not refused)" );
-		Check( rOp.issues.size() == 1 &&
-		       rOp.issues[0].param == "bsdf" &&
-		       rOp.issues[0].value == "mat_notyet" &&
-		       rOp.issues[0].reason == "unresolved_reference",
-		       "U1(b) warned about the not-yet-defined material" );
+		Check( !rOp.applied && rOp.status == "rejected", "U1(b) the (frozen) forward-referencing shaderop insert is REFUSED" );
 
 		Agent::AgentChunkResult rMat = sess->InsertChunk(
 			"lambertian_material\n{\n\tname mat_notyet\n\treflectance pnt_albedo\n}" );
 		Check( rMat.applied, "U1(b) the material insert applies" );
 		Check( rMat.issues.empty(), "U1(b) the material's OWN insert reports no issues of its own" );
 
-		// The document as a whole resolves cleanly now.
-		const std::string doc = sess->ReadDocument();
-		RISE::Cst::Document parsed = RISE::Cst::ParseToCst( doc );
-		std::vector<RISE::Cst::UnresolvedReference> unresolved;
-		RISE::Cst::BuildReferenceGraph( parsed, nullptr, &unresolved );
-		bool stillDangling = false;
-		for( const RISE::Cst::UnresolvedReference& u : unresolved )
-			if( u.chunkKeyword == "directlighting_shaderop" && u.param == "bsdf" && u.value == "mat_notyet" )
-				stillDangling = true;
-		Check( !stillDangling, "U1(b) dlop_fwd.bsdf now resolves cleanly (no dangling entry left)" );
+		// The document as a whole resolves cleanly (the refused shaderop never landed).
+		{
+			RISE::Cst::Document parsed = RISE::Cst::ParseToCst( sess->ReadDocument() );
+			std::vector<RISE::Cst::UnresolvedReference> unresolved;
+			RISE::Cst::BuildReferenceGraph( parsed, nullptr, &unresolved );
+			bool stillDangling = false;
+			for( const RISE::Cst::UnresolvedReference& u : unresolved )
+				if( u.value == "mat_notyet" ) stillDangling = true;
+			Check( !stillDangling, "U1(b) no dangling mat_notyet entry (the frozen shaderop was never inserted)" );
+		}
 
 		sess.reset();
 		pJob->release();
@@ -3495,16 +3494,18 @@ static void TestCsgOperandRebaseWarning()
 // "agents may use PT and VCM only".  ALLOWED: pathtracing_pel /
 // pathtracing_spectral / vcm_pel / vcm_spectral.  BLOCKED: bdpt_pel /
 // bdpt_spectral / mlt / mlt_spectral / auto / auto_spectral.
-// DELIBERATELY UNGATED: pixelpel_rasterizer /
-// pixelintegratingspectral_rasterizer -- they are not integrator
-// choices, and pixelpel is required for alpha-mask scenes.
+// Legacy-deprecation Phase 1 (2026-10-09): pixelpel_rasterizer /
+// pixelintegratingspectral_rasterizer were DELIBERATELY UNGATED (on the
+// stale "pixelpel is required for alpha-mask scenes" premise, false since
+// DL-214); both are now FROZEN and BLOCKED like the six above.
 //
 // Sub-tests, one per enforcement path this gate had to close:
 //   (a) insert_chunk of EACH blocked kind -> refused, document
 //       byte-identical, head revision unmoved, message names the kind
 //       AND the whole allowed set AND the no-override alternative;
 //   (b) insert_chunk of EACH allowed kind -> applies;
-//   (c) the two utility rasterizers -> NOT blocked;
+//   (c) the two FROZEN legacy rasterizers -> blocked, and the refusal
+//       says they are legacy / unsupported;
 //   (d) STATE-VS-DELTA on a scene that ALREADY carries mlt_rasterizer:
 //       an unrelated edit applies, a patch to the MLT chunk's OWN params
 //       applies, the scene RENDERS, and a SECOND blocked rasterizer is
@@ -3559,7 +3560,7 @@ static const char* const kUserAuthoredMLTScene =
 	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tmaterial matte\n}\n\n"
 	"omni_light\n{\n\tname lamp\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 3 3\n}\n";
 
-//! The six kinds this policy blocks, each with a minimal, VALID body so
+//! The eight kinds this policy blocks, each with a minimal, VALID body so
 //! a refusal can never be confused with a parse/derive failure.
 struct BlockedRasterizerCase { const char* kind; const char* chunkText; };
 static const BlockedRasterizerCase kBlockedRasterizerCases[] = {
@@ -3575,6 +3576,10 @@ static const BlockedRasterizerCase kBlockedRasterizerCases[] = {
 	  "auto_rasterizer\n{\n\tsamples 2\n\tintegrator pt\n\tpixel_filter box\n\toidn_denoise false\n}" },
 	{ "auto_spectral_rasterizer",
 	  "auto_spectral_rasterizer\n{\n\tsamples 2\n\tintegrator pt\n\tpixel_filter box\n\toidn_denoise false\n}" },
+	{ "pixelpel_rasterizer",
+	  "pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}" },
+	{ "pixelintegratingspectral_rasterizer",
+	  "pixelintegratingspectral_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}" },
 };
 static const std::size_t kBlockedRasterizerCaseCount =
 	sizeof( kBlockedRasterizerCases ) / sizeof( kBlockedRasterizerCases[0] );
@@ -3596,6 +3601,120 @@ static void CheckRasterizerRefusalMessage( const std::string& msg, const std::st
 	       std::string( tag ) + " message states there is NO escape parameter" );
 	Check( msg.find( "USER" ) != std::string::npos || msg.find( "user" ) != std::string::npos,
 	       std::string( tag ) + " message states the alternative (the user selects it themselves)" );
+}
+
+//----------------------------------------------------------------------
+// Legacy-deprecation Phase 1 (2026-10-09): the FROZEN-chunk insert ban.
+// A frozen (legacy, unsupported) chunk type still LOADS and stays EDITABLE,
+// but the agent surface does not CREATE one -- through insert_chunk,
+// insert_chunks (whole batch refused), or a propose_patch value splice.
+//----------------------------------------------------------------------
+static const char* const kFrozenExistingScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"schlick_material\n{\n\tname legacy\n\trd albedo\n\trs albedo\n\troughness 0.2\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tmaterial legacy\n}\n\n"
+	"omni_light\n{\n\tname lamp\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 3 3\n}\n";
+
+static void TestFrozenChunkBan()
+{
+	std::printf( "Legacy Phase 1: frozen-chunk insert ban...\n" );
+
+	// (a) insert_chunk of a frozen material / shader op / photon map is refused atomically.
+	static const char* const kFrozenInserts[] = {
+		"schlick_material\n{\n\tname s2\n\trd albedo\n\trs albedo\n\troughness 0.3\n}",
+		"composite_material\n{\n\tname cm\n\ttop legacy\n\tbottom legacy\n}",
+		"distributiontracing_shaderop\n{\n\tname dt\n}",
+		"irradiance_cache\n{\n\tsize 100\n\ttolerance 0.1\n\tmin_spacing 0.05\n}",
+	};
+	static const char* const kFrozenKinds[] = { "schlick_material", "composite_material", "distributiontracing_shaderop", "irradiance_cache" };
+	for( std::size_t i = 0; i < 4; ++i )
+	{
+		const std::string tmp = TempPath( ( std::string( "agentcrud_frozen_a_" ) + kFrozenKinds[i] + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kFrozenExistingScene, tmp );
+		Check( pJob != nullptr, std::string( "FROZEN(a) fixture (with an existing frozen schlick_material) loads for " ) + kFrozenKinds[i] );
+		if( !pJob ) continue;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+		Agent::AgentChunkResult r = sess->InsertChunk( kFrozenInserts[i] );
+		Check( !r.applied && r.status == "rejected", std::string( "FROZEN(a) inserting " ) + kFrozenKinds[i] + " is REFUSED" );
+		Check( !r.retriable, std::string( "FROZEN(a) the refusal is permanent for " ) + kFrozenKinds[i] );
+		Check( r.kind == kFrozenKinds[i], std::string( "FROZEN(a) the refusal echoes the kind " ) + kFrozenKinds[i] );
+		Check( r.message.find( "LEGACY and UNSUPPORTED" ) != std::string::npos && r.message.find( kFrozenKinds[i] ) != std::string::npos,
+		       std::string( "FROZEN(a) the message names " ) + kFrozenKinds[i] + " as legacy and unsupported" );
+		Check( r.message.find( "Use instead:" ) != std::string::npos, std::string( "FROZEN(a) the message names a replacement for " ) + kFrozenKinds[i] );
+		Check( sess->ReadDocument() == headBefore && sess->HeadVersion() == vBefore,
+		       std::string( "FROZEN(a) document and head unchanged after refusing " ) + kFrozenKinds[i] );
+		if( i == 0 ) std::printf( "  FROZEN(a) message: %s\n", r.message.c_str() );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	const std::string tmp = TempPath( "agentcrud_frozen_bcd.RISEscene" );
+	Job* pJob = LoadScene( kFrozenExistingScene, tmp );
+	Check( pJob != nullptr, "FROZEN(b-e) fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	// (b) a batch carrying one frozen chunk is refused whole.
+	{
+		const std::string headBefore = sess->ReadDocument();
+		std::vector<std::string> batch;
+		batch.push_back( "uniformcolor_painter\n{\n\tname pnt_fz\n\tcolor 0.2 0.4 0.6\n}" );
+		batch.push_back( "cooktorrance_material\n{\n\tname ct\n\trd albedo\n\trs albedo\n\tfacets 0.2\n}" );
+		const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( batch );
+		bool allRejected = rs.size() == batch.size();
+		for( const Agent::AgentChunkResult& e : rs ) if( e.applied ) allRejected = false;
+		Check( allRejected, "FROZEN(b) a batch with one frozen chunk is refused WHOLE" );
+		Check( sess->ReadDocument() == headBefore, "FROZEN(b) nothing was inserted" );
+		Check( !rs.empty() && rs[0].message.find( "chunks[1]" ) != std::string::npos, "FROZEN(b) the message names the offending index" );
+	}
+
+	// (c) a value splice cannot smuggle a frozen chunk in.
+	{
+		const std::string headBefore = sess->ReadDocument();
+		Agent::AgentSetPatch p;
+		p.target = "sph";
+		p.kind   = "sphere_geometry";
+		p.param  = "radius";
+		p.value  = "1.0\n}\n\nambientocclusion_shaderop\n{\n\tname ao\n\tnumtheta 4\n\tnumphi 4\n";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected", "FROZEN(c) a value splice introducing a frozen chunk is REFUSED" );
+		Check( r.message.find( "ambientocclusion_shaderop" ) != std::string::npos, "FROZEN(c) the refusal names the frozen kind" );
+		Check( sess->ReadDocument() == headBefore, "FROZEN(c) the document is unchanged" );
+	}
+
+	// (d) STATE, not delta: the existing frozen chunk stays editable.
+	{
+		Agent::AgentSetPatch p;
+		p.target = "legacy";
+		p.kind   = "schlick_material";
+		p.param  = "roughness";
+		p.value  = "0.4";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( r.applied && r.status == "applied", "FROZEN(d) an EXISTING frozen chunk's own parameter still patches" );
+	}
+
+	// (e) a DEPRECATED-only chunk (not frozen) is not refused by this ban.
+	{
+		Agent::AgentChunkResult r = sess->InsertChunk( "onb_pinhole_camera\n{\n\tname cam2\n\tlocation 0 0 6\n}" );
+		Check( r.message.find( "LEGACY and UNSUPPORTED" ) == std::string::npos,
+		       "FROZEN(e) a deprecated-only chunk (onb_pinhole_camera) is not refused as frozen" );
+	}
+	Check( Agent::CheckFrozenChunkBanForInsert( "ggx_material\n{\n\tname g\n}" ).empty(), "FROZEN(e) a supported chunk passes the ban" );
+	Check( Agent::CheckFrozenChunkBanForInsert( "pixelpel_rasterizer\n{\n\tsamples 1\n}" ).empty(),
+	       "FROZEN(e) frozen RASTERIZERS are left to the R1c allowlist (one refusal text)" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
 }
 
 static void TestRasterizerAllowlistGate()
@@ -3668,28 +3787,37 @@ static void TestRasterizerAllowlistGate()
 		}
 	}
 
-	// ---- (c) the DELIBERATELY UNGATED utility rasterizers ---------------
-	// pixelpel_rasterizer is REQUIRED for alpha-mask scenes
-	// (docs/SCENE_CONVENTIONS.md) and neither of these is an integrator
-	// choice, so the directive does not reach them.
+	// ---- (c) the FROZEN legacy rasterizers say so ------------------------
+	// Legacy-deprecation Phase 1 (2026-10-09): the formerly ungated
+	// pixelpel / pixelintegratingspectral rasterizers (and MLT) are FROZEN;
+	// (a) already proves they are refused atomically.  Here: the refusal
+	// names them legacy / unsupported rather than merely "specialized",
+	// while a non-frozen blocked kind (bdpt) keeps the "specialized" text.
 	{
-		static const char* const kUtilityInserts[] = {
+		static const char* const kFrozenInserts[] = {
 			"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}",
 			"pixelintegratingspectral_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}",
+			"mlt_rasterizer\n{\n\tbootstrap_samples 16\n\tchains 1\n\tmutations_per_pixel 1\n\tpixel_filter box\n\toidn_denoise false\n}",
+			"bdpt_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}",
 		};
-		static const char* const kUtilityNames[] = {
-			"pixelpel_rasterizer", "pixelintegratingspectral_rasterizer",
+		static const char* const kFrozenNames[] = {
+			"pixelpel_rasterizer", "pixelintegratingspectral_rasterizer", "mlt_rasterizer", "bdpt_pel_rasterizer",
 		};
-		for( std::size_t i = 0; i < 2; ++i )
+		static const bool kIsFrozen[] = { true, true, true, false };
+		for( std::size_t i = 0; i < 4; ++i )
 		{
-			const std::string tmp = TempPath( ( std::string( "agentcrud_r1c_c_" ) + kUtilityNames[i] + ".RISEscene" ).c_str() );
+			const std::string tmp = TempPath( ( std::string( "agentcrud_r1c_c_" ) + kFrozenNames[i] + ".RISEscene" ).c_str() );
 			Job* pJob = LoadScene( kRasterAllowlistScene, tmp );
-			Check( pJob != nullptr, std::string( "R1c(c) fixture loads for " ) + kUtilityNames[i] );
+			Check( pJob != nullptr, std::string( "R1c(c) fixture loads for " ) + kFrozenNames[i] );
 			if( !pJob ) continue;
 			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
-			Agent::AgentChunkResult r = sess->InsertChunk( kUtilityInserts[i] );
-			Check( r.applied && r.status == "applied",
-			       std::string( "R1c(c) the UNGATED utility rasterizer " ) + kUtilityNames[i] + " is NOT blocked" );
+			Agent::AgentChunkResult r = sess->InsertChunk( kFrozenInserts[i] );
+			Check( !r.applied && r.status == "rejected",
+			       std::string( "R1c(c) " ) + kFrozenNames[i] + " is refused" );
+			const bool saysFrozen = r.message.find( "LEGACY, UNSUPPORTED" ) != std::string::npos;
+			Check( saysFrozen == kIsFrozen[i],
+			       std::string( "R1c(c) the refusal for " ) + kFrozenNames[i] +
+			       ( kIsFrozen[i] ? " says LEGACY, UNSUPPORTED" : " does NOT call it legacy (it is merely specialized)" ) );
 			sess.reset();
 			pJob->release();
 			std::remove( tmp.c_str() );
@@ -4112,7 +4240,7 @@ static void TestRasterizerAllowlistGate()
 	// policy has explicitly considered.  A rasterizer added to the parser
 	// tomorrow fails HERE and blocks at runtime meanwhile.
 	{
-		unsigned int seen = 0, allowed = 0, ungated = 0, blocked = 0;
+		unsigned int seen = 0, allowed = 0, blocked = 0;
 		for( const RISE::ChunkParserEntry& e : RISE::CreateAllChunkParsers() )
 		{
 			const std::string& kw = e.keyword;
@@ -4120,7 +4248,6 @@ static void TestRasterizerAllowlistGate()
 			if( cls == RISE::Agent::AgentRasterizerPolicy::NotARasterizer ) continue;
 			++seen;
 			if( cls == RISE::Agent::AgentRasterizerPolicy::Allowed )        ++allowed;
-			else if( cls == RISE::Agent::AgentRasterizerPolicy::UngatedUtility ) ++ungated;
 			else                                                            ++blocked;
 			Check( RISE::Agent::AgentRasterizerKindIsExplicitlyClassified( kw ),
 			       "R1c(i) rasterizer kind `" + kw + "` is EXPLICITLY classified by the R1c policy "
@@ -4130,8 +4257,7 @@ static void TestRasterizerAllowlistGate()
 		       "R1c(i) the parser registers exactly 12 rasterizer kinds (update this count AND the "
 		       "policy sets together when that changes)" );
 		Check( allowed == 4, "R1c(i) exactly FOUR kinds are agent-selectable (PT + VCM, pel + spectral)" );
-		Check( ungated == 2, "R1c(i) exactly TWO utility rasterizers are deliberately ungated" );
-		Check( blocked == 6, "R1c(i) exactly SIX kinds are blocked (BDPT, MLT, auto -- pel + spectral)" );
+		Check( blocked == 8, "R1c(i) exactly EIGHT kinds are blocked (BDPT, MLT, auto, and the frozen legacy pixel rasterizers -- pel + spectral)" );
 		// `light_rr_threshold` is ChunkCategory::Rasterizer but is NOT a
 		// rasterizer -- the suffix half of the predicate is load-bearing.
 		Check( RISE::Agent::ClassifyAgentRasterizerKind( "light_rr_threshold" ) ==
@@ -7982,9 +8108,10 @@ static void TestReplaceGeometryScaffoldGatesAreDelta()
 			// RED-PROVE the gate is actually wired: the SAME candidate arm
 			// refuses when a blocked rasterizer really IS newly introduced.
 			const Agent::AgentChunkResult bad =
-				sess->InsertChunk( "mlt_rasterizer\n{\nsamples 4\n}" );
+				sess->InsertChunk( "bdpt_spectral_rasterizer\n{\nsamples 4\n}" );
 			Check( !bad.applied && bad.message.find( "SPECIALIZED rasterizer" ) != std::string::npos,
-			       "RG8(a) the shared R1c policy still BLOCKS a newly introduced mlt_rasterizer" );
+			       "RG8(a) the shared R1c policy still BLOCKS a newly introduced bdpt_spectral_rasterizer "
+			       "(mlt is frozen since 2026-10-09 and is refused with the legacy text instead)" );
 			pJob->release();
 			std::remove( tmp.c_str() );
 		}
@@ -20181,6 +20308,7 @@ int main()
 	TestNonSamplingEmitterGate();
 	TestCsgOperandRebaseWarning();
 	TestRasterizerAllowlistGate();
+	TestFrozenChunkBan();
 	TestActionableRemoveDiagnostics();
 	TestRemoveChunksBatch();
 	TestRemoveChunksWireShape();

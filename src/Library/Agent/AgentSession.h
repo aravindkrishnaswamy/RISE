@@ -2217,14 +2217,13 @@ namespace RISE
 		//!                       select: pathtracing_pel_rasterizer,
 		//!                       pathtracing_spectral_rasterizer,
 		//!                       vcm_pel_rasterizer, vcm_spectral_rasterizer.
-		//!   * UngatedUtility -- pixelpel_rasterizer /
-		//!                       pixelintegratingspectral_rasterizer.  These
-		//!                       are DELIBERATELY not gated (supervisor
-		//!                       decision): they are not integrator choices at
-		//!                       all, and pixelpel_rasterizer is REQUIRED for
-		//!                       alpha-mask scenes (docs/SCENE_CONVENTIONS.md).
-		//!                       The directive is about which INTEGRATOR an
-		//!                       agent reaches for.
+		//!   * (Retired 2026-10-09, legacy-deprecation Phase 1: there used to
+		//!     be an UngatedUtility class for pixelpel_rasterizer /
+		//!     pixelintegratingspectral_rasterizer, on the premise that
+		//!     pixelpel was required for alpha-mask scenes.  That premise is
+		//!     stale since DL-214 -- material alpha coverage works in every
+		//!     integrator -- and both kinds are now FROZEN (legacy, unsupported),
+		//!     so they are Blocked like every other non-allowed kind.)
 		//!   * Blocked        -- EVERYTHING ELSE that is a rasterizer chunk.
 		//!                       Today that is exactly bdpt_pel /
 		//!                       bdpt_spectral / mlt / mlt_spectral / auto /
@@ -2254,15 +2253,14 @@ namespace RISE
 		{
 			NotARasterizer,
 			Allowed,
-			UngatedUtility,
 			Blocked
 		};
 
 		//! Classify a chunk keyword under the R1c policy above.
 		AgentRasterizerPolicy ClassifyAgentRasterizerKind( const std::string& keyword );
 
-		//! TRUE iff `keyword` appears in one of the THREE hand-maintained R1c
-		//! policy sets (allowed / ungated-utility / known-blocked).  A
+		//! TRUE iff `keyword` appears in one of the TWO hand-maintained R1c
+		//! policy sets (allowed / known-blocked).  A
 		//! rasterizer keyword the parser registers but this policy never
 		//! named comes back FALSE -- it still BLOCKS at runtime (allowlist
 		//! semantics), but the coverage test in tests/AgentChunkCrudTest.cpp
@@ -2388,6 +2386,34 @@ namespace RISE
 		                                           const std::string& kind,
 		                                           const std::string& param,
 		                                           const std::string& value );
+
+		//! Legacy-deprecation Phase 1 (2026-10-09, docs/LEGACY_DEPRECATION_
+		//! ASSESSMENT.md §10.1): the FROZEN-chunk insert ban.  Does `chunkText`
+		//! create a chunk whose descriptor is `frozen` (legacy and UNSUPPORTED)?
+		//! "" when it does not; otherwise a refusal naming the keyword and its
+		//! replacement, with `outKind` / `outName` (when non-null) receiving the
+		//! offending chunk's keyword and bare `name`.  Same contract as the
+		//! ambient_light ban above: unconditional, no phase budget, every
+		//! top-level chunk scanned, additive (no head text needed).  FROZEN
+		//! RASTERIZER kinds are NOT reported here -- the R1c rasterizer allowlist
+		//! already blocks every one of them with its own message (see
+		//! kAgentBlockedRasterizers_), so a rasterizer insert keeps exactly one
+		//! refusal text.  Loading and EDITING an existing frozen chunk is never
+		//! refused.
+		std::string CheckFrozenChunkBanForInsert( const std::string& chunkText,
+		                                          std::string* outKind = nullptr,
+		                                          std::string* outName = nullptr );
+
+		//! Legacy Phase 1: the PATCH arm of the frozen-chunk ban.  DELTA, NOT
+		//! STATE, like CheckAmbientLightBanForPatch: refuses only when the
+		//! value-splice would RAISE the number of frozen (non-rasterizer)
+		//! chunks, so a scene that already carries frozen chunks stays fully
+		//! editable.  Same `}` pre-filter.
+		std::string CheckFrozenChunkBanForPatch( const std::string& headText,
+		                                         const std::string& target,
+		                                         const std::string& kind,
+		                                         const std::string& param,
+		                                         const std::string& value );
 
 		//! G2 fix-round (2026-08-10): would this PARAM EDIT newly introduce a
 		//! chunk whose registry ChunkCategory is Geometry?  Returns that
