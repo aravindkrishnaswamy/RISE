@@ -2,9 +2,9 @@
 # Regenerate:  export RISE_MEDIA_PATH="$(pwd)/" && ./bin/tests/CstDeriveGoldenTest --generate
 # Then REVIEW git diff before commit -- an unexpected digest change is a CST-derive regression.
 # Columns:  <repo-relative-path>  <sha256(DumpJob)>  <dump-bytes>  <dump-lines>
-scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene  a176ff9f5670e7880b4f0b552af7f1025d3787c1cc0b6d17d546cffa9380c9c6  29069  188
-scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene  6cc3559fefa7ae770f20406efbfc3cebd64fe9314487e2032ebc9190907d5963  29079  188
-scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene  0bbcebaf872ab2abc254808653e060f194f4d83a33d0f8d53508758c689fb411  19515  110
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene  91a96ebce23e59a522b19eef7df4afa0c744e4178d569e9ad1f5312f99e21bd3  23842  186
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene  dee13440316837190f601160576771b2448fe5a3dd710df7fcaf04a6616bf867  23852  186
+scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene  a0098aa4b6b3accdc1d9ce84da6485e3718cb632a77dc928490a3d8e7785898c  14288  108
 scenes/FeatureBased/Animation/caustic_animation.RISEscene  a462518ef800f2e461aada177c8e9dbb7fd8b3cde9383d5225a7e29c9a263058  1197  27
 scenes/FeatureBased/Animation/translucent_bunny.RISEscene  ba66f4e36f7b9fc958f0ccc77c355d1d7356dfefff537313e6f7baf7c3ecd32d  1172  27
 scenes/FeatureBased/BDPT/bdpt_cloister.RISEscene  aa9801b759e8d78e140600f10c3a2831359eeacd54d2b181ced3a0c288fbfb2c  16125  154
@@ -20,9 +20,9 @@ scenes/FeatureBased/Combined/glass_pavilion.RISEscene  44845896a00c403ad45f21afd
 scenes/FeatureBased/Combined/pavilion_colonnade.RISEscene  82145bebf087da95f1bd7106f8b425c1a6527c2d92d7f1fe4320771ef5ef93f6  4982  56
 scenes/FeatureBased/Combined/planetary_survey.RISEscene  628fc339d9920cfe332209ab98ee8ff5098a91a3abd192230847325ff0eaabf9  6242  74
 scenes/FeatureBased/Combined/sculptors_studio.RISEscene  4c4952da29790cfac50e95c6c1297e5a0e453cc9aebe2a1f4b435517879ff3c1  5969  64
-scenes/FeatureBased/Combined/showroom.RISEscene  0c86c2f6990b61249a7179b29e32377c1a603a04a44f71460bfbaafbed84c9fd  10424  59
+scenes/FeatureBased/Combined/showroom.RISEscene  5759b6cf9d47b8b6a3270c5f98c628594a884f403c1f5059db4bbd62b3db76d9  5197  57
 scenes/FeatureBased/Combined/spotlight_drama.RISEscene  a40ac097c7bb4716ef207d95dd7b0eea9a88a51c3aec137e4227d930446335f1  3597  50
-scenes/FeatureBased/Combined/tidepools.RISEscene  56c2f5a784988f4f526d424fdf3e45d6a5c3f4d99e8a9ded10973feb115c1a1b  5655  63
+scenes/FeatureBased/Combined/tidepools.RISEscene  af36b49a0e0b3a4cbdb21032bd7c13c8cb11042d6712280f67bc6b05f67f430f  6962  67
 scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene  f37ba3f60b7085d0d500b8e5db22007f144d4f8520bac26a758818d93f5edc04  11543  126
 scenes/FeatureBased/Geometry/aphrodite.RISEscene  698c071896af5323e7b8b4992dc3675af84d3244695d2ca40f5a29d5b1ecd5f3  7645  32
 scenes/FeatureBased/Geometry/f16.RISEscene  ae2eaba2232de4c23508ac6aba0d39c0a940b4308bcab4ded553763048006d02  7651  32
@@ -51,7 +51,7 @@ scenes/FeatureBased/Materials/sheer_curtain.RISEscene  7bc7c6dc309672bd43603976c
 scenes/FeatureBased/Materials/thinfilm_heattint_showcase.RISEscene  27b984a1bfab8b77c2f71267b75d17542b492476c329815b962a96160b72a2e2  16197  65
 scenes/FeatureBased/Materials/velvet_cushion.RISEscene  45cfd1efe9e7c1d1092b985e9261c2fad776c5e08ae623718adb7299340e95cd  2946  36
 scenes/FeatureBased/Materials/wool_throw_fuzz.RISEscene  8312a06627cf5f4f7559796b401ba9b6d36803790ad4b4035b44e2d2dffe31af  1538  30
-scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene  49d9bbf2bd810cb9a49c538b3e5155236e454eccc199bae38488fe8d6b9c78a1  53153  419
+scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene  6f5d0da88eec3b796f5a2718a7d5e9cbf4737a515ef3a5eb4fc3ea37fe90f036  53187  420
 scenes/FeatureBased/Parser/photon_cloister.RISEscene  e23b36772cba4b3da89d0f9dd29b27bbb5f659c4651eeba46a1706715b1671c7  17297  159
 scenes/FeatureBased/Parser/pillow.RISEscene  e350df553edf86af804dcbee76bb54645c546e2811ad0d74a4fc81a62a8f899d  74095  653
 scenes/FeatureBased/Parser/sombrero.RISEscene  5ca913104aebfb8f58aecfbc96033463f94ff09035b0affde6e63aa7eada2db6  1301600  11183
@@ -298,7 +298,7 @@ scenes/Tests/Painters/expression_painter_marble.RISEscene  b1112f180f329361b2354
 scenes/Tests/Painters/fractal.RISEscene  3de4a110d89b492f496c13fbe9170324b944a80a99a9982fe30a6c38cb511bfd  1090  25
 scenes/Tests/Painters/jpg_painter.RISEscene  73d294086b22275162b2fe47d6e61cdd1f2db50b55d14112c623dd9cd8cd4b3a  802  23
 scenes/Tests/Painters/mapping_triplanar.RISEscene  c3977f8f84cd73a32dc71ec4cd44e03c09362b57f7d5a4571922d6f8f3a38522  1971  34
-scenes/Tests/Painters/painters.RISEscene  e2a123ba10d6d66eec122ae420341dd36aa12b86c8e027e7c03a48d346c132b3  12374  72
+scenes/Tests/Painters/painters.RISEscene  03ab7ba7de717360b79534fffd90c10b2f9a792466dce383f9c8aaee654f1147  7147  70
 scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene  ce003d75c212326f015993992476c8cd105d50d3864fd796f4fe2e122cbbdb0a  3024  47
 scenes/Tests/Painters/polynomial_negative_amplitude_check.RISEscene  5d6de64d457f8c72527867ebf5c11645e5dd0b172078c95058253431699dbe3a  1362  30
 scenes/Tests/Painters/ramp_painter_terrain.RISEscene  9dd3c8cc7997cf39158841bf2546ca14972e6c406a93e99e1f82157115e66b09  1780  29
