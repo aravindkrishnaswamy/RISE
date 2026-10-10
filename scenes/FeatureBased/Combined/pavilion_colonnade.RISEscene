@@ -29,10 +29,12 @@ RISE ASCII SCENE 7
 #
 #   WHAT IS DROPPED.  The pavilion's `floor_shader` line on the `floor` object (DefaultPathTracing) --
 #   dropped so every surface in this scene shades under the scene-wide default `global` standard_shader
-#   (DefaultDirectLighting), and with it the now-unreferenced `floor_shader` / `glass_shader` standard_shader
-#   chunks.  `global` STAYS: nothing in this file names it by chunk reference, but `pixelpel_rasterizer`'s
-#   `defaultshader` resolves that name (RasterizerDefaults.h: defaultShader = "global"), and that is what
-#   makes "direct-only, scene-wide" a true claim -- every cap pixel takes no indirect light at all, so its
+#   (DefaultDirectLighting at authoring time; DefaultPathTracing since legacy-deprecation Phase 2 slice A
+#   moved the scene to `pathtracing_pel_rasterizer` with `max_diffuse_bounce 0`), and with it the
+#   now-unreferenced `floor_shader` / `glass_shader` standard_shader chunks.  `global` STAYS: nothing in
+#   this file names it by chunk reference, but the rasterizer's `defaultshader` resolves that name
+#   (RasterizerDefaults.h: defaultShader = "global").  "Direct-only, scene-wide" is what
+#   `max_diffuse_bounce 0` keeps true -- every cap pixel takes no indirect diffuse light, so its
 #   ratio under the probe/control divide is EXACTLY the albedo, which is why Sec 0 of the spec exempts this
 #   showcase from the black-out every path-traced showcase needs.  NO PROP IS RELOCATED INTO THE FRAME: the
 #   pavilion's vase (`vasegeom`, an unscaled Bezier teapot 6.5 world units wide -- `AddBezierPatchGeometry`
@@ -98,7 +100,8 @@ RISE ASCII SCENE 7
 #   between the pair is worth ~0.05 of ratio.  That is what the wide +-0.15 band is for.  S6 does not
 #   move at all: `dust` is flat 0 over its whole neighbourhood, so the probe pixel is exactly black.
 #
-#   COST.  Live vs `def dust 0` at 64 spp under `pixelpel_rasterizer` (about one painter evaluation per
+#   COST (measured under `pixelpel_rasterizer`, before the Phase 2 migration; not re-measured).  Live vs
+#   `def dust 0` at 64 spp under `pixelpel_rasterizer` (about one painter evaluation per
 #   camera sample -- NOT comparable to the path-traced showcases' regime, whose per-hit call rate is many
 #   times higher; docs/PROXIMITY_SHOWCASES.md Sec 0 and Sec 8.5 say so).  2 warm-ups then 3 interleaved
 #   pairs, every core busy (RISE_OPTIONS_FILE / render_thread_reserve_count 0, the same route ./bench.sh

@@ -928,7 +928,10 @@ int main()
 	job->release();
 
 	//------------------------------------------------------------------
-	// (c) COST: live vs `def dust 0`, 64 spp, pixelpel_rasterizer.  The
+	// (c) COST: live vs `def dust 0`, 64 spp, pathtracing_pel_rasterizer with
+	// max_diffuse_bounce 0 (the scene moved off pixelpel_rasterizer in
+	// legacy-deprecation Phase 2 slice A; the recorded 1.043x ratio in the
+	// scene header was measured under pixelpel).  The
 	// expression VM has no constant folding, so the rest of the program
 	// still executes and the delta isolates the signal call and its L1
 	// memo lookup (docs/PROXIMITY_SHOWCASES.md Sec 0).

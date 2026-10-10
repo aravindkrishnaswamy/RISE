@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 migrate_scenes_legacy_rasterizer.py -- move scenes off the FROZEN legacy
-pixel rasterizers (legacy-deprecation Phase 2, slice A; see
+pixel rasterizers (legacy-deprecation Phase 2, slices A and B1; see
 docs/LEGACY_DEPRECATION_ASSESSMENT.md section 11 and the owner rulings in
 section 13).
 
@@ -27,6 +27,54 @@ MODES (pick one with --mode; every mode refuses what it does not handle):
             continuation (which still shades through the scene's default
             shader) is a path tracer, not a direct-lighting op.
 
+  full      (slice B1) Any other legacy chain: Whitted `DefaultReflection` /
+            `DefaultRefraction`, `distributiontracing_shaderop`,
+            `finalgather_shaderop`, the photon maps and gathers,
+            `irradiance_cache`, `ambientocclusion_shaderop` (dropped, owner
+            ruling #6), the point-cloud SSS ops, `arealight_shaderop`,
+            `directlighting_shaderop`, path-tracing ops and alpha ops.
+            `--integrator pt|bdpt|vcm` picks the target (default pt; CLAUDE.md
+            "Integrator selection": PT by default, BDPT for strong indirect,
+            VCM for caustics); `--sms` (pt only) also enables specular
+            manifold sampling.  What it does:
+              * a chain of only direct lighting / emission / Whitted
+                reflection / refraction / area-light ops maps to the path
+                tracer with `max_diffuse_bounce 0` (the ruling #3a rule);
+                any indirect op (DT, FG, photon map, irradiance cache, AO,
+                path tracing, point-cloud SSS) gets full global illumination;
+              * `samples` = legacy samples x lum_samples (the legacy chain did
+                its lum_samples / DT / FG / gather work INSIDE each pixel
+                sample), floored at 16 (direct) / 64 (indirect), capped 1024;
+              * every shader becomes a `standard_shader` with the single op
+                `DefaultPathTracing`; every op chunk, photon map, gather,
+                irradiance cache, and shader left unreferenced is deleted;
+              * no chain had an emission op but the scene has luminaire
+                materials: `show_luminaires FALSE` (the legacy camera never
+                saw them);
+              * `diffusion_approximation_sss_shaderop` -> a
+                `subsurfacescattering_material` (a diffusion BSSRDF, the
+                closest match to the op's dipole; a random walk differs most
+                on thin features) with the op's own sigma_s /
+                sigma_a (per mm) x 1000 x geometric_scale, its ior and g;
+              * `simple_sss_shaderop` (a phenomenological exp falloff) -> a
+                `subsurfacescattering_material` (Christensen-Burley) whose
+                albedo -- its total diffuse reflectance -- is the object
+                material's uniform base colour times the op's per-channel
+                response 1/extinction^2 (normalized to the least-extinct
+                channel; the integral of the op's exp kernel is 2 pi /
+                extinction^2) and whose profile tail falls off at the op's
+                rate (extinction x 1000 x geometric_scale); a base colour
+                that is not a literal
+                uniform painter is REFUSED unless `--sss-albedo R G B` gives
+                one or `--sss-keep-material` keeps the authored material;
+              * `arealight_shaderop` (N 1, no hotspot) -> a `rect_light` of
+                exitance `power` (at N 1 the op is a Lambertian panel of
+                radiance power/pi).
+            The point-cloud SSS ops' brightness was set by an `irrad_scale`
+            fudge factor and the photon maps' by `power_scale`; the migrated
+            materials and integrators are physically normalized, so those
+            looks change (reported).
+
   renames   Keyword-level renames with no transport change:
               mis_pathtracing_shaderop -> pathtracing_shaderop (alias);
               onb_pinhole_camera       -> pinhole_camera (va/vb/components
@@ -46,30 +94,43 @@ object (otherwise refused).  The op is removed from the shader chains and its
 (now unreferenced) chunk is deleted.  Coverage = 1 - transparency; an
 `alpha_test_shaderop` becomes `alpha_mode mask` with its `cutoff`.
 `transparency_shaderop`'s `one_sided` has no material-coverage equivalent
-(coverage applies to both faces): reported as a look change.
+(coverage applies to both faces): reported as a look change.  Material
+coverage is honoured by shadow rays too, so a coverage below 1 also makes the
+object's SHADOWS that transmissive (the legacy op only blended what the camera
+saw): also reported as a look change.
 
 RASTERIZER PARAMETERS.  The path tracers do not accept `max_recursion`,
 `lum_samples`, `luminary_sampler`, `luminary_sampler_param`, `filter_glossy`,
-`integrate_rgb` or `rgb_spd*`.  `max_recursion` and `lum_samples` are dropped
-(PT bounds paths itself at kDefaultPathTracingMaxDepth; `lum_samples` only
-acts with a `luminary_sampler`, which no shipped scene sets).  A scene that
-sets `luminary_sampler` (not none), a nonzero `filter_glossy`,
-`integrate_rgb TRUE` or any `rgb_spd*` is REFUSED.  `samples` is carried
-verbatim; when absent it is written as `samples 1`, because the legacy
-default is 1 and the path tracers' default is 32.  `oidn_denoise` is carried
+`integrate_rgb` or `rgb_spd*`.  `max_recursion` is dropped (PT bounds paths
+itself at kDefaultPathTracingMaxDepth).  `lum_samples`, `luminary_sampler` and
+`luminary_sampler_param` are dropped because they are INERT: the rasterizer
+builds the sampler and hands it to LuminaryManager::SetLuminaireSampling,
+which stores `pLumSampling` and never reads it (verified 2026-10-10,
+src/Library/Rendering/LuminaryManager.cpp).  A scene that sets a nonzero
+`filter_glossy`, `integrate_rgb TRUE` or any `rgb_spd*` is REFUSED.  `samples`
+is carried verbatim in --mode pt / direct; when absent it is written as
+`samples 1`, because the legacy default is 1 and the path tracers' default is
+32 (--mode full has its own rule, see below).  `oidn_denoise` is carried
 verbatim and NOT added when absent: the legacy pixel rasterizers ALSO default
 to OIDN on (verified 2026-10-10: a default `pixelpel_rasterizer` render logs
 "OIDN auto" and writes a `_denoised` output), so leaving it absent keeps the
-scene's effective denoise setting.  A `pathtracing_shaderop` referenced by a
-shader that enables SMS (`sms_enabled TRUE`) has its `sms_*` parameters
-copied onto the rasterizer, where the path-tracing rasterizers read them.
+scene's effective denoise setting.
 
-OUT OF SCOPE (refused, left for later slices): photon maps / gathers,
-`finalgather_shaderop`, `irradiance_cache`, point-cloud SSS ops,
-`ambientocclusion_shaderop`, `distributiontracing_shaderop`, Whitted chains
-(`DefaultReflection` / `DefaultRefraction`), `arealight_shaderop`, custom
-`directlighting_shaderop`, `sms_shaderop`, direct volume rendering, MLT, and
-scenes declaring more than one rasterizer.  Scenes in HELD below are reserved
+SMS (--mode pt).  The SMS settings of the `pathtracing_shaderop`s a chain
+references move to the rasterizer's `sms_*` parameters, with the op's
+EFFECTIVE values written explicitly: an op leaves out a parameter at ITS
+default, and the op's `sms_max_chain_depth` default is 10 where the
+rasterizer's is 30 (SMSConfig::maxChainDepth), so copying only the lines the
+op spells out would silently triple the chain depth.  The rasterizer setting
+is global, so every referenced path-tracing op (DefaultPathTracing included,
+whose SMS is off) must agree; otherwise the scene is REFUSED.
+
+OUT OF SCOPE.  --mode pt / direct refuse every family --mode full handles.
+Every mode refuses `sms_shaderop`, `donner_jensen_skin_sss_shaderop`, the
+translucent / shadow photon maps, direct volume rendering, MLT, scenes
+declaring more than one rasterizer, and an OBJECT-level `radiance_map` (only
+the legacy chain honours it; the supported integrators read only the
+rasterizer's map -- Tests/Shaders/different_rmaps is held on that).  Scenes in HELD below are reserved
 for a later slice (Android catalogue / quickstart sample), and
 scenes/Tests/Legacy/ (the frozen-feature regression corpus) and
 scenes/Tests/ChunkCoverage/ (one-chunk parser coverage) are never touched.
@@ -80,6 +141,8 @@ Idempotent: a migrated scene has no legacy rasterizer and is reported
 written back are the originals, edited line by line.
 
 Usage:
+    python3 tools/migrate_scenes_legacy_rasterizer.py --mode full [--integrator pt|bdpt|vcm] [--sms]
+                                    [--sss-albedo R G B | --sss-keep-material] [--dry-run] [paths...]
     python3 tools/migrate_scenes_legacy_rasterizer.py --mode pt     [--dry-run] [paths...]
     python3 tools/migrate_scenes_legacy_rasterizer.py --mode direct [--dry-run] [paths...]
     python3 tools/migrate_scenes_legacy_rasterizer.py --mode renames [--dry-run] [paths...]
@@ -132,9 +195,46 @@ TARGET_PARAMS = {
         'spectral_samples', 'num_wavelengths', 'nmbegin', 'nmend', 'hwss', 'use_hwss',
     },
 }
+_BIDIR_COMMON = {
+    'defaultshader', 'samples', 'show_luminaires', 'oidn_denoise', 'oidn_quality',
+    'oidn_device', 'oidn_prefilter', 'choose_one_light', 'blue_noise_sampler',
+    'pixel_sampler', 'pixel_sampler_param', 'pixel_filter', 'pixel_filter_width',
+    'pixel_filter_height', 'pixel_filter_paramA', 'pixel_filter_paramB',
+    'radiance_map', 'radiance_scale', 'radiance_background', 'radiance_orient',
+    'adaptive_max_samples', 'adaptive_threshold', 'show_adaptive_map',
+    'direct_clamp', 'indirect_clamp', 'rr_min_depth', 'rr_threshold',
+    'max_diffuse_bounce', 'max_glossy_bounce', 'max_transmission_bounce',
+    'max_translucent_bounce', 'max_volume_bounce', 'light_bvh',
+    'progressive_rendering', 'progressive_samples_per_pass',
+    'max_eye_depth', 'max_light_depth',
+}
+_SPECTRAL_CORE = {'spectral_samples', 'num_wavelengths', 'nmbegin', 'nmend', 'hwss'}
+_VCM_EXTRA = {'merge_radius', 'vc_enabled', 'vm_enabled'}
+TARGET_PARAMS.update({
+    'bdpt_pel_rasterizer': _BIDIR_COMMON,
+    'bdpt_spectral_rasterizer': _BIDIR_COMMON | _SPECTRAL_CORE,
+    'vcm_pel_rasterizer': _BIDIR_COMMON | _VCM_EXTRA,
+    'vcm_spectral_rasterizer': _BIDIR_COMMON | _VCM_EXTRA | _SPECTRAL_CORE,
+})
+# --mode full: legacy rasterizer -> target, by --integrator.
+FULL_TARGETS = {
+    'pt':   {'pixelpel_rasterizer': 'pathtracing_pel_rasterizer',
+             'pixelintegratingspectral_rasterizer': 'pathtracing_spectral_rasterizer'},
+    'bdpt': {'pixelpel_rasterizer': 'bdpt_pel_rasterizer',
+             'pixelintegratingspectral_rasterizer': 'bdpt_spectral_rasterizer'},
+    'vcm':  {'pixelpel_rasterizer': 'vcm_pel_rasterizer',
+             'pixelintegratingspectral_rasterizer': 'vcm_spectral_rasterizer'},
+}
+
+# Dropped silently: max_recursion (PT bounds paths itself); lum_samples and
+# luminary_sampler_param (inert, see the docstring).
 DROPPED = {'max_recursion', 'lum_samples', 'luminary_sampler_param'}
 SMS_OP_PARAMS = ('sms_enabled', 'sms_max_iterations', 'sms_threshold',
                  'sms_max_chain_depth', 'sms_biased')
+# pathtracing_shaderop's own SMS defaults (ChunkParserRegistry.cpp
+# PathTracingShaderOpAsciiChunkParser::Finalize; Job.cpp DefaultPathTracing).
+PT_OP_SMS_DEFAULTS = {'sms_enabled': 'FALSE', 'sms_max_iterations': '20', 'sms_threshold': '1e-5',
+                      'sms_max_chain_depth': '10', 'sms_biased': 'TRUE'}
 
 PT_OPS = {'pathtracing_shaderop'}
 DIRECT_OPS = {'directlighting', 'emission', 'transparency_shaderop', 'alpha_test_shaderop'}
@@ -316,9 +416,86 @@ def classify_op(op_name, named):
     return 'unknown op `%s`' % op_name
 
 
+def _norm_val(name, toks):
+    """Canonical form of an sms_* value for comparison."""
+    v = ' '.join(toks)
+    if name in ('sms_enabled', 'sms_biased'):
+        return 'TRUE' if v.strip('"').upper() in ('TRUE', '1') else 'FALSE'
+    try:
+        return repr(float(v))
+    except ValueError:
+        return v
+
+
+def sms_to_rasterizer(chunks, chains, named, have, ind, additions, notes):
+    """The SMS settings of the path-tracing ops a chain references move to
+    the rasterizer.  An op's EFFECTIVE values are written -- including the
+    op's own defaults for any it leaves out, because three of them differ from
+    the rasterizer's (ChunkParserRegistry.cpp PathTracingShaderOpAsciiChunkParser
+    / Job.cpp DefaultPathTracing: max_iterations 20, threshold 1e-5,
+    max_chain_depth 10, biased TRUE; SMSConfig::maxChainDepth is 30).  The
+    op's other solver fields take ManifoldSolverConfig's defaults, which equal
+    the rasterizer's SMSConfig defaults, so they need no line.  Every
+    referenced path-tracing op (DefaultPathTracing included: SMS off) must
+    agree, because the rasterizer setting is global; otherwise REFUSED.
+    Returns a refusal string or None."""
+    referenced = []
+    seen = set()
+    for _, ops in chains:
+        for _, opn in ops:
+            if opn not in seen and classify_op(opn, named) == 'pathtracing_shaderop':
+                seen.add(opn)
+                referenced.append(opn)
+    configs = {}
+    for opn in referenced:
+        chunk = next((c for c in chunks if c.kw in ('pathtracing_shaderop', 'mis_pathtracing_shaderop')
+                      and c.name() == opn), None)
+        cfg = {}
+        en = chunk.get('sms_enabled') if chunk else None
+        cfg['sms_enabled'] = _norm_val('sms_enabled', en) if en else 'FALSE'
+        if cfg['sms_enabled'] == 'TRUE':
+            for p in SMS_OP_PARAMS[1:]:
+                v = chunk.get(p)
+                cfg[p] = _norm_val(p, v) if v is not None else _norm_val(p, [PT_OP_SMS_DEFAULTS[p]])
+        configs[opn] = (cfg, chunk)
+    enabled = [o for o in referenced if configs[o][0]['sms_enabled'] == 'TRUE']
+    if not enabled:
+        return None
+    first = configs[enabled[0]][0]
+    for o in referenced:
+        if configs[o][0] != first:
+            return ('REFUSED: path-tracing ops `%s` and `%s` have different SMS settings; the '
+                    'rasterizer\'s sms_* parameters are global' % (enabled[0], o))
+    chunk = configs[enabled[0]][1]
+    for p in SMS_OP_PARAMS:
+        v = chunk.get(p)
+        text = ' '.join(v) if v is not None else PT_OP_SMS_DEFAULTS[p]
+        if p in have:
+            if _norm_val(p, have[p][1][1:]) != first[p]:
+                return 'REFUSED: rasterizer %s disagrees with pathtracing_shaderop `%s`' % (p, enabled[0])
+            continue
+        additions.append(ind + '%s\t\t%s' % (p, text))
+    notes.append('SMS settings of pathtracing_shaderop `%s` copied to the rasterizer (op defaults '
+                 'written explicitly)' % enabled[0])
+    return None
+
+
 # --------------------------------------------------------------------------
 # Rasterizer migration (modes pt / direct)
 # --------------------------------------------------------------------------
+
+def per_object_radiance_map_refusal(chunks):
+    """A `radiance_map` on an OBJECT is consulted only by the legacy shader-op
+    chain (the ops forward RayIntersection::pRadianceMap to the rays they
+    cast); the path tracer, BDPT and VCM read only the rasterizer's global
+    map.  Migrating would silently drop the feature, so refuse."""
+    for c in chunks:
+        if c.kw.endswith('_object') and c.get('radiance_map'):
+            return ('REFUSED: object `%s` sets its own radiance_map, which only the legacy '
+                    'shader-op chain honours (the supported integrators read only the '
+                    'rasterizer\'s radiance_map)' % c.name())
+    return None
+
 
 def migrate_rasterizer(text, mode, report):
     lines = text.split('\n')
@@ -338,6 +515,9 @@ def migrate_rasterizer(text, mode, report):
         if c.kw.endswith('_photonmap') or c.kw.endswith('_gather'):
             return None, 'REFUSED: uses photon mapping (`%s`), a later slice' % c.kw
 
+    res = per_object_radiance_map_refusal(chunks)
+    if res:
+        return None, res
     named = op_types(chunks)
     chains = shader_chains(chunks)
     used = set()
@@ -365,8 +545,9 @@ def migrate_rasterizer(text, mode, report):
     for name, (idx, toks) in have.items():
         val = toks[1:]
         if name == 'luminary_sampler':
+            # Inert (LuminaryManager stores the sampler and never reads it).
             if val and val[0].strip('"') != 'none':
-                return None, 'REFUSED: luminary_sampler %s has no path-tracer equivalent' % val[0]
+                notes.append('luminary_sampler %s dropped (inert: never read)' % val[0])
             edits[idx] = []
             continue
         if name == 'filter_glossy':
@@ -425,16 +606,9 @@ def migrate_rasterizer(text, mode, report):
 
     # SMS on a referenced pathtracing_shaderop moves to the rasterizer.
     if mode == 'pt':
-        referenced = set(opn for _, ops in chains for _, opn in ops)
-        for c in chunks:
-            if c.kw in ('pathtracing_shaderop', 'mis_pathtracing_shaderop') and c.name() in referenced:
-                en = c.get('sms_enabled')
-                if en and en[0].upper() in ('TRUE', '1'):
-                    for p in SMS_OP_PARAMS:
-                        v = c.get(p)
-                        if v is not None and p not in have:
-                            additions.append(ind + '%s\t\t%s' % (p, ' '.join(v)))
-                    notes.append('SMS settings of pathtracing_shaderop `%s` copied to the rasterizer' % c.name())
+        res = sms_to_rasterizer(chunks, chains, named, have, ind, additions, notes)
+        if res is not None:
+            return None, res
 
     if mode == 'direct':
         if 'max_diffuse_bounce' in have:
@@ -584,7 +758,435 @@ def convert_alpha_ops(lines, chunks, chains, named, alpha_ops, edits, notes):
             edits[k] = []
         notes.append('%s `%s` -> alpha_coverage %s / alpha_mode %s on its materials (op chunk removed)'
                      % (t, opn, fmt_num(coverage), mode))
+        if coverage < 1.0:
+            notes.append('LOOK CHANGE: material coverage also applies to SHADOW rays, so the object\'s '
+                         'shadows become %s%% transmissive (the legacy op only blended the camera-visible '
+                         'surface; its shadows stayed opaque)' % fmt_num(round(100.0 * (1.0 - coverage), 6)))
     return None
+
+
+# --------------------------------------------------------------------------
+# --mode full (legacy-deprecation Phase 2 slice B1)
+# --------------------------------------------------------------------------
+
+# Op families --mode full understands (classify_op's names).
+FULL_DIRECT_OPS = {'directlighting', 'directlighting_shaderop', 'emission',
+                   'reflection (Whitted)', 'refraction (Whitted)', 'arealight_shaderop'}
+FULL_INDIRECT_OPS = {'pathtracing_shaderop', 'distributiontracing_shaderop', 'finalgather_shaderop',
+                     'ambientocclusion_shaderop', 'photon map'}
+SSS_OPS = {'simple_sss_shaderop', 'diffusion_approximation_sss_shaderop'}
+FULL_KNOWN_OPS = FULL_DIRECT_OPS | FULL_INDIRECT_OPS | SSS_OPS | ALPHA_OPS
+# Chunks that only feed the legacy chain; deleted by --mode full.
+FULL_DELETED_KINDS = ('_photonmap', '_gather')
+# Sample floors for --mode full (see the docstring).
+FULL_SAMPLE_FLOOR_DIRECT = 16
+FULL_SAMPLE_FLOOR_INDIRECT = 64
+FULL_SAMPLE_CAP = 1024
+# Index of refraction the simple (phenomenological) SSS op is converted at.
+SIMPLE_SSS_IOR = 1.3
+
+
+def _painter_rgb(chunks, name):
+    """Linear Rec.709 RGB of a literal uniformcolor_painter, or None."""
+    for c in chunks:
+        if c.kw == 'uniformcolor_painter' and c.name() == name:
+            col = c.get('color')
+            if not col or len(col) != 3 or not all(is_literal_number(x) for x in col):
+                return None
+            v = [float(x) for x in col]
+            cs = (c.get('colorspace') or ['Rec709RGB_Linear'])[0]
+            if cs in ('Rec709RGB_Linear', 'sRGB_Linear', 'RISERGB'):
+                return v
+            if cs == 'sRGB':
+                return [x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in v]
+            return None
+    return None
+
+
+def _burley_s(A):
+    """Christensen-Burley scaling factor (BurleyNormalizedDiffusionProfile.h)."""
+    return 1.9 - A + 3.5 * (A - 0.8) ** 2
+
+
+def simple_sss_coefficients(albedo, sigma_tr):
+    """Per channel: (absorption, scattering) for subsurfacescattering_material
+    (Christensen-Burley normalized diffusion, src/Library/Materials/
+    BurleyNormalizedDiffusionProfile.h).  Its total diffuse reflectance IS
+    the albedo A = sigma_s / (sigma_s + sigma_a) (g = 0), and its profile's
+    long tail decays as exp(-s(A) r / (3 d)) with d = 1 / sigma_t, so the
+    legacy op's exp(-sigma_tr r) falloff maps to sigma_t = 3 sigma_tr / s(A)."""
+    absorption, scattering = [], []
+    for A, tr in zip(albedo, sigma_tr):
+        A = min(max(A, 0.01), 0.95)
+        st = 3.0 * tr / _burley_s(A)
+        scattering.append(A * st)
+        absorption.append((1.0 - A) * st)
+    return absorption, scattering
+
+
+def _fmt3(v):
+    return ' '.join('%.6g' % x for x in v)
+
+
+def _material_base_color(chunks, mat):
+    """The diffuse base colour of a material (the colour the legacy SSS op's
+    multiplybsdf tinted by), as linear RGB, or None."""
+    slot = {'lambertian_material': 'reflectance', 'translucent_material': 'ref',
+            'ward_anisotropic_material': 'rd', 'ward_isotropic_material': 'rd',
+            'orennayar_material': 'reflectance'}.get(mat.kw)
+    if slot is None:
+        return None
+    p = mat.get(slot)
+    return _painter_rgb(chunks, p[0]) if p else None
+
+
+def migrate_full(text, integrator, report, sss_albedo=None, sss_keep=False, sms=False):
+    lines = text.split('\n')
+    code = strip_comments(lines)
+    chunks = parse_chunks(code)
+
+    rasters = [c for c in chunks if c.kw.endswith('_rasterizer')]
+    legacy = [c for c in rasters if c.kw in LEGACY_RASTERIZERS]
+    if not legacy:
+        return None, 'unchanged (no legacy pixel rasterizer)'
+    if len(rasters) != 1:
+        return None, 'REFUSED: %d rasterizer chunks (%s); the active one is ambiguous' % (
+            len(rasters), ', '.join(c.kw for c in rasters))
+    for c in chunks:
+        if c.kw in ('mlt_rasterizer', 'mlt_spectral_rasterizer', 'directvolumerendering_shader',
+                    'spectraldirectvolumerendering_shader'):
+            return None, 'REFUSED: uses %s, not a --mode full family' % c.kw
+        if c.kw in ('donner_jensen_skin_sss_shaderop', 'sms_shaderop', 'translucent_pel_photonmap',
+                    'shadow_photonmap'):
+            return None, 'REFUSED: `%s` has no --mode full conversion' % c.kw
+
+    res = per_object_radiance_map_refusal(chunks)
+    if res:
+        return None, res
+    named = op_types(chunks)
+    chains = shader_chains(chunks)
+    ops_by_name = {c.name(): c for c in chunks if c.kw.endswith('_shaderop') and c.name()}
+    mats_by_name = {c.name(): c for c in chunks if c.kw.endswith('_material') and c.name()}
+    used = set()
+    for _, ops in chains:
+        for _, opn in ops:
+            used.add(classify_op(opn, named))
+    unknown = sorted(used - FULL_KNOWN_OPS)
+    if unknown:
+        return None, 'REFUSED for --mode full: shader chains use %s' % ', '.join(unknown)
+    has_ic = any(c.kw == 'irradiance_cache' for c in chunks)
+    has_pm = any(c.kw.endswith(FULL_DELETED_KINDS) for c in chunks)
+    indirect = bool(used & (FULL_INDIRECT_OPS | SSS_OPS)) or has_ic
+    direct_only = not indirect
+
+    r = legacy[0]
+    target = FULL_TARGETS[integrator][r.kw]
+    accepted = TARGET_PARAMS[target]
+    edits = {}
+    notes = []
+
+    have = {}
+    for idx, toks in r.params:
+        have[toks[0]] = (idx, toks)
+    for name, (idx, toks) in have.items():
+        val = toks[1:]
+        if name == 'luminary_sampler':
+            if val and val[0].strip('"') != 'none':
+                notes.append('luminary_sampler %s dropped (inert: never read)' % val[0])
+            edits[idx] = []
+            continue
+        if name == 'filter_glossy':
+            if val and is_literal_number(val[0]) and float(val[0]) == 0.0:
+                edits[idx] = []
+                continue
+            return None, 'REFUSED: filter_glossy is not accepted by %s' % target
+        if name == 'integrate_rgb':
+            if val and val[0].upper() in ('FALSE', '0'):
+                edits[idx] = []
+                continue
+            return None, 'REFUSED: integrate_rgb TRUE has no equivalent'
+        if name.startswith('rgb_spd'):
+            return None, 'REFUSED: %s has no equivalent' % name
+        if name in DROPPED or name == 'samples':
+            if name != 'samples':
+                edits[idx] = []
+            continue
+        if name not in accepted:
+            return None, 'REFUSED: parameter `%s` is not accepted by %s' % (name, target)
+
+    ind = '\t'
+    for idx, toks in r.params:
+        ind = indent_of(lines[idx]) or '\t'
+        break
+    additions = []
+
+    # Samples: the legacy chain multiplied its own work per pixel sample
+    # (lum_samples light samples per hit; DT / FG / AO / photon-gather inner
+    # loops), so carrying `samples` verbatim would leave the migrated scene far
+    # noisier.  samples x lum_samples, floored (16 direct, 64 indirect) and
+    # capped at 1024.
+    def ival(n, d):
+        v = have.get(n)
+        try:
+            return int(float(v[1][1])) if v else d
+        except (IndexError, ValueError):
+            return None
+    spp, lum = ival('samples', 1), ival('lum_samples', 1)
+    if spp is None or lum is None:
+        return None, 'REFUSED: samples / lum_samples is not a literal number'
+    floor = FULL_SAMPLE_FLOOR_DIRECT if direct_only else FULL_SAMPLE_FLOOR_INDIRECT
+    new_spp = min(max(spp * max(lum, 1), floor), FULL_SAMPLE_CAP)
+    if 'samples' in have:
+        idx = have['samples'][0]
+        edits[idx] = [indent_of(lines[idx]) + 'samples\t\t\t\t%d' % new_spp]
+    else:
+        additions.append(ind + 'samples\t\t\t\t%d' % new_spp)
+    notes.append('samples %d (legacy samples %d x lum_samples %d, floor %d, cap %d)'
+                 % (new_spp, spp, lum, floor, FULL_SAMPLE_CAP))
+
+    if direct_only:
+        if integrator != 'pt':
+            return None, ('REFUSED: a direct / Whitted chain (no indirect op) maps to the path '
+                          'tracer with max_diffuse_bounce 0; use --integrator pt')
+        if 'max_diffuse_bounce' in have:
+            idx = have['max_diffuse_bounce'][0]
+            edits[idx] = [ind + 'max_diffuse_bounce\t\t0']
+        else:
+            additions.append(ind + 'max_diffuse_bounce\t\t0')
+        notes.append('max_diffuse_bounce 0: the chain was direct lighting plus Whitted '
+                     'reflection / refraction only (owner ruling #3a)')
+    else:
+        notes.append('full global illumination (%s): the chain integrated indirect / caustic light' % target)
+
+    # Emitters the legacy camera never saw: no chain had an emission op.
+    if 'emission' not in used and 'show_luminaires' not in have:
+        lum_mats = [c for c in chunks if c.kw.endswith('_luminaire_material')]
+        if lum_mats:
+            additions.append(ind + 'show_luminaires\t\tFALSE')
+            notes.append('show_luminaires FALSE: no chain had an emission op, so the legacy camera '
+                         'never saw the luminaires (they still light the scene)')
+
+    if integrator == 'pt' and 'pathtracing_shaderop' in used:
+        res = sms_to_rasterizer(chunks, chains, named, have, ind, additions, notes)
+        if res is not None:
+            return None, res
+    elif 'pathtracing_shaderop' in used:
+        for c in chunks:
+            if c.kw in ('pathtracing_shaderop', 'mis_pathtracing_shaderop'):
+                en = c.get('sms_enabled')
+                if en and en[0].upper() in ('TRUE', '1'):
+                    return None, 'REFUSED: SMS is a path-tracer feature; use --integrator pt'
+
+    if sms:
+        if integrator != 'pt':
+            return None, 'REFUSED: --sms needs --integrator pt (SMS is a path-tracer feature)'
+        if any(a.split()[0] == 'sms_enabled' for a in additions) or 'sms_enabled' in have:
+            return None, 'REFUSED: --sms on a scene whose path-tracing op already configures SMS'
+        additions.append(ind + 'sms_enabled\t\tTRUE')
+        notes.append('sms_enabled TRUE (--sms): specular manifold sampling carries the caustics the '
+                     'photon map used to (rasterizer SMS defaults)')
+
+    kl = lines[r.kw_line]
+    edits[r.kw_line] = [indent_of(kl) + '# Migrated from %s by tools/migrate_scenes_legacy_rasterizer.py '
+                        '(--mode full --integrator %s%s, legacy-deprecation Phase 2).'
+                        % (r.kw, integrator, ' --sms' if sms else ''),
+                        kl.replace(r.kw, target, 1)]
+    edits[r.close_line] = additions + [lines[r.close_line]]
+
+    default_shader = (have['defaultshader'][1][1] if 'defaultshader' in have else 'global').strip('"')
+    objects = [c for c in chunks if c.kw.endswith('_object')]
+
+    def obj_shader(o):
+        v = o.get('shader')
+        return v[0] if v else default_shader
+
+    # Point-cloud SSS ops -> subsurfacescattering_material on their objects.
+    sss_ops = {}
+    for c, ops in chains:
+        for _, opn in ops:
+            if classify_op(opn, named) in SSS_OPS:
+                sss_ops.setdefault(opn, set()).add(c.name())
+    new_mats = {}     # (op, material) -> new name
+    insert_before = {}  # line index -> lines
+    for opn in sorted(sss_ops):
+        oc = ops_by_name[opn]
+        shaders = sss_ops[opn]
+        users = [o for o in objects if obj_shader(o) in shaders]
+        if not users:
+            continue
+        gs = oc.get('geometric_scale')
+        gs = float(gs[0]) if gs else 1.0
+        k = 1000.0 * gs     # legacy: r_mm = r_scene * 1000 * geometric_scale
+        for o in users:
+            mv = o.get('material')
+            if not mv:
+                return None, 'REFUSED: SSS object `%s` has no material' % o.name()
+            key = (opn, mv[0])
+            if key not in new_mats:
+                mat = mats_by_name.get(mv[0])
+                if mat is None:
+                    return None, 'REFUSED: material `%s` not found' % mv[0]
+                nm = '%s_sss_%s' % (opn, mv[0])
+                body = ['subsurfacescattering_material', '{', '\tname\t\t\t%s' % nm]
+                if oc.kw == 'diffusion_approximation_sss_shaderop':
+                    sc = oc.get('scattering') or ['2.19', '2.62', '3.0']
+                    ab = oc.get('absorption') or ['0.0021', '0.0041', '0.0071']
+                    ior = (oc.get('ior') or ['1.3'])[0]
+                    g = (oc.get('g') or ['0.8'])[0]
+                    scat = [float(x) * k for x in sc]
+                    absr = [float(x) * k for x in ab]
+                    body += ['\tior\t\t\t%s' % ior, '\tabsorption\t%s' % _fmt3(absr),
+                             '\tscattering\t%s' % _fmt3(scat), '\tg\t\t\t%s' % g]
+                    how = ('the op\'s own sigma_s / sigma_a (per mm) x 1000 x geometric_scale %s, '
+                           'ior %s, g %s' % (fmt_num(gs), ior, g))
+                else:
+                    ext = oc.get('extinction') or ['0.02', '0.03', '0.09']
+                    tr = [float(x) * k for x in ext]
+                    alb = _material_base_color(chunks, mat)
+                    src = 'material `%s`' % mv[0]
+                    if alb is None:
+                        if sss_keep:
+                            new_mats[key] = None
+                            notes.append('simple_sss_shaderop `%s`: material `%s` (%s) KEPT as authored '
+                                         '(--sss-keep-material: its colour is not a uniform painter, which '
+                                         'the SSS materials\' scalar coefficients cannot carry); the op is '
+                                         'dropped' % (opn, mv[0], mat.kw))
+                            continue
+                        if sss_albedo is None:
+                            return None, ('REFUSED: simple_sss_shaderop `%s`: cannot read a uniform base '
+                                          'colour from material `%s` (%s); pass --sss-albedo or '
+                                          '--sss-keep-material' % (opn, mv[0], mat.kw))
+                        alb, src = sss_albedo, '--sss-albedo'
+                    # The op's response per channel is the base colour times
+                    # the integral of its exp(-sigma r) kernel over the
+                    # surface, 2 pi / sigma^2: channels with a lower
+                    # extinction glow brighter (that is where the authored
+                    # tint of a white-material SSS object comes from).  The
+                    # least-extinct channel keeps the base colour.
+                    emin = min(tr)
+                    alb = [min(max(c * (emin / t) ** 2, 0.01), 0.95) for c, t in zip(alb, tr)]
+                    absr, scat = simple_sss_coefficients(alb, tr)
+                    body += ['\tior\t\t\t%s' % fmt_num(SIMPLE_SSS_IOR), '\tabsorption\t%s' % _fmt3(absr),
+                             '\tscattering\t%s' % _fmt3(scat), '\tg\t\t\t0']
+                    how = ('Christensen-Burley match: albedo %s (%s x the op\'s 1/extinction^2 '
+                           'channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x '
+                           'geometric_scale %s = %s per unit'
+                           % (_fmt3(alb), src, fmt_num(gs), _fmt3(tr)))
+                body += ['}', '']
+                hdr = ['# Converted from %s `%s` (point-cloud SSS, frozen) by '
+                       'tools/migrate_scenes_legacy_rasterizer.py --mode full:' % (oc.kw, opn),
+                       '#   %s.' % how]
+                insert_before.setdefault(o.kw_line, []).extend(hdr + body)
+                new_mats[key] = nm
+                notes.append('%s `%s` -> subsurfacescattering_material `%s` (%s)' % (oc.kw, opn, nm, how))
+            if new_mats[key] is None:
+                continue
+            for idx, toks in o.params:
+                if toks[0] == 'material':
+                    edits[idx] = [re.sub(r'^(\s*material\s+)\S+', lambda m: m.group(1) + new_mats[key],
+                                         lines[idx], count=1)]
+
+    if any(v is not None for v in new_mats.values()):
+        notes.append('LOOK CHANGE: the point-cloud SSS brightness was set by each op\'s irrad_scale '
+                     'fudge factor; the subsurfacescattering_material is physically normalized')
+
+    # arealight_shaderop -> rect_light.
+    for c in chunks:
+        if c.kw != 'arealight_shaderop':
+            continue
+        if not any(opn == c.name() for _, ops in chains for _, opn in ops):
+            continue
+        Nv = c.get('N')
+        if (Nv and not (is_literal_number(Nv[0]) and float(Nv[0]) == 1.0)) or c.get('hotspot'):
+            return None, 'REFUSED: arealight_shaderop `%s` sets N / hotspot (no rect_light equivalent)' % c.name()
+        loc = _vec(c.get('location')) or [0.0, 10.0, 0.0]
+        if c.get('make_dir'):
+            t = _vec(c.get('make_dir'))
+            if t is None:
+                return None, 'REFUSED: arealight_shaderop make_dir is not literal'
+            d = _sub(t, loc)
+        else:
+            d = _vec(c.get('dir')) or [0.0, -1.0, 0.0]
+        if math.sqrt(sum(x * x for x in d)) == 0.0:
+            return None, 'REFUSED: arealight_shaderop `%s` has a zero direction' % c.name()
+        col = _painter_rgb(chunks, (c.get('emission') or ['color_white'])[0])
+        if col is None:
+            return None, 'REFUSED: arealight_shaderop emission is not a literal uniformcolor_painter'
+        power = float((c.get('power') or ['1.0'])[0])
+        w = float((c.get('width') or ['1.0'])[0])
+        h = float((c.get('height') or ['1.0'])[0])
+        # The op adds emm*power*(N+1)cos_r^N/(2pi)*cos_l*A/d^2*f per sample
+        # (AreaLightShaderOp::Shade; Job::AddAreaLightShaderOp normalizes
+        # `dir`).  At N = 1 that is a Lambertian panel of radiance
+        # emm*power/pi, i.e. a rect_light of exitance `power`.
+        exitance = power
+        body = ['# Converted from arealight_shaderop `%s` (frozen) by tools/migrate_scenes_legacy_rasterizer.py'
+                ' --mode full:' % c.name(),
+                '#   exitance = power (at N 1 the op is a Lambertian panel of radiance power/pi).',
+                'rect_light', '{', '\tname\t\t%s' % c.name(),
+                '\tcenter\t\t%s' % ' '.join(fmt_num(x) for x in loc),
+                '\tsize\t\t%s %s' % (fmt_num(w), fmt_num(h)),
+                '\tfacing\t\t%s' % ' '.join(fmt_num(x) for x in d),
+                '\texitance\t%s' % ('%.6g' % exitance),
+                '\tcolor\t\t%s' % _fmt3(col), '}']
+        edits[c.kw_line] = body
+        for kk in range(c.kw_line + 1, c.close_line + 1):
+            edits[kk] = []
+        notes.append('arealight_shaderop `%s` -> rect_light (exitance %.6g, centre %s, facing %s)'
+                     % (c.name(), exitance, ' '.join(fmt_num(x) for x in loc), ' '.join(fmt_num(x) for x in d)))
+
+    # Alpha ops -> material coverage (as --mode direct).
+    alpha_ops = {}
+    for _, ops in chains:
+        for _, opn in ops:
+            t = classify_op(opn, named)
+            if t in ALPHA_OPS:
+                alpha_ops[opn] = t
+    if alpha_ops:
+        res = convert_alpha_ops(lines, chunks, chains, named, alpha_ops, edits, notes)
+        if res is not None:
+            return None, res
+
+    # Every shader chain becomes one DefaultPathTracing op (PT's SSS
+    # continuation shades through the scene's shaders; the integrators
+    # ignore the chain otherwise).
+    dropped = sorted(used - {'pathtracing_shaderop'})
+    for c, ops in chains:
+        kl = lines[c.kw_line]
+        if c.kw == 'advanced_shader':
+            edits[c.kw_line] = [kl.replace('advanced_shader', 'standard_shader', 1)]
+        first = True
+        for idx, opn in ops:
+            if first:
+                edits[idx] = [indent_of(lines[idx]) + 'shaderop\t\tDefaultPathTracing']
+                first = False
+            else:
+                edits[idx] = []
+    notes.append('every shader chain -> DefaultPathTracing (dropped ops: %s)' % ', '.join(dropped))
+    if 'ambientocclusion_shaderop' in used:
+        notes.append('ambientocclusion_shaderop dropped with no replacement (owner ruling #6)')
+
+    # Delete the chunks that only fed the legacy chain: photon maps, gathers,
+    # the irradiance cache, every op chunk (none is referenced any more), and
+    # shader chunks nothing references after the ops that named them go.
+    referenced_shaders = set(obj_shader(o) for o in objects) | {default_shader, 'global'}
+    for c in chunks:
+        kill = (c.kw.endswith(FULL_DELETED_KINDS) or c.kw == 'irradiance_cache'
+                or (c.kw.endswith('_shaderop') and c.kw != 'arealight_shaderop')
+                or (c.kw in ('standard_shader', 'advanced_shader') and c.name() not in referenced_shaders))
+        if kill:
+            for kk in range(c.kw_line, c.close_line + 1):
+                edits[kk] = []
+    if has_pm or has_ic:
+        notes.append('photon map / gather / irradiance-cache chunks removed (frozen, owner ruling #4)')
+
+    out = []
+    for i, line in enumerate(lines):
+        if i in insert_before:
+            out.extend(insert_before[i])
+        out.extend(edits[i] if i in edits else [line])
+    report.extend(notes)
+    return '\n'.join(out), 'MIGRATED %s -> %s' % (r.kw, target)
 
 
 # --------------------------------------------------------------------------
@@ -692,7 +1294,7 @@ def repo_rel(path):
     return ap[i + 1:] if i >= 0 else path
 
 
-def run(mode, paths, dry_run, verbose):
+def run(mode, paths, dry_run, verbose, integrator='pt', sss_albedo=None, sss_keep=False, sms=False):
     counts = {'migrated': 0, 'refused': 0, 'unchanged': 0, 'held': 0}
     rc = 0
     for f in collect(paths):
@@ -708,6 +1310,8 @@ def run(mode, paths, dry_run, verbose):
         try:
             if mode == 'renames':
                 new, status = migrate_renames(text, notes)
+            elif mode == 'full':
+                new, status = migrate_full(text, integrator, notes, sss_albedo, sss_keep, sms)
             else:
                 new, status = migrate_rasterizer(text, mode, notes)
         except ParseError as e:
@@ -769,13 +1373,62 @@ def selftest():
     new, st = migrate_renames(onb, [])
     assert 'pinhole_camera' in new and 'lookat\t\t0 0 -9' in new and 'up\t\t0 1 0' in new, new
     assert 'onb_' not in new and '\npathtracing_shaderop' in new
+    # SMS: the op's own defaults are written (chain depth 10, not the
+    # rasterizer's 30), and disagreeing ops are refused.
+    sm = ('pathtracing_shaderop\n{\n\tname a\n\tsms_enabled TRUE\n}\n'
+          'standard_shader\n{\n\tname global\n\tshaderop a\n}\npixelpel_rasterizer\n{\n}\n')
+    new, st = migrate_rasterizer(sm, 'pt', [])
+    assert 'sms_max_chain_depth\t\t10' in new and new.count('sms_enabled') == 2, new
+    assert 'sms_max_iterations\t\t20' in new and 'sms_biased\t\tTRUE' in new, new
+    sm2 = sm + 'standard_shader\n{\n\tname other\n\tshaderop DefaultPathTracing\n}\n'
+    assert 'different SMS settings' in migrate_rasterizer(sm2, 'pt', [])[1]
+    # --mode full: Whitted chain -> PT direct; photon map -> chunks deleted.
+    wh = ('standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n\tshaderop DefaultReflection\n}\n'
+          'pixelpel_rasterizer\n{\n\tsamples 4\n\tlum_samples 9\n}\n')
+    new, st = migrate_full(wh, 'pt', [])
+    assert 'max_diffuse_bounce\t\t0' in new and 'samples\t\t\t\t36' in new, new
+    assert 'DefaultReflection' not in new and new.count('DefaultPathTracing') == 1, new
+    assert migrate_full(wh, 'vcm', [])[0] is None
+    pm = ('standard_shader\n{\n\tname global\n\tshaderop DefaultCausticPelPhotonMap\n}\n'
+          'pixelpel_rasterizer\n{\n}\ncaustic_pel_photonmap\n{\n\tnum 10\n}\n'
+          'caustic_pel_gather\n{\n\tmax_photons 5\n}\n')
+    new, st = migrate_full(pm, 'vcm', [])
+    assert 'vcm_pel_rasterizer' in new and 'photonmap' not in new.split('Migrated')[1].replace('Migrated', ''), new
+    assert '_gather' not in new and 'samples\t\t\t\t64' in new and 'max_diffuse_bounce' not in new, new
+    # arealight_shaderop -> rect_light, exitance = power x |dir|.
+    al = ('uniformcolor_painter\n{\n\tname e\n\tcolor 1 1 1\n}\narealight_shaderop\n{\n\tname l\n\temission e\n'
+          '\tlocation 0 4 0\n\tmake_dir 0 0 0\n\tpower 2\n}\nstandard_shader\n{\n\tname global\n\tshaderop l\n}\n'
+          'pixelpel_rasterizer\n{\n}\n')
+    new, st = migrate_full(al, 'pt', [])
+    assert 'rect_light' in new and 'exitance\t2' in new and 'facing\t\t0 -4 0' in new, new
+    assert 'arealight_shaderop\n' not in new, new
+    # diffusion SSS op -> subsurfacescattering_material on its object.
+    ss = ('lambertian_material\n{\n\tname m\n}\ndiffusion_approximation_sss_shaderop\n{\n\tname d\n'
+          '\tgeometric_scale 0.1\n\tscattering 1 2 3\n\tabsorption 0.1 0.2 0.3\n}\n'
+          'standard_shader\n{\n\tname s\n\tshaderop d\n}\nstandard_shader\n{\n\tname global\n'
+          '\tshaderop DefaultDirectLighting\n}\npixelpel_rasterizer\n{\n}\n'
+          'standard_object\n{\n\tname o\n\tmaterial m\n\tshader s\n}\n')
+    new, st = migrate_full(ss, 'pt', [])
+    assert 'subsurfacescattering_material' in new and 'scattering\t100 200 300' in new, new
+    assert 'material d_sss_m' in new and 'absorption\t10 20 30' in new, new
     print('selftest: OK')
     return 0
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--mode', choices=('pt', 'direct', 'renames'))
+    ap.add_argument('--mode', choices=('pt', 'direct', 'renames', 'full'))
+    ap.add_argument('--integrator', choices=('pt', 'bdpt', 'vcm'), default='pt',
+                    help='--mode full: the integrator to migrate to (default pt)')
+    ap.add_argument('--sss-albedo', nargs=3, type=float, metavar=('R', 'G', 'B'),
+                    help='--mode full: diffuse albedo for a simple_sss_shaderop whose object '
+                         'material has no readable uniform base colour')
+    ap.add_argument('--sms', action='store_true',
+                    help='--mode full --integrator pt: also enable specular manifold sampling '
+                         '(caustics from point / spot / area lights through smooth dielectrics)')
+    ap.add_argument('--sss-keep-material', action='store_true',
+                    help='--mode full: keep (rather than convert) the material of a simple_sss_shaderop '
+                         'object whose base colour is not a uniform painter; the op is dropped')
     ap.add_argument('--dry-run', action='store_true', help='report only, write nothing')
     ap.add_argument('-v', '--verbose', action='store_true', help='also list unchanged files')
     ap.add_argument('--selftest', action='store_true')
@@ -785,7 +1438,7 @@ def main():
         return selftest()
     if not a.mode:
         ap.error('--mode is required')
-    return run(a.mode, a.paths, a.dry_run, a.verbose)
+    return run(a.mode, a.paths, a.dry_run, a.verbose, a.integrator, a.sss_albedo, a.sss_keep_material, a.sms)
 
 
 if __name__ == '__main__':
