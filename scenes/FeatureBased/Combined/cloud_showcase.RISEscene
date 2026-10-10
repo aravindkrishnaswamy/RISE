@@ -24,14 +24,18 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-# Legacy phase 2 slice B2: the radiance_map `pnt_sky` 0.22 0.4 0.78 (linear) plus the former ambient_light term 0.1006 0.1452 0.34
-# / radiance_scale 1.5 (ambient color x power / pi: the uniform radiance that lights an
-# unoccluded Lambertian surface as the ambient light did; the environment is occluded,
-# so creases darken).  A new painter: `pnt_sky` itself is left as authored (other chunks may bind it).
+# Legacy phase 2 slice B2 (owner ruling c): the radiance_map `pnt_sky` 0.22 0.4 0.78 (linear) plus the former
+# ambient_light term 0.1006 0.1452 0.34 / radiance_scale 1.5 (ambient color x power / pi), scaled x11.6:
+# the folded environment is occluded by the cloud, so a x1 fold (0.99797 1.52290 3.40930) rendered the cloud
+# far dimmer and greyer than the unshadowed legacy ambient light.  x11.6 (not a sun boost, which restored
+# luminance but turned the cloud neutral/warm) restores BOTH the legacy whole-image mean (Y 1.273) and its
+# blue tint (mean R/G/B 1.031/1.270/1.997, B/R 1.93; legacy 1.031/1.273/1.991, 1.93; measured at 320x200,
+# 32 spp, oidn off, 3 seeds): 0.22 + 11.6 x 0.1006/1.5, 0.40 + 11.6 x 0.1452/1.5, 0.78 + 11.6 x 0.34/1.5.
+# A new painter: `pnt_sky` itself is left as authored (other chunks may bind it).
 uniformcolor_painter
 {
 	name				pnt_sky_with_ambient
-	color				0.28704 0.49678 1.0066
+	color				0.99797 1.52290 3.40930
 	colorspace			Rec709RGB_Linear
 }
 
@@ -73,11 +77,12 @@ pinhole_camera
 # Lighting
 ##################################################
 
-# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): power x2 (12 -> 24) restores the legacy whole-image mean (1.273): the deprecated ambient_light lit every point inside the cloud unshadowed; its uniform-environment replacement is occluded by the cloud itself.
+# Legacy phase 2 slice B2: the sun keeps its authored power (12); the lost ambient fill is restored through the
+# environment painter above (an interim sun x2 retune was reverted: it shifted the colour).
 directional_light
 {
 	name				sun
-	power				24
+	power				12.0
 	color				1.0 0.95 0.85
 	colorspace			sRGB
 	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.

@@ -364,7 +364,7 @@ scalar_painter
 	file				colors/thinfilm/oxides/TiO2.k
 }
 
-# Legacy phase 2 slice B2: was perfectreflector_material; perfectreflector with iridescent `pnt_iri` -> near-mirror (alpha 0.01) TiO2 film 125 nm over titanium, thickness matching its normal-incidence colour 0.265 0.309 0.735; OVERRIDDEN to 125 nm by owner ruling 2026-10-10 (keeps the purple look; FILM_OVERRIDE).
+# Legacy phase 2 slice B2: was perfectreflector_material; perfectreflector with iridescent `pnt_iri` -> near-mirror (alpha 0.01) TiO2 film over titanium, thickness 55 nm matching its normal-incidence colour 0.265 0.309 0.735; OVERRIDDEN to 125 nm by owner ruling 2026-10-10 (keeps the purple look; FILM_OVERRIDE).
 ggx_material
 {
 	name				perf_ref
