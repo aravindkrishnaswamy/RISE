@@ -58,6 +58,13 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
 		);
 }
 
+void PathTracingSpectralRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+    PixelBasedSpectralIntegratingRasterizer::PrepareRuntimeContext(rc);
+    rc.pNativePTSubsurfaceBounceCap = rc.pStabilityConfig ?
+        &rc.pStabilityConfig->maxTranslucentBounce : nullptr;
+}
+
 PathTracingSpectralRasterizer::~PathTracingSpectralRasterizer()
 {
 	safe_release( pIntegrator );

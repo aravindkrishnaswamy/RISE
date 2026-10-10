@@ -104,6 +104,8 @@ void PathTracingPelRasterizer::SetClayOverride( bool b )
 void PathTracingPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 {
 	PixelBasedPelRasterizer::PrepareRuntimeContext( rc );
+	rc.pNativePTSubsurfaceBounceCap = rc.pStabilityConfig ?
+		&rc.pStabilityConfig->maxTranslucentBounce : nullptr;
 	if( mHasVariantTransportConfig ) {
 		rc.hasPathTracingVariantConfig = true;
 		rc.pathTracingMaxDepth = mVariantMaxPathDepth;

@@ -2884,15 +2884,15 @@ namespace {
 
 					if( Ft > NEARZERO && sampler.Get1D() < Ft )
 					{
-						// DL-482 zero-cap slice: reject the selected jump, preserving
-						// the Fresnel reflection branch and its sampling mass. Positive
-						// caps still require a per-path jump count across strategies.
-						if( stabilityConfig.maxTranslucentBounce == 0 ) break;
+						// DL-482: the nonlocal jump consumes one translucent bounce.
+						// Reject its selected branch without reallocating Fresnel mass.
+						if( eyeTranslucentBounces >= stabilityConfig.maxTranslucentBounce ) break;
 						BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
 							ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ) );
 
 							if( bssrdf.valid )
 							{
+								++eyeTranslucentBounces;
 								CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
 								vertices.back().isDelta = true;
 							V betaSpatial;
@@ -3022,10 +3022,9 @@ namespace {
 
 					if( Ft > NEARZERO && sampler.Get1D() < Ft )
 					{
-						// DL-482 zero-cap slice: reject the selected jump, preserving
-						// the Fresnel reflection branch and its sampling mass. Positive
-						// caps still require a per-path jump count across strategies.
-						if( stabilityConfig.maxTranslucentBounce == 0 ) break;
+						// DL-482: the nonlocal jump consumes one translucent bounce.
+						// Reject its selected branch without reallocating Fresnel mass.
+						if( eyeTranslucentBounces >= stabilityConfig.maxTranslucentBounce ) break;
 						// See RGB light subpath comment for rationale.
 						IndependentSampler walkSampler( rc.random );
 						ISampler& rwSampler = sampler.HasFixedDimensionBudget()
@@ -3038,6 +3037,7 @@ namespace {
 
 							if( bssrdf.valid )
 							{
+								++eyeTranslucentBounces;
 								CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
 								vertices.back().isDelta = true;
 
@@ -7762,16 +7762,16 @@ unsigned int GenerateLightSubpathImpl(
 
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
-					// DL-482 zero-cap slice: reject the selected jump, preserving
-					// the Fresnel reflection branch and its sampling mass. Positive
-					// caps still require a per-path jump count across strategies.
-					if( stabilityConfig.maxTranslucentBounce == 0 ) break;
+					// DL-482: the nonlocal jump consumes one translucent bounce.
+					// Reject its selected branch without reallocating Fresnel mass.
+					if( translucentBounces >= stabilityConfig.maxTranslucentBounce ) break;
 					// Chose subsurface transmission (probability Ft)
 					BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
 						ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ) );
 
 					if( bssrdf.valid )
 					{
+								++translucentBounces;
 						vertices.back().isDelta = true;
 
 						// Spatial-only weight for connections (Sw not baked into
@@ -7899,10 +7899,9 @@ unsigned int GenerateLightSubpathImpl(
 
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
-					// DL-482 zero-cap slice: reject the selected jump, preserving
-					// the Fresnel reflection branch and its sampling mass. Positive
-					// caps still require a per-path jump count across strategies.
-					if( stabilityConfig.maxTranslucentBounce == 0 ) break;
+					// DL-482: the nonlocal jump consumes one translucent bounce.
+					// Reject its selected branch without reallocating Fresnel mass.
+					if( translucentBounces >= stabilityConfig.maxTranslucentBounce ) break;
 					// The random walk consumes a variable number of
 					// dimensions (up to ~7 per scatter × maxBounces).
 					// Samplers with a fixed dimension budget (Sobol)
@@ -7921,6 +7920,7 @@ unsigned int GenerateLightSubpathImpl(
 
 					if( bssrdf.valid )
 					{
+								++translucentBounces;
 						vertices.back().isDelta = true;
 
 						// SampleExit does NOT include Ft(entry).

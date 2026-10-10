@@ -72,6 +72,7 @@ namespace RISE
 				PixelAOV* pAOV = 0
 				) const;
 
+			void PrepareRuntimeContext( RuntimeContext& rc ) const override;
 			unsigned int GetProgressiveTotalSPP() const override;
 
 			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.

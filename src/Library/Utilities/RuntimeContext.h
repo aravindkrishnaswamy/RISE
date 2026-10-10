@@ -118,6 +118,10 @@ namespace RISE
 		bool											pathTracingIndirectOnly;
 		bool											pathTracingClayOverride;
 
+		// Native PT SSS continuations inherit this cap through recursive casts.
+		// Null for standalone legacy rasterizers; their configured behaviour stays local.
+		const unsigned int* pNativePTSubsurfaceBounceCap;
+
 		/// Production stability controls (clamps, RR tuning, bounce
 		/// limits, glossy filtering).  Set by the rasterizer before
 		/// rendering.  NULL when no stability config is provided.
@@ -224,6 +228,7 @@ namespace RISE
 		  pathTracingMaxDepth( kDefaultPathTracingMaxDepth ),
 		  pathTracingIndirectOnly( false ),
 		  pathTracingClayOverride( false ),
+		  pNativePTSubsurfaceBounceCap( 0 ),
 		  pStabilityConfig( 0 ),
 		  pOptimalMIS( 0 ),
 		  pProgressiveFilm( 0 ),

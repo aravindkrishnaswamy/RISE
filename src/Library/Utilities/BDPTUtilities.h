@@ -823,6 +823,8 @@ namespace RISE
 			{
 				const BDPTVertex& v = ( q < s ) ? lightVerts[q] : eyeVerts[n - 1 - q];
 				const bool endpoint = s >= 1 && ( q + 1 == s || q == s );
+				// The relocation edge is counted even when its angular exit is free.
+				if( v.isBSSRDFEntry ) plan.base.Add( ScatteredRay::eRayTranslucent );
 				if( q == 1 ) {
 					if( endpoint || ( !v.isDelta && v.isConnectible ) ) {
 						continue;
@@ -882,7 +884,9 @@ namespace RISE
 			BounceTypeCounts c;
 			for( unsigned int q = 1; q < k; q++ ) {
 				c.Add( lightVerts[q].capType );
+				if( lightVerts[q].isBSSRDFEntry ) c.Add( ScatteredRay::eRayTranslucent );
 			}
+			if( k > 0 && lightVerts[k].isBSSRDFEntry ) c.Add( ScatteredRay::eRayTranslucent );
 			for( int j = 0; j < 4; j++ ) {
 				out[j] = static_cast<unsigned char>( c.n[j] > 255u ? 255u : c.n[j] );
 			}
@@ -920,7 +924,9 @@ namespace RISE
 			}
 			for( unsigned int q = 1; q < i; q++ ) {
 				plan.base.Add( eyeVerts[q].capType );
+				if( eyeVerts[q].isBSSRDFEntry ) plan.base.Add( ScatteredRay::eRayTranslucent );
 			}
+			if( i > 0 && eyeVerts[i].isBSSRDFEntry ) plan.base.Add( ScatteredRay::eRayTranslucent );
 			if( k >= 2 ) {
 				unsigned int type = 0;
 				if( !EndpointBounceType( eyeVerts[i], caps, type ) ) {
