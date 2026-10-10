@@ -30,7 +30,7 @@ standard_shader
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
 pathtracing_pel_rasterizer
 {
-	samples				81
+	samples				1024
 	pixel_filter		tent
 	pixel_filter_width	1.7
 	pixel_filter_height	1.7
@@ -237,7 +237,7 @@ risemesh_geometry
 }
 
 # Converted from simple_sss_shaderop `sss` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
-#   Christensen-Burley match: albedo 0.0493827 0.95 0.444444 (material `white` x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 0.2 = 18 4 6 per unit.
+#   Christensen-Burley match: albedo 0.0493827 0.95 0.444444 (colour material `white`, x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 0.2 = 18 4 6 per unit.
 subsurfacescattering_material
 {
 	name			sss_sss_white

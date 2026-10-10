@@ -814,10 +814,6 @@ spot_light
 }
 
 ##################################################
-# Photon mapping - caustics from water refraction
-##################################################
-
-##################################################
 # Animation timeline — keyframe the Gerstner painter's `time` parameter so the
 # water surface evolves frame-to-frame.  The displaced mesh is rebuilt at every
 # frame because GerstnerWavePainter::SetIntermediateValue updates m_time and

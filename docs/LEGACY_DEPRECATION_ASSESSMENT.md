@@ -586,24 +586,33 @@ pixel-rasterizer families):**
   deprecation hint no longer suggests turning OIDN off; stale comments fixed; every
   `scenes/Tests/Legacy/` copy writes `rendered/legacy_<name>`.
 - **Tool:** `--mode full [--integrator pt|bdpt|vcm] [--sms] [--sss-albedo R G B |
-  --sss-keep-material]` (docstring has the rules).  A chain of only direct lighting /
-  emission / Whitted / area-light ops becomes PT with `max_diffuse_bounce 0` (the ruling
-  #3a rule); any indirect op gets full GI.  `samples` = legacy samples x `lum_samples`,
-  floored 16 (direct) / 64 (indirect), capped 1024, because the legacy chain did its
-  light / DT / FG / gather sampling inside each pixel sample.  Every shader becomes one
-  `DefaultPathTracing` op; op chunks, photon maps, gathers, irradiance caches and
-  unreferenced shaders are deleted.  `diffusion_approximation_sss_shaderop` ->
+  --sss-keep-material | --vcm-drop-unsupported-lights]` (docstring has the rules).  A
+  chain of only direct lighting / emission / Whitted / area-light ops, or distribution
+  tracing with `diffuse false` beside direct lighting (direct + glossy), becomes PT with
+  `max_diffuse_bounce 0` (the ruling #3a rule); any indirect op gets full GI.
+  `samples` = legacy samples x the largest per-op sample count (arealight `samples`,
+  DT / FG hemisphere samples, AO numtheta x numphi -- what set the legacy noise floor),
+  floored 16 (direct) / 64 (indirect), capped 1024 (`lum_samples` is inert).  Every
+  shader becomes one `DefaultPathTracing` op; op chunks, photon maps, gathers,
+  irradiance caches and unreferenced shaders are deleted, with their attached comments
+  and emptied section banners.  `--integrator vcm` refuses a scene with an
+  `ambient_light` / `directional_light` (VCM renders neither) unless
+  `--vcm-drop-unsupported-lights` is given, which writes a NOTE in the scene.  `diffusion_approximation_sss_shaderop` ->
   `subsurfacescattering_material` with the op's own coefficients (per mm x 1000 x
   `geometric_scale`); `simple_sss_shaderop` -> a Christensen-Burley
-  `subsurfacescattering_material` whose albedo is the object's base colour times the op's
-  1/extinction^2 channel weights and whose profile tail falls off at the op's rate
+  `subsurfacescattering_material` whose albedo is the op's colour (the object's base
+  colour only where the legacy op applied it: `multiplybsdf TRUE` or an irradiance shader
+  shading with the object's BSDF; otherwise untinted) times the op's 1/extinction^2
+  channel weights and whose profile tail falls off at the op's rate
   (checked in a white furnace: albedo 0.15/0.25/0.15 reads 0.163/0.261/0.164 including
   Fresnel); `arealight_shaderop` -> `rect_light` of exitance `power`.  Chosen over
   `randomwalk_sss_material` because the ops are dipole (diffusion) models.
 - **44 scenes migrated** (gallery: `docs/legacy_phase2b_review/index.html`).
   Integrators: VCM for the caustic photon-map scenes (`caustic_animation`,
   `pool_caustics`, `motion_blurred_caustic`, `diacaustic`, `rgb_dispersive_caustic`,
-  `triplecaustic`, `sdf_caustic`, `sms_slab_close_photonmap`, `caustic_sss`; spectral
+  `triplecaustic`, `sdf_caustic`, `sms_slab_close_photonmap`, `caustic_sss` -- with
+  `--vcm-drop-unsupported-lights`: its `ambient_light` is not rendered, measured at 1.2%
+  of the legacy image, and no other integrator reaches its caustic-into-SSS light; spectral
   `spectral_dispersive_caustic`); PT + SMS for the two env-lit caustic showcases
   (`crystal_lens`, `photon_cloister`: VCM has a measured env-light bias, and their
   caustics come from spot lights through smooth glass); BDPT for the two strong-indirect
@@ -612,12 +621,12 @@ pixel-rasterizer families):**
   objects of seven scenes converted to `subsurfacescattering_material`; `translucent_bunny`
   (iridescent) and `sss_colorvariation` (checker) keep their `translucent_material`,
   because a uniform-coefficient SSS material cannot carry a spatially or angularly
-  varying colour.  25 scenes change by under 10%; the 19 larger changes each carry a
+  varying colour.  26 scenes change by under 10% (`blurry_floor` and `pillow`, whose DT ops
+  are glossy-only, reproduce the legacy mean at bounce 0); the 18 larger changes each carry a
   MEASURED cause in the gallery: fudge factors removed (`irrad_scale`, `power_scale`;
   doubling a scene's `irrad_scale` moves its legacy mean linearly), indirect light the
   legacy chain did not have or truncated (checked by PT at `max_diffuse_bounce` 0/1/2 vs
-  the legacy image, e.g. `blurry_floor` and `ambocc_ibl` match the legacy mean to 4-5
-  digits at bounce 0), the dropped AO term (`showroom`), and chains with no direct
+  the legacy image, e.g. `ambocc_ibl` matches the legacy mean exactly at bounce 0), the dropped AO term (`showroom`), and chains with no direct
   lighting (`diacaustic`, `motion_blurred_caustic`).  **No lighting was retuned**; the
   gallery lists, per showcase, the measured knob that restores the legacy mean.
   `photon_cloister` renders blown out and should get its proposed retune before merge
@@ -637,15 +646,15 @@ pixel-rasterizer families):**
   83aa86d2f).  After B1 the only shipped scenes still on a legacy pixel rasterizer are
   `visiblehuman` (frozen DVR), `shapes` and `kaleidoscope_atrium` (slice C) and
   `different_rmaps` (held).
-- **Found, not fixed:** VCM ignores `ambient_light` (and directional lights), so
-  `caustic_sss`'s ambient term is gone until B2 moves ambient to a `radiance_map`;
+- **Found, not fixed:** VCM renders neither `ambient_light` nor directional lights (the
+  tool now refuses such a migration unless told to drop them), so `caustic_sss`'s ambient
+  term (1.2% of its legacy image) is gone until B2 moves ambient to a `radiance_map`;
   `scenes/pr.RISEscene` (the CLI performance-rating scene) moved to PT, so ratings are not
-  comparable across this change.  `AutoRasterizerTest` fails 4 checks (153/4) on
-  `ggx_showcase` and `corridor_100lights` routing to BDPT instead of PT -- scenes this
-  slice does not touch (the slice's only compiled change is a hint string), measured
-  twice at load average ~20 from concurrent worktrees; its time-normalized probe is
-  load-sensitive.  The checks on the migrated `gi_spheres`, `glass_pavilion` and
-  `spectral_dispersive_caustic` pass.
+  comparable across this change.  `AutoRasterizerTest` is a PRE-EXISTING flaky test: the
+  slice review reproduced 153/4, 155/2 and 150/7 at load ~5 on the slice's base, master
+  and this branch alike (the failures are `ggx_showcase` / `corridor_100lights` probe
+  routing, scenes this slice does not touch); it is filed separately.  Its checks on the
+  migrated `gi_spheres`, `glass_pavilion` and `spectral_dispersive_caustic` pass.
 - **Left for slice B2:** the step-5 families inside scenes on supported rasterizers (R13
   materials, R11 `ambient_light` -- including the five `PixelFilters` scenes and
   `caustic_sss` migrated here, R14 `iridescent_painter`, R12 MLT), and the owner's call on

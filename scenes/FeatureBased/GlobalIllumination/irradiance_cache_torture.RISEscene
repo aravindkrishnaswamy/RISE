@@ -27,7 +27,7 @@ standard_shader
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator bdpt, legacy-deprecation Phase 2).
 bdpt_pel_rasterizer
 {
-	samples				64
+	samples				1024
 }
 
 file_rasterizeroutput
@@ -549,9 +549,3 @@ standard_object
 	position			-2.15 3.45 -1.35
 	material			light_cool
 }
-
-##################################################
-# Global illumination settings
-##################################################
-
-

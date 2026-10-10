@@ -19,11 +19,6 @@ hdr_painter
 	file				lightprobes/rnl_probe.hdr
 }
 
-# We do the incident lighting calculation using ambient occlusion, which is smart enough
-# to also figure out that there is a radiance map.  We use ambient occlusion because it has
-# an optimized path in the rendering system
-# Shader by which we compute incident illuminatin
-# Note: You may have to increase the number of points to get adequate results
 # Now setup the default 'global' shader for the object itself
 standard_shader
 {
@@ -234,7 +229,7 @@ bezierpatch_geometry
 }
 
 # Converted from simple_sss_shaderop `sss` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
-#   Christensen-Burley match: albedo 0.95 0.444444 0.0493827 (material `white` x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 0.35 = 7 10.5 31.5 per unit.
+#   Christensen-Burley match: albedo 0.95 0.444444 0.0493827 (colour material `white`, x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 0.35 = 7 10.5 31.5 per unit.
 subsurfacescattering_material
 {
 	name			sss_sss_white

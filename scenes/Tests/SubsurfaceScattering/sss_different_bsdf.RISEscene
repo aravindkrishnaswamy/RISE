@@ -241,13 +241,13 @@ risemesh_geometry
 }
 
 # Converted from simple_sss_shaderop `sss` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
-#   Christensen-Burley match: albedo 0.95 0.222222 0.01 (material `wa` x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 7 = 140 210 630 per unit.
+#   Christensen-Burley match: albedo 0.7 0.311111 0.0345679 (colour the irradiance shader's override BSDF, x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 7 = 140 210 630 per unit.
 subsurfacescattering_material
 {
 	name			sss_sss_wa
 	ior			1.3
-	absorption	20.4131 172.161 459.239
-	scattering	387.849 49.1889 4.63878
+	absorption	102.024 178.937 465.948
+	scattering	238.057 80.8103 16.6835
 	g			0
 }
 

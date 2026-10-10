@@ -17,7 +17,6 @@ standard_shader
 {
 	name				global
 	shaderop		DefaultPathTracing
-#	shaderop			DefaultReflection			1		1			+
 }
 
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).

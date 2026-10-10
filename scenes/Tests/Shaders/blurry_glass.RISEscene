@@ -271,10 +271,9 @@ standard_object
 	material			checks
 }
 
-# The advanced shader allows us to specify that distributed ray tracing
-# is only to be applied for the first intersection and that all subsequent
-# interactions should just trace the refracted rays, this keeps the ray branching
-# from becoming insane.
+# Historically an advanced shader running distribution tracing at the first hit
+# and plain refraction after it; since legacy-deprecation Phase 2 the path tracer
+# samples the glossy glass itself and this chain only serves PT's SSS continuation.
 standard_shader
 {
 	name				adv

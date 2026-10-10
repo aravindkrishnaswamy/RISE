@@ -28,11 +28,12 @@ standard_shader
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
 pathtracing_pel_rasterizer
 {
-	samples				64
+	samples				288
 	pixel_filter			tent
 	pixel_filter_width		1.7
 	pixel_filter_height		1.7
 
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput

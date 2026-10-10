@@ -236,7 +236,7 @@ box_geometry
 }
 
 # Converted from simple_sss_shaderop `sss` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
-#   Christensen-Burley match: albedo 0.95 0.444444 0.0493827 (material `trans` x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 2 = 40 60 180 per unit.
+#   Christensen-Burley match: albedo 0.95 0.444444 0.0493827 (colour material `trans`, x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 2 = 40 60 180 per unit.
 subsurfacescattering_material
 {
 	name			sss_sss_trans

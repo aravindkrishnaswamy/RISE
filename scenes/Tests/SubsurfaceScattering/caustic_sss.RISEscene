@@ -26,6 +26,7 @@ standard_shader
 }
 
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator vcm, legacy-deprecation Phase 2).
+# NOTE: VCM renders neither ambient_light nor directional_light, so this scene's ambient_light `ambient` contribute nothing here.
 vcm_pel_rasterizer
 {
 	samples				64
@@ -257,7 +258,7 @@ box_geometry
 }
 
 # Converted from simple_sss_shaderop `sss` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
-#   Christensen-Burley match: albedo 0.65 0.15 0.02 (material `trans` x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 0.45 = 4.5 4.5 4.5 per unit.
+#   Christensen-Burley match: albedo 0.65 0.15 0.02 (colour material `trans`, x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 0.45 = 4.5 4.5 4.5 per unit.
 subsurfacescattering_material
 {
 	name			sss_sss_trans
@@ -302,7 +303,7 @@ spot_light
 }
 
 ##################################################
-# Photon mapping settings
+# Ambient light (not rendered by VCM; see the rasterizer chunk)
 ##################################################
 
 ambient_light

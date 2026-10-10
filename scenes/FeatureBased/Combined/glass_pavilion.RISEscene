@@ -399,7 +399,7 @@ clippedplane_geometry
 # Objects
 ##################################################
 
-# Floor with polished material and distribution tracing
+# Floor with polished material (path-traced; its shader was the only path-traced chain before Phase 2)
 standard_object
 {
 	name				floor
