@@ -58,12 +58,14 @@ FabricBRDF::FabricBRDF(
 	const IPainter& sheenColor,
 	const IScalarPainter& sheenRoughness,
 	const IScalarPainter& weaveRotation,
-	const bool baseScattersFullSphere
+	const bool baseScattersFullSphere,
+	const bool baseSingleDiffuseLabel
 	) :
   pBase( &base ),
   pSheenColor( &sheenColor ),
   pSheenRoughness( &sheenRoughness ),
   pWeaveRotation( &weaveRotation ),
+  bSingleDiffuseLabel( baseSingleDiffuseLabel ),
   bBaseFullSphere( baseScattersFullSphere )
 {
 	pBase->addref();

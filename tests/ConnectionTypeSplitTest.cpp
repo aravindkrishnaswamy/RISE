@@ -70,6 +70,8 @@
 #include "TestStubObject.h"
 #include "WeaveTestFixture.h"
 #include "../src/Library/Materials/HairMaterial.h"
+#include "../src/Library/Materials/FabricMaterial.h"
+#include "../src/Library/Materials/OrenNayarMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -445,6 +447,12 @@ int main(int argc, char** argv)
 		cases.push_back({"DL502 weave", weave.Material(), &iorStack});
 		cases.push_back({"DL502 thin weave", thin.Material(), &iorStack});
 	}
+	LambertianMaterial* fabricLam = new LambertianMaterial(*rd); fabricLam->addref();
+	OrenNayarMaterial* fabricOren = new OrenNayarMaterial(*rd,*a03); fabricOren->addref();
+	UniformScalarPainter* rotation = new UniformScalarPainter(0.0); rotation->addref();
+	cases.push_back({"DL502 fabric Lambertian",new FabricMaterial(*fabricLam,*rs,*a03,*rotation),&iorStack});
+	cases.push_back({"DL502 fabric Oren-Nayar",new FabricMaterial(*fabricOren,*rs,*a03,*rotation),&iorStack});
+	fabricLam->release(); fabricOren->release(); rotation->release();
 	HairPainters hp; hp.sigma_a=trExt; hp.beta_m=a03; hp.beta_n=a03; hp.alpha=iso1; hp.ior=ior15;
 	cases.push_back({"DL502 hair",new HairMaterial(hp),&iorStack});
 	for( Case& c : cases ) c.mat->addref();
