@@ -113,6 +113,7 @@
 #include <vector>
 #include <cmath>
 #include <limits>
+#include "../src/Library/Interfaces/IOptions.h"
 #include <string>
 #include <algorithm>
 #ifdef _WIN32
@@ -2172,7 +2173,7 @@ static const char* kRasterizerVCMRoughSSSU =
 	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_vcm_unused\n\ttype EXR\n\tbpp 32\n"
 		"\tcolor_space Rec709RGB_Linear\n}\n";
 
-static void MeasureRoughSSSU(unsigned samples, bool gate=false, double radius=-1);
+static void MeasureRoughSSSU(unsigned samples, bool gate=false, double radius=-1, bool strict=false, bool unmatched=false);
 static void TestRoughSSSEmptyContainerU()
 {
     MeasureRoughSSSU(2048,true);
@@ -2181,7 +2182,7 @@ static void TestRoughSSSEmptyContainerU()
 // DL-367 measurement: distinguish sample-count drift from salt noise without
 // changing transport. The default gate uses n=8 at its original 2048 spp.
 // Independent SMS-free PT reference; original +/-0.8% physical limit retained.
-static void MeasureRoughSSSU(unsigned samples, bool gate, double radius) {
+static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool strict, bool unmatched) {
  const unsigned savedSeed=g_seedBase, savedIndex=g_renderIndex;
  auto replace=[](std::string s,const std::string& a,const std::string& b){auto p=s.find(a);if(p!=std::string::npos)s.replace(p,a.size(),b);return s;};
  std::vector<double> pt,on,off;
@@ -2189,6 +2190,7 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius) {
   g_seedBase=367001+101*i; g_renderIndex=0;
   auto render=[&](const char* raster,bool merging){
    std::string r=replace(raster,"samples 2048","samples "+std::to_string(samples));
+   if(unmatched) r=replace(r,"progressive_samples_per_pass 1","progressive_samples_per_pass 32");
    if(radius>=0) {
     char text[64];std::snprintf(text,sizeof(text),"%.17g",radius);
     r=replace(r,"merge_radius 0.0","merge_radius "+std::string(text));
@@ -2208,6 +2210,10 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius) {
  auto p=stat(pt),a=stat(on),b=stat(off);
  std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g off-sd=%.9g\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.));
  std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
+ if(strict) {
+  Check(std::fabs(a.first-p.first)<=3*std::hypot(a.second,p.second),"DL367 strict VM/PT parity at 3SE");
+  Check(std::fabs(b.first-p.first)<=3*std::hypot(b.second,p.second),"DL367 strict VM-off/PT parity at 3SE");
+ }
  if(gate) {
   const double ratio=a.first/p.first, uncertainty=3*std::hypot(a.second,p.second)/p.first;
   std::printf("DL367 default n=8 PT sd=%.9g on sd=%.9g off sd=%.9g ratio3SE=%.9g physical band=0.008\n",p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.),uncertainty);
@@ -3237,6 +3243,15 @@ int main( int argc, char** argv )
   TestRoughSSSEmptyContainerU();
   Check(g_seedBase==seed,"topology U preserves the caller's salt base");
   Check(g_renderIndex==index,"topology U preserves the caller's render salt index");
+  std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+ }
+ if(argc>=2 && (std::strcmp(argv[1],"--dl367-strict-only")==0 || std::strcmp(argv[1],"--dl367-unmatched-only")==0)) {
+  Check(argc==2,"DL367 strict probe takes no additional arguments");
+  if(argc!=2)return 1;
+  const bool fixed=GlobalOptions().ReadBool("vcm_disable_progressive_radius",false);
+  Check(fixed,"DL367 strict probe requires vcm_disable_progressive_radius true");
+  if(!fixed)return 1;
+  MeasureRoughSSSU(8192,false,.02,true,std::strcmp(argv[1],"--dl367-unmatched-only")==0);
   std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
  }
  // Diagnostic sweep only: disable the progressive schedule in RISE_OPTIONS_FILE
