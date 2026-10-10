@@ -56,6 +56,9 @@ namespace RISE
 			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
+			//! DL-465: see CameraCommon::CloneForTimeView.
+			CameraCommon* CloneForTimeView() const override { return new FisheyeCamera( *this ); }
+
 			//! Sets the camera based on two basis vectors and position
 			FisheyeCamera( 
 				const Point3& vPosition,			///< [in] Location of the camera in the world

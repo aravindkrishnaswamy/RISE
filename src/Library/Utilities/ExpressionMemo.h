@@ -458,9 +458,12 @@ namespace RISE
 		//!
 		//! THE ONE KNOWN HOLE, and it is pre-existing: motion blur's
 		//! per-sample `EvaluateAtTime` moves keyframed values DURING a
-		//! pass (single-threaded -- an exposure > 0 frame renders on the
-		//! calling thread, DL-457 -- but still mid-pass, so the memo is not
-		//! bumped between samples).  For an
+		//! pass (on the calling thread, DL-457; or, on DL-465's multi-
+		//! threaded time-indexed path, each render thread re-poses its own
+		//! clones of the moving objects / camera / lights -- painters are
+		//! never time-indexed -- so either way one thread's tables span
+		//! samples at different times, and the memo is not bumped between
+		//! them).  For an
 		//! expression that is a hazard only if a keyframed value could
 		//! change the program's output without changing its context --
 		//! and it essentially cannot: `param`s are compile-time constants

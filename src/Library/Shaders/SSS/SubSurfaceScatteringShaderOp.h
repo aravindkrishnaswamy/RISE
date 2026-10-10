@@ -118,6 +118,7 @@ namespace RISE
 
 			//! Tells the ShaderOp to reset itself
 			void ResetRuntimeData() const;
+			bool HasRuntimeData() const { return true; }
 
 			//! Asks if the shader op needs SPF data
 			bool RequireSPF() const { return false; };

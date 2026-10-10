@@ -57,6 +57,12 @@ namespace RISE
 			void GetTimeRange( Scalar& begin, Scalar& end );
 			void EvaluateAtTime( const Scalar time );
 
+			//! DL-465: evaluates this timeline at `time` and writes the value
+			//! into `target` instead of the keyframed element.  READ-ONLY on
+			//! the timeline, so render threads may call it concurrently, each
+			//! with its own target (a per-thread clone of the element).
+			void EvaluateInto( const Scalar time, IKeyframable& target ) const;
+
 			//! DL-457: appends every keyframe time strictly inside (t0, t1).
 			void CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const
 			{

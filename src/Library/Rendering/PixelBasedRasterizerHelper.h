@@ -24,6 +24,7 @@
 #include "AOVBuffers.h"
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/ProgressiveConfig.h"
+#include "TimeIndexedMotionBlur.h"
 #include <typeinfo>	// Model-B F2 S3 fix round: ForTest_SamplingKernelName's typeid
 
 namespace RISE
@@ -251,6 +252,8 @@ namespace RISE
 			//! / pixel rate).  A hook whose pass-0 state the per-pass loop
 			//! would rebuild anyway may skip building it at the frame time.
 			mutable bool				mPerPassShutterTimeCandidate = false;
+			//! DL-465: the single-threaded-fallback note was logged for this frame.
+			mutable bool				mTimeIndexedFallbackLogged = false;
 
 			mutable AOVBuffers*		pAOVBuffers;		///< Planned first-hit AOV sidecar (OIDN and/or FrameStore consumers)
 
@@ -520,10 +523,21 @@ namespace RISE
 		/// DL-457: moves the scene to ONE motion-blur sample's time.
 		/// Evaluating the animator alone leaves parented objects composed
 		/// against their parents' frame-time pose; the hierarchy re-bake
-		/// carries them along.  Single-threaded: a frame with exposure
-		/// renders on the calling thread (RenderFrameOfAnimationPass).
+		/// carries them along.
+		///
+		/// DL-465: inside a time-indexed pass (TimeIndexedMotionBlur.h) the
+		/// calling render thread poses only its OWN clones of the moving
+		/// elements -- the same evaluation and re-compose -- and the shared
+		/// scene is never written, so such a frame renders multi-threaded.
+		/// Otherwise (the single-threaded fallback, the shutter sweep and
+		/// the per-pass VCM time) the shared scene moves, on the one
+		/// thread rendering it.
 		static void AnimateSceneToSampleTime( const IScene& pScene, const Scalar t )
 		{
+			if( TimeIndexedThread* pThread = TimeIndexedThread::Current() ) {
+				pThread->PoseAt( t );
+				return;
+			}
 			pScene.GetAnimator()->EvaluateAtTime( t );
 			pScene.GetObjects()->RecomposeAnimatedHierarchy();
 		}
@@ -563,6 +577,14 @@ namespace RISE
 		/// progressive film's average over passes is the shutter average.
 		/// Queried after PreRenderSetup.  Default false.
 		virtual bool WantsPerPassShutterTime() const { return false; }
+
+		/// DL-465: may a motion-blurred animation frame of this rasterizer
+		/// render MULTI-threaded through per-thread time-indexed scene
+		/// state (TimeIndexedMotionBlur.h)?  True for the PT, BDPT and VCM
+		/// rasterizers, whose per-sample work reaches moving state only
+		/// through the time-indexed interfaces.  Default false: the legacy
+		/// rasterizers (frozen) keep the single-threaded per-sample path.
+		virtual bool SupportsTimeIndexedMotionBlur() const { return false; }
 
 		/// When true, per-block intermediate output is skipped during
 		/// the block dispatch.  The end-of-pass flush still runs.

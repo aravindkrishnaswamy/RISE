@@ -41,6 +41,10 @@ namespace RISE
 		class VCMRasterizerBase : public BidirectionalRasterizerBase
 		{
 		protected:
+			//! DL-465: motion-blurred animation frames render multi-threaded
+			//! through per-thread time-indexed scene state.
+			bool SupportsTimeIndexedMotionBlur() const { return true; }
+
 			VCMIntegrator*			pIntegrator;
 			mutable LightVertexStore*	pLightVertexStore;
 

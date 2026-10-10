@@ -33,6 +33,12 @@ namespace RISE
 			virtual ~Reference();
 			Reference();
 
+			//! A COPY is a new object: it starts with its own count of one and
+			//! its own mutex.  (The implicit copy would have duplicated the
+			//! count and, worse, the mutex HANDLE, destroying it twice.)  Used
+			//! by the DL-465 per-thread clones of cameras and lights.
+			Reference( const Reference& ) : IReference(), m_nRefcount( 1 ) {}
+
 		public:
 			virtual void addref() const;
 			virtual bool release() const;

@@ -243,10 +243,13 @@ namespace RISE
 		//! `IAnimator::EvaluateAtTime` per pixel sample, so a keyframed
 		//! displacement painter drives `DisplacedGeometry::RefreshMeshVertices`
 		//! -> `UpdateVertices` -> `InvalidateSignalBakes` MID-PASS; this was
-		//! once documented as a worker-thread race, but a frame with camera
-		//! exposure renders on the calling thread only (checked 2026-10-08,
-		//! DL-457; docs/ARCHITECTURE.md "Animation / Temporal Sampling"), so
-		//! no reader is concurrent with it.  The `shared_ptr` is kept as
+		//! once documented as a worker-thread race, but a motion-blurred frame
+		//! whose keyframes reach geometry (a displacement painter included)
+		//! renders on the calling thread only (checked 2026-10-08, DL-457;
+		//! DL-465's multi-threaded time-indexed path refuses every keyframed
+		//! element but object transforms, the camera and delta lights;
+		//! docs/ARCHITECTURE.md "Animation / Temporal Sampling"), so no
+		//! reader is concurrent with it.  The `shared_ptr` is kept as
 		//! defence: should a threaded motion-blur path ever appear, a reader
 		//! would finish on a table that is still alive and merely STALE --
 		//! though that path would also mutate the vertex array and refit the

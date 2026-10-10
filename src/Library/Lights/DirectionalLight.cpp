@@ -60,6 +60,9 @@ void DirectionalLight::ComputeDirectLightingSampled(
     ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
+	// DL-465: this render thread's pose of the light, if it moves.
+	RISE_TIME_INDEXED_FORWARD( DirectionalLight, ComputeDirectLightingSampled( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver, pIORStack, sampler, boundaries ) );
+
 	amount = RISEPel(0.0);
 
 	// This dot product tells us the angle of incidence between the light ray
@@ -159,6 +162,9 @@ Scalar DirectionalLight::ComputeDirectLightingSampledNM(
     ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
+	// DL-465: this render thread's pose of the light, if it moves.
+	RISE_TIME_INDEXED_FORWARD( DirectionalLight, ComputeDirectLightingSampledNM( ri, pCaster, brdf, bReceivesShadows, nm, bFullSphereReceiver, bVolumeReceiver, pIORStack, sampler, boundaries ) );
+
 	// Same geometry as the RGB ComputeDirectLighting: cosine of angle
 	// between light direction and surface normal, shadow ray test.
 	// Only the BSDF eval differs (per-NM scalar instead of per-RGB).

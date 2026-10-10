@@ -190,6 +190,47 @@ void Animator::CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vect
 	}
 }
 
+void Animator::GetActiveAnimatedElements( std::vector<IKeyframable*>& out ) const
+{
+	const String& active =
+		!IsBlankName( activeAnimation ) ? activeAnimation :
+		( !animations.empty() ? animations[0].name : activeAnimation );
+	for( ElementList::const_iterator it=elements.begin(); it!=elements.end(); it++ ) {
+		std::vector<String> params;
+		it->second->GetAnimatedParameters( active, params );
+		if( !params.empty() ) {
+			out.push_back( it->first );
+		}
+	}
+}
+
+bool Animator::GetActiveAnimatedParameters( IKeyframable* element, std::vector<String>& out ) const
+{
+	const String& active =
+		!IsBlankName( activeAnimation ) ? activeAnimation :
+		( !animations.empty() ? animations[0].name : activeAnimation );
+	ElementList::const_iterator it = elements.find( element );
+	if( it == elements.end() ) {
+		return false;
+	}
+	const std::size_t before = out.size();
+	it->second->GetAnimatedParameters( active, out );
+	return out.size() > before;
+}
+
+bool Animator::EvaluateElementAtTimeInto( IKeyframable* element, const Scalar time, IKeyframable& target ) const
+{
+	// The same active-animation resolution EvaluateAtTime uses.
+	const String& active =
+		!IsBlankName( activeAnimation ) ? activeAnimation :
+		( !animations.empty() ? animations[0].name : activeAnimation );
+	ElementList::const_iterator it = elements.find( element );
+	if( it == elements.end() ) {
+		return false;
+	}
+	return it->second->EvaluateIntoForAnimation( time, active, target );
+}
+
 bool Animator::DeclareAnimation(
 	const String& name,
 	const double time_start,

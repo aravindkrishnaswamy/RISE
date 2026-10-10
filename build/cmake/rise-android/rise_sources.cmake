@@ -2,6 +2,7 @@
 # Schlick BRDF/SPF share header-only Materials/SchlickMasking.h (DL-225).
 # Donner-Jensen SSS profile/shader-op share header-only Utilities/ExteriorIndexCache.h (DL-291).
 # Graded-index media share header-only Utilities/GradedIndexMedium.h (DL-09).
+# Time-indexed motion blur shares header-only Animation/TimeIndexedView.h (DL-465).
 # -----------------------------------------------------------------------------
 # rise_sources.cmake
 #
@@ -287,6 +288,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/PixelBasedPelRasterizer.cpp"
     "${RISE_LIB}/Rendering/InteractivePelRasterizer.cpp"
     "${RISE_LIB}/Rendering/PixelBasedRasterizerHelper.cpp"
+    "${RISE_LIB}/Rendering/TimeIndexedMotionBlur.cpp"
     "${RISE_LIB}/Rendering/PixelBasedSpectralIntegratingRasterizer.cpp"
     "${RISE_LIB}/Rendering/Rasterizer.cpp"
     "${RISE_LIB}/Rendering/RayCaster.cpp"

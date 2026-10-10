@@ -969,6 +969,9 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.cpp">
       <Filter>Rendering\Rasterizers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\Rasterizer.cpp">
       <Filter>Rendering\Rasterizers</Filter>
     </ClCompile>
@@ -2361,6 +2364,9 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.h">
       <Filter>Rendering\Rasterizers</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.h">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\RasterizeDispatchers.h">
       <Filter>Rendering\Rasterizers</Filter>
     </ClInclude>
@@ -2962,6 +2968,9 @@
       <Filter>Animation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Animation\Timeline.h">
+      <Filter>Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Animation\TimeIndexedView.h">
       <Filter>Animation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\IrradianceCache.h">

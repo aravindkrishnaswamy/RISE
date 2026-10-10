@@ -88,6 +88,14 @@ namespace RISE
 			virtual void Recompute( const unsigned int width, const unsigned int height ) = 0;
 
 		public:
+			//! DL-465: a per-thread clone for time-indexed motion blur -- an
+			//! exact copy of this camera's state (a new Reference with its own
+			//! count), which the render thread re-poses at each sample time.
+			virtual CameraCommon* CloneForTimeView() const = 0;
+
+		protected:
+
+		public:
 
 			//
 			// Mutation surface for the interactive scene editor.

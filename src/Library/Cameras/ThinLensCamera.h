@@ -151,6 +151,9 @@ namespace RISE
 			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
+			//! DL-465: see CameraCommon::CloneForTimeView.
+			CameraCommon* CloneForTimeView() const override { return new ThinLensCamera( *this ); }
+
 			ThinLensCamera(
 				const Point3& vPosition,
 				const Point3& vLookAt,

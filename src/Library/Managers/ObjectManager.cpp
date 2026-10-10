@@ -647,6 +647,20 @@ void ObjectManager::RecomposeAnimatedHierarchy() const
 	}
 }
 
+bool ObjectManager::GetPerSampleRecomposePlan( std::vector< std::pair<IObjectPriv*, IObjectPriv*> >& out ) const
+{
+	// Mirrors RecomposeAnimatedHierarchy's non-sweep branches exactly.
+	out.clear();
+	if( !recomposePerSample ) {
+		return true;
+	}
+	if( recomposeList.empty() ) {
+		return false;
+	}
+	out = recomposeList;
+	return true;
+}
+
 void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
 	RISE_PROFILE_INC(nObjectIntersectionTests);

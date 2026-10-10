@@ -17,8 +17,10 @@
 #include "../Interfaces/ILog.h"
 #include "FiniteMath.h"
 
+#include <atomic>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -137,8 +139,20 @@ struct FinalMatrixMetadata
 
 struct FinalMetadataRegistry
 {
-	std::mutex mutex;
+	//! DL-465: a READER-writer lock plus an entry count.  Every keyframe
+	//! application (SetPosition / SetOrientation / SetStretch) reads this
+	//! registry, and a time-indexed motion-blur pass does that on every
+	//! render thread for every pixel sample; a plain mutex serialised the
+	//! whole pass on it.  Readers now share the lock, and when no
+	//! transformable in the process is matrix-authored (the registry is
+	//! empty -- the common case) they skip it altogether.  An entry for a
+	//! transformable is only ever written by the thread that owns that
+	//! transformable at the time, so a reader that sees the count at 0
+	//! cannot be missing an entry of its own.
+	std::shared_mutex mutex;
+	std::atomic<std::size_t> count;
 	std::map<const Transformable*, FinalMatrixMetadata> entries;
+	FinalMetadataRegistry() : count( 0 ) {}
 };
 
 // Process-lifetime sidecar avoids both public Transformable layout changes and
@@ -153,7 +167,8 @@ FinalMetadataRegistry& FinalMetadataRegistry_()
 bool ReadFinalMetadata_( const Transformable* transformable, FinalMatrixMetadata& metadata )
 {
 	FinalMetadataRegistry& registry = FinalMetadataRegistry_();
-	std::lock_guard<std::mutex> lock( registry.mutex );
+	if( registry.count.load( std::memory_order_acquire ) == 0 ) return false;
+	std::shared_lock<std::shared_mutex> lock( registry.mutex );
 	const std::map<const Transformable*, FinalMatrixMetadata>::const_iterator found =
 		registry.entries.find( transformable );
 	if( found == registry.entries.end() ) return false;
@@ -164,15 +179,18 @@ bool ReadFinalMetadata_( const Transformable* transformable, FinalMatrixMetadata
 void StoreFinalMetadata_( const Transformable* transformable, const FinalMatrixMetadata& metadata )
 {
 	FinalMetadataRegistry& registry = FinalMetadataRegistry_();
-	std::lock_guard<std::mutex> lock( registry.mutex );
+	std::unique_lock<std::shared_mutex> lock( registry.mutex );
 	registry.entries[transformable] = metadata;
+	registry.count.store( registry.entries.size(), std::memory_order_release );
 }
 
 void ClearFinalMetadata_( const Transformable* transformable )
 {
 	FinalMetadataRegistry& registry = FinalMetadataRegistry_();
-	std::lock_guard<std::mutex> lock( registry.mutex );
+	if( registry.count.load( std::memory_order_acquire ) == 0 ) return;
+	std::unique_lock<std::shared_mutex> lock( registry.mutex );
 	registry.entries.erase( transformable );
+	registry.count.store( registry.entries.size(), std::memory_order_release );
 }
 
 bool MatrixIsFinite_( const Matrix4& matrix )

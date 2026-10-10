@@ -3162,9 +3162,11 @@ void SDFGeometry::RegenerateData()
 	// This MUTATES shared geometry state (m_bbox, m_hfLip, the sampling cache)
 	// and so must NOT overlap the parallel render of a frame.  The engine
 	// guarantees that: frame-stepping evaluates the animator BETWEEN frames
-	// (before RenderParallelScope is entered), and the per-sample motion-blur
-	// path (exposure>0) is forced single-threaded for the whole frame
-	// (PixelBasedRasterizerHelper's `threads>1 && exposure==0` gate).  The
+	// (before RenderParallelScope is entered), and a per-sample motion-blur
+	// frame (exposure>0) whose keyframes reach geometry is forced single-
+	// threaded for the whole frame (DL-465's time-indexed multi-threaded
+	// path, TimeIndexedFrame::TryCreate, refuses any keyframed element but
+	// object transforms, the camera and delta lights).  The
 	// assert in InvalidateSamplingStructure makes that contract self-enforcing.
 	if( m_isHeightfield ) {
 		ComputeHeightfieldLipschitz();

@@ -20,6 +20,7 @@
 #include "Interfaces/IAnimator.h"
 #include "PhotonMapping/PendingPhotonShoots.h"
 #include "Utilities/Reference.h"
+#include "Animation/TimeIndexedView.h"
 
 namespace RISE
 {
@@ -270,7 +271,13 @@ namespace RISE
 			const IObjectManager*		GetObjects( )	const	{ return pObjectManager; }
 			const ILightManager*		GetLights( )	const	{ return pLightManager; }
 			const ILuminaryManager*		GetLuminaries() const	{ return pLuminaryManager; }
-			const ICamera*				GetCamera( )	const	{ return pActiveCamera; }
+			//! DL-465: inside a time-indexed motion-blur pass a render thread
+			//! sees its own posed clone of a moving active camera.
+			const ICamera*				GetCamera( )	const
+			{
+				const ICamera* pPosed = TimeIndexed::CameraOverride();
+				return pPosed ? pPosed : pActiveCamera;
+			}
 			const ICameraManager*		GetCameras( )	const	{ return pCameraManager; }
 			String						GetActiveCameraName( ) const { return activeCameraName; }
 			const IFilm*				GetFilm( )		const	{ return pFilm; }

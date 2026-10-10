@@ -388,6 +388,7 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizerRGB.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
@@ -548,6 +549,7 @@
     <ClInclude Include="..\..\..\src\Library\Animation\KeyframableHelper.h" />
     <ClInclude Include="..\..\..\src\Library\Animation\Keyframe.h" />
     <ClInclude Include="..\..\..\src\Library\Animation\Timeline.h" />
+    <ClInclude Include="..\..\..\src\Library\Animation\TimeIndexedView.h" />
     <ClInclude Include="..\..\..\src\Library\BSPTree.h" />
     <ClInclude Include="..\..\..\src\Library\BSPTreeNode.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentDiagnostic.h" />
@@ -924,6 +926,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\LuminaryManager.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\RadianceMap.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\RasterizeDispatchers.h" />

@@ -21,6 +21,7 @@
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/GeometricUtilities.h"
 
@@ -39,6 +40,10 @@ namespace RISE
 			RISEPel		cColor;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
+			//! DL-465: time-indexed slot for a motion-blur pass (see
+			//! Animation/TimeIndexedView.h); -1 outside one.
+			TimeIndexed::TimeSlot	m_timeSlot;
+
 			Vector3		vDirection;
 
 			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2).
@@ -56,6 +61,15 @@ namespace RISE
 
 		public:
 
+			//! DL-465: set / clear the time-indexed slot (calling thread only,
+			//! before the workers start and after they join).
+			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
+			inline int GetTimeSlot() const { return m_timeSlot.value; }
+
+			//! DL-465: a per-thread clone, exact copy of this light's state
+			//! (never itself slotted).
+			SpotLight* CloneForTimeView() const { SpotLight* c = new SpotLight( *this ); CopyTransformMetadataTo( *c ); return c; }
+
 			inline bool CanGeneratePhotons() const override
 			{
 				return bShootPhotons;
@@ -65,11 +79,11 @@ namespace RISE
 
 			inline bool IsPositionalLight() const override { return true; }
 
-			inline Vector3 emissionDirection() const override { return vDirection; }
-			inline Scalar emissionConeHalfAngle() const override { return dOuterAngle / 2.0; }
+			inline Vector3 emissionDirection() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionDirection() ); return vDirection; }
+			inline Scalar emissionConeHalfAngle() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionConeHalfAngle() ); return dOuterAngle / 2.0; }
 
 			inline RISEPel radiantExitance() const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, radiantExitance() );
 				// Integrate emittedRadiance over the emission solid angle.
 				// dInnerAngle/dOuterAngle are full cone angles; half-angles
 				// are used for the actual cone geometry.
@@ -96,19 +110,19 @@ namespace RISE
 			}
 
 			inline Point3 position() const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, position() );
 				return ptPosition;
 			}
 
-			inline RISEPel   emissionColor() const override  { return cColor; }
-			inline Scalar    emissionEnergy() const override { return radiantEnergy; }
+			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionColor() ); return cColor; }
+			inline Scalar    emissionEnergy() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionEnergy() ); return radiantEnergy; }
 			inline LightType lightType() const override      { return LightType::Spot; }
-			inline Point3    emissionTarget() const override { return ptTarget; }
-			inline Scalar    emissionInnerAngle() const override { return dInnerAngle; }
-			inline Scalar    emissionOuterAngle() const override { return dOuterAngle; }
+			inline Point3    emissionTarget() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionTarget() ); return ptTarget; }
+			inline Scalar    emissionInnerAngle() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionInnerAngle() ); return dInnerAngle; }
+			inline Scalar    emissionOuterAngle() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionOuterAngle() ); return dOuterAngle; }
 
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, emittedRadiance( vLightOut ) );
 				// Find the angle between the light out and vDirection.
 				// dInnerAngle/dOuterAngle are full cone angles, so we
 				// compare against half of each (matching ComputeDirectLighting).
@@ -139,7 +153,7 @@ namespace RISE
 			//! above; only the colour term differs (cached illuminant
 			//! spectrum at `nm` instead of the RGB triple).
 			inline Scalar emittedRadianceNM( const Vector3& vLightOut, const Scalar nm ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, emittedRadianceNM( vLightOut, nm ) );
 				const Scalar cost = Vector3Ops::Dot( vLightOut, vDirection );
 				if( cost < 0 ) {
 					return Scalar(0);
@@ -160,7 +174,7 @@ namespace RISE
 			}
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, generateRandomPhoton( ptrand ) );
 				// Uniform solid angle sampling within the outer half-cone
 				const Scalar halfOuter = dOuterAngle / 2.0;
 				const Scalar cosAlpha = cos( halfOuter );
@@ -181,7 +195,7 @@ namespace RISE
 			}
 
 			inline Scalar pdfDirection( const Vector3& dir ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, pdfDirection( dir ) );
 				const Scalar halfOuter = dOuterAngle / 2.0;
 				const Scalar cost = Vector3Ops::Dot( dir, vDirection );
 				if( cost <= 0 ) return 0;

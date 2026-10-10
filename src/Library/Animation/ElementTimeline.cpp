@@ -87,6 +87,31 @@ void ElementTimeline::EvaluateAtTimeForAnimation( const Scalar time, const Strin
 	pElement->RegenerateData();
 }
 
+bool ElementTimeline::EvaluateIntoForAnimation( const Scalar time, const String& animation, IKeyframable& target ) const
+{
+	AnimationTimelineList::const_iterator a = animations.find( animation );
+	if( a == animations.end() ) {
+		return false;
+	}
+	// Same order and the same RegenerateData as EvaluateAtTimeForAnimation.
+	for( TimelineList::const_iterator it=a->second.begin(); it!=a->second.end(); it++ ) {
+		it->second->EvaluateInto( time, target );
+	}
+	target.RegenerateData();
+	return true;
+}
+
+void ElementTimeline::GetAnimatedParameters( const String& animation, std::vector<String>& out ) const
+{
+	AnimationTimelineList::const_iterator a = animations.find( animation );
+	if( a == animations.end() ) {
+		return;
+	}
+	for( TimelineList::const_iterator it=a->second.begin(); it!=a->second.end(); it++ ) {
+		out.push_back( it->first );
+	}
+}
+
 void ElementTimeline::CollectKeyframeTimesForAnimation( const Scalar t0, const Scalar t1, const String& animation, std::vector<Scalar>& out ) const
 {
 	AnimationTimelineList::const_iterator a = animations.find( animation );

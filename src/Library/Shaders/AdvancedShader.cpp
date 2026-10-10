@@ -331,6 +331,17 @@ void AdvancedShader::ShadeHWSS(
 }
 
 //! Tells the shader to reset itself
+bool AdvancedShader::HasRuntimeData() const
+{
+	ShadeOpListType::const_iterator i, e;
+	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
+		if( i->pShaderOp->HasRuntimeData() ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void AdvancedShader::ResetRuntimeData() const
 {
 	ShadeOpListType::const_iterator i, e;

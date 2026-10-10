@@ -36,6 +36,10 @@ namespace RISE
 			public PixelBasedSpectralIntegratingRasterizer
 		{
 		protected:
+			//! DL-465: motion-blurred animation frames render multi-threaded
+			//! through per-thread time-indexed scene state.
+			bool SupportsTimeIndexedMotionBlur() const override { return true; }
+
 #ifdef RISE_ENABLE_OIDN
 			double DenoiseWorkPerMegaSample() const override { return 0.8; }
 #endif

@@ -390,9 +390,11 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	// blur temporal sampling calls IAnimator::EvaluateAtTime per pixel
 	// sample, and a keyframed displacement painter's notification reaches
 	// here synchronously through DisplacedGeometry::RefreshMeshVertices.
-	// That path is single-threaded (a frame with exposure renders on the
-	// calling thread; docs/ARCHITECTURE.md "Animation / Temporal Sampling",
-	// DL-457), so the assert holds; a DEBUG build says so if it ever stops.
+	// That path is single-threaded (a motion-blurred frame whose keyframes
+	// reach geometry renders on the calling thread -- DL-465's time-indexed
+	// multi-threaded path refuses them; docs/ARCHITECTURE.md "Animation /
+	// Temporal Sampling", DL-457), so the assert holds; a DEBUG build says so
+	// if it ever stops.
 	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
 		"TriangleMeshGeometryIndexed::UpdateVertices() during the parallel render — vertex mutation "
 		"and BVH refit are between-frames operations (docs/ARCHITECTURE.md, Animation / Temporal Sampling)" );

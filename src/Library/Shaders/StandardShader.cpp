@@ -196,6 +196,17 @@ void StandardShader::ShadeHWSS(
 }
 
 //! Tells the shader to reset itself
+bool StandardShader::HasRuntimeData() const
+{
+	std::vector<IShaderOp*>::const_iterator i, e;
+	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
+		if( (*i)->HasRuntimeData() ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void StandardShader::ResetRuntimeData() const
 {
 	std::vector<IShaderOp*>::const_iterator i, e;

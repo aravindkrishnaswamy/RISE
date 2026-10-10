@@ -35,7 +35,7 @@ namespace RISE
 		//! Interpolates between two values, given all the possible values
 		/// \return The interpolated value
 		virtual T Interpolate2Values( 
-			typename std::vector<T>& values,						///< [in] A list of values in a container to be interpolated
+			const typename std::vector<T>& values,						///< [in] A list of values in a container to be interpolated
 			typename std::vector<T>::const_iterator& first,			///< [in] Iterator at the value to interpolate from
 			typename std::vector<T>::const_iterator& second,		///< [in] Iterator at the value to interpolate to
 			const Scalar x											///< [in] Specifies the interpolate amount, scalar from [0..1]

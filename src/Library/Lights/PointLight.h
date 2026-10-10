@@ -20,6 +20,7 @@
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/GeometricUtilities.h"
 
@@ -34,6 +35,10 @@ namespace RISE
 			Point3		ptPosition;
 			RISEPel		cColor;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
+
+			//! DL-465: time-indexed slot for a motion-blur pass (see
+			//! Animation/TimeIndexedView.h); -1 outside one.
+			TimeIndexed::TimeSlot	m_timeSlot;
 
 			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2):
 			//! JH sigmoid times the D65 reference illuminant, Y-normalised
@@ -59,6 +64,15 @@ namespace RISE
 			virtual ~PointLight( );
 
 		public:
+
+			//! DL-465: set / clear the time-indexed slot (calling thread only,
+			//! before the workers start and after they join).
+			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
+			inline int GetTimeSlot() const { return m_timeSlot.value; }
+
+			//! DL-465: a per-thread clone, exact copy of this light's state
+			//! (never itself slotted).
+			PointLight* CloneForTimeView() const { PointLight* c = new PointLight( *this ); CopyTransformMetadataTo( *c ); return c; }
 			inline bool CanGeneratePhotons() const override
 			{
 				return bShootPhotons;
@@ -69,12 +83,12 @@ namespace RISE
 			inline bool IsPositionalLight() const override { return true; }
 
 			inline RISEPel radiantExitance() const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, radiantExitance() );
 				return (cColor * radiantEnergy * FOUR_PI);
 			}
 
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, emittedRadiance( vLightOut ) );
 				return (cColor * radiantEnergy);
 			}
 
@@ -82,21 +96,21 @@ namespace RISE
 			//! the cached illuminant spectrum instead of the ILight
 			//! default's per-call LUT uplift; the two agree numerically.
 			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, emittedRadianceNM( Vector3( 0, 0, 0 ), nm ) );
 				return cSpectrum.Eval( nm ) * radiantEnergy;
 			}
 
 			inline Point3 position() const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, position() );
 				return ptPosition;
 			}
 
-			inline RISEPel   emissionColor() const override  { return cColor; }
-			inline Scalar    emissionEnergy() const override { return radiantEnergy; }
+			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( PointLight, emissionColor() ); return cColor; }
+			inline Scalar    emissionEnergy() const override { RISE_TIME_INDEXED_FORWARD( PointLight, emissionEnergy() ); return radiantEnergy; }
 			inline LightType lightType() const override      { return LightType::Point; }
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
-			{
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, generateRandomPhoton( ptrand ) );
 				// Uniform sampling on the full sphere
 				const Scalar cosTheta = 1.0 - 2.0 * ptrand.x;
 				const Scalar sinTheta = sqrt( r_max( 0.0, 1.0 - cosTheta * cosTheta ) );

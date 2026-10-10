@@ -1087,9 +1087,17 @@ interval (DL-457 was filed against one that did not).  `scanning_rate` /
 
 Consequences worth knowing:
 
-- An animation frame with `exposure > 0` renders SINGLE-THREADED for PT,
-  BDPT, MLT and the legacy rasterizers (per-sample scene evaluation mutates
-  the scene, so the frame runs on the calling thread).
+- An animation frame with `exposure > 0` renders MULTI-THREADED for PT,
+  BDPT and VCM (merging off, or with a scanning / pixel rate) when every
+  keyframe animates an object transform (position / orientation / scale,
+  parented children included), the active camera, or a point / spot /
+  directional / ambient light: each render thread poses its own copies of
+  the moving elements at its samples' times, so every sample still sees the
+  scene at its own continuous shutter time -- the look is exactly the
+  single-threaded one (DL-465).  It stays SINGLE-THREADED when anything else
+  is keyframed (geometry parameters, painters, materials, a CSG composite or
+  operand, an object whose shader keeps runtime data -- the log says which),
+  and for MLT and the legacy rasterizers.
 - VCM with vertex merging instead traces each progressive pass at ONE
   shutter time (the scene moves once per pass; the N passes take the N
   equal strata of the shutter in a random order, so any prefix of the passes
