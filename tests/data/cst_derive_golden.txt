@@ -22,7 +22,7 @@ scenes/FeatureBased/Combined/planetary_survey.RISEscene  628fc339d9920cfe332209a
 scenes/FeatureBased/Combined/sculptors_studio.RISEscene  4c4952da29790cfac50e95c6c1297e5a0e453cc9aebe2a1f4b435517879ff3c1  5969  64
 scenes/FeatureBased/Combined/showroom.RISEscene  0c86c2f6990b61249a7179b29e32377c1a603a04a44f71460bfbaafbed84c9fd  10424  59
 scenes/FeatureBased/Combined/spotlight_drama.RISEscene  a40ac097c7bb4716ef207d95dd7b0eea9a88a51c3aec137e4227d930446335f1  3597  50
-scenes/FeatureBased/Combined/tidepools.RISEscene  56c2f5a784988f4f526d424fdf3e45d6a5c3f4d99e8a9ded10973feb115c1a1b  5655  63
+scenes/FeatureBased/Combined/tidepools.RISEscene  627ca21599f12261d771695b42c3928b1f30e8fcc354eaca57492cd815530424  12189  69
 scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene  f37ba3f60b7085d0d500b8e5db22007f144d4f8520bac26a758818d93f5edc04  11543  126
 scenes/FeatureBased/Geometry/aphrodite.RISEscene  698c071896af5323e7b8b4992dc3675af84d3244695d2ca40f5a29d5b1ecd5f3  7645  32
 scenes/FeatureBased/Geometry/f16.RISEscene  ae2eaba2232de4c23508ac6aba0d39c0a940b4308bcab4ded553763048006d02  7651  32
@@ -51,7 +51,7 @@ scenes/FeatureBased/Materials/sheer_curtain.RISEscene  7bc7c6dc309672bd43603976c
 scenes/FeatureBased/Materials/thinfilm_heattint_showcase.RISEscene  27b984a1bfab8b77c2f71267b75d17542b492476c329815b962a96160b72a2e2  16197  65
 scenes/FeatureBased/Materials/velvet_cushion.RISEscene  45cfd1efe9e7c1d1092b985e9261c2fad776c5e08ae623718adb7299340e95cd  2946  36
 scenes/FeatureBased/Materials/wool_throw_fuzz.RISEscene  8312a06627cf5f4f7559796b401ba9b6d36803790ad4b4035b44e2d2dffe31af  1538  30
-scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene  49d9bbf2bd810cb9a49c538b3e5155236e454eccc199bae38488fe8d6b9c78a1  53153  419
+scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene  448fae7dc98549ec9ec466d6780d9aacd4803b968f82aaf40e8f1ae1c5ca4009  53170  420
 scenes/FeatureBased/Parser/photon_cloister.RISEscene  e23b36772cba4b3da89d0f9dd29b27bbb5f659c4651eeba46a1706715b1671c7  17297  159
 scenes/FeatureBased/Parser/pillow.RISEscene  e350df553edf86af804dcbee76bb54645c546e2811ad0d74a4fc81a62a8f899d  74095  653
 scenes/FeatureBased/Parser/sombrero.RISEscene  5ca913104aebfb8f58aecfbc96033463f94ff09035b0affde6e63aa7eada2db6  1301600  11183
