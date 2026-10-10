@@ -15984,11 +15984,23 @@ std::vector<String> SceneEditController::PaletteKeywords( ChunkCategory category
 	// never lead the list.  `AllKeywordsForCategory` itself is untouched:
 	// the agent surface and the tests read its plain alphabetical order.
 	std::vector<String> all = AllKeywordsForCategory( category );
-	std::stable_partition( all.begin(), all.end(), []( const String& kw ) {
+	std::vector<String>::iterator legacyBegin = std::stable_partition( all.begin(), all.end(), []( const String& kw ) {
 		const ChunkDescriptor* d = DescriptorForKeyword( kw );
 		return !( d && d->deprecated );
 	} );
+	// Legacy-deprecation Phase 1: within the legacy group, FROZEN (unsupported)
+	// types sort after the merely deprecated ones.
+	std::stable_partition( legacyBegin, all.end(), []( const String& kw ) {
+		const ChunkDescriptor* d = DescriptorForKeyword( kw );
+		return !( d && d->frozen );
+	} );
 	return all;
+}
+
+bool SceneEditController::PaletteKeywordIsFrozen( const String& keyword ) const
+{
+	const ChunkDescriptor* d = DescriptorForKeyword( keyword );
+	return d && d->frozen;
 }
 
 std::string SceneEditController::PaletteKeywordDeprecation( const String& keyword ) const

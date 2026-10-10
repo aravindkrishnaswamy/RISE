@@ -461,7 +461,9 @@ namespace RISE
 				       // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): ONE
 				       // add_wetness call is ONE blind mutation on the same
 				       // argument -- one composite document swap (a Lambertian
-				       // rewrite to polished_material, or one-to-three field
+				       // base wrapped in coated_material -- Phase 2; the Phase 1
+				       // rewrite to the now-FROZEN polished_material is gone --
+				       // or one-to-three field
 				       // chunks plus the material's slots on a GGX/PBR base),
 				       // one head bump, one undo step, made without looking.
 				       v == "add_wetness" ||

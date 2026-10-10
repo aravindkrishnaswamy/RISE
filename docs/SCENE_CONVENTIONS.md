@@ -1515,7 +1515,71 @@ model this follows.
 
 ---
 
+## 11.4. Legacy tiers (legacy-deprecation Phase 1, 2026-10-09)
+
+Owner rulings: [LEGACY_DEPRECATION_ASSESSMENT.md](LEGACY_DEPRECATION_ASSESSMENT.md) §13.
+Every chunk type is in one of three tiers.  The authoritative list is
+`kLegacyTierTable` in `src/Library/Parsers/ChunkParserRegistry.cpp` (the
+seven legacy BRDF materials are marked in their own `Describe()`), and
+`tests/DeprecatedMaterialWarningTest.cpp` pins it.  **Removal is ON HOLD by
+owner ruling (2026-10-09)**: no chunk is removed; Phase 1 only marks.
+
+| tier | loads / renders | on load | agent | GUI palette | debt |
+|---|---|---|---|---|---|
+| **Supported** | yes | nothing | normal | normal | normal |
+| **Deprecated** | yes, bit-identical | one warning per type: `` `X` is DEPRECATED (...): use Y `` | may still insert | sorted after supported, badged "(deprecated -> Y)" | fixes allowed, not sought |
+| **Frozen** (legacy, unsupported) | yes, bit-identical | one warning per type: `` `X` is LEGACY and UNSUPPORTED (frozen 2026-10-09; ... receive no fixes): use Y `` | **refuses to insert** a new one (insert, batch, value splice); loading and editing an existing one still work; `read_schema` carries `"frozen":true` | sorted last, badged "(legacy, unsupported -> Y)" | rows close `WON'T-FIX (frozen)`; only crash / hang / memory / security / data-loss fixes |
+
+`ChunkDescriptor::frozen` implies `deprecated`, so every consumer that reads
+only `deprecated` treats a frozen chunk as legacy too.  Bit-identity is pinned
+by `tests/LegacyTierRenderIdentityTest.cpp` (one shipped scene per family,
+hashed against the parent commit `4694f511c`).
+
+**Frozen** (replacement in brackets):
+
+- Legacy shader-op rasterizers: `pixelpel_rasterizer` [`pathtracing_pel_rasterizer`;
+  `max_diffuse_bounce 0` for a direct-only look, owner ruling #3],
+  `pixelintegratingspectral_rasterizer` [`pathtracing_spectral_rasterizer`].
+- Their chain ops: `distributiontracing_shaderop`, `finalgather_shaderop`,
+  `directlighting_shaderop`, `arealight_shaderop` [`rect_light` / `shape_light`],
+  `ambientocclusion_shaderop` [none, owner ruling #6], `alpha_test_shaderop`,
+  `transparency_shaderop` [material `alpha_coverage` / `alpha_mode` / `alpha_cutoff`, DL-214],
+  and the point-cloud SSS ops `simple_sss_shaderop`,
+  `diffusion_approximation_sss_shaderop`, `donner_jensen_skin_sss_shaderop`
+  [`subsurfacescattering_material` / `randomwalk_sss_material` under PT].
+- Photon mapping: `caustic_{pel,spectral}_photonmap`, `global_{pel,spectral}_photonmap`,
+  `translucent_pel_photonmap`, `shadow_photonmap`, their six `*_gather` chunks,
+  `irradiance_cache` [VCM for caustics; PT/BDPT with OIDN for GI].
+- `mlt_rasterizer`, `mlt_spectral_rasterizer` [BDPT / VCM / auto].
+- The seven legacy BRDF materials (section 11.5) [`ggx_material` / `coated_material`].
+- `composite_material` [`coated_material`] (owner ruling #10).
+- `phong_luminaire_material` [`lambertian_luminaire_material`; no cos^N equivalent].
+- `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` [none] (owner ruling #7).
+
+**Deprecated** (warn only): `ambient_light` [a uniform environment `radiance_map`;
+unlike ambient it is occluded, so creases darken -- owner ruling #5],
+`iridescent_painter` [`ggx_material` `fresnel_mode thinfilm`],
+`onb_pinhole_camera` [`pinhole_camera`], `3dsmesh_geometry` [`plymesh_geometry` /
+`gltf_import`], `sms_shaderop` [the `sms_*` PT rasterizer parameters], and the
+`mis_pathtracing_shaderop` keyword ALIAS [`pathtracing_shaderop`] (deprecated by
+dispatch keyword, `DeprecatedChunkAliasReplacement`, because it shares the
+supported chunk's descriptor).
+
+**Kept SUPPORTED** by ruling or as infrastructure: `translucent_material` (#11),
+`biospec_skin_material` / `generic_human_tissue_material` (#12),
+`datadriven_material`, `bezierpatch_geometry`, both SSS material models, the
+delta lights (`omni_light`, `spot_light`, `directional_light`),
+`pathtracing_shaderop` (PT's SSS continuation shades through the default
+shader, D13), `standard_shader` / `advanced_shader`, and the `PixelBased*`
+rasterizer classes PT derives from.
+
 ## 11.5. Deprecated materials (DL-323 follow-through, 2026-10-02)
+
+**Update 2026-10-09:** these seven chunks are now **FROZEN** (owner ruling
+#9, section 11.4): the warning reads "LEGACY and UNSUPPORTED", the agent
+refuses to insert them, and their ledger rows close won't-fix.  They still
+render bit-identically.  `composite_material` and `phong_luminaire_material`
+are frozen too (the table below predates that).
 
 **Ruling (user, 2026-10-02):** the legacy non-physically-based material
 chunks are being DEPRECATED, not retrofitted.  A deprecated chunk **keeps

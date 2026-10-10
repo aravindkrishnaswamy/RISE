@@ -5583,6 +5583,15 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, const char* keyword,
 		char* outReplacement, unsigned int outReplacementLen );
 
+	//! Legacy-deprecation Phase 1 (2026-10-09) -- is `keyword` a FROZEN
+	//! chunk type (legacy and UNSUPPORTED: it still loads and renders but
+	//! receives no fixes)?  A frozen type is also deprecated, so
+	//! `..._PaletteKeywordDeprecation` fills its replacement hint as well;
+	//! the GUIs use this to badge it "legacy, unsupported".  False for a
+	//! modern, merely deprecated, or unknown keyword, or a null controller.
+	bool RISE_API_SceneEditController_PaletteKeywordFrozen(
+		SceneEditController* p, const char* keyword );
+
 	//! Remove the named entity in `category` (see
 	//! SceneEditController::RemoveEntity) — refused with a non-empty
 	//! `outMessage` if it is still referenced (e.g. a material a

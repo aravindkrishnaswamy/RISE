@@ -526,8 +526,9 @@ should be the brightest thing in the frame.
    generous cell.
 3. **Scale.**  See the top of this file: the width defaults are metres.
 4. **Bind every scalar-pipe slot on nearby materials.**  A slot like
-   `polished_material.tau` is an `IScalarPainter` whose "none" default
-   is a COLOUR painter, so leaving it unbound fails that material.  The
+   `dielectric_material.tau` is an `IScalarPainter`; binding a COLOUR
+   painter (or leaving a slot on a colour-painter default) fails that
+   material.  The
    groom is fine; the eye or the nose leather beside it vanishes.
 5. **Read the diagnostics -- the scene will still load.**  A chunk whose
    apply fails is diagnosed BY NAME and the derive keeps going, so

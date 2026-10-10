@@ -178,8 +178,9 @@ or spectral form:
 select** — inserting one is refused, and there is no override
 parameter.  If a scene needs one, the user selects it themselves.
 `pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are
-not integrator choices and are not gated (`pixelpel_rasterizer` is
-required for alpha-mask scenes).
+**frozen legacy rasterizers** (unsupported since 2026-10-09) and are
+refused too.  Material alpha (`alpha_coverage` / `alpha_mode` /
+`alpha_cutoff`) works under PT and VCM, so no scene needs them.
 
 A scene the user handed you that already contains one of the blocked
 rasterizers stays **fully editable** — edit any chunk in it, including

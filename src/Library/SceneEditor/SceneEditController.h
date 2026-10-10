@@ -4593,7 +4593,8 @@ namespace RISE
 		//! `ChunkNodeRequirements` above.
 		//!
 		//! DL-401: DEPRECATED chunk types (`ChunkDescriptor::deprecated`)
-		//! sort AFTER the modern keywords (each group lexicographic).
+		//! sort AFTER the modern keywords, and FROZEN ones (legacy Phase 1)
+		//! after the deprecated ones (each group lexicographic).
 		//! `AllKeywordsForCategory` keeps its plain alphabetical order.
 		std::vector<String> PaletteKeywords( ChunkCategory category ) const;
 
@@ -4603,6 +4604,14 @@ namespace RISE
 		//! GUI node palettes read it to badge a deprecated row.  Pure
 		//! descriptor read, same posture as `PaletteKeywords`.
 		std::string PaletteKeywordDeprecation( const String& keyword ) const;
+
+		//! Legacy-deprecation Phase 1 (2026-10-09): is @a keyword a FROZEN
+		//! chunk type (`ChunkDescriptor::frozen` -- legacy and UNSUPPORTED)?
+		//! A frozen type is also deprecated, so `PaletteKeywordDeprecation`
+		//! returns its replacement hint too; the GUIs read this to badge it
+		//! "legacy, unsupported" instead of "deprecated".  `PaletteKeywords`
+		//! sorts frozen types after the merely deprecated ones.
+		bool PaletteKeywordIsFrozen( const String& keyword ) const;
 
 		//! Create ONE new painter/material chunk of type `keyword`, named
 		//! from `baseName` (deduped `_2`, `_3`, ... exactly as

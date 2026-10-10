@@ -1768,6 +1768,12 @@ public:
     /// modern ones; the add-node palette badges them with this.
     QString paletteDeprecationReplacement(const QString& keyword) const;
 
+    /// Legacy-deprecation Phase 1 (2026-10-09): true when `keyword` is a FROZEN
+    /// chunk type (legacy and UNSUPPORTED). Frozen types are also deprecated,
+    /// so `paletteDeprecationReplacement` returns their hint too; the palette
+    /// badges them "legacy, unsupported" instead of "deprecated".
+    bool paletteKeywordIsFrozen(const QString& keyword) const;
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active. `proposedName` is canonicalized to a
     /// CST-safe identifier, then deduplicated with a numeric suffix.

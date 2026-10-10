@@ -86,6 +86,8 @@ struct NodeGraphAddNodeSheet: View {
     @State private var keywords: [String] = []
     /// DL-401: keyword -> replacement hint for the deprecated chunk types in `keywords`.
     @State private var deprecatedReplacements: [String: String] = [:]
+    /// Legacy-deprecation Phase 1: the FROZEN (legacy, unsupported) subset of `deprecatedReplacements`.
+    @State private var frozenKeywords: Set<String> = []
 
     // Step 2 state -- non-nil `selectedKeyword` means "on the
     // requirement-fill step."
@@ -184,7 +186,8 @@ struct NodeGraphAddNodeSheet: View {
                                     .font(Theme.mono(11.5))
                                     .foregroundColor(replacement == nil ? Theme.textPrimary : Theme.textFaint)
                                 if let replacement {
-                                    Text("(deprecated \u{2192} \(replacement.split(separator: " ").first.map(String.init) ?? replacement))")
+                                    // Legacy Phase 1: a FROZEN type is badged "legacy, unsupported" (it sorts last).
+                                    Text("(\(frozenKeywords.contains(kw) ? "legacy, unsupported" : "deprecated") \u{2192} \(replacement.split(separator: " ").first.map(String.init) ?? replacement))")
                                         .font(Theme.mono(9.5))
                                         .foregroundColor(Theme.warn)
                                 }
@@ -193,7 +196,7 @@ struct NodeGraphAddNodeSheet: View {
                             .padding(.horizontal, 14)
                             .padding(.vertical, 6)
                             .contentShape(Rectangle())
-                            .help(replacement.map { "Deprecated: use \($0)" } ?? "")
+                            .help(replacement.map { (frozenKeywords.contains(kw) ? "Legacy, unsupported (frozen): use " : "Deprecated: use ") + $0 } ?? "")
                         }
                         .buttonStyle(.plain)
                     }
@@ -215,13 +218,16 @@ struct NodeGraphAddNodeSheet: View {
     }
 
     private func reloadKeywords() {
-        guard let bridge else { keywords = []; deprecatedReplacements = [:]; return }
+        guard let bridge else { keywords = []; deprecatedReplacements = [:]; frozenKeywords = []; return }
         keywords = bridge.paletteKeywords(forCategory: category.rawValue)
         var deprecated: [String: String] = [:]
+        var frozen: Set<String> = []
         for kw in keywords {
             if let r = bridge.paletteDeprecationReplacement(forKeyword: kw) { deprecated[kw] = r }
+            if bridge.paletteKeywordIsFrozen(kw) { frozen.insert(kw) }
         }
         deprecatedReplacements = deprecated
+        frozenKeywords = frozen
     }
 
     private func selectKeyword(_ keyword: String) {
