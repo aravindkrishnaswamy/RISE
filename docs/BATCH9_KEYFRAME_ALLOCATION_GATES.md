@@ -77,3 +77,7 @@ started at Unix1791660527.329823, after our last build finished1791660323.491276
 Our renders are serialized by an advisory file lock; no own builds or renders
 overlapped these eight timing pairs. Other machine users remain uncontrolled;
 these are interleaved fixture measurements, not a general speed guarantee.
+
+Fresh review found zero P1. P2 coverage: the direct allocation regression
+exercises Scalar; the other supported types rely on rendered hash coverage.
+Custom-interpolator and parameter-subclass fallbacks lack direct regressions.
