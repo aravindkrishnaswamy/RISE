@@ -1177,6 +1177,10 @@ def migrate_full(text, integrator, report, sss_albedo=None, sss_keep=False, sms=
         if kill:
             for kk in range(c.kw_line, c.close_line + 1):
                 edits[kk] = []
+            # ...and the blank line that separated it from the next chunk.
+            nxt = c.close_line + 1
+            if nxt < len(lines) and lines[nxt].strip() == '' and nxt not in edits:
+                edits[nxt] = []
     if has_pm or has_ic:
         notes.append('photon map / gather / irradiance-cache chunks removed (frozen, owner ruling #4)')
 
