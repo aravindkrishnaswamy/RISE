@@ -41,7 +41,7 @@ namespace RISE
 		{
 		};
 
-        // Reset in place: copying a Mersenne state can copy its internal cursor.
+        // Reset the existing generator in place; retain its object identity.
         inline void Reseed( unsigned int seed )
         {
 #if defined DRAND48
