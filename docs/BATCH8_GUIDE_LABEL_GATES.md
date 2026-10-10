@@ -9,3 +9,5 @@ Full BDPTGuidedContinuationTest 177/0, PTGuidingMISPartitionTest 185/0, Connecti
 Strict row M remains red, 1/1 rc1: weave gap transmission count 1, expected 0. The single-label guided metadata status is now OK for both interior and endpoint. Mixed-label guide expectations remain unresolved. No new direct PT or light-generator label witness; the production regression witnesses BDPT eye RGB/NM only.
 
 Self-review: single reflection mask equals the SPF label for every hair order; the helper is called only on guided vertices, inactive guiding follows unchanged behavior; guide ownership is non-owning and released after generators; no PDF/energy/MIS rescaling changes. No P1 found in self-review. No performance claim.
+
+Downstream label consumers also change consistently with ordinary hair: native PT categorizes the guided draw as specular, and the BDPT NM diffuse-only training filter excludes guide-substituted hair, as it already excludes ordinary hair SPF draws. Existing field sampling remains enabled. P2: no new training-field evolution gate for this consequence.
