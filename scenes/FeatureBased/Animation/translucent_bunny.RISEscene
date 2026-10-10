@@ -170,42 +170,16 @@ lambertian_material
 	reflectance			color_white
 }
 
-directlighting_shaderop
-{
-	name		sss_dl
-	bsdf		white
-}
-
-standard_shader
-{
-	name		sss_irrad
-	shaderop	sss_dl
-}
-
-simple_sss_shaderop
-{
-	name				sss
-	numpoints			5000
-	irrad_scale			120
-	geometric_scale 	10
-	extinction			0.01 0.01 0.01	
-	multiplybsdf		TRUE
-
-	shader				sss_irrad
-}
-
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	sss
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				1
-	lum_samples			1
+	samples				64
 }
 
 file_rasterizeroutput
@@ -316,7 +290,8 @@ standard_object
 omni_light
 {
 	name				light
-	power				2.0
+	# Phase 2 slice B1 retune (owner-approved): power 2.0 -> 2.9; the legacy point-cloud SSS op added an irrad_scale-scaled glow (0.081 of the 0.129 mean) that is gone
+	power				2.9
 	position			0 0.5 0
 	color				1.0 1.0 1.0
 }

@@ -19,30 +19,29 @@ uniformcolor_painter
 	color			1 1 1
 }
 
-arealight_shaderop
+# Converted from arealight_shaderop `arealight` (frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
+#   exitance = power (at N 1 the op is a Lambertian panel of radiance power/pi).
+rect_light
 {
-	name			arealight
-	emission		color_emm
-	location		-5 5 2
-	make_dir		0 0 0
-	samples			64
-	width			3.0
-	height			3.0
-	power			50
-	cache			false
+	name		arealight
+	center		-5 5 2
+	size		3 3
+	facing		5 -5 -2
+	exitance	50
+	color		1 1 1
 }
 
 standard_shader
 {
 	name			global
-	shaderop		arealight
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				4
-	lum_samples			1
+	samples				256
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput

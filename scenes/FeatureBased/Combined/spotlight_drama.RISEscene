@@ -28,32 +28,22 @@ RISE ASCII SCENE 7
 # because they need color_white from the colors script.
 ##################################################
 
-distributiontracing_shaderop
-{
-	name				dt
-	samples				4
-	diffuse				false
-	reflections			TRUE
-}
-
 standard_shader
 {
 	name		floor_shader
-	shaderop	dt
-	shaderop	DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		4
-	samples				64
-	lum_samples			1
+	samples				256
 }
 
 file_rasterizeroutput
@@ -275,68 +265,25 @@ uniformcolor_painter
 # SSS Shaders (after colors script so color_white is available)
 ##################################################
 
-# White lambertian BSDF for SSS irradiance capture - ensures maximum
-# irradiance is gathered regardless of the object's actual material
+# White lambertian BSDF the legacy point-cloud SSS ops gathered their irradiance
+# with (unreferenced since legacy-deprecation Phase 2 slice B1 converted those ops
+# to subsurfacescattering_material; kept so the scene's material set is unchanged)
 lambertian_material
 {
 	name				sss_white
 	reflectance			color_white
 }
 
-directlighting_shaderop
-{
-	name				sss_dl
-	bsdf				sss_white
-}
-
-standard_shader
-{
-	name		sss_irrad
-	shaderop	sss_dl
-}
-
-# Simple SSS for the dragon (~6 units tall after 10x scale)
-# geometric_scale converts scene meters to mm for extinction:
-#   r_mm = r_meters * 1000 * geometric_scale
-# At 0.1, a 0.3m thick section gives exp(-0.05 * 300 * 0.1) = exp(-1.5) ≈ 0.22
-# which produces visible colored translucency without going fully opaque or white.
-simple_sss_shaderop
-{
-	name				sss_simple
-	numpoints			200000
-	irrad_scale			100
-	geometric_scale		1.5
-	shader				sss_irrad
-}
-
-# Diffusion approximation SSS for the bunny (~6 units tall after 30x scale)
-# At 0.05, the diffusion profile spreads a few cm in scene units,
-# giving a visible waxy glow without being fully transparent.
-diffusion_approximation_sss_shaderop
-{
-	name				sss_wax
-	numpoints			200000
-	irrad_scale			50000
-	geometric_scale		0.05
-
-	scattering			0.74 0.88 1.01
-	absorption			0.032 0.17 0.48
-	ior					1.3
-	g					0.8
-
-	shader				sss_irrad
-}
-
 standard_shader
 {
 	name		dragon_shader
-	shaderop	sss_simple
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
 	name		bunny_shader
-	shaderop	sss_wax
+	shaderop		DefaultPathTracing
 }
 
 ##################################################
@@ -437,6 +384,21 @@ risemesh_geometry
 	file				models/risemesh/dragon_small.risemesh
 }
 
+# Green jade (re-authored in legacy-deprecation Phase 2 slice B1, owner-approved; was the
+# point-cloud simple_sss_shaderop `sss_simple`, whose white override BSDF hid the jade colour).
+# Christensen-Burley subsurfacescattering_material (as the scene's other SSS objects): its
+# diffuse reflectance (albedo) is the scene's authored jade colour 0.15 0.25 0.15 (pnt_jade_ref),
+# and its profile tail falls off at 10 per unit (a ~0.1-unit glow on the ~6-unit dragon), so it
+# reads as translucent stone rather than a glowing surface.
+subsurfacescattering_material
+{
+	name			sss_simple_sss_jade
+	ior			1.3
+	absorption	7.89779 8.30641 7.89779
+	scattering	1.39373 2.7688 1.39373
+	g			0
+}
+
 standard_object
 {
 	name				dragon
@@ -444,7 +406,7 @@ standard_object
 	position			-4 -1.5 3
 	orientation			0 30 0
 	scale				30 30 30
-	material			jade
+	material			sss_simple_sss_jade
 	shader				dragon_shader
 }
 
@@ -456,6 +418,17 @@ risemesh_geometry
 	file				models/risemesh/bunny.risemesh
 }
 
+# Converted from diffusion_approximation_sss_shaderop `sss_wax` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
+#   the op's own sigma_s / sigma_a (per mm) x 1000 x geometric_scale 0.05, ior 1.3, g 0.8.
+subsurfacescattering_material
+{
+	name			sss_wax_sss_wax
+	ior			1.3
+	absorption	1.6 8.5 24
+	scattering	37 44 50.5
+	g			0.8
+}
+
 standard_object
 {
 	name				bunny
@@ -463,7 +436,7 @@ standard_object
 	position			4 -1.2 2
 	orientation			0 20 0
 	scale				30 30 30
-	material			wax
+	material			sss_wax_sss_wax
 	shader				bunny_shader
 }
 
@@ -495,7 +468,7 @@ standard_object
 	name				center_sphere
 	geometry			spheregeom
 	position			0 3.2 -2
-	material			wax
+	material			sss_wax_sss_wax
 	shader				bunny_shader
 }
 
@@ -503,15 +476,16 @@ standard_object
 # Lights - Colored spot lights for dramatic effect
 ##################################################
 
-# Red spot from upper left - illuminates the dragon
+# Red spot from upper left - lights the backdrop behind the dragon
 spot_light
 {
 	name				spot_red
 	position			-7 10 6
-	target				-4 3 1
+	target				-4 4 -8
 	color				1.0 0.2 0.15
 	colorspace			sRGB
-	power				20000.0
+	# Phase 2 slice B1 (owner-approved, option b): re-aimed from the dragon to the backdrop behind it (target -4 3 1 -> -4 4 -8), power 20000 -> 7100, so the jade dragon is no longer drowned in red and the red stays as the dramatic backdrop
+	power				7100
 	inner				30
 	outer				80
 }
@@ -524,9 +498,10 @@ spot_light
 	target				4 3 2
 	color				0.2 0.3 1.0
 	colorspace			sRGB
-	power				30000.0
-	inner				30
-	outer				80
+	# Phase 2 slice B1 (owner-approved, option b): cone narrowed 30/80 -> 20/40 so it stays on the bunny instead of tinting the dragon, power 30000 -> 24800 to keep the whole-image mean
+	power				24800
+	inner				20
+	outer				40
 }
 
 # Warm amber spot from directly above center
@@ -537,19 +512,36 @@ spot_light
 	target				0 2 -2
 	color				1.0 0.8 0.4
 	colorspace			sRGB
-	power				15000.0
-	inner				30
-	outer				80
+	# Phase 2 slice B1 (owner-approved, option b): cone narrowed 30/80 -> 15/30 so it lights the centre pedestal, not the dragon, power 15000 -> 6534
+	power				6534
+	inner				15
+	outer				30
 }
 
 # Subtle cool rim light from behind
 directional_light
 {
 	name				backlight
-	power				30.0
+	# Phase 2 slice B1 (owner-approved, option b): power 30 -> 8.7
+	power				8.7
 	color				0.6 0.65 0.8
 	colorspace			sRGB
 	direction			0 -0.3 1
+}
+
+# Soft white key on the jade dragon from the camera side, above it (legacy-deprecation Phase 2
+# slice B1, owner-approved option b): the white light is what lets the authored jade colour read
+# as green against the coloured spots (whole image 1.013 vs legacy 1.010; dragon 2.9x the legacy
+# dragon, median pixel green-dominant)
+spot_light
+{
+	name				dragon_key
+	position			-1 10 15
+	target				-3.5 2.5 3
+	color				1 1 1
+	power				900
+	inner				20
+	outer				35
 }
 
 

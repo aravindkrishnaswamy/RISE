@@ -1890,14 +1890,14 @@ static Cst::Document ResizeFilmChunkCst( const Cst::Document& inDoc, unsigned in
 //! the original chunk when present (pavilion_colonnade's own env map).
 //! No standard_shader chunk is emitted here: every one of the four
 //! showcases already declares `standard_shader { name global ... }`
-//! (plank_closeup / tidal_stones / shelf_bunny with `shaderop
-//! DefaultPathTracing`, pavilion_colonnade with `shaderop
-//! DefaultDirectLighting`) -- the modern PT/BDPT/VCM rasterizers below
+//! (all four with `shaderop DefaultPathTracing`; pavilion_colonnade's was
+//! `DefaultDirectLighting` until legacy-deprecation Phase 2 slice A moved
+//! it off pixelpel_rasterizer) -- the modern PT/BDPT/VCM rasterizers below
 //! don't consult the shader chain's op at all, they only need
 //! `defaultshader` to resolve to a real shader chunk (BDPTStrategyBalance-
 //! Test's own header explains why the legacy pixelpel_rasterizer, unlike
 //! these, DOES execute the chain literally) -- so pavilion_colonnade's
-//! DefaultDirectLighting "global" is a perfectly valid reference for these
+//! "global" is a perfectly valid reference for these
 //! three swapped-in chunks.  No `file_rasterizeroutput` chunk is emitted
 //! either: the caller captures pixels via its own CapturingRasterizerOutput
 //! and calls `RemoveRasterizerOutputs()` before adding it, so any output

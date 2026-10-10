@@ -16,21 +16,16 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
-	shaderop		DefaultReflection
-	shaderop		DefaultRefraction
-	shaderop		DefaultCausticSpectralPhotonMap
-	shaderop		DefaultEmission
+	shaderop		DefaultPathTracing
 }
 
-pixelintegratingspectral_rasterizer
+# Migrated from pixelintegratingspectral_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator vcm, legacy-deprecation Phase 2).
+vcm_spectral_rasterizer
 {
-	samples					256
-	lum_samples				1
+	samples				256
 	nmbegin					405
 	nmend					705
 	num_wavelengths			8
-	max_recursion			3
 }
 
 file_rasterizeroutput
@@ -236,18 +231,4 @@ standard_object
 	geometry			spheregeom
 	position			0.273 0.23	0.2
 	material			glass
-}
-
-caustic_spectral_photonmap
-{
-	num					100000
-	nmbegin				405
-	nmend				705
-	num_wavelengths		8
-}
-
-caustic_spectral_gather
-{
-	max_photons			450
-	radius				0.01
 }

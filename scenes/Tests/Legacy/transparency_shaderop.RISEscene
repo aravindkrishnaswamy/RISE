@@ -209,7 +209,7 @@ pixelpel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/transparency_shaderop
+	pattern				rendered/legacy_transparency_shaderop
 	type				PNG
 	bpp					8
 	color_space			sRGB

@@ -297,6 +297,69 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// [object-rmap] legacy-deprecation Phase 2 slice B1: a per-OBJECT
+	// radiance_map is honoured only by the frozen legacy chain, so a scene that
+	// sets one under a supported rasterizer gets ONE warning naming it (and the
+	// rasterizer that ignores it); under a legacy pixel rasterizer, or with no
+	// object map, nothing.  The derive itself is unchanged.
+	//----------------------------------------------------------------------
+	std::printf( "[object-rmap] per-object radiance_map under a supported rasterizer warns once\n" );
+	{
+		const std::string objs =
+			"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+			"lambertian_material\n{\nname lb\nreflectance pnt\n}\n"
+			"sphere_geometry\n{\nname sg\nradius 1\n}\n"
+			"standard_object\n{\nname o1\ngeometry sg\nmaterial lb\nradiance_map pnt\n}\n"
+			"standard_object\n{\nname o2\ngeometry sg\nmaterial lb\nradiance_map pnt\n}\n"
+			"standard_object\n{\nname o3\ngeometry sg\nmaterial lb\n}\n";
+		const char* needle = "set their own `radiance_map`";
+		struct Case { const char* raster; bool rmaps; int expect; const char* what; };
+		const Case cases[] = {
+			{ "pathtracing_pel_rasterizer\n{\n}\n", true,  1, "PT + two object maps: one warning" },
+			{ "vcm_pel_rasterizer\n{\n}\n",         true,  1, "VCM + object maps: one warning" },
+			{ "pixelpel_rasterizer\n{\n}\n",        true,  0, "the legacy chain honours them: no object-map warning" },
+			{ "pathtracing_pel_rasterizer\n{\n}\n", false, 0, "no object map: no warning" },
+			// P2-1 (slice-B1 final review): non-rasterizer chunks of the Rasterizer
+			// category must not count as a modern rasterizer, a rasterizer-level map is
+			// supported, and the LAST declared rasterizer is the active one.
+			{ "pixelpel_rasterizer\n{\n}\nlight_rr_threshold\n{\nthreshold 0.5\n}\n"
+			  "file_rasterizeroutput\n{\npattern rendered/x\ntype PNG\n}\n",
+			  true,  0, "legacy scene with light_rr_threshold / file_rasterizeroutput: no warning" },
+			{ "pathtracing_pel_rasterizer\n{\nradiance_map pnt\n}\n", false, 0,
+			  "only the rasterizer-level radiance_map: no warning" },
+			{ "pathtracing_pel_rasterizer\n{\n}\npixelpel_rasterizer\n{\n}\n", true, 0,
+			  "last declared (active) rasterizer is legacy: no warning" },
+			{ "pixelpel_rasterizer\n{\n}\nvcm_pel_rasterizer\n{\n}\n", true, 1,
+			  "last declared (active) rasterizer is VCM: one warning" },
+		};
+		for( const Case& c : cases ) {
+			std::string body = objs;
+			if( !c.rmaps ) {
+				size_t at;
+				while( ( at = body.find( "radiance_map pnt\n" ) ) != std::string::npos ) body.erase( at, 17 );
+			}
+			log->Reset();
+			Job* j = new Job();
+			std::vector<std::string> diags;
+			Document d = ParseToCst( Scene( body + c.raster ) );
+			const int n = DeriveToJob( d, *j, &diags, nullptr, nullptr, true );
+			Check( n > 0 && diags.empty(), std::string( "[object-rmap] " ) + c.what + ": derives cleanly" );
+			Check( log->Count( needle ) == c.expect, std::string( "[object-rmap] " ) + c.what );
+			if( c.expect ) {
+				const std::string m = log->First( needle );
+				Check( m.find( "2 object(s)" ) != std::string::npos && m.find( "`o1`" ) != std::string::npos,
+					std::string( "[object-rmap] " ) + c.what + ": counts both objects and names the first" );
+				const std::string rs( c.raster );
+				const size_t lastKw = rs.rfind( "_rasterizer\n{" );
+				const size_t kwStart = rs.rfind( '\n', lastKw ) == std::string::npos ? 0 : rs.rfind( '\n', lastKw ) + 1;
+				Check( m.find( "`" + rs.substr( kwStart, lastKw + 11 - kwStart ) + "`" ) != std::string::npos,
+					std::string( "[object-rmap] " ) + c.what + ": names the rasterizer that ignores it" );
+			}
+			j->release();
+		}
+	}
+
+	//----------------------------------------------------------------------
 	// [schema] the agent's read_schema surface
 	//----------------------------------------------------------------------
 	std::printf( "[schema] read_schema carries the deprecation\n" );

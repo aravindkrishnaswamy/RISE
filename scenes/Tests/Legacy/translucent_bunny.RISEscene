@@ -2,101 +2,15 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           different_rmaps.RISEscene                                                               #
-#   Description:    A simple test scene with objects with different radiance maps and different shaders     #
-#                     The spheres each have their own radiance map while there is also a global radiance    #
-#                     map.  In addition the floor uses path tracing as a shader while the spheres use a     #
-#                     simpler ray tracing function for just reflections and refractions.                    #
+#   File:           translucent_bunny.RISEscene                                                             #
+#   Description:    
 #   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      May 17, 2004                                                                            #
+#   Birthdate:      April 19, 2004                                                                          #
 #                                                                                                           #
 #############################################################################################################
 
 ##################################################
 # Setup a renderer
-##################################################
-
-# Load all the radiance maps
-hdr_painter
-{
-	name				pnt_rad
-	file				lightprobes/stpeters_probe.hdr
-}
-
-hdr_painter
-{
-	name				pnt_rad2
-	file				lightprobes/grace_probe.hdr
-}
-
-hdr_painter
-{
-	name				pnt_rad3
-	file				lightprobes/rnl_probe.hdr
-}
-
-standard_shader
-{
-	name			global
-	shaderop		DefaultDirectLighting
-	shaderop		DefaultReflection
-	shaderop		DefaultRefraction
-	shaderop		DefaultEmission
-}
-
-distributiontracing_shaderop
-{
-	name		pt
-	samples		128
-}
-
-# We use an advanced shader to make sure that distribution tracing is only
-# used for the couple of bounces
-
-advanced_shader
-{
-	name			pt							
-	shaderop		pt	0	2 	+
-	shaderop		DefaultDirectLighting	2   10	+
-}
-
-pixelpel_rasterizer
-{
-	max_recursion		10
-	samples				1
-	lum_samples			4
-	show_luminaires		FALSE
-	pixel_filter		catmull-rom
-}
-
-file_rasterizeroutput
-{
-	pattern				rendered/different_rmaps
-	type				PNG
-	bpp					8
-	color_space			sRGB
-}
-
-##################################################
-# Cameras
-##################################################
-
-film
-{
-	width			600
-	height			300
-}
-
-pinhole_camera
-{
-	location			0 0.4 3.5
-	lookat				0 0 0
-	up					0 1 0
-	fov					14.0
-}
-
-##################################################
-# Painters
 ##################################################
 
 #############################################################################################################
@@ -194,12 +108,37 @@ uniformcolor_painter
 
 
 
+uniformcolor_painter
+{
+	name		color_slateblue
+	color		0.0 0.498039 1.0 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 uniformcolor_painter
 {
-	name		color_steelblue
-	color		0.137255 0.419608 0.556863 
+	name		color_darkpurple
+	color		0.53 0.12 0.47 
 }
 
 
@@ -224,30 +163,6 @@ uniformcolor_painter
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-##################################################
-# Materials
-##################################################
 
 lambertian_material
 {
@@ -255,106 +170,203 @@ lambertian_material
 	reflectance			color_white
 }
 
+directlighting_shaderop
+{
+	name		sss_dl
+	bsdf		white
+}
+
+standard_shader
+{
+	name		sss_irrad
+	shaderop	sss_dl
+}
+
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			5000
+	irrad_scale			120
+	geometric_scale 	10
+	extinction			0.01 0.01 0.01	
+	multiplybsdf		TRUE
+
+	shader				sss_irrad
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	sss
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/legacy_translucent_bunny/frame
+	type				PNG
+	bpp				8
+	color_space			sRGB
+	multiple			TRUE
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			1024
+	height			1024
+}
+
+pinhole_camera
+{
+	location			0 0 0.4
+	lookat				0 0 0
+	up					0 1 0
+	fov					30.0
+}
+
+
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			60.000000000000
+}
+
+##################################################
+# Painters
+##################################################
+
+
+##################################################
+# Materials
+##################################################
+
+iridescent_painter
+{
+	name				pnt_iri
+	colora				color_darkpurple
+	colorb				color_slateblue
+	bias				-0.5
+}
+
+translucent_material
+{
+	name				trans
+	ref					pnt_iri
+	tau					pnt_iri
+	ext			0
+}
+/*
 lambertian_luminaire_material
 {
-	name				white_lum
+	name				lum
 	exitance			color_white
-	scale				25.0
-	material			white
+	scale				100.0
+	material			none
 }
-
-polished_material
-{
-	name				polished
-	reflectance			color_steelblue
-	tau			1
-	ior					1.57
-	scattering			10000
-}
-
-perfectrefractor_material
-{
-	name				glass
-	refractance			color_white
-	ior					1.57
-}
-
-perfectreflector_material
-{
-	name				mirror
-	reflectance			color_white
-}
-
+*/
 ##################################################
-# Objects - plane
+# Objects
 ##################################################
 
-infiniteplane_geometry
+risemesh_geometry
 {
-	name				planegeom
-	xtile				0.2
-	ytile				0.2
+	name			meshgeom
+	file			models/risemesh/bunny.risemesh
 }
 
 standard_object
 {
-	name				planeA
-	geometry			planegeom
-	position			0.0 -0.3 0.0
-	orientation			-90.0 0.0 45.0
-	material			polished
-	shader				pt
-	radiance_map		pnt_rad3
+	name				mesh
+	geometry			meshgeom
+	position			0.02 -0.1 0.0
+	material			trans
 }
-
-##################################################
-# Objects - spheres
-##################################################
-
-sphere_geometry
-{
-	name				spheregeom
-	radius				0.3
-}
-
-standard_object
-{
-	name				sphereA
-	geometry			spheregeom
-	position			0.4 0.0 0.0
-	material			mirror
-	radiance_map		pnt_rad
-}
-
-standard_object
-{
-	name				sphereC
-	geometry			spheregeom
-	position			-0.4 0.0 0.0
-	material			glass
-	radiance_map		pnt_rad2
-}
-
+/*
 clippedplane_geometry
 {
 	name				lightgeom
-	pta					-40.0 0.0 40.0
-	ptb					-40.0 0.0 -40.0
-	ptc					40.0 0.0 -40.0
-	ptd					40.0 0.0 40.0
+	pta					-0.1 -0.1 0
+	ptb					0.1 -0.1 0
+	ptc					0.1 0.1 0
+	ptd					-0.1 0.1 0
 }
-
-##################################################
-# Lights
-##################################################
 
 standard_object
 {
 	name				light
 	geometry			lightgeom
-	position			0 150.0 0.0
-	orientation			0 0 0
-	material			white_lum
+	material			lum
+	position			0 0.5 0
+	orientation			90 0 0
+}
+*/
+
+omni_light
+{
+	name				light
+	power				2.0
+	position			0 0.5 0
+	color				1.0 1.0 1.0
+}
+
+/*
+directional_light
+{
+	name		light
+	power		3.0
+	color		1.0 1.0 1.0
+	direction	0 1 0
+}
+*/
+
+timeline
+{
+	element_type light
+	element		light
+	param		position
+
+	interpolator hermite
+	
+	time		0.0
+	value		0 0.5 0
+
+	time        0.25
+	value       0 0 0.5
+
+	time        0.5
+	value       0 -0.5 0
+
+	time        0.75
+	value       0 0 -0.5
+
+	time		1.0
+	value		0 0.5 0
+}
+
+timeline
+{
+	element_type	camera
+	param			target_orientation
+	
+	interpolator	hermite
+	
+	time		0.0
+	value		0.0 20
+
+	time		1.0
+	value		0 -20
 }
 
 

@@ -13927,8 +13927,8 @@ namespace RISE
 
 		static const LegacyTierEntry kLegacyTierTable[] = {
 			// ---- R1/R2: legacy shader-op rasterizers ----------------------------------
-			{ "pixelpel_rasterizer",                  true,  "pathtracing_pel_rasterizer (set oidn_denoise FALSE to keep a raw look; for a direct-lighting-only render use max_diffuse_bounce 0)." },
-			{ "pixelintegratingspectral_rasterizer",  true,  "pathtracing_spectral_rasterizer (set oidn_denoise FALSE to keep a raw look)." },
+			{ "pixelpel_rasterizer",                  true,  "pathtracing_pel_rasterizer (leave oidn_denoise as it was -- the legacy rasterizers denoise by default too; for a direct-lighting-only render use max_diffuse_bounce 0; tools/migrate_scenes_legacy_rasterizer.py converts a scene)." },
+			{ "pixelintegratingspectral_rasterizer",  true,  "pathtracing_spectral_rasterizer (leave oidn_denoise as it was -- the legacy rasterizers denoise by default too; tools/migrate_scenes_legacy_rasterizer.py converts a scene)." },
 			// ---- R3: legacy shader-op chain ops (meaningful only under R1/R2) ---------
 			{ "distributiontracing_shaderop",         true,  "pathtracing_pel_rasterizer / pathtracing_spectral_rasterizer (the pure integrators do distribution ray tracing themselves)." },
 			{ "finalgather_shaderop",                 true,  "pathtracing_pel_rasterizer (with OIDN) for global illumination." },

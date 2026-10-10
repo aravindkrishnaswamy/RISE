@@ -15,49 +15,22 @@ RISE ASCII SCENE 7
 # Setup a renderer
 ##################################################
 
-finalgather_shaderop
-{
-	name				fg
-	samples			1000
-}
-
-standard_shader
-{
-	name				sss_irrad
-	shaderop			DefaultDirectLighting
-	shaderop			DefaultGlobalPelPhotonMap
-}
-
-simple_sss_shaderop
-{
-	name				sss
-	numpoints			10000
-	irrad_scale			130
-	geometric_scale 		0.2
-	extinction			0.09 0.02 0.03
-
-	shader				sss_irrad
-}
-
 standard_shader
 {
 	name				global
-	shaderop			DefaultDirectLighting
-	shaderop			fg
-	shaderop			DefaultEmission
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
 	name				sss
-	shaderop			sss
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				9
-	lum_samples			9
+	samples				64
 	pixel_filter		tent
 	pixel_filter_width	1.7
 	pixel_filter_height	1.7
@@ -249,7 +222,8 @@ lambertian_luminaire_material
 	name				lum
 	exitance			color_white
 	# DL-320 (2026-09-28): 10 -> 8.2.  The panel is double-sided and sits close to the left wall; since DL-320 its back face lights that wall (it used to leave a dark patch there), and the bounce brightened the dragon by ~23 %.  8.2 returns the dragon to within ~3.5 % (about one sd of the measurement) of its pre-DL-320 level, erring bright rather than dark.
-	scale				8.2
+	# Phase 2 slice B1 retune (owner-approved): scale 8.2 -> 3.8; the legacy final gather truncated the bounces in this albedo-1.0 box, and full path tracing read 2.2x brighter
+	scale				3.8
 	material			none
 }
 
@@ -263,6 +237,17 @@ risemesh_geometry
 	file			models/risemesh/dragon_small.risemesh
 }
 
+# Converted from simple_sss_shaderop `sss` (point-cloud SSS, frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
+#   Christensen-Burley match: albedo 0.0493827 0.95 0.444444 (colour material `white`, x the op's 1/extinction^2 channel weights, clamped to [0.01, 0.95]), profile tail falloff = extinction x 1000 x geometric_scale 0.2 = 18 4 6 per unit.
+subsurfacescattering_material
+{
+	name			sss_sss_white
+	ior			1.3
+	absorption	13.4289 0.583232 5.26864
+	scattering	0.697604 11.0814 4.21491
+	g			0
+}
+
 standard_object
 {
 	name				mesh
@@ -270,7 +255,7 @@ standard_object
 	orientation			0 30 0
 	position			1 -5.6 0
 	scale				40 40 40
-	material			white
+	material			sss_sss_white
 	shader				sss
 }
 
@@ -345,26 +330,6 @@ standard_object
 	material			lum
 	position			-5.5 0 0
 	orientation			0 90 0
-}
-
-global_pel_photonmap
-{
-	num					100000
-	max_recursion		5
-	min_importance		0.01
-}
-
-global_pel_gather
-{
-	max_photons		200
-	ellipse_ratio		0.0005
-}
-
-irradiance_cache
-{
-	size				100
-	tolerance			0.1
-	min_spacing			0.02
 }
 
 

@@ -72,7 +72,7 @@ pixelpel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/fabric_presets
+	pattern				rendered/legacy_fabric_presets
 	type				PNG
 	bpp					8
 	color_space			sRGB

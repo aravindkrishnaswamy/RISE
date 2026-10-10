@@ -18,11 +18,7 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	DefaultCausticPelPhotonMap
-	shaderop	DefaultEmission
-	shaderop	DefaultReflection
-	shaderop	DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
 hdr_painter
@@ -31,13 +27,15 @@ hdr_painter
 	file				lightprobes/uffizi_probe.hdr
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt --sms, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		6
-	samples				16
-	lum_samples			4
+	samples				64
 	radiance_map		pnt_env
 	radiance_background	TRUE
+	sms_enabled		TRUE
+	# Phase 2 slice B1 retune (owner-approved): radiance_scale 1 -> 0.85 (measured 1.540 vs legacy 1.533); the legacy global photon map under-counted the indirect light the path tracer now adds
+	radiance_scale		0.85
 }
 
 file_rasterizeroutput
@@ -463,43 +461,3 @@ spot_light
 	inner				10
 	outer				25
 }
-
-##################################################
-# Photon map settings
-##################################################
-
-caustic_pel_photonmap
-{
-	num					100000
-	max_recursion		10
-	min_importance		0.001
-	power_scale			5.311
-	branch				TRUE
-	reflect				TRUE
-	refract				TRUE
-	shootFromNonMeshLights		TRUE
-}
-
-caustic_pel_gather
-{
-	max_photons			200
-	radius				0.5
-	ellipse_ratio		0.05
-}
-
-global_pel_photonmap
-{
-	num					5000
-	max_recursion		5
-	min_importance		0.01
-	branch				FALSE
-}
-
-global_pel_gather
-{
-	max_photons			80
-	radius				0.5
-	ellipse_ratio		0.05
-}
-
-

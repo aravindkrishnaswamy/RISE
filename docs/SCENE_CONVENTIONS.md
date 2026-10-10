@@ -1573,6 +1573,14 @@ unlike ambient it is occluded, so creases darken -- owner ruling #5],
 dispatch keyword, `DeprecatedChunkAliasReplacement`, because it shares the
 supported chunk's descriptor).
 
+**Frozen PARAMETER** (owner-approved 2026-10-10, legacy-deprecation Phase 2 slice B1): an
+OBJECT's own `radiance_map` (on `standard_object` and the other object chunks).  Only the frozen
+legacy shader-op chain honours it (its ops hand `RayIntersection::pRadianceMap` to the rays they
+cast); `pathtracing_*`, `bdpt_*` and `vcm_*` rasterizers ignore it and read only the rasterizer's
+own `radiance_map`.  A scene that sets one under a supported rasterizer logs ONE load warning saying
+so (pinned by `tests/DeprecatedMaterialWarningTest.cpp`); nothing renders differently.  Its one
+scene, `different_rmaps`, lives unmigrated in `scenes/Tests/Legacy/`.
+
 **Kept SUPPORTED** by ruling or as infrastructure: `translucent_material` (#11),
 `biospec_skin_material` / `generic_human_tissue_material` (#12),
 `datadriven_material`, `bezierpatch_geometry`, both SSS material models, the
@@ -1584,6 +1592,10 @@ rasterizer classes PT derives from.
 **Migrating a scene off the legacy pixel rasterizers** (Phase 2, 2026-10-10):
 `tools/migrate_scenes_legacy_rasterizer.py --mode pt|direct|renames [--dry-run]`.
 `--mode pt` handles a chain that is only path tracing (look kept up to noise);
+`--mode full [--integrator pt|bdpt|vcm] [--sms]` handles every other legacy
+chain (Whitted reflection / refraction, distribution tracing, final gather,
+photon maps, irradiance cache, ambient occlusion, the point-cloud SSS ops and
+`arealight_shaderop`; see the tool's docstring for each conversion);
 `--mode direct` handles a direct-lighting-only chain (plus `DefaultEmission` and
 uniform `transparency_shaderop` / `alpha_test_shaderop`, turned into material
 alpha) and writes `max_diffuse_bounce 0` (owner ruling #3a; the look changes:
@@ -1591,10 +1603,15 @@ specular paths and MIS emitter hits now contribute); `--mode renames` renames
 the `mis_pathtracing_shaderop` alias and turns `onb_pinhole_camera` into
 `pinhole_camera`.  Things to know when doing it by hand: the path tracers do not
 accept `max_recursion`, `lum_samples`, `luminary_sampler*`, `filter_glossy`,
-`integrate_rgb` or `rgb_spd*`; the legacy `samples` default is **1** where the
-path tracers' is 32, so write `samples` explicitly; the legacy rasterizers ALSO
-denoise with OIDN by default, so leave `oidn_denoise` as it was; SMS settings on
-a `pathtracing_shaderop` move to the rasterizer's `sms_*` parameters; and point
+`integrate_rgb` or `rgb_spd*` (`lum_samples` and `luminary_sampler` were inert
+anyway: the luminary manager stores the sampler and never reads it); the legacy
+`samples` default is **1** where the path tracers' is 32, so write `samples`
+explicitly; the legacy rasterizers ALSO denoise with OIDN by default, so leave
+`oidn_denoise` as it was; SMS settings on a `pathtracing_shaderop` move to the
+rasterizer's `sms_*` parameters -- write ALL five of the op's effective values,
+because the op's defaults are not the rasterizer's (`sms_max_chain_depth` is 10
+on the op and 30 on the rasterizer), and the rasterizer setting is global, so the
+ops a scene uses must agree; and point
 `defaultshader` at a `DefaultPathTracing` chain (PT's SSS continuation shades
 through it).  Scenes that keep a frozen chunk's only regression render live
 verbatim in `scenes/Tests/Legacy/`.

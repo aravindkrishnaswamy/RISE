@@ -21,12 +21,7 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name				global
-	shaderop			DefaultDirectLighting
-	shaderop			DefaultGlobalPelPhotonMap
-	shaderop			DefaultCausticPelPhotonMap
-	shaderop			DefaultEmission
-	shaderop			DefaultReflection
-	shaderop			DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
 hdr_painter
@@ -35,14 +30,14 @@ hdr_painter
 	file				lightprobes/stpeters_probe.hdr
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt --sms, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		6
-	samples				6
-	lum_samples			6
+	samples				64
 	radiance_map		pnt_env
 	radiance_scale		0.35
 	radiance_background	FALSE
+	sms_enabled		TRUE
 }
 
 file_rasterizeroutput
@@ -317,7 +312,8 @@ lambertian_luminaire_material
 {
 	name				ceiling_lum
 	exitance			pnt_emit
-	scale				12000.0
+	# Phase 2 slice B1 retune (owner-approved): scale 12000.0 -> 5.5; with the disks flipped to face the room (they faced the ceiling 8 cm above), 5.5 / 4.58 restores the legacy mean (0.219 vs 0.220)
+	scale				5.5
 	material			none
 }
 
@@ -325,7 +321,8 @@ lambertian_luminaire_material
 {
 	name				ceiling_lum_cool
 	exitance			pnt_emit_cool
-	scale				10000.0
+	# Phase 2 slice B1 retune (owner-approved): scale 10000.0 -> 4.58; with the disks flipped to face the room (they faced the ceiling 8 cm above), 5.5 / 4.58 restores the legacy mean (0.219 vs 0.220)
+	scale				4.58
 	material			none
 }
 
@@ -952,7 +949,9 @@ standard_object
 	{
 		name			ceilingdiskwarm-1.000000000000
 		geometry		lightdiskgeom
+		# Phase 2 slice B1 (owner-approved): flipped to emit DOWN into the room; the one-sided disk faced the ceiling 8 cm above it
 		position		-2.250000000000 5.92 -2.2
+		orientation		180 0 0
 		material		ceiling_lum
 	}
 
@@ -960,7 +959,9 @@ standard_object
 	{
 		name			ceilingdiskcool-1.000000000000
 		geometry		lightdiskgeom
+		# Phase 2 slice B1 (owner-approved): flipped to emit DOWN into the room; the one-sided disk faced the ceiling 8 cm above it
 		position		-2.250000000000 5.92 0.0
+		orientation		180 0 0
 		material		ceiling_lum_cool
 	}
 
@@ -971,7 +972,9 @@ standard_object
 	{
 		name			ceilingdiskwarm0.000000000000
 		geometry		lightdiskgeom
+		# Phase 2 slice B1 (owner-approved): flipped to emit DOWN into the room; the one-sided disk faced the ceiling 8 cm above it
 		position		0.000000000000 5.92 -2.2
+		orientation		180 0 0
 		material		ceiling_lum
 	}
 
@@ -979,7 +982,9 @@ standard_object
 	{
 		name			ceilingdiskcool0.000000000000
 		geometry		lightdiskgeom
+		# Phase 2 slice B1 (owner-approved): flipped to emit DOWN into the room; the one-sided disk faced the ceiling 8 cm above it
 		position		0.000000000000 5.92 0.0
+		orientation		180 0 0
 		material		ceiling_lum_cool
 	}
 
@@ -990,7 +995,9 @@ standard_object
 	{
 		name			ceilingdiskwarm1.000000000000
 		geometry		lightdiskgeom
+		# Phase 2 slice B1 (owner-approved): flipped to emit DOWN into the room; the one-sided disk faced the ceiling 8 cm above it
 		position		2.250000000000 5.92 -2.2
+		orientation		180 0 0
 		material		ceiling_lum
 	}
 
@@ -998,7 +1005,9 @@ standard_object
 	{
 		name			ceilingdiskcool1.000000000000
 		geometry		lightdiskgeom
+		# Phase 2 slice B1 (owner-approved): flipped to emit DOWN into the room; the one-sided disk faced the ceiling 8 cm above it
 		position		2.250000000000 5.92 0.0
+		orientation		180 0 0
 		material		ceiling_lum_cool
 	}
 
@@ -1351,44 +1360,3 @@ spot_light
 	outer				36
 	shootphotons		FALSE
 }
-
-##################################################
-# Photon map settings
-##################################################
-
-caustic_pel_photonmap
-{
-	num					10000
-	max_recursion		5
-	min_importance		0.001
-	power_scale			5.311
-	branch				FALSE
-	reflect				TRUE
-	refract				TRUE
-	shootFromNonMeshLights		TRUE
-	shootFromMeshLights			FALSE
-}
-
-caustic_pel_gather
-{
-	max_photons			120
-	radius				0.035
-	ellipse_ratio		0.03
-}
-
-global_pel_photonmap
-{
-	num					10000
-	max_recursion		5
-	min_importance		0.005
-	branch				FALSE
-}
-
-global_pel_gather
-{
-	max_photons			150
-	radius				0.18
-	ellipse_ratio		0.05
-}
-
-

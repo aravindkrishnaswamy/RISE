@@ -28,7 +28,7 @@ pixelintegratingspectral_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/uniform_green_spectral
+	pattern				rendered/legacy_uniform_green_spectral
 	type				PNG
 	bpp				8
 	color_space			sRGB

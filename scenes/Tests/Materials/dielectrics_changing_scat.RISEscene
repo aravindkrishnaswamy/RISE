@@ -28,9 +28,13 @@ pathtracing_shaderop
 	name			pathtracer
 }
 
-# We want to setup an advanced shader to only do reflections on the first couple of bounces
-# so that we can avoid total internal reflection.  The flexibility of the advanced shader
-# lets us do this
+# Historical: under the legacy pixelpel_rasterizer this advanced shader meant to restrict
+# reflections to the first bounces (avoiding total internal reflection), but both ops are
+# path tracers whose `refractions` / `diffuse` lines are ignored legacy parameters, and their
+# overlapping depth ranges (0-1 and 1-10, `+`) made the legacy chain SUM two path tracers at
+# depth 1 (a double count).  Since legacy-deprecation Phase 2 the scene renders with
+# pathtracing_pel_rasterizer, which consults this chain only for PT's SSS continuation (none
+# here): it path-traces every bounce once, with total internal reflection.
 advanced_shader
 {
 	name			global

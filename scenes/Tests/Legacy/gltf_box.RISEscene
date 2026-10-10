@@ -31,7 +31,7 @@ pixelpel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/gltf_box
+	pattern				rendered/legacy_gltf_box
 	type				PNG
 	bpp					8
 	color_space			sRGB

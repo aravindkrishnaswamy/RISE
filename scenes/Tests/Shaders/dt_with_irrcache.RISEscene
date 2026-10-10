@@ -16,37 +16,22 @@ RISE ASCII SCENE 7
 # Setup a renderer
 ##################################################
 
-pathtracing_shaderop
-{
-	name			pt
-}
-
 standard_shader
 {
 	name			global
-	shaderop		pt
-}
-
-distributiontracing_shaderop
-{
-	name				dist
-	samples				10000
-	force_check_emitters	TRUE
-	irradiance_caching	TRUE
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
 	name			dist
-	shaderop		dist
-	shaderop		DefaultEmission
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				4
-	lum_samples			1
+	samples				64
 }
 
 file_rasterizeroutput
@@ -273,13 +258,6 @@ standard_object
 	position			0 -0.05 0
 	material			white
 	shader				dist
-}
-
-irradiance_cache
-{
-	size				1
-	tolerance			0.04
-	min_spacing			0.02
 }
 
 

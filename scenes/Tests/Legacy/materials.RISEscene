@@ -28,7 +28,7 @@ pixelpel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/materials
+	pattern				rendered/legacy_materials
 	type				PNG
 	bpp				16
 	color_space			ProPhotoRGB
