@@ -187,10 +187,16 @@ static bool RenderHash( unsigned long long& hash, double& mean )
 	return ok;
 }
 
-//! Measured on the parent commit f03359223 (no deprecation code).
-//! Measured by building f03359223 verbatim (library + this test) and running
-//! the test in a fresh process three times: mean 0.607363772, hash identical.
-static const unsigned long long kParentHash = 0x13c3910b9964ab63ull;
+//! RE-PINNED 2026-10-09 (legacy-deprecation Phase 1, owner ruling #17: a
+//! frozen-feature test is re-pinned, not fixed).  The original constant
+//! 0x13c3910b9964ab63 (mean 0.607363772) was measured on f03359223; supported
+//! changes since then moved this scene (it binds ggx / translucent / lambertian
+//! controls and the legacy SPFs it shares code with), and the test was already
+//! RED on master 4694f511c.  The value below was measured by building
+//! 4694f511c verbatim (library + this test) and running it: mean 0.666687203,
+//! hash a4e972d01879f63c -- identical to the legacy-phase1 build, which is the
+//! bit-identity proof for the frozen tier on these seven materials.
+static const unsigned long long kParentHash = 0xa4e972d01879f63cull;
 
 static char g_optPath[512] = { 0 };
 
