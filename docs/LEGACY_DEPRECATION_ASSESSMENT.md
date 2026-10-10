@@ -643,10 +643,13 @@ pixel-rasterizer families):**
   `radiance_scale` 0.85 (measured), `sss` omni 500000 -> 280, `sss_different_bsdf` omni
   x11.4, `sss_ibl` `radiance_scale` 0.78, `caustic_sss` spot x18.  `photon_cloister`'s
   one-sided ceiling disks, which faced the ceiling 8 cm above them, were FLIPPED to emit
-  into the room and their scales set to 5.5 / 4.58 (from 12000 / 10000).
+  into the room and their scales set to 5.5 / 4.58 (from 12000 / 10000); re-measured over 12
+  salts it reads 0.2187 against a legacy 0.2438 whose 6-spp photon-map image is
+  firefly-dominated (salt sd 12%, standard error 0.008), so the retune target (a 3-salt 0.2198)
+  is within the legacy noise and was not chased further.
   `spotlight_drama`'s dragon was re-authored as green jade (Christensen-Burley SSS with the
   authored jade colour 0.15 0.25 0.15 as albedo, 10-per-unit falloff) and every light
-  scaled x0.29; whole image 1.010 vs legacy 1.010, dragon region 0.41 vs 0.074 (5.6x, from
+  scaled (spots x0.2904, backlight x0.29); whole image 1.010 vs legacy 1.010, dragon region 0.41 vs 0.074 (5.6x, from
   84x migrated).  Under the scene's red and blue spots the jade reads lavender-pink, not
   green (median dragon pixel 0.74 0.27 0.34); a green read needs a whiter key on the dragon,
   which is a lighting-design call.

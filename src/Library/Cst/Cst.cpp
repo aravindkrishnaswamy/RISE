@@ -3394,7 +3394,15 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// nothing about the derive changes.
 	int objectRadianceMaps = 0;
 	std::string firstObjectWithRadianceMap;
-	std::string supportedRasterizer;
+	// The ACTIVE rasterizer is the last one declared (Job::RegisterRasterizer activates each
+	// new one).  Matched by keyword: the Rasterizer category also holds file_rasterizeroutput
+	// and light_rr_threshold, which are not rasterizers.
+	static const char* const kRasterizerKeywords_[] = {
+		"pixelpel_rasterizer", "pixelintegratingspectral_rasterizer",
+		"pathtracing_pel_rasterizer", "pathtracing_spectral_rasterizer",
+		"bdpt_pel_rasterizer", "bdpt_spectral_rasterizer", "vcm_pel_rasterizer", "vcm_spectral_rasterizer",
+		"auto_rasterizer", "auto_spectral_rasterizer", "mlt_rasterizer", "mlt_spectral_rasterizer" };
+	std::string activeRasterizer;
 	for( Pending& p : pending ) {
 		if( !p.isSourceInstance && p.parser ) {
 			const std::string& kwp = p.keyword;
@@ -3405,9 +3413,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 					if( objectRadianceMaps++ == 0 ) firstObjectWithRadianceMap = p.bag.GetString( "name", "noname" );
 				}
 			}
-			if( catp == ChunkCategory::Rasterizer && supportedRasterizer.empty()
-			    && kwp != "pixelpel_rasterizer" && kwp != "pixelintegratingspectral_rasterizer" )
-				supportedRasterizer = kwp;
+			if( catp == ChunkCategory::Rasterizer )
+				for( const char* rk : kRasterizerKeywords_ )
+					if( kwp == rk ) { activeRasterizer = kwp; break; }
 		}
 		// scene_variant bake (doc 63): apply the ACTIVE definition per material name.  An active override is applied at
 		// its overridden BASE's slot (so objects bind it by name regardless of the override chunk's file position -- the
@@ -3492,7 +3500,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 				"See docs/SCENE_CONVENTIONS.md \"Legacy tiers\" for the full legacy -> modern table.",
 				d.keyword.c_str(), d.count, d.replacement.c_str() );
 	}
-	if( warnDeprecated && objectRadianceMaps > 0 && !supportedRasterizer.empty() )
+	const std::string& supportedRasterizer = activeRasterizer;
+	if( warnDeprecated && objectRadianceMaps > 0 && !activeRasterizer.empty()
+	    && activeRasterizer != "pixelpel_rasterizer" && activeRasterizer != "pixelintegratingspectral_rasterizer" )
 		GlobalLog()->PrintEx( eLog_Warning,
 			"DeriveToJob:: %d object(s) set their own `radiance_map` (first: `%s`), which is LEGACY and UNSUPPORTED "
 			"(frozen 2026-10-10): only the frozen legacy shader-op chain (pixelpel_rasterizer / "

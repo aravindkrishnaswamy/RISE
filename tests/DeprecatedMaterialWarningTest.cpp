@@ -319,6 +319,18 @@ int main()
 			{ "vcm_pel_rasterizer\n{\n}\n",         true,  1, "VCM + object maps: one warning" },
 			{ "pixelpel_rasterizer\n{\n}\n",        true,  0, "the legacy chain honours them: no object-map warning" },
 			{ "pathtracing_pel_rasterizer\n{\n}\n", false, 0, "no object map: no warning" },
+			// P2-1 (slice-B1 final review): non-rasterizer chunks of the Rasterizer
+			// category must not count as a modern rasterizer, a rasterizer-level map is
+			// supported, and the LAST declared rasterizer is the active one.
+			{ "pixelpel_rasterizer\n{\n}\nlight_rr_threshold\n{\nthreshold 0.5\n}\n"
+			  "file_rasterizeroutput\n{\npattern rendered/x\ntype PNG\n}\n",
+			  true,  0, "legacy scene with light_rr_threshold / file_rasterizeroutput: no warning" },
+			{ "pathtracing_pel_rasterizer\n{\nradiance_map pnt\n}\n", false, 0,
+			  "only the rasterizer-level radiance_map: no warning" },
+			{ "pathtracing_pel_rasterizer\n{\n}\npixelpel_rasterizer\n{\n}\n", true, 0,
+			  "last declared (active) rasterizer is legacy: no warning" },
+			{ "pixelpel_rasterizer\n{\n}\nvcm_pel_rasterizer\n{\n}\n", true, 1,
+			  "last declared (active) rasterizer is VCM: one warning" },
 		};
 		for( const Case& c : cases ) {
 			std::string body = objs;
@@ -337,7 +349,10 @@ int main()
 				const std::string m = log->First( needle );
 				Check( m.find( "2 object(s)" ) != std::string::npos && m.find( "`o1`" ) != std::string::npos,
 					std::string( "[object-rmap] " ) + c.what + ": counts both objects and names the first" );
-				Check( m.find( std::string( c.raster ).substr( 0, std::string( c.raster ).find( '\n' ) ) ) != std::string::npos,
+				const std::string rs( c.raster );
+				const size_t lastKw = rs.rfind( "_rasterizer\n{" );
+				const size_t kwStart = rs.rfind( '\n', lastKw ) == std::string::npos ? 0 : rs.rfind( '\n', lastKw ) + 1;
+				Check( m.find( "`" + rs.substr( kwStart, lastKw + 11 - kwStart ) + "`" ) != std::string::npos,
 					std::string( "[object-rmap] " ) + c.what + ": names the rasterizer that ignores it" );
 			}
 			j->release();
