@@ -2,7 +2,7 @@
 
 The scenes in this folder are copies of shipped scenes taken just before
 legacy-deprecation Phase 2 migrated the shipped copies off FROZEN features
-(slice A at `master` `6ff502457`, slice B1 at `master` `83aa86d2f`) (see
+(slice A at `master` `6ff502457`, slice B1 at `master` `83aa86d2f`, slice B2 at `master` `5bd23470d`) (see
 [docs/LEGACY_DEPRECATION_ASSESSMENT.md](../../../docs/LEGACY_DEPRECATION_ASSESSMENT.md)
 §11 and the owner rulings in §13).
 
@@ -11,7 +11,7 @@ shipped scene would remove the only regression coverage of a frozen chunk, the
 original is kept here and the test that covered it points here instead.
 
 **Never migrate or edit these files.**  `tools/migrate_scenes_legacy_rasterizer.py`
-skips this folder by design.  They render exactly as they did before the
+and `tools/migrate_scenes_legacy_families.py` skip this folder by design.  They render exactly as they did before the
 migration; a test that pins their render hash measured it on the parent commit.
 The ONE change from the originals is the output file name: every
 `file_rasterizeroutput` writes `rendered/legacy_<name>` so a render of the copy
@@ -38,6 +38,12 @@ image in memory and never see the file name).
 | `spectral_dispersive_caustic.RISEscene` | `scenes/Tests/Spectral/` | `caustic_spectral_photonmap` / gather under `pixelintegratingspectral_rasterizer` | `LegacyTierRenderIdentityTest` |
 | `different_rmaps.RISEscene` | `scenes/Tests/Shaders/` | per-object `radiance_map` (frozen: only the legacy chain honours it), `distributiontracing_shaderop`; MOVED here, not copied -- it was never migrated | `LegacyTierRenderIdentityTest` |
 | `dt_with_irrcache.RISEscene` | `scenes/Tests/Shaders/` | `distributiontracing_shaderop` with `irradiance_caching` and no direct-lighting sibling (DL-209's chain shape) | `LegacyTierRenderIdentityTest` |
+| `cooktorrance_multiscatter_test.RISEscene` | `scenes/Tests/Materials/` | `cooktorrance_material` multiscatter compensation (its subject); MOVED here, not copied | `CstDeriveGoldenTest` |
+| `cooktorrance_vndf_test.RISEscene` | `scenes/Tests/Materials/` | `cooktorrance_material` VNDF sampling (its subject); MOVED here, not copied | `CstDeriveGoldenTest` |
+| `ggx_vs_cooktorrance.RISEscene` | `scenes/Tests/Materials/` | `cooktorrance_material` beside `ggx_material` (a comparison that migration would make meaningless); MOVED here, not copied | `CstDeriveGoldenTest` |
+| `cornellbox_mlt_fast.RISEscene` | `scenes/Tests/MLT/` | `mlt_rasterizer` (slice B2 migrated the shipped copy to BDPT) | `CstDeriveGoldenTest` (MLT is not hash-pinnable: not reproducible run to run) |
+| `mlt_deep_fog.RISEscene` | `scenes/Tests/MLT/` | `mlt_rasterizer` through a medium (the PSSMLT walk-stream layout notes cite it) | `CstDeriveGoldenTest` |
+| `mlt_deep_fog_spectral.RISEscene` | `scenes/Tests/MLT/` | `mlt_spectral_rasterizer` | `CstDeriveGoldenTest` |
 
 The ChunkCoverage `cc_*` scenes for frozen and deprecated chunks
 (`scenes/Tests/ChunkCoverage/`) are coverage-only scenes and stay where they

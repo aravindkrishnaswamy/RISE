@@ -2,11 +2,10 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           cooktorrance_multiscatter_test.RISEscene                                                #
-#   Description:    Torture test for Kulla-Conty multiscattering energy compensation. Eight metallic         #
-#                   spheres at roughness 0.01 to 1.0 in a Cornell box. Top row: gold (IOR=2.5, k=3.0).     #
-#                   Bottom row: copper (IOR=0.21, k=3.6). High-roughness spheres should appear              #
-#                   significantly brighter with Kulla-Conty than without.                                   #
+#   File:           cooktorrance_vndf_test.RISEscene                                                        #
+#   Description:    Torture test for CookTorrance VNDF sampling. Six metallic spheres with varying           #
+#                   roughness (0.01 to 0.8) in a Cornell box. Tests VNDF at grazing angles, near-mirror,    #
+#                   and very rough configurations.                                                           #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      March 28, 2026                                                                          #
 #                                                                                                           #
@@ -26,12 +25,12 @@ bdpt_pel_rasterizer
 {
 	max_eye_depth		10
 	max_light_depth		8
-	samples				128
+	samples				64
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/cooktorrance_multiscatter_test
+	pattern				rendered/legacy_cooktorrance_vndf_test
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -227,19 +226,20 @@ uniformcolor_painter
 	color				1.0 0.85 0.35
 }
 
-uniformcolor_painter
-{
-	name				pnt_copper_spec
-	color				0.98 0.72 0.52
-}
+# Roughness painters for each sphere
+
+
+
+
+
 
 ##################################################
-# Materials - Gold row (IOR=2.5, k=3.0): alpha 0.01, 0.1, 0.5, 1.0
+# Materials - 6 CookTorrance at varying roughness
 ##################################################
 
 cooktorrance_material
 {
-	name				mat_gold_001
+	name				mat_ct_001
 	rd					pnt_black
 	rs					pnt_gold_spec
 	facets				0.01
@@ -249,7 +249,17 @@ cooktorrance_material
 
 cooktorrance_material
 {
-	name				mat_gold_01
+	name				mat_ct_005
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.05
+	ior					2.5
+	extinction			3.0
+}
+
+cooktorrance_material
+{
+	name				mat_ct_01
 	rd					pnt_black
 	rs					pnt_gold_spec
 	facets				0.1
@@ -259,7 +269,17 @@ cooktorrance_material
 
 cooktorrance_material
 {
-	name				mat_gold_05
+	name				mat_ct_03
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.3
+	ior					2.5
+	extinction			3.0
+}
+
+cooktorrance_material
+{
+	name				mat_ct_05
 	rd					pnt_black
 	rs					pnt_gold_spec
 	facets				0.5
@@ -269,56 +289,12 @@ cooktorrance_material
 
 cooktorrance_material
 {
-	name				mat_gold_10
+	name				mat_ct_08
 	rd					pnt_black
 	rs					pnt_gold_spec
-	facets				1.0
+	facets				0.8
 	ior					2.5
 	extinction			3.0
-}
-
-##################################################
-# Materials - Copper row (IOR=0.21, k=3.6): alpha 0.01, 0.1, 0.5, 1.0
-##################################################
-
-cooktorrance_material
-{
-	name				mat_copper_001
-	rd					pnt_black
-	rs					pnt_copper_spec
-	facets				0.01
-	ior					0.21
-	extinction			3.6
-}
-
-cooktorrance_material
-{
-	name				mat_copper_01
-	rd					pnt_black
-	rs					pnt_copper_spec
-	facets				0.1
-	ior					0.21
-	extinction			3.6
-}
-
-cooktorrance_material
-{
-	name				mat_copper_05
-	rd					pnt_black
-	rs					pnt_copper_spec
-	facets				0.5
-	ior					0.21
-	extinction			3.6
-}
-
-cooktorrance_material
-{
-	name				mat_copper_10
-	rd					pnt_black
-	rs					pnt_copper_spec
-	facets				1.0
-	ior					0.21
-	extinction			3.6
 }
 
 # Wall and light materials
@@ -459,75 +435,59 @@ sphere_geometry
 }
 
 ##################################################
-# Top row (gold): alpha = 0.01, 0.1, 0.5, 1.0
+# Row 1 (back, y=380): alpha = 0.01, 0.05, 0.1
 ##################################################
 
 standard_object
 {
-	name				sphere_gold_001
+	name				sphere_001
 	geometry			spheregeom
-	position			100 380 350
-	material			mat_gold_001
+	position			140 380 350
+	material			mat_ct_001
 }
 
 standard_object
 {
-	name				sphere_gold_01
+	name				sphere_005
 	geometry			spheregeom
-	position			230 380 350
-	material			mat_gold_01
+	position			278 380 350
+	material			mat_ct_005
 }
 
 standard_object
 {
-	name				sphere_gold_05
+	name				sphere_01
 	geometry			spheregeom
-	position			360 380 350
-	material			mat_gold_05
-}
-
-standard_object
-{
-	name				sphere_gold_10
-	geometry			spheregeom
-	position			490 380 350
-	material			mat_gold_10
+	position			416 380 350
+	material			mat_ct_01
 }
 
 ##################################################
-# Bottom row (copper): alpha = 0.01, 0.1, 0.5, 1.0
+# Row 2 (front, y=160): alpha = 0.3, 0.5, 0.8
 ##################################################
 
 standard_object
 {
-	name				sphere_copper_001
+	name				sphere_03
 	geometry			spheregeom
-	position			100 160 220
-	material			mat_copper_001
+	position			140 160 220
+	material			mat_ct_03
 }
 
 standard_object
 {
-	name				sphere_copper_01
+	name				sphere_05
 	geometry			spheregeom
-	position			230 160 220
-	material			mat_copper_01
+	position			278 160 220
+	material			mat_ct_05
 }
 
 standard_object
 {
-	name				sphere_copper_05
+	name				sphere_08
 	geometry			spheregeom
-	position			360 160 220
-	material			mat_copper_05
-}
-
-standard_object
-{
-	name				sphere_copper_10
-	geometry			spheregeom
-	position			490 160 220
-	material			mat_copper_10
+	position			416 160 220
+	material			mat_ct_08
 }
 
 
