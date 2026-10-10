@@ -38,11 +38,10 @@ advanced_shader
 	shaderop		pathtracer_noreflections	1 10		+
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
 	samples				256
-	lum_samples			4
 	pixel_filter		tent
 	pixel_filter_width	1.7
 	pixel_filter_height	1.7

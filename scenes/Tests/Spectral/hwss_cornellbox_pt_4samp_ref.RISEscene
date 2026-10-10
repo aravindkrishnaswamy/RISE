@@ -17,15 +17,14 @@ standard_shader
 	shaderop	pathtracer
 }
 
-pixelintegratingspectral_rasterizer
+# Migrated from pixelintegratingspectral_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_spectral_rasterizer
 {
 	samples					64
-	lum_samples				1
 	spectral_samples		4
 	nmbegin					405
 	nmend					705
 	num_wavelengths			8
-	max_recursion			5
 	hwss					false
 }
 
