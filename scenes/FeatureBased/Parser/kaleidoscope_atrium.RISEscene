@@ -3546,6 +3546,13 @@ standard_object
 
 ##################################################
 # Loop-generated light rig
+#
+# Legacy phase 2 slice C retune (B1/B2 owner precedent): every light power
+# x0.951.  Moving off the legacy pixel rasterizer added the indirect light the
+# old direct-lighting / Whitted chains never computed (+16%, PT bounce 0 vs
+# full GI), and the GGX / coated materials dropped energy the legacy models
+# invented (-5.5%); net +5.2%.  Both are legacy biases, so the whole-image
+# mean is restored to the legacy image's (powers were 80 / 132 / 95 / 35).
 ##################################################
 
 
@@ -3553,7 +3560,7 @@ standard_object
 	omni_light
 	{
 		name			light0.000000000000
-		power			80
+		power			76.08
 		color			0.865922011884 0.895029118760 0.701197161074
 		colorspace		sRGB
 		position		8.314915792601 8.8 2.678784026557
@@ -3565,7 +3572,7 @@ standard_object
 	omni_light
 	{
 		name			light1.000000000000
-		power			80
+		power			76.08
 		color			0.870295702110 0.891244438081 0.700618613309
 		colorspace		sRGB
 		position		8.171332554408 8.8 2.933915956404
@@ -3577,7 +3584,7 @@ standard_object
 	omni_light
 	{
 		name			light2.000000000000
-		power			80
+		power			76.08
 		color			0.874589777526 0.887346982112 0.700229038477
 		colorspace		sRGB
 		position		8.014814630831 8.8 3.184403689042
@@ -3589,7 +3596,7 @@ standard_object
 	omni_light
 	{
 		name			light3.000000000000
-		power			80
+		power			76.08
 		color			0.878797440893 0.883342920273 0.700029053249
 		colorspace		sRGB
 		position		7.845609779514 8.8 3.429850718762
@@ -3600,7 +3607,7 @@ standard_object
 omni_light
 {
 	name		fill
-	power		132
+	power		125.5
 	color		1.0 0.98 0.94
 	colorspace	sRGB
 	position	0.0 8.2 5.0
@@ -3609,7 +3616,7 @@ omni_light
 omni_light
 {
 	name		fill_left
-	power		95
+	power		90.34
 	color		0.92 0.95 1.0
 	colorspace	sRGB
 	position	-6.5 6.0 7.5
@@ -3618,7 +3625,7 @@ omni_light
 directional_light
 {
 	name		rim
-	power		35
+	power		33.28
 	color		0.92 0.95 1.0
 	colorspace	sRGB
 	direction	0.2 -1.0 -0.35
