@@ -358,7 +358,8 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack,
 				const Scalar nm,									///< [in] wavelength, or <= 0 for the RGB query
-				const Scalar outerIOR
+				const Scalar outerIOR,
+				const int channel = -1			///< [in] exact RGB channel, or -1 for scalar metadata
 				) const;
 
 			//! DL-407 (2): true when light can cross the whole stack by

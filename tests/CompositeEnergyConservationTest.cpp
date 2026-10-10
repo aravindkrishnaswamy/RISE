@@ -1192,6 +1192,8 @@ static void WarpHistogramChannels( const ISPF* composite, const ISPF* top, const
 	}
 }
 
+static void SectionW2Back( Fixtures& f );
+
 static void SectionW2( Fixtures& f )
 {
 	std::cout << "\n[W2] DL-406: exit-energy histogram per channel, HG and per-channel RGB warped coats vs the independent layer walk (16 x 20000 each)\n";
@@ -1271,6 +1273,7 @@ static void SectionW2( Fixtures& f )
 	s145->release(); s16->release(); g03->release(); g085->release(); s5->release();
 	hg06->release(); hgm03->release(); scatCh->release(); disp->release(); dispHG->release();
 	g06->release(); gm03->release(); scatRGB->release(); iorRGB->release(); gRGB->release();
+	SectionW2Back(f);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -3260,6 +3263,80 @@ static RayIntersectionGeometric MakeSheetIntersection( const Vector3& inDir, con
 	return ri;
 }
 
+// DL-480: the zero-reflection bottom has no second upward response after
+// a top reflection. Its independent native-SPF reference therefore consists
+// of the bottom entry followed by one top event, for each uniform RGB top.
+static void SectionW2Back( Fixtures& f )
+{
+    auto* zero=new UniformColorPainter(RISEPel(0,0,0)); zero->addref();
+    auto* bottom=new TranslucentMaterial(*zero,*f.white,*f.s0,*f.s1,*f.s0); bottom->addref();
+    auto* indices=new RGBScalarPainter(1.6,1.5,1.3); indices->addref();
+    auto* warps=new RGBScalarPainter(.3,.6,.85); warps->addref();
+    auto* top=new DielectricMaterial(*f.s1,*indices,*warps,true); top->addref();
+    auto* composite=MakeComposite(*top,*bottom,3,3,3,3,3,0,*f.s0);
+    auto* bottomKey=new StubObject(); bottomKey->addref();
+    const double index[3]={1.6,1.5,1.3}, warp[3]={.3,.6,.85};
+    UniformScalarPainter* ni[3]; UniformScalarPainter* wi[3]; DielectricMaterial* reference[3];
+    for(int ch=0;ch<3;++ch) {
+        ni[ch]=new UniformScalarPainter(index[ch]); ni[ch]->addref();
+        wi[ch]=new UniformScalarPainter(warp[ch]); wi[ch]->addref();
+        reference[ch]=new DielectricMaterial(*f.s1,*ni[ch],*wi[ch],true); reference[ch]->addref();
+    }
+    constexpr int batches=16, draws=12000;
+    std::vector<double> actual[3][kWarpBins], oracle[3][kWarpBins];
+    for(int batch=0;batch<batches;++batch) {
+        for(int mode=-1;mode<3;++mode) {
+            RandomNumberGenerator rng(480001u+7919u*batch+101u*(mode+1)); IndependentSampler sampler(rng);
+            double sum[3][kWarpBins]{};
+            for(int sample=0;sample<draws;++sample) {
+                const Point3 p(rng.CanonicalRandom()*10,rng.CanonicalRandom()*10,0);
+                auto ri=MakeSheetIntersection(Vector3(0,0,1),p);
+                auto record=[&](const ScatteredRay& ray,const RISEPel& beta) {
+                    const Vector3 d=Vector3Ops::Normalize(ray.ray.Dir());
+                    if(d.z<=0) return;
+                    const int bin=std::min(kWarpBins-1,int(d.z*kWarpBins));
+                    for(int ch=0;ch<3;++ch) sum[ch][bin]+=beta[ch]*ray.kray[ch];
+                };
+                if(mode<0) {
+                    auto stack=MakeTestIORStack(g_stub); ScatteredRayContainer rays;
+                    composite->GetSPF()->Scatter(ri,sampler,rays,stack);
+                    for(unsigned j=0;j<rays.Count();++j) record(rays[j],RISEPel(1,1,1));
+                } else {
+                    auto gap=MakeTestIORStack(g_stub); gap.push(index[mode]);
+                    auto entry=gap; entry.SetCurrentObject(bottomKey); ri.ambientIOR=index[mode];
+                    ScatteredRayContainer first; bottom->GetSPF()->Scatter(ri,sampler,first,entry);
+                    for(unsigned j=0;j<first.Count();++j) {
+                        if(first[j].ray.Dir().z<=0) continue;
+                        auto topRecord=ri; topRecord.bProvablyNoInterior=false;
+                        topRecord.ray.origin=p; topRecord.ray.SetDir(first[j].ray.Dir());
+                        ScatteredRayContainer exits;
+                        reference[mode]->GetSPF()->Scatter(topRecord,sampler,exits,gap);
+                        for(unsigned k=0;k<exits.Count();++k) record(exits[k],first[j].kray);
+                    }
+                }
+            }
+            for(int ch=0;ch<3;++ch) for(int bin=0;bin<kWarpBins;++bin) {
+                if(mode<0) actual[ch][bin].push_back(sum[ch][bin]/draws);
+                else if(ch==mode) oracle[ch][bin].push_back(sum[ch][bin]/draws);
+            }
+        }
+    }
+    auto stats=[](const std::vector<double>& v) {
+        double mean=0,ss=0; for(double x:v) mean+=x; mean/=v.size();
+        for(double x:v) ss+=(x-mean)*(x-mean);
+        return std::make_pair(mean,std::sqrt(ss/(v.size()-1)));
+    };
+    for(int ch=0;ch<3;++ch) for(int bin=0;bin<kWarpBins;++bin) {
+        auto a=stats(actual[ch][bin]), b=stats(oracle[ch][bin]);
+        const double se=std::hypot(a.second,b.second)/std::sqrt(double(batches));
+        std::cout<<std::setprecision(8)<<"DL480 back ch="<<ch<<" bin="<<bin<<" n="<<batches<<" actual="<<a.first<<" sd="<<a.second
+            <<" oracle="<<b.first<<" sd="<<b.second<<" z="<<(a.first-b.first)/se<<"\n";
+        Check(std::fabs(a.first-b.first)<=3*se+1e-5,"[W2] DL-480 back-face channel histogram matches uniform-top native walk");
+    }
+    for(int ch=0;ch<3;++ch) {reference[ch]->release();ni[ch]->release();wi[ch]->release();}
+    bottomKey->release(); composite->release(); top->release(); indices->release(); warps->release(); bottom->release(); zero->release();
+}
+
 static void RunSectionR( const char* label, const IMaterial& m, const bool gateReciprocity )
 {
 	const ISPF& spf = *m.GetSPF();
@@ -3442,6 +3519,11 @@ int main( int argc, char** argv )
 	if( argc > 1 && std::string( argv[1] ) == "--dl296-probe" ) {
 		ProbeLightInside();
 		return 0;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--dl480-only" ) {
+		SectionW2Back(f);
+		std::cout << passCount << " passed, " << failCount << " failed\n";
+		return failCount ? 1 : 0;
 	}
 	if( argc > 1 && std::string( argv[1] ) == "--dl296-only" ) {
 		SectionX();

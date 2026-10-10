@@ -1676,12 +1676,14 @@ transport is all walker).
 * On a dispersive RGB top, `eta` is the walk's gap index (`gap0`), i.e.
   the index of the channel the walk's entry selected; every other channel
   of such a walk carries zero throughput, so that is exact for walks
-  entered from above.  A DL-472 back-face walk (beta 1 in every channel
-  at its bottom entry) still uses one `eta` for all three channels --
-  pre-existing, unchanged.
-* Cost: a per-channel RGB top now scatters the top once per channel (and
-  an HG top twice: delta + perturbed part) per term-(a) evaluation; no
-  shipped scene binds either.
+  entered from above. DL-480 now uses each native refractor painter's
+  RGB index on a back-face walk (beta 1 in every channel at its bottom
+  entry), recursively through composite layers. Unknown custom refractors
+  retain the scalar metadata fallback.
+* DL-480 skips channel connections without bottom throughput, and skips
+  zero-throughput visits within a connection. A live channel evaluates the
+  delta and perturbed components of its warp. No timing change is measured;
+  no shipped scene binds these per-channel tops.
 
 ### 11.5 Gates
 

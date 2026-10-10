@@ -15,6 +15,9 @@
 
 #include "pch.h"
 #include "CompositeSPF.h"
+#include "DielectricSPF.h"
+#include "PerfectRefractorSPF.h"
+#include "PolishedSPF.h"
 #include <optional>
 #include "../Interfaces/ILog.h"
 
@@ -1824,7 +1827,7 @@ namespace RISE
 
 				// One connection: internal direction ux, its weight `adj`.
 				auto connect = [&]( const Vector3& ux, const Scalar Lx, const T& W, const Scalar adj ) {
-					if( !( P::MaxOf( W ) > 0 ) || !( adj > 0 ) ) {
+					if( !( P::MaxOf( P::Mask( W, channel ) ) > 0 ) || !( adj > 0 ) ) {
 						return;
 					}
 					const T aFactor = P::Scaled( P::Mul( W, P::GapAtt( s.extinction, ri, nm, Lx ) ), adj / ( eta * eta ) );
@@ -1834,6 +1837,7 @@ namespace RISE
 						f = f + P::Mul( P::Value( *s.pBottomBSDF, ux, ri, nm, &path.entryStack ), aFactor );
 					}
 					for( size_t i = 0; i < path.betaBot.size(); i++ ) {
+						if( !( P::MaxOf( P::Mask( path.betaBot[i], channel ) ) > 0 ) ) continue;
 						SetLayerRay( rec, ri, path.wBot[i], path.LBot[i], path.gapBot[i] );
 						f = f + P::Mul( P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, ux, rec, nm, &path.gapBot[i] ) ), aFactor );
 					}
@@ -1942,7 +1946,16 @@ namespace RISE
 					}
 					if( perChannel ) {
 						for( int ch = 0; ch < 3; ch++ ) {
-							f = f + P::Mask( ConnectThroughTop<P>( s, ri, wOut, nm, path, laws[ch], ch, eta, hx ), ch );
+							// From-above walks already select one channel. Do not
+							// sample a connection with no bottom throughput.
+							bool live = path.fromBelow;
+							for( const auto& beta : path.betaBot ) live = live || P::MaxOf( P::Mask( beta, ch ) ) > 0;
+							if( !live ) continue;
+							// A back entry carries all channels, while its scalar
+							// gap stack stores only the metadata index (red).
+							const Scalar below = path.fromBelow ? s.BelowMediumIOR( ri, path.out, nm, nGap, ch ) : nGap;
+							const Scalar etaCh = ( below > 0 && nOut > 0 ) ? below / nOut : eta;
+							f = f + P::Mask( ConnectThroughTop<P>( s, ri, wOut, nm, path, laws[ch], ch, etaCh, hx ), ch );
 						}
 					} else {
 						f = f + ConnectThroughTop<P>( s, ri, wOut, nm, path, s.top.DeltaTransmissionWarp( ri, nm, -1 ), -1, eta, hx );
@@ -3249,12 +3262,25 @@ Scalar CompositeSPF::BelowMediumIOR(
 	const RayIntersectionGeometric& ri,
 	const IORStack& ior_stack,
 	const Scalar nm,
-	const Scalar outerIOR
+	const Scalar outerIOR,
+	const int channel
 	) const
 {
 	auto layer = [&]( const ISPF& L, const Scalar fallback ) -> Scalar {
 		if( const CompositeSPF* pc = dynamic_cast<const CompositeSPF*>( &L ) ) {
-			return pc->BelowMediumIOR( ri, ior_stack, nm, fallback );
+			return pc->BelowMediumIOR( ri, ior_stack, nm, fallback, channel );
+		}
+		// RGB indices are painter channels, not spectral interpolation at
+		// representative wavelengths. Native refractors expose their painter.
+		if( nm <= 0 && channel >= 0 && channel < 3 ) {
+			const IScalarPainter* painter = nullptr;
+			if( const auto* d = dynamic_cast<const DielectricSPF*>( &L ) ) painter = &d->GetIOR();
+			else if( const auto* r = dynamic_cast<const PerfectRefractorSPF*>( &L ) ) painter = &r->GetIOR();
+			else if( const auto* p = dynamic_cast<const PolishedSPF*>( &L ) ) painter = &p->GetIOR();
+			if( painter ) {
+				const Scalar index = painter->GetValuesAt( ri ).v[channel];
+				return index > 0 ? index : fallback;
+			}
 		}
 		const SpecularInfo si = ( nm > 0 ) ? L.GetSpecularInfoNM( ri, ior_stack, nm ) : L.GetSpecularInfo( ri, ior_stack );
 		return ( si.valid && si.canRefract && si.ior > 0 ) ? si.ior : fallback;
