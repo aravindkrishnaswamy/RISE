@@ -630,10 +630,43 @@ const IObject* BSSRDFSampling::FindExitContact(
 	if( !r.valid ) {
 		return 0;
 	}
-	const IObject* pTarget = objects.SolidObjectContaining( r.entryPoint, r.entryNormal, pExitObject );
-	if( !pTarget ) {
+	// Candidates: every other body whose box lies within the band's reach
+	// of the launch point -- a touching neighbour, an open sheet the exit
+	// lies on (a ground plane: no interior, so no containment test can see
+	// it), and also any enclosure whose box merely contains the point.
+	// Each is asked by the restricted cast; the band is the arbiter, and
+	// the NEAREST accepted hit wins (DL-408 review: the first containing
+	// candidate used to be an enclosure, whose far face failed the band and
+	// hid the real neighbour).
+	const Point3& p = r.boundaryPoint;
+	const Scalar s = r_max( r_max( fabs( p.x ), fabs( p.y ) ), fabs( p.z ) );
+	const Scalar radius = Scalar( 96 ) * BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
+	static const unsigned int kMaxCandidates = 64;
+	const IObject* cand[kMaxCandidates];
+	const unsigned int n = objects.ObjectsNearPoint( p, radius, pExitObject, cand, kMaxCandidates );
+	if( n == 0 ) {
 		return 0;
 	}
-	RayIntersection probe( ContactRay( r.boundaryPoint, dir ), nullRasterizerState );
-	return IntersectContactRay( objects, pTarget, pExitObject, probe ) ? pTarget : 0;
+	const Ray ray = ContactRay( p, dir );
+	const IObject* best = 0;
+	Scalar bestT = RISE_INFINITY;
+	for( unsigned int k = 0; k < n; ++k ) {
+		RayIntersection probe( ray, nullRasterizerState );
+		if( !IntersectContactRay( objects, cand[k], pExitObject, probe ) ) {
+			continue;
+		}
+		if( !( probe.geometric.range < bestT ) ) {
+			continue;
+		}
+		// A body coincident with the exit face on the LAUNCHING body's own
+		// side (an inset flush with the surface) also meets the cast at
+		// the launch point -- from inside itself.  It contains the
+		// backed-off origin; a body across the face does not.
+		if( objects.ObjectContainsPoint( cand[k], ray.origin, r.entryNormal ) ) {
+			continue;
+		}
+		best = cand[k];
+		bestT = probe.geometric.range;
+	}
+	return best;
 }

@@ -390,11 +390,13 @@ namespace RISE
 
 		/// At an SSS exit (`r`, left through `pExitObject`) whose
 		/// continuation is `dir`: the body the exit is in CONTACT with, or
-		/// null.  Asks `SolidObjectContaining` at the exit's offset point
-		/// (`r.entryPoint`, the point the defect puts inside a neighbour)
-		/// and accepts only if the contact cast from `r.boundaryPoint`
-		/// along `dir` meets that body at the launch point.  Nothing draws
-		/// from a sampler.
+		/// null.  Candidates are every other body whose box lies within the
+		/// band's reach of `r.boundaryPoint` (`ObjectsNearPoint`: touching
+		/// solids, open sheets such as a ground plane, enclosures); each is
+		/// asked by the contact cast, the band arbitrates, the nearest
+		/// accepted hit wins, and a candidate that contains the backed-off
+		/// origin (a body flush with the face on the launching side) is
+		/// refused.  Nothing draws from a sampler.
 		const IObject* FindExitContact(
 			const IObjectManager& objects,
 			const SampleResult& r,

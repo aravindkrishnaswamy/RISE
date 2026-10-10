@@ -2122,6 +2122,51 @@ namespace RISE
 			}
 		}
 
+		//! DL-408: visit every element whose box lies within `radius` of
+		//! `p` (node boxes by the conservative `PointBoxDistanceF`, element
+		//! boxes by `PointBoxDistance` when `useElementBoxTest`).  The
+		//! radius-widened sibling of `ForEachContainingPoint`: a contact
+		//! launch needs the bodies whose SURFACE may lie at the launch point,
+		//! including a zero-thickness box (a flat floor) the launch point
+		//! sits a hair outside of.
+		template< class VisitFn >
+		void ForEachNearPoint(
+			const Point3& p,
+			const Scalar  radius,
+			VisitFn&&     visit,
+			const bool    useElementBoxTest = false ) const
+		{
+			if( nodes.empty() || prims.empty() ) return;
+			static thread_local std::vector<uint32_t> stack;
+			stack.clear();
+			if( PointBoxDistanceF( p, nodes[0].bboxMin, nodes[0].bboxMax ) > radius ) return;
+			stack.push_back( 0u );
+			while( !stack.empty() ) {
+				const uint32_t ni = stack.back();
+				stack.pop_back();
+				const Node& node = nodes[ni];
+				if( node.primCount > 0 ) {
+					const uint32_t end = node.firstPrimOrLeft + node.primCount;
+					for( uint32_t i = node.firstPrimOrLeft; i < end; ++i ) {
+						if( useElementBoxTest ) {
+							const BoundingBox eb = ep.GetElementBoundingBox( prims[i] );
+							if( PointBoxDistance( p, eb.ll, eb.ur ) > radius ) continue;
+						}
+						visit( prims[i], p );
+					}
+				} else {
+					const uint32_t leftIdx  = node.firstPrimOrLeft;
+					const uint32_t rightIdx = leftIdx + 1;
+					if( PointBoxDistanceF( p, nodes[leftIdx].bboxMin, nodes[leftIdx].bboxMax ) <= radius ) {
+						stack.push_back( leftIdx );
+					}
+					if( PointBoxDistanceF( p, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax ) <= radius ) {
+						stack.push_back( rightIdx );
+					}
+				}
+			}
+		}
+
 	protected:
 		//! Distance from a point to an axis-aligned box, 0 when inside.  The
 		//! bounds are the node's conservative `float` AABB, rounded OUTWARD

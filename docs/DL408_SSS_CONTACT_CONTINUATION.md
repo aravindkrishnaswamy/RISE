@@ -61,17 +61,30 @@ the ordinary material at that hit.
 
 Where T comes from:
 
-* **SSS exit (diffusion profile and random walk).**  The exit's own offset
-  point q = p + n * BSSRDF_RAY_EPSILON is the point the defect puts inside
-  a neighbour.  `IObjectManager::SolidObjectContaining(q, n, self)`
-  (new, tail-appended) asks the same per-candidate question DL-370's
-  `RandomWalkObjectContaining` asks -- box tree, then the candidate's
-  signed distance or two-way crossing parity, winding-independent -- but
-  without the random-walk material filter.  Only exits whose q lies in
-  another object's world box pay it; the restricted cast then verifies the
-  contact geometrically.  DL-370's in-walk crossing between random-walk
-  bodies is kept: it runs first, inside the walk, and a walk only reaches
-  this test once it has really left to the exterior.
+* **SSS exit (diffusion profile and random walk).**  Every other body whose
+  world box lies within the band's reach of the exit's boundary point p
+  (`IObjectManager::ObjectsNearPoint`, new, a radius-widened sibling of
+  the box-tree point walk) is a candidate: a touching solid, an OPEN sheet
+  the exit lies on (a ground plane has no interior, so no containment test
+  can see it), and any enclosure whose box merely contains p.  Each is
+  asked by the restricted cast itself; the band is the arbiter and the
+  NEAREST accepted hit wins.  One refusal: a candidate that contains the
+  backed-off origin o (`IObjectManager::ObjectContainsPoint`, DL-370's
+  winding-independent sign / two-way-parity rule) lies on the LAUNCHING
+  side -- an inset flush with the exit face -- and is not a neighbour
+  across it.  DL-370's in-walk crossing between random-walk bodies is
+  kept: it runs first, inside the walk, and a walk only reaches this test
+  once it has really left to the exterior.
+
+  *Review round 1 (2026-10-10) changed this.*  The first version asked
+  for the FIRST body containing the exit's offset point; inside any
+  enclosure (a glass or water box, a fog volume, a closed room mesh) that
+  was the enclosure, whose far face failed the band, so the real neighbour
+  was never tried and the fix was a no-op (RW | diffusion inside an
+  index-1.0 glass sphere: contact/gap 0.926 PT, 0.927 BDPT, bit-identical
+  to master).  It also could not see an open-sheet floor at all (RW cube
+  on a clipped-plane floor over a black box: 0.928).  Both are now rows
+  of the contact test.
 * **Surface scatter at a contact hit.**  The partner recorded on the hit;
   no query.
 
@@ -117,13 +130,32 @@ Why this and not the alternatives the earlier passes weighed:
   contact never takes the restricted cast (the containment query answers
   no, or the cast fails its band); its pixels are unchanged bit for bit.
 
+* **Medium inside the back-off.**  The restricted cast's segment runs
+  from o, delta inside the launching body, to the contact; the loop prices
+  it in the medium the IOR stack says the ray is in (the exterior's).  A
+  scatter there has probability ~sigma_t * delta = sigma_t * 1e-6 (1+s),
+  the same order as the gap twin's own ~1e-6 segment in the gap; it is not
+  corrected.
+* **NEE through the partner.**  NEE from a contact exit (its offset point
+  lies inside the neighbour) and from a contact hit (backed off into the
+  launching body) relies on the partner OCCLUDING every shadow ray into the
+  covered hemisphere -- through its far side instead of its near face in
+  the gap twin.  That holds for every shadow-casting body; a partner with
+  `casts_shadows FALSE` behaves the same in both twins; the opt-in
+  transparent-shadow dielectric walk would count one interface where the
+  gap twin counts two (not measured).
+
 ## 4. Cost
 
-Every SSS exit whose offset point lies in ANOTHER object's world box pays
-one containment query (closed-form signed distance for analytic solids,
-parity rays for meshes) and, on a yes, one single-object intersection;
-exits in no other box pay one box-tree walk.  Contact-hit scatters pay one
-single-object intersection.  Measured numbers: section 6.
+Every SSS exit pays one radius-widened box-tree walk (radius 96e-6 (1+s)
+around the exit point).  Each candidate it returns -- a body whose box
+lies within that radius, including an enclosure whose box contains the
+point -- costs one single-object intersection; only a candidate whose cast
+lands in the band additionally pays the containment test at the backed-off
+origin (a closed-form signed distance, or two parity casts for an
+uncertified mesh).  An enclosure therefore costs one intersection per exit
+and NO parity casts.  Contact-hit scatters pay one single-object
+intersection.  Measured numbers: section 6.
 
 ## 5. Residuals (by design)
 
@@ -135,8 +167,25 @@ single-object intersection.  Measured numbers: section 6.
   restricted cast (a cut-out contact face is treated as solid).
 * The legacy shader-op chain (frozen) and the photon tracers keep the old
   launch; SMS is untouched.
-* Two touching shells of ONE object (the containment query excludes self,
-  DL-370's same residual).
+* Two touching shells of ONE object (the launching object is never a
+  candidate, DL-370's same residual).
+* More than 64 candidate boxes within the band's radius of one exit point:
+  the rest are not asked (none in any shipped scene).
+* `sdf_geometry` neighbour: the contact row reads 1.000 on master too --
+  that RW | SDF-box pair shows no contact loss to recover, so it pins
+  consistency only (the SDF's own image mean is 1.000 where the box and
+  mesh variants read 1.037; not investigated here).
+* MLT: its image mean is fixed by the bootstrap normalisation (contact and
+  gap twins read the same mean to 1e-9), so the MLT row is a sanity row
+  (renders through the contact code); MLT shares the BDPT walks the BDPT
+  rows gate.
+* An INWARD-wound double-sided mesh diffusion neighbour renders at 0.455
+  of the furnace in both twins (master: contact 0.54 +/- 0.09, unstable);
+  the contact row is 1.0007 after the fix, but the body itself is an
+  authoring error (DL-370's pinned inward row).
+* An index-1.0 glass ENCLOSURE changes the diffusion profile's own image
+  (a diffusion cube alone 1.031 -> 0.975); pre-existing, independent of
+  contact: DL-557.
 * A ray inside a transparent DIELECTRIC neighbour that reaches the shared
   face (glass resting on wax) is not a contact launch: its exit continuation
   is an ordinary refraction from inside the dielectric; not changed.
@@ -181,3 +230,58 @@ is self-deterministic; the difference is `-ffast-math` code generation in
 the VCM path after the `RayIntersection` / `RAY_STATE` layout change.
 
 **Cost:** user CPU, single thread, base/fix interleaved, n = 3: worst case -- a diffusion sphere submerged in a large dielectric box, so EVERY exit pays a containment query that answers yes and a restricted cast that is then rejected -- 22.33 +/- 0.16 -> 22.80 +/- 0.30 s (+2.1 %); shipped `rwsss_sphere` (no candidate box) 4.07 -> 4.11 s (+1.0 %); a wax and a skin block on a Lambertian table 8.14 +/- 0.17 -> 6.75 +/- 0.08 s (-17 %: a real transport change, paths no longer wander inside the table's interior).
+
+### 6.1 Review round 1 (2026-10-10): enclosure, open-sheet floor, geometry rows
+
+Contact/gap ratio, same harness (paired salts, n = 8), three libraries:
+master `ba133dd38`, the first fix `26b9961f6`, this round.
+
+| row | master | 26b9961f6 | this round |
+|---|---|---|---|
+| RW \| diffusion inside an index-1.0 glass sphere, PT | 0.9256 | 0.9277 | 0.9999 |
+| same, BDPT | 0.9267 | 0.9253 | 0.9987 |
+| RW block on an open clipped-plane floor over a black box, PT | 0.9278 | 0.9278 | 1.0003 |
+| same, BDPT | 0.9274 | 0.9278 | 1.0009 |
+| diffusion block on the open floor, PT | 0.9698 | 0.9833 | 1.0000 |
+| RW \| diffusion, neighbour double-sided outward mesh, PT | 0.9029 | -- | 1.0015 |
+| single-sided outward mesh | 0.9039 | -- | 1.0002 |
+| INWARD double-sided mesh (body itself reads 0.455) | 1.186 +/- noise | -- | 1.0008 |
+| uncertified mesh (one duplicated triangle) | 0.9710 | 1.0005 | 1.0014 |
+| box rotated 90 deg | 0.9035 | -- | 1.0007 |
+| CSG (box intersect big sphere) | 0.9047 | -- | 1.0015 |
+| displaced (box, zero displacement) | 0.9047 | -- | 0.9996 |
+| SDF box (no loss on master either) | 0.9997 | -- | 1.0000 |
+| PT-spectral hwss TRUE | 0.9042 | -- | 1.0008 |
+| MLT (sanity; image mean fixed by bootstrap) | render failed (no env; row rebuilt) | -- | 1.0000 |
+
+Contact test: 33/0.  Master: 21 of 33 rows red, plus the MLT row, which
+did not render there (its first version passed an environment map MLT
+does not take; the row now lights the pair from a panel).  The rows that
+stay green on master are the controls, the diffusion-table rows, the SDF
+row and the noisy inward-mesh row (section 5).
+
+**Bit-identity, re-run on this round** (same protocol as above, against a
+fresh `ba133dd38` build): 10 of the 12 shipped SSS scenes identical.  The
+two that differ are random-walk spheres resting on a clipped-plane floor
+at a POINT contact (`rwsss_sphere`, mean identical to 9 digits;
+`rwsss_bdpt`, 0.420399254 -> 0.420400973): exits within ~1e-2 of the
+tangent point now take the contact launch to the floor, which is the
+floor hit the old cast would have found from a slightly different origin.
+`vcm_sss_dragon` is now identical (its earlier 9.4e-10 difference came
+from a stale base build).
+
+**Cost, review round** (user CPU, single thread, 3 libraries interleaved,
+n = 3; the machine was shared, load ~25 on 18 cores, so per-run spread is
+~10 %; paired per-rep ratios quoted):
+
+| scene | master | 26b9961f6 | this round | this round / master, paired |
+|---|---|---|---|---|
+| diffusion sphere submerged in a dielectric BOX (every exit asks the box) | 21.49 +/- 2.31 s | 20.63 +/- 1.86 | 21.68 +/- 2.04 | 0.997 / 1.006 / 1.026 (+1.0 %) |
+| same, the box an UNCERTIFIED double-sided MESH | 23.05 +/- 1.84 | 24.29 +/- 1.99 | 24.00 +/- 2.24 | 1.061 / 0.880 / 1.205 (inconclusive at this noise) |
+| wax and skin blocks on a Lambertian table | 8.21 +/- 0.70 | 6.51 +/- 0.51 | 6.33 +/- 0.66 | -23 % (transport change) |
+| shipped `rwsss_sphere` | 3.95 +/- 0.38 | 4.01 +/- 0.43 | 4.04 +/- 0.47 | 1.029 / 1.000 / 1.038 (+2.2 %) |
+
+The enclosure now costs one single-object cast per exit and NO parity
+casts (containment is asked only of a candidate whose cast lands in the
+band), so the uncertified-mesh container pays one mesh intersection per
+exit, not two parity walks.

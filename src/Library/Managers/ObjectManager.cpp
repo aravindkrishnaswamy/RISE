@@ -1796,9 +1796,62 @@ const IObject* ObjectManager::RandomWalkObjectContaining( const Point3& ptWorld,
 	return ObjectContaining_( ptWorld, probeDir, self, true );
 }
 
-const IObject* ObjectManager::SolidObjectContaining( const Point3& ptWorld, const Vector3& probeDir, const IObject* self ) const
+unsigned int ObjectManager::ObjectsNearPoint( const Point3& ptWorld, const Scalar radius, const IObject* self, const IObject** out, const unsigned int maxOut ) const
 {
-	return ObjectContaining_( ptWorld, probeDir, self, false );
+	unsigned int n = 0;
+	auto take = [&]( const IObjectPriv* obj ) {
+		if( n >= maxOut || !obj || obj == self || !obj->IsWorldVisible() || !obj->GetMaterial() ) {
+			return;
+		}
+		out[n++] = obj;
+	};
+	EnsureBoxSnapshot();
+	const ObjectBoxSnapshot* const snap = pBoxes.load( std::memory_order_acquire );
+	if( !snap ) {
+		return 0;
+	}
+	const BVH<const IObjectPriv*>* const tlas =
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode )
+			? pBVH.load( std::memory_order_acquire ) : 0;
+	if( tlas && tlas->numPrims() > 0 ) {
+		tlas->ForEachNearPoint(
+			ptWorld, radius,
+			[&]( const IObjectPriv* obj, const Point3& ) { take( obj ); },
+			true );
+		return n;
+	}
+	for( std::size_t k = 0; k < snap->entries.size() && n < maxOut; ++k ) {
+		const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+		const Point3& ll = entry.box.ll;
+		const Point3& ur = entry.box.ur;
+		const Scalar dx = ( ptWorld.x < ll.x ) ? ( ll.x - ptWorld.x ) : ( ( ptWorld.x > ur.x ) ? ( ptWorld.x - ur.x ) : Scalar( 0 ) );
+		const Scalar dy = ( ptWorld.y < ll.y ) ? ( ll.y - ptWorld.y ) : ( ( ptWorld.y > ur.y ) ? ( ptWorld.y - ur.y ) : Scalar( 0 ) );
+		const Scalar dz = ( ptWorld.z < ll.z ) ? ( ll.z - ptWorld.z ) : ( ( ptWorld.z > ur.z ) ? ( ptWorld.z - ur.z ) : Scalar( 0 ) );
+		if( dx*dx + dy*dy + dz*dz > radius * radius ) continue;
+		take( entry.pObj );
+	}
+	return n;
+}
+
+//! DL-370 / DL-408: the per-candidate containment rule; see the lambda in
+//! ObjectContaining_ for the derivation.
+static bool CandidateContainsPoint( const IObject* obj, const Point3& ptWorld, const Vector3& probeDir )
+{
+	Scalar f = 0;
+	bool exact = false;
+	if( obj->SignedDistanceLower( ptWorld, Scalar( 1e-3 ), f, exact ) ) {
+		return f < 0;
+	}
+	const IObjectPriv* priv = dynamic_cast<const IObjectPriv*>( obj );
+	if( !priv ) {
+		return false;
+	}
+	return OddCrossings( priv, ptWorld, probeDir ) && OddCrossings( priv, ptWorld, -probeDir );
+}
+
+bool ObjectManager::ObjectContainsPoint( const IObject* pObject, const Point3& ptWorld, const Vector3& probeDir ) const
+{
+	return pObject ? CandidateContainsPoint( pObject, ptWorld, probeDir ) : false;
 }
 
 void ObjectManager::IntersectSingleObject( RayIntersection& ri, const IObject* pObject ) const

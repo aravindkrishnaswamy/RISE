@@ -468,11 +468,20 @@ namespace RISE
 				const IObject* self
 				) const;
 
-			//! See IObjectManager::SolidObjectContaining (DL-408).
-			const IObject* SolidObjectContaining(
+			//! See IObjectManager::ObjectsNearPoint (DL-408).
+			unsigned int ObjectsNearPoint(
 				const Point3& ptWorld,
-				const Vector3& probeDir,
-				const IObject* self
+				const Scalar radius,
+				const IObject* self,
+				const IObject** out,
+				const unsigned int maxOut
+				) const;
+
+			//! See IObjectManager::ObjectContainsPoint (DL-408).
+			bool ObjectContainsPoint(
+				const IObject* pObject,
+				const Point3& ptWorld,
+				const Vector3& probeDir
 				) const;
 
 			//! See IObjectManager::IntersectSingleObject (DL-408).

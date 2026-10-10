@@ -519,18 +519,29 @@ namespace RISE
 			const IObject* self							///< [in] Never counts.  May be null
 			) const = 0;
 
-		//! DL-408: `RandomWalkObjectContaining` without the random-walk
-		//! material filter -- the world-visible object OTHER than `self`,
-		//! with a material, whose interior contains `ptWorld`, by the same
-		//! candidate source and the same per-candidate rule (signed distance
-		//! where the candidate answers, else two-way crossing parity along
-		//! `probeDir`; winding-independent; `bProvablyNoInterior` refuses).
-		//! Asked at an SSS exit's offset point to find a body the exit is in
-		//! CONTACT with.  Appended at the interface tail.
-		virtual const IObject* SolidObjectContaining(
-			const Point3& ptWorld,						///< [in] The world-space point to test
-			const Vector3& probeDir,					///< [in] Unit direction of the containment ray
-			const IObject* self							///< [in] Never counts.  May be null
+		//! DL-408: the world-visible objects OTHER than `self`, with a
+		//! material, whose world box lies within `radius` of `ptWorld` --
+		//! every body whose surface may lie at a contact launch point,
+		//! including a zero-thickness box (a flat floor) and an enclosure
+		//! whose box merely contains the point.  Writes at most `maxOut`
+		//! and returns the number written.  Appended at the interface tail.
+		virtual unsigned int ObjectsNearPoint(
+			const Point3& ptWorld,						///< [in] The world-space point
+			const Scalar radius,						///< [in] World distance from the point to a candidate's box
+			const IObject* self,						///< [in] Never counts.  May be null
+			const IObject** out,						///< [out] Candidates
+			const unsigned int maxOut					///< [in] Capacity of `out`
+			) const = 0;
+
+		//! DL-408: does `pObject`'s interior contain `ptWorld`?  The exact
+		//! per-candidate rule `RandomWalkObjectContaining` uses (the sign of
+		//! `SignedDistanceLower` where it answers, else two-way crossing
+		//! parity along `probeDir`; winding-independent; no interior ->
+		//! false).  Appended at the interface tail.
+		virtual bool ObjectContainsPoint(
+			const IObject* pObject,						///< [in] The object asked
+			const Point3& ptWorld,						///< [in] The world-space point
+			const Vector3& probeDir						///< [in] Unit direction of the parity rays
 			) const = 0;
 
 		//! DL-408: intersect ONE object (`pObject`, which must belong to this
