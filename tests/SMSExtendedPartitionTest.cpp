@@ -3,6 +3,8 @@
 //
 // Sections (all by default; `--section <name>` runs one; `--quick` lowers
 // the sample counts for a smoke run, never for the recorded gate):
+//   dl500-baseline  opt-in n=8 interleaved extended/SMS-off image timings;
+//              diagnostic only, no performance acceptance band
 //   synthetic  estimator B's expectation on a known topology distribution
 //   predicate  the canonical predicate on real scenes: determinism and
 //              independence of N, budget, emitter-normal sign and prior
@@ -47,6 +49,7 @@
 #include <iomanip>
 #include <map>
 #include <chrono>
+#include <regex>
 #define PIN_RATIO 1.0556
 #define PIN_SE 0.0122
 
@@ -943,14 +946,14 @@ namespace
     }
     // Mean of (r+g+b)/3 over the image, extended PT with an internal config.
     double ExtendedImage(const std::string& text,unsigned spp,unsigned salt,bool extended,bool drop,
-        SMSReferenceCounters* counters,unsigned trials=2,Scalar threshold=1e-4) {
+        SMSReferenceCounters* counters,unsigned trials=2,Scalar threshold=1e-4,bool smsEnabled=true) {
         Fixture fixture(text);
         if(!fixture.Ok()) return -1;
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
         if(!RISE_API_CreateStandardShader(&shader,ops)) return -1;
         auto* caster=new RayCaster(false,16,*shader,true);
         caster->AttachScene(&fixture.Scene());
-        ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=extended;cfg.biased=true;
+        ManifoldSolverConfig cfg;cfg.enabled=smsEnabled;cfg.extendedMode=extended;cfg.biased=true;
         cfg.maxBernoulliTrials=64;cfg.multiTrials=trials;cfg.referenceCounters=counters;cfg.solverThreshold=threshold;
         const DropScope dropScope(drop);
         StabilityConfig stability;stability.rrMinDepth=8;
@@ -1084,6 +1087,43 @@ int main(int argc,char** argv)
 #ifndef RISE_SMS_EXTENDED_PARTITION
     std::cout<<"NOTE: RISE_SMS_EXTENDED_PARTITION absent: partition-API checks compiled out\n";
 #endif
+    if(section=="dl500-baseline") {
+        std::ifstream input("scenes/Tests/SMS/sms_k2_glasssphere_extended.RISEscene");
+        const std::string shipped((std::istreambuf_iterator<char>(input)),{});
+        Check(!shipped.empty(),"DL-500 shipped sphere scene is available");
+        // Resize only the film; preserve the shipped geometry, camera and materials.
+        const std::string small=std::regex_replace(shipped,
+            std::regex("film\\s*\\{[^}]*\\}"),"film\n{\n width 24\n height 18\n}\n");
+        for(const auto& scene:{std::make_pair(std::string("DL372"),BallLensScene(false)),
+                               std::make_pair(std::string("shipped-sphere"),small)}) {
+            std::vector<double> extTimes,offTimes,ratios,extValues,offValues;
+            for(unsigned i=0;i<8;++i) {
+                const unsigned salt=SobolSequence::HashCombine(500001+101*i,kSaltTag);
+                double time[2],value[2];
+                for(unsigned j=0;j<2;++j) {
+                    const unsigned mode=(i+j)%2;
+                    std::srand(salt);GlobalRNG()=RandomNumberGenerator(salt);
+                    SMSReferenceCounters counters;
+                    const auto start=std::chrono::steady_clock::now();
+                    value[mode]=ExtendedImage(scene.second,64,salt,mode==1,false,&counters,2,1e-4,mode==1);
+                    time[mode]=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+                    Check(std::isfinite(value[mode])&&value[mode]>=0,"DL-500 benchmark render completes");
+                    std::cout<<std::setprecision(17)<<"DL500 pair scene="<<scene.first<<" salt="<<salt
+                        <<" extended="<<mode<<" mean="<<value[mode]<<" wall="<<time[mode]<<std::endl;
+                    Check(mode ? counters.proposalTrials.load()>0 : counters.proposalTrials.load()==0,
+                        "DL-500 baseline selects extended SMS versus SMS-off PT");
+                    if(mode) PrintCounters(scene.first,counters);
+                }
+                offTimes.push_back(time[0]);extTimes.push_back(time[1]);ratios.push_back(time[1]/time[0]);
+                offValues.push_back(value[0]);extValues.push_back(value[1]);
+            }
+            const Moments e(extTimes),l(offTimes),r(ratios),ev(extValues),lv(offValues);
+            std::cout<<"DL500 summary scene="<<scene.first<<" n=8 spp=64 extended-wall="<<e.mean
+                <<" sd="<<e.sd<<" off-wall="<<l.mean<<" sd="<<l.sd<<" paired-ratio="<<r.mean
+                <<" sd="<<r.sd<<" extended-value="<<ev.mean<<" sd="<<ev.sd
+                <<" off-value="<<lv.mean<<" sd="<<lv.sd<<std::endl;
+        }
+    }
     if(section=="dl445") {
         std::vector<double> one,two,pt,tight;
         for(unsigned i=0;i<4;++i) {
