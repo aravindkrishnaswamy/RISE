@@ -16,9 +16,50 @@
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Interfaces/ILog.h"
 #include <algorithm>
+#include <typeinfo>
+#include "KeyframableHelper.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+    // Arithmetic-only borrowed scratch. Never passed to a target or retained.
+    // Parameter's arithmetic writes via setValue; it needs no refcount/mutex.
+    template<class T>
+    class ArithmeticScratch final : public IKeyframeParameter {
+        T value;
+    public:
+        explicit ArithmeticScratch(const T& v) : value(v) { paramid=0; }
+        void* getValue() const override { return const_cast<T*>(&value); }
+        void setValue(void* v) override { value=*static_cast<T*>(v); }
+        void Add(IKeyframeParameter&,const IKeyframeParameter&,const IKeyframeParameter&) override { std::abort(); }
+        void Subtract(IKeyframeParameter&,const IKeyframeParameter&,const IKeyframeParameter&) override { std::abort(); }
+        void ScalarMult(IKeyframeParameter&,const IKeyframeParameter&,const Scalar&) override { std::abort(); }
+        IKeyframeParameter* Clone() const override { std::abort(); }
+        void addref() const override { std::abort(); }
+        bool release() const override { std::abort(); }
+        unsigned int refcount() const override { return 1; }
+    };
+
+    template<class T>
+    bool LinearScratch(const IKeyframeParameter& a, const IKeyframeParameter& b,
+                       Scalar d, IKeyframable& target)
+    {
+        if (typeid(a) != typeid(Parameter<T>) || typeid(b) != typeid(Parameter<T>)) return false;
+        // Keep an owned final parameter: targets may retain it with addref.
+        // This one clone (and its mutex allocation) remains as the residual.
+        KeyframeParameterDispatch result(*a.Clone(), true);
+        auto& left=result.GetParam();
+        ArithmeticScratch<T> right(*static_cast<T*>(b.getValue()));
+        auto& op = const_cast<IKeyframeParameter&>(a);
+        op.ScalarMult(left, a, 1.0-d);
+        op.ScalarMult(right, b, d);
+        op.Add(left, left, right);
+        target.SetIntermediateValue(left);
+        return true;
+    }
+}
 
 Timeline::Timeline( 
 	IKeyframable* pElem,			///< [in] Element we are keyframing
@@ -152,6 +193,16 @@ void Timeline::EvaluateInto( const Scalar time, IKeyframable& target ) const
 			const Keyframe* after = *(i+1);
 
 			const Scalar d = (time - before->time) / (after->time - before->time);
+
+			// Preserve the built-in linear expression a*(1-d) + b*d.
+            // Unknown parameter/interpolator subclasses retain their virtual path.
+            if (!before->pInterp || typeid(*before->pInterp) == typeid(LinearInterpolator<KeyframeParameterDispatch>)) {
+                const auto& a = before->param;
+                const auto& b = after->param;
+                if (LinearScratch<Point3>(a,b,d,target) || LinearScratch<Vector3>(a,b,d,target) ||
+                    LinearScratch<Scalar>(a,b,d,target) || LinearScratch<RISEPel>(a,b,d,target) ||
+                    LinearScratch<Vector2>(a,b,d,target)) return;
+            }
 
 			RuntimeKeyframesList::const_iterator s = m;
 			RuntimeKeyframesList::const_iterator t = (m+1);
