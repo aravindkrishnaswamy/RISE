@@ -257,12 +257,15 @@ lambertian_material
 }
 
 # Glossy material on short block to make focus vs blur more visible
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 80 -> alpha 1/sqrt(2N+1) = 0.07881, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				glossy_white
 	rd					color_white
 	rs					color_white
-	N					80.0
+	alphax				0.078811
+	alphay				0.078811
+	fresnel_mode		schlick_f0
 }
 
 lambertian_luminaire_material

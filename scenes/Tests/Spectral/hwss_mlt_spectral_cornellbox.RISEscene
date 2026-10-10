@@ -12,18 +12,16 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-mlt_spectral_rasterizer
+# Legacy phase 2 slice B2: was mlt_spectral_rasterizer (frozen) -> bdpt_spectral_rasterizer; mutations_per_pixel -> samples, dropped bootstrap_samples 10000, chains 64, large_step_prob 0.3.
+bdpt_spectral_rasterizer
 {
-	max_eye_depth			5
-	max_light_depth			5
-	bootstrap_samples		10000
-	chains					64
-	mutations_per_pixel		256
-	large_step_prob			0.3
-	nmbegin					405
-	nmend					705
-	spectral_samples		1
-	hwss					true
+	max_eye_depth		5
+	max_light_depth		5
+	samples				256
+	nmbegin				405
+	nmend				705
+	spectral_samples	1
+	hwss				true
 }
 
 file_rasterizeroutput

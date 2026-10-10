@@ -455,12 +455,15 @@ uniformcolor_painter
 ##################################################
 
 # Polished stone floor
-ward_isotropic_material
+# Legacy phase 2 slice B2: was ward_isotropic_material; ward_isotropic alpha 0.06 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				floor_mat
 	rd					pnt_floor_rd
 	rs					pnt_floor_rs
-	alpha				0.06
+	alphax				0.06
+	alphay				0.06
+	fresnel_mode		schlick_f0
 }
 
 # Walls
@@ -498,12 +501,15 @@ orennayar_material
 }
 
 # Copper pedestal
-ward_isotropic_material
+# Legacy phase 2 slice B2: was ward_isotropic_material; ward_isotropic alpha 0.08 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				copper_ped_mat
 	rd					pnt_ped_copper_diff
 	rs					pnt_ped_copper_spec
-	alpha				0.08
+	alphax				0.08
+	alphay				0.08
+	fresnel_mode		schlick_f0
 }
 
 # Stone pillars

@@ -573,13 +573,11 @@ uniformcolor_painter
 	color			0.150 0.082 0.078
 }
 
-polished_material
+# Legacy phase 2 slice B2: was polished_material with tau 0 (no coat: only the substrate) -> lambertian_material.
+lambertian_material
 {
-	name			mat_leather
-	reflectance		pnt_leather
-	tau			0.0
-	ior			1.38
-	scattering		9000
+	name				mat_leather
+	reflectance			pnt_leather
 }
 
 ellipsoid_geometry

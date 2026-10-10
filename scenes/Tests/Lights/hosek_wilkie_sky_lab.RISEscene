@@ -55,15 +55,6 @@ hosek_wilkie_skylight
 	create_sun				true
 }
 
-# Fill light so the probes still show on the camera-facing side even
-# when the matched HW sun is positioned to leave them backlit.
-ambient_light
-{
-	name		fill
-	power		0.30
-	color		1.0 1.0 1.0
-}
-
 # Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
 pathtracing_pel_rasterizer
 {

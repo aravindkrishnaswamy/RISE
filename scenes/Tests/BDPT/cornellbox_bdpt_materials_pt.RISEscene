@@ -289,31 +289,39 @@ translucent_material
 
 # Row 2 (middle): Isotropic Phong, Cook-Torrance, Schlick
 
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 60 -> alpha 1/sqrt(2N+1) = 0.09091, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				mat_phong
 	rd					pnt_copper
 	rs					color_white
-	N					60.0
+	alphax				0.090909
+	alphay				0.090909
+	fresnel_mode		schlick_f0
 }
 
-cooktorrance_material
+# Legacy phase 2 slice B2: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.15 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				mat_cooktorrance
 	rd					pnt_gold
 	rs					color_white
-	facets				0.15
+	alphax				0.15
+	alphay				0.15
+	fresnel_mode		conductor
 	ior					2.5
 	extinction			3.0
 }
 
-schlick_material
+# Legacy phase 2 slice B2: was schlick_material; schlick roughness 0.05 -> alpha sqrt(r) = 0.2236; isotropy 0.3 -> alphax 0.3021 alphay 0.1655 (heuristic: geometric-mean width kept, aspect 1/sqrt(isotropy)), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				mat_schlick
 	rd					pnt_grey
 	rs					color_white
-	roughness			0.05
-	isotropy			0.3
+	alphax				0.30214
+	alphay				0.16549
+	fresnel_mode		schlick_f0
 }
 
 # Row 3 (bottom): Perfect mirror, Dielectric glass, Ward Anisotropic
@@ -332,13 +340,15 @@ dielectric_material
 	scattering			100000.0
 }
 
-ward_anisotropic_material
+# Legacy phase 2 slice B2: was ward_anisotropic_material; ward_anisotropic alphax 0.05 alphay 0.3 carried, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				mat_ward_aniso
 	rd					pnt_copper
 	rs					color_white
 	alphax				0.05
 	alphay				0.3
+	fresnel_mode		schlick_f0
 }
 
 # Wall and light materials

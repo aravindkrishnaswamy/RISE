@@ -347,13 +347,22 @@ perfectreflector_material
 	reflectance			color_silver
 }
 
-polished_material
+# Legacy phase 2 slice B2: substrate of `pedestal_mat` (was polished_material reflectance).
+lambertian_material
+{
+	name				pedestal_mat_base
+	reflectance			pnt_pedestal
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `pedestal_mat_base`; coat_weight = tau 1, coat_ior 1.5, coat_roughness 1/sqrt(2*350+1) = 0.03777 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				pedestal_mat
-	reflectance			pnt_pedestal
-	tau			1
-	ior					1.5
-	scattering			350.0
+	base				pedestal_mat_base
+	coat_weight			1
+	coat_ior			1.5
+	coat_roughness		0.03777
 }
 
 dielectric_material

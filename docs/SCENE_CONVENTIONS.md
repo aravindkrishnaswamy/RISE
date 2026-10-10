@@ -1616,6 +1616,25 @@ ops a scene uses must agree; and point
 through it).  Scenes that keep a frozen chunk's only regression render live
 verbatim in `scenes/Tests/Legacy/`.
 
+**Migrating the remaining legacy chunk families** (Phase 2 slice B2,
+2026-10-10): `tools/migrate_scenes_legacy_families.py --family
+materials|iridescent|ambient|mlt|all [--mlt-integrator bdpt|vcm] [--dry-run]`
+(the docstring states every mapping).  The seven legacy materials follow the
+table in section 11.5 (a per-channel roughness is refused unless
+`--collapse-per-channel` takes its luminance-weighted mean: `ggx_material` reads only the
+first channel of `alphax` / `alphay` under the RGB rasterizers); `iridescent_painter` becomes the thin-film
+`ggx_material` (`fresnel_mode thinfilm`, a TiO2 film whose thickness matches
+the painter's normal-incidence hue: over titanium for a mirror, over a 1.5
+dielectric -- pearlescent -- for a diffuse body, whose `rd` becomes the
+painter's projected-area mean colour); `ambient_light` becomes a uniform
+`radiance_map` of radiance `color x power / pi` (that is what lights an
+unoccluded Lambertian surface as the ambient light did) with
+`radiance_background FALSE` (an existing uniform sky gets a NEW `<sky>_with_ambient`
+painter, since the sky painter may be shared); MLT becomes BDPT (VCM for SDS caustics) with
+`mutations_per_pixel` -> `samples`.  Owner rulings 2026-10-10: `FeatureBased/Animation/translucent_bunny`
+keeps the deprecated `iridescent_painter` (`translucent_material` has no thin film; the tool's
+`KEEP` list), and both teapots use a 125 nm film (`FILM_OVERRIDE`) to keep their purple look.
+
 ## 11.5. Deprecated materials (DL-323 follow-through, 2026-10-02)
 
 **Update 2026-10-09:** these seven chunks are now **FROZEN** (owner ruling
@@ -1696,7 +1715,17 @@ agent's skill docs now steer to the modern chunks
 (`src/3DSMax`) calls the legacy `IJob` entry points directly and is not
 built here.
 
-**Shipped scenes (not migrated -- their looks are kept).**  Counted by
+**Shipped scenes: MIGRATED in Phase 2 slice B2 (2026-10-10).**  The
+paragraph below is the pre-migration census.  Slice B2 rewrote every
+shipped scene outside `scenes/Tests/Legacy/` with
+`tools/migrate_scenes_legacy_families.py --family materials` except the
+Android catalogue scenes held for slice C (`kaleidoscope_atrium`,
+`tidepools`, `pt_jewel_vault`); the three Cook-Torrance subject scenes
+(`cooktorrance_multiscatter_test`, `cooktorrance_vndf_test`,
+`ggx_vs_cooktorrance`) moved unmigrated into `scenes/Tests/Legacy/`.  Look
+review: `docs/legacy_phase2b2_review/index.html`.
+
+**Pre-migration census (2026-10-02).**  Counted by
 CHUNK-HEADER match (a line that is exactly the keyword, optionally with a
 trailing comment; not a word grep) over `git ls-files scenes` at the merge
 with master `0dfda8c05` -- untracked / gitignored local scenes such as

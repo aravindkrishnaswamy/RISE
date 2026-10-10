@@ -681,7 +681,93 @@ pixel-rasterizer families):**
 - **Left for slice B2:** the step-5 families inside scenes on supported rasterizers (R13
   materials, R11 `ambient_light` -- including the five `PixelFilters` scenes and
   `caustic_sss` migrated here (whose spot retune assumed the ambient term stays dropped),
-  R14 `iridescent_painter`, R12 MLT).  **Slice C** unchanged.
+  R14 `iridescent_painter`, R12 MLT).  **Slice C** unchanged.  (Done in slice B2, below.)
+
+**Phase 2 slice B2 as landed (2026-10-10, branch `legacy-phase2b2`, step 5 for the
+families inside scenes already on supported rasterizers):**
+- **Tool:** `tools/migrate_scenes_legacy_families.py --family materials|iridescent|ambient|mlt|all
+  [--mlt-integrator bdpt|vcm] [--ambient-with-sky drop] [--dry-run]` (sibling of the
+  rasterizer tool, reusing its lexer; idempotent; the docstring states every mapping).
+  Materials follow the SCENE_CONVENTIONS 11.5 table (Phong alpha = 1/sqrt(2N+1), the
+  table's 4N rule, not the half-vector sqrt(2/(N+2)); Ashikhmin sqrt(2/(n+2)); Schlick
+  sqrt(r), `isotropy` by a stated heuristic that stretches the lobe along onb.u, where
+  Schlick's A(w) peaks; Ward / Cook-Torrance carried; a per-channel roughness is refused
+  unless `--collapse-per-channel` replaces it by its luminance-weighted mean, because
+  `ggx_material` reads only the first channel of alphax / alphay under RGB), and
+  `polished_material` becomes `coated_material` over a `lambertian_material`
+  (coat_roughness 1/sqrt(2 scattering + 1); an `r g b` tau becomes its luminance as
+  coat_weight; tau 0 is a plain Lambertian; ior above coated's range -- the `ior 10000`
+  mirror coats -- becomes `ggx_material` schlick_f0 with F0 = tau ((n-1)/(n+1))^2; a
+  painter-driven gloss is rewritten in place to 1/sqrt(2n+1) of its expression).
+  `iridescent_painter` becomes a thin-film `ggx_material` (TiO2 over titanium for a
+  mirror, over a 1.5 dielectric -- pearlescent -- for a diffuse body whose rd is the
+  painter's projected-area mean), the film thickness matching the painter's own
+  normal-incidence hue through the renderer's RGB thin-film integral; on
+  `translucent_material` it becomes the mean colour.  `ambient_light` becomes a uniform
+  `radiance_map` of radiance color x power / pi (what lights an unoccluded Lambertian
+  surface as the ambient did), `radiance_background FALSE`; with an existing uniform
+  sky the rasterizer points at a NEW `<sky>_with_ambient` painter (the sky painter may be
+  shared: in `cloud_showcase` it is also a luminaire's exitance); a scene whose `hosek_wilkie_skylight` already installs the environment
+  drops the ambient fill (a radiance_map would replace the sky: measured -97%).  MLT
+  becomes BDPT (`mutations_per_pixel` -> `samples`), VCM for the four SDS-caustic
+  showcases (`mlt_caustic_chain`, `mlt_luminous_orb`, `mlt_reflected_caustic`,
+  `mlt_veach_egg`).
+- **102 scenes migrated:** materials 28 (pillow alone 123 polished chunks;
+  `Tests/Materials/materials` with its five per-channel roughnesses collapsed, noted in the
+  scene), iridescent 11, ambient 54, MLT 12 (overlapping).  Held for slice C:
+  `kaleidoscope_atrium`, `tidepools`, `pt_jewel_vault` (Android catalogue) and `shapes`;
+  held as written: `scenes/Benchmarks/sea_creatures` (no `.RISEscene` extension, a
+  recorded agent-benchmark output with two iridescent painters).
+- **Coverage kept (ruling #17):** `scenes/Tests/Legacy/` gains the three Cook-Torrance
+  SUBJECT scenes, moved unmigrated (`cooktorrance_multiscatter_test`,
+  `cooktorrance_vndf_test`, `ggx_vs_cooktorrance` -- migrating would have made them
+  meaningless), verbatim copies of `cornellbox_mlt_fast`, `mlt_deep_fog` and
+  `mlt_deep_fog_spectral` (MLT is not hash-pinnable), and the original
+  `composite_material` (its ambient light moved), which `LegacyTierRenderIdentityTest`
+  now renders (hash unchanged, 38/0).  The seven materials, the iridescent painter and
+  the ambient light were already covered there (`materials`, `blurry_floor`, `teapot`,
+  `showroom`, `translucent_bunny`, `gltf_box`, ...).
+- **Look review:** `docs/legacy_phase2b2_review/index.html` (102 rows -- 101
+  migrated scenes and the kept bunny -- 3 salts at long side 160).  86 of them move under
+  10%.  Measured causes of the large ones: the
+  legacy models invent energy (white furnace, uniform radiance 1: Phong 0.5/white/N60
+  reads 1.246; the glass_pavilion Cook-Torrance bronze RGB 1.18/0.86/0.55 against GGX
+  0.66/0.56/0.42; `polished_material` over a 0.5 substrate 0.526 against `coated` 0.327,
+  because it renormalises its substrate by the coat's mean transmittance and never
+  loses the light the coat traps; at `ior 10000` it reflects ~2x), `rs` white becomes
+  F0 = 1 per the table (coloured bodies turn into tinted mirrors: `Tests/Materials/
+  materials`, `cornellbox_bdpt_thinlens`), and the ambient was unoccluded and invisible
+  in reflections (`PixelFilters` +14.7%, `cloud_showcase`).
+- **Owner-precedent retunes applied** (legacy bias / fudge, B1 rule): `cloud_showcase`
+  sun 12 -> 24, `glass_pavilion` omni x1.682 (partly reversing its B1 retune: the bronze
+  and floor were legacy materials then), `pavilion_colonnade` omni x1.146, `pillow`
+  omni x1.273, and the test `caustic_sss` radiance_scale x0.00171 (so the environment
+  adds the 1.2% of the legacy image its ambient added; VCM never rendered the ambient
+  and B1's spot retune assumed it stays out -- kept, effectively zero by design, with a
+  scene comment, so the ambient conversion stays uniform).  All within 0.5% of the legacy mean.
+- **Owner rulings 2026-10-10 on the two authored-intent losses (applied):**
+  `translucent_bunny` KEEPS the deprecated (not frozen) `iridescent_painter`, because
+  `translucent_material` has no thin-film model (its mean colour turned the pearly bunny
+  flat purple, -78%); the scene is the pre-B2 scene plus a comment (legacy look, +0.0%)
+  and the tool's `KEEP` list skips its iridescent family.  Both teapots (`FeatureBased/
+  Geometry/teapot`, `Tests/Geometry/teapot_analytic`, which share the material) use a
+  125 nm titanium film (the tool's `FILM_OVERRIDE`), which keeps the purple look:
+  +25.0% / +55.1%.  No light retune: with the film swapped back for a constant
+  mean-colour mirror the showcase reads -2.1%, so the gain is the film's physical
+  Fresnel rise at grazing incidence, not a legacy energy bias (the B1 precedent's
+  condition).  `wetness_prelude_validation`'s -11.6% (the coat's own darkening now
+  stacks with the Phase-1 `pow(base, k)` recipe) is accepted as is.
+- **Gates:** CstDeriveGoldenTest regenerated (480 MATCH, 0 DRIFT; every changed entry a
+  migrated, moved or new Legacy scene), LegacyTierRenderIdentityTest 38/0,
+  DeprecatedMaterialRenderIdentityTest 3/0, DeprecatedMaterialWarningTest 376/0,
+  ConnectionLegalityTest 319/0, SourceHygieneTest 172/0, AgentEvalCheckTest 2075/0, and
+  every test that loads a changed scene.
+- **Found, not fixed:** `scenes/pr.RISEscene` does not load outside its own working
+  directory (`../models` meshes; pre-existing), so its migration is load-checked but not
+  rendered; `mlt_deep_fog{,_spectral}` render black at reduced resolution.
+- **Left for slice C:** unchanged (`shapes`, `kaleidoscope_atrium`, `tidepools`,
+  `pt_jewel_vault`, Android / quickstart / Blender defaults -- including the Blender
+  `use_world_ambient` toggle and MLT enum items).  `visiblehuman` stays frozen.
 
 **Phase 3 — remove: ON HOLD by owner ruling (2026-10-09); nothing below is scheduled.** (Original plan: several slices; each slice must update all five build projects per
 CLAUDE.md).** Order from least coupled:

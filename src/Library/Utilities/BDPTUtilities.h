@@ -87,7 +87,7 @@ namespace RISE
 		// `PSSMLTSampler` (MLT) stream is an unbounded lane that cannot
 		// spill.  Routing MLT through the blocks too was measured and
 		// declined: no correctness gain, and +13 % user CPU on
-		// scenes/Tests/MLT/mlt_deep_fog.RISEscene (its chains, not its
+		// scenes/Tests/Legacy/mlt_deep_fog.RISEscene (its chains, not its
 		// storage -- 128 events cost 128 extra-tier lanes), besides
 		// needing PSSMLTSampler's 4096-stream sanity bound raised.
 		//////////////////////////////////////////////////////////////

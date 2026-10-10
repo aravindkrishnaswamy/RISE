@@ -2,12 +2,13 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           ggx_vs_cooktorrance.RISEscene                                                          #
-#   Description:    Side-by-side comparison of GGX (height-correlated G2) vs CookTorrance (separable G1*G1)#
-#                   at matching roughness values. Both use GGX NDF, VNDF sampling, and Kulla-Conty.         #
-#                   The GGX material should be slightly brighter at mid-roughness due to less masking loss.  #
+#   File:           cooktorrance_multiscatter_test.RISEscene                                                #
+#   Description:    Torture test for Kulla-Conty multiscattering energy compensation. Eight metallic         #
+#                   spheres at roughness 0.01 to 1.0 in a Cornell box. Top row: gold (IOR=2.5, k=3.0).     #
+#                   Bottom row: copper (IOR=0.21, k=3.6). High-roughness spheres should appear              #
+#                   significantly brighter with Kulla-Conty than without.                                   #
 #   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      April 6, 2026                                                                           #
+#   Birthdate:      March 28, 2026                                                                          #
 #                                                                                                           #
 #############################################################################################################
 
@@ -21,14 +22,16 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-pathtracing_pel_rasterizer
+bdpt_pel_rasterizer
 {
-	samples                       64
+	max_eye_depth		10
+	max_light_depth		8
+	samples				128
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/ggx_vs_cooktorrance
+	pattern				rendered/legacy_cooktorrance_multiscatter_test
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -224,61 +227,29 @@ uniformcolor_painter
 	color				1.0 0.85 0.35
 }
 
-##################################################
-# GGX Materials (height-correlated G2) - Left column
-##################################################
-
-ggx_material
+uniformcolor_painter
 {
-	name				ggx_01
-	rd					pnt_black
-	rs					pnt_gold_spec
-	alphax				0.1
-	alphay				0.1
-	ior					2.5
-	extinction			3.0
-}
-
-ggx_material
-{
-	name				ggx_03
-	rd					pnt_black
-	rs					pnt_gold_spec
-	alphax				0.3
-	alphay				0.3
-	ior					2.5
-	extinction			3.0
-}
-
-ggx_material
-{
-	name				ggx_06
-	rd					pnt_black
-	rs					pnt_gold_spec
-	alphax				0.6
-	alphay				0.6
-	ior					2.5
-	extinction			3.0
-}
-
-ggx_material
-{
-	name				ggx_10
-	rd					pnt_black
-	rs					pnt_gold_spec
-	alphax				1.0
-	alphay				1.0
-	ior					2.5
-	extinction			3.0
+	name				pnt_copper_spec
+	color				0.98 0.72 0.52
 }
 
 ##################################################
-# CookTorrance Materials (separable G1*G1) - Right column
+# Materials - Gold row (IOR=2.5, k=3.0): alpha 0.01, 0.1, 0.5, 1.0
 ##################################################
 
 cooktorrance_material
 {
-	name				ct_01
+	name				mat_gold_001
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.01
+	ior					2.5
+	extinction			3.0
+}
+
+cooktorrance_material
+{
+	name				mat_gold_01
 	rd					pnt_black
 	rs					pnt_gold_spec
 	facets				0.1
@@ -288,27 +259,17 @@ cooktorrance_material
 
 cooktorrance_material
 {
-	name				ct_03
+	name				mat_gold_05
 	rd					pnt_black
 	rs					pnt_gold_spec
-	facets				0.3
+	facets				0.5
 	ior					2.5
 	extinction			3.0
 }
 
 cooktorrance_material
 {
-	name				ct_06
-	rd					pnt_black
-	rs					pnt_gold_spec
-	facets				0.6
-	ior					2.5
-	extinction			3.0
-}
-
-cooktorrance_material
-{
-	name				ct_10
+	name				mat_gold_10
 	rd					pnt_black
 	rs					pnt_gold_spec
 	facets				1.0
@@ -317,9 +278,50 @@ cooktorrance_material
 }
 
 ##################################################
-# Wall materials
+# Materials - Copper row (IOR=0.21, k=3.6): alpha 0.01, 0.1, 0.5, 1.0
 ##################################################
 
+cooktorrance_material
+{
+	name				mat_copper_001
+	rd					pnt_black
+	rs					pnt_copper_spec
+	facets				0.01
+	ior					0.21
+	extinction			3.6
+}
+
+cooktorrance_material
+{
+	name				mat_copper_01
+	rd					pnt_black
+	rs					pnt_copper_spec
+	facets				0.1
+	ior					0.21
+	extinction			3.6
+}
+
+cooktorrance_material
+{
+	name				mat_copper_05
+	rd					pnt_black
+	rs					pnt_copper_spec
+	facets				0.5
+	ior					0.21
+	extinction			3.6
+}
+
+cooktorrance_material
+{
+	name				mat_copper_10
+	rd					pnt_black
+	rs					pnt_copper_spec
+	facets				1.0
+	ior					0.21
+	extinction			3.6
+}
+
+# Wall and light materials
 lambertian_material
 {
 	name				white
@@ -453,81 +455,79 @@ standard_object
 sphere_geometry
 {
 	name				spheregeom
-	radius				52.0
+	radius				65.0
 }
 
 ##################################################
-# Left column: GGX (height-correlated)
-# Right column: CookTorrance (separable)
-# Rows: alpha = 0.1, 0.3, 0.6, 1.0 (top to bottom)
+# Top row (gold): alpha = 0.01, 0.1, 0.5, 1.0
 ##################################################
 
-# alpha = 0.1
 standard_object
 {
-	name				sphere_ggx_01
+	name				sphere_gold_001
 	geometry			spheregeom
-	position			190 430 300
-	material			ggx_01
+	position			100 380 350
+	material			mat_gold_001
 }
 
 standard_object
 {
-	name				sphere_ct_01
+	name				sphere_gold_01
 	geometry			spheregeom
-	position			370 430 300
-	material			ct_01
-}
-
-# alpha = 0.3
-standard_object
-{
-	name				sphere_ggx_03
-	geometry			spheregeom
-	position			190 320 290
-	material			ggx_03
+	position			230 380 350
+	material			mat_gold_01
 }
 
 standard_object
 {
-	name				sphere_ct_03
+	name				sphere_gold_05
 	geometry			spheregeom
-	position			370 320 290
-	material			ct_03
-}
-
-# alpha = 0.6
-standard_object
-{
-	name				sphere_ggx_06
-	geometry			spheregeom
-	position			190 210 280
-	material			ggx_06
+	position			360 380 350
+	material			mat_gold_05
 }
 
 standard_object
 {
-	name				sphere_ct_06
+	name				sphere_gold_10
 	geometry			spheregeom
-	position			370 210 280
-	material			ct_06
+	position			490 380 350
+	material			mat_gold_10
 }
 
-# alpha = 1.0
-standard_object
-{
-	name				sphere_ggx_10
-	geometry			spheregeom
-	position			190 100 270
-	material			ggx_10
-}
+##################################################
+# Bottom row (copper): alpha = 0.01, 0.1, 0.5, 1.0
+##################################################
 
 standard_object
 {
-	name				sphere_ct_10
+	name				sphere_copper_001
 	geometry			spheregeom
-	position			370 100 270
-	material			ct_10
+	position			100 160 220
+	material			mat_copper_001
+}
+
+standard_object
+{
+	name				sphere_copper_01
+	geometry			spheregeom
+	position			230 160 220
+	material			mat_copper_01
+}
+
+standard_object
+{
+	name				sphere_copper_05
+	geometry			spheregeom
+	position			360 160 220
+	material			mat_copper_05
+}
+
+standard_object
+{
+	name				sphere_copper_10
+	geometry			spheregeom
+	position			490 160 220
+	material			mat_copper_10
 }
 
 

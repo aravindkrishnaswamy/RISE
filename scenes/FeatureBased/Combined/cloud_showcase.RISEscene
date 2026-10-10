@@ -24,10 +24,21 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
+# Legacy phase 2 slice B2: the radiance_map `pnt_sky` 0.22 0.4 0.78 (linear) plus the former ambient_light term 0.1006 0.1452 0.34
+# / radiance_scale 1.5 (ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did; the environment is occluded,
+# so creases darken).  A new painter: `pnt_sky` itself is left as authored (other chunks may bind it).
+uniformcolor_painter
+{
+	name				pnt_sky_with_ambient
+	color				0.28704 0.49678 1.0066
+	colorspace			Rec709RGB_Linear
+}
+
 pathtracing_pel_rasterizer
 {
 	samples					64
-	radiance_map			pnt_sky
+	radiance_map			pnt_sky_with_ambient
 	radiance_background		TRUE
 	radiance_scale			1.5
 }
@@ -62,22 +73,15 @@ pinhole_camera
 # Lighting
 ##################################################
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): power x2 (12 -> 24) restores the legacy whole-image mean (1.273): the deprecated ambient_light lit every point inside the cloud unshadowed; its uniform-environment replacement is occluded by the cloud itself.
 directional_light
 {
 	name				sun
-	power				12.0
+	power				24
 	color				1.0 0.95 0.85
 	colorspace			sRGB
 	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
 	direction			0.3 0.5 -0.8
-}
-
-ambient_light
-{
-	name				sky_fill
-	color				0.55 0.65 0.95
-	colorspace			sRGB
-	power				1.2
 }
 
 ##################################################

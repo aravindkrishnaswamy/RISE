@@ -272,12 +272,14 @@ png_painter
 	file				textures/waterbump.png
 }
 
-iridescent_painter
+# Legacy phase 2 slice B2: was iridescent_painter (colora `color_darkpurple`, colorb `color_slateblue`, bias -0.5); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.2083; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
 	name				pnt_iri
-	colora				color_darkpurple
-	colorb				color_slateblue
-	bias				-0.5
+	color				0.41958 0.19876 0.58042
+	colorspace			Rec709RGB_Linear
 }
 
 mandelbrot_painter
@@ -292,12 +294,15 @@ mandelbrot_painter
 	exponent			12.0
 }
 
-cooktorrance_material
+# Legacy phase 2 slice B2: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.1 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ct
 	rd					color_black
 	rs					color_gold
-	facets				0.1
+	alphax				0.1
+	alphay				0.1
+	fresnel_mode		conductor
 	ior					1.8
 	extinction			0
 }
@@ -306,19 +311,73 @@ cooktorrance_material
 # Materials
 ##################################################
 
-polished_material
+# Legacy phase 2 slice B2: F0 of `polished` = tau x ((ior-1)/(ior+1))^2.
+uniformcolor_painter
 {
-	name				polished
-	reflectance			pnt_iri
-	tau					0.90 0.91 0.98
-	scattering			256.0
-	ior					10000
+	name				polished_f0
+	color				0.89964 0.90964 0.97961
+	colorspace			Rec709RGB_Linear
 }
 
-perfectreflector_material
+# Legacy phase 2 slice B2: was polished_material with ior 10000, beyond coated_material's [1, 3] range: the coat is a
+# near-total reflector, so -> ggx_material schlick_f0 with F0 = tau x ((n-1)/(n+1))^2 = 0.8996 0.9096 0.9796, rd = reflectance,
+# alpha = coat_roughness 1/sqrt(2*256+1) = 0.04415 (SCENE_CONVENTIONS 11.5 roughness rule).
+ggx_material
+{
+	name				polished
+	rd					pnt_iri
+	rs					polished_f0
+	alphax				0.04415
+	alphay				0.04415
+	fresnel_mode		schlick_f0
+}
+
+# Legacy phase 2 slice B2: white F0 tint for the thin-film materials.
+uniformcolor_painter
+{
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				tf_Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				tf_Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Legacy phase 2 slice B2: was perfectreflector_material; perfectreflector with iridescent `pnt_iri` -> near-mirror (alpha 0.01) TiO2 film 125 nm over titanium, thickness matching its normal-incidence colour 0.265 0.309 0.735; OVERRIDDEN to 125 nm by owner ruling 2026-10-10 (keeps the purple look; FILM_OVERRIDE).
+ggx_material
 {
 	name				perf_ref
-	reflectance			pnt_iri
+	rd					none
+	rs					pnt_tf_white
+	alphax				0.01
+	alphay				0.01
+	fresnel_mode		thinfilm
+	ior					tf_Ti_n
+	extinction			tf_Ti_k
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		125
 }
 
 lambertian_material

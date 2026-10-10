@@ -301,22 +301,34 @@ orennayar_material
 }
 
 # Polished marble pedestal
-polished_material
+# Legacy phase 2 slice B2: substrate of `polished_marble` (was polished_material reflectance).
+lambertian_material
+{
+	name				polished_marble_base
+	reflectance			pnt_cream
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `polished_marble_base`; coat_weight = tau 0.95 0.92 0.85 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*50+1) = 0.0995 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				polished_marble
-	reflectance			pnt_cream
-	tau			0.95 0.92 0.85
-	ior					1.5
-	scattering			50.0
+	base				polished_marble_base
+	coat_weight			0.9213
+	coat_ior			1.5
+	coat_roughness		0.0995
 }
 
 # Metallic tools - isotropic phong
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 64 -> alpha 1/sqrt(2N+1) = 0.08805, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				pewter
 	rd					pnt_pewter
 	rs					color_white
-	N					64.0
+	alphax				0.088045
+	alphay				0.088045
+	fresnel_mode		schlick_f0
 }
 
 # Wooden table

@@ -160,7 +160,7 @@ namespace RISE
 			// `PrimarySample` slots (~528 KB; see
 			// docs/DL08_PSSMLT_LANE_LAYOUT.md for the exact byte count
 			// and the measured bootstrap-time regression, ~5x on
-			// `scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene`) on
+			// `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene`) on
 			// EVERY fresh sampler, vs 294 slots (~6.9 KB) before the
 			// DL-08 collision fix.  The
 			// analogy drawn at the time -- "this is like SobolSampler's
@@ -196,7 +196,7 @@ namespace RISE
 			//    hash map: `std::unordered_map` was tried first and
 			//    measured ~2x slower bootstrap wall-clock than even the
 			//    pre-DL-08 base commit on
-			//    `scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene`
+			//    `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene`
 			//    (100,000 bootstrap samples, each constructing and
 			//    destroying its OWN `PSSMLTSampler` --
 			//    `MLTRasterizer.cpp`'s bootstrap loop -- so a hash

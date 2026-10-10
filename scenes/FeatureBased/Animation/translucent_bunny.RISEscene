@@ -226,6 +226,10 @@ animation_options
 # Materials
 ##################################################
 
+# Kept by owner ruling 2026-10-10 (legacy-deprecation Phase 2 slice B2): this showcase keeps the
+# DEPRECATED (not frozen) iridescent_painter, because translucent_material has no thin-film model to
+# carry the pearly view-dependent colour (the painter's mean colour turned the bunny flat purple, -78%).
+# tools/migrate_scenes_legacy_families.py skips this scene's iridescent family (KEEP).
 iridescent_painter
 {
 	name				pnt_iri

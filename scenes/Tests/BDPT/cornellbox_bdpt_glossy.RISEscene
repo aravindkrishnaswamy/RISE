@@ -255,12 +255,15 @@ lambertian_luminaire_material
 }
 
 # Glossy metallic material using Phong model
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 100 -> alpha 1/sqrt(2N+1) = 0.07053, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				glossy_metal
 	rd					pnt_glossy_diff
 	rs					pnt_glossy_spec
-	N			100.0
+	alphax				0.070535
+	alphay				0.070535
+	fresnel_mode		schlick_f0
 }
 
 ##################################################

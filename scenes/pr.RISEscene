@@ -296,13 +296,15 @@ lambertian_material
 	reflectance			color_gold
 }
 
-ashikminshirley_anisotropicphong_material
+# Legacy phase 2 slice B2: was ashikminshirley_anisotropicphong_material; ashikmin-shirley nu 4000 nv 100 -> alphax 0.02236 alphay 0.14 (sqrt(2/(n+2))), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				psilver
-	nu					4000
-	nv					100
 	rd					pnt_aniso_Rd
 	rs					pnt_aniso_Rs
+	alphax				0.022355
+	alphay				0.14003
+	fresnel_mode		schlick_f0
 }
 
 lambertian_luminaire_material

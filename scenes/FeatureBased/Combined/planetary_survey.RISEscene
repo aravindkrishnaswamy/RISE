@@ -462,12 +462,15 @@ lambertian_material
 }
 
 # Ice world - slightly glossy
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 32 -> alpha 1/sqrt(2N+1) = 0.124, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ice_mat
 	rd					pnt_ice
 	rs					color_white
-	N					32.0
+	alphax				0.12403
+	alphay				0.12403
+	fresnel_mode		schlick_f0
 }
 
 # Rocky world

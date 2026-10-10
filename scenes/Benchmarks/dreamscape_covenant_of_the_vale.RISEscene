@@ -307,19 +307,71 @@ reactiondiffusion3d_painter
 	scale		1.4 1.4 1.4
 }
 
-# Magenta sheen at grazing angles over the patterned hide.
-iridescent_painter
+# Legacy phase 2 slice B2: constant blend weight 1-w for `pnt_dragon`.
+uniformcolor_painter
 {
-	name	pnt_dragon
-	colora	pnt_drg_magenta
-	colorb	pnt_drg_hide
-	bias	0.05
+	name				pnt_dragon_mask
+	color				0.28579 0.28579 0.28579
+	colorspace			Rec709RGB_Linear
 }
 
-lambertian_material
+# Magenta sheen at grazing angles over the patterned hide.
+# Legacy phase 2 slice B2: was iridescent_painter (bias 0.05); now its projected-area mean
+# (1-w) colora + w colorb, w = 0.7142 (mask = 1-w selects colora).
+blend_painter
 {
-	name		mat_dragon
-	reflectance	pnt_dragon
+	name				pnt_dragon
+	colora				pnt_drg_magenta
+	colorb				pnt_drg_hide
+	mask				pnt_dragon_mask
+}
+
+# Legacy phase 2 slice B2: white F0 tint for the thin-film materials.
+uniformcolor_painter
+{
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				tf_Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				tf_Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_dragon` -> pearlescent ggx: rd = mean blend w 0.714, TiO2 film 190 nm over a 1.5 dielectric (alpha 0.3), thickness matching colora (colorb is not a uniform colour).
+ggx_material
+{
+	name				mat_dragon
+	rd					pnt_dragon
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		190
 }
 
 # Body: local frame, head toward +X.  Dense sphere chain along a
@@ -388,18 +440,30 @@ uniformcolor_painter
 	color	0.03 0.35 0.42
 }
 
-iridescent_painter
+# Legacy phase 2 slice B2: was iridescent_painter (colora `pnt_wing_violet`, colorb `pnt_wing_teal`, bias 0.1); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.7570; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
-	name	pnt_wing
-	colora	pnt_wing_violet
-	colorb	pnt_wing_teal
-	bias	0.1
+	name				pnt_wing
+	color				0.09561 0.28439 0.45159
+	colorspace			Rec709RGB_Linear
 }
 
-lambertian_material
+# Legacy phase 2 slice B2: was lambertian_material; lambertian with iridescent `pnt_wing` -> pearlescent ggx: rd = mean colour 0.0956 0.284 0.452 (w 0.757), TiO2 film 135 nm over a 1.5 dielectric (alpha 0.3), thickness matching its normal-incidence colour 0.03 0.35 0.42.
+ggx_material
 {
-	name		mat_wing
-	reflectance	pnt_wing
+	name				mat_wing
+	rd					pnt_wing
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		135
 }
 
 # Wings rise as a V from the shoulders.  The X euler tips the membrane
