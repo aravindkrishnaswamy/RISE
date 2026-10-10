@@ -1502,6 +1502,7 @@ debt-dl406 slice note (2026-10-09, branched from `master` `4ef05c006`; does NOT 
 
 **Authoritative totals on `master` (recount after each merge; per-slice notes
 below are each slice's own snapshot at its branch HEAD and do NOT sum):**
+- 2026-10-10 batch 7 image investigation: DL-368 intentionally explains the drift (`e19288fe7`, merged `8dcf20d69`); no new row. **332 main rows: 21 open, 311 closed** (numeric identifier recount). Evidence: [BATCH7_IMAGE_DRIFT.md](BATCH7_IMAGE_DRIFT.md); batch result: [BATCH7_REPORT.md](BATCH7_REPORT.md).
 - 2026-10-10 batch 7 DL-449 superseded by DL-500: **332 main rows: 21 open, 311 closed** (numeric identifier recount).
 - 2026-10-10 batch 7 DL-502/482 integration and DL-502 warning follow-through: **332 main rows: 22 open, 310 closed** (numeric identifier recount; both rows remain partial).
 - 2026-10-09 (`debt-codex6-367`): reference batching corrected; DL-367 remains partial with a strict unmatched pin. Numeric-ID recount for integration: **332 main rows: 22 open, 310 closed**.

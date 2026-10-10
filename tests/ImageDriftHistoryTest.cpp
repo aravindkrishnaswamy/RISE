@@ -1,0 +1,227 @@
+// Batch 7 image drift diagnostic. Same historical scene; optional isolated
+// supported controls bind every sphere to one supported material. One render
+// per process, fixed srand, selectable ValueSalt. No production changes.
+// Derived from DeprecatedMaterialRenderIdentityTest (Claude Sonnet 5.5).
+// Default pins the post-DL-368 hash. DRIFT_MEASURE_ONLY=1 permits historical
+// measurements; DRIFT_CONTROL=7/8/9 and nonzero DRIFT_SALT are diagnostic.
+
+#include <cstdio>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>
+#endif
+
+#include "../src/Library/Interfaces/IJob.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IRasterizer.h"
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/SobolSampler.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+namespace RISE
+{
+	bool RISE_CreateJobPriv( IJobPriv** ppi );
+}
+
+static int g_control = -1;
+static unsigned int g_salt = 0;
+static bool g_measureOnly = false;
+
+static bool ReadDiagnosticOptions()
+{
+    if(const char* c=std::getenv("DRIFT_CONTROL")) {
+        if(std::strcmp(c,"7")==0) g_control=7;
+        else if(std::strcmp(c,"8")==0) g_control=8;
+        else if(std::strcmp(c,"9")==0) g_control=9;
+        else return false;
+    }
+    if(const char* t=std::getenv("DRIFT_SALT")) {
+        char* end=nullptr;errno=0;
+        const unsigned long value=std::strtoul(t,&end,10);
+        if(!*t || *t=='-' || *end || errno || value>UINT_MAX) return false;
+        g_salt=static_cast<unsigned int>(value);
+    }
+    if(const char* m=std::getenv("DRIFT_MEASURE_ONLY")) {
+        if(std::strcmp(m,"1")!=0) return false;
+        g_measureOnly=true;
+    }
+    return true;
+}
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const char* what )
+{
+	if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", what ); }
+}
+
+class CapturingRasterizerOutput
+	: public virtual IRasterizerOutput
+	, public virtual Reference
+{
+public:
+	std::vector<RISEColor> pixels;
+	CapturingRasterizerOutput() {}
+protected:
+	virtual ~CapturingRasterizerOutput() {}
+public:
+	virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	virtual void OutputImage( const IRasterImage& img, const Rect*, const unsigned int ) override
+	{
+		const unsigned int w = img.GetWidth(), h = img.GetHeight();
+		pixels.resize( w * h );
+		for( unsigned int y = 0; y < h; y++ )
+			for( unsigned int x = 0; x < w; x++ )
+				pixels[y * w + x] = img.GetPEL( x, y );
+	}
+};
+
+static unsigned long long PixelHash( const std::vector<RISEColor>& px )
+{
+	unsigned long long h = 1469598103934665603ull;
+	for( const RISEColor& c : px ) {
+		const double v[4] = { c.base.r, c.base.g, c.base.b, c.a };
+		const unsigned char* b = reinterpret_cast<const unsigned char*>( v );
+		for( size_t i = 0; i < sizeof( v ); i++ ) { h ^= b[i]; h *= 1099511628211ull; }
+	}
+	return h;
+}
+
+//! A row of ten spheres, one material each: the seven deprecated
+//! chunk types, then translucent_material (NOT deprecated), ggx_material
+//! and lambertian_material as controls.  16 spp of direct+indirect
+//! path tracing under an omni light; small enough to render in about a
+//! second on one worker.
+static std::string SceneText()
+{
+	std::ostringstream ss;
+	ss << "RISE ASCII SCENE 7\n"
+		"film\n{\n\twidth 40\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 1.5 9\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_d\n\tcolor 0.6 0.3 0.2\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_s\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_r\n\tcolor 0.3 0.3 0.3\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_t\n\tcolor 0.4 0.4 0.4\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		// the seven deprecated chunk types
+		"cooktorrance_material\n{\n\tname m0\n\trd pnt_d\n\trs pnt_s\n\tfacets 0.2\n\tior 1.5\n\textinction 0.0\n}\n\n"
+		"isotropic_phong_material\n{\n\tname m1\n\trd pnt_d\n\trs pnt_s\n\tN 32\n}\n\n"
+		"ashikminshirley_anisotropicphong_material\n{\n\tname m2\n\trd pnt_d\n\trs pnt_s\n\tnu 20\n\tnv 80\n}\n\n"
+		"schlick_material\n{\n\tname m3\n\trd pnt_d\n\trs pnt_s\n\troughness 0.2\n\tisotropy 1\n}\n\n"
+		"ward_isotropic_material\n{\n\tname m4\n\trd pnt_d\n\trs pnt_s\n\talpha 0.15\n}\n\n"
+		"ward_anisotropic_material\n{\n\tname m5\n\trd pnt_d\n\trs pnt_s\n\talphax 0.1\n\talphay 0.2\n}\n\n"
+		"polished_material\n{\n\tname m6\n\treflectance pnt_d\n\ttau 0.9\n\tior 1.5\n\tscattering 100\n}\n\n"
+		// controls
+		"translucent_material\n{\n\tname m7\n\tref pnt_r\n\ttau pnt_t\n\text 0.1\n\tN 10\n\tscattering 0.5\n}\n\n"
+		"ggx_material\n{\n\tname m8\n\trd pnt_d\n\trs pnt_s\n\talphax 0.2\n\talphay 0.2\n}\n\n"
+		"lambertian_material\n{\n\tname m9\n\treflectance pnt_d\n}\n\n"
+		"lambertian_material\n{\n\tname m_floor\n\treflectance pnt_floor\n}\n\n"
+		"sphere_geometry\n{\n\tname geo_s\n\tradius 0.5\n}\n\n"
+		"clippedplane_geometry\n{\n\tname geo_floor\n\tpta -8 -0.5 8\n\tptb 8 -0.5 8\n\tptc 8 -0.5 -8\n\tptd -8 -0.5 -8\n\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname obj_floor\n\tgeometry geo_floor\n\tmaterial m_floor\n}\n\n";
+	for( int i = 0; i < 10; i++ ) {
+		const double x = ( i - 4.5 ) * 1.2;
+		ss << "standard_object\n{\n\tname obj" << i << "\n\tgeometry geo_s\n\tmaterial m" << (g_control>=0 ? g_control : i)
+		   << "\n\tposition " << x << " 0 0\n}\n\n";
+	}
+	ss << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"omni_light\n{\n\tname lgt\n\tposition 2 6 6\n\tcolor 1 1 1\n\tpower 600\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\trr_min_depth 4\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern rendered/deprecated_material_identity_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+	return ss.str();
+}
+
+//! TMPDIR-honouring temp path (the suites' usual helper, e.g. AgentAddFuzzTest).
+static std::string TempPath( const std::string& name )
+{
+	const char* base = std::getenv( "TMPDIR" );
+	std::string dir = base ? base : "/tmp";
+	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
+	return dir + name;
+}
+
+static bool RenderHash( unsigned long long& hash, double& mean )
+{
+	const std::string path = TempPath( "deprecated_material_identity_" + std::to_string( static_cast<int>( ::getpid() ) ) + ".RISEscene" );
+	{
+		std::ofstream ofs( path.c_str() );
+		if( !ofs.is_open() ) return false;
+		ofs << SceneText();
+	}
+	std::srand( 4242 );
+	SobolSamplerTestHooks::ValueSalt().store( g_salt );
+
+	bool ok = false;
+	IJobPriv* pJob = nullptr;
+	if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+		if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+			pJob->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+			if( pJob->Rasterize() && !pCap->pixels.empty() ) {
+				hash = PixelHash( pCap->pixels );
+				double s = 0;
+				for( const RISEColor& c : pCap->pixels ) s += 0.2126 * c.base.r * c.a + 0.7152 * c.base.g * c.a + 0.0722 * c.base.b * c.a;
+				mean = s / double( pCap->pixels.size() );
+				ok = true;
+			}
+			safe_release( pCap );
+		}
+		safe_release( pJob );
+	}
+	std::remove( path.c_str() );
+	return ok;
+}
+
+static char g_optPath[512] = { 0 };
+
+int main()
+{
+	std::printf( "ImageDriftHistoryTest (batch 7 diagnostic)\n" );
+    if(!ReadDiagnosticOptions()) {std::fprintf(stderr,"Invalid DRIFT_CONTROL, DRIFT_SALT or DRIFT_MEASURE_ONLY\n");return 2;}
+
+	if( !std::getenv( "RISE_OPTIONS_FILE" ) ) {
+		std::snprintf( g_optPath, sizeof( g_optPath ), "%s", TempPath( "deprecated_material_options_" + std::to_string( static_cast<int>( ::getpid() ) ) + ".txt" ).c_str() );
+		std::atexit( []() { std::remove( g_optPath ); } );
+		std::ofstream opt( g_optPath );
+		opt << "force_number_of_threads 1\n";
+		opt.close();
+#ifdef _WIN32
+		_putenv_s( "RISE_OPTIONS_FILE", g_optPath );
+#else
+		setenv( "RISE_OPTIONS_FILE", g_optPath, 1 );
+#endif
+	}
+
+	// ONE render per process: a second in-process render is not bit-identical
+	// (render-global RNG state carries over), so determinism is a property of
+	// a fresh process, which is also how the parent-commit hash was taken.
+	unsigned long long h1 = 0;
+	double m1 = 0;
+	const bool ok1 = RenderHash( h1, m1 );
+	Check( ok1, "the all-deprecated-materials scene loads and renders" );
+	Check( m1 > 1e-4, "the render is not black (mean luminance > 1e-4)" );
+	std::printf( "  mean %.17g hash %016llx\n", m1, h1 );
+
+	if(g_control<0 && g_salt==0 && !g_measureOnly) {
+		Check(h1==0xa4e972d01879f63cull,"DL-368 post-convention scene hash");
+	}
+	std::printf( "%d passed, %d failed\n", g_pass, g_fail );
+	return g_fail ? 1 : 0;
+}
