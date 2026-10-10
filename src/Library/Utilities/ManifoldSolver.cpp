@@ -8438,10 +8438,14 @@ void ManifoldSolver::CanonicalExtendedRoots(const Point3& start,const Vector3& s
         }
         break; // bounded: the first internal reflector only
     }
+    // Rejected and duplicate seeds do not escape this loop. Reuse their
+    // vector capacities; accepted roots still move their buffers into O(T,y).
+    SMSDomainRoot root(topology.domain,topology.startingStack);
     for(const Vector3& direction:directions) {
         SMSCanonicalGuardSampler guard;
-        SMSDomainRoot root(topology.domain,topology.startingStack);
-        root.scale=scale;
+        root.domain=topology.domain;root.startingStack=topology.startingStack;
+        root.vertices.clear();SMSResetResult(root.result);
+        root.accepted=false;root.uncertainty=0;root.scale=scale;
         if(!BuildExtendedWalk(start,y,scene,root.startingStack,root.domain,guard,root.vertices,
                 raster,&luminary,&topology.vertices,&direction)
             || !SameExtendedTopology(root,topology)) continue;
