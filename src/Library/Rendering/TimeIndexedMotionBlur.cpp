@@ -23,6 +23,13 @@
 #include "../Lights/SpotLight.h"
 #include "../Lights/DirectionalLight.h"
 #include "../Lights/AmbientLight.h"
+#include "../Painters/UniformColorPainter.h"
+#include "../Geometry/SphereGeometry.h"
+#include "../Geometry/BoxGeometry.h"
+#include "../Geometry/ClippedPlaneGeometry.h"
+#include "../Materials/LambertianMaterial.h"
+#include "../Materials/LambertianLuminaireMaterial.h"
+#include "../Materials/Material.h"
 #include <atomic>
 #include <typeinfo>
 
@@ -31,6 +38,21 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	bool IsUniformPainter(const IPainter& painter) { return typeid(painter)==typeid(UniformColorPainter); }
+	bool AuditedPainterMaterial(const IMaterial* material,const UniformColorPainter* animated)
+	{
+		if(!material) return true;
+		if(typeid(*material)==typeid(NullMaterial)) return true;
+        if(typeid(*material)==typeid(LambertianMaterial))
+            return IsUniformPainter(dynamic_cast<const LambertianMaterial*>(material)->GetReflectance());
+		if(typeid(*material)==typeid(LambertianLuminaireMaterial))
+			{
+            const auto* lum=dynamic_cast<const LambertianLuminaireMaterial*>(material);
+            return IsUniformPainter(lum->GetRadEx()) && &lum->GetRadEx()!=animated &&
+                AuditedPainterMaterial(&lum->GetBaseMaterial(),animated);
+        }
+		return false;
+	}
 	thread_local TimeIndexedThread* tlsCurrentThread = nullptr;
 	std::atomic<unsigned long long> gFramesCreated( 0 );
 
@@ -76,6 +98,7 @@ int TimeIndexedFrame::SharedSlot( const Entry& e )
 	case kSpotLight:		return dynamic_cast<SpotLight*>( e.shared )->GetTimeSlot();
 	case kDirectionalLight:	return dynamic_cast<DirectionalLight*>( e.shared )->GetTimeSlot();
 	case kAmbientLight:		return dynamic_cast<AmbientLight*>( e.shared )->GetTimeSlot();
+    case kUniformPainter: return dynamic_cast<UniformColorPainter*>(e.shared)->GetTimeSlot();
 	}
 	return -1;
 }
@@ -89,6 +112,7 @@ void TimeIndexedFrame::SetSharedSlot( const Entry& e, const int slot )
 	case kSpotLight:		dynamic_cast<SpotLight*>( e.shared )->SetTimeSlot( slot ); break;
 	case kDirectionalLight:	dynamic_cast<DirectionalLight*>( e.shared )->SetTimeSlot( slot ); break;
 	case kAmbientLight:		dynamic_cast<AmbientLight*>( e.shared )->SetTimeSlot( slot ); break;
+    case kUniformPainter: dynamic_cast<UniformColorPainter*>(e.shared)->SetTimeSlot(slot);break;
 	}
 }
 
@@ -152,6 +176,32 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 			}
 			e.kind = kObject;
 			e.typed = static_cast<const Object*>( o );
+        } else if(typeid(*elem)==typeid(UniformColorPainter)) {
+            auto* painter=static_cast<UniformColorPainter*>(dynamic_cast<UniformColorPainter*>(elem));
+            const IRadianceMap* environment=scene.GetGlobalRadianceMap();
+            if(scene.GetGlobalMedium() || (environment && (!IsUniformPainter(environment->GetPainter()) || &environment->GetPainter()==painter)))
+                return Fail::Out(f,reason,"a painter with unverified medium/environment consumers");
+            if(painter->HasObservers()) return Fail::Out(f,reason,"a painter with registered observers");
+            struct ShadingOnly final : IEnumCallback<IObject> {
+                const UniformColorPainter* animated;
+                explicit ShadingOnly(const UniformColorPainter* p):animated(p){}
+                bool safe=true;
+                bool operator()(const IObject& object) override {
+                    const IGeometry* geometry=object.GetGeometry();
+                    const IShader* shader=object.GetShader();
+                    const IRadianceMap* map=object.GetRadianceMap();
+                    if(typeid(object)!=typeid(Object) || object.GetModifier() || object.GetInteriorMedium() || (map && (!IsUniformPainter(map->GetPainter()) || &map->GetPainter()==animated)) ||
+                       !AuditedPainterMaterial(object.GetMaterial(),animated) || dynamic_cast<const CSGObject*>(&object) || (shader && shader->HasRuntimeData()) ||
+                       (geometry && typeid(*geometry)!=typeid(SphereGeometry) &&
+                        typeid(*geometry)!=typeid(BoxGeometry) && typeid(*geometry)!=typeid(ClippedPlaneGeometry))) {
+                        safe=false;return false;
+                    }
+                    return true;
+                }
+            } census(painter);
+            pObjects->EnumerateObjects(census);
+            if(!census.safe) return Fail::Out(f,reason,"a painter whose geometry/material/shader consumers are unverified");
+            e.kind=kUniformPainter;e.typed=painter;
 		} else if( CameraCommon* c = dynamic_cast<CameraCommon*>( elem ) ) {
 			// Only the scene's active camera generates rays; a keyframed
 			// inactive camera is never read by the render (the per-sample
@@ -275,6 +325,10 @@ TimeIndexedThread::TimeIndexedThread( const TimeIndexedFrame* frame_ ) :
 			objects[i] = c;
 			owned.push_back( c );
 			break; }
+        case TimeIndexedFrame::kUniformPainter: {
+            auto* c=static_cast<const UniformColorPainter*>(e.typed)->CloneForTimeView();
+            slots[i]=static_cast<const UniformColorPainter*>(c);
+            keyframable[i]=c;owned.push_back(c);break; }
 		case TimeIndexedFrame::kPointLight: {
 			PointLight* c = static_cast<const PointLight*>( e.typed )->CloneForTimeView();
 			slots[i] = static_cast<const void*>( static_cast<const PointLight*>( c ) );
