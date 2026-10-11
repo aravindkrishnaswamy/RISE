@@ -951,6 +951,103 @@ class ExporterCoatNormalAlphaTangentGatingTest(unittest.TestCase):
         self.assertIn("tangent_attribute=", self.source)
 
 
+class LegacyDefaultsTest(unittest.TestCase):
+    """Legacy-deprecation Phase 2 slice C: the add-on's defaults are
+    supported paths, and the frozen choices that remain selectable really
+    select what they name.
+
+    `properties.py` and `export_scene` import bpy, so the enum / default
+    checks read `properties.py`'s source; the rasterizer selection itself is
+    tested through behaviour: `bridge.resolve_rasterizer_selection` (what
+    `export_scene` calls) and the ctypes payload `_marshal_settings` builds
+    from its result.  The native side (rise_blender_bridge.cpp) maps kind 0
+    to PT_PEL when use_path_tracing is set and to PIXELPEL otherwise; the
+    native BlenderBridgeAlphaTest / BlenderBridgeTangentTest render kind 0
+    with use_path_tracing 0 through the legacy pixel rasterizer."""
+
+    @classmethod
+    def setUpClass(cls):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "properties.py"), "r", encoding="utf-8") as handle:
+            cls.props = handle.read()
+        with open(_EXPORTER_SOURCE, "r", encoding="utf-8") as handle:
+            cls.exporter = handle.read()
+
+    def _prop_block(self, name):
+        start = self.props.index(f"    {name}: bpy.props.")
+        end = self.props.index("\n    )\n", start)
+        return self.props[start:end]
+
+    def _items(self):
+        return dict(re.findall(r'\("(\d+)",\s*"([^"]+)"', self._prop_block("rasterizer_type")))
+
+    @staticmethod
+    def _native_kind(kind, use_path_tracing):
+        # Mirror of rise_blender_bridge.cpp's kind resolution.
+        if kind == bridge.RASTERIZER_KIND_PIXELPEL:
+            return bridge.RASTERIZER_KIND_PT_PEL if use_path_tracing else bridge.RASTERIZER_KIND_PIXELPEL
+        return kind
+
+    def _marshalled(self, rasterizer_type, use_path_tracing):
+        kind, upt = bridge.resolve_rasterizer_selection(rasterizer_type, use_path_tracing)
+        settings = mock.MagicMock()
+        settings.use_path_tracing = upt
+        settings.rasterizer_kind = kind
+        settings.temporary_directory = ""
+        handle = bridge._SceneHandle.__new__(bridge._SceneHandle)
+        handle.keepalive = []
+        payload = handle._marshal_settings(settings)
+        return payload.rasterizer_kind, payload.use_path_tracing
+
+    def test_default_rasterizer_is_supported(self):
+        default = re.search(r'default="(\d+)"', self._prop_block("rasterizer_type")).group(1)
+        items = self._items()
+        self.assertNotIn("legacy", items[default].lower())
+        kind, upt = self._marshalled(default, True)   # use_path_tracing defaults True
+        self.assertNotIn(self._native_kind(kind, upt), (0, 7, 8))
+
+    def test_frozen_rasterizers_remain_selectable_and_labelled_legacy(self):
+        items = self._items()
+        for key in ("0", "7", "8"):
+            self.assertIn("[legacy]", items[key])
+
+    def test_explicit_pixel_rasterizer_reaches_pixelpel(self):
+        # The back-compat box defaults True and is not drawn; picking the
+        # legacy pixel rasterizer must still select it natively.
+        for upt in (True, False):
+            kind, sent_upt = self._marshalled("0", upt)
+            self.assertEqual((kind, sent_upt), (0, 0))
+            self.assertEqual(self._native_kind(kind, sent_upt), bridge.RASTERIZER_KIND_PIXELPEL)
+
+    def test_other_choices_pass_use_path_tracing_through(self):
+        for key in self._items():
+            if key == "0":
+                continue
+            for upt in (True, False):
+                kind, sent_upt = self._marshalled(key, upt)
+                self.assertEqual((kind, sent_upt), (int(key), int(upt)))
+                self.assertEqual(self._native_kind(kind, sent_upt), int(key))
+
+    def test_export_scene_uses_the_resolver(self):
+        start = self.exporter.index("def _render_settings_from_scene(") if "def _render_settings_from_scene(" in self.exporter else 0
+        self.assertIn("resolve_rasterizer_selection(", self.exporter[start:])
+        self.assertIn("use_path_tracing=use_path_tracing,", self.exporter)
+        self.assertIn("rasterizer_kind=rasterizer_kind,", self.exporter)
+
+    def test_world_ambient_defaults_off(self):
+        self.assertIn("default=False", self._prop_block("use_world_ambient"))
+
+    def test_non_node_world_exports_as_uniform_environment(self):
+        start = self.exporter.index("def export_scene(")
+        end = self.exporter.find("\ndef ", start + 1)
+        body = self.exporter[start:end if end >= 0 else len(self.exporter)]
+        gate = body.index("world_radiance_painter is None and not render_settings.use_world_ambient")
+        self.assertIn("not scene.world.use_nodes", body[gate:gate + 200])
+        self.assertIn('_add_uniform_painter(state, "world_radiance_uniform", world_rgb)', body[gate:])
+        # The explicitly-enabled ambient path is unchanged.
+        self.assertIn("world_radiance_painter is None and render_settings.use_world_ambient", body)
+
+
 class _StubHairMaterial:
     """The subset of `exporter.HairMaterialData` the bridge marshals.
     Deliberately a stand-in rather than the real dataclass: importing
