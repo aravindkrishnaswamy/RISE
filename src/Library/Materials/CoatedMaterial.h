@@ -92,6 +92,7 @@
 #include "../Interfaces/IPainter.h"
 #include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
+#include <typeinfo>
 #include "CoatedBRDF.h"
 #include "CoatedSPF.h"
 #include "LambertianMaterial.h"
@@ -205,7 +206,8 @@ namespace RISE
 				pBRDF = new CoatedBRDF(
 					*base.GetBSDF(), coatWeight, coatIOR, coatRoughness,
 					coatThickness, coatAbsorption, coatTint, recyclingCompensation,
-					base.ScattersFullSphere(), coatNormal, coatNormalScale );
+					base.ScattersFullSphere(), coatNormal, coatNormalScale,
+                    typeid(base)==typeid(LambertianMaterial) || typeid(base)==typeid(OrenNayarMaterial) );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new CoatedSPF( *pBRDF, *base.GetSPF() );
@@ -215,6 +217,11 @@ namespace RISE
 			/// \return The BRDF for this material.  Never NULL -- the
 			///         whole point of the material (7.1).
 			inline IBSDF* GetBSDF() const { return pBRDF; }
+            unsigned int ConnectionScatterTypes() const {
+                return pBRDF->SingleDiffuseLabel() ? (1u << ScatteredRay::eRayDiffuse)
+                    : IMaterial::ConnectionScatterTypes();
+            }
+            bool HasConnectionTypeSplit() const { return pBRDF->SingleDiffuseLabel(); }
 
 			/// \return The SPF for this material.  Never NULL.
 			inline ISPF* GetSPF() const { return pSPF; }

@@ -1013,6 +1013,10 @@ static std::string EnclosedPointScene( const std::string& rasterizerChunk, const
 		s += "uniformcolor_painter\n{\n name pnt_black\n color 0 0 0\n colorspace Rec709RGB_Linear\n}\n\nfabric_material\n{\n name mat_multi\n base mat_floor\n sheen_color pnt_black\n sheen_roughness 0.3\n weave_rotation 0\n}\n";
 		floorMat="mat_multi";
 	}
+	if(floorKind == 6) {
+        s += "coated_material\n{\n name mat_multi\n base mat_floor\n coat_weight 0\n coat_ior 1.5\n coat_roughness 0.3\n}\n";
+        floorMat="mat_multi";
+    }
 	s += "dielectric_material\n{\n\tname mat_glass\n\ttau 1.0 1.0 1.0\n\tior 1.5\n\tscattering 1000000.0\n}\n\n"
 		"clippedplane_geometry\n{\n\tname floor_g\n\tpta -2 0 -2\n\tptb -2 0 2\n\tptc 2 0 2\n\tptd 2 0 -2\n}\n\n";
 	s += "standard_object\n{\n\tname floor\n\tgeometry floor_g\n\tmaterial " + floorMat + "\n}\n\n";
@@ -1141,6 +1145,58 @@ static void RowN()
         Print((std::string(kind)+" fabric free identity").c_str(),free);
         Print((std::string(kind)+" fabric nonbinding identity").c_str(),nonbinding);
         Check(free.ok && nonbinding.ok && free.hashes==nonbinding.hashes,std::string(kind)+": fabric nonbinding pixel identity");
+    }
+}
+
+static void CoatedSingleThreadOptions()
+{
+    char path[512];
+    std::snprintf(path,sizeof(path),"%s/coated_cap_options_%d.txt",
+        std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp",int(::getpid()));
+    std::ofstream file(path); file << "force_number_of_threads 1\nrender_thread_reserve_count 0\n"; file.close();
+#ifdef _WIN32
+    _putenv_s("RISE_OPTIONS_FILE",path);
+#else
+    setenv("RISE_OPTIONS_FILE",path,1);
+#endif
+}
+
+static void RowQ()
+{
+    const unsigned n=8;
+    for(const char* kind:{"bdpt_pel","vcm_pel","bdpt_spectral","vcm_spectral"}) {
+        auto scene=[&](int floor,const char* cap) {
+            std::string s=EnclosedPointScene(EnclosedChunk(kind,cap),floor);
+            s.replace(s.find("\tior 1.5\n"),9,"\tior 1.0\n"); return s;
+        };
+        const Stats ref=RenderStatsSalted(scene(0,""),n,56200);
+        const Stats cap=RenderStatsSalted(scene(6,"\tmax_glossy_bounce 1\n"),n,56200);
+        Print((std::string(kind)+" coated Lambertian twin").c_str(),ref);
+        Print((std::string(kind)+" coated cap one").c_str(),cap);
+        Check(ref.ok && ref.mean>1e-3 && cap.ok && Agree(ref,cap,3.0,0),std::string(kind)+": coated cap == Lambertian twin");
+        const Stats free=RenderStatsSalted(scene(6,""),n,56300);
+        const Stats nonbinding=RenderStatsSalted(scene(6,"\tmax_glossy_bounce 100\n"),n,56300);
+        Print((std::string(kind)+" coated free identity").c_str(),free);
+        Print((std::string(kind)+" coated nonbinding identity").c_str(),nonbinding);
+        Check(free.ok && nonbinding.ok && free.hashes==nonbinding.hashes,std::string(kind)+": coated nonbinding pixel identity");
+    }
+}
+
+// DL-502: a genuinely binding glossy cap. The glass keeps IOR1.5,
+// so Fresnel reflection paths have positive probability and cap0 removes them.
+// Both receivers are compared under that same cap; zero coat coverage is
+// exactly a Lambertian value and diffuse-labelled walk in either direction.
+static void RowR()
+{
+    const unsigned n=8;
+    for(const char* kind:{"bdpt_pel","vcm_pel","bdpt_spectral","vcm_spectral"}) {
+        const std::string chunk=EnclosedChunk(kind,"\tmax_glossy_bounce 0\n");
+        const Stats ref=RenderStatsSalted(EnclosedPointScene(chunk,0),n,56500);
+        const Stats cap=RenderStatsSalted(EnclosedPointScene(chunk,6),n,56500);
+        Print((std::string(kind)+" refractive-shell Lambertian cap0 twin").c_str(),ref);
+        Print((std::string(kind)+" coated refractive-shell cap0").c_str(),cap);
+        Check(ref.ok && ref.mean>1e-3 && cap.ok && Agree(ref,cap,3.0,0),
+            std::string(kind)+": coated binding cap0 == same-cap Lambertian twin");
     }
 }
 
@@ -1513,6 +1569,7 @@ int main()
 	// RISE_DL351_ROWS (e.g. "CD") runs a subset; default all.
 	const char* rows = std::getenv( "RISE_DL351_ROWS" );
 	const std::string sel = rows ? rows : "ABCDEFGHIJKLP";
+	if(sel.find_first_of("QR")!=std::string::npos) CoatedSingleThreadOptions();
 	if( sel.find( 'A' ) != std::string::npos ) RowA();
 	if( sel.find( 'B' ) != std::string::npos ) RowB();
 	if( sel.find( 'C' ) != std::string::npos ) RowC();
@@ -1525,6 +1582,8 @@ int main()
 	if( sel.find( 'J' ) != std::string::npos ) RowJ();
 	if( sel.find( 'K' ) != std::string::npos ) RowK();
 	if( sel.find( 'N' ) != std::string::npos ) RowN();
+	if( sel.find( 'Q' ) != std::string::npos ) RowQ();
+	if( sel.find( 'R' ) != std::string::npos ) RowR();
 	if( sel.find( 'L' ) != std::string::npos ) RowL();
 	if( sel.find( 'M' ) != std::string::npos ) RowM();
 	if( sel.find( 'P' ) != std::string::npos ) RowP();
