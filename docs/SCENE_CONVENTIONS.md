@@ -1350,11 +1350,14 @@ rasterizer chunk must appear **before** it (same convention as
 `file_rasterizeroutput` first — or omits the rasterizer chunk
 entirely — fails to load with a "no rasterizer is set" diagnostic.
 Rasterizer chunks are unnamed and derive last-wins: a LATER rasterizer
-chunk replaces the active one and drops the outputs attached to it, with
-no diagnostic (verified 2026-10-10: PT, then `file_rasterizeroutput`, then
-BDPT renders with BDPT and writes no file).  Declare outputs after the
+chunk replaces the active one and drops the outputs attached to it, logging
+a load warning naming the dropped output pattern and the replacement
+rasterizer (e.g. PT, then `file_rasterizeroutput`, then BDPT warns and
+renders with BDPT, writing no file; pinned by
+`tests/DroppedRasterizerOutputWarningTest.cpp`).  Declare outputs after the
 last rasterizer chunk; `tools/migrate_scenes_legacy_rasterizer.py --audit`
 lists scenes with more than one live rasterizer chunk.
+
 
 ```
 # HDR primary — the integrator's verbatim radiometric output.
