@@ -89,10 +89,9 @@ OUT = os.path.join(REPO, OUT_REL)
 def render(scene_text, name):
     """Render `scene_text` to <OUT>/<name>.exr and return it as a float32 HxWx3.
 
-    bin/rise exits non-zero on the `render\\nquit` path even on success (see
-    tools/pixel_gate_global_medium.py's note), so the produced file -- removed
-    first, so a stale one cannot masquerade as a fresh render -- is the success
-    signal.
+    Keep the fresh-file gate for compatibility with older consoles that
+    returned nonzero on clean quit (fixed by DL-571). Remove stale output
+    first so a previous image cannot masquerade as a fresh render.
     """
     os.makedirs(OUT, exist_ok=True)
     exr = os.path.join(OUT, name + ".exr")

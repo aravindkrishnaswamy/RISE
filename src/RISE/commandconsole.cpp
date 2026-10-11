@@ -1095,6 +1095,9 @@ int main( int argc, char** argv )
 		}
 	}
 
+	// A later successful command or quit must not hide an earlier failure.
+	bool consoleFailed = false;
+
 	// If there was a file specified in the arguments, then assume its an
 	// ascii scene file and load it
 	if( argc > 1 ) {
@@ -1141,6 +1144,7 @@ int main( int argc, char** argv )
 					if( !pJob->SetFilm( w, h, pAR ) ) {
 						GlobalLog()->PrintEasyError(
 							"CLI Film override failed (invalid width/height/pixelAR); using scene-file values." );
+						consoleFailed = true;
 					}
 				}
 				const ICamera* pCamera = pJob->GetScene()->GetCamera();
@@ -1166,6 +1170,7 @@ int main( int argc, char** argv )
 				// interactive console loop instead of aborting (rendering a partial scene is
 				// legitimate author debugging -- continuation makes the partial MORE useful).
 				// Make that loud so it is not mistaken for a clean load.
+				consoleFailed = true;
 				std::cerr << "=====================================================================\n"
 				             "PARTIAL SCENE: derive reported failures -- see the log; 'render' will\n"
 				             "render the PARTIAL scene\n"
@@ -1191,11 +1196,12 @@ int main( int argc, char** argv )
 					const unsigned int w   = ( cliFilmWidth   > 0 ) ? (unsigned)cliFilmWidth   : ( curFilm ? curFilm->GetWidth()   : 960 );
 					const unsigned int h   = ( cliFilmHeight  > 0 ) ? (unsigned)cliFilmHeight  : ( curFilm ? curFilm->GetHeight()  : 540 );
 					const double       pAR = ( cliFilmPixelAR > 0 ) ? cliFilmPixelAR           : ( curFilm ? curFilm->GetPixelAR() : 1.0 );
-					pJob->SetFilm( w, h, pAR );
+					if( !pJob->SetFilm( w, h, pAR ) ) consoleFailed = true;
 				}
 			} else {
 				// See the matching `else` in the Windows branch above (bug-fix wave 2026-08-28,
 				// fix 4) -- same deliberate loud-fall-through, same reason.
+				consoleFailed = true;
 				std::cerr << "=====================================================================\n"
 				             "PARTIAL SCENE: derive reported failures -- see the log; 'render' will\n"
 				             "render the PARTIAL scene\n"
@@ -1320,6 +1326,9 @@ int main( int argc, char** argv )
 		std::cin.getline( line, 8192 );
 
 		if( std::cin.fail() ) {
+			// EOF with no pending command is a normal end of a script.
+			// Bad input or an overlong line is a failed command acquisition.
+			if( std::cin.bad() || !std::cin.eof() ) consoleFailed = true;
 			break;
 		}
 
@@ -1331,6 +1340,7 @@ int main( int argc, char** argv )
 		}
 
 		if( !commandParser->ParseCommand( line, *pJob ) ) {
+			consoleFailed = true;
 			std::cout << "\"" << line << "\"" << " Unknown command or command failure" << std::endl;
 		}
 	}
@@ -1354,6 +1364,6 @@ int main( int argc, char** argv )
 	GlobalLogCleanupAndShutdown();
 
 
-	return 1;
+	return consoleFailed ? 1 : 0;
 }
 

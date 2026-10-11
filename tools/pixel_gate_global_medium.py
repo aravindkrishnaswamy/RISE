@@ -42,9 +42,8 @@ def render(scene_text, name):
     try: os.remove(png)                              # drop any stale output so a failed render cannot pass on a previous PNG
     except OSError: pass
     env = dict(os.environ); env["RISE_MEDIA_PATH"] = REPO + "/"
-    # NOTE: bin/rise exits NON-ZERO on the `render\nquit` path even on a SUCCESSFUL render, so its
-    # return code is not a usable success signal -- the produced-PNG check below is.  The stale-remove
-    # above is what stops a failed render from passing on a previous run's PNG.
+    # Keep the produced-PNG gate for older always-1 consoles (fixed by DL-571).
+    # Removing stale output prevents a failed render from passing on a previous PNG.
     subprocess.run(["./bin/rise", path], input="render\nquit\n", text=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, timeout=900)
     return png if os.path.exists(png) else None
