@@ -3403,6 +3403,15 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		"bdpt_pel_rasterizer", "bdpt_spectral_rasterizer", "vcm_pel_rasterizer", "vcm_spectral_rasterizer",
 		"auto_rasterizer", "auto_spectral_rasterizer", "mlt_rasterizer", "mlt_spectral_rasterizer" };
 	std::string activeRasterizer;
+	struct DroppedRasterizerOutput_ {
+		std::string pattern;
+		std::string priorRasterizer;
+		std::string replacementRasterizer;
+	};
+	std::vector<DroppedRasterizerOutput_> droppedOutputs;
+	std::string currentRasterizer;
+	std::vector<std::string> currentRasterizerOutputs;
+
 	for( Pending& p : pending ) {
 		if( !p.isSourceInstance && p.parser ) {
 			const std::string& kwp = p.keyword;
@@ -3413,9 +3422,27 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 					if( objectRadianceMaps++ == 0 ) firstObjectWithRadianceMap = p.bag.GetString( "name", "noname" );
 				}
 			}
-			if( catp == ChunkCategory::Rasterizer )
-				for( const char* rk : kRasterizerKeywords_ )
-					if( kwp == rk ) { activeRasterizer = kwp; break; }
+			if( catp == ChunkCategory::Rasterizer ) {
+				for( const char* rk : kRasterizerKeywords_ ) {
+					if( kwp == rk ) {
+						activeRasterizer = kwp;
+						if( !currentRasterizerOutputs.empty() ) {
+							for( const std::string& pat : currentRasterizerOutputs ) {
+								droppedOutputs.push_back( { pat, currentRasterizer, kwp } );
+							}
+							currentRasterizerOutputs.clear();
+						}
+						currentRasterizer = kwp;
+						break;
+					}
+				}
+			}
+			if( kwp == "file_rasterizeroutput" || catp == ChunkCategory::RasterizerOutput ) {
+				if( !currentRasterizer.empty() ) {
+					const std::string pat = p.bag.GetString( "pattern", "none" );
+					currentRasterizerOutputs.push_back( pat );
+				}
+			}
 		}
 		// scene_variant bake (doc 63): apply the ACTIVE definition per material name.  An active override is applied at
 		// its overridden BASE's slot (so objects bind it by name regardless of the override chunk's file position -- the
@@ -3474,7 +3501,18 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 					outRecorded->dependents[ it->second ].insert( applyP->nodeId );   // editing the producer re-derives this consumer
 			}
 		}
-		if( ok ) { ++count; continue; }
+		if( !ok ) {
+			if( applyP->parser ) {
+				const ChunkCategory catp = applyP->parser->Describe().category;
+				if( applyP->keyword == "file_rasterizeroutput" || catp == ChunkCategory::RasterizerOutput ) {
+					if( !currentRasterizerOutputs.empty() ) currentRasterizerOutputs.pop_back();
+				}
+			}
+		} else {
+			++count;
+			continue;
+		}
+
 		if( !expandDiagnosed )
 			diags.push_back( finalizeDiag.empty()
 				? applyP->keyword + ": apply failed (e.g. unresolved reference); see log"
@@ -3509,6 +3547,17 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			"pixelintegratingspectral_rasterizer) honours it, and `%s` ignores it.  Use the rasterizer's own "
 			"`radiance_map`.  See docs/SCENE_CONVENTIONS.md \"Legacy tiers\".",
 			objectRadianceMaps, firstObjectWithRadianceMap.c_str(), supportedRasterizer.c_str() );
+	// Load warning for dropped file_rasterizeroutput chunks:
+	// a file_rasterizeroutput attaches to whichever rasterizer is active at that point
+	// in the scene file; a later rasterizer chunk replaces it and drops those outputs.
+	if( warnDeprecated ) {
+		for( const DroppedRasterizerOutput_& dro : droppedOutputs ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"DeriveToJob:: file_rasterizeroutput `%s` was attached to `%s` and dropped when `%s` replaced it; "
+				"declare file_rasterizeroutput after the last rasterizer chunk. See docs/SCENE_CONVENTIONS.md \"HDR output pipeline\".",
+				dro.pattern.c_str(), dro.priorRasterizer.c_str(), dro.replacementRasterizer.c_str() );
+		}
+	}
 	// Summary LOG LINE (not a `diags` entry) when anything failed above:
 	// `diags` is already non-empty (each failure pushed its own named
 	// diagnostic), which is what every caller actually keys "did the derive
