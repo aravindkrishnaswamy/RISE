@@ -18,19 +18,20 @@
 #include <algorithm>
 #include <typeinfo>
 #include "KeyframableHelper.h"
+#include "../Objects/Object.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace
 {
-    // Arithmetic-only borrowed scratch. Never passed to a target or retained.
+    // Borrowed scratch: final results reach only the exact audited copying target.
     // Parameter's arithmetic writes via setValue; it needs no refcount/mutex.
     template<class T>
     class ArithmeticScratch final : public IKeyframeParameter {
         T value;
     public:
-        explicit ArithmeticScratch(const T& v) : value(v) { paramid=0; }
+        explicit ArithmeticScratch(const T& v,unsigned id=0) : value(v) { paramid=id; }
         void* getValue() const override { return const_cast<T*>(&value); }
         void setValue(void* v) override { value=*static_cast<T*>(v); }
         void Add(IKeyframeParameter&,const IKeyframeParameter&,const IKeyframeParameter&) override { std::abort(); }
@@ -47,6 +48,17 @@ namespace
                        Scalar d, IKeyframable& target)
     {
         if (typeid(a) != typeid(Parameter<T>) || typeid(b) != typeid(Parameter<T>)) return false;
+        if(typeid(target)==typeid(Object)) {
+            // Transformable copies all numeric parameters synchronously;
+            // subclasses/custom targets retain the owned protocol below.
+            ArithmeticScratch<T> left(*static_cast<T*>(a.getValue()),a.getID());
+            ArithmeticScratch<T> right(*static_cast<T*>(b.getValue()));
+            auto& op=const_cast<IKeyframeParameter&>(a);
+            op.ScalarMult(left,a,1.0-d);
+            op.ScalarMult(right,b,d);
+            op.Add(left,left,right);
+            target.SetIntermediateValue(left);return true;
+        }
         // Keep an owned final parameter: targets may retain it with addref.
         // This one clone (and its mutex allocation) remains as the residual.
         KeyframeParameterDispatch result(*a.Clone(), true);
