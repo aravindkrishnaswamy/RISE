@@ -19,13 +19,31 @@
 #include <typeinfo>
 #include "KeyframableHelper.h"
 #include "../Objects/Object.h"
+#include "../Cameras/PinholeCamera.h"
+#include "../Cameras/ThinLensCamera.h"
+#include "../Cameras/FisheyeCamera.h"
+#include "../Cameras/OrthographicCamera.h"
+#include "../Lights/PointLight.h"
+#include "../Lights/SpotLight.h"
+#include "../Lights/DirectionalLight.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace
 {
-    // Borrowed scratch: final results reach only the exact audited copying target.
+    bool CopiesFinalParameter(const IKeyframable& target)
+    {
+        // Exact native types only: a subclass may override the setter and retain
+        // its parameter. Audited setters synchronously copy every numeric value.
+        const std::type_info& type = typeid(target);
+        return type == typeid(Object) || type == typeid(PinholeCamera) ||
+               type == typeid(ThinLensCamera) || type == typeid(FisheyeCamera) ||
+               type == typeid(OrthographicCamera) || type == typeid(PointLight) ||
+               type == typeid(SpotLight) || type == typeid(DirectionalLight);
+    }
+
+    // Borrowed scratch: final results reach only exact audited copying targets.
     // Parameter's arithmetic writes via setValue; it needs no refcount/mutex.
     template<class T>
     class ArithmeticScratch final : public IKeyframeParameter {
@@ -48,9 +66,8 @@ namespace
                        Scalar d, IKeyframable& target)
     {
         if (typeid(a) != typeid(Parameter<T>) || typeid(b) != typeid(Parameter<T>)) return false;
-        if(typeid(target)==typeid(Object)) {
-            // Transformable copies all numeric parameters synchronously;
-            // subclasses/custom targets retain the owned protocol below.
+        if (CopiesFinalParameter(target)) {
+            // Subclasses/custom targets retain the owned protocol below.
             ArithmeticScratch<T> left(*static_cast<T*>(a.getValue()),a.getID());
             ArithmeticScratch<T> right(*static_cast<T*>(b.getValue()));
             auto& op=const_cast<IKeyframeParameter&>(a);
@@ -60,7 +77,7 @@ namespace
             target.SetIntermediateValue(left);return true;
         }
         // Keep an owned final parameter: targets may retain it with addref.
-        // This one clone (and its mutex allocation) remains as the residual.
+        // This clone and its mutex remain for unknown or retaining consumers.
         KeyframeParameterDispatch result(*a.Clone(), true);
         auto& left=result.GetParam();
         ArithmeticScratch<T> right(*static_cast<T*>(b.getValue()));
