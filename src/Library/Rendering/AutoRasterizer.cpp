@@ -64,9 +64,8 @@ namespace
 	//! Tier-1 signal: does any visible object carry a transmissive /
 	//! dielectric material (`IMaterial::CouldLightPassThrough()`)?  That
 	//! is the surface kind — glass, water, gems — that bends light into
-	//! refractive caustics.  One early-out object enumeration (stops at
-	//! the first match).  Mirrors the `MediaScan` idiom in
-	//! LightSampler::Prepare (return false = stop, true = continue).
+	//! refractive caustics. ObjectManager enumerates all visible objects;
+	//! its current implementation ignores the callback return value.
 	//!
 	//! `CouldLightPassThrough()` ALONE.  A `weave_material` under
 	//! `transmission thin` also reports `CouldLightPassThrough() == true`

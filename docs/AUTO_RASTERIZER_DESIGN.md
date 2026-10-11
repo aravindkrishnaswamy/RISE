@@ -213,8 +213,8 @@ are the documented later add for power users.
   `auto_rasterizer` chunk parser, `RISE_API_CreateAutoRasterizer` + `Job::SetAutoRasterizer`,
   the five build projects, and `tests/AutoRasterizerTest.cpp` (delegation verified
   two ways: `ResolvedIntegrator()` exact-match + radiance ≡ the concrete rasterizer).
-  Param population = option (i). Selection is Tier-0 only (pin, else PT) — NO
-  detection. Spectral sibling (`auto_spectral_rasterizer`) deferred to **Phase 1b**
+  Param population = option (i). At this historical phase selection was Tier-0 only (pin, else PT), before
+  the later static/probe routing and DL-475 support guard. Spectral sibling (`auto_spectral_rasterizer`) deferred to **Phase 1b**
   (§3.1). Round-trip persists the pin in the rasterizer snapshot; the UI "Auto"
   selector + introspection is Phase 7.
 - **Phase 1b — Spectral sibling `auto_spectral_rasterizer`.** ✅ **DONE (2026-06-05).**
@@ -245,8 +245,8 @@ are the documented later add for power users.
 
 **Status:** ✅ implemented in `AutoRasterizer::SelectIntegrator(const IScene*)`
 ([src/Library/Rendering/AutoRasterizer.cpp](../src/Library/Rendering/AutoRasterizer.cpp));
-tested in [tests/AutoRasterizerTest.cpp](../tests/AutoRasterizerTest.cpp). Pel path
-only (the `auto_spectral_rasterizer` sibling is still Phase-1b).
+tested in [tests/AutoRasterizerTest.cpp](../tests/AutoRasterizerTest.cpp). This historical phase covered Pel only; the shared spectral selector shipped
+in Phase-1b and also honours the current DL-475 support guard.
 
 **Introspection signals — what the assembled `IScene` cheaply exposes.** Selection
 runs at the first render-time entry given a `const IScene*`. The material and bound-medium object censuses plus a light-list walk yield
@@ -254,7 +254,7 @@ the inputs used by the current selector:
 
 | signal | source | cost |
 |---|---|---|
-| transmissive / dielectric material present | `IMaterial::CouldLightPassThrough()` over `GetObjects()->EnumerateObjects` (early-out) | O(objects), stops at first hit |
+| transmissive / dielectric material present | `IMaterial::CouldLightPassThrough()` over `GetObjects()->EnumerateObjects` | O(objects), full visible-object scan |
 | positional (point/spot/omni) light present | `ILight::IsPositionalLight()` over `GetLights()->getLights()` | O(lights), tiny |
 | _(reachable, not yet routed on)_ area/mesh emitter | object `IMaterial::GetEmitter() != null` | O(objects) |
 | _(reachable, not yet routed on)_ env-IBL | `IScene::GetGlobalRadianceMap() != null` | O(1) |

@@ -7,23 +7,14 @@
 //    delegates every IRasterizer call to it.  It composes the existing
 //    integrators — it contains NO integrator algorithm of its own.
 //
-//    Phase 1 (this file): selection is Tier-0 only — honour an explicit
-//    author pin (`integrator pt|bdpt|vcm`), else fall back to PT (the
-//    matrix's default-and-converged-bulk winner).  See
-//    docs/AUTO_RASTERIZER_DESIGN.md §3 for the architecture and §1 for
-//    the routing policy.
+//    Selection honours an explicit author pin first, then the DL-475
+//    bound-medium support guard, then probe/static selection. See
+//    docs/AUTO_RASTERIZER_DESIGN.md §§2,5 for policy and scope.
 //
-//    WHY LATE (render-time) RESOLUTION, not construction-time:
-//    Phase 4 adds a render-time PROBE — a cheap pre-render of the
-//    *assembled* scene to pick the integrator per-scene.  The assembled
-//    scene only exists at `RasterizeScene` time, so the dispatcher
-//    defers building its delegate until then (guarded by std::call_once)
-//    rather than at parse/construction.  The wrapper stores everything
-//    needed to build ANY of the three delegates and resolves exactly one
-//    lazily; Phase 4 replaces the body of `SelectIntegrator` with the
-//    probe and is free to build candidate delegates via `BuildDelegate`.
-//    A parse-time-only dispatch could not host that probe, which is why
-//    this is the foundation rather than a switch in Job::SetAutoRasterizer.
+//    Resolution uses the assembled scene at render time, including the
+//    optional pre-render probes. std::call_once guards delegate creation;
+//    BuildDelegate also creates temporary probe candidates. The wrapper
+//    stores the settings needed for all three concrete delegates.
 //
 //    The base `Implementation::Rasterizer` already buffers the output
 //    sinks (`outs`), the progress callback, and the FrameStore for us;
@@ -81,7 +72,7 @@ namespace RISE
 				IRayCaster* caster,								///< [in] Shared ray caster (integrator-agnostic)
 				ISampling2D* samples,							///< [in] Pixel sampler
 				IPixelFilter* filter,							///< [in] Pixel reconstruction filter
-				const AutoIntegratorChoice integrator,			///< [in] Author pin (Auto = dispatcher decides -> PT in Phase 1)
+				const AutoIntegratorChoice integrator,			///< [in] Author pin (Auto = support guard, then probe/static selection)
 				const bool oidnDenoise,							///< [in] OIDN denoise (forwarded to the delegate)
 				const OidnQuality oidnQuality,					///< [in] OIDN quality preset
 				const OidnDevice oidnDevice,					///< [in] OIDN device backend
