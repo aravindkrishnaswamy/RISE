@@ -64,9 +64,8 @@ namespace
 	//! Tier-1 signal: does any visible object carry a transmissive /
 	//! dielectric material (`IMaterial::CouldLightPassThrough()`)?  That
 	//! is the surface kind — glass, water, gems — that bends light into
-	//! refractive caustics.  One early-out object enumeration (stops at
-	//! the first match).  Mirrors the `MediaScan` idiom in
-	//! LightSampler::Prepare (return false = stop, true = continue).
+	//! refractive caustics. ObjectManager enumerates all visible objects;
+	//! its current implementation ignores the callback return value.
 	//!
 	//! `CouldLightPassThrough()` ALONE.  A `weave_material` under
 	//! `transmission thin` also reports `CouldLightPassThrough() == true`
@@ -138,6 +137,26 @@ namespace
 		objs->EnumerateObjects( scan );
 		return scan.found;
 	}
+
+    // DL-475: a conservative census of the proven C-S-M-S-L support gap.
+    // Do not infer topology or IOR from a dummy shading record. Mixed and
+    // absorption-only boundaries may over-route; a missing bound medium
+    // at a CSG root remains outside this census.
+    bool SceneHasTransmissiveInteriorMedium(const IScene& scene)
+    {
+        struct Scan final : IEnumCallback<IObject> {
+            bool found=false;
+            bool operator()(const IObject& obj) override {
+                const IMaterial* mat=obj.GetMaterial();
+                if(obj.IsWorldVisible() && obj.GetInteriorMedium() && mat && mat->CouldLightPassThrough()) {
+                    found=true; return false;
+                }
+                return true;
+            }
+        } scan;
+        if(const IObjectManager* objects=scene.GetObjects()) objects->EnumerateObjects(scan);
+        return scan.found;
+    }
 
 	//! Tier-1 signal: does the scene have at least one positional
 	//! (point / spot / omni) delta light?  These are the small / point
@@ -397,12 +416,11 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 		default:                         break;   // -> Tier-1 static analysis
 	}
 
-	// Tier 1 — cheap, conservative static best-guess over the assembled
-	// scene (docs/AUTO_RASTERIZER_DESIGN.md §5).  Two early-out scans give
-	// the only two signals the routing keys on; everything else defaults
-	// to PT, the matrix's converged-bulk winner.  `scene` is the assembled
-	// scene because resolution runs at the first render-time entry (not at
-	// construction); Phase 4 replaces this body with the probe.
+	// Resolve author pins first, then the DL-475 support guard, then
+	// probe/static selection (docs/AUTO_RASTERIZER_DESIGN.md §§2,5).
+	// Census the assembled scene at the first render-time entry: the
+	// support guard reads bound interior media as well as transmissive
+	// materials and positional lights; probes cannot repair missing support.
 	if( !scene ) {
 		// Defensive: the render path always passes a real scene, but a
 		// null here must not crash the dispatcher — fall back to PT.
@@ -413,6 +431,17 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	const bool hasTransmissive = SceneHasTransmissiveMaterial( *scene );
 	const bool hasPositional   = SceneHasPositionalLight( *scene );
 	const bool hasEnvIBL       = ( scene->GetGlobalRadianceMap() != 0 );
+
+    // A variance probe cannot detect absent support: an all-black BDPT
+    // candidate can even appear noise-free. Select a sampler that reaches
+    // the single-medium-scatter class before measuring candidate costs.
+    if(hasPositional && SceneHasTransmissiveInteriorMedium(*scene)) {
+        mResolveReason="DL-475: transmissive interior medium + positional light (support guard)";
+        GlobalLog()->PrintEx(eLog_Warning,
+            "AutoRasterizer:: DL-475: BDPT cannot sample a single medium scatter between delta walls under a positional light; conservatively selecting VCM before the probe. Explicit author pins remain honored.");
+        return AutoIntegratorChoice::VCM;
+    }
+
 
 	// Tier 2 — the render-time probe (Phase 4).  Gated twice: the author
 	// must opt in (`probe` on the chunk) AND the production sample count

@@ -45,12 +45,19 @@ contraindicated: §2 of the decision doc.)
 3. **Tier 2 — probe render (accurate, gated on cost — see Phase 3 experiment).** A
    cheap low-spp pass on a sparse tile sample that *operationalizes the matrix
    per-scene*: estimate each candidate's σ²·T (and detect caustic energy PT/BDPT
-   miss), pick the winner. Backs up / overrides the Tier-1 guess. **Only adopted
+   miss), pick the winner. Backs up / overrides the Tier-1 guess, except for the
+   DL-475 support guard below. **Only adopted
    if the cost experiment (Phase 3) shows the probe is a small fraction of the
    render budget AND reliably matches the matrix verdicts.**
 
-The auto-rasterizer runs Tier 0 (pin?) → else Tier 1 (guess) → else Tier 2
-(probe, if enabled) and delegates to the chosen concrete rasterizer.
+Current order: author pin → DL-475 support guard → probe selection when enabled,
+otherwise the static guess. The guard selects VCM and emits a one-time warning
+when a world-visible transmissive object binds an interior medium and a positional
+light exists. Ordinary BDPT lacks the proven C-S-M-S-L one-scatter path; a black
+probe cannot establish support. The shared RGB/spectral selector retains explicit
+pins. This conservative census can overroute absorption-only or mixed-material
+objects; nested bindings not exposed by the object census remain outside it.
+See [BATCH10_DL475_DESIGN.md](BATCH10_DL475_DESIGN.md) for the path proof and gates.
 
 **No signal-based routing rule ever existed here, and none is needed
 (2026-09-11).** Tiers 0–2 key on transmissive-material presence, positional
@@ -206,8 +213,8 @@ are the documented later add for power users.
   `auto_rasterizer` chunk parser, `RISE_API_CreateAutoRasterizer` + `Job::SetAutoRasterizer`,
   the five build projects, and `tests/AutoRasterizerTest.cpp` (delegation verified
   two ways: `ResolvedIntegrator()` exact-match + radiance ≡ the concrete rasterizer).
-  Param population = option (i). Selection is Tier-0 only (pin, else PT) — NO
-  detection. Spectral sibling (`auto_spectral_rasterizer`) deferred to **Phase 1b**
+  Param population = option (i). At this historical phase selection was Tier-0 only (pin, else PT), before
+  the later static/probe routing and DL-475 support guard. Spectral sibling (`auto_spectral_rasterizer`) deferred to **Phase 1b**
   (§3.1). Round-trip persists the pin in the rasterizer snapshot; the UI "Auto"
   selector + introspection is Phase 7.
 - **Phase 1b — Spectral sibling `auto_spectral_rasterizer`.** ✅ **DONE (2026-06-05).**
@@ -238,27 +245,28 @@ are the documented later add for power users.
 
 **Status:** ✅ implemented in `AutoRasterizer::SelectIntegrator(const IScene*)`
 ([src/Library/Rendering/AutoRasterizer.cpp](../src/Library/Rendering/AutoRasterizer.cpp));
-tested in [tests/AutoRasterizerTest.cpp](../tests/AutoRasterizerTest.cpp). Pel path
-only (the `auto_spectral_rasterizer` sibling is still Phase-1b).
+tested in [tests/AutoRasterizerTest.cpp](../tests/AutoRasterizerTest.cpp). This historical phase covered Pel only; the shared spectral selector shipped
+in Phase-1b and also honours the current DL-475 support guard.
 
 **Introspection signals — what the assembled `IScene` cheaply exposes.** Selection
-runs at the first render-time entry given a `const IScene*`. One early-out object
-enumeration plus a light-list walk yield everything the rule reads:
+runs at the first render-time entry given a `const IScene*`. The material and bound-medium object censuses plus a light-list walk yield
+the inputs used by the current selector:
 
 | signal | source | cost |
 |---|---|---|
-| transmissive / dielectric material present | `IMaterial::CouldLightPassThrough()` over `GetObjects()->EnumerateObjects` (early-out) | O(objects), stops at first hit |
+| transmissive / dielectric material present | `IMaterial::CouldLightPassThrough()` over `GetObjects()->EnumerateObjects` | O(objects), full visible-object scan |
 | positional (point/spot/omni) light present | `ILight::IsPositionalLight()` over `GetLights()->getLights()` | O(lights), tiny |
 | _(reachable, not yet routed on)_ area/mesh emitter | object `IMaterial::GetEmitter() != null` | O(objects) |
 | _(reachable, not yet routed on)_ env-IBL | `IScene::GetGlobalRadianceMap() != null` | O(1) |
-| _(reachable, not yet routed on)_ participating media | `GetGlobalMedium()` / per-object `GetInteriorMedium()` | O(1) / O(objects) |
+| bound interior medium on a world-visible transmissive object (DL-475 support guard) | per-object `GetInteriorMedium()` and `IMaterial::CouldLightPassThrough()` | O(objects) |
+| _(reachable, not yet routed on)_ global medium | `GetGlobalMedium()` | O(1) |
 
 **NOT cheaply reachable** (documented for the Phase-4 probe): glossy / roughness
 coverage — there is **no accessor** on `IMaterial` or `IBSDF`, so it would need a
 brittle `dynamic_cast` chain over concrete material classes — and a robust
 enclosed-vs-open geometry test. Per the §"Stop rule", these are left to the probe.
 
-**The rule (one paragraph).** Tier-0 author pin wins and skips analysis. Otherwise
+**The static rule (after the DL-475 support guard).** Tier-0 author pin wins and skips analysis. A bound-medium/positional-light support guard bypasses probes as described in §2. Otherwise
 route **VCM** iff a transmissive/dielectric surface **and** a positional point/spot
 light are *both* present — the physical precondition for a concentrated refractive
 caustic. This is deliberately coarse (a dielectric scene with no real caustic still
