@@ -12,6 +12,7 @@ from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 from mathutils import Vector
 
 from . import hair_file_writer
+from .bridge import resolve_rasterizer_selection
 from .hair_material_math import (
     anisotropic_rotation_turns_to_radians,
     melanin_to_eumelanin_pheomelanin,
@@ -3938,6 +3939,9 @@ def build_render_settings(scene) -> RenderSettingsData:
     rise = scene.rise
     temporary_directory = bpy.app.tempdir or tempfile.gettempdir()
 
+    rasterizer_kind, use_path_tracing = resolve_rasterizer_selection(
+        getattr(rise, "rasterizer_type", "1"), rise.use_path_tracing)
+
     return RenderSettingsData(
         width=width,
         height=height,
@@ -3945,7 +3949,7 @@ def build_render_settings(scene) -> RenderSettingsData:
         pixel_samples=int(rise.pixel_samples),
         light_samples=int(rise.light_samples),
         max_recursion=int(rise.max_recursion),
-        use_path_tracing=bool(rise.use_path_tracing),
+        use_path_tracing=use_path_tracing,
         choose_one_light=bool(rise.choose_one_light),
         show_lights=bool(rise.show_lights),
         use_world_ambient=bool(rise.use_world_ambient),
@@ -4004,9 +4008,10 @@ def build_render_settings(scene) -> RenderSettingsData:
         pixel_filter_param_a=float(rise.pixel_filter_param_a),
         pixel_filter_param_b=float(rise.pixel_filter_param_b),
         temporary_directory=str(temporary_directory),
-        # Rasterizer EnumProperty stores the int as a string — convert
-        # back here.  Default "1" = PT_PEL.
-        rasterizer_kind=int(getattr(rise, "rasterizer_type", "1") or "1"),
+        # Rasterizer EnumProperty stores the int as a string; resolved
+        # above (an explicit "0" also clears use_path_tracing so the
+        # native bridge renders the legacy pixel rasterizer it names).
+        rasterizer_kind=rasterizer_kind,
         bidir_max_eye_depth=int(getattr(rise, "bidir_max_eye_depth", 0)),
         bidir_max_light_depth=int(getattr(rise, "bidir_max_light_depth", 0)),
         vcm_merge_radius=float(getattr(rise, "vcm_merge_radius", 0.0)),
@@ -4406,8 +4411,10 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
 
     Returns ``(painter_name, strength, orientation_xyz_radians,
     is_background)``.  ``painter_name`` is None when no Environment
-    Texture is reachable from the world's surface output, in which
-    case the legacy ambient-colour fallback applies.
+    Texture, uniform Background or procedural sky is reachable from the
+    world's surface output; `export_scene` then exports a non-node world's
+    colour as a uniform environment, and the deprecated `use_world_ambient`
+    ambient approximation applies only when the user enabled it.
 
     Supports the trivial ``Background → Environment Texture`` chain
     and the standard Cycles ``Mix Shader gated by Light Path.Is
@@ -4470,7 +4477,14 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
                 (rgb[0], rgb[1], rgb[2]),
             )
             return painter_name, float(strength), (0.0, 0.0, 0.0), bool(camera_visible)
-        _warn_once(state, "RISE could not find a usable World shader graph; falling back to ambient approximation.")
+        _warn_once(
+            state,
+            "RISE could not find a usable World shader graph, so no environment light is exported "
+            "(the world renders black; Film > Transparent only hides the background, it never "
+            "supplies light).  Connect a Background (colour or Environment Texture) to the World "
+            "Output; the deprecated 'Approximate World' option still substitutes an unshadowed "
+            "ambient light from the world viewport colour.",
+        )
         return None, 1.0, (0.0, 0.0, 0.0), True
 
     # Background strength scales the HDRI.  When the HDRI sits in the
@@ -4735,6 +4749,24 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     # a synthetic DirectionalLight here to restore primary lighting
     # for any sky type we can read parameters from.
     lights.extend(_synthesise_world_lights(scene, state))
+
+    # A world that does not use nodes renders its viewport colour as a
+    # uniform background in Cycles.  `_world_radiance_map` returns None for
+    # it, so without this the world was simply dropped unless the deprecated
+    # `use_world_ambient` approximation was on.  With that toggle OFF (the
+    # default; legacy-deprecation Phase 2 slice C, owner ruling #5) the world
+    # colour becomes a uniform environment light -- the same
+    # `world_radiance_uniform` painter a node-based uniform Background gets.
+    # A .blend that explicitly enabled `use_world_ambient` keeps the ambient
+    # approximation below, unchanged.
+    if (world_radiance_painter is None and not render_settings.use_world_ambient
+            and scene.world is not None and not scene.world.use_nodes):
+        world_rgb = _float_color3(scene.world.color)
+        if any(c > 0.0 for c in world_rgb):
+            world_radiance_painter = _add_uniform_painter(state, "world_radiance_uniform", world_rgb)
+            world_radiance_scale = 1.0
+            world_radiance_orientation = (0.0, 0.0, 0.0)
+            world_radiance_is_background = True
 
     world_color = (0.0, 0.0, 0.0)
     world_strength = 0.0

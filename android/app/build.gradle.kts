@@ -31,7 +31,7 @@ val sceneCatalogKt: File = file("src/main/java/com/risegfx/android/ui/SceneCatal
 // ignored by the dependency scanner.
 val riseMediaPrefixes = listOf(
     "scenes/", "textures/", "models/", "lightprobes/",
-    "sounds/", "tables/", "media/",
+    "sounds/", "tables/", "media/", "colors/",
 )
 
 val riseDirectivePattern = Regex("""^\s*(?:>\s*run|load|file)\s+(\S+)""", RegexOption.MULTILINE)

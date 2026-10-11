@@ -22,47 +22,29 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name				global
-	shaderop			DefaultDirectLighting
-}
-
-/*
-distributiontracing_shaderop
-{
-	name				dt
-	samples				6
-	diffuse				false
-	reflections			TRUE
-}
-*/
-
-pathtracing_shaderop
-{
-	name				pt
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
-	# pathtracing_shaderop already does NEE direct lighting via MIS;
-	# stacking DefaultDirectLighting on top double-counts every direct
-	# illumination contribution.  Job::CreateStandardShader() emits a
-	# warning about this combination -- keep the shader stack lean.
+	# Since the slice-C migration every shader is the plain path tracer
+	# (the scene used to mix Whitted, direct-lighting and path-tracing
+	# chains under the legacy pixel rasterizer); the three shader names
+	# are kept so the loop-generated objects below stay unchanged.
 	name				glossy_shader
-	shaderop			pt
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
 {
 	name				glass_shader
-	shaderop			DefaultDirectLighting
-	shaderop			DefaultReflection
-	shaderop			DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		6
-	samples				16
-	lum_samples			1
+	samples				64
 	adaptive_max_samples	512
 	adaptive_threshold	0.05
 }
@@ -295,13 +277,22 @@ uniformcolor_painter
 # Materials
 ##################################################
 
-polished_material
+# Legacy phase 2 slice C: substrate of `floor_mat` (was polished_material reflectance).
+lambertian_material
+{
+	name				floor_mat_base
+	reflectance			pnt_floor
+}
+
+# Legacy phase 2 slice C: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `floor_mat_base`; coat_weight = tau 1, coat_ior 1.45, coat_roughness 1/sqrt(2*250+1) = 0.04468 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				floor_mat
-	reflectance			pnt_floor
-	tau			1
-	ior					1.45
-	scattering			250.0
+	base				floor_mat_base
+	coat_weight			1
+	coat_ior			1.45
+	coat_roughness		0.04468
 }
 
 lambertian_material
@@ -310,23 +301,28 @@ lambertian_material
 	reflectance			pnt_wall
 }
 
-cooktorrance_material
+# Legacy phase 2 slice C: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.12 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ring_mat
 	rd					pnt_ring
 	rs					pnt_ring_spec
-	facets				0.12
+	alphax				0.12
+	alphay				0.12
+	fresnel_mode		conductor
 	ior					2.4
 	extinction			1.6
 }
 
-ward_anisotropic_material
+# Legacy phase 2 slice C: was ward_anisotropic_material; ward_anisotropic alphax 0.03 alphay 0.22 carried, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				pillar_mat
 	rd					pnt_metal
 	rs					pnt_metal_spec
 	alphax				0.03
-	alphay			0.22
+	alphay				0.22
+	fresnel_mode		schlick_f0
 }
 
 dielectric_material
@@ -3077,7 +3073,7 @@ standard_object
 
 
 ##################################################
-# Cook-Torrance torus ring
+# GGX conductor torus ring (was Cook-Torrance)
 ##################################################
 
 
@@ -3550,6 +3546,20 @@ standard_object
 
 ##################################################
 # Loop-generated light rig
+#
+# Legacy phase 2 slice C retune (B1/B2 owner precedent): every light power
+# x0.951 (powers were 80 / 132 / 95 / 35).  Under the legacy pixel rasterizer
+# the 14 glossy_shader objects (floor slab, rings, pillars) already path
+# traced (pathtracing_shaderop); only the 91 default-shader objects (back
+# wall, the 81 floor wave tiles, plinths, jade cores) were direct-lit, and the
+# 5 glass objects used the Whitted chain.  Path tracing them adds the
+# indirect light those chains never computed (the rasterizer change alone,
+# legacy materials kept, reads +11.8% whole image), and the GGX / coated
+# materials drop energy the legacy models invented (-5.5% alone); net +5.2%,
+# both legacy biases, so the whole-image mean is restored to the legacy
+# image's.  The retune does not restore the
+# distribution: against the legacy image the top half (back wall) reads
+# about +11% and the bottom half (floor) about -7%.
 ##################################################
 
 
@@ -3557,7 +3567,7 @@ standard_object
 	omni_light
 	{
 		name			light0.000000000000
-		power			80
+		power			76.08
 		color			0.865922011884 0.895029118760 0.701197161074
 		colorspace		sRGB
 		position		8.314915792601 8.8 2.678784026557
@@ -3569,7 +3579,7 @@ standard_object
 	omni_light
 	{
 		name			light1.000000000000
-		power			80
+		power			76.08
 		color			0.870295702110 0.891244438081 0.700618613309
 		colorspace		sRGB
 		position		8.171332554408 8.8 2.933915956404
@@ -3581,7 +3591,7 @@ standard_object
 	omni_light
 	{
 		name			light2.000000000000
-		power			80
+		power			76.08
 		color			0.874589777526 0.887346982112 0.700229038477
 		colorspace		sRGB
 		position		8.014814630831 8.8 3.184403689042
@@ -3593,7 +3603,7 @@ standard_object
 	omni_light
 	{
 		name			light3.000000000000
-		power			80
+		power			76.08
 		color			0.878797440893 0.883342920273 0.700029053249
 		colorspace		sRGB
 		position		7.845609779514 8.8 3.429850718762
@@ -3604,7 +3614,7 @@ standard_object
 omni_light
 {
 	name		fill
-	power		132
+	power		125.5
 	color		1.0 0.98 0.94
 	colorspace	sRGB
 	position	0.0 8.2 5.0
@@ -3613,7 +3623,7 @@ omni_light
 omni_light
 {
 	name		fill_left
-	power		95
+	power		90.34
 	color		0.92 0.95 1.0
 	colorspace	sRGB
 	position	-6.5 6.0 7.5
@@ -3622,7 +3632,7 @@ omni_light
 directional_light
 {
 	name		rim
-	power		35
+	power		33.28
 	color		0.92 0.95 1.0
 	colorspace	sRGB
 	direction	0.2 -1.0 -0.35

@@ -436,6 +436,30 @@ _LOADED_PATH = None
 _LOADED_CAPABILITIES = None
 
 
+RASTERIZER_KIND_PIXELPEL = 0   # RISE_BLENDER_RASTERIZER_PIXELPEL
+RASTERIZER_KIND_PT_PEL = 1     # RISE_BLENDER_RASTERIZER_PT_PEL
+
+
+def resolve_rasterizer_selection(rasterizer_type, use_path_tracing) -> tuple[int, bool]:
+    """Map the add-on's `rasterizer_type` enum + the back-compat
+    `use_path_tracing` box to the ABI's (rasterizer_kind, use_path_tracing).
+
+    The native bridge reads kind 0 (PIXELPEL) as the ABI-v4 "pick by the
+    use_path_tracing boolean" value (rise_blender_bridge.cpp: kind 0 +
+    use_path_tracing -> PT_PEL).  That boolean defaults to True and the
+    panel does not draw it, so an EXPLICIT "Pixel Rasterizer [legacy]"
+    choice used to render with the path tracer.  An explicit choice of
+    kind 0 therefore sends use_path_tracing False, which makes the native
+    side honour it.  Every other kind ignores the boolean natively, so it
+    is passed through unchanged (and a .blend that never chose kind 0
+    exports exactly as before).  ABI unchanged.
+    """
+    kind = int(rasterizer_type if rasterizer_type not in (None, "") else RASTERIZER_KIND_PT_PEL)
+    if kind == RASTERIZER_KIND_PIXELPEL:
+        return kind, False
+    return kind, bool(use_path_tracing)
+
+
 def _bridge_filenames():
     if sys.platform == "darwin":
         return ["rise_blender_bridge.dylib"]
