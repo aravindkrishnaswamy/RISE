@@ -1469,6 +1469,15 @@ floor), so it is filed, not fixed: **DL-408**, which also covers a random
 walk meeting a coincident NON-random-walk neighbour (a diffusion body, an
 opaque table under a wax block), where the walk keeps the old behaviour.
 
+**Update 2026-10-10 (`debt-dl408`):** both halves are now handled by the
+integrators' CONTACT LAUNCH: an SSS exit (diffusion or random walk) whose
+offset point lies inside another body that shares the exit face is
+continued by a cast restricted to that body from behind the shared face,
+and a continuation from such a contact hit back toward its arrival side is
+restricted to the body it came from.  DL-370's in-walk random-walk crossing
+is unchanged and runs first.  See
+[DL408_SSS_CONTACT_CONTINUATION.md](DL408_SSS_CONTACT_CONTINUATION.md).
+
 ### 12.5 Residuals (disclosed, not fixed)
 
 - DL-408: the diffusion profile and non-random-walk neighbours (above).

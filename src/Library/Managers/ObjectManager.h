@@ -468,6 +468,38 @@ namespace RISE
 				const IObject* self
 				) const;
 
+			//! See IObjectManager::ObjectsNearPoint (DL-408).
+			unsigned int ObjectsNearPoint(
+				const Point3& ptWorld,
+				const Scalar radius,
+				const IObject* self,
+				const IObject** out,
+				const unsigned int maxOut
+				) const;
+
+			//! See IObjectManager::ObjectContainsPoint (DL-408).
+			bool ObjectContainsPoint(
+				const IObject* pObject,
+				const Point3& ptWorld,
+				const Vector3& probeDir
+				) const;
+
+			//! See IObjectManager::IntersectSingleObject (DL-408).
+			void IntersectSingleObject(
+				RayIntersection& ri,
+				const IObject* pObject,
+				const Scalar dHowFar
+				) const;
+
+			//! DL-370 / DL-408: the shared containment walk; `bRandomWalkOnly`
+			//! restricts the candidates to random-walk materials.
+			const IObject* ObjectContaining_(
+				const Point3& ptWorld,
+				const Vector3& probeDir,
+				const IObject* self,
+				const bool bRandomWalkOnly
+				) const;
+
 			//! See IObjectManager::NearestOtherSurface's contract comment.
 			bool NearestOtherSurface(
 				const Point3& ptWorld,

@@ -30,6 +30,7 @@ namespace RISE
 	class ILuminaryManager;
 	class IScene;
 	class IORStack;
+	class IObject;
 	struct RuntimeContext;
 
 	namespace Implementation { class LightSampler; }
@@ -196,13 +197,32 @@ namespace RISE
 			//! field or is not itself wrapped by that roulette.
 			Scalar castRRCompensation;
 
+			//! DL-408: a CONTACT LAUNCH.  When `pContactTarget` is set, the
+			//! cast first tries the contact ray
+			//! `BSSRDFSampling::ContactRay( contactPoint, ray.Dir() )` (its
+			//! origin backed off INTO the launching body) restricted to that
+			//! one object (`BSSRDFSampling::IntersectContactRay`): the target
+			//! shares the launch point's face, so the hit lies at zero
+			//! distance where no whole-scene cast can resolve it.  The hit
+			//! records `pContactSource` (the launching body) as its
+			//! `RayIntersection::pContactPartner`.  If the restricted cast does
+			//! not land in the band, the cast falls back to the ORDINARY scene
+			//! cast of the ray it was given (the exit's own offset ray), never
+			//! from the backed-off origin, which lies inside the launching body
+			//! (review round 2).  All null / unused on every other cast.  Set
+			//! only by PT's SSS exit continuations.
+			const IObject* pContactTarget;
+			const IObject* pContactSource;
+			Point3 contactPoint;				///< DL-408: the launch's surface point (valid when pContactTarget)
+
 			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
 				bsdfMisPdf( -1 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
 				glossyFilterWidth( 0 ), volumeBounces( 0 ),
 				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
 				chainHasNEEOp( true ), chainHasBsdfContinuationOp( true ),
-				castRRCompensation( 1.0 ) {}
+				castRRCompensation( 1.0 ),
+				pContactTarget( 0 ), pContactSource( 0 ), contactPoint( 0, 0, 0 ) {}
 
 			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.
 			Scalar MisPartnerPdf() const
