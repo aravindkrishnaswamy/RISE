@@ -57,6 +57,7 @@
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/CookTorranceMaterial.h"
 #include "../src/Library/Materials/SchlickMaterial.h"
 #include "../src/Library/Materials/WardIsotropicGaussianMaterial.h"
@@ -374,6 +375,8 @@ static void RunIdentity( const std::string& name, IMaterial* mat, IdKind kind, d
 int main(int argc, char** argv)
 {
 	const bool dl502Only = argc == 2 && std::string(argv[1]) == "--dl502-only";
+	const bool coatedOnly = argc == 2 && std::string(argv[1]) == "--dl502-coated-only";
+	const bool coatedPin = argc == 2 && std::string(argv[1]) == "--dl502-coated-pin";
 	const bool weavePin = argc == 2 && std::string(argv[1]) == "--dl502-weave-pin";
 	GlobalLog();
 	std::cout << "=== ConnectionTypeSplitTest (DL-481) ===" << std::endl;
@@ -452,14 +455,30 @@ int main(int argc, char** argv)
 	UniformScalarPainter* rotation = new UniformScalarPainter(0.0); rotation->addref();
 	cases.push_back({"DL502 fabric Lambertian",new FabricMaterial(*fabricLam,*rs,*a03,*rotation),&iorStack});
 	cases.push_back({"DL502 fabric Oren-Nayar",new FabricMaterial(*fabricOren,*rs,*a03,*rotation),&iorStack});
+	cases.push_back({"DL502 coated Lambertian",new CoatedMaterial(*fabricLam,*ext0,*ior15,*a03,*ext0,*ext0,*rd),&iorStack});
+	cases.push_back({"DL502 coated Oren-Nayar",new CoatedMaterial(*fabricOren,*ext0,*ior15,*a03,*ext0,*ext0,*rd),&iorStack});
+	if(coatedPin) cases.push_back({"DL502 coated positive",new CoatedMaterial(*fabricLam,*a03,*ior15,*a03,*ext0,*ext0,*rd),&iorStack});
 	fabricLam->release(); fabricOren->release(); rotation->release();
 	HairPainters hp; hp.sigma_a=trExt; hp.beta_m=a03; hp.beta_n=a03; hp.alpha=iso1; hp.ior=ior15;
 	cases.push_back({"DL502 hair",new HairMaterial(hp),&iorStack});
+    if(coatedOnly || coatedPin || dl502Only) {
+        CoatedMaterial* material=nullptr;
+        // Locate by name: the optional positive-coat case changes list offsets.
+        for(auto& c:cases) if(c.name=="DL502 coated Lambertian") material=dynamic_cast<CoatedMaterial*>(c.mat);
+        Check(material && material->HasConnectionTypeSplit(),"zero-weight coated split available");
+        if(material) {
+            material->SetCoatWeight(*a03);
+            Check(!material->HasConnectionTypeSplit(),"live positive weight disables split");
+            material->SetCoatWeight(*ext0);
+            Check(material->HasConnectionTypeSplit(),"live zero weight restores split");
+        }
+    }
 	for( Case& c : cases ) c.mat->addref();
 
 	const double thetas[] = { 0.0, 40.0, 70.0 };
 	for( const Case& c : cases ) {
 		if(dl502Only && c.name.find("DL502") != 0) continue;
+		if((coatedOnly || coatedPin) && c.name.find("DL502 coated") != 0) continue;
 		if(weavePin && c.name.find("DL502") != 0) continue;
 		for( double th : thetas ) {
 			if( c.glossyFilterWidth > 0 && th != 40.0 ) continue;	// filter-width rows: one incidence
@@ -470,7 +489,7 @@ int main(int argc, char** argv)
 	}
 
 	// Direct single-scatter identity (black diffuse; see RunIdentity).
-	if(!dl502Only && !weavePin) {
+	if(!dl502Only && !weavePin && !coatedOnly && !coatedPin) {
 		UniformColorPainter* black = new UniformColorPainter( RISEPel( 0, 0, 0 ) ); black->addref();
 		UniformColorPainter* rsG = new UniformColorPainter( RISEPel( 0.3, 0.3, 0.3 ) ); rsG->addref();
 		struct IdCase { std::string n; IMaterial* m; IdKind k; double ax, ay, ior, ext; const IScalarPainter* iorP; const IScalarPainter* extP; FresnelMode fm; };

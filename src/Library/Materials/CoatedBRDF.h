@@ -270,10 +270,24 @@ namespace RISE
 				//! extension point (RISE_API_CreateCoatedMaterial) only
 				//! promises construction-time binding.
 				const IPainter* coatNormal = 0,
-				const Scalar coatNormalScale = Scalar(1)
+				const Scalar coatNormalScale = Scalar(1),
+                const bool auditedDiffuseBase = false
 				);
 
-			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
+			bool SingleDiffuseLabel() const;
+            bool valueByScatterType(const Vector3& wo,const RayIntersectionGeometric& ri,
+                const IORStack*,RISEPel out[5]) const {
+                if(!SingleDiffuseLabel()) return false;
+                for(int t=0;t<5;++t) out[t]=RISEPel(0,0,0);
+                out[ScatteredRay::eRayDiffuse]=value(wo,ri); return true;
+            }
+            bool valueByScatterTypeNM(const Vector3& wo,const RayIntersectionGeometric& ri,
+                Scalar nm,const IORStack*,Scalar out[5]) const {
+                if(!SingleDiffuseLabel()) return false;
+                for(int t=0;t<5;++t) out[t]=0;
+                out[ScatteredRay::eRayDiffuse]=valueNM(wo,ri,nm); return true;
+            }
+            virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar  valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 			virtual bool    hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const;
@@ -377,6 +391,7 @@ namespace RISE
 			const IScalarPainter*	pCoatAbsorption;
 			const IPainter*			pCoatTint;
 			const bool				bRecycling;
+			bool bAuditedDiffuseBase;
 			bool					bBaseFullSphere;	///< DL-23: see the ctor parameter and CoatedBRDF.cpp's transmission section
 			const IPainter*			pCoatNormal;		///< DL-192: optional coat-lobe-only normal map; NULL = none
 			Scalar					coatNormalScale;	///< DL-192: xy scale on the decoded tangent-space normal

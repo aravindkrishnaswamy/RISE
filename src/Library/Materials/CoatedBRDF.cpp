@@ -22,6 +22,8 @@
 #include "../Modifiers/ModifierFrame.h"
 #include "../Interfaces/ILog.h"
 
+#include "../Painters/UniformScalarPainter.h"
+#include <typeinfo>
 #include <atomic>
 #include <cmath>
 #include <vector>
@@ -40,7 +42,8 @@ CoatedBRDF::CoatedBRDF(
 	const bool recyclingCompensation,
 	const bool baseScattersFullSphere,
 	const IPainter* coatNormal,
-	const Scalar coatNormalScale_
+	const Scalar coatNormalScale_,
+    const bool auditedDiffuseBase
 	) :
   pBase( &base ),
   pCoatWeight( &coatWeight ),
@@ -50,6 +53,7 @@ CoatedBRDF::CoatedBRDF(
   pCoatAbsorption( &coatAbsorption ),
   pCoatTint( &coatTint ),
   bRecycling( recyclingCompensation ),
+  bAuditedDiffuseBase( auditedDiffuseBase ),
   bBaseFullSphere( baseScattersFullSphere ),
   pCoatNormal( coatNormal ),
   coatNormalScale( coatNormalScale_ ),
@@ -77,6 +81,12 @@ CoatedBRDF::CoatedBRDF(
 	if( pCoatNormal ) {
 		pCoatNormal->addref();
 	}
+}
+
+bool CoatedBRDF::SingleDiffuseLabel() const
+{
+    return bAuditedDiffuseBase && typeid(*pCoatWeight)==typeid(UniformScalarPainter) &&
+        dynamic_cast<const UniformScalarPainter*>(pCoatWeight)->GetValue()==0;
 }
 
 CoatedBRDF::~CoatedBRDF()
