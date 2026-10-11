@@ -18,14 +18,6 @@ standard_shader
 	name			global
 	shaderop		DefaultDirectLighting
 }
-/*
-pixelpel_rasterizer
-{
-	max_recursion		10
-	samples				4
-	lum_samples			1
-}
-*/
 
 bdpt_pel_rasterizer
 {
@@ -433,18 +425,6 @@ uniformcolor_painter
 	name				pnt_tf_white
 	color				1 1 1
 	colorspace			Rec709RGB_Linear
-}
-
-scalar_painter
-{
-	name				tf_Ti_n
-	file				colors/thinfilm/substrates/Ti.n
-}
-
-scalar_painter
-{
-	name				tf_Ti_k
-	file				colors/thinfilm/substrates/Ti.k
 }
 
 scalar_painter
