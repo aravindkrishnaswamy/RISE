@@ -2958,6 +2958,106 @@ namespace RISE
 		}
 
 		//======================================================================
+		// LEGACY-DEPRECATION PHASE 1 DEFERRED (docs/LEGACY_DEPRECATION_ASSESSMENT.md §10.1)
+		// THE DEPRECATED-PARAMETER BAN.
+		//
+		// ParameterDescriptor::deprecated flags parameters that are legacy /
+		// unsupported (today: per-object radiance_map on standard_object and csg_object).
+		// The agent refuses to insert or patch these parameters.
+		//======================================================================
+		namespace
+		{
+			std::string DescribeDeprecatedParamBan_( const std::string& kw, const ParameterDescriptor& pd )
+			{
+				std::string msg = "`" + kw + "." + pd.name + "` is DEPRECATED and UNSUPPORTED, so this surface does not insert it. ";
+				if( !pd.replacement.empty() ) {
+					msg += "Use instead: " + pd.replacement + ". ";
+				}
+				msg += "See docs/SCENE_CONVENTIONS.md \"Legacy tiers\".";
+				return msg;
+			}
+		}
+
+		std::string CheckDeprecatedParamBanForInsert( const std::string& chunkText,
+		                                              std::string* outKind,
+		                                              std::string* outName,
+		                                              std::string* outParam )
+		{
+			if( chunkText.empty() ) return std::string();
+			const Document doc = RISE::Cst::ParseToCst( chunkText );
+			const int n = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < n; ++i )
+			{
+				const NodeRef it =
+					RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				const ChunkDescriptor* cd = DescriptorForKeyword( String( it->role.c_str() ) );
+				if( !cd ) continue;
+
+				for( const NodeRef& kid : it->kids ) {
+					if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+					std::string pname;
+					for( const auto& tk : kid->kids ) {
+						if( tk && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" ) {
+							pname = tk->text;
+							break;
+						}
+					}
+					if( pname.empty() ) continue;
+
+					for( const ParameterDescriptor& pd : cd->parameters ) {
+						if( pd.name == pname && pd.deprecated ) {
+							if( outKind )  *outKind  = it->role;
+							if( outName )  *outName  = ChunkParamString_( it, "name" );
+							if( outParam ) *outParam = pd.name;
+							return DescribeDeprecatedParamBan_( it->role, pd );
+						}
+					}
+				}
+			}
+			return std::string();
+		}
+
+		std::string CheckDeprecatedParamBanForPatch( const std::string& headText,
+		                                             const std::string& target,
+		                                             const std::string& kind,
+		                                             const std::string& param,
+		                                             const std::string& value )
+		{
+			if( param.empty() ) return std::string();
+
+			std::string targetKind = kind;
+			if( targetKind.empty() && !target.empty() && !headText.empty() ) {
+				const Document headDoc = RISE::Cst::ParseToCst( headText );
+				const RISE::Cst::NodeId id = ResolvePatchTargetChunk_( headDoc, target, kind );
+				if( id ) {
+					const NodeRef it = RISE::Cst::DocResolveNodeId( headDoc, id );
+					if( it ) targetKind = it->role;
+				}
+			}
+
+			if( !targetKind.empty() ) {
+				const ChunkDescriptor* cd = DescriptorForKeyword( String( targetKind.c_str() ) );
+				if( cd ) {
+					for( const ParameterDescriptor& pd : cd->parameters ) {
+						if( pd.name == param && pd.deprecated ) {
+							return DescribeDeprecatedParamBan_( targetKind, pd );
+						}
+					}
+				}
+			}
+
+			// Value-splice check: if someone splices in a chunk with deprecated param
+			if( value.find( '}' ) != std::string::npos ) {
+				std::string insKind, insName, insParam;
+				const std::string spliceClause = CheckDeprecatedParamBanForInsert( value, &insKind, &insName, &insParam );
+				if( !spliceClause.empty() ) return spliceClause;
+			}
+
+			return std::string();
+		}
+
+		//======================================================================
 		// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13 -- THE ZERO-AREA
 		// LIGHT CONFIRMATION.
 		//
@@ -10552,6 +10652,26 @@ namespace RISE
 				}
 			}
 
+			// Legacy-deprecation Phase 1 deferred (docs/LEGACY_DEPRECATION_ASSESSMENT.md §10.1):
+			// the parameter-level DEPRECATION ban's PATCH arm.
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				const std::string clause = snap.hasDocument
+					? CheckDeprecatedParamBanForPatch( snap.document, patch.target, patch.kind,
+					                                   patch.param, patch.value )
+					: CheckDeprecatedParamBanForPatch( std::string(), patch.target, patch.kind,
+					                                   patch.param, patch.value );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = snap.hasDocument ? snap.headVersion : ( mJob ? mJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion() );
+					r.message     = "propose_patch refused: " + clause;
+					return r;
+				}
+			}
+
 			// ARC 83 SLICE 4 (2026-08-12): the ZERO-AREA LIGHT CONFIRMATION's PATCH
 			// arm, next, and it exists for the ban arm's exact reason -- a param
 			// value is spliced into the document as TEXT, so a confirmation with no
@@ -12515,6 +12635,24 @@ namespace RISE
 				}
 			}
 
+			// Legacy-deprecation Phase 1 deferred (docs/LEGACY_DEPRECATION_ASSESSMENT.md §10.1):
+			// the parameter-level DEPRECATION ban.
+			{
+				std::string depKind, depName, depParam;
+				const std::string clause = CheckDeprecatedParamBanForInsert( chunkText, &depKind, &depName, &depParam );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.kind        = depKind;
+					r.name        = depName;
+					r.message     = "insert_chunk refused: " + clause;
+					return r;
+				}
+			}
+
 			// ARC 83 SLICE 4 (2026-08-12, house lighting policy): the ZERO-AREA
 			// LIGHT CONFIRMATION, immediately after the ambient ban and for the
 			// SAME ordering reason -- omni / spot / directional are Light chunks,
@@ -13095,6 +13233,8 @@ namespace RISE
 					clause = CheckAmbientLightBanForInsert( chunkTexts[i] );
 					// Legacy Phase 1: the frozen-chunk ban rides the same whole-batch scan.
 					if( clause.empty() ) clause = CheckFrozenChunkBanForInsert( chunkTexts[i] );
+					// Legacy Phase 1 deferred: the deprecated-parameter ban rides the same scan.
+					if( clause.empty() ) clause = CheckDeprecatedParamBanForInsert( chunkTexts[i] );
 					if( !clause.empty() ) { offender = i; break; }
 				}
 				if( offender < chunkTexts.size() ) {

@@ -464,9 +464,11 @@ declared ABI break, because the vtable manifest is append-only).
    safe to land first.
 
 **Phase 1 as landed (2026-10-09):** the chunk-level FROZEN tier, the agent insert ban, the
-warning text, the schema flag and palette sorting / badging.  **DEFERRED:** the parameter-level
-`ParameterDescriptor::deprecated` flag and the GUI "show legacy" filter (Phase 1 sorts and
-badges only).
+warning text, the schema flag and palette sorting / badging.  **Deferred items landed
+(2026-10-11):** the parameter-level `ParameterDescriptor::deprecated` flag (schema reports
+`"deprecated":true`, agent refuses insert/patch, applied to frozen per-object `radiance_map`)
+and the GUI "show legacy" toggle (Mac SwiftUI and Windows/Qt add-node palettes hide deprecated/frozen
+chunks unless toggled ON).
 
 **Phase 2 — migrate shipped content (several slices; look changes are reviewed).**
 Order by risk, lowest first:
@@ -916,9 +918,10 @@ Explicit rulings:
   now reads "freeze (removal on hold)", and Phase 3 is not scheduled.
 
 - **Phase 1 scope as landed:** the parameter-level deprecation flag and the GUI "show legacy"
-  filter of §10.1 are DEFERRED; Phase 1 sorts and badges legacy chunk types only.  The alpha ops
-  (R8) were frozen (they run only under the frozen pixel rasterizers) and `sms_shaderop` (R9) was
-  deprecated, per the brief, not frozen.
+  filter of §10.1 were initially DEFERRED and landed 2026-10-11 (ParameterDescriptor::deprecated,
+  read_schema reporting, agent refusal for per-object radiance_map, and Mac/Qt add-node "Show legacy"
+  toggle).  The alpha ops (R8) were frozen (they run only under the frozen pixel rasterizers) and
+  `sms_shaderop` (R9) was deprecated, per the brief, not frozen.
 
 Taken at the recommended default (the owner did not object; any can be overridden):
 #1 freeze the shader-op pipeline now (removing its chunks in Phase 3 is on hold); #2 custom shader-op

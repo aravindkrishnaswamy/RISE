@@ -88,6 +88,8 @@ struct NodeGraphAddNodeSheet: View {
     @State private var deprecatedReplacements: [String: String] = [:]
     /// Legacy-deprecation Phase 1: the FROZEN (legacy, unsupported) subset of `deprecatedReplacements`.
     @State private var frozenKeywords: Set<String> = []
+    /// Legacy-deprecation Phase 1 deferred: hide deprecated and frozen chunk keywords unless toggled ON.
+    @State private var showLegacy: Bool = false
 
     // Step 2 state -- non-nil `selectedKeyword` means "on the
     // requirement-fill step."
@@ -165,10 +167,15 @@ struct NodeGraphAddNodeSheet: View {
             .padding(.horizontal, 14)
             .padding(.top, 10)
 
-            TextField("Search keywords\u{2026}", text: $search)
-                .textFieldStyle(.roundedBorder)
-                .font(Theme.mono(11))
-                .padding(.horizontal, 14)
+            HStack(spacing: 8) {
+                TextField("Search keywords\u{2026}", text: $search)
+                    .textFieldStyle(.roundedBorder)
+                    .font(Theme.mono(11))
+                Toggle("Show legacy", isOn: $showLegacy)
+                    .toggleStyle(.checkbox)
+                    .font(Theme.sans(11))
+            }
+            .padding(.horizontal, 14)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
@@ -212,9 +219,10 @@ struct NodeGraphAddNodeSheet: View {
     }
 
     private var filteredKeywords: [String] {
-        guard !search.isEmpty else { return keywords }
+        let base = showLegacy ? keywords : keywords.filter { deprecatedReplacements[$0] == nil }
+        guard !search.isEmpty else { return base }
         let needle = search.lowercased()
-        return keywords.filter { $0.lowercased().contains(needle) }
+        return base.filter { $0.lowercased().contains(needle) }
     }
 
     private func reloadKeywords() {

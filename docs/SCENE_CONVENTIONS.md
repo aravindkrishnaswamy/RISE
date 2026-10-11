@@ -1588,7 +1588,10 @@ legacy shader-op chain honours it (its ops hand `RayIntersection::pRadianceMap` 
 cast); `pathtracing_*`, `bdpt_*` and `vcm_*` rasterizers ignore it and read only the rasterizer's
 own `radiance_map`.  A scene that sets one under a supported rasterizer logs ONE load warning saying
 so (pinned by `tests/DeprecatedMaterialWarningTest.cpp`); nothing renders differently.  Its one
-scene, `different_rmaps`, lives unmigrated in `scenes/Tests/Legacy/`.
+scene, `different_rmaps`, lives unmigrated in `scenes/Tests/Legacy/`.  Carries
+`ParameterDescriptor::deprecated = true` with replacement hint; `read_schema` reports
+`"deprecated":true`, and `AgentSession` refuses insertion or patching (pinned by
+`tests/DeprecatedParameterTest.cpp`).
 
 **Kept SUPPORTED** by ruling or as infrastructure: `translucent_material` (#11),
 `biospec_skin_material` / `generic_human_tissue_material` (#12),

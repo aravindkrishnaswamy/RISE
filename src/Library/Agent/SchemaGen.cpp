@@ -204,6 +204,13 @@ namespace RISE
 					out += ",\"unit\":";
 					AppendJsonString( out, p.unitLabel );
 				}
+				if( p.deprecated ) {
+					out += ",\"deprecated\":true";
+					if( !p.replacement.empty() ) {
+						out += ",\"replacement\":";
+						AppendJsonString( out, p.replacement );
+					}
+				}
 				out += '}';
 			}
 
