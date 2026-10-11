@@ -26,6 +26,7 @@
 #include "../Materials/CoatedMaterial.h"
 #include "../Materials/FabricMaterial.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/BSSRDFSampling.h"
 #include "../Materials/DielectricMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/Material.h"
@@ -1597,6 +1598,10 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 			}
 		}
 	}
+
+	// DL-408 round 4: an SSS entry that ties with a coincident partner face
+	// (a sheet emitter under the body, a closed room's floor) yields to it.
+	BSSRDFSampling::ResolveCoincidentEntry( *this, ri, bHitFrontFaces, bHitBackFaces );
 
     CompleteShadingSignals(ri.geometric,ri.pObject);
 

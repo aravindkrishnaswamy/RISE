@@ -306,6 +306,57 @@ namespace
 		return out;
 	}
 
+	//! Review round 4 (P2): a RW cube on the floor of a closed box room lit
+	//! by a small panel under the ceiling AND by a bright single-sided panel
+	//! OUTSIDE, under the floor, facing up (the review's fixture).  Nothing
+	//! from outside may reach the inside: a light subpath from the outer
+	//! panel meets the floor's outer face exactly where the cube's bottom
+	//! face coincides with it, and must take the floor.  No environment.
+	std::string BuildRoomOutside( Scalar gap, Rast r, unsigned int samples, bool outsideOn = true )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 40\n\theight 30\n}\n\n";
+		s << "pinhole_camera\n{\n\tlocation 0 0.8 2.5\n\tlookat 0 -0.6 0\n\tup 0 1 0\n\tfov 55\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 0.8 0.8 0.8\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname lt\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "lambertian_material\n{\n\tname wall\n\treflectance white\n}\n\n";
+		s << "lambertian_luminaire_material\n{\n\tname lum\n\texitance lt\n\tscale 40\n\tmaterial none\n}\n\n";
+		s << "lambertian_luminaire_material\n{\n\tname lumout\n\texitance lt\n\tscale 20\n\tmaterial none\n}\n\n";
+		s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		s << "standard_object\n{\n\tname blk\n\tgeometry block_geo\n\tmaterial block\n\tposition 0 " << -0.5 + gap << " 0\n}\n\n";
+		s << "box_geometry\n{\n\tname room_geo\n\twidth 6\n\theight 4\n\tdepth 6\n}\n\n";
+		s << "standard_object\n{\n\tname room\n\tgeometry room_geo\n\tmaterial wall\n\tposition 0 1 0\n}\n\n";
+		s << "clippedplane_geometry\n{\n\tname cl\n\tpta -0.5 0 -0.5\n\tptb 0.5 0 -0.5\n\tptc 0.5 0 0.5\n\tptd -0.5 0 0.5\n\tdoublesided FALSE\n}\n\n";
+		s << "standard_object\n{\n\tname ceil\n\tgeometry cl\n\tmaterial lum\n\tposition 0 2.9 0\n}\n\n";
+		if( outsideOn ) {
+			s << "clippedplane_geometry\n{\n\tname ol\n\tpta -2 0 2\n\tptb 2 0 2\n\tptc 2 0 -2\n\tptd -2 0 -2\n\tdoublesided FALSE\n}\n\n";
+			s << "standard_object\n{\n\tname outl\n\tgeometry ol\n\tmaterial lumout\n\tposition 0 -1.5 0\n}\n\n";
+		}
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples 1\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl408_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		std::string out = s.str();
+		SetRasterizer( out, r, samples, 0.0 );
+		const std::string env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
+		const std::size_t e = out.find( env );
+		if( e != std::string::npos ) {
+			out.erase( e, env.size() );
+		}
+		// The review's depth caps: at 12 the tie's leak showed on
+		// `8df8b6dff` (BDPT 1.024); at 64 it hid (1.001).
+		for( const char* key : { "\tmax_eye_depth 64\n", "\tmax_light_depth 64\n" } ) {
+			const std::size_t k = out.find( key );
+			if( k != std::string::npos ) {
+				std::string rep( key );
+				rep.replace( rep.find( "64" ), 2, "12" );
+				out.replace( k, std::string( key ).size(), rep );
+			}
+		}
+		return out;
+	}
+
 	//! Review round 2: an INSET -- a white Lambertian slab nested inside a
 	//! random-walk cube, flush with the cube's top face (lowered by 2e-6 in
 	//! the gap twin).  The walk ignores the slab's interior, and an exit on
@@ -338,7 +389,7 @@ namespace
 	//! environment): every photon reaches the cube through the contact.
 	//! An eye path that reaches the pad by a contact launch carries its
 	//! emission (BDPT / VCM / MLT used to read exactly 0 here).
-	std::string BuildPad( bool diffusion, Scalar gap, Rast r, unsigned int samples )
+	std::string BuildPad( bool diffusion, Scalar gap, Rast r, unsigned int samples, bool floorBelow = false )
 	{
 		std::ostringstream s;
 		s << std::setprecision( 17 );
@@ -355,6 +406,15 @@ namespace
 		s << "clippedplane_geometry\n{\n\tname pad_geo\n\tpta -0.5 0 0.5\n\tptb 0.5 0 0.5\n\tptc 0.5 0 -0.5\n\tptd -0.5 0 -0.5\n}\n\n";
 		s << "standard_object\n{\n\tname block\n\tgeometry block_geo\n\tmaterial block\n\tposition 0 0 0\n}\n\n";
 		s << "standard_object\n{\n\tname pad\n\tgeometry pad_geo\n\tmaterial lum\n\tposition 0 " << -0.5 - gap << " 0\n}\n\n";
+		if( floorBelow ) {
+			// Review round 4: a white floor 0.4 below the double-sided pad.
+			// Its rays up toward the pad meet the block's bottom face and the
+			// pad's at exactly one point; whichever the traversal picks, every
+			// strategy must see the same first surface (the pad).
+			s << "lambertian_material\n{\n\tname floorm\n\treflectance white\n}\n\n";
+			s << "clippedplane_geometry\n{\n\tname floor_geo\n\tpta -3 0 3\n\tptb 3 0 3\n\tptc 3 0 -3\n\tptd -3 0 -3\n}\n\n";
+			s << "standard_object\n{\n\tname floor\n\tgeometry floor_geo\n\tmaterial floorm\n\tposition 0 -0.9 0\n}\n\n";
+		}
 		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 		s << "pathtracing_pel_rasterizer\n{\n\tsamples 1\n}\n\n";
 		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl408_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
@@ -444,6 +504,21 @@ int main( int argc, char** argv )
 		}
 	}
 	rows.push_back( { "RW block with a flush Lambert inset PT", []( Scalar gap, std::string& sc ) { sc = BuildInset( gap, Rast::PT, 256 ); return true; }, false } );
+	// Review round 4: the coincident-face tie -- a double-sided pad with a
+	// floor below it, and a closed room lit from OUTSIDE.
+	for( bool diffusion : { false, true } ) {
+		for( Rast r : { Rast::PT, Rast::BDPT, Rast::VCM } ) {
+			std::ostringstream l;
+			l << ( diffusion ? "diffusion" : "RW" ) << " block on an emissive pad over a floor " << RastName( r );
+			const unsigned int spp = r == Rast::PT ? 256 : 64;
+			rows.push_back( { l.str(), [=]( Scalar gap, std::string& sc ) { sc = BuildPad( diffusion, gap, r, spp, true ); return true; }, false } );
+		}
+	}
+	for( Rast r : { Rast::BDPT, Rast::VCM } ) {
+		std::ostringstream l;
+		l << "RW block in a closed box room lit from outside " << RastName( r );
+		rows.push_back( { l.str(), [=]( Scalar gap, std::string& sc ) { sc = BuildRoomOutside( gap, r, 64 ); return true; }, false } );
+	}
 	// Review round 3: a cube on an emissive pad.
 	for( bool diffusion : { false, true } ) {
 		for( Rast r : { Rast::PT, Rast::BDPT, Rast::VCM } ) {

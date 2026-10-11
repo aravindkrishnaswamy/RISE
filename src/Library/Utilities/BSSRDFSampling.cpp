@@ -651,6 +651,76 @@ namespace
 	}
 }
 
+bool BSSRDFSampling::ResolveCoincidentEntry(
+	const IObjectManager& objects,
+	RayIntersection& ri,
+	const bool bHitFrontFaces,
+	const bool bHitBackFaces
+	)
+{
+	if( !ri.geometric.bHit || !ri.pObject || !ri.pMaterial ) {
+		return false;
+	}
+	if( !( ri.pMaterial->GetDiffusionProfile() || ri.pMaterial->GetRandomWalkSSSParams() ) ) {
+		return false;
+	}
+	if( !ri.geometric.HasTrueGeomSide() ) {
+		return false;
+	}
+	const Ray ray = ri.geometric.ray;
+	const Vector3& d = ray.Dir();
+	if( !( ri.geometric.TrueGeomFacing( d ) < 0 ) ) {
+		return false;	// not an entry from outside
+	}
+	const Point3 q = ray.PointAtLength( ri.geometric.range );
+	const Scalar s = r_max( r_max( fabs( q.x ), fabs( q.y ) ), fabs( q.z ) );
+	const Scalar delta = BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
+	const Scalar radius = Scalar( 96 ) * delta;
+	static const unsigned int kMaxCandidates = 64;
+	const IObject* cand[kMaxCandidates];
+	const unsigned int nCand = objects.ObjectsNearPoint( q, radius, ri.pObject, cand, kMaxCandidates );
+	if( nCand == 0 ) {
+		return false;
+	}
+	// A TIE: the candidate's own face on the SAME ray lies at the hit's
+	// range to rounding (coincident), not merely within the contact band --
+	// a face 2e-6 behind the SSS face (a flush-inset twin moved down) is met
+	// after it and is not a tie.
+	const Scalar tieTol = Scalar( 1e-3 ) * delta;
+	const Point3 before = Point3Ops::mkPoint3( q, d * ( -delta ) );
+	const Point3 after = Point3Ops::mkPoint3( q, d * delta );
+	RayIntersection hit( ray, ri.geometric.rast );
+	bool found = false;
+	for( unsigned int k = 0; k < nCand; ++k ) {
+		RayIntersection cand_ri( ray, ri.geometric.rast );
+		cand_ri.geometric.PropagateCastInputs( ri.geometric );
+		cand[k]->IntersectRay( cand_ri, ri.geometric.range + tieTol, bHitFrontFaces, bHitBackFaces, false );
+		// (Object::IntersectRay's limit is not a hard bound on every
+		// geometry, so the window is checked on both sides.)
+		if( !cand_ri.geometric.bHit || cand_ri.geometric.range < ri.geometric.range - tieTol ||
+			cand_ri.geometric.range > ri.geometric.range + tieTol ) {
+			continue;
+		}
+		if( found && !( cand_ri.geometric.range < hit.geometric.range ) ) {
+			continue;
+		}
+		if( objects.ObjectContainsPoint( cand[k], before, d ) ) {
+			continue;	// the ray is inside it: its face is an exit, not met first
+		}
+		if( objects.ObjectContainsPoint( cand[k], after, d ) &&
+			!EnclosesLauncher( cand[k], ri.pObject, radius ) ) {
+			continue;	// a flush inset inside the SSS body
+		}
+		hit = cand_ri;
+		found = true;
+	}
+	if( !found ) {
+		return false;
+	}
+	ri = hit;
+	return true;
+}
+
 const IObject* BSSRDFSampling::FindExitContact(
 	const IObjectManager& objects,
 	const SampleResult& r,

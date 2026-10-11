@@ -444,6 +444,30 @@ namespace RISE
 			return pMat && !pMat->ScattersFullSphere() && !pMat->HasDeltaPassThrough();
 		}
 
+		/// DL-408 review round 4: the closest-hit TIE at a coincident face.
+		/// `ri` is a whole-scene closest hit that ENTERS an SSS body (a
+		/// body carrying a diffusion profile or a random walk) from outside.
+		/// If another body's surface lies at the same point -- a sheet
+		/// emitter the body rests on, the floor of a closed room the body
+		/// stands in -- the two hits tie exactly and the traversal's choice
+		/// is arbitrary; physically the ray meets that other surface FIRST
+		/// (it lies on the ray's side of the SSS body).  Rewrites `ri` to
+		/// that surface's hit on the same ray and returns true.  A
+		/// candidate qualifies when the contact cast from just before the
+		/// point (`ContactRay`) meets it in the band, it does not contain
+		/// the point just before the face (the ray is not inside it), and
+		/// either it does not contain the point just past the face (a
+		/// sheet) or it ENCLOSES the SSS body (world-box nesting, a room);
+		/// a flush INSET inside the body does not qualify.  Called from
+		/// `ObjectManager::IntersectRay`, so every strategy of every
+		/// integrator sees the same first surface.  Draws no samples.
+		bool ResolveCoincidentEntry(
+			const IObjectManager& objects,
+			RayIntersection& ri,
+			const bool bHitFrontFaces,
+			const bool bHitBackFaces
+			);
+
 		/// At a CONTACT hit (`ri.pContactPartner` set): the body a
 		/// continuation in `dirOut` meets at zero distance -- the partner
 		/// when `dirOut` goes back to the arrival side of the hit's

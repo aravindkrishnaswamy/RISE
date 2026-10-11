@@ -109,6 +109,26 @@ Where T comes from:
   of the contact test.
 * **Surface scatter at a contact hit.**  The partner recorded on the hit;
   no query.
+* **A ray from OUTSIDE meeting the coincident faces (review round 4).**
+  Where an SSS body's face coincides with another surface (a sheet
+  emitter under it, the floor of the room it stands in), a whole-scene
+  ray arriving from the far side meets both at exactly one point and the
+  closest-hit tie is arbitrary (1860 of 2000 upward rays from a floor
+  under a double-sided pad picked the block).  Picking the block is
+  wrong: the other surface lies on the ray's side and is met first.
+  `BSSRDFSampling::ResolveCoincidentEntry`, called at the end of
+  `ObjectManager::IntersectRay` (the one closest-hit resolution every
+  integrator and strategy uses), rewrites an SSS ENTRY hit to the
+  coincident surface's hit on the same ray, found by the same candidate
+  search and band as the contact launch.  A candidate qualifies when the
+  ray is not inside it, and either it has no interior past the face (a
+  sheet) or it encloses the SSS body (a room); a flush inset does not.
+  Without it the floor's BSDF ray entered the block, whose exit then
+  re-met the pad as a covered contact launch and took its emission at
+  weight ~1, while the floor's NEE to the same pad point kept its own
+  weight: counted twice (diffusion block on a pad over a floor: PT 1.33,
+  BDPT 1.50, VCM 1.47 on `8df8b6dff`).  A light subpath from below a
+  closed room's floor entered the block the same way and leaked inside.
 * **Light emitted from a luminary in contact (BDPT / VCM / MLT light
   subpaths, review round 3).**  A light subpath sampled on an emissive
   pad under a wax block starts ON the block's bottom face; its emission
@@ -240,7 +260,10 @@ intersection.  Since review round 2 the single-object cast is bounded by
 the band's widest far edge, and a candidate that contains the backed-off
 origin additionally pays two bounding-box reads (the nesting test).
 A light subpath sampled on a mesh luminary pays one contact query
-(the same box walk) at its emission point (round 3).
+(the same box walk) at its emission point (round 3).  Every closest hit
+that ENTERS an SSS body pays one more (round 4: the tie): a box walk,
+and a bounded single-object cast per candidate box within the radius
+(an enclosure's box always qualifies).
 Covering a contact's NEE costs nothing extra in PT (the exit's contact
 query moved ahead of the NEE; the NEE is still evaluated) and one flag
 test per strategy in BDPT / VCM.  Measured numbers: section 6.
@@ -508,4 +531,48 @@ headers + ONLY the final `VCMIntegrator.cpp` reproduces that exact hash
 difference is code generation of those loops under `-ffast-math`.
 `rwsss_sphere` (4 pixels, 6e-8) and `rwsss_bdpt` (2556 pixels, means as
 in round 1) differ through real point contacts.
+
+### 6.4 Review round 4 (2026-10-10): the coincident-face tie
+
+Contact test rows (contact vs a 2e-6 gap, n = 8; `8df8b6dff` -> this
+round):
+
+| row | `8df8b6dff` | this round |
+|---|---|---|
+| RW block on a double-sided pad over a floor, PT | 0.9316 | 1.0011 |
+| same, BDPT | 0.9297 | 0.9978 |
+| same, VCM | 0.9203 | 0.9931 |
+| diffusion block on that pad over a floor, PT | 1.2241 | 0.9995 |
+| same, BDPT | 1.2125 | 0.9988 |
+| same, VCM | 1.1615 | 0.9980 |
+| RW block in a closed room lit from OUTSIDE (depth 12), BDPT | 1.0213 | 0.9997 |
+| same, VCM | 1.0217 | 0.9996 |
+
+The same eight rows against an OUT-OF-BAND twin (gap 5e-4, outside both
+the contact band and the candidate radius, so the twin takes no contact
+code at all): 1.0004 / 0.9972 / 0.9993 / 0.9989 / 1.0007 / 0.9981 /
+0.9999 / 0.9980, all inside their bands.  That matters: a 2e-6 gap lies
+INSIDE the contact band, so on this branch the 2e-6 twin's exits take
+contact launches too and the 2e-6 rows check continuity across the band;
+the red-proofs against older builds and the 5e-4 rows check the result.
+
+The review's own fixtures (crop means; `h` = 1e-3 gap, `g` = 2e-6):
+`padds_df` whole image PT / BDPT / VCM 0.989 / 0.997 / 0.996 vs `h`
+(review: 1.332 / 1.500 / 1.474 on `8df8b6dff`), VCM 1.000 vs `g`;
+`padds_rw` 1.000 / 1.002 / 0.999 vs `g`; the room lit from outside
+`room_rw` BDPT / VCM 1.024 / 1.024 on `8df8b6dff` -> 1.000 / 1.001 vs
+`g` (PT 0.999, unchanged: no PT path starts outside the room).
+
+The room row needs the review's depth caps (max eye / light depth 12):
+at 64 the `8df8b6dff` contact twin agreed with its gap twin (1.001), so
+the row runs at 12.  Why the cap exposed it was not investigated.
+
+Shipped SSS scenes (single thread, salt 0, 8 spp): unchanged from round
+3 -- 9 of 12 bit-identical to master, `vcm_sss_dragon` the verified
+code-generation difference, `rwsss_sphere` / `rwsss_bdpt` real point
+contacts.  Cost (user CPU, interleaved): `rwsss_sphere` 4.95 -> 4.97 s,
+`rwsss_bdpt` 11.20 -> 11.19 s, `pt_sss_dragon` 74.00 -> 74.52 s (n = 3);
+worst case, a wax ball inside four large tessellated glass shells (every
+entry asks four mesh candidates): 4.945 +/- 0.047 -> 5.178 +/- 0.137 s
+(+4.7 %, n = 4).
 
