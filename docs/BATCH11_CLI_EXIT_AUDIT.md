@@ -42,3 +42,8 @@ Validated production baseline: 9 passed/4 failed, rc1; the fresh PNG check passe
 After the fix: 13/0, rc0; AgentStdioSmoke 13/0 and AgentAutonomyPolicy404/0,
 rc0. All four named builds rc0 and no compiler warnings. Early malformed
 output-fixture runs were discarded; they are not the red regression evidence.
+
+Fresh review exposed a direct padded-quit path to the parser's legacy exit(1).
+The console now recognizes the first command token before dispatch, preserving
+cleanup and sticky failures for whitespace-padded quit/exit/bye. Additional
+regression14/2 ->16/0 (n1 SD0); final agent gates13/0 and404/0 remain rc0.

@@ -25,6 +25,7 @@
 #include <fstream>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <vector>
 #include "../Library/RISE_API.h"
@@ -1332,9 +1333,12 @@ int main( int argc, char** argv )
 			break;
 		}
 
-		if( strcmp( line, "quit" ) == 0 ||
-			strcmp( line, "exit" ) == 0 ||
-			strcmp( line, "bye" ) == 0 ) {
+		// Match the parser's first-token command dispatch, including padded
+		// quit, before its legacy quit handler can exit without our cleanup.
+		std::istringstream commandLine( line );
+		std::string commandVerb;
+		commandLine >> commandVerb;
+		if( commandVerb == "quit" || commandVerb == "exit" || commandVerb == "bye" ) {
 			std::cout << "Bye!" << std::endl;
 			break;
 		}

@@ -58,6 +58,9 @@ int main() {
     success(run(scene,"render\nquit\n"),"clean render and quit returns zero");
     check(fs::is_regular_file(image.string()+".png") && fs::file_size(image.string()+".png")>0,"fresh render output exists");
     success(run(scene,"quit\n"),"load then quit returns zero");
+    success(run(scene,"  quit \t\r\n"),"whitespace-padded quit returns zero");
+    success(run(scene,"\texit \n"),"whitespace-padded exit returns zero");
+    failure(run(scene,"not_a_command\n  quit \n"),"failure survives padded quit");
     success(run(scene,"render\n"),"successful command then EOF returns zero");
     success(run({},""),"clean empty stdin returns zero");
     failure(run(broken,"quit\n"),"broken scene then quit remains failure");
