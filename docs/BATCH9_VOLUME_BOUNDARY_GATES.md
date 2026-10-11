@@ -1,4 +1,7 @@
-# DL-474: certified single-boundary volume normalization
+# DL-474: batch 9 certified single-boundary volume normalization
+
+Historical batch 9 scope and measurements follow. Batch 10 adds conservative
+own-box corner bounds; see BATCH10_DL474_DESIGN.md for current scope.
 
 VCM's 3-D merge ball previously divided by its full volume even where an
 opaque sphere or the containing medium box removed part of that volume.

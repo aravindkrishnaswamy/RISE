@@ -272,19 +272,20 @@ namespace
 
 int main( int argc, char** argv )
 {
-	bool boundaryOnly = false, thinningPTOnly = false;
+	bool boundaryOnly = false, thinningPTOnly = false, cornerOnly=false;
+    for(int i=1;i<argc;++i) if(std::string(argv[i])=="--dl474-corner-pin") cornerOnly=true;
     for(int i=1;i<argc;++i) if(std::string(argv[i])=="--dl474-boundary-only") boundaryOnly=true;
     for(int i=1;i<argc;++i) if(std::string(argv[i])=="--dl474-thinning-pt-only") thinningPTOnly=true;
     std::string boundaryOptions;
-    if(boundaryOnly || thinningPTOnly) {
+    if(boundaryOnly || thinningPTOnly || cornerOnly) {
         boundaryOptions=WriteScene(std::string("force_number_of_threads 1\nrender_thread_reserve_count 0\n") +
-            (boundaryOnly ? "vcm_volume_merge_neighbours 1\nvcm_volume_merge_footprints 64\n" : ""), "opts");
+            ((boundaryOnly || cornerOnly) ? "vcm_volume_merge_neighbours 1\nvcm_volume_merge_footprints 64\n" : ""), "opts");
         #ifdef _WIN32
         _putenv_s("RISE_OPTIONS_FILE",boundaryOptions.c_str());
 #else
         setenv("RISE_OPTIONS_FILE",boundaryOptions.c_str(),1);
 #endif
-        if((boundaryOnly && (GlobalOptions().ReadDouble("vcm_volume_merge_neighbours",0.01)!=1 ||
+        if(((boundaryOnly || cornerOnly) && (GlobalOptions().ReadDouble("vcm_volume_merge_neighbours",0.01)!=1 ||
            GlobalOptions().ReadDouble("vcm_volume_merge_footprints",2)!=64)) ||
            GlobalOptions().ReadInt("force_number_of_threads",0)!=1) return 2;
     }
@@ -301,6 +302,18 @@ int main( int argc, char** argv )
 		if( std::string( argv[i] ) == "--only" && i + 1 < argc ) only = argv[++i];
 	}
 
+    if(cornerOnly) {
+        auto corner=[](bool vcm) {
+            std::string scene=FogBoxScene(vcm,512,false);
+            const std::string camera="location 0 0 5\n\tlookat 0 0 0";
+            scene.replace(scene.find(camera),camera.size(),"location 1.4 1.4 5\n\tlookat 1.4 1.4 0");
+            return scene;
+        };
+        RatioRow("G: own-box corner VCM / PT",corner(true),corner(false),1.0,-1.0,trials,seed,"");
+        std::remove(boundaryOptions.c_str());
+        std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+        return failCount ? 1:0;
+    }
     if(boundaryOnly) {
         std::string blackVCM=FogBoxScene(true,512,true), blackPT=FogBoxScene(false,512,true);
         const std::string white="\treflectance white";
