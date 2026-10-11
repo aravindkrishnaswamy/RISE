@@ -70,12 +70,9 @@ for scene_rel in "${SCENES[@]}"; do
     base_name="$(basename "${scene_rel}" .RISEscene)"
     echo "=== Rendering ${base_name} ==="
 
-    # `rise` exits non-zero on the interactive `quit` command even after
-    # a successful render writes its PNG, so we cannot use its exit code
-    # as a render-success signal.  Instead, pre-delete any stale PNG
-    # from a previous run so the post-render presence check is
-    # unambiguous, then run rise without gating on exit code, then check
-    # whether the expected PNG was produced.
+    # Keep the independent fresh-image gate: older consoles returned 1
+    # even on clean quit (fixed by DL-571). Pre-delete stale output, record
+    # status for diagnostics, and require a readable nonblack PNG.
     candidate_png="${RENDERED_DIR}/${base_name}.png"
     rm -f "${candidate_png}"
 

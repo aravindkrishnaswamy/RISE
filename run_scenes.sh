@@ -13,7 +13,7 @@ find scenes/FeatureBased -name "*.RISEscene" | while read scene; do
     filename=$(basename "$scene")
     
     # Run rise with piped input to render and quit
-    # We ignore the exit code because rise seems to exit with 1 on 'quit'
+    # This batch runner ignores status; DL-571 makes clean console quit return 0.
     printf "render\nquit\n" | ./bin/rise "$scene" > /dev/null 2>&1
     
     # Check if output file exists (assuming default output naming convention)

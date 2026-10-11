@@ -48,8 +48,8 @@ render_pose() {
 		-e "s/^([[:space:]]*)fov[[:space:]].*/\1fov\t$fov/" \
 		"$TRUTH" > "$scene"
 	rm -f "$OUT_PNG"
-	# rise returns a non-zero exit code even on a clean render, so don't gate on it;
-	# verify the PNG was actually produced instead.
+	# Keep the fresh-PNG gate for compatibility with older always-1 consoles
+	# (fixed by DL-571); verify the reference was actually produced.
 	printf "render\nquit\n" | "$RISE_BIN" "$scene" >/dev/null 2>&1 || true
 	if [ ! -f "$OUT_PNG" ]; then
 		echo "ERROR: render of $name produced no PNG at $OUT_PNG" >&2
