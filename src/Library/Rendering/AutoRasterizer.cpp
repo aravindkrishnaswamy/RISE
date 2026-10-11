@@ -417,12 +417,11 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 		default:                         break;   // -> Tier-1 static analysis
 	}
 
-	// Tier 1 — cheap, conservative static best-guess over the assembled
-	// scene (docs/AUTO_RASTERIZER_DESIGN.md §5).  Two early-out scans give
-	// the only two signals the routing keys on; everything else defaults
-	// to PT, the matrix's converged-bulk winner.  `scene` is the assembled
-	// scene because resolution runs at the first render-time entry (not at
-	// construction); Phase 4 replaces this body with the probe.
+	// Resolve author pins first, then the DL-475 support guard, then
+	// probe/static selection (docs/AUTO_RASTERIZER_DESIGN.md §§2,5).
+	// Census the assembled scene at the first render-time entry: the
+	// support guard reads bound interior media as well as transmissive
+	// materials and positional lights; probes cannot repair missing support.
 	if( !scene ) {
 		// Defensive: the render path always passes a real scene, but a
 		// null here must not crash the dispatcher — fall back to PT.
