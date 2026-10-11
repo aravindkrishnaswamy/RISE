@@ -20,8 +20,8 @@
 //       threaded by construction), n salted renders each; whole-image mean
 //       and 4x4 region means compared by Welch t at a Bonferroni family
 //       level of 0.01.  Every TI render must report a time-indexed frame.
-//    C  FALLBACK: a keyframed painter cannot be time-indexed; the frame
-//       must take the old path (no time-indexed frame) and still render.
+//    C  FALLBACK: unverified geometry consumers keep a painter on the old path;
+//       no time-indexed frame is created and the scene still renders.
 //    D  SPEED (not a gate unless asked): TI vs OLD wall time, interleaved.
 //
 //    Options are process-wide and read once, so every render runs in a
@@ -136,7 +136,7 @@ static std::string Rasterizer( const std::string& kind, const int spp )
 //!   combo        everything below moves
 //!   no_<x>       combo without timeline <x> (section S)
 //!   static       combo with exposure 0 (no blur; the frame-time pose)
-//!   fallback     combo plus a keyframed painter (not time-indexable)
+//!   fallback     combo plus a painter and unverified ellipsoid geometry
 //!   matmove      combo plus a MATRIX-authored object whose position is keyframed
 //!   matstatic    combo plus a static matrix-authored object
 //! "ext_" adds the review's extended variant: a thin-lens camera (f/1.4), a
@@ -200,8 +200,13 @@ static std::string Scene( const std::string& keyIn, const std::string& ras, cons
 		s += Sphere( "lum2", "lum", "1 -1 1.0", "0.3 0.3 0.3" );
 		if( keep( "lum2" ) ) s += Timeline( "object", "lum2", "scale", "0.3 0.3 0.3", "0.6 0.1 0.3" );
 	}
+    if(key=="shade" || key=="shade_static" || key=="shade_unsafe") {
+        if(key!="shade_static") s+=Timeline("painter","grey","risepel","0.2 0.1 0.05","0.8 0.4 0.2");
+        if(key=="shade_unsafe") s+="ellipsoid_geometry\n{\n\tname unsafe_geo\n\tradii 1 1 1\n}\n\nstandard_object\n{\n\tname unsafe_obj\n\tgeometry unsafe_geo\n\tmaterial floor_mat\n\tposition 30 30 -30\n}\n\n";
+    }
+    if(key=="fallback") s+="ellipsoid_geometry\n{\n\tname unsafe_geo\n\tradii 1 1 1\n}\n\nstandard_object\n{\n\tname unsafe_obj\n\tgeometry unsafe_geo\n\tmaterial floor_mat\n\tposition 30 30 -30\n}\n\n";
 	if( key == "fallback" ) {
-		// A keyframed painter: not time-indexable.
+		// The unverified ellipsoid keeps this painter on the old path.
 		s += "uniformcolor_painter\n{\n\tname pulse\n\tcolor 0.2 0.2 0.2\n}\n\n";
 		s += Timeline( "painter", "pulse", "risepel", "0.2 0.2 0.2", "0.9 0.9 0.9" );
 	}
@@ -507,7 +512,7 @@ static void SectionB( const int spp, const int n )
 
 static void SectionC( const int spp )
 {
-	std::cout << "\nC: a keyframed painter keeps the single-threaded path\n";
+	std::cout << "\nC: unverified geometry keeps a painter on the single-threaded path\n";
 	const ChildResult r = RunChild( "fallback", "pt", 0, true, 4242u, spp );
 	Check( r.ok, "C: fallback render succeeds" );
 	Check( r.frames == 0, "C: no time-indexed frame was created" );

@@ -52,10 +52,11 @@
 //  had already printed it.
 //
 //  WHAT KEEPS THE SINGLE-THREADED PATH (logged once per frame, naming the
-//  element): any other keyframed element (geometry parameters, painters,
+//  element): any unverified keyframed element (geometry parameters, painters,
 //  materials, media, CSG composites and their operands, an object whose
 //  shader keeps runtime data), a per-sample hierarchy re-compose no sweep
-//  narrowed, and the legacy rasterizers (frozen).
+//  narrowed, and the legacy rasterizers (frozen). DL-531 permits exact
+//  UniformColorPainter keyframes only under the audited shading-only guard.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -104,7 +105,7 @@ namespace RISE
 		private:
 			friend class TimeIndexedThread;
 
-			enum Kind { kObject, kPointLight, kSpotLight, kDirectionalLight, kAmbientLight };
+			enum Kind { kObject, kPointLight, kSpotLight, kDirectionalLight, kAmbientLight, kUniformPainter };
 
 			struct Entry
 			{
