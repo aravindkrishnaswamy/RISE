@@ -56,9 +56,37 @@ using RISE::SpectralDispatch::PelTag;
 using RISE::SpectralDispatch::NMTag;
 using RISE::SpectralDispatch::SpectralValueTraits;
 
-// Correct a certified single cut of the volume ball. Keeping its radius
+namespace {
+    // DL-474: an upper Riemann sum for the decreasing positive-octant
+    // sphere height. A fixed 16x16 grid uses 256 height evaluations.
+    Scalar CornerStripUpper(Scalar a, Scalar b, Scalar cap=Scalar(1)) {
+        constexpr unsigned cells=16;
+        Scalar sum=0;
+        for(unsigned i=0;i<cells;++i) for(unsigned j=0;j<cells;++j) {
+            const Scalar x=a*Scalar(i)/cells, y=b*Scalar(j)/cells;
+            const Scalar h=std::sqrt(std::max(Scalar(0),Scalar(1)-x*x-y*y));
+            sum+=std::min(cap,h);
+        }
+        return sum*(a*b/Scalar(cells*cells));
+    }
+    Scalar BoxCornerFractionUpper(const Scalar* a,unsigned count) {
+        Scalar fraction=count==2 ? Scalar(.25) : Scalar(.125);
+        const Scalar slab=count==2 ? Scalar(3)/8 : Scalar(3)/16;
+        for(unsigned i=0;i<count;++i) fraction+=slab*(a[i]-a[i]*a[i]*a[i]/3);
+        const Scalar pair=count==2 ? Scalar(3)/(2*PI) : Scalar(3)/(4*PI);
+        for(unsigned i=0;i<count;++i) for(unsigned j=i+1;j<count;++j)
+            fraction+=pair*CornerStripUpper(a[i],a[j]);
+        if(count==3) fraction+=Scalar(3)/(4*PI)*CornerStripUpper(a[0],a[1],a[2]);
+        // Retained mass cannot exceed a full ball. Clamping the conservative
+        // upper sum to this geometric bound preserves its upper-bound property.
+        return std::min(Scalar(1),fraction);
+    }
+}
+
+// Correct one certified object cut of the volume ball. Keeping its radius
 // avoids the arbitrarily small kernels and unbounded boundary variance of a
-// distance clamp. Multiple/unknown cuts keep the legacy kernel (DL-474 residual).
+// distance clamp. Own-box corners use a conservative retained-volume upper
+// bound; multiple-object/unknown cuts keep the legacy kernel (DL-474 residual).
 VCMNormalization VCMIntegrator::BoundaryVolumeNormalization(
     const VCMNormalization& norm, const BDPTVertex& vertex )
 {
@@ -104,6 +132,22 @@ VCMNormalization VCMIntegrator::BoundaryVolumeNormalization(
                     (p.z-local.ll.z)*scale,(local.ur.z-p.z)*scale};
                 unsigned faces=0, face=0;
                 for(unsigned j=0;j<6;++j) if(std::fabs(distances[j])<r) { ++faces; face=j; }
+                if(own && faces>=2 && faces<=3) {
+                    Scalar clearances[3]; unsigned count=0;
+                    for(unsigned axis=0;axis<3;++axis) {
+                        const bool low=distances[2*axis]<r, high=distances[2*axis+1]<r;
+                        if(low && high) { certified=false; return true; }
+                        if(low || high) {
+                            const Scalar clearance=distances[2*axis+(high?1:0)];
+                            if(!(clearance>0)) { certified=false; return true; }
+                            clearances[count++]=clearance/r;
+                        }
+                    }
+                    if(count!=faces) { certified=false; return true; }
+                    phi=BoxCornerFractionUpper(clearances,count);
+                    if(!std::isfinite(phi) || !(phi>=Scalar(.125)) || !(phi<=Scalar(1))) { certified=false; return true; }
+                    ++cuts; fraction=phi; return true;
+                }
                 if(faces!=1) { certified=false; return true; }
                 for(unsigned j=0;j<6;++j) if(j!=face && !(distances[j]>=r)) { certified=false; return true; }
                 // The current medium is inside its box. Another box must be
