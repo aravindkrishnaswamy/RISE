@@ -22,7 +22,7 @@ reserve0, n8 ValueSalts, no overlapping own build/render jobs during timing.
 
 ## Exact counter evidence
 
-`ObjectKeyframeAllocationTest`: production master9998 allocations for4999
+`ObjectKeyframeAllocationTest` counts C++ operator-new calls: production master9998 allocations for4999
 interpolated position evaluations, zero bit mismatches, rc1; copying-target
 scratch0 allocations, zero bit mismatches, rc0. Independent legacy interpolation
 computes the comparison before the measured window; object finalization is
