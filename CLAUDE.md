@@ -12,6 +12,8 @@ This file intentionally stays thin so it does not drift from the shared docs. St
 
 ```sh
 export RISE_MEDIA_PATH="$(pwd)/"
+# ~1 s: path-traced (direct light only) shapes -> rendered/shapes.png + shapes_denoised.png
+# (`mkdir -p rendered` first in a fresh checkout or worktree; the directory is gitignored)
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 

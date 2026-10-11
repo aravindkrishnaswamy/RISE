@@ -70,3 +70,5 @@ Master987b43824 was integrated before the pre-merge rebuild of all six named
 tests; that rebuild returned0. The routing row is rerun before local merge.
 
 Fresh independent correctness and evidence reviews of5f2aa481f found zero P1s. P2 coverage remaining: add a guard-specific spectral-routing assertion and direct hidden/opaque/no-positional-light controls. The shared selector and existing spectral delegation gates cover the code path, but the new red/green render witness is RGB only. These are disclosed coverage gaps, not claims of a completed transport strategy.
+
+Integration update: masterdfb777341 was merged after the Phase2 scene/tool/docs migration and supervisor DL571 filing. No Library C++ or related test implementation changed. Both ledger recount notes are retained; recomputed338 rows:24 open,314 closed. The six named targets are rebuilt and the routing witness rerun before local integration; no future rerun success is asserted.
