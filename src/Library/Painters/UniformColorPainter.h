@@ -19,6 +19,7 @@
 #define UNIFORM_COLOR_PAINTER_
 
 #include "Painter.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Utilities/Color/RGBSpectra.h"
 
@@ -34,6 +35,7 @@ namespace RISE
 			RGBUnboundedSpectrum   unboundedSpec;    // kind = Unbounded
 			RGBIlluminantSpectrum  illuminantSpec;   // kind = Illuminant
 			SpectrumKind           kind;
+            TimeIndexed::TimeSlot m_timeSlot;
 			virtual ~UniformColorPainter(){};
 
 			void Recompute()
@@ -98,19 +100,23 @@ namespace RISE
 				Recompute();
 			}
 
-			RISEPel GetColor( const RayIntersectionGeometric& ) const { return C; }
+			RISEPel GetColor( const RayIntersectionGeometric& ri ) const {
+                RISE_TIME_INDEXED_FORWARD(UniformColorPainter,GetColor(ri)); return C;
+            }
 
-			Scalar GetColorNM( const RayIntersectionGeometric&, const Scalar nm ) const
+			Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 			{
-				return EvalKind( nm );
+				RISE_TIME_INDEXED_FORWARD(UniformColorPainter,GetColorNM(ri,nm));
+                return EvalKind( nm );
 			}
 
 			//! Source-term sample: always the cached illuminant spectrum,
 			//! whatever this painter's construction kind is.  Overrides the
 			//! IPainter default purely to avoid its per-call LUT lookup --
 			//! the RESULT is identical to the default for a uniform colour.
-			Scalar GetRadianceNM( const RayIntersectionGeometric&, const Scalar nm ) const
+			Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 			{
+                RISE_TIME_INDEXED_FORWARD(UniformColorPainter,GetRadianceNM(ri,nm));
 				return illuminantSpec.Eval( nm );
 			}
 
@@ -123,9 +129,10 @@ namespace RISE
 			// RGB emissive painters silently emit zero on spectral
 			// photon paths even though direct GetColorNM shading is
 			// correct.  See SpectralPacket::SetAtIndex (added 2026-05).
-			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ) const
+			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const
 			{
-				const Scalar lambda_begin = Scalar(380);
+				RISE_TIME_INDEXED_FORWARD(UniformColorPainter,GetSpectrum(ri));
+                const Scalar lambda_begin = Scalar(380);
 				const Scalar lambda_end   = Scalar(780);
 				const unsigned int nbins  = 81;
 				SpectralPacket sp( lambda_begin, lambda_end, nbins );
@@ -136,6 +143,16 @@ namespace RISE
 				}
 				return sp;
 			}
+
+            int GetTimeSlot() const { return m_timeSlot.value; }
+            void SetTimeSlot(int slot) { m_timeSlot.value=slot; }
+            UniformColorPainter* CloneForTimeView() const {
+                auto* clone=new UniformColorPainter(C,kind);
+                clone->albedoSpec=albedoSpec;
+                clone->unboundedSpec=unboundedSpec;
+                clone->illuminantSpec=illuminantSpec;
+                return clone; // fresh Reference, Observable and unslotted queries
+            }
 
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value )
