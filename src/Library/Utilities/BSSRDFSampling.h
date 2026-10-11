@@ -79,6 +79,8 @@
 #include "ISampler.h"
 #include "Optics.h"
 
+namespace RISE { class IObjectManager; }
+
 namespace RISE
 {
 	namespace BSSRDFSampling
@@ -91,6 +93,10 @@ namespace RISE
 		{
             Scalar acceptedAlphaCoverage = 1;
 			Point3				entryPoint;		///< Entry point on the surface
+			/// DL-408: the entry point ON the surface, before the
+			/// `BSSRDF_RAY_EPSILON` outward offset `entryPoint` carries --
+			/// the launch point of a contact continuation (FindExitContact).
+			Point3				boundaryPoint;
 			Vector3				entryNormal;	///< Shading normal at entry point — drives the cosine-sampled
 												///< continuation frame and Sw Fresnel angular dependence.
 			Vector3				entryGeomNormal;///< Geometric normal at entry point — drives the disk-to-surface
@@ -324,6 +330,158 @@ namespace RISE
 			ISampler& sampler,						///< [in] Sampler for stochastic decisions
 			const Scalar nm							///< [in] Wavelength for NM path (0 = RGB)
 			);
+
+		//////////////////////////////////////////////////////////////
+		// DL-408: CONTACT LAUNCHES (docs/DL408_SSS_CONTACT_CONTINUATION.md)
+		//
+		// A continuation launched from a point p that lies on a face SHARED
+		// with a neighbour T meets T at zero distance, where neither a ray
+		// offset off the surface (it starts inside T) nor one from p (both
+		// roots under the self-hit floor) can find it.  A contact launch is
+		// cast against T ALONE from o = p - d * delta, backed off INTO the
+		// launching body: T's face is then at t ~= delta and the launching
+		// body's face is not tested.  The hit is an ordinary hit (backed off
+		// toward o, i.e. on the launching side, as a hit reached through a
+		// tiny gap is) and records the launching body as its
+		// `pContactPartner`, so a continuation from it back toward the
+		// arrival side is again a contact launch restricted to that body.
+		//////////////////////////////////////////////////////////////
+
+		/// The back-off delta of a contact launch from `p`: scale-relative,
+		/// far above every primitive's self-hit floor (~1e-12 (1+s)).
+		inline Scalar ContactBackoff( const Point3& p )
+		{
+			const Scalar s = r_max( r_max( fabs( p.x ), fabs( p.y ) ), fabs( p.z ) );
+			return BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
+		}
+
+		/// The contact launch ray from surface point `p` along unit `dir`.
+		inline Ray ContactRay( const Point3& p, const Vector3& dir )
+		{
+			return Ray( Point3Ops::mkPoint3( p, dir * ( -ContactBackoff( p ) ) ), dir );
+		}
+
+		/// Casts `ri.geometric.ray` (built by ContactRay) against `pTarget`
+		/// alone and ACCEPTS the hit only if it lies at the launch point:
+		/// `delta/2 <= range <= delta + reach`, `reach = 4 BSSRDF_RAY_EPSILON
+		/// (1+s) / max(|cos|, 0.05)` against the hit's own geometric normal
+		/// (covers a sub-offset gap, which the containment test admits).  On
+		/// acceptance `ri` is the hit with `pContactPartner = pSource` and
+		/// TRUE is returned; otherwise `ri` is reset to an unhit record on
+		/// the same ray and FALSE is returned.  Deterministic in its inputs,
+		/// so a verification and a later re-cast agree.
+		bool IntersectContactRay(
+			const IObjectManager& objects,			///< [in] The scene's objects
+			const IObject* pTarget,					///< [in] The only object tested
+			const IObject* pSource,					///< [in] The launching body (the hit's partner)
+			RayIntersection& ri						///< [in/out] Ray in (a ContactRay), hit out
+			);
+
+		/// ContactRay + IntersectContactRay from surface point `p` along `dir`.
+		bool IntersectContact(
+			const IObjectManager& objects,
+			const IObject* pTarget,
+			const IObject* pSource,
+			const Point3& p,
+			const Vector3& dir,
+			const RasterizerState& rast,
+			RayIntersection& ri
+			);
+
+		/// At an SSS exit (`r`, left through `pExitObject`) whose
+		/// continuation is `dir`: the body the exit is in CONTACT with, or
+		/// null.  Candidates are every other body whose box lies within the
+		/// band's reach of `r.boundaryPoint` (`ObjectsNearPoint`: touching
+		/// solids, open sheets such as a ground plane, enclosures); each is
+		/// asked by the contact cast, the band arbitrates, the nearest
+		/// accepted hit wins.  A candidate that contains the backed-off
+		/// origin is nested with the launching body at the face: it is
+		/// accepted when it ENCLOSES that body (world-box nesting: a room
+		/// the body rests in) and refused otherwise (an inset flush with
+		/// the face on the launching side).  Nothing draws from a sampler.
+		const IObject* FindExitContact(
+			const IObjectManager& objects,
+			const SampleResult& r,
+			const IObject* pExitObject,
+			const Vector3& dir
+			);
+
+		/// FindExitContact's search for any launch from surface point `p`
+		/// (outward normal `n`) of body `pSelf` along `dir`: also used by
+		/// BDPT / VCM / MLT for a light subpath EMITTED from a luminary in
+		/// contact with an SSS body (DL-408 round 3), with
+		/// `bSSSTargetsOnly`: only a body carrying a diffusion profile or a
+		/// random walk is a candidate.  A luminary is usually a sheet with no
+		/// interior, so "which side of a coincident surface is it on" has no
+		/// geometric answer; a panel flush with a ceiling sheet or with the
+		/// inside face of a closed room emits AWAY from that surface, and a
+		/// contact launch there would hit it from behind and lose the light.
+		/// An SSS body flush with an emitter is the DL-408 case.
+		const IObject* FindSurfaceContact(
+			const IObjectManager& objects,
+			const Point3& p,
+			const Vector3& n,
+			const IObject* pSelf,
+			const Vector3& dir,
+			const bool bSSSTargetsOnly = false
+			);
+
+		/// Does a contact with `pPartner` COVER the side facing it -- is every
+		/// shadow ray and connection into that side occluded at zero
+		/// distance, as the gap twin's are by the partner's near face?  True
+		/// for a shadow-casting partner whose material has no non-delta
+		/// transmission a connection could cross (not `ScattersFullSphere`:
+		/// translucent, fabric, weave, hair; not a delta pass-through).
+		/// A covered contact's NEE / connections are zeroed (DL-408 round 2);
+		/// a transmitting partner's are left to the ordinary visibility test
+		/// (round 3: zeroing them removed real light).
+		inline bool ContactCovers( const IObject* pPartner )
+		{
+			if( !pPartner || !pPartner->DoesCastShadows() ) {
+				return false;
+			}
+			const IMaterial* pMat = pPartner->GetMaterial();
+			return pMat && !pMat->ScattersFullSphere() && !pMat->HasDeltaPassThrough();
+		}
+
+		/// DL-408 review round 4: the closest-hit TIE at a coincident face.
+		/// `ri` is a whole-scene closest hit that ENTERS an SSS body (a
+		/// body carrying a diffusion profile or a random walk) from outside.
+		/// If another body's surface lies at the same point -- a sheet
+		/// emitter the body rests on, the floor of a closed room the body
+		/// stands in -- the two hits tie exactly and the traversal's choice
+		/// is arbitrary; physically the ray meets that other surface FIRST
+		/// (it lies on the ray's side of the SSS body).  Rewrites `ri` to
+		/// that surface's hit on the same ray and returns true.  A
+		/// candidate qualifies when the contact cast from just before the
+		/// point (`ContactRay`) meets it in the band, it does not contain
+		/// the point just before the face (the ray is not inside it), and
+		/// either it does not contain the point just past the face (a
+		/// sheet) or it ENCLOSES the SSS body (world-box nesting, a room);
+		/// a flush INSET inside the body does not qualify.  Called from
+		/// `ObjectManager::IntersectRay`, so every strategy of every
+		/// integrator sees the same first surface.  Draws no samples.
+		bool ResolveCoincidentEntry(
+			const IObjectManager& objects,
+			RayIntersection& ri,
+			const bool bHitFrontFaces,
+			const bool bHitBackFaces
+			);
+
+		/// At a CONTACT hit (`ri.pContactPartner` set): the body a
+		/// continuation in `dirOut` meets at zero distance -- the partner
+		/// when `dirOut` goes back to the arrival side of the hit's
+		/// geometric plane, else null.  Null for every ordinary hit.
+		inline const IObject* ContactReturnTarget( const RayIntersection& ri, const Vector3& dirOut )
+		{
+			if( !ri.pContactPartner ) {
+				return 0;
+			}
+			const Vector3& ng = ri.geometric.vGeomNormal;
+			const Scalar a = Vector3Ops::Dot( dirOut, ng );
+			const Scalar b = -Vector3Ops::Dot( ri.geometric.ray.Dir(), ng );
+			return ( a * b > 0 ) ? ri.pContactPartner : 0;
+		}
 	}
 }
 

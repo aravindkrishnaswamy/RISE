@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "BSSRDFSampling.h"
+#include "../Interfaces/IObjectManager.h"
 
 using namespace RISE;
 
@@ -540,6 +541,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	// ray direction) ensures adequate clearance even for near-grazing
 	// directions, and keeps the ray origin consistent with the stored
 	// vertex position used by BDPT geometric terms.
+	result.boundaryPoint = entryPoint;
 	result.entryPoint = Point3Ops::mkPoint3( entryPoint,
 		entryNormal * BSSRDF_RAY_EPSILON );
 	result.entryNormal = entryNormal;
@@ -563,4 +565,240 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	result.valid = true;
 
 	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-408: contact launches -- see BSSRDFSampling.h and
+// docs/DL408_SSS_CONTACT_CONTINUATION.md.
+//////////////////////////////////////////////////////////////////////
+
+bool BSSRDFSampling::IntersectContactRay(
+	const IObjectManager& objects,
+	const IObject* pTarget,
+	const IObject* pSource,
+	RayIntersection& ri
+	)
+{
+	const Ray ray = ri.geometric.ray;
+	const RasterizerState rast = ri.geometric.rast;
+	const Scalar glossyFilterWidth = ri.geometric.glossyFilterWidth;
+	const bool bWantsWireEdgeInfo = ri.geometric.bWantsWireEdgeInfo;
+	if( !pTarget ) {
+		return false;
+	}
+	// The band, in ray range.  Its scale is the launch point's COORDINATE
+	// magnitude (as BSSRDF_RAY_EPSILON's offsets are), not the size of either
+	// body: a millimetre contact far from the origin gets a wider band than
+	// the same contact at the origin.  The cast itself stops at the band's
+	// widest possible far edge (the 0.05 cosine floor), so a large candidate
+	// does not pay a full closest-hit traversal (review round 2, P2-1).
+	const Point3& o = ray.origin;
+	const Scalar s = r_max( r_max( fabs( o.x ), fabs( o.y ) ), fabs( o.z ) );
+	const Scalar delta = BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
+	const Scalar reachMax = Scalar( 4 ) * BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s ) / Scalar( 0.05 );
+	objects.IntersectSingleObject( ri, pTarget, delta + reachMax );
+	if( ri.geometric.bHit ) {
+		const Scalar cosHit = fabs( Vector3Ops::Dot( ray.Dir(), ri.geometric.vGeomNormal ) );
+		const Scalar reach = Scalar( 4 ) * BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s ) /
+			r_max( cosHit, Scalar( 0.05 ) );
+		const Scalar t = ri.geometric.range;
+		if( t >= Scalar( 0.5 ) * delta && t <= delta + reach ) {
+			ri.pContactPartner = pSource;
+			return true;
+		}
+	}
+	ri = RayIntersection( ray, rast );
+	ri.geometric.glossyFilterWidth = glossyFilterWidth;
+	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+	return false;
+}
+
+bool BSSRDFSampling::IntersectContact(
+	const IObjectManager& objects,
+	const IObject* pTarget,
+	const IObject* pSource,
+	const Point3& p,
+	const Vector3& dir,
+	const RasterizerState& rast,
+	RayIntersection& ri
+	)
+{
+	ri = RayIntersection( ContactRay( p, dir ), rast );
+	return IntersectContactRay( objects, pTarget, pSource, ri );
+}
+
+namespace
+{
+	//! Is box `a` inside box `b` padded by `pad`?
+	inline bool BoxInsidePadded( const BoundingBox& a, const BoundingBox& b, const Scalar pad )
+	{
+		return a.ll.x >= b.ll.x - pad && a.ll.y >= b.ll.y - pad && a.ll.z >= b.ll.z - pad &&
+			a.ur.x <= b.ur.x + pad && a.ur.y <= b.ur.y + pad && a.ur.z <= b.ur.z + pad;
+	}
+
+	//! DL-408 review round 2: given that candidate `pT` contains the
+	//! launch's backed-off origin (its interior overlaps the launching body
+	//! `pS` at the shared face), is `pS` nested inside `pT` (an enclosure)
+	//! rather than `pT` inside `pS` (an inset)?
+	bool EnclosesLauncher( const IObject* pT, const IObject* pS, const Scalar pad )
+	{
+		if( !pT || !pS ) {
+			return false;
+		}
+		const BoundingBox bT = pT->getBoundingBox();
+		const BoundingBox bS = pS->getBoundingBox();
+		return BoxInsidePadded( bS, bT, pad ) && !BoxInsidePadded( bT, bS, pad );
+	}
+}
+
+bool BSSRDFSampling::ResolveCoincidentEntry(
+	const IObjectManager& objects,
+	RayIntersection& ri,
+	const bool bHitFrontFaces,
+	const bool bHitBackFaces
+	)
+{
+	if( !ri.geometric.bHit || !ri.pObject || !ri.pMaterial ) {
+		return false;
+	}
+	if( !( ri.pMaterial->GetDiffusionProfile() || ri.pMaterial->GetRandomWalkSSSParams() ) ) {
+		return false;
+	}
+	if( !ri.geometric.HasTrueGeomSide() ) {
+		return false;
+	}
+	const Ray ray = ri.geometric.ray;
+	const Vector3& d = ray.Dir();
+	if( !( ri.geometric.TrueGeomFacing( d ) < 0 ) ) {
+		return false;	// not an entry from outside
+	}
+	const Point3 q = ray.PointAtLength( ri.geometric.range );
+	const Scalar s = r_max( r_max( fabs( q.x ), fabs( q.y ) ), fabs( q.z ) );
+	const Scalar delta = BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
+	const Scalar radius = Scalar( 96 ) * delta;
+	static const unsigned int kMaxCandidates = 64;
+	const IObject* cand[kMaxCandidates];
+	const unsigned int nCand = objects.ObjectsNearPoint( q, radius, ri.pObject, cand, kMaxCandidates );
+	if( nCand == 0 ) {
+		return false;
+	}
+	// A TIE: the candidate's own face on the SAME ray lies at the hit's
+	// range to rounding (coincident), not merely within the contact band --
+	// a face 2e-6 behind the SSS face (a flush-inset twin moved down) is met
+	// after it and is not a tie.
+	const Scalar tieTol = Scalar( 1e-3 ) * delta;
+	const Point3 before = Point3Ops::mkPoint3( q, d * ( -delta ) );
+	const Point3 after = Point3Ops::mkPoint3( q, d * delta );
+	RayIntersection hit( ray, ri.geometric.rast );
+	bool found = false;
+	for( unsigned int k = 0; k < nCand; ++k ) {
+		RayIntersection cand_ri( ray, ri.geometric.rast );
+		cand_ri.geometric.PropagateCastInputs( ri.geometric );
+		cand[k]->IntersectRay( cand_ri, ri.geometric.range + tieTol, bHitFrontFaces, bHitBackFaces, false );
+		// (Object::IntersectRay's limit is not a hard bound on every
+		// geometry, so the window is checked on both sides.)
+		if( !cand_ri.geometric.bHit || cand_ri.geometric.range < ri.geometric.range - tieTol ||
+			cand_ri.geometric.range > ri.geometric.range + tieTol ) {
+			continue;
+		}
+		if( found && !( cand_ri.geometric.range < hit.geometric.range ) ) {
+			continue;
+		}
+		if( objects.ObjectContainsPoint( cand[k], before, d ) ) {
+			continue;	// the ray is inside it: its face is an exit, not met first
+		}
+		if( objects.ObjectContainsPoint( cand[k], after, d ) &&
+			!EnclosesLauncher( cand[k], ri.pObject, radius ) ) {
+			continue;	// a flush inset inside the SSS body
+		}
+		hit = cand_ri;
+		found = true;
+	}
+	if( !found ) {
+		return false;
+	}
+	ri = hit;
+	return true;
+}
+
+const IObject* BSSRDFSampling::FindExitContact(
+	const IObjectManager& objects,
+	const SampleResult& r,
+	const IObject* pExitObject,
+	const Vector3& dir
+	)
+{
+	if( !r.valid ) {
+		return 0;
+	}
+	return FindSurfaceContact( objects, r.boundaryPoint, r.entryNormal, pExitObject, dir );
+}
+
+const IObject* BSSRDFSampling::FindSurfaceContact(
+	const IObjectManager& objects,
+	const Point3& p,
+	const Vector3& n,
+	const IObject* pExitObject,
+	const Vector3& dir,
+	const bool bSSSTargetsOnly
+	)
+{
+	// Candidates: every other body whose box lies within the band's reach
+	// of the launch point -- a touching neighbour, an open sheet the exit
+	// lies on (a ground plane: no interior, so no containment test can see
+	// it), and also any enclosure whose box merely contains the point.
+	// Each is asked by the restricted cast; the band is the arbiter, and
+	// the NEAREST accepted hit wins (DL-408 review: the first containing
+	// candidate used to be an enclosure, whose far face failed the band and
+	// hid the real neighbour).
+	const Scalar s = r_max( r_max( fabs( p.x ), fabs( p.y ) ), fabs( p.z ) );
+	const Scalar radius = Scalar( 96 ) * BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
+	static const unsigned int kMaxCandidates = 64;
+	const IObject* cand[kMaxCandidates];
+	const unsigned int nCand = objects.ObjectsNearPoint( p, radius, pExitObject, cand, kMaxCandidates );
+	if( nCand == 0 ) {
+		return 0;
+	}
+	const Ray ray = ContactRay( p, dir );
+	const IObject* best = 0;
+	Scalar bestT = RISE_INFINITY;
+	for( unsigned int k = 0; k < nCand; ++k ) {
+		if( bSSSTargetsOnly ) {
+			const IMaterial* pMat = cand[k]->GetMaterial();
+			if( !pMat || !( pMat->GetDiffusionProfile() || pMat->GetRandomWalkSSSParams() ) ) {
+				continue;
+			}
+		}
+		RayIntersection probe( ray, nullRasterizerState );
+		if( !IntersectContactRay( objects, cand[k], pExitObject, probe ) ) {
+			continue;
+		}
+		if( !( probe.geometric.range < bestT ) ) {
+			continue;
+		}
+		// A candidate whose face is at the launch point AND whose interior
+		// overlaps the launching body there (it contains the backed-off
+		// origin) is one of two NESTED configurations, locally identical --
+		// both interiors on the same side of the shared face:
+		//   * an ENCLOSURE floor: S rests on the inside face of T (a closed
+		//     box room, a glass tank); T's surface is really there, and the
+		//     continuation must meet it (review round 2, P1);
+		//   * an INSET: T sits inside S, flush with S's face; the
+		//     continuation leaves both into whatever is outside S, and T's
+		//     surface is not a neighbour across the face.
+		// No local probe separates them (a point just outside S beside p is
+		// outside T in BOTH), so the test is the nesting itself: two closed
+		// bodies whose interiors overlap and whose boundaries only touch are
+		// nested, and nesting implies world-box nesting.  S inside T is an
+		// enclosure (accept); T inside S is an inset (refuse); boxes that do
+		// not tell (equal, or loose boxes from different transforms) keep
+		// the refusal.
+		if( objects.ObjectContainsPoint( cand[k], ray.origin, n ) &&
+			!EnclosesLauncher( cand[k], pExitObject, radius ) ) {
+			continue;
+		}
+		best = cand[k];
+		bestT = probe.geometric.range;
+	}
+	return best;
 }

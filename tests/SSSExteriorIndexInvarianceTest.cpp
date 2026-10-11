@@ -1806,10 +1806,10 @@ namespace
 		// gives its continuation (BSSRDF_RAY_EPSILON) and optically nothing,
 		// so the pair differs ONLY in whether that offset crosses into the
 		// neighbour.  Paired seeds (common random numbers).  The diffusion
-		// row is printed, not gated: its profile probe cannot cross into a
-		// neighbour at all, so the same offset still lands inside it there
-		// (DL-408); and on a finite cube the profile is not energy
-		// conserving, so its gapped side is heavy-tailed.
+		// row is printed, not gated here: on a finite cube the profile is not
+		// energy conserving, so its gapped side is heavy-tailed at n = 4.  Its
+		// contact transport (DL-408, the contact launch) is gated with paired
+		// salts at n = 8 by tests/SSSContactContinuationTest.cpp.
 		// The mismatched row gives the right cube index 1.3 and g 0.3 (every
 		// row's right cube has g 0.3, so a crossing must also switch the
 		// phase function): the shared face is then a real 1.5 / 1.3
@@ -1862,7 +1862,7 @@ namespace
 				std::cout << " (band " << row.band << ")" << std::endl;
 				Check( std::fabs( st.mean / sg.mean - 1.0 ) < row.band, label + ": touching / gapped image mean within band of 1" );
 			} else {
-				std::cout << " (not gated: DL-408)" << std::endl;
+				std::cout << " (not gated here: SSSContactContinuationTest)" << std::endl;
 			}
 		}
 	}

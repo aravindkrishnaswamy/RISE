@@ -26,6 +26,7 @@
 #include "../Materials/CoatedMaterial.h"
 #include "../Materials/FabricMaterial.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/BSSRDFSampling.h"
 #include "../Materials/DielectricMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/Material.h"
@@ -1598,6 +1599,10 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		}
 	}
 
+	// DL-408 round 4: an SSS entry that ties with a coincident partner face
+	// (a sheet emitter under the body, a closed room's floor) yields to it.
+	BSSRDFSampling::ResolveCoincidentEntry( *this, ri, bHitFrontFaces, bHitBackFaces );
+
     CompleteShadingSignals(ri.geometric,ri.pObject);
 
 	if( !ri.geometric.bHit ) {
@@ -1793,16 +1798,94 @@ static bool OddCrossings( const IObjectPriv* obj, const Point3& pt, const Vector
 
 const IObject* ObjectManager::RandomWalkObjectContaining( const Point3& ptWorld, const Vector3& probeDir, const IObject* self ) const
 {
+	return ObjectContaining_( ptWorld, probeDir, self, true );
+}
+
+unsigned int ObjectManager::ObjectsNearPoint( const Point3& ptWorld, const Scalar radius, const IObject* self, const IObject** out, const unsigned int maxOut ) const
+{
+	unsigned int n = 0;
+	auto take = [&]( const IObjectPriv* obj ) {
+		if( n >= maxOut || !obj || obj == self || !obj->IsWorldVisible() || !obj->GetMaterial() ) {
+			return;
+		}
+		out[n++] = obj;
+	};
+	EnsureBoxSnapshot();
+	const ObjectBoxSnapshot* const snap = pBoxes.load( std::memory_order_acquire );
+	if( !snap ) {
+		return 0;
+	}
+	const BVH<const IObjectPriv*>* const tlas =
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode )
+			? pBVH.load( std::memory_order_acquire ) : 0;
+	if( tlas && tlas->numPrims() > 0 ) {
+		tlas->ForEachNearPoint(
+			ptWorld, radius,
+			[&]( const IObjectPriv* obj, const Point3& ) { take( obj ); },
+			true );
+		return n;
+	}
+	for( std::size_t k = 0; k < snap->entries.size() && n < maxOut; ++k ) {
+		const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+		const Point3& ll = entry.box.ll;
+		const Point3& ur = entry.box.ur;
+		const Scalar dx = ( ptWorld.x < ll.x ) ? ( ll.x - ptWorld.x ) : ( ( ptWorld.x > ur.x ) ? ( ptWorld.x - ur.x ) : Scalar( 0 ) );
+		const Scalar dy = ( ptWorld.y < ll.y ) ? ( ll.y - ptWorld.y ) : ( ( ptWorld.y > ur.y ) ? ( ptWorld.y - ur.y ) : Scalar( 0 ) );
+		const Scalar dz = ( ptWorld.z < ll.z ) ? ( ll.z - ptWorld.z ) : ( ( ptWorld.z > ur.z ) ? ( ptWorld.z - ur.z ) : Scalar( 0 ) );
+		if( dx*dx + dy*dy + dz*dz > radius * radius ) continue;
+		take( entry.pObj );
+	}
+	return n;
+}
+
+//! DL-370 / DL-408: the per-candidate containment rule; see the lambda in
+//! ObjectContaining_ for the derivation.
+static bool CandidateContainsPoint( const IObject* obj, const Point3& ptWorld, const Vector3& probeDir )
+{
+	Scalar f = 0;
+	bool exact = false;
+	if( obj->SignedDistanceLower( ptWorld, Scalar( 1e-3 ), f, exact ) ) {
+		return f < 0;
+	}
+	const IObjectPriv* priv = dynamic_cast<const IObjectPriv*>( obj );
+	if( !priv ) {
+		return false;
+	}
+	return OddCrossings( priv, ptWorld, probeDir ) && OddCrossings( priv, ptWorld, -probeDir );
+}
+
+bool ObjectManager::ObjectContainsPoint( const IObject* pObject, const Point3& ptWorld, const Vector3& probeDir ) const
+{
+	return pObject ? CandidateContainsPoint( pObject, ptWorld, probeDir ) : false;
+}
+
+void ObjectManager::IntersectSingleObject( RayIntersection& ri, const IObject* pObject, const Scalar dHowFar ) const
+{
+	ri.geometric.bHit = false;
+	ri.geometric.range = RISE_INFINITY;
+	if( !pObject ) {
+		return;
+	}
+	pObject->IntersectRay( ri, dHowFar, true, true, false );
+	if( !ri.geometric.bHit ) {
+		return;
+	}
+	CompleteShadingSignals( ri.geometric, ri.pObject );
+}
+
+const IObject* ObjectManager::ObjectContaining_( const Point3& ptWorld, const Vector3& probeDir, const IObject* self, const bool bRandomWalkOnly ) const
+{
 	// DL-370; see the interface comment.  The box walk is the cheap gate
-	// (a point no other random-walk box contains costs no ray at all);
-	// the per-object ray decides containment.
+	// (a point no other candidate box contains costs no ray at all);
+	// the per-object ray decides containment.  DL-408 shares it without
+	// the random-walk filter.
 	const IObject* found = 0;
 	auto test = [&]( const IObjectPriv* obj ) {
 		if( found || !obj || obj == self || !obj->IsWorldVisible() ) {
 			return;
 		}
 		const IMaterial* pMat = obj->GetMaterial();
-		if( !pMat || !pMat->GetRandomWalkSSSParams() ) {
+		if( !pMat || ( bRandomWalkOnly && !pMat->GetRandomWalkSSSParams() ) ) {
 			return;
 		}
 		// (1) A body that can sign a distance answers containment exactly
