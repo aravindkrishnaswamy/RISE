@@ -499,13 +499,18 @@ forward label shares must also define the same capped integrand when a
 path is reversed. Hair is a single-label exception: every HairSPF draw
 (including TT/TTs) is reflection, so its complete RGB/NM value belongs
 to that label and its connection mask declares reflection alone.
+Diffusion, random-walk SSS and Donner–Jensen skin likewise put their complete
+ordinary finite surface BSDF in reflection. Their smooth delta reflection has
+zero finite value; a nonlocal subsurface jump is charged separately as
+translucent and is not a term in this surface split (DL-482).
 `tests/ConnectionTypeSplitTest.cpp` checks exactly this identity per type,
 channel, incidence and lane.  The MIS densities stay the aggregate ones --
 MIS is unbiased for any weights that partition, and every strategy's
 expectation is f_cap -- so VCM's recurrence is unchanged and only the
 connection, splat and merge CONTRIBUTIONS change.  Materials with a split
 (`IMaterial::HasConnectionTypeSplit`): GGX, Cook-Torrance, Schlick, both
-Ward, isotropic Phong, Ashikhmin-Shirley, polished, translucent, hair (and the
+Ward, isotropic Phong, Ashikhmin-Shirley, polished, translucent, hair,
+diffusion, random-walk SSS and Donner–Jensen skin (and the
 luminaire wrappers over them).
 
 A material with several possible types and NO split (coated, composite,

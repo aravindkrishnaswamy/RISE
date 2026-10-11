@@ -20,7 +20,8 @@
 //  every material that declares the split
 //  (IMaterial::HasConnectionTypeSplit): GGX (Schlick and conductor
 //  Fresnel), Cook-Torrance, Schlick, both Ward models, isotropic Phong,
-//  Ashikhmin-Shirley, polished, translucent (its entry side) and hair.
+//  Ashikhmin-Shirley, polished, translucent (its entry side), hair and
+//  ordinary SSS surface reflection (--dl482-only isolates the SSS cases).
 //  --dl502-weave-pin retains the unresolved weave declaration checks.  It also
 //  checks that the parts sum to `valueStateful` at random directions.
 //
@@ -73,6 +74,9 @@
 #include "../src/Library/Materials/HairMaterial.h"
 #include "../src/Library/Materials/FabricMaterial.h"
 #include "../src/Library/Materials/OrenNayarMaterial.h"
+#include "../src/Library/Materials/SubSurfaceScatteringMaterial.h"
+#include "../src/Library/Materials/RandomWalkSSSMaterial.h"
+#include "../src/Library/Materials/DonnerJensenSkinBSSRDFMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -378,6 +382,7 @@ int main(int argc, char** argv)
 	const bool coatedOnly = argc == 2 && std::string(argv[1]) == "--dl502-coated-only";
 	const bool coatedPin = argc == 2 && std::string(argv[1]) == "--dl502-coated-pin";
 	const bool weavePin = argc == 2 && std::string(argv[1]) == "--dl502-weave-pin";
+	const bool sssOnly = argc == 2 && std::string(argv[1]) == "--dl482-only";
 	GlobalLog();
 	std::cout << "=== ConnectionTypeSplitTest (DL-481) ===" << std::endl;
 
@@ -473,13 +478,20 @@ int main(int argc, char** argv)
             Check(material->HasConnectionTypeSplit(),"live zero weight restores split");
         }
     }
-	for( Case& c : cases ) c.mat->addref();
+	// Shared finite reflection BSDF, independent native-SPF expectation.
+	cases.push_back({"DL482 diffusion",new SubSurfaceScatteringMaterial(*ior15,*a03,*scat30,0,.4),&iorStack});
+	cases.push_back({"DL482 random-walk",new RandomWalkSSSMaterial(*ior15,*a03,*scat30,0,.4,256),&iorStack});
+	cases.push_back({"DL482 skin",new DonnerJensenSkinBSSRDFMaterial(*a03,*a02,*ext0,*a01,*a03,*a02,*ior15,*ior15,*a03,.4),&iorStack});
+	// New SSS cases own their construction reference until final release.
+	for( Case& c : cases ) if(c.name.find("DL482")!=0) c.mat->addref();
 
 	const double thetas[] = { 0.0, 40.0, 70.0 };
 	for( const Case& c : cases ) {
+		if(sssOnly && c.name.find("DL482") != 0) continue;
 		if(dl502Only && c.name.find("DL502") != 0) continue;
 		if((coatedOnly || coatedPin) && c.name.find("DL502 coated") != 0) continue;
 		if(weavePin && c.name.find("DL502") != 0) continue;
+		if(c.name.find("DL482")==0) Check(c.mat->ConnectionScatterTypes()==(1u<<ScatteredRay::eRayReflection),c.name+": finite surface reflection label");
 		for( double th : thetas ) {
 			if( c.glossyFilterWidth > 0 && th != 40.0 ) continue;	// filter-width rows: one incidence
 			RunCase( c, th, 0, 0, sampler );
@@ -489,7 +501,7 @@ int main(int argc, char** argv)
 	}
 
 	// Direct single-scatter identity (black diffuse; see RunIdentity).
-	if(!dl502Only && !weavePin && !coatedOnly && !coatedPin) {
+	if(!sssOnly && !dl502Only && !weavePin && !coatedOnly && !coatedPin) {
 		UniformColorPainter* black = new UniformColorPainter( RISEPel( 0, 0, 0 ) ); black->addref();
 		UniformColorPainter* rsG = new UniformColorPainter( RISEPel( 0.3, 0.3, 0.3 ) ); rsG->addref();
 		struct IdCase { std::string n; IMaterial* m; IdKind k; double ax, ay, ior, ext; const IScalarPainter* iorP; const IScalarPainter* extP; FresnelMode fm; };
