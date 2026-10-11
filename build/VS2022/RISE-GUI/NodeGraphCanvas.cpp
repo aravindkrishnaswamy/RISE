@@ -55,6 +55,7 @@
 #include <QSize>
 #include <QFrame>
 #include <QSet>
+#include <QCheckBox>
 
 #include <algorithm>
 #include <cmath>
@@ -721,9 +722,14 @@ private:
         m_categoryCombo->addItem(tr("Material"), 2);
         v->addWidget(m_categoryCombo);
 
+        auto* searchRow = new QHBoxLayout();
         m_searchEdit = new QLineEdit(m_keywordPage);
         m_searchEdit->setPlaceholderText(tr("Search keywords…"));
-        v->addWidget(m_searchEdit);
+        searchRow->addWidget(m_searchEdit, 1);
+
+        m_showLegacyCheck = new QCheckBox(tr("Show legacy"), m_keywordPage);
+        searchRow->addWidget(m_showLegacyCheck);
+        v->addLayout(searchRow);
 
         m_keywordList = new QListWidget(m_keywordPage);
         v->addWidget(m_keywordList, 1);
@@ -738,6 +744,7 @@ private:
         connect(m_categoryCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
                 this, [this](int) { reloadKeywords(); });
         connect(m_searchEdit, &QLineEdit::textChanged, this, [this](const QString&) { applyFilter(); });
+        connect(m_showLegacyCheck, &QCheckBox::stateChanged, this, [this](int) { applyFilter(); });
         connect(m_keywordList, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
             selectKeyword(item->data(Qt::UserRole).toString());
         });
@@ -789,13 +796,16 @@ private:
     {
         m_keywordList->clear();
         const QString needle = m_searchEdit->text().trimmed().toLower();
+        const bool showLegacy = m_showLegacyCheck && m_showLegacyCheck->isChecked();
         for (const QString& kw : std::as_const(m_keywords)) {
             if (!needle.isEmpty() && !kw.toLower().contains(needle)) continue;
             // DL-401: a deprecated chunk type (already sorted after the modern
             // ones by the core) is badged; the keyword itself rides Qt::UserRole
             // so selectKeyword never parses the badge back out of the text.
             // Legacy Phase 1: a FROZEN type (legacy, unsupported; sorted last) gets its own badge.
+            // Legacy Phase 1 deferred: hidden unless "Show legacy" is checked.
             const QString replacement = m_bridge ? m_bridge->paletteDeprecationReplacement(kw) : QString();
+            if (!showLegacy && !replacement.isEmpty()) continue;
             const bool frozen = m_bridge && m_bridge->paletteKeywordIsFrozen(kw);
             auto* item = new QListWidgetItem(replacement.isEmpty()
                 ? kw
@@ -968,8 +978,9 @@ private:
     QStackedWidget* m_stack         = nullptr;
     QWidget*        m_keywordPage   = nullptr;
     QComboBox*      m_categoryCombo = nullptr;
-    QLineEdit*      m_searchEdit    = nullptr;
-    QListWidget*    m_keywordList   = nullptr;
+    QLineEdit*      m_searchEdit        = nullptr;
+    QCheckBox*      m_showLegacyCheck   = nullptr;
+    QListWidget*    m_keywordList       = nullptr;
     QStringList     m_keywords;
 
     QWidget*         m_requirementPage   = nullptr;

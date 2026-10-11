@@ -2423,6 +2423,20 @@ namespace RISE
 		                                         const std::string& param,
 		                                         const std::string& value );
 
+		//! Legacy Phase 1 deferred (docs/LEGACY_DEPRECATION_ASSESSMENT.md §10.1):
+		//! the parameter-level DEPRECATION ban.  Refuses to insert a chunk that sets
+		//! a ParameterDescriptor::deprecated parameter, or to patch a deprecated parameter.
+		std::string CheckDeprecatedParamBanForInsert( const std::string& chunkText,
+		                                              std::string* outKind = nullptr,
+		                                              std::string* outName = nullptr,
+		                                              std::string* outParam = nullptr );
+
+		std::string CheckDeprecatedParamBanForPatch( const std::string& headText,
+		                                             const std::string& target,
+		                                             const std::string& kind,
+		                                             const std::string& param,
+		                                             const std::string& value );
+
 		//! G2 fix-round (2026-08-10): would this PARAM EDIT newly introduce a
 		//! chunk whose registry ChunkCategory is Geometry?  Returns that
 		//! chunk's KEYWORD (and, via `outName`, its bare `name` param) -- ""

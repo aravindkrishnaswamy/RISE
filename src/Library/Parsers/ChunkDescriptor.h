@@ -649,6 +649,12 @@ namespace RISE
 		// construction if a future chunk gains its own expression-body field.
 		bool                         carriesExpressionSampleRefs = false;
 		ApplyParameterFn             apply      = nullptr;
+
+		//! Legacy-deprecation Phase 1 deferred (docs/LEGACY_DEPRECATION_ASSESSMENT.md §10.1):
+		//! the parameter is DEPRECATED.  A scene load logs one warning per load, read_schema
+		//! reports `"deprecated":true`, and the agent refuses to insert/patch it.
+		bool                         deprecated = false;
+		std::string                  replacement;                            //!< human-readable replacement hint
 	};
 
 	struct ChunkDescriptor
