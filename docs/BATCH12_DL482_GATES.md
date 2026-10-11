@@ -31,3 +31,5 @@ Every table entry uses n8. These are radiance comparisons, with no timing claim.
 ## Self-review
 
 Checked that the five-slot split sums to the original finite BSDF, has no jump term or second energy contribution, leaves smooth/delta and back-face values zero, and declares the SPF's actual reflection type for every shared-BSDF material. No contact source or integrator path state was edited. The new test cases release their construction references. Fresh independent review is required before merging.
+
+Review round1 found no transport P1, but one reviewer found a P1 stale API-comment family: IMaterial and EndpointBounceType still described SSS masks as empty. Corrected both and the matching MIS positive-cap/ordinary-reflection documentation. These follow-up edits change comments/docs only; the production function bodies and render-band code are identical to those used for the n8 render evidence. All four named builds returned0 without warnings after the correction. The full split, strict parity, exterior unit gate, row S (n8), all controls and positive-jump row L were rerun and returned0 before fresh round2 review; no test bands changed.
