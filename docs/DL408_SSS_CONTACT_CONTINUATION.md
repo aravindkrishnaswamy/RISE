@@ -109,6 +109,14 @@ Where T comes from:
   of the contact test.
 * **Surface scatter at a contact hit.**  The partner recorded on the hit;
   no query.
+* **Light emitted from a luminary in contact (BDPT / VCM / MLT light
+  subpaths, review round 3).**  A light subpath sampled on an emissive
+  pad under a wax block starts ON the block's bottom face; its emission
+  ray is a contact launch exactly like an SSS exit
+  (`BSSRDFSampling::FindSurfaceContact`, the same candidate search, with
+  the luminary as the launching body).  Without it VCM's light-traced
+  strategies saw the block through its bottom face and read 0.966 on the
+  RW block on a pad (BDPT, whose eye path dominates there, read 0.996).
 
 Why this and not the alternatives the earlier passes weighed:
 
@@ -131,31 +139,49 @@ Why this and not the alternatives the earlier passes weighed:
 
 ## 3. Transport consistency
 
-* **NEE and connections at a contact (review round 2).**  At a contact
-  exit, and at a contact hit, the side facing the partner is covered by
-  the partner's surface at zero distance: in the gap twin every shadow
-  ray or connection into it is occluded by the partner's near face.  The
-  exit's own offset point (p + n BSSRDF_RAY_EPSILON) need NOT lie inside
-  the partner, though -- resting on the inside floor of a closed room it
-  lies 1e-6 BELOW the floor, outside the room, where a shadow ray sees
-  whatever is outside (round 1 relied on the partner occluding through
-  its far side, which a solid neighbour does and an enclosure floor does
-  not).  So the covering is now explicit, for every partner that casts
-  shadows: PT computes the exit's contact before its NEE and zeroes that
-  NEE (still evaluated, so the sampler stays in lockstep; its optimal-MIS
-  training scale is 0, a counted zero); BDPT, VCM and MLT mark the exit
-  vertex and every contact-hit vertex `BDPTVertex::contactCovered`, and
-  every connection with such a vertex as an endpoint returns zero (s = 1
-  NEE, t = 1 splat, interior connections, the zero-exitance sweep, VCM's
-  NEE / splat / connections).  The vertex stays connectible, so the MIS
-  denominators keep the gap twin's structure.  BDPT needed the contact
-  HIT gated too: the floor-contact vertex's predecessor (the exit) lies
-  1e-6 below it, so a direction rebuilt from positions put both of its
-  BSDF arguments below the floor and a Lambertian floor priced env light
-  from outside the room (BDPT contact/gap 1.020 with only the exit
-  gated).  PT is not affected by that (it uses the ray's own direction).
-  Residuals: an EMITTING neighbour seen from a contact exit, and a
-  partner with `casts_shadows FALSE` (section 5).
+* **NEE and connections at a contact (review rounds 2 and 3).**  At a
+  contact exit the outward side is covered by the partner's surface at
+  zero distance: in the gap twin every shadow ray or connection into it
+  is occluded by the partner's near face.  The exit's own offset point
+  (p + n BSSRDF_RAY_EPSILON) need NOT lie inside the partner, though --
+  resting on the inside floor of a closed room it lies 1e-6 BELOW the
+  floor, outside the room, where a shadow ray sees whatever is outside
+  (round 1 relied on the partner occluding through its far side, which a
+  solid neighbour does and an enclosure floor does not).  So the covering
+  is explicit when the partner is OPAQUE and casts shadows
+  (`BSSRDFSampling::ContactCovers`: not `ScattersFullSphere` -- translucent,
+  fabric, weave, hair -- and no delta pass-through): PT computes the
+  exit's contact before its NEE and zeroes that NEE (still evaluated, so
+  the sampler stays in lockstep; its optimal-MIS training scale is 0, a
+  counted zero); BDPT, VCM and MLT mark the exit vertex
+  `BDPTVertex::contactCovered`, and every CONNECTION with it as an
+  endpoint returns zero (s >= 1 and t >= 1: NEE, splat, interior
+  connections, the zero-exitance sweep, VCM's NEE / splat / connections).
+  The exit's other hemisphere carries Sw = 0, so the whole vertex is
+  gated; the vertex stays connectible, so the MIS denominators keep the
+  gap twin's structure.  A TRANSMITTING partner is not covered: real light
+  crosses it (round 2 covered it and moved a translucent slab's BDPT /
+  VCM rows from 1.030 / 0.896 to 0.978 / 0.859).
+
+  Emission is not a connection.  An eye path that reaches an EMITTING
+  partner by a contact launch (s = 0) is a real path and is never gated;
+  round 2 gated it with the connections, and round 1 already lost it
+  through the second mechanism below, so BDPT / VCM / MLT read EXACTLY 0
+  for a block lit only by an emissive pad under it.
+
+  **Positions follow the contact ray (DL-558, round 3).**  A strategy
+  rebuilds directions and endpoint densities from vertex POSITIONS, and
+  across a contact edge the stored positions lay on the wrong sides of
+  the shared face (the exit 1e-6 past it, the hit 1e-12 on the arrival
+  side): VCM's S0 rebuilt the pad's emission direction facing away from
+  the block (Le = 0), and a Lambertian floor-contact vertex priced env
+  light from below the floor (BDPT contact/gap 1.020 in a closed room).
+  On every accepted contact launch the LAUNCHING vertex is now moved to
+  the contact ray's origin -- delta behind the shared face, on its own
+  side -- so positions agree with the walk's range and every rebuilt
+  direction faces the way the ray travelled.  Not an UNCOVERED SSS exit:
+  its connections still run from its offset point (moved inside its own
+  body they would cross its own face), so DL-558 remains for those.
 * **PT MIS.**  The continuation's density is unchanged (the same sampled
   direction); a contact hit is an ordinary hit, so emission weighting,
   bsdfMisPdf and the optimal-MIS training are untouched.
@@ -163,17 +189,13 @@ Why this and not the alternatives the earlier passes weighed:
   the previous vertex's `pdfRev` from the RAY (direction and `range`), not
   from vertex positions, so a restricted cast's range delta enters exactly
   where the gap twin's ~1e-6 range does.  A strategy's ENDPOINT and its
-  predecessor are re-priced from POSITIONS, and across a contact edge
-  those can differ from the range by orders of magnitude (two vertices on
-  opposite sides of a shared face, ~1e-12 apart, against a range of
-  ~1e-6: a factor ~(1e-6/1e-12)^2 in an area density).  That re-pricing
-  only enters a strategy whose endpoint is a contact vertex, and those
-  contribute zero (above) unless the partner casts no shadows: DL-558,
-  documented, not fixed.  Contact vertices are connectible
-  as usual; every connection from one into the covered hemisphere is
-  occluded (as in the gap twin).  The SSS exit vertex is a subsurface-jump
-  MIS barrier (DL-317 / DL-375), so no MIS walk evaluates the zero-length
-  S-exit -> B edge from positions.  No zero-length density fold is needed.
+  predecessor are re-priced from POSITIONS; since round 3 those agree with
+  the range across a contact edge (the launching vertex sits at the
+  contact ray's origin, above), except at an uncovered SSS exit (DL-558).
+  Contact vertices are connectible as usual.  The SSS exit vertex is a
+  subsurface-jump MIS barrier (DL-317 / DL-375), so no MIS walk evaluates
+  the zero-length S-exit -> B edge from positions.  No zero-length density
+  fold is needed.
 * **Bit-identity.**  Nothing draws from the sampler.  A scene with no
   contact never takes the restricted cast (the containment query answers
   no, or the cast fails its band); its pixels are unchanged bit for bit.
@@ -217,33 +239,46 @@ and NO parity casts.  Contact-hit scatters pay one single-object
 intersection.  Since review round 2 the single-object cast is bounded by
 the band's widest far edge, and a candidate that contains the backed-off
 origin additionally pays two bounding-box reads (the nesting test).
+A light subpath sampled on a mesh luminary pays one contact query
+(the same box walk) at its emission point (round 3).
 Covering a contact's NEE costs nothing extra in PT (the exit's contact
 query moved ahead of the NEE; the NEE is still evaluated) and one flag
 test per strategy in BDPT / VCM.  Measured numbers: section 6.
 
 ## 5. Residuals (by design)
 
-* An EMITTING neighbour: NEE from a contact exit samples the emitter's
-  contact face from inside it (direction into S, Sw = 0) and its far faces
-  through its interior; the continuation (a contact launch) carries the
-  emission at MIS weight ~1.  Unchanged by this slice.
+* An EMITTING neighbour (review round 3).  The continuation (a contact
+  launch) carries the emission; NEE from the exit toward the pad is
+  zeroed (covered), which loses nothing measurable: across a ~1e-6 edge
+  the BSDF strategy's area density is ~1e12 times the light's, so its MIS
+  weight is ~1 in both twins.  Rows: RW / diffusion block on a pad, PT,
+  BDPT, VCM and MLT.  Was 0 in BDPT / VCM / MLT on the base and in rounds
+  1 and 2 (section 6.3).
+* A TRANSMITTING partner keeps a pre-existing bias that is not DL-408's:
+  a RW block on a 0.1-thick `translucent_material` slab lit from below
+  (block crop, 1024 spp, n = 8, contact vs a 1e-3 gap) reads BDPT
+  1.0175 +/- 0.0030 se, VCM 0.9424 +/- 0.0054, PT 0.9989 +/- 0.0016; the
+  base `ba133dd38` reads 1.0178 / 0.9484 on the same crop, i.e. the slice
+  returns BDPT and VCM to their pre-DL-408 values.  The BDPT / VCM vs PT
+  gap is the translucent model's non-reciprocity under connections
+  (DL-223), present in the gap twin as well.
 * Alpha coverage (DL-214) of the neighbour is not consulted by the
   restricted cast: a cut-out contact face is treated as solid.  An
   alpha-carded leaf or decal lying flat on an SSS body therefore reflects
   the exit's continuation off its transparent texels too, and (since round
   2) zeroes the exit's NEE there, where the gap twin's alpha-aware scene
   cast and shadow rays would see through the cut-out.
-* A partner with `casts_shadows FALSE` is still met by the continuation
-  but does not cover: its exits keep their NEE and connections from the
-  offset point, which is correct for a solid neighbour (the offset point
-  is inside it and the gap twin's shadow rays pass it too) but leaks
-  past an enclosure floor that casts no shadows; and the DL-558 position
-  re-pricing applies there.
-* A contact HIT's connections are gated on BOTH sides.  For a reflecting
-  partner the far side carries zero BSDF anyway; a NON-DELTA TRANSMITTING
-  partner material (`translucent_material`, a rough dielectric) at a
-  contact loses its connections through itself (its continuation still
-  transmits).
+* A partner with `casts_shadows FALSE` (or a transmitting one) is still
+  met by the continuation but does not cover: its exits keep their NEE
+  and connections from the offset point, which is correct for a solid
+  neighbour (the offset point is inside it and the gap twin's shadow rays
+  pass it too) but leaks past an enclosure floor that casts no shadows;
+  and the DL-558 position re-pricing applies there (an emissive partner
+  that is uncovered keeps the S0 direction problem).
+* Contact HITS are not gated at all; their predecessor's position makes
+  every rebuilt direction face the right way, so a reflecting partner's
+  far side reads zero BSDF and a transmitting one connects through itself
+  as in the gap twin.
 * The nesting test is a box test: an inset whose box is not inside the
   launching body's (a flush inset under a different, loose transform), or
   an enclosure whose box does not contain the body's, keeps the refusal.
@@ -410,4 +445,67 @@ four meshes whose boxes contain it): master 5.130 +/- 0.071 s,
 within noise; the unbounded single-mesh casts were not a measurable cost
 there either, the bound removes the worst case for a candidate whose
 closest hit is far.
+
+**Correction (round 3).**  The bit-identity paragraph above attributed
+its three ~1e-9 differences to code generation without checking; round 3
+checked (section 6.3).
+
+### 6.3 Review round 3 (2026-10-10): emitting partner, transmitting partner
+
+**P1 -- an emitting partner.**  A block lit only by a 1 x 1 emissive pad
+under it read EXACTLY 0 in BDPT / VCM / MLT on the base and in rounds 1
+and 2 (PT was right since round 1).  Contact test rows (contact vs a 2e-6
+gap, n = 8, final library):
+
+| row | `c616c1b5f` | this round |
+|---|---|---|
+| RW block on a pad, PT | 1.0029 | 0.9971 |
+| same, BDPT | render mean 0 | 1.0072 |
+| same, VCM | render mean 0 | 1.0023 |
+| diffusion block on a pad, PT | 0.9967 | 0.9973 |
+| same, BDPT | render mean 0 | 0.9999 |
+| same, VCM | 0.0008 | 1.0173 (band 2.2 %) |
+| RW block on a pad, MLT (sanity) | render failed | 1.0008 |
+
+The reviewer's own fixtures (block crop) read RW pad BDPT 0.9990 and VCM
+0.9971 (n = 8; VCM read 0.966 before the emission ray became a contact
+launch), the box emitter BDPT 1.022 +/- 0.020.  The reviewer's `_g`
+twins for `lumfloor` / `lumpad` are 1e-3 gaps: the generator writes
+`_g` (2e-6) and then `_G` (1e-3), and the macOS filesystem is
+case-insensitive.  Against that 1e-3 twin the diffusion pad reads ~0.988
+in PT and BDPT alike, a geometry difference, not a contact one.
+
+The round-2 room rows on the final library: 0.9992 / 0.9969 / 0.9999 /
+0.9968; the inset 1.0000.  Contact test 45/0.
+
+**P2 -- a transmitting partner.**  RW block on a 0.1-thick
+`translucent_material` slab lit from below, block crop, 1024 spp, n = 8,
+contact vs a 1e-3 gap:
+
+| build | BDPT | VCM | PT |
+|---|---|---|---|
+| `ba133dd38` (base) | 1.0178 +/- 0.0031 | 0.9484 +/- 0.0052 | -- |
+| `c616c1b5f` (round 2) | 0.9831 +/- 0.0028 | 0.9089 +/- 0.0051 | -- |
+| this round | 1.0175 +/- 0.0030 | 0.9424 +/- 0.0054 | 0.9989 +/- 0.0016 |
+
+(se of the mean ratio, my block crop x 14..26, y 8..23; the reviewer's
+own crop read base 1.023 / 0.913 and round 2 0.978 / 0.859 -- different
+numbers, the same ordering.)  The covering is now restricted to opaque
+partners, which returns BDPT and VCM to their base values; the remaining
+BDPT / VCM vs PT gap is DL-223 (section 5).
+
+**P3 -- bit-identity, verified.**  A struct-only rebuild (master plus the
+three layout headers `RayIntersection.h`, `IRayCaster.h`, `BDPTVertex.h`,
+every dependent recompiled; a first attempt was invalid because the
+copied objects and the copied headers shared one mtime second and make
+recompiled nothing) is bit-identical to master on all five scenes that
+had differed.  Against it the final library leaves `bdpt_sss_dragon` and
+`bdpt_sss_different_bsdf` bit-identical (round 2's differences there
+came from gating contact hits, since withdrawn); `vcm_sss_dragon`
+differs in 4451 pixels by at most 1.3e-9 relative, and master + layout
+headers + ONLY the final `VCMIntegrator.cpp` reproduces that exact hash
+-- its new branches are never taken there (no vertex is covered), so the
+difference is code generation of those loops under `-ffast-math`.
+`rwsss_sphere` (4 pixels, 6e-8) and `rwsss_bdpt` (2556 pixels, means as
+in round 1) differ through real point contacts.
 

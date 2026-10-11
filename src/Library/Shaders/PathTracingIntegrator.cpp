@@ -3182,7 +3182,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
 								const IObject* pContact = BSSRDFSampling::FindExitContact(
 									*scene.GetObjects(), bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
-								const bool bContactCovered = pContact && pContact->DoesCastShadows();
+								const bool bContactCovered = BSSRDFSampling::ContactCovers( pContact );
 								// NEE at BSSRDF entry point.  GUI render modes P2b
 								// `indirect` (review-p2c P2-c fix): this is the
 								// SSS analog of the surface NEE gate above --
@@ -3474,7 +3474,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								const IObject* pSSSExitObject = bssrdf.ExitObject( ri.pObject );
 								const IObject* pContact = BSSRDFSampling::FindExitContact(
 									*scene.GetObjects(), bssrdf, pSSSExitObject, bssrdf.scatteredRay.Dir() );
-								const bool bContactCovered = pContact && pContact->DoesCastShadows();
+								const bool bContactCovered = BSSRDFSampling::ContactCovers( pContact );
 								// GUI render modes P2b `indirect` (review-p2c
 								// P2-c fix): same SSS-analog-of-surface-NEE
 								// gate as the diffusion-profile site above.

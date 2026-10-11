@@ -2113,6 +2113,15 @@ namespace {
 			}
 			if( bWalkContactHit ) {
 				currentRay = ri.geometric.ray;
+				// DL-408 / DL-558 (round 3): the launching vertex moves to the contact
+				// ray's origin, on its own side of the shared face, so positions agree
+				// with the range (endpoint re-pricing; the direction a later strategy
+				// rebuilds from positions -- VCM's S0 emission, a BSDF's wo).  Not an
+				// UNCOVERED SSS exit: its connections still run from its offset point
+				// (moved inside the body they would cross its own face).
+				if( !vertices.back().isBSSRDFEntry || vertices.back().contactCovered ) {
+					vertices.back().position = ri.geometric.ray.origin;
+				}
 			} else {
 				scene.GetObjects()->IntersectRaySampled( ri, sampler );
 			}
@@ -2725,10 +2734,6 @@ namespace {
 			StoreThroughput<Tag>( v, beta );
 			v.pdfRev = 0;
 			v.isDelta = false;
-			// DL-408 (review round 2): a contact hit lies against its partner
-			// at zero distance; its connections are covered by the partner
-			// (BDPTVertex::contactCovered).
-			v.contactCovered = ri.pContactPartner && ri.pContactPartner->DoesCastShadows();
 
 			// VCM post-pass input: the receiving-side cosine used to
 			// invert the area-measure pdfFwd back to solid angle at
@@ -2995,7 +3000,7 @@ namespace {
 									pWalkContactSource = pSSSExitObject;
 									walkContactPoint = bssrdf.boundaryPoint;
 									// Review round 2: its connections are covered by the body.
-									vertices.back().contactCovered = pWalkContactTarget->DoesCastShadows();
+									vertices.back().contactCovered = BSSRDFSampling::ContactCovers( pWalkContactTarget );
 								}
 							}
 							continue;
@@ -3158,7 +3163,7 @@ namespace {
 									pWalkContactSource = pSSSExitObject;
 									walkContactPoint = bssrdf.boundaryPoint;
 									// Review round 2: its connections are covered by the body.
-									vertices.back().contactCovered = pWalkContactTarget->DoesCastShadows();
+									vertices.back().contactCovered = BSSRDFSampling::ContactCovers( pWalkContactTarget );
 								}
 							}
 							continue;
@@ -4190,8 +4195,11 @@ ConnectAndEvaluateImplCore(
 	// DL-408 (review round 2): a connection with a contact-covered SSS exit
 	// as an endpoint meets the covering body at zero distance -- occluded
 	// (BDPTVertex::contactCovered).  Its MIS weight is not touched.
-	if( ( s >= 1 && lightVerts[s - 1].contactCovered ) ||
-		( t >= 1 && eyeVerts[t - 1].contactCovered ) ) {
+	// Only CONNECTION strategies (s >= 1 and t >= 1) are covered: an eye
+	// path that reaches an emitting partner by a contact launch (s == 0)
+	// is a real path, and its emission is not a connection (round 3).
+	if( s >= 1 && t >= 1 &&
+		( lightVerts[s - 1].contactCovered || eyeVerts[t - 1].contactCovered ) ) {
 		return result;
 	}
 
@@ -7348,6 +7356,18 @@ unsigned int GenerateLightSubpathImpl(
 	const IObject* pWalkContactTarget = 0;		// DL-408: pending contact launch
 	const IObject* pWalkContactSource = 0;
 	Point3 walkContactPoint;
+	// DL-408 (round 3): an emitter in contact with an SSS body (an
+	// emissive pad under a wax block) emits into it at zero distance -- a
+	// contact launch, exactly as an SSS exit continues into its neighbour.
+	// SSS targets only (BSSRDFSampling::FindSurfaceContact).
+	if( ls.pLuminary && !ls.pEnvLight ) {
+		pWalkContactTarget = BSSRDFSampling::FindSurfaceContact( *scene.GetObjects(),
+			ls.position, ls.normal, ls.pLuminary, ls.direction, true );
+		if( pWalkContactTarget ) {
+			pWalkContactSource = ls.pLuminary;
+			walkContactPoint = ls.position;
+		}
+	}
 	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
 	{
 		// Per-bounce stream on the light subpath: 1 + depth for the
@@ -7374,6 +7394,15 @@ unsigned int GenerateLightSubpathImpl(
 		}
 		if( bWalkContactHit ) {
 			currentRay = ri.geometric.ray;
+			// DL-408 / DL-558 (round 3): the launching vertex moves to the contact
+			// ray's origin, on its own side of the shared face, so positions agree
+			// with the range (endpoint re-pricing; the direction a later strategy
+			// rebuilds from positions -- VCM's S0 emission, a BSDF's wo).  Not an
+			// UNCOVERED SSS exit: its connections still run from its offset point
+			// (moved inside the body they would cross its own face).
+			if( !vertices.back().isBSSRDFEntry || vertices.back().contactCovered ) {
+				vertices.back().position = ri.geometric.ray.origin;
+			}
 		} else {
 			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 		}
@@ -7668,9 +7697,6 @@ unsigned int GenerateLightSubpathImpl(
 			? ls.pdfPosition * absCosIn
 			: BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
 		StoreThroughput<Tag>( v, beta );
-		// DL-408 (review round 2): a contact hit's connections are covered
-		// by its partner (BDPTVertex::contactCovered).
-		v.contactCovered = ri.pContactPartner && ri.pContactPartner->DoesCastShadows();
 		if constexpr( Traits::is_nm ) {
 			// NM broadcasts the scalar throughput into the RISEPel field so
 			// light-subpath guiding training (which stores RISEPel weights on
@@ -7935,7 +7961,7 @@ unsigned int GenerateLightSubpathImpl(
 								pWalkContactSource = pSSSExitObject;
 								walkContactPoint = bssrdf.boundaryPoint;
 								// Review round 2: its connections are covered by the body.
-								vertices.back().contactCovered = pWalkContactTarget->DoesCastShadows();
+								vertices.back().contactCovered = BSSRDFSampling::ContactCovers( pWalkContactTarget );
 							}
 						}
 						continue;
@@ -8118,7 +8144,7 @@ unsigned int GenerateLightSubpathImpl(
 								pWalkContactSource = pSSSExitObject;
 								walkContactPoint = bssrdf.boundaryPoint;
 								// Review round 2: its connections are covered by the body.
-								vertices.back().contactCovered = pWalkContactTarget->DoesCastShadows();
+								vertices.back().contactCovered = BSSRDFSampling::ContactCovers( pWalkContactTarget );
 							}
 						}
 						continue;

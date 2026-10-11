@@ -313,17 +313,21 @@ namespace RISE
 		bool isLightSubpathVertex;
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
-		/// DL-408 (review round 2): on an SSS exit vertex whose continuation
-		/// is a CONTACT launch against a shadow-casting body, the whole
-		/// outward hemisphere is covered by that body's surface at zero
-		/// distance, so every connection with this vertex as an endpoint is
-		/// occluded (as the gap twin's is, by the body's near face).  The
-		/// vertex's own offset position can lie on the far side of that
-		/// surface (an exit resting on the inside floor of a closed room
-		/// sits 1e-6 BELOW the floor), where a visibility ray would wrongly
-		/// see past it; the strategies read this flag instead.  The MIS
-		/// structure is untouched (the vertex stays connectible).  No
-		/// RayIntersectionGeometric counterpart.
+		/// DL-408 (review rounds 2-3): on an SSS exit vertex whose
+		/// continuation is a CONTACT launch against an opaque, shadow-casting
+		/// body (`BSSRDFSampling::ContactCovers`), the whole outward
+		/// hemisphere is covered by that body's surface at zero distance, so
+		/// every CONNECTION with this vertex as an endpoint is occluded (as
+		/// the gap twin's is, by the body's near face); its other hemisphere
+		/// carries Sw = 0.  The exit's own offset position can lie past that
+		/// surface (1e-6 below the inside floor of a closed room), where a
+		/// visibility ray would wrongly see past it; the connection
+		/// strategies read this flag instead.  Emission at a contact hit
+		/// (s = 0) is not a connection and is never gated.  The MIS structure
+		/// is untouched (the vertex stays connectible).  Contact HITS are not
+		/// flagged: their launching predecessor is moved to the contact ray's
+		/// origin, so a direction rebuilt from positions faces the right way.
+		/// No RayIntersectionGeometric counterpart.
 		bool					contactCovered;
 		/// DL-357: on a DIFFUSION-profile BSSRDF entry vertex, the jump's
 		/// exit-to-entry distance and exit cosine (BSSRDFSampling::

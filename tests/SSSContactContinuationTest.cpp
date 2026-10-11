@@ -333,6 +333,41 @@ namespace
 		return out;
 	}
 
+	//! Review round 3: a cube (random walk, or `diffusion`) resting on a
+	//! 1 x 1 EMISSIVE pad exactly under it, lit by nothing else (no
+	//! environment): every photon reaches the cube through the contact.
+	//! An eye path that reaches the pad by a contact launch carries its
+	//! emission (BDPT / VCM / MLT used to read exactly 0 here).
+	std::string BuildPad( bool diffusion, Scalar gap, Rast r, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 1.5 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 1.8 1.8\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		if( diffusion ) {
+			s << kDiffusionLeft << "\n";
+		} else {
+			s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		}
+		s << "lambertian_luminaire_material\n{\n\tname lum\n\texitance white\n\tscale 4\n\tmaterial none\n}\n\n";
+		s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		s << "clippedplane_geometry\n{\n\tname pad_geo\n\tpta -0.5 0 0.5\n\tptb 0.5 0 0.5\n\tptc 0.5 0 -0.5\n\tptd -0.5 0 -0.5\n}\n\n";
+		s << "standard_object\n{\n\tname block\n\tgeometry block_geo\n\tmaterial block\n\tposition 0 0 0\n}\n\n";
+		s << "standard_object\n{\n\tname pad\n\tgeometry pad_geo\n\tmaterial lum\n\tposition 0 " << -0.5 - gap << " 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples 1\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl408_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		std::string out = s.str();
+		SetRasterizer( out, r, samples, diffusion ? 4.0 : 0.0 );
+		const std::string env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
+		const std::size_t e = out.find( env );
+		if( e != std::string::npos ) {
+			out.erase( e, env.size() );	// lit by the pad alone
+		}
+		return out;
+	}
+
 	struct Row
 	{
 		std::string label;
@@ -409,6 +444,20 @@ int main( int argc, char** argv )
 		}
 	}
 	rows.push_back( { "RW block with a flush Lambert inset PT", []( Scalar gap, std::string& sc ) { sc = BuildInset( gap, Rast::PT, 256 ); return true; }, false } );
+	// Review round 3: a cube on an emissive pad.
+	for( bool diffusion : { false, true } ) {
+		for( Rast r : { Rast::PT, Rast::BDPT, Rast::VCM } ) {
+			std::ostringstream l;
+			l << ( diffusion ? "diffusion" : "RW" ) << " block on an emissive pad " << RastName( r );
+			const unsigned int spp = r == Rast::PT ? 256 : 64;
+			rows.push_back( { l.str(), [=]( Scalar gap, std::string& sc ) { sc = BuildPad( diffusion, gap, r, spp ); return true; }, false } );
+		}
+	}
+	{
+		Row mlt{ "RW block on an emissive pad MLT (sanity)", []( Scalar gap, std::string& sc ) { sc = BuildPad( false, gap, Rast::MLT, 64 ); return true; }, false };
+		mlt.floor = 0.03;
+		rows.push_back( mlt );
+	}
 	rows.push_back( { "pair RW|diffusion PT-spectral hwss", []( Scalar gap, std::string& sc ) { sc = BuildVariantPair( "box", false, gap, Rast::HWSS, 256 ); return true; }, false } );
 	{
 		Row mlt{ "pair RW|diffusion MLT (sanity)", []( Scalar gap, std::string& sc ) { sc = BuildVariantPair( "box", false, gap, Rast::MLT, 64 ); return true; }, false };

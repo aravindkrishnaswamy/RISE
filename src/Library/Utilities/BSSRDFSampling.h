@@ -406,6 +406,44 @@ namespace RISE
 			const Vector3& dir
 			);
 
+		/// FindExitContact's search for any launch from surface point `p`
+		/// (outward normal `n`) of body `pSelf` along `dir`: also used by
+		/// BDPT / VCM / MLT for a light subpath EMITTED from a luminary in
+		/// contact with an SSS body (DL-408 round 3), with
+		/// `bSSSTargetsOnly`: only a body carrying a diffusion profile or a
+		/// random walk is a candidate.  A luminary is usually a sheet with no
+		/// interior, so "which side of a coincident surface is it on" has no
+		/// geometric answer; a panel flush with a ceiling sheet or with the
+		/// inside face of a closed room emits AWAY from that surface, and a
+		/// contact launch there would hit it from behind and lose the light.
+		/// An SSS body flush with an emitter is the DL-408 case.
+		const IObject* FindSurfaceContact(
+			const IObjectManager& objects,
+			const Point3& p,
+			const Vector3& n,
+			const IObject* pSelf,
+			const Vector3& dir,
+			const bool bSSSTargetsOnly = false
+			);
+
+		/// Does a contact with `pPartner` COVER the side facing it -- is every
+		/// shadow ray and connection into that side occluded at zero
+		/// distance, as the gap twin's are by the partner's near face?  True
+		/// for a shadow-casting partner whose material has no non-delta
+		/// transmission a connection could cross (not `ScattersFullSphere`:
+		/// translucent, fabric, weave, hair; not a delta pass-through).
+		/// A covered contact's NEE / connections are zeroed (DL-408 round 2);
+		/// a transmitting partner's are left to the ordinary visibility test
+		/// (round 3: zeroing them removed real light).
+		inline bool ContactCovers( const IObject* pPartner )
+		{
+			if( !pPartner || !pPartner->DoesCastShadows() ) {
+				return false;
+			}
+			const IMaterial* pMat = pPartner->GetMaterial();
+			return pMat && !pMat->ScattersFullSphere() && !pMat->HasDeltaPassThrough();
+		}
+
 		/// At a CONTACT hit (`ri.pContactPartner` set): the body a
 		/// continuation in `dirOut` meets at zero distance -- the partner
 		/// when `dirOut` goes back to the arrival side of the hit's
