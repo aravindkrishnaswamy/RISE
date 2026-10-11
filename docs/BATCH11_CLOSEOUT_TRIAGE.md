@@ -1,6 +1,6 @@
 # Batch 11 close-out triage
 
-Proposals for the owner, 2026-10-10. **No verdict below is applied to the debt ledger.** This batch changes no transport. The only additional code here is a DL-482 measurement test; DL-571 is independently merged at `c344a4612`.
+Proposal snapshot for the owner, 2026-10-10. **At publication, the debt ledger was unchanged. The owner subsequently accepted the verdicts on 2026-10-10; they are recorded in [DEBT_LEDGER.md](DEBT_LEDGER.md), with the DL-367 unmatched probe re-banded to +/-0.8% and DL-531 fallback safety checks retained.** Recommendations and measured pre-ruling pin results below remain the triage snapshot. This batch changes no transport. The only additional code here is a DL-482 measurement test; DL-571 is independently merged at `c344a4612`.
 
 | Row | Proposed verdict | Current residual / practical exposure | Pin disposition |
 |---|---|---|---|
@@ -158,6 +158,6 @@ PY
 
 All ten named test builds and the new reflection-test rebuild returned **rc0**, no compiler warnings. Actual status record: corner exact **1**; reflection ordinary **0**, strict **1**; positive-jump metadata **0**; weave-gap **1**; generic allocation strict **1**, Object allocation **0**; positive-coat/weave split pins **1/1**; manual-BDPT energy **1**; matched/unmatched U **0/1**; low-budget photon energy **0** (the original expectation of rc1 was not reproduced), PT reference-only measurement **0**, separate-reference comparison **1**; SMS cost **0**; four fallback children and section C **0**. Intentional strict residuals are not presented as positive regression gates. No full suite was run.
 
-The CLI-only production change has two fresh zero-P1 reviews and its own audit at [BATCH11_CLI_EXIT_AUDIT.md](BATCH11_CLI_EXIT_AUDIT.md). These triage recommendations intentionally leave the ledger unchanged. No frozen feature, shipped scene or supervisor-owned contact source is edited, no file is deleted, and nothing is pushed.
+The CLI-only production change has two fresh zero-P1 reviews and its own audit at [BATCH11_CLI_EXIT_AUDIT.md](BATCH11_CLI_EXIT_AUDIT.md). The original triage publication intentionally left the ledger unchanged; the subsequent owner rulings are recorded as noted above. No frozen feature, shipped scene or supervisor-owned contact source is edited, no file is deleted, and nothing is pushed.
 
 Self-review: checked measurement units and actual spp, default/census versus arbitrary authored exposure, numerical fraction versus radiance bounds, native SPF versus synthetic path metadata, and retaining-target lifetime versus allocation goals. The new witness keeps materials alive through each joined-plan query and does not own or dereference contact pointers. No thresholds or production transport were changed.

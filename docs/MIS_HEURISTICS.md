@@ -499,13 +499,18 @@ forward label shares must also define the same capped integrand when a
 path is reversed. Hair is a single-label exception: every HairSPF draw
 (including TT/TTs) is reflection, so its complete RGB/NM value belongs
 to that label and its connection mask declares reflection alone.
+Diffusion, random-walk SSS and Donner–Jensen skin likewise put their complete
+ordinary finite surface BSDF in reflection. Their smooth delta reflection has
+zero finite value; a nonlocal subsurface jump is charged separately as
+translucent and is not a term in this surface split (DL-482).
 `tests/ConnectionTypeSplitTest.cpp` checks exactly this identity per type,
 channel, incidence and lane.  The MIS densities stay the aggregate ones --
 MIS is unbiased for any weights that partition, and every strategy's
 expectation is f_cap -- so VCM's recurrence is unchanged and only the
 connection, splat and merge CONTRIBUTIONS change.  Materials with a split
 (`IMaterial::HasConnectionTypeSplit`): GGX, Cook-Torrance, Schlick, both
-Ward, isotropic Phong, Ashikhmin-Shirley, polished, translucent, hair (and the
+Ward, isotropic Phong, Ashikhmin-Shirley, polished, translucent, hair,
+diffusion, random-walk SSS and Donner–Jensen skin (and the
 luminaire wrappers over them).
 
 A material with several possible types and NO split (coated, composite,
@@ -546,12 +551,16 @@ before, 0.98-1.02 after, RGB and HWSS), J (an area light inside glass over
 a GGX floor: BDPT / VCM equal PT under a glossy or a diffuse cap) and P (a
 brute-force partition over the strategies that evaluate and cover the
 labelling, including split endpoints).
-Subsurface positive-cap paths (DL-482) and see-through / guided continuations
-(DL-483) are outside this. The DL-482 zero-cap slice rejects a selected
-subsurface jump before constructing its nonlocal vertices in both BDPT/VCM
-walks, retaining the Fresnel reflection branch unchanged. Positive caps
-still need a common jump count at interiors and endpoints; row L's optional
-`RISE_DL482_POSITIVE_PIN` tests that unresolved joined-path contract.
+Subsurface jumps are separately charged as translucent under zero and positive
+caps (DL-482); BSSRDF entry/re-emission endpoints are excluded from ordinary
+surface-lobe counting. The zero-cap walk rejects a selected jump before
+constructing its nonlocal vertices. Positive-cap row L's optional
+`RISE_DL482_POSITIVE_PIN` checks the common joined-path jump count at caps1/2.
+Ordinary rough SSS reflection declares its reflection label and finite RGB/NM
+split, so the same reflection has the same charge as an interior vertex or a
+connection endpoint; strict SSSReflectionCapCloseoutTest and row S pin that
+parity. See [batch12 gates](BATCH12_DL482_GATES.md). See-through/guided
+continuations remain a separate, owner-parked DL-483 contract.
 
 ### 5. SMS — no per-strategy MIS reweight
 

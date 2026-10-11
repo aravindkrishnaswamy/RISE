@@ -6,7 +6,7 @@
 //  With the BSSRDF approach, only surface reflection is evaluated:
 //
 //  Both outside (front/front): GGX microfacet BRDF for rough
-//    surfaces, diffuse Fresnel approximation for smooth surfaces.
+//    surfaces; smooth reflection is delta, with zero finite value.
 //  All other cases: return 0.  Subsurface transport is handled
 //    by the diffusion profile, not the BSDF connection.
 //

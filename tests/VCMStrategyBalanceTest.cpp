@@ -2183,8 +2183,9 @@ static void TestRoughSSSEmptyContainerU()
 // Independent SMS-free PT reference; original +/-0.8% physical limit retained.
 // Match PT and merging-off to VM-on’s forced one sample per pass. The old
 // 32-sample reference changes the finite-budget mean; --dl367-unmatched-only
-// retains that strict red comparator. This isolates the reference confound,
-// not the still-unattributed native batching dependence (DL-367 remains open).
+// retains that comparator with the owner-accepted +/-0.8% physical budget
+// (2026-10-10). Matched references still require three-SE parity. This isolates
+// the reference confound; it does not prove unbiased native batching.
 // DL-367: a value salt must identify a complete render, including camera RNG.
 // Single-thread replay is exact; different salts must still change the image.
 static void TestRoughSSSReplay(unsigned repeats) {
@@ -2244,8 +2245,16 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool st
  std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g off-sd=%.9g\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.));
  std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
  if(strict) {
-  Check(std::fabs(a.first-p.first)<=3*std::hypot(a.second,p.second),"DL367 strict VM/PT parity at 3SE");
-  Check(std::fabs(b.first-p.first)<=3*std::hypot(b.second,p.second),"DL367 strict VM-off/PT parity at 3SE");
+  if(unmatched) {
+   // Owner ruling 2026-10-10: accept this finite-budget batching residual
+   // within U's existing physical budget; keep the measured three-SE output.
+   const double onRatio=a.first/p.first, offRatio=b.first/p.first;
+   Check(std::isfinite(onRatio)&&std::fabs(onRatio-1)<=.008,"DL367 unmatched VM/PT within owner-accepted +/-0.8% budget");
+   Check(std::isfinite(offRatio)&&std::fabs(offRatio-1)<=.008,"DL367 unmatched VM-off/PT within owner-accepted +/-0.8% budget");
+  } else {
+   Check(std::fabs(a.first-p.first)<=3*std::hypot(a.second,p.second),"DL367 strict VM/PT parity at 3SE");
+   Check(std::fabs(b.first-p.first)<=3*std::hypot(b.second,p.second),"DL367 strict VM-off/PT parity at 3SE");
+  }
  }
  if(gate) {
   const double ratio=a.first/p.first, uncertainty=3*std::hypot(a.second,p.second)/p.first;
