@@ -732,9 +732,9 @@ namespace RISE
 
 		/// The type a CONNECTION ENDPOINT contributes when it is counted.
 		/// From the material's possible non-delta lobe types
-		/// (IMaterial::ConnectionScatterTypes): none of them capped (this
-		/// includes a subsurface material's empty set, DL-482) -> counts
-		/// nothing; exactly one -> that type; otherwise undefined (false).
+		/// (IMaterial::ConnectionScatterTypes): none capped -> counts nothing;
+		/// a single possible type that is capped -> that type; otherwise false.
+		/// Ordinary SSS reflection has its own label; jumps are charged separately.
 		/// Medium vertices, subsurface entries and roots contribute no type.
 		/// A property of the material and the caps only, never of a sampled
 		/// lobe, so every strategy of a path agrees on it.

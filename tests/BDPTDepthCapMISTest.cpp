@@ -1267,6 +1267,49 @@ static void RowL()
     }
 }
 
+// DL-482 ordinary reflection: the matte floor makes a reflected ray's
+// SSS receiver an interior vertex, not the free last scatter before the env.
+// Translucent cap zero isolates surface reflection from nonlocal jumps.
+static std::string RoughSSSReflectionScene(const char* kind,bool rw,bool spectral,int glossy,bool controls=false)
+{
+    std::string s=SubsurfaceCapScene(kind,rw,0,spectral);
+    const auto rough=s.find("roughness 0\n");s.replace(rough,12,"roughness 0.4\n");
+    const auto ior=s.find("ior 1.3");s.replace(ior,7,"ior 1.8");
+    const auto samples=s.find("samples 128");s.replace(samples,11,controls?"samples 32":"samples 512");
+    const auto cap=s.find("max_translucent_bounce 0");
+    if(controls) s.erase(cap,24); // all transport caps free except optional nonbinding glossy cap
+    if(glossy>=0) s.insert(s.find("pixel_filter"),"max_glossy_bounce "+std::to_string(glossy)+"\n ");
+    const auto shader=s.find("standard_shader\n");
+    s.insert(shader,"uniformcolor_painter\n{\n name matte_p\n color 0.8 0.8 0.8\n colorspace Rec709RGB_Linear\n}\n"
+        "lambertian_material\n{\n name matte\n reflectance matte_p\n}\n"
+        "clippedplane_geometry\n{\n name floor_geo\n pta -3 -0.9 -3\n ptb -3 -0.9 3\n ptc 3 -0.9 3\n ptd 3 -0.9 -3\n}\n"
+        "standard_object\n{\n name floor_obj\n geometry floor_geo\n material matte\n}\n");
+    return s;
+}
+static void RowS()
+{
+    const int n=std::max(8,Repeats());
+    const bool controls=std::getenv("RISE_DL482_CONTROL_ONLY");
+    for(bool spectral:{false,true}) for(bool rw:{false,true}) {
+        const unsigned seed=482120+1000*unsigned(spectral)+100*unsigned(rw);
+        const std::string label=std::string(spectral?"HWSS ":"RGB ")+(rw?"random-walk":"diffusion");
+        if(!controls) {
+            const Stats pt=RenderStatsSalted(RoughSSSReflectionScene("pathtracing",rw,spectral,0),n,seed);
+            Print((label+" rough reflection cap0 PT").c_str(),pt);
+            for(const char* kind:{"bdpt","vcm"}) {
+                const Stats st=RenderStatsSalted(RoughSSSReflectionScene(kind,rw,spectral,0),n,seed+10000);
+                Print((label+" rough reflection cap0 "+kind).c_str(),st);
+                Check(pt.ok && st.ok && pt.mean>1e-5 && Agree(pt,st,3,0),label+" "+kind+": rough SSS glossy-cap0 parity with PT");
+            }
+        } else for(const char* kind:{"pathtracing","bdpt","vcm"}) {
+            const Stats free=RenderStatsSalted(RoughSSSReflectionScene(kind,rw,spectral,-1,true),4,seed);
+            const Stats cap=RenderStatsSalted(RoughSSSReflectionScene(kind,rw,spectral,100,true),4,seed);
+            Print((label+" "+kind+" cap-free control").c_str(),free);
+            Check(free.ok && cap.ok && free.hashes==cap.hashes,label+" "+kind+": nonbinding glossy-cap pixel identity");
+        }
+    }
+}
+
 // DL-483 strict metadata pins, deliberately excluded from default green gates.
 // These exercise JoinedTypeCapPlan, not a trained guiding-field render.
 static void RowM()
@@ -1569,7 +1612,7 @@ int main()
 	// RISE_DL351_ROWS (e.g. "CD") runs a subset; default all.
 	const char* rows = std::getenv( "RISE_DL351_ROWS" );
 	const std::string sel = rows ? rows : "ABCDEFGHIJKLP";
-	if(sel.find_first_of("QR")!=std::string::npos) CoatedSingleThreadOptions();
+	if(sel.find_first_of("QRS")!=std::string::npos) CoatedSingleThreadOptions();
 	if( sel.find( 'A' ) != std::string::npos ) RowA();
 	if( sel.find( 'B' ) != std::string::npos ) RowB();
 	if( sel.find( 'C' ) != std::string::npos ) RowC();
@@ -1584,6 +1627,7 @@ int main()
 	if( sel.find( 'N' ) != std::string::npos ) RowN();
 	if( sel.find( 'Q' ) != std::string::npos ) RowQ();
 	if( sel.find( 'R' ) != std::string::npos ) RowR();
+	if( sel.find( 'S' ) != std::string::npos ) RowS();
 	if( sel.find( 'L' ) != std::string::npos ) RowL();
 	if( sel.find( 'M' ) != std::string::npos ) RowM();
 	if( sel.find( 'P' ) != std::string::npos ) RowP();

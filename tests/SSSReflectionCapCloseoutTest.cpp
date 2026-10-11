@@ -51,8 +51,8 @@ int main(int argc,char** argv) {
         const auto b=BDPTUtilities::JoinedTypeCapPlan(light,eye,3,2,caps,connection);
         std::printf("material=%u walk reflection=%u status=%d endpoint reflection=%u status=%d n=1 SD=0 (metadata, not energy)\n",
             kind,walk.base.n[1],int(a),connection.base.n[1],int(b));
-        // The ordinary mode validates the witness, and also accepts a future
-        // corrected endpoint count. Only the opt-in strict pin demands parity.
+        // Ordinary mode accepts both the historical witness and the corrected
+        // endpoint count. The strict regression gate demands parity.
         const bool endpointValid=(connection.base.n[1]==0 && b==BDPTUtilities::eTypeCapOK) ||
             (connection.base.n[1]==1 && b==BDPTUtilities::eTypeCapOver);
         if(walk.base.n[1]!=1 || a!=BDPTUtilities::eTypeCapOver || !endpointValid) ++failures;

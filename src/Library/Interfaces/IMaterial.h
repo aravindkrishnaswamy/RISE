@@ -293,10 +293,11 @@ namespace RISE
 		//! defined from an aggregate value only when the set has one
 		//! member or none of its members is capped, so BDPT/MLT drop (and
 		//! VCM routes to S0 + NEE) a path whose counted endpoint needs a
-		//! split (BDPTUtilities::EndpointBounceType).  The default, every
+		//! split but provides none (EndpointNeedsTypeSplit). The default, every
 		//! type, is always SAFE (conservative); a subclass narrows it only
-		//! to the types it really emits.  0 means "counts nothing" and is
-		//! reserved for the subsurface materials (DL-482).  A wrapper whose
+		//! to the types it really emits. 0 means no ordinary finite lobe.
+		//! SSS declares surface reflection; its nonlocal jump is counted
+		//! separately (DL-482). A wrapper whose
 		//! `GetBSDF()` / `GetSPF()` forward a base material forwards this.
 		static const unsigned int kAllConnectionScatterTypes = ( 1u << 1 ) | ( 1u << 2 ) | ( 1u << 3 ) | ( 1u << 4 );
 		virtual unsigned int ConnectionScatterTypes() const { return kAllConnectionScatterTypes; }
