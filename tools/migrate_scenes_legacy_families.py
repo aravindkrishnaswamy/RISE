@@ -145,8 +145,7 @@ Kept by owner ruling (KEEP below): FeatureBased/Animation/translucent_bunny keep
 its iridescent_painter (2026-10-10).
 
 Never touched: scenes/Tests/Legacy/ (the frozen-feature regression corpus),
-scenes/Tests/ChunkCoverage/, and the scenes held for slice C (Android
-catalogue / quickstart sample, HELD below).  Idempotent: a migrated scene has
+and scenes/Tests/ChunkCoverage/.  Idempotent: a migrated scene has
 none of the family's chunks and is reported `unchanged`.  Structure is read
 from a comment-stripped view; the bytes written back are the originals,
 edited chunk by chunk.
@@ -170,20 +169,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from migrate_scenes_legacy_rasterizer import (  # noqa: E402
     strip_comments, parse_chunks, ParseError, is_literal_number, indent_of, fmt_num,
-    collect, repo_rel, LEGACY_CORPUS, COVERAGE_CORPUS, TARGET_PARAMS)
+    collect, repo_rel, LEGACY_CORPUS, COVERAGE_CORPUS, TARGET_PARAMS, rasterizer_flag)
 
 LEGACY_MATERIALS = (
     'cooktorrance_material', 'isotropic_phong_material',
     'ashikminshirley_anisotropicphong_material', 'schlick_material',
     'ward_isotropic_material', 'ward_anisotropic_material', 'polished_material')
 
-# Reserved for slice C (Phase 2 step 6): the Android catalogue and the
-# CLAUDE.md / README quickstart sample.  Repo-relative.
+# Scenes deliberately left as written.  (The four slice-C scenes -- the Android
+# catalogue and the quickstart sample -- were held here until slice C migrated
+# them, 2026-10-10.)  Repo-relative.
 HELD = {
-    'scenes/Tests/Geometry/shapes.RISEscene': 'quickstart sample and Android catalogue scene (slice C)',
-    'scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene': 'Android catalogue scene (slice C)',
-    'scenes/FeatureBased/Combined/tidepools.RISEscene': 'Android catalogue scene (slice C)',
-    'scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene': 'Android catalogue scene (slice C)',
     # No .RISEscene extension, so directory walks never collect it; HELD when
     # passed explicitly.  It is a recorded agent-benchmark run's output (cited
     # in AgentSession.cpp), kept as the agent wrote it, iridescent_painters
@@ -872,6 +868,11 @@ def migrate_iridescent(text, report, rel=None):
             white = ensure_painter(ed, created, 'pnt_tf_white', [1, 1, 1], d.kw_line, dind,
                                    '%s: white F0 tint for the thin-film materials.' % STAMP)
             for nm_, fn in THINFILM_DATA:
+                # The titanium substrate tables are bound only by the mirror
+                # (perfectreflector) branch; a pearlescent body sits on a 1.5
+                # dielectric and would leave them declared but unused.
+                if nm_.startswith('tf_Ti_') and d.kw != 'perfectreflector_material':
+                    continue
                 if nm_ not in created and nm_ not in named:
                     created.add(nm_)
                     ed.insert_before(d.kw_line, chunk_lines('scalar_painter', [('name', nm_), ('file', fn)], None, dind) + [''])
@@ -917,7 +918,8 @@ def migrate_ambient(text, report, drop_with_sky=False):
         return None, 'unchanged (no ambient_light)'
     rasters = [c for c in ed.chunks if c.kw.endswith('_rasterizer')]
     if len(rasters) != 1:
-        return None, 'REFUSED: %d rasterizer chunks' % len(rasters)
+        return None, ('REFUSED: %d rasterizer chunks (%s); only the last declared (`%s`) renders' % (
+            len(rasters), ', '.join(c.kw for c in rasters), rasters[-1].kw))
     R = rasters[0]
     if R.kw.startswith('pixel') or R.kw.startswith('mlt'):
         return None, 'REFUSED: rasterizer `%s` is frozen (migrate it first)' % R.kw
@@ -1014,7 +1016,8 @@ def migrate_mlt(text, report, integrator='bdpt'):
     if not mlt:
         return None, 'unchanged (no MLT rasterizer)'
     if len(rasters) != 1:
-        return None, 'REFUSED: %d rasterizer chunks' % len(rasters)
+        return None, ('REFUSED: %d rasterizer chunks (%s); only the last declared (`%s`) renders -- '
+                      'remove the others first' % (len(rasters), ', '.join(c.kw for c in rasters), rasters[-1].kw))
     R = mlt[0]
     target = MLT_TARGETS[integrator][R.kw]
     accepted = TARGET_PARAMS[target]
@@ -1063,6 +1066,11 @@ def run(families, paths, dry_run, verbose, mlt_integrator, ambient_with_sky=None
             print('ERROR     %s: %s' % (rel, e))
             rc = 1
             continue
+        flag = rasterizer_flag(rel, text)
+        if flag:
+            # More than one live rasterizer (only the last renders) or a
+            # frozen ACTIVE rasterizer: reported whatever the family.
+            print(flag)
         cur = text
         statuses = []
         notes = []
@@ -1154,6 +1162,10 @@ def selftest():
     new4, st4 = migrate_iridescent(ir, [])
     assert re.search(r'fresnel_mode\s+thinfilm', new4) and 'tf_Ti_n' in new4, new4
     assert migrate_iridescent(new4, [])[0] is None
+    # A pearlescent (lambertian) body binds only the TiO2 film tables.
+    new4b, _ = migrate_iridescent(ir.replace('perfectreflector_material\n{\n\tname r\n\treflectance i',
+                                             'lambertian_material\n{\n\tname r\n\treflectance i'), [])
+    assert 'tf_TiO2_n' in new4b and 'tf_Ti_n' not in new4b and 'tf_Ti_k' not in new4b, new4b
     # Schlick isotropy < 1: facets spread along onb.u, so alphax is the LARGER.
     sch = 'schlick_material\n{\n\tname s\n\troughness 0.04\n\tisotropy 0.1\n}\n'
     new5, _ = migrate_materials(sch, [])

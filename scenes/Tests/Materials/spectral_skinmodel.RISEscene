@@ -54,18 +54,7 @@ pathtracing_spectral_rasterizer
 #	radiance_map		speclum2
 	show_luminaires		FALSE
 }
-/*
-mlt_spectral_rasterizer
-{
 
-	mutations_per_pixel 2048
-	nmbegin				380
-	nmend				720
-	num_wavelengths		8
-#	radiance_map		speclum2
-	show_luminaires		FALSE
-}
-*/
 file_rasterizeroutput
 {
 	pattern				rendered/skinmodel

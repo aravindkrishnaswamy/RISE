@@ -21,7 +21,7 @@ the bridge talks to RISE only through the existing public APIs in
 - PNG, HDR, EXR, and TIFF image textures when the local RISE build has the matching texture readers enabled.
 - Homogeneous participating media on material and world volume outputs.
 - Heterogeneous VDB-backed volume objects driven by the `density` grid, exported through a temporary slice cache.
-- Point, spot, sun, and world ambient approximation. Blender area lights are still approximated as point lights.
+- Point, spot and sun lights, and the world as an environment light: an Environment Texture becomes an image-based radiance map, a uniform Background (or a world that does not use nodes) a uniform one. The deprecated "Approximate World" option (`use_world_ambient`, default OFF) still exports the world colour as an unshadowed `ambient_light` when enabled. Blender area lights are still approximated as point lights.
 - Curated advanced ray controls for path tracing, adaptive sampling, path guiding, stability, and OIDN denoising.
 - Extended SMS (`sms_extended`) is exposed as the **Extended SMS** render setting (ABI v17); see `docs/SMS_EXTENDED_DESIGN.md` "Using extended SMS".
 - Native bridge ABI/version validation plus runtime capability reporting for OIDN, path guiding, and VDB volume support.
@@ -37,7 +37,7 @@ the bridge talks to RISE only through the existing public APIs in
 - Subsurface uses a documented single-scattering-albedo APPROXIMATION (Radius/Scale/Base-Colour -> sigma_a/sigma_s), not Blender's/PBRT's own photon-beam-diffusion (Christensen-Burley) fit -- the right order of magnitude and per-channel colour bias, not a photometric match to Cycles.  See `docs/BLENDER_MATERIAL_TRANSLATION.md` "Subsurface -> `randomwalk_sss_material`" (DL-186).
 - Specular Tint (like Specular IOR Level) has no effect at `metallic=1` -- RISE's F0 formula routes both through the dielectric branch of its base_color/F0 lerp only, so it does not reproduce Blender 4.x Principled's additional metallic-edge (F82-style) tint from the same socket.  See `docs/BLENDER_MATERIAL_TRANSLATION.md` "Specular Tint" (DL-151).
 - Area lights are still reduced to point lights, so softness and directionality will not match Cycles exactly.
-- World surface nodes are still reduced to a simple ambient approximation; only world volume nodes are exported as participating media.
+- World surface graphs are reduced to an environment light: an Environment Texture (optionally gated by Light Path > Is Camera Ray), a uniform Background colour, or, for procedural skies, a sky-tinted uniform placeholder plus a synthesised sun; bake procedural worlds to an HDR for an exact match. World volume nodes are exported as participating media.
 - Heterogeneous media currently treat color and emission as uniform coefficients modulated by the exported density field.
 
 ## Build

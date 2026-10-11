@@ -78,7 +78,8 @@ class RenderSmokeTest {
     }
 
     companion object {
-        // shapes.RISEscene @ 800x800, 4 samples, recursion 10 takes roughly
+        // shapes.RISEscene @ 800x800, 4 samples of direct-lit path tracing
+        // (pathtracing_pel_rasterizer, max_diffuse_bounce 0) takes roughly
         // 10-60s on an arm64 emulator depending on host. Give it generous
         // headroom so slow CI/emulator environments don't flake the test.
         private const val TIMEOUT_MS = 5 * 60 * 1000L
