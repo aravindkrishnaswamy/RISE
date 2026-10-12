@@ -265,6 +265,7 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bOpenSignedVolumeNegative=false;
 	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -541,9 +542,30 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 
 	// DL-382: refreshed with the winding audit just above, at every real
 	// mutation (DoneIndexedTriangles, UpdateVertices, deserialize).
-	m_bProvablyOpenSheet = !smsUncertainNormalOrientation &&
-		GeometricUtilities::IsPlanarConsistentlyWoundSheet( ptr_polygons.size(),
-			[this]( size_t t, int k ) -> const Point3& { return *ptr_polygons[t].pVertices[k]; } );
+	m_bProvablyOpenSheet = false;
+	m_bOpenSignedVolumeNegative = false;
+	if( !smsUncertainNormalOrientation ) {
+		if( GeometricUtilities::IsPlanarConsistentlyWoundSheet( ptr_polygons.size(),
+			[this]( size_t t, int k ) -> const Point3& { return *ptr_polygons[t].pVertices[k]; } ) )
+		{
+			m_bProvablyOpenSheet = true;
+		}
+		else
+		{
+			std::vector<Point3> corners;
+			corners.reserve( ptr_polygons.size() * 3 );
+			for( std::size_t t = 0; t < ptr_polygons.size(); ++t ) {
+				for( int k = 0; k < 3; ++k ) {
+					corners.push_back( *ptr_polygons[t].pVertices[k] );
+				}
+			}
+			const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners );
+			if( cert.certified ) {
+				m_bProvablyOpenSheet = true;
+				m_bOpenSignedVolumeNegative = ( cert.signedVolumeAboutCentre < 0 );
+			}
+		}
+	}
 }
 
 void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
@@ -653,134 +675,6 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	// re-points every PointerTriangle into pPoints/pNormals), so anything
 	// baked before this call describes storage that no longer exists.
 	InvalidateSignalBakes();
-}
-
-namespace
-{
-	//! DL-143.  Welds `points` to a shared id per PHYSICAL corner, so
-	//! that watertightness (and anything else that needs "is this the
-	//! same vertex") can be decided by position rather than by which
-	//! array slot a per-corner import/tessellation pipeline happened to
-	//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`;
-	//! two positions land in the same id iff they are within `eps` of
-	//! each other under the grid below.
-	//!
-	//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal)`, i.e. relative
-	//! to THIS mesh's own scale, not an absolute constant -- an absolute
-	//! epsilon would either be too coarse for a millimetre-scale asset
-	//! or too fine to absorb import float noise on a kilometre-scale
-	//! one.  A cell size of `eps` with a 3x3x3 neighbour-cell scan finds
-	//! every prior welded point within `eps` regardless of which side of
-	//! a cell boundary two near-duplicate positions fall on; an exact
-	//! (bit-identical) duplicate -- the common case, both for a
-	//! deliberately shared corner and for this engine's own
-	//! `TessellateToMesh` producers, which copy the source position
-	//! verbatim rather than recomputing it -- is necessarily caught by
-	//! this same scan (distance 0 <= eps), so no separate exact-match
-	//! fast path is needed for correctness; it would only change the
-	//! constant factor, not the result.
-	//!
-	//! O(n) expected (each point does one grid-bucket insert/lookup plus
-	//! a bounded 27-cell scan whose average occupancy is O(1) for a
-	//! well-formed mesh); see ComputeWatertightness's own build-cost
-	//! measurement for the wall-clock this adds on a real asset.
-	//! DL-197.  `outEps`, when non-null, receives the SAME relative
-	//! epsilon this function used for its own weld -- so a caller that
-	//! needs a second geometric test at "the same tolerance the weld
-	//! itself trusted" (the coplanarity test below) doesn't re-derive
-	//! the formula and risk drifting from it.
-	bool WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId, Scalar* outEps = nullptr )
-	{
-		outWeldedId.assign( points.size(), 0u );
-		if( points.empty() ) {
-			if( outEps ) { *outEps = Scalar( 1e-9 ); }
-			return true;
-		}
-
-		BoundingBox bbox( points[0], points[0] );
-		for( const auto& p : points ) {
-			if( !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ) return false;
-		}
-		for( std::size_t i = 1; i < points.size(); ++i ) {
-			bbox.Include( points[i] );
-		}
-		const Vector3 extents = bbox.GetExtents();
-		const Scalar diag = Vector3Ops::Magnitude( extents );
-		const Scalar eps = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag );
-		const Scalar cell = eps;
-		if( !std::isfinite(cell) || !(cell > 0) ) return false;
-		if( outEps ) { *outEps = eps; }
-
-		// Keep the existing grid for representable absolute coordinates. When
-		// translation exceeds its integer range, use a mesh-local origin.
-		// Relative coordinates are bounded by diag/eps <= 1e6. Strict bounds
-		// below also leave room for the signed +/-1 neighbor additions.
-		const auto safeCoordinate = [cell](Scalar v) {
-			const double c=std::floor(double(v/cell));
-			return std::isfinite(c) && c > double(std::numeric_limits<std::int64_t>::min())
-				&& c < double(std::numeric_limits<std::int64_t>::max());
-		};
-		bool localGrid=false;
-		for( const auto& p : points ) {
-			if( !safeCoordinate(p.x) || !safeCoordinate(p.y) || !safeCoordinate(p.z) ) {localGrid=true;break;}
-		}
-		const Point3 origin=localGrid?bbox.ll:Point3(0,0,0);
-		auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
-			return static_cast<std::int64_t>(std::floor(double(v/cell)));
-		};
-		// A simple, well-distributed combine for the 3D cell key -- collisions are
-		// fine (unordered_map handles them; a false-positive bucket collision only
-		// costs an extra distance check, never a wrong weld, since every candidate
-		// found is still distance-checked against `eps` below).
-		auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::uint64_t {
-            // Hash products intentionally wrap modulo 2^64. Convert before
-            // multiplication so large translated cells have defined arithmetic.
-			return static_cast<std::uint64_t>(x) * 73856093ULL
-                ^ static_cast<std::uint64_t>(y) * 19349663ULL
-                ^ static_cast<std::uint64_t>(z) * 83492791ULL;
-		};
-
-		std::unordered_map<std::uint64_t, std::vector<unsigned int>> grid;
-		grid.reserve( points.size() );
-		std::vector<Point3> weldedPos;
-		weldedPos.reserve( points.size() );
-		const Scalar epsSq = eps * eps;
-
-		for( std::size_t i = 0; i < points.size(); ++i ) {
-			const Point3& p = points[i];
-			const std::int64_t cx = cellCoord( p.x-origin.x );
-			const std::int64_t cy = cellCoord( p.y-origin.y );
-			const std::int64_t cz = cellCoord( p.z-origin.z );
-
-			unsigned int foundId = 0xFFFFFFFFu;
-			for( int dz = -1; dz <= 1 && foundId == 0xFFFFFFFFu; ++dz ) {
-				for( int dy = -1; dy <= 1 && foundId == 0xFFFFFFFFu; ++dy ) {
-					for( int dx = -1; dx <= 1 && foundId == 0xFFFFFFFFu; ++dx ) {
-						const std::uint64_t key = cellKey( cx + dx, cy + dy, cz + dz );
-						std::unordered_map<std::uint64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
-						if( git == grid.end() ) { continue; }
-						const std::vector<unsigned int>& candidates = git->second;
-						for( std::size_t c = 0; c < candidates.size(); ++c ) {
-							const unsigned int cand = candidates[c];
-							const Vector3 d = Vector3Ops::mkVector3( weldedPos[cand], p );
-							if( Vector3Ops::SquaredModulus( d ) <= epsSq ) {
-								foundId = cand;
-								break;
-							}
-						}
-					}
-				}
-			}
-
-			if( foundId == 0xFFFFFFFFu ) {
-				foundId = (unsigned int)weldedPos.size();
-				weldedPos.push_back( p );
-				grid[ cellKey( cx, cy, cz ) ].push_back( foundId );
-			}
-			outWeldedId[i] = foundId;
-		}
-		return true;
-	}
 }
 
 //! DL-31/DL-143.  Every edge of `ptr_polygons`, keyed by its two
@@ -964,7 +858,7 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 
 	std::vector<unsigned int> weldedId;
 	Scalar weldEps = Scalar( 1e-9 );
-	if( !WeldVertexPositions( pPoints, weldedId, &weldEps ) ) return;
+	if( !GeometricUtilities::WeldVertexPositions( pPoints, weldedId, &weldEps ) ) return;
 
 	// DL-150.  Report the weld's own vertex-count reduction so an author
 	// can see an over-aggressive weld even when the discriminator below

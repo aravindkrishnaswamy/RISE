@@ -16,6 +16,12 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Functions/Polynomial.h"
 #include "../Interfaces/ILog.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <unordered_map>
+#include <vector>
 
 using namespace RISE;
 
@@ -1380,4 +1386,562 @@ char GeometricUtilities::WhichSideOfPlane(
 	} else {
 		return 0;
 	}
+}
+
+//! (Moved unchanged from TriangleMeshGeometryIndexed.cpp, DL-382.)
+//! DL-143.  Welds `points` to a shared id per PHYSICAL corner, so
+//! that watertightness (and anything else that needs "is this the
+//! same vertex") can be decided by position rather than by which
+//! array slot a per-corner import/tessellation pipeline happened to
+//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`;
+//! two positions land in the same id iff they are within `eps` of
+//! each other under the grid below.
+//!
+//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal)`, i.e. relative
+//! to THIS mesh's own scale, not an absolute constant -- an absolute
+//! epsilon would either be too coarse for a millimetre-scale asset
+//! or too fine to absorb import float noise on a kilometre-scale
+//! one.  A cell size of `eps` with a 3x3x3 neighbour-cell scan finds
+//! every prior welded point within `eps` regardless of which side of
+//! a cell boundary two near-duplicate positions fall on; an exact
+//! (bit-identical) duplicate -- the common case, both for a
+//! deliberately shared corner and for this engine's own
+//! `TessellateToMesh` producers, which copy the source position
+//! verbatim rather than recomputing it -- is necessarily caught by
+//! this same scan (distance 0 <= eps), so no separate exact-match
+//! fast path is needed for correctness; it would only change the
+//! constant factor, not the result.
+//!
+//! O(n) expected (each point does one grid-bucket insert/lookup plus
+//! a bounded 27-cell scan whose average occupancy is O(1) for a
+//! well-formed mesh); see ComputeWatertightness's own build-cost
+//! measurement for the wall-clock this adds on a real asset.
+//! DL-197.  `outEps`, when non-null, receives the SAME relative
+//! epsilon this function used for its own weld -- so a caller that
+//! needs a second geometric test at "the same tolerance the weld
+//! itself trusted" (the coplanarity test below) doesn't re-derive
+//! the formula and risk drifting from it.
+bool GeometricUtilities::WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId, Scalar* outEps )
+{
+	outWeldedId.assign( points.size(), 0u );
+	if( points.empty() ) {
+		if( outEps ) { *outEps = Scalar( 1e-9 ); }
+		return true;
+	}
+
+	BoundingBox bbox( points[0], points[0] );
+	for( const auto& p : points ) {
+		if( !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ) return false;
+	}
+	for( std::size_t i = 1; i < points.size(); ++i ) {
+		bbox.Include( points[i] );
+	}
+	const Vector3 extents = bbox.GetExtents();
+	const Scalar diag = Vector3Ops::Magnitude( extents );
+	const Scalar eps = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag );
+	const Scalar cell = eps;
+	if( !std::isfinite(cell) || !(cell > 0) ) return false;
+	if( outEps ) { *outEps = eps; }
+
+	// Keep the existing grid for representable absolute coordinates. When
+	// translation exceeds its integer range, use a mesh-local origin.
+	// Relative coordinates are bounded by diag/eps <= 1e6. Strict bounds
+	// below also leave room for the signed +/-1 neighbor additions.
+	const auto safeCoordinate = [cell](Scalar v) {
+		const double c=std::floor(double(v/cell));
+		return std::isfinite(c) && c > double(std::numeric_limits<std::int64_t>::min())
+			&& c < double(std::numeric_limits<std::int64_t>::max());
+	};
+	bool localGrid=false;
+	for( const auto& p : points ) {
+		if( !safeCoordinate(p.x) || !safeCoordinate(p.y) || !safeCoordinate(p.z) ) {localGrid=true;break;}
+	}
+	const Point3 origin=localGrid?bbox.ll:Point3(0,0,0);
+	auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
+		return static_cast<std::int64_t>(std::floor(double(v/cell)));
+	};
+	// A simple, well-distributed combine for the 3D cell key -- collisions are
+	// fine (unordered_map handles them; a false-positive bucket collision only
+	// costs an extra distance check, never a wrong weld, since every candidate
+	// found is still distance-checked against `eps` below).
+	auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::uint64_t {
+            // Hash products intentionally wrap modulo 2^64. Convert before
+            // multiplication so large translated cells have defined arithmetic.
+		return static_cast<std::uint64_t>(x) * 73856093ULL
+                ^ static_cast<std::uint64_t>(y) * 19349663ULL
+                ^ static_cast<std::uint64_t>(z) * 83492791ULL;
+	};
+
+	std::unordered_map<std::uint64_t, std::vector<unsigned int>> grid;
+	grid.reserve( points.size() );
+	std::vector<Point3> weldedPos;
+	weldedPos.reserve( points.size() );
+	const Scalar epsSq = eps * eps;
+
+	for( std::size_t i = 0; i < points.size(); ++i ) {
+		const Point3& p = points[i];
+		const std::int64_t cx = cellCoord( p.x-origin.x );
+		const std::int64_t cy = cellCoord( p.y-origin.y );
+		const std::int64_t cz = cellCoord( p.z-origin.z );
+
+		unsigned int foundId = 0xFFFFFFFFu;
+		for( int dz = -1; dz <= 1 && foundId == 0xFFFFFFFFu; ++dz ) {
+			for( int dy = -1; dy <= 1 && foundId == 0xFFFFFFFFu; ++dy ) {
+				for( int dx = -1; dx <= 1 && foundId == 0xFFFFFFFFu; ++dx ) {
+					const std::uint64_t key = cellKey( cx + dx, cy + dy, cz + dz );
+					std::unordered_map<std::uint64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
+					if( git == grid.end() ) { continue; }
+					const std::vector<unsigned int>& candidates = git->second;
+					for( std::size_t c = 0; c < candidates.size(); ++c ) {
+						const unsigned int cand = candidates[c];
+						const Vector3 d = Vector3Ops::mkVector3( weldedPos[cand], p );
+						if( Vector3Ops::SquaredModulus( d ) <= epsSq ) {
+							foundId = cand;
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		if( foundId == 0xFFFFFFFFu ) {
+			foundId = (unsigned int)weldedPos.size();
+			weldedPos.push_back( p );
+			grid[ cellKey( cx, cy, cz ) ].push_back( foundId );
+		}
+		outWeldedId[i] = foundId;
+	}
+	return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-382: the general open-surface certificate.  Proof and design:
+// docs/DL382_OPEN_SHEET_CERTIFICATE.md section 2.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	using namespace RISE;
+
+	inline Scalar Sq( const Vector3& v ) { return Vector3Ops::SquaredModulus( v ); }
+
+	//! Squared distance from p to triangle abc (closest point by Voronoi
+	//! region, Ericson, Real-Time Collision Detection 5.1.5).
+	Scalar PointTriangleDistSq( const Point3& p, const Point3& a, const Point3& b, const Point3& c )
+	{
+		const Vector3 ab = Vector3Ops::mkVector3( b, a );
+		const Vector3 ac = Vector3Ops::mkVector3( c, a );
+		const Vector3 ap = Vector3Ops::mkVector3( p, a );
+		const Scalar d1 = Vector3Ops::Dot( ab, ap ), d2 = Vector3Ops::Dot( ac, ap );
+		if( d1 <= 0 && d2 <= 0 ) return Sq( ap );
+		const Vector3 bp = Vector3Ops::mkVector3( p, b );
+		const Scalar d3 = Vector3Ops::Dot( ab, bp ), d4 = Vector3Ops::Dot( ac, bp );
+		if( d3 >= 0 && d4 <= d3 ) return Sq( bp );
+		const Scalar vc = d1 * d4 - d3 * d2;
+		if( vc <= 0 && d1 >= 0 && d3 <= 0 ) {
+			const Scalar v = d1 / ( d1 - d3 );
+			return Sq( Vector3Ops::mkVector3( p, Point3Ops::mkPoint3( a, ab * v ) ) );
+		}
+		const Vector3 cp = Vector3Ops::mkVector3( p, c );
+		const Scalar d5 = Vector3Ops::Dot( ab, cp ), d6 = Vector3Ops::Dot( ac, cp );
+		if( d6 >= 0 && d5 <= d6 ) return Sq( cp );
+		const Scalar vb = d5 * d2 - d1 * d6;
+		if( vb <= 0 && d2 >= 0 && d6 <= 0 ) {
+			const Scalar w = d2 / ( d2 - d6 );
+			return Sq( Vector3Ops::mkVector3( p, Point3Ops::mkPoint3( a, ac * w ) ) );
+		}
+		const Scalar va = d3 * d6 - d5 * d4;
+		if( va <= 0 && ( d4 - d3 ) >= 0 && ( d5 - d6 ) >= 0 ) {
+			const Scalar w = ( d4 - d3 ) / ( ( d4 - d3 ) + ( d5 - d6 ) );
+			return Sq( Vector3Ops::mkVector3( p, Point3Ops::mkPoint3( b, Vector3Ops::mkVector3( c, b ) * w ) ) );
+		}
+		const Scalar denom = Scalar( 1 ) / ( va + vb + vc );
+		const Scalar v = vb * denom, w = vc * denom;
+		return Sq( Vector3Ops::mkVector3( p, Point3Ops::mkPoint3( a, ab * v + ac * w ) ) );
+	}
+
+	inline Scalar Clamp01( const Scalar x ) { return x < 0 ? Scalar( 0 ) : ( x > 1 ? Scalar( 1 ) : x ); }
+
+	//! Squared distance between segments p1q1 and p2q2 (Ericson 5.1.9).
+	Scalar SegmentSegmentDistSq( const Point3& p1, const Point3& q1, const Point3& p2, const Point3& q2 )
+	{
+		const Vector3 d1 = Vector3Ops::mkVector3( q1, p1 );
+		const Vector3 d2 = Vector3Ops::mkVector3( q2, p2 );
+		const Vector3 r = Vector3Ops::mkVector3( p1, p2 );
+		const Scalar a = Vector3Ops::Dot( d1, d1 ), e = Vector3Ops::Dot( d2, d2 ), f = Vector3Ops::Dot( d2, r );
+		Scalar s = 0, t = 0;
+		if( a <= 0 && e <= 0 ) {
+			return Sq( r );
+		}
+		if( a <= 0 ) {
+			t = Clamp01( f / e );
+		} else {
+			const Scalar c = Vector3Ops::Dot( d1, r );
+			if( e <= 0 ) {
+				s = Clamp01( -c / a );
+			} else {
+				const Scalar b = Vector3Ops::Dot( d1, d2 );
+				const Scalar denom = a * e - b * b;
+				s = denom > 0 ? Clamp01( ( b * f - c * e ) / denom ) : Scalar( 0 );
+				t = ( b * s + f ) / e;
+				if( t < 0 ) {
+					t = 0;
+					s = Clamp01( -c / a );
+				} else if( t > 1 ) {
+					t = 1;
+					s = Clamp01( ( b - c ) / a );
+				}
+			}
+		}
+		return Sq( Vector3Ops::mkVector3( Point3Ops::mkPoint3( p1, d1 * s ), Point3Ops::mkPoint3( p2, d2 * t ) ) );
+	}
+
+	//! Does segment pq cross triangle abc (Moller-Trumbore on t in
+	//! [0,1])?  A segment parallel to the triangle's plane reports no
+	//! crossing; every caller pairs this with the edge/endpoint distances,
+	//! which see a coplanar overlap (it crosses an edge or has an endpoint
+	//! inside).
+	bool SegmentCrossesTriangle( const Point3& p, const Point3& q, const Point3& a, const Point3& b, const Point3& c )
+	{
+		const Vector3 dir = Vector3Ops::mkVector3( q, p );
+		const Vector3 e1 = Vector3Ops::mkVector3( b, a );
+		const Vector3 e2 = Vector3Ops::mkVector3( c, a );
+		const Vector3 h = Vector3Ops::Cross( dir, e2 );
+		const Scalar det = Vector3Ops::Dot( e1, h );
+		if( det == 0 ) return false;
+		const Scalar inv = Scalar( 1 ) / det;
+		const Vector3 s = Vector3Ops::mkVector3( p, a );
+		const Scalar u = inv * Vector3Ops::Dot( s, h );
+		if( u < 0 || u > 1 ) return false;
+		const Vector3 qv = Vector3Ops::Cross( s, e1 );
+		const Scalar v = inv * Vector3Ops::Dot( dir, qv );
+		if( v < 0 || u + v > 1 ) return false;
+		const Scalar t = inv * Vector3Ops::Dot( e2, qv );
+		return t >= 0 && t <= 1;
+	}
+
+	//! Squared distance between segment pq and triangle abc.  If they do
+	//! not cross, the closest pair has an endpoint or a triangle edge in it.
+	Scalar SegmentTriangleDistSq( const Point3& p, const Point3& q, const Point3* T )
+	{
+		if( SegmentCrossesTriangle( p, q, T[0], T[1], T[2] ) ) return 0;
+		Scalar d = PointTriangleDistSq( p, T[0], T[1], T[2] );
+		d = std::min( d, PointTriangleDistSq( q, T[0], T[1], T[2] ) );
+		for( int k = 0; k < 3; ++k ) {
+			d = std::min( d, SegmentSegmentDistSq( p, q, T[k], T[(k + 1) % 3] ) );
+		}
+		return d;
+	}
+
+	//! Squared distance between two triangles: zero if an edge of one
+	//! crosses the other, else the minimum over vertex-face and edge-edge
+	//! pairs (where the closest pair of two disjoint triangles lies).
+	Scalar TriangleTriangleDistSq( const Point3* A, const Point3* B )
+	{
+		for( int k = 0; k < 3; ++k ) {
+			if( SegmentCrossesTriangle( A[k], A[(k + 1) % 3], B[0], B[1], B[2] ) ) return 0;
+			if( SegmentCrossesTriangle( B[k], B[(k + 1) % 3], A[0], A[1], A[2] ) ) return 0;
+		}
+		Scalar d = RISE_INFINITY;
+		for( int k = 0; k < 3; ++k ) {
+			d = std::min( d, PointTriangleDistSq( A[k], B[0], B[1], B[2] ) );
+			d = std::min( d, PointTriangleDistSq( B[k], A[0], A[1], A[2] ) );
+			for( int m = 0; m < 3; ++m ) {
+				d = std::min( d, SegmentSegmentDistSq( A[k], A[(k + 1) % 3], B[m], B[(m + 1) % 3] ) );
+			}
+		}
+		return d;
+	}
+
+	//! Step 4 for one candidate pair: do triangles i and j meet ONLY in
+	//! the welded faces they share, with margin `eps`?
+	//!
+	//! One shared vertex v: two convex sets containing v that meet
+	//! elsewhere meet along a segment from v whose far end lies on the
+	//! boundary of one of them, and following the argument through the
+	//! edges at v, the far end is always on an edge OPPOSITE v (or a
+	//! vertex of one triangle lies in the other, which is on an opposite
+	//! edge too).  So "the opposite edges keep their distance" suffices.
+	//! A shared edge ab (third vertices c, d): a non-coplanar pair meets
+	//! only on ab; a coplanar FOLD puts c or d inside the other triangle
+	//! or makes ac / bc cross bd / ad -- all refused.
+	bool PairMeetsOnlyInSharedFaces( const Point3* Pi, const unsigned int* Ii,
+		const Point3* Pj, const unsigned int* Ij, const Scalar epsSq )
+	{
+		int sharedI[3], sharedJ[3], s = 0;
+		for( int a = 0; a < 3; ++a ) {
+			for( int b = 0; b < 3; ++b ) {
+				if( Ii[a] == Ij[b] ) {
+					sharedI[s] = a;
+					sharedJ[s] = b;
+					++s;
+				}
+			}
+		}
+		if( s == 0 ) {
+			return TriangleTriangleDistSq( Pi, Pj ) > epsSq;
+		}
+		if( s == 1 ) {
+			const int vi = sharedI[0], vj = sharedJ[0];
+			return SegmentTriangleDistSq( Pi[(vi + 1) % 3], Pi[(vi + 2) % 3], Pj ) > epsSq &&
+				SegmentTriangleDistSq( Pj[(vj + 1) % 3], Pj[(vj + 2) % 3], Pi ) > epsSq;
+		}
+		if( s == 2 ) {
+			const int ci = 3 - sharedI[0] - sharedI[1];
+			const int dj = 3 - sharedJ[0] - sharedJ[1];
+			const Point3& ai = Pi[sharedI[0]];
+			const Point3& bi = Pi[sharedI[1]];
+			const Point3& aj = Pj[sharedJ[0]];
+			const Point3& bj = Pj[sharedJ[1]];
+			return PointTriangleDistSq( Pi[ci], Pj[0], Pj[1], Pj[2] ) > epsSq &&
+				PointTriangleDistSq( Pj[dj], Pi[0], Pi[1], Pi[2] ) > epsSq &&
+				SegmentSegmentDistSq( ai, Pi[ci], bj, Pj[dj] ) > epsSq &&
+				SegmentSegmentDistSq( bi, Pi[ci], aj, Pj[dj] ) > epsSq;
+		}
+		return false;
+	}
+
+	struct CellKey
+	{
+		std::int64_t x, y, z;
+		bool operator==( const CellKey& o ) const { return x == o.x && y == o.y && z == o.z; }
+	};
+	struct CellKeyHash
+	{
+		std::size_t operator()( const CellKey& k ) const
+		{
+			return static_cast<std::size_t>( static_cast<std::uint64_t>( k.x ) * 73856093ULL
+				^ static_cast<std::uint64_t>( k.y ) * 19349663ULL
+				^ static_cast<std::uint64_t>( k.z ) * 83492791ULL );
+		}
+	};
+}
+
+GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOrientedSurface(
+	const std::vector<Point3>& corners
+	)
+{
+	OpenSurfaceCertificate result;
+	const std::size_t nTris = corners.size() / 3;
+	if( nTris == 0 || corners.size() % 3 != 0 || nTris > 0x3FFFFFFFu ) {
+		return result;
+	}
+	std::vector<unsigned int> wid;
+	Scalar eps = 0;
+	if( !WeldVertexPositions( corners, wid, &eps ) ) {
+		return result;
+	}
+	const Scalar epsSq = eps * eps;
+
+	// 1. Non-degenerate: distinct welded corners, smallest altitude > eps
+	// (altitude = 2 x area / longest edge).
+	for( std::size_t t = 0; t < nTris; ++t ) {
+		const unsigned int* I = &wid[3 * t];
+		if( I[0] == I[1] || I[1] == I[2] || I[0] == I[2] ) {
+			return result;
+		}
+		const Point3* P = &corners[3 * t];
+		const Scalar twiceArea = Vector3Ops::Magnitude( Vector3Ops::Cross(
+			Vector3Ops::mkVector3( P[1], P[0] ), Vector3Ops::mkVector3( P[2], P[0] ) ) );
+		Scalar longest = 0;
+		for( int k = 0; k < 3; ++k ) {
+			longest = std::max( longest, Vector3Ops::Magnitude( Vector3Ops::mkVector3( P[(k + 1) % 3], P[k] ) ) );
+		}
+		if( !( twiceArea > eps * longest ) ) {
+			return result;
+		}
+	}
+
+	// 2. Manifold edges, consistently oriented.
+	struct EdgeUse
+	{
+		unsigned int tri[2] = { 0, 0 };
+		bool forward[2] = { false, false };
+		unsigned int count = 0;
+	};
+	std::unordered_map<std::uint64_t, EdgeUse> edges;
+	edges.reserve( nTris * 2 );
+	std::vector<EdgeUse*> triEdges( 3 * nTris, nullptr );
+	for( std::size_t t = 0; t < nTris; ++t ) {
+		for( int k = 0; k < 3; ++k ) {
+			const unsigned int a = wid[3 * t + k], b = wid[3 * t + ( k + 1 ) % 3];
+			const std::uint64_t key = a < b ? ( ( std::uint64_t( a ) << 32 ) | b ) : ( ( std::uint64_t( b ) << 32 ) | a );
+			EdgeUse& e = edges[key];
+			if( e.count >= 2 ) {
+				return result;		// non-manifold edge
+			}
+			e.tri[e.count] = (unsigned int)t;
+			e.forward[e.count] = a < b;
+			++e.count;
+			triEdges[3 * t + k] = &e;	// element addresses are stable in unordered_map
+		}
+	}
+	for( const auto& kv : edges ) {
+		if( kv.second.count == 2 && kv.second.forward[0] == kv.second.forward[1] ) {
+			return result;			// traversed the same way twice: inconsistent orientation
+		}
+	}
+
+	// 2b. Single connected component: all triangles connected via manifold edges.
+	// A collection of disconnected sheets in one mesh can bound an interior or
+	// have inconsistent facing; each open sheet must be its own object.
+	{
+		std::vector<unsigned char> visited( nTris, 0 );
+		std::vector<unsigned int> q;
+		q.reserve( nTris );
+		q.push_back( 0 );
+		visited[0] = 1;
+		for( std::size_t i = 0; i < q.size(); ++i ) {
+			const unsigned int t = q[i];
+			for( int k = 0; k < 3; ++k ) {
+				const EdgeUse* e = triEdges[3 * t + k];
+				if( e->count == 2 ) {
+					const unsigned int other = ( e->tri[0] == t ) ? e->tri[1] : e->tri[0];
+					if( !visited[other] ) {
+						visited[other] = 1;
+						q.push_back( other );
+					}
+				}
+			}
+		}
+		if( q.size() != nTris ) {
+			return result;			// multiple disconnected components
+		}
+	}
+
+	// 3. Free-face peeling (H_2 = 0).
+	{
+		std::vector<unsigned char> alive( nTris, 1 );
+		std::vector<unsigned int> queue;
+		queue.reserve( nTris );
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			for( int k = 0; k < 3; ++k ) {
+				if( triEdges[3 * t + k]->count == 1 ) {
+					queue.push_back( (unsigned int)t );
+					break;
+				}
+			}
+		}
+		std::size_t removed = 0;
+		for( std::size_t q = 0; q < queue.size(); ++q ) {
+			const unsigned int t = queue[q];
+			if( !alive[t] ) {
+				continue;
+			}
+			alive[t] = 0;
+			++removed;
+			for( int k = 0; k < 3; ++k ) {
+				EdgeUse* e = triEdges[3 * t + k];
+				--e->count;
+				if( e->count == 1 ) {
+					const unsigned int other = alive[e->tri[0]] ? e->tri[0] : e->tri[1];
+					if( alive[other] ) {
+						queue.push_back( other );
+					}
+				}
+			}
+		}
+		if( removed != nTris ) {
+			return result;			// a closed 2-cycle survives
+		}
+	}
+
+	// 4. Embedded: candidate pairs from a uniform grid over eps-inflated
+	// triangle boxes; each pair is tested once, in the cell holding the
+	// low corner of the two boxes' overlap.
+	{
+		std::vector<Point3> lo( nTris ), hi( nTris );
+		Point3 gLo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+		Scalar meanExtent = 0;
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			const Point3* P = &corners[3 * t];
+			Point3 l = P[0], h = P[0];
+			for( int k = 1; k < 3; ++k ) {
+				l.x = std::min( l.x, P[k].x ); l.y = std::min( l.y, P[k].y ); l.z = std::min( l.z, P[k].z );
+				h.x = std::max( h.x, P[k].x ); h.y = std::max( h.y, P[k].y ); h.z = std::max( h.z, P[k].z );
+			}
+			l = Point3( l.x - eps, l.y - eps, l.z - eps );
+			h = Point3( h.x + eps, h.y + eps, h.z + eps );
+			lo[t] = l;
+			hi[t] = h;
+			gLo.x = std::min( gLo.x, l.x ); gLo.y = std::min( gLo.y, l.y ); gLo.z = std::min( gLo.z, l.z );
+			meanExtent += std::max( h.x - l.x, std::max( h.y - l.y, h.z - l.z ) );
+		}
+		Scalar cell = meanExtent / Scalar( nTris );
+		if( !( cell > 0 ) || !std::isfinite( cell ) ) {
+			return result;
+		}
+		const auto coord = [&]( const Scalar v, const Scalar o ) -> std::int64_t {
+			return static_cast<std::int64_t>( std::floor( double( ( v - o ) / cell ) ) );
+		};
+		// Bound the insertions: a few huge triangles in a fine mesh would
+		// otherwise touch very many cells; coarsen until the total is linear.
+		const double budget = 64.0 * double( nTris ) + 4096.0;
+		for( int attempt = 0; attempt < 64; ++attempt ) {
+			double total = 0;
+			for( std::size_t t = 0; t < nTris && total <= budget; ++t ) {
+				total += double( coord( hi[t].x, gLo.x ) - coord( lo[t].x, gLo.x ) + 1 )
+					* double( coord( hi[t].y, gLo.y ) - coord( lo[t].y, gLo.y ) + 1 )
+					* double( coord( hi[t].z, gLo.z ) - coord( lo[t].z, gLo.z ) + 1 );
+			}
+			if( total <= budget ) {
+				break;
+			}
+			cell *= 2;
+		}
+		std::unordered_map<CellKey, std::vector<unsigned int>, CellKeyHash> grid;
+		grid.reserve( nTris * 2 );
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			const std::int64_t x0 = coord( lo[t].x, gLo.x ), x1 = coord( hi[t].x, gLo.x );
+			const std::int64_t y0 = coord( lo[t].y, gLo.y ), y1 = coord( hi[t].y, gLo.y );
+			const std::int64_t z0 = coord( lo[t].z, gLo.z ), z1 = coord( hi[t].z, gLo.z );
+			for( std::int64_t z = z0; z <= z1; ++z ) {
+				for( std::int64_t y = y0; y <= y1; ++y ) {
+					for( std::int64_t x = x0; x <= x1; ++x ) {
+						grid[CellKey{ x, y, z }].push_back( (unsigned int)t );
+					}
+				}
+			}
+		}
+		for( const auto& kv : grid ) {
+			const std::vector<unsigned int>& list = kv.second;
+			for( std::size_t a = 0; a < list.size(); ++a ) {
+				const unsigned int i = list[a];
+				for( std::size_t b = a + 1; b < list.size(); ++b ) {
+					const unsigned int j = list[b];
+					if( lo[i].x > hi[j].x || lo[j].x > hi[i].x ||
+						lo[i].y > hi[j].y || lo[j].y > hi[i].y ||
+						lo[i].z > hi[j].z || lo[j].z > hi[i].z ) {
+						continue;	// inflated boxes apart: the gap exceeds eps
+					}
+					const CellKey ref{ coord( std::max( lo[i].x, lo[j].x ), gLo.x ),
+						coord( std::max( lo[i].y, lo[j].y ), gLo.y ),
+						coord( std::max( lo[i].z, lo[j].z ), gLo.z ) };
+					if( !( ref == kv.first ) ) {
+						continue;	// tested in the reference cell
+					}
+					if( !PairMeetsOnlyInSharedFaces( &corners[3 * i], &wid[3 * i], &corners[3 * j], &wid[3 * j], epsSq ) ) {
+						return result;
+					}
+				}
+			}
+		}
+	}
+
+	// Certified.  The signed volume about the box centre is the diagnostic
+	// of section 2.1 (never a transport input).
+	Point3 bbLo = corners[0], bbHi = corners[0];
+	for( const Point3& p : corners ) {
+		bbLo.x = std::min( bbLo.x, p.x ); bbLo.y = std::min( bbLo.y, p.y ); bbLo.z = std::min( bbLo.z, p.z );
+		bbHi.x = std::max( bbHi.x, p.x ); bbHi.y = std::max( bbHi.y, p.y ); bbHi.z = std::max( bbHi.z, p.z );
+	}
+	const Point3 centre( 0.5 * ( bbLo.x + bbHi.x ), 0.5 * ( bbLo.y + bbHi.y ), 0.5 * ( bbLo.z + bbHi.z ) );
+	Scalar vol = 0;
+	for( std::size_t t = 0; t < nTris; ++t ) {
+		const Point3* P = &corners[3 * t];
+		vol += Vector3Ops::Dot( Vector3Ops::mkVector3( P[0], centre ),
+			Vector3Ops::Cross( Vector3Ops::mkVector3( P[1], centre ), Vector3Ops::mkVector3( P[2], centre ) ) );
+	}
+	result.signedVolumeAboutCentre = vol / Scalar( 6 );
+	result.certified = true;
+	return result;
 }

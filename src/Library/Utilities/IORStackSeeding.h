@@ -410,6 +410,8 @@ namespace RISE
             const Scalar nm = 0
 			)
 		{
+			stack.SetMediumProbeScene( &scene );
+
 			// Emergency off-switch for perf regression triage — set
 			// RISE_DISABLE_IOR_STACK_SEEDING=1 in the environment to
 			// restore the legacy empty-stack behaviour.  Kept as an
@@ -632,6 +634,106 @@ namespace RISE
 			return false;
 		}
 
+		//! DL-382: does closed object @a pY ENCLOSE the crossing at @a p (walk
+		//! travelling along @a dir)?  Computed by the PARITY of pY's own crossings
+		//! along the probe (odd = inside), which is winding-independent (T5c).
+		inline bool ClosedObjectEnclosesCrossing( const IObject* pY, const Point3& p, const Vector3& dir )
+		{
+			if( !pY ) {
+				return false;
+			}
+			const Scalar scale = Scalar( 1 ) + std::fabs( p.x ) + std::fabs( p.y ) + std::fabs( p.z );
+			Ray probe( Point3Ops::mkPoint3( p, dir * ( Scalar( 1e-7 ) * scale ) ), dir );
+			int crossings = 0;
+			for( int step = 0; step < 64; ++step ) {
+				RayIntersection pri( probe, nullRasterizerState );
+				pY->IntersectRay( pri, RISE_INFINITY, true, true, false );
+				if( !pri.geometric.bHit || !pri.geometric.HasTrueGeomSide() ) {
+					break;
+				}
+				++crossings;
+				probe.origin = Point3Ops::mkPoint3( pri.geometric.ptIntersection, dir * ( Scalar( 1e-6 ) * scale ) );
+			}
+			return ( crossings % 2 ) == 1;
+		}
+
+		//! DL-382: does open sheet @a pY's medium continue past the crossing at
+		//! @a p (walk travelling along @a dir)?  The medium continues iff the
+		//! first surface ahead made of pY's material (excluding @a pSheet) is
+		//! hit from its BACK (an exit of that medium).
+		inline bool OpenSheetEnclosesCrossing(
+			const IObject* pY,
+			const IObject* pSheet,
+			const IScene* pScene,
+			const Point3& p,
+			const Vector3& dir
+			)
+		{
+			if( !pY ) {
+				return false;
+			}
+			if( !pScene || !pScene->GetObjects() ) {
+				return ObjectEnclosesCrossing( pY, p, dir );
+			}
+			const IMaterial* pMat = pY->GetMaterial();
+			if( !pMat ) {
+				return ObjectEnclosesCrossing( pY, p, dir );
+			}
+			const Scalar scale = Scalar( 1 ) + std::fabs( p.x ) + std::fabs( p.y ) + std::fabs( p.z );
+			Ray probe( Point3Ops::mkPoint3( p, dir * ( Scalar( 1e-7 ) * scale ) ), dir );
+			for( int step = 0; step < 64; ++step ) {
+				RayIntersection pri( probe, nullRasterizerState );
+				pScene->GetObjects()->IntersectRay( pri, true, true, false );
+				if( !pri.geometric.bHit || !pri.geometric.HasTrueGeomSide() ) {
+					return false;
+				}
+				if( pri.pObject == pSheet ) {
+					probe.origin = Point3Ops::mkPoint3( pri.geometric.ptIntersection, dir * ( Scalar( 1e-6 ) * scale ) );
+					continue;
+				}
+				if( pri.pObject && pri.pObject->GetMaterial() == pMat ) {
+					return Vector3Ops::Dot( dir, pri.geometric.UnflippedGeomNormal() ) >= 0;
+				}
+				probe.origin = Point3Ops::mkPoint3( pri.geometric.ptIntersection, dir * ( Scalar( 1e-6 ) * scale ) );
+			}
+			return false;
+		}
+
+		//! DL-382: resolves an unpushed exit on certified sheet @a pSheet.
+		//! Pops top entry Y while it does not contain the front region.
+		inline void ResolveUnpushedExit(
+			const RayIntersectionGeometric& ri,
+			const IObject* pSheet,
+			IORStack& dest
+			)
+		{
+			const Vector3& dir = ri.ray.Dir();
+			const Point3& pt = ri.ptIntersection;
+			const IScene* pScene = dest.MediumProbeScene();
+
+			while( const IObject* pY = dest.topObject() ) {
+				if( pY == pSheet ) {
+					break;
+				}
+				bool bEncloses = false;
+				if( dest.topIsOpenSheet() ) {
+					bEncloses = OpenSheetEnclosesCrossing( pY, pSheet, pScene, pt, dir );
+				} else {
+					bEncloses = ClosedObjectEnclosesCrossing( pY, pt, dir );
+				}
+
+				if( bEncloses ) {
+					break;
+				}
+
+				dest.SetCurrentObject( pY );
+				dest.pop();
+				if( pSheet ) {
+					dest.SetCurrentObject( pSheet );
+				}
+			}
+		}
+
 		//! Result of ResolveOpenSheetCrossing (below).
 		struct OpenSheetCrossing
 		{
@@ -667,7 +769,7 @@ namespace RISE
 		//!    either a sibling sheet the walk entered a slab through
 		//!    (popped: leaving the slab leaves Y's entry) or a medium that
 		//!    encloses the crossing (kept) -- told apart by
-		//!    ObjectEnclosesCrossing, exactly the SMS seed walk's rule.
+		//!    ResolveUnpushedExit (DL-382).
 		//!    With no sibling, the walk reached the sheet's back WITHOUT
 		//!    crossing it (a receiver under a lone sheet, seen directly):
 		//!    the crossing still refracts from the sheet's index, and the
@@ -693,21 +795,13 @@ namespace RISE
 				}
 				c.bEntering = true;
 				c.etaFrom = dest.top();
-				dest.push( sheetIOR );
+				dest.pushOpenSheet( sheetIOR );
 				c.etaTo = sheetIOR;
 			} else {
 				if( dest.containsCurrent() ) {
 					dest.pop();
 				} else {
-					const IObject* pSheet = dest.currentObject();
-					const IObject* pY = dest.topObject();
-					if( pY && pY != pSheet && !ObjectEnclosesCrossing( pY, ri.ptIntersection, d ) ) {
-						dest.SetCurrentObject( pY );
-						dest.pop();
-						if( pSheet ) {
-							dest.SetCurrentObject( pSheet );
-						}
-					}
+					ResolveUnpushedExit( ri, dest.currentObject(), dest );
 				}
 				c.bEntering = false;
 				c.etaFrom = sheetIOR;

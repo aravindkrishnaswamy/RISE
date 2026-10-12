@@ -69,6 +69,8 @@
 
 namespace RISE
 {
+	class IScene;
+
 	class IORStack
 	{
 	protected:
@@ -77,18 +79,22 @@ namespace RISE
 		{
 			const IObject* pObj;
 			Scalar ior;
+			bool bOpenSheet;
 
 			IORDATA(
 				const IObject* pObj_,
-				Scalar ior_
+				Scalar ior_,
+				bool bOpenSheet_ = false
 				) : 
 			pObj( pObj_ ),
-			ior( ior_ )
+			ior( ior_ ),
+			bOpenSheet( bOpenSheet_ )
 			{}
 
 			IORDATA( const IORDATA& that ) : 
 			  pObj( that.pObj ),
-			  ior( that.ior )
+			  ior( that.ior ),
+			  bOpenSheet( that.bOpenSheet )
 			{}
 		};
 
@@ -111,6 +117,8 @@ namespace RISE
             std::size_t depth() const { return c.size(); }
             const IObject* objectAt( std::size_t i ) const { return c[i].pObj; }
             void setIORAt( std::size_t i, Scalar ior ) { c[i].ior = ior; }
+            bool topIsOpenSheet() const { return c.empty() ? false : c.back().bOpenSheet; }
+            bool isOpenSheetAt( std::size_t i ) const { return i < c.size() ? c[i].bOpenSheet : false; }
             bool SameInterfaces(const MyIORStack& other) const {
                 if(c.size() != other.c.size()) return false;
                 for(std::size_t i=0; i<c.size(); ++i)
@@ -170,6 +178,7 @@ namespace RISE
 		//! one crossing, and the walk's next stack (a copy) must not carry
 		//! it into a later vertex's reflection copy.
 		Scalar crossingEtaFrom;
+		const IScene* pProbeScene;
 
 	public:
 		// Explicit to prevent implicit conversion from Scalar / integer
@@ -178,16 +187,18 @@ namespace RISE
 		// environment IOR of 0 and causing Ni=0 refraction errors.
 		explicit IORStack( const Scalar ior ) :
 		  pCurrentObject( 0 ),
-		  crossingEtaFrom( 0 )
+		  crossingEtaFrom( 0 ),
+		  pProbeScene( 0 )
 		{
 			// An empty IOR stack always has the environment's IOR
-			iorstack.push( IORDATA(0,ior) );
+			iorstack.push( IORDATA(0,ior,false) );
 		}
 
 		IORStack( const IORStack& s ) : 
 		  iorstack( s.iorstack ),
 		  pCurrentObject( s.pCurrentObject ),
-		  crossingEtaFrom( 0 )
+		  crossingEtaFrom( 0 ),
+		  pProbeScene( s.pProbeScene )
 		{}
 
 		IORStack& operator=( const IORStack& s )
@@ -195,8 +206,13 @@ namespace RISE
 			iorstack = s.iorstack;
 			pCurrentObject = s.pCurrentObject;
 			crossingEtaFrom = 0;
+			pProbeScene = s.pProbeScene;
 			return *this;
 		}
+
+		//! DL-382: the scene used for medium containment probes.
+		inline void SetMediumProbeScene( const IScene* scene ) { pProbeScene = scene; }
+		inline const IScene* MediumProbeScene() const { return pProbeScene; }
 
 		//! DL-345: see `crossingEtaFrom`.
 		inline void SetCrossingEtaFrom( const Scalar eta ) { crossingEtaFrom = eta; }
@@ -212,9 +228,22 @@ namespace RISE
 			if( !pCurrentObject ) {
 				GlobalLog()->PrintEasyWarning( "IORStack::push Asked to push item onto stack with no object" );
 			} else {
-				iorstack.push( IORDATA(pCurrentObject,ior) );
+				iorstack.push( IORDATA(pCurrentObject,ior,false) );
 			}
 		}
+
+		//! DL-382: pushes an entry marked as entered through an open sheet face.
+		inline void pushOpenSheet( const Scalar ior )
+		{
+			if( !pCurrentObject ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
+			} else {
+				iorstack.push( IORDATA(pCurrentObject,ior,true) );
+			}
+		}
+
+		inline bool topIsOpenSheet() const { return iorstack.topIsOpenSheet(); }
+		inline bool isOpenSheetAt( const std::size_t i ) const { return iorstack.isOpenSheetAt( i ); }
 
 		// Ability to pop something off the stack
 		inline void pop()

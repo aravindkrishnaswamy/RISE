@@ -68,6 +68,7 @@ namespace RISE
             //! the argument).  Refreshed with the area cache; stamped as
             //! `RayIntersectionGeometric::bProvablyNoInterior` on every hit.
             bool m_bProvablyOpenSheet = false;
+            bool m_bOpenSignedVolumeNegative = false;
 
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas();
@@ -75,6 +76,7 @@ namespace RISE
 		public:
             bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
             bool IsProvablyOpenSheet() const {return m_bProvablyOpenSheet;}
+            bool HasNegativeOpenSignedVolume() const {return m_bOpenSignedVolumeNegative;}
             unsigned long long SMSOrientationAudits() const {return smsOrientationAudits;}
             unsigned long long SMSOrientationTriangleVisits() const {return smsOrientationTriangleVisits;}
 			TriangleMeshGeometry(

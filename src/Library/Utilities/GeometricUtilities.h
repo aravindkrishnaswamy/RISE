@@ -677,6 +677,59 @@ namespace RISE
 			}
 			return true;
 		}
+
+		//! DL-143.  Welds `points` to a shared id per PHYSICAL corner:
+		//! `outWeldedId[i]` is the welded id of `points[i]`; two positions
+		//! share an id iff they are within `eps = max(1e-9, 1e-6 x bbox
+		//! diagonal)` of each other (grid of cell `eps`, 3x3x3 neighbour
+		//! scan).  `outEps`, when non-null, receives that epsilon.  False
+		//! on a non-finite input.  (Moved here unchanged from
+		//! TriangleMeshGeometryIndexed.cpp so the DL-382 certificate below
+		//! welds with exactly the watertightness weld's rule; the full
+		//! rationale is on TriangleMeshGeometryIndexed::ComputeWatertightness.)
+		extern bool WeldVertexPositions(
+			const std::vector<Point3>& points,
+			std::vector<unsigned int>& outWeldedId,
+			Scalar* outEps = nullptr
+			);
+
+		//! Result of IsEmbeddedOpenOrientedSurface.
+		struct OpenSurfaceCertificate
+		{
+			bool	certified = false;	//!< every test passed
+			//! Signed volume of the triangles about their bounding-box
+			//! centre (sum of (a-c).((b-c)x(d-c))/6).  For a closed
+			//! outward-wound solid it is the enclosed volume; negative on a
+			//! certified surface hints at an inside-out cracked solid
+			//! (diagnostic only -- see docs/DL382_OPEN_SHEET_CERTIFICATE.md
+			//! section 2.1).  Filled only when `certified`.
+			Scalar	signedVolumeAboutCentre = 0;
+		};
+
+		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
+		//! consistently oriented (readable) face?  The general certificate
+		//! behind the open-sheet face rule for meshes; the full proof is in
+		//! docs/DL382_OPEN_SHEET_CERTIFICATE.md section 2.  `corners` holds
+		//! 3 points per triangle.  Certified iff, after the DL-143 weld
+		//! (WeldVertexPositions):
+		//!  1. no triangle repeats a welded vertex and every triangle's
+		//!     smallest altitude exceeds the weld epsilon;
+		//!  2. every welded edge is used by one or two triangles, a shared
+		//!     edge in OPPOSITE directions (consistent orientation), and no
+		//!     two triangles share all three welded vertices;
+		//!  3. free-face peeling deletes every triangle (=> H_2 = 0: no
+		//!     closed 2-cycle, so no closed component and no closed
+		//!     component plus flaps);
+		//!  4. the triangles meet only in the faces the weld says they
+		//!     share, with margin `eps` (embedded).
+		//! 3 + 4 give a connected complement by Alexander duality, i.e. no
+		//! enclosed volume (pockets thinner than the weld tolerance are
+		//! below resolution, as for the planar certificate).  Authored
+		//! normals agreeing with the winding is the CALLER's check.
+		//! Conservative: anything it cannot prove is refused.
+		extern OpenSurfaceCertificate IsEmbeddedOpenOrientedSurface(
+			const std::vector<Point3>& corners
+			);
 	}
 }
 
