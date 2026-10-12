@@ -1601,7 +1601,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 
 	// DL-408 round 4: an SSS entry that ties with a coincident partner face
 	// (a sheet emitter under the body, a closed room's floor) yields to it.
-	BSSRDFSampling::ResolveCoincidentEntry( *this, ri, bHitFrontFaces, bHitBackFaces );
+	BSSRDFSampling::ResolveCoincidentEntry( *this, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 
     CompleteShadingSignals(ri.geometric,ri.pObject);
 

@@ -16,6 +16,7 @@
 #include "pch.h"
 #include "BSSRDFSampling.h"
 #include "../Interfaces/IObjectManager.h"
+#include <limits>
 
 using namespace RISE;
 
@@ -655,7 +656,8 @@ bool BSSRDFSampling::ResolveCoincidentEntry(
 	const IObjectManager& objects,
 	RayIntersection& ri,
 	const bool bHitFrontFaces,
-	const bool bHitBackFaces
+	const bool bHitBackFaces,
+	const bool bComputeExitInfo
 	)
 {
 	if( !ri.geometric.bHit || !ri.pObject || !ri.pMaterial ) {
@@ -672,7 +674,9 @@ bool BSSRDFSampling::ResolveCoincidentEntry(
 	if( !( ri.geometric.TrueGeomFacing( d ) < 0 ) ) {
 		return false;	// not an entry from outside
 	}
-	const Point3 q = ray.PointAtLength( ri.geometric.range );
+	if( !ri.hasBoundaryRange ) return false; // cannot certify a tie from a backed-off point
+	const Scalar sourceRange = ri.boundaryRange;
+	const Point3 q = ray.PointAtLength( sourceRange );
 	const Scalar s = r_max( r_max( fabs( q.x ), fabs( q.y ) ), fabs( q.z ) );
 	const Scalar delta = BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
 	const Scalar radius = Scalar( 96 ) * delta;
@@ -682,31 +686,42 @@ bool BSSRDFSampling::ResolveCoincidentEntry(
 	if( nCand == 0 ) {
 		return false;
 	}
-	// A TIE: the candidate's own face on the SAME ray lies at the hit's
-	// range to rounding (coincident), not merely within the contact band --
-	// a face 2e-6 behind the SSS face (a flush-inset twin moved down) is met
-	// after it and is not a tie.
-	const Scalar tieTol = Scalar( 1e-3 ) * delta;
-	const Point3 before = Point3Ops::mkPoint3( q, d * ( -delta ) );
+	// Compare the physical ray parameters stamped before Object backs its
+	// published point off and recomputes a world-space distance. The contact
+	// launch/search epsilon is not a coincidence tolerance: it grows into
+	// real gaps after translation. Use a rounding budget for the affine
+	// transforms, direction normalization and conversion of root parameters:
+	// a conservative 64-epsilon allowance on the input coordinate/parameter
+	// scale, rather than the much larger physical launch/search epsilon.
+	const Scalar inputScale = Scalar(1) + fabs(sourceRange) + s +
+		r_max(r_max(fabs(ray.origin.x),fabs(ray.origin.y)),fabs(ray.origin.z));
+	const Scalar roundingBudget = Scalar(64) * std::numeric_limits<Scalar>::epsilon() * inputScale;
+	const Scalar sourceCos = fabs(ri.geometric.TrueGeomFacing(d));
 	const Point3 after = Point3Ops::mkPoint3( q, d * delta );
 	RayIntersection hit( ray, ri.geometric.rast );
 	bool found = false;
 	for( unsigned int k = 0; k < nCand; ++k ) {
 		RayIntersection cand_ri( ray, ri.geometric.rast );
 		cand_ri.geometric.PropagateCastInputs( ri.geometric );
-		cand[k]->IntersectRay( cand_ri, ri.geometric.range + tieTol, bHitFrontFaces, bHitBackFaces, false );
+		cand[k]->IntersectRay( cand_ri, sourceRange + radius, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 		// (Object::IntersectRay's limit is not a hard bound on every
 		// geometry, so the window is checked on both sides.)
-		if( !cand_ri.geometric.bHit || cand_ri.geometric.range < ri.geometric.range - tieTol ||
-			cand_ri.geometric.range > ri.geometric.range + tieTol ) {
+		if( !cand_ri.geometric.bHit || !cand_ri.hasBoundaryRange || !cand_ri.geometric.HasTrueGeomSide() ) {
 			continue;
 		}
-		if( found && !( cand_ri.geometric.range < hit.geometric.range ) ) {
+		// Coincidence is a plane-distance fact. A grazing ray magnifies
+		// coordinate rounding into parameter differences by 1/|n.d|.
+		// Require the difference projected onto BOTH geometric normals to
+		// fit the coordinate budget, rather than loosening a ray-distance
+		// epsilon. The radius limits this to the local candidate search.
+		const Scalar separation = fabs(cand_ri.boundaryRange-sourceRange);
+		const Scalar maxCos = r_max(sourceCos,fabs(cand_ri.geometric.TrueGeomFacing(d)));
+		if( separation > radius || separation * maxCos > roundingBudget ) continue;
+		if( found && !( cand_ri.boundaryRange < hit.boundaryRange ) ) {
 			continue;
 		}
-		if( objects.ObjectContainsPoint( cand[k], before, d ) ) {
-			continue;	// the ray is inside it: its face is an exit, not met first
-		}
+		// Outside the SSS body does not mean outside the neighbour. If
+		// arriving from its interior, its exit still precedes the SSS entry.
 		if( objects.ObjectContainsPoint( cand[k], after, d ) &&
 			!EnclosesLauncher( cand[k], ri.pObject, radius ) ) {
 			continue;	// a flush inset inside the SSS body
@@ -719,6 +734,13 @@ bool BSSRDFSampling::ResolveCoincidentEntry(
 	}
 	ri = hit;
 	return true;
+}
+
+bool BSSRDFSampling::ResolveCoincidentEntry(
+	const IObjectManager& objects, RayIntersection& ri,
+	const bool bHitFrontFaces, const bool bHitBackFaces )
+{
+	return ResolveCoincidentEntry(objects,ri,bHitFrontFaces,bHitBackFaces,false);
 }
 
 const IObject* BSSRDFSampling::FindExitContact(

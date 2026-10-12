@@ -120,9 +120,12 @@ Where T comes from:
   `ObjectManager::IntersectRay` (the one closest-hit resolution every
   integrator and strategy uses), rewrites an SSS ENTRY hit to the
   coincident surface's hit on the same ray, found by the same candidate
-  search and band as the contact launch.  A candidate qualifies when the
-  ray is not inside it, and either it has no interior past the face (a
-  sheet) or it encloses the SSS body (a room); a flush inset does not.
+  search as the contact launch, with a strict same-ray range tie rather
+  than the wider launch band. A candidate qualifies when it has no
+  interior past the face (a sheet or adjacent neighbour exit), or it
+  encloses the SSS body (a room); a flush inset does not. Outside the
+  SSS body does not imply outside its neighbour: the neighbour exit
+  must win in that case too. Requested exit information is preserved.
   Without it the floor's BSDF ray entered the block, whose exit then
   re-met the pad as a covered contact launch and took its emission at
   weight ~1, while the floor's NEE to the same pad point kept its own
@@ -532,10 +535,11 @@ difference is code generation of those loops under `-ffast-math`.
 `rwsss_sphere` (4 pixels, 6e-8) and `rwsss_bdpt` (2556 pixels, means as
 in round 1) differ through real point contacts.
 
-### 6.4 Review round 4 (2026-10-10): the coincident-face tie
+### 6.4 Unfinished/unreviewed round-4 WIP (2026-10-10): the coincident-face tie
 
-Contact test rows (contact vs a 2e-6 gap, n = 8; `8df8b6dff` -> this
-round):
+**User correction and clarification 2026-10-11:** WIP `6f4df8775` was merged before testing or independent review. The reported perspective diffusion-pad/floor gains (PT1.33, BDPT1.50, VCM1.47) and ~2% outside-lit room leak came from `8df8b6dff`; the original round-4 production code already fixes those supplied witnesses. A fresh review nevertheless found an unresolved P1 in neighbouring-solid exit ownership, and self-review found a translated non-contact sheet could be falsely promoted. The additional correction and full red/green evidence are in [DL408_ROUND4_CORRECTION.md](DL408_ROUND4_CORRECTION.md); DL-408 was reopened, corrected, gated and closed after two fresh independent reviews of `004edc7c3` found zero P1. The following WIP measurements are historical, not proof of completed review. DL-557 is OPEN; no fix is attempted here.
+
+Historical contact test rows (contact vs a 2e-6 gap, n = 8; `8df8b6dff` -> WIP):
 
 | row | `8df8b6dff` | this round |
 |---|---|---|

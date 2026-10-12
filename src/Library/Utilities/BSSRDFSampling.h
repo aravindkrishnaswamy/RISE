@@ -453,20 +453,26 @@ namespace RISE
 		/// is arbitrary; physically the ray meets that other surface FIRST
 		/// (it lies on the ray's side of the SSS body).  Rewrites `ri` to
 		/// that surface's hit on the same ray and returns true.  A
-		/// candidate qualifies when the contact cast from just before the
-		/// point (`ContactRay`) meets it in the band, it does not contain
-		/// the point just before the face (the ray is not inside it), and
-		/// either it does not contain the point just past the face (a
-		/// sheet) or it ENCLOSES the SSS body (world-box nesting, a room);
-		/// a flush INSET inside the body does not qualify.  Called from
-		/// `ObjectManager::IntersectRay`, so every strategy of every
-		/// integrator sees the same first surface.  Draws no samples.
+		/// candidate qualifies when its physical (unbacked) distance on the
+		/// same ray agrees within a floating-point rounding budget, and either it has no interior just past the
+		/// face (a sheet or an adjacent body's exit), or it ENCLOSES the SSS
+		/// body (world-box nesting, a room). Arrival from inside a neighbour
+		/// does not disqualify its exit. A flush INSET inside SSS is refused.
+		/// Called from ObjectManager::IntersectRay so strategies share the
+		/// same first surface. Draws no samples; preserves requested exit data.
 		bool ResolveCoincidentEntry(
 			const IObjectManager& objects,
 			RayIntersection& ri,
 			const bool bHitFrontFaces,
 			const bool bHitBackFaces
 			);
+
+		/// Manager overload: intersect the chosen neighbour with the caller's
+		/// exit-information request. The four-argument entry point stays intact.
+		bool ResolveCoincidentEntry(
+			const IObjectManager& objects, RayIntersection& ri,
+			const bool bHitFrontFaces, const bool bHitBackFaces,
+			const bool bComputeExitInfo );
 
 		/// At a CONTACT hit (`ri.pContactPartner` set): the body a
 		/// continuation in `dirOut` meets at zero distance -- the partner
