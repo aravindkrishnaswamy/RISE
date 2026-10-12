@@ -752,7 +752,7 @@ namespace
 		std::cout << "A7-KF: seed-walk configurations the containment probe gets wrong (KNOWN-FAILURE, not gated)" << std::endl;
 		const std::string up = "\tpta -0.6 0 -0.6\n\tptb -0.6 0 0.6\n\tptc 0.6 0 0.6\n\tptd 0.6 0 -0.6\n";
 		const std::string down = "\tpta -0.6 0 -0.6\n\tptb 0.6 0 -0.6\n\tptc 0.6 0 0.6\n\tptd -0.6 0 0.6\n";
-		struct KF { const char* tag; std::string scene; const char* pushObj; Scalar pushIor; Point3 end; std::vector<Scalar> expect; };
+		struct KF { const char* tag; std::string scene; const char* pushObj; Scalar pushIor; Point3 start; Point3 end; std::vector<Scalar> expect; };
 		std::vector<KF> cases;
 		std::vector<std::string> tempFiles;
 		{
@@ -766,7 +766,9 @@ namespace
 			o << "standard_object\n{\n\tname lone_sheet\n\tgeometry up_geo\n\tposition 0 0.5 0\n\tmaterial lone_mat\n}\n\n";
 			o << "standard_object\n{\n\tname top_sheet\n\tgeometry up_geo\n\tposition 0 0.55 0\n\tmaterial slab_mat\n}\n\n";
 			cases.push_back( KF{ "T6 lone 1.5 sheet inside an open two-sheet 2.2 slab", o.str(), nullptr, 0,
-				Point3( 0.1, 1.5, 0.05 ), { 1.0, 2.2, 1.5, 2.2, 2.2, 1.0 } } );
+				Point3( 0.05, 0, 0.02 ), Point3( 0.1, 1.5, 0.05 ), { 1.0, 2.2, 1.5, 2.2, 2.2, 1.0 } } );
+			cases.push_back( KF{ "T6 reverse walk", o.str(), nullptr, 0,
+				Point3( 0.1, 1.5, 0.05 ), Point3( 0.05, 0, 0.02 ), { 1.0, 2.2, 2.2, 1.5, 2.2, 1.0 } } );
 		}
 		{
 			// A closed water cube (a single-sided RAW2 mesh) wound INWARD --
@@ -810,29 +812,28 @@ namespace
 			o << "clippedplane_geometry\n{\n\tname up_geo\n" << up << "}\n\n";
 			o << "standard_object\n{\n\tname lone_sheet\n\tgeometry up_geo\n\tposition 0 0.5 0\n\tmaterial lone_mat\n}\n\n";
 			cases.push_back( KF{ "T5c inward-wound closed 1.33 mesh (camera-pushed), lone 2.2 sheet inside", o.str(), "water", 1.33,
-				Point3( 0.1, 3.0, 0.05 ), { 2.2, 1.33, 1.33, 1.0 } } );
+				Point3( 0.05, 0, 0.02 ), Point3( 0.1, 3.0, 0.05 ), { 2.2, 1.33, 1.33, 1.0 } } );
 			tempFiles.push_back( meshPath );
 		}
 		for( const KF& c : cases ) {
 			const std::string path = WriteScene( c.scene, "seedwalk_kf" );
 			IJobPriv* job = nullptr;
 			const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
-			Check( loaded, std::string( "A7-KF: scene loads, " ) + c.tag );
+			Check( loaded, std::string( "A7: scene loads, " ) + c.tag );
 			if( !loaded ) { safe_release( job ); std::remove( path.c_str() ); continue; }
 			StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
 			RayCaster* caster = new RayCaster( false, 8, *shader, false );
 			caster->AttachScene( job->GetScene() );
 			ManifoldSolver* solver = new ManifoldSolver( ManifoldSolverConfig() );
-			const Point3 start( 0.05, 0, 0.02 );
 			IORStack receiver( 1.0 );
 			if( c.pushObj ) {
 				const IObjectPriv* pObj = job->GetScene()->GetObjects()->GetItem( c.pushObj );
-				Check( pObj != nullptr, std::string( "A7-KF: pushed object found, " ) + c.tag );
+				Check( pObj != nullptr, std::string( "A7: pushed object found, " ) + c.tag );
 				receiver.SetCurrentObject( pObj );
 				receiver.push( c.pushIor );
 			}
 			std::vector<ManifoldVertex> chain;
-			solver->BuildSeedChain( start, c.end, *job->GetScene(), *caster, chain, true, &receiver );
+			solver->BuildSeedChain( c.start, c.end, *job->GetScene(), *caster, chain, true, &receiver );
 			std::ostringstream got, want;
 			got << std::setprecision( 9 );
 			for( const ManifoldVertex& v : chain ) got << "[" << v.etaI << " -> " << v.etaT << ( v.isExiting ? " exit" : " entry" ) << "]";
@@ -841,8 +842,8 @@ namespace
 			for( std::size_t k = 0; ok && k < chain.size(); ++k ) {
 				ok = std::fabs( chain[k].etaI - c.expect[2 * k] ) < 1e-12 && std::fabs( chain[k].etaT - c.expect[2 * k + 1] ) < 1e-12;
 			}
-			std::cout << "    " << c.tag << ": got " << got.str() << "  correct " << want.str()
-				<< ( ok ? "  (now CORRECT -- promote this row to a gate)" : "  KNOWN-FAILURE (not gated; DL-345 family)" ) << std::endl;
+			std::cout << "    " << c.tag << ": got " << got.str() << "  correct " << want.str() << std::endl;
+			Check( ok, std::string( "A7: " ) + c.tag );
 			safe_release( solver );
 			safe_release( caster );
 			safe_release( shader );

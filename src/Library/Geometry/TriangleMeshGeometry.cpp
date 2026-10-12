@@ -172,6 +172,7 @@ void TriangleMeshGeometry::BeginTriangles( )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bOpenSignedVolumeNegative=false;
 	safe_release( pPolygonsBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -229,9 +230,30 @@ void TriangleMeshGeometry::ComputeAreas()
 	}
 
 	// DL-382: see TriangleMeshGeometryIndexed::ComputeAreas.
-	m_bProvablyOpenSheet = !smsUncertainNormalOrientation &&
-		GeometricUtilities::IsPlanarConsistentlyWoundSheet( polygons.size(),
-			[this]( size_t t, int k ) -> const Point3& { return polygons[t].vertices[k]; } );
+	m_bProvablyOpenSheet = false;
+	m_bOpenSignedVolumeNegative = false;
+	if( !smsUncertainNormalOrientation ) {
+		if( GeometricUtilities::IsPlanarConsistentlyWoundSheet( polygons.size(),
+			[this]( size_t t, int k ) -> const Point3& { return polygons[t].vertices[k]; } ) )
+		{
+			m_bProvablyOpenSheet = true;
+		}
+		else
+		{
+			std::vector<Point3> corners;
+			corners.reserve( polygons.size() * 3 );
+			for( std::size_t t = 0; t < polygons.size(); ++t ) {
+				for( int k = 0; k < 3; ++k ) {
+					corners.push_back( polygons[t].vertices[k] );
+				}
+			}
+			const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners );
+			if( cert.certified ) {
+				m_bProvablyOpenSheet = true;
+				m_bOpenSignedVolumeNegative = ( cert.signedVolumeAboutCentre < 0 );
+			}
+		}
+	}
 }
 
 void TriangleMeshGeometry::DoneTriangles( )

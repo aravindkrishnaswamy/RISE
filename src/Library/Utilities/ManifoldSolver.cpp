@@ -5240,6 +5240,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	// render is bit-identical).
 	Point3 currentOrigin = start;
 	IORStack seedIor = pStartStack ? *pStartStack : IORStack( 1.0 );
+	seedIor.SetMediumProbeScene( &scene );
 	Scalar currentIOR = seedIor.top();
 	if( !( currentIOR > 0 && currentIOR < RISE_INFINITY ) ) {
 		currentIOR = 1.0;
@@ -5610,7 +5611,11 @@ unsigned int ManifoldSolver::SnellContinueChain(
 				if( bStaleReentry ) {
 					destIor.pop();
 				}
-				destIor.push( specInfo.ior );
+				if( bOpenSheetHit ) {
+					destIor.pushOpenSheet( specInfo.ior );
+				} else {
+					destIor.push( specInfo.ior );
+				}
 			} else if( sameObjectAgain ) {
 				// Only pop if we pushed earlier.  The legacy
 				// slabs-from-planes pattern uses cosI-based
@@ -5688,20 +5693,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 				//    receiver stack's own open-sheet convention
 				//    (DL-345), not this branch.
 				etaFrom = specInfo.ior;
-				const IObject* pY = destIor.topObject();
-				if( pY ) {
-					bool yEnclosesCrossing = false;
-					const Ray probe( Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * offsetEps ), dir );
-					RayIntersection pri( probe, nullRasterizerState );
-					pY->IntersectRay( pri, RISE_INFINITY, true, true, false );
-					if( pri.geometric.bHit && pri.geometric.HasTrueGeomSide() ) {
-						yEnclosesCrossing = Vector3Ops::Dot( dir, pri.geometric.UnflippedGeomNormal() ) > 0;
-					}
-					if( !yEnclosesCrossing ) {
-						destIor.SetCurrentObject( pY );
-						destIor.pop();
-					}
-				}
+				IORStackSeeding::ResolveUnpushedExit( ri.geometric, ri.pObject, destIor );
 				destIOR = destIor.top();
 			}
 			if( !( destIOR > 0 && destIOR < RISE_INFINITY ) ) {

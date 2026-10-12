@@ -164,6 +164,7 @@ namespace RISE
             //! the argument).  Refreshed with the area cache; stamped as
             //! `RayIntersectionGeometric::bProvablyNoInterior` on every hit.
             bool m_bProvablyOpenSheet = false;
+            bool m_bOpenSignedVolumeNegative = false;
 
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas();
@@ -232,6 +233,7 @@ namespace RISE
 		public:
             bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
             bool IsProvablyOpenSheet() const {return m_bProvablyOpenSheet;}
+            bool HasNegativeOpenSignedVolume() const {return m_bOpenSignedVolumeNegative;}
             //! DL-382: certified closed (DL-143/150/197).  Neither this nor
             //! IsProvablyOpenSheet() -> the mesh is UNCERTIFIED.
             bool IsCertifiedWatertight() const {return m_bWatertight;}
