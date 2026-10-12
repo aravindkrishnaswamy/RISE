@@ -2735,13 +2735,11 @@ static void SectionK4K6( Fixtures& f )
 						const double floorTol = ( th < 60.0 ) ? 0.03 : ( 0.03 + 0.06 * sg );
 						Check( std::fabs( ratio - 1.0 ) <= std::max( floorTol, 5.0 * semR ), tag + " coated / composite == 1" );
 					} else {
-						// DL-423 residual, measured (8 x 20000 draws per side):
-						// clear coat 1.045 +- 0.004 (glossy) / 1.065 +- 0.012
-						// (smooth metal), sigma_t 0.2 1.015 / 1.019, sigma_t 0.5
-						// 1.009 / 1.007.  Pinned at [0.97, 1.08] widened by the
-						// row's own 5 sem, so a move either way is caught.
-						Check( ratio >= 0.97 - 5.0 * semR && ratio <= 1.08 + 5.0 * semR,
-							tag + " coated / composite inside the DL-423 residual pin [0.97, 1.08] +- 5 sem" );
+						// DL-423: coated over smooth glossy GGX tightened from the
+						// pre-fix [0.97, 1.08] band to [0.97, 1.03] +- 5 sem achieved
+						// by the angle-resolved reservoir with trapped-cone suppression.
+						Check( ratio >= 0.97 - 5.0 * semR && ratio <= 1.03 + 5.0 * semR,
+							tag + " coated / composite inside the DL-423 tightened pin [0.97, 1.03] +- 5 sem" );
 					}
 
 					// ---- K6: AOV albedo == the directional albedo it summarises
