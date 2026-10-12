@@ -676,3 +676,19 @@ bool DisplacedGeometry::HasUncertifiedOpenness() const
     const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
     return mesh && !mesh->IsCertifiedWatertight() && !mesh->IsProvablyOpenSheet();
 }
+
+// Preserve the pre-DL-382 proof for consumers other than clear refraction.
+bool DisplacedGeometry::HasLegacyOpenSheetProof() const
+{
+    if(m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad()) return true;
+    Realize();
+    const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
+    return mesh && mesh->IsZeroVolumeSheet();
+}
+bool DisplacedGeometry::HasNegativeOpenSignedVolume() const
+{
+    if(m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad()) return false;
+    Realize();
+    const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
+    return mesh && mesh->IsProvablyOpenSheet() && mesh->HasNegativeOpenSignedVolume();
+}

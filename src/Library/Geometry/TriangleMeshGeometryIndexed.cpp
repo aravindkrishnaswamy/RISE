@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <map>
 #include "TriangleMeshGeometryIndexed.h"
 #include "../Utilities/ExpressionMemo.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -217,7 +218,7 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 		// consumer (the BSSRDF front-face gate) that reads this.
 		ri.bOpenSheet = !m_bWatertight;
 	}
-	// DL-382: a planar, consistently wound mesh is a certified open sheet
+	// DL-382: an embedded, consistently wound open mesh is certified for the face rule
 	// (see m_bProvablyOpenSheet), so the transmissive SPFs cross it by its
 	// FACE exactly as they cross a clipped plane (DL-345).  Stamped on
 	// every hit, front or back, like ClippedPlaneGeometry; any other mesh
@@ -265,6 +266,10 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openGraphCoincidentPairs.clear();
     m_bOpenSignedVolumeNegative=false;
 	safe_release( pPtrBVH );
 	areas.clear();
@@ -285,6 +290,10 @@ void TriangleMeshGeometryIndexed::AddVertex( const Point3& point )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openGraphCoincidentPairs.clear();
 	pPoints.push_back( point );
 }
 
@@ -292,6 +301,10 @@ void TriangleMeshGeometryIndexed::AddNormal( const Vector3& normal )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openGraphCoincidentPairs.clear();
 	if( !bUseFaceNormals ) {
 		pNormals.push_back( normal );
 	}
@@ -306,6 +319,10 @@ void TriangleMeshGeometryIndexed::AddVertices( const VerticesListType& points )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openGraphCoincidentPairs.clear();
 	pPoints.insert( pPoints.end(), points.begin(), points.end() );
 }
 
@@ -313,6 +330,10 @@ void TriangleMeshGeometryIndexed::AddNormals( const NormalsListType& normals )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openGraphCoincidentPairs.clear();
 	if( !bUseFaceNormals ) {
 		pNormals.insert( pNormals.end(), normals.begin(), normals.end() );
 	}
@@ -366,6 +387,10 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openGraphCoincidentPairs.clear();
 	indexedtris.push_back( tri );
 }
 
@@ -373,6 +398,10 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangles( const IndexTriangleListTy
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openGraphCoincidentPairs.clear();
 	indexedtris.insert( indexedtris.end(), tris.begin(), tris.end() );
 }
 
@@ -418,6 +447,24 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 		return 0;
 	}
 
+    bool positionsChanged=false;
+    bool graphProofReusable=openGraphAxis>=0;
+    const auto coordinate=[](const Point3& p,int k) {return k==0?p.x:k==1?p.y:p.z;};
+    for(size_t i=0;i<pPoints.size();++i) {
+        const Point3& a=pPoints[i]; const Point3& b=newVertices[i];
+        for(int k=0;k<3;++k) {
+            if(coordinate(a,k)!=coordinate(b,k)) {
+                positionsChanged=true;
+                if(k!=openGraphAxis) graphProofReusable=false;
+            }
+            if(!std::isfinite(coordinate(b,k))) graphProofReusable=false;
+        }
+    }
+    if(graphProofReusable) for(const auto& pair : openGraphCoincidentPairs) {
+        if(coordinate(newVertices[pair.first],openGraphAxis)!=coordinate(newVertices[pair.second],openGraphAxis)) {
+            graphProofReusable=false; break;
+        }
+    }
 	// In-place vertex / normal replacement.  ptr_polygons hold pointers
 	// INTO pPoints/pNormals — those pointers stay valid as long as we
 	// resize 0 (we're overwriting, not reallocating).  We use plain
@@ -434,7 +481,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	}
 
 	// Recompute triangle areas + CDF (vertex positions changed).
-	ComputeAreas();
+	ComputeAreas(positionsChanged,graphProofReusable);
 
 	// The mesh has genuinely CHANGED SHAPE under a stable IGeometry*, which
 	// is the one case design doc §7.2's free-invalidation argument does not
@@ -489,7 +536,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	return refitMs;
 }
 
-void TriangleMeshGeometryIndexed::ComputeAreas()
+void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graphProofReusable)
 {
 	// Self-clearing: the inner loops both push_back, so we MUST clear
 	// before recomputing or the CDF grows quadratically across repeated
@@ -540,32 +587,89 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 		}
 	}
 
-	// DL-382: refreshed with the winding audit just above, at every real
-	// mutation (DoneIndexedTriangles, UpdateVertices, deserialize).
-	m_bProvablyOpenSheet = false;
-	m_bOpenSignedVolumeNegative = false;
-	if( !smsUncertainNormalOrientation ) {
-		if( GeometricUtilities::IsPlanarConsistentlyWoundSheet( ptr_polygons.size(),
-			[this]( size_t t, int k ) -> const Point3& { return *ptr_polygons[t].pVertices[k]; } ) )
-		{
-			m_bProvablyOpenSheet = true;
-		}
-		else
-		{
-			std::vector<Point3> corners;
-			corners.reserve( ptr_polygons.size() * 3 );
-			for( std::size_t t = 0; t < ptr_polygons.size(); ++t ) {
-				for( int k = 0; k < 3; ++k ) {
-					corners.push_back( *ptr_polygons[t].pVertices[k] );
-				}
-			}
-			const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners );
-			if( cert.certified ) {
-				m_bProvablyOpenSheet = true;
-				m_bOpenSignedVolumeNegative = ( cert.signedVolumeAboutCentre < 0 );
-			}
-		}
-	}
+    // Position-only proof cached across unchanged-position updates. Normal
+    // agreement is always re-audited above, even when the proof is reused.
+    if(positionsChanged && graphProofReusable) {
+        // The projected embedded disk and all projected coordinates stayed
+        // fixed. Changing heights preserves its graph, hence embedding and
+        // openness. Recompute the planar refusal and signed-volume warning.
+        m_bZeroVolumeSheet=GeometricUtilities::IsPlanarConsistentlyWoundSheet(
+            ptr_polygons.size(),[this](size_t t,int k)->const Point3& {return *ptr_polygons[t].pVertices[k];});
+        Point3 lo=pPoints[0],hi=pPoints[0];
+        for(const auto& p : pPoints) {
+            lo.x=std::min(lo.x,p.x); lo.y=std::min(lo.y,p.y); lo.z=std::min(lo.z,p.z);
+            hi.x=std::max(hi.x,p.x); hi.y=std::max(hi.y,p.y); hi.z=std::max(hi.z,p.z);
+        }
+        const Point3 centre((lo.x+hi.x)/2,(lo.y+hi.y)/2,(lo.z+hi.z)/2);
+        Scalar volume=0;
+        for(const auto& triangle : ptr_polygons) {
+            volume+=Vector3Ops::Dot(Vector3Ops::mkVector3(*triangle.pVertices[0],centre),
+                Vector3Ops::Cross(Vector3Ops::mkVector3(*triangle.pVertices[1],centre),
+                    Vector3Ops::mkVector3(*triangle.pVertices[2],centre)));
+        }
+        m_bOpenSignedVolumeNegative=!m_bZeroVolumeSheet && volume<0;
+    }
+    if(positionsChanged && !graphProofReusable) {
+        openGraphAxis=-1;
+        openGraphCoincidentPairs.clear();
+        ++openCertificateAudits;
+        m_bZeroVolumeSheet = GeometricUtilities::IsPlanarConsistentlyWoundSheet(
+            ptr_polygons.size(), [this](size_t t, int k) -> const Point3& { return *ptr_polygons[t].pVertices[k]; });
+        m_bShapeOpenSheet = m_bZeroVolumeSheet;
+        m_bOpenSignedVolumeNegative = false;
+        if(!m_bZeroVolumeSheet) {
+            std::vector<Point3> corners;
+            corners.reserve(ptr_polygons.size()*3);
+            for(size_t t=0;t<ptr_polygons.size();++t)
+                for(int k=0;k<3;++k) corners.push_back(*ptr_polygons[t].pVertices[k]);
+            const auto cert=GeometricUtilities::IsEmbeddedOpenOrientedSurface(corners);
+            m_bShapeOpenSheet=cert.certified;
+            m_bOpenSignedVolumeNegative=cert.certified && cert.signedVolumeAboutCentre<0;
+            if(cert.certified) {
+                // Certify a planar projection once. This is stronger than
+                // merely keeping triangle indices: folded projections fail.
+                for(int axis=0;axis<3 && openGraphAxis<0;++axis) {
+                    auto projected=corners;
+                    for(auto& point : projected) {
+                        if(axis==0) point.x=0; else if(axis==1) point.y=0; else point.z=0;
+                    }
+                    if(!GeometricUtilities::IsEmbeddedOpenOrientedSurface(projected).certified) continue;
+                    // A tolerance-only seam is insufficient for an exact
+                    // graph: height motion could separate its two aliases.
+                    std::vector<unsigned int> welded;
+                    if(!GeometricUtilities::WeldVertexPositions(projected,welded)) continue;
+                    std::vector<size_t> first(projected.size(),projected.size());
+                    bool exactProjection=true;
+                    for(size_t i=0;i<projected.size();++i) {
+                        size_t& representative=first[welded[i]];
+                        if(representative==projected.size()) representative=i;
+                        else {
+                            const auto& a=projected[representative]; const auto& b=projected[i];
+                            if(a.x!=b.x || a.y!=b.y || a.z!=b.z) {exactProjection=false;break;}
+                        }
+                    }
+                    if(!exactProjection) continue;
+                    std::map<std::pair<Scalar,Scalar>,size_t> seen;
+                    std::vector<std::pair<size_t,size_t>> coincident;
+                    bool graph=true;
+                    const auto coordinate=[](const Point3& p,int k) {return k==0?p.x:k==1?p.y:p.z;};
+                    for(size_t i=0;i<pPoints.size();++i) {
+                        const auto& point=pPoints[i];
+                        if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {graph=false;break;}
+                        const auto key=std::make_pair(coordinate(pPoints[i],(axis+1)%3),coordinate(pPoints[i],(axis+2)%3));
+                        const auto inserted=seen.emplace(key,i);
+                        if(!inserted.second) {
+                            const size_t other=inserted.first->second;
+                            if(coordinate(pPoints[i],axis)!=coordinate(pPoints[other],axis)) {graph=false;break;}
+                            coincident.emplace_back(other,i);
+                        }
+                    }
+                    if(graph) {openGraphAxis=axis;openGraphCoincidentPairs=std::move(coincident);}
+                }
+            }
+        }
+    }
+    m_bProvablyOpenSheet = m_bShapeOpenSheet && !smsUncertainNormalOrientation;
 }
 
 void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
@@ -1878,6 +1982,10 @@ void TriangleMeshGeometryIndexed::ComputeVertexNormals()
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openGraphCoincidentPairs.clear();
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );

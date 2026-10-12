@@ -158,16 +158,21 @@ namespace RISE
             // mesh mutation. Shared instances/preparation only read it.
             bool smsUncertainNormalOrientation = true;
             unsigned long long smsOrientationAudits = 0, smsOrientationTriangleVisits = 0;
-            //! DL-382: the mesh is ONE planar, consistently wound sheet with
-            //! certain normal orientation, so it provably encloses no volume
-            //! (GeometricUtilities::IsPlanarConsistentlyWoundSheet carries
-            //! the argument).  Refreshed with the area cache; stamped as
-            //! `RayIntersectionGeometric::bProvablyNoInterior` on every hit.
+            // Face-rule proof and planar zero-volume proof are distinct.
+            // A cracked solid can pass the former, never the latter.
             bool m_bProvablyOpenSheet = false;
+            bool m_bZeroVolumeSheet = false;
             bool m_bOpenSignedVolumeNegative = false;
+            bool m_bShapeOpenSheet = false;
+            unsigned long long openCertificateAudits = 0;
+            // A certified embedded projection remains a graph under height
+            // changes. Exact projected coordinates and coincident heights
+            // are checked before overwriting vertices.
+            int openGraphAxis = -1;
+            std::vector<std::pair<size_t,size_t>> openGraphCoincidentPairs;
 
 			//! Computes the triangle areas and the CDF
-			void ComputeAreas();
+			void ComputeAreas(bool positionsChanged = true, bool graphProofReusable = false);
 
 			//! LAZY per-vertex signal bakes (occlusion / thickness), one
 			//! table per (kind, radius).  `mutable` + the cache's own RMutex
@@ -233,6 +238,8 @@ namespace RISE
 		public:
             bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
             bool IsProvablyOpenSheet() const {return m_bProvablyOpenSheet;}
+            bool IsZeroVolumeSheet() const {return m_bZeroVolumeSheet && !smsUncertainNormalOrientation;}
+            unsigned long long OpenCertificateAudits() const {return openCertificateAudits;}
             bool HasNegativeOpenSignedVolume() const {return m_bOpenSignedVolumeNegative;}
             //! DL-382: certified closed (DL-143/150/197).  Neither this nor
             //! IsProvablyOpenSheet() -> the mesh is UNCERTIFIED.

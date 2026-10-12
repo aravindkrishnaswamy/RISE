@@ -70,27 +70,25 @@ Why 3 + 4 => no enclosed volume: for a compact polyhedron `S` embedded in
 with `H_1(S)` free for a subcomplex of `S^3`.  So `H_2(S) = 0` => the
 complement is connected => no bounded complementary component, i.e. no
 enclosed volume, whatever the surface's shape, topology (holes, handles,
-several components) or curvature.
+curvature). The implementation additionally requires one edge-connected component; disconnected pieces are refused by the general certificate.
 
 The existing planar certificate (`IsPlanarConsistentlyWoundSheet`) is kept
 as an OR, so every mesh certified today (including degenerate planar ones
 such as two coincident copies of a sheet, which 4 refuses) stays certified
 and bit-identical.  Closed meshes are refused by 3 and stay bit-identical.
 
-**Consequences that are intended:** a slab authored as ONE mesh of two
-sheets, an open-top box, a bent quad, a curved lens surface, a terrain, a
+**Consequences that are intended:** an open-top box, a bent quad, a curved lens surface, a terrain, a
 displaced non-planar / dart / non-convex clipped plane (its realized mesh)
-are now certified when they pass 1-5.  "N sheets can bound a volume"
+are now certified when they pass 1-5 and the single-component check. A slab authored as one mesh of disconnected sheets is refused; use separate sheet objects.  "N sheets can bound a volume"
 (DL-157 round 3) is answered by 4: N embedded sheets that bound a volume
 must touch along the volume's edges, which is a refusal; if they leave a
 gap the "volume" is connected to the outside and the face rule is the
 reciprocal rule for it (DL-345 measured six open sheets around a box
 matching the closed box to 4 digits).
 
-**Cost**: the certificate runs in `ComputeAreas` (build, `UpdateVertices`,
-deserialize) like the planar one.  Steps 1-3 are linear (hash maps); step 4
+**Cost**: the certificate runs in `ComputeAreas` at build/deserialization and after changed-position updates. Unchanged positions reuse the cached shape proof; authored-normal agreement is refreshed on every update. Height-only deformation of a certified embedded planar projection also reuses the shape proof: exact projected weld aliases, unchanged projected positions, and equality of coincident heights are checked before mutation. Openness and embedding follow from remaining a graph over that fixed projection. Planarity and signed volume are refreshed in linear passes. Other deformation must revalidate embedding; topology alone is insufficient (DL-620). The projection audit is performed at build time for qualifying non-planar indexed meshes, and may increase build cost.  Steps 1-3 are linear (hash maps); step 4
 runs only for meshes that pass 1-3 (open, oriented) and costs one grid
-pass with O(1) expected candidates per triangle.  Measured in section 8.
+pass whose candidate count depends on triangle sizes and spatial overlap; there is no general linear-time guarantee.  Measured in section 8.
 
 ### 2.1 The inside-out crack risk
 
@@ -101,7 +99,7 @@ invert (the outside reads as glass).  There is no sound refusal for this:
 a cracked inward-wound shell and an intentionally inward-facing open bowl
 are the same topology, and any "how closed is it" threshold is a fudge
 that would refuse legitimate sheets.  Decision: the transport certificate
-stays purely topological; the `ObjectManager` preparation pass WARNS (once
+uses topology plus embedding and normal agreement; the `ObjectManager` preparation pass WARNS (once
 per scene) for a transmissive mesh certified by the general certificate
 whose signed volume about its bounding-box centre is negative ("if this is
 meant to be a solid it is wound inside-out").  This is a diagnostic only
@@ -164,7 +162,7 @@ with the rule above.  In a well-nested configuration -- every region's
 medium is claimed consistently (a slab's sheets share one material, closed
 solids nest, lone sheets sit inside a medium that encloses them) -- both
 equal the region's medium, so each pair is the reverse of the other.  Worked
-cases (gated in `ExteriorIndexInvarianceTest` A7 / A8):
+cases (gated in `ExteriorIndexInvarianceTest` A7, including the former A7-KF cases; A8 tests Newton continuity):
 
 | case | forward pairs | reverse pairs |
 |---|---|---|
@@ -186,21 +184,19 @@ history-independent medium and stay order-dependent.
 - Item (4): a refractor inside a lone sheet's half-space sees the walk's
   stack, not the half-space (unchanged; needs half-space seeding).
 - Item (3) composite: frozen, untouched.  Note: `composite_material` on a
-  NEWLY certified mesh takes `CompositeSPF`'s existing open-sheet path, as
-  it already does on planar meshes and clipped planes.
+  newly certified curved mesh retains its pre-merge record. Only the old planar/displaced-quad proof reaches frozen consumers.
 
 ## 6. Tests
 
 - `MeshInteriorSignalTest`: certificate accept/refuse matrix (curved sheet,
-  two-component mesh, open-top box, bent quad accepted; closed cube, sphere
-  plus disk, flattened box, X-crossing sheets, T-junction box, folded
+  open-top box, bent quad accepted; disconnected two-component mesh, closed cube, sphere
+  plus disk, flattened box, X-crossing sheets, inconsistently wound flap, folded
   sheet, non-manifold fan, mixed winding, sliver refused), UpdateVertices
   re-decides.
-- `OpenSheetIndexConventionTest` DL-382 curved rows: PT vs BDPT vs VCM on
-  two-sheet slabs of gently curved open meshes (separate objects) and on one
-  two-component mesh, n >= 8 salted; red on the base, green after.
+- `CurvedOpenSheetSlabTest` (maintained reviewer fixture) curved rows: PT vs BDPT vs VCM on
+  two-sheet slabs of gently curved open meshes (separate objects), n = 8 salted; red on the base, green after.
 - `ExteriorIndexInvarianceTest`: A7-KF T6 / T5c promoted to gates, plus
-  their reverse walks (A8).
+  their reverse walks (also A7).
 
 ## 7. Shipped scenes
 
@@ -208,7 +204,11 @@ Shipped scenes corpus audit:
 - All transmissive mesh objects in shipped scenes (e.g. `diacaustic`, `sms_slab_close_*`) are either closed solids (watertight, verified bit-identical) or clipped-plane / displaced-geometry slabs (already certified under DL-345, bit-identical).
 - No shipped showcase scenes authored transmissive open meshes; test suite verification confirms bit-identical rendering on closed solids and clipped-plane scenes.
 
-## 8. Measurements
+## 8. Historical measurements
+
+The following figures were recorded by `jetski-dl382`; current fix-forward
+gate counts and fresh curved-fixture measurements are in section 9. The old
+closure review claim is withdrawn.
 
 `OpenSheetIndexConventionTest` (mesh rows, salted $n = 8$, Sobol' seeded):
 - **Single open sheet** (up-wound) PT / clipped plane PT: $0.14502 / 0.14515 = 0.9991 \pm 0.0031$
@@ -234,3 +234,95 @@ Shipped scenes corpus audit:
 - Prior baseline before DL-382: RED ($7$ passed / $9$ failed; PT was $0.44$ of clipped plane; slab ratios were $0.59$–$0.63$; integrators disagreed by up to $3\times$).
 - After DL-382: GREEN ($44$ of $44$ full suite checks pass, $20$ of $20$ mesh rows pass).
 
+
+## 9. Fix-forward (2026-10-12)
+
+The `2c08b50c0` merge is retained: the curved-sheet slab core is verified.
+DL-382 is reopened because the previous zero-P1 review claim was false.
+Random-walk scene rejection now uses `IsZeroVolumeSheet`, the old planar
+proof, rather than the general face-rule proof. A cracked solid remains
+accepted. The broader hit flag is admitted at `Object::IntersectRay` only
+for clear dielectric/perfect-refractor SPFs; all other materials retain
+their old planar/displaced-quad proof. This preserves stackless translucent
+and frozen composite consumers without editing their transport code.
+
+Negative open signed volume now produces a once-per-object-set ObjectManager
+warning, including displaced meshes. Certification stays available because
+intentional inward bowls and cracked inward solids cannot be distinguished
+by topology. The warning names the inverted-index risk; it does not promise
+winding invariance for uncertified cracked solids. Analytic patch sets, CSG,
+lone-sheet half-space membership, the pre-existing nested SMS bias, and
+arbitrary-deformation certificate cost are actual rows DL-616..DL-620.
+
+Validation commands for this slice (run from the repository root):
+
+```sh
+# Build the named tests and the two diagnostics; make discovers test sources.
+make -C build/make/rise -j8 all build-test/MeshInteriorSignalTest \
+  build-test/ExteriorIndexInvarianceTest build-test/TransmissionPushGateTest \
+  build-test/SMSDomainReplayTest build-test/CompositeEnergyConservationTest \
+  build-test/OpenSheetIndexConventionTest build-test/OpenSheetWarningTest \
+  build-test/BSSRDFOpenSheetEntryTest build-test/RandomWalkOpenSheetRejectionTest \
+  build-test/CurvedOpenSheetSlabTest build-test/OpenSheetConsumerScopeTest \
+  build-test/OpenSheetLegacyRenderTest build-tool/OpenSheetCertificateAudit \
+  build-tool/OpenSheetCertificateTiming
+python3 scripts/validate_dl382.py --log-dir /tmp/dl382-gates \
+  --baseline-root /tmp/rise-dl382-base-0131003bc \
+  --before-root /tmp/rise-dl382-head-72d9fce57
+```
+
+The optional baseline checkout supplies the frozen-composite pixel hash;
+the pre-fix master checkout supplies runtime red proofs for the two P1s.
+`CurvedOpenSheetSlabTest` is a real ratio gate (5% band, n=8), with the
+reviewer's separate curved sheets and closed slab retained as authored.
+Its baseline is 19 pass / 9 fail. `OpenSheetConsumerScopeTest` checks both
+faces of the holed translucent/composite mesh and the hair skip. The
+certification audit compares all 157 reviewer inputs against the committed
+375-record snapshot, including six unchanged failure records.
+
+The cache avoids full geometric revalidation for unchanged positions and
+for height changes over an already certified exact embedded projection.
+Projection construction is a one-time extra build cost; a formerly planar
+mesh first becoming curved also pays that cost on its first deformation.
+Other deformation retains the full proof (DL-620). The total update can
+still rebuild its BVH when SAH degradation warrants it, as before.
+
+### Runtime red proofs and consumer controls
+
+| Finding | Red control | Fix-forward control |
+|---|---|---|
+| Random-walk holed sphere | pre-fix master: 10 pass / 2 fail, load refused, render -1 | 12 pass / 0 fail; mean 0.90687, equal to the 0131003bc control |
+| Inward glass warning | pre-fix master: 11 pass / 2 fail; no negative-volume warning | 13 pass / 0 fail; named warning appears once, repeat preparation stays quiet |
+| Curved two-sheet slab optics | 0131003bc: 19 pass / 9 fail | 28 pass / 0 fail; separate sheets vs closed slab and integrator ratios gated |
+| Translucent/composite consumer scope; hair skip | broader certificate reaches stackless consumers without the object filter | 32 pass / 0 fail; both faces checked on the holed sphere |
+| Frozen composite image | 0131003bc mean 0.0389199, pixel hash 1764210018072765843 | exactly the same pixel hash; 3 pass / 0 fail with baseline hash supplied |
+
+The warning resolves the missing diagnostic, not the intentionally accepted
+winding dependence of cracked glass. Intentional inward-facing sheets retain
+the face rule; an author who intended a solid is told to correct winding or
+close the mesh. Analytic patches, CSG, lone-sheet half-space membership,
+nested-sheet SMS pricing, and non-graph deformation cost remain separate
+open rows DL-616 through DL-620. No frozen transport implementation was edited.
+
+Fresh curved open/closed slab ratios (n=8, camera below / above): PT
+**0.9921 / 0.9953**, PT+SMS **0.9929 / 0.9954**, BDPT **0.9900 / 0.9947**,
+VCM **0.9965 / 0.9946**. The matching baseline camera-above ratios are
+**0.5878 / 0.5873 / 0.5867 / 0.5866**. These fresh numbers preserve the
+reviewer's verified core while giving the actual gated fixture evidence.
+
+### Final gate and cost record
+
+All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **129/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **13/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **32/0**, exact frozen image **3/0**. Certification audit: **375 identical records from 157 inputs**.
+
+Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **129/0**.
+
+Costs below are wall-time medians of three interleaved runs, 980,000 triangles, `render_thread_reserve_count 0`, no concurrent renders or builds. “Before” is pre-fix master `72d9fce57`; “base” is `0131003bc`. Timing tool output reports openness after the final deformation.
+
+| Work | Base ms | Before ms | Fix-forward ms |
+|---|---:|---:|---:|
+| Curved mesh, identical-position update | 26.9 | 865.9 | 23.1 |
+| Curved graph, height deformation | 26.8 | 907.6 | 29.9 |
+| Closed-ish sphere, identical-position update | 29.2 | 221.0 | 25.5 |
+| Closed-ish sphere, general deformation (DL-620) | 29.5 | 210.6 | 206.6 |
+| Curved mesh build, including projection cache | 496.9 | 1363.6 | 2529.0 |
+| Planar mesh first becoming curved (one-time cache cost) | 26.6 | 793.7 | 1992.8 |

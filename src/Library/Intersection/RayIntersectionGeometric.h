@@ -432,44 +432,21 @@ namespace RISE
 		//!    transformed -- no build-time check needed;
 		//!  - `DisplacedGeometry` over a coplanar convex clipped plane
 		//!    (DL-345): the graph of a function over the quad;
-		//!  - `TriangleMeshGeometryIndexed` / `TriangleMeshGeometry` that
-		//!    are ONE planar, consistently wound sheet with authored
-		//!    normals agreeing with the winding (DL-382,
-		//!    `IsProvablyOpenSheet`, decided by
-		//!    `GeometricUtilities::IsPlanarConsistentlyWoundSheet` at build
-		//!    and on every vertex update).
-		//!
-		//! WHAT CAN NEVER SET IT.
-		//!
-		//! (1) A mesh on the strength of its TOPOLOGY.  "Not certified
-		//! closed" is not "certified open", and `bOpenSheet` on the two
-		//! mesh classes means only the former; a boundary edge proves
-		//! nothing (a box plus a stray quad has one).  The DL-382 mesh
-		//! certificate is GEOMETRIC instead: a planar set has empty
-		//! interior and a connected complement whatever its topology.
-		//!
-		//! (2) A COLLECTION of primitives on the strength of each one
-		//! being interior-free -- an interior is a property of the whole
-		//! surface, and N open sheets can bound a volume that no single
-		//! sheet can.  Coplanarity is what defeats that argument for the
-		//! DL-382 meshes: every triangle lies in ONE plane, so their
-		//! union is still a planar set, and the consistent-winding
-		//! requirement refuses any closed oriented component (a constant
-		//! field has zero flux through a closed surface, so one cannot
-		//! have every normal on the same side) -- a box flattened inside
-		//! the tolerance is refused, and two parallel sheets in one mesh
-		//! are not coplanar.  `BezierPatchGeometry` is
-		//! the concrete case (DL-157 review round 3, P1): it reads as
-		//! "one patch" from its name only.  `patches` is a vector with a
-		//! BSP/Octree over it, and `Job.cpp`'s `.bezier` loader puts
-		//! every patch of a file into ONE geometry --
-		//! `models/raw/teapot.bezier` declares 28,
-		//! `models/bezier/aphrodite.bezier` and `f16.bezier` are closed
-		//! solids.  Round 2 stamped this flag there on the back-face
-		//! condition; at a genuine interior exit on such an object that
-		//! condition holds, so the stamp asserted "no interior" on
-		//! precisely the hit that disproves it.  The setter was removed.
-		//!
+        //!  - meshes passing the legacy planar proof, or the general
+        //!    embedded open oriented surface proof (DL-382). The latter
+        //!    combines welded topology, single-component/free-face peeling,
+        //!    embedding, and normal agreement. Boundary edges alone prove
+        //!    nothing. Disconnected non-planar pieces are refused.
+        //! Object::IntersectRay admits the broader proof only for clear
+        //! dielectric/perfect-refractor materials. Other material consumers
+        //! retain the old planar/displaced-convex-quad proof. In particular,
+        //! random-walk load rejection uses IsZeroVolumeSheet(), because an
+        //! open cracked solid still has a meaningful random-walk interior.
+        //!
+        //! A collection of analytic patches cannot certify itself merely
+        //! because each patch is interior-free; the union may be closed.
+        //! Bezier and bilinear patch sets retain no such proof (DL-616).
+
 		//! Explicitly cleared by `CSGObject::IntersectRay` after operand
 		//! copies and payload adoption, unlike
 		//! `bOpenSheet`: `bOpenSheet` is a property of the SURFACE the

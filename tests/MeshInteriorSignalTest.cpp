@@ -1714,7 +1714,43 @@ static void TestProvablyOpenSheetCertification()
 		Check( !m->IsProvablyOpenSheet(), "X-crossing quads: refused (self-intersection)" );
 		safe_release( m );
 	}
-	// (j) T-junction: quad plus perpendicular flap sharing an edge -> REFUSED (non-manifold edge).
+    // Cached shape proof survives identical positions, while deformation
+    // revalidates geometry and changed normals revalidate readability.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25;
+        auto* m=BuildFaceNormalMesh(v,t);
+        const auto audits=m->OpenCertificateAudits();
+        const bool before=m->IsProvablyOpenSheet();
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits && m->IsProvablyOpenSheet()==before,
+            "identical positions reuse the shape certificate");
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits,"height deformation reuses the embedded projection proof");
+        v[2].x+=0.2; m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits+1,"changed projection revalidates embedding");
+        safe_release(m);
+    }
+    // Exact duplicate projection vertices must keep identical heights.
+    // Tolerance-only welds must not receive the graph deformation shortcut.
+    for(bool nearSeam : {false,true}) {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25;
+        v.push_back(v[0]); v.push_back(v[2]);
+        t.clear(); AddTri(t,0,1,2); AddTri(t,4,5,3);
+        if(nearSeam) v[4].x+=1e-8;
+        auto* m=BuildFaceNormalMesh(v,t);
+        Check(m->IsProvablyOpenSheet(),"split-corner curved sheet initially certifies");
+        const auto audits=m->OpenCertificateAudits();
+        if(nearSeam) for(auto& p : v) p.z*=2;
+        else v[4].z+=0.2;
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits+1,
+            nearSeam?"tolerance-only projection seam revalidates":"split coincident heights revalidate");
+        if(!nearSeam) Check(!m->IsProvablyOpenSheet(),"separating the seam revokes the graph certificate");
+        safe_release(m);
+    }
+	// (j) Quad plus perpendicular flap: inconsistent shared-edge winding -> REFUSED.
 	{
 		std::vector<Point3> v; IndexTriangleListType t;
 		quad( v, t, 0.0, true, 0 );
@@ -1722,7 +1758,7 @@ static void TestProvablyOpenSheetCertification()
 		v.push_back( Point3( 0, -1, 1 ) );
 		AddTri( t, 0, 1, 4 );
 		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
-		Check( !m->IsProvablyOpenSheet(), "T-junction mesh (edge used 3 times): refused" );
+		Check( !m->IsProvablyOpenSheet(), "flap with inconsistent shared-edge winding: refused" );
 		safe_release( m );
 	}
 	// (k) sliver triangle: altitude < eps -> REFUSED.
@@ -1737,7 +1773,7 @@ static void TestProvablyOpenSheetCertification()
 		safe_release( m );
 	}
 	// (l) the non-indexed mesh class (rawmesh) shares the predicate:
-	// one quad certified, two parallel quads certified.
+	// one quad certified, two parallel quads refused.
 	for( int two = 0; two < 2; ++two ) {
 		TriangleMeshGeometry* m = new TriangleMeshGeometry( true );
 		m->addref();

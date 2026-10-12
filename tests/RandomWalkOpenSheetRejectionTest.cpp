@@ -48,6 +48,20 @@ int main()
     std::string thin=BuildInsetScene(1,64);
     const auto h=thin.find("height 0.5"); thin.replace(h,10,"height 0.000001");
     Check(LoadBody(thin),"DL-409 positive thin slab is accepted");
+    // DL-382 regression: one missing triangle is a cracked solid, not a
+    // planar zero-volume card. Load and render the reviewer's sphere.
+    std::ifstream fixture("tests/fixtures/dl382/holed.RISEscene");
+    std::string holed((std::istreambuf_iterator<char>(fixture)),std::istreambuf_iterator<char>());
+    Check(!holed.empty(),"holed sphere fixture exists");
+    holed += "uniformcolor_painter\n{\n name white\n color 1 1 1\n}\n"
+        "standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n"
+        "pathtracing_pel_rasterizer\n{\n samples 16\n pixel_filter box\n oidn_denoise FALSE\n radiance_map white\n radiance_background TRUE\n}\n";
+    Check(LoadBody(holed),"holed random-walk sphere loads");
+    const std::string holePath=WriteScene(holed,"dl382_holed_rw");
+    const double holeMean=RenderFurnaceMean(holePath,382616);
+    std::cout << "holed random-walk sphere render mean=" << holeMean << "\n";
+    Check(std::isfinite(holeMean) && holeMean>0,"holed random-walk sphere renders finite positive pixels");
+    std::remove(holePath.c_str());
     std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
     return failCount ? 1 : 0;
 }

@@ -547,8 +547,10 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		//
 		// `ri.bProvablyNoInterior` is the flag that means what is needed;
 		// its setters (a clipped plane, a displaced coplanar convex one,
-		// and since DL-382 a mesh that is ONE planar consistently wound
-		// sheet) are listed on the flag's own doc.  A mesh is never
+		// and a mesh that is ONE planar consistently wound
+		// sheet) are listed on the flag's own doc. Object::IntersectRay
+        // excludes the broader DL-382 certificate from translucent records,
+        // including stackless photon gather and SMS callers. A mesh is never
 		// certified on topology ("not certified closed" is not "certified
 		// open"), and a COLLECTION of primitives is never certified on the
 		// strength of each being interior-free, since N such sheets can

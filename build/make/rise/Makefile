@@ -187,6 +187,14 @@ $(PATHTESTDEST)% : $(PATHTESTS)%.o $(OBJLIB)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(OBJLIB) $(LDLIBS)
 
+# Targeted diagnostic builds (for reproducible certification audits/timings).
+build-tool/% : $(PATHTOOLDEST)%
+	@:
+
+$(PATHTOOLDEST)% : $(PATHTOOLS)%.o $(OBJLIB)
+	@mkdir -p $(PATHTOOLDEST)
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTOOLS)$*.o $(OBJLIB) $(LDLIBS)
+
 # Build all tools. Mirrors the `tests` target — same loop-and-continue
 # pattern so one broken tool doesn't block the rest.
 tools : $(OBJLIB)

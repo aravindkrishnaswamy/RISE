@@ -192,6 +192,8 @@ namespace RISE
             //! realized mesh's own certificates, or DL-345's convex-plane
             //! base).  Such a transmissive surface keeps the IOR-stack rule.
             bool HasUncertifiedOpenness() const;
+            bool HasLegacyOpenSheetProof() const;
+            bool HasNegativeOpenSignedVolume() const;
 			static unsigned int GetBuildMeshCount();
 			static void         ResetBuildMeshCount();
 

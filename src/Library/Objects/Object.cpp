@@ -19,6 +19,8 @@
 #include "../Geometry/TriangleMeshGeometry.h"
 #include "../Geometry/TriangleMeshGeometryIndexed.h"
 #include "../Geometry/BoxGeometry.h"
+#include "../Materials/DielectricSPF.h"
+#include "../Materials/PerfectRefractorSPF.h"
 #include "../Geometry/DisplacedGeometry.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -1066,6 +1068,17 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	}
 
 	pGeometry->IntersectRay( ri.geometric, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+    if(ri.geometric.bHit && ri.geometric.bProvablyNoInterior) {
+        const ISPF* spf=pMaterial ? pMaterial->GetSPF() : nullptr;
+        if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) {
+            if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(pGeometry))
+                ri.geometric.bProvablyNoInterior=mesh->IsZeroVolumeSheet();
+            else if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(pGeometry))
+                ri.geometric.bProvablyNoInterior=mesh->IsZeroVolumeSheet();
+            else if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(pGeometry))
+                ri.geometric.bProvablyNoInterior=displaced->HasLegacyOpenSheetProof();
+        }
+    }
     ri.hasBoundaryRange = ri.geometric.bHit;
     ri.hasBoundaryRange2 = ri.geometric.bHit && bComputeExitInfo && ri.geometric.range2 != RISE_INFINITY;
     if (ri.hasBoundaryRange) ri.boundaryRange = ri.geometric.range / factor;
