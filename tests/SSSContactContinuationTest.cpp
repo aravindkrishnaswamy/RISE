@@ -1,9 +1,12 @@
 // DL-408: an SSS exit against a COINCIDENT neighbour (contact continuation).
 //
-// Every row compares a touching scene against its twin with a 2e-6 gap
+// Contact rows compare a touching scene against its twin with a 2e-6 gap
 // (wider than the 1e-6 outward offset an SSS exit gives its continuation,
 // optically nothing), with PAIRED salts (ValueSalt, common random numbers),
-// n = 8 salted renders per side.  Under the white environment with
+// n = 8 per side (unclamped diffusion VCM uses 16). The perspective rows
+// are unclamped; outside-light occlusion rows keep geometry fixed and turn
+// off the fully occluded exterior light as an independent reference.
+// Under the white environment with
 // conservative materials the gapped twin is the oracle (the diffusion
 // profile is not energy conserving on a finite cube, so its absolute value
 // is not 1); rows whose every material conserves energy are also gated
@@ -428,28 +431,276 @@ namespace
 		return out;
 	}
 
+	//! Supplied round-4 perspective fixture (gen4.py), unclamped.
+	std::string BuildReview4Pad( bool diffusion, Scalar gap, Rast r )
+	{
+		std::string out = R"REVIEW(RISE ASCII SCENE 7
+film
+{
+	width 40
+	height 30
+}
+
+pinhole_camera
+{
+	location 0 0.3 3.0
+	lookat 0 -1.2 0
+	up 0 1 0
+	fov 55
+}
+
+uniformcolor_painter
+{
+	name white
+	color 0.8 0.8 0.8
+}
+
+uniformcolor_painter
+{
+	name lt
+	color 1 1 1
+}
+
+randomwalk_sss_material
+{
+	name block
+	ior 1.5
+	absorption 0
+	scattering 2
+	g 0
+	roughness 0
+	max_bounces 8192
+}
+
+lambertian_material
+{
+	name wall
+	reflectance white
+}
+
+lambertian_luminaire_material
+{
+	name lum
+	exitance lt
+	scale 1
+	material none
+}
+
+box_geometry
+{
+	name block_geo
+	width 1
+	height 1
+	depth 1
+}
+
+standard_object
+{
+	name blk
+	geometry block_geo
+	material block
+	position 0 -0.5 0
+}
+
+clippedplane_geometry
+{
+	name pad
+	pta -0.5 0 0.5
+	ptb 0.5 0 0.5
+	ptc 0.5 0 -0.5
+	ptd -0.5 0 -0.5
+}
+
+standard_object
+{
+	name padobj
+	geometry pad
+	material lum
+	position 0 -1 0
+}
+
+clippedplane_geometry
+{
+	name fl
+	pta -4 0 4
+	ptb 4 0 4
+	ptc 4 0 -4
+	ptd -4 0 -4
+}
+
+standard_object
+{
+	name floor
+	geometry fl
+	material wall
+	position 0 -1.4 0
+}
+
+standard_shader
+{
+	name global
+	shaderop DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples 256
+	pixel_filter box
+	oidn_denoise FALSE
+	pathguiding FALSE
+	adaptive_max_samples 0
+}
+
+file_rasterizeroutput
+{
+	pattern rendered/unused
+	type EXR
+	bpp 32
+	color_space Rec709RGB_Linear
+}
+)REVIEW";
+		if( diffusion ) ReplaceMaterial( out, "randomwalk_sss_material\n{\n\tname block", kDiffusionLeft );
+		const std::string position = "\tposition 0 -0.5 0\n";
+		std::ostringstream moved; moved << std::setprecision(17) << "\tposition 0 " << -0.5 + gap << " 0\n";
+		out.replace( out.find(position), position.size(), moved.str() );
+		SetRasterizer( out, r, r == Rast::PT ? 256 : 128, 0 );
+		const std::string env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
+		out.erase( out.find(env), env.size() );
+		for( const char* key : { "\tmax_eye_depth 64\n", "\tmax_light_depth 64\n" } ) {
+			const auto at = out.find(key); if( at == std::string::npos ) continue;
+			std::string replacement(key); replacement.replace(replacement.find("64"),2,"30");
+			out.replace(at,std::string(key).size(),replacement);
+		}
+		return out;
+	}
+
+	bool TestOutsideArrivalOwnership()
+	{
+		bool ok=true;
+		for( bool diffusion : {false,true} ) for( bool wideTraversal : {false,true} ) {
+			std::string scene=BuildReview4Pad(diffusion,0,Rast::PT);
+			const std::string sheet="standard_object\n{\n\tname padobj\n\tgeometry pad\n\tmaterial lum\n\tposition 0 -1 0\n}\n\n";
+			scene.erase(scene.find(sheet),sheet.size());
+			// Replace the open pad by an adjacent solid neighbour. Arrival
+			// is outside SSS but inside this neighbour; its exit is first.
+			scene += "\ndielectric_material\n{\n name neighbour_material\n ior 1.5\n tau 1\n scattering 1000000\n}\nbox_geometry\n{\n name neighbour_geo\n width 1\n height 0.4\n depth 1\n}\nstandard_object\n{\n name solid_neighbour\n geometry neighbour_geo\n material neighbour_material\n position 0 -1.2 0\n}\n";
+			if(wideTraversal) for(unsigned i=0;i<16;++i) {
+				std::ostringstream far;far<<"\nstandard_object\n{\n name far"<<i<<"\n geometry block_geo\n material wall\n position "<<100+10*i<<" 0 0\n}\n";scene+=far.str();
+			}
+			const std::string path=WriteScene(scene,"dl408_ownership");
+			IJobPriv* job=nullptr;
+			if(!RISE_CreateJobPriv(&job) || !job || !job->SetPrimaryAcceleration(wideTraversal,false,4,32) || !job->LoadAsciiSceneViaCst(path.c_str())) {safe_release(job);std::remove(path.c_str());return false;}
+			std::remove(path.c_str());
+			IObjectManager* objects=job->GetObjects();objects->PrepareForRendering();
+			const IObject* sss=objects->GetItem("blk");
+			const IObject* neighbour=objects->GetItem("solid_neighbour");
+			if(!sss || !neighbour) {safe_release(job);return false;}
+			// The only coincident neighbour is the solid.
+			// The sheet is omitted before loading; no prepared tree is mutated.
+			unsigned wrong=0,managerWrong=0,exitWrong=0;
+			for(unsigned i=0;i<128;++i) {
+				Ray ray(Point3(-.4+.8*double(i%16)/15,-1.2,-.4+.8*double(i/16)/7),Vector3(0,1,0));
+				RayIntersection ri(ray,nullRasterizerState);sss->IntersectRay(ri,RISE_INFINITY,true,true,false);
+				BSSRDFSampling::ResolveCoincidentEntry(*objects,ri,true,true);
+				if(!ri.geometric.bHit || ri.pObject!=neighbour) ++wrong;
+				RayIntersection primary(ray,nullRasterizerState);objects->IntersectRay(primary,true,true,false);
+				if(!primary.geometric.bHit || primary.pObject!=neighbour) ++managerWrong;
+				RayIntersection withExit(ray,nullRasterizerState),expectedExit(ray,nullRasterizerState);
+				objects->IntersectRay(withExit,true,true,true);neighbour->IntersectRay(expectedExit,RISE_INFINITY,true,true,true);
+				if(withExit.pObject!=neighbour || withExit.hasBoundaryRange2!=expectedExit.hasBoundaryRange2 || !RelClose(withExit.geometric.ptExit.y,expectedExit.geometric.ptExit.y,1e-12) ||
+					!RelClose(withExit.geometric.vNormal2.y,expectedExit.geometric.vNormal2.y,1e-12)) ++exitWrong;
+			}
+			std::cout << "DL408 ownership " << (diffusion?"diffusion":"RW") << (wideTraversal?" BVH":" linear") << " outside-SSS/inside-neighbour helper-wrong=" <<wrong<<"/128 manager-wrong="<<managerWrong<<"/128 exit-wrong="<<exitWrong<<"/128"<<std::endl;
+			if(wrong || managerWrong || exitWrong) ok=false;
+			safe_release(job);
+		}
+		return ok;
+	}
+
+	bool TestNonTouchIdentity()
+	{
+		unsigned index=0;
+		for(unsigned fixture=0;fixture<8;++fixture) for(unsigned repeat=0;repeat<4;++repeat) {
+			const Rast r=fixture%3==0?Rast::PT:fixture%3==1?Rast::BDPT:Rast::VCM;
+			const std::string scene=fixture<6?BuildReview4Pad(fixture>=3,1e-3,r):
+				BuildRoomOutside(1e-3,fixture==6?Rast::BDPT:Rast::VCM,64);
+			const std::string path=WriteScene(scene,"dl408_identity");
+			IJobPriv* job=nullptr;
+			if(!RISE_CreateJobPriv(&job) || !job || !job->LoadAsciiSceneViaCst(path.c_str())) {safe_release(job);std::remove(path.c_str());return false;}
+			std::remove(path.c_str());job->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* cap=new CapturingRasterizerOutput();job->GetRasterizer()->AddRasterizerOutput(cap);
+			const unsigned seed=841000+fixture*31+repeat;
+			SobolSamplerTestHooks::ValueSalt().store(SobolSequence::HashCombine(seed,0x315u));std::srand(seed);
+			const bool rendered=job->Rasterize();SobolSamplerTestHooks::ValueSalt().store(0u);
+			bool finite=true;
+			unsigned long long hash=1469598103934665603ull;
+			for(const auto& pixel:cap->pixels) {
+				const double channels[]={pixel.base.r,pixel.base.g,pixel.base.b,pixel.a};
+				for(double channel:channels) if(!std::isfinite(channel)) finite=false;
+				const auto* bytes=reinterpret_cast<const unsigned char*>(channels);
+				for(std::size_t k=0;k<sizeof(channels);++k) {hash^=bytes[k];hash*=1099511628211ull;}
+			}
+			const bool valid=rendered && finite && !cap->pixels.empty();safe_release(cap);safe_release(job);
+			if(!valid)return false;
+			std::cout<<"DL408 IDENTITY "<<index++<<" seed="<<seed<<" hash="<<std::hex<<hash<<std::dec<<std::endl;
+		}
+		return true;
+	}
+	//! A nearby sheet is not a tie, even after a large scene translation.
+	bool TestEntryDistance()
+	{
+		bool ok=true;
+		for(double x : {0.,10000.}) {
+			for(double gap : {0.,2e-6}) for(bool grazing : {false,true}) {
+				std::string scene=BuildReview4Pad(false,0,Rast::PT);
+				for(auto item : {std::pair<const char*,double>{"-0.5",-.5},{"-1",-gap},{"-1.4",-1.4}}) {
+					const std::string old="\tposition 0 "+std::string(item.first)+" 0\n";
+					std::ostringstream moved; moved<<std::setprecision(17)<<"\tposition "<<x<<" "<<item.second<<" 0\n";
+					scene.replace(scene.find(old),old.size(),moved.str());
+				}
+				const auto path=WriteScene(scene,"noncontact"); IJobPriv* job=nullptr;
+				if(!RISE_CreateJobPriv(&job)||!job||!job->LoadAsciiSceneViaCst(path.c_str())) {
+					safe_release(job); std::remove(path.c_str()); return false;
+				}
+				std::remove(path.c_str()); auto* objects=job->GetObjects(); objects->PrepareForRendering();
+				const auto* sss=objects->GetItem("blk"); const auto* pad=objects->GetItem("padobj");
+				if(!sss||!pad) {safe_release(job);return false;}
+				Ray ray(Point3(x,grazing?1e-7:.2,0),grazing?Vector3(1,-1e-4,0):Vector3(0,-1,0)); RayIntersection result(ray,nullRasterizerState);
+				objects->IntersectRay(result,true,true,false);
+				std::cout<<"DL408 distance x="<<x<<" gap="<<gap<<" grazing="<<grazing<<" SSS-first="<<(result.pObject==sss)
+					<<" pad-first="<<(result.pObject==pad)<<" range="<<std::setprecision(17)<<result.geometric.range<<std::endl;
+				ok=ok && result.pObject==(gap>0?sss:pad); safe_release(job);
+			}
+		}
+		return ok;
+	}
+
 	struct Row
 	{
 		std::string label;
 		std::function<bool( Scalar gap, std::string& scene )> build;
 		bool absolute;		// every material conserves energy: also gate both sides against 1
 		double floor = 0.002;	// relative floor of the paired band
+		bool outsideOffOracle = false;
+		unsigned trials = 8;
 	};
 }
 
 int main( int argc, char** argv )
 {
-	bool gate = true;
+	bool gate = true, identityOnly=false, ownershipOnly=false;
 	std::string only;
 	double gapTwin = 2e-6;	// --gap: the separated twin's gap (measurement aid)
 	for( int i = 1; i < argc; ++i ) {
 		const std::string a = argv[i];
-		if( a == "--measure" ) gate = false;
+		if( a == "--identity-only" ) identityOnly=true;
+		else if( a == "--ownership-only" ) ownershipOnly=true;
+		else if( a == "--measure" ) gate = false;
 		else if( a == "--gate" ) gate = true;
 		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
 		else if( a == "--gap" && i + 1 < argc ) gapTwin = std::atof( argv[++i] );
 	}
-	const unsigned int kSalts = 8;
+
 	std::vector<Row> rows;
 	const char* kindName[] = { "RW|RW", "RW|Lambert", "RW|diffusion", "diffusion|diffusion" };
 	for( int kind = 0; kind < 4; ++kind ) {
@@ -540,9 +791,40 @@ int main( int argc, char** argv )
 		rows.push_back( mlt );
 	}
 
-	bool failed = false;
+	// Original reviewer fixtures: perspective pad/floor, no contribution clamp.
+	// Both sides share a salt; a 2e-6 gap changes no visible geometry.
+	for( bool diffusion : {false,true} ) for( Rast r : {Rast::PT,Rast::BDPT,Rast::VCM} ) {
+		rows.push_back({std::string("review4 original ")+(diffusion?"diffusion":"RW")+" pad-floor "+RastName(r),
+			[=](Scalar gap,std::string& sc){sc=BuildReview4Pad(diffusion,gap,r);return true;},false,0,false,diffusion && r==Rast::VCM?16u:8u});
+	}
+	for( Rast r : {Rast::BDPT,Rast::VCM} ) {
+		rows.push_back({std::string("review4 original outside-lit room ")+RastName(r),
+			[=](Scalar gap,std::string& sc){sc=BuildRoomOutside(gap,r,256);return true;},false,0});
+	}
+
+	// Independent room reference: turning off a fully occluded exterior
+	// light must not change the interior image, without moving any geometry.
+	for( Rast r : {Rast::BDPT,Rast::VCM} ) {
+		rows.push_back({std::string("review4 original outside-light occlusion ")+RastName(r),
+			[=](Scalar side,std::string& sc){
+				sc=BuildRoomOutside(0,r,256,side==0);
+				// Auto radius depends on all traced light segments, including
+				// those blocked outside the room. Hold the finite kernel fixed
+				// so on/off tests occlusion rather than two smoothing radii.
+				if(r==Rast::VCM) {const auto at=sc.find("vcm_pel_rasterizer\n{\n");if(at==std::string::npos)return false;sc.insert(at+std::string("vcm_pel_rasterizer\n{\n").size(),"\tmerge_radius 0.005\n");}
+				return true;
+			},false,0,true});
+	}
+
+	if(identityOnly) return TestNonTouchIdentity()?0:1;
+	const bool neighbourOK=TestOutsideArrivalOwnership();
+	const bool distanceOK=TestEntryDistance();
+	const bool ownershipOK=neighbourOK && distanceOK;
+	if(ownershipOnly) return ownershipOK?0:1;
+	bool failed = !ownershipOK;
 	unsigned int salt = 49000;
 	for( const Row& row : rows ) {
+		const unsigned kSalts=row.trials;
 		if( !only.empty() && row.label.find( only ) == std::string::npos ) continue;
 		std::vector<double> contact, gapped;
 		bool valid = true;
@@ -566,20 +848,24 @@ int main( int argc, char** argv )
 		const Stats a = Summarize( contact ), b = Summarize( gapped );
 		const double seA = a.sd / std::sqrt( double( kSalts ) ), seB = b.sd / std::sqrt( double( kSalts ) );
 		// The twins share each salt (common random numbers), so the band is
-		// 4 SE of the PAIRED differences -- a heavy-tailed salt shows up in
-		// both twins and cancels -- with a 0.2 % floor for the pairing the
+		// 4 SE of the PAIRED differences for legacy rows, 3 SE for original
+		// review fixtures -- a heavy-tailed salt shows up in
+		// both twins and cancels -- with a legacy-only 0.2 % floor for pairing the
 		// thread schedule breaks.
 		std::vector<double> diff;
 		for( unsigned int i = 0; i < kSalts; ++i ) diff.push_back( contact[i] - gapped[i] );
+		std::vector<double> ratios;
+		for(unsigned i=0;i<kSalts;++i) ratios.push_back(contact[i]/gapped[i]);
+		const Stats ratioStats=Summarize(ratios);
 		const Stats d = Summarize( diff );
-		const double band = r_max( 4 * d.sd / std::sqrt( double( kSalts ) ), row.floor * b.mean );
+		const double band = r_max( (row.label.find("review4 original")==0?3:4) * d.sd / std::sqrt( double( kSalts ) ), row.floor * b.mean );
 		const bool ratioOK = std::fabs( d.mean ) <= band;
 		const bool absOK = !row.absolute ||
 			( std::fabs( a.mean - 1 ) <= r_max( 4 * seA, 0.002 ) && std::fabs( b.mean - 1 ) <= r_max( 4 * seB, 0.002 ) );
 		const bool ok = ratioOK && absOK;
 		std::cout << std::setprecision( 6 ) << "DL408 " << ( ok ? "ok   " : "FAIL " ) << row.label
-			<< ": contact " << a.mean << " +/- " << a.sd << "  gap " << b.mean << " +/- " << b.sd
-			<< "  ratio " << a.mean / b.mean << "  diff " << d.mean << "  (n=" << kSalts << ", paired band " << band << ")"
+			<< ": contact " << a.mean << " +/- " << a.sd << (row.outsideOffOracle?"  outside-off ":"  gap ") << b.mean << " +/- " << b.sd
+			<< "  ratio " << a.mean / b.mean << "  ratio-sd " << ratioStats.sd << "  diff " << d.mean << "  (n=" << kSalts << ", paired band " << band << ")"
 			<< ( row.absolute ? ( absOK ? "  furnace ok" : "  furnace FAIL" ) : "" ) << std::endl;
 		if( !ok ) failed = true;
 	}
