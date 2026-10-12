@@ -18,7 +18,7 @@ A deterministic ray test places an adjacent transmitting dielectric solid below 
 
 ## Evidence
 
-All required gates below now pass; final independent review is pending and no closure is claimed yet. Native before/after binaries use the same harness and current library context, replacing only the two production source files changed by `8df8b6dff..6f4df8775` for the historical comparison. The historical harness omits its direct call to the not-yet-existing resolver while retaining actual ObjectManager ownership checks. Focused ASan/UBSan instruments the two changed production translation units and the test; other library objects retain the native build.
+All required gates below pass. Two fresh independent reviews of committed `004edc7c3` found zero P1: one checked first-surface ownership, numerical conditioning and API contracts; the other checked oracles, statistical evidence, ledger scope and documentation fidelity. DL-408 is closed after that review; DL-557 remains OPEN without a fix. Native before/after binaries use the same harness and current library context, replacing only the two production source files changed by `8df8b6dff..6f4df8775` for the historical comparison. The historical harness omits its direct call to the not-yet-existing resolver while retaining actual ObjectManager ownership checks. Focused ASan/UBSan instruments the two changed production translation units and the test; other library objects retain the native build.
 
 ### Original round-4 production verification (source-controlled comparison)
 
