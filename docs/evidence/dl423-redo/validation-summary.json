@@ -1,0 +1,21 @@
+{
+  "source_parent_blob": "adec3800e831fb6129e5a4fa13bed937d4728180",
+  "clean_make_rc": 0,
+  "deployment_rc": 0,
+  "opto_rc": 0,
+  "unexpected_compiler_warnings": 0,
+  "restoration_gates": {
+    "LayeredWhiteFurnaceTest": "63/0",
+    "CoatedEtaContinuityTest": "60/0",
+    "CoatedMaterialChunkTest": "85/0",
+    "SPFBSDFConsistencyTest": "rc0 all passed",
+    "SPFPdfConsistencyTest": "rc0 all passed",
+    "ConnectionTypeSplitTest": "431782/0",
+    "CompositeEnergyConservationTest": "1177/0"
+  },
+  "known_unfixed_diagnostics": {
+    "CoatedGGXAccuracyTest --gate": "11 passing comparisons,8 failures;rc1",
+    "CoatedParameterContinuityProbe": "90260/44;rc1,all failures coarse shrinking pair"
+  },
+  "status": "STEP0+design only; no replacement and no merge"
+}
