@@ -215,14 +215,28 @@ int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
     const IMaterial* material = object.GetMaterial();
     const ISPF* spf = material ? material->GetSPF() : nullptr;
     if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) return 0;
+    // Match Object::IntersectRay's admission by scattering material identity:
+    // a sole-layer composite can forward a clear SPF without receiving the rule.
+    const IMaterial* proofMaterial=material;
+    while(proofMaterial) {
+        if(const auto* lum=dynamic_cast<const LambertianLuminaireMaterial*>(proofMaterial))
+            proofMaterial=&lum->GetBaseMaterial();
+        else if(const auto* lum=dynamic_cast<const PhongLuminaireMaterial*>(proofMaterial))
+            proofMaterial=&lum->GetBaseMaterial();
+        else break;
+    }
+    const bool broadProof=dynamic_cast<const DielectricMaterial*>(proofMaterial)
+        || dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial);
     const IGeometry* geometry = object.GetGeometry();
     if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
-        return mesh->IsProvablyOpenSheet() && mesh->HasNegativeOpenSignedVolume() ? 4 :
-            ((!mesh->IsCertifiedWatertight() && !mesh->IsProvablyOpenSheet()) ? 1 : 0);
+        return broadProof && mesh->IsProvablyOpenSheet() && mesh->HasNegativeOpenSignedVolume() ? 4 :
+            ((!mesh->IsCertifiedWatertight() && !(broadProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet())) ? 1 : 0);
     if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
-        return mesh->IsProvablyOpenSheet() ? (mesh->HasNegativeOpenSignedVolume() ? 4 : 0) : 2;
+        return (broadProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet())
+            ? (broadProof && mesh->HasNegativeOpenSignedVolume() ? 4 : 0) : 2;
     if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(geometry))
-        return displaced->HasNegativeOpenSignedVolume() ? 4 : (displaced->HasUncertifiedOpenness() ? 1 : 0);
+        return broadProof && displaced->HasNegativeOpenSignedVolume() ? 4
+            : (displaced->HasUncertifiedOpenness(broadProof) ? 1 : 0);
     if(dynamic_cast<const BezierPatchGeometry*>(geometry) || dynamic_cast<const BilinearPatchGeometry*>(geometry)) return 3;
     if(const auto* plane=dynamic_cast<const ClippedPlaneGeometry*>(geometry)) return plane->IsPlanarConvexQuad() ? 0 : 3;
     return 0;

@@ -667,14 +667,15 @@ bool DisplacedGeometry::HasUncertainSMSNormalOrientation() const
     return !mesh || mesh->HasUncertainSMSNormalOrientation();
 }
 
-bool DisplacedGeometry::HasUncertifiedOpenness() const
+bool DisplacedGeometry::HasUncertifiedOpenness(bool allowGeneralProof) const
 {
     if( m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad() ) {
         return false;
     }
     Realize();
     const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
-    return mesh && !mesh->IsCertifiedWatertight() && !mesh->IsProvablyOpenSheet();
+    return mesh && !mesh->IsCertifiedWatertight()
+        && !(allowGeneralProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet());
 }
 
 // Preserve the pre-DL-382 proof for consumers other than clear refraction.

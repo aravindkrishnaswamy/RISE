@@ -195,8 +195,7 @@ history-independent medium and stay order-dependent.
   re-decides.
 - `CurvedOpenSheetSlabTest` (maintained reviewer fixture) curved rows: PT vs BDPT vs VCM on
   two-sheet slabs of gently curved open meshes (separate objects), n = 8 salted; red on the base, green after.
-- `ExteriorIndexInvarianceTest`: A7-KF T6 / T5c promoted to gates, plus
-  their reverse walks (also A7).
+- `ExteriorIndexInvarianceTest`: A7 T6 and its reverse walk, plus T5c, promoted to gates.
 
 ## 7. Shipped scenes
 
@@ -313,7 +312,7 @@ reviewer's verified core while giving the actual gated fixture evidence.
 
 ### Final gate and cost record
 
-All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **136/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **13/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
+All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **136/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **53/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
 
 Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **136/0**.
 
@@ -339,3 +338,14 @@ A direct-material-only intermediate filter also excluded plain clear glass under
 The closed-ish timing fixture contains an exactly coincident corner pair in a triangle. The cache now stores that necessary failure witness and reuses only the general refusal while those corners remain exactly coincident and positions stay finite. The legacy planar proof is recomputed on every changed frame: it intentionally ignores degenerate triangles. Splitting the pair invalidates the witness and reruns certification. The initial new cache test was red **132/2**; the expanded mesh gate also checks flattening into and leaving the legacy planar case. Refusals without a reusable exact witness and valid non-graph deformations still need full revalidation (DL-620).
 
 An isolated control using `0c5500401`'s Object.cpp and the current geometry produces frozen aggregate hash **16954627485471606144**, failing the paired baseline check **5/1**; the fixed four-image control gives **18203558810393780052**, **6/0**. This control isolates the reviewed material-scope regression.
+
+
+The second fresh review of `8a9289edc` found **zero P1s** across correctness,
+cache/cost, and evidence lenses. Its remaining warning P2 is corrected: warning
+classification now uses the same material identity and luminaire unwrapping as
+`Object::IntersectRay`. Single-layer composites retain the uncertainty warning;
+they cannot receive the negative-volume message describing a face rule they do
+not use. Indexed, raw, and displaced classifiers follow that admission. The new
+warning coverage was red **41/12** on `8a9289edc` and is green **53/0**; it checks both windings,
+both single-layer arrangements, nested wrappers, native wrapped glass, and
+once-only preparation.
