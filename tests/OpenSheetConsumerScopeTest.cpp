@@ -14,8 +14,14 @@ int main() {
     const std::string geometry=fixture.substr(begin,end-begin);
     const std::string materials=Materials(false)+
         "translucent_material\n{\n name trans\n ref white\n tau white\n ext 0\n N 10\n scattering 0\n}\n"
-        "composite_material\n{\n name comp\n top glass\n bottom inner\n thickness 0\n extinction 0\n}\n";
-    for(const char* material : {"glass","trans","comp"}) {
+        "composite_material\n{\n name comp\n top glass\n bottom inner\n thickness 0\n extinction 0\n}\n"
+        "composite_material\n{\n name top_only\n top glass\n bottom none\n thickness 0\n extinction 0\n}\n"
+        "composite_material\n{\n name bottom_only\n top none\n bottom glass\n thickness 0\n extinction 0\n}\n"
+        "lambertian_luminaire_material\n{\n name wrapped\n material top_only\n exitance white\n scale 0\n}\n"
+        "phong_luminaire_material\n{\n name nested\n material wrapped\n exitance white\n scale 0\n N 10\n}\n"
+        "lambertian_luminaire_material\n{\n name wrapped_glass\n material glass\n exitance white\n scale 0\n}\n"
+        "phong_luminaire_material\n{\n name nested_glass\n material wrapped_glass\n exitance white\n scale 0\n N 10\n}\n";
+    for(const char* material : {"glass","trans","comp","top_only","bottom_only","wrapped","nested","wrapped_glass","nested_glass"}) {
         LoadedScene loaded(materials+geometry+"standard_object\n{\n name caster\n geometry gs\n material "+material+"\n}\n");
         const auto* object=loaded.Object("caster");
         Check(object!=nullptr,"consumer object exists");
@@ -25,7 +31,7 @@ int main() {
         for(int side : {-1,1}) {
             const auto hit=Hit(*object,Point3(0.1,1.1,side*3),Vector3(0,0,-side));
             Check(hit.geometric.bHit,"consumer ray hits cracked solid");
-            Check(hit.geometric.bProvablyNoInterior==(std::string(material)=="glass"),
+            Check(hit.geometric.bProvablyNoInterior==(std::string(material)=="glass" || std::string(material)=="wrapped_glass" || std::string(material)=="nested_glass"),
                 "wider proof admitted only for clear refraction");
         }
     }

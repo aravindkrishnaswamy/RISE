@@ -1,6 +1,6 @@
 # DL-382: certifying open sheets, and the unpushed-exit rule
 
-Slice `jetski-dl382`, 2026-10-12, branched from `master` `0131003bc`.
+Original slice `jetski-dl382`, 2026-10-12, based on `master` `0131003bc`. Fix-forward is based on local master `72d9fce57`; the verified core merge `2c08b50c0` is retained.
 Background: [DL345_OPEN_SHEET_FACE_RULE.md](DL345_OPEN_SHEET_FACE_RULE.md)
 (the face rule and why it is the only reciprocal convention on an open
 transmissive sheet).  This is the FRESH design the owner asked for after the
@@ -86,7 +86,7 @@ gap the "volume" is connected to the outside and the face rule is the
 reciprocal rule for it (DL-345 measured six open sheets around a box
 matching the closed box to 4 digits).
 
-**Cost**: the certificate runs in `ComputeAreas` at build/deserialization and after changed-position updates. Unchanged positions reuse the cached shape proof; authored-normal agreement is refreshed on every update. Height-only deformation of a certified embedded planar projection also reuses the shape proof: exact projected weld aliases, unchanged projected positions, and equality of coincident heights are checked before mutation. Openness and embedding follow from remaining a graph over that fixed projection. Planarity and signed volume are refreshed in linear passes. Other deformation must revalidate embedding; topology alone is insufficient (DL-620). The projection audit is performed at build time for qualifying non-planar indexed meshes, and may increase build cost.  Steps 1-3 are linear (hash maps); step 4
+**Cost**: the certificate runs in `ComputeAreas` at build/deserialization and after changed-position updates. Unchanged positions reuse the cached shape proof; authored-normal agreement is refreshed on every update. Height-only deformation of a certified embedded planar projection also reuses the shape proof: exact projected weld aliases, unchanged projected positions, and equality of coincident heights are checked before mutation. Openness and embedding follow from remaining a graph over that fixed projection. Planarity and signed volume are refreshed in linear passes. An exactly coincident triangle-corner pair supplies a cached necessary refusal for the general certificate while that equality remains; the legacy planar proof is still recomputed. Other deformation without a reusable proof must revalidate embedding; topology alone is insufficient (DL-620). The projection audit is performed at build time for qualifying non-planar indexed meshes, and may increase build cost.  Steps 1-3 are linear (hash maps); step 4
 runs only for meshes that pass 1-3 (open, oriented) and costs one grid
 pass whose candidate count depends on triangle sizes and spatial overlap; there is no general linear-time guarantee.  Measured in section 8.
 
@@ -201,8 +201,8 @@ history-independent medium and stay order-dependent.
 ## 7. Shipped scenes
 
 Shipped scenes corpus audit:
-- All transmissive mesh objects in shipped scenes (e.g. `diacaustic`, `sms_slab_close_*`) are either closed solids (watertight, verified bit-identical) or clipped-plane / displaced-geometry slabs (already certified under DL-345, bit-identical).
-- No shipped showcase scenes authored transmissive open meshes; test suite verification confirms bit-identical rendering on closed solids and clipped-plane scenes.
+- The shipped corpus includes closed solids, clipped/displaced slabs, and pre-existing planar mesh sheets. Five dielectric indexed meshes in `gltf_import_attenuation.RISEscene` already certified on the base.
+- The 157-input audit produces the same 375 records before and after the fix-forward; it establishes unchanged certification across this corpus. Render gates independently cover closed solids and clipped-plane scenes.
 
 ## 8. Historical measurements
 
@@ -242,7 +242,7 @@ DL-382 is reopened because the previous zero-P1 review claim was false.
 Random-walk scene rejection now uses `IsZeroVolumeSheet`, the old planar
 proof, rather than the general face-rule proof. A cracked solid remains
 accepted. The broader hit flag is admitted at `Object::IntersectRay` only
-for clear dielectric/perfect-refractor SPFs; all other materials retain
+for dielectric/perfect-refractor scattering materials, including luminaire wrappers around them; all other materials (including single-layer composites under wrappers) retain
 their old planar/displaced-quad proof. This preserves stackless translucent
 and frozen composite consumers without editing their transport code.
 
@@ -280,11 +280,12 @@ faces of the holed translucent/composite mesh and the hair skip. The
 certification audit compares all 157 reviewer inputs against the committed
 375-record snapshot, including six unchanged failure records.
 
-The cache avoids full geometric revalidation for unchanged positions and
-for height changes over an already certified exact embedded projection.
+The cache avoids full geometric revalidation for unchanged positions,
+height changes over an already certified exact embedded projection, and
+general refusals with retained exactly coincident triangle corners.
 Projection construction is a one-time extra build cost; a formerly planar
 mesh first becoming curved also pays that cost on its first deformation.
-Other deformation retains the full proof (DL-620). The total update can
+Other deformation without a reusable proof retains full revalidation (DL-620). The total update can
 still rebuild its BVH when SAH degradation warrants it, as before.
 
 ### Runtime red proofs and consumer controls
@@ -294,8 +295,8 @@ still rebuild its BVH when SAH degradation warrants it, as before.
 | Random-walk holed sphere | pre-fix master: 10 pass / 2 fail, load refused, render -1 | 12 pass / 0 fail; mean 0.90687, equal to the 0131003bc control |
 | Inward glass warning | pre-fix master: 11 pass / 2 fail; no negative-volume warning | 13 pass / 0 fail; named warning appears once, repeat preparation stays quiet |
 | Curved two-sheet slab optics | 0131003bc: 19 pass / 9 fail | 28 pass / 0 fail; separate sheets vs closed slab and integrator ratios gated |
-| Translucent/composite consumer scope; hair skip | broader certificate reaches stackless consumers without the object filter | 32 pass / 0 fail; both faces checked on the holed sphere |
-| Frozen composite image | 0131003bc mean 0.0389199, pixel hash 1764210018072765843 | exactly the same pixel hash; 3 pass / 0 fail with baseline hash supplied |
+| Translucent/composite consumer scope; hair skip | reviewed 0c5500401: 60 pass / 8 fail on single-layer and wrapped composites | 86 pass / 0 fail; material identity after luminaire unwrapping, both faces checked on the holed sphere |
+| Frozen composite images | 0131003bc: two-layer, top-only, bottom-only, wrapped top-only; aggregate hash 18203558810393780052 | same four exact images gated against the baseline aggregate; 6 pass / 0 fail |
 
 The warning resolves the missing diagnostic, not the intentionally accepted
 winding dependence of cracked glass. Intentional inward-facing sheets retain
@@ -312,17 +313,29 @@ reviewer's verified core while giving the actual gated fixture evidence.
 
 ### Final gate and cost record
 
-All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **129/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **13/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **32/0**, exact frozen image **3/0**. Certification audit: **375 identical records from 157 inputs**.
+All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **136/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **13/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
 
-Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **129/0**.
+Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **136/0**.
 
 Costs below are wall-time medians of three interleaved runs, 980,000 triangles, `render_thread_reserve_count 0`, no concurrent renders or builds. “Before” is pre-fix master `72d9fce57`; “base” is `0131003bc`. Timing tool output reports openness after the final deformation.
 
 | Work | Base ms | Before ms | Fix-forward ms |
 |---|---:|---:|---:|
-| Curved mesh, identical-position update | 26.9 | 865.9 | 23.1 |
-| Curved graph, height deformation | 26.8 | 907.6 | 29.9 |
-| Closed-ish sphere, identical-position update | 29.2 | 221.0 | 25.5 |
-| Closed-ish sphere, general deformation (DL-620) | 29.5 | 210.6 | 206.6 |
-| Curved mesh build, including projection cache | 496.9 | 1363.6 | 2529.0 |
-| Planar mesh first becoming curved (one-time cache cost) | 26.6 | 793.7 | 1992.8 |
+| Curved mesh, identical-position update | 24.9 | 797.6 | 22.8 |
+| Curved graph, height deformation | 24.9 | 826.1 | 31.5 |
+| Closed-ish sphere, identical-position update | 28.1 | 190.6 | 25.2 |
+| Closed-ish sphere, deformation with retained coincident-corner witness | 28.5 | 185.7 | 29.6 |
+| Curved mesh build, including projection cache | 466.9 | 1244.0 | 2281.7 |
+| Planar mesh first becoming curved (one-time cache cost) | 25.4 | 724.9 | 1793.2 |
+
+### Independent review correction
+
+The first fresh review of `0c5500401` found one P1: scoping by SPF admitted a frozen composite that forwards its sole scattering layer. The scope now checks dielectric/perfect-refractor material identity after unwrapping luminaires; every composite keeps the legacy proof, including single-layer composites under wrappers. Clear glass under luminaires retains the verified face rule. Both single-layer arrangements and nested wrappers have hit-record gates, and four composite render variants compare exact pixels against `0131003bc`. The expanded scope gate was red **60/8** on the reviewed commit.
+
+Review also found a P2: the graph-cache signed-volume centre included unused storage vertices. Its bounds now use referenced triangle corners, matching full certification. An inward bowl with an unused outlier was red **130/1** in MeshInteriorSignalTest before this correction. The shipped-scene description now includes the pre-existing planar dielectric meshes in the attenuation scene. The cost table above was remeasured after these corrections.
+
+A direct-material-only intermediate filter also excluded plain clear glass under luminaires. Added controls were red **82/4** on that filter; classification now follows luminaire base materials without unwrapping composites. No luminaire or composite implementation changed.
+
+The closed-ish timing fixture contains an exactly coincident corner pair in a triangle. The cache now stores that necessary failure witness and reuses only the general refusal while those corners remain exactly coincident and positions stay finite. The legacy planar proof is recomputed on every changed frame: it intentionally ignores degenerate triangles. Splitting the pair invalidates the witness and reruns certification. The initial new cache test was red **132/2**; the expanded mesh gate also checks flattening into and leaving the legacy planar case. Refusals without a reusable exact witness and valid non-graph deformations still need full revalidation (DL-620).
+
+An isolated control using `0c5500401`'s Object.cpp and the current geometry produces frozen aggregate hash **16954627485471606144**, failing the paired baseline check **5/1**; the fixed four-image control gives **18203558810393780052**, **6/0**. This control isolates the reviewed material-scope regression.

@@ -19,8 +19,10 @@
 #include "../Geometry/TriangleMeshGeometry.h"
 #include "../Geometry/TriangleMeshGeometryIndexed.h"
 #include "../Geometry/BoxGeometry.h"
-#include "../Materials/DielectricSPF.h"
-#include "../Materials/PerfectRefractorSPF.h"
+#include "../Materials/DielectricMaterial.h"
+#include "../Materials/PerfectRefractorMaterial.h"
+#include "../Materials/LambertianLuminaireMaterial.h"
+#include "../Materials/PhongLuminaireMaterial.h"
 #include "../Geometry/DisplacedGeometry.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -1069,8 +1071,19 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 
 	pGeometry->IntersectRay( ri.geometric, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
     if(ri.geometric.bHit && ri.geometric.bProvablyNoInterior) {
-        const ISPF* spf=pMaterial ? pMaterial->GetSPF() : nullptr;
-        if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) {
+        // Scope by scattering material identity. Luminaires preserve their
+        // base's scattering law, but a composite may forward a sole layer's
+        // SPF: it must retain its frozen legacy record even under luminaires.
+        const IMaterial* proofMaterial=pMaterial;
+        while(proofMaterial) {
+            if(const auto* lum=dynamic_cast<const LambertianLuminaireMaterial*>(proofMaterial)) {
+                proofMaterial=&lum->GetBaseMaterial();
+            } else if(const auto* lum=dynamic_cast<const PhongLuminaireMaterial*>(proofMaterial)) {
+                proofMaterial=&lum->GetBaseMaterial();
+            } else break;
+        }
+        if(!dynamic_cast<const DielectricMaterial*>(proofMaterial) &&
+            !dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial)) {
             if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(pGeometry))
                 ri.geometric.bProvablyNoInterior=mesh->IsZeroVolumeSheet();
             else if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(pGeometry))

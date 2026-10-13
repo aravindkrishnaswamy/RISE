@@ -269,6 +269,7 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
     m_bOpenSignedVolumeNegative=false;
 	safe_release( pPtrBVH );
@@ -293,6 +294,7 @@ void TriangleMeshGeometryIndexed::AddVertex( const Point3& point )
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	pPoints.push_back( point );
 }
@@ -304,6 +306,7 @@ void TriangleMeshGeometryIndexed::AddNormal( const Vector3& normal )
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	if( !bUseFaceNormals ) {
 		pNormals.push_back( normal );
@@ -322,6 +325,7 @@ void TriangleMeshGeometryIndexed::AddVertices( const VerticesListType& points )
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	pPoints.insert( pPoints.end(), points.begin(), points.end() );
 }
@@ -333,6 +337,7 @@ void TriangleMeshGeometryIndexed::AddNormals( const NormalsListType& normals )
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	if( !bUseFaceNormals ) {
 		pNormals.insert( pNormals.end(), normals.begin(), normals.end() );
@@ -390,6 +395,7 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	indexedtris.push_back( tri );
 }
@@ -401,6 +407,7 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangles( const IndexTriangleListTy
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	indexedtris.insert( indexedtris.end(), tris.begin(), tris.end() );
 }
@@ -450,6 +457,11 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
     bool positionsChanged=false;
     bool graphProofReusable=openGraphAxis>=0;
     const auto coordinate=[](const Point3& p,int k) {return k==0?p.x:k==1?p.y:p.z;};
+    bool refusalProofReusable=openRefusalPair[0]<newVertices.size() && openRefusalPair[1]<newVertices.size();
+    if(refusalProofReusable) for(int k=0;k<3;++k) {
+        if(coordinate(newVertices[openRefusalPair[0]],k)!=coordinate(newVertices[openRefusalPair[1]],k))
+            refusalProofReusable=false;
+    }
     for(size_t i=0;i<pPoints.size();++i) {
         const Point3& a=pPoints[i]; const Point3& b=newVertices[i];
         for(int k=0;k<3;++k) {
@@ -457,7 +469,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
                 positionsChanged=true;
                 if(k!=openGraphAxis) graphProofReusable=false;
             }
-            if(!std::isfinite(coordinate(b,k))) graphProofReusable=false;
+            if(!std::isfinite(coordinate(b,k))) {graphProofReusable=false;refusalProofReusable=false;}
         }
     }
     if(graphProofReusable) for(const auto& pair : openGraphCoincidentPairs) {
@@ -481,7 +493,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	}
 
 	// Recompute triangle areas + CDF (vertex positions changed).
-	ComputeAreas(positionsChanged,graphProofReusable);
+	ComputeAreas(positionsChanged,graphProofReusable,refusalProofReusable);
 
 	// The mesh has genuinely CHANGED SHAPE under a stable IGeometry*, which
 	// is the one case design doc §7.2's free-invalidation argument does not
@@ -536,7 +548,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	return refitMs;
 }
 
-void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graphProofReusable)
+void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graphProofReusable, bool refusalProofReusable)
 {
 	// Self-clearing: the inner loops both push_back, so we MUST clear
 	// before recomputing or the CDF grows quadratically across repeated
@@ -589,14 +601,26 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
 
     // Position-only proof cached across unchanged-position updates. Normal
     // agreement is always re-audited above, even when the proof is reused.
+    if(positionsChanged && refusalProofReusable) {
+        // Exactly coincident corners force the general certificate to refuse
+        // on every such frame. The legacy planar test ignores degenerate
+        // triangles, so it must still be recomputed independently.
+        m_bZeroVolumeSheet=GeometricUtilities::IsPlanarConsistentlyWoundSheet(
+            ptr_polygons.size(),[this](size_t t,int k)->const Point3& {return *ptr_polygons[t].pVertices[k];});
+        m_bShapeOpenSheet=m_bZeroVolumeSheet;
+        m_bOpenSignedVolumeNegative=false;
+    }
     if(positionsChanged && graphProofReusable) {
         // The projected embedded disk and all projected coordinates stayed
         // fixed. Changing heights preserves its graph, hence embedding and
         // openness. Recompute the planar refusal and signed-volume warning.
         m_bZeroVolumeSheet=GeometricUtilities::IsPlanarConsistentlyWoundSheet(
             ptr_polygons.size(),[this](size_t t,int k)->const Point3& {return *ptr_polygons[t].pVertices[k];});
-        Point3 lo=pPoints[0],hi=pPoints[0];
-        for(const auto& p : pPoints) {
+        // Match the full certificate's centre: unused storage vertices are
+        // not part of this open surface and cannot affect its warning sign.
+        Point3 lo=*ptr_polygons[0].pVertices[0],hi=lo;
+        for(const auto& triangle : ptr_polygons) for(int k=0;k<3;++k) {
+            const Point3& p=*triangle.pVertices[k];
             lo.x=std::min(lo.x,p.x); lo.y=std::min(lo.y,p.y); lo.z=std::min(lo.z,p.z);
             hi.x=std::max(hi.x,p.x); hi.y=std::max(hi.y,p.y); hi.z=std::max(hi.z,p.z);
         }
@@ -609,8 +633,9 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
         }
         m_bOpenSignedVolumeNegative=!m_bZeroVolumeSheet && volume<0;
     }
-    if(positionsChanged && !graphProofReusable) {
+    if(positionsChanged && !graphProofReusable && !refusalProofReusable) {
         openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
         openGraphCoincidentPairs.clear();
         ++openCertificateAudits;
         m_bZeroVolumeSheet = GeometricUtilities::IsPlanarConsistentlyWoundSheet(
@@ -625,6 +650,22 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
             const auto cert=GeometricUtilities::IsEmbeddedOpenOrientedSurface(corners);
             m_bShapeOpenSheet=cert.certified;
             m_bOpenSignedVolumeNegative=cert.certified && cert.signedVolumeAboutCentre<0;
+            if(!cert.certified) {
+                // Store a cheap, exact failure witness where one exists. No
+                // refusal is cached merely because topology stayed constant.
+                for(const auto& triangle : ptr_polygons) {
+                    for(int k=0;k<3;++k) {
+                        const Point3& a=*triangle.pVertices[k];
+                        const Point3& b=*triangle.pVertices[(k+1)%3];
+                        if(a.x==b.x && a.y==b.y && a.z==b.z) {
+                            openRefusalPair[0]=triangle.pVertices[k]-pPoints.data();
+                            openRefusalPair[1]=triangle.pVertices[(k+1)%3]-pPoints.data();
+                            break;
+                        }
+                    }
+                    if(openRefusalPair[0]<pPoints.size()) break;
+                }
+            }
             if(cert.certified) {
                 // Certify a planar projection once. This is stronger than
                 // merely keeping triangle indices: folded projections fail.
@@ -1985,6 +2026,7 @@ void TriangleMeshGeometryIndexed::ComputeVertexNormals()
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );

@@ -170,9 +170,12 @@ namespace RISE
             // are checked before overwriting vertices.
             int openGraphAxis = -1;
             std::vector<std::pair<size_t,size_t>> openGraphCoincidentPairs;
+            // A pair of coincident corners in one triangle is a necessary
+            // refusal witness for the general (non-degenerate) certificate.
+            size_t openRefusalPair[2] = {size_t(-1),size_t(-1)};
 
 			//! Computes the triangle areas and the CDF
-			void ComputeAreas(bool positionsChanged = true, bool graphProofReusable = false);
+			void ComputeAreas(bool positionsChanged = true, bool graphProofReusable = false, bool refusalProofReusable = false);
 
 			//! LAZY per-vertex signal bakes (occlusion / thickness), one
 			//! table per (kind, radius).  `mutable` + the cache's own RMutex

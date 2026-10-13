@@ -1731,6 +1731,51 @@ static void TestProvablyOpenSheetCertification()
         Check(m->OpenCertificateAudits()==audits+1,"changed projection revalidates embedding");
         safe_release(m);
     }
+    // An exact degenerate-triangle witness remains a valid refusal until
+    // its two corners separate, including during non-graph deformation.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25; v.push_back(v[0]);
+        AddTri(t,0,4,1);
+        auto* m=BuildFaceNormalMesh(v,t);
+        Check(!m->IsProvablyOpenSheet(),"coincident-corner curved surface is uncertified");
+        const auto audits=m->OpenCertificateAudits();
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(!m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "unchanged coincident corners reuse a necessary refusal witness");
+        v[2].z=0; m->UpdateVertices(v,NormalsListType());
+        Check(m->IsZeroVolumeSheet() && m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "refusal cache still admits the legacy planar proof after flattening");
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(!m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "leaving the plane restores the cached general refusal");
+        v[4].z=0.2; m->UpdateVertices(v,NormalsListType());
+        Check(m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits+1,
+            "separating refused corners revalidates and accepts an embedded flap");
+        safe_release(m);
+    }
+    // Unreferenced storage vertices cannot change the signed-volume centre.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        for(int j=0;j<3;++j) for(int i=0;i<3;++i) {
+            const Scalar x=i-1,y=j-1;
+            v.push_back(Point3(x,y,0.2*(x*x+y*y)));
+        }
+        v.push_back(Point3(2,2,-100)); // unused, deliberately outside the surface bounds
+        for(unsigned j=0;j<2;++j) for(unsigned i=0;i<2;++i) {
+            const unsigned a=j*3+i;
+            AddTri(t,a,a+1,a+4); AddTri(t,a,a+4,a+3);
+        }
+        auto* m=BuildFaceNormalMesh(v,t);
+        const auto audits=m->OpenCertificateAudits();
+        Check(m->IsProvablyOpenSheet() && m->HasNegativeOpenSignedVolume(),
+            "inward bowl sign ignores unused vertex on initial certification");
+        for(unsigned i=0;i<9;++i) v[i].z*=1.01;
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits && m->HasNegativeOpenSignedVolume(),
+            "cached graph update keeps referenced-corner signed-volume convention");
+        safe_release(m);
+    }
     // Exact duplicate projection vertices must keep identical heights.
     // Tolerance-only welds must not receive the graph deformation shortcut.
     for(bool nearSeam : {false,true}) {
