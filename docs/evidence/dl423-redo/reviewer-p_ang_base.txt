@@ -1,0 +1,18 @@
+ANG F0 0.90000 a 0.05000 th 45.00000 coated[tot 0.88620 nearMirror 0.22600 inPlaneFar 0.01365 offPlane 0.03330] composite[tot 0.87645 nearMirror 0.22709 inPlaneFar 0.01374 offPlane 0.04074]
+ANG F0 0.90000 a 0.05000 th 70.00000 coated[tot 0.85736 nearMirror 0.27731 inPlaneFar 0.01764 offPlane 0.04145] composite[tot 0.79663 nearMirror 0.29429 inPlaneFar 0.02126 offPlane 0.04728]
+ANG F0 0.90000 a 0.05000 th 85.00000 coated[tot 0.92002 nearMirror 0.62058 inPlaneFar 0.02796 offPlane 0.04296] composite[tot 0.86693 nearMirror 0.62686 inPlaneFar 0.03859 offPlane 0.05888]
+MAXK F0 0.90000 a 0.05000 th 45.00000 coated mean 0.88702 max kray 1.27627
+MAXK F0 0.90000 a 0.05000 th 70.00000 coated mean 0.85646 max kray 4.06983
+MAXK F0 0.90000 a 0.05000 th 85.00000 coated mean 0.91788 max kray 4.53482
+ANG F0 0.90000 a 0.02000 th 45.00000 coated[tot 0.89256 nearMirror 0.55885 inPlaneFar 0.00349 offPlane 0.00892] composite[tot 0.89627 nearMirror 0.57591 inPlaneFar 0.00299 offPlane 0.00751]
+ANG F0 0.90000 a 0.02000 th 70.00000 coated[tot 0.87815 nearMirror 0.48170 inPlaneFar 0.00498 offPlane 0.01262] composite[tot 0.84381 nearMirror 0.52278 inPlaneFar 0.00498 offPlane 0.00908]
+ANG F0 0.90000 a 0.02000 th 85.00000 coated[tot 0.91895 nearMirror 0.63846 inPlaneFar 0.01237 offPlane 0.02110] composite[tot 0.87508 nearMirror 0.65640 inPlaneFar 0.01856 offPlane 0.01551]
+MAXK F0 0.90000 a 0.02000 th 45.00000 coated mean 0.89504 max kray 1.33774
+MAXK F0 0.90000 a 0.02000 th 70.00000 coated mean 0.87850 max kray 4.30328
+MAXK F0 0.90000 a 0.02000 th 85.00000 coated mean 0.91563 max kray 8.02902
+ANG F0 0.50000 a 0.16000 th 45.00000 coated[tot 0.41159 nearMirror 0.06354 inPlaneFar 0.00983 offPlane 0.03677] composite[tot 0.39948 nearMirror 0.06254 inPlaneFar 0.01023 offPlane 0.03841]
+ANG F0 0.50000 a 0.16000 th 70.00000 coated[tot 0.42880 nearMirror 0.17941 inPlaneFar 0.01296 offPlane 0.04731] composite[tot 0.41048 nearMirror 0.17901 inPlaneFar 0.01390 offPlane 0.04973]
+ANG F0 0.50000 a 0.16000 th 85.00000 coated[tot 0.72409 nearMirror 0.61296 inPlaneFar 0.01106 offPlane 0.03464] composite[tot 0.71574 nearMirror 0.61525 inPlaneFar 0.01179 offPlane 0.03791]
+MAXK F0 0.50000 a 0.16000 th 45.00000 coated mean 0.40956 max kray 1.00037
+MAXK F0 0.50000 a 0.16000 th 70.00000 coated mean 0.42789 max kray 1.00762
+MAXK F0 0.50000 a 0.16000 th 85.00000 coated mean 0.72398 max kray 1.02613
