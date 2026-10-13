@@ -736,20 +736,11 @@ namespace
 		}
 	}
 
-	//! A7-KF (DL-290 review round 3, P2-3): configurations the containment
-	//! probe gets WRONG, printed and NOT gated so they stay visible.  The
-	//! probe asks "does the stack-top object Y enclose this crossing?" by
-	//! looking for an EXIT hit on Y ahead; that answer is wrong when Y is
-	//! itself an OPEN sheet that bounds the walk's medium (T6: a lone sheet
-	//! inside a two-sheet slab -- the probe misses the slab's bottom sheet
-	//! and pops it) and when Y is a closed solid wound INWARD (T5c: the
-	//! probe's exit hit reads as an entry -- a single-sided mesh; an
-	//! analytic sphere under `scale -1` does NOT reproduce it).  Both belong to the open-sheet /
-	//! winding convention family, DL-345 (filed at merge); see the
-	//! SnellContinueChain comment for the full residual list.
+    //! A7 containment regressions: T6 sibling sheet, reverse walks, and
+    //! T5c inward closed mesh. Promoted to gates by DL-382.
 	void TestSeedWalkKnownFailures()
 	{
-		std::cout << "A7-KF: seed-walk configurations the containment probe gets wrong (KNOWN-FAILURE, not gated)" << std::endl;
+		std::cout << "A7: gated seed-walk containment regressions" << std::endl;
 		const std::string up = "\tpta -0.6 0 -0.6\n\tptb -0.6 0 0.6\n\tptc 0.6 0 0.6\n\tptd 0.6 0 -0.6\n";
 		const std::string down = "\tpta -0.6 0 -0.6\n\tptb 0.6 0 -0.6\n\tptc 0.6 0 0.6\n\tptd -0.6 0 0.6\n";
 		struct KF { const char* tag; std::string scene; const char* pushObj; Scalar pushIor; Point3 start; Point3 end; std::vector<Scalar> expect; };

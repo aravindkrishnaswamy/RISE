@@ -190,8 +190,11 @@ namespace RISE
             bool HasUncertainSMSNormalOrientation() const;
             //! DL-382: neither certified closed nor certified open (the
             //! realized mesh's own certificates, or DL-345's convex-plane
-            //! base).  Such a transmissive surface keeps the IOR-stack rule.
-            bool HasUncertifiedOpenness() const;
+            //! base). Set allowGeneralProof=false for legacy-only material consumers.
+            //! Such an uncertified transmissive surface keeps the IOR-stack rule.
+            bool HasUncertifiedOpenness(bool allowGeneralProof=true) const;
+            bool HasLegacyOpenSheetProof() const;
+            bool HasNegativeOpenSignedVolume() const;
 			static unsigned int GetBuildMeshCount();
 			static void         ResetBuildMeshCount();
 

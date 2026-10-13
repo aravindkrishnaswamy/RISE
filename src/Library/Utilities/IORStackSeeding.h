@@ -684,10 +684,10 @@ namespace RISE
 			for( int step = 0; step < 64; ++step ) {
 				RayIntersection pri( probe, nullRasterizerState );
 				pScene->GetObjects()->IntersectRay( pri, true, true, false );
-				if( !pri.geometric.bHit || !pri.geometric.HasTrueGeomSide() ) {
+				if( !pri.geometric.bHit ) {
 					return false;
 				}
-				if( pri.pObject == pSheet ) {
+				if( !pri.geometric.HasTrueGeomSide() || pri.pObject == pSheet ) {
 					probe.origin = Point3Ops::mkPoint3( pri.geometric.ptIntersection, dir * ( Scalar( 1e-6 ) * scale ) );
 					continue;
 				}

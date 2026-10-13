@@ -7854,8 +7854,8 @@ static bool RefuseVolumeFreeRandomWalk_(const IGeometry* geometry, const IMateri
     if(!geometry || !material || !material->GetRandomWalkSSSParams()) return false;
     const auto* indexed=dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>(geometry);
     const auto* triangles=dynamic_cast<const Implementation::TriangleMeshGeometry*>(geometry);
-    const bool certified=(indexed && indexed->IsProvablyOpenSheet()) ||
-        (triangles && triangles->IsProvablyOpenSheet());
+    const bool certified=(indexed && indexed->IsZeroVolumeSheet()) ||
+        (triangles && triangles->IsZeroVolumeSheet());
     const BoundingBox box=geometry->GenerateBoundingBox();
     if(!certified && box.ll.x!=box.ur.x && box.ll.y!=box.ur.y && box.ll.z!=box.ur.z) return false;
     GlobalLog()->PrintEx(eLog_Error,

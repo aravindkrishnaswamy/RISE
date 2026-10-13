@@ -16,13 +16,15 @@
 //
 //  THE FIX (TriangleMeshGeometryIndexed.h/.cpp) adds a real
 //  `SignedDistanceLower` for the CLOSED case only:
-//    - WATERTIGHTNESS is checked once, at `DoneIndexedTriangles`, by the
-//      textbook necessary condition for a closed 2-manifold with no
+//    - WATERTIGHTNESS is checked initially at `DoneIndexedTriangles` and
+//      re-proved after changed positions unless a retained geometric proof
+//      already establishes refusal. It includes the necessary condition for
+//      a closed 2-manifold with no
 //      boundary: every edge is shared by EXACTLY two triangles.  An open
 //      sheet or a mesh missing a face has boundary edges (count 1); a
 //      non-manifold mesh has an edge shared by 3+.  Either way the mesh
-//      stays an unsigned-only sheet, exactly as before, and a one-shot
-//      diagnostic at build time says why.
+//      stays an unsigned-only sheet, and a certification-time diagnostic
+//      at build or deformation reproof says why.
 //    - THE SIGN, on a certified-watertight mesh, comes from a parity
 //      ray-cast against the mesh's own BVH: odd number of GEOMETRIC
 //      crossings (both faces, so winding and `bDoubleSided` cannot skew
@@ -172,6 +174,7 @@
 #include <vector>
 
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/EllipsoidGeometry.h"
@@ -596,6 +599,27 @@ static void TestFlatShadedPerCornerCubeWelds()
 	CheckClose( (double)outSigned, -(double)h, 1e-9,
 		"(e) MONEY -- centre depth equals the half-size exactly, same as the hand-welded (a) fixture" );
 	Check( outExact, "(e) MONEY -- exact, same as the hand-welded (a) fixture" );
+
+    Check(mesh->IsCertifiedWatertight(), "(e) initial welded cube is certified closed");
+    VerticesListType moved(vertices.begin(),vertices.end());
+    NormalsListType normals(vertices.size(),Vector3(0,0,1));
+    for(size_t i=4;i<8;++i) moved[i].z+=0.1;
+    mesh->UpdateVertices(moved,normals);
+    Check(!mesh->IsCertifiedWatertight(), "(e) separated seam invalidates closed certificate");
+    Check(!mesh->IsProvablyOpenSheet(), "(e) disconnected bent pieces do not get general proof");
+    Check(!mesh->SignedDistanceLower(Point3(0,0,0),1000,outSigned,outExact),
+        "(e) separated seam refuses signed distance");
+    moved.assign(vertices.begin(),vertices.end());
+    mesh->UpdateVertices(moved,normals);
+    Check(mesh->IsCertifiedWatertight(), "(e) restoring seams re-certifies closed cube");
+    Check(mesh->SignedDistanceLower(Point3(0,0,0),1000,outSigned,outExact) && outSigned<0,
+        "(e) restored closed cube regains signed interior");
+    for(auto& point : moved) point.z=0;
+    mesh->UpdateVertices(moved,normals);
+    Check(!mesh->IsCertifiedWatertight(), "(e) folded-flat cube loses closed certificate");
+    moved.assign(vertices.begin(),vertices.end());
+    mesh->UpdateVertices(moved,normals);
+    Check(mesh->IsCertifiedWatertight(), "(e) leaving a refusal witness re-proves watertightness");
 
 	mesh->release();
 }
@@ -1563,10 +1587,10 @@ static bool BuildWeldedUVSphere( const Scalar R, const unsigned int n, const uns
 
 //////////////////////////////////////////////////////////////////////
 // DL-382: `TriangleMeshGeometryIndexed::IsProvablyOpenSheet` -- the
-// certification behind the open-sheet face rule for meshes.  ONLY a
-// single planar, consistently wound sheet with certain normal
-// orientation is certified; "has a boundary" (not certified closed) is
-// NOT "certified open".
+// certification behind the open-sheet face rule for meshes. The general
+// connected, consistently wound, embedded open-mesh proof extends the
+// legacy planar proof. Both require readable normal orientation; merely
+// "has a boundary" (not certified closed) is NOT "certified open".
 //////////////////////////////////////////////////////////////////////
 static TriangleMeshGeometryIndexed* BuildFaceNormalMesh(
 	const std::vector<Point3>& corners, const IndexTriangleListType& tris,
@@ -1584,6 +1608,79 @@ static TriangleMeshGeometryIndexed* BuildFaceNormalMesh(
 	mesh->AddIndexedTriangles( tris );
 	mesh->DoneIndexedTriangles();
 	return mesh;
+}
+
+static void TestDeserializedClosedCertificate()
+{
+    std::vector<Point3> vertices; CubeCorners(2,vertices);
+    IndexTriangleListType closedTris,openTris;
+    CubeTriangles(closedTris,false); CubeTriangles(openTris,true);
+    auto* closed=BuildFaceNormalMesh(vertices,closedTris,false);
+    auto* open=BuildFaceNormalMesh(vertices,openTris,false);
+    Check(closed->IsCertifiedWatertight(),"serialization control starts certified closed");
+    auto* closedBytes=new MemoryBuffer(); auto* openBytes=new MemoryBuffer();
+    closed->Serialize(*closedBytes); open->Serialize(*openBytes);
+    SurfaceSignalInfo signal; signal.primId=0;
+    Scalar warmed=0;
+    Check(closed->ComputeOcclusion(signal,1,true,warmed),"closed roundtrip control warms geometry-owned signal table");
+
+    auto* fresh=new TriangleMeshGeometryIndexed(false,false); fresh->addref();
+    closedBytes->seek(IBuffer::START,0); fresh->Deserialize(*closedBytes);
+    Check(fresh->IsCertifiedWatertight(),"fresh closed deserialization establishes watertightness");
+    Scalar distance=0; bool exact=false;
+    Check(fresh->SignedDistanceLower(Point3(0,0,0),1000,distance,exact) && distance<0,
+        "fresh deserialized closed cube answers signed interior");
+    const auto openHit=[](TriangleMeshGeometryIndexed& mesh,bool expected) {
+        RayIntersectionGeometric hit(Ray(Point3(0.1,0.2,3),Vector3(0,0,-1)),nullRasterizerState);
+        mesh.IntersectRay(hit,true,true,false);
+        return hit.bHit && hit.bOpenSheet==expected;
+    };
+    Check(openHit(*fresh,false),"deserialized closed cube retains closed entry record");
+    openBytes->seek(IBuffer::START,0); closed->Deserialize(*openBytes);
+    Check(!closed->IsCertifiedWatertight(),"deserializing open mesh revokes previous closed certificate");
+    Check(!closed->SignedDistanceLower(Point3(0,0,0),1000,distance,exact),
+        "deserialized open replacement refuses signed interior");
+    Check(openHit(*closed,true),"deserialized open replacement records an open entry");
+    Scalar reusedSignal=0,freshSignal=0;
+    const bool reusedOK=closed->ComputeOcclusion(signal,1,true,reusedSignal);
+    const bool freshOK=open->ComputeOcclusion(signal,1,true,freshSignal);
+    std::cout<<"    replacement occlusion: reused "<<reusedSignal<<" vs fresh "<<freshSignal<<std::endl;
+    Check(reusedOK && freshOK && std::fabs(reusedSignal-freshSignal)<1e-9,
+        "deserialized replacement matches fresh mesh signal, not stale closed bake");
+
+    closedBytes->seek(IBuffer::START,0); closed->Deserialize(*closedBytes);
+    Check(closed->IsCertifiedWatertight(),"deserializing closed mesh restores closed certificate");
+    closed->UpdateVertices(VerticesListType(vertices.begin(),vertices.end()),
+        NormalsListType(vertices.size(),Vector3(0.1,0,1)));
+    Check(closed->IsCertifiedWatertight(),"normal-only update preserves freshly derived closed certificate");
+    // Legacy v1-v3 streams remain unsigned under the frozen eligibility rule.
+    // Construct a valid v3 closed cube without a legacy tree or BVH cache.
+    auto* legacy=new MemoryBuffer(); legacy->setBytes("RISETMGI",8); legacy->setUInt(3);
+    legacy->setUInt(10); legacy->setChar(8); legacy->setChar(0);
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(const auto& p : vertices) {legacy->setDouble(p.x);legacy->setDouble(p.y);legacy->setDouble(p.z);}
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(size_t i=0;i<vertices.size();++i) {legacy->setDouble(0);legacy->setDouble(0);legacy->setDouble(1);}
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(size_t i=0;i<vertices.size();++i) {legacy->setDouble(0);legacy->setDouble(0);}
+    legacy->setUInt(static_cast<unsigned>(closedTris.size()));
+    for(const auto& tri : closedTris) for(int k=0;k<3;++k) {
+        legacy->setUInt(tri.iVertices[k]);legacy->setUInt(tri.iNormals[k]);legacy->setUInt(tri.iCoords[k]);
+    }
+    legacy->setChar(1); legacy->setChar(0); legacy->setChar(0); legacy->setChar(0);
+    legacy->seek(IBuffer::START,0); closed->Deserialize(*legacy);
+    Check(!closed->IsCertifiedWatertight(),"legacy closed replacement preserves unsigned eligibility and clears inherited certificate");
+    Check(!closed->SignedDistanceLower(Point3(0,0,0),1000,distance,exact),
+        "legacy closed replacement retains unsigned-only query behavior");
+    closedBytes->seek(IBuffer::START,0); closed->Deserialize(*closedBytes);
+    Check(closed->IsCertifiedWatertight(),"modern reload restores proof after a legacy replacement");
+    legacy->release();
+    auto* empty=new TriangleMeshGeometryIndexed(true,false); empty->addref();
+    auto* emptyBytes=new MemoryBuffer(); empty->Serialize(*emptyBytes);
+    emptyBytes->seek(IBuffer::START,0); closed->Deserialize(*emptyBytes);
+    Check(!closed->IsCertifiedWatertight(),"empty deserialized replacement revokes closed certificate");
+    emptyBytes->release(); empty->release();
+    fresh->release(); closed->release(); open->release(); closedBytes->release(); openBytes->release();
 }
 
 static void TestProvablyOpenSheetCertification()
@@ -1714,7 +1811,88 @@ static void TestProvablyOpenSheetCertification()
 		Check( !m->IsProvablyOpenSheet(), "X-crossing quads: refused (self-intersection)" );
 		safe_release( m );
 	}
-	// (j) T-junction: quad plus perpendicular flap sharing an edge -> REFUSED (non-manifold edge).
+    // Cached shape proof survives identical positions, while deformation
+    // revalidates geometry and changed normals revalidate readability.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25;
+        auto* m=BuildFaceNormalMesh(v,t);
+        const auto audits=m->OpenCertificateAudits();
+        const bool before=m->IsProvablyOpenSheet();
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits && m->IsProvablyOpenSheet()==before,
+            "identical positions reuse the shape certificate");
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits,"height deformation reuses the embedded projection proof");
+        v[2].x+=0.2; m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits+1,"changed projection revalidates embedding");
+        safe_release(m);
+    }
+    // An exact degenerate-triangle witness remains a valid refusal until
+    // its two corners separate, including during non-graph deformation.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25; v.push_back(v[0]);
+        AddTri(t,0,4,1);
+        auto* m=BuildFaceNormalMesh(v,t);
+        Check(!m->IsProvablyOpenSheet(),"coincident-corner curved surface is uncertified");
+        const auto audits=m->OpenCertificateAudits();
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(!m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "unchanged coincident corners reuse a necessary refusal witness");
+        v[2].z=0; m->UpdateVertices(v,NormalsListType());
+        Check(m->IsZeroVolumeSheet() && m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "refusal cache still admits the legacy planar proof after flattening");
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(!m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "leaving the plane restores the cached general refusal");
+        v[4].z=0.2; m->UpdateVertices(v,NormalsListType());
+        Check(m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits+1,
+            "separating refused corners revalidates and accepts an embedded flap");
+        safe_release(m);
+    }
+    // Unreferenced storage vertices cannot change the signed-volume centre.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        for(int j=0;j<3;++j) for(int i=0;i<3;++i) {
+            const Scalar x=i-1,y=j-1;
+            v.push_back(Point3(x,y,0.2*(x*x+y*y)));
+        }
+        v.push_back(Point3(2,2,-100)); // unused, deliberately outside the surface bounds
+        for(unsigned j=0;j<2;++j) for(unsigned i=0;i<2;++i) {
+            const unsigned a=j*3+i;
+            AddTri(t,a,a+1,a+4); AddTri(t,a,a+4,a+3);
+        }
+        auto* m=BuildFaceNormalMesh(v,t);
+        const auto audits=m->OpenCertificateAudits();
+        Check(m->IsProvablyOpenSheet() && m->HasNegativeOpenSignedVolume(),
+            "inward bowl sign ignores unused vertex on initial certification");
+        for(unsigned i=0;i<9;++i) v[i].z*=1.01;
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits && m->HasNegativeOpenSignedVolume(),
+            "cached graph update keeps referenced-corner signed-volume convention");
+        safe_release(m);
+    }
+    // Exact duplicate projection vertices must keep identical heights.
+    // Tolerance-only welds must not receive the graph deformation shortcut.
+    for(bool nearSeam : {false,true}) {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25;
+        v.push_back(v[0]); v.push_back(v[2]);
+        t.clear(); AddTri(t,0,1,2); AddTri(t,4,5,3);
+        if(nearSeam) v[4].x+=1e-8;
+        auto* m=BuildFaceNormalMesh(v,t);
+        Check(m->IsProvablyOpenSheet(),"split-corner curved sheet initially certifies");
+        const auto audits=m->OpenCertificateAudits();
+        if(nearSeam) for(auto& p : v) p.z*=2;
+        else v[4].z+=0.2;
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits+1,
+            nearSeam?"tolerance-only projection seam revalidates":"split coincident heights revalidate");
+        if(!nearSeam) Check(!m->IsProvablyOpenSheet(),"separating the seam revokes the graph certificate");
+        safe_release(m);
+    }
+	// (j) Quad plus perpendicular flap: inconsistent shared-edge winding -> REFUSED.
 	{
 		std::vector<Point3> v; IndexTriangleListType t;
 		quad( v, t, 0.0, true, 0 );
@@ -1722,7 +1900,7 @@ static void TestProvablyOpenSheetCertification()
 		v.push_back( Point3( 0, -1, 1 ) );
 		AddTri( t, 0, 1, 4 );
 		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
-		Check( !m->IsProvablyOpenSheet(), "T-junction mesh (edge used 3 times): refused" );
+		Check( !m->IsProvablyOpenSheet(), "flap with inconsistent shared-edge winding: refused" );
 		safe_release( m );
 	}
 	// (k) sliver triangle: altitude < eps -> REFUSED.
@@ -1737,7 +1915,7 @@ static void TestProvablyOpenSheetCertification()
 		safe_release( m );
 	}
 	// (l) the non-indexed mesh class (rawmesh) shares the predicate:
-	// one quad certified, two parallel quads certified.
+	// one quad certified, two parallel quads refused.
 	for( int two = 0; two < 2; ++two ) {
 		TriangleMeshGeometry* m = new TriangleMeshGeometry( true );
 		m->addref();
@@ -1880,6 +2058,7 @@ int main()
 	TestFlatShadedCubeWithRealNormalsCertifies();
 	TestThinButValidSolidThickerThanEpsCertifies();
 	TestProvablyOpenSheetCertification();
+    TestDeserializedClosedCertificate();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

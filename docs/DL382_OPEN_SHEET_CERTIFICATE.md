@@ -1,6 +1,6 @@
 # DL-382: certifying open sheets, and the unpushed-exit rule
 
-Slice `jetski-dl382`, 2026-10-12, branched from `master` `0131003bc`.
+Original slice `jetski-dl382`, 2026-10-12, based on `master` `0131003bc`. Fix-forward is based on local master `72d9fce57`; the verified core merge `2c08b50c0` is retained.
 Background: [DL345_OPEN_SHEET_FACE_RULE.md](DL345_OPEN_SHEET_FACE_RULE.md)
 (the face rule and why it is the only reciprocal convention on an open
 transmissive sheet).  This is the FRESH design the owner asked for after the
@@ -70,27 +70,25 @@ Why 3 + 4 => no enclosed volume: for a compact polyhedron `S` embedded in
 with `H_1(S)` free for a subcomplex of `S^3`.  So `H_2(S) = 0` => the
 complement is connected => no bounded complementary component, i.e. no
 enclosed volume, whatever the surface's shape, topology (holes, handles,
-several components) or curvature.
+curvature). The implementation additionally requires one edge-connected component; disconnected pieces are refused by the general certificate.
 
 The existing planar certificate (`IsPlanarConsistentlyWoundSheet`) is kept
 as an OR, so every mesh certified today (including degenerate planar ones
 such as two coincident copies of a sheet, which 4 refuses) stays certified
 and bit-identical.  Closed meshes are refused by 3 and stay bit-identical.
 
-**Consequences that are intended:** a slab authored as ONE mesh of two
-sheets, an open-top box, a bent quad, a curved lens surface, a terrain, a
+**Consequences that are intended:** an open-top box, a bent quad, a curved lens surface, a terrain, a
 displaced non-planar / dart / non-convex clipped plane (its realized mesh)
-are now certified when they pass 1-5.  "N sheets can bound a volume"
+are now certified when they pass 1-5 and the single-component check. A slab authored as one mesh of disconnected sheets is refused; use separate sheet objects.  "N sheets can bound a volume"
 (DL-157 round 3) is answered by 4: N embedded sheets that bound a volume
 must touch along the volume's edges, which is a refusal; if they leave a
 gap the "volume" is connected to the outside and the face rule is the
 reciprocal rule for it (DL-345 measured six open sheets around a box
 matching the closed box to 4 digits).
 
-**Cost**: the certificate runs in `ComputeAreas` (build, `UpdateVertices`,
-deserialize) like the planar one.  Steps 1-3 are linear (hash maps); step 4
+**Cost**: the certificate runs in `ComputeAreas` at build/deserialization and after changed-position updates. Unchanged positions reuse the cached shape proof; authored-normal agreement is refreshed on every update. Height-only deformation of a certified embedded planar projection also reuses the shape proof: exact projected weld aliases, unchanged projected positions, and equality of coincident heights are checked before mutation. Openness and embedding follow from remaining a graph over that fixed projection. Planarity and signed volume are refreshed in linear passes. An exactly coincident triangle-corner pair supplies a cached necessary refusal for the general certificate while that equality remains; the legacy planar proof is still recomputed. Other deformation without a reusable proof must revalidate embedding; topology alone is insufficient (DL-620). The projection audit is performed at build time for qualifying non-planar indexed meshes, and may increase build cost.  Steps 1-3 are linear (hash maps); step 4
 runs only for meshes that pass 1-3 (open, oriented) and costs one grid
-pass with O(1) expected candidates per triangle.  Measured in section 8.
+pass whose candidate count depends on triangle sizes and spatial overlap; there is no general linear-time guarantee.  Measured in section 8.
 
 ### 2.1 The inside-out crack risk
 
@@ -101,7 +99,7 @@ invert (the outside reads as glass).  There is no sound refusal for this:
 a cracked inward-wound shell and an intentionally inward-facing open bowl
 are the same topology, and any "how closed is it" threshold is a fudge
 that would refuse legitimate sheets.  Decision: the transport certificate
-stays purely topological; the `ObjectManager` preparation pass WARNS (once
+uses topology plus embedding and normal agreement; the `ObjectManager` preparation pass WARNS (once
 per scene) for a transmissive mesh certified by the general certificate
 whose signed volume about its bounding-box centre is negative ("if this is
 meant to be a solid it is wound inside-out").  This is a diagnostic only
@@ -164,7 +162,7 @@ with the rule above.  In a well-nested configuration -- every region's
 medium is claimed consistently (a slab's sheets share one material, closed
 solids nest, lone sheets sit inside a medium that encloses them) -- both
 equal the region's medium, so each pair is the reverse of the other.  Worked
-cases (gated in `ExteriorIndexInvarianceTest` A7 / A8):
+cases (gated in `ExteriorIndexInvarianceTest` A7, including the former A7-KF cases; A8 tests Newton continuity):
 
 | case | forward pairs | reverse pairs |
 |---|---|---|
@@ -186,29 +184,30 @@ history-independent medium and stay order-dependent.
 - Item (4): a refractor inside a lone sheet's half-space sees the walk's
   stack, not the half-space (unchanged; needs half-space seeding).
 - Item (3) composite: frozen, untouched.  Note: `composite_material` on a
-  NEWLY certified mesh takes `CompositeSPF`'s existing open-sheet path, as
-  it already does on planar meshes and clipped planes.
+  newly certified curved mesh retains its pre-merge record. Only the old planar/displaced-quad proof reaches frozen consumers.
 
 ## 6. Tests
 
 - `MeshInteriorSignalTest`: certificate accept/refuse matrix (curved sheet,
-  two-component mesh, open-top box, bent quad accepted; closed cube, sphere
-  plus disk, flattened box, X-crossing sheets, T-junction box, folded
+  open-top box, bent quad accepted; disconnected two-component mesh, closed cube, sphere
+  plus disk, flattened box, X-crossing sheets, inconsistently wound flap, folded
   sheet, non-manifold fan, mixed winding, sliver refused), UpdateVertices
   re-decides.
-- `OpenSheetIndexConventionTest` DL-382 curved rows: PT vs BDPT vs VCM on
-  two-sheet slabs of gently curved open meshes (separate objects) and on one
-  two-component mesh, n >= 8 salted; red on the base, green after.
-- `ExteriorIndexInvarianceTest`: A7-KF T6 / T5c promoted to gates, plus
-  their reverse walks (A8).
+- `CurvedOpenSheetSlabTest` (maintained reviewer fixture) curved rows: PT vs BDPT vs VCM on
+  two-sheet slabs of gently curved open meshes (separate objects), n = 8 salted; red on the base, green after.
+- `ExteriorIndexInvarianceTest`: A7 T6 and its reverse walk, plus T5c, promoted to gates.
 
 ## 7. Shipped scenes
 
 Shipped scenes corpus audit:
-- All transmissive mesh objects in shipped scenes (e.g. `diacaustic`, `sms_slab_close_*`) are either closed solids (watertight, verified bit-identical) or clipped-plane / displaced-geometry slabs (already certified under DL-345, bit-identical).
-- No shipped showcase scenes authored transmissive open meshes; test suite verification confirms bit-identical rendering on closed solids and clipped-plane scenes.
+- The shipped corpus includes closed solids, clipped/displaced slabs, and pre-existing planar mesh sheets. Five dielectric indexed meshes in `gltf_import_attenuation.RISEscene` already certified on the base.
+- The 157-input audit produces the same 375 records before and after the fix-forward; it establishes unchanged certification across this corpus. Render gates independently cover closed solids and clipped-plane scenes.
 
-## 8. Measurements
+## 8. Historical measurements
+
+The following figures were recorded by `jetski-dl382`; current fix-forward
+gate counts and fresh curved-fixture measurements are in section 9. The old
+closure review claim is withdrawn.
 
 `OpenSheetIndexConventionTest` (mesh rows, salted $n = 8$, Sobol' seeded):
 - **Single open sheet** (up-wound) PT / clipped plane PT: $0.14502 / 0.14515 = 0.9991 \pm 0.0031$
@@ -234,3 +233,221 @@ Shipped scenes corpus audit:
 - Prior baseline before DL-382: RED ($7$ passed / $9$ failed; PT was $0.44$ of clipped plane; slab ratios were $0.59$–$0.63$; integrators disagreed by up to $3\times$).
 - After DL-382: GREEN ($44$ of $44$ full suite checks pass, $20$ of $20$ mesh rows pass).
 
+
+## 9. Fix-forward (2026-10-12)
+
+The `2c08b50c0` merge is retained: the curved-sheet slab core is verified.
+DL-382 was reopened because the previous zero-P1 review claim was false.
+The fifth review found zero P1s on `7ffa6023d`, but the sixth review of
+`6dac4bc5e` exposed sanitizer diagnostics missed by the earlier assessment.
+The empty-serialization correction has now passed the full gate rerun and
+a genuinely clean sanitizer run. The ledger marks this final closure candidate;
+local merge remains blocked until a fresh review of the final committed state.
+Random-walk scene rejection now uses `IsZeroVolumeSheet`, the old planar
+proof, rather than the general face-rule proof. A cracked solid remains
+accepted. The broader hit flag is admitted at `Object::IntersectRay` only
+for dielectric/perfect-refractor scattering materials, including luminaire wrappers around them; all other materials (including single-layer composites under wrappers) retain
+their old planar/displaced-quad proof. This preserves stackless translucent
+and frozen composite consumers without editing their transport code.
+
+Negative open signed volume now produces a once-per-object-set ObjectManager
+warning, including displaced meshes. Certification stays available because
+intentional inward bowls and cracked inward solids cannot be distinguished
+by topology. The warning names the inverted-index risk; it does not promise
+winding invariance for uncertified cracked solids. Analytic patch sets, CSG,
+lone-sheet half-space membership, the pre-existing nested SMS bias, and
+arbitrary-deformation certificate cost are actual rows DL-616..DL-620.
+
+Validation commands for this slice (run from the repository root):
+
+```sh
+# Build the named tests and the two diagnostics; make discovers test sources.
+make -C build/make/rise -j8 all build-test/MeshInteriorSignalTest \
+  build-test/ExteriorIndexInvarianceTest build-test/TransmissionPushGateTest \
+  build-test/SMSDomainReplayTest build-test/CompositeEnergyConservationTest \
+  build-test/OpenSheetIndexConventionTest build-test/OpenSheetWarningTest \
+  build-test/BSSRDFOpenSheetEntryTest build-test/RandomWalkOpenSheetRejectionTest \
+  build-test/CurvedOpenSheetSlabTest build-test/OpenSheetConsumerScopeTest \
+  build-test/OpenSheetLegacyRenderTest build-tool/OpenSheetCertificateAudit \
+  build-tool/OpenSheetCertificateTiming
+python3 scripts/validate_dl382.py --log-dir /tmp/dl382-gates \
+  --baseline-root /tmp/rise-dl382-base-0131003bc \
+  --before-root /tmp/rise-dl382-head-72d9fce57
+```
+
+The optional baseline checkout supplies the frozen-composite pixel hash;
+the pre-fix master checkout supplies runtime red proofs for the two P1s.
+`CurvedOpenSheetSlabTest` is a real ratio gate (5% band, n=8), with the
+reviewer's separate curved sheets and closed slab retained as authored.
+Its baseline is 19 pass / 9 fail. `OpenSheetConsumerScopeTest` checks both
+faces of the holed translucent/composite mesh and the hair skip. The
+certification audit compares all 157 reviewer inputs against the committed
+375-record snapshot, including six unchanged failure records.
+
+The cache avoids full geometric revalidation for unchanged positions,
+height changes over an already certified exact embedded projection, and
+general refusals with retained exactly coincident triangle corners.
+Projection construction is a one-time extra build cost; a formerly planar
+mesh first becoming curved also pays that cost on its first deformation.
+Other deformation without a reusable proof retains full revalidation (DL-620). The total update can
+still rebuild its BVH when SAH degradation warrants it, as before.
+
+### Runtime red proofs and consumer controls
+
+| Finding | Red control | Fix-forward control |
+|---|---|---|
+| Random-walk holed sphere | pre-fix master: 10 pass / 2 fail, load refused, render -1 | 12 pass / 0 fail; mean 0.90687, equal to the 0131003bc control |
+| Inward glass warning | pre-fix master: 11 pass / 2 fail; no negative-volume warning | 13 pass / 0 fail; named warning appears once, repeat preparation stays quiet |
+| Curved two-sheet slab optics | 0131003bc: 19 pass / 9 fail | 28 pass / 0 fail; separate sheets vs closed slab and integrator ratios gated |
+| Translucent/composite consumer scope; hair skip | reviewed 0c5500401: 60 pass / 8 fail on single-layer and wrapped composites | 86 pass / 0 fail; material identity after luminaire unwrapping, both faces checked on the holed sphere |
+| Frozen composite images | 0131003bc: two-layer, top-only, bottom-only, wrapped top-only; aggregate hash 18203558810393780052 | same four exact images gated against the baseline aggregate; 6 pass / 0 fail |
+
+The warning resolves the missing diagnostic, not the intentionally accepted
+winding dependence of cracked glass. Intentional inward-facing sheets retain
+the face rule; an author who intended a solid is told to correct winding or
+close the mesh. Analytic patches, CSG, lone-sheet half-space membership,
+nested-sheet SMS pricing, and non-graph deformation cost remain separate
+open rows DL-616 through DL-620. No frozen transport implementation was edited.
+
+Fresh curved open/closed slab ratios (n=8, camera below / above): PT
+**0.9921 / 0.9953**, PT+SMS **0.9929 / 0.9954**, BDPT **0.9900 / 0.9947**,
+VCM **0.9965 / 0.9946**. The matching baseline camera-above ratios are
+**0.5878 / 0.5873 / 0.5867 / 0.5866**. These fresh numbers preserve the
+reviewer's verified core while giving the actual gated fixture evidence.
+
+### Final gate and cost record
+
+All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **159/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **53/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
+
+Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. The earlier ASan/UBSan run had **159/0** assertions but emitted three UBSan diagnostics; it was not clean. The sixth review caught empty-vector iterator dereferences in mesh serialization.
+
+Costs below were measured on `686c116b0`; the later deserialization correction does not change these timing paths. They are wall-time medians of three interleaved runs, 980,000 triangles (978,600 for the true closed sphere), `render_thread_reserve_count 0`, no concurrent renders or builds. “Before” is pre-fix master `72d9fce57`; “base” is `0131003bc`. Timing tool output reports openness after the final deformation.
+
+| Work | Base ms | Before ms | Fix-forward ms |
+|---|---:|---:|---:|
+| Curved mesh, identical-position update | 26.1 | 880.8 | 22.4 |
+| Curved graph, height deformation | 26.5 | 903.0 | 32.0 |
+| Closed-ish sphere, identical-position update | 29.3 | 222.6 | 26.4 |
+| Closed-ish sphere, deformation with retained coincident-corner witness | 29.6 | 207.8 | 31.1 |
+| Curved mesh build, including projection cache | 487.6 | 1359.3 | 2515.1 |
+| Planar mesh first becoming curved (one-time cache and closed-proof cost) | 26.2 | 797.9 | 2204.6 |
+| Truly closed sphere, identical-position update | 29.5 | 286.5 | 25.7 |
+| Truly closed sphere, deformation including closed reproof | 30.1 | 271.4 | 481.6 |
+
+The truly closed control removes the polar degenerate triangles from the
+reviewer's sphere fixture and retains `IsCertifiedWatertight()==true` after
+motion on all three revisions. Its latest deformation cost includes the
+necessary full position-weld and folded-face audit; the previous revisions
+retained the build-time closed certificate without rechecking it. This
+correctness cost is deliberately disclosed as DL-620, alongside the remaining
+non-graph and witnessless motion cost. Projection-cache startup remains an
+explicit tradeoff.
+
+
+### Independent review correction
+
+The first fresh review of `0c5500401` found one P1: scoping by SPF admitted a frozen composite that forwards its sole scattering layer. The scope now checks dielectric/perfect-refractor material identity after unwrapping luminaires; every composite keeps the legacy proof, including single-layer composites under wrappers. Clear glass under luminaires retains the verified face rule. Both single-layer arrangements and nested wrappers have hit-record gates, and four composite render variants compare exact pixels against `0131003bc`. The expanded scope gate was red **60/8** on the reviewed commit.
+
+Review also found a P2: the graph-cache signed-volume centre included unused storage vertices. Its bounds now use referenced triangle corners, matching full certification. An inward bowl with an unused outlier was red **130/1** in MeshInteriorSignalTest before this correction. The shipped-scene description now includes the pre-existing planar dielectric meshes in the attenuation scene. The cost table above was remeasured after these corrections.
+
+A direct-material-only intermediate filter also excluded plain clear glass under luminaires. Added controls were red **82/4** on that filter; classification now follows luminaire base materials without unwrapping composites. No luminaire or composite implementation changed.
+
+The closed-ish timing fixture contains an exactly coincident corner pair in a triangle. The cache now stores that necessary failure witness and reuses only the general refusal while those corners remain exactly coincident and positions stay finite. The legacy planar proof is recomputed on every changed frame: it intentionally ignores degenerate triangles. Splitting the pair invalidates the witness and reruns certification. The initial new cache test was red **132/2**; the expanded mesh gate also checks flattening into and leaving the legacy planar case. Refusals without a reusable exact witness and valid non-graph deformations still need full revalidation (DL-620).
+
+An isolated control using `0c5500401`'s Object.cpp and the current geometry produces frozen aggregate hash **16954627485471606144**, failing the paired baseline check **5/1**; the fixed four-image control gives **18203558810393780052**, **6/0**. This control isolates the reviewed material-scope regression.
+
+
+The second fresh review of `8a9289edc` found **zero P1s** across correctness,
+cache/cost, and evidence lenses. Its remaining warning P2 is corrected: warning
+classification now uses the same material identity and luminaire unwrapping as
+`Object::IntersectRay`. Single-layer composites retain the uncertainty warning;
+they cannot receive the negative-volume message describing a face rule they do
+not use. Indexed, raw, and displaced classifiers follow that admission. The new
+warning coverage was red **41/12** on `8a9289edc` and is green **53/0**; it checks both windings,
+both single-layer arrangements, nested wrappers, native wrapped glass, and
+once-only preparation.
+
+
+The third fresh review of `62900ec62` blocked convergence with two P1s:
+`UpdateVertices` retained a stale closed-volume certificate when position-weld
+seams separated, and planar-only comments contradicted the broader proof.
+Changed-position updates now re-prove watertightness, including its folded-face
+discriminator, unless a retained embedded open graph or exact coincident-corner
+witness already forces refusal of closed certification. Identical positions keep the
+closed certificate. The per-face-slot cube mutation control was red **141/3** and is green **144/0**;
+it separates and restores a seam, checks signed-distance refusal and recovery,
+and folds and restores the cube. No signed-distance or contact implementation
+was changed. The displaced, indexed, raw-mesh, and test comments now describe
+their actual proofs. Valid closed-body deformation may pay a full position-weld
+and folded-face audit; this conservative cost is included in DL-620.
+
+
+The fourth fresh review of `686c116b0` found one P1 in the same closed-proof
+lifecycle: `Deserialize` refreshed only the open proof. A fresh closed load kept
+the constructor's false closed certificate, while replacing a certified closed
+instance with an open mesh retained true. Successful modern v4/v5 deserialization now derives
+both certificates from the loaded data, including empty replacements. Legacy
+v1-v3 loads remain unsigned and clear any inherited closed certificate. The
+round-trip control was red **147/6** and checks fresh closed signed queries,
+closed/open hit records, closed-to-open replacement, restoration, and a subsequent
+normal-only update. Serialized loads pay the one-time closed proof, as builds do;
+no file format or frozen transport implementation changed.
+
+
+The expanded round-trip control also reproduced a stale geometry-owned
+occlusion table after replacement (**155/1**). Deserialization now calls the
+existing geometry invalidation callback, as construction and vertex mutation
+already do. The provider's reused result must match a freshly built mesh's
+result. The expanded gate includes empty and legacy replacements and is **159/0**.
+This changes no signal or SSS contact implementation; it drops derived data
+when its owning mesh is replaced.
+
+
+The first audit after unrestricted deserialization reproof changed seven
+legacy-v3 `wt=0` records to `wt=1`. That candidate was rejected: the user's
+shipped-scene certification gate and frozen behavior require preserving those
+loads' existing unsigned eligibility. V1-v3 deserialization now explicitly
+clears inherited closure without granting a new closed certificate; modern
+v4/v5 loads perform the full proof. The legacy compatibility control was red
+**157/2**. The audit baseline was not edited. The validator now runs the audit
+before the expensive render gates so compatibility changes fail early.
+
+
+The fifth fresh review of `7ffa6023d` found **zero P1s** on both independent
+axes: correctness/cache lifetime, and evidence/cost/design fidelity. Its one
+P2 wording finding is corrected in the code and this document: exact coincident
+triangle corners force refusal of closed certification; they do not prove
+that the rest of the mesh encloses no volume. A closed cube plus a stray
+degenerate triangle illustrates the distinction. No runtime behavior changed
+after the final validator. Legacy BSP compatibility, BVH serialization
+(**25/0**), and mesh closest-point (**65/0**) also passed.
+
+DL-616..DL-620 remain real open rows. The DL-382 closure and this final comment
+correction are committed for another fresh independent review before the
+local merge; neither a merge nor a future review verdict is assumed here.
+
+
+The sixth fresh review of `6dac4bc5e` blocked closure: the empty-mesh
+round-trip gate exercised pre-existing undefined behavior in `Serialize`,
+which dereferenced the end iterators of empty position, normal and UV vectors.
+The fix uses each vector's `data()` without dereferencing an empty iterator;
+the serialized bytes and file format stay unchanged. The previous sanitizer
+assessment is withdrawn. The corrected run used `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`
+and passed **159/0** with **zero ASan/UBSan diagnostics**, verified by an
+explicit log scan. Empty serialization previously emitted three UBSan
+diagnostics; it now emits zero. The complete validator was rerun: all nine
+requested and three added gates passed, with the byte-identical shipped
+audit and exact frozen images. Make, clean Deployment and clean Opto builds
+passed without compiler warnings (only the AppIntents metadata notice).
+
+
+Final correction evidence: `/tmp/dl382-serialize-final-summary.log`,
+`/tmp/dl382-serialize-final-gates/`, `/tmp/dl382-serialize-build.log`,
+`/tmp/dl382-serialize-deployment.log`, `/tmp/dl382-serialize-opto.log`,
+`/tmp/dl382-serialize-sanitizer-summary.log`, and
+`/tmp/dl382-sanitizer-run.log` (the corrected halt-on-error run). The legacy
+BSP compatibility, BVH serialization and closest-point checks were rerun
+and passed. The original sanitizer success claim is retained only as
+withdrawn history above; the current claim is backed by the corrected
+diagnostic-free run. Final independent review is required on this committed
+closure candidate before local merge; no future verdict is asserted.

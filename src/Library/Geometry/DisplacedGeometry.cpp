@@ -369,9 +369,9 @@ void DisplacedGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool b
 	// the transmissive SPFs cross such a sheet by its FACE.  The base is
 	// re-asked per hit because its corners can be keyframed.  Any other base
 	// (a mesh, a closed analytic primitive) leaves whatever the realized
-	// mesh stamped: `false`, unless the displaced result is itself ONE planar
-	// consistently wound sheet (DL-382, e.g. zero displacement over a flat
-	// mesh), which the mesh certifies on its own.
+	// mesh stamped: the general embedded open-mesh certificate OR the
+	// legacy planar proof (DL-382). Object::IntersectRay restricts the wider
+	// proof to native clear refraction, preserving other material consumers.
 	if( ri.bHit && m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad() ) {
 		ri.bProvablyNoInterior = true;
 	}
@@ -667,12 +667,29 @@ bool DisplacedGeometry::HasUncertainSMSNormalOrientation() const
     return !mesh || mesh->HasUncertainSMSNormalOrientation();
 }
 
-bool DisplacedGeometry::HasUncertifiedOpenness() const
+bool DisplacedGeometry::HasUncertifiedOpenness(bool allowGeneralProof) const
 {
     if( m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad() ) {
         return false;
     }
     Realize();
     const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
-    return mesh && !mesh->IsCertifiedWatertight() && !mesh->IsProvablyOpenSheet();
+    return mesh && !mesh->IsCertifiedWatertight()
+        && !(allowGeneralProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet());
+}
+
+// Preserve the pre-DL-382 proof for consumers other than clear refraction.
+bool DisplacedGeometry::HasLegacyOpenSheetProof() const
+{
+    if(m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad()) return true;
+    Realize();
+    const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
+    return mesh && mesh->IsZeroVolumeSheet();
+}
+bool DisplacedGeometry::HasNegativeOpenSignedVolume() const
+{
+    if(m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad()) return false;
+    Realize();
+    const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
+    return mesh && mesh->IsProvablyOpenSheet() && mesh->HasNegativeOpenSignedVolume();
 }

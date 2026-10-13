@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <map>
 #include "TriangleMeshGeometryIndexed.h"
 #include "../Utilities/ExpressionMemo.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -210,14 +211,14 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 		}
 		ri.bGeomNormalOrientedToRay = bFlipGeomNormal;
 		// DL-96: a double-sided mesh that is NOT certified watertight
-		// (DL-143's build-time position-weld check, m_bWatertight) has no
+		// (DL-143's position-weld check, m_bWatertight) has no
 		// single true "outside" -- it is an open sheet where both faces
 		// are legitimate physical sides.  See
 		// RayIntersectionGeometric::bOpenSheet's doc comment for the one
 		// consumer (the BSSRDF front-face gate) that reads this.
 		ri.bOpenSheet = !m_bWatertight;
 	}
-	// DL-382: a planar, consistently wound mesh is a certified open sheet
+	// DL-382: an embedded, consistently wound open mesh is certified for the face rule
 	// (see m_bProvablyOpenSheet), so the transmissive SPFs cross it by its
 	// FACE exactly as they cross a clipped plane (DL-345).  Stamped on
 	// every hit, front or back, like ClippedPlaneGeometry; any other mesh
@@ -265,6 +266,11 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+    openGraphCoincidentPairs.clear();
     m_bOpenSignedVolumeNegative=false;
 	safe_release( pPtrBVH );
 	areas.clear();
@@ -285,6 +291,11 @@ void TriangleMeshGeometryIndexed::AddVertex( const Point3& point )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+    openGraphCoincidentPairs.clear();
 	pPoints.push_back( point );
 }
 
@@ -292,6 +303,11 @@ void TriangleMeshGeometryIndexed::AddNormal( const Vector3& normal )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+    openGraphCoincidentPairs.clear();
 	if( !bUseFaceNormals ) {
 		pNormals.push_back( normal );
 	}
@@ -306,6 +322,11 @@ void TriangleMeshGeometryIndexed::AddVertices( const VerticesListType& points )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+    openGraphCoincidentPairs.clear();
 	pPoints.insert( pPoints.end(), points.begin(), points.end() );
 }
 
@@ -313,6 +334,11 @@ void TriangleMeshGeometryIndexed::AddNormals( const NormalsListType& normals )
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+    openGraphCoincidentPairs.clear();
 	if( !bUseFaceNormals ) {
 		pNormals.insert( pNormals.end(), normals.begin(), normals.end() );
 	}
@@ -366,6 +392,11 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+    openGraphCoincidentPairs.clear();
 	indexedtris.push_back( tri );
 }
 
@@ -373,6 +404,11 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangles( const IndexTriangleListTy
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+    openGraphCoincidentPairs.clear();
 	indexedtris.insert( indexedtris.end(), tris.begin(), tris.end() );
 }
 
@@ -418,6 +454,29 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 		return 0;
 	}
 
+    bool positionsChanged=false;
+    bool graphProofReusable=openGraphAxis>=0;
+    const auto coordinate=[](const Point3& p,int k) {return k==0?p.x:k==1?p.y:p.z;};
+    bool refusalProofReusable=openRefusalPair[0]<newVertices.size() && openRefusalPair[1]<newVertices.size();
+    if(refusalProofReusable) for(int k=0;k<3;++k) {
+        if(coordinate(newVertices[openRefusalPair[0]],k)!=coordinate(newVertices[openRefusalPair[1]],k))
+            refusalProofReusable=false;
+    }
+    for(size_t i=0;i<pPoints.size();++i) {
+        const Point3& a=pPoints[i]; const Point3& b=newVertices[i];
+        for(int k=0;k<3;++k) {
+            if(coordinate(a,k)!=coordinate(b,k)) {
+                positionsChanged=true;
+                if(k!=openGraphAxis) graphProofReusable=false;
+            }
+            if(!std::isfinite(coordinate(b,k))) {graphProofReusable=false;refusalProofReusable=false;}
+        }
+    }
+    if(graphProofReusable) for(const auto& pair : openGraphCoincidentPairs) {
+        if(coordinate(newVertices[pair.first],openGraphAxis)!=coordinate(newVertices[pair.second],openGraphAxis)) {
+            graphProofReusable=false; break;
+        }
+    }
 	// In-place vertex / normal replacement.  ptr_polygons hold pointers
 	// INTO pPoints/pNormals — those pointers stay valid as long as we
 	// resize 0 (we're overwriting, not reallocating).  We use plain
@@ -434,7 +493,18 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	}
 
 	// Recompute triangle areas + CDF (vertex positions changed).
-	ComputeAreas();
+	ComputeAreas(positionsChanged,graphProofReusable,refusalProofReusable);
+    // Array indices stay fixed, but the position-weld partition and folded
+    // face discriminator do not. Re-prove closed membership after motion.
+    // These two retained proofs already establish refusal of closed certification:
+    // an embedded open graph, or a triangle with exact coincident corners.
+    if(positionsChanged) {
+        if(refusalProofReusable || (graphProofReusable && m_bShapeOpenSheet))
+            m_bWatertight=false;
+        else
+            ComputeWatertightness();
+    }
+
 
 	// The mesh has genuinely CHANGED SHAPE under a stable IGeometry*, which
 	// is the one case design doc §7.2's free-invalidation argument does not
@@ -489,7 +559,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	return refitMs;
 }
 
-void TriangleMeshGeometryIndexed::ComputeAreas()
+void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graphProofReusable, bool refusalProofReusable)
 {
 	// Self-clearing: the inner loops both push_back, so we MUST clear
 	// before recomputing or the CDF grows quadratically across repeated
@@ -540,32 +610,118 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 		}
 	}
 
-	// DL-382: refreshed with the winding audit just above, at every real
-	// mutation (DoneIndexedTriangles, UpdateVertices, deserialize).
-	m_bProvablyOpenSheet = false;
-	m_bOpenSignedVolumeNegative = false;
-	if( !smsUncertainNormalOrientation ) {
-		if( GeometricUtilities::IsPlanarConsistentlyWoundSheet( ptr_polygons.size(),
-			[this]( size_t t, int k ) -> const Point3& { return *ptr_polygons[t].pVertices[k]; } ) )
-		{
-			m_bProvablyOpenSheet = true;
-		}
-		else
-		{
-			std::vector<Point3> corners;
-			corners.reserve( ptr_polygons.size() * 3 );
-			for( std::size_t t = 0; t < ptr_polygons.size(); ++t ) {
-				for( int k = 0; k < 3; ++k ) {
-					corners.push_back( *ptr_polygons[t].pVertices[k] );
-				}
-			}
-			const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners );
-			if( cert.certified ) {
-				m_bProvablyOpenSheet = true;
-				m_bOpenSignedVolumeNegative = ( cert.signedVolumeAboutCentre < 0 );
-			}
-		}
-	}
+    // Position-only proof cached across unchanged-position updates. Normal
+    // agreement is always re-audited above, even when the proof is reused.
+    if(positionsChanged && refusalProofReusable) {
+        // Exactly coincident corners force the general certificate to refuse
+        // on every such frame. The legacy planar test ignores degenerate
+        // triangles, so it must still be recomputed independently.
+        m_bZeroVolumeSheet=GeometricUtilities::IsPlanarConsistentlyWoundSheet(
+            ptr_polygons.size(),[this](size_t t,int k)->const Point3& {return *ptr_polygons[t].pVertices[k];});
+        m_bShapeOpenSheet=m_bZeroVolumeSheet;
+        m_bOpenSignedVolumeNegative=false;
+    }
+    if(positionsChanged && graphProofReusable) {
+        // The projected embedded disk and all projected coordinates stayed
+        // fixed. Changing heights preserves its graph, hence embedding and
+        // openness. Recompute the planar refusal and signed-volume warning.
+        m_bZeroVolumeSheet=GeometricUtilities::IsPlanarConsistentlyWoundSheet(
+            ptr_polygons.size(),[this](size_t t,int k)->const Point3& {return *ptr_polygons[t].pVertices[k];});
+        // Match the full certificate's centre: unused storage vertices are
+        // not part of this open surface and cannot affect its warning sign.
+        Point3 lo=*ptr_polygons[0].pVertices[0],hi=lo;
+        for(const auto& triangle : ptr_polygons) for(int k=0;k<3;++k) {
+            const Point3& p=*triangle.pVertices[k];
+            lo.x=std::min(lo.x,p.x); lo.y=std::min(lo.y,p.y); lo.z=std::min(lo.z,p.z);
+            hi.x=std::max(hi.x,p.x); hi.y=std::max(hi.y,p.y); hi.z=std::max(hi.z,p.z);
+        }
+        const Point3 centre((lo.x+hi.x)/2,(lo.y+hi.y)/2,(lo.z+hi.z)/2);
+        Scalar volume=0;
+        for(const auto& triangle : ptr_polygons) {
+            volume+=Vector3Ops::Dot(Vector3Ops::mkVector3(*triangle.pVertices[0],centre),
+                Vector3Ops::Cross(Vector3Ops::mkVector3(*triangle.pVertices[1],centre),
+                    Vector3Ops::mkVector3(*triangle.pVertices[2],centre)));
+        }
+        m_bOpenSignedVolumeNegative=!m_bZeroVolumeSheet && volume<0;
+    }
+    if(positionsChanged && !graphProofReusable && !refusalProofReusable) {
+        openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+        openGraphCoincidentPairs.clear();
+        ++openCertificateAudits;
+        m_bZeroVolumeSheet = GeometricUtilities::IsPlanarConsistentlyWoundSheet(
+            ptr_polygons.size(), [this](size_t t, int k) -> const Point3& { return *ptr_polygons[t].pVertices[k]; });
+        m_bShapeOpenSheet = m_bZeroVolumeSheet;
+        m_bOpenSignedVolumeNegative = false;
+        if(!m_bZeroVolumeSheet) {
+            std::vector<Point3> corners;
+            corners.reserve(ptr_polygons.size()*3);
+            for(size_t t=0;t<ptr_polygons.size();++t)
+                for(int k=0;k<3;++k) corners.push_back(*ptr_polygons[t].pVertices[k]);
+            const auto cert=GeometricUtilities::IsEmbeddedOpenOrientedSurface(corners);
+            m_bShapeOpenSheet=cert.certified;
+            m_bOpenSignedVolumeNegative=cert.certified && cert.signedVolumeAboutCentre<0;
+            if(!cert.certified) {
+                // Store a cheap, exact failure witness where one exists. No
+                // refusal is cached merely because topology stayed constant.
+                for(const auto& triangle : ptr_polygons) {
+                    for(int k=0;k<3;++k) {
+                        const Point3& a=*triangle.pVertices[k];
+                        const Point3& b=*triangle.pVertices[(k+1)%3];
+                        if(a.x==b.x && a.y==b.y && a.z==b.z) {
+                            openRefusalPair[0]=triangle.pVertices[k]-pPoints.data();
+                            openRefusalPair[1]=triangle.pVertices[(k+1)%3]-pPoints.data();
+                            break;
+                        }
+                    }
+                    if(openRefusalPair[0]<pPoints.size()) break;
+                }
+            }
+            if(cert.certified) {
+                // Certify a planar projection once. This is stronger than
+                // merely keeping triangle indices: folded projections fail.
+                for(int axis=0;axis<3 && openGraphAxis<0;++axis) {
+                    auto projected=corners;
+                    for(auto& point : projected) {
+                        if(axis==0) point.x=0; else if(axis==1) point.y=0; else point.z=0;
+                    }
+                    if(!GeometricUtilities::IsEmbeddedOpenOrientedSurface(projected).certified) continue;
+                    // A tolerance-only seam is insufficient for an exact
+                    // graph: height motion could separate its two aliases.
+                    std::vector<unsigned int> welded;
+                    if(!GeometricUtilities::WeldVertexPositions(projected,welded)) continue;
+                    std::vector<size_t> first(projected.size(),projected.size());
+                    bool exactProjection=true;
+                    for(size_t i=0;i<projected.size();++i) {
+                        size_t& representative=first[welded[i]];
+                        if(representative==projected.size()) representative=i;
+                        else {
+                            const auto& a=projected[representative]; const auto& b=projected[i];
+                            if(a.x!=b.x || a.y!=b.y || a.z!=b.z) {exactProjection=false;break;}
+                        }
+                    }
+                    if(!exactProjection) continue;
+                    std::map<std::pair<Scalar,Scalar>,size_t> seen;
+                    std::vector<std::pair<size_t,size_t>> coincident;
+                    bool graph=true;
+                    const auto coordinate=[](const Point3& p,int k) {return k==0?p.x:k==1?p.y:p.z;};
+                    for(size_t i=0;i<pPoints.size();++i) {
+                        const auto& point=pPoints[i];
+                        if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {graph=false;break;}
+                        const auto key=std::make_pair(coordinate(pPoints[i],(axis+1)%3),coordinate(pPoints[i],(axis+2)%3));
+                        const auto inserted=seen.emplace(key,i);
+                        if(!inserted.second) {
+                            const size_t other=inserted.first->second;
+                            if(coordinate(pPoints[i],axis)!=coordinate(pPoints[other],axis)) {graph=false;break;}
+                            coincident.emplace_back(other,i);
+                        }
+                    }
+                    if(graph) {openGraphAxis=axis;openGraphCoincidentPairs=std::move(coincident);}
+                }
+            }
+        }
+    }
+    m_bProvablyOpenSheet = m_bShapeOpenSheet && !smsUncertainNormalOrientation;
 }
 
 void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
@@ -667,8 +823,8 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 
 	// DL-31.  Topology is final now (ptr_polygons is built, indexedtris
 	// -- which is what carried the index triples -- was just cleared
-	// above), so this is the one place watertightness can be computed
-	// from live state.
+	// above), so perform the initial watertightness proof from live state.
+	// Changed positions refresh it in UpdateVertices.
 	ComputeWatertightness();
 
 	// Vertex arrays and topology are final only now (the block above
@@ -831,7 +987,7 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 //! edge for this check (or the coincident-triangle one) to examine in
 //! the first place.  A stronger guarantee would need an independent
 //! geometric test (self-intersection / distinct connected-component
-//! volume enclosure), out of scope for this cheap, build-time check.
+//! volume enclosure), out of scope for this position-weld check.
 //!
 //! (2) Two independently-tessellated, coincident sheets that happen to
 //! face the SAME way (same winding, so `normalDot >= 0` at every shared
@@ -862,8 +1018,8 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 
 	// DL-150.  Report the weld's own vertex-count reduction so an author
 	// can see an over-aggressive weld even when the discriminator below
-	// does not (or cannot) catch it.  One-shot, build-time, same pattern
-	// as the diagnostics below.
+	// does not (or cannot) catch it. Certification-time, never per query,
+	// like the diagnostics below.
 	{
 		unsigned int weldedCount = 0;
 		for( std::size_t i = 0; i < weldedId.size(); ++i ) {
@@ -919,7 +1075,7 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	// TEMPORARY allocation (~10.4 MB on the 96360-triangle sphere this
 	// function's own cost measurement uses), freed when this function
 	// returns.  Not a persistent or per-query cost; see the ledger's
-	// DL-197 entry for the measured build-time-only overhead this adds.
+	// DL-197 entry for the originally measured build overhead this adds.
 	struct TriGeom
 	{
 		Point3 p[3];
@@ -991,10 +1147,10 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	// `DeepestOtherContainment`'s own per-QUERY refusal (deliberately
 	// silent there: a shared latch would print once per ray for every
 	// mesh AND plane in the scene, see that function's comment), this is
-	// a one-shot, BUILD-TIME diagnostic on the mesh itself: it fires once
-	// per authored mesh that fails the check, not once per interior()
-	// call, so it cannot spam and it tells an author what "unsigned
-	// only" traces back to.
+	// a certification-time diagnostic on the mesh itself: it fires during
+	// a build or shape reproof, not per interior() query, and tells an
+	// author what "unsigned only" traces back to. Animated geometry may
+	// repeat this information when its shape needs reproof.
 	unsigned int boundaryEdges = 0, nonManifoldEdges = 0;
 	for( std::unordered_map<std::uint64_t, EdgeInfo>::const_iterator i = edgeInfo.begin(), e = edgeInfo.end(); i != e; ++i ) {
 		if( i->second.count == 1 ) { ++boundaryEdges; }
@@ -1548,9 +1704,9 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 		// Do pointer arithmetic to do the conversion
 		// NOTE: this only works if the points, normals and coords list
 		//  are all vectors
-		unsigned int vertex_ptr_begin = VoidPtrToUInt( (void*)&(*(pPoints.begin())) );
-		unsigned int normal_ptr_begin = VoidPtrToUInt( (void*)&(*(pNormals.begin())) );
-		unsigned int coord_ptr_begin = VoidPtrToUInt( (void*)&(*(pCoords.begin())) );
+		unsigned int vertex_ptr_begin = VoidPtrToUInt( (void*)pPoints.data() );
+		unsigned int normal_ptr_begin = VoidPtrToUInt( (void*)pNormals.data() );
+		unsigned int coord_ptr_begin = VoidPtrToUInt( (void*)pCoords.data() );
 
 		MyPointerTriangleList::const_iterator it;
 		for( it=ptr_polygons.begin(); it != ptr_polygons.end(); it++ ) {
@@ -1609,8 +1765,8 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 		return;
 	}
 
-	// Next check version.  The Tier A2 v4 format is the canonical write
-	// format; v1/v2/v3 are kept for backward-compatible reads.
+	// Next check version. The v5 writer adds vertex colors to the Tier A2
+	// v4 acceleration layout; v1/v2/v3/v4 remain readable.
 	const unsigned int version = buffer.getUInt();
 
 	if( version < 1 || version > cur_version ) {
@@ -1869,6 +2025,14 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	}
 
 	ComputeAreas();
+    // Modern loads derive closure from the loaded data. Legacy v1-v3 loads
+    // keep their frozen unsigned eligibility (DL-382 shipped-scene audit).
+    // Neither may inherit a closed certificate from the previous mesh.
+    if(version>=4) ComputeWatertightness();
+    else m_bWatertight=false;
+	// Replacing a mesh under the same geometry identity also invalidates
+	// geometry-owned signal tables and their cached per-position normals.
+	InvalidateSignalBakes();
 
 	// And we're done!
 	GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Finished deserialization", bDoubleSided );
@@ -1878,6 +2042,11 @@ void TriangleMeshGeometryIndexed::ComputeVertexNormals()
 {
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    openGraphAxis=-1;
+    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+    openGraphCoincidentPairs.clear();
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );

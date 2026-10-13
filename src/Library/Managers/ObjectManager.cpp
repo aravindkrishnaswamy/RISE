@@ -193,7 +193,8 @@ bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
 // open mesh, a mesh with stray boundary edges) is crossed by the IOR-stack
 // rule, which is non-reciprocal on genuinely open sheets (DL-345).
 // Kind 1: failed indexed/displaced certificate; 2: raw mesh with no closed
-// certificate; 3: patches/CSG with no sound open-versus-closed certificate.
+// certificate; 3: patches/CSG with no sound open-versus-closed certificate;
+// 4: certified open mesh with the negative signed-volume winding risk.
 // An uncertainty warning must never confer an open-sheet transport flag.
 int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
 {
@@ -214,13 +215,28 @@ int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
     const IMaterial* material = object.GetMaterial();
     const ISPF* spf = material ? material->GetSPF() : nullptr;
     if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) return 0;
+    // Match Object::IntersectRay's admission by scattering material identity:
+    // a sole-layer composite can forward a clear SPF without receiving the rule.
+    const IMaterial* proofMaterial=material;
+    while(proofMaterial) {
+        if(const auto* lum=dynamic_cast<const LambertianLuminaireMaterial*>(proofMaterial))
+            proofMaterial=&lum->GetBaseMaterial();
+        else if(const auto* lum=dynamic_cast<const PhongLuminaireMaterial*>(proofMaterial))
+            proofMaterial=&lum->GetBaseMaterial();
+        else break;
+    }
+    const bool broadProof=dynamic_cast<const DielectricMaterial*>(proofMaterial)
+        || dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial);
     const IGeometry* geometry = object.GetGeometry();
     if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
-        return (!mesh->IsCertifiedWatertight() && !mesh->IsProvablyOpenSheet()) ? 1 : 0;
+        return broadProof && mesh->IsProvablyOpenSheet() && mesh->HasNegativeOpenSignedVolume() ? 4 :
+            ((!mesh->IsCertifiedWatertight() && !(broadProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet())) ? 1 : 0);
     if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
-        return mesh->IsProvablyOpenSheet() ? 0 : 2;
+        return (broadProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet())
+            ? (broadProof && mesh->HasNegativeOpenSignedVolume() ? 4 : 0) : 2;
     if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(geometry))
-        return displaced->HasUncertifiedOpenness() ? 1 : 0;
+        return broadProof && displaced->HasNegativeOpenSignedVolume() ? 4
+            : (displaced->HasUncertifiedOpenness(broadProof) ? 1 : 0);
     if(dynamic_cast<const BezierPatchGeometry*>(geometry) || dynamic_cast<const BilinearPatchGeometry*>(geometry)) return 3;
     if(const auto* plane=dynamic_cast<const ClippedPlaneGeometry*>(geometry)) return plane->IsPlanarConvexQuad() ? 0 : 3;
     return 0;
@@ -2645,8 +2661,8 @@ void ObjectManager::PrepareForRendering() const
     // an animation prepares every frame.  Re-armed only when the set of
     // offending objects changes (an edit added or fixed one).
     {
-        unsigned int n[4] = { 0, 0, 0, 0 };
-        std::string first[4];
+        unsigned int n[5] = { 0, 0, 0, 0, 0 };
+        std::string first[5];
         std::string key;
         for(const auto& item : items) {
             if(!item.second.first->IsWorldVisible()) continue;
@@ -2659,11 +2675,17 @@ void ObjectManager::PrepareForRendering() const
         }
         if(key != openMeshWarningKey) {
             openMeshWarningKey = key;
+            if(n[4]) {
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "ObjectManager: %u certified open glass mesh object(s) (first '%s') have negative open signed volume (DL-382). "
+                    "The face rule follows authored winding; an inward-wound cracked solid will invert its outside and inside indices. "
+                    "Check winding or author a certified closed solid.", n[4], first[4].c_str());
+            }
             if(n[1]) {
                 GlobalLog()->PrintEx(eLog_Warning,
-                    "ObjectManager: %u transmissive mesh object(s) (first '%s') are neither certified watertight nor a single planar sheet; "
+                    "ObjectManager: %u transmissive mesh object(s) (first '%s') are neither certified watertight nor a certified open sheet; "
                     "they are refracted by the IOR-stack rule, which is right for a closed solid with stray boundary edges but not reciprocal on a genuinely OPEN surface (PT/BDPT/VCM can disagree). "
-                    "Author glass as a closed solid, or each open sheet as one planar mesh / clipped plane (docs/SCENE_CONVENTIONS.md, DL-382).",
+                    "Author glass as a closed solid, or each open sheet as one certified open mesh / clipped plane (docs/SCENE_CONVENTIONS.md, DL-382).",
                     n[1], first[1].c_str());
             }
             if(n[3]) {
@@ -2675,7 +2697,7 @@ void ObjectManager::PrepareForRendering() const
             }
             if(n[2]) {
                 GlobalLog()->PrintEx(eLog_Info,
-                    "ObjectManager: %u transmissive rawmesh object(s) (first '%s') are not a single planar sheet; that mesh class has no watertightness check, "
+                    "ObjectManager: %u transmissive rawmesh object(s) (first '%s') are not certified open sheets; that mesh class has no watertightness check, "
                     "so they use the IOR-stack rule -- correct if they are closed solids, not reciprocal if they are OPEN sheets (docs/SCENE_CONVENTIONS.md, DL-382).",
                     n[2], first[2].c_str());
             }

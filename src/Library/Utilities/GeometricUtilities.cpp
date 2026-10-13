@@ -1782,8 +1782,9 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 	}
 
 	// 2b. Single connected component: all triangles connected via manifold edges.
-	// A collection of disconnected sheets in one mesh can bound an interior or
-	// have inconsistent facing; each open sheet must be its own object.
+    // Conservative transport policy: disconnected pieces are refused by
+    // this general proof. Author each sheet as its own object; certification
+    // of individual pieces does not define their combined medium convention.
 	{
 		std::vector<unsigned char> visited( nTris, 0 );
 		std::vector<unsigned int> q;
