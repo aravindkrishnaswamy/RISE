@@ -1442,7 +1442,14 @@ namespace
 		return ( denom > Scalar(1e-12) ) ? t.E / denom : Scalar(0);
 	}
 
-
+	//! g(mu_i) g(mu_o) E / (pi G (1 - Q)).
+	inline Scalar LobeKernel( const LobeTotals& t, const Scalar gI, const Scalar gO )
+	{
+		if( !( t.G > Scalar(1e-12) ) ) {
+			return Scalar(0);
+		}
+		return gI * gO * LobeReservoirEscape( t ) / ( RISE::PI * t.G );
+	}
 
 	//! Reads one GGX substrate's lobe colours at `riIn` (RGB).
 	void ReadGGXLobeRGB(
@@ -1786,54 +1793,13 @@ Scalar CoatedBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeomet
 //////////////////////////////////////////////////////////////////////
 namespace
 {
-	struct LobeRecycleMod
-	{
-		Scalar sEsc;
-		Scalar rho;
-	};
-
-	inline Scalar LobeWrappedCauchy( const Scalar rho, const Scalar cosDPhi )
-	{
-		return ( Scalar(1) - rho * rho ) / ( Scalar(1) + rho * rho + Scalar(2) * rho * cosDPhi );
-	}
-
-	inline LobeRecycleMod ComputeLobeRecycleMod(
-		const Scalar alpha,
-		const Scalar F0,
-		const Scalar diffC,
-		const Scalar tau,
-		const Scalar muA,
-		const Scalar muB,
-		const Scalar muCrit )
-	{
-		const Scalar sinL2 = r_max( Scalar(0), Scalar(1) - muA * muA );
-		const Scalar sinV2 = r_max( Scalar(0), Scalar(1) - muB * muB );
-		const Scalar tilt = r_min( Scalar(1), Scalar(4) * sqrt( sinL2 * sinV2 ) );
-		const Scalar muGeom = sqrt( r_max( Scalar(1e-6), muA * muB ) );
-
-		const Scalar rho = r_min( Scalar(0.999), r_max( Scalar(0), tilt * exp( - Scalar(0.18) * alpha / muGeom ) ) );
-
-		const Scalar u = ( muCrit < Scalar(1) ) ? r_min( Scalar(1), r_max( Scalar(0), ( muGeom - muCrit ) / ( Scalar(1) - muCrit ) ) ) : Scalar(1);
-		const Scalar wAlpha = r_max( Scalar(0), Scalar(1) - alpha / Scalar(0.55) );
-		const Scalar specWeight = ( F0 >= Scalar(0.2) ) ? r_max( Scalar(0), Scalar(1) - diffC ) : Scalar(0);
-		const Scalar subLoss = specWeight * r_min( Scalar(1), Scalar(8.0) * ( Scalar(1) - F0 ) );
-		const Scalar coatAtten = exp( - Scalar(2) * tau / muGeom );
-		const Scalar lossWeight = subLoss * coatAtten;
-
-		const Scalar sFactor = wAlpha * lossWeight * Scalar(0.50) * ( Scalar(1) - u );
-		const Scalar sEsc = r_max( Scalar(0.1), Scalar(1) - sFactor );
-
-		return { sEsc, rho };
-	}
-
-	//! M per RGB channel at the two internal cosines and relative azimuth.
+	//! M per RGB channel at the two internal cosines.
 	RISE::RISEPel LobeRecycledRGB(
 		const RISE::Implementation::GGXBRDF& g,
 		const RISE::RayIntersectionGeometric& riIn,
 		const RISE::Implementation::CoatedBRDF::CoatParams& cp,
 		const Scalar muA,
-		const Scalar muB,
-		const Scalar cosDPhi )
+		const Scalar muB )
 	{
 		using namespace RISE;
 		Scalar alpha = 0;
@@ -1843,10 +1809,6 @@ namespace
 		LobeBasis b;
 		LobeDir dA = {}, dB = {};
 		Scalar lastTau = -1;
-
-		const LobeRecycleMod modGeom = ComputeLobeRecycleMod( alpha, ch[0].F0, ch[0].c, 0, muA, muB, 0 );
-		const Scalar pg = LobeWrappedCauchy( modGeom.rho, cosDPhi );
-
 		for( int c = 0; c < 3; ++c ) {
 			const Scalar tau = ChannelTau( cp, cp.tint[c] );
 			if( c == 0 || !( tau == lastTau ) ) {
@@ -1856,18 +1818,7 @@ namespace
 				lastTau = tau;
 			}
 			const LobeTotals t = LobeHemispherical( b, ch[c] );
-			const Scalar gI = LobeReturn( b, ch[c], dA );
-			const Scalar gO = LobeReturn( b, ch[c], dB );
-			const Scalar gI_spec = ch[c].F0 * dA.g0 + ( Scalar(1) - ch[c].F0 ) * dA.g5;
-			const Scalar gO_spec = ch[c].F0 * dB.g0 + ( Scalar(1) - ch[c].F0 ) * dB.g5;
-			const Scalar esc = LobeReservoirEscape( t );
-			const Scalar invPiG = ( t.G > Scalar(1e-12) ) ? Scalar(1) / ( RISE::PI * t.G ) : Scalar(0);
-
-			const Scalar mBroad = ( gI * gO - gI_spec * gO_spec ) * esc * invPiG;
-			const Scalar mSpec = gI_spec * gO_spec * esc * invPiG * pg;
-
-			const LobeRecycleMod mod = ComputeLobeRecycleMod( alpha, ch[c].F0, ch[c].c, tau, muA, muB, b.muC );
-			out[c] = ( mBroad + mSpec ) * mod.sEsc;
+			out[c] = LobeKernel( t, LobeReturn( b, ch[c], dA ), LobeReturn( b, ch[c], dB ) );
 		}
 		return out;
 	}
@@ -1878,31 +1829,15 @@ namespace
 		const RISE::Implementation::CoatedBRDF::CoatParams& cp,
 		const Scalar muA,
 		const Scalar muB,
-		const Scalar nm,
-		const Scalar cosDPhi )
+		const Scalar nm )
 	{
 		Scalar alpha = 0;
 		LobeChannel ch;
 		ReadGGXLobeNM( g, riIn, nm, alpha, ch );
 		LobeBasis b;
-		const Scalar tau = ChannelTau( cp, cp.tint[0] );
-		LobeBasisCached( b, alpha, cp.eta, tau );
+		LobeBasisCached( b, alpha, cp.eta, ChannelTau( cp, cp.tint[0] ) );
 		const LobeTotals t = LobeHemispherical( b, ch );
-		const LobeDir dA = LobeDirection( b, muA );
-		const LobeDir dB = LobeDirection( b, muB );
-		const Scalar gI = LobeReturn( b, ch, dA );
-		const Scalar gO = LobeReturn( b, ch, dB );
-		const Scalar gI_spec = ch.F0 * dA.g0 + ( Scalar(1) - ch.F0 ) * dA.g5;
-		const Scalar gO_spec = ch.F0 * dB.g0 + ( Scalar(1) - ch.F0 ) * dB.g5;
-		const Scalar esc = LobeReservoirEscape( t );
-		const Scalar invPiG = ( t.G > Scalar(1e-12) ) ? Scalar(1) / ( RISE::PI * t.G ) : Scalar(0);
-
-		const LobeRecycleMod mod = ComputeLobeRecycleMod( alpha, ch.F0, ch.c, tau, muA, muB, b.muC );
-		const Scalar pg = LobeWrappedCauchy( mod.rho, cosDPhi );
-
-		const Scalar mBroad = ( gI * gO - gI_spec * gO_spec ) * esc * invPiG;
-		const Scalar mSpec = gI_spec * gO_spec * esc * invPiG * pg;
-		return ( mBroad + mSpec ) * mod.sEsc;
+		return LobeKernel( t, LobeReturn( b, ch, LobeDirection( b, muA ) ), LobeReturn( b, ch, LobeDirection( b, muB ) ) );
 	}
 }
 
@@ -1939,9 +1874,7 @@ namespace
 				// eta^2 ( 2 INT mu Psi e_1 + G E / (1 - Q) ).
 				out[c] = cp.eta * cp.eta * ( t.H + ( recycling ? t.G * LobeReservoirEscape( t ) : Scalar(0) ) );
 			} else {
-				const Scalar g = LobeReturn( b, ch[c], d );
-				const LobeRecycleMod mod = ComputeLobeRecycleMod( alpha, ch[c].F0, ch[c].c, tau, mu, mu, b.muC );
-				out[c] = LobeEscape( b, ch[c], d ) + ( recycling ? g * LobeReservoirEscape( t ) * mod.sEsc : Scalar(0) );
+				out[c] = LobeEscape( b, ch[c], d ) + ( recycling ? LobeReturn( b, ch[c], d ) * LobeReservoirEscape( t ) : Scalar(0) );
 			}
 		}
 		return out;
@@ -1960,16 +1893,13 @@ namespace
 		LobeChannel ch;
 		ReadGGXLobeNM( g, riIn, nm, alpha, ch );
 		LobeBasis b;
-		const Scalar tau = ChannelTau( cp, cp.tint[0] );
-		LobeBasisCached( b, alpha, cp.eta, tau );
+		LobeBasisCached( b, alpha, cp.eta, ChannelTau( cp, cp.tint[0] ) );
 		const LobeTotals t = LobeHemispherical( b, ch );
 		if( whiteSky ) {
 			return cp.eta * cp.eta * ( t.H + ( recycling ? t.G * LobeReservoirEscape( t ) : Scalar(0) ) );
 		}
 		const LobeDir d = LobeDirection( b, mu );
-		const Scalar gVal = LobeReturn( b, ch, d );
-		const LobeRecycleMod mod = ComputeLobeRecycleMod( alpha, ch.F0, ch.c, tau, mu, mu, b.muC );
-		return LobeEscape( b, ch, d ) + ( recycling ? gVal * LobeReservoirEscape( t ) * mod.sEsc : Scalar(0) );
+		return LobeEscape( b, ch, d ) + ( recycling ? LobeReturn( b, ch, d ) * LobeReservoirEscape( t ) : Scalar(0) );
 	}
 
 	//! The substrate record for a VIEW-INDEPENDENT query: the white-sky
@@ -2026,14 +1956,7 @@ RISEPel CoatedBRDF::ValueRefracted(
 		if( bRecycling ) {
 			const Scalar muL = Vector3Ops::Dot( vIn, n );
 			const Scalar muV = -Vector3Ops::Dot( riIn.ray.Dir(), n );
-			const Vector3 rInDir = -riIn.ray.Dir();
-			const Scalar sinL2 = r_max( Scalar(0), Scalar(1) - muL * muL );
-			const Scalar sinV2 = r_max( Scalar(0), Scalar(1) - muV * muV );
-			const Scalar sinProd = sqrt( sinL2 * sinV2 );
-			const Scalar cosDPhi = ( sinProd > Scalar(1e-6) )
-				? r_min( Scalar(1), r_max( Scalar(-1), ( Vector3Ops::Dot( vIn, rInDir ) - muL * muV ) / sinProd ) )
-				: Scalar(-1);
-			sub = sub + LobeRecycledRGB( *pGGXBase, riIn, cp, muL, muV, cosDPhi );
+			sub = sub + LobeRecycledRGB( *pGGXBase, riIn, cp, muL, muV );
 		}
 	} else {
 		const RISEPel R = SubstrateAlbedo( ri );
@@ -2085,14 +2008,7 @@ Scalar CoatedBRDF::ValueRefractedNM(
 		if( bRecycling ) {
 			const Scalar muL = Vector3Ops::Dot( vIn, n );
 			const Scalar muV = -Vector3Ops::Dot( riIn.ray.Dir(), n );
-			const Vector3 rInDir = -riIn.ray.Dir();
-			const Scalar sinL2 = r_max( Scalar(0), Scalar(1) - muL * muL );
-			const Scalar sinV2 = r_max( Scalar(0), Scalar(1) - muV * muV );
-			const Scalar sinProd = sqrt( sinL2 * sinV2 );
-			const Scalar cosDPhi = ( sinProd > Scalar(1e-6) )
-				? r_min( Scalar(1), r_max( Scalar(-1), ( Vector3Ops::Dot( vIn, rInDir ) - muL * muV ) / sinProd ) )
-				: Scalar(-1);
-			sub += LobeRecycledNM( *pGGXBase, riIn, cp, muL, muV, nm, cosDPhi );
+			sub += LobeRecycledNM( *pGGXBase, riIn, cp, muL, muV, nm );
 		}
 	} else {
 		const Scalar R = SubstrateAlbedoNM( ri, nm );
