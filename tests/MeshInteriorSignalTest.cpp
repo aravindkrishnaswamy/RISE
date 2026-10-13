@@ -174,6 +174,7 @@
 #include <vector>
 
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/EllipsoidGeometry.h"
@@ -1609,6 +1610,79 @@ static TriangleMeshGeometryIndexed* BuildFaceNormalMesh(
 	return mesh;
 }
 
+static void TestDeserializedClosedCertificate()
+{
+    std::vector<Point3> vertices; CubeCorners(2,vertices);
+    IndexTriangleListType closedTris,openTris;
+    CubeTriangles(closedTris,false); CubeTriangles(openTris,true);
+    auto* closed=BuildFaceNormalMesh(vertices,closedTris,false);
+    auto* open=BuildFaceNormalMesh(vertices,openTris,false);
+    Check(closed->IsCertifiedWatertight(),"serialization control starts certified closed");
+    auto* closedBytes=new MemoryBuffer(); auto* openBytes=new MemoryBuffer();
+    closed->Serialize(*closedBytes); open->Serialize(*openBytes);
+    SurfaceSignalInfo signal; signal.primId=0;
+    Scalar warmed=0;
+    Check(closed->ComputeOcclusion(signal,1,true,warmed),"closed roundtrip control warms geometry-owned signal table");
+
+    auto* fresh=new TriangleMeshGeometryIndexed(false,false); fresh->addref();
+    closedBytes->seek(IBuffer::START,0); fresh->Deserialize(*closedBytes);
+    Check(fresh->IsCertifiedWatertight(),"fresh closed deserialization establishes watertightness");
+    Scalar distance=0; bool exact=false;
+    Check(fresh->SignedDistanceLower(Point3(0,0,0),1000,distance,exact) && distance<0,
+        "fresh deserialized closed cube answers signed interior");
+    const auto openHit=[](TriangleMeshGeometryIndexed& mesh,bool expected) {
+        RayIntersectionGeometric hit(Ray(Point3(0.1,0.2,3),Vector3(0,0,-1)),nullRasterizerState);
+        mesh.IntersectRay(hit,true,true,false);
+        return hit.bHit && hit.bOpenSheet==expected;
+    };
+    Check(openHit(*fresh,false),"deserialized closed cube retains closed entry record");
+    openBytes->seek(IBuffer::START,0); closed->Deserialize(*openBytes);
+    Check(!closed->IsCertifiedWatertight(),"deserializing open mesh revokes previous closed certificate");
+    Check(!closed->SignedDistanceLower(Point3(0,0,0),1000,distance,exact),
+        "deserialized open replacement refuses signed interior");
+    Check(openHit(*closed,true),"deserialized open replacement records an open entry");
+    Scalar reusedSignal=0,freshSignal=0;
+    const bool reusedOK=closed->ComputeOcclusion(signal,1,true,reusedSignal);
+    const bool freshOK=open->ComputeOcclusion(signal,1,true,freshSignal);
+    std::cout<<"    replacement occlusion: reused "<<reusedSignal<<" vs fresh "<<freshSignal<<std::endl;
+    Check(reusedOK && freshOK && std::fabs(reusedSignal-freshSignal)<1e-9,
+        "deserialized replacement matches fresh mesh signal, not stale closed bake");
+
+    closedBytes->seek(IBuffer::START,0); closed->Deserialize(*closedBytes);
+    Check(closed->IsCertifiedWatertight(),"deserializing closed mesh restores closed certificate");
+    closed->UpdateVertices(VerticesListType(vertices.begin(),vertices.end()),
+        NormalsListType(vertices.size(),Vector3(0.1,0,1)));
+    Check(closed->IsCertifiedWatertight(),"normal-only update preserves freshly derived closed certificate");
+    // Legacy v1-v3 streams remain unsigned under the frozen eligibility rule.
+    // Construct a valid v3 closed cube without a legacy tree or BVH cache.
+    auto* legacy=new MemoryBuffer(); legacy->setBytes("RISETMGI",8); legacy->setUInt(3);
+    legacy->setUInt(10); legacy->setChar(8); legacy->setChar(0);
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(const auto& p : vertices) {legacy->setDouble(p.x);legacy->setDouble(p.y);legacy->setDouble(p.z);}
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(size_t i=0;i<vertices.size();++i) {legacy->setDouble(0);legacy->setDouble(0);legacy->setDouble(1);}
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(size_t i=0;i<vertices.size();++i) {legacy->setDouble(0);legacy->setDouble(0);}
+    legacy->setUInt(static_cast<unsigned>(closedTris.size()));
+    for(const auto& tri : closedTris) for(int k=0;k<3;++k) {
+        legacy->setUInt(tri.iVertices[k]);legacy->setUInt(tri.iNormals[k]);legacy->setUInt(tri.iCoords[k]);
+    }
+    legacy->setChar(1); legacy->setChar(0); legacy->setChar(0); legacy->setChar(0);
+    legacy->seek(IBuffer::START,0); closed->Deserialize(*legacy);
+    Check(!closed->IsCertifiedWatertight(),"legacy closed replacement preserves unsigned eligibility and clears inherited certificate");
+    Check(!closed->SignedDistanceLower(Point3(0,0,0),1000,distance,exact),
+        "legacy closed replacement retains unsigned-only query behavior");
+    closedBytes->seek(IBuffer::START,0); closed->Deserialize(*closedBytes);
+    Check(closed->IsCertifiedWatertight(),"modern reload restores proof after a legacy replacement");
+    legacy->release();
+    auto* empty=new TriangleMeshGeometryIndexed(true,false); empty->addref();
+    auto* emptyBytes=new MemoryBuffer(); empty->Serialize(*emptyBytes);
+    emptyBytes->seek(IBuffer::START,0); closed->Deserialize(*emptyBytes);
+    Check(!closed->IsCertifiedWatertight(),"empty deserialized replacement revokes closed certificate");
+    emptyBytes->release(); empty->release();
+    fresh->release(); closed->release(); open->release(); closedBytes->release(); openBytes->release();
+}
+
 static void TestProvablyOpenSheetCertification()
 {
 	std::cout << "DL-382: provably-open-sheet certification" << std::endl;
@@ -1984,6 +2058,7 @@ int main()
 	TestFlatShadedCubeWithRealNormalsCertifies();
 	TestThinButValidSolidThickerThanEpsCertifies();
 	TestProvablyOpenSheetCertification();
+    TestDeserializedClosedCertificate();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

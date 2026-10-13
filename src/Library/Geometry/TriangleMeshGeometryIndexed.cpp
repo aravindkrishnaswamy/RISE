@@ -1765,8 +1765,8 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 		return;
 	}
 
-	// Next check version.  The Tier A2 v4 format is the canonical write
-	// format; v1/v2/v3 are kept for backward-compatible reads.
+	// Next check version. The v5 writer adds vertex colors to the Tier A2
+	// v4 acceleration layout; v1/v2/v3/v4 remain readable.
 	const unsigned int version = buffer.getUInt();
 
 	if( version < 1 || version > cur_version ) {
@@ -2025,6 +2025,14 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	}
 
 	ComputeAreas();
+    // Modern loads derive closure from the loaded data. Legacy v1-v3 loads
+    // keep their frozen unsigned eligibility (DL-382 shipped-scene audit).
+    // Neither may inherit a closed certificate from the previous mesh.
+    if(version>=4) ComputeWatertightness();
+    else m_bWatertight=false;
+	// Replacing a mesh under the same geometry identity also invalidates
+	// geometry-owned signal tables and their cached per-position normals.
+	InvalidateSignalBakes();
 
 	// And we're done!
 	GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Finished deserialization", bDoubleSided );

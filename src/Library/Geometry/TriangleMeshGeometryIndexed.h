@@ -92,8 +92,8 @@ namespace RISE
 			//! EXACTLY two triangles -- the cheap necessary condition for
 			//! "closed manifold" this class uses to decide whether it may
 			//! answer `SignedDistanceLower` (the parity inside-test is only
-			//! meaningful for a mesh with no boundary).  Computed initially in
-			//! `DoneIndexedTriangles`, from the position-index pairs of
+			//! meaningful for a mesh with no boundary). Computed initially in
+			//! `DoneIndexedTriangles` or modern (v4+) `Deserialize`, from the position-index pairs of
 			//! `ptr_polygons` (recovered via pointer arithmetic into
 			//! `pPoints`, since `indexedtris` -- which carries the indices
 			//! directly -- is freed earlier in the same function).  An open
@@ -118,10 +118,12 @@ namespace RISE
 			bool					m_bWatertight;
 
 			//! Computes and caches `m_bWatertight`.  Called from
-			//! `DoneIndexedTriangles` once `ptr_polygons` is final; a
+			//! `DoneIndexedTriangles` or modern `Deserialize` once `ptr_polygons` is final; a
 			//! changed-position update also calls it unless a retained geometric
 			//! proof already establishes refusal. Fixed array indices do not
 			//! preserve position welding or the folded-face discriminator.
+            //! Legacy v1-v3 deserialization retains unsigned eligibility and
+            //! clears any prior closed certificate (DL-382 compatibility).
 			void ComputeWatertightness();
 
 			//! DL-31.  Casts one ray from `ptObject` along a fixed,
@@ -218,7 +220,7 @@ namespace RISE
 			//! built from.  Called wherever the vertex data underneath them
 			//! changes -- rebuild (`BeginIndexedTriangles`/
 			//! `DoneIndexedTriangles`), vertex-level animation
-			//! (`UpdateVertices`) and `ComputeVertexNormals`.
+			//! (`UpdateVertices`), `Deserialize`, and `ComputeVertexNormals`.
 			//!
 			//! §14 item 10 asked whether deforming geometry could stale a
 			//! bake, on the assumption that RISE animates transforms rather

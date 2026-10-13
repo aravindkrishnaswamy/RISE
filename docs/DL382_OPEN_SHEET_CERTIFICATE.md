@@ -312,11 +312,11 @@ reviewer's verified core while giving the actual gated fixture evidence.
 
 ### Final gate and cost record
 
-All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **144/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **53/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
+All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **159/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **53/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
 
-Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **144/0**.
+Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **159/0**.
 
-Costs below are wall-time medians of three interleaved runs, 980,000 triangles (978,600 for the true closed sphere), `render_thread_reserve_count 0`, no concurrent renders or builds. “Before” is pre-fix master `72d9fce57`; “base” is `0131003bc`. Timing tool output reports openness after the final deformation.
+Costs below were measured on `686c116b0`; the later deserialization correction does not change these timing paths. They are wall-time medians of three interleaved runs, 980,000 triangles (978,600 for the true closed sphere), `render_thread_reserve_count 0`, no concurrent renders or builds. “Before” is pre-fix master `72d9fce57`; “base” is `0131003bc`. Timing tool output reports openness after the final deformation.
 
 | Work | Base ms | Before ms | Fix-forward ms |
 |---|---:|---:|---:|
@@ -375,3 +375,34 @@ and folds and restores the cube. No signed-distance or contact implementation
 was changed. The displaced, indexed, raw-mesh, and test comments now describe
 their actual proofs. Valid closed-body deformation may pay a full position-weld
 and folded-face audit; this conservative cost is included in DL-620.
+
+
+The fourth fresh review of `686c116b0` found one P1 in the same closed-proof
+lifecycle: `Deserialize` refreshed only the open proof. A fresh closed load kept
+the constructor's false closed certificate, while replacing a certified closed
+instance with an open mesh retained true. Successful modern v4/v5 deserialization now derives
+both certificates from the loaded data, including empty replacements. Legacy
+v1-v3 loads remain unsigned and clear any inherited closed certificate. The
+round-trip control was red **147/6** and checks fresh closed signed queries,
+closed/open hit records, closed-to-open replacement, restoration, and a subsequent
+normal-only update. Serialized loads pay the one-time closed proof, as builds do;
+no file format or frozen transport implementation changed.
+
+
+The expanded round-trip control also reproduced a stale geometry-owned
+occlusion table after replacement (**155/1**). Deserialization now calls the
+existing geometry invalidation callback, as construction and vertex mutation
+already do. The provider's reused result must match a freshly built mesh's
+result. The expanded gate includes empty and legacy replacements and is **159/0**.
+This changes no signal or SSS contact implementation; it drops derived data
+when its owning mesh is replaced.
+
+
+The first audit after unrestricted deserialization reproof changed seven
+legacy-v3 `wt=0` records to `wt=1`. That candidate was rejected: the user's
+shipped-scene certification gate and frozen behavior require preserving those
+loads' existing unsigned eligibility. V1-v3 deserialization now explicitly
+clears inherited closure without granting a new closed certificate; modern
+v4/v5 loads perform the full proof. The legacy compatibility control was red
+**157/2**. The audit baseline was not edited. The validator now runs the audit
+before the expensive render gates so compatibility changes fail early.

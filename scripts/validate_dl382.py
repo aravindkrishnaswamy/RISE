@@ -47,6 +47,21 @@ def main():
             failed.append(label)
         return text
 
+    fixtures = ROOT / "tests/fixtures/dl382"
+    scenes = (fixtures / "meshscenes.txt").read_text().splitlines()
+    audit_path = args.log_dir / "certification-audit.txt"
+    with audit_path.open("w") as log:
+        audit = subprocess.run([str(ROOT / "bin/tools/OpenSheetCertificateAudit"), *scenes],
+                               cwd=ROOT, env=env, stdout=log, stderr=subprocess.PIPE)
+    expected = (fixtures / "certification-audit.txt").read_bytes()
+    same = audit.returncode == 0 and audit_path.read_bytes() == expected
+    print(f"certification audit: {'UNCHANGED' if same else 'FAIL'} ({len(scenes)} inputs)", flush=True)
+    if not same:
+        failed.append("certification audit")
+    if failed:
+        print("Stopped before renders: " + ", ".join(failed), flush=True)
+        return True
+
     expected_hash = None
     if args.before_root:
         for name in ["RandomWalkOpenSheetRejectionTest", "OpenSheetWarningTest"]:
@@ -69,17 +84,6 @@ def main():
             print("Stopped after failed gate: " + ", ".join(failed), flush=True)
             return True
 
-    fixtures = ROOT / "tests/fixtures/dl382"
-    scenes = (fixtures / "meshscenes.txt").read_text().splitlines()
-    audit_path = args.log_dir / "certification-audit.txt"
-    with audit_path.open("w") as log:
-        audit = subprocess.run([str(ROOT / "bin/tools/OpenSheetCertificateAudit"), *scenes],
-                               cwd=ROOT, env=env, stdout=log, stderr=subprocess.PIPE)
-    expected = (fixtures / "certification-audit.txt").read_bytes()
-    same = audit.returncode == 0 and audit_path.read_bytes() == expected
-    print(f"certification audit: {'UNCHANGED' if same else 'FAIL'} ({len(scenes)} inputs)", flush=True)
-    if not same:
-        failed.append("certification audit")
     print("Failed: " + (", ".join(failed) if failed else "none"), flush=True)
     return bool(failed)
 
