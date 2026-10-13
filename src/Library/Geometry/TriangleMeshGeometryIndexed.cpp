@@ -1704,9 +1704,9 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 		// Do pointer arithmetic to do the conversion
 		// NOTE: this only works if the points, normals and coords list
 		//  are all vectors
-		unsigned int vertex_ptr_begin = VoidPtrToUInt( (void*)&(*(pPoints.begin())) );
-		unsigned int normal_ptr_begin = VoidPtrToUInt( (void*)&(*(pNormals.begin())) );
-		unsigned int coord_ptr_begin = VoidPtrToUInt( (void*)&(*(pCoords.begin())) );
+		unsigned int vertex_ptr_begin = VoidPtrToUInt( (void*)pPoints.data() );
+		unsigned int normal_ptr_begin = VoidPtrToUInt( (void*)pNormals.data() );
+		unsigned int coord_ptr_begin = VoidPtrToUInt( (void*)pCoords.data() );
 
 		MyPointerTriangleList::const_iterator it;
 		for( it=ptr_polygons.begin(); it != ptr_polygons.end(); it++ ) {

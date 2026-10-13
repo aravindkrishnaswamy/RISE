@@ -238,9 +238,11 @@ closure review claim is withdrawn.
 
 The `2c08b50c0` merge is retained: the curved-sheet slab core is verified.
 DL-382 was reopened because the previous zero-P1 review claim was false.
-The fix-forward is now closed after the gates below and the fifth fresh
-independent review of `7ffa6023d`, which found zero P1s on both axes.
-Local merge remains conditional on a fresh review of the final committed state.
+The fifth review found zero P1s on `7ffa6023d`, but the sixth review of
+`6dac4bc5e` exposed sanitizer diagnostics missed by the earlier assessment.
+The empty-serialization correction has now passed the full gate rerun and
+a genuinely clean sanitizer run. The ledger marks this final closure candidate;
+local merge remains blocked until a fresh review of the final committed state.
 Random-walk scene rejection now uses `IsZeroVolumeSheet`, the old planar
 proof, rather than the general face-rule proof. A cracked solid remains
 accepted. The broader hit flag is admitted at `Object::IntersectRay` only
@@ -317,7 +319,7 @@ reviewer's verified core while giving the actual gated fixture evidence.
 
 All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **159/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **53/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
 
-Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **159/0**.
+Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. The earlier ASan/UBSan run had **159/0** assertions but emitted three UBSan diagnostics; it was not clean. The sixth review caught empty-vector iterator dereferences in mesh serialization.
 
 Costs below were measured on `686c116b0`; the later deserialization correction does not change these timing paths. They are wall-time medians of three interleaved runs, 980,000 triangles (978,600 for the true closed sphere), `render_thread_reserve_count 0`, no concurrent renders or builds. “Before” is pre-fix master `72d9fce57`; “base” is `0131003bc`. Timing tool output reports openness after the final deformation.
 
@@ -423,3 +425,29 @@ after the final validator. Legacy BSP compatibility, BVH serialization
 DL-616..DL-620 remain real open rows. The DL-382 closure and this final comment
 correction are committed for another fresh independent review before the
 local merge; neither a merge nor a future review verdict is assumed here.
+
+
+The sixth fresh review of `6dac4bc5e` blocked closure: the empty-mesh
+round-trip gate exercised pre-existing undefined behavior in `Serialize`,
+which dereferenced the end iterators of empty position, normal and UV vectors.
+The fix uses each vector's `data()` without dereferencing an empty iterator;
+the serialized bytes and file format stay unchanged. The previous sanitizer
+assessment is withdrawn. The corrected run used `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`
+and passed **159/0** with **zero ASan/UBSan diagnostics**, verified by an
+explicit log scan. Empty serialization previously emitted three UBSan
+diagnostics; it now emits zero. The complete validator was rerun: all nine
+requested and three added gates passed, with the byte-identical shipped
+audit and exact frozen images. Make, clean Deployment and clean Opto builds
+passed without compiler warnings (only the AppIntents metadata notice).
+
+
+Final correction evidence: `/tmp/dl382-serialize-final-summary.log`,
+`/tmp/dl382-serialize-final-gates/`, `/tmp/dl382-serialize-build.log`,
+`/tmp/dl382-serialize-deployment.log`, `/tmp/dl382-serialize-opto.log`,
+`/tmp/dl382-serialize-sanitizer-summary.log`, and
+`/tmp/dl382-sanitizer-run.log` (the corrected halt-on-error run). The legacy
+BSP compatibility, BVH serialization and closest-point checks were rerun
+and passed. The original sanitizer success claim is retained only as
+withdrawn history above; the current claim is backed by the corrected
+diagnostic-free run. Final independent review is required on this committed
+closure candidate before local merge; no future verdict is asserted.
