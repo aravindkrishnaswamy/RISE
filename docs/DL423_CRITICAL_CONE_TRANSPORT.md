@@ -267,8 +267,9 @@ with `build-test/<Name>` and its build rc checked (all0), then run sequentially.
   sweeps pass; reported coarse failures are not fixed per the user instruction.
 
 Build logs remain `/tmp/dl423-clean-build.log`, `/tmp/dl423-deployment-build.log`,
-`/tmp/dl423-opto-build.log`, and `/tmp/dl423-build-<Test>.log`; test logs and
-validation summary are committed with the evidence. The branch is committed
+`/tmp/dl423-opto-build.log`, and `/tmp/dl423-build-<Test>.log`; named restoration
+test logs also remain in `/tmp`. Diagnostic logs and the validation summary
+are committed with the evidence. The branch is committed
 for fresh independent review of rollback integrity and physics/evidence
 honesty. This does not claim a clean DL-423 replacement, and no future review
 verdict or local merge is assumed. The acceptance failures forbid merging
