@@ -233,8 +233,8 @@ void TriangleMeshGeometry::ComputeAreas()
 		}
 	}
 
-    // Position-only proof cached across unchanged-position updates. Normal
-    // agreement is always re-audited above, even when the proof is reused.
+    // Raw meshes recompute the shape proof on every ComputeAreas call.
+    // Authored-normal agreement is also re-audited above.
     {
         ++openCertificateAudits;
         m_bZeroVolumeSheet = GeometricUtilities::IsPlanarConsistentlyWoundSheet(

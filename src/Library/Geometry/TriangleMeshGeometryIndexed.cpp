@@ -211,7 +211,7 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 		}
 		ri.bGeomNormalOrientedToRay = bFlipGeomNormal;
 		// DL-96: a double-sided mesh that is NOT certified watertight
-		// (DL-143's build-time position-weld check, m_bWatertight) has no
+		// (DL-143's position-weld check, m_bWatertight) has no
 		// single true "outside" -- it is an open sheet where both faces
 		// are legitimate physical sides.  See
 		// RayIntersectionGeometric::bOpenSheet's doc comment for the one
@@ -494,6 +494,17 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 
 	// Recompute triangle areas + CDF (vertex positions changed).
 	ComputeAreas(positionsChanged,graphProofReusable,refusalProofReusable);
+    // Array indices stay fixed, but the position-weld partition and folded
+    // face discriminator do not. Re-prove closed membership after motion.
+    // These two retained proofs already establish absence of a closed body:
+    // an embedded open graph, or a triangle with exact coincident corners.
+    if(positionsChanged) {
+        if(refusalProofReusable || (graphProofReusable && m_bShapeOpenSheet))
+            m_bWatertight=false;
+        else
+            ComputeWatertightness();
+    }
+
 
 	// The mesh has genuinely CHANGED SHAPE under a stable IGeometry*, which
 	// is the one case design doc §7.2's free-invalidation argument does not
@@ -812,8 +823,8 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 
 	// DL-31.  Topology is final now (ptr_polygons is built, indexedtris
 	// -- which is what carried the index triples -- was just cleared
-	// above), so this is the one place watertightness can be computed
-	// from live state.
+	// above), so perform the initial watertightness proof from live state.
+	// Changed positions refresh it in UpdateVertices.
 	ComputeWatertightness();
 
 	// Vertex arrays and topology are final only now (the block above
@@ -976,7 +987,7 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 //! edge for this check (or the coincident-triangle one) to examine in
 //! the first place.  A stronger guarantee would need an independent
 //! geometric test (self-intersection / distinct connected-component
-//! volume enclosure), out of scope for this cheap, build-time check.
+//! volume enclosure), out of scope for this position-weld check.
 //!
 //! (2) Two independently-tessellated, coincident sheets that happen to
 //! face the SAME way (same winding, so `normalDot >= 0` at every shared
@@ -1007,8 +1018,8 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 
 	// DL-150.  Report the weld's own vertex-count reduction so an author
 	// can see an over-aggressive weld even when the discriminator below
-	// does not (or cannot) catch it.  One-shot, build-time, same pattern
-	// as the diagnostics below.
+	// does not (or cannot) catch it. Certification-time, never per query,
+	// like the diagnostics below.
 	{
 		unsigned int weldedCount = 0;
 		for( std::size_t i = 0; i < weldedId.size(); ++i ) {
@@ -1064,7 +1075,7 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	// TEMPORARY allocation (~10.4 MB on the 96360-triangle sphere this
 	// function's own cost measurement uses), freed when this function
 	// returns.  Not a persistent or per-query cost; see the ledger's
-	// DL-197 entry for the measured build-time-only overhead this adds.
+	// DL-197 entry for the originally measured build overhead this adds.
 	struct TriGeom
 	{
 		Point3 p[3];
@@ -1136,10 +1147,10 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	// `DeepestOtherContainment`'s own per-QUERY refusal (deliberately
 	// silent there: a shared latch would print once per ray for every
 	// mesh AND plane in the scene, see that function's comment), this is
-	// a one-shot, BUILD-TIME diagnostic on the mesh itself: it fires once
-	// per authored mesh that fails the check, not once per interior()
-	// call, so it cannot spam and it tells an author what "unsigned
-	// only" traces back to.
+	// a certification-time diagnostic on the mesh itself: it fires during
+	// a build or shape reproof, not per interior() query, and tells an
+	// author what "unsigned only" traces back to. Animated geometry may
+	// repeat this information when its shape needs reproof.
 	unsigned int boundaryEdges = 0, nonManifoldEdges = 0;
 	for( std::unordered_map<std::uint64_t, EdgeInfo>::const_iterator i = edgeInfo.begin(), e = edgeInfo.end(); i != e; ++i ) {
 		if( i->second.count == 1 ) { ++boundaryEdges; }

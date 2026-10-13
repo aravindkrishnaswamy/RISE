@@ -16,13 +16,15 @@
 //
 //  THE FIX (TriangleMeshGeometryIndexed.h/.cpp) adds a real
 //  `SignedDistanceLower` for the CLOSED case only:
-//    - WATERTIGHTNESS is checked once, at `DoneIndexedTriangles`, by the
-//      textbook necessary condition for a closed 2-manifold with no
+//    - WATERTIGHTNESS is checked initially at `DoneIndexedTriangles` and
+//      re-proved after changed positions unless a retained geometric proof
+//      already establishes refusal. It includes the necessary condition for
+//      a closed 2-manifold with no
 //      boundary: every edge is shared by EXACTLY two triangles.  An open
 //      sheet or a mesh missing a face has boundary edges (count 1); a
 //      non-manifold mesh has an edge shared by 3+.  Either way the mesh
-//      stays an unsigned-only sheet, exactly as before, and a one-shot
-//      diagnostic at build time says why.
+//      stays an unsigned-only sheet, and a certification-time diagnostic
+//      at build or deformation reproof says why.
 //    - THE SIGN, on a certified-watertight mesh, comes from a parity
 //      ray-cast against the mesh's own BVH: odd number of GEOMETRIC
 //      crossings (both faces, so winding and `bDoubleSided` cannot skew
@@ -596,6 +598,27 @@ static void TestFlatShadedPerCornerCubeWelds()
 	CheckClose( (double)outSigned, -(double)h, 1e-9,
 		"(e) MONEY -- centre depth equals the half-size exactly, same as the hand-welded (a) fixture" );
 	Check( outExact, "(e) MONEY -- exact, same as the hand-welded (a) fixture" );
+
+    Check(mesh->IsCertifiedWatertight(), "(e) initial welded cube is certified closed");
+    VerticesListType moved(vertices.begin(),vertices.end());
+    NormalsListType normals(vertices.size(),Vector3(0,0,1));
+    for(size_t i=4;i<8;++i) moved[i].z+=0.1;
+    mesh->UpdateVertices(moved,normals);
+    Check(!mesh->IsCertifiedWatertight(), "(e) separated seam invalidates closed certificate");
+    Check(!mesh->IsProvablyOpenSheet(), "(e) disconnected bent pieces do not get general proof");
+    Check(!mesh->SignedDistanceLower(Point3(0,0,0),1000,outSigned,outExact),
+        "(e) separated seam refuses signed distance");
+    moved.assign(vertices.begin(),vertices.end());
+    mesh->UpdateVertices(moved,normals);
+    Check(mesh->IsCertifiedWatertight(), "(e) restoring seams re-certifies closed cube");
+    Check(mesh->SignedDistanceLower(Point3(0,0,0),1000,outSigned,outExact) && outSigned<0,
+        "(e) restored closed cube regains signed interior");
+    for(auto& point : moved) point.z=0;
+    mesh->UpdateVertices(moved,normals);
+    Check(!mesh->IsCertifiedWatertight(), "(e) folded-flat cube loses closed certificate");
+    moved.assign(vertices.begin(),vertices.end());
+    mesh->UpdateVertices(moved,normals);
+    Check(mesh->IsCertifiedWatertight(), "(e) leaving a refusal witness re-proves watertightness");
 
 	mesh->release();
 }
@@ -1563,10 +1586,10 @@ static bool BuildWeldedUVSphere( const Scalar R, const unsigned int n, const uns
 
 //////////////////////////////////////////////////////////////////////
 // DL-382: `TriangleMeshGeometryIndexed::IsProvablyOpenSheet` -- the
-// certification behind the open-sheet face rule for meshes.  ONLY a
-// single planar, consistently wound sheet with certain normal
-// orientation is certified; "has a boundary" (not certified closed) is
-// NOT "certified open".
+// certification behind the open-sheet face rule for meshes. The general
+// connected, consistently wound, embedded open-mesh proof extends the
+// legacy planar proof. Both require readable normal orientation; merely
+// "has a boundary" (not certified closed) is NOT "certified open".
 //////////////////////////////////////////////////////////////////////
 static TriangleMeshGeometryIndexed* BuildFaceNormalMesh(
 	const std::vector<Point3>& corners, const IndexTriangleListType& tris,

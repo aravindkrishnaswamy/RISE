@@ -92,7 +92,7 @@ namespace RISE
 			//! EXACTLY two triangles -- the cheap necessary condition for
 			//! "closed manifold" this class uses to decide whether it may
 			//! answer `SignedDistanceLower` (the parity inside-test is only
-			//! meaningful for a mesh with no boundary).  Computed once, in
+			//! meaningful for a mesh with no boundary).  Computed initially in
 			//! `DoneIndexedTriangles`, from the position-index pairs of
 			//! `ptr_polygons` (recovered via pointer arithmetic into
 			//! `pPoints`, since `indexedtris` -- which carries the indices
@@ -119,8 +119,9 @@ namespace RISE
 
 			//! Computes and caches `m_bWatertight`.  Called from
 			//! `DoneIndexedTriangles` once `ptr_polygons` is final; a
-			//! topology-preserving update (`UpdateVertices`) never needs to
-			//! call this again, since it moves vertices, not edges.
+			//! changed-position update also calls it unless a retained geometric
+			//! proof already establishes refusal. Fixed array indices do not
+			//! preserve position welding or the folded-face discriminator.
 			void ComputeWatertightness();
 
 			//! DL-31.  Casts one ray from `ptObject` along a fixed,
@@ -328,7 +329,7 @@ namespace RISE
 			//! contact"); a mesh had no inside test at all and so
 			//! contributed 0 to `interior(r)` even when genuinely closed and
 			//! buried in.  For a WATERTIGHT mesh (`m_bWatertight`, a
-			//! build-time edge-count check -- see the member comment) this
+			//! position-weld edge-count check -- see the member comment) this
 			//! now answers EXACTLY: the magnitude is `DistanceToSurface`'s
 			//! own answer, which this family already computes exactly (not
 			//! merely bounded, unlike the ellipsoid/SDF families) via a

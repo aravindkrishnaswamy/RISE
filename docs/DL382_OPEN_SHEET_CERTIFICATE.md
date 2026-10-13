@@ -312,20 +312,32 @@ reviewer's verified core while giving the actual gated fixture evidence.
 
 ### Final gate and cost record
 
-All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **136/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **53/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
+All nine requested gates passed on the corrected implementation: MeshInteriorSignalTest **144/0**, ExteriorIndexInvarianceTest **303/0**, TransmissionPushGateTest **416/0**, SMSDomainReplayTest **10285/0**, CompositeEnergyConservationTest `--sidedness-only` **296/0**, OpenSheetIndexConventionTest **44/0**, OpenSheetWarningTest **53/0**, BSSRDFOpenSheetEntryTest **73/0**, RandomWalkOpenSheetRejectionTest **12/0**. Added gates: curved slab **28/0**, consumer scope **86/0**, exact frozen image **6/0**. Certification audit: **375 identical records from 157 inputs**.
 
-Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **136/0**.
+Clean make and Xcode Deployment builds were warning-free; Opto also built warning-free. Only the expected Xcode AppIntents metadata notice was emitted. ASan/UBSan over the indexed mesh and Object implementations passed MeshInteriorSignalTest **144/0**.
 
-Costs below are wall-time medians of three interleaved runs, 980,000 triangles, `render_thread_reserve_count 0`, no concurrent renders or builds. “Before” is pre-fix master `72d9fce57`; “base” is `0131003bc`. Timing tool output reports openness after the final deformation.
+Costs below are wall-time medians of three interleaved runs, 980,000 triangles (978,600 for the true closed sphere), `render_thread_reserve_count 0`, no concurrent renders or builds. “Before” is pre-fix master `72d9fce57`; “base” is `0131003bc`. Timing tool output reports openness after the final deformation.
 
 | Work | Base ms | Before ms | Fix-forward ms |
 |---|---:|---:|---:|
-| Curved mesh, identical-position update | 24.9 | 797.6 | 22.8 |
-| Curved graph, height deformation | 24.9 | 826.1 | 31.5 |
-| Closed-ish sphere, identical-position update | 28.1 | 190.6 | 25.2 |
-| Closed-ish sphere, deformation with retained coincident-corner witness | 28.5 | 185.7 | 29.6 |
-| Curved mesh build, including projection cache | 466.9 | 1244.0 | 2281.7 |
-| Planar mesh first becoming curved (one-time cache cost) | 25.4 | 724.9 | 1793.2 |
+| Curved mesh, identical-position update | 26.1 | 880.8 | 22.4 |
+| Curved graph, height deformation | 26.5 | 903.0 | 32.0 |
+| Closed-ish sphere, identical-position update | 29.3 | 222.6 | 26.4 |
+| Closed-ish sphere, deformation with retained coincident-corner witness | 29.6 | 207.8 | 31.1 |
+| Curved mesh build, including projection cache | 487.6 | 1359.3 | 2515.1 |
+| Planar mesh first becoming curved (one-time cache and closed-proof cost) | 26.2 | 797.9 | 2204.6 |
+| Truly closed sphere, identical-position update | 29.5 | 286.5 | 25.7 |
+| Truly closed sphere, deformation including closed reproof | 30.1 | 271.4 | 481.6 |
+
+The truly closed control removes the polar degenerate triangles from the
+reviewer's sphere fixture and retains `IsCertifiedWatertight()==true` after
+motion on all three revisions. Its latest deformation cost includes the
+necessary full position-weld and folded-face audit; the previous revisions
+retained the build-time closed certificate without rechecking it. This
+correctness cost is deliberately disclosed as DL-620, alongside the remaining
+non-graph and witnessless motion cost. Projection-cache startup remains an
+explicit tradeoff.
+
 
 ### Independent review correction
 
@@ -349,3 +361,17 @@ not use. Indexed, raw, and displaced classifiers follow that admission. The new
 warning coverage was red **41/12** on `8a9289edc` and is green **53/0**; it checks both windings,
 both single-layer arrangements, nested wrappers, native wrapped glass, and
 once-only preparation.
+
+
+The third fresh review of `62900ec62` blocked convergence with two P1s:
+`UpdateVertices` retained a stale closed-volume certificate when position-weld
+seams separated, and planar-only comments contradicted the broader proof.
+Changed-position updates now re-prove watertightness, including its folded-face
+discriminator, unless a retained embedded open graph or exact coincident-corner
+witness already proves there is no closed body. Identical positions keep the
+closed certificate. The per-face-slot cube mutation control was red **141/3** and is green **144/0**;
+it separates and restores a seam, checks signed-distance refusal and recovery,
+and folds and restores the cube. No signed-distance or contact implementation
+was changed. The displaced, indexed, raw-mesh, and test comments now describe
+their actual proofs. Valid closed-body deformation may pay a full position-weld
+and folded-face audit; this conservative cost is included in DL-620.
