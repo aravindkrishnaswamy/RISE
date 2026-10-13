@@ -237,7 +237,10 @@ closure review claim is withdrawn.
 ## 9. Fix-forward (2026-10-12)
 
 The `2c08b50c0` merge is retained: the curved-sheet slab core is verified.
-DL-382 is reopened because the previous zero-P1 review claim was false.
+DL-382 was reopened because the previous zero-P1 review claim was false.
+The fix-forward is now closed after the gates below and the fifth fresh
+independent review of `7ffa6023d`, which found zero P1s on both axes.
+Local merge remains conditional on a fresh review of the final committed state.
 Random-walk scene rejection now uses `IsZeroVolumeSheet`, the old planar
 proof, rather than the general face-rule proof. A cracked solid remains
 accepted. The broader hit flag is admitted at `Object::IntersectRay` only
@@ -368,7 +371,7 @@ The third fresh review of `62900ec62` blocked convergence with two P1s:
 seams separated, and planar-only comments contradicted the broader proof.
 Changed-position updates now re-prove watertightness, including its folded-face
 discriminator, unless a retained embedded open graph or exact coincident-corner
-witness already proves there is no closed body. Identical positions keep the
+witness already forces refusal of closed certification. Identical positions keep the
 closed certificate. The per-face-slot cube mutation control was red **141/3** and is green **144/0**;
 it separates and restores a seam, checks signed-distance refusal and recovery,
 and folds and restores the cube. No signed-distance or contact implementation
@@ -406,3 +409,17 @@ clears inherited closure without granting a new closed certificate; modern
 v4/v5 loads perform the full proof. The legacy compatibility control was red
 **157/2**. The audit baseline was not edited. The validator now runs the audit
 before the expensive render gates so compatibility changes fail early.
+
+
+The fifth fresh review of `7ffa6023d` found **zero P1s** on both independent
+axes: correctness/cache lifetime, and evidence/cost/design fidelity. Its one
+P2 wording finding is corrected in the code and this document: exact coincident
+triangle corners force refusal of closed certification; they do not prove
+that the rest of the mesh encloses no volume. A closed cube plus a stray
+degenerate triangle illustrates the distinction. No runtime behavior changed
+after the final validator. Legacy BSP compatibility, BVH serialization
+(**25/0**), and mesh closest-point (**65/0**) also passed.
+
+DL-616..DL-620 remain real open rows. The DL-382 closure and this final comment
+correction are committed for another fresh independent review before the
+local merge; neither a merge nor a future review verdict is assumed here.

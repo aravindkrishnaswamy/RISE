@@ -496,7 +496,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	ComputeAreas(positionsChanged,graphProofReusable,refusalProofReusable);
     // Array indices stay fixed, but the position-weld partition and folded
     // face discriminator do not. Re-prove closed membership after motion.
-    // These two retained proofs already establish absence of a closed body:
+    // These two retained proofs already establish refusal of closed certification:
     // an embedded open graph, or a triangle with exact coincident corners.
     if(positionsChanged) {
         if(refusalProofReusable || (graphProofReusable && m_bShapeOpenSheet))
