@@ -585,6 +585,31 @@ static std::vector<BezierPatch> ReadBezierFile( const std::string& path )
 	return out;
 }
 
+static std::vector<BilinearPatch> ReadBilinearFile( const std::string& path )
+{
+	std::vector<BilinearPatch> out;
+	std::FILE* f = std::fopen( path.c_str(), "r" );
+	if( !f ) {
+		return out;
+	}
+	unsigned int n = 0;
+	if( std::fscanf( f, "%u", &n ) == 1 ) {
+		for( unsigned int i = 0; i < n; ++i ) {
+			BilinearPatch p;
+			bool ok = true;
+			for( int k = 0; k < 4 && ok; ++k ) {
+				double x, y, z;
+				ok = std::fscanf( f, "%lf %lf %lf", &x, &y, &z ) == 3;
+				p.pts[k] = Point3( x, y, z );
+			}
+			if( !ok ) break;
+			out.push_back( p );
+		}
+	}
+	std::fclose( f );
+	return out;
+}
+
 static void TestCostAndShippedModels()
 {
 	std::cout << "G. cost and shipped models" << std::endl;
@@ -607,6 +632,12 @@ static void TestCostAndShippedModels()
 		const auto t1 = std::chrono::steady_clock::now();
 		const double ms = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
 		std::cout << "    " << m << " (" << p.size() << " patches): " << Describe( v ) << " in " << ms << " ms" << std::endl;
+		Check( !p.empty(), std::string( "G: shipped model loads: " ) + m );
+	}
+	for( const char* m : { "models/raw/teapot.bilinear", "models/raw/test.bilinear" } ) {
+		const std::vector<BilinearPatch> p = ReadBilinearFile( m );
+		const Verdict v = CertBilinear( p );
+		std::cout << "    " << m << " (" << p.size() << " patches): " << Describe( v ) << std::endl;
 		Check( !p.empty(), std::string( "G: shipped model loads: " ) + m );
 	}
 }
