@@ -777,15 +777,33 @@ namespace RISE
 		//! crossing anywhere is refused.  `outNegativeOpenSignedVolume`
 		//! reports an open sheet whose exact signed volume about its
 		//! bounding-box centre is negative (the inward-winding warning).
-		//! `outRefusalReason`, when given, names the first failed proof
-		//! step (a static string; "" when certified).
+		//! `diag`, when given, supplies an optional work-budget override
+		//! and receives the first failed proof step (a static string; ""
+		//! when certified), the sub-patch grid that decided and the work
+		//! spent.  The work budget and a sub-patch count cap bound time and
+		//! memory BEFORE anything large is allocated; past either the set
+		//! is refused.
+		struct PatchSetCertDiagnostics
+		{
+			std::size_t		workBudget = 0;	//!< [in] 0 = the default budget
+			const char*		reason = "";	//!< [out]
+			unsigned int	grid = 0;		//!< [out] 4 or 8 (0: refused before subdividing)
+			std::size_t		workUsed = 0;	//!< [out]
+		};
+
 		extern void CertifyBilinearPatchSet(
 			const std::vector<BilinearPatch>& patches,
 			bool& outCertifiedWatertight,
 			bool& outProvablyOpenSheet,
 			bool& outNegativeOpenSignedVolume,
-			const char** outRefusalReason = nullptr
+			PatchSetCertDiagnostics* diag = nullptr
 			);
+
+		//! DL-616: a process-wide counter bumped whenever any patch set's
+		//! certificate may have changed (a patch added, a set re-prepared),
+		//! so a composite's cached certificate can tell it is stale.
+		extern unsigned int PatchCertificateEpoch();
+		extern void BumpPatchCertificateEpoch();
 
 		//! DL-616: as `CertifyBilinearPatchSet`, for bicubic Bezier patches
 		//! (a bilinear patch is certified as its exact degree elevation).
@@ -794,7 +812,7 @@ namespace RISE
 			bool& outCertifiedWatertight,
 			bool& outProvablyOpenSheet,
 			bool& outNegativeOpenSignedVolume,
-			const char** outRefusalReason = nullptr
+			PatchSetCertDiagnostics* diag = nullptr
 			);
 	}
 }

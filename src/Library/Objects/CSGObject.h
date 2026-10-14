@@ -64,9 +64,12 @@ namespace RISE
 			CSG_OP									op;
 
 			//! DL-617 certificate cache (see `ComputeCertificateBits`):
-			//! -1 = not computed, else a mask of the kCert* bits below.
-			//! Recomputed by `Realize` (every preparation) and dropped by
-			//! `AssignObjects` / `SetOperation`.
+			//! -1 = not computed, else (patch-certificate epoch << 8) | the
+			//! kCert* mask below.  Recomputed by `Realize` (every
+			//! preparation), dropped by `AssignObjects` / `SetOperation`, and
+			//! STALE whenever `GeometricUtilities::PatchCertificateEpoch()`
+			//! has moved (a patch was added to, or re-prepared in, any patch
+			//! set -- possibly an operand's -- since it was computed).
 			enum
 			{
 				kCertWatertight		= 1,	//!< both operands certified closed solids
@@ -74,7 +77,7 @@ namespace RISE
 				kCertOpenSheetB		= 4,	//!< certified open sheet; operand B is the sheet
 				kCertNegativeVolume	= 8		//!< the sheet operand's negative-winding warning
 			};
-			mutable std::atomic<int>				m_certBits;
+			mutable std::atomic<long long>			m_certBits;
 			int CertificateBits() const;
 			int ComputeCertificateBits() const;
 

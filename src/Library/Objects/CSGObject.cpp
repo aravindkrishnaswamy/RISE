@@ -25,6 +25,7 @@
 #include "../Materials/LambertianLuminaireMaterial.h"
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Utilities/OrthonormalBasis3D.h"
+#include "../Utilities/GeometricUtilities.h"
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
@@ -1174,11 +1175,13 @@ int CSGObject::OperandContainsPoint( const IObjectPriv* operand, const Point3& p
 
 int CSGObject::CertificateBits() const
 {
-	int bits = m_certBits.load( std::memory_order_relaxed );
-	if( bits < 0 ) {
-		bits = ComputeCertificateBits();
-		m_certBits.store( bits, std::memory_order_relaxed );
+	const long long epoch = static_cast<long long>( GeometricUtilities::PatchCertificateEpoch() );
+	const long long cached = m_certBits.load( std::memory_order_acquire );
+	if( cached >= 0 && ( cached >> 8 ) == epoch ) {
+		return static_cast<int>( cached & 0xff );
 	}
+	const int bits = ComputeCertificateBits();
+	m_certBits.store( ( epoch << 8 ) | bits, std::memory_order_release );
 	return bits;
 }
 
@@ -2516,7 +2519,8 @@ void CSGObject::Realize() const
 	// DL-617: re-derive the certificate from the (now realized) operands
 	// once per preparation, so an operand edit since the last one cannot
 	// leave a stale answer, and no ray pays for it.
-	m_certBits.store( ComputeCertificateBits(), std::memory_order_relaxed );
+	m_certBits.store( -1, std::memory_order_relaxed );
+	CertificateBits();
 }
 
 void CSGObject::ResetRuntimeData() const

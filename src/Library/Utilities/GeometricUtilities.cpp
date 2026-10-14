@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 
@@ -2749,6 +2750,17 @@ namespace
 		std::vector<unsigned int> parent;
 	};
 
+	// Work units per certification attempt (one per candidate pair, per
+	// recursive box test, per hashed cell).  Measured at ~10 M units/s, so
+	// a refused worst case costs about 2 s per attempt; a set that needs
+	// more is REFUSED, never certified.
+	static const std::size_t kPatchCertWorkBudget = std::size_t( 20000000 );
+
+	// Cap on sub-patch records per attempt (memory; see CertifyBezierNets).
+	static const std::size_t kMaxSubPatches = std::size_t( 1 ) << 18;
+
+	std::atomic<unsigned int> s_patchCertificateEpoch( 1 );
+
 	struct PatchSetVerdict
 	{
 		bool		watertight = false;
@@ -2756,6 +2768,8 @@ namespace
 		bool		negative = false;
 		const char*	reason = "";
 		bool		geometric = false;	//!< refused by an embedding step (a finer grid may succeed)
+		unsigned int	grid = 0;		//!< sub-patch grid of the attempt that decided
+		std::size_t		workUsed = 0;	//!< work units that attempt spent
 	};
 
 	struct SubPatchRec
@@ -2774,8 +2788,13 @@ namespace
 			r.reason = "empty patch set";
 			return r;
 		}
-		if( nPatches > ( std::size_t( 1 ) << 22 ) ) {
-			r.reason = "patch set too large to certify";
+		r.grid = n;
+		// Memory cap, checked BEFORE anything is allocated: a sub-patch
+		// record is ~470 bytes, so kMaxSubPatches bounds the dominant
+		// allocation near 125 MB (the node arrays add ~30 % at most).  A
+		// set past it is refused, never certified.
+		if( nPatches > kMaxSubPatches / ( std::size_t( n ) * n ) ) {
+			r.reason = "patch set too large to certify at this sub-patch grid";
 			return r;
 		}
 
@@ -2801,9 +2820,15 @@ namespace
 			r.reason = "degenerate extent";
 			return r;
 		}
-		// Absorbs the rounding of the sub-patch nets against the surface
-		// the renderer intersects: a few hundred ulps of the coordinates.
-		const Scalar inflate = Scalar( 1e-12 ) * ( diag + maxAbs );
+		// One positional tolerance for the whole proof.  It absorbs the
+		// rounding of the sub-patch nets against the surface the renderer
+		// intersects (subdivision differs from it by a few hundred ulps),
+		// and the glued-seam assignment below may move a boundary control
+		// point by up to the same amount -- so the disjointness boxes must
+		// be inflated by at least that much, or a seam correction could
+		// carry a net across a gap the boxes claimed was clear.
+		const Scalar seamTol = Scalar( 1e-9 ) * ( diag + maxAbs );
+		const Scalar inflate = seamTol;
 
 		// T: sides and exact seam matching.
 		struct SideRec
@@ -2928,7 +2953,6 @@ namespace
 		// control points.  Before assignment each copy must agree with the
 		// owner to `seamTol` -- a sanity check only, since the glue itself
 		// was proved exactly on the input control points above.
-		const Scalar seamTol = Scalar( 1e-9 ) * ( diag + maxAbs );
 		std::vector<SubPatchRec> subs( nPatches * n * n );
 		auto subIndex = [&]( std::size_t p, unsigned int iu, unsigned int iv ) {
 			return ( p * n + iv ) * n + iu;
@@ -3036,85 +3060,178 @@ namespace
 			}
 		}
 
-		// G2: pairwise embedding over a sort-and-sweep on x.
+		// G2: pairwise embedding.  Candidate pairs come from a uniform
+		// grid hash (cell = the median sub-patch box extent): every pair
+		// whose boxes overlap shares at least one cell, and is tested once,
+		// in the cell holding the low corner of the two boxes' overlap.  A
+		// box spanning more than kMaxCellsPerBox cells is tested against
+		// every sub-patch instead.  Every candidate costs one work unit, so
+		// a dense set exhausts the budget and is refused.
 		PatchCertWork work;
 		work.remaining = workBudget;
-		std::vector<unsigned int> order( subs.size() );
-		for( std::size_t i = 0; i < order.size(); ++i ) order[i] = static_cast<unsigned int>( i );
-		std::sort( order.begin(), order.end(), [&]( unsigned int x, unsigned int y ) {
-			return subs[x].box.ll.x < subs[y].box.ll.x;
-		} );
-		for( std::size_t oi = 0; oi < order.size(); ++oi ) {
-			const SubPatchRec& A = subs[order[oi]];
-			for( std::size_t oj = oi + 1; oj < order.size(); ++oj ) {
-				const SubPatchRec& B = subs[order[oj]];
-				if( B.box.ll.x > A.box.ur.x ) {
-					break;
+		const std::size_t nSubs = subs.size();
+		std::vector<Scalar> extents( nSubs );
+		for( std::size_t i = 0; i < nSubs; ++i ) {
+			const BoundingBox& bb = subs[i].box;
+			extents[i] = std::max( bb.ur.x - bb.ll.x, std::max( bb.ur.y - bb.ll.y, bb.ur.z - bb.ll.z ) );
+		}
+		std::nth_element( extents.begin(), extents.begin() + nSubs / 2, extents.end() );
+		Scalar cell = extents[nSubs / 2];
+		const Scalar boxSpan = diag + Scalar( 4 ) * inflate;
+		if( !( cell > boxSpan * Scalar( 1.0 / 1048576.0 ) ) ) {
+			cell = boxSpan * Scalar( 1.0 / 1048576.0 );	// keeps every index below 2^21
+		}
+		const Point3 gridLo( lo.x - Scalar( 2 ) * inflate, lo.y - Scalar( 2 ) * inflate, lo.z - Scalar( 2 ) * inflate );
+		struct CellRange { std::uint32_t lo[3], hi[3]; };
+		std::vector<CellRange> ranges( nSubs );
+		auto cellIndex = [&]( Scalar v, Scalar origin ) {
+			const Scalar t = std::floor( ( v - origin ) / cell );
+			return static_cast<std::uint32_t>( std::min( Scalar( 2097151 ), std::max( Scalar( 0 ), t ) ) );
+		};
+		auto cellKey = []( std::uint32_t x, std::uint32_t y, std::uint32_t z ) {
+			return ( std::uint64_t( x ) << 42 ) | ( std::uint64_t( y ) << 21 ) | std::uint64_t( z );
+		};
+		static const std::uint64_t kMaxCellsPerBox = 64;
+		std::unordered_map<std::uint64_t, std::vector<unsigned int> > cells;
+		std::vector<unsigned int> oversize;
+		for( std::size_t i = 0; i < nSubs; ++i ) {
+			const BoundingBox& bb = subs[i].box;
+			CellRange& cr = ranges[i];
+			cr.lo[0] = cellIndex( bb.ll.x, gridLo.x ); cr.hi[0] = cellIndex( bb.ur.x, gridLo.x );
+			cr.lo[1] = cellIndex( bb.ll.y, gridLo.y ); cr.hi[1] = cellIndex( bb.ur.y, gridLo.y );
+			cr.lo[2] = cellIndex( bb.ll.z, gridLo.z ); cr.hi[2] = cellIndex( bb.ur.z, gridLo.z );
+			const std::uint64_t count = std::uint64_t( cr.hi[0] - cr.lo[0] + 1 ) *
+				( cr.hi[1] - cr.lo[1] + 1 ) * ( cr.hi[2] - cr.lo[2] + 1 );
+			if( count > kMaxCellsPerBox ) {
+				oversize.push_back( static_cast<unsigned int>( i ) );
+				continue;
+			}
+			if( !work.Spend( count ) ) {
+				r.reason = "certification work budget exhausted";
+				r.workUsed = workBudget;
+				return r;
+			}
+			for( std::uint32_t x = cr.lo[0]; x <= cr.hi[0]; ++x ) {
+				for( std::uint32_t y = cr.lo[1]; y <= cr.hi[1]; ++y ) {
+					for( std::uint32_t z = cr.lo[2]; z <= cr.hi[2]; ++z ) {
+						cells[cellKey( x, y, z )].push_back( static_cast<unsigned int>( i ) );
+					}
+				}
+			}
+		}
+		std::vector<unsigned char> isOversize( nSubs, 0 );
+		for( const unsigned int i : oversize ) isOversize[i] = 1;
+
+		// The per-pair proof; FALSE (with r filled) refuses the set.
+		auto testPair = [&]( const SubPatchRec& A, const SubPatchRec& B ) -> bool {
+			if( !PatchBoxesOverlap( A.box, B.box ) ) {
+				return true;
+			}
+			int shared = 0, ka = -1, kb = -1;
+			for( int a = 0; a < 4; ++a ) {
+				for( int b = 0; b < 4; ++b ) {
+					if( A.corner[a] == B.corner[b] ) {
+						++shared;
+						if( ka < 0 ) { ka = a; kb = b; }
+					}
+				}
+			}
+			if( shared == 0 ) {
+				if( !NetsProvablyDisjoint( A.net, 0, B.net, 0, inflate, work ) ) {
+					r.reason = work.exhausted ? "certification work budget exhausted" :
+						"sub-patches without a shared vertex are not provably disjoint (touching, crossing or T-junction)";
+					r.geometric = !work.exhausted;
+					return false;
+				}
+			} else if( shared == 1 ) {
+				if( !CornerPairSeparated( A.net, ka, B.net, kb, A.V + B.V ) ) {
+					r.reason = "sub-patches sharing one vertex are not provably separated there";
+					r.geometric = true;
+					return false;
+				}
+			} else if( shared == 2 ) {
+				// The two shared vertices must be the ends of one side of
+				// each, traversed in opposite directions.
+				int sa = -1, sb = -1;
+				for( int s = 0; s < 4 && sa < 0; ++s ) {
+					for( int t = 0; t < 4; ++t ) {
+						if( A.corner[s] == B.corner[( t + 1 ) & 3] && A.corner[( s + 1 ) & 3] == B.corner[t] ) {
+							sa = s; sb = t;
+							break;
+						}
+					}
+				}
+				if( sa < 0 ) {
+					r.reason = "sub-patches share two vertices that are not one oppositely-traversed side";
+					return false;
+				}
+				BezierPatch pair[2] = { RotateNet( A.net, ( sa + 2 ) & 3 ), RotateNet( B.net, sb ) };
+				for( int i = 0; i < 4; ++i ) {
+					if( !PatchPointEqual( pair[0].c[i].pts[3], pair[1].c[i].pts[0] ) ) {
+						r.reason = "glued sub-patch sides disagree in position";
+						return false;
+					}
+				}
+				Vector3 V;
+				if( !CrossConeProof( pair, 2, V ) ) {
+					r.reason = "sub-patches sharing a side are not provably injective as a union (fold or sharp crease)";
+					r.geometric = true;
+					return false;
+				}
+			} else {
+				r.reason = "sub-patches share more than one side";
+				return false;
+			}
+			return true;
+		};
+
+		// Visit cells in key order so the first refusal (and its reason)
+		// does not depend on the hash table's iteration order.
+		std::vector<std::uint64_t> keys;
+		keys.reserve( cells.size() );
+		for( const auto& entry : cells ) keys.push_back( entry.first );
+		std::sort( keys.begin(), keys.end() );
+		for( const std::uint64_t key : keys ) {
+			const std::vector<unsigned int>& list = cells[key];
+			for( std::size_t ii = 0; ii < list.size(); ++ii ) {
+				for( std::size_t jj = ii + 1; jj < list.size(); ++jj ) {
+					const CellRange& ra = ranges[list[ii]];
+					const CellRange& rb = ranges[list[jj]];
+					// Test each pair once: in the cell at the low corner of
+					// the overlap of the two cell ranges.
+					if( cellKey( std::max( ra.lo[0], rb.lo[0] ), std::max( ra.lo[1], rb.lo[1] ),
+					             std::max( ra.lo[2], rb.lo[2] ) ) != key ) {
+						continue;
+					}
+					if( !work.Spend( 1 ) ) {
+						r.reason = "certification work budget exhausted";
+						r.workUsed = workBudget;
+						return r;
+					}
+					if( !testPair( subs[list[ii]], subs[list[jj]] ) ) {
+						r.workUsed = workBudget - work.remaining;
+						return r;
+					}
+				}
+			}
+		}
+		for( const unsigned int i : oversize ) {
+			for( std::size_t j = 0; j < nSubs; ++j ) {
+				if( j == i || ( isOversize[j] && j < i ) ) {
+					continue;
 				}
 				if( !work.Spend( 1 ) ) {
 					r.reason = "certification work budget exhausted";
+					r.workUsed = workBudget;
 					return r;
 				}
-				if( !PatchBoxesOverlap( A.box, B.box ) ) {
-					continue;
-				}
-				int shared = 0, ka = -1, kb = -1;
-				for( int a = 0; a < 4; ++a ) {
-					for( int b = 0; b < 4; ++b ) {
-						if( A.corner[a] == B.corner[b] ) {
-							++shared;
-							if( ka < 0 ) { ka = a; kb = b; }
-						}
-					}
-				}
-				if( shared == 0 ) {
-					if( !NetsProvablyDisjoint( A.net, 0, B.net, 0, inflate, work ) ) {
-						r.reason = work.exhausted ? "certification work budget exhausted" :
-							"sub-patches without a shared vertex are not provably disjoint (touching, crossing or T-junction)";
-						r.geometric = !work.exhausted;
-						return r;
-					}
-				} else if( shared == 1 ) {
-					if( !CornerPairSeparated( A.net, ka, B.net, kb, A.V + B.V ) ) {
-						r.reason = "sub-patches sharing one vertex are not provably separated there";
-						r.geometric = true;
-						return r;
-					}
-				} else if( shared == 2 ) {
-					// The two shared vertices must be the ends of one side of
-					// each, traversed in opposite directions.
-					int sa = -1, sb = -1;
-					for( int s = 0; s < 4 && sa < 0; ++s ) {
-						for( int t = 0; t < 4; ++t ) {
-							if( A.corner[s] == B.corner[( t + 1 ) & 3] && A.corner[( s + 1 ) & 3] == B.corner[t] ) {
-								sa = s; sb = t;
-								break;
-							}
-						}
-					}
-					if( sa < 0 ) {
-						r.reason = "sub-patches share two vertices that are not one oppositely-traversed side";
-						return r;
-					}
-					BezierPatch pair[2] = { RotateNet( A.net, ( sa + 2 ) & 3 ), RotateNet( B.net, sb ) };
-					for( int i = 0; i < 4; ++i ) {
-						if( !PatchPointEqual( pair[0].c[i].pts[3], pair[1].c[i].pts[0] ) ) {
-							r.reason = "glued sub-patch sides disagree in position";
-							return r;
-						}
-					}
-					Vector3 V;
-					if( !CrossConeProof( pair, 2, V ) ) {
-						r.reason = "sub-patches sharing a side are not provably injective as a union (fold or sharp crease)";
-						r.geometric = true;
-						return r;
-					}
-				} else {
-					r.reason = "sub-patches share more than one side";
+				if( !testPair( subs[i], subs[j] ) ) {
+					r.workUsed = workBudget - work.remaining;
 					return r;
 				}
 			}
 		}
+		r.workUsed = workBudget - work.remaining;
 
 		// C: classification by the exact signed volume.
 		const Point3 centre( Scalar( 0.5 ) * ( lo.x + hi.x ), Scalar( 0.5 ) * ( lo.y + hi.y ), Scalar( 0.5 ) * ( lo.z + hi.z ) );
@@ -3135,15 +3252,14 @@ namespace
 		return r;
 	}
 
-	// Total pair/box work units per certification attempt: a few seconds
-	// at worst, and a set that needs more is REFUSED, never certified.
-	static const std::size_t kPatchCertWorkBudget = std::size_t( 50000000 );
-
-	PatchSetVerdict CertifyBezierNetsAdaptive( const std::vector<BezierPatch>& patches )
+	PatchSetVerdict CertifyBezierNetsAdaptive( const std::vector<BezierPatch>& patches, std::size_t workBudget )
 	{
-		PatchSetVerdict r = CertifyBezierNets( patches, 4, kPatchCertWorkBudget );
+		if( workBudget == 0 ) {
+			workBudget = kPatchCertWorkBudget;
+		}
+		PatchSetVerdict r = CertifyBezierNets( patches, 4, workBudget );
 		if( !r.watertight && !r.open && r.geometric ) {
-			r = CertifyBezierNets( patches, 8, kPatchCertWorkBudget );
+			r = CertifyBezierNets( patches, 8, workBudget );
 		}
 		return r;
 	}
@@ -3195,13 +3311,15 @@ namespace
 		bool& outCertifiedWatertight,
 		bool& outProvablyOpenSheet,
 		bool& outNegativeOpenSignedVolume,
-		const char** outRefusalReason )
+		GeometricUtilities::PatchSetCertDiagnostics* diag )
 	{
 		outCertifiedWatertight = v.watertight;
 		outProvablyOpenSheet = v.open;
 		outNegativeOpenSignedVolume = v.open && v.negative;
-		if( outRefusalReason ) {
-			*outRefusalReason = v.reason;
+		if( diag ) {
+			diag->reason = v.reason;
+			diag->grid = v.grid;
+			diag->workUsed = v.workUsed;
 		}
 	}
 }
@@ -3211,7 +3329,7 @@ void GeometricUtilities::CertifyBilinearPatchSet(
 	bool& outCertifiedWatertight,
 	bool& outProvablyOpenSheet,
 	bool& outNegativeOpenSignedVolume,
-	const char** outRefusalReason )
+	GeometricUtilities::PatchSetCertDiagnostics* diag )
 {
 	std::vector<BezierPatch> nets;
 	nets.reserve( patches.size() );
@@ -3220,7 +3338,7 @@ void GeometricUtilities::CertifyBilinearPatchSet(
 			if( !PatchPointFinite( b.pts[k] ) ) {
 				PatchSetVerdict v;
 				v.reason = "non-finite control point";
-				PublishVerdict( v, outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, outRefusalReason );
+				PublishVerdict( v, outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
 				return;
 			}
 		}
@@ -3253,8 +3371,8 @@ void GeometricUtilities::CertifyBilinearPatchSet(
 			}
 		}
 	}
-	PublishVerdict( CertifyBezierNetsAdaptive( nets ),
-		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, outRefusalReason );
+	PublishVerdict( CertifyBezierNetsAdaptive( nets, diag ? diag->workBudget : 0 ),
+		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
 }
 
 void GeometricUtilities::CertifyBezierPatchSet(
@@ -3262,8 +3380,18 @@ void GeometricUtilities::CertifyBezierPatchSet(
 	bool& outCertifiedWatertight,
 	bool& outProvablyOpenSheet,
 	bool& outNegativeOpenSignedVolume,
-	const char** outRefusalReason )
+	GeometricUtilities::PatchSetCertDiagnostics* diag )
 {
-	PublishVerdict( CertifyBezierNetsAdaptive( patches ),
-		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, outRefusalReason );
+	PublishVerdict( CertifyBezierNetsAdaptive( patches, diag ? diag->workBudget : 0 ),
+		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
+}
+
+unsigned int GeometricUtilities::PatchCertificateEpoch()
+{
+	return s_patchCertificateEpoch.load( std::memory_order_acquire );
+}
+
+void GeometricUtilities::BumpPatchCertificateEpoch()
+{
+	s_patchCertificateEpoch.fetch_add( 1, std::memory_order_acq_rel );
 }

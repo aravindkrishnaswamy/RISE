@@ -37,6 +37,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -56,26 +57,37 @@ struct Verdict
 	bool open = false;
 	bool negative = false;
 	const char* reason = "";
+	unsigned int grid = 0;
 };
 
-static Verdict CertBezier( const std::vector<BezierPatch>& p )
+static Verdict CertBezier( const std::vector<BezierPatch>& p, std::size_t budget = 0 )
 {
 	Verdict v;
 #ifdef DL616_BASELINE_SIGNATURE
+	(void)budget;
 	GeometricUtilities::CertifyBezierPatchSet( p, v.watertight, v.open, v.negative );
 #else
-	GeometricUtilities::CertifyBezierPatchSet( p, v.watertight, v.open, v.negative, &v.reason );
+	GeometricUtilities::PatchSetCertDiagnostics d;
+	d.workBudget = budget;
+	GeometricUtilities::CertifyBezierPatchSet( p, v.watertight, v.open, v.negative, &d );
+	v.reason = d.reason;
+	v.grid = d.grid;
 #endif
 	return v;
 }
 
-static Verdict CertBilinear( const std::vector<BilinearPatch>& p )
+static Verdict CertBilinear( const std::vector<BilinearPatch>& p, std::size_t budget = 0 )
 {
 	Verdict v;
 #ifdef DL616_BASELINE_SIGNATURE
+	(void)budget;
 	GeometricUtilities::CertifyBilinearPatchSet( p, v.watertight, v.open, v.negative );
 #else
-	GeometricUtilities::CertifyBilinearPatchSet( p, v.watertight, v.open, v.negative, &v.reason );
+	GeometricUtilities::PatchSetCertDiagnostics d;
+	d.workBudget = budget;
+	GeometricUtilities::CertifyBilinearPatchSet( p, v.watertight, v.open, v.negative, &d );
+	v.reason = d.reason;
+	v.grid = d.grid;
 #endif
 	return v;
 }
@@ -83,7 +95,8 @@ static Verdict CertBilinear( const std::vector<BilinearPatch>& p )
 static std::string Describe( const Verdict& v )
 {
 	return std::string( v.watertight ? "watertight" : ( v.open ? ( v.negative ? "open(neg)" : "open" ) : "refused" ) ) +
-		( v.reason && *v.reason ? std::string( " [" ) + v.reason + "]" : std::string() );
+		( v.reason && *v.reason ? std::string( " [" ) + v.reason + "]" : std::string() ) +
+		( v.grid ? " grid " + std::to_string( v.grid ) : std::string() );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -592,6 +605,13 @@ static void TestOpenSheetCSG()
 // G. cost and shipped models
 //////////////////////////////////////////////////////////////////////
 
+static bool ReasonIs( const Verdict& v, const char* expected )
+{
+	return v.reason && std::strcmp( v.reason, expected ) == 0;
+}
+
+static const char* const kCollapsed = "patch with coincident corners (collapsed side or loop)";
+
 static std::vector<BezierPatch> ReadBezierFile( const std::string& path )
 {
 	std::vector<BezierPatch> out;
@@ -666,14 +686,159 @@ static void TestCostAndShippedModels()
 		const auto t1 = std::chrono::steady_clock::now();
 		const double ms = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
 		std::cout << "    " << m << " (" << p.size() << " patches): " << Describe( v ) << " in " << ms << " ms" << std::endl;
-		Check( !p.empty(), std::string( "G: shipped model loads: " ) + m );
+		Check( !p.empty() && !v.watertight && !v.open && ReasonIs( v, kCollapsed ),
+			std::string( "G: shipped model refused at the collapsed-side topology step: " ) + m );
 	}
 	for( const char* m : { "models/raw/teapot.bilinear", "models/raw/test.bilinear" } ) {
 		const std::vector<BilinearPatch> p = ReadBilinearFile( m );
 		const Verdict v = CertBilinear( p );
 		std::cout << "    " << m << " (" << p.size() << " patches): " << Describe( v ) << std::endl;
-		Check( !p.empty(), std::string( "G: shipped model loads: " ) + m );
+		const bool single = std::strcmp( m, "models/raw/test.bilinear" ) == 0;
+		Check( !p.empty() && ( single ? ( v.open && v.negative && ReasonIs( v, "" ) )
+		                              : ( !v.watertight && !v.open && ReasonIs( v, kCollapsed ) ) ),
+			std::string( "G: shipped bilinear model verdict pinned: " ) + m );
 	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// H. proof-step coverage (DL-616 review round 2)
+//
+// Rows whose REASON pins which proof step refused them, so a step that
+// silently stopped refusing (e.g. the injectivity cone stubbed to "true")
+// fails a row instead of passing it through a later, weaker step.
+//////////////////////////////////////////////////////////////////////
+
+static const char* const kConeSingle = "sub-patch not provably injective (degenerate, folded or too curved)";
+static const char* const kConePair = "sub-patches sharing a side are not provably injective as a union (fold or sharp crease)";
+static const char* const kBudget = "certification work budget exhausted";
+
+//! A planar patch (z = 0) whose v-curve x(v) reverses for v in
+//! (0.54, 0.58): the patch folds over itself in a thin band strictly
+//! inside one sub-patch row at both grids (4 and 8).  Nothing but the
+//! per-sub-patch injectivity cone sees the fold: the u-neighbours that
+//! share its side meet only along that side, and every other pair is
+//! separated in y or across an unfolded row boundary.
+static std::vector<BezierPatch> MakeInRowFold()
+{
+	// x'(v) = A (v - 0.56)^2 - A d^2, d = 0.02 (negative on (0.54, 0.58));
+	// Bernstein differences of the quadratic x'/3.
+	const Scalar A = 1, c = 0.56, d = 0.02;
+	auto q = [&]( Scalar v ) { return A * ( v - c ) * ( v - c ) - A * d * d; };
+	const Scalar dq0 = -2 * A * c;
+	const Scalar d0 = q( 0 ) / 3, d1 = ( q( 0 ) + dq0 / 2 ) / 3, d2 = q( 1 ) / 3;
+	const Scalar x[4] = { 0, 10 * d0, 10 * ( d0 + d1 ), 10 * ( d0 + d1 + d2 ) };
+	BezierPatch p;
+	for( int i = 0; i < 4; ++i ) {
+		for( int j = 0; j < 4; ++j ) {
+			p.c[i].pts[j] = Point3( x[j], Scalar( i ) / 3, 0 );
+		}
+	}
+	return std::vector<BezierPatch>( 1, p );
+}
+
+//! Two Bezier patches glued along x = 1: the first flat, the second
+//! turning straight back over it and rising as z = c s^2 with the
+//! distance s from the crease.  The surface meets itself only along the
+//! crease (a cusp ridge) but is not immersed there -- the two normals at
+//! the crease are opposite -- so the pooled side-pair cone is the proof
+//! step that refuses it.
+static std::vector<BezierPatch> MakeCuspFold( Scalar c )
+{
+	BezierPatch a, b;
+	for( int i = 0; i < 4; ++i ) {
+		for( int j = 0; j < 4; ++j ) {
+			// a: u along -y (index i), v along x from 0 to 1 (index j).
+			a.c[i].pts[j] = Point3( Scalar( j ) / 3, Scalar( 3 - i ) / 3, 0 );
+		}
+	}
+	// b's v = 0 side is a's v = 1 side (x = 1) traversed the other way;
+	// b runs back to x = 0.5.  Bernstein coefficients of s^2: (0,0,1/3,1).
+	const Scalar zc[4] = { 0, 0, c / 3, c };
+	for( int i = 0; i < 4; ++i ) {
+		for( int j = 0; j < 4; ++j ) {
+			b.c[i].pts[j] = Point3( 1 - Scalar( 0.5 ) * Scalar( j ) / 3, Scalar( 3 - i ) / 3, zc[j] );
+		}
+	}
+	std::vector<BezierPatch> f;
+	f.push_back( a );
+	f.push_back( b );
+	return f;
+}
+
+//! One bicubic helicoid strip: rulings r in [r0, r1] through the axis,
+//! turning by T radians while rising h T.  Near r = 0 the normal is
+//! nearly horizontal and turns with the ruling, so a sub-patch that
+//! straddles r = 0 pools normals over almost a half-turn plus its share
+//! of T; a finer grid splits both.
+static std::vector<BezierPatch> MakeHelicoidStrip( Scalar r0, Scalar r1, Scalar T, Scalar h )
+{
+	const Scalar kk = Scalar( 4 ) / 3 * std::tan( T / 4 );
+	const Point3 arc[4] = {
+		Point3( 1, 0, 0 ), Point3( 1, kk, 0 ),
+		Point3( std::cos( T ) + kk * std::sin( T ), std::sin( T ) - kk * std::cos( T ), 0 ),
+		Point3( std::cos( T ), std::sin( T ), 0 ) };
+	BezierPatch p;
+	for( int i = 0; i < 4; ++i ) {
+		const Scalar r = r0 + ( r1 - r0 ) * Scalar( i ) / 3;
+		for( int j = 0; j < 4; ++j ) {
+			p.c[i].pts[j] = Point3( r * arc[j].x, r * arc[j].y, h * T * Scalar( j ) / 3 );
+		}
+	}
+	return std::vector<BezierPatch>( 1, p );
+}
+
+//! A closed bilinear "cube" whose top square is rotated half a turn
+//! about the vertical axis: every seam is exact and the set is a closed
+//! oriented 2-manifold, but the four twisted side faces all pass through
+//! the central axis and cross one another -- an immersed, not embedded,
+//! closed surface.
+static std::vector<BilinearPatch> MakeInvertedCube()
+{
+	const Point3 v[8] = {
+		Point3(0,0,0), Point3(1,0,0), Point3(1,1,0), Point3(0,1,0),
+		Point3(1,1,1), Point3(0,1,1), Point3(0,0,1), Point3(1,0,1) };
+	std::vector<BilinearPatch> c;
+	c.push_back( MakeQuad( v[0], v[3], v[2], v[1] ) );
+	c.push_back( MakeQuad( v[4], v[5], v[6], v[7] ) );
+	c.push_back( MakeQuad( v[0], v[1], v[5], v[4] ) );
+	c.push_back( MakeQuad( v[2], v[3], v[7], v[6] ) );
+	c.push_back( MakeQuad( v[0], v[4], v[7], v[3] ) );
+	c.push_back( MakeQuad( v[1], v[2], v[6], v[5] ) );
+	return c;
+}
+
+static void TestProofStepCoverage()
+{
+	std::cout << "H. proof-step coverage" << std::endl;
+
+	const Verdict fold = CertBezier( MakeInRowFold() );
+	std::cout << "    in-row fold: " << Describe( fold ) << std::endl;
+	Check( !fold.open && !fold.watertight && ReasonIs( fold, kConeSingle ),
+		"H: a fold inside one sub-patch row is refused by the sub-patch injectivity cone" );
+
+	for( const Scalar c : { 0.05, 0.2, 0.5 } ) {
+		std::cout << "    cusp fold c=" << c << ": " << Describe( CertBezier( MakeCuspFold( c ) ) ) << std::endl;
+	}
+	const Verdict flat = CertBezier( MakeCuspFold( 0.2 ) );
+	std::cout << "    cusp fold at a seam: " << Describe( flat ) << std::endl;
+	Check( !flat.open && !flat.watertight && ReasonIs( flat, kConePair ),
+		"H: a sheet folded back across a seam (cusp ridge) is refused by the pooled side-pair cone" );
+
+	const Verdict inv = CertBilinear( MakeInvertedCube() );
+	std::cout << "    immersed closed cube: " << Describe( inv ) << std::endl;
+	Check( !inv.watertight && !inv.open, "H: an immersed (self-crossing) closed surface is not certified watertight" );
+
+	const Verdict tight = CertBezier( MakeCubeSphere( 2, true ), 200 );
+	std::cout << "    cube-sphere k=2 under a 200-unit budget: " << Describe( tight ) << std::endl;
+	Check( !tight.watertight && !tight.open && ReasonIs( tight, kBudget ),
+		"H: a set whose proof exceeds the work budget is refused, not certified" );
+
+	const Verdict helix = CertBezier( MakeHelicoidStrip( -1, 0.6, 1.5, 0.1 ) );
+	std::cout << "    helicoid strip straddling its axis: " << Describe( helix ) << std::endl;
+	Check( helix.open && helix.grid == 8,
+		"H: a helicoid strip refused on the 4 x 4 grid is certified open by the 8 x 8 retry" );
+	const Verdict helixSteep = CertBezier( MakeHelicoidStrip( -1, 0.6, 1.5, 0.3 ) );
+	Check( helixSteep.open && helixSteep.grid == 4, "H: a steeper helicoid strip certifies on the first (4 x 4) grid" );
 }
 
 #ifndef PATCHSET_NO_MAIN
@@ -686,6 +851,7 @@ int main()
 	TestFanCrossingAtVertex();
 	TestOpenSheetCSG();
 	TestCostAndShippedModels();
+	TestProofStepCoverage();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }
