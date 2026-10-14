@@ -2751,9 +2751,12 @@ namespace
 	};
 
 	// Work units per certification attempt (one per candidate pair, per
-	// recursive box test, per hashed cell).  Measured at ~10 M units/s, so
-	// a refused worst case costs about 2 s per attempt; a set that needs
-	// more is REFUSED, never certified.
+	// recursive box test, per hashed cell).  A set that needs more is
+	// REFUSED, never certified.  Measured worst case so far (a 600-turn
+	// coil of 2400 patches whose tilted turns overlap in every box, both
+	// grid attempts exhausting the budget): 1.1 s in total.  The costlier
+	// per-unit steps (pooled cone, corner separation) are bounded by a
+	// small multiple of the sub-patch count, itself capped below.
 	static const std::size_t kPatchCertWorkBudget = std::size_t( 20000000 );
 
 	// Cap on sub-patch records per attempt (memory; see CertifyBezierNets).

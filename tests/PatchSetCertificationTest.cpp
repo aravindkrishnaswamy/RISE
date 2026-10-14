@@ -47,6 +47,7 @@
 #include "../src/Library/Polygon.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Objects/CSGObject.h"
+#include "../src/Library/Geometry/BezierPatchGeometry.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -472,6 +473,7 @@ static void TestOpenSheetCSG()
 		sheetAt( "sheet_m12", -1.2 ) + sheetAt( "sheet_m17", -1.7 ) +
 		"bezierpatch_geometry\n{\n name ball\n file " + spherePath + "\n}\n"
 		"bilinearpatch_geometry\n{\n name frame\n file " + framePath + "\n}\n"
+		"bezierpatch_geometry\n{\n name ball_edit\n file " + spherePath + "\n}\n"
 		"bilinearpatch_geometry\n{\n name tcube\n file " + tcubePath + "\n}\n"
 		"clippedplane_geometry\n{\n name sheet_half\n pta -1 -1 0.5\n ptb 2 -1 0.5\n ptc 2 2 0.5\n ptd -1 2 0.5\n}\n"
 		"sphere_geometry\n{\n name sph\n radius 0.5\n}\n";
@@ -495,6 +497,8 @@ static void TestOpenSheetCSG()
 	// F: nested closed operand -- sheet minus (ball union small sphere).
 	obj( "c1", "ball" ); obj( "c2", "sph", " position 2 0 0\n" ); csg( "solids", "c1", "c2", "union" );
 	obj( "c3", "sheet_z" ); csg( "minus_solids", "c3", "solids", "subtraction" );
+	// P3-e: a composite whose patch operand is edited after preparation.
+	obj( "es", "sheet_z" ); obj( "eb", "ball_edit" ); csg( "epoch_probe", "es", "eb", "subtraction" );
 	// P3-b: the same trimming geometry when the solid is closed but NOT
 	// certified (the T-junction cube).
 	obj( "ts1", "sheet_half" ); obj( "tc1", "tcube" ); csg( "inter_tcube", "ts1", "tc1", "intersection" );
@@ -572,6 +576,28 @@ static void TestOpenSheetCSG()
 			"E: a transformed open-sheet composite keeps range2 == RISE_INFINITY and lands on its sheet" );
 		Check( std::isfinite( t.geometric.ptExit.x ) && std::isfinite( t.geometric.ptExit.z ),
 			"E: a transformed open-sheet composite reports a finite ptExit" );
+	}
+	{	// P3-e: AddPatch after preparation stales the composite's cache.
+		const IObject* probe = loaded.Object( "epoch_probe" );
+		Check( probe && AsCSG( probe )->IsProvablyOpenSheet(), "P3-e: probe composite starts certified open" );
+		if( probe ) {
+			const IObject* solid = AsCSG( probe )->GetOperandB();
+			const BezierPatchGeometry* g = solid ? dynamic_cast<const BezierPatchGeometry*>( solid->GetGeometry() ) : nullptr;
+			Check( g != nullptr, "P3-e: probe solid is a Bezier patch set" );
+			if( g ) {
+				// A stray far-away patch makes the set disconnected: no longer closed.
+				BezierPatch stray = MakeCubeSphere( 1, true )[0];
+				for( int i = 0; i < 4; ++i ) {
+					for( int j = 0; j < 4; ++j ) {
+						stray.c[i].pts[j] = Point3( stray.c[i].pts[j].x + 10, stray.c[i].pts[j].y, stray.c[i].pts[j].z );
+					}
+				}
+				const_cast<BezierPatchGeometry*>( g )->AddPatch( stray );
+				Check( !g->IsCertifiedWatertight(), "P3-e: the edited patch set is no longer certified closed" );
+				Check( !AsCSG( probe )->IsProvablyOpenSheet(),
+					"P3-e: the composite's cached certificate follows the operand edit without a re-preparation" );
+			}
+		}
 	}
 	{	// P3-b: geometry does not depend on the trimming solid's certificate.
 		const IObject* it = loaded.Object( "inter_tcube" );
@@ -704,6 +730,34 @@ static void TestCostAndShippedModels()
 		std::cout << "    cube-sphere k=" << k << " (" << big.size() << " patches): " << Describe( v )
 			<< " in " << ms << " ms" << std::endl;
 		Check( v.watertight, "G: large closed cube-sphere (" + std::to_string( big.size() ) + " patches) certifies watertight" );
+	}
+	{	// Worst cases (P2-2): a set past the sub-patch cap is refused before
+		// anything large is allocated; a dense embedded set (a tightly
+		// wound helix whose turns all share grid cells) is refused when the
+		// work budget runs out.  Both report their wall time.
+		const std::vector<BezierPatch> huge = MakeCubeSphere( 58, true );
+		auto t0 = std::chrono::steady_clock::now();
+		const Verdict vh = CertBezier( huge );
+		auto t1 = std::chrono::steady_clock::now();
+		std::cout << "    cube-sphere k=58 (" << huge.size() << " patches): " << Describe( vh ) << " in "
+			<< std::chrono::duration<double, std::milli>( t1 - t0 ).count() << " ms" << std::endl;
+		Check( !vh.watertight && !vh.open && ReasonIs( vh, "patch set too large to certify at this sub-patch grid" ),
+			"G: a set past the sub-patch cap is refused before allocation" );
+
+		const Scalar pi = 3.14159265358979323846;
+		std::vector<BezierPatch> coil;
+		const int turns = 600;
+		for( int k = 0; k < 4 * turns; ++k ) {
+			coil.push_back( AnnulusPatch( 1.0, 2.0, 3 * k, [&]( Scalar r, int aa ) {
+				return Scalar( 0.0002 ) * Scalar( aa ) * pi / 6 + Scalar( 0.05 ) * r;
+			} ) );
+		}
+		t0 = std::chrono::steady_clock::now();
+		const Verdict vc = CertBezier( coil );
+		t1 = std::chrono::steady_clock::now();
+		std::cout << "    tight coil (" << coil.size() << " patches, " << turns << " turns): " << Describe( vc ) << " in "
+			<< std::chrono::duration<double, std::milli>( t1 - t0 ).count() << " ms" << std::endl;
+		Check( !vc.watertight && !vc.open, "G: a dense coil beyond the work budget is refused, never certified" );
 	}
 	const char* models[] = { "models/raw/teapot.bezier", "models/bezier/aphrodite.bezier",
 		"models/bezier/f16.bezier", "models/bezier/balanza.bezier" };
