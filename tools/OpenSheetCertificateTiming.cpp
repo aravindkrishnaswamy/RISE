@@ -13,16 +13,26 @@
 //              (closed body: watertight, open certificate refuses)
 //   fold       figure-eight ribbon that passes through itself (open, not a
 //              graph, refused by the Step-4 embedding test)
+//   dense      the curved sheet plus ONE unused vertex far enough away that
+//              the all-vertex weld epsilon is 1/1.2 of the grid spacing: the
+//              DL-150 regime (dense model, one stray far vertex), where
+//              every grid vertex is a separate representative barely more
+//              than eps from its neighbours.
+// Every fixture also reports GeometricUtilities::WeldVertexPositions alone
+// on its vertex list (weld).
 // and every row reports the mean and sample standard deviation over `reps`
 // fresh meshes of the WHOLE call: DoneIndexedTriangles (build), an
 // UpdateVertices with identical positions (same), and two successive
 // UpdateVertices calls that move every vertex (def1: z += 0.03 (x^2+y^2);
-// def2: z += 0.01 y) -- the second shows the steady state once any
-// one-time projection cost of the first has been paid.  The process's peak
+// def2: z += 0.01 y; the far vertex of `dense` is not moved) -- the second
+// shows the steady state once any one-time projection cost of the first
+// has been paid.  Only the UpdateVertices call itself is timed, not the
+// vertex edits.  The process's peak
 // RSS is printed last; run one fixture per process to attribute it.  The
 // open-certificate audit counter shows which updates re-ran the full proof.
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Utilities/GeometricUtilities.h"
 #include <sys/resource.h>
 #include <chrono>
 #include <cmath>
@@ -55,8 +65,14 @@ namespace
 				const double s = -0.3 + ( pi + 0.6 ) * i / N;
 				v.push_back( Point3( std::sin( s ), y, 0.5 * std::sin( 2 * s ) ) );
 			} else {
-				v.push_back( Point3( x, y, kind == "curved" ? 0.2 * ( x * x + y * y ) : 0 ) );
+				v.push_back( Point3( x, y, kind == "planar" ? 0 : 0.2 * ( x * x + y * y ) ) );
 			}
+			n.push_back( Vector3( 0, 0, 1 ) ); c.push_back( Point2( 0, 0 ) );
+		}
+		if( kind == "dense" ) {
+			// eps = 1e-6 x diagonal ~ 1e-6 x D; make it the grid spacing / 1.2.
+			const double D = ( 2.0 / N ) / 1.2e-6;
+			v.push_back( Point3( -1 + D, -1, 0 ) );
 			n.push_back( Vector3( 0, 0, 1 ) ); c.push_back( Point2( 0, 0 ) );
 		}
 		auto id = [&]( int i, int j ) { return (unsigned)( j * ( N + 1 ) + i ); };
@@ -80,12 +96,13 @@ int main( int argc, char** argv )
 	const int N = argc > 1 ? std::atoi( argv[1] ) : 700;
 	const int reps = argc > 2 ? std::atoi( argv[2] ) : 5;
 	const std::string only = argc > 3 ? argv[3] : "all";
-	const char* kinds[] = { "planar", "curved", "closedish", "closed", "fold" };
+	const char* kinds[] = { "planar", "curved", "closedish", "closed", "fold", "dense" };
 	for( const char* kind : kinds ) {
 		if( only != "all" && only != kind ) continue;
 		VerticesListType v0; NormalsListType n; TexCoordsListType c; IndexTriangleListType t;
 		BuildFixture( kind, N, v0, n, c, t );
-		Stat build, same, def1, def2;
+		Stat build, same, def1, def2, weld;
+		const size_t moved = kind == std::string( "dense" ) ? v0.size() - 1 : v0.size();
 		bool open = false, wt = false, open1 = false, wt1 = false, open2 = false, wt2 = false;
 		unsigned long long audits[3] = { 0, 0, 0 };
 		for( int r = 0; r < reps; ++r ) {
@@ -97,15 +114,24 @@ int main( int argc, char** argv )
 			open = m->IsProvablyOpenSheet(); wt = m->IsCertifiedWatertight(); audits[0] = m->OpenCertificateAudits();
 			m->UpdateVertices( v, NormalsListType() );
 			const auto t2 = std::chrono::steady_clock::now();
-			for( auto& p : v ) p.z += 0.03 * ( p.x * p.x + p.y * p.y );
+			for( size_t i = 0; i < moved; ++i ) { Point3& p = v[i]; p.z += 0.03 * ( p.x * p.x + p.y * p.y ); }
+			const auto t3a = std::chrono::steady_clock::now();
 			m->UpdateVertices( v, NormalsListType() );
 			const auto t3 = std::chrono::steady_clock::now();
 			open1 = m->IsProvablyOpenSheet(); wt1 = m->IsCertifiedWatertight(); audits[1] = m->OpenCertificateAudits();
-			for( auto& p : v ) p.z += 0.01 * p.y;
+			for( size_t i = 0; i < moved; ++i ) { Point3& p = v[i]; p.z += 0.01 * p.y; }
+			const auto t4a = std::chrono::steady_clock::now();
 			m->UpdateVertices( v, NormalsListType() );
 			const auto t4 = std::chrono::steady_clock::now();
 			open2 = m->IsProvablyOpenSheet(); wt2 = m->IsCertifiedWatertight(); audits[2] = m->OpenCertificateAudits();
-			build.add( Ms( t0, t1 ) ); same.add( Ms( t1, t2 ) ); def1.add( Ms( t2, t3 ) ); def2.add( Ms( t3, t4 ) );
+			build.add( Ms( t0, t1 ) ); same.add( Ms( t1, t2 ) ); def1.add( Ms( t3a, t3 ) ); def2.add( Ms( t4a, t4 ) );
+			{
+				std::vector<unsigned int> ids; Scalar eps = 0;
+				const auto w0 = std::chrono::steady_clock::now();
+				GeometricUtilities::WeldVertexPositions( v0, ids, &eps );
+				const auto w1 = std::chrono::steady_clock::now();
+				weld.add( Ms( w0, w1 ) );
+			}
 			m->release();
 		}
 		std::cout << kind << " tris=" << t.size() << " reps=" << reps
@@ -115,8 +141,14 @@ int main( int argc, char** argv )
 			<< "\n  same  ms " << same.mean() << " +- " << same.sd()
 			<< "\n  def1  ms " << def1.mean() << " +- " << def1.sd()
 			<< "\n  def2  ms " << def2.mean() << " +- " << def2.sd() << "\n";
+		if( !weld.v.empty() ) std::cout << "  weld  ms " << weld.mean() << " +- " << weld.sd() << " (WeldVertexPositions alone)\n";
 	}
 	struct rusage ru; getrusage( RUSAGE_SELF, &ru );
-	std::cout << "peak RSS MB " << double( ru.ru_maxrss ) / ( 1024.0 * 1024.0 ) << "\n";
+#ifdef __APPLE__
+	const double rssBytes = double( ru.ru_maxrss );			// bytes on macOS
+#else
+	const double rssBytes = double( ru.ru_maxrss ) * 1024.0;	// kilobytes on Linux
+#endif
+	std::cout << "peak RSS MB " << rssBytes / ( 1024.0 * 1024.0 ) << "\n";
 	return 0;
 }

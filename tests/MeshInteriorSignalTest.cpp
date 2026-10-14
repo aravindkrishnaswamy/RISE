@@ -2494,6 +2494,80 @@ static void TestDL620ReviewFindings()
 		Check( !GeometricUtilities::IsEmbeddedOpenOrientedSurface( bad, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) ).certified,
 			"P3-5: a triangle at the edge of the double range is refused" );
 	}
+
+	// Round 2, P2.  Weld cost in the DL-150 regime: a dense grid whose
+	// epsilon a single far vertex has inflated to just below the grid
+	// spacing, so every grid vertex is its own representative barely more
+	// than eps from its neighbours.  With 32-eps cells each lookup scanned
+	// ~1,000 representatives.  Compared as a RATIO against welding the same
+	// grid without the far vertex (machine-load independent); the partition
+	// must also match the brute-force reference on a smaller copy.
+	{
+		const int N = 500;
+		std::vector<Point3> grid;
+		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
+			const double x = -1 + 2.0 * i / N, y = -1 + 2.0 * j / N;
+			grid.push_back( Point3( x, y, 0.2 * ( x * x + y * y ) ) );
+		}
+		std::vector<Point3> dense = grid;
+		dense.push_back( Point3( -1 + ( 2.0 / N ) / 1.2e-6, -1, 0 ) );
+		const auto timeWeld = []( const std::vector<Point3>& pts, Scalar& eps, unsigned int& classes ) {
+			std::vector<unsigned int> id;
+			double best = 1e30;
+			for( int r = 0; r < 3; ++r ) {
+				const auto t0 = std::chrono::steady_clock::now();
+				GeometricUtilities::WeldVertexPositions( pts, id, &eps );
+				const auto t1 = std::chrono::steady_clock::now();
+				best = std::min( best, std::chrono::duration<double, std::milli>( t1 - t0 ).count() );
+			}
+			classes = 0;
+			for( const unsigned int k : id ) { classes = std::max( classes, k + 1 ); }
+			return best;
+		};
+		Scalar epsPlain = 0, epsDense = 0; unsigned int cPlain = 0, cDense = 0;
+		const double msPlain = timeWeld( grid, epsPlain, cPlain );
+		const double msDense = timeWeld( dense, epsDense, cDense );
+		std::cout << "    dense-grid weld: " << msDense << " ms with a far vertex (eps = spacing/"
+			<< ( 2.0 / N ) / epsDense << ", " << cDense << " classes) vs " << msPlain << " ms without" << std::endl;
+		Check( cDense == dense.size() && cPlain == grid.size(),
+			"Round 2 P2: dense grid with a far vertex keeps every vertex distinct (fixture is in the eps..2eps regime)" );
+		Check( msDense < 10.0 * msPlain + 5.0,
+			"Round 2 P2: weld in the DL-150 dense regime costs within 10x of the ordinary weld" );
+	}
+
+	// Round 2, P3-b.  A huge triangle attached to a fine sheet forces the
+	// Step-4 cell to grow until the whole sheet shares one or two cells;
+	// the all-pairs scan used to go quadratic (~1.6e10 pairs here).  It is
+	// now bounded and refused promptly.
+	{
+		const int N = 300;
+		std::vector<Point3> pts;
+		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
+			pts.push_back( Point3( double( i ) / N, double( j ) / N, 0 ) );
+		}
+		const unsigned int apex = (unsigned int)pts.size();
+		pts.push_back( Point3( 1e5, 0.5, 1e5 ) );
+		std::vector<Point3> corners;
+		std::vector<unsigned int> weld;
+		const auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			corners.push_back( pts[a] ); corners.push_back( pts[b] ); corners.push_back( pts[c] );
+			weld.push_back( a ); weld.push_back( b ); weld.push_back( c );
+		};
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) for( int i = 0; i < N; ++i ) {
+			add( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		// The big flap shares the sheet's boundary edge (1,0)-(1,1/N) in the
+		// opposite direction to the sheet triangle that uses it.
+		add( id( N, 1 ), id( N, 0 ), apex );
+		const auto t0 = std::chrono::steady_clock::now();
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+		std::cout << "    fine sheet + 1e5 flap: certified=" << cert.certified << " in " << ms << " ms" << std::endl;
+		Check( !cert.certified && ms < 5000.0,
+			"Round 2 P3-b: quadratic Step-4 cell occupancy is refused promptly, not scanned" );
+	}
 }
 
 int main()

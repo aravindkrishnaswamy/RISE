@@ -1285,10 +1285,35 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 		}
 	}
 
+	// DL-150.  Report the weld's own vertex-count reduction so an author
+	// can see an over-aggressive weld even when the discriminator below
+	// does not (or cannot) catch it. Certification-time, never per query,
+	// like the diagnostics below.  Printed before the cached-topology
+	// shortcut so every proof -- full or reused -- reports it (DL-620
+	// review round 2, P3-d).
+	{
+		unsigned int weldedCount = 0;
+		for( std::size_t i = 0; i < weldedId.size(); ++i ) {
+			if( weldedId[i] + 1 > weldedCount ) { weldedCount = weldedId[i] + 1; }
+		}
+		GlobalLog()->PrintEx( eLog_Info,
+			"TriangleMeshGeometryIndexed:: welded %zu raw vertices to %u positions "
+			"(%.1f%% reduction) before the watertightness edge count; see "
+			"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-143/DL-150).",
+			pPoints.size(), weldedCount,
+			pPoints.empty() ? 0.0 : 100.0 * ( 1.0 - (double)weldedCount / (double)pPoints.size() ) );
+	}
+
 	if( m_lastWeldTransitive && !m_watertightTopologyWeldedId.empty()
 		&& weldedId == m_watertightTopologyWeldedId )
 	{
 		if( m_cachedTopologicalWatertightRefusal ) {
+			// The refusal diagnostic printed when this partition was first
+			// proved still applies; say so rather than repeat its counts.
+			GlobalLog()->PrintEx( eLog_Info,
+				"TriangleMeshGeometryIndexed:: weld partition unchanged since the last "
+				"watertightness proof, which refused it -- interior() stays unsigned "
+				"(DL-31/DL-150)." );
 			return;
 		}
 		if( !m_watertightEdges.empty() ) {
@@ -1333,23 +1358,6 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	m_watertightTopologyWeldedId.clear();
 	m_cachedTopologicalWatertightRefusal = false;
 	m_watertightEdges.clear();
-
-	// DL-150.  Report the weld's own vertex-count reduction so an author
-	// can see an over-aggressive weld even when the discriminator below
-	// does not (or cannot) catch it. Certification-time, never per query,
-	// like the diagnostics below.
-	{
-		unsigned int weldedCount = 0;
-		for( std::size_t i = 0; i < weldedId.size(); ++i ) {
-			if( weldedId[i] + 1 > weldedCount ) { weldedCount = weldedId[i] + 1; }
-		}
-		GlobalLog()->PrintEx( eLog_Info,
-			"TriangleMeshGeometryIndexed:: welded %zu raw vertices to %u positions "
-			"(%.1f%% reduction) before the watertightness edge count; see "
-			"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-143/DL-150).",
-			pPoints.size(), weldedCount,
-			pPoints.empty() ? 0.0 : 100.0 * ( 1.0 - (double)weldedCount / (double)pPoints.size() ) );
-	}
 
 	const Point3* const pBase = &pPoints[0];
 

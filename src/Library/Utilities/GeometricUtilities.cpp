@@ -1424,18 +1424,20 @@ char GeometricUtilities::WhichSideOfPlane(
 //! `eps`-separated).  Callers use it to decide when an earlier weld's
 //! labels can be compared against a new one.
 //!
-//! Grid: cell `32 eps` over coordinates RELATIVE to the bounding box's
+//! Grid: cell `6 eps` over coordinates RELATIVE to the bounding box's
 //! low corner (always, DL-620 review P3-4: relative coordinates lie in
 //! [0, diagonal], so the cell arithmetic's rounding error is a few ulps
 //! of the diagonal -- about 1e-10 of `eps` -- however far the mesh is
 //! translated; absolute coordinates at 1e9 x the mesh size made
-//! `rx - floor(rx/cell)*cell` lose whole multiples of `eps`).  A point
-//! whose relative coordinate lies more than `2 eps` (plus that rounding
-//! bound) inside its home cell on every axis has every candidate it
-//! must see (within `1.5 eps`) in the home cell; otherwise the cells
-//! overlapping its search box are scanned too.  An exact (bit-identical)
-//! duplicate, the common case for shared corners, is its own nearest
-//! representative at distance 0 and ends the scan early.
+//! `rx - floor(rx/cell)*cell` lose whole multiples of `eps`).  The home
+//! cell is scanned first; an exact (bit-identical) duplicate, the common
+//! case for shared corners, is its own nearest representative at
+//! distance 0 and ends the scan there.  Otherwise, unless the point's
+//! search box (`1.5 eps`, or `eps` once the weld is known to be
+//! ambiguous, plus the rounding bound) lies inside its home cell, every
+//! cell overlapping the box is scanned.  The cell is small (`6 eps`)
+//! because each visited cell is scanned in full and representatives are
+//! only `eps` apart: the per-cell count is what a dense mesh can blow up.
 //!
 //! O(n) expected.  DL-197: `outEps`, when non-null, receives the SAME
 //! epsilon this function used, so a caller that needs a second
@@ -1467,19 +1469,31 @@ bool GeometricUtilities::WeldVertexPositions(
 	const Vector3 extents = bbox.GetExtents();
 	const Scalar diag = Vector3Ops::Magnitude( extents );
 	const Scalar eps = std::max( std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag ), minEps );
-	// A cell of 32 eps puts most points more than 2 eps inside their home
-	// cell on all three axes, so they need no neighbour-cell lookups,
-	// while keeping bucket lists short.
-	const Scalar cell = Scalar( 32 ) * eps;
+	// Cell size (DL-620 review round 2, P2).  Each lookup scans every
+	// representative in the cells it visits, and representatives are only
+	// guaranteed to be more than eps apart, so a cell of k eps can hold
+	// ~k^2 representatives on a surface and ~k^3 in a volume.  32 eps let a
+	// vertex spacing just above eps (the DL-150 regime: a dense model whose
+	// epsilon one stray far vertex has inflated) put ~1,000 representatives
+	// in a cell and slowed the weld by ~20x on a 490k-vertex sheet.  Smaller
+	// cells cost hash lookups instead: the 1.5 eps search box spans up to
+	// two cells per axis, and only a point more than that far inside its
+	// home cell on every axis can skip its neighbours.  Measured on 490k
+	// vertices (OpenSheetCertificateTiming, weld alone, n=5): 3 eps reads
+	// 18 / 48 ms (dense / ordinary sheet), 6 eps 15 / 21 ms, 8 eps 36 / 24
+	// ms, 32 eps 237 / 12 ms.  6 eps keeps the dense case bounded (about
+	// 30 representatives per cell on a surface) for ~10 ms on an ordinary
+	// one.
+	const Scalar cell = Scalar( 6 ) * eps;
 	if( !std::isfinite( diag ) || !std::isfinite( cell ) || !( cell > 0 ) ) return false;
 	if( outEps ) { *outEps = eps; }
 
 	// Relative coordinates lie in [0, extent] with extent <= diag <= 1e6 eps,
-	// so cell indices are at most ~31250 (or 0 when minEps dominates): no
+	// so cell indices are at most ~167,000 (or 0 when minEps dominates): no
 	// integer range concern.  `slack` bounds the rounding of the relative
 	// coordinate, of its quotient by `cell` and of `fx * cell` -- all a few
-	// ulps of a magnitude <= extent + cell -- and is added to every margin
-	// and search radius below.
+	// ulps of a magnitude <= extent + cell -- and is added to the search
+	// radius below.
 	const Point3 origin = bbox.ll;
 	const Scalar maxExtent = std::max( extents.x, std::max( extents.y, extents.z ) );
 	const Scalar slack = Scalar( 64 ) * std::numeric_limits<Scalar>::epsilon() * ( maxExtent + cell );
@@ -1517,8 +1531,6 @@ bool GeometricUtilities::WeldVertexPositions(
 	const Scalar halfEpsSq = Scalar( 0.25 ) * epsSq;
 	const Scalar sepEps = Scalar( 1.5 ) * eps;
 	const Scalar sepEpsSq = Scalar( 2.25 ) * epsSq;
-	const Scalar interiorLo = Scalar( 2 ) * eps + slack;
-	const Scalar interiorHi = cell - interiorLo;
 	bool transitive = true;
 
 	auto mixKey = []( std::uint64_t k ) -> std::size_t {
@@ -1584,31 +1596,30 @@ bool GeometricUtilities::WeldVertexPositions(
 		}
 
 		if( !exactMatch ) {
-			// Exact by construction: cx is an integer far below 2^53, so
-			// Scalar(cx) * cell rounds once; `slack` absorbs it.
+			// Within eps decides membership; within 1.5 eps decides only
+			// the transitivity report, so once that is false eps suffices.
+			const Scalar searchRad = ( transitive ? sepEps : eps ) + slack;
+			// A point whose search box lies inside its home cell (with the
+			// rounding slack once more for `cx * cell`, an integer below 2^53
+			// times `cell`, rounded once) has already seen every candidate.
+			const Scalar inLo = searchRad + slack;
+			const Scalar inHi = cell - inLo;
 			const Scalar dx = rx - Scalar( cx ) * cell;
 			const Scalar dy = ry - Scalar( cy ) * cell;
 			const Scalar dz = rz - Scalar( cz ) * cell;
-			const bool interiorToCell = ( dx > interiorLo && dx < interiorHi )
-				&& ( dy > interiorLo && dy < interiorHi )
-				&& ( dz > interiorLo && dz < interiorHi );
-			if( !interiorToCell ) {
-				// Within eps decides membership; within 1.5 eps decides only
-				// the transitivity report, so once that is false eps suffices.
-				const Scalar searchRad = ( transitive ? sepEps : eps ) + slack;
-				const std::int64_t cx0 = cellCoord( rx - searchRad ), cx1 = cellCoord( rx + searchRad );
-				const std::int64_t cy0 = cellCoord( ry - searchRad ), cy1 = cellCoord( ry + searchRad );
-				const std::int64_t cz0 = cellCoord( rz - searchRad ), cz1 = cellCoord( rz + searchRad );
-				for( std::int64_t nz = cz0; nz <= cz1 && !exactMatch; ++nz ) {
-					for( std::int64_t ny = cy0; ny <= cy1 && !exactMatch; ++ny ) {
-						for( std::int64_t nx = cx0; nx <= cx1 && !exactMatch; ++nx ) {
-							if( nx == cx && ny == cy && nz == cz ) {
-								continue;
-							}
-							for( unsigned int cand = findBucketHead( cellKey( nx, ny, nz ) );
-								cand != 0xFFFFFFFFu && !exactMatch; cand = nextInCell[cand] ) {
-								consider( cand );
-							}
+			const bool insideHome = dx > inLo && dx < inHi && dy > inLo && dy < inHi && dz > inLo && dz < inHi;
+			const std::int64_t cx0 = cellCoord( rx - searchRad ), cx1 = insideHome ? cx0 - 1 : cellCoord( rx + searchRad );
+			const std::int64_t cy0 = cellCoord( ry - searchRad ), cy1 = cellCoord( ry + searchRad );
+			const std::int64_t cz0 = cellCoord( rz - searchRad ), cz1 = cellCoord( rz + searchRad );
+			for( std::int64_t nz = cz0; nz <= cz1 && !exactMatch; ++nz ) {
+				for( std::int64_t ny = cy0; ny <= cy1 && !exactMatch; ++ny ) {
+					for( std::int64_t nx = cx0; nx <= cx1 && !exactMatch; ++nx ) {
+						if( nx == cx && ny == cy && nz == cz ) {
+							continue;
+						}
+						for( unsigned int cand = findBucketHead( cellKey( nx, ny, nz ) );
+							cand != 0xFFFFFFFFu && !exactMatch; cand = nextInCell[cand] ) {
+							consider( cand );
 						}
 					}
 				}
@@ -2113,6 +2124,15 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		if( !withinBudget ) {
 			return result;
 		}
+		// DL-620 review round 2, P3-a.  Entry nodes, cell slots and the
+		// 0xFFFFFFFF end-of-list sentinel are 32-bit: past 2^31 insertions a
+		// node index (or, at half load, a slot index) could wrap or alias the
+		// sentinel and silently drop pairs from the test.  The budget allows
+		// up to 64 nTris + 4096 entries, which exceeds that for nTris above
+		// ~33.5M, so refuse there rather than test a truncated list.
+		if( !( finalTotal < 2147483648.0 ) ) {
+			return result;
+		}
 		struct CellSlot
 		{
 			CellKey key{ 0, 0, 0 };
@@ -2192,6 +2212,24 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 						}
 					}
 				}
+			}
+		}
+		// DL-620 review round 2, P3-b.  The insertion budget bounds entries,
+		// not pairs: when a few huge triangles force the cell to double far
+		// past the size of the small ones, many small triangles share one
+		// cell and the all-pairs scan below goes quadratic (a 1e5-wide
+		// triangle on a 180k-triangle unit sheet puts the whole sheet in one
+		// or two cells: ~1.6e10 pairs).  Count the candidate pairs first and
+		// refuse past a linear budget.  Refusal is the conservative answer:
+		// this certificate never claims a surface it has not fully tested.
+		{
+			double pairs = 0;
+			for( const unsigned int slotIdx : multiCellSlots ) {
+				const double c = double( cellTable[slotIdx].count );
+				pairs += 0.5 * c * ( c - 1.0 );
+			}
+			if( pairs > 1024.0 * double( nTris ) + 16777216.0 ) {
+				return result;
 			}
 		}
 		for( const unsigned int slotIdx : multiCellSlots ) {
