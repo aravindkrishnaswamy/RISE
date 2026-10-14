@@ -215,7 +215,10 @@ bool IsClearTransmissiveMaterial(const IMaterial* material, bool& outBroadProof)
 }
 void CollectCSGClearMaterials(const CSGObject& csg, const IMaterial* inheritedMat, bool& anyClear, bool& allBroadProof)
 {
-    const IMaterial* effMat=csg.GetMaterial() ? csg.GetMaterial() : inheritedMat;
+    // The OUTERMOST material override wins: CSGObject::IntersectRay stamps
+    // its own pMaterial after the child composite has stamped its own, so
+    // an enclosing composite's material is what renders.
+    const IMaterial* effMat=inheritedMat ? inheritedMat : csg.GetMaterial();
     for(const IObject* operand : {csg.GetOperandA(),csg.GetOperandB()}) {
         if(!operand) continue;
         if(const auto* childCsg=dynamic_cast<const CSGObject*>(operand)) {

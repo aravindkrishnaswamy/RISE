@@ -131,14 +131,14 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// DL-157 review round 3 (P1): a patch set cannot certify "no interior"
 	// merely because each individual patch is open (`patches` is a vector;
 	// `.bezier` files load all patches into one geometry).  DL-616 adds an
-	// analytic patch-set certificate (`CertifyBezierPatchSet`) in Prepare()
+	// analytic patch-set certificate (`CertifyBezierPatchSet`, computed lazily on first query)
 	// that proves exact seam topology, a connected 2-manifold with
 	// boundary, and an EMBEDDING (sub-patch injectivity plus pairwise
 	// separation; see the certifier's header comment).
 	// Only when the entire patch set is certified as an embedded open
 	// oriented sheet does it stamp `ri.bProvablyNoInterior` (which
 	// `Object::IntersectRay` further scopes to clear refractive materials).
-	if( m_bProvablyOpenSheet ) {
+	if( m_bProvablyOpenSheet.load( std::memory_order_relaxed ) ) {
 		ri.bProvablyNoInterior = true;
 	}
 
@@ -248,6 +248,7 @@ BezierPatchGeometry::BezierPatchGeometry(
   bUseBSP( bUseBSP_ ),
   m_areaOnce( new std::once_flag ),
   m_area( 0 ),
+  m_certOnce( new std::once_flag ),
   m_bCertifiedWatertight( false ),
   m_bProvablyOpenSheet( false ),
   m_bNegativeOpenSignedVolume( false )
@@ -264,9 +265,7 @@ void BezierPatchGeometry::AddPatch( const BezierPatch& patch )
 {
 	patches.push_back( patch );
 	m_areaOnce.reset( new std::once_flag );	// DL-459: the area table is stale
-	m_bCertifiedWatertight = false;
-	m_bProvablyOpenSheet = false;
-	m_bNegativeOpenSignedVolume = false;
+	InvalidateCertificate();
 }
 
 void BezierPatchGeometry::Prepare()
@@ -275,11 +274,7 @@ void BezierPatchGeometry::Prepare()
 	// Optimize the patch container
 	stl_utils::container_optimize< BezierPatchList >( patches );
 	m_areaOnce.reset( new std::once_flag );	// DL-459: rebuilt lazily on first surface sample
-	GeometricUtilities::CertifyBezierPatchSet(
-		patches,
-		m_bCertifiedWatertight,
-		m_bProvablyOpenSheet,
-		m_bNegativeOpenSignedVolume );
+	InvalidateCertificate();	// DL-616: recomputed lazily on first query
 
 	// First create the pointer patches list
 	BezierPatchPtrList		patchptrs;
@@ -636,4 +631,24 @@ Scalar BezierPatchGeometry::GetArea( ) const
 	// keeps the legacy 1.0 placeholder.
 	EnsureAreaTable();
 	return m_area > 0.0 ? m_area : 1.0;
+}
+
+void BezierPatchGeometry::InvalidateCertificate()
+{
+	m_certOnce.reset( new std::once_flag );
+	m_bCertifiedWatertight.store( false, std::memory_order_release );
+	m_bProvablyOpenSheet.store( false, std::memory_order_release );
+	m_bNegativeOpenSignedVolume.store( false, std::memory_order_release );
+	GeometricUtilities::BumpPatchCertificateEpoch();	// cached composite certificates are stale
+}
+
+void BezierPatchGeometry::EnsureCertified() const
+{
+	std::call_once( *m_certOnce, [this]() {
+		bool watertight = false, open = false, negative = false;
+		GeometricUtilities::CertifyBezierPatchSet( patches, watertight, open, negative );
+		m_bCertifiedWatertight.store( watertight, std::memory_order_release );
+		m_bProvablyOpenSheet.store( open, std::memory_order_release );
+		m_bNegativeOpenSignedVolume.store( negative, std::memory_order_release );
+	} );
 }

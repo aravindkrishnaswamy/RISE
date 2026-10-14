@@ -24,6 +24,8 @@
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/LambertianLuminaireMaterial.h"
 #include "../Materials/PhongLuminaireMaterial.h"
+#include "../Utilities/OrthonormalBasis3D.h"
+#include "../Utilities/GeometricUtilities.h"
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
@@ -816,12 +818,45 @@ namespace
 // DL-411: meshes publish only the nearest root, even when asked for
 // exit information. Recover the contained-origin interval convention from
 // certified geometry instead of interpreting its infinite range2 as outside.
-static void RecoverContainedOperand( const IObject* operand, RayIntersection& hit )
+//
+// DL-617 review: a certified-closed PATCH set (and a certified-closed
+// composite) refuses SignedDistanceLower and never writes range2 either,
+// so a contained origin used to read as "outside, entering at the exit".
+// Those operands answer containment by the composite's own inside test
+// (`CSGObject::OperandContainsPoint`); the cheap certificate check gates
+// it so no other operand pays for a parity walk.
+static bool IsCheapCertifiedClosedOperand( const IObject* operand )
+{
+	if( const auto* csg = dynamic_cast<const CSGObject*>( operand ) ) {
+		return csg->IsCertifiedWatertight();
+	}
+	const IGeometry* g = operand->GetGeometry();
+	if( const auto* bez = dynamic_cast<const BezierPatchGeometry*>( g ) ) {
+		return bez->IsCertifiedWatertight();
+	}
+	if( const auto* bil = dynamic_cast<const BilinearPatchGeometry*>( g ) ) {
+		return bil->IsCertifiedWatertight();
+	}
+	return false;
+}
+
+static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection& hit )
 {
 	if( hit.geometric.bHit && !hit.hasBoundaryRange2 ) {
 		Scalar distance = 0;
 		bool exact = false;
-		if( operand->SignedDistanceLower( hit.geometric.ray.origin, Scalar( 1e-3 ), distance, exact ) && distance < 0 ) {
+		bool contained = false;
+		if( operand->SignedDistanceLower( hit.geometric.ray.origin, Scalar( 1e-3 ), distance, exact ) && distance != 0 ) {
+			contained = distance < 0;
+		} else if( IsCheapCertifiedClosedOperand( operand ) ) {
+			const BoundingBox box = operand->getBoundingBox();
+			Scalar scale = Vector3Ops::Magnitude( Vector3Ops::mkVector3( box.ur, box.ll ) );
+			if( !( scale > 0 ) || !std::isfinite( scale ) ) {
+				scale = 1;
+			}
+			contained = CSGObject::OperandContainsPoint( operand, hit.geometric.ray.origin, hit.geometric.ray.Dir(), scale ) > 0;
+		}
+		if( contained ) {
 			hit.geometric.range2 = 0;
 			hit.boundaryRange2 = 0;
 			hit.hasBoundaryRange2 = true;
@@ -935,53 +970,94 @@ namespace
 	//! instead of inventing a miss.
 	static const unsigned int kMaxOpenSheetWalk = 4096;
 
-	//! Inside test against a CERTIFIED-CLOSED operand at `pt`, in this
-	//! composite's local frame (the operand's parent frame).  +1 inside,
-	//! -1 outside, 0 undecided.
+	//! Crossing parity of one closed surface from `pt` to infinity along
+	//! `dir`: +1 odd (inside), -1 even (outside), 0 undecided.  Every
+	//! crossing is found by re-casting just past the previous one.  A hit
+	//! at or beyond half of RISE_INFINITY (the sentinel a geometry without
+	//! exit information leaves in range / range2) is NOT a crossing, and a
+	//! re-cast origin that leaves the finite range, or a walk past
+	//! `kMaxOpenSheetWalk` crossings, is undecided rather than guessed.
+	int LeafCrossingParity( const IObjectPriv* pSolid, const Point3& pt, const Vector3& dir, const Scalar scale )
+	{
+		Ray probeRay( pt, dir );
+		unsigned int crossings = 0;
+		for( unsigned int k = 0; k < kMaxOpenSheetWalk; ++k ) {
+			RayIntersection probe( probeRay, nullRasterizerState );
+			pSolid->IntersectRay( probe, RISE_INFINITY, true, true, false );
+			const Scalar t = probe.geometric.range;
+			if( !probe.geometric.bHit || !( t < Scalar( 0.5 ) * RISE_INFINITY ) ) {
+				return ( crossings & 1 ) ? 1 : -1;
+			}
+			++crossings;
+			probeRay.origin = probeRay.PointAtLength( t + OpenSheetRecastStep( t, scale ) );
+			if( !std::isfinite( probeRay.origin.x ) || !std::isfinite( probeRay.origin.y ) || !std::isfinite( probeRay.origin.z ) ) {
+				return 0;
+			}
+		}
+		return 0;
+	}
+
+	//! Inside test against ONE certified-closed non-composite operand.
 	//!
 	//! First the operand's signed distance: IObject::SignedDistanceLower's
 	//! SIGN is exact whenever it is non-zero (`<0` strictly inside, `>0`
 	//! strictly outside), whatever the exactness of the magnitude, and
 	//! `0` carries no information.  An operand that refuses or answers 0
-	//! (patch sets, a displaced surface, a nested composite on a seam) is
-	//! decided by PARITY: the number of times the closed surface is
-	//! crossed from `pt` to infinity along `dir`, every crossing found by
-	//! re-casting just past the previous one.  An embedded closed surface
-	//! (which the certificate proves) is crossed an odd number of times
-	//! exactly from inside.
-	int ClosedOperandContains( const IObjectPriv* pSolid, const Point3& pt, const Vector3& dir, const Scalar scale )
+	//! (patch sets, a displaced surface) is decided by crossing PARITY,
+	//! which an embedded closed surface (what the certificate proves) gets
+	//! right from every point not on it -- but a ray that grazes a surface
+	//! tangentially (a double root) or slips through a seam between
+	//! patches miscounts.  So parity is VOTED: along `dir` and along
+	//! `-dir`, and only when those disagree (or one is undecided) along a
+	//! third, oblique direction; the answer is the strict majority of the
+	//! decided votes, else undecided.  A miscount needs a degenerate
+	//! contact along two of the three directions at once.
+	int LeafContains( const IObjectPriv* pSolid, const Point3& pt, const Vector3& dir, const Scalar scale )
 	{
 		Scalar f = 0;
 		bool exact = false;
 		if( pSolid->SignedDistanceLower( pt, scale, f, exact ) && f != 0 && std::isfinite( f ) ) {
 			return f < 0 ? 1 : -1;
 		}
-		Ray probeRay( pt, dir );
-		unsigned int crossings = 0;
-		for( unsigned int k = 0; k < kMaxOpenSheetWalk; ++k ) {
-			RayIntersection probe( probeRay, nullRasterizerState );
-			pSolid->IntersectRay( probe, RISE_INFINITY, true, true, false );
-			if( !probe.geometric.bHit ) {
-				return ( crossings & 1 ) ? 1 : -1;
-			}
-			if( !std::isfinite( probe.geometric.range ) ) {
-				return 0;
-			}
-			++crossings;
-			probeRay.origin = probeRay.PointAtLength(
-				probe.geometric.range + OpenSheetRecastStep( probe.geometric.range, scale ) );
+		const int p1 = LeafCrossingParity( pSolid, pt, dir, scale );
+		const int p2 = LeafCrossingParity( pSolid, pt, -dir, scale );
+		if( p1 != 0 && p1 == p2 ) {
+			return p1;
 		}
+		OrthonormalBasis3D onb;
+		onb.CreateFromW( dir );
+		const Vector3 oblique = Vector3Ops::Normalize( dir + onb.u() * Scalar( 0.7 ) + onb.v() * Scalar( 0.3 ) );
+		const int p3 = LeafCrossingParity( pSolid, pt, oblique, scale );
+		int inside = 0, outside = 0;
+		for( const int p : { p1, p2, p3 } ) {
+			if( p > 0 ) ++inside;
+			if( p < 0 ) ++outside;
+		}
+		if( inside >= 2 ) return 1;
+		if( outside >= 2 ) return -1;
 		return 0;
+	}
+
+	//! Inside test against a CERTIFIED-CLOSED operand at `pt`, in this
+	//! composite's local frame (the operand's parent frame).  +1 inside,
+	//! -1 outside, 0 undecided.  See `CSGObject::OperandContainsPoint`.
+	int ClosedOperandContains( const IObjectPriv* pSolid, const Point3& pt, const Vector3& dir, const Scalar scale )
+	{
+		return CSGObject::OperandContainsPoint( pSolid, pt, dir, scale );
 	}
 
 	//! DL-617: a certified open-sheet composite (sheet INTERSECT closed,
 	//! closed INTERSECT sheet, sheet MINUS closed) is the part of a
 	//! zero-thickness sheet inside (intersection) or outside (subtraction)
 	//! the closed operand.  Walk the sheet's hits along the local ray from
-	//! `firstSheetHit` and report the first one the inside test keeps.  An
-	//! undecided inside test, or a walk that exhausts `kMaxOpenSheetWalk`,
-	//! keeps the hit (conservative: a reported surface / occluder, never a
-	//! leak).  Returns FALSE when no hit within `dHowFar2` is kept.
+	//! `firstSheetHit` and report the first one the inside test keeps.  The
+	//! inside test already re-decides a disputed parity along a second and
+	//! a third direction (`LeafContains`), so "undecided" needs degenerate
+	//! contacts along two directions at once; then, or when a walk exhausts
+	//! `kMaxOpenSheetWalk`, the hit is KEPT -- a reported surface /
+	//! occluder rather than a light leak, at the price of a possible stray
+	//! sheet fragment in a subtraction.  Returns FALSE when no hit within
+	//! `dHowFar2` is kept.
 	//! `outHit` (optional) receives the kept record in the local frame
 	//! with `range` measured from `localRay`'s origin.
 	bool WalkTrimmedSheet(
@@ -1047,13 +1123,69 @@ namespace
 	}
 }
 
+//! DL-617 review (P2-1): containment in a closed operand, recursing
+//! through composites by their operation -- union: in A or in B;
+//! intersection: in A and in B; subtraction: in A and not in B (the
+//! regularized boolean of two closed solids) -- so the answer never
+//! depends on a composite's interval algebra, which reads range2 of
+//! operands that have none.  Leaves use `LeafContains`.  Tri-state
+//! throughout: an undecided operand leaves the composite undecided
+//! unless the other operand settles it.
+int CSGObject::OperandContainsPoint( const IObjectPriv* operand, const Point3& pt, const Vector3& dir, const Scalar scale )
+{
+	if( !operand ) {
+		return -1;
+	}
+	const CSGObject* csg = dynamic_cast<const CSGObject*>( operand );
+	if( !csg ) {
+		return LeafContains( operand, pt, dir, scale );
+	}
+	if( !csg->pObjectA || !csg->pObjectB ) {
+		return -1;
+	}
+	const Point3 ptL = Point3Ops::Transform( csg->m_mxInvFinalTrans, pt );
+	const Vector3 dirL = Vector3Ops::Normalize( Vector3Ops::Transform( csg->m_mxInvFinalTrans, dir ) );
+	Scalar scaleL = 1;
+	if( !csg->LocalBoxDiagonal( scaleL ) || !( scaleL > 0 ) ) {
+		scaleL = 1;
+	}
+	const int a = OperandContainsPoint( csg->pObjectA, ptL, dirL, scaleL );
+	switch( csg->op )
+	{
+	case CSG_INTERSECTION:
+		if( a < 0 ) return -1;
+		{
+			const int b = OperandContainsPoint( csg->pObjectB, ptL, dirL, scaleL );
+			if( b < 0 ) return -1;
+			return ( a > 0 && b > 0 ) ? 1 : 0;
+		}
+	case CSG_SUBTRACTION:
+		if( a < 0 ) return -1;
+		{
+			const int b = OperandContainsPoint( csg->pObjectB, ptL, dirL, scaleL );
+			if( b > 0 ) return -1;
+			return ( a > 0 && b < 0 ) ? 1 : 0;
+		}
+	default:
+	case CSG_UNION:
+		if( a > 0 ) return 1;
+		{
+			const int b = OperandContainsPoint( csg->pObjectB, ptL, dirL, scaleL );
+			if( b > 0 ) return 1;
+			return ( a < 0 && b < 0 ) ? -1 : 0;
+		}
+	}
+}
+
 int CSGObject::CertificateBits() const
 {
-	int bits = m_certBits.load( std::memory_order_relaxed );
-	if( bits < 0 ) {
-		bits = ComputeCertificateBits();
-		m_certBits.store( bits, std::memory_order_relaxed );
+	const long long epoch = static_cast<long long>( GeometricUtilities::PatchCertificateEpoch() );
+	const long long cached = m_certBits.load( std::memory_order_acquire );
+	if( cached >= 0 && ( cached >> 8 ) == epoch ) {
+		return static_cast<int>( cached & 0xff );
 	}
+	const int bits = ComputeCertificateBits();
+	m_certBits.store( ( epoch << 8 ) | bits, std::memory_order_release );
 	return bits;
 }
 
@@ -1070,6 +1202,17 @@ int CSGObject::CertificateBits() const
 //!  - OPEN: sheet INTERSECT closed (either order) and sheet MINUS closed:
 //!    a subset of one certified open sheet encloses no volume, and its
 //!    medium convention is that sheet's own.
+//!  - GEOMETRY follows the operand ROLES, not the proof: whenever one
+//!    operand of an intersection / subtraction is a certified open sheet
+//!    and the other is not a sheet, the composite renders as that sheet
+//!    trimmed by the other operand (kTrimSheet*), certified or not, so a
+//!    composite does not change shape when the other operand's closed
+//!    certificate comes or goes.  Only the TRANSPORT claim (the open-sheet
+//!    face rule, bProvablyNoInterior) waits for the closed certificate;
+//!    with an uncertified trimming operand the inside test is still the
+//!    signed-distance sign or voted crossing parity, which is exact for a
+//!    closed solid the certifier could not prove and a best effort
+//!    otherwise.
 //!  - A UNION of sheets is NOT certified, even when disjoint: like the
 //!    mesh certificate, which refuses disconnected pieces, the
 //!    certification of individual pieces does not define their combined
@@ -1089,20 +1232,37 @@ int CSGObject::ComputeCertificateBits() const
 	switch( op )
 	{
 	case CSG_INTERSECTION:
-		if( IsOperandProvablyOpenSheet( pObjectA, true, &neg ) && IsOperandCertifiedWatertight( pObjectB ) ) {
-			bits |= kCertOpenSheetA;
-		} else {
-			neg = false;
-			if( IsOperandCertifiedWatertight( pObjectA ) && IsOperandProvablyOpenSheet( pObjectB, true, &neg ) ) {
+	{
+		bool negA = false, negB = false;
+		const bool sheetA = IsOperandProvablyOpenSheet( pObjectA, true, &negA );
+		const bool sheetB = IsOperandProvablyOpenSheet( pObjectB, true, &negB );
+		if( sheetA && !sheetB ) {
+			bits |= kTrimSheetA;
+			if( IsOperandCertifiedWatertight( pObjectB ) ) {
+				bits |= kCertOpenSheetA;
+				neg = negA;
+			}
+		} else if( sheetB && !sheetA ) {
+			bits |= kTrimSheetB;
+			if( IsOperandCertifiedWatertight( pObjectA ) ) {
 				bits |= kCertOpenSheetB;
+				neg = negB;
 			}
 		}
 		break;
+	}
 	case CSG_SUBTRACTION:
-		if( IsOperandProvablyOpenSheet( pObjectA, true, &neg ) && IsOperandCertifiedWatertight( pObjectB ) ) {
-			bits |= kCertOpenSheetA;
+	{
+		bool negA = false;
+		if( IsOperandProvablyOpenSheet( pObjectA, true, &negA ) && !IsOperandProvablyOpenSheet( pObjectB, true ) ) {
+			bits |= kTrimSheetA;
+			if( IsOperandCertifiedWatertight( pObjectB ) ) {
+				bits |= kCertOpenSheetA;
+				neg = negA;
+			}
 		}
 		break;
+	}
 	default:
 	case CSG_UNION:
 		break;
@@ -1215,14 +1375,15 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	RecoverContainedOperand( pObjectA, riObjA );
 	RecoverContainedOperand( pObjectB, riObjB );
 
-	// DL-617: a certified open-sheet composite treats its sheet operand as
-	// a zero-thickness surface, not the semi-infinite interval
-	// [range, RISE_INFINITY) the solid algebra below would read.
+	// DL-617: a sheet-trimming composite (see ComputeCertificateBits)
+	// treats its sheet operand as a zero-thickness surface, not the
+	// semi-infinite interval [range, RISE_INFINITY) the solid algebra
+	// below would read.
 	const int certBits = CertificateBits();
 	const bool certifiedOpenCSG = ( certBits & ( kCertOpenSheetA | kCertOpenSheetB ) ) != 0;
-	if( certifiedOpenCSG )
+	if( certBits & ( kTrimSheetA | kTrimSheetB ) )
 	{
-		const bool sheetIsA = ( certBits & kCertOpenSheetA ) != 0;
+		const bool sheetIsA = ( certBits & kTrimSheetA ) != 0;
 		Scalar scale = 1;
 		if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
 			scale = 1;
@@ -2268,11 +2429,11 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	RecoverContainedOperand( pObjectA, riObjA );
 	RecoverContainedOperand( pObjectB, riObjB );
 
-	// DL-617: certified open-sheet composite -- see IntersectRay.
+	// DL-617: sheet-trimming composite -- see IntersectRay.
 	const int certBits = CertificateBits();
-	if( certBits & ( kCertOpenSheetA | kCertOpenSheetB ) )
+	if( certBits & ( kTrimSheetA | kTrimSheetB ) )
 	{
-		const bool sheetIsA = ( certBits & kCertOpenSheetA ) != 0;
+		const bool sheetIsA = ( certBits & kTrimSheetA ) != 0;
 		Scalar scale = 1;
 		if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
 			scale = 1;
@@ -2391,7 +2552,8 @@ void CSGObject::Realize() const
 	// DL-617: re-derive the certificate from the (now realized) operands
 	// once per preparation, so an operand edit since the last one cannot
 	// leave a stale answer, and no ray pays for it.
-	m_certBits.store( ComputeCertificateBits(), std::memory_order_relaxed );
+	m_certBits.store( -1, std::memory_order_relaxed );
+	CertificateBits();
 }
 
 void CSGObject::ResetRuntimeData() const

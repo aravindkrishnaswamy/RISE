@@ -86,6 +86,22 @@ int main() {
    Check(capture->count==previous+expected,"scoped warning does not repeat");
   }
  }
+ // DL-617 review: a nested composite renders with the OUTERMOST material
+ // override, so the warning must judge clarity by that material too.
+ for(int outerGlass=0;outerGlass<2;++outerGlass) {
+  const std::string inner=outerGlass?"matte":"glass", outer=outerGlass?"glass":"matte";
+  const unsigned previous=capture->count;
+  LoadedScene loaded(Materials(false)+"lambertian_material\n{\n name matte\n reflectance white\n}\n"
+   "clippedplane_geometry\n{\n name sheet_g\npta -2 -2 0\nptb 2 -2 0\nptc 2 2 0\nptd -2 2 0\n}\n"
+   "sphere_geometry\n{\n name ball_g\n radius 0.5\n}\n"
+   "standard_object\n{\n name s1\n geometry sheet_g\n material glass\n}\n"
+   "standard_object\n{\n name s2\n geometry sheet_g\n material glass\n position 0 0 3\n}\n"
+   "csg_object\n{\n name inner_union\n obja s1\n objb s2\n operation union\n material "+inner+"\n}\n"
+   "standard_object\n{\n name far_ball\n geometry ball_g\n material glass\n position 10 0 0\n}\n"
+   "csg_object\n{\n name outer_union\n obja inner_union\n objb far_ball\n operation union\n material "+outer+"\n}\n");
+  Check(capture->count==previous+unsigned(outerGlass),
+   outerGlass?"nested CSG whose OUTER override is clear glass warns":"nested CSG whose OUTER override is matte does not warn");
+ }
  std::remove(path.c_str());GlobalLogPriv()->RemoveAllPrinters();capture->release();
  std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
 }

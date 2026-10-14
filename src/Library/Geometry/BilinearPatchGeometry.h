@@ -15,6 +15,9 @@
 #define BILINEARPATCH_GEOMETRY_
 
 #include "Geometry.h"
+#include <atomic>
+#include <mutex>
+#include <memory>
 #include "../Interfaces/IBilinearPatchGeometry.h"
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
@@ -57,9 +60,19 @@ namespace RISE
 			static const unsigned int nAreaCells = 8;
 			std::vector<Scalar>		vAreaCDF;
 			Scalar					dTotalArea;
-			bool					m_bCertifiedWatertight;
-			bool					m_bProvablyOpenSheet;
-			bool					m_bNegativeOpenSignedVolume;
+			// DL-616: the patch-set certificate is computed LAZILY, on the
+			// first query of the accessors below.  Only consumers that need
+			// it ask (the object manager's open-sheet pass for clear
+			// transmissive materials; a CSG composite certifying its
+			// operands), so an opaque patch model never pays for it.  The
+			// per-hit stamp reads the stored flag without forcing it: an
+			// uncertified set reads "not open", the conservative answer.
+			mutable std::unique_ptr<std::once_flag>	m_certOnce;
+			mutable std::atomic<bool>	m_bCertifiedWatertight;
+			mutable std::atomic<bool>	m_bProvablyOpenSheet;
+			mutable std::atomic<bool>	m_bNegativeOpenSignedVolume;
+			void EnsureCertified() const;
+			void InvalidateCertificate();
 
 			virtual ~BilinearPatchGeometry( );
 
@@ -104,9 +117,9 @@ namespace RISE
 			//! an emissive material became a silently broken area light whose
 			//! every NEE sample landed on the object's local origin.
 			bool CanBeAreaLight() const override { return !patches.empty() && dTotalArea > 0; }
-			bool IsCertifiedWatertight() const { return m_bCertifiedWatertight; }
-			bool IsProvablyOpenSheet() const { return m_bProvablyOpenSheet; }
-			bool HasNegativeOpenSignedVolume() const { return m_bNegativeOpenSignedVolume; }
+			bool IsCertifiedWatertight() const { EnsureCertified(); return m_bCertifiedWatertight.load( std::memory_order_acquire ); }
+			bool IsProvablyOpenSheet() const { EnsureCertified(); return m_bProvablyOpenSheet.load( std::memory_order_acquire ); }
+			bool HasNegativeOpenSignedVolume() const { EnsureCertified(); return m_bNegativeOpenSignedVolume.load( std::memory_order_acquire ); }
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
