@@ -754,7 +754,8 @@ bool SMSCaptureUncached(const RISE::IScene& scene,
         Vector3(0,1,0), Vector3(0,-1,0), Vector3(0,0,1), Vector3(0,0,-1)};
     const std::vector<const IObject*> keys = live.ObjectKeys();
     IORStack geometricMembership(live.EnvironmentIOR());
-    IORStackSeeding::SeedFromPoint(geometricMembership, anchor, scene);
+    // Only CLOSED membership is checked below; skip the open-sheet tests.
+    IORStackSeeding::SeedFromPoint(geometricMembership, anchor, scene, 0, false);
     for(std::size_t i = 1; i < geometricMembership.Depth(); ++i) {
         if(geometricMembership.isOpenSheetAt(i)) continue;
         const IObject* required = geometricMembership.ObjectAt(i);
@@ -783,7 +784,35 @@ bool SMSCaptureUncached(const RISE::IScene& scene,
             return false; // opaque non-scene identities must never be dereferenced
         if(!key->GetMaterial() || key->GetInteriorMedium()) return false;
         bool captured = false;
+        // DL-618 (review P3-b / round 2 P3-f): an OPEN-SHEET key's membership
+        // is not geometric containment, so no axis ray need reach the sheet.
+        // Its context is read where the sheet-normal convention reads it --
+        // the foot of the sheet's normal ray from the anchor (either way
+        // along it) -- so a position-varying sheet index is evaluated at the
+        // point the seed convention associates with the anchor; failing
+        // that, at an axis hit; failing that, toward the bounds' centre.  The
+        // walk's own crossing may have been elsewhere on the sheet: an
+        // anchor has no record of it.  A CLOSED key that no axis ray from
+        // the anchor meets does not contain the anchor: that is stale
+        // membership, and the capture declines.
+        bool keyIsOpenSheet = false;
+        for(std::size_t i = 0; i < live.Depth(); ++i)
+            if(live.ObjectAt(i) == key && live.isOpenSheetAt(i)) keyIsOpenSheet = true;
+        IORStackSeeding::OpenSheetCatalogEntry sheet;
+        if(keyIsOpenSheet && IORStackSeeding::FindOpenSheet(scene.GetObjects(), key, sheet)) {
+            for(const Vector3& direction : {sheet.normal, -sheet.normal}) {
+                RayIntersection hit(Ray(anchor, direction), nullRasterizerState);
+                key->IntersectRay(hit, RISE_INFINITY, true, true, false);
+                SMSCompleteNativeHit(hit,scene.GetObjects());
+                if(!hit.geometric.bHit || !hit.geometric.bProvablyNoInterior) continue;
+                if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+                result.enclosing.emplace_back(key, hit.pMaterial, hit.geometric);
+                captured = true;
+                break;
+            }
+        }
         for(const Vector3& direction : directions) {
+            if(captured) break;
             RayIntersection hit(Ray(anchor, direction), nullRasterizerState);
             key->IntersectRay(hit, RISE_INFINITY, true, true, false);
             SMSCompleteNativeHit(hit,scene.GetObjects());
@@ -793,16 +822,6 @@ bool SMSCaptureUncached(const RISE::IScene& scene,
             captured = true;
             break;
         }
-        // DL-618 (review P3-b): an OPEN-SHEET key's membership is not
-        // geometric containment, so no axis ray need reach the sheet (an
-        // anchor that reached a finite sheet's medium off its axes); its
-        // index is the sheet material's, readable at any point of it, so
-        // take the context toward its bounds' centre.  A CLOSED key that
-        // no axis ray from the anchor meets does not contain the anchor:
-        // that is stale membership, and the capture declines as before.
-        bool keyIsOpenSheet = false;
-        for(std::size_t i = 0; i < live.Depth(); ++i)
-            if(live.ObjectAt(i) == key && live.isOpenSheetAt(i)) keyIsOpenSheet = true;
         if(!captured && keyIsOpenSheet) {
             Vector3 toCenter = Vector3Ops::mkVector3(key->getBoundingBox().GetCenter(), anchor);
             if(Vector3Ops::NormalizeMag(toCenter) > NEARZERO) {
@@ -10957,26 +10976,50 @@ void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm,
 				chain[i].attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
 				chain[i].hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
 				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
-                // Fallback for contexts declined by native replay below:
-                // refresh the material side, preserving the seeded exterior.
-				if( chain[i].isExiting ) {
-					chain[i].etaI = specNM.ior;
-				} else {
-					chain[i].etaT = specNM.ior;
-				}
 			}
 		}
-		// DL-619 (review P3-a): re-derive the radiance indices from the
-		// refreshed interfaces, so a non-top closed exit beneath a
-		// DISPERSIVE sheet prices from the sheet's index at THIS
-		// wavelength (the previous crossing's refreshed etaT), not from
-		// the RGB index the seed walk recorded.
-		if( !chain.empty() ) {
-			Scalar receiverTop = chain.front().etaI;
-			if( starting && starting->top() > 0 && starting->top() < RISE_INFINITY ) {
-				receiverTop = starting->top();
+		// Fallback for contexts declined by native replay below (DL-619
+		// round 2, P3-d): replay the receiver walk's stack at THIS
+		// wavelength so BOTH sides of every refraction -- the material side
+		// and the exterior a walk returns to -- and the radiance index are
+		// the wavelength's, not the RGB seed's.  Same bookkeeping as
+		// SnellContinueChain: closed media push on entry and pop on exit
+		// (an exit through an object not on the stack leaves it unchanged);
+		// an open sheet is crossed by its face; a reflection leaves the
+		// stack alone and refreshes only its material side.
+		IORStack replay = starting ? *starting : IORStack( Scalar( 1 ) );
+		for( unsigned int i = 0; i < chain.size(); i++ )
+		{
+			ManifoldVertex& v = chain[i];
+			if( !v.pMaterial || !v.pObject ) {
+				continue;
 			}
-			ManifoldSolver::AssignRadianceEtas( chain, receiverTop );
+			if( v.isReflection ) {
+				if( v.isExiting ) v.etaI = v.eta; else v.etaT = v.eta;
+				continue;
+			}
+			const Scalar before = replay.top();
+			const Scalar index = v.eta;
+			replay.SetCurrentObject( v.pObject );
+			if( !v.isExiting ) {
+				if( v.isOpenSheet && replay.containsCurrent() ) {
+					replay.pop();
+				}
+				v.etaI = replay.top();
+				if( v.isOpenSheet ) {
+					replay.pushOpenSheet( index );
+				} else {
+					replay.push( index );
+				}
+				v.etaT = index;
+			} else {
+				v.etaI = index;
+				if( replay.containsCurrent() ) {
+					replay.pop();
+				}
+				v.etaT = replay.top();
+			}
+			v.radianceEtaI = v.isOpenSheet ? v.etaI : before;
 		}
 	}
 
