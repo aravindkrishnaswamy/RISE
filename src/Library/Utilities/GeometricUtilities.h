@@ -754,20 +754,47 @@ namespace RISE
 			Scalar preWeldEps = Scalar( 0 )
 			);
 
-		//! DL-616: analytic open-versus-closed certification for a bilinear patch set.
+		//! DL-616: analytic open-versus-closed certification for a PATCH
+		//! SET (one geometry holding many patches).  Exactly one of the
+		//! two outputs can be TRUE, and only when proved:
+		//!  - `outCertifiedWatertight`: the set is a connected, consistently
+		//!    oriented, EMBEDDED closed 2-manifold with positive enclosed
+		//!    volume (outward winding);
+		//!  - `outProvablyOpenSheet`: the set is a connected, consistently
+		//!    oriented, EMBEDDED 2-manifold with non-empty boundary, so it
+		//!    encloses no volume.
+		//! Topology comes only from EXACT seam identity (every matched side
+		//! is the bitwise-reversed control polygon of exactly one other
+		//! side); nothing is welded by tolerance.  Embedding is proved on a
+		//! grid of sub-patches: each sub-patch is injective (every
+		//! cross product of a u- and a v-derivative control vector lies in
+		//! one open half-space, which by the mean-value theorem makes the
+		//! map injective), every pair sharing a side is injective as a
+		//! union (the same test over both nets), every pair sharing only a
+		//! vertex is strictly separated by a plane through it, and every
+		//! other pair is disjoint by recursive control-hull boxes.  A
+		//! collapsed (degenerate) side, a T-junction, a pinch vertex or a
+		//! crossing anywhere is refused.  `outNegativeOpenSignedVolume`
+		//! reports an open sheet whose exact signed volume about its
+		//! bounding-box centre is negative (the inward-winding warning).
+		//! `outRefusalReason`, when given, names the first failed proof
+		//! step (a static string; "" when certified).
 		extern void CertifyBilinearPatchSet(
 			const std::vector<BilinearPatch>& patches,
 			bool& outCertifiedWatertight,
 			bool& outProvablyOpenSheet,
-			bool& outNegativeOpenSignedVolume
+			bool& outNegativeOpenSignedVolume,
+			const char** outRefusalReason = nullptr
 			);
 
-		//! DL-616: analytic open-versus-closed certification for a bicubic Bezier patch set.
+		//! DL-616: as `CertifyBilinearPatchSet`, for bicubic Bezier patches
+		//! (a bilinear patch is certified as its exact degree elevation).
 		extern void CertifyBezierPatchSet(
 			const std::vector<BezierPatch>& patches,
 			bool& outCertifiedWatertight,
 			bool& outProvablyOpenSheet,
-			bool& outNegativeOpenSignedVolume
+			bool& outNegativeOpenSignedVolume,
+			const char** outRefusalReason = nullptr
 			);
 	}
 }

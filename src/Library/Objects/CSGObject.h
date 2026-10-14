@@ -16,6 +16,7 @@
 
 #include "Object.h"
 #include "../Utilities/RString.h"
+#include <atomic>
 
 namespace RISE
 {
@@ -61,6 +62,21 @@ namespace RISE
 			IObjectPriv*							pObjectB;
 
 			CSG_OP									op;
+
+			//! DL-617 certificate cache (see `ComputeCertificateBits`):
+			//! -1 = not computed, else a mask of the kCert* bits below.
+			//! Recomputed by `Realize` (every preparation) and dropped by
+			//! `AssignObjects` / `SetOperation`.
+			enum
+			{
+				kCertWatertight		= 1,	//!< both operands certified closed solids
+				kCertOpenSheetA		= 2,	//!< certified open sheet; operand A is the sheet
+				kCertOpenSheetB		= 4,	//!< certified open sheet; operand B is the sheet
+				kCertNegativeVolume	= 8		//!< the sheet operand's negative-winding warning
+			};
+			mutable std::atomic<int>				m_certBits;
+			int CertificateBits() const;
+			int ComputeCertificateBits() const;
 
 			virtual ~CSGObject( );
 
@@ -176,7 +192,9 @@ namespace RISE
 			bool DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar maxDistWorld,
 				Scalar& outDist, CsgLandingArm& outArm ) const;
 
-			//! DL-617: closed-volume vs open-sheet certification for CSG trees.
+			//! DL-617: closed-volume vs open-sheet certification for CSG
+			//! trees, cached per preparation (policy on
+			//! `ComputeCertificateBits`).
 			bool IsCertifiedWatertight() const;
 			bool IsProvablyOpenSheet( const bool allowGeneralProof = true ) const;
 			bool HasNegativeOpenSignedVolume() const;

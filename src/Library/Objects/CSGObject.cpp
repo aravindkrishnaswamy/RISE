@@ -33,7 +33,8 @@ using namespace RISE::Implementation;
 CSGObject::CSGObject( const CSG_OP& op_ ) :
   pObjectA( 0 ),
   pObjectB( 0 ),
-  op( op_ )
+  op( op_ ),
+  m_certBits( -1 )
 {
 }
 
@@ -213,12 +214,15 @@ bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
 	pObjectA->AddConsumer();
 	pObjectB->AddConsumer();
 
+	m_certBits.store( -1, std::memory_order_relaxed );	// DL-617: recomputed on first use
+
 	return true;
 }
 
 void CSGObject::SetOperation( const CSG_OP& op_ )
 {
 	op = op_;
+	m_certBits.store( -1, std::memory_order_relaxed );	// DL-617: the certificate depends on the operation
 }
 
 namespace
@@ -915,107 +919,213 @@ namespace
 		return false;
 	}
 
-	bool BoxesStrictlyDisjoint( const BoundingBox& a, const BoundingBox& b )
+	//! DL-617: the re-cast step past a sheet hit / parity crossing.  It
+	//! must clear the operand's own self-hit floor (so a re-cast never
+	//! re-finds the hit it starts on) and stay far below any feature the
+	//! composite resolves; relative to the composite's local scale.
+	inline Scalar OpenSheetRecastStep( const Scalar t, const Scalar scale )
 	{
-		if( !( a.ll.x <= a.ur.x && a.ll.y <= a.ur.y && a.ll.z <= a.ur.z ) ||
-			!( b.ll.x <= b.ur.x && b.ll.y <= b.ur.y && b.ll.z <= b.ur.z ) ) {
-			return false;
-		}
-		return ( a.ur.x < b.ll.x ) || ( b.ur.x < a.ll.x ) ||
-			( a.ur.y < b.ll.y ) || ( b.ur.y < a.ll.y ) ||
-			( a.ur.z < b.ll.z ) || ( b.ur.z < a.ll.z );
+		return Scalar( 1e-7 ) * ( scale + std::fabs( t ) );
 	}
 
-	bool IsSheetHitInsideClosedOperand(
-		const IObjectPriv* pSolid,
-		const RayIntersection& riSolid,
-		const Ray& localRay,
-		const Scalar tSheet
-		)
+	//! Upper bound on boundary crossings walked per query.  A certified
+	//! closed or open operand is a finite set of patches/triangles, so a
+	//! walk that reaches this bound is degenerate; the callers then answer
+	//! CONSERVATIVELY (inside unknown -> report the hit / the occlusion)
+	//! instead of inventing a miss.
+	static const unsigned int kMaxOpenSheetWalk = 4096;
+
+	//! Inside test against a CERTIFIED-CLOSED operand at `pt`, in this
+	//! composite's local frame (the operand's parent frame).  +1 inside,
+	//! -1 outside, 0 undecided.
+	//!
+	//! First the operand's signed distance: IObject::SignedDistanceLower's
+	//! SIGN is exact whenever it is non-zero (`<0` strictly inside, `>0`
+	//! strictly outside), whatever the exactness of the magnitude, and
+	//! `0` carries no information.  An operand that refuses or answers 0
+	//! (patch sets, a displaced surface, a nested composite on a seam) is
+	//! decided by PARITY: the number of times the closed surface is
+	//! crossed from `pt` to infinity along `dir`, every crossing found by
+	//! re-casting just past the previous one.  An embedded closed surface
+	//! (which the certificate proves) is crossed an odd number of times
+	//! exactly from inside.
+	int ClosedOperandContains( const IObjectPriv* pSolid, const Point3& pt, const Vector3& dir, const Scalar scale )
 	{
-		if( !pSolid ) {
-			return false;
-		}
-		const Point3 ptLocal = localRay.PointAtLength( tSheet );
-		Scalar dist = Scalar( 0 );
+		Scalar f = 0;
 		bool exact = false;
-		if( pSolid->SignedDistanceLower( ptLocal, Scalar( 1e-3 ), dist, exact ) ) {
-			if( dist < Scalar( 0 ) ) {
-				return true;
+		if( pSolid->SignedDistanceLower( pt, scale, f, exact ) && f != 0 && std::isfinite( f ) ) {
+			return f < 0 ? 1 : -1;
+		}
+		Ray probeRay( pt, dir );
+		unsigned int crossings = 0;
+		for( unsigned int k = 0; k < kMaxOpenSheetWalk; ++k ) {
+			RayIntersection probe( probeRay, nullRasterizerState );
+			pSolid->IntersectRay( probe, RISE_INFINITY, true, true, false );
+			if( !probe.geometric.bHit ) {
+				return ( crossings & 1 ) ? 1 : -1;
 			}
-			if( exact && dist > Scalar( 0 ) ) {
+			if( !std::isfinite( probe.geometric.range ) ) {
+				return 0;
+			}
+			++crossings;
+			probeRay.origin = probeRay.PointAtLength(
+				probe.geometric.range + OpenSheetRecastStep( probe.geometric.range, scale ) );
+		}
+		return 0;
+	}
+
+	//! DL-617: a certified open-sheet composite (sheet INTERSECT closed,
+	//! closed INTERSECT sheet, sheet MINUS closed) is the part of a
+	//! zero-thickness sheet inside (intersection) or outside (subtraction)
+	//! the closed operand.  Walk the sheet's hits along the local ray from
+	//! `firstSheetHit` and report the first one the inside test keeps.  An
+	//! undecided inside test, or a walk that exhausts `kMaxOpenSheetWalk`,
+	//! keeps the hit (conservative: a reported surface / occluder, never a
+	//! leak).  Returns FALSE when no hit within `dHowFar2` is kept.
+	//! `outHit` (optional) receives the kept record in the local frame
+	//! with `range` measured from `localRay`'s origin.
+	bool WalkTrimmedSheet(
+		const IObjectPriv* pSheet,
+		const IObjectPriv* pSolid,
+		const bool keepInside,
+		const Ray& localRay,
+		const Scalar dHowFar2,
+		const Scalar scale,
+		const RayIntersection& firstSheetHit,
+		const RayIntersectionGeometric* castInputs,
+		const RasterizerState& rast,
+		RayIntersection* outHit,
+		Scalar& outT )
+	{
+		RayIntersection cur( firstSheetHit );
+		Scalar tBase = 0;
+		for( unsigned int k = 0; ; ++k ) {
+			if( !cur.geometric.bHit || !std::isfinite( cur.geometric.range ) ) {
 				return false;
 			}
+			const Scalar tHit = tBase + cur.geometric.range;
+			if( !( tHit <= dHowFar2 ) ) {
+				return false;
+			}
+			const int inside = ( k >= kMaxOpenSheetWalk ) ? 0 :
+				ClosedOperandContains( pSolid, localRay.PointAtLength( tHit ), localRay.Dir(), scale );
+			if( inside == 0 || ( inside > 0 ) == keepInside ) {
+				if( outHit ) {
+					*outHit = cur;
+					outHit->geometric.ray = localRay;
+					outHit->geometric.range = tHit;
+					if( outHit->hasBoundaryRange ) {
+						outHit->boundaryRange += tBase;
+					}
+					outHit->geometric.range2 = RISE_INFINITY;
+					outHit->hasBoundaryRange2 = false;
+				}
+				outT = tHit;
+				return true;
+			}
+			const Scalar tStart = tHit + OpenSheetRecastStep( tHit, scale );
+			if( !( tStart < dHowFar2 ) ) {
+				return false;
+			}
+			Ray next( localRay );
+			next.origin = localRay.PointAtLength( tStart );
+			if( next.hasDifferentials ) {
+				// Transfer the differential origins along the ray, as a
+				// straight continuation does.
+				next.diffs.rxOrigin = next.diffs.rxOrigin + next.diffs.rxDir * tStart;
+				next.diffs.ryOrigin = next.diffs.ryOrigin + next.diffs.ryDir * tStart;
+			}
+			RayIntersection riNext( next, rast );
+			if( castInputs ) {
+				riNext.geometric.PropagateCastInputs( *castInputs );
+			}
+			const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
+			pSheet->IntersectRay( riNext, remFar, true, true, false );
+			cur = riNext;
+			tBase = tStart;
 		}
-		if( !riSolid.geometric.bHit ) {
-			return false;
-		}
-		if( riSolid.geometric.range2 == 0 ) {
-			return tSheet <= riSolid.geometric.range;
-		}
-		if( riSolid.geometric.range2 > 0 && riSolid.geometric.range2 < RISE_INFINITY ) {
-			return tSheet >= riSolid.geometric.range && tSheet <= riSolid.geometric.range2;
-		}
-		return false;
 	}
 }
 
-bool CSGObject::IsCertifiedWatertight() const
+int CSGObject::CertificateBits() const
 {
-	return pObjectA && pObjectB &&
-		IsOperandCertifiedWatertight( pObjectA ) &&
-		IsOperandCertifiedWatertight( pObjectB );
+	int bits = m_certBits.load( std::memory_order_relaxed );
+	if( bits < 0 ) {
+		bits = ComputeCertificateBits();
+		m_certBits.store( bits, std::memory_order_relaxed );
+	}
+	return bits;
 }
 
-bool CSGObject::IsProvablyOpenSheet( const bool allowGeneralProof ) const
+//! DL-617, computed once per preparation (`Realize`) or on first use, and
+//! dropped by `AssignObjects` / `SetOperation`: per-ray recomputation
+//! cost a signed-distance query, a displaced realize and a nested
+//! composite's recursion on every intersection.  The certificates read
+//! only the operands' own (geometry-level, transform-independent)
+//! certificates, so no transform change can stale them.
+//!
+//! Policy:
+//!  - WATERTIGHT: both operands certified closed solids (the regularized
+//!    boolean of two solids is a solid).
+//!  - OPEN: sheet INTERSECT closed (either order) and sheet MINUS closed:
+//!    a subset of one certified open sheet encloses no volume, and its
+//!    medium convention is that sheet's own.
+//!  - A UNION of sheets is NOT certified, even when disjoint: like the
+//!    mesh certificate, which refuses disconnected pieces, the
+//!    certification of individual pieces does not define their combined
+//!    medium convention (two sheets with one shared material and stack
+//!    key, possibly from opposite sides), so the union keeps the
+//!    IOR-stack rule and the uncertified warning.
+int CSGObject::ComputeCertificateBits() const
 {
-	if( !allowGeneralProof || !pObjectA || !pObjectB ) {
-		return false;
+	if( !pObjectA || !pObjectB ) {
+		return 0;
 	}
-	switch( op )
-	{
-	case CSG_UNION:
-		if( !pMaterial && pObjectA->GetMaterial() != pObjectB->GetMaterial() ) {
-			return false;
-		}
-		return IsOperandProvablyOpenSheet( pObjectA, true ) &&
-			IsOperandProvablyOpenSheet( pObjectB, true ) &&
-			BoxesStrictlyDisjoint( pObjectA->getBoundingBox(), pObjectB->getBoundingBox() );
-	case CSG_INTERSECTION:
-		return ( IsOperandProvablyOpenSheet( pObjectA, true ) && IsOperandCertifiedWatertight( pObjectB ) ) ||
-			( IsOperandCertifiedWatertight( pObjectA ) && IsOperandProvablyOpenSheet( pObjectB, true ) );
-	case CSG_SUBTRACTION:
-		return IsOperandProvablyOpenSheet( pObjectA, true ) &&
-			IsOperandCertifiedWatertight( pObjectB );
-	default:
-		return false;
-	}
-}
-
-bool CSGObject::HasNegativeOpenSignedVolume() const
-{
-	if( !IsProvablyOpenSheet( true ) ) {
-		return false;
+	int bits = 0;
+	if( IsOperandCertifiedWatertight( pObjectA ) && IsOperandCertifiedWatertight( pObjectB ) ) {
+		bits |= kCertWatertight;
 	}
 	bool neg = false;
 	switch( op )
 	{
-	case CSG_UNION:
-		IsOperandProvablyOpenSheet( pObjectA, true, &neg );
-		IsOperandProvablyOpenSheet( pObjectB, true, &neg );
-		return neg;
 	case CSG_INTERSECTION:
-		if( IsOperandProvablyOpenSheet( pObjectA, true, &neg ) ) {
-			return neg;
+		if( IsOperandProvablyOpenSheet( pObjectA, true, &neg ) && IsOperandCertifiedWatertight( pObjectB ) ) {
+			bits |= kCertOpenSheetA;
+		} else {
+			neg = false;
+			if( IsOperandCertifiedWatertight( pObjectA ) && IsOperandProvablyOpenSheet( pObjectB, true, &neg ) ) {
+				bits |= kCertOpenSheetB;
+			}
 		}
-		IsOperandProvablyOpenSheet( pObjectB, true, &neg );
-		return neg;
+		break;
 	case CSG_SUBTRACTION:
-		IsOperandProvablyOpenSheet( pObjectA, true, &neg );
-		return neg;
+		if( IsOperandProvablyOpenSheet( pObjectA, true, &neg ) && IsOperandCertifiedWatertight( pObjectB ) ) {
+			bits |= kCertOpenSheetA;
+		}
+		break;
 	default:
-		return false;
+	case CSG_UNION:
+		break;
 	}
+	if( ( bits & ( kCertOpenSheetA | kCertOpenSheetB ) ) && neg ) {
+		bits |= kCertNegativeVolume;
+	}
+	return bits;
+}
+
+bool CSGObject::IsCertifiedWatertight() const
+{
+	return ( CertificateBits() & kCertWatertight ) != 0;
+}
+
+bool CSGObject::IsProvablyOpenSheet( const bool allowGeneralProof ) const
+{
+	return allowGeneralProof && ( CertificateBits() & ( kCertOpenSheetA | kCertOpenSheetB ) ) != 0;
+}
+
+bool CSGObject::HasNegativeOpenSignedVolume() const
+{
+	return ( CertificateBits() & kCertNegativeVolume ) != 0;
 }
 
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
@@ -1105,112 +1215,29 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	RecoverContainedOperand( pObjectA, riObjA );
 	RecoverContainedOperand( pObjectB, riObjB );
 
-	// DL-617: certified open-sheet CSG operations treat the open-sheet
-	// operand as a zero-thickness surface rather than a semi-infinite
-	// interval [range, RISE_INFINITY).
-	const bool certifiedOpenCSG = IsProvablyOpenSheet( true );
+	// DL-617: a certified open-sheet composite treats its sheet operand as
+	// a zero-thickness surface, not the semi-infinite interval
+	// [range, RISE_INFINITY) the solid algebra below would read.
+	const int certBits = CertificateBits();
+	const bool certifiedOpenCSG = ( certBits & ( kCertOpenSheetA | kCertOpenSheetB ) ) != 0;
 	if( certifiedOpenCSG )
 	{
-		const Ray localRay = ri.geometric.ray;
-		switch( op )
-		{
-		default:
-		case CSG_UNION:
-			if( riObjA.geometric.bHit && riObjB.geometric.bHit ) {
-				ri = ( riObjA.geometric.range <= riObjB.geometric.range ) ? riObjA : riObjB;
-			} else if( riObjA.geometric.bHit ) {
-				ri = riObjA;
-			} else if( riObjB.geometric.bHit ) {
-				ri = riObjB;
-			}
-			if( ri.geometric.bHit ) {
-				ri.geometric.range2 = RISE_INFINITY;
-				ri.hasBoundaryRange2 = false;
-			}
-			break;
-		case CSG_INTERSECTION:
-		{
-			const bool aIsSheet = IsOperandProvablyOpenSheet( pObjectA, true );
-			const IObjectPriv* pSheet = aIsSheet ? pObjectA : pObjectB;
-			const IObjectPriv* pSolid = aIsSheet ? pObjectB : pObjectA;
-			const RayIntersection& riSheet = aIsSheet ? riObjA : riObjB;
-			const RayIntersection& riSolid = aIsSheet ? riObjB : riObjA;
-			if( riSheet.geometric.bHit ) {
-				if( IsSheetHitInsideClosedOperand( pSolid, riSolid, localRay, riSheet.geometric.range ) ) {
-					ri = riSheet;
-					ri.geometric.range2 = RISE_INFINITY;
-					ri.hasBoundaryRange2 = false;
-				} else {
-					Scalar tCur = riSheet.geometric.range;
-					for( int step = 0; step < 4; ++step ) {
-						const Scalar stepEps = Scalar( 1e-5 ) * ( Scalar( 1 ) + std::fabs( tCur ) );
-						const Scalar tStart = tCur + stepEps;
-						if( !( tStart < dHowFar2 ) ) {
-							break;
-						}
-						Ray nextRay( localRay.PointAtLength( tStart ), localRay.Dir() );
-						RayIntersection riNext( nextRay, ri.geometric.rast );
-						riNext.geometric.PropagateCastInputs( ri.geometric );
-						const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
-						pSheet->IntersectRay( riNext, remFar, true, true, false );
-						if( !riNext.geometric.bHit ) {
-							break;
-						}
-						tCur = tStart + riNext.geometric.range;
-						if( tCur <= dHowFar2 && IsSheetHitInsideClosedOperand( pSolid, riSolid, localRay, tCur ) ) {
-							ri = riNext;
-							ri.geometric.ray = localRay;
-							ri.geometric.range = tCur;
-							if( ri.hasBoundaryRange ) {
-								ri.boundaryRange = tStart + riNext.boundaryRange;
-							}
-							ri.geometric.range2 = RISE_INFINITY;
-							ri.hasBoundaryRange2 = false;
-							break;
-						}
-					}
-				}
-			}
-			break;
+		const bool sheetIsA = ( certBits & kCertOpenSheetA ) != 0;
+		Scalar scale = 1;
+		if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+			scale = 1;
 		}
-		case CSG_SUBTRACTION:
-			if( riObjA.geometric.bHit ) {
-				if( !IsSheetHitInsideClosedOperand( pObjectB, riObjB, localRay, riObjA.geometric.range ) ) {
-					ri = riObjA;
-					ri.geometric.range2 = RISE_INFINITY;
-					ri.hasBoundaryRange2 = false;
-				} else {
-					Scalar tCur = riObjA.geometric.range;
-					for( int step = 0; step < 4; ++step ) {
-						const Scalar stepEps = Scalar( 1e-5 ) * ( Scalar( 1 ) + std::fabs( tCur ) );
-						const Scalar tStart = tCur + stepEps;
-						if( !( tStart < dHowFar2 ) ) {
-							break;
-						}
-						Ray nextRay( localRay.PointAtLength( tStart ), localRay.Dir() );
-						RayIntersection riNext( nextRay, ri.geometric.rast );
-						riNext.geometric.PropagateCastInputs( ri.geometric );
-						const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
-						pObjectA->IntersectRay( riNext, remFar, true, true, false );
-						if( !riNext.geometric.bHit ) {
-							break;
-						}
-						tCur = tStart + riNext.geometric.range;
-						if( tCur <= dHowFar2 && !IsSheetHitInsideClosedOperand( pObjectB, riObjB, localRay, tCur ) ) {
-							ri = riNext;
-							ri.geometric.ray = localRay;
-							ri.geometric.range = tCur;
-							if( ri.hasBoundaryRange ) {
-								ri.boundaryRange = tStart + riNext.boundaryRange;
-							}
-							ri.geometric.range2 = RISE_INFINITY;
-							ri.hasBoundaryRange2 = false;
-							break;
-						}
-					}
-				}
-			}
-			break;
+		Scalar tKept = 0;
+		RayIntersection kept( ri.geometric.ray, ri.geometric.rast );
+		if( WalkTrimmedSheet(
+				sheetIsA ? pObjectA : pObjectB,
+				sheetIsA ? pObjectB : pObjectA,
+				op == CSG_INTERSECTION,
+				ri.geometric.ray, dHowFar2, scale,
+				sheetIsA ? riObjA : riObjB,
+				&ri.geometric, ri.geometric.rast,
+				&kept, tKept ) ) {
+			ri = kept;
 		}
 	}
 	else switch( op )
@@ -2068,7 +2095,14 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 
         // Compute the intersection in world space
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
-		if( ri.geometric.range2 != 0 && ri.geometric.range2 != RISE_INFINITY ) {
+		// An open-sheet hit has no exit (range2 == RISE_INFINITY, kept as
+		// the sentinel below); give it the entry point rather than leaving
+		// a stale local-frame value or transforming a point at infinity.
+		// range2 == 0 ("origin inside") keeps the pre-DL-617 transform,
+		// matching Object::IntersectRay.
+		if( ri.geometric.range2 == RISE_INFINITY ) {
+			ri.geometric.ptExit = ri.geometric.ptIntersection;
+		} else {
 			ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
 		}
 
@@ -2234,78 +2268,27 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	RecoverContainedOperand( pObjectA, riObjA );
 	RecoverContainedOperand( pObjectB, riObjB );
 
-	if( IsProvablyOpenSheet( true ) )
+	// DL-617: certified open-sheet composite -- see IntersectRay.
+	const int certBits = CertificateBits();
+	if( certBits & ( kCertOpenSheetA | kCertOpenSheetB ) )
 	{
-		switch( op )
-		{
-		default:
-		case CSG_UNION:
-			return ( riObjA.geometric.bHit && riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0 ) ||
-				( riObjB.geometric.bHit && riObjB.geometric.range < dHowFar2 && riObjB.geometric.range > 0 );
-		case CSG_INTERSECTION:
-		{
-			const bool aIsSheet = IsOperandProvablyOpenSheet( pObjectA, true );
-			const IObjectPriv* pSheet = aIsSheet ? pObjectA : pObjectB;
-			const IObjectPriv* pSolid = aIsSheet ? pObjectB : pObjectA;
-			const RayIntersection& riSheet = aIsSheet ? riObjA : riObjB;
-			const RayIntersection& riSolid = aIsSheet ? riObjB : riObjA;
-			if( !riSheet.geometric.bHit ) {
-				return false;
-			}
-			if( riSheet.geometric.range < dHowFar2 && riSheet.geometric.range > 0 &&
-				IsSheetHitInsideClosedOperand( pSolid, riSolid, orig, riSheet.geometric.range ) ) {
-				return true;
-			}
-			Scalar tCur = riSheet.geometric.range;
-			for( int step = 0; step < 4; ++step ) {
-				const Scalar stepEps = Scalar( 1e-5 ) * ( Scalar( 1 ) + std::fabs( tCur ) );
-				const Scalar tStart = tCur + stepEps;
-				if( !( tStart < dHowFar2 ) ) {
-					break;
-				}
-				Ray nextRay( orig.PointAtLength( tStart ), orig.Dir() );
-				RayIntersection riNext( nextRay, nullRasterizerState );
-				const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
-				pSheet->IntersectRay( riNext, remFar, true, true, false );
-				if( !riNext.geometric.bHit ) {
-					break;
-				}
-				tCur = tStart + riNext.geometric.range;
-				if( tCur < dHowFar2 && tCur > 0 && IsSheetHitInsideClosedOperand( pSolid, riSolid, orig, tCur ) ) {
-					return true;
-				}
-			}
+		const bool sheetIsA = ( certBits & kCertOpenSheetA ) != 0;
+		Scalar scale = 1;
+		if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+			scale = 1;
+		}
+		Scalar tKept = 0;
+		if( !WalkTrimmedSheet(
+				sheetIsA ? pObjectA : pObjectB,
+				sheetIsA ? pObjectB : pObjectA,
+				op == CSG_INTERSECTION,
+				orig, dHowFar2, scale,
+				sheetIsA ? riObjA : riObjB,
+				0, nullRasterizerState,
+				0, tKept ) ) {
 			return false;
 		}
-		case CSG_SUBTRACTION:
-			if( !riObjA.geometric.bHit ) {
-				return false;
-			}
-			if( riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0 &&
-				!IsSheetHitInsideClosedOperand( pObjectB, riObjB, orig, riObjA.geometric.range ) ) {
-				return true;
-			}
-			Scalar tCur = riObjA.geometric.range;
-			for( int step = 0; step < 4; ++step ) {
-				const Scalar stepEps = Scalar( 1e-5 ) * ( Scalar( 1 ) + std::fabs( tCur ) );
-				const Scalar tStart = tCur + stepEps;
-				if( !( tStart < dHowFar2 ) ) {
-					break;
-				}
-				Ray nextRay( orig.PointAtLength( tStart ), orig.Dir() );
-				RayIntersection riNext( nextRay, nullRasterizerState );
-				const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
-				pObjectA->IntersectRay( riNext, remFar, true, true, false );
-				if( !riNext.geometric.bHit ) {
-					break;
-				}
-				tCur = tStart + riNext.geometric.range;
-				if( tCur < dHowFar2 && tCur > 0 && !IsSheetHitInsideClosedOperand( pObjectB, riObjB, orig, tCur ) ) {
-					return true;
-				}
-			}
-			return false;
-		}
+		return tKept > 0 && tKept < dHowFar2;
 	}
 
 	// Do different things depending on the type of CSG operation
@@ -2405,6 +2388,10 @@ void CSGObject::Realize() const
 	if( pObjectB ) {
 		pObjectB->Realize();
 	}
+	// DL-617: re-derive the certificate from the (now realized) operands
+	// once per preparation, so an operand edit since the last one cannot
+	// leave a stale answer, and no ray pays for it.
+	m_certBits.store( ComputeCertificateBits(), std::memory_order_relaxed );
 }
 
 void CSGObject::ResetRuntimeData() const

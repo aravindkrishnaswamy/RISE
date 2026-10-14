@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -2248,116 +2249,97 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 
 namespace
 {
-	struct WeldPointLess
-	{
-		bool operator()( const Point3& a, const Point3& b ) const
-		{
-			if( a.x != b.x ) return a.x < b.x;
-			if( a.y != b.y ) return a.y < b.y;
-			return a.z < b.z;
-		}
-	};
+	//////////////////////////////////////////////////////////////////////
+	// DL-616: patch-set certifier.
+	//
+	// The claim either output makes is about the WHOLE set, so every step
+	// below is a proof, and anything a step cannot prove is a refusal:
+	//
+	//  T. TOPOLOGY from exact seam identity only.  Every side is a cubic
+	//     control polygon; two sides are glued iff one is the bitwise
+	//     reverse of the other (the reversal is the orientation check).
+	//     A side shared by more than two patches, a self-glued patch, a
+	//     side whose endpoints coincide (collapsed / looping) or a patch
+	//     with two coincident corners is refused.  Nothing is welded by a
+	//     tolerance: two corners that merely coincide in space without a
+	//     glued seam between them are DIFFERENT vertices, so the geometric
+	//     steps below must prove them apart -- which is how a T-junction,
+	//     a pinch vertex or a corner that touches without a seam is
+	//     refused rather than silently stitched.
+	//  G. EMBEDDING on an n x n grid of sub-patches per patch (n = 4, then
+	//     8 on a geometric refusal).  Sub-patch vertices are identified by
+	//     union-find over the glued seams (exact topology again), and
+	//     glued sub-patch boundaries are ASSIGNED bitwise equal (after a
+	//     tolerance sanity check), never left to two rounding sequences.
+	//     Then:
+	//      - every sub-patch is INJECTIVE: if every cross product
+	//        du_i x dv_k of a u- and a v-derivative control vector has a
+	//        positive component along one direction V, the map is
+	//        injective, because P(x) - P(y) = a du + b dv with a in the
+	//        convex hull of the u-derivatives and b in that of the
+	//        v-derivatives (mean-value theorem along the segment), and
+	//        (a x b).V is bilinear, so its minimum over the two hulls is
+	//        attained at control vectors and is positive -- a x b != 0;
+	//      - every pair of sub-patches sharing a SIDE is injective as a
+	//        union: the two nets, rotated so the shared side is v = 1 of
+	//        one and v = 0 of the other, parameterize one continuous
+	//        piecewise-polynomial map of a rectangle, and the same
+	//        argument applies to the pooled derivative vectors;
+	//      - every pair sharing only a VERTEX X is strictly separated by
+	//        a plane through X: every control point but the corner on one
+	//        side, every one of the other's on the other side; a convex
+	//        combination with weight off the corner is then strictly on
+	//        its own side, so the two meet only at X;
+	//      - every other pair is DISJOINT, proved by recursive subdivision
+	//        of control-point boxes (inflated by a relative epsilon).
+	//     Together: the map from the glued topological complex to space is
+	//     injective, i.e. an embedding.
+	//  C. CLASSIFICATION.  The complex is connected.  No free side: an
+	//     embedded closed oriented surface bounds a region, and the EXACT
+	//     signed volume (1/3 of the integral of P.(Pu x Pv), integrated in
+	//     Bernstein form) gives its orientation; positive certifies
+	//     watertight, negative or tiny is refused.  With a free side: a
+	//     connected compact surface with non-empty boundary encloses no
+	//     volume -> provably open; the signed volume about the bbox centre
+	//     drives the inward-winding warning.
+	//
+	// Cost: sub-patch pairs come from a sort-and-sweep over boxes, and a
+	// work budget refuses (never certifies) a set it cannot finish.
+	//////////////////////////////////////////////////////////////////////
 
-	struct HalfEdgeRec
-	{
-		unsigned int u, v, tri;
-		bool operator<( const HalfEdgeRec& o ) const
-		{
-			if( u != o.u ) return u < o.u;
-			if( v != o.v ) return v < o.v;
-			return tri < o.tri;
-		}
-	};
+	typedef std::array<Point3, 4> PatchCurve;
 
-	struct TriKey
-	{
-		std::array<unsigned int, 3> v;
-		bool operator<( const TriKey& o ) const { return v < o.v; }
-		bool operator==( const TriKey& o ) const { return v == o.v; }
-	};
-
-	inline bool PointFinite( const Point3& p )
+	inline bool PatchPointFinite( const Point3& p )
 	{
 		return std::isfinite( p.x ) && std::isfinite( p.y ) && std::isfinite( p.z );
 	}
 
-	inline bool PointEqualExact( const Point3& a, const Point3& b )
+	inline bool PatchPointEqual( const Point3& a, const Point3& b )
 	{
 		return a.x == b.x && a.y == b.y && a.z == b.z;
 	}
 
-	inline Point3 CanonicalAddPoints( const Point3& a, const Point3& b )
+	inline bool PatchPointLess( const Point3& a, const Point3& b )
 	{
-		const WeldPointLess less;
-		if( less( a, b ) ) {
-			return Point3( a.x + b.x, a.y + b.y, a.z + b.z );
+		if( a.x != b.x ) return a.x < b.x;
+		if( a.y != b.y ) return a.y < b.y;
+		return a.z < b.z;
+	}
+
+	inline bool PatchCurveEqual( const PatchCurve& a, const PatchCurve& b )
+	{
+		for( int k = 0; k < 4; ++k ) {
+			if( !PatchPointEqual( a[k], b[k] ) ) return false;
 		}
-		return Point3( b.x + a.x, b.y + a.y, b.z + a.z );
+		return true;
 	}
 
-	inline Point3 LerpSym4( const Point3& p0, const Point3& p1, unsigned int k )
+	inline PatchCurve ReversePatchCurve( const PatchCurve& c )
 	{
-		if( k == 0 ) return p0;
-		if( k == 4 ) return p1;
-		if( k == 2 ) {
-			const Point3 s = CanonicalAddPoints( p0, p1 );
-			return Point3( Scalar( 0.5 ) * s.x, Scalar( 0.5 ) * s.y, Scalar( 0.5 ) * s.z );
-		}
-		const Point3& nearPt = ( k == 1 ) ? p0 : p1;
-		const Point3& farPt  = ( k == 1 ) ? p1 : p0;
-		return Point3(
-			Scalar( 0.25 ) * ( Scalar( 3 ) * nearPt.x + farPt.x ),
-			Scalar( 0.25 ) * ( Scalar( 3 ) * nearPt.y + farPt.y ),
-			Scalar( 0.25 ) * ( Scalar( 3 ) * nearPt.z + farPt.z ) );
+		return PatchCurve{ { c[3], c[2], c[1], c[0] } };
 	}
 
-	inline Point3 EvalBilinearGrid4( const BilinearPatch& patch, unsigned int iu, unsigned int iv )
-	{
-		if( iu == 0 ) return LerpSym4( patch.pts[0], patch.pts[1], iv );
-		if( iu == 4 ) return LerpSym4( patch.pts[2], patch.pts[3], iv );
-		if( iv == 0 ) return LerpSym4( patch.pts[0], patch.pts[2], iu );
-		if( iv == 4 ) return LerpSym4( patch.pts[1], patch.pts[3], iu );
-		const Point3 col0 = LerpSym4( patch.pts[0], patch.pts[1], iv );
-		const Point3 col1 = LerpSym4( patch.pts[2], patch.pts[3], iv );
-		return LerpSym4( col0, col1, iu );
-	}
-
-	inline Point3 CubicSym4( const Point3& p0, const Point3& p1, const Point3& p2, const Point3& p3, unsigned int k )
-	{
-		if( k == 0 ) return p0;
-		if( k == 4 ) return p3;
-		if( k == 2 ) {
-			const Point3 s03 = CanonicalAddPoints( p0, p3 );
-			const Point3 s12 = CanonicalAddPoints( p1, p2 );
-			return Point3(
-				Scalar( 0.125 ) * s03.x + Scalar( 0.375 ) * s12.x,
-				Scalar( 0.125 ) * s03.y + Scalar( 0.375 ) * s12.y,
-				Scalar( 0.125 ) * s03.z + Scalar( 0.375 ) * s12.z );
-		}
-		const Point3& a0 = ( k == 1 ) ? p0 : p3;
-		const Point3& a1 = ( k == 1 ) ? p1 : p2;
-		const Point3& a2 = ( k == 1 ) ? p2 : p1;
-		const Point3& a3 = ( k == 1 ) ? p3 : p0;
-		return Point3(
-			Scalar( 1.0 / 64.0 ) * ( Scalar( 27 ) * ( a0.x + a1.x ) + Scalar( 9 ) * a2.x + a3.x ),
-			Scalar( 1.0 / 64.0 ) * ( Scalar( 27 ) * ( a0.y + a1.y ) + Scalar( 9 ) * a2.y + a3.y ),
-			Scalar( 1.0 / 64.0 ) * ( Scalar( 27 ) * ( a0.z + a1.z ) + Scalar( 9 ) * a2.z + a3.z ) );
-	}
-
-	inline Point3 EvalBezierGrid4( const BezierPatch& patch, unsigned int iu, unsigned int iv )
-	{
-		if( iu == 0 ) return CubicSym4( patch.c[0].pts[0], patch.c[0].pts[1], patch.c[0].pts[2], patch.c[0].pts[3], iv );
-		if( iu == 4 ) return CubicSym4( patch.c[3].pts[0], patch.c[3].pts[1], patch.c[3].pts[2], patch.c[3].pts[3], iv );
-		if( iv == 0 ) return CubicSym4( patch.c[0].pts[0], patch.c[1].pts[0], patch.c[2].pts[0], patch.c[3].pts[0], iu );
-		if( iv == 4 ) return CubicSym4( patch.c[0].pts[3], patch.c[1].pts[3], patch.c[2].pts[3], patch.c[3].pts[3], iu );
-		Point3 r[4];
-		for( int i = 0; i < 4; ++i ) {
-			r[i] = CubicSym4( patch.c[i].pts[0], patch.c[i].pts[1], patch.c[i].pts[2], patch.c[i].pts[3], iv );
-		}
-		return CubicSym4( r[0], r[1], r[2], r[3], iu );
-	}
-
-	inline Point3 BlossomCubic( const Point3 P[4], Scalar t1, Scalar t2, Scalar t3 )
+	inline Point3 BlossomCubic( const PatchCurve& P, Scalar t1, Scalar t2, Scalar t3 )
 	{
 		Point3 a[3], b[2];
 		for( int k = 0; k < 3; ++k ) a[k] = Point3Ops::WeightedAverage2( P[k + 1], P[k], t1 );
@@ -2365,12 +2347,15 @@ namespace
 		return Point3Ops::WeightedAverage2( b[1], b[0], t3 );
 	}
 
-	inline void SubCubicSegment( const Point3 P[4], Scalar s0, Scalar s1, Point3 Q[4] )
+	//! Control polygon of the cubic `P` restricted to [s0, s1] (blossoming).
+	//! The endpoints are exact at s = 0 and s = 1.
+	inline PatchCurve SubCubicSegment( const PatchCurve& P, Scalar s0, Scalar s1 )
 	{
-		Q[0] = BlossomCubic( P, s0, s0, s0 );
-		Q[1] = BlossomCubic( P, s0, s0, s1 );
-		Q[2] = BlossomCubic( P, s0, s1, s1 );
-		Q[3] = BlossomCubic( P, s1, s1, s1 );
+		return PatchCurve{ {
+			BlossomCubic( P, s0, s0, s0 ),
+			BlossomCubic( P, s0, s0, s1 ),
+			BlossomCubic( P, s0, s1, s1 ),
+			BlossomCubic( P, s1, s1, s1 ) } };
 	}
 
 	inline BezierPatch SubdivideBezierPatchRange(
@@ -2378,15 +2363,15 @@ namespace
 		Scalar u0, Scalar u1,
 		Scalar v0, Scalar v1 )
 	{
-		Point3 R[4][4];
+		PatchCurve R[4];
 		BezierPatch out;
 		for( int i = 0; i < 4; ++i ) {
-			SubCubicSegment( p.c[i].pts, v0, v1, R[i] );
+			const PatchCurve row = { { p.c[i].pts[0], p.c[i].pts[1], p.c[i].pts[2], p.c[i].pts[3] } };
+			R[i] = SubCubicSegment( row, v0, v1 );
 		}
 		for( int l = 0; l < 4; ++l ) {
-			const Point3 col[4] = { R[0][l], R[1][l], R[2][l], R[3][l] };
-			Point3 sub[4];
-			SubCubicSegment( col, u0, u1, sub );
+			const PatchCurve col = { { R[0][l], R[1][l], R[2][l], R[3][l] } };
+			const PatchCurve sub = SubCubicSegment( col, u0, u1 );
 			for( int k = 0; k < 4; ++k ) {
 				out.c[k].pts[l] = sub[k];
 			}
@@ -2394,19 +2379,7 @@ namespace
 		return out;
 	}
 
-	inline BilinearPatch SubdivideBilinearPatchRange(
-		const BilinearPatch& p,
-		Scalar u0, Scalar u1,
-		Scalar v0, Scalar v1 )
-	{
-		BilinearPatch out;
-		out.pts[0] = GeometricUtilities::EvaluateBilinearPatchAt( p, u0, v0 );
-		out.pts[1] = GeometricUtilities::EvaluateBilinearPatchAt( p, u0, v1 );
-		out.pts[2] = GeometricUtilities::EvaluateBilinearPatchAt( p, u1, v0 );
-		out.pts[3] = GeometricUtilities::EvaluateBilinearPatchAt( p, u1, v1 );
-		return out;
-	}
-
+	//! Bernstein coefficients N[a][b] (degree 5 x 5) of (Pu x Pv) / 9.
 	inline void ComputeBezierNormalBernsteinCoeffs( const BezierPatch& subPatch, Vector3 (&c)[6][6] )
 	{
 		static const Scalar C2[3] = { 1, 2, 1 };
@@ -2440,40 +2413,136 @@ namespace
 		}
 	}
 
-	inline bool BoxesOverlapClosed( const BoundingBox& a, const BoundingBox& b )
+	// Net corners / sides, counter-clockwise in (u, v): corner k is where
+	// side k starts; side k runs from corner k to corner k+1.
+	inline void NetCornerIndex( int k, int& i, int& j )
+	{
+		static const int I[4] = { 0, 3, 3, 0 };
+		static const int J[4] = { 0, 0, 3, 3 };
+		i = I[k]; j = J[k];
+	}
+
+	inline const Point3& NetCorner( const BezierPatch& q, int k )
+	{
+		int i, j;
+		NetCornerIndex( k, i, j );
+		return q.c[i].pts[j];
+	}
+
+	inline void NetSideIndex( int s, int m, int& i, int& j )
+	{
+		switch( s ) {
+		default:
+		case 0: i = m;     j = 0;     break;
+		case 1: i = 3;     j = m;     break;
+		case 2: i = 3 - m; j = 3;     break;
+		case 3: i = 0;     j = 3 - m; break;
+		}
+	}
+
+	inline PatchCurve NetSide( const BezierPatch& q, int s )
+	{
+		PatchCurve c;
+		for( int m = 0; m < 4; ++m ) {
+			int i, j;
+			NetSideIndex( s, m, i, j );
+			c[m] = q.c[i].pts[j];
+		}
+		return c;
+	}
+
+	inline void SetNetSide( BezierPatch& q, int s, const PatchCurve& c )
+	{
+		for( int m = 0; m < 4; ++m ) {
+			int i, j;
+			NetSideIndex( s, m, i, j );
+			q.c[i].pts[j] = c[m];
+		}
+	}
+
+	//! Rotate the parameter domain a quarter turn r times (orientation
+	//! preserving): the result's side k is the input's side (k + r) % 4
+	//! and its corner k is the input's corner (k + r) % 4.
+	inline BezierPatch RotateNet( const BezierPatch& q, int r )
+	{
+		BezierPatch cur = q;
+		for( int t = 0; t < ( r & 3 ); ++t ) {
+			BezierPatch nxt;
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 0; j < 4; ++j ) {
+					nxt.c[i].pts[j] = cur.c[3 - j].pts[i];
+				}
+			}
+			cur = nxt;
+		}
+		return cur;
+	}
+
+	struct PatchCertWork
+	{
+		std::size_t	remaining;
+		bool		exhausted = false;
+		bool Spend( std::size_t units )
+		{
+			if( units > remaining ) {
+				remaining = 0;
+				exhausted = true;
+				return false;
+			}
+			remaining -= units;
+			return true;
+		}
+	};
+
+	inline BoundingBox InflatedNetBox( const BezierPatch& q, Scalar inflate )
+	{
+		BoundingBox b = GeometricUtilities::BezierPatchBoundingBox( q );
+		b.ll = Point3( b.ll.x - inflate, b.ll.y - inflate, b.ll.z - inflate );
+		b.ur = Point3( b.ur.x + inflate, b.ur.y + inflate, b.ur.z + inflate );
+		return b;
+	}
+
+	//! Closed comparison on inflated boxes: touching reads as overlapping.
+	inline bool PatchBoxesOverlap( const BoundingBox& a, const BoundingBox& b )
 	{
 		return !( a.ur.x < b.ll.x || b.ur.x < a.ll.x ||
 		          a.ur.y < b.ll.y || b.ur.y < a.ll.y ||
 		          a.ur.z < b.ll.z || b.ur.z < a.ll.z );
 	}
 
-	bool BezierSubPatchesDisjointRecursive(
-		const BezierPatch& a,
-		const BezierPatch& b,
-		int depth )
+	//! TRUE only when the two nets' surfaces are proved disjoint.
+	bool NetsProvablyDisjoint(
+		const BezierPatch& a, int levelA,
+		const BezierPatch& b, int levelB,
+		Scalar inflate,
+		PatchCertWork& work )
 	{
-		const BoundingBox boxA = GeometricUtilities::BezierPatchBoundingBox( a );
-		const BoundingBox boxB = GeometricUtilities::BezierPatchBoundingBox( b );
-		if( !BoxesOverlapClosed( boxA, boxB ) ) {
-			return true;
-		}
-		if( depth <= 0 ) {
+		if( !work.Spend( 1 ) ) {
 			return false;
 		}
-		BezierPatch subA[4], subB[4];
+		const BoundingBox boxA = InflatedNetBox( a, inflate );
+		const BoundingBox boxB = InflatedNetBox( b, inflate );
+		if( !PatchBoxesOverlap( boxA, boxB ) ) {
+			return true;
+		}
+		static const int kMaxLevel = 5;
+		const Scalar diagA = Vector3Ops::Magnitude( Vector3Ops::mkVector3( boxA.ur, boxA.ll ) );
+		const Scalar diagB = Vector3Ops::Magnitude( Vector3Ops::mkVector3( boxB.ur, boxB.ll ) );
+		const bool splitA = ( levelA < kMaxLevel ) && ( diagA >= diagB || levelB >= kMaxLevel );
+		const bool splitB = !splitA && ( levelB < kMaxLevel );
+		if( !splitA && !splitB ) {
+			return false;
+		}
+		const BezierPatch& big = splitA ? a : b;
 		for( int iu = 0; iu < 2; ++iu ) {
 			for( int iv = 0; iv < 2; ++iv ) {
 				const Scalar u0 = Scalar( 0.5 ) * Scalar( iu );
-				const Scalar u1 = u0 + Scalar( 0.5 );
 				const Scalar v0 = Scalar( 0.5 ) * Scalar( iv );
-				const Scalar v1 = v0 + Scalar( 0.5 );
-				subA[2 * iu + iv] = SubdivideBezierPatchRange( a, u0, u1, v0, v1 );
-				subB[2 * iu + iv] = SubdivideBezierPatchRange( b, u0, u1, v0, v1 );
-			}
-		}
-		for( int i = 0; i < 4; ++i ) {
-			for( int j = 0; j < 4; ++j ) {
-				if( !BezierSubPatchesDisjointRecursive( subA[i], subB[j], depth - 1 ) ) {
+				const BezierPatch sub = SubdivideBezierPatchRange( big, u0, u0 + Scalar( 0.5 ), v0, v0 + Scalar( 0.5 ) );
+				const bool ok = splitA ?
+					NetsProvablyDisjoint( sub, levelA + 1, b, levelB, inflate, work ) :
+					NetsProvablyDisjoint( a, levelA, sub, levelB + 1, inflate, work );
+				if( !ok ) {
 					return false;
 				}
 			}
@@ -2481,343 +2550,659 @@ namespace
 		return true;
 	}
 
-	bool BilinearSubPatchesDisjointRecursive(
-		const BilinearPatch& a,
-		const BilinearPatch& b,
-		int depth )
+	//! The injectivity proof (see the header comment): every
+	//! u-derivative control vector crossed with every v-derivative control
+	//! vector, over all the nets given, has a strictly positive component
+	//! along one direction.  `outV` receives that direction.
+	bool CrossConeProof( const BezierPatch* nets, int count, Vector3& outV )
 	{
-		const BoundingBox boxA = GeometricUtilities::BilinearPatchBoundingBox( a );
-		const BoundingBox boxB = GeometricUtilities::BilinearPatchBoundingBox( b );
-		if( !BoxesOverlapClosed( boxA, boxB ) ) {
-			return true;
-		}
-		if( depth <= 0 ) {
-			return false;
-		}
-		BilinearPatch subA[4], subB[4];
-		for( int iu = 0; iu < 2; ++iu ) {
-			for( int iv = 0; iv < 2; ++iv ) {
-				const Scalar u0 = Scalar( 0.5 ) * Scalar( iu );
-				const Scalar u1 = u0 + Scalar( 0.5 );
-				const Scalar v0 = Scalar( 0.5 ) * Scalar( iv );
-				const Scalar v1 = v0 + Scalar( 0.5 );
-				subA[2 * iu + iv] = SubdivideBilinearPatchRange( a, u0, u1, v0, v1 );
-				subB[2 * iu + iv] = SubdivideBilinearPatchRange( b, u0, u1, v0, v1 );
+		Vector3 du[2 * 12], dv[2 * 12];
+		int nu = 0, nv = 0;
+		for( int q = 0; q < count; ++q ) {
+			const BezierPatch& net = nets[q];
+			for( int i = 0; i < 3; ++i ) {
+				for( int j = 0; j < 4; ++j ) {
+					du[nu++] = Vector3Ops::mkVector3( net.c[i + 1].pts[j], net.c[i].pts[j] );
+				}
+			}
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 0; j < 3; ++j ) {
+					dv[nv++] = Vector3Ops::mkVector3( net.c[i].pts[j + 1], net.c[i].pts[j] );
+				}
 			}
 		}
+		Vector3 sum( 0, 0, 0 );
+		for( int a = 0; a < nu; ++a ) {
+			for( int b = 0; b < nv; ++b ) {
+				const Vector3 c = Vector3Ops::Cross( du[a], dv[b] );
+				const Scalar len = Vector3Ops::Magnitude( c );
+				if( !( len > 0 ) ) {
+					return false;	// a vanishing or parallel derivative pair: not provably immersed
+				}
+				sum = sum + c * ( Scalar( 1 ) / len );
+			}
+		}
+		const Scalar sumLen = Vector3Ops::Magnitude( sum );
+		if( !( sumLen > 0 ) || !std::isfinite( sumLen ) ) {
+			return false;
+		}
+		const Vector3 V = sum * ( Scalar( 1 ) / sumLen );
+		for( int a = 0; a < nu; ++a ) {
+			for( int b = 0; b < nv; ++b ) {
+				const Vector3 c = Vector3Ops::Cross( du[a], dv[b] );
+				if( !( Vector3Ops::Dot( c, V ) > Scalar( 1e-12 ) * Vector3Ops::Magnitude( c ) ) ) {
+					return false;
+				}
+			}
+		}
+		outV = V;
+		return true;
+	}
+
+	//! TRUE when `w` puts every control point of `a` but its corner `ka`
+	//! strictly on the positive side of the plane through `X`, and every
+	//! control point of `b` but its corner `kb` strictly on the negative
+	//! side.
+	bool PlaneSeparatesAtCorner(
+		const BezierPatch& a, int ka,
+		const BezierPatch& b, int kb,
+		const Point3& X,
+		const Vector3& w )
+	{
+		const Scalar wLen = Vector3Ops::Magnitude( w );
+		if( !( wLen > 0 ) || !std::isfinite( wLen ) ) {
+			return false;
+		}
+		int ia, ja, ib, jb;
+		NetCornerIndex( ka, ia, ja );
+		NetCornerIndex( kb, ib, jb );
 		for( int i = 0; i < 4; ++i ) {
 			for( int j = 0; j < 4; ++j ) {
-				if( !BilinearSubPatchesDisjointRecursive( subA[i], subB[j], depth - 1 ) ) {
-					return false;
+				if( !( i == ia && j == ja ) ) {
+					const Vector3 d = Vector3Ops::mkVector3( a.c[i].pts[j], X );
+					if( !( Vector3Ops::Dot( d, w ) > Scalar( 1e-12 ) * wLen * Vector3Ops::Magnitude( d ) ) ) {
+						return false;
+					}
+				}
+				if( !( i == ib && j == jb ) ) {
+					const Vector3 d = Vector3Ops::mkVector3( b.c[i].pts[j], X );
+					if( !( -Vector3Ops::Dot( d, w ) > Scalar( 1e-12 ) * wLen * Vector3Ops::Magnitude( d ) ) ) {
+						return false;
+					}
 				}
 			}
 		}
 		return true;
 	}
 
-	// Checks whether the welded triangle mesh (3 corners per triangle in `corners`)
-	// is a single-component, consistently oriented, embedded closed 2-manifold with
-	// positive enclosed volume and no coplanar oppositely-wound adjacent faces.
-	bool IsEmbeddedClosedOrientedTriangulation( const std::vector<Point3>& corners )
+	//! Bisector of a net's two sides at corner k (unit edge directions).
+	inline Vector3 CornerBisector( const BezierPatch& q, int k )
 	{
-		const std::size_t nTris = corners.size() / 3;
-		if( nTris < 4 ) {
+		const Point3& X = NetCorner( q, k );
+		const PatchCurve out = NetSide( q, k );
+		const PatchCurve in = NetSide( q, ( k + 3 ) & 3 );
+		Vector3 e1 = Vector3Ops::mkVector3( out[1], X );
+		Vector3 e2 = Vector3Ops::mkVector3( in[2], X );
+		const Scalar l1 = Vector3Ops::Magnitude( e1 );
+		const Scalar l2 = Vector3Ops::Magnitude( e2 );
+		if( l1 > 0 ) e1 = e1 * ( Scalar( 1 ) / l1 );
+		if( l2 > 0 ) e2 = e2 * ( Scalar( 1 ) / l2 );
+		return e1 + e2;
+	}
+
+	inline Vector3 NetCentroidOffset( const BezierPatch& q, const Point3& X )
+	{
+		Vector3 s( 0, 0, 0 );
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				s = s + Vector3Ops::mkVector3( q.c[i].pts[j], X );
+			}
+		}
+		const Scalar l = Vector3Ops::Magnitude( s );
+		return l > 0 ? s * ( Scalar( 1 ) / l ) : s;
+	}
+
+	bool CornerPairSeparated(
+		const BezierPatch& a, int ka,
+		const BezierPatch& b, int kb,
+		const Vector3& normalHint )
+	{
+		const Point3& X = NetCorner( a, ka );
+		if( !PatchPointEqual( X, NetCorner( b, kb ) ) ) {
 			return false;
 		}
-		std::vector<unsigned int> wid;
-		Scalar eps = 0;
-		if( !GeometricUtilities::WeldVertexPositions( corners, wid, &eps ) ) {
-			return false;
-		}
-		const Scalar epsSq = eps * eps;
-		const Scalar fourEpsSq = Scalar( 4 ) * epsSq;
-
-		std::vector<HalfEdgeRec> halfEdges;
-		std::vector<TriKey> triKeys;
-		std::vector<Vector3> faceNormals( nTris );
-		halfEdges.reserve( nTris * 3 );
-		triKeys.reserve( nTris );
-
-		for( std::size_t t = 0; t < nTris; ++t ) {
-			const unsigned int a = wid[3 * t + 0];
-			const unsigned int b = wid[3 * t + 1];
-			const unsigned int c = wid[3 * t + 2];
-			if( a == b || b == c || c == a ) {
-				return false;
+		Vector3 bisA = CornerBisector( a, ka );
+		Vector3 bisB = CornerBisector( b, kb );
+		const Scalar la = Vector3Ops::Magnitude( bisA );
+		const Scalar lb = Vector3Ops::Magnitude( bisB );
+		if( la > 0 ) bisA = bisA * ( Scalar( 1 ) / la );
+		if( lb > 0 ) bisB = bisB * ( Scalar( 1 ) / lb );
+		const Vector3 candidates[2] = {
+			bisA - bisB,
+			NetCentroidOffset( a, X ) - NetCentroidOffset( b, X )
+		};
+		const Scalar nLen = Vector3Ops::Magnitude( normalHint );
+		const Vector3 n = nLen > 0 ? normalHint * ( Scalar( 1 ) / nLen ) : Vector3( 0, 0, 0 );
+		for( const Vector3& w : candidates ) {
+			if( PlaneSeparatesAtCorner( a, ka, b, kb, X, w ) ) {
+				return true;
 			}
-			const Point3& pa = corners[3 * t + 0];
-			const Point3& pb = corners[3 * t + 1];
-			const Point3& pc = corners[3 * t + 2];
-			const Vector3 ab = Vector3Ops::mkVector3( pb, pa );
-			const Vector3 ac = Vector3Ops::mkVector3( pc, pa );
-			const Vector3 bc = Vector3Ops::mkVector3( pc, pb );
-			const Vector3 n = Vector3Ops::Cross( ab, ac );
-			const Scalar nSq = Vector3Ops::SquaredModulus( n );
-			const Scalar maxEdgeSq = std::max( Vector3Ops::SquaredModulus( ab ),
-				std::max( Vector3Ops::SquaredModulus( ac ), Vector3Ops::SquaredModulus( bc ) ) );
-			if( !( nSq > maxEdgeSq * fourEpsSq ) ) {
-				return false;
-			}
-			faceNormals[t] = n * ( Scalar( 1 ) / std::sqrt( nSq ) );
-			halfEdges.push_back( { a, b, static_cast<unsigned int>( t ) } );
-			halfEdges.push_back( { b, c, static_cast<unsigned int>( t ) } );
-			halfEdges.push_back( { c, a, static_cast<unsigned int>( t ) } );
-			TriKey tk = { { a, b, c } };
-			std::sort( tk.v.begin(), tk.v.end() );
-			triKeys.push_back( tk );
-		}
-
-		std::sort( triKeys.begin(), triKeys.end() );
-		if( std::adjacent_find( triKeys.begin(), triKeys.end() ) != triKeys.end() ) {
-			return false;
-		}
-		std::sort( halfEdges.begin(), halfEdges.end() );
-		for( std::size_t i = 0; i + 1 < halfEdges.size(); ++i ) {
-			if( halfEdges[i].u == halfEdges[i + 1].u && halfEdges[i].v == halfEdges[i + 1].v ) {
-				return false;
+			// The same direction with the shared normal projected out, so
+			// curvature away from the tangent plane cannot tip a point
+			// across the separating plane.
+			const Vector3 wt = w - n * Vector3Ops::Dot( w, n );
+			if( PlaneSeparatesAtCorner( a, ka, b, kb, X, wt ) ) {
+				return true;
 			}
 		}
+		return false;
+	}
 
-		std::vector<std::array<unsigned int, 3> > adj( nTris, { { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu } } );
-		std::vector<unsigned char> adjCount( nTris, 0 );
-		for( const HalfEdgeRec& he : halfEdges ) {
-			const HalfEdgeRec revKey = { he.v, he.u, 0 };
-			const auto it = std::lower_bound( halfEdges.begin(), halfEdges.end(), revKey );
-			if( it == halfEdges.end() || it->u != he.v || it->v != he.u ) {
-				return false; // Every edge in a closed manifold must have an opposite half-edge.
+	//! Exact signed volume terms of one patch about `c`:
+	//! (1/3) * integral over [0,1]^2 of (P - c).(Pu x Pv), from the
+	//! Bernstein product integral  int B3_i B5_a = C3_i C5_a / (9 C8_{i+a}).
+	inline void AccumulatePatchVolume( const BezierPatch& p, const Point3& c, Scalar& vol, Scalar& absSum )
+	{
+		static const Scalar C3[4] = { 1, 3, 3, 1 };
+		static const Scalar C5[6] = { 1, 5, 10, 10, 5, 1 };
+		static const Scalar C8[9] = { 1, 8, 28, 56, 70, 56, 28, 8, 1 };
+		Vector3 N[6][6];
+		ComputeBezierNormalBernsteinCoeffs( p, N );
+		for( int i = 0; i < 4; ++i ) {
+			for( int a = 0; a < 6; ++a ) {
+				const Scalar Iia = C3[i] * C5[a] / ( Scalar( 9 ) * C8[i + a] );
+				for( int j = 0; j < 4; ++j ) {
+					const Vector3 pc = Vector3Ops::mkVector3( p.c[i].pts[j], c );
+					for( int b = 0; b < 6; ++b ) {
+						const Scalar Ijb = C3[j] * C5[b] / ( Scalar( 9 ) * C8[j + b] );
+						// Pu x Pv = 9 * sum N_ab B5_a B5_b, and the volume is a third of the integral
+						const Scalar t = Scalar( 3 ) * Vector3Ops::Dot( pc, N[a][b] ) * Iia * Ijb;
+						vol += t;
+						absSum += std::fabs( t );
+					}
+				}
 			}
-			adj[he.tri][adjCount[he.tri]++] = it->tri;
-			if( he.u < he.v ) {
-				const unsigned int t1 = he.tri;
-				const unsigned int t2 = it->tri;
-				if( Vector3Ops::Dot( faceNormals[t1], faceNormals[t2] ) < Scalar( 0 ) ) {
-					for( int k = 0; k < 3; ++k ) {
-						const unsigned int w = wid[3 * t2 + k];
-						if( w != he.u && w != he.v ) {
-							const Scalar dist = std::fabs( Vector3Ops::Dot(
-								Vector3Ops::mkVector3( corners[3 * t2 + k], corners[3 * t1] ),
-								faceNormals[t1] ) );
-							if( dist <= eps ) {
-								return false; // Coplanar oppositely-wound seam (folded sheet).
+		}
+	}
+
+	class UnionFindNodes
+	{
+	public:
+		explicit UnionFindNodes( std::size_t n ) : parent( n )
+		{
+			for( std::size_t i = 0; i < n; ++i ) parent[i] = static_cast<unsigned int>( i );
+		}
+		unsigned int Find( unsigned int x )
+		{
+			while( parent[x] != x ) {
+				parent[x] = parent[parent[x]];
+				x = parent[x];
+			}
+			return x;
+		}
+		void Unite( unsigned int a, unsigned int b )
+		{
+			a = Find( a ); b = Find( b );
+			if( a != b ) parent[a < b ? b : a] = ( a < b ? a : b );
+		}
+	private:
+		std::vector<unsigned int> parent;
+	};
+
+	struct PatchSetVerdict
+	{
+		bool		watertight = false;
+		bool		open = false;
+		bool		negative = false;
+		const char*	reason = "";
+		bool		geometric = false;	//!< refused by an embedding step (a finer grid may succeed)
+	};
+
+	struct SubPatchRec
+	{
+		BezierPatch		net;
+		BoundingBox		box;
+		Vector3			V;
+		unsigned int	corner[4];	//!< union-find vertex id of each corner
+	};
+
+	PatchSetVerdict CertifyBezierNets( const std::vector<BezierPatch>& patches, unsigned int n, std::size_t workBudget )
+	{
+		PatchSetVerdict r;
+		const std::size_t nPatches = patches.size();
+		if( nPatches == 0 ) {
+			r.reason = "empty patch set";
+			return r;
+		}
+		if( nPatches > ( std::size_t( 1 ) << 22 ) ) {
+			r.reason = "patch set too large to certify";
+			return r;
+		}
+
+		// Finite control points; global box and scale.
+		Point3 lo = patches[0].c[0].pts[0], hi = lo;
+		Scalar maxAbs = 0;
+		for( const BezierPatch& p : patches ) {
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 0; j < 4; ++j ) {
+					const Point3& q = p.c[i].pts[j];
+					if( !PatchPointFinite( q ) ) {
+						r.reason = "non-finite control point";
+						return r;
+					}
+					lo = Point3( std::min( lo.x, q.x ), std::min( lo.y, q.y ), std::min( lo.z, q.z ) );
+					hi = Point3( std::max( hi.x, q.x ), std::max( hi.y, q.y ), std::max( hi.z, q.z ) );
+					maxAbs = std::max( maxAbs, std::max( std::fabs( q.x ), std::max( std::fabs( q.y ), std::fabs( q.z ) ) ) );
+				}
+			}
+		}
+		const Scalar diag = Vector3Ops::Magnitude( Vector3Ops::mkVector3( hi, lo ) );
+		if( !( diag > 0 ) || !std::isfinite( diag ) ) {
+			r.reason = "degenerate extent";
+			return r;
+		}
+		// Absorbs the rounding of the sub-patch nets against the surface
+		// the renderer intersects: a few hundred ulps of the coordinates.
+		const Scalar inflate = Scalar( 1e-12 ) * ( diag + maxAbs );
+
+		// T: sides and exact seam matching.
+		struct SideRec
+		{
+			Point3			a, b;	//!< endpoints in lexicographic order
+			unsigned int	id;		//!< patch * 4 + side
+		};
+		std::vector<SideRec> sides;
+		sides.reserve( nPatches * 4 );
+		for( std::size_t p = 0; p < nPatches; ++p ) {
+			for( int k = 0; k < 4; ++k ) {
+				for( int m = k + 1; m < 4; ++m ) {
+					if( PatchPointEqual( NetCorner( patches[p], k ), NetCorner( patches[p], m ) ) ) {
+						r.reason = "patch with coincident corners (collapsed side or loop)";
+						return r;
+					}
+				}
+			}
+			for( int s = 0; s < 4; ++s ) {
+				const PatchCurve c = NetSide( patches[p], s );
+				SideRec rec;
+				const bool fwd = PatchPointLess( c[0], c[3] );
+				rec.a = fwd ? c[0] : c[3];
+				rec.b = fwd ? c[3] : c[0];
+				rec.id = static_cast<unsigned int>( p * 4 + s );
+				sides.push_back( rec );
+			}
+		}
+		std::sort( sides.begin(), sides.end(), []( const SideRec& x, const SideRec& y ) {
+			if( PatchPointLess( x.a, y.a ) ) return true;
+			if( PatchPointLess( y.a, x.a ) ) return false;
+			if( PatchPointLess( x.b, y.b ) ) return true;
+			if( PatchPointLess( y.b, x.b ) ) return false;
+			return x.id < y.id;
+		} );
+		std::vector<int> match( nPatches * 4, -1 );
+		std::size_t freeSides = 0;
+		for( std::size_t i = 0; i < sides.size(); ) {
+			std::size_t j = i + 1;
+			while( j < sides.size() && PatchPointEqual( sides[j].a, sides[i].a ) && PatchPointEqual( sides[j].b, sides[i].b ) ) {
+				++j;
+			}
+			if( j - i > 2 ) {
+				r.reason = "non-manifold seam (more than two sides share endpoints)";
+				return r;
+			}
+			if( j - i == 2 ) {
+				const unsigned int s0 = sides[i].id, s1 = sides[i + 1].id;
+				if( s0 / 4 == s1 / 4 ) {
+					r.reason = "self-glued patch";
+					return r;
+				}
+				const PatchCurve c0 = NetSide( patches[s0 / 4], s0 % 4 );
+				const PatchCurve c1 = NetSide( patches[s1 / 4], s1 % 4 );
+				if( !PatchCurveEqual( c0, ReversePatchCurve( c1 ) ) ) {
+					r.reason = "sides share endpoints but are not one reversed seam (crack, curve mismatch or inconsistent winding)";
+					return r;
+				}
+				match[s0] = static_cast<int>( s1 );
+				match[s1] = static_cast<int>( s0 );
+			} else {
+				++freeSides;
+			}
+			i = j;
+		}
+
+		// A single seam-connected component.
+		{
+			std::vector<unsigned char> seen( nPatches, 0 );
+			std::vector<unsigned int> stack( 1, 0 );
+			seen[0] = 1;
+			std::size_t reached = 1;
+			while( !stack.empty() ) {
+				const unsigned int p = stack.back();
+				stack.pop_back();
+				for( int s = 0; s < 4; ++s ) {
+					const int m = match[p * 4 + s];
+					if( m >= 0 && !seen[m / 4] ) {
+						seen[m / 4] = 1;
+						++reached;
+						stack.push_back( static_cast<unsigned int>( m / 4 ) );
+					}
+				}
+			}
+			if( reached != nPatches ) {
+				r.reason = "patch set is not one seam-connected piece";
+				return r;
+			}
+		}
+
+		// Vertex identities of the sub-patch grid, from glued seams only.
+		const unsigned int n1 = n + 1;
+		const std::size_t nodesPerPatch = std::size_t( n1 ) * n1;
+		auto nodeAt = [&]( std::size_t p, unsigned int iu, unsigned int iv ) {
+			return static_cast<unsigned int>( p * nodesPerPatch + iv * n1 + iu );
+		};
+		auto sideNode = [&]( std::size_t p, int s, unsigned int k ) {
+			switch( s ) {
+			default:
+			case 0: return nodeAt( p, k, 0 );
+			case 1: return nodeAt( p, n, k );
+			case 2: return nodeAt( p, n - k, n );
+			case 3: return nodeAt( p, 0, n - k );
+			}
+		};
+		UnionFindNodes uf( nPatches * nodesPerPatch );
+		for( std::size_t id = 0; id < match.size(); ++id ) {
+			const int m = match[id];
+			if( m > static_cast<int>( id ) ) {
+				for( unsigned int k = 0; k <= n; ++k ) {
+					uf.Unite( sideNode( id / 4, static_cast<int>( id % 4 ), k ),
+					          sideNode( static_cast<std::size_t>( m ) / 4, m % 4, n - k ) );
+				}
+			}
+		}
+
+		// G1: sub-patch nets.  Glued boundaries are then made BITWISE
+		// equal by assignment, not by hoping two rounding sequences agree
+		// (the build's -ffast-math may contract the same expression
+		// differently at different inline sites): every vertex takes its
+		// first-seen position and every glued sub-patch side its owner's
+		// control points.  Before assignment each copy must agree with the
+		// owner to `seamTol` -- a sanity check only, since the glue itself
+		// was proved exactly on the input control points above.
+		const Scalar seamTol = Scalar( 1e-9 ) * ( diag + maxAbs );
+		std::vector<SubPatchRec> subs( nPatches * n * n );
+		auto subIndex = [&]( std::size_t p, unsigned int iu, unsigned int iv ) {
+			return ( p * n + iv ) * n + iu;
+		};
+		for( std::size_t p = 0; p < nPatches; ++p ) {
+			for( unsigned int iv = 0; iv < n; ++iv ) {
+				for( unsigned int iu = 0; iu < n; ++iu ) {
+					SubPatchRec& rec = subs[subIndex( p, iu, iv )];
+					rec.net = SubdivideBezierPatchRange( patches[p],
+						Scalar( iu ) / Scalar( n ), Scalar( iu + 1 ) / Scalar( n ),
+						Scalar( iv ) / Scalar( n ), Scalar( iv + 1 ) / Scalar( n ) );
+					const unsigned int cn[4] = {
+						nodeAt( p, iu, iv ), nodeAt( p, iu + 1, iv ),
+						nodeAt( p, iu + 1, iv + 1 ), nodeAt( p, iu, iv + 1 ) };
+					for( int k = 0; k < 4; ++k ) {
+						rec.corner[k] = uf.Find( cn[k] );
+					}
+					for( int k = 0; k < 4; ++k ) {
+						for( int m = k + 1; m < 4; ++m ) {
+							if( rec.corner[k] == rec.corner[m] ) {
+								r.reason = "sub-patch with identified corners";
+								return r;
 							}
 						}
 					}
 				}
 			}
 		}
-
-		// Connectedness check.
-		std::vector<unsigned char> visited( nTris, 0 );
-		std::vector<unsigned int> queue;
-		queue.reserve( nTris );
-		visited[0] = 1;
-		queue.push_back( 0 );
-		for( std::size_t head = 0; head < queue.size(); ++head ) {
-			const unsigned int t = queue[head];
-			for( unsigned char k = 0; k < adjCount[t]; ++k ) {
-				const unsigned int nb = adj[t][k];
-				if( !visited[nb] ) {
-					visited[nb] = 1;
-					queue.push_back( nb );
+		{
+			std::vector<Point3> nodePos( nPatches * nodesPerPatch );
+			std::vector<unsigned char> nodePosSet( nPatches * nodesPerPatch, 0 );
+			for( SubPatchRec& rec : subs ) {
+				for( int k = 0; k < 4; ++k ) {
+					int ci, cj;
+					NetCornerIndex( k, ci, cj );
+					Point3& pos = rec.net.c[ci].pts[cj];
+					const unsigned int root = rec.corner[k];
+					if( !nodePosSet[root] ) {
+						nodePosSet[root] = 1;
+						nodePos[root] = pos;
+					} else {
+						if( !( Vector3Ops::Magnitude( Vector3Ops::mkVector3( pos, nodePos[root] ) ) <= seamTol ) ) {
+							r.reason = "glued seam nodes disagree in position";
+							return r;
+						}
+						pos = nodePos[root];
+					}
 				}
 			}
 		}
-		if( queue.size() != nTris ) {
-			return false;
-		}
-
-		// Step 4 embedding check on all triangle pairs with overlapping inflated AABBs.
-		for( std::size_t i = 0; i < nTris; ++i ) {
-			for( std::size_t j = i + 1; j < nTris; ++j ) {
-				if( !PairMeetsOnlyInSharedFaces(
-					&corners[3 * i], &wid[3 * i],
-					&corners[3 * j], &wid[3 * j], epsSq ) ) {
+		// Glued sub-patch side pairs: (owner, side) -> (partner, side),
+		// the partner's side being the owner's reversed.
+		auto glueSide = [&]( std::size_t owner, int so, std::size_t partner, int sp ) {
+			const PatchCurve co = NetSide( subs[owner].net, so );
+			const PatchCurve cp = NetSide( subs[partner].net, sp );
+			for( int m = 0; m < 4; ++m ) {
+				if( !( Vector3Ops::Magnitude( Vector3Ops::mkVector3( cp[m], co[3 - m] ) ) <= seamTol ) ) {
 					return false;
 				}
 			}
-		}
-
-		// Positive enclosed volume check (outward-wound solid).
-		Point3 bbLo = corners[0], bbHi = corners[0];
-		for( const Point3& p : corners ) {
-			bbLo.x = std::min( bbLo.x, p.x ); bbLo.y = std::min( bbLo.y, p.y ); bbLo.z = std::min( bbLo.z, p.z );
-			bbHi.x = std::max( bbHi.x, p.x ); bbHi.y = std::max( bbHi.y, p.y ); bbHi.z = std::max( bbHi.z, p.z );
-		}
-		const Point3 centre( 0.5 * ( bbLo.x + bbHi.x ), 0.5 * ( bbLo.y + bbHi.y ), 0.5 * ( bbLo.z + bbHi.z ) );
-		Scalar vol = 0;
-		for( std::size_t t = 0; t < nTris; ++t ) {
-			const Point3* P = &corners[3 * t];
-			vol += Vector3Ops::Dot( Vector3Ops::mkVector3( P[0], centre ),
-				Vector3Ops::Cross( Vector3Ops::mkVector3( P[1], centre ), Vector3Ops::mkVector3( P[2], centre ) ) );
-		}
-		return vol > eps * eps * eps;
-	}
-
-	template<std::size_t N>
-	struct PatchSideCurve
-	{
-		std::array<Point3, N> pts;
-		unsigned int patchIdx = 0;
-		unsigned char sideIdx = 0;
-		bool collapsed = false;
-	};
-
-	template<std::size_t N>
-	bool ValidateAndMatchPatchSides(
-		const std::vector<std::array<PatchSideCurve<N>, 4> >& patchSides,
-		bool& outAllMatchedClosed,
-		bool& outPeelsToEmptyOpen )
-	{
-		outAllMatchedClosed = false;
-		outPeelsToEmptyOpen = false;
-		const std::size_t nPatches = patchSides.size();
-		if( nPatches == 0 ) {
-			return false;
-		}
-
-		const WeldPointLess less;
-		struct EndpointKey
-		{
-			Point3 a;
-			Point3 b;
-			bool operator<( const EndpointKey& o ) const
-			{
-				const WeldPointLess cmp;
-				if( cmp( a, o.a ) ) return true;
-				if( cmp( o.a, a ) ) return false;
-				return cmp( b, o.b );
-			}
-			bool operator==( const EndpointKey& o ) const
-			{
-				return PointEqualExact( a, o.a ) && PointEqualExact( b, o.b );
-			}
+			SetNetSide( subs[partner].net, sp, ReversePatchCurve( co ) );
+			return true;
 		};
-
-		struct SideEntry
-		{
-			EndpointKey key;
-			unsigned int patchIdx;
-			unsigned char sideIdx;
-			std::array<Point3, N> pts;
-			bool operator<( const SideEntry& o ) const
-			{
-				return key < o.key;
-			}
-		};
-
-		std::vector<SideEntry> activeSides;
-		activeSides.reserve( nPatches * 4 );
-
 		for( std::size_t p = 0; p < nPatches; ++p ) {
-			unsigned int collapsedCount = 0;
-			for( int s = 0; s < 4; ++s ) {
-				const PatchSideCurve<N>& sc = patchSides[p][s];
-				if( sc.collapsed ) {
-					++collapsedCount;
-					continue;
-				}
-				const Point3& pStart = sc.pts[0];
-				const Point3& pEnd   = sc.pts[N - 1];
-				if( PointEqualExact( pStart, pEnd ) ) {
-					return false; // Non-collapsed side loops back to its start corner.
-				}
-				EndpointKey key;
-				if( less( pStart, pEnd ) ) {
-					key.a = pStart; key.b = pEnd;
-				} else {
-					key.a = pEnd;   key.b = pStart;
-				}
-				activeSides.push_back( { key, sc.patchIdx, sc.sideIdx, sc.pts } );
-			}
-			if( collapsedCount >= 2 ) {
-				return false;
-			}
-		}
-
-		std::sort( activeSides.begin(), activeSides.end() );
-		std::vector<std::vector<unsigned int> > patchAdj( nPatches );
-		std::vector<unsigned char> unmatchedCount( nPatches, 0 );
-		std::size_t totalUnmatched = 0;
-
-		std::size_t i = 0;
-		while( i < activeSides.size() ) {
-			std::size_t j = i + 1;
-			while( j < activeSides.size() && activeSides[j].key == activeSides[i].key ) {
-				++j;
-			}
-			const std::size_t count = j - i;
-			if( count > 2 ) {
-				return false; // Non-manifold seam (>2 patches meeting at one boundary).
-			}
-			if( count == 2 ) {
-				const SideEntry& sA = activeSides[i];
-				const SideEntry& sB = activeSides[i + 1];
-				if( sA.patchIdx == sB.patchIdx ) {
-					return false; // Self-glued patch seam.
-				}
-				// Exact opposite-orientation curve control-point match required.
-				for( std::size_t k = 0; k < N; ++k ) {
-					if( !PointEqualExact( sA.pts[k], sB.pts[N - 1 - k] ) ) {
-						return false; // Either opposing winding (same direction) or mismatched interior control points (crack).
+			for( unsigned int iv = 0; iv < n; ++iv ) {
+				for( unsigned int iu = 0; iu < n; ++iu ) {
+					if( iu + 1 < n && !glueSide( subIndex( p, iu, iv ), 1, subIndex( p, iu + 1, iv ), 3 ) ) {
+						r.reason = "glued seam sides disagree in position";
+						return r;
+					}
+					if( iv + 1 < n && !glueSide( subIndex( p, iu, iv ), 2, subIndex( p, iu, iv + 1 ), 0 ) ) {
+						r.reason = "glued seam sides disagree in position";
+						return r;
 					}
 				}
-				patchAdj[sA.patchIdx].push_back( sB.patchIdx );
-				patchAdj[sB.patchIdx].push_back( sA.patchIdx );
-			} else {
-				++unmatchedCount[activeSides[i].patchIdx];
-				++totalUnmatched;
 			}
-			i = j;
 		}
-
-		// Require a single seam-connected patch component.
-		std::vector<unsigned char> visited( nPatches, 0 );
-		std::vector<unsigned int> queue;
-		queue.reserve( nPatches );
-		visited[0] = 1;
-		queue.push_back( 0 );
-		for( std::size_t head = 0; head < queue.size(); ++head ) {
-			const unsigned int u = queue[head];
-			for( const unsigned int v : patchAdj[u] ) {
-				if( !visited[v] ) {
-					visited[v] = 1;
-					queue.push_back( v );
+		auto sideSub = [&]( std::size_t p, int s, unsigned int k ) {
+			switch( s ) {
+			default:
+			case 0: return subIndex( p, k, 0 );
+			case 1: return subIndex( p, n - 1, k );
+			case 2: return subIndex( p, n - 1 - k, n - 1 );
+			case 3: return subIndex( p, 0, n - 1 - k );
+			}
+		};
+		for( std::size_t id = 0; id < match.size(); ++id ) {
+			const int m = match[id];
+			if( m > static_cast<int>( id ) ) {
+				for( unsigned int k = 0; k < n; ++k ) {
+					if( !glueSide( sideSub( id / 4, static_cast<int>( id % 4 ), k ), static_cast<int>( id % 4 ),
+					               sideSub( static_cast<std::size_t>( m ) / 4, m % 4, n - 1 - k ), m % 4 ) ) {
+						r.reason = "glued seam sides disagree in position";
+						return r;
+					}
 				}
 			}
 		}
-		if( queue.size() != nPatches ) {
-			return false;
-		}
-
-		if( totalUnmatched == 0 ) {
-			outAllMatchedClosed = true;
-			return true;
-		}
-
-		// Free-face peeling on the patch complex.
-		std::vector<unsigned char> peeled( nPatches, 0 );
-		std::vector<unsigned int> peelQueue;
-		peelQueue.reserve( nPatches );
-		for( std::size_t p = 0; p < nPatches; ++p ) {
-			if( unmatchedCount[p] > 0 ) {
-				peeled[p] = 1;
-				peelQueue.push_back( static_cast<unsigned int>( p ) );
+		for( SubPatchRec& rec : subs ) {
+			rec.box = InflatedNetBox( rec.net, inflate );
+			if( !CrossConeProof( &rec.net, 1, rec.V ) ) {
+				r.reason = "sub-patch not provably injective (degenerate, folded or too curved)";
+				r.geometric = true;
+				return r;
 			}
 		}
-		for( std::size_t head = 0; head < peelQueue.size(); ++head ) {
-			const unsigned int u = peelQueue[head];
-			for( const unsigned int v : patchAdj[u] ) {
-				if( !peeled[v] ) {
-					peeled[v] = 1;
-					peelQueue.push_back( v );
+
+		// G2: pairwise embedding over a sort-and-sweep on x.
+		PatchCertWork work;
+		work.remaining = workBudget;
+		std::vector<unsigned int> order( subs.size() );
+		for( std::size_t i = 0; i < order.size(); ++i ) order[i] = static_cast<unsigned int>( i );
+		std::sort( order.begin(), order.end(), [&]( unsigned int x, unsigned int y ) {
+			return subs[x].box.ll.x < subs[y].box.ll.x;
+		} );
+		for( std::size_t oi = 0; oi < order.size(); ++oi ) {
+			const SubPatchRec& A = subs[order[oi]];
+			for( std::size_t oj = oi + 1; oj < order.size(); ++oj ) {
+				const SubPatchRec& B = subs[order[oj]];
+				if( B.box.ll.x > A.box.ur.x ) {
+					break;
+				}
+				if( !work.Spend( 1 ) ) {
+					r.reason = "certification work budget exhausted";
+					return r;
+				}
+				if( !PatchBoxesOverlap( A.box, B.box ) ) {
+					continue;
+				}
+				int shared = 0, ka = -1, kb = -1;
+				for( int a = 0; a < 4; ++a ) {
+					for( int b = 0; b < 4; ++b ) {
+						if( A.corner[a] == B.corner[b] ) {
+							++shared;
+							if( ka < 0 ) { ka = a; kb = b; }
+						}
+					}
+				}
+				if( shared == 0 ) {
+					if( !NetsProvablyDisjoint( A.net, 0, B.net, 0, inflate, work ) ) {
+						r.reason = work.exhausted ? "certification work budget exhausted" :
+							"sub-patches without a shared vertex are not provably disjoint (touching, crossing or T-junction)";
+						r.geometric = !work.exhausted;
+						return r;
+					}
+				} else if( shared == 1 ) {
+					if( !CornerPairSeparated( A.net, ka, B.net, kb, A.V + B.V ) ) {
+						r.reason = "sub-patches sharing one vertex are not provably separated there";
+						r.geometric = true;
+						return r;
+					}
+				} else if( shared == 2 ) {
+					// The two shared vertices must be the ends of one side of
+					// each, traversed in opposite directions.
+					int sa = -1, sb = -1;
+					for( int s = 0; s < 4 && sa < 0; ++s ) {
+						for( int t = 0; t < 4; ++t ) {
+							if( A.corner[s] == B.corner[( t + 1 ) & 3] && A.corner[( s + 1 ) & 3] == B.corner[t] ) {
+								sa = s; sb = t;
+								break;
+							}
+						}
+					}
+					if( sa < 0 ) {
+						r.reason = "sub-patches share two vertices that are not one oppositely-traversed side";
+						return r;
+					}
+					BezierPatch pair[2] = { RotateNet( A.net, ( sa + 2 ) & 3 ), RotateNet( B.net, sb ) };
+					for( int i = 0; i < 4; ++i ) {
+						if( !PatchPointEqual( pair[0].c[i].pts[3], pair[1].c[i].pts[0] ) ) {
+							r.reason = "glued sub-patch sides disagree in position";
+							return r;
+						}
+					}
+					Vector3 V;
+					if( !CrossConeProof( pair, 2, V ) ) {
+						r.reason = "sub-patches sharing a side are not provably injective as a union (fold or sharp crease)";
+						r.geometric = true;
+						return r;
+					}
+				} else {
+					r.reason = "sub-patches share more than one side";
+					return r;
 				}
 			}
 		}
-		if( peelQueue.size() != nPatches ) {
-			return false;
+
+		// C: classification by the exact signed volume.
+		const Point3 centre( Scalar( 0.5 ) * ( lo.x + hi.x ), Scalar( 0.5 ) * ( lo.y + hi.y ), Scalar( 0.5 ) * ( lo.z + hi.z ) );
+		Scalar vol = 0, absSum = 0;
+		for( const BezierPatch& p : patches ) {
+			AccumulatePatchVolume( p, centre, vol, absSum );
 		}
-		outPeelsToEmptyOpen = true;
-		return true;
+		if( freeSides == 0 ) {
+			if( !( vol > Scalar( 1e-9 ) * absSum ) ) {
+				r.reason = "closed surface is inward-wound or encloses no resolvable volume";
+				return r;
+			}
+			r.watertight = true;
+			return r;
+		}
+		r.open = true;
+		r.negative = vol < 0;
+		return r;
+	}
+
+	// Total pair/box work units per certification attempt: a few seconds
+	// at worst, and a set that needs more is REFUSED, never certified.
+	static const std::size_t kPatchCertWorkBudget = std::size_t( 50000000 );
+
+	PatchSetVerdict CertifyBezierNetsAdaptive( const std::vector<BezierPatch>& patches )
+	{
+		PatchSetVerdict r = CertifyBezierNets( patches, 4, kPatchCertWorkBudget );
+		if( !r.watertight && !r.open && r.geometric ) {
+			r = CertifyBezierNets( patches, 8, kPatchCertWorkBudget );
+		}
+		return r;
+	}
+
+	//! The cubic control polygon of the segment E0 -> E1, computed from
+	//! the lexicographically smaller end so the glued partner (E1 -> E0)
+	//! gets the bitwise reverse; the ends are exact.
+	inline PatchCurve ElevatedSegment( const Point3& E0, const Point3& E1 )
+	{
+		const bool fwd = !PatchPointLess( E1, E0 );
+		const Point3& A = fwd ? E0 : E1;
+		const Point3& B = fwd ? E1 : E0;
+		const PatchCurve c = { {
+			A,
+			Point3Ops::WeightedAverage2( B, A, Scalar( 1 ) / Scalar( 3 ) ),
+			Point3Ops::WeightedAverage2( B, A, Scalar( 2 ) / Scalar( 3 ) ),
+			B } };
+		return fwd ? c : ReversePatchCurve( c );
+	}
+
+	//! Exact degree elevation of a bilinear patch (pts[0] = (0,0),
+	//! pts[1] = (0,1), pts[2] = (1,0), pts[3] = (1,1)) to a bicubic net
+	//! with the same (u, v) and hence the same normal Pu x Pv.
+	BezierPatch ElevateBilinear( const BilinearPatch& b )
+	{
+		BezierPatch q;
+		const PatchCurve v0 = ElevatedSegment( b.pts[0], b.pts[2] );	// side v = 0, u increasing
+		const PatchCurve u1 = ElevatedSegment( b.pts[2], b.pts[3] );	// side u = 1, v increasing
+		const PatchCurve v1 = ElevatedSegment( b.pts[1], b.pts[3] );	// v = 1, u increasing
+		const PatchCurve u0 = ElevatedSegment( b.pts[0], b.pts[1] );	// u = 0, v increasing
+		for( int j = 0; j < 4; ++j ) {
+			q.c[0].pts[j] = u0[j];
+			q.c[3].pts[j] = u1[j];
+		}
+		for( int i = 0; i < 4; ++i ) {
+			q.c[i].pts[0] = v0[i];
+			q.c[i].pts[3] = v1[i];
+		}
+		for( int i = 1; i < 3; ++i ) {
+			for( int j = 1; j < 3; ++j ) {
+				q.c[i].pts[j] = Point3Ops::WeightedAverage2( q.c[3].pts[j], q.c[0].pts[j], Scalar( i ) / Scalar( 3 ) );
+			}
+		}
+		return q;
+	}
+
+	void PublishVerdict(
+		const PatchSetVerdict& v,
+		bool& outCertifiedWatertight,
+		bool& outProvablyOpenSheet,
+		bool& outNegativeOpenSignedVolume,
+		const char** outRefusalReason )
+	{
+		outCertifiedWatertight = v.watertight;
+		outProvablyOpenSheet = v.open;
+		outNegativeOpenSignedVolume = v.open && v.negative;
+		if( outRefusalReason ) {
+			*outRefusalReason = v.reason;
+		}
 	}
 }
 
@@ -2825,445 +3210,60 @@ void GeometricUtilities::CertifyBilinearPatchSet(
 	const std::vector<BilinearPatch>& patches,
 	bool& outCertifiedWatertight,
 	bool& outProvablyOpenSheet,
-	bool& outNegativeOpenSignedVolume )
+	bool& outNegativeOpenSignedVolume,
+	const char** outRefusalReason )
 {
-	outCertifiedWatertight = false;
-	outProvablyOpenSheet = false;
-	outNegativeOpenSignedVolume = false;
-	if( patches.empty() ) {
-		return;
-	}
-
-	const std::size_t nPatches = patches.size();
-	std::vector<std::array<PatchSideCurve<2>, 4> > patchSides( nPatches );
-	for( std::size_t p = 0; p < nPatches; ++p ) {
-		const BilinearPatch& bp = patches[p];
+	std::vector<BezierPatch> nets;
+	nets.reserve( patches.size() );
+	for( const BilinearPatch& b : patches ) {
 		for( int k = 0; k < 4; ++k ) {
-			if( !PointFinite( bp.pts[k] ) ) {
+			if( !PatchPointFinite( b.pts[k] ) ) {
+				PatchSetVerdict v;
+				v.reason = "non-finite control point";
+				PublishVerdict( v, outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, outRefusalReason );
 				return;
 			}
 		}
-		// Canonical RISE corner mapping: pts[0]=(0,0), pts[1]=(0,1), pts[2]=(1,0), pts[3]=(1,1).
-		const Point3 c00 = bp.pts[0];
-		const Point3 c01 = bp.pts[1];
-		const Point3 c10 = bp.pts[2];
-		const Point3 c11 = bp.pts[3];
-		patchSides[p][0] = { { c00, c10 }, static_cast<unsigned int>( p ), 0, PointEqualExact( c00, c10 ) };
-		patchSides[p][1] = { { c10, c11 }, static_cast<unsigned int>( p ), 1, PointEqualExact( c10, c11 ) };
-		patchSides[p][2] = { { c11, c01 }, static_cast<unsigned int>( p ), 2, PointEqualExact( c11, c01 ) };
-		patchSides[p][3] = { { c01, c00 }, static_cast<unsigned int>( p ), 3, PointEqualExact( c01, c00 ) };
+		nets.push_back( ElevateBilinear( b ) );
 	}
-
-	bool allMatchedClosed = false;
-	bool peelsToEmptyOpen = false;
-	if( !ValidateAndMatchPatchSides<2>( patchSides, allMatchedClosed, peelsToEmptyOpen ) ) {
-		return;
-	}
-
-	struct BilinearSubRec
+	// Two bilinear sides with the same endpoints ARE the same segment, but
+	// their elevated interior control points come from different call
+	// sites; give every side with a given endpoint pair one canonical
+	// polygon so the exact seam matching sees the glue that is there.
 	{
-		BilinearPatch subPatch;
-		Vector3 coeffs[4];
-		Vector3 unitN;
-		unsigned int wCorners[4];
-	};
-
-	std::vector<BilinearSubRec> subRecs;
-	subRecs.reserve( nPatches * 16 );
-	std::vector<Point3> gridPoints;
-	gridPoints.reserve( nPatches * 25 );
-
-	for( std::size_t p = 0; p < nPatches; ++p ) {
-		const BilinearPatch& bp = patches[p];
-		// Check whole-patch analytic normal Bernstein coefficients at the 4 corners.
-		const Vector3 nCorners[4] = {
-			GeometricUtilities::BilinearPatchNormalAt( bp, 0.0, 0.0 ),
-			GeometricUtilities::BilinearPatchNormalAt( bp, 1.0, 0.0 ),
-			GeometricUtilities::BilinearPatchNormalAt( bp, 0.0, 1.0 ),
-			GeometricUtilities::BilinearPatchNormalAt( bp, 1.0, 1.0 )
+		struct Key
+		{
+			Point3 a, b;
+			bool operator<( const Key& o ) const
+			{
+				if( PatchPointLess( a, o.a ) ) return true;
+				if( PatchPointLess( o.a, a ) ) return false;
+				return PatchPointLess( b, o.b );
+			}
 		};
-		Vector3 patchSum = nCorners[0] + nCorners[1] + nCorners[2] + nCorners[3];
-		const Scalar patchSumSq = Vector3Ops::SquaredModulus( patchSum );
-		if( !( patchSumSq > Scalar( 1e-24 ) ) ) {
-			return;
-		}
-		const Vector3 patchDir = patchSum * ( Scalar( 1 ) / std::sqrt( patchSumSq ) );
-		unsigned int positiveCorners = 0;
-		for( int c = 0; c < 4; ++c ) {
-			const Scalar lenSq = Vector3Ops::SquaredModulus( nCorners[c] );
-			if( lenSq > Scalar( 1e-24 ) ) {
-				if( !( Vector3Ops::Dot( nCorners[c], patchDir ) > Scalar( 1e-6 ) * std::sqrt( lenSq ) ) ) {
-					return; // Analytic bilinear normal reverses or folds within the patch.
-				}
-				++positiveCorners;
-			}
-		}
-		if( positiveCorners < 3 ) {
-			return;
-		}
-
-		for( unsigned int iv = 0; iv <= 4; ++iv ) {
-			for( unsigned int iu = 0; iu <= 4; ++iu ) {
-				gridPoints.push_back( EvalBilinearGrid4( bp, iu, iv ) );
+		std::map<Key, PatchCurve> canonical;
+		for( BezierPatch& q : nets ) {
+			for( int s = 0; s < 4; ++s ) {
+				const PatchCurve c = NetSide( q, s );
+				const bool fwd = !PatchPointLess( c[3], c[0] );
+				const Key key = { fwd ? c[0] : c[3], fwd ? c[3] : c[0] };
+				const PatchCurve oriented = fwd ? c : ReversePatchCurve( c );
+				const auto it = canonical.insert( std::make_pair( key, oriented ) ).first;
+				SetNetSide( q, s, fwd ? it->second : ReversePatchCurve( it->second ) );
 			}
 		}
 	}
-
-	std::vector<unsigned int> gridWeldId;
-	Scalar gridEps = 0;
-	if( !GeometricUtilities::WeldVertexPositions( gridPoints, gridWeldId, &gridEps ) ) {
-		return;
-	}
-
-	std::vector<Point3> triCorners;
-	triCorners.reserve( nPatches * 32 * 3 );
-	Vector3 globalNormalSum( 0, 0, 0 );
-
-	for( std::size_t p = 0; p < nPatches; ++p ) {
-		const BilinearPatch& bp = patches[p];
-		const std::size_t baseGrid = p * 25;
-		for( unsigned int iv = 0; iv < 4; ++iv ) {
-			const Scalar v0 = Scalar( 0.25 ) * Scalar( iv );
-			const Scalar v1 = v0 + Scalar( 0.25 );
-			for( unsigned int iu = 0; iu < 4; ++iu ) {
-				const Scalar u0 = Scalar( 0.25 ) * Scalar( iu );
-				const Scalar u1 = u0 + Scalar( 0.25 );
-				BilinearSubRec rec;
-				rec.subPatch = SubdivideBilinearPatchRange( bp, u0, u1, v0, v1 );
-				rec.coeffs[0] = GeometricUtilities::BilinearPatchNormalAt( bp, u0, v0 );
-				rec.coeffs[1] = GeometricUtilities::BilinearPatchNormalAt( bp, u1, v0 );
-				rec.coeffs[2] = GeometricUtilities::BilinearPatchNormalAt( bp, u0, v1 );
-				rec.coeffs[3] = GeometricUtilities::BilinearPatchNormalAt( bp, u1, v1 );
-				const Vector3 sum = rec.coeffs[0] + rec.coeffs[1] + rec.coeffs[2] + rec.coeffs[3];
-				const Scalar sumSq = Vector3Ops::SquaredModulus( sum );
-				if( !( sumSq > Scalar( 1e-24 ) ) ) {
-					return;
-				}
-				rec.unitN = sum * ( Scalar( 1 ) / std::sqrt( sumSq ) );
-				globalNormalSum = globalNormalSum + rec.unitN;
-
-				const std::size_t i00 = baseGrid + iv * 5 + iu;
-				const std::size_t i10 = baseGrid + iv * 5 + ( iu + 1 );
-				const std::size_t i01 = baseGrid + ( iv + 1 ) * 5 + iu;
-				const std::size_t i11 = baseGrid + ( iv + 1 ) * 5 + ( iu + 1 );
-				rec.wCorners[0] = gridWeldId[i00];
-				rec.wCorners[1] = gridWeldId[i10];
-				rec.wCorners[2] = gridWeldId[i01];
-				rec.wCorners[3] = gridWeldId[i11];
-				subRecs.push_back( rec );
-
-				if( rec.wCorners[0] != rec.wCorners[1] &&
-				    rec.wCorners[1] != rec.wCorners[2] &&
-				    rec.wCorners[2] != rec.wCorners[0] ) {
-					triCorners.push_back( gridPoints[i00] );
-					triCorners.push_back( gridPoints[i10] );
-					triCorners.push_back( gridPoints[i01] );
-				}
-				if( rec.wCorners[1] != rec.wCorners[3] &&
-				    rec.wCorners[3] != rec.wCorners[2] &&
-				    rec.wCorners[2] != rec.wCorners[1] ) {
-					triCorners.push_back( gridPoints[i10] );
-					triCorners.push_back( gridPoints[i11] );
-					triCorners.push_back( gridPoints[i01] );
-				}
-			}
-		}
-	}
-
-	bool isGlobalGraph = false;
-	if( peelsToEmptyOpen && Vector3Ops::SquaredModulus( globalNormalSum ) > Scalar( 1e-24 ) ) {
-		const Vector3 gDir = Vector3Ops::Normalize( globalNormalSum );
-		isGlobalGraph = true;
-		for( const BilinearSubRec& rec : subRecs ) {
-			for( int c = 0; c < 4; ++c ) {
-				const Scalar lenSq = Vector3Ops::SquaredModulus( rec.coeffs[c] );
-				if( lenSq > Scalar( 1e-24 ) &&
-				    !( Vector3Ops::Dot( rec.coeffs[c], gDir ) > Scalar( 1e-6 ) * std::sqrt( lenSq ) ) ) {
-					isGlobalGraph = false;
-					break;
-				}
-			}
-			if( !isGlobalGraph ) break;
-		}
-	}
-
-	if( !isGlobalGraph ) {
-		for( std::size_t i = 0; i < subRecs.size(); ++i ) {
-			for( std::size_t j = i + 1; j < subRecs.size(); ++j ) {
-				bool shareCorner = false;
-				for( int a = 0; a < 4 && !shareCorner; ++a ) {
-					for( int b = 0; b < 4; ++b ) {
-						if( subRecs[i].wCorners[a] == subRecs[j].wCorners[b] ) {
-							shareCorner = true;
-							break;
-						}
-					}
-				}
-				if( shareCorner ) {
-					const Vector3 pairSum = subRecs[i].unitN + subRecs[j].unitN;
-					const Scalar pairSumSq = Vector3Ops::SquaredModulus( pairSum );
-					if( !( pairSumSq > Scalar( 1e-12 ) ) ) {
-						return;
-					}
-					const Vector3 pairDir = pairSum * ( Scalar( 1 ) / std::sqrt( pairSumSq ) );
-					for( int c = 0; c < 4; ++c ) {
-						const Scalar lenSqI = Vector3Ops::SquaredModulus( subRecs[i].coeffs[c] );
-						if( lenSqI > Scalar( 1e-24 ) &&
-						    !( Vector3Ops::Dot( subRecs[i].coeffs[c], pairDir ) > Scalar( 1e-6 ) * std::sqrt( lenSqI ) ) ) {
-							return;
-						}
-						const Scalar lenSqJ = Vector3Ops::SquaredModulus( subRecs[j].coeffs[c] );
-						if( lenSqJ > Scalar( 1e-24 ) &&
-						    !( Vector3Ops::Dot( subRecs[j].coeffs[c], pairDir ) > Scalar( 1e-6 ) * std::sqrt( lenSqJ ) ) ) {
-							return;
-						}
-					}
-				} else {
-					if( !BilinearSubPatchesDisjointRecursive( subRecs[i].subPatch, subRecs[j].subPatch, 3 ) ) {
-						return;
-					}
-				}
-			}
-		}
-	}
-
-	if( allMatchedClosed ) {
-		outCertifiedWatertight = IsEmbeddedClosedOrientedTriangulation( triCorners );
-	} else if( peelsToEmptyOpen ) {
-		const OpenSurfaceCertificate cert = IsEmbeddedOpenOrientedSurface( triCorners );
-		if( cert.certified ) {
-			outProvablyOpenSheet = true;
-			outNegativeOpenSignedVolume = ( cert.signedVolumeAboutCentre < Scalar( 0 ) );
-		}
-	}
+	PublishVerdict( CertifyBezierNetsAdaptive( nets ),
+		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, outRefusalReason );
 }
 
 void GeometricUtilities::CertifyBezierPatchSet(
 	const std::vector<BezierPatch>& patches,
 	bool& outCertifiedWatertight,
 	bool& outProvablyOpenSheet,
-	bool& outNegativeOpenSignedVolume )
+	bool& outNegativeOpenSignedVolume,
+	const char** outRefusalReason )
 {
-	outCertifiedWatertight = false;
-	outProvablyOpenSheet = false;
-	outNegativeOpenSignedVolume = false;
-	if( patches.empty() ) {
-		return;
-	}
-
-	const std::size_t nPatches = patches.size();
-	std::vector<std::array<PatchSideCurve<4>, 4> > patchSides( nPatches );
-	for( std::size_t p = 0; p < nPatches; ++p ) {
-		const BezierPatch& bp = patches[p];
-		for( int i = 0; i < 4; ++i ) {
-			for( int j = 0; j < 4; ++j ) {
-				if( !PointFinite( bp.c[i].pts[j] ) ) {
-					return;
-				}
-			}
-		}
-		const std::array<Point3, 4> s0 = { bp.c[0].pts[0], bp.c[1].pts[0], bp.c[2].pts[0], bp.c[3].pts[0] };
-		const std::array<Point3, 4> s1 = { bp.c[3].pts[0], bp.c[3].pts[1], bp.c[3].pts[2], bp.c[3].pts[3] };
-		const std::array<Point3, 4> s2 = { bp.c[3].pts[3], bp.c[2].pts[3], bp.c[1].pts[3], bp.c[0].pts[3] };
-		const std::array<Point3, 4> s3 = { bp.c[0].pts[3], bp.c[0].pts[2], bp.c[0].pts[1], bp.c[0].pts[0] };
-		auto isCollapsed4 = []( const std::array<Point3, 4>& c ) {
-			return PointEqualExact( c[0], c[1] ) && PointEqualExact( c[1], c[2] ) && PointEqualExact( c[2], c[3] );
-		};
-		patchSides[p][0] = { s0, static_cast<unsigned int>( p ), 0, isCollapsed4( s0 ) };
-		patchSides[p][1] = { s1, static_cast<unsigned int>( p ), 1, isCollapsed4( s1 ) };
-		patchSides[p][2] = { s2, static_cast<unsigned int>( p ), 2, isCollapsed4( s2 ) };
-		patchSides[p][3] = { s3, static_cast<unsigned int>( p ), 3, isCollapsed4( s3 ) };
-	}
-
-	bool allMatchedClosed = false;
-	bool peelsToEmptyOpen = false;
-	if( !ValidateAndMatchPatchSides<4>( patchSides, allMatchedClosed, peelsToEmptyOpen ) ) {
-		return;
-	}
-
-	struct BezierSubRec
-	{
-		BezierPatch subPatch;
-		Vector3 coeffs[6][6];
-		Vector3 unitN;
-		unsigned int wCorners[4];
-	};
-
-	std::vector<BezierSubRec> subRecs;
-	subRecs.reserve( nPatches * 16 );
-	std::vector<Point3> gridPoints;
-	gridPoints.reserve( nPatches * 25 );
-
-	for( std::size_t p = 0; p < nPatches; ++p ) {
-		const BezierPatch& bp = patches[p];
-		for( unsigned int iv = 0; iv <= 4; ++iv ) {
-			for( unsigned int iu = 0; iu <= 4; ++iu ) {
-				gridPoints.push_back( EvalBezierGrid4( bp, iu, iv ) );
-			}
-		}
-	}
-
-	std::vector<unsigned int> gridWeldId;
-	Scalar gridEps = 0;
-	if( !GeometricUtilities::WeldVertexPositions( gridPoints, gridWeldId, &gridEps ) ) {
-		return;
-	}
-
-	std::vector<Point3> triCorners;
-	triCorners.reserve( nPatches * 32 * 3 );
-	Vector3 globalNormalSum( 0, 0, 0 );
-
-	for( std::size_t p = 0; p < nPatches; ++p ) {
-		const BezierPatch& bp = patches[p];
-		const std::size_t baseGrid = p * 25;
-		for( unsigned int iv = 0; iv < 4; ++iv ) {
-			const Scalar v0 = Scalar( 0.25 ) * Scalar( iv );
-			const Scalar v1 = v0 + Scalar( 0.25 );
-			for( unsigned int iu = 0; iu < 4; ++iu ) {
-				const Scalar u0 = Scalar( 0.25 ) * Scalar( iu );
-				const Scalar u1 = u0 + Scalar( 0.25 );
-				BezierSubRec rec;
-				rec.subPatch = SubdivideBezierPatchRange( bp, u0, u1, v0, v1 );
-				ComputeBezierNormalBernsteinCoeffs( rec.subPatch, rec.coeffs );
-
-				Vector3 sum( 0, 0, 0 );
-				for( int a = 0; a < 6; ++a ) {
-					for( int b = 0; b < 6; ++b ) {
-						sum = sum + rec.coeffs[a][b];
-					}
-				}
-				const Scalar sumSq = Vector3Ops::SquaredModulus( sum );
-				if( !( sumSq > Scalar( 1e-24 ) ) ) {
-					return;
-				}
-				rec.unitN = sum * ( Scalar( 1 ) / std::sqrt( sumSq ) );
-				globalNormalSum = globalNormalSum + rec.unitN;
-
-				// Analytic Bernstein normal-cone check on the sub-patch:
-				// Every non-collapsed Bernstein coefficient must have strictly positive
-				// projection onto rec.unitN, proving the analytic sub-patch has non-vanishing
-				// Jacobian and is a smooth single-valued graph over the plane perp to rec.unitN.
-				unsigned int positiveCount = 0;
-				for( int a = 0; a < 6; ++a ) {
-					for( int b = 0; b < 6; ++b ) {
-						const Scalar lenSq = Vector3Ops::SquaredModulus( rec.coeffs[a][b] );
-						const bool onCollapsedBoundary =
-							( iv == 0 && b == 0 && patchSides[p][0].collapsed ) ||
-							( iu == 3 && a == 5 && patchSides[p][1].collapsed ) ||
-							( iv == 3 && b == 5 && patchSides[p][2].collapsed ) ||
-							( iu == 0 && a == 0 && patchSides[p][3].collapsed );
-						if( lenSq <= Scalar( 1e-24 ) ) {
-							if( !onCollapsedBoundary ) {
-								return;
-							}
-							continue;
-						}
-						if( !( Vector3Ops::Dot( rec.coeffs[a][b], rec.unitN ) > Scalar( 1e-6 ) * std::sqrt( lenSq ) ) ) {
-							return;
-						}
-						++positiveCount;
-					}
-				}
-				if( positiveCount < 24 ) {
-					return;
-				}
-
-				const std::size_t i00 = baseGrid + iv * 5 + iu;
-				const std::size_t i10 = baseGrid + iv * 5 + ( iu + 1 );
-				const std::size_t i01 = baseGrid + ( iv + 1 ) * 5 + iu;
-				const std::size_t i11 = baseGrid + ( iv + 1 ) * 5 + ( iu + 1 );
-				rec.wCorners[0] = gridWeldId[i00];
-				rec.wCorners[1] = gridWeldId[i10];
-				rec.wCorners[2] = gridWeldId[i01];
-				rec.wCorners[3] = gridWeldId[i11];
-				subRecs.push_back( rec );
-
-				if( rec.wCorners[0] != rec.wCorners[1] &&
-				    rec.wCorners[1] != rec.wCorners[2] &&
-				    rec.wCorners[2] != rec.wCorners[0] ) {
-					triCorners.push_back( gridPoints[i00] );
-					triCorners.push_back( gridPoints[i10] );
-					triCorners.push_back( gridPoints[i01] );
-				}
-				if( rec.wCorners[1] != rec.wCorners[3] &&
-				    rec.wCorners[3] != rec.wCorners[2] &&
-				    rec.wCorners[2] != rec.wCorners[1] ) {
-					triCorners.push_back( gridPoints[i10] );
-					triCorners.push_back( gridPoints[i11] );
-					triCorners.push_back( gridPoints[i01] );
-				}
-			}
-		}
-	}
-
-	bool isGlobalGraph = false;
-	if( peelsToEmptyOpen && Vector3Ops::SquaredModulus( globalNormalSum ) > Scalar( 1e-24 ) ) {
-		const Vector3 gDir = Vector3Ops::Normalize( globalNormalSum );
-		isGlobalGraph = true;
-		for( const BezierSubRec& rec : subRecs ) {
-			for( int a = 0; a < 6 && isGlobalGraph; ++a ) {
-				for( int b = 0; b < 6; ++b ) {
-					const Scalar lenSq = Vector3Ops::SquaredModulus( rec.coeffs[a][b] );
-					if( lenSq > Scalar( 1e-24 ) &&
-					    !( Vector3Ops::Dot( rec.coeffs[a][b], gDir ) > Scalar( 1e-6 ) * std::sqrt( lenSq ) ) ) {
-						isGlobalGraph = false;
-						break;
-					}
-				}
-			}
-		}
-	}
-
-	if( !isGlobalGraph ) {
-		for( std::size_t i = 0; i < subRecs.size(); ++i ) {
-			for( std::size_t j = i + 1; j < subRecs.size(); ++j ) {
-				bool shareCorner = false;
-				for( int a = 0; a < 4 && !shareCorner; ++a ) {
-					for( int b = 0; b < 4; ++b ) {
-						if( subRecs[i].wCorners[a] == subRecs[j].wCorners[b] ) {
-							shareCorner = true;
-							break;
-						}
-					}
-				}
-				if( shareCorner ) {
-					const Vector3 pairSum = subRecs[i].unitN + subRecs[j].unitN;
-					const Scalar pairSumSq = Vector3Ops::SquaredModulus( pairSum );
-					if( !( pairSumSq > Scalar( 1e-12 ) ) ) {
-						return;
-					}
-					const Vector3 pairDir = pairSum * ( Scalar( 1 ) / std::sqrt( pairSumSq ) );
-					for( int a = 0; a < 6; ++a ) {
-						for( int b = 0; b < 6; ++b ) {
-							const Scalar lenSqI = Vector3Ops::SquaredModulus( subRecs[i].coeffs[a][b] );
-							if( lenSqI > Scalar( 1e-24 ) &&
-							    !( Vector3Ops::Dot( subRecs[i].coeffs[a][b], pairDir ) > Scalar( 1e-6 ) * std::sqrt( lenSqI ) ) ) {
-								return;
-							}
-							const Scalar lenSqJ = Vector3Ops::SquaredModulus( subRecs[j].coeffs[a][b] );
-							if( lenSqJ > Scalar( 1e-24 ) &&
-							    !( Vector3Ops::Dot( subRecs[j].coeffs[a][b], pairDir ) > Scalar( 1e-6 ) * std::sqrt( lenSqJ ) ) ) {
-								return;
-							}
-						}
-					}
-				} else {
-					if( !BezierSubPatchesDisjointRecursive( subRecs[i].subPatch, subRecs[j].subPatch, 3 ) ) {
-						return;
-					}
-				}
-			}
-		}
-	}
-
-	if( allMatchedClosed ) {
-		outCertifiedWatertight = IsEmbeddedClosedOrientedTriangulation( triCorners );
-	} else if( peelsToEmptyOpen ) {
-		const OpenSurfaceCertificate cert = IsEmbeddedOpenOrientedSurface( triCorners );
-		if( cert.certified ) {
-			outProvablyOpenSheet = true;
-			outNegativeOpenSignedVolume = ( cert.signedVolumeAboutCentre < Scalar( 0 ) );
-		}
-	}
+	PublishVerdict( CertifyBezierNetsAdaptive( patches ),
+		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, outRefusalReason );
 }
-

@@ -132,8 +132,9 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// merely because each individual patch is open (`patches` is a vector;
 	// `.bezier` files load all patches into one geometry).  DL-616 adds an
 	// analytic patch-set certificate (`CertifyBezierPatchSet`) in Prepare()
-	// that checks exact boundary-curve matching, Bernstein normal-cone
-	// regularity, free-face peeling, and sub-patch convex-hull embedding.
+	// that proves exact seam topology, a connected 2-manifold with
+	// boundary, and an EMBEDDING (sub-patch injectivity plus pairwise
+	// separation; see the certifier's header comment).
 	// Only when the entire patch set is certified as an embedded open
 	// oriented sheet does it stamp `ri.bProvablyNoInterior` (which
 	// `Object::IntersectRay` further scopes to clear refractive materials).
