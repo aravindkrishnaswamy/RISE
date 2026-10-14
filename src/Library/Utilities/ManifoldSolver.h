@@ -296,7 +296,7 @@ namespace RISE
 			Scalar				eta;			///< Surface MATERIAL'S IOR at this vertex (e.g. 1.5 for typical glass).  Kept for backward compatibility with callers that just want "the dielectric's nominal IOR".  For half-vector / Snell / Fresnel math, prefer (etaI, etaT) below — they encode the actual interface, including nested-dielectric cases where neither side is air.
 			Scalar				etaI;			///< IOR on the INCOMING (`wi`) side of the interface — Walter et al. 2007 notation η_i.  This is the medium the ray is travelling FROM as it hits this vertex.  Default 1.0 (air).
 			Scalar				etaT;			///< IOR on the OUTGOING (`wo`) side of the interface — Walter et al. 2007 notation η_t.  This is the medium the ray is travelling INTO as it leaves this vertex.  Default 1.0 (air).
-			Scalar				radianceEtaI;	///< Stack-top IOR before the crossing when pricing RISE::RadianceEtaScale (0.0 sentinel = use etaI).  Differs from etaI at a non-top closed exit beneath an open-sheet entry (DL-619).
+			Scalar				radianceEtaI;	///< DL-619: the index RISE::RadianceEtaScale prices this crossing FROM, i.e. the receiver -> light walk's IOR-stack top before the crossing -- except on a certified open sheet, where it is etaI (the sheet's face-rule index).  0.0 sentinel = use etaI.  Differs from etaI at a non-top closed exit beneath an open-sheet entry.  Every chain producer must set it consistently (`ManifoldSolver::AssignRadianceEtas` is the stack-free form).
 			///<
 			///< Together (etaI, etaT) replace the old `eta_eff = isExiting ? 1/eta : eta` derivation, which silently assumed the OPPOSITE side of every interface was air (IOR=1.0).  That assumption holds for a single dielectric in air (the typical SMS test case) but BREAKS for nested dielectrics — e.g. an air-cavity sphere (IOR=1.0) inside a glass shell (IOR=1.5), where the inner sphere's interface has glass on one side and air on the other.  Without (etaI, etaT), Newton would solve the half-vector constraint h ∝ -(1·wi + 1·wo) at the air-cavity vertex (which is the REFLECTION constraint) instead of the actual Snell refraction h ∝ -(1.5·wi + 1.0·wo).  Convergence at the wrong constraint root explains the SMS rejection cliff on Veach Egg / luminous orb scenes.
 			///<
@@ -308,6 +308,7 @@ namespace RISE
 			bool				attenuationIsInteriorTransmittance;	///< Dielectric per-unit-distance tau; exiting transmission only.
 			bool				isReflection;	///< True if the chain ray bounces off (mirror, Fresnel reflection on glass, or TIR); false if it refracts through.
 			bool				canRefract;		///< True if the underlying material can refract (dielectric).  False for pure mirrors / conductors.  Selects the throughput law: dielectrics use Fresnel(cosI, η_i, η_t) (covers reflection, refraction, and TIR); mirrors take full reflectance from the painter without an angle-dependent Fresnel factor.  Default true so hand-constructed test chains and pre-existing back-compat callers behave as dielectrics — the prior implicit assumption.
+			bool				isOpenSheet;	///< DL-619: the vertex lies on a certified open sheet (`RayIntersectionGeometric::bProvablyNoInterior`), crossed by its face rule (DL-345).
 			bool				isExiting;		///< True if ray EXITS the object at this vertex (glass→air).  Set at seed-build time via IOR-stack object tracking.  Refraction-direction code uses this (NOT a local dot test) because a double-sided thin-sheet mesh can be crossed twice with the normal pointing in the same direction at both hits.
 			const IObject*		pObject;		///< Object this vertex lies on
 			const IMaterial*	pMaterial;		///< Material at this vertex
@@ -345,6 +346,7 @@ namespace RISE
 			attenuationIsInteriorTransmittance( false ),
 			isReflection( false ),
 			canRefract( true ),
+			isOpenSheet( false ),
 			isExiting( false ),
 			pObject( 0 ),
 			pMaterial( 0 ),
@@ -1259,8 +1261,24 @@ namespace RISE
 			unsigned int ReversePhotonChainForSeed(
 				const SMSPhoton& photon,
 				std::vector<ManifoldVertex>& chain,
-				Scalar nm = 0
+				Scalar nm = 0,
+				const IORStack* pReceiverStack = 0
 				) const;
+
+			/// DL-619: assigns every vertex's `radianceEtaI` from the chain's
+			/// own interface indices, as the receiver -> light walk's IOR-stack
+			/// top before each crossing: @a receiverTop at the first vertex,
+			/// then the previous REFRACTION's `etaT` (a walk's top after any
+			/// crossing is that crossing's etaT; a reflection leaves the stack
+			/// alone), except at a certified open sheet, which prices from its
+			/// own `etaI` (DL-345).  `SnellContinueChain` records the same
+			/// values from its live stack; this is the form for chains that
+			/// were not built by that walk (photon-seeded chains, the
+			/// wavelength refresh's fallback).
+			static void AssignRadianceEtas(
+				std::vector<ManifoldVertex>& chain,
+				Scalar receiverTop
+				);
 
 			/// Computes a single converged trial's contribution at the
 			/// shading point.  Performs the visibility check, BSDF eval,
