@@ -2457,28 +2457,28 @@ static void TestDL620ReviewFindings()
 
 	// P3-5.  Step 4's grid indices must stay in int64 range and the
 	// insertion budget must hold.  A caller-supplied weld that joins a
-	// triangle 1e30 away to a self-intersecting ribbon (topology valid, so
-	// Steps 1-3 pass) used to cast ~1e33 to int64 (undefined behaviour;
-	// on arm64 it saturated and the insertion loop never terminated).  The
-	// ribbon's intersection must still be found and reported.
+	// triangle 1e30 away to a ribbon (topology valid, so Steps 1-3 pass)
+	// used to cast ~6e29 to int64 -- undefined behaviour (UBSan
+	// float-cast-overflow aborts there; an -O3 arm64 build happened to
+	// survive it).  Genuinely welded input can never span more than
+	// nTris cells, so such input is now refused, not gridded.
 	{
 		std::vector<Point3> corners = {
 			Point3( -1.0, -1.0, 0.0 ), Point3( 1.0, -1.0, 0.0 ), Point3( 0.0, 1.0, 0.0 ),
 			Point3( 1.0, -1.0, 0.0 ), Point3( 0.8, 0.5, 0.5 ), Point3( 0.0, 1.0, 0.0 ),
-			Point3( 0.0, 1.0, 0.0 ), Point3( 0.8, 0.5, 0.5 ), Point3( -0.8, -1.0, -0.5 ),
+			Point3( 0.0, 1.0, 0.0 ), Point3( 0.8, 0.5, 0.5 ), Point3( 0.0, 2.0, 0.2 ),
 			Point3( 1e30, 0.0, 0.0 ), Point3( 1e30, 1.0, 0.0 ), Point3( 1e30, 0.0, 1.0 ) };
 		const std::vector<unsigned int> weld = { 0, 1, 2,  1, 3, 2,  2, 3, 4,  4, 3, 5 };
 		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
-		Check( !cert.certified && !cert.topologicalRefusal && cert.refusalTriA < 3 && cert.refusalTriB < 3 &&
-			cert.refusalTriA != cert.refusalTriB,
-			"P3-5: remote-outlier input terminates, refuses, and still reports the ribbon's own intersecting pair" );
+		Check( !cert.certified && !cert.topologicalRefusal,
+			"P3-5: an embedded ribbon joined by its weld labels to a triangle 1e30 away is refused, not gridded" );
 
-		// The same remote outlier attached to an EMBEDDED ribbon: no in-range
-		// failure to report, so the result is decided by the geometry alone
-		// (here certified), not by an overflowing grid.
-		corners[8] = Point3( 0.0, 2.0, 0.2 );
-		const auto cert2 = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
-		Check( cert2.certified, "P3-5: embedded ribbon with a remote outlier certifies on its geometry" );
+		// Control: the same labels with the fourth triangle placed where the
+		// labels say it is (sharing the ribbon's edge) certify normally.
+		std::vector<Point3> near = corners;
+		near[9] = corners[8]; near[10] = corners[7]; near[11] = Point3( 1.2, 1.8, 0.4 );
+		Check( GeometricUtilities::IsEmbeddedOpenOrientedSurface( near, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) ).certified,
+			"P3-5 control: the same weld with the fourth triangle in place certifies" );
 
 		// Non-finite and overflowing input is refused outright.
 		std::vector<Point3> bad = corners;
@@ -2491,9 +2491,8 @@ static void TestDL620ReviewFindings()
 			"P3-5: a NaN coordinate is refused" );
 		bad = corners;
 		bad[9] = Point3( 1.7e308, 0.0, 0.0 ); bad[10] = Point3( 1.7e308, 1.0, 0.0 ); bad[11] = Point3( 1.7e308, 0.0, 1.0 );
-		bad[0] = Point3( -1.7e308, -1.0, 0.0 );
 		Check( !GeometricUtilities::IsEmbeddedOpenOrientedSurface( bad, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) ).certified,
-			"P3-5: coordinates whose span overflows are refused" );
+			"P3-5: a triangle at the edge of the double range is refused" );
 	}
 }
 

@@ -2062,10 +2062,16 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		// DL-620 review P3-5: the grid index of every box corner must be a
 		// finite integer well inside int64 before it is cast (an out-of-range
 		// float-to-integer conversion is undefined behaviour), and the
-		// insertion count must actually meet its budget.  Input that cannot
-		// satisfy both -- non-finite or overflowing coordinates, or a caller
-		// whose supplied weld labels join geometrically remote triangles --
-		// is REFUSED (conservative), never certified on a partial test.
+		// insertion count must actually meet its budget.  Steps 2b-3 have
+		// proved the surface connected through welded corners, and welded
+		// corners lie within 2 eps of each other, so along any axis the span
+		// is at most the sum of all box extents: span <= nTris * cell < 2^30
+		// cells.  A wider span means the weld labels join geometrically
+		// distant corners (only a caller-supplied weld can do that) or the
+		// coordinates are degenerate; like non-finite or overflowing input,
+		// or a budget that cannot be met, it is REFUSED (conservative) rather
+		// than tested on a grid whose single huge cell would make the pair
+		// search quadratic.
 		const Scalar span = std::max( gHi.x - gLo.x, std::max( gHi.y - gLo.y, gHi.z - gLo.z ) );
 		Scalar cell = meanExtent / Scalar( nTris );
 		if( !( cell > 0 ) || !std::isfinite( cell ) || !std::isfinite( span ) ) {
@@ -2073,12 +2079,8 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		}
 		// 2^40 cells per axis keeps every index, and the +1 / product
 		// arithmetic below, exact in double and far inside int64.
-		const Scalar maxCellsPerAxis = Scalar( 1099511627776.0 );
-		if( !( span / cell <= maxCellsPerAxis ) ) {
-			cell = span / maxCellsPerAxis;
-			if( !( cell > 0 ) || !std::isfinite( cell ) ) {
-				return result;
-			}
+		if( !( span / cell <= Scalar( 1099511627776.0 ) ) ) {
+			return result;
 		}
 		const auto coord = [&]( const Scalar v, const Scalar o ) -> std::int64_t {
 			return static_cast<std::int64_t>( std::floor( double( ( v - o ) / cell ) ) );
