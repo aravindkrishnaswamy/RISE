@@ -13,7 +13,6 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include <map>
 #include "TriangleMeshGeometryIndexed.h"
 #include "../Utilities/ExpressionMemo.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -35,6 +34,7 @@
 #include <cmath>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <unordered_map>
 #include <utility>
@@ -518,11 +518,13 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	// Recompute triangle areas + CDF (vertex positions changed).
 	ComputeAreas(positionsChanged,graphProofReusable,refusalProofReusable);
     // Array indices stay fixed, but the position-weld partition and folded
-    // face discriminator do not. Re-prove closed membership after motion.
-    // A certified open sheet (or a triangle with exact coincident corners)
-    // already establishes refusal of closed certification.
+    // face discriminator do not. Re-prove closed membership after motion,
+    // under exactly the rule DoneIndexedTriangles applies (P2-1): a
+    // certified open sheet is never watertight, which ComputeWatertightness
+    // itself enforces.  Exactly coincident triangle corners weld to one id,
+    // so the full proof would refuse them as degenerate; skip it there.
     if(positionsChanged) {
-        if(refusalProofReusable || m_bShapeOpenSheet)
+        if(refusalProofReusable)
             m_bWatertight=false;
         else
             ComputeWatertightness();
@@ -1228,6 +1230,23 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	if( ptr_polygons.empty() || pPoints.empty() ) {
 		return;
 	}
+	// DL-620 review P2-1.  "Provably open" and "watertight" are mutually
+	// exclusive claims about one surface, yet they are decided at two
+	// tolerances: the open certificate (ComputeAreas) welds at eps from the
+	// bounding box of the USED corners, this proof at eps from ALL of
+	// pPoints, unused storage included.  A crack wider than the first but
+	// narrower than the second (one far unused vertex suffices) used to
+	// certify BOTH, and since UpdateVertices skips this proof for an open
+	// sheet, any later deformation silently changed the answer.  The open
+	// certificate wins: it has proved a real boundary at the finer
+	// tolerance, and a signed parity test on a cracked surface can be
+	// wrong for rays through the crack, while refusing interior() only
+	// falls back to the honest unsigned distance.  Every caller (build,
+	// deformation, deserialization) reaches this check after ComputeAreas,
+	// so all three agree by construction.
+	if( m_bShapeOpenSheet ) {
+		return;
+	}
 
 	if( !m_lastWeldValid || m_lastWeldedId.size() != pPoints.size() ) {
 		m_lastWeldValid = GeometricUtilities::WeldVertexPositions(
@@ -1328,8 +1347,11 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 		unsigned int count = 0;
 		unsigned int triIdx[2] = { 0, 0 };
 	};
+	// At most 3 nTris distinct edges, about 1.5 nTris on a closed mesh: a
+	// capacity of at least 4 nTris keeps the worst-case load below 3/4
+	// (DL-620 review P3-1: 6 nTris cost ~200 MB at 980k triangles).
 	std::size_t edgeCap = 16;
-	while( edgeCap < nTris * 6 ) {
+	while( edgeCap < nTris * 4 ) {
 		edgeCap <<= 1;
 	}
 	const std::size_t edgeMask = edgeCap - 1;

@@ -679,14 +679,20 @@ namespace RISE
 		}
 
 		//! DL-143.  Welds `points` to a shared id per PHYSICAL corner:
-		//! `outWeldedId[i]` is the welded id of `points[i]`; two positions
-		//! share an id iff they are within `eps = max(1e-9, 1e-6 x bbox
-		//! diagonal)` of each other (grid of cell `eps`, 3x3x3 neighbour
-		//! scan).  `outEps`, when non-null, receives that epsilon.  False
-		//! on a non-finite input.  (Moved here unchanged from
-		//! TriangleMeshGeometryIndexed.cpp so the DL-382 certificate below
-		//! welds with exactly the watertightness weld's rule; the full
-		//! rationale is on TriangleMeshGeometryIndexed::ComputeWatertightness.)
+		//! `outWeldedId[i]` is the welded id of `points[i]`: points are
+		//! visited in order and each joins the NEAREST earlier
+		//! representative within `eps = max(1e-9, 1e-6 x bbox diagonal,
+		//! minEps)` (ties: lowest id), else founds a new one.  The partition
+		//! is a pure function of the input sequence.  It is not an
+		//! equivalence on positions: points within `eps` can fall in
+		//! different classes.  `outTransitive` reports an UNAMBIGUOUS weld
+		//! (each point within `eps/2` of its representative, representatives
+		//! more than `1.5 eps` apart, so every point had exactly one
+		//! candidate); even then different classes are only guaranteed
+		//! `eps/2` apart.  `outEps`, when non-null, receives `eps`.  False
+		//! on a non-finite input.  (Shared with the DL-382 certificate below
+		//! so it welds with exactly the watertightness weld's rule; the full
+		//! rationale is on the definition.)
 		extern bool WeldVertexPositions(
 			const std::vector<Point3>& points,
 			std::vector<unsigned int>& outWeldedId,

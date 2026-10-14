@@ -1388,39 +1388,58 @@ char GeometricUtilities::WhichSideOfPlane(
 	}
 }
 
-//! (Moved unchanged from TriangleMeshGeometryIndexed.cpp, DL-382.)
+//! (Moved from TriangleMeshGeometryIndexed.cpp, DL-382.)
 //! DL-143.  Welds `points` to a shared id per PHYSICAL corner, so
 //! that watertightness (and anything else that needs "is this the
 //! same vertex") can be decided by position rather than by which
 //! array slot a per-corner import/tessellation pipeline happened to
-//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`;
-//! two positions land in the same id iff they are within `eps` of
-//! each other under the grid below.
+//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`.
 //!
-//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal)`, i.e. relative
-//! to THIS mesh's own scale, not an absolute constant -- an absolute
-//! epsilon would either be too coarse for a millimetre-scale asset
-//! or too fine to absorb import float noise on a kilometre-scale
-//! one.  A cell size of `eps` with a 3x3x3 neighbour-cell scan finds
-//! every prior welded point within `eps` regardless of which side of
-//! a cell boundary two near-duplicate positions fall on; an exact
-//! (bit-identical) duplicate -- the common case, both for a
-//! deliberately shared corner and for this engine's own
-//! `TessellateToMesh` producers, which copy the source position
-//! verbatim rather than recomputing it -- is necessarily caught by
-//! this same scan (distance 0 <= eps), so no separate exact-match
-//! fast path is needed for correctness; it would only change the
-//! constant factor, not the result.
+//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal, minEps)`, i.e.
+//! relative to THIS point set's own scale, not an absolute constant --
+//! an absolute epsilon would either be too coarse for a millimetre-scale
+//! asset or too fine to absorb import float noise on a kilometre-scale
+//! one.
 //!
-//! O(n) expected (each point does one grid-bucket insert/lookup plus
-//! a bounded 27-cell scan whose average occupancy is O(1) for a
-//! well-formed mesh); see ComputeWatertightness's own build-cost
-//! measurement for the wall-clock this adds on a real asset.
-//! DL-197.  `outEps`, when non-null, receives the SAME relative
-//! epsilon this function used for its own weld -- so a caller that
-//! needs a second geometric test at "the same tolerance the weld
-//! itself trusted" (the coplanarity test below) doesn't re-derive
-//! the formula and risk drifting from it.
+//! The partition (DL-620 review, P3-2).  Points are visited in input
+//! order.  A point joins the NEAREST existing representative within
+//! `eps` (ties: the lowest id); with none within `eps` it becomes a
+//! new representative, numbered in creation order.  The result is
+//! therefore a pure function of the input sequence -- it does not
+//! depend on the grid's cell size, hash-table capacity or bucket scan
+//! order (an earlier first-match scan did, so two equally valid grids
+//! could produce two different partitions for the same mesh).  The
+//! weld is NOT an equivalence relation on raw positions: two points
+//! within `eps` of each other can land in different classes, and two
+//! points in one class can be up to `2 eps` apart.
+//!
+//! `outTransitive` (when non-null) reports whether the weld was
+//! UNAMBIGUOUS: every point lies within `eps/2` of its representative
+//! and representatives are pairwise more than `1.5 eps` apart.  Then
+//! every point had exactly one representative within `eps`, so no
+//! tie-break or visiting-order choice influenced its class, and points
+//! in DIFFERENT classes are at least `eps/2` apart (not `eps`: a
+//! transitive weld still does not certify that the classes are
+//! `eps`-separated).  Callers use it to decide when an earlier weld's
+//! labels can be compared against a new one.
+//!
+//! Grid: cell `32 eps` over coordinates RELATIVE to the bounding box's
+//! low corner (always, DL-620 review P3-4: relative coordinates lie in
+//! [0, diagonal], so the cell arithmetic's rounding error is a few ulps
+//! of the diagonal -- about 1e-10 of `eps` -- however far the mesh is
+//! translated; absolute coordinates at 1e9 x the mesh size made
+//! `rx - floor(rx/cell)*cell` lose whole multiples of `eps`).  A point
+//! whose relative coordinate lies more than `2 eps` (plus that rounding
+//! bound) inside its home cell on every axis has every candidate it
+//! must see (within `1.5 eps`) in the home cell; otherwise the cells
+//! overlapping its search box are scanned too.  An exact (bit-identical)
+//! duplicate, the common case for shared corners, is its own nearest
+//! representative at distance 0 and ends the scan early.
+//!
+//! O(n) expected.  DL-197: `outEps`, when non-null, receives the SAME
+//! epsilon this function used, so a caller that needs a second
+//! geometric test at "the tolerance the weld itself trusted" does not
+//! re-derive the formula.
 bool GeometricUtilities::WeldVertexPositions(
 	const std::vector<Point3>& points,
 	std::vector<unsigned int>& outWeldedId,
@@ -1447,40 +1466,34 @@ bool GeometricUtilities::WeldVertexPositions(
 	const Vector3 extents = bbox.GetExtents();
 	const Scalar diag = Vector3Ops::Magnitude( extents );
 	const Scalar eps = std::max( std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag ), minEps );
-	// Using a cell size of 32*eps ensures over 74% of query points lie
-	// strictly > 1.5*eps inside their home cell on all 3 axes, avoiding
-	// any neighbor-cell lookups while keeping bucket lists short.
+	// A cell of 32 eps puts most points more than 2 eps inside their home
+	// cell on all three axes, so they need no neighbour-cell lookups,
+	// while keeping bucket lists short.
 	const Scalar cell = Scalar( 32 ) * eps;
-	if( !std::isfinite(cell) || !(cell > 0) ) return false;
+	if( !std::isfinite( diag ) || !std::isfinite( cell ) || !( cell > 0 ) ) return false;
 	if( outEps ) { *outEps = eps; }
 
-	// Keep the existing grid for representable absolute coordinates. When
-	// translation exceeds its integer range, use a mesh-local origin.
-	// Relative coordinates are bounded by diag/eps <= 1e6. Strict bounds
-	// below also leave room for the signed +/-1 neighbor additions.
-	// Monotonicity of floor(v/cell) means checking bbox extremes suffices
-	// for all finite points in bbox.
-	const auto safeCoordinate = [cell](Scalar v) {
-		const double c=std::floor(double(v/cell));
-		return std::isfinite(c) && c > double(std::numeric_limits<std::int64_t>::min())
-			&& c < double(std::numeric_limits<std::int64_t>::max());
-	};
-	const bool localGrid = !safeCoordinate(bbox.ll.x) || !safeCoordinate(bbox.ll.y) || !safeCoordinate(bbox.ll.z)
-		|| !safeCoordinate(bbox.ur.x) || !safeCoordinate(bbox.ur.y) || !safeCoordinate(bbox.ur.z);
-	const Point3 origin=localGrid?bbox.ll:Point3(0,0,0);
+	// Relative coordinates lie in [0, extent] with extent <= diag <= 1e6 eps,
+	// so cell indices are at most ~31250 (or 0 when minEps dominates): no
+	// integer range concern.  `slack` bounds the rounding of the relative
+	// coordinate, of its quotient by `cell` and of `fx * cell` -- all a few
+	// ulps of a magnitude <= extent + cell -- and is added to every margin
+	// and search radius below.
+	const Point3 origin = bbox.ll;
+	const Scalar maxExtent = std::max( extents.x, std::max( extents.y, extents.z ) );
+	const Scalar slack = Scalar( 64 ) * std::numeric_limits<Scalar>::epsilon() * ( maxExtent + cell );
+	if( !( maxExtent / cell < Scalar( 1e15 ) ) ) return false;
 	auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
-		return static_cast<std::int64_t>(std::floor(double(v/cell)));
+		return static_cast<std::int64_t>( std::floor( double( v / cell ) ) );
 	};
 	// A simple, well-distributed combine for the 3D cell key -- collisions are
 	// fine (a false-positive bucket collision only costs an extra distance
 	// check, never a wrong weld, since every candidate found is still
 	// distance-checked against `eps` below).
 	auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::uint64_t {
-            // Hash products intentionally wrap modulo 2^64. Convert before
-            // multiplication so large translated cells have defined arithmetic.
 		return static_cast<std::uint64_t>(x) * 73856093ULL
-                ^ static_cast<std::uint64_t>(y) * 19349663ULL
-                ^ static_cast<std::uint64_t>(z) * 83492791ULL;
+			^ static_cast<std::uint64_t>(y) * 19349663ULL
+			^ static_cast<std::uint64_t>(z) * 83492791ULL;
 	};
 
 	struct CellBucket
@@ -1503,8 +1516,8 @@ bool GeometricUtilities::WeldVertexPositions(
 	const Scalar halfEpsSq = Scalar( 0.25 ) * epsSq;
 	const Scalar sepEps = Scalar( 1.5 ) * eps;
 	const Scalar sepEpsSq = Scalar( 2.25 ) * epsSq;
-	const Scalar interiorMargin = Scalar( 2 ) * eps;
-	const Scalar interiorHi = cell - interiorMargin;
+	const Scalar interiorLo = Scalar( 2 ) * eps + slack;
+	const Scalar interiorHi = cell - interiorLo;
 	bool transitive = true;
 
 	auto mixKey = []( std::uint64_t k ) -> std::size_t {
@@ -1529,12 +1542,9 @@ bool GeometricUtilities::WeldVertexPositions(
 		const Scalar rx = p.x - origin.x;
 		const Scalar ry = p.y - origin.y;
 		const Scalar rz = p.z - origin.z;
-		const double fx = std::floor( double( rx / cell ) );
-		const double fy = std::floor( double( ry / cell ) );
-		const double fz = std::floor( double( rz / cell ) );
-		const std::int64_t cx = static_cast<std::int64_t>( fx );
-		const std::int64_t cy = static_cast<std::int64_t>( fy );
-		const std::int64_t cz = static_cast<std::int64_t>( fz );
+		const std::int64_t cx = cellCoord( rx );
+		const std::int64_t cy = cellCoord( ry );
+		const std::int64_t cz = cellCoord( rz );
 		const std::uint64_t homeKey = cellKey( cx, cy, cz );
 
 		std::size_t homeSlot = mixKey( homeKey ) & tableMask;
@@ -1542,72 +1552,72 @@ bool GeometricUtilities::WeldVertexPositions(
 			homeSlot = ( homeSlot + 1 ) & tableMask;
 		}
 
-		unsigned int foundId = 0xFFFFFFFFu;
+		// Nearest representative within eps (ties: lowest id), plus the
+		// ambiguity bookkeeping behind `outTransitive`.
+		unsigned int bestId = 0xFFFFFFFFu;
+		Scalar bestSq = 0;
+		unsigned int withinEps = 0;
 		bool exactMatch = false;
-		for( unsigned int cand = grid[homeSlot].head; cand != 0xFFFFFFFFu; cand = nextInCell[cand] ) {
+		const auto consider = [&]( const unsigned int cand ) {
 			const Point3& wp = weldedPos[cand];
 			if( wp.x == p.x && wp.y == p.y && wp.z == p.z ) {
-				foundId = cand;
+				bestId = cand;
+				bestSq = 0;
 				exactMatch = true;
-				break;
+				return;
 			}
-			const Vector3 d = Vector3Ops::mkVector3( wp, p );
-			const Scalar dSq = Vector3Ops::SquaredModulus( d );
+			const Scalar dSq = Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( wp, p ) );
 			if( dSq <= epsSq ) {
-				if( foundId == 0xFFFFFFFFu ) {
-					foundId = cand;
-					if( dSq > halfEpsSq ) { transitive = false; }
-				} else {
-					transitive = false;
+				++withinEps;
+				if( bestId == 0xFFFFFFFFu || dSq < bestSq || ( dSq == bestSq && cand < bestId ) ) {
+					bestId = cand;
+					bestSq = dSq;
 				}
 			} else if( dSq <= sepEpsSq ) {
 				transitive = false;
 			}
+		};
+
+		for( unsigned int cand = grid[homeSlot].head; cand != 0xFFFFFFFFu && !exactMatch; cand = nextInCell[cand] ) {
+			consider( cand );
 		}
 
 		if( !exactMatch ) {
-			const Scalar dx = rx - Scalar( fx ) * cell;
-			const Scalar dy = ry - Scalar( fy ) * cell;
-			const Scalar dz = rz - Scalar( fz ) * cell;
-			const bool interiorToCell = ( dx > interiorMargin && dx < interiorHi )
-				&& ( dy > interiorMargin && dy < interiorHi )
-				&& ( dz > interiorMargin && dz < interiorHi );
+			// Exact by construction: cx is an integer far below 2^53, so
+			// Scalar(cx) * cell rounds once; `slack` absorbs it.
+			const Scalar dx = rx - Scalar( cx ) * cell;
+			const Scalar dy = ry - Scalar( cy ) * cell;
+			const Scalar dz = rz - Scalar( cz ) * cell;
+			const bool interiorToCell = ( dx > interiorLo && dx < interiorHi )
+				&& ( dy > interiorLo && dy < interiorHi )
+				&& ( dz > interiorLo && dz < interiorHi );
 			if( !interiorToCell ) {
-				const Scalar searchRad = transitive ? sepEps : eps;
+				// Within eps decides membership; within 1.5 eps decides only
+				// the transitivity report, so once that is false eps suffices.
+				const Scalar searchRad = ( transitive ? sepEps : eps ) + slack;
 				const std::int64_t cx0 = cellCoord( rx - searchRad ), cx1 = cellCoord( rx + searchRad );
 				const std::int64_t cy0 = cellCoord( ry - searchRad ), cy1 = cellCoord( ry + searchRad );
 				const std::int64_t cz0 = cellCoord( rz - searchRad ), cz1 = cellCoord( rz + searchRad );
-				for( std::int64_t nz = cz0; nz <= cz1; ++nz ) {
-					for( std::int64_t ny = cy0; ny <= cy1; ++ny ) {
-						for( std::int64_t nx = cx0; nx <= cx1; ++nx ) {
+				for( std::int64_t nz = cz0; nz <= cz1 && !exactMatch; ++nz ) {
+					for( std::int64_t ny = cy0; ny <= cy1 && !exactMatch; ++ny ) {
+						for( std::int64_t nx = cx0; nx <= cx1 && !exactMatch; ++nx ) {
 							if( nx == cx && ny == cy && nz == cz ) {
 								continue;
 							}
-							const std::uint64_t key = cellKey( nx, ny, nz );
-							for( unsigned int cand = findBucketHead( key ); cand != 0xFFFFFFFFu; cand = nextInCell[cand] ) {
-								const Vector3 d = Vector3Ops::mkVector3( weldedPos[cand], p );
-								const Scalar dSq = Vector3Ops::SquaredModulus( d );
-								if( dSq <= epsSq ) {
-									if( foundId == 0xFFFFFFFFu ) {
-										foundId = cand;
-										if( dSq > halfEpsSq ) { transitive = false; }
-									} else {
-										transitive = false;
-									}
-									if( !transitive ) { break; }
-								} else if( dSq <= sepEpsSq ) {
-									transitive = false;
-								}
+							for( unsigned int cand = findBucketHead( cellKey( nx, ny, nz ) );
+								cand != 0xFFFFFFFFu && !exactMatch; cand = nextInCell[cand] ) {
+								consider( cand );
 							}
-							if( foundId != 0xFFFFFFFFu && !transitive ) { break; }
 						}
-						if( foundId != 0xFFFFFFFFu && !transitive ) { break; }
 					}
-					if( foundId != 0xFFFFFFFFu && !transitive ) { break; }
 				}
+			}
+			if( withinEps > 1 || ( withinEps == 1 && bestSq > halfEpsSq ) ) {
+				transitive = false;
 			}
 		}
 
+		unsigned int foundId = bestId;
 		if( foundId == 0xFFFFFFFFu ) {
 			foundId = (unsigned int)weldedPos.size();
 			weldedPos.push_back( p );
@@ -1906,13 +1916,18 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		bool forward[2] = { false, false };
 		unsigned int count = 0;
 	};
+	// At most 3 nTris distinct edges (a manifold mesh has about 1.5 nTris),
+	// so a capacity of at least 4 nTris keeps the worst-case load below 3/4
+	// and the typical one near 3/8 (DL-620 review P3-1: 6 nTris cost ~200 MB
+	// at 980k triangles for a typical load of 0.18).
 	std::size_t edgeCap = 16;
-	while( edgeCap < nTris * 6 ) {
+	while( edgeCap < nTris * 4 ) {
 		edgeCap <<= 1;
 	}
 	const std::size_t edgeMask = edgeCap - 1;
 	std::vector<EdgeUse> edgeTable( edgeCap );
-	std::vector<EdgeUse*> triEdges( 3 * nTris, nullptr );
+	std::vector<unsigned int> triEdgeSlot( 3 * nTris, 0u );
+	const auto triEdge = [&]( const std::size_t i ) -> EdgeUse* { return &edgeTable[triEdgeSlot[i]]; };
 	for( std::size_t t = 0; t < nTris; ++t ) {
 		for( int k = 0; k < 3; ++k ) {
 			const unsigned int a = wid[3 * t + k], b = wid[3 * t + ( k + 1 ) % 3];
@@ -1932,12 +1947,12 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			e.tri[e.count] = (unsigned int)t;
 			e.forward[e.count] = a < b;
 			++e.count;
-			triEdges[3 * t + k] = &e;
+			triEdgeSlot[3 * t + k] = static_cast<unsigned int>( slot );
 		}
 	}
 	bool hasBoundaryEdge = false;
 	for( std::size_t i = 0; i < 3 * nTris; ++i ) {
-		const EdgeUse* e = triEdges[i];
+		const EdgeUse* e = triEdge( i );
 		if( e->count == 1 ) {
 			hasBoundaryEdge = true;
 		} else if( e->count == 2 && e->forward[0] == e->forward[1] ) {
@@ -1963,7 +1978,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		for( std::size_t i = 0; i < q.size(); ++i ) {
 			const unsigned int t = q[i];
 			for( int k = 0; k < 3; ++k ) {
-				const EdgeUse* e = triEdges[3 * t + k];
+				const EdgeUse* e = triEdge( 3 * t + k );
 				if( e->count == 2 ) {
 					const unsigned int other = ( e->tri[0] == t ) ? e->tri[1] : e->tri[0];
 					if( !visited[other] ) {
@@ -1986,7 +2001,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		queue.reserve( nTris );
 		for( std::size_t t = 0; t < nTris; ++t ) {
 			for( int k = 0; k < 3; ++k ) {
-				if( triEdges[3 * t + k]->count == 1 ) {
+				if( triEdge( 3 * t + k )->count == 1 ) {
 					queue.push_back( (unsigned int)t );
 					break;
 				}
@@ -2001,7 +2016,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			alive[t] = 0;
 			++removed;
 			for( int k = 0; k < 3; ++k ) {
-				EdgeUse* e = triEdges[3 * t + k];
+				EdgeUse* e = triEdge( 3 * t + k );
 				--e->count;
 				if( e->count == 1 ) {
 					const unsigned int other = alive[e->tri[0]] ? e->tri[0] : e->tri[1];
@@ -2023,6 +2038,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 	{
 		std::vector<Point3> lo( nTris ), hi( nTris );
 		Point3 gLo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+		Point3 gHi( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 		Scalar meanExtent = 0;
 		for( std::size_t t = 0; t < nTris; ++t ) {
 			const Point3* P = &corners[3 * t];
@@ -2033,22 +2049,47 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			}
 			l = Point3( l.x - eps, l.y - eps, l.z - eps );
 			h = Point3( h.x + eps, h.y + eps, h.z + eps );
+			if( !std::isfinite( l.x ) || !std::isfinite( l.y ) || !std::isfinite( l.z ) ||
+				!std::isfinite( h.x ) || !std::isfinite( h.y ) || !std::isfinite( h.z ) ) {
+				return result;	// P3-5: non-finite geometry is never certified
+			}
 			lo[t] = l;
 			hi[t] = h;
 			gLo.x = std::min( gLo.x, l.x ); gLo.y = std::min( gLo.y, l.y ); gLo.z = std::min( gLo.z, l.z );
+			gHi.x = std::max( gHi.x, h.x ); gHi.y = std::max( gHi.y, h.y ); gHi.z = std::max( gHi.z, h.z );
 			meanExtent += std::max( h.x - l.x, std::max( h.y - l.y, h.z - l.z ) );
 		}
+		// DL-620 review P3-5: the grid index of every box corner must be a
+		// finite integer well inside int64 before it is cast (an out-of-range
+		// float-to-integer conversion is undefined behaviour), and the
+		// insertion count must actually meet its budget.  Input that cannot
+		// satisfy both -- non-finite or overflowing coordinates, or a caller
+		// whose supplied weld labels join geometrically remote triangles --
+		// is REFUSED (conservative), never certified on a partial test.
+		const Scalar span = std::max( gHi.x - gLo.x, std::max( gHi.y - gLo.y, gHi.z - gLo.z ) );
 		Scalar cell = meanExtent / Scalar( nTris );
-		if( !( cell > 0 ) || !std::isfinite( cell ) ) {
+		if( !( cell > 0 ) || !std::isfinite( cell ) || !std::isfinite( span ) ) {
 			return result;
+		}
+		// 2^40 cells per axis keeps every index, and the +1 / product
+		// arithmetic below, exact in double and far inside int64.
+		const Scalar maxCellsPerAxis = Scalar( 1099511627776.0 );
+		if( !( span / cell <= maxCellsPerAxis ) ) {
+			cell = span / maxCellsPerAxis;
+			if( !( cell > 0 ) || !std::isfinite( cell ) ) {
+				return result;
+			}
 		}
 		const auto coord = [&]( const Scalar v, const Scalar o ) -> std::int64_t {
 			return static_cast<std::int64_t>( std::floor( double( ( v - o ) / cell ) ) );
 		};
 		// Bound the insertions: a few huge triangles in a fine mesh would
 		// otherwise touch very many cells; coarsen until the total is linear.
+		// Doubling ends with at most 8 cells per triangle once the cell
+		// exceeds the span, so 64 attempts always suffice for valid input.
 		const double budget = 64.0 * double( nTris ) + 4096.0;
 		double finalTotal = 0;
+		bool withinBudget = false;
 		for( int attempt = 0; attempt < 64; ++attempt ) {
 			double total = 0;
 			for( std::size_t t = 0; t < nTris && total <= budget; ++t ) {
@@ -2058,9 +2099,16 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			}
 			finalTotal = total;
 			if( total <= budget ) {
+				withinBudget = true;
 				break;
 			}
 			cell *= 2;
+			if( !std::isfinite( cell ) ) {
+				break;
+			}
+		}
+		if( !withinBudget ) {
+			return result;
 		}
 		struct CellSlot
 		{
@@ -2072,8 +2120,12 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		const std::size_t estInsertions = ( finalTotal > 0.0 && finalTotal <= budget )
 			? static_cast<std::size_t>( finalTotal )
 			: nTris * 4;
+		// Occupied cells are typically about nTris / 2 (measured: 488,601 for
+		// a 980,000-triangle sheet), and the table doubles whenever it
+		// reaches half load, so start at nTris rather than 4 nTris (DL-620
+		// review P3-1: 168 MB of mostly empty slots at that size).
 		std::size_t cellCap = 16;
-		while( cellCap < nTris * 4 ) {
+		while( cellCap < nTris ) {
 			cellCap <<= 1;
 		}
 		std::size_t cellMask = cellCap - 1;
