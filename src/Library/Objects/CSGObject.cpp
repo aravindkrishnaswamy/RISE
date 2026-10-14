@@ -1050,10 +1050,14 @@ namespace
 	//! closed INTERSECT sheet, sheet MINUS closed) is the part of a
 	//! zero-thickness sheet inside (intersection) or outside (subtraction)
 	//! the closed operand.  Walk the sheet's hits along the local ray from
-	//! `firstSheetHit` and report the first one the inside test keeps.  An
-	//! undecided inside test, or a walk that exhausts `kMaxOpenSheetWalk`,
-	//! keeps the hit (conservative: a reported surface / occluder, never a
-	//! leak).  Returns FALSE when no hit within `dHowFar2` is kept.
+	//! `firstSheetHit` and report the first one the inside test keeps.  The
+	//! inside test already re-decides a disputed parity along a second and
+	//! a third direction (`LeafContains`), so "undecided" needs degenerate
+	//! contacts along two directions at once; then, or when a walk exhausts
+	//! `kMaxOpenSheetWalk`, the hit is KEPT -- a reported surface /
+	//! occluder rather than a light leak, at the price of a possible stray
+	//! sheet fragment in a subtraction.  Returns FALSE when no hit within
+	//! `dHowFar2` is kept.
 	//! `outHit` (optional) receives the kept record in the local frame
 	//! with `range` measured from `localRay`'s origin.
 	bool WalkTrimmedSheet(
@@ -1198,6 +1202,17 @@ int CSGObject::CertificateBits() const
 //!  - OPEN: sheet INTERSECT closed (either order) and sheet MINUS closed:
 //!    a subset of one certified open sheet encloses no volume, and its
 //!    medium convention is that sheet's own.
+//!  - GEOMETRY follows the operand ROLES, not the proof: whenever one
+//!    operand of an intersection / subtraction is a certified open sheet
+//!    and the other is not a sheet, the composite renders as that sheet
+//!    trimmed by the other operand (kTrimSheet*), certified or not, so a
+//!    composite does not change shape when the other operand's closed
+//!    certificate comes or goes.  Only the TRANSPORT claim (the open-sheet
+//!    face rule, bProvablyNoInterior) waits for the closed certificate;
+//!    with an uncertified trimming operand the inside test is still the
+//!    signed-distance sign or voted crossing parity, which is exact for a
+//!    closed solid the certifier could not prove and a best effort
+//!    otherwise.
 //!  - A UNION of sheets is NOT certified, even when disjoint: like the
 //!    mesh certificate, which refuses disconnected pieces, the
 //!    certification of individual pieces does not define their combined
@@ -1217,20 +1232,37 @@ int CSGObject::ComputeCertificateBits() const
 	switch( op )
 	{
 	case CSG_INTERSECTION:
-		if( IsOperandProvablyOpenSheet( pObjectA, true, &neg ) && IsOperandCertifiedWatertight( pObjectB ) ) {
-			bits |= kCertOpenSheetA;
-		} else {
-			neg = false;
-			if( IsOperandCertifiedWatertight( pObjectA ) && IsOperandProvablyOpenSheet( pObjectB, true, &neg ) ) {
+	{
+		bool negA = false, negB = false;
+		const bool sheetA = IsOperandProvablyOpenSheet( pObjectA, true, &negA );
+		const bool sheetB = IsOperandProvablyOpenSheet( pObjectB, true, &negB );
+		if( sheetA && !sheetB ) {
+			bits |= kTrimSheetA;
+			if( IsOperandCertifiedWatertight( pObjectB ) ) {
+				bits |= kCertOpenSheetA;
+				neg = negA;
+			}
+		} else if( sheetB && !sheetA ) {
+			bits |= kTrimSheetB;
+			if( IsOperandCertifiedWatertight( pObjectA ) ) {
 				bits |= kCertOpenSheetB;
+				neg = negB;
 			}
 		}
 		break;
+	}
 	case CSG_SUBTRACTION:
-		if( IsOperandProvablyOpenSheet( pObjectA, true, &neg ) && IsOperandCertifiedWatertight( pObjectB ) ) {
-			bits |= kCertOpenSheetA;
+	{
+		bool negA = false;
+		if( IsOperandProvablyOpenSheet( pObjectA, true, &negA ) && !IsOperandProvablyOpenSheet( pObjectB, true ) ) {
+			bits |= kTrimSheetA;
+			if( IsOperandCertifiedWatertight( pObjectB ) ) {
+				bits |= kCertOpenSheetA;
+				neg = negA;
+			}
 		}
 		break;
+	}
 	default:
 	case CSG_UNION:
 		break;
@@ -1343,14 +1375,15 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	RecoverContainedOperand( pObjectA, riObjA );
 	RecoverContainedOperand( pObjectB, riObjB );
 
-	// DL-617: a certified open-sheet composite treats its sheet operand as
-	// a zero-thickness surface, not the semi-infinite interval
-	// [range, RISE_INFINITY) the solid algebra below would read.
+	// DL-617: a sheet-trimming composite (see ComputeCertificateBits)
+	// treats its sheet operand as a zero-thickness surface, not the
+	// semi-infinite interval [range, RISE_INFINITY) the solid algebra
+	// below would read.
 	const int certBits = CertificateBits();
 	const bool certifiedOpenCSG = ( certBits & ( kCertOpenSheetA | kCertOpenSheetB ) ) != 0;
-	if( certifiedOpenCSG )
+	if( certBits & ( kTrimSheetA | kTrimSheetB ) )
 	{
-		const bool sheetIsA = ( certBits & kCertOpenSheetA ) != 0;
+		const bool sheetIsA = ( certBits & kTrimSheetA ) != 0;
 		Scalar scale = 1;
 		if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
 			scale = 1;
@@ -2396,11 +2429,11 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	RecoverContainedOperand( pObjectA, riObjA );
 	RecoverContainedOperand( pObjectB, riObjB );
 
-	// DL-617: certified open-sheet composite -- see IntersectRay.
+	// DL-617: sheet-trimming composite -- see IntersectRay.
 	const int certBits = CertificateBits();
-	if( certBits & ( kCertOpenSheetA | kCertOpenSheetB ) )
+	if( certBits & ( kTrimSheetA | kTrimSheetB ) )
 	{
-		const bool sheetIsA = ( certBits & kCertOpenSheetA ) != 0;
+		const bool sheetIsA = ( certBits & kTrimSheetA ) != 0;
 		Scalar scale = 1;
 		if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
 			scale = 1;

@@ -75,7 +75,9 @@ namespace RISE
 				kCertWatertight		= 1,	//!< both operands certified closed solids
 				kCertOpenSheetA		= 2,	//!< certified open sheet; operand A is the sheet
 				kCertOpenSheetB		= 4,	//!< certified open sheet; operand B is the sheet
-				kCertNegativeVolume	= 8		//!< the sheet operand's negative-winding warning
+				kCertNegativeVolume	= 8,	//!< the sheet operand's negative-winding warning
+				kTrimSheetA			= 16,	//!< render as operand A's sheet trimmed by B (certified or not)
+				kTrimSheetB			= 32	//!< render as operand B's sheet trimmed by A
 			};
 			mutable std::atomic<long long>			m_certBits;
 			int CertificateBits() const;

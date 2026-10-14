@@ -339,16 +339,21 @@ static void TestCrossingStrip()
 // C. T-junction closed body (P2-4)
 //////////////////////////////////////////////////////////////////////
 
+//! The unit cube with its top face split at x = 0.5: the -Y and +Y
+//! faces' top sides each meet two half-sides -> T-junctions at
+//! (0.5, 0, 1) and (0.5, 1, 1).  The body still encloses the cube.
+static std::vector<BilinearPatch> MakeTJunctionCube()
+{
+	std::vector<BilinearPatch> c = MakeBilinearCube();
+	c[1] = MakeQuad( Point3(0,0,1), Point3(0.5,0,1), Point3(0.5,1,1), Point3(0,1,1) );
+	c.push_back( MakeQuad( Point3(0.5,0,1), Point3(1,0,1), Point3(1,1,1), Point3(0.5,1,1) ) );
+	return c;
+}
+
 static void TestTJunction()
 {
 	std::cout << "C. T-junction" << std::endl;
-	std::vector<BilinearPatch> c = MakeBilinearCube();
-	// Replace +Z with two half quads split at x = 0.5: the -Y and +Y faces'
-	// top sides each meet two half-sides -> T-junctions at (0.5, 0, 1) and
-	// (0.5, 1, 1).  The body still encloses the cube.
-	c[1] = MakeQuad( Point3(0,0,1), Point3(0.5,0,1), Point3(0.5,1,1), Point3(0,1,1) );
-	c.push_back( MakeQuad( Point3(0.5,0,1), Point3(1,0,1), Point3(1,1,1), Point3(0.5,1,1) ) );
-	const Verdict v = CertBilinear( c );
+	const Verdict v = CertBilinear( MakeTJunctionCube() );
 	std::cout << "    cube with split top: " << Describe( v ) << std::endl;
 	Check( !v.open && !v.watertight, "C: closed body with T-junctions is refused (not certified open)" );
 }
@@ -453,6 +458,7 @@ static void TestOpenSheetCSG()
 	std::cout << "E/F. open-sheet CSG against patch solids" << std::endl;
 	const std::string spherePath = WriteBezier( "dl616_cubesphere.bezier", MakeCubeSphere( 1, true ) );
 	const std::string framePath = WriteBilinear( "dl616_frame.bilinear", MakeBilinearFrame() );
+	const std::string tcubePath = WriteBilinear( "dl616_tcube.bilinear", MakeTJunctionCube() );
 	const std::string sheetZ =
 		"clippedplane_geometry\n{\n name sheet_z\n pta -3 -3 0\n ptb 3 -3 0\n ptc 3 3 0\n ptd -3 3 0\n}\n";
 	const std::string sheetX =
@@ -466,6 +472,8 @@ static void TestOpenSheetCSG()
 		sheetAt( "sheet_m12", -1.2 ) + sheetAt( "sheet_m17", -1.7 ) +
 		"bezierpatch_geometry\n{\n name ball\n file " + spherePath + "\n}\n"
 		"bilinearpatch_geometry\n{\n name frame\n file " + framePath + "\n}\n"
+		"bilinearpatch_geometry\n{\n name tcube\n file " + tcubePath + "\n}\n"
+		"clippedplane_geometry\n{\n name sheet_half\n pta -1 -1 0.5\n ptb 2 -1 0.5\n ptc 2 2 0.5\n ptd -1 2 0.5\n}\n"
 		"sphere_geometry\n{\n name sph\n radius 0.5\n}\n";
 	auto obj = [&]( const std::string& name, const std::string& geom, const std::string& extra = "" ) {
 		scene += "standard_object\n{\n name " + name + "\n geometry " + geom + "\n material glass\n" + extra + "}\n";
@@ -487,6 +495,10 @@ static void TestOpenSheetCSG()
 	// F: nested closed operand -- sheet minus (ball union small sphere).
 	obj( "c1", "ball" ); obj( "c2", "sph", " position 2 0 0\n" ); csg( "solids", "c1", "c2", "union" );
 	obj( "c3", "sheet_z" ); csg( "minus_solids", "c3", "solids", "subtraction" );
+	// P3-b: the same trimming geometry when the solid is closed but NOT
+	// certified (the T-junction cube).
+	obj( "ts1", "sheet_half" ); obj( "tc1", "tcube" ); csg( "inter_tcube", "ts1", "tc1", "intersection" );
+	obj( "ts2", "sheet_half" ); obj( "tc2", "tcube" ); csg( "minus_tcube", "ts2", "tc2", "subtraction" );
 	// P2-1: sheet minus (Bezier ball UNION a sphere overlapping the ball's
 	// exit along the ray).  A ray down x = 0.3 enters the ball at z ~ 0.95,
 	// leaves it at z ~ -0.95 inside the sphere (centre z = -1, r = 0.5) and
@@ -561,6 +573,21 @@ static void TestOpenSheetCSG()
 		Check( std::isfinite( t.geometric.ptExit.x ) && std::isfinite( t.geometric.ptExit.z ),
 			"E: a transformed open-sheet composite reports a finite ptExit" );
 	}
+	{	// P3-b: geometry does not depend on the trimming solid's certificate.
+		const IObject* it = loaded.Object( "inter_tcube" );
+		const IObject* mt = loaded.Object( "minus_tcube" );
+		Check( it && mt && !AsCSG( it )->IsProvablyOpenSheet() && !AsCSG( mt )->IsProvablyOpenSheet(),
+			"P3-b: sheet trimmed by an UNCERTIFIED closed solid carries no open-sheet certificate" );
+		if( it && mt ) {
+			const RayIntersection in = Cast( *it, Point3( 0.3, 0.4, 3 ), down );
+			Check( in.geometric.bHit && std::fabs( in.geometric.range - 2.5 ) < 1e-6 && in.geometric.range2 == RISE_INFINITY &&
+				!in.geometric.bProvablyNoInterior,
+				"P3-b: sheet INTERSECT uncertified solid renders the zero-thickness trimmed sheet" );
+			Check( !Cast( *mt, Point3( 0.3, 0.4, 3 ), down ).geometric.bHit &&
+				Cast( *mt, Point3( 1.5, 0.4, 3 ), down ).geometric.bHit,
+				"P3-b: sheet MINUS uncertified solid removes only the inside part" );
+		}
+	}
 	{	// P2-1: overlapping solids in the closed operand.
 		const IObject* m0 = loaded.Object( "minus_ovl0" );
 		const IObject* m1 = loaded.Object( "minus_ovl1" );
@@ -599,6 +626,7 @@ static void TestOpenSheetCSG()
 	}
 	std::remove( spherePath.c_str() );
 	std::remove( framePath.c_str() );
+	std::remove( tcubePath.c_str() );
 }
 
 //////////////////////////////////////////////////////////////////////
