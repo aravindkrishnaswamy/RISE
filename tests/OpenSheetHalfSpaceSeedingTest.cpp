@@ -24,7 +24,8 @@
 //        (declined) for two materials
 //    A6  a closed glass sphere between point and pane is transparent;
 //        a point inside it seeds [pane, sphere]
-//    A7  probe budget: 6 walks with no sheet, +1 per candidate sheet
+//    A7  probe budget: 1 walk with no sheet (the pre-DL-618 cost), +1
+//        per open sheet in the scene
 //    A8  OpenSheetEnclosesCrossing: a CLOSED object sharing the sheet's
 //        material neither vetoes nor approves; an opaque room around the
 //        crossing makes the sheet's medium not continue
@@ -275,17 +276,20 @@ static void PartA()
 				Check( a == expectIn[i] && b == expectIn[i], label );
 			}
 		}
-		// Recorded, not gated: the documented DISCOVERY residual.  A pane of
-		// half-extent 1 at height 2, tilted 40 deg, holds (0.2, 0) in its
-		// prism, but no axis probe from that point meets it (each misses
-		// the pane by up to sqrt(2) x the distance to its plane), so the
-		// candidate is never proposed and the rotated point is not seeded.
-		Loaded small( Header() + RotatedSheet( "g_s", 2, 1, -40 ) + Obj( "s", "g_s", "glass15" ) );
-		if( small.ok ) {
+		// A small pane (half-extent 1 at height 2, tilted 40 deg) holds
+		// (0.2, 0) in its prism, but no axis probe from that point meets it
+		// (each misses the pane by up to sqrt(2) x the distance to its
+		// plane): per-seed axis DISCOVERY never proposed it and the answer
+		// depended on the scene's orientation.  The catalog lists every
+		// sheet, so it is seeded in both frames.
+		Loaded smallFlat( Header() + RotatedSheet( "g_s", 2, 1, 0 ) + Obj( "s", "g_s", "glass15" ) );
+		Loaded smallRot( Header() + RotatedSheet( "g_s", 2, 1, -40 ) + Obj( "s", "g_s", "glass15" ) );
+		if( smallFlat.ok && smallRot.ok ) {
 			double x = 0.2, y = 0.0;
+			const bool a = smallFlat.Seed( Point3( x, y, 0.1 ) ).Depth() == 2;
 			RotZ( -40, x, y );
-			std::cout << "  [recorded] small tilted pane, point in its prism but off every axis: seeded = "
-				<< int( small.Seed( Point3( x, y, 0.1 ) ).Depth() == 2 ) << " (discovery residual; unrotated: 1)" << std::endl;
+			const bool b = smallRot.Seed( Point3( x, y, 0.1 ) ).Depth() == 2;
+			Check( a && b, "A3: a small tilted pane off every probe axis is still seeded inside its prism" );
 		}
 	}
 
@@ -352,8 +356,8 @@ static void PartA()
 			one.Seed( Point3( 0, 0, 0 ) );
 			const std::size_t c1 = IORStackSeeding::DebugGetProbeTraceCount();
 			char label[160];
-			std::snprintf( label, sizeof(label), "A7: probe walks: %zu with no sheet (want 6), %zu with one candidate sheet (want 7)", c0, c1 );
-			Check( c0 == 6 && c1 == 7, label );
+			std::snprintf( label, sizeof(label), "A7: probe walks: %zu with no sheet (want 1, the pre-DL-618 cost), %zu with one open sheet (want 2)", c0, c1 );
+			Check( c0 == 1 && c1 == 2, label );
 		}
 	}
 

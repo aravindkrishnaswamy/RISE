@@ -202,12 +202,11 @@ namespace RISE
 		// locking, correct under the render thread pool since each
 		// thread seeds its own subpaths independently.  Counts EVERY
 		// scene ray walk `SeedFromPoint` makes -- `TallyProbe` calls
-		// (parity walks and DL-618 discovery-only walks alike) and the
-		// DL-618 sheet-normal confirmations (`OpenSheetNormalRayReaches`)
+		// and the DL-618 sheet-normal confirmations (`OpenSheetNormalRayReaches`)
 		// -- so regression tests can assert its total probe-trace budget
 		// stays bounded.  Its consumers are
 		// `TranslucentInitialContainmentTest` and
-		// `IORStackSeedingRegressionTest`.
+		// `OpenSheetHalfSpaceSeedingTest`.
 		namespace Diagnostics
 		{
 			inline std::size_t& ProbeTraceCounter()
@@ -262,27 +261,16 @@ namespace RISE
 		//    the sheet (outside its normal prism), nor from its front.
 		//  - For a planar S the predicate depends on `pos` and S only --
 		//    not on any probe axis -- so it is invariant under rotating
-		//    the scene (once S is proposed; see CANDIDATES below), and
-		//    it changes only where `pos` crosses the
+		//    the scene, and it changes only where `pos` crosses the
 		//    boundary of S's normal prism (or an occluder's shadow along
 		//    N), which IS the medium boundary of this convention.
-		//  - A curved sheet (displaced, Bezier, non-planar mesh) uses N
-		//    at the point where a discovery probe met it; that is an
-		//    approximation of "its normal", exact for planar sheets.
-		//  - CANDIDATES are discovered by the six principal-axis probes
-		//    (`TallyProbe`'s `sheets` output): an axis probe that meets S
-		//    on its back face before any blocking surface proposes S.  A
-		//    sheet no axis probe meets is not proposed even if its normal
-		//    ray would confirm it.  The axis nearest N is within
-		//    acos(1/sqrt 3) of it, so a planar S IS proposed whenever it
-		//    covers the disk of radius sqrt(2) d about the foot of the
-		//    normal from `pos` (d = the distance to S's plane) and that
-		//    axis ray is unblocked; for an axis-aligned S the axis along N
-		//    IS the normal ray, so discovery is exact.  A small sheet
-		//    tilted away from every axis and seen from comparatively far
-		//    away can be missed -- and then the answer does depend on the
-		//    scene's orientation.  Accepted residual
-		//    (OpenSheetHalfSpaceSeedingTest A3 records one).
+		//  - CANDIDATES are the scene's open refractive sheets, listed once
+		//    per scene state by `OpenSheetCatalog` (no per-seed discovery,
+		//    so every sheet is tested whatever its orientation, and a scene
+		//    with none pays nothing).  N is each sheet's true normal where
+		//    the catalog's probe met it: exact for a planar sheet, an
+		//    approximation of "its normal" for a curved one (displaced,
+		//    Bezier, non-planar mesh).
 		//  - Two confirmed sheets are NESTED when one's back face is on
 		//    the other's normal ray before it (the passed one is inner).
 		//    Two confirmed sheets neither of which is on the other's ray
@@ -340,74 +328,130 @@ namespace RISE
 			return kMembershipTransparent;
 		}
 
-		//! DL-618: an open refractive sheet a discovery probe met on its BACK
-		//! face before any blocking surface -- a membership CANDIDATE.
-		struct OpenSheetCandidate
+		//! DL-618: one certified open refractive sheet of the scene.
+		struct OpenSheetCatalogEntry
 		{
 			const IObject* pObj;
-			Scalar ior;
-			Vector3 normal;		//!< true geometric normal where the probe met it
+			Vector3 normal;		//!< true geometric normal where the catalog's probe met it
 		};
 
-		static const std::size_t kMaxOpenSheetCandidates = 8;
-
-		struct OpenSheetCandidates
+		//! DL-618 (review P2-1): the scene's certified open refractive sheets,
+		//! found ONCE per scene state instead of by per-seed discovery walks
+		//! (which made `SeedFromPoint` -- run per camera sample, per HWSS lane
+		//! and per subpath -- cost several extra BVH traversals in EVERY scene;
+		//! measured +66 % CPU on an open scene with no sheet at all).
+		//!
+		//! Built by probing each world-visible object ALONE from outside its
+		//! bounds, toward its centre and four quarter points on each axis,
+		//! and classifying the first hit with a true side
+		//! (`ClassifyMembershipHit`): a sheet certifies every hit, so one hit
+		//! decides.  An object none of those 15 rays meets is not listed (its
+		//! open-sheet medium is then never seeded -- a documented residual,
+		//! e.g. a sheet perforated exactly at all five aim points).
+		//!
+		//! Thread-local, keyed on the object manager, its spatial-structure
+		//! generation (process-unique, advanced by every spatial edit) and its
+		//! item count.  RESIDUAL: an edit that changes only an object's
+		//! MATERIAL (opaque <-> glass) without a spatial invalidation keeps the
+		//! old listing until the next spatial edit; the correct home for this
+		//! list is the object manager's PrepareForRendering, which this file
+		//! does not own.
+		struct OpenSheetCatalog
 		{
-			OpenSheetCandidate items[kMaxOpenSheetCandidates];
-			std::size_t count;
+			const IObjectManager* pObjects;
+			unsigned long long generation;
+			unsigned int itemCount;
+			std::vector<OpenSheetCatalogEntry> sheets;
 
-			OpenSheetCandidates() : count( 0 ) {}
-
-			void Add( const IObject* pObj, const Scalar ior, const Vector3& normal )
-			{
-				for( std::size_t i = 0; i < count; i++ ) {
-					if( items[i].pObj == pObj ) {
-						return;
-					}
-				}
-				if( count < kMaxOpenSheetCandidates ) {
-					items[count].pObj = pObj;
-					items[count].ior = ior;
-					items[count].normal = normal;
-					count++;
-				}
-			}
+			OpenSheetCatalog() : pObjects( 0 ), generation( 0 ), itemCount( 0 ) {}
 		};
 
-		/// Walks one probe ray from `pos` along `dir`.
-		///
-		/// With `parityWalk` (the default) fills `out` with the per-object
-		/// exit/entry parity tally of the CLOSED trackable objects it meets
-		/// (certified open sheets have no interior and are not tallied --
-		/// DL-618 handles them through `sheets`) and returns the number of
-		/// entries written.  The walk continues through every surface.
-		///
-		/// With `sheets`, also records every certified open refractive
-		/// sheet met on its BACK face before the first membership-BLOCKING
-		/// hit (see `ClassifyMembershipHit`) as a DL-618 candidate.  With
-		/// `parityWalk` false the walk is a discovery walk only: it stops
-		/// at that first blocking hit, `out` is untouched and 0 is returned.
+		inline const std::vector<OpenSheetCatalogEntry>& OpenSheetsOf( const IObjectManager* pObjects )
+		{
+			static thread_local OpenSheetCatalog catalog;
+			const unsigned long long generation = pObjects->GetSpatialStructureGeneration();
+			const unsigned int itemCount = pObjects->getItemCount();
+			if( catalog.pObjects == pObjects && catalog.generation == generation && catalog.itemCount == itemCount ) {
+				return catalog.sheets;
+			}
+			catalog.pObjects = pObjects;
+			catalog.generation = generation;
+			catalog.itemCount = itemCount;
+			catalog.sheets.clear();
+
+			struct Collect : IEnumCallback<IObject>
+			{
+				std::vector<OpenSheetCatalogEntry>* out;
+				bool operator()( const IObject& object ) override
+				{
+					if( !object.IsWorldVisible() ) {
+						return true;
+					}
+					const BoundingBox box = object.getBoundingBox();
+					const Point3 c = box.GetCenter();
+					const Vector3 e = box.GetExtents();
+					if( !std::isfinite( c.x ) || !std::isfinite( c.y ) || !std::isfinite( c.z ) ||
+						!std::isfinite( e.x ) || !std::isfinite( e.y ) || !std::isfinite( e.z ) ) {
+						return true;
+					}
+					const Scalar reach = Vector3Ops::Magnitude( e ) + Scalar( 1 );
+					static const Scalar kOff[5][2] = { { 0, 0 }, { 0.25, 0.25 }, { -0.25, 0.25 }, { 0.25, -0.25 }, { -0.25, -0.25 } };
+					for( int axis = 0; axis < 3; axis++ ) {
+						for( int k = 0; k < 5; k++ ) {
+							Scalar aim[3] = { c.x, c.y, c.z };
+							const Scalar ext[3] = { e.x, e.y, e.z };
+							aim[( axis + 1 ) % 3] += kOff[k][0] * ext[( axis + 1 ) % 3];
+							aim[( axis + 2 ) % 3] += kOff[k][1] * ext[( axis + 2 ) % 3];
+							Scalar dir[3] = { 0, 0, 0 };
+							dir[axis] = 1;
+							const Point3 target( aim[0], aim[1], aim[2] );
+							const Vector3 d( dir[0], dir[1], dir[2] );
+							RayIntersection ri( Ray( Point3Ops::mkPoint3( target, d * ( -reach ) ), d ), nullRasterizerState );
+							object.IntersectRay( ri, RISE_INFINITY, true, true, false );
+							if( !ri.geometric.bHit || !ri.geometric.HasTrueGeomSide() ) {
+								continue;
+							}
+							SpecularInfo info;
+							const MembershipHit membership = ClassifyMembershipHit( ri, d, 0, info );
+							if( membership == kMembershipSheetBack || membership == kMembershipSheetFront ) {
+								OpenSheetCatalogEntry entry;
+								entry.pObj = &object;
+								entry.normal = ri.geometric.UnflippedGeomNormal();
+								out->push_back( entry );
+							}
+							return true;
+						}
+					}
+					return true;
+				}
+			} collect;
+			collect.out = &catalog.sheets;
+			pObjects->EnumerateObjects( collect );
+			return catalog.sheets;
+		}
+
+		static const std::size_t kMaxSeededOpenSheets = 8;
+
+		/// Walks one probe ray from `pos` along `dir` and fills `out` with
+		/// the per-object exit/entry parity tally of the CLOSED trackable
+		/// objects it meets (certified open refractive sheets have no
+		/// interior and are not tallied -- DL-618 seeds them by the
+		/// sheet-normal convention).  Returns the number of entries written.
 		inline std::size_t TallyProbe(
 			const IObjectManager* pObjects,
 			const Point3& pos,
 			const Vector3& dir,
 			ProbeEntry* out,
-			const Scalar nm = 0,
-			OpenSheetCandidates* sheets = 0,
-			const bool parityWalk = true
+			const Scalar nm = 0
 			)
 		{
 			Diagnostics::ProbeTraceCounter()++;
 			std::size_t count = 0;
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			Ray probe( pos, dir );
-			bool discovering = ( sheets != 0 );
 
 			for( int step = 0; step < kMaxProbeSteps; step++ )
 			{
-				if( !parityWalk && !discovering ) {
-					break;
-				}
 				RayIntersection ri( probe, nullRasterizerState );
 				pObjects->IntersectRay( ri, true, true, false );
 				if( !ri.geometric.bHit ) {
@@ -454,21 +498,13 @@ namespace RISE
 				SpecularInfo info;
 				const MembershipHit membership = ClassifyMembershipHit( ri, probe.Dir(), nm, info );
 
-				if( discovering ) {
-					if( membership == kMembershipBlock || membership == kMembershipSheetFront ) {
-						discovering = false;
-					} else if( membership == kMembershipSheetBack ) {
-						sheets->Add( ri.pObject, info.ior, ri.geometric.UnflippedGeomNormal() );
-					}
-				}
-
 				// Closed-parity tally.  Track refractive materials (own
 				// numeric IOR) AND hasInterior-only stateful materials
 				// (DL-46, no distinct IOR, just membership tracking) —
 				// pure reflectors (mirrors) and Lambertian surfaces report
 				// neither and have no "interior" the ray travels through.
 				// A certified open sheet has no interior either (DL-618).
-				if( parityWalk && membership == kMembershipTransparent )
+				if( membership == kMembershipTransparent )
 				{
 					// Find or create per-object entry.  Linear scan is
 					// fine — at most kMaxProbeEntries (32) entries.
@@ -510,9 +546,6 @@ namespace RISE
 				probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
 				probe.Advance( kSeedEps );
 			}
-			if( !parityWalk ) {
-				return 0;
-			}
 			// DL-444: a closed inward-wound mesh has negative signed face
 			// parity even when the point is inside. Normalize that sign only
 			// when the object's independent signed-distance query certifies
@@ -552,7 +585,8 @@ namespace RISE
 			std::size_t* passedCount = 0,
 			const IObject** crossedClosed = 0,
 			std::size_t* crossedCount = 0,
-			const std::size_t cap = 0
+			const std::size_t cap = 0,
+			Scalar* sheetIor = 0
 			)
 		{
 			Diagnostics::ProbeTraceCounter()++;
@@ -570,6 +604,7 @@ namespace RISE
 				SpecularInfo info;
 				const MembershipHit membership = ClassifyMembershipHit( ri, probe.Dir(), nm, info );
 				if( membership != kMembershipSkip && ri.pObject == pSheet ) {
+					if( sheetIor ) *sheetIor = info.ior;
 					return membership == kMembershipSheetBack;
 				}
 				if( membership == kMembershipBlock || membership == kMembershipSheetFront ) {
@@ -676,11 +711,11 @@ namespace RISE
 
 			// +Z is arbitrary; any fixed direction avoids per-seed RNG
 			// and keeps results deterministic across threads.  Every
-			// probe below also proposes DL-618 open-sheet candidates.
-			OpenSheetCandidates sheets;
+			// probe below is a closed-parity walk; DL-618 open sheets are
+			// seeded separately from the scene's catalog of them.
 			ProbeEntry containing[kMaxProbeEntries];
 			const std::size_t containingCount =
-				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing, nm, &sheets );
+				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing, nm );
 
 			// P2-4 (review round 3): a single probe's parity is only a
 			// containment test for a CLOSED surface.  Every
@@ -747,29 +782,28 @@ namespace RISE
 			// docs/SUBMERGED_CAMERA_IOR_SEEDING.md for the accepted
 			// scope.
 			//
-			// COST (DL-618 review P2-1): the five other probes run as full
-			// PARITY walks only when +Z found a closed candidate (the
-			// DL-76 early-out, unchanged).  Otherwise they run as
-			// DISCOVERY-only walks for open sheets, each of which stops at
-			// its first membership-blocking surface -- one hit in an
-			// enclosed (opaque-walled) scene.  Open-sheet discovery cannot
-			// be skipped from +Z alone: a sheet whose normal is horizontal
-			// is never met along Z.  Total: always 6 walks, plus one
-			// normal-ray confirmation per distinct candidate sheet.
+			// COST (DL-618 review P2-1): exactly the pre-DL-618 budget for
+			// closed media -- the reverse probe only when +Z found a
+			// candidate, the X/Y pairs only when one is Z-confirmed -- plus
+			// one normal-ray walk per open refractive sheet in the scene
+			// (`OpenSheetsOf`), none in a scene without one.
+			ProbeEntry reverse[kMaxProbeEntries];
+			std::size_t reverseCount = 0;
 			bool anyCandidate = false;
 			for( std::size_t i = 0; i < containingCount; i++ ) {
 				if( containing[i].parity > 0 ) { anyCandidate = true; break; }
 			}
-			ProbeEntry reverse[kMaxProbeEntries];
+			if( anyCandidate ) {
+				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse, nm );
+			}
+
+			// DL-76 perf fix (2026-09-14): trace the X and Y confirmation
+			// pairs ONCE per SeedFromPoint call, and only when at least one
+			// object is already Z-confirmed.
 			ProbeEntry xForward[kMaxProbeEntries], xReverse[kMaxProbeEntries];
 			ProbeEntry yForward[kMaxProbeEntries], yReverse[kMaxProbeEntries];
-			const std::size_t reverseCount =
-				TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse, nm, &sheets, anyCandidate );
-
-			// Only pay for X/Y PARITY walks when at least one object is
-			// already Z-confirmed (positive parity along +Z AND -Z); the
-			// "open single sheet" and "nothing here" calls stop at the Z
-			// pair for closed media, exactly as before.
+			std::size_t xForwardCount = 0, xReverseCount = 0;
+			std::size_t yForwardCount = 0, yReverseCount = 0;
 			bool anyZConfirmed = false;
 			for( std::size_t i = 0; i < containingCount; i++ ) {
 				if( containing[i].parity > 0 &&
@@ -778,10 +812,12 @@ namespace RISE
 					break;
 				}
 			}
-			const std::size_t xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward, nm, &sheets, anyZConfirmed );
-			const std::size_t xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse, nm, &sheets, anyZConfirmed );
-			const std::size_t yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward, nm, &sheets, anyZConfirmed );
-			const std::size_t yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse, nm, &sheets, anyZConfirmed );
+			if( anyZConfirmed ) {
+				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward, nm );
+				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse, nm );
+				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward, nm );
+				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse, nm );
+			}
 
 			// Closed containing objects (parity > 0 on all six probes),
 			// stack ORDER: bottom = outermost, top = innermost.  Along an
@@ -823,26 +859,30 @@ namespace RISE
 				orderedCount++;
 			}
 
-			// DL-618: confirm each candidate sheet by its normal ray (see the
-			// convention above `ClassifyMembershipHit`), recording what the
-			// ray passed so the confirmed sheets can be ordered.
+			// DL-618: confirm each of the scene's open sheets by its normal ray
+			// (see the convention above `ClassifyMembershipHit`), recording
+			// what the ray passed so the confirmed sheets can be ordered.  At
+			// most kMaxSeededOpenSheets are kept.
 			struct ConfirmedSheet
 			{
-				const OpenSheetCandidate* cand;
-				const IObject* passed[kMaxOpenSheetCandidates];
+				const IObject* pObj;
+				Scalar ior;
+				const IObject* passed[kMaxSeededOpenSheets];
 				std::size_t passedCount;
 				const IObject* crossed[kMaxProbeEntries];
 				std::size_t crossedCount;
 				std::size_t closedInner;	// confirmed closed media inner to this sheet
 				bool keep;
 			};
-			ConfirmedSheet confirmed[kMaxOpenSheetCandidates];
+			ConfirmedSheet confirmed[kMaxSeededOpenSheets];
 			std::size_t confirmedCount = 0;
-			for( std::size_t i = 0; i < sheets.count; i++ ) {
+			const std::vector<OpenSheetCatalogEntry>& sheets = OpenSheetsOf( pObjects );
+			for( std::size_t i = 0; i < sheets.size() && confirmedCount < kMaxSeededOpenSheets; i++ ) {
 				ConfirmedSheet& c = confirmed[confirmedCount];
-				c.cand = &sheets.items[i];
-				if( !OpenSheetNormalRayReaches( pObjects, pos, c.cand->normal, c.cand->pObj, nm,
-						c.passed, &c.passedCount, c.crossed, &c.crossedCount, kMaxOpenSheetCandidates ) ) {
+				c.pObj = sheets[i].pObj;
+				c.ior = 0;
+				if( !OpenSheetNormalRayReaches( pObjects, pos, sheets[i].normal, c.pObj, nm,
+						c.passed, &c.passedCount, c.crossed, &c.crossedCount, kMaxSeededOpenSheets, &c.ior ) ) {
 					continue;
 				}
 				c.closedInner = 0;
@@ -871,14 +911,14 @@ namespace RISE
 			bool declineSheets = false;
 			for( std::size_t a = 0; a < confirmedCount && !declineSheets; a++ ) {
 				for( std::size_t b = a + 1; b < confirmedCount && !declineSheets; b++ ) {
-					const bool aInB = passes( confirmed[b], confirmed[a].cand->pObj );
-					const bool bInA = passes( confirmed[a], confirmed[b].cand->pObj );
+					const bool aInB = passes( confirmed[b], confirmed[a].pObj );
+					const bool bInA = passes( confirmed[a], confirmed[b].pObj );
 					if( aInB && bInA ) {
 						declineSheets = true;
 					} else if( !aInB && !bInA ) {
-						const IMaterial* ma = confirmed[a].cand->pObj->GetMaterial();
-						const IMaterial* mb = confirmed[b].cand->pObj->GetMaterial();
-						if( ma && ma == mb && confirmed[a].cand->ior == confirmed[b].cand->ior ) {
+						const IMaterial* ma = confirmed[a].pObj->GetMaterial();
+						const IMaterial* mb = confirmed[b].pObj->GetMaterial();
+						if( ma && ma == mb && confirmed[a].ior == confirmed[b].ior ) {
 							if( confirmed[b].keep ) {
 								confirmed[b].keep = false;
 							}
@@ -894,7 +934,7 @@ namespace RISE
 			// sheets, the one nested inside another goes after it.  Sheets
 			// are sorted by (slot = orderedCount - closedInner, nesting),
 			// then each closed slot s is preceded by the sheets of slot s.
-			const ConfirmedSheet* sheetOrder[kMaxOpenSheetCandidates];
+			const ConfirmedSheet* sheetOrder[kMaxSeededOpenSheets];
 			std::size_t sheetOrderCount = 0;
 			if( !declineSheets ) {
 				for( std::size_t i = 0; i < confirmedCount; i++ ) {
@@ -910,7 +950,7 @@ namespace RISE
 						// `s` goes before `t` when its slot is lower, or the
 						// same slot with `t` nested inside `s`.
 						const bool sBeforeT = slot < tSlot ||
-							( slot == tSlot && passes( *s, t->cand->pObj ) );
+							( slot == tSlot && passes( *s, t->pObj ) );
 						if( !sBeforeT ) {
 							break;
 						}
@@ -926,8 +966,8 @@ namespace RISE
 			for( std::size_t i = 0; i <= orderedCount; i++ ) {
 				while( nextSheet < sheetOrderCount &&
 					orderedCount - sheetOrder[nextSheet]->closedInner <= i ) {
-					stack.SetCurrentObject( sheetOrder[nextSheet]->cand->pObj );
-					stack.pushOpenSheet( sheetOrder[nextSheet]->cand->ior );
+					stack.SetCurrentObject( sheetOrder[nextSheet]->pObj );
+					stack.pushOpenSheet( sheetOrder[nextSheet]->ior );
 					nextSheet++;
 				}
 				if( i == orderedCount ) {
