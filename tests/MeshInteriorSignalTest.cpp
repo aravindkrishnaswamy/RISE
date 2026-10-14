@@ -2343,6 +2343,37 @@ static void TestDL620ReviewFindings()
 		safe_release( closed );
 	}
 
+	// P2-2.  A retained Step-4 refusal witness is reused across deformations
+	// that change the bounding box, as long as the pair still intersects.
+	// Pre-fix the reuse gate compared two independently computed weld
+	// epsilons bit for bit, which -ffast-math contraction made fail by an
+	// ulp on some boxes and silently re-ran the full certificate.
+	{
+		std::vector<Point3> v = {
+			Point3( -1.0, -1.0,  0.0 ), Point3(  1.0, -1.0,  0.0 ), Point3(  0.0,  1.0,  0.0 ),
+			Point3(  0.8,  0.5,  0.5 ), Point3( -0.8, -1.0, -0.5 ) };
+		IndexTriangleListType t;
+		AddTri( t, 0, 1, 2 );
+		AddTri( t, 1, 3, 2 );
+		AddTri( t, 2, 3, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const auto audits = m->OpenCertificateAudits();
+		unsigned int reAudits = 0, refused = 0;
+		for( int k = 1; k <= 200; ++k ) {
+			v[0].x = -1.0 - 0.00137 * k;	// widens the box: the weld epsilon changes every step
+			v[4].z = -0.5 - 0.000731 * k;
+			v[3].y = 0.5 + 0.00071 * k;
+			m->UpdateVertices( v, NormalsListType() );
+			if( !m->IsProvablyOpenSheet() ) { ++refused; }
+		}
+		reAudits = (unsigned int)( m->OpenCertificateAudits() - audits );
+		std::cout << "    self-intersecting ribbon, 200 box-changing deformations: " << refused
+			<< " refused, " << reAudits << " full re-audits" << std::endl;
+		Check( refused == 200 && reAudits == 0,
+			"P2-2: Step-4 refusal witness reused across 200 box-changing deformations (no full re-audit)" );
+		safe_release( m );
+	}
+
 	// P3-2 / P3-4.  The weld's partition is a pure function of the input
 	// sequence -- nearest earlier representative within eps, ties lowest id
 	// -- independent of grid layout, and no point within eps of an earlier

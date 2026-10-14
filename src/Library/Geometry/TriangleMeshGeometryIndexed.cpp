@@ -716,11 +716,28 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
         } else if( !ptr_polygons.empty() && !pPoints.empty() ) {
             m_lastWeldValid = GeometricUtilities::WeldVertexPositions(
                 pPoints, m_lastWeldedId, &m_lastWeldEps, Scalar( 0 ), &m_lastWeldTransitive );
+            // The point weld can stand in for the certificate's own corner
+            // weld when it is unambiguous and its tolerance is the corners'
+            // tolerance, i.e. when unused storage vertices do not widen the
+            // bounding box.  Compare the boxes exactly (min/max never round)
+            // and then take the weld's own epsilon: re-deriving it here and
+            // comparing bit patterns was fragile -- under -ffast-math the two
+            // expressions can contract differently and differ by an ulp, which
+            // silently disabled every refusal-witness reuse after a
+            // deformation that changed the box (DL-620 review, P2-2).
+            Point3 allLo = pPoints[0], allHi = pPoints[0];
+            for( const Point3& q : pPoints ) {
+                allLo.x = std::min( allLo.x, q.x ); allLo.y = std::min( allLo.y, q.y ); allLo.z = std::min( allLo.z, q.z );
+                allHi.x = std::max( allHi.x, q.x ); allHi.y = std::max( allHi.y, q.y ); allHi.z = std::max( allHi.z, q.z );
+            }
+            const bool sameBox = allLo.x == refLo.x && allLo.y == refLo.y && allLo.z == refLo.z
+                && allHi.x == refHi.x && allHi.y == refHi.y && allHi.z == refHi.z;
             const Scalar diag3D = Vector3Ops::Magnitude(
                 Vector3( refHi.x - refLo.x, refHi.y - refLo.y, refHi.z - refLo.z ) );
-            const Scalar eps3D = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag3D );
+            const Scalar eps3D = ( m_lastWeldValid && sameBox ) ? m_lastWeldEps
+                : std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag3D );
             const bool pointWeldMatchesCorners = m_lastWeldValid && m_lastWeldTransitive
-                && std::isfinite( eps3D ) && ( m_lastWeldEps == eps3D );
+                && sameBox && std::isfinite( eps3D );
             const Point3* const pBase = pPoints.data();
 
             // Check cached topological / triangle-pair refusal witnesses before
