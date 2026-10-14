@@ -793,13 +793,23 @@ bool SMSCaptureUncached(const RISE::IScene& scene,
             captured = true;
             break;
         }
-        if(!captured) {
+        // DL-618 (review P3-b): an OPEN-SHEET key's membership is not
+        // geometric containment, so no axis ray need reach the sheet (an
+        // anchor that reached a finite sheet's medium off its axes); its
+        // index is the sheet material's, readable at any point of it, so
+        // take the context toward its bounds' centre.  A CLOSED key that
+        // no axis ray from the anchor meets does not contain the anchor:
+        // that is stale membership, and the capture declines as before.
+        bool keyIsOpenSheet = false;
+        for(std::size_t i = 0; i < live.Depth(); ++i)
+            if(live.ObjectAt(i) == key && live.isOpenSheetAt(i)) keyIsOpenSheet = true;
+        if(!captured && keyIsOpenSheet) {
             Vector3 toCenter = Vector3Ops::mkVector3(key->getBoundingBox().GetCenter(), anchor);
             if(Vector3Ops::NormalizeMag(toCenter) > NEARZERO) {
                 RayIntersection hit(Ray(anchor, toCenter), nullRasterizerState);
                 key->IntersectRay(hit, RISE_INFINITY, true, true, false);
                 SMSCompleteNativeHit(hit,scene.GetObjects());
-                if(hit.geometric.bHit) {
+                if(hit.geometric.bHit && hit.geometric.bProvablyNoInterior) {
                     if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
                     result.enclosing.emplace_back(key, hit.pMaterial, hit.geometric);
                     captured = true;
@@ -5600,6 +5610,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		// Fresnel with mv.etaI = specInfo.ior, while RadianceEtaScale uses
 		// currentIOR = stack.top() (DL-619, matching SMSDomainReplay::EventWeight).
 		mv.radianceEtaI = bOpenSheetHit ? mv.etaI : currentIOR;
+		mv.isOpenSheet = bOpenSheetHit;
 
 		const std::size_t idxJustPushed = chain.size();
 		chain.push_back( mv );
@@ -7709,10 +7720,31 @@ void ManifoldSolver::SolveCoreInto(const Point3& shadingPoint, const Vector3& sh
 //   Transmission reverses the recorded native interface pair.
 //////////////////////////////////////////////////////////////////////
 
+void ManifoldSolver::AssignRadianceEtas(
+	std::vector<ManifoldVertex>& chain,
+	const Scalar receiverTop
+	)
+{
+	Scalar top = receiverTop;
+	for( ManifoldVertex& v : chain ) {
+		Scalar etaI, etaT;
+		GetEffectiveEtas( v, etaI, etaT );
+		// A record without native indices (an old photon, a hand-built
+		// test vertex) keeps the air-on-the-other-side fallback for
+		// pricing too: the 0 sentinel reads its effective etaI.
+		const bool native = !( v.etaI == Scalar( 1.0 ) && v.etaT == Scalar( 1.0 ) && v.eta != Scalar( 1.0 ) );
+		v.radianceEtaI = !native ? Scalar( 0 ) : ( v.isOpenSheet ? etaI : top );
+		if( !v.isReflection ) {
+			top = etaT;
+		}
+	}
+}
+
 unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 	const SMSPhoton& photon,
 	std::vector<ManifoldVertex>& chain,
-	Scalar nm
+	Scalar nm,
+	const IORStack* pReceiverStack
 	) const
 {
 	const unsigned int k = photon.chainLen;
@@ -7782,8 +7814,34 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 			mv.etaI = mv.isReflection ? pv.etaI : pv.etaT;
 			mv.etaT = mv.isReflection ? pv.etaT : pv.etaI;
 		}
+		// DL-619: whether the vertex lies on a certified open sheet is a
+		// property of the hit, not of the material, and the photon record
+		// does not carry it -- re-query the vertex's own object along its
+		// stored true normal.
+		if( pv.pObject ) {
+			const Vector3 n = Vector3Ops::Normalize( mv.geomNormal );
+			const Scalar scale = Scalar( 1 ) + std::fabs( pv.position.x ) + std::fabs( pv.position.y ) + std::fabs( pv.position.z );
+			const Scalar offset = Scalar( 1e-6 ) * scale;
+			RayIntersection probe( Ray( Point3Ops::mkPoint3( pv.position, n * offset ), -n ), nullRasterizerState );
+			pv.pObject->IntersectRay( probe, RISE_INFINITY, true, true, false );
+			mv.isOpenSheet = probe.geometric.bHit && probe.geometric.bProvablyNoInterior &&
+				Point3Ops::Distance( probe.geometric.ptIntersection, pv.position ) <= Scalar( 4 ) * offset;
+		}
 		mv.valid = false;
 	}
+	// DL-619: price each crossing from the receiver walk's stack top, as
+	// SnellContinueChain does for a Snell-seeded chain.  The photon's own
+	// stack tops are a DIFFERENT walk's history (light -> receiver) and can
+	// differ wherever media overlap; the receiver walk's are what PT prices.
+	Scalar receiverTop, firstEtaT;
+	GetEffectiveEtas( chain[0], receiverTop, firstEtaT );
+	if( pReceiverStack ) {
+		const Scalar top = pReceiverStack->top();
+		if( top > 0 && top < RISE_INFINITY ) {
+			receiverTop = top;
+		}
+	}
+	AssignRadianceEtas( chain, receiverTop );
 	return k;
 }
 
@@ -8165,6 +8223,7 @@ bool ManifoldSolver::BuildExtendedWalk(const Point3& start,const Point3& end,
         vertex.pObject = hit.pObject; vertex.pMaterial = hit.pMaterial;
         vertex.isReflection = reflection; vertex.isExiting = exiting;
         vertex.eta = query.index; vertex.etaI = etaI; vertex.etaT = etaT;
+        vertex.isOpenSheet = hit.geometric.bProvablyNoInterior;
         vertex.canRefract = query.dielectricInterface;
         previous = vertex.position;
         direction=reflection?law.reflected:law.transmitted;
@@ -8576,6 +8635,7 @@ bool ManifoldSolver::ReplayExtendedChain(const SMSChainRecord& rec,const IObject
         vertex.pObject=hit.pObject;vertex.pMaterial=hit.pMaterial;
         vertex.isReflection=reflection;vertex.isExiting=exiting;
         vertex.eta=query.index;vertex.etaI=etaI;vertex.etaT=etaT;
+        vertex.isOpenSheet=hit.geometric.bProvablyNoInterior;
         vertex.canRefract=query.dielectricInterface;
         previous=vertex.position;
     }
@@ -9583,7 +9643,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			}
 
 			std::vector<ManifoldVertex> newChain;
-			if( ReversePhotonChainForSeed( ph, newChain ) == 0 ) continue;
+			if( ReversePhotonChainForSeed( ph, newChain, 0, pIorStack ) == 0 ) continue;
 			trialSeed = newChain;
 			}  // end photon-aided branch (else of "no more photons")
 		}
@@ -10376,7 +10436,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			for( const SMSPhoton& ph : photonSeeds )
 			{
 				std::vector<ManifoldVertex> photonChain;
-				if( ReversePhotonChainForSeed( ph, photonChain ) == 0 ) continue;
+				if( ReversePhotonChainForSeed( ph, photonChain, 0, pIorStack ) == 0 ) continue;
 
 				// TARGET BOUNCES: Mitsuba-parity exact-length requirement.
 				// Photon chains have lengths determined at photon-trace time
@@ -10792,7 +10852,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			for( const SMSPhoton& ph : photonSeeds )
 			{
 				std::vector<ManifoldVertex> photonChain;
-				if( ReversePhotonChainForSeed( ph, photonChain ) == 0 ) continue;
+				if( ReversePhotonChainForSeed( ph, photonChain, 0, pIorStack ) == 0 ) continue;
 
 				// TARGET BOUNCES: see RGB EvaluateAtShadingPointUniform
 				// for the rationale.  Mirror filter for the spectral path.
@@ -10899,17 +10959,24 @@ void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm,
 				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
                 // Fallback for contexts declined by native replay below:
                 // refresh the material side, preserving the seeded exterior.
-				const Scalar prevEtaI = chain[i].etaI;
 				if( chain[i].isExiting ) {
 					chain[i].etaI = specNM.ior;
-					if( chain[i].radianceEtaI <= Scalar( 0 ) || chain[i].radianceEtaI == prevEtaI ) {
-						chain[i].radianceEtaI = specNM.ior;
-					}
 				} else {
 					chain[i].etaT = specNM.ior;
-					chain[i].radianceEtaI = chain[i].etaI;
 				}
 			}
+		}
+		// DL-619 (review P3-a): re-derive the radiance indices from the
+		// refreshed interfaces, so a non-top closed exit beneath a
+		// DISPERSIVE sheet prices from the sheet's index at THIS
+		// wavelength (the previous crossing's refreshed etaT), not from
+		// the RGB index the seed walk recorded.
+		if( !chain.empty() ) {
+			Scalar receiverTop = chain.front().etaI;
+			if( starting && starting->top() > 0 && starting->top() < RISE_INFINITY ) {
+				receiverTop = starting->top();
+			}
+			ManifoldSolver::AssignRadianceEtas( chain, receiverTop );
 		}
 	}
 
@@ -11169,7 +11236,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 			}
 
 			std::vector<ManifoldVertex> newChain;
-			if( ReversePhotonChainForSeed( ph, newChain, nm ) == 0 ) continue;
+			if( ReversePhotonChainForSeed( ph, newChain, nm, pIorStack ) == 0 ) continue;
 			RefreshLegacySeedNM(newChain,nm,pos,scene,pIorStack);
 			trialSeed = newChain;
             }

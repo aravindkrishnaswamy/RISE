@@ -114,6 +114,7 @@
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/ManifoldSolver.h"
+#include "../src/Library/Utilities/SMSPhoton.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Rendering/RayCaster.h"
@@ -938,6 +939,69 @@ namespace
 					std::fabs( chain[2].etaT - 1.5 ) < 1e-12 &&
 					std::fabs( chain[2].radianceEtaI - 1.5 ) < 1e-12,
 					"DL-619: non-top closed exit beneath open sheet records stack-top radianceEtaI = 1.5" );
+				if( chain.size() == 3 ) {
+					// DL-619 review P2-3: the THROUGHPUT, not just the recorded
+					// field.  Vertical chain, normal incidence at every vertex,
+					// white perfect refractors: the radiance factors must
+					// telescope to (n_receiver / n_light)^2 = (1 / 1.5)^2 --
+					// PT's RadianceEtaScale over the same walk -- times the
+					// three normal-incidence Fresnel transmittances of the
+					// interfaces Snell sees (1|2.2, 2.2|1.5, 2.2|1.5).  Pricing
+					// the third vertex from its Snell etaI (2.2) instead reads
+					// (2.2/1.5)^2 = 2.151x this.
+					auto T = []( const Scalar a, const Scalar b ) {
+						const Scalar r = ( a - b ) / ( a + b );
+						return Scalar( 1 ) - r * r;
+					};
+					const Scalar expected = T( 1.0, 2.2 ) * T( 2.2, 1.5 ) * T( 2.2, 1.5 ) / ( 1.5 * 1.5 );
+					const Point3 start( 0.05, 0, 0.02 ), end( 0.05, 1.2, 0.02 );
+					const Scalar rgb = solver->EvaluateChainThroughput( start, end, chain ).r;
+					const Scalar nm = solver->EvaluateChainThroughputNM( start, end, chain, 550 );
+					Check( RelClose( rgb, expected, 1e-9 ),
+						"DL-619: RGB chain throughput telescopes to (1/1.5)^2 x Fresnel (got " + Num( rgb ) + ", want " + Num( expected ) + ")" );
+					Check( RelClose( nm, expected, 1e-9 ),
+						"DL-619: NM chain throughput telescopes to (1/1.5)^2 x Fresnel (got " + Num( nm ) + ", want " + Num( expected ) + ")" );
+
+					// AssignRadianceEtas (the stack-free form used for chains
+					// not built by the seed walk) reproduces the walk's own
+					// recorded values.
+					std::vector<ManifoldVertex> derived( chain );
+					for( ManifoldVertex& v : derived ) v.radianceEtaI = -1;
+					ManifoldSolver::AssignRadianceEtas( derived, receiver.top() );
+					bool same = true;
+					for( std::size_t i = 0; i < chain.size(); i++ ) same = same && derived[i].radianceEtaI == chain[i].radianceEtaI;
+					Check( same, "DL-619: AssignRadianceEtas reproduces the seed walk's radiance indices" );
+
+					// DL-619 review P2-4: the SAME root reached as a photon
+					// seed must price the same.  The photon walks light ->
+					// receiver, so its record is the chain reversed with each
+					// refraction's interface pair swapped and its exit flag
+					// in photon order.
+					SMSPhoton photon;
+					photon.chainLen = static_cast<unsigned int>( chain.size() );
+					for( std::size_t i = 0; i < chain.size(); i++ ) {
+						const ManifoldVertex& v = chain[chain.size() - 1 - i];
+						SMSPhotonChainVertex& pv = photon.chain[i];
+						pv.position = v.position; pv.objectPosition = v.objectPosition; pv.uv = v.uv;
+						pv.normal = v.normal; pv.geomNormal = v.geomNormal;
+						pv.pObject = v.pObject; pv.pMaterial = v.pMaterial; pv.eta = v.eta;
+						pv.etaI = v.etaT; pv.etaT = v.etaI;
+						pv.flags = static_cast<unsigned char>( v.isExiting ? 0x0 : 0x1 );
+					}
+					std::vector<ManifoldVertex> photonChain;
+					solver->ReversePhotonChainForSeed( photon, photonChain, 0, &receiver );
+					bool photonSame = photonChain.size() == chain.size();
+					for( std::size_t i = 0; photonSame && i < chain.size(); i++ ) {
+						photonSame = photonChain[i].etaI == chain[i].etaI && photonChain[i].etaT == chain[i].etaT &&
+							photonChain[i].isExiting == chain[i].isExiting &&
+							photonChain[i].isOpenSheet == chain[i].isOpenSheet &&
+							photonChain[i].radianceEtaI == chain[i].radianceEtaI;
+					}
+					Check( photonSame, "DL-619: photon-seeded chain carries the seed walk's interfaces, open-sheet flags and radiance indices" );
+					const Scalar photonRgb = photonSame ? solver->EvaluateChainThroughput( start, end, photonChain ).r : -1;
+					Check( RelClose( photonRgb, expected, 1e-9 ),
+						"DL-619: photon-seeded chain throughput equals the Snell-seeded one (got " + Num( photonRgb ) + ")" );
+				}
 				safe_release( solver );
 				safe_release( caster );
 				safe_release( shader );
