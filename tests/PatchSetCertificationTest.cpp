@@ -444,7 +444,13 @@ static void TestOpenSheetCSG()
 		"clippedplane_geometry\n{\n name sheet_z\n pta -3 -3 0\n ptb 3 -3 0\n ptc 3 3 0\n ptd -3 3 0\n}\n";
 	const std::string sheetX =
 		"clippedplane_geometry\n{\n name sheet_x\n pta -1.5 -3 -3\n ptb -1.5 3 -3\n ptc -1.5 3 3\n ptd -1.5 -3 3\n}\n";
+	auto sheetAt = [&]( const std::string& name, Scalar z ) {
+		const std::string zs = std::to_string( z );
+		return "clippedplane_geometry\n{\n name " + name + "\n pta -3 -3 " + zs + "\n ptb 3 -3 " + zs +
+			"\n ptc 3 3 " + zs + "\n ptd -3 3 " + zs + "\n}\n";
+	};
 	std::string scene = Materials( false ) + sheetZ + sheetX +
+		sheetAt( "sheet_m12", -1.2 ) + sheetAt( "sheet_m17", -1.7 ) +
 		"bezierpatch_geometry\n{\n name ball\n file " + spherePath + "\n}\n"
 		"bilinearpatch_geometry\n{\n name frame\n file " + framePath + "\n}\n"
 		"sphere_geometry\n{\n name sph\n radius 0.5\n}\n";
@@ -468,6 +474,17 @@ static void TestOpenSheetCSG()
 	// F: nested closed operand -- sheet minus (ball union small sphere).
 	obj( "c1", "ball" ); obj( "c2", "sph", " position 2 0 0\n" ); csg( "solids", "c1", "c2", "union" );
 	obj( "c3", "sheet_z" ); csg( "minus_solids", "c3", "solids", "subtraction" );
+	// P2-1: sheet minus (Bezier ball UNION a sphere overlapping the ball's
+	// exit along the ray).  A ray down x = 0.3 enters the ball at z ~ 0.95,
+	// leaves it at z ~ -0.95 inside the sphere (centre z = -1, r = 0.5) and
+	// leaves the union at z ~ -1.40.
+	const char* ovlSheets[3] = { "sheet_z", "sheet_m12", "sheet_m17" };
+	for( int k = 0; k < 3; ++k ) {
+		const std::string id = std::to_string( k );
+		obj( "ob" + id, "ball" ); obj( "os" + id, "sph", " position 0 0 -1\n" );
+		csg( "ovl" + id, "ob" + id, "os" + id, "union" );
+		obj( "oq" + id, ovlSheets[k] ); csg( "minus_ovl" + id, "oq" + id, "ovl" + id, "subtraction" );
+	}
 
 	LoadedScene loaded( scene );
 	const Vector3 down( 0, 0, -1 ), west( -1, 0, 0 );
@@ -530,6 +547,23 @@ static void TestOpenSheetCSG()
 			"E: a transformed open-sheet composite keeps range2 == RISE_INFINITY and lands on its sheet" );
 		Check( std::isfinite( t.geometric.ptExit.x ) && std::isfinite( t.geometric.ptExit.z ),
 			"E: a transformed open-sheet composite reports a finite ptExit" );
+	}
+	{	// P2-1: overlapping solids in the closed operand.
+		const IObject* m0 = loaded.Object( "minus_ovl0" );
+		const IObject* m1 = loaded.Object( "minus_ovl1" );
+		const IObject* m2 = loaded.Object( "minus_ovl2" );
+		Check( m0 && m1 && m2 && AsCSG( m0 )->IsProvablyOpenSheet(), "P2-1: sheet minus overlapping solids is certified open" );
+		if( m0 && m1 && m2 ) {
+			Check( !Cast( *m0, Point3( 0.3, 0, 2 ), down ).geometric.bHit,
+				"P2-1: sheet inside the Bezier ball of an overlapping union is removed" );
+			Check( !Cast( *m1, Point3( 0.3, 0, 2 ), down ).geometric.bHit,
+				"P2-1: sheet inside only the overlapping sphere is removed" );
+			const RayIntersection keep = Cast( *m2, Point3( 0.3, 0, 2 ), down );
+			Check( keep.geometric.bHit && std::fabs( keep.geometric.range - 3.7 ) < 1e-6,
+				"P2-1: sheet below the overlapping union is kept" );
+			Check( !Shadow( *m1, Point3( 0.3, 0, 2 ), down, 10 ) && Shadow( *m2, Point3( 0.3, 0, 2 ), down, 10 ),
+				"P2-1: shadow rays agree with the overlapping-union trim" );
+		}
 	}
 	{	// F.
 		const CSGObject* u = AsCSG( sheetUnion );

@@ -196,6 +196,13 @@ namespace RISE
 			//! trees, cached per preparation (policy on
 			//! `ComputeCertificateBits`).
 			bool IsCertifiedWatertight() const;
+
+			//! DL-617: +1 when `pt` (in `operand`'s PARENT frame) is inside
+			//! the certified-closed `operand`, -1 outside, 0 undecided.
+			//! Composites recurse by their operation; leaves use the
+			//! signed-distance sign, else crossing parity voted over three
+			//! directions (see the .cpp).
+			static int OperandContainsPoint( const IObjectPriv* operand, const Point3& pt, const Vector3& dir, const Scalar scale );
 			bool IsProvablyOpenSheet( const bool allowGeneralProof = true ) const;
 			bool HasNegativeOpenSignedVolume() const;
 
