@@ -1936,6 +1936,77 @@ static void TestProvablyOpenSheetCertification()
 			two ? "rawmesh: two parallel quads refused" : "rawmesh: one planar quad certified" );
 		safe_release( m );
 	}
+	// (m) DL-620: topological refusal witness (mixed shared-edge winding / closed surface)
+	// and Step-4 self-intersection pair witness are reused across 3D deformations, while
+	// unfolding the self-intersection revalidates and certifies.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		v.push_back( Point3( 0, -1, 1 ) );
+		AddTri( t, 0, 1, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const auto audits = m->OpenCertificateAudits();
+		Check( !m->IsProvablyOpenSheet(), "DL-620: mixed-winding flap initially refused" );
+		v[4].x += 0.35;
+		v[2].z += 0.4;
+		m->UpdateVertices( v, NormalsListType() );
+		Check( !m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == audits,
+			"DL-620: topological open refusal witness reused across general 3D deformation" );
+		safe_release( m );
+	}
+	{
+		// Three-triangle ribbon (0,1,2) - (1,3,2) - (2,3,4) where edge (v3,v4) pierces (0,1,2) at (0, -0.25, 0)
+		std::vector<Point3> v = {
+			Point3( -1.0, -1.0,  0.0 ), // 0
+			Point3(  1.0, -1.0,  0.0 ), // 1
+			Point3(  0.0,  1.0,  0.0 ), // 2
+			Point3(  0.8,  0.5,  0.5 ), // 3
+			Point3( -0.8, -1.0, -0.5 )  // 4: midpoint of (v3,v4) is (0, -0.25, 0) inside triangle (0,1,2)
+		};
+		IndexTriangleListType t;
+		AddTri( t, 0, 1, 2 );
+		AddTri( t, 1, 3, 2 );
+		AddTri( t, 2, 3, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const auto audits = m->OpenCertificateAudits();
+		Check( !m->IsProvablyOpenSheet(), "DL-620: self-intersecting 3-triangle ribbon refused" );
+		v[4].z = -0.6;
+		v[0].x = -1.1;
+		m->UpdateVertices( v, NormalsListType() );
+		Check( !m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == audits,
+			"DL-620: Step-4 intersecting triangle-pair witness reused while pair still intersects" );
+		v[4] = Point3( 0.0, 2.0, 0.2 ); // unfold so ribbon is embedded
+		m->UpdateVertices( v, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == audits + 1,
+			"DL-620: unfolding Step-4 witness pair triggers re-audit and certifies embedded ribbon" );
+		safe_release( m );
+	}
+	{
+		// Closed watertight tetrahedron (4 vertices, 4 outward faces): deformation reuses both
+		// topological open refusal and watertight edge witnesses without re-auditing.
+		std::vector<Point3> v = {
+			Point3(  1.0,  1.0,  1.0 ),
+			Point3(  1.0, -1.0, -1.0 ),
+			Point3( -1.0,  1.0, -1.0 ),
+			Point3( -1.0, -1.0,  1.0 )
+		};
+		IndexTriangleListType t;
+		AddTri( t, 0, 1, 2 );
+		AddTri( t, 0, 3, 1 );
+		AddTri( t, 0, 2, 3 );
+		AddTri( t, 1, 3, 2 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const auto audits = m->OpenCertificateAudits();
+		Scalar sd = 0; bool exact = false;
+		Check( m->SignedDistanceLower( Point3( 0, 0, 0 ), 10.0, sd, exact ) && sd < 0 && !m->IsProvablyOpenSheet(),
+			"DL-620: closed tetrahedron initially watertight and not open" );
+		for( auto& p : v ) { p.x *= 1.05; p.y *= 0.95; p.z += 0.1; }
+		m->UpdateVertices( v, NormalsListType() );
+		Check( m->SignedDistanceLower( Point3( 0, 0, 0.1 ), 10.0, sd, exact ) && sd < 0 &&
+			!m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == audits,
+			"DL-620: smooth 3D deformation of closed mesh reuses watertight and open-refusal witnesses" );
+		safe_release( m );
+	}
 }
 
 
@@ -2034,6 +2105,122 @@ static void TestParityCost()
 	mesh->release();
 }
 
+#include "../src/Library/Utilities/GeometricUtilities.h"
+
+static void TestPatchSetCertification()
+{
+	std::cout << "DL-616: Bezier and bilinear patch-set certification" << std::endl;
+
+	// 1. Single embedded bilinear patch -> certified open sheet
+	{
+		std::vector<BilinearPatch> patches( 1 );
+		patches[0].pts[0] = Point3( 0, 0, 0 );
+		patches[0].pts[1] = Point3( 1, 0, 0 );
+		patches[0].pts[2] = Point3( 0, 1, 0 );
+		patches[0].pts[3] = Point3( 1, 1, 0.25 );
+		bool wt = false, open = false, neg = false;
+		GeometricUtilities::CertifyBilinearPatchSet( patches, wt, open, neg );
+		Check( open && !wt && !neg,
+			"DL-616: single embedded bilinear patch is certified open sheet" );
+	}
+
+	// 2. Two connected bilinear patches with consistent seam winding -> certified open sheet;
+	//    with opposing seam winding -> refused!
+	{
+		std::vector<BilinearPatch> consistent( 2 ), opposing( 2 );
+		consistent[0].pts[0] = Point3( 0, 0, 0 );
+		consistent[0].pts[1] = Point3( 1, 0, 0 );
+		consistent[0].pts[2] = Point3( 0, 1, 0 );
+		consistent[0].pts[3] = Point3( 1, 1, 0 );
+		consistent[1].pts[0] = Point3( 1, 0, 0 );
+		consistent[1].pts[1] = Point3( 2, 0, 0.3 );
+		consistent[1].pts[2] = Point3( 1, 1, 0 );
+		consistent[1].pts[3] = Point3( 2, 1, 0.3 );
+		bool wt = false, open = false, neg = false;
+		GeometricUtilities::CertifyBilinearPatchSet( consistent, wt, open, neg );
+		Check( open && !wt,
+			"DL-616: two connected bilinear patches with consistent seam winding certify as open sheet" );
+
+		opposing = consistent;
+		std::swap( opposing[1].pts[0], opposing[1].pts[2] );
+		std::swap( opposing[1].pts[1], opposing[1].pts[3] );
+		GeometricUtilities::CertifyBilinearPatchSet( opposing, wt, open, neg );
+		Check( !open && !wt,
+			"DL-616: two connected bilinear patches with opposing seam winding refuse certification" );
+	}
+
+	// 3. Closed 6-patch bilinear cube -> certified watertight; removing 1 face -> open sheet
+	//    (positive volume when outward-wound, negative volume when inward-wound).
+	{
+		auto makeCube = []( bool outward ) {
+			std::vector<BilinearPatch> p( 6 );
+			// BilinearPatchNormalAt is Cross(pts[2]-pts[0], pts[1]-pts[0]).
+			// -Z face (outward normal -Z): pts0=(0,0,0), pts1=(1,0,0), pts2=(0,1,0), pts3=(1,1,0)
+			p[0] = { { Point3(0,0,0), Point3(1,0,0), Point3(0,1,0), Point3(1,1,0) } };
+			// +Z face (outward normal +Z): pts0=(0,0,1), pts1=(0,1,1), pts2=(1,0,1), pts3=(1,1,1)
+			p[1] = { { Point3(0,0,1), Point3(0,1,1), Point3(1,0,1), Point3(1,1,1) } };
+			// -Y face (outward normal -Y): pts0=(0,0,0), pts1=(0,0,1), pts2=(1,0,0), pts3=(1,0,1)
+			p[2] = { { Point3(0,0,0), Point3(0,0,1), Point3(1,0,0), Point3(1,0,1) } };
+			// +Y face (outward normal +Y): pts0=(0,1,0), pts1=(1,1,0), pts2=(0,1,1), pts3=(1,1,1)
+			p[3] = { { Point3(0,1,0), Point3(1,1,0), Point3(0,1,1), Point3(1,1,1) } };
+			// -X face (outward normal -X): pts0=(0,0,0), pts1=(0,1,0), pts2=(0,0,1), pts3=(0,1,1)
+			p[4] = { { Point3(0,0,0), Point3(0,1,0), Point3(0,0,1), Point3(0,1,1) } };
+			// +X face (outward normal +X): pts0=(1,0,0), pts1=(1,0,1), pts2=(1,1,0), pts3=(1,1,1)
+			p[5] = { { Point3(1,0,0), Point3(1,0,1), Point3(1,1,0), Point3(1,1,1) } };
+			if( !outward ) {
+				for( auto& patch : p ) {
+					std::swap( patch.pts[1], patch.pts[2] );
+				}
+			}
+			return p;
+		};
+		const auto closedCube = makeCube( true );
+		bool wt = false, open = false, neg = false;
+		GeometricUtilities::CertifyBilinearPatchSet( closedCube, wt, open, neg );
+		Check( wt && !open,
+			"DL-616: 6-patch closed bilinear cube is certified watertight" );
+
+		std::vector<BilinearPatch> openOutward( closedCube.begin(), closedCube.begin() + 5 );
+		GeometricUtilities::CertifyBilinearPatchSet( openOutward, wt, open, neg );
+		Check( open && !wt && !neg,
+			"DL-616: 5-patch outward open bilinear cube is certified open without negative-volume flag" );
+
+		const auto inwardCube = makeCube( false );
+		std::vector<BilinearPatch> openInward( inwardCube.begin(), inwardCube.begin() + 5 );
+		GeometricUtilities::CertifyBilinearPatchSet( openInward, wt, open, neg );
+		Check( open && !wt && neg,
+			"DL-616: 5-patch inward open bilinear cube is certified open with negative-volume flag" );
+	}
+
+	// 4. Bezier patches: single curved patch certifies; self-intersecting patch refuses;
+	//    2 connected patches sharing a degree-elevated cubic seam certify.
+	{
+		BezierPatchesListType single( 1 );
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				single[0].c[i].pts[j] = Point3( Scalar( i ), Scalar( j ), Scalar( 0.1 * i * j ) );
+			}
+		}
+		bool wt = false, open = false, neg = false;
+		GeometricUtilities::CertifyBezierPatchSet( single, wt, open, neg );
+		Check( open && !wt,
+			"DL-616: single embedded bicubic Bezier patch is certified open sheet" );
+
+		BezierPatchesListType selfCross( 1 );
+		// Fold the patch across itself in X so non-adjacent subpatches cross.
+		const Scalar xs[4] = { 0.0, 2.0, -2.0, 0.0 };
+		const Scalar zs[4] = { 0.0, 1.0, -1.0, 0.0 };
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				selfCross[0].c[i].pts[j] = Point3( xs[i], Scalar( j ), zs[i] );
+			}
+		}
+		GeometricUtilities::CertifyBezierPatchSet( selfCross, wt, open, neg );
+		Check( !open && !wt,
+			"DL-616: self-intersecting bicubic Bezier patch refuses certification" );
+	}
+}
+
 int main()
 {
 	std::cout << "=== MeshInteriorSignalTest (DL-31, DL-143, DL-136, DL-150, DL-197) ===" << std::endl;
@@ -2058,7 +2245,8 @@ int main()
 	TestFlatShadedCubeWithRealNormalsCertifies();
 	TestThinButValidSolidThickerThanEpsCertifies();
 	TestProvablyOpenSheetCertification();
-    TestDeserializedClosedCertificate();
+	TestDeserializedClosedCertificate();
+	TestPatchSetCertification();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

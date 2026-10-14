@@ -176,6 +176,11 @@ namespace RISE
 			bool DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar maxDistWorld,
 				Scalar& outDist, CsgLandingArm& outArm ) const;
 
+			//! DL-617: closed-volume vs open-sheet certification for CSG trees.
+			bool IsCertifiedWatertight() const;
+			bool IsProvablyOpenSheet( const bool allowGeneralProof = true ) const;
+			bool HasNegativeOpenSignedVolume() const;
+
 		protected:
 			//! THE DIAGONAL OF THIS COMPOSITE'S OWN LOCAL BOX -- A's box
 			//! alone for a subtraction (which can never extend past its

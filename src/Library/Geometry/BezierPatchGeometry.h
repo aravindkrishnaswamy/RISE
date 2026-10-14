@@ -83,6 +83,9 @@ namespace RISE
 			mutable std::vector<Scalar>		m_cellCdf;
 			mutable std::vector<Scalar>		m_cellBound;
 			mutable Scalar					m_area;
+			bool					m_bCertifiedWatertight;
+			bool					m_bProvablyOpenSheet;
+			bool					m_bNegativeOpenSignedVolume;
 			void EnsureAreaTable() const;
 
 			virtual ~BezierPatchGeometry( );
@@ -127,6 +130,9 @@ namespace RISE
 			Scalar GetArea( ) const override;
 			//! DL-320: every accepted back-face hit is flipped toward the ray (see IGeometry).
 			bool IsDoubleSided() const override { return true; }
+			bool IsCertifiedWatertight() const { return m_bCertifiedWatertight; }
+			bool IsProvablyOpenSheet() const { return m_bProvablyOpenSheet; }
+			bool HasNegativeOpenSignedVolume() const { return m_bNegativeOpenSignedVolume; }
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 

@@ -149,10 +149,13 @@ namespace RISE
 		// this probe.
 		struct ProbeEntry {
 			const IObject* pObj;
+			const IMaterial* pMat;
 			Scalar ior;
 			int parity;
 			int firstExitStep;  // probe step of FIRST exit, for stack-order sort
-            int firstEntryStep; // inward-wound closed solids reverse these faces
+			int firstEntryStep; // inward-wound closed solids reverse these faces
+			Scalar firstExitDist;
+			Scalar firstEntryDist;
 			// DL-46: true for a `hasInterior`-only (non-refracting,
 			// stateful) material -- push re-pushes the stack's CURRENT
 			// top instead of this entry's captured `ior`, matching
@@ -160,6 +163,9 @@ namespace RISE
 			// False for an ordinary `canRefract` medium, which pushes
 			// its own distinct `ior` as before.
 			bool repushParentIor;
+			// DL-618: true when this entry is a certified open refractive
+			// sheet (`bProvablyNoInterior && canRefract && ior > 0`).
+			bool isOpenSheet;
 		};
 
 		// Safety cap on the surface hits one probe walks: guards against
@@ -228,6 +234,7 @@ namespace RISE
 			std::size_t count = 0;
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			Ray probe( pos, dir );
+			bool seenOpenFrontFace = false;
 
 			for( int step = 0; step < kMaxProbeSteps; step++ )
 			{
@@ -236,6 +243,8 @@ namespace RISE
 				if( !ri.geometric.bHit ) {
 					break;
 				}
+
+				const Scalar hitDist = Point3Ops::Distance( pos, ri.geometric.ptIntersection );
 
 				// Side-of-surface decision: use the GEOMETRIC normal,
 				// not the shading normal — the question is "is the seed
@@ -289,6 +298,7 @@ namespace RISE
 					const bool bTrackable = info.canRefract ? (info.ior > 0) : info.hasInterior;
 					if( info.valid && bTrackable )
 					{
+						const bool bOpenSheet = ri.geometric.bProvablyNoInterior && info.canRefract && (info.ior > 0);
 						// Find or create per-object entry.  Linear scan is
 						// fine — at most kMaxProbeEntries (32) entries.
 						ProbeEntry* e = 0;
@@ -301,24 +311,46 @@ namespace RISE
 						if( !e && count < kMaxProbeEntries ) {
 							e = &out[count++];
 							e->pObj = ri.pObject;
+							e->pMat = ri.pMaterial;
 							e->ior = info.ior;
 							e->parity = 0;
 							e->firstExitStep = -1;
-                            e->firstEntryStep = -1;
+							e->firstEntryStep = -1;
+							e->firstExitDist = RISE_INFINITY;
+							e->firstEntryDist = RISE_INFINITY;
 							e->repushParentIor = !info.canRefract;
+							e->isOpenSheet = bOpenSheet;
 						}
 						if( e )
 						{
 							// +1 per exit, -1 per entry.  Positive net =
 							// seed is inside this object.
+							// DL-618: for a certified open refractive sheet,
+							// a back-face hit (cosN > 0) only counts as an
+							// enclosing exit when no open sheet has been
+							// entered from its front face along this probe ray
+							// (`!seenOpenFrontFace`).  Once an open sheet is
+							// hit on its front face (cosN <= 0), `pos` is on
+							// the exterior side of that boundary, so further
+							// open-sheet back faces along the same ray close
+							// that entered slab rather than enclosing `pos`.
 							if( cosN > 0 ) {
-								e->parity++;
-								if( e->firstExitStep < 0 ) {
-									e->firstExitStep = step;
+								if( !bOpenSheet || !seenOpenFrontFace ) {
+									e->parity++;
+									if( e->firstExitStep < 0 ) {
+										e->firstExitStep = step;
+										e->firstExitDist = hitDist;
+									}
 								}
 							} else {
 								e->parity--;
-                                if(e->firstEntryStep<0) e->firstEntryStep=step;
+								if( e->firstEntryStep < 0 ) {
+									e->firstEntryStep = step;
+									e->firstEntryDist = hitDist;
+								}
+								if( bOpenSheet ) {
+									seenOpenFrontFace = true;
+								}
 							}
 						}
 					}
@@ -334,7 +366,7 @@ namespace RISE
             // containment. Open sheets keep the established face convention.
             for(std::size_t i=0;i<count;++i) {
                 ProbeEntry& entry=out[i];
-                if(entry.parity>=0) continue;
+                if(entry.parity>=0 || entry.isOpenSheet) continue;
                 const IGeometry* geometry=entry.pObj->GetGeometry();
                 if(!geometry) continue;
                 const Point3 local=Point3Ops::Transform(entry.pObj->GetFinalInverseTransformMatrix(),pos);
@@ -344,6 +376,7 @@ namespace RISE
                 if(geometry->SignedDistanceLower(local,reach,signedDistance,exact) && exact && signedDistance<0) {
                     entry.parity=-entry.parity;
                     entry.firstExitStep=entry.firstEntryStep;
+                    entry.firstExitDist=entry.firstEntryDist;
                 }
             }
 			return count;
@@ -396,6 +429,20 @@ namespace RISE
 			return false;
 		}
 
+		inline const ProbeEntry* FindPositiveParityEntry(
+			const ProbeEntry* entries,
+			std::size_t count,
+			const IObject* pObj
+			)
+		{
+			for( std::size_t i = 0; i < count; i++ ) {
+				if( entries[i].pObj == pObj && entries[i].parity > 0 ) {
+					return &entries[i];
+				}
+			}
+			return 0;
+		}
+
 		/// Populate `stack` with the dielectric objects that physically
 		/// contain `pos`, so that subsequent scatters at the first
 		/// enclosing boundary see bFromInside==true.
@@ -428,173 +475,144 @@ namespace RISE
 				return;
 			}
 
-			// +Z is arbitrary; any fixed direction avoids per-seed RNG
-			// and keeps results deterministic across threads.
-			ProbeEntry containing[kMaxProbeEntries];
-			const std::size_t containingCount =
-				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing, nm );
-
-			// P2-4 (review round 3): a single probe's parity is only a
-			// containment test for a CLOSED surface.  Every
-			// `translucent_material` object is now a probe participant
-			// (DL-46), and translucent is exactly the material authors put
-			// on OPEN sheets -- a leaf, a curtain, a lampshade panel, a
-			// paper card.  An open single-sided card sitting above the
-			// seed with its normal pointing up registers one "exit" and no
-			// entry, so parity reads +1 and the seed is falsely declared
-			// inside it: the camera's very first hit then runs
-			// TranslucentSPF's EXIT branch (Beer extinction + a pop of an
-			// IOR that was never pushed) instead of the entry branch.
-			//
-			// Rule: require positive parity along the probe AND along its
-			// REVERSE.  For a closed manifold both directions agree by
-			// construction (the seed is inside or it is not), so this is a
-			// no-op for every case the mechanism was built for; for an
-			// open surface the two disagree (the reverse probe never meets
-			// it) and the object is rejected.  The reverse probe only runs
-			// when the forward one actually found a candidate, so the
-			// overwhelmingly common "not inside anything" call costs
-			// exactly what it did before.
-			//
-			// DL-76 (this rule's own documented residual, closed below):
-			// a single-axis pair alone still cannot tell a genuine
-			// enclosure from a SINGLE Object built out of several open
-			// pieces that straddle the seed on opposite sides of just
-			// that one axis, each piece's normal facing away from the
-			// seed (e.g. a two-blade louvre mesh, one blade above and one
-			// below along Z, both part of the same triangle mesh Object)
-			// -- both probes independently see an "exit" for that one
-			// pObj, so the same-object confirmation above accepts it.
-			// The vote below extends confirmation to the two OTHER
-			// principal axes (X, Y) for whichever objects the Z pair
-			// already accepts: a probe along an axis coplanar with a flat
-			// pair of blades crosses neither, so the false positive is
-			// caught by requiring ALL THREE axes to agree.  This is a
-			// closed manifold's natural behaviour (it agrees along every
-			// direction, so the extra votes are a no-op there); it is a
-			// bounded, cheap improvement — not a general winding-number /
-			// solid-angle containment test — so an adversarial Object
-			// deliberately built from open pieces straddling the seed
-			// along all three principal axes at once would still fool
-			// it (accepted FALSE-POSITIVE limit).
-			//
-			// There is no mirror-image false-negative from tunnel
-			// alignment: a point strictly inside the solid bounded by a
-			// closed orientable manifold has ODD (net positive) crossing
-			// parity along every generic probe direction, regardless of
-			// genus, tunnels, or convexity — the ray starts inside and
-			// ends at infinity (outside a bounded solid), so it must
-			// cross the boundary an odd number of times no matter which
-			// axis it follows, including one that happens to run through
-			// a hole.  (Verified directly: a torus with its hole aligned
-			// to Y, probed from a seed point on the tube itself, reads
-			// positive parity on all six +-X/+-Y/+-Z probes.)  An earlier
-			// draft of this comment claimed a through-tunnel false
-			// negative here; that claim was wrong and is retracted.  The
-			// one real residual — unchanged from the single-axis rule
-			// and now shared by three axes instead of one — is a probe
-			// that grazes the surface exactly tangentially or threads a
-			// face/edge boundary at the sampled precision, a pre-existing
-			// degenerate-alignment hazard rather than a new failure mode.
-			// See docs/DEBT_LEDGER.md DL-76 and
-			// docs/SUBMERGED_CAMERA_IOR_SEEDING.md for the accepted
-			// scope.
-			ProbeEntry reverse[kMaxProbeEntries];
-			std::size_t reverseCount = 0;
-			bool anyCandidate = false;
-			for( std::size_t i = 0; i < containingCount; i++ ) {
-				if( containing[i].parity > 0 ) { anyCandidate = true; break; }
-			}
-			if( anyCandidate ) {
-				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse, nm );
+			// Trace the 6 principal directions (+Z, -Z, +X, -X, +Y, -Y),
+			// bounded by 6 `TallyProbe` calls total.
+			//  - Closed objects (!isOpenSheet) require positive parity on all
+			//    6 probes (P2-4 + DL-76 unanimity vote, unchanged).
+			//  - Certified open refractive sheets (isOpenSheet, DL-618) seed
+			//    when at least one probe sees an unoccluded back-face exit
+			//    (parity > 0), no probe sees a front-face entry (parity < 0)
+			//    of the sheet or its material, and the opposite direction on
+			//    the same axis does not report an unoccluded back-face exit of
+			//    a DIFFERENT material (which would be a walk-history-dependent
+			//    unequal slab).
+			static const Vector3 kDirs[6] = {
+				Vector3( 0, 0, 1 ), Vector3( 0, 0, -1 ),
+				Vector3( 1, 0, 0 ), Vector3( -1, 0, 0 ),
+				Vector3( 0, 1, 0 ), Vector3( 0, -1, 0 )
+			};
+			ProbeEntry probes[6][kMaxProbeEntries];
+			std::size_t probeCounts[6] = { 0, 0, 0, 0, 0, 0 };
+			for( int d = 0; d < 6; d++ ) {
+				probeCounts[d] = TallyProbe( pObjects, pos, kDirs[d], probes[d], nm );
 			}
 
-			// DL-76 perf fix (2026-09-14): trace the X and Y confirmation
-			// pairs ONCE per SeedFromPoint call here -- exactly like the Z
-			// reverse probe above -- instead of re-tracing them per
-			// candidate object inside the loop below (see the comment on
-			// `HasPositiveParity`).  Only pay for them when at least one
-			// object is already Z-confirmed (positive parity along +Z AND
-			// -Z): the overwhelmingly common "nothing here" and "open
-			// single sheet" calls stop at the Z pair, exactly as before.
-			// Worst case is now Z-fwd + Z-rev + X-fwd + X-rev + Y-fwd +
-			// Y-rev = 6 `TallyProbe` calls total, independent of how many
-			// candidates the Z round found (was up to 8 candidates x 4 =
-			// 32 on top of the Z pair).
-			ProbeEntry xForward[kMaxProbeEntries], xReverse[kMaxProbeEntries];
-			ProbeEntry yForward[kMaxProbeEntries], yReverse[kMaxProbeEntries];
-			std::size_t xForwardCount = 0, xReverseCount = 0;
-			std::size_t yForwardCount = 0, yReverseCount = 0;
-			bool anyZConfirmed = false;
-			for( std::size_t i = 0; i < containingCount; i++ ) {
-				if( containing[i].parity > 0 &&
-					HasPositiveParity( reverse, reverseCount, containing[i].pObj ) ) {
-					anyZConfirmed = true;
-					break;
+			ProbeEntry confirmed[kMaxProbeEntries];
+			std::size_t confirmedCount = 0;
+
+			// 1. Closed objects: must be present in probes[0] (+Z) and confirmed
+			//    on all 5 other principal directions.
+			for( std::size_t i = 0; i < probeCounts[0]; i++ ) {
+				const ProbeEntry& cand = probes[0][i];
+				if( cand.isOpenSheet || cand.parity <= 0 ) {
+					continue;
+				}
+				if( !HasPositiveParity( probes[1], probeCounts[1], cand.pObj ) ||
+					!HasPositiveParity( probes[2], probeCounts[2], cand.pObj ) ||
+					!HasPositiveParity( probes[3], probeCounts[3], cand.pObj ) ||
+					!HasPositiveParity( probes[4], probeCounts[4], cand.pObj ) ||
+					!HasPositiveParity( probes[5], probeCounts[5], cand.pObj ) ) {
+					continue;
+				}
+				if( confirmedCount < kMaxProbeEntries ) {
+					confirmed[confirmedCount++] = cand;
 				}
 			}
-			if( anyZConfirmed ) {
-				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward, nm );
-				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse, nm );
-				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward, nm );
-				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse, nm );
+
+			// 2. Certified open refractive sheets (DL-618): check across all 6 probes.
+			for( int d = 0; d < 6; d++ ) {
+				const int oppD = d ^ 1;
+				for( std::size_t i = 0; i < probeCounts[d]; i++ ) {
+					const ProbeEntry& cand = probes[d][i];
+					if( !cand.isOpenSheet || cand.parity <= 0 ) {
+						continue;
+					}
+					// Deduplicate by object or material (a consistent two-sheet
+					// slab of the same material pushes at most one open-sheet entry).
+					bool alreadyAdded = false;
+					for( std::size_t k = 0; k < confirmedCount; k++ ) {
+						if( confirmed[k].pObj == cand.pObj ||
+							( confirmed[k].isOpenSheet && cand.pMat && confirmed[k].pMat == cand.pMat ) ) {
+							alreadyAdded = true;
+							break;
+						}
+					}
+					if( alreadyAdded ) {
+						continue;
+					}
+					// Reject if any of the 6 probes hit this sheet (or a sibling
+					// open sheet of the same material) on its front face (parity < 0).
+					bool anyFrontEntry = false;
+					for( int q = 0; q < 6 && !anyFrontEntry; q++ ) {
+						for( std::size_t m = 0; m < probeCounts[q]; m++ ) {
+							const ProbeEntry& other = probes[q][m];
+							if( other.isOpenSheet && other.parity < 0 &&
+								( other.pObj == cand.pObj || ( cand.pMat && other.pMat == cand.pMat ) ) ) {
+								anyFrontEntry = true;
+								break;
+							}
+						}
+					}
+					if( anyFrontEntry ) {
+						continue;
+					}
+					// Reject if the opposite direction along the same axis has an
+					// unoccluded open-sheet exit of a DIFFERENT material (unequal
+					// two-sheet slab, whose interior index is walk-history-dependent).
+					bool axisMaterialConflict = false;
+					for( std::size_t m = 0; m < probeCounts[oppD]; m++ ) {
+						const ProbeEntry& opp = probes[oppD][m];
+						if( opp.isOpenSheet && opp.parity > 0 && opp.pMat != cand.pMat ) {
+							axisMaterialConflict = true;
+							break;
+						}
+					}
+					if( axisMaterialConflict ) {
+						continue;
+					}
+					if( confirmedCount < kMaxProbeEntries ) {
+						confirmed[confirmedCount++] = cand;
+					}
+				}
 			}
 
-			// Push containing objects (parity > 0) onto the stack.
-			//
-			// Stack ORDER: bottom = outermost, top = innermost.  Along an
-			// outward-going probe, the FIRST exit of an object is at its
-			// INNERMOST surface, the LAST exit at its OUTERMOST.  Objects
-			// with smaller firstExitStep are inner — push them last.
-			// Insertion-sort to OUTERMOST-FIRST (largest firstExitStep
-			// first); buffer is at most kMaxProbeEntries entries.
-			//
-			// Objects with parity == 0 (probe passed through) and
-			// parity < 0 (unbalanced entries — only possible from
-			// pathological geometry hitting the step cap) are skipped.
+			// Helper: returns true when `a` is INNER to `b` (so `b` is outer and
+			// must be pushed before `a`).  When `a` and `b` both have positive
+			// parity in any shared probe direction `d`, their `firstExitStep`
+			// along that exact ray decides the nesting order without aspect-ratio
+			// bias; otherwise fall back to `firstExitDist`.
+			auto isInnerTo = [&]( const ProbeEntry& a, const ProbeEntry& b ) -> bool {
+				for( int d = 0; d < 6; d++ ) {
+					const ProbeEntry* ea = FindPositiveParityEntry( probes[d], probeCounts[d], a.pObj );
+					const ProbeEntry* eb = FindPositiveParityEntry( probes[d], probeCounts[d], b.pObj );
+					if( ea && eb ) {
+						return ea->firstExitStep < eb->firstExitStep;
+					}
+				}
+				return a.firstExitDist < b.firstExitDist;
+			};
+
+			// Sort `ordered[]` OUTERMOST-FIRST (`isInnerTo(ordered[j-1], cand)`
+			// means `ordered[j-1]` is inner to `cand`, so `cand` goes before it).
 			ProbeEntry* ordered[kMaxProbeEntries];
 			std::size_t orderedCount = 0;
-			for( std::size_t i = 0; i < containingCount; i++ ) {
-				if( containing[i].parity <= 0 ) {
-					continue;
-				}
-				// P2-4: confirm against the reverse probe (see above).
-				if( !HasPositiveParity( reverse, reverseCount, containing[i].pObj ) ) {
-					continue;
-				}
-				// DL-76: the Z pair alone cannot distinguish a genuine
-				// enclosure from two disjoint open pieces of the SAME
-				// Object straddling the seed along Z (see the comment
-				// above).  Require the two other principal axes to
-				// independently confirm this exact object too, using the
-				// X/Y probe pairs already traced once above.
-				if( !HasPositiveParity( xForward, xForwardCount, containing[i].pObj ) ||
-					!HasPositiveParity( xReverse, xReverseCount, containing[i].pObj ) ||
-					!HasPositiveParity( yForward, yForwardCount, containing[i].pObj ) ||
-					!HasPositiveParity( yReverse, yReverseCount, containing[i].pObj ) ) {
-					continue;
-				}
-				// Insert into ordered[] keeping descending firstExitStep.
+			for( std::size_t i = 0; i < confirmedCount; i++ ) {
 				std::size_t j = orderedCount;
-				while( j > 0 && ordered[j-1]->firstExitStep <
-					containing[i].firstExitStep )
-				{
+				while( j > 0 && isInnerTo( *ordered[j-1], confirmed[i] ) ) {
 					ordered[j] = ordered[j-1];
 					j--;
 				}
-				ordered[j] = &containing[i];
+				ordered[j] = &confirmed[i];
 				orderedCount++;
 			}
+
 			for( std::size_t i = 0; i < orderedCount; i++ ) {
 				stack.SetCurrentObject( ordered[i]->pObj );
-				// DL-46: a hasInterior-only entry (e.g. TranslucentSPF) has
-				// no distinct IOR of its own -- re-push whatever is
-				// CURRENTLY on top (set by the previous, more-outer push,
-				// or the stack's initial environment IOR if this is the
-				// outermost entry), matching Scatter()'s own
-				// `push(ior_stack.top())`.  An ordinary canRefract medium
-				// pushes its own captured `ior` as before.
-				stack.push( ordered[i]->repushParentIor ? stack.top() : ordered[i]->ior );
+				if( ordered[i]->isOpenSheet ) {
+					stack.pushOpenSheet( ordered[i]->ior );
+				} else {
+					stack.push( ordered[i]->repushParentIor ? stack.top() : ordered[i]->ior );
+				}
 			}
 
 			// DL-09: every entry above was recorded at its probe's FIRST
@@ -657,10 +675,15 @@ namespace RISE
 			return ( crossings % 2 ) == 1;
 		}
 
-		//! DL-382: does open sheet @a pY's medium continue past the crossing at
-		//! @a p (walk travelling along @a dir)?  The medium continues iff the
-		//! first surface ahead made of pY's material (excluding @a pSheet) is
-		//! hit from its BACK (an exit of that medium).
+		//! DL-382 / DL-618: does open sheet @a pY's medium continue past the
+		//! crossing at @a p (walk travelling along @a dir)?  First probes along
+		//! @a dir for the first surface made of pY's material (excluding @a pSheet).
+		//! If the walk direction misses pY's material altogether (e.g. an oblique
+		//! exit inside a lone sheet's back half-space), falls back to probing the
+		//! 6 principal directions from a point just past the crossing at @a p:
+		//! the medium continues iff at least one axis probe reaches pY's material
+		//! on its BACK face without first crossing any open sheet's FRONT face,
+		//! and no axis probe hits pY's material on its FRONT face first.
 		inline bool OpenSheetEnclosesCrossing(
 			const IObject* pY,
 			const IObject* pSheet,
@@ -676,27 +699,67 @@ namespace RISE
 				return ObjectEnclosesCrossing( pY, p, dir );
 			}
 			const IMaterial* pMat = pY->GetMaterial();
-			if( !pMat ) {
-				return ObjectEnclosesCrossing( pY, p, dir );
-			}
 			const Scalar scale = Scalar( 1 ) + std::fabs( p.x ) + std::fabs( p.y ) + std::fabs( p.z );
 			Ray probe( Point3Ops::mkPoint3( p, dir * ( Scalar( 1e-7 ) * scale ) ), dir );
 			for( int step = 0; step < 64; ++step ) {
 				RayIntersection pri( probe, nullRasterizerState );
 				pScene->GetObjects()->IntersectRay( pri, true, true, false );
 				if( !pri.geometric.bHit ) {
-					return false;
+					break;
 				}
 				if( !pri.geometric.HasTrueGeomSide() || pri.pObject == pSheet ) {
 					probe.origin = Point3Ops::mkPoint3( pri.geometric.ptIntersection, dir * ( Scalar( 1e-6 ) * scale ) );
 					continue;
 				}
-				if( pri.pObject && pri.pObject->GetMaterial() == pMat ) {
+				const IMaterial* hitMat = pri.pMaterial ? pri.pMaterial : ( pri.pObject ? pri.pObject->GetMaterial() : nullptr );
+				if( pri.pObject == pY || ( pMat && hitMat == pMat ) ) {
 					return Vector3Ops::Dot( dir, pri.geometric.UnflippedGeomNormal() ) >= 0;
 				}
 				probe.origin = Point3Ops::mkPoint3( pri.geometric.ptIntersection, dir * ( Scalar( 1e-6 ) * scale ) );
 			}
-			return false;
+
+			// DL-618: walk direction missed `pMat`.  Probe the 6 principal
+			// directions from just past the crossing (`pAfter`).  Not skipping
+			// `pSheet` here is deliberate: if `pSheet` is the closing face of a
+			// two-sheet slab entered through `pY`, the ray from `pAfter` back
+			// toward `pY` hits `pSheet` on its FRONT face first and stops.
+			const Point3 pAfter = Point3Ops::mkPoint3( p, dir * ( Scalar( 1e-5 ) * scale ) );
+			static const Vector3 kAxes[6] = {
+				Vector3( 0, 0, 1 ), Vector3( 0, 0, -1 ),
+				Vector3( 1, 0, 0 ), Vector3( -1, 0, 0 ),
+				Vector3( 0, 1, 0 ), Vector3( 0, -1, 0 )
+			};
+			bool foundBackHit = false;
+			for( int a = 0; a < 6; ++a ) {
+				const Vector3& qDir = kAxes[a];
+				Ray qProbe( pAfter, qDir );
+				for( int step = 0; step < 64; ++step ) {
+					RayIntersection pri( qProbe, nullRasterizerState );
+					pScene->GetObjects()->IntersectRay( pri, true, true, false );
+					if( !pri.geometric.bHit ) {
+						break;
+					}
+					if( !pri.geometric.HasTrueGeomSide() ) {
+						qProbe.origin = Point3Ops::mkPoint3( pri.geometric.ptIntersection, qDir * ( Scalar( 1e-6 ) * scale ) );
+						continue;
+					}
+					const Scalar cosQ = Vector3Ops::Dot( qDir, pri.geometric.UnflippedGeomNormal() );
+					const IMaterial* hitMat = pri.pMaterial ? pri.pMaterial : ( pri.pObject ? pri.pObject->GetMaterial() : nullptr );
+					if( pri.pObject == pY || ( pMat && hitMat == pMat ) ) {
+						if( cosQ >= 0 ) {
+							foundBackHit = true;
+							break;
+						} else {
+							return false;
+						}
+					}
+					if( pri.geometric.bProvablyNoInterior && cosQ < 0 ) {
+						break;
+					}
+					qProbe.origin = Point3Ops::mkPoint3( pri.geometric.ptIntersection, qDir * ( Scalar( 1e-6 ) * scale ) );
+				}
+			}
+			return foundBackHit;
 		}
 
 		//! DL-382: resolves an unpushed exit on certified sheet @a pSheet.

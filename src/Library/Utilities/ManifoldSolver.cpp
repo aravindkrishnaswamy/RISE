@@ -755,10 +755,15 @@ bool SMSCaptureUncached(const RISE::IScene& scene,
     const std::vector<const IObject*> keys = live.ObjectKeys();
     IORStack geometricMembership(live.EnvironmentIOR());
     IORStackSeeding::SeedFromPoint(geometricMembership, anchor, scene);
-    for(const IObject* required : geometricMembership.ObjectKeys())
-        if(std::find(keys.begin(), keys.end(), required) == keys.end()) return false;
-    // Live open-sheet membership can legitimately exceed geometric containment;
-    // preserve it rather than replacing the walk's state with a fresh seed.
+    for(std::size_t i = 1; i < geometricMembership.Depth(); ++i) {
+        if(geometricMembership.isOpenSheetAt(i)) continue;
+        const IObject* required = geometricMembership.ObjectAt(i);
+        if(required && std::find(keys.begin(), keys.end(), required) == keys.end()) return false;
+    }
+    // Live open-sheet membership can legitimately exceed or differ from
+    // local geometric containment (e.g. a path that reached the anchor around
+    // a finite sheet's edge without crossing it); preserve the live walk's
+    // open-sheet state while still requiring every closed enclosing object.
     // Participating local media are excluded, including uncertain containment
     // when their boundary does not provide reconstructible IOR membership.
     // Composite scenes already declined through the prepared policy above.
@@ -788,6 +793,19 @@ bool SMSCaptureUncached(const RISE::IScene& scene,
             captured = true;
             break;
         }
+        if(!captured) {
+            Vector3 toCenter = Vector3Ops::mkVector3(key->getBoundingBox().GetCenter(), anchor);
+            if(Vector3Ops::NormalizeMag(toCenter) > NEARZERO) {
+                RayIntersection hit(Ray(anchor, toCenter), nullRasterizerState);
+                key->IntersectRay(hit, RISE_INFINITY, true, true, false);
+                SMSCompleteNativeHit(hit,scene.GetObjects());
+                if(hit.geometric.bHit) {
+                    if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+                    result.enclosing.emplace_back(key, hit.pMaterial, hit.geometric);
+                    captured = true;
+                }
+            }
+        }
         if(!captured) return false;
     }
     result.reconstructible = true;
@@ -802,6 +820,7 @@ bool RISE::Implementation::SMSDomainReplay::BuildStack(const SMSStartingMedia& m
     if(!media.reconstructible || !domain.Valid()
         || !std::isfinite(media.environmentIndex) || media.environmentIndex <= 0) return false;
     IORStack replay(media.environmentIndex);
+    replay.SetMediumProbeScene(result.MediumProbeScene());
     for(const SMSMediumCapture& entry : media.enclosing) {
         if(!entry.identity || !entry.material || entry.identity->GetInteriorMedium()) return false;
         replay.SetCurrentObject(entry.identity);
@@ -809,7 +828,8 @@ bool RISE::Implementation::SMSDomainReplay::BuildStack(const SMSStartingMedia& m
         SMSNativeMaterialQuery query;
         if(!Query(*entry.material, entry.context, replay, domain, query)
             || !query.transmission) return false;
-        replay.push(query.index);
+        if(entry.context.bProvablyNoInterior) replay.pushOpenSheet(query.index);
+        else replay.push(query.index);
     }
     result = replay;
     return true;
@@ -933,6 +953,7 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
         || !std::isfinite(positionTolerance) || positionTolerance < 0) { return; }
     SMSStartingMedia media;
     IORStack replay(startingStack.EnvironmentIOR());
+    replay.SetMediumProbeScene(&scene);
     if(!SMSDomainReplay::Capture(scene, start, startingStack, media)
         || !SMSDomainReplay::BuildStack(media, domain, replay)) { return; }
     auto& chain=scratch.Vertices(0,config.maxChainDepth);
@@ -5572,6 +5593,13 @@ unsigned int ManifoldSolver::SnellContinueChain(
 			mv.etaI = specInfo.ior;
 			mv.etaT = currentIOR;	// provisional; corrected after the pop below
 		}
+		// RISE::RadianceEtaScale prices crossings using the stack top BEFORE
+		// the crossing (except on certified open-sheet exits, where the sheet's
+		// own material index is the before-crossing index).  At a non-top
+		// closed exit beneath an open-sheet entry, SPF refracts and evaluates
+		// Fresnel with mv.etaI = specInfo.ior, while RadianceEtaScale uses
+		// currentIOR = stack.top() (DL-619, matching SMSDomainReplay::EventWeight).
+		mv.radianceEtaI = bOpenSheetHit ? mv.etaI : currentIOR;
 
 		const std::size_t idxJustPushed = chain.size();
 		chain.push_back( mv );
@@ -5597,14 +5625,12 @@ unsigned int ManifoldSolver::SnellContinueChain(
 			// the direction, and both directions leave through this face.
 			IORStack destIor = seedIor;
 			Scalar destIOR;
-			// The index the crossing refracts FROM.  For an entry and for a
-			// pushed exit it is the walk's own medium; for an UNPUSHED exit
-			// (an open sheet crossed against its normal) it is the sheet's
-			// index -- what `mv.etaI` records and Newton solves with
-			// (DL-290 review P3-1 / DL-345: the walk used to refract with
-			// the stack's index there, so the seed and the constraint
-			// described different interfaces).
-			Scalar etaFrom = currentIOR;
+			// The index the crossing refracts FROM.  For an entry it is the
+			// walk's current medium; for an exit (whether pushed, non-top
+			// closed, or unpushed open sheet) it is the exited object's index
+			// (`specInfo.ior`) -- what `mv.etaI` records and both the SPF and
+			// Newton solve with (DL-290 review P3-1 / DL-345 / DL-619).
+			Scalar etaFrom = bEntering ? currentIOR : specInfo.ior;
 			if( bEntering ) {
 				destIOR = specInfo.ior;
 				destIor.SetCurrentObject( ri.pObject );
@@ -6480,9 +6506,13 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 			//
 			// eta_i is the index on the x-receiver side, eta_t on the
 			// y-source side, in the photon's FORWARD direction.  The
-			// forward rescale is (n_receiver / n_source)^2 = (eta_i / eta_t)^2.
+			// forward rescale is (n_receiver / n_source)^2.  At a non-top
+			// closed exit beneath an open-sheet entry, RISE::RadianceEtaScale
+			// reads the pre-crossing stack top (v.radianceEtaI) while Snell
+			// and Fresnel read the exited object's index (eta_i) (DL-619).
 			const RISEPel fr = EvaluateVertexFresnelRGB( v, cosI, eta_i, eta_t );
-			const Scalar eta_ratio = eta_i / eta_t;
+			const Scalar rad_eta_i = ( v.radianceEtaI > Scalar( 0 ) ) ? v.radianceEtaI : eta_i;
+			const Scalar eta_ratio = rad_eta_i / eta_t;
 			const Scalar radiance_rescale = eta_ratio * eta_ratio;
 			throughput = throughput * attenuation * (RISEPel(1,1,1) - fr) * radiance_rescale;
 		}
@@ -6564,7 +6594,8 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		else
 		{
 			const Scalar fr = EvaluateVertexFresnel( v, cosI, eta_i, eta_t, nm );
-			const Scalar eta_ratio = eta_i / eta_t;
+			const Scalar rad_eta_i = ( v.radianceEtaI > Scalar( 0 ) ) ? v.radianceEtaI : eta_i;
+			const Scalar eta_ratio = rad_eta_i / eta_t;
 			throughput *= attenuation * (1.0 - fr) * eta_ratio * eta_ratio;
 		}
 	}
@@ -10868,10 +10899,15 @@ void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm,
 				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
                 // Fallback for contexts declined by native replay below:
                 // refresh the material side, preserving the seeded exterior.
+				const Scalar prevEtaI = chain[i].etaI;
 				if( chain[i].isExiting ) {
 					chain[i].etaI = specNM.ior;
+					if( chain[i].radianceEtaI <= Scalar( 0 ) || chain[i].radianceEtaI == prevEtaI ) {
+						chain[i].radianceEtaI = specNM.ior;
+					}
 				} else {
 					chain[i].etaT = specNM.ior;
+					chain[i].radianceEtaI = chain[i].etaI;
 				}
 			}
 		}
@@ -10900,10 +10936,12 @@ void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm,
         if(!hit.geometric.bHit || hit.pMaterial!=vertex.pMaterial
             || Point3Ops::Distance(hit.geometric.ptIntersection,vertex.position)>1e-5*scale) return;
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+        const Scalar beforeTop = replay.top();
         bool exiting;
         if(!SMSDomainReplay::Cross(*vertex.pMaterial,vertex.pObject,hit.geometric,
             domain,vertex.isReflection,replay,vertex.etaI,vertex.etaT,exiting)
             || exiting!=vertex.isExiting) return;
+        vertex.radianceEtaI = hit.geometric.bProvablyNoInterior ? vertex.etaI : beforeTop;
         previous=vertex.position;
     }
     chain.swap(refreshed);

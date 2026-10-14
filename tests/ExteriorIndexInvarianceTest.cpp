@@ -842,6 +842,158 @@ namespace
 			std::remove( path.c_str() );
 		}
 		for( const std::string& f : tempFiles ) std::remove( f.c_str() );
+
+		// DL-618: refractor (and oblique open-sheet exit) inside a lone open
+		// sheet's back half-space, plus DL-619: radianceEtaI at a non-top
+		// closed exit beneath an open sheet.
+		{
+			std::ostringstream o;
+			o << "RISE ASCII SCENE 7\n" << PainterPreamble();
+			o << "perfectrefractor_material\n{\n\tname box_mat\n\tior 2.2\n\trefractance white\n}\n\n";
+			o << "perfectrefractor_material\n{\n\tname lone_mat\n\tior 1.5\n\trefractance white\n}\n\n";
+			o << "perfectrefractor_material\n{\n\tname vert_mat\n\tior 1.8\n\trefractance white\n}\n\n";
+			o << "clippedplane_geometry\n{\n\tname up_geo\n" << up << "}\n\n";
+			o << "clippedplane_geometry\n{\n\tname vert_geo\n\tpta 0 0.05 -0.4\n\tptb 0 0.05 0.4\n\tptc 0 0.45 0.4\n\tptd 0 0.45 -0.4\n}\n\n";
+			o << "box_geometry\n{\n\tname box_geo\n\twidth 0.8\n\theight 0.2\n\tdepth 0.8\n}\n\n";
+			o << "standard_object\n{\n\tname closed_box\n\tgeometry box_geo\n\tposition 0 0.25 0\n\tmaterial box_mat\n}\n\n";
+			o << "standard_object\n{\n\tname lone_sheet\n\tgeometry up_geo\n\tposition 0 0.60 0\n\tmaterial lone_mat\n}\n\n";
+			o << "standard_object\n{\n\tname vert_sheet\n\tgeometry vert_geo\n\tmaterial vert_mat\n}\n\n";
+			const std::string path = WriteScene( o.str(), "seedwalk_dl618" );
+			IJobPriv* job = nullptr;
+			const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
+			Check( loaded, "DL-618: scene loads" );
+			if( loaded ) {
+				job->GetScene()->GetObjects()->PrepareForRendering();
+				const IObject* pLone = job->GetScene()->GetObjects()->GetItem( "lone_sheet" );
+				const IObject* pBox  = job->GetScene()->GetObjects()->GetItem( "closed_box" );
+				const IObject* pVert = job->GetScene()->GetObjects()->GetItem( "vert_sheet" );
+
+				// 1. SeedFromPoint below closed_box inside lone_sheet's back half-space
+				IORStack belowBox( 1.0 );
+				IORStackSeeding::SeedFromPoint( belowBox, Point3( -0.2, 0.02, 0.02 ), *job->GetScene() );
+				Check( belowBox.topObject() == pLone && belowBox.topIsOpenSheet() && std::fabs( belowBox.top() - 1.5 ) < 1e-12,
+					"DL-618: SeedFromPoint in lone sheet's back half-space seeds sheet IOR 1.5" );
+
+				// 2. SeedFromPoint inside closed_box inside lone_sheet's back half-space
+				IORStack insideBox( 1.0 );
+				IORStackSeeding::SeedFromPoint( insideBox, Point3( -0.2, 0.25, 0.02 ), *job->GetScene() );
+				Check( insideBox.Depth() == 3 &&
+					insideBox.ObjectAt( 1 ) == pLone && insideBox.isOpenSheetAt( 1 ) &&
+					insideBox.topObject() == pBox && !insideBox.topIsOpenSheet() &&
+					std::fabs( insideBox.top() - 2.2 ) < 1e-12,
+					"DL-618: SeedFromPoint inside closed refractor under lone sheet orders sheet outermost and box innermost" );
+
+				// 3. BuildSeedChain through closed_box and out through lone_sheet
+				StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
+				RayCaster* caster = new RayCaster( false, 8, *shader, false );
+				caster->AttachScene( job->GetScene() );
+				ManifoldSolver* solver = new ManifoldSolver( ManifoldSolverConfig() );
+				std::vector<ManifoldVertex> chain;
+				solver->BuildSeedChain( Point3( -0.2, 0.02, 0.02 ), Point3( -0.2, 1.2, 0.02 ),
+					*job->GetScene(), *caster, chain, true, &belowBox );
+				Check( chain.size() == 3 &&
+					std::fabs( chain[0].etaI - 1.5 ) < 1e-12 && std::fabs( chain[0].etaT - 2.2 ) < 1e-12 && !chain[0].isExiting &&
+					std::fabs( chain[1].etaI - 2.2 ) < 1e-12 && std::fabs( chain[1].etaT - 1.5 ) < 1e-12 && chain[1].isExiting &&
+					std::fabs( chain[2].etaI - 1.5 ) < 1e-12 && std::fabs( chain[2].etaT - 1.0 ) < 1e-12 && chain[2].isExiting,
+					"DL-618: BuildSeedChain prices closed refractor inside lone sheet's 1.5 half-space" );
+
+				// 4. Oblique exit of vert_sheet inside lone_sheet's half-space
+				//    along a horizontal ray that misses lone_sheet along +dir
+				Check( IORStackSeeding::OpenSheetEnclosesCrossing(
+					pLone, pVert, job->GetScene(), Point3( 0, 0.08, 0.02 ), Vector3( 1, 0, 0 ) ),
+					"DL-618: OpenSheetEnclosesCrossing keeps enclosing lone sheet on oblique exit" );
+
+				safe_release( solver );
+				safe_release( caster );
+				safe_release( shader );
+			}
+			safe_release( job );
+			std::remove( path.c_str() );
+		}
+		{
+			std::ostringstream o;
+			o << "RISE ASCII SCENE 7\n" << PainterPreamble();
+			o << "perfectrefractor_material\n{\n\tname box_mat\n\tior 2.2\n\trefractance white\n}\n\n";
+			o << "perfectrefractor_material\n{\n\tname lone_mat\n\tior 1.5\n\trefractance white\n}\n\n";
+			o << "clippedplane_geometry\n{\n\tname down_geo\n" << down << "}\n\n";
+			o << "box_geometry\n{\n\tname box_geo\n\twidth 0.8\n\theight 0.4\n\tdepth 0.8\n}\n\n";
+			o << "standard_object\n{\n\tname closed_box\n\tgeometry box_geo\n\tposition 0 0.5 0\n\tmaterial box_mat\n}\n\n";
+			o << "standard_object\n{\n\tname lone_sheet\n\tgeometry down_geo\n\tposition 0 0.5 0\n\tmaterial lone_mat\n}\n\n";
+			const std::string path = WriteScene( o.str(), "seedwalk_dl619" );
+			IJobPriv* job = nullptr;
+			const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
+			Check( loaded, "DL-619: scene loads" );
+			if( loaded ) {
+				job->GetScene()->GetObjects()->PrepareForRendering();
+				StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
+				RayCaster* caster = new RayCaster( false, 8, *shader, false );
+				caster->AttachScene( job->GetScene() );
+				ManifoldSolver* solver = new ManifoldSolver( ManifoldSolverConfig() );
+				IORStack receiver( 1.0 );
+				std::vector<ManifoldVertex> chain;
+				solver->BuildSeedChain( Point3( 0.05, 0, 0.02 ), Point3( 0.05, 1.2, 0.02 ),
+					*job->GetScene(), *caster, chain, true, &receiver );
+				Check( chain.size() == 3 &&
+					std::fabs( chain[2].etaI - 2.2 ) < 1e-12 &&
+					std::fabs( chain[2].etaT - 1.5 ) < 1e-12 &&
+					std::fabs( chain[2].radianceEtaI - 1.5 ) < 1e-12,
+					"DL-619: non-top closed exit beneath open sheet records stack-top radianceEtaI = 1.5" );
+				safe_release( solver );
+				safe_release( caster );
+				safe_release( shader );
+			}
+			safe_release( job );
+			std::remove( path.c_str() );
+		}
+		{
+			// DL-617: a two-sheet horizontal slab whose top face has a central hole
+			// subtracted via CSG_SUBTRACTION is certified as an open-sheet CSG object;
+			// a point below the outer (intact) portion of the slab seeds as inside 1.5,
+			// while a vertical ray through the central hole sees only the bottom sheet.
+			std::ostringstream o;
+			o << "RISE ASCII SCENE 7\n" << PainterPreamble();
+			o << "perfectrefractor_material\n{\n\tname slab_mat\n\tior 1.5\n\trefractance white\n}\n\n";
+			o << "clippedplane_geometry\n{\n\tname up_geo\n" << up << "}\n\n";
+			o << "clippedplane_geometry\n{\n\tname down_geo\n" << down << "}\n\n";
+			o << "sphere_geometry\n{\n\tname hole_geo\n\tradius 0.15\n}\n\n";
+			o << "standard_object\n{\n\tname top_raw\n\tgeometry up_geo\n\tposition 0 0.72 0\n\tmaterial slab_mat\n}\n\n";
+			o << "standard_object\n{\n\tname hole_cutter\n\tgeometry hole_geo\n\tposition 0 0.72 0\n\tmaterial slab_mat\n}\n\n";
+			o << "csg_object\n{\n\tname top_holed\n\tobja top_raw\n\tobjb hole_cutter\n\toperation subtraction\n\tmaterial slab_mat\n}\n\n";
+			o << "standard_object\n{\n\tname bot_sheet\n\tgeometry down_geo\n\tposition 0 0.36 0\n\tmaterial slab_mat\n}\n\n";
+			const std::string path = WriteScene( o.str(), "seedwalk_dl617" );
+			IJobPriv* job = nullptr;
+			const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
+			Check( loaded, "DL-617: CSG holed-sheet slab scene loads" );
+			if( loaded ) {
+				job->GetScene()->GetObjects()->PrepareForRendering();
+				IORStack intactMid( 1.0 );
+				IORStackSeeding::SeedFromPoint( intactMid, Point3( 0.35, 0.54, 0.02 ), *job->GetScene() );
+				Check( std::fabs( intactMid.top() - 1.5 ) < 1e-12,
+					"DL-617: point between CSG-holed top sheet and bottom sheet seeds inside 1.5" );
+				StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
+				RayCaster* caster = new RayCaster( false, 8, *shader, false );
+				caster->AttachScene( job->GetScene() );
+				ManifoldSolver* solver = new ManifoldSolver( ManifoldSolverConfig() );
+				IORStack receiver( 1.0 );
+				std::vector<ManifoldVertex> chainOuter, chainHole;
+				solver->BuildSeedChain( Point3( 0.35, 0, 0.02 ), Point3( 0.35, 1.2, 0.02 ),
+					*job->GetScene(), *caster, chainOuter, true, &receiver );
+				Check( chainOuter.size() == 2 &&
+					std::fabs( chainOuter[0].etaI - 1.0 ) < 1e-12 && std::fabs( chainOuter[0].etaT - 1.5 ) < 1e-12 &&
+					std::fabs( chainOuter[1].etaI - 1.5 ) < 1e-12 && std::fabs( chainOuter[1].etaT - 1.0 ) < 1e-12,
+					"DL-617: seed walk across intact portion of CSG-holed sheet slab enters 1.5 and exits to 1.0" );
+				solver->BuildSeedChain( Point3( 0, 0, 0.02 ), Point3( 0, 1.2, 0.02 ),
+					*job->GetScene(), *caster, chainHole, true, &receiver );
+				Check( chainHole.size() == 1 &&
+					std::fabs( chainHole[0].etaI - 1.0 ) < 1e-12 && std::fabs( chainHole[0].etaT - 1.5 ) < 1e-12,
+					"DL-617: seed walk through subtracted hole in top sheet crosses only bottom sheet" );
+				safe_release( solver );
+				safe_release( caster );
+				safe_release( shader );
+			}
+			safe_release( job );
+			std::remove( path.c_str() );
+		}
 	}
 
 	//! A8 (DL-290 review round 2, P2-2): Newton convergence must be

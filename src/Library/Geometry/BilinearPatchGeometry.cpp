@@ -65,6 +65,9 @@ void BilinearPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 		ri.ptCoord = Point2( h.u, h.v );
 		ri.vNormal = Vector3Ops::Normalize(GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v ));
 		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+		if( m_bProvablyOpenSheet ) {
+			ri.bProvablyNoInterior = true;
+		}
 
 		// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
 		// this hit already knows exactly which PATCH and (u, v) it landed
@@ -142,7 +145,10 @@ BilinearPatchGeometry::BilinearPatchGeometry(
   nMaxPerOctantNode( max_polys_per_node ),
   nMaxRecursionLevel( max_recursion_level ),
   bUseBSP( bUseBSP_ ),
-  dTotalArea( 0 )
+  dTotalArea( 0 ),
+  m_bCertifiedWatertight( false ),
+  m_bProvablyOpenSheet( false ),
+  m_bNegativeOpenSignedVolume( false )
 {
 }
 
@@ -155,6 +161,9 @@ BilinearPatchGeometry::~BilinearPatchGeometry( )
 void BilinearPatchGeometry::AddPatch( const BilinearPatch& patch )
 {
 	patches.push_back( patch );
+	m_bCertifiedWatertight = false;
+	m_bProvablyOpenSheet = false;
+	m_bNegativeOpenSignedVolume = false;
 }
 
 void BilinearPatchGeometry::Prepare()
@@ -162,6 +171,11 @@ void BilinearPatchGeometry::Prepare()
 	// Prepare for rendering
 	// Optimize the patch container
 	stl_utils::container_optimize< BilinearPatchList >( patches );
+	GeometricUtilities::CertifyBilinearPatchSet(
+		patches,
+		m_bCertifiedWatertight,
+		m_bProvablyOpenSheet,
+		m_bNegativeOpenSignedVolume );
 
 	// First create the pointer patches list
 	BilinearPatchPtrList		patchptrs;

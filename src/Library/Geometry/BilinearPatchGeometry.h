@@ -57,6 +57,9 @@ namespace RISE
 			static const unsigned int nAreaCells = 8;
 			std::vector<Scalar>		vAreaCDF;
 			Scalar					dTotalArea;
+			bool					m_bCertifiedWatertight;
+			bool					m_bProvablyOpenSheet;
+			bool					m_bNegativeOpenSignedVolume;
 
 			virtual ~BilinearPatchGeometry( );
 
@@ -101,6 +104,9 @@ namespace RISE
 			//! an emissive material became a silently broken area light whose
 			//! every NEE sample landed on the object's local origin.
 			bool CanBeAreaLight() const override { return !patches.empty() && dTotalArea > 0; }
+			bool IsCertifiedWatertight() const { return m_bCertifiedWatertight; }
+			bool IsProvablyOpenSheet() const { return m_bProvablyOpenSheet; }
+			bool HasNegativeOpenSignedVolume() const { return m_bNegativeOpenSignedVolume; }
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 

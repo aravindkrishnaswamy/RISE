@@ -690,13 +690,18 @@ namespace RISE
 		extern bool WeldVertexPositions(
 			const std::vector<Point3>& points,
 			std::vector<unsigned int>& outWeldedId,
-			Scalar* outEps = nullptr
+			Scalar* outEps = nullptr,
+			Scalar minEps = Scalar( 0 ),
+			bool* outTransitive = nullptr
 			);
 
 		//! Result of IsEmbeddedOpenOrientedSurface.
 		struct OpenSurfaceCertificate
 		{
 			bool	certified = false;	//!< every test passed
+			bool	topologicalRefusal = false;	//!< refused at Step 2/2b/3 (depends only on post-weld vertex partition)
+			std::size_t	refusalTriA = std::size_t( -1 );	//!< Step 1 (A == B) or Step 4 (A != B) failure witness
+			std::size_t	refusalTriB = std::size_t( -1 );
 			//! Signed volume of the triangles about their bounding-box
 			//! centre (sum of (a-c).((b-c)x(d-c))/6).  For a closed
 			//! outward-wound solid it is the enclosed volume; negative on a
@@ -705,6 +710,14 @@ namespace RISE
 			//! section 2.1).  Filled only when `certified`.
 			Scalar	signedVolumeAboutCentre = 0;
 		};
+
+		extern bool CheckOpenSurfaceStep4Pair(
+			const Point3* Pi,
+			const unsigned int* Ii,
+			const Point3* Pj,
+			const unsigned int* Ij,
+			Scalar epsSq
+			);
 
 		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
 		//! consistently oriented (readable) face?  The general certificate
@@ -728,7 +741,27 @@ namespace RISE
 		//! normals agreeing with the winding is the CALLER's check.
 		//! Conservative: anything it cannot prove is refused.
 		extern OpenSurfaceCertificate IsEmbeddedOpenOrientedSurface(
-			const std::vector<Point3>& corners
+			const std::vector<Point3>& corners,
+			std::vector<unsigned int>* outWeldedId = nullptr,
+			Scalar minEps = Scalar( 0 ),
+			const std::vector<unsigned int>* preWeldedId = nullptr,
+			Scalar preWeldEps = Scalar( 0 )
+			);
+
+		//! DL-616: analytic open-versus-closed certification for a bilinear patch set.
+		extern void CertifyBilinearPatchSet(
+			const std::vector<BilinearPatch>& patches,
+			bool& outCertifiedWatertight,
+			bool& outProvablyOpenSheet,
+			bool& outNegativeOpenSignedVolume
+			);
+
+		//! DL-616: analytic open-versus-closed certification for a bicubic Bezier patch set.
+		extern void CertifyBezierPatchSet(
+			const std::vector<BezierPatch>& patches,
+			bool& outCertifiedWatertight,
+			bool& outProvablyOpenSheet,
+			bool& outNegativeOpenSignedVolume
 			);
 	}
 }

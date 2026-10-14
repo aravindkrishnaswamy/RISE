@@ -24,6 +24,8 @@
 #include "../Materials/LambertianLuminaireMaterial.h"
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Geometry/DisplacedGeometry.h"
+#include "../Geometry/BezierPatchGeometry.h"
+#include "../Geometry/BilinearPatchGeometry.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Intersection/TextureFootprintCompute.h"
@@ -1090,6 +1092,9 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
                 ri.geometric.bProvablyNoInterior=mesh->IsZeroVolumeSheet();
             else if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(pGeometry))
                 ri.geometric.bProvablyNoInterior=displaced->HasLegacyOpenSheetProof();
+            else if(dynamic_cast<const BezierPatchGeometry*>(pGeometry) ||
+                dynamic_cast<const BilinearPatchGeometry*>(pGeometry))
+                ri.geometric.bProvablyNoInterior=false;
         }
     }
     ri.hasBoundaryRange = ri.geometric.bHit;

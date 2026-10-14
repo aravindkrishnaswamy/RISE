@@ -128,21 +128,18 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// (`bOpenSheet == false`), which is the correct default for any geometry
 	// that might enclose a volume.
 	//
-	// DL-157 review round 3 (P1): this geometry deliberately does NOT set
-	// `ri.bProvablyNoInterior`.  Round 2 did, on the premise that "a
-	// single patch cannot enclose a volume" -- but this class is not a
-	// single patch: `patches` is a `BezierPatchList` (a vector) with a
-	// BSP/Octree over it, `AddPatch` appends, and `Job.cpp`'s `.bezier`
-	// loader puts EVERY patch of a file into ONE geometry
-	// (`models/raw/teapot.bezier` declares 28; `aphrodite.bezier` and
-	// `f16.bezier` are closed solids).  At a genuine interior exit on
-	// such an object `dotND > 0` and `bDidFlip` is true, so the round-2
-	// stamp claimed "no interior" on exactly the hit that proves there
-	// is one.  Note also that the flip above is a WINDING artifact (the
-	// comment on it says so: the teapot file traverses some patches CCW
-	// and others CW), which is a second reason it cannot carry a
-	// topological claim.  See `RayIntersectionGeometric::
-	// bProvablyNoInterior`'s contract.
+	// DL-157 review round 3 (P1): a patch set cannot certify "no interior"
+	// merely because each individual patch is open (`patches` is a vector;
+	// `.bezier` files load all patches into one geometry).  DL-616 adds an
+	// analytic patch-set certificate (`CertifyBezierPatchSet`) in Prepare()
+	// that checks exact boundary-curve matching, Bernstein normal-cone
+	// regularity, free-face peeling, and sub-patch convex-hull embedding.
+	// Only when the entire patch set is certified as an embedded open
+	// oriented sheet does it stamp `ri.bProvablyNoInterior` (which
+	// `Object::IntersectRay` further scopes to clear refractive materials).
+	if( m_bProvablyOpenSheet ) {
+		ri.bProvablyNoInterior = true;
+	}
 
 	// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
 	// this hit already knows exactly which PATCH and (u, v) it landed on
@@ -249,7 +246,10 @@ BezierPatchGeometry::BezierPatchGeometry(
   nMaxRecursionLevel( max_recursion_level ),
   bUseBSP( bUseBSP_ ),
   m_areaOnce( new std::once_flag ),
-  m_area( 0 )
+  m_area( 0 ),
+  m_bCertifiedWatertight( false ),
+  m_bProvablyOpenSheet( false ),
+  m_bNegativeOpenSignedVolume( false )
 {
 }
 
@@ -263,6 +263,9 @@ void BezierPatchGeometry::AddPatch( const BezierPatch& patch )
 {
 	patches.push_back( patch );
 	m_areaOnce.reset( new std::once_flag );	// DL-459: the area table is stale
+	m_bCertifiedWatertight = false;
+	m_bProvablyOpenSheet = false;
+	m_bNegativeOpenSignedVolume = false;
 }
 
 void BezierPatchGeometry::Prepare()
@@ -271,6 +274,11 @@ void BezierPatchGeometry::Prepare()
 	// Optimize the patch container
 	stl_utils::container_optimize< BezierPatchList >( patches );
 	m_areaOnce.reset( new std::once_flag );	// DL-459: rebuilt lazily on first surface sample
+	GeometricUtilities::CertifyBezierPatchSet(
+		patches,
+		m_bCertifiedWatertight,
+		m_bProvablyOpenSheet,
+		m_bNegativeOpenSignedVolume );
 
 	// First create the pointer patches list
 	BezierPatchPtrList		patchptrs;

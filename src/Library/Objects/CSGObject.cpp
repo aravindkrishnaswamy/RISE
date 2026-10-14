@@ -14,6 +14,16 @@
 #include "pch.h"
 #include "../Utilities/ManifoldSolver.h"
 #include "../Modifiers/ModifierFrame.h"
+#include "../Geometry/ClippedPlaneGeometry.h"
+#include "../Geometry/TriangleMeshGeometry.h"
+#include "../Geometry/TriangleMeshGeometryIndexed.h"
+#include "../Geometry/DisplacedGeometry.h"
+#include "../Geometry/BezierPatchGeometry.h"
+#include "../Geometry/BilinearPatchGeometry.h"
+#include "../Materials/DielectricMaterial.h"
+#include "../Materials/PerfectRefractorMaterial.h"
+#include "../Materials/LambertianLuminaireMaterial.h"
+#include "../Materials/PhongLuminaireMaterial.h"
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
@@ -815,6 +825,199 @@ static void RecoverContainedOperand( const IObject* operand, RayIntersection& hi
 	}
 }
 
+namespace
+{
+	bool IsOperandCertifiedWatertight( const IObject* operand )
+	{
+		if( !operand ) {
+			return false;
+		}
+		if( const auto* csg = dynamic_cast<const CSGObject*>( operand ) ) {
+			return csg->IsCertifiedWatertight();
+		}
+		const IGeometry* g = operand->GetGeometry();
+		if( !g ) {
+			return false;
+		}
+		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( g ) ) {
+			return mesh->IsCertifiedWatertight();
+		}
+		if( const auto* disp = dynamic_cast<const DisplacedGeometry*>( g ) ) {
+			return disp->IsCertifiedWatertight();
+		}
+		if( const auto* bez = dynamic_cast<const BezierPatchGeometry*>( g ) ) {
+			return bez->IsCertifiedWatertight();
+		}
+		if( const auto* bil = dynamic_cast<const BilinearPatchGeometry*>( g ) ) {
+			return bil->IsCertifiedWatertight();
+		}
+		Scalar d = Scalar( 0 );
+		bool exact = false;
+		return g->SignedDistanceLower( Point3( 0, 0, 0 ), RISE_INFINITY, d, exact );
+	}
+
+	bool IsOperandProvablyOpenSheet( const IObject* operand, const bool allowGeneralProof, bool* outNegativeVolume = 0 )
+	{
+		if( !operand ) {
+			return false;
+		}
+		if( const auto* csg = dynamic_cast<const CSGObject*>( operand ) ) {
+			if( !csg->IsProvablyOpenSheet( allowGeneralProof ) ) {
+				return false;
+			}
+			if( outNegativeVolume && csg->HasNegativeOpenSignedVolume() ) {
+				*outNegativeVolume = true;
+			}
+			return true;
+		}
+		const IGeometry* g = operand->GetGeometry();
+		if( !g ) {
+			return false;
+		}
+		if( const auto* plane = dynamic_cast<const ClippedPlaneGeometry*>( g ) ) {
+			return plane->IsPlanarConvexQuad();
+		}
+		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( g ) ) {
+			const bool ok = allowGeneralProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet();
+			if( ok && outNegativeVolume && allowGeneralProof && mesh->HasNegativeOpenSignedVolume() ) {
+				*outNegativeVolume = true;
+			}
+			return ok;
+		}
+		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometry*>( g ) ) {
+			const bool ok = allowGeneralProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet();
+			if( ok && outNegativeVolume && allowGeneralProof && mesh->HasNegativeOpenSignedVolume() ) {
+				*outNegativeVolume = true;
+			}
+			return ok;
+		}
+		if( const auto* disp = dynamic_cast<const DisplacedGeometry*>( g ) ) {
+			const bool ok = disp->IsProvablyOpenSheet( allowGeneralProof );
+			if( ok && outNegativeVolume && allowGeneralProof && disp->HasNegativeOpenSignedVolume() ) {
+				*outNegativeVolume = true;
+			}
+			return ok;
+		}
+		if( const auto* bez = dynamic_cast<const BezierPatchGeometry*>( g ) ) {
+			const bool ok = allowGeneralProof && bez->IsProvablyOpenSheet();
+			if( ok && outNegativeVolume && bez->HasNegativeOpenSignedVolume() ) {
+				*outNegativeVolume = true;
+			}
+			return ok;
+		}
+		if( const auto* bil = dynamic_cast<const BilinearPatchGeometry*>( g ) ) {
+			const bool ok = allowGeneralProof && bil->IsProvablyOpenSheet();
+			if( ok && outNegativeVolume && bil->HasNegativeOpenSignedVolume() ) {
+				*outNegativeVolume = true;
+			}
+			return ok;
+		}
+		return false;
+	}
+
+	bool BoxesStrictlyDisjoint( const BoundingBox& a, const BoundingBox& b )
+	{
+		if( !( a.ll.x <= a.ur.x && a.ll.y <= a.ur.y && a.ll.z <= a.ur.z ) ||
+			!( b.ll.x <= b.ur.x && b.ll.y <= b.ur.y && b.ll.z <= b.ur.z ) ) {
+			return false;
+		}
+		return ( a.ur.x < b.ll.x ) || ( b.ur.x < a.ll.x ) ||
+			( a.ur.y < b.ll.y ) || ( b.ur.y < a.ll.y ) ||
+			( a.ur.z < b.ll.z ) || ( b.ur.z < a.ll.z );
+	}
+
+	bool IsSheetHitInsideClosedOperand(
+		const IObjectPriv* pSolid,
+		const RayIntersection& riSolid,
+		const Ray& localRay,
+		const Scalar tSheet
+		)
+	{
+		if( !pSolid ) {
+			return false;
+		}
+		const Point3 ptLocal = localRay.PointAtLength( tSheet );
+		Scalar dist = Scalar( 0 );
+		bool exact = false;
+		if( pSolid->SignedDistanceLower( ptLocal, Scalar( 1e-3 ), dist, exact ) ) {
+			if( dist < Scalar( 0 ) ) {
+				return true;
+			}
+			if( exact && dist > Scalar( 0 ) ) {
+				return false;
+			}
+		}
+		if( !riSolid.geometric.bHit ) {
+			return false;
+		}
+		if( riSolid.geometric.range2 == 0 ) {
+			return tSheet <= riSolid.geometric.range;
+		}
+		if( riSolid.geometric.range2 > 0 && riSolid.geometric.range2 < RISE_INFINITY ) {
+			return tSheet >= riSolid.geometric.range && tSheet <= riSolid.geometric.range2;
+		}
+		return false;
+	}
+}
+
+bool CSGObject::IsCertifiedWatertight() const
+{
+	return pObjectA && pObjectB &&
+		IsOperandCertifiedWatertight( pObjectA ) &&
+		IsOperandCertifiedWatertight( pObjectB );
+}
+
+bool CSGObject::IsProvablyOpenSheet( const bool allowGeneralProof ) const
+{
+	if( !allowGeneralProof || !pObjectA || !pObjectB ) {
+		return false;
+	}
+	switch( op )
+	{
+	case CSG_UNION:
+		if( !pMaterial && pObjectA->GetMaterial() != pObjectB->GetMaterial() ) {
+			return false;
+		}
+		return IsOperandProvablyOpenSheet( pObjectA, true ) &&
+			IsOperandProvablyOpenSheet( pObjectB, true ) &&
+			BoxesStrictlyDisjoint( pObjectA->getBoundingBox(), pObjectB->getBoundingBox() );
+	case CSG_INTERSECTION:
+		return ( IsOperandProvablyOpenSheet( pObjectA, true ) && IsOperandCertifiedWatertight( pObjectB ) ) ||
+			( IsOperandCertifiedWatertight( pObjectA ) && IsOperandProvablyOpenSheet( pObjectB, true ) );
+	case CSG_SUBTRACTION:
+		return IsOperandProvablyOpenSheet( pObjectA, true ) &&
+			IsOperandCertifiedWatertight( pObjectB );
+	default:
+		return false;
+	}
+}
+
+bool CSGObject::HasNegativeOpenSignedVolume() const
+{
+	if( !IsProvablyOpenSheet( true ) ) {
+		return false;
+	}
+	bool neg = false;
+	switch( op )
+	{
+	case CSG_UNION:
+		IsOperandProvablyOpenSheet( pObjectA, true, &neg );
+		IsOperandProvablyOpenSheet( pObjectB, true, &neg );
+		return neg;
+	case CSG_INTERSECTION:
+		if( IsOperandProvablyOpenSheet( pObjectA, true, &neg ) ) {
+			return neg;
+		}
+		IsOperandProvablyOpenSheet( pObjectB, true, &neg );
+		return neg;
+	case CSG_SUBTRACTION:
+		IsOperandProvablyOpenSheet( pObjectA, true, &neg );
+		return neg;
+	default:
+		return false;
+	}
+}
+
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
 {
     SMSRecordObjectIntersection();
@@ -902,20 +1105,115 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	RecoverContainedOperand( pObjectA, riObjA );
 	RecoverContainedOperand( pObjectB, riObjB );
 
-	/* Not necessary, should never happen!
-	if( riObjA.geometric.bHit && riObjA.geometric.range2 == RISE_INFINITY ) {
-		riObjA.geometric.range2 = 0;
-		__debugbreak();
+	// DL-617: certified open-sheet CSG operations treat the open-sheet
+	// operand as a zero-thickness surface rather than a semi-infinite
+	// interval [range, RISE_INFINITY).
+	const bool certifiedOpenCSG = IsProvablyOpenSheet( true );
+	if( certifiedOpenCSG )
+	{
+		const Ray localRay = ri.geometric.ray;
+		switch( op )
+		{
+		default:
+		case CSG_UNION:
+			if( riObjA.geometric.bHit && riObjB.geometric.bHit ) {
+				ri = ( riObjA.geometric.range <= riObjB.geometric.range ) ? riObjA : riObjB;
+			} else if( riObjA.geometric.bHit ) {
+				ri = riObjA;
+			} else if( riObjB.geometric.bHit ) {
+				ri = riObjB;
+			}
+			if( ri.geometric.bHit ) {
+				ri.geometric.range2 = RISE_INFINITY;
+				ri.hasBoundaryRange2 = false;
+			}
+			break;
+		case CSG_INTERSECTION:
+		{
+			const bool aIsSheet = IsOperandProvablyOpenSheet( pObjectA, true );
+			const IObjectPriv* pSheet = aIsSheet ? pObjectA : pObjectB;
+			const IObjectPriv* pSolid = aIsSheet ? pObjectB : pObjectA;
+			const RayIntersection& riSheet = aIsSheet ? riObjA : riObjB;
+			const RayIntersection& riSolid = aIsSheet ? riObjB : riObjA;
+			if( riSheet.geometric.bHit ) {
+				if( IsSheetHitInsideClosedOperand( pSolid, riSolid, localRay, riSheet.geometric.range ) ) {
+					ri = riSheet;
+					ri.geometric.range2 = RISE_INFINITY;
+					ri.hasBoundaryRange2 = false;
+				} else {
+					Scalar tCur = riSheet.geometric.range;
+					for( int step = 0; step < 4; ++step ) {
+						const Scalar stepEps = Scalar( 1e-5 ) * ( Scalar( 1 ) + std::fabs( tCur ) );
+						const Scalar tStart = tCur + stepEps;
+						if( !( tStart < dHowFar2 ) ) {
+							break;
+						}
+						Ray nextRay( localRay.PointAtLength( tStart ), localRay.Dir() );
+						RayIntersection riNext( nextRay, ri.geometric.rast );
+						riNext.geometric.PropagateCastInputs( ri.geometric );
+						const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
+						pSheet->IntersectRay( riNext, remFar, true, true, false );
+						if( !riNext.geometric.bHit ) {
+							break;
+						}
+						tCur = tStart + riNext.geometric.range;
+						if( tCur <= dHowFar2 && IsSheetHitInsideClosedOperand( pSolid, riSolid, localRay, tCur ) ) {
+							ri = riNext;
+							ri.geometric.ray = localRay;
+							ri.geometric.range = tCur;
+							if( ri.hasBoundaryRange ) {
+								ri.boundaryRange = tStart + riNext.boundaryRange;
+							}
+							ri.geometric.range2 = RISE_INFINITY;
+							ri.hasBoundaryRange2 = false;
+							break;
+						}
+					}
+				}
+			}
+			break;
+		}
+		case CSG_SUBTRACTION:
+			if( riObjA.geometric.bHit ) {
+				if( !IsSheetHitInsideClosedOperand( pObjectB, riObjB, localRay, riObjA.geometric.range ) ) {
+					ri = riObjA;
+					ri.geometric.range2 = RISE_INFINITY;
+					ri.hasBoundaryRange2 = false;
+				} else {
+					Scalar tCur = riObjA.geometric.range;
+					for( int step = 0; step < 4; ++step ) {
+						const Scalar stepEps = Scalar( 1e-5 ) * ( Scalar( 1 ) + std::fabs( tCur ) );
+						const Scalar tStart = tCur + stepEps;
+						if( !( tStart < dHowFar2 ) ) {
+							break;
+						}
+						Ray nextRay( localRay.PointAtLength( tStart ), localRay.Dir() );
+						RayIntersection riNext( nextRay, ri.geometric.rast );
+						riNext.geometric.PropagateCastInputs( ri.geometric );
+						const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
+						pObjectA->IntersectRay( riNext, remFar, true, true, false );
+						if( !riNext.geometric.bHit ) {
+							break;
+						}
+						tCur = tStart + riNext.geometric.range;
+						if( tCur <= dHowFar2 && !IsSheetHitInsideClosedOperand( pObjectB, riObjB, localRay, tCur ) ) {
+							ri = riNext;
+							ri.geometric.ray = localRay;
+							ri.geometric.range = tCur;
+							if( ri.hasBoundaryRange ) {
+								ri.boundaryRange = tStart + riNext.boundaryRange;
+							}
+							ri.geometric.range2 = RISE_INFINITY;
+							ri.hasBoundaryRange2 = false;
+							break;
+						}
+					}
+				}
+			}
+			break;
+		}
 	}
-
-	if( riObjB.geometric.bHit && riObjB.geometric.range2 == RISE_INFINITY ) {
-		riObjB.geometric.range2 = 0;
-		__debugbreak();
-	}
-	*/
-
-	// Do different things depending on the type of CSG operation
-	switch( op )
+	else switch( op )
 	{
 	default:
 	case CSG_UNION:
@@ -1770,7 +2068,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 
         // Compute the intersection in world space
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
-		ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
+		if( ri.geometric.range2 != 0 && ri.geometric.range2 != RISE_INFINITY ) {
+			ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
+		}
 
 		// The child's Object::IntersectRay landed ptWireNearestEdge in
 		// THIS CSG object's local frame (it transforms by the child's own
@@ -1786,7 +2086,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// Re-compute the ranges in world space
 		ri.geometric.range = Vector3Ops::Magnitude( Vector3Ops::mkVector3( ri.geometric.ptIntersection, orig.origin ) );
 
-		if( ri.geometric.range2 != 0 ) {
+		if( ri.geometric.range2 != 0 && ri.geometric.range2 != RISE_INFINITY ) {
 			ri.geometric.range2 = Vector3Ops::Magnitude( Vector3Ops::mkVector3( ri.geometric.ptExit, orig.origin ) );
 		}
 
@@ -1830,10 +2130,28 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		ri.pObject = this;
 	}
 
-	// A primitive's no-interior certification cannot certify a composite.
-	// Clear after every whole-record copy / exit-face payload path; merely
-	// omitting it in AdoptCsgSurfacePayload leaves the copied flag alive.
-	ri.geometric.bProvablyNoInterior = false;
+	// DL-617: preserve bProvablyNoInterior only when this CSG composite
+	// is a certified open sheet and the effective scattering material is
+	// clear refraction (DielectricMaterial / PerfectRefractorMaterial,
+	// optionally wrapped in luminaire materials).
+	bool allowOpenSheetProof = false;
+	if( ri.geometric.bHit && certifiedOpenCSG && ri.pMaterial ) {
+		const IMaterial* proofMaterial = ri.pMaterial;
+		while( proofMaterial ) {
+			if( const auto* lum = dynamic_cast<const LambertianLuminaireMaterial*>( proofMaterial ) ) {
+				proofMaterial = &lum->GetBaseMaterial();
+			} else if( const auto* lum = dynamic_cast<const PhongLuminaireMaterial*>( proofMaterial ) ) {
+				proofMaterial = &lum->GetBaseMaterial();
+			} else {
+				break;
+			}
+		}
+		if( dynamic_cast<const DielectricMaterial*>( proofMaterial ) ||
+			dynamic_cast<const PerfectRefractorMaterial*>( proofMaterial ) ) {
+			allowOpenSheetProof = true;
+		}
+	}
+	ri.geometric.bProvablyNoInterior = allowOpenSheetProof;
 
 	// Restore the old ray
 	ri.geometric.ray = orig;
@@ -1915,6 +2233,80 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
 	RecoverContainedOperand( pObjectA, riObjA );
 	RecoverContainedOperand( pObjectB, riObjB );
+
+	if( IsProvablyOpenSheet( true ) )
+	{
+		switch( op )
+		{
+		default:
+		case CSG_UNION:
+			return ( riObjA.geometric.bHit && riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0 ) ||
+				( riObjB.geometric.bHit && riObjB.geometric.range < dHowFar2 && riObjB.geometric.range > 0 );
+		case CSG_INTERSECTION:
+		{
+			const bool aIsSheet = IsOperandProvablyOpenSheet( pObjectA, true );
+			const IObjectPriv* pSheet = aIsSheet ? pObjectA : pObjectB;
+			const IObjectPriv* pSolid = aIsSheet ? pObjectB : pObjectA;
+			const RayIntersection& riSheet = aIsSheet ? riObjA : riObjB;
+			const RayIntersection& riSolid = aIsSheet ? riObjB : riObjA;
+			if( !riSheet.geometric.bHit ) {
+				return false;
+			}
+			if( riSheet.geometric.range < dHowFar2 && riSheet.geometric.range > 0 &&
+				IsSheetHitInsideClosedOperand( pSolid, riSolid, orig, riSheet.geometric.range ) ) {
+				return true;
+			}
+			Scalar tCur = riSheet.geometric.range;
+			for( int step = 0; step < 4; ++step ) {
+				const Scalar stepEps = Scalar( 1e-5 ) * ( Scalar( 1 ) + std::fabs( tCur ) );
+				const Scalar tStart = tCur + stepEps;
+				if( !( tStart < dHowFar2 ) ) {
+					break;
+				}
+				Ray nextRay( orig.PointAtLength( tStart ), orig.Dir() );
+				RayIntersection riNext( nextRay, nullRasterizerState );
+				const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
+				pSheet->IntersectRay( riNext, remFar, true, true, false );
+				if( !riNext.geometric.bHit ) {
+					break;
+				}
+				tCur = tStart + riNext.geometric.range;
+				if( tCur < dHowFar2 && tCur > 0 && IsSheetHitInsideClosedOperand( pSolid, riSolid, orig, tCur ) ) {
+					return true;
+				}
+			}
+			return false;
+		}
+		case CSG_SUBTRACTION:
+			if( !riObjA.geometric.bHit ) {
+				return false;
+			}
+			if( riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0 &&
+				!IsSheetHitInsideClosedOperand( pObjectB, riObjB, orig, riObjA.geometric.range ) ) {
+				return true;
+			}
+			Scalar tCur = riObjA.geometric.range;
+			for( int step = 0; step < 4; ++step ) {
+				const Scalar stepEps = Scalar( 1e-5 ) * ( Scalar( 1 ) + std::fabs( tCur ) );
+				const Scalar tStart = tCur + stepEps;
+				if( !( tStart < dHowFar2 ) ) {
+					break;
+				}
+				Ray nextRay( orig.PointAtLength( tStart ), orig.Dir() );
+				RayIntersection riNext( nextRay, nullRasterizerState );
+				const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
+				pObjectA->IntersectRay( riNext, remFar, true, true, false );
+				if( !riNext.geometric.bHit ) {
+					break;
+				}
+				tCur = tStart + riNext.geometric.range;
+				if( tCur < dHowFar2 && tCur > 0 && !IsSheetHitInsideClosedOperand( pObjectB, riObjB, orig, tCur ) ) {
+					return true;
+				}
+			}
+			return false;
+		}
+	}
 
 	// Do different things depending on the type of CSG operation
 	switch( op )

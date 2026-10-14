@@ -296,6 +296,7 @@ namespace RISE
 			Scalar				eta;			///< Surface MATERIAL'S IOR at this vertex (e.g. 1.5 for typical glass).  Kept for backward compatibility with callers that just want "the dielectric's nominal IOR".  For half-vector / Snell / Fresnel math, prefer (etaI, etaT) below — they encode the actual interface, including nested-dielectric cases where neither side is air.
 			Scalar				etaI;			///< IOR on the INCOMING (`wi`) side of the interface — Walter et al. 2007 notation η_i.  This is the medium the ray is travelling FROM as it hits this vertex.  Default 1.0 (air).
 			Scalar				etaT;			///< IOR on the OUTGOING (`wo`) side of the interface — Walter et al. 2007 notation η_t.  This is the medium the ray is travelling INTO as it leaves this vertex.  Default 1.0 (air).
+			Scalar				radianceEtaI;	///< Stack-top IOR before the crossing when pricing RISE::RadianceEtaScale (0.0 sentinel = use etaI).  Differs from etaI at a non-top closed exit beneath an open-sheet entry (DL-619).
 			///<
 			///< Together (etaI, etaT) replace the old `eta_eff = isExiting ? 1/eta : eta` derivation, which silently assumed the OPPOSITE side of every interface was air (IOR=1.0).  That assumption holds for a single dielectric in air (the typical SMS test case) but BREAKS for nested dielectrics — e.g. an air-cavity sphere (IOR=1.0) inside a glass shell (IOR=1.5), where the inner sphere's interface has glass on one side and air on the other.  Without (etaI, etaT), Newton would solve the half-vector constraint h ∝ -(1·wi + 1·wo) at the air-cavity vertex (which is the REFLECTION constraint) instead of the actual Snell refraction h ∝ -(1.5·wi + 1.0·wo).  Convergence at the wrong constraint root explains the SMS rejection cliff on Veach Egg / luminous orb scenes.
 			///<
@@ -336,6 +337,7 @@ namespace RISE
 			eta( 1.0 ),
 			etaI( 1.0 ),
 			etaT( 1.0 ),
+			radianceEtaI( 0.0 ),
 			attenuation( 1.0, 1.0, 1.0 ),
 			attenuationNM( 1.0 ),
 			attenuationAppliesToReflection( true ),
