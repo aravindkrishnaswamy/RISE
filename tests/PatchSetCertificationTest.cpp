@@ -48,6 +48,7 @@
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Geometry/BezierPatchGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -449,6 +450,14 @@ static bool Shadow( const IObject& o, const Point3& origin, const Vector3& dir, 
 	return o.IntersectRay_IntersectionOnly( Ray( origin, dir ), far, true, true );
 }
 
+//! A record whose normals agree with each other and carry no stale
+//! "flipped toward the ray" flag.
+static bool Coherent( const RayIntersection& h )
+{
+	return !h.geometric.bGeomNormalOrientedToRay &&
+		Vector3Ops::Dot( h.geometric.vGeomNormal, h.geometric.vNormal ) > 0;
+}
+
 static const CSGObject* AsCSG( const IObject* o )
 {
 	return dynamic_cast<const CSGObject*>( o );
@@ -516,6 +525,21 @@ static void TestOpenSheetCSG()
 	// bilinear cube poking out of its top face leaves a square pit.
 	scene += "bilinearpatch_geometry\n{\n name bcube\n file " + bcubePath + "\n}\n";
 	obj( "pa", "cube2" ); obj( "pb", "bcube", " position -0.5 -0.5 0.5\n" ); csg( "pit", "pa", "pb", "subtraction" );
+	// Review P2: a double-sided watertight indexed MESH cube poking out
+	// of the box's top face (the DL-411 signed-distance path).
+	scene += Mesh( true, false );
+	obj( "ma", "cube2" ); obj( "mb", "shape", " position 0 0 1\n scale 0.5 0.5 0.5\n" ); csg( "mesh_pit", "ma", "mb", "subtraction" );
+	// Review P3-2: a genuine grazing exit through the bilinear cube's top.
+	obj( "ga", "cube2" ); obj( "gb", "bcube" ); csg( "graze_lens", "ga", "gb", "intersection" );
+	// Review P3-2: a Bezier operand scaled 1000x (back-off in its frame).
+	scene += "sphere_geometry\n{\n name huge\n radius 100000\n}\n";
+	obj( "sb", "ball", " scale 1000 1000 1000\n" ); obj( "sh", "huge" ); csg( "scaled_lens", "sb", "sh", "intersection" );
+	// Review P3-3: box MINUS sphere entered from inside both, nested in a
+	// union with a slightly larger sphere: the outer exit adopts the inner
+	// record's exit normal (the box's).
+	scene += "sphere_geometry\n{\n name sph07\n radius 0.7\n}\n";
+	obj( "na", "cube2" ); obj( "nb", "sph" ); csg( "box_minus_sph", "na", "nb", "subtraction" );
+	obj( "nc", "sph07" ); csg( "nested_exit", "box_minus_sph", "nc", "union" );
 	// P3-b: the same trimming geometry when the solid is closed but NOT
 	// certified (the T-junction cube).
 	// The uncertified closed trimmer is the INWARD-wound cube-sphere: closed
@@ -640,7 +664,7 @@ static void TestOpenSheetCSG()
 			const RayIntersection floorHit = Cast( *dimple, Point3( 0.2, 0, 3 ), down );
 			Check( floorHit.geometric.bHit, "R3: camera ray lands on the dimple floor" );
 			Check( floorHit.geometric.bHit && Vector3Ops::Dot( floorHit.geometric.vNormal, down ) < 0 &&
-				Vector3Ops::Dot( floorHit.geometric.UnflippedGeomNormal(), Vector3( 0, 0, 1 ) ) > 0,
+				Vector3Ops::Dot( floorHit.geometric.UnflippedGeomNormal(), Vector3( 0, 0, 1 ) ) > 0 && Coherent( floorHit ),
 				"P1: the dimple floor's shading normal faces the camera and its true outward normal points up" );
 			const Point3 o = floorHit.geometric.ptIntersection;
 			int phantomHits = 0, phantomShadows = 0, total = 0;
@@ -673,14 +697,14 @@ static void TestOpenSheetCSG()
 			// where it enters the composite's material, so both the shading
 			// normal and the true outward normal must face back along it.
 			Check( wall.geometric.bHit && Vector3Ops::Dot( wall.geometric.vNormal, across ) < 0 &&
-				Vector3Ops::Dot( wall.geometric.UnflippedGeomNormal(), across ) < 0,
+				Vector3Ops::Dot( wall.geometric.UnflippedGeomNormal(), across ) < 0 && Coherent( wall ),
 				"P1: the far bowl wall seen from inside the ball faces the ray (shading and true normal)" );
 			// Camera inside the ball, above the box, looking down: the ray
 			// leaves the ball at the dimple floor inside the box.
 			const RayIntersection fromBall = Cast( *dimple, Point3( 0.1, 0, 1.5 ), down );
 			Check( fromBall.geometric.bHit && fromBall.geometric.ptIntersection.z < 0.2 &&
 				Vector3Ops::Dot( fromBall.geometric.vNormal, down ) < 0 &&
-				Vector3Ops::Dot( fromBall.geometric.UnflippedGeomNormal(), down ) < 0,
+				Vector3Ops::Dot( fromBall.geometric.UnflippedGeomNormal(), down ) < 0 && Coherent( fromBall ),
 				"P1: a camera inside the ball sees the dimple floor facing it (shading and true normal)" );
 		}
 	}
@@ -697,18 +721,73 @@ static void TestOpenSheetCSG()
 			const RayIntersection pf = pit ? Cast( *pit, Point3( 0.1, 0.2, 3 ), Vector3( 0, 0, -1 ) ) : RayIntersection( Ray(), nullRasterizerState );
 			Check( pit && pf.geometric.bHit && std::fabs( pf.geometric.ptIntersection.z - 0.5 ) < 1e-6 &&
 				Vector3Ops::Dot( pf.geometric.vNormal, Vector3( 0, 0, 1 ) ) > 0 &&
-				Vector3Ops::Dot( pf.geometric.UnflippedGeomNormal(), Vector3( 0, 0, 1 ) ) > 0,
+				Vector3Ops::Dot( pf.geometric.UnflippedGeomNormal(), Vector3( 0, 0, 1 ) ) > 0 && Coherent( pf ),
 				"P1: a box minus a bilinear cube shows its pit floor with an upward normal" );
 			Check( h.geometric.bHit && h.geometric.ptIntersection.x > 2.0 &&
 				Vector3Ops::Dot( h.geometric.vNormal, east ) > 0 &&
-				Vector3Ops::Dot( h.geometric.UnflippedGeomNormal(), east ) > 0,
+				Vector3Ops::Dot( h.geometric.UnflippedGeomNormal(), east ) > 0 && Coherent( h ),
 				"P1: a union exit through a Bezier operand reports the OUTWARD normal (shading and true)" );
 			const IObject* ui = loaded.Object( "union_in" );
 			const RayIntersection hi = ui ? Cast( *ui, Point3( 0, 0.05, 0.03 ), east ) : RayIntersection( Ray(), nullRasterizerState );
 			Check( ui && hi.geometric.bHit && hi.geometric.ptIntersection.x > 0.7 &&
 				Vector3Ops::Dot( hi.geometric.vNormal, east ) > 0 &&
-				Vector3Ops::Dot( hi.geometric.UnflippedGeomNormal(), east ) > 0,
+				Vector3Ops::Dot( hi.geometric.UnflippedGeomNormal(), east ) > 0 && Coherent( hi ),
 				"P1: a union exited from INSIDE its Bezier operand reports the OUTWARD normal (shading and true)" );
+		}
+	}
+	{	// Review round 6 rows.
+		const IObject* mp = loaded.Object( "mesh_pit" );
+		const IObject* mbLeaf = mp ? AsCSG( mp )->GetOperandB() : nullptr;
+		const auto* meshG = mbLeaf ? dynamic_cast<const TriangleMeshGeometryIndexed*>( mbLeaf->GetGeometry() ) : nullptr;
+		Check( meshG && meshG->IsCertifiedWatertight(), "P2: the double-sided mesh cube is certified watertight" );
+		if( mp ) {
+			const RayIntersection f = Cast( *mp, Point3( 0.1, 0.1, 0.8 ), down );
+			Check( f.geometric.bHit && std::fabs( f.geometric.ptIntersection.z - 0.5 ) < 1e-6 &&
+				Vector3Ops::Dot( f.geometric.vNormal, down ) < 0 &&
+				Vector3Ops::Dot( f.geometric.UnflippedGeomNormal(), down ) < 0 && Coherent( f ),
+				"P2: box minus a double-sided watertight mesh, seen from inside both, faces the ray" );
+		}
+		const IObject* gl = loaded.Object( "graze_lens" );
+		if( gl ) {
+			const Vector3 d = Vector3Ops::Normalize( Vector3( 1, 0, 5e-4 ) );
+			const Point3 o( -0.5, 0.5, 1 - 5e-4 );
+			RayIntersection g( Ray( o, d ), nullRasterizerState );
+			gl->IntersectRay( g, RISE_INFINITY, true, true, true );
+			const Scalar expected = std::sqrt( 1 + 2.5e-7 );
+			std::cout << "    grazing exit: hit " << g.geometric.bHit << " range " << g.geometric.range
+				<< " range2 " << g.geometric.range2 << " (exit at " << expected << ")" << std::endl;
+			Check( g.geometric.bHit && std::fabs( g.geometric.range2 - expected ) < 1e-6,
+				"P3-2: a genuine grazing exit (cos 5e-4) completes the bilinear operand's interval" );
+		}
+		const IObject* sl = loaded.Object( "scaled_lens" );
+		if( sl ) {
+			const IObjectPriv* ballLeaf = AsCSG( sl )->GetOperandA();
+			const Point3 o( -5000, 30, 20 );
+			const Vector3 east( 1, 0, 0 );
+			RayIntersection g( Ray( o, east ), nullRasterizerState );
+			sl->IntersectRay( g, RISE_INFINITY, true, true, true );
+			// The exit face, approached from beyond it: Object::IntersectRay
+			// publishes that point a hair outside the face, i.e. a hair PAST
+			// the exit along `east` -- where a completed range2 must land.
+			RayIntersection back( Ray( Point3( 5000, 30, 20 ), Vector3( -1, 0, 0 ) ), nullRasterizerState );
+			ballLeaf->IntersectRay( back, RISE_INFINITY, true, true, false );
+			const Scalar past = back.geometric.ptIntersection.x - o.x;
+			std::cout.precision( 15 );
+			std::cout << "    scaled operand: range2 " << g.geometric.range2 << " vs exit-from-beyond " << past
+				<< " diff " << ( g.geometric.range2 - past ) << std::endl;
+			std::cout.precision( 6 );
+			Check( g.geometric.bHit && back.geometric.bHit && std::fabs( g.geometric.range2 - past ) < 5e-10,
+				"P3-2: a 1000x scaled operand's completed range2 lands just past its exit face" );
+		}
+		const IObject* ne = loaded.Object( "nested_exit" );
+		if( ne ) {
+			const Vector3 east( 1, 0, 0 );
+			const RayIntersection n = Cast( *ne, Point3( 0, 0.01, 0.02 ), east );
+			std::cout << "    nested exit: hit " << n.geometric.bHit << " x " << n.geometric.ptIntersection.x
+				<< " n.x " << n.geometric.vNormal.x << " g.x " << n.geometric.vGeomNormal.x << std::endl;
+			Check( n.geometric.bHit && std::fabs( n.geometric.ptIntersection.x - 1 ) < 1e-6 &&
+				n.geometric.vNormal.x > 0.99 && n.geometric.vGeomNormal.x > 0.99,
+				"P3-3: a nested exit through box-minus-sphere adopts the box's outward exit normal" );
 		}
 	}
 	{	// P3-e: AddPatch after preparation stales the composite's cache.

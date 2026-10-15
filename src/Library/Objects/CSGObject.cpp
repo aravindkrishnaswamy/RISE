@@ -970,6 +970,29 @@ namespace
 		return false;
 	}
 
+	//! Any operand whose closed certificate makes "outward" well defined
+	//! and whose hits may arrive flipped toward the ray: a certified
+	//! patch set, a certified-watertight (possibly double-sided) indexed
+	//! mesh, a displaced surface over a closed base, or a certified-closed
+	//! composite.
+	bool IsCertifiedClosedOperandForUnflip( const IObject* operand )
+	{
+		if( const auto* csg = dynamic_cast<const CSGObject*>( operand ) ) {
+			return csg->IsCertifiedWatertight();
+		}
+		if( IsCertifiedClosedPatchLeaf( operand ) ) {
+			return true;
+		}
+		const IGeometry* g = operand->GetGeometry();
+		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( g ) ) {
+			return mesh->IsCertifiedWatertight();
+		}
+		if( const auto* disp = dynamic_cast<const DisplacedGeometry*>( g ) ) {
+			return disp->IsCertifiedWatertight();
+		}
+		return false;
+	}
+
 	//! Side of a ray's start against a certified-closed patch leaf, read
 	//! from the ORIENTATION of its first crossing along the ray: an exit
 	//! (outward normal along the ray) means the ray starts inside, an entry
@@ -1256,15 +1279,16 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 		// algebra expects every operand normal to be OUTWARD (what an
 		// analytic sphere or box reports even from inside; the subtraction
 		// branches negate it, the union / intersection branches keep it),
-		// but a patch set reports a back-face hit flipped toward the ray.
-		// Un-flip it (shading and geometric normal alike) and clear the
-		// flag, so the record matches an analytic operand's.
-		//
-		// The DL-411 mesh path (SignedDistanceLower above) has the same
-		// latent issue for a DOUBLE-SIDED mesh operand, whose hits from
-		// inside are flipped the same way; it is left as it was here.
+		// but a patch set, a double-sided watertight mesh (the DL-411 path
+		// above) and a composite passing such a record on all report a
+		// back-face hit flipped toward the ray.  Un-flip it (shading and
+		// geometric normal alike) and clear the flag, so the record matches
+		// an analytic operand's.  This runs on the RAW operand record:
+		// surface modifiers (normal / bump maps) are applied later, to the
+		// composite's final record (RayCaster), so no perturbed normal is
+		// negated here.
 		if( hit.geometric.bGeomNormalOrientedToRay && !hit.geometric.bGeomNormalRayDerived &&
-			IsCertifiedClosedPatchLeaf( operand ) ) {
+			IsCertifiedClosedOperandForUnflip( operand ) ) {
 			hit.geometric.vNormal = -hit.geometric.vNormal;
 			hit.geometric.vGeomNormal = -hit.geometric.vGeomNormal;
 			hit.geometric.bGeomNormalOrientedToRay = false;
@@ -1939,8 +1963,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						// this.  Toggled so nested subtractions compose.
 						ri.geometric.signals.bComplementedField = !ri.geometric.signals.bComplementedField;
 					}
-					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
-					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
+					// The exit is A's own first hit (the ray starts inside A),
+					// so its OUTWARD normal is A's reported normal there, not
+					// A's (unused, from inside) second normal.
+					ri.geometric.vNormal2 = riObjA.geometric.vNormal;
+					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
 				}
 			} else if( riObjA.geometric.range2 == 0 ) {
 				// If we are inside A but not inside B
