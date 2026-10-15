@@ -175,6 +175,8 @@ void TriangleMeshGeometry::BeginTriangles( )
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
     m_bOpenSignedVolumeNegative=false;
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	GeometricUtilities::BumpPatchCertificateEpoch();
 	safe_release( pPolygonsBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -186,6 +188,8 @@ void TriangleMeshGeometry::AddTriangle( const Triangle& tri )
     m_bProvablyOpenSheet=false;
     m_bZeroVolumeSheet=false;
     m_bShapeOpenSheet=false;
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	GeometricUtilities::BumpPatchCertificateEpoch();
 	// Add the triangle, precompute the stuff that needs to be precompute
 	polygons.push_back( tri );
 }
@@ -252,6 +256,26 @@ void TriangleMeshGeometry::ComputeAreas()
         }
     }
     m_bProvablyOpenSheet = m_bShapeOpenSheet && !smsUncertainNormalOrientation;
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	GeometricUtilities::BumpPatchCertificateEpoch();
+}
+
+int TriangleMeshGeometry::TopologicalOpenness() const
+{
+	const int cached = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( cached >= -1 ) {
+		return cached;
+	}
+	std::vector<Point3> corners;
+	corners.reserve( polygons.size() * 3 );
+	for( std::size_t t = 0; t < polygons.size(); ++t ) {
+		for( int k = 0; k < 3; ++k ) {
+			corners.push_back( polygons[t].vertices[k] );
+		}
+	}
+	const int open = GeometricUtilities::TriangleMeshOpenness( corners );
+	m_topologicalOpenness.store( open, std::memory_order_release );
+	return open;
 }
 
 void TriangleMeshGeometry::DoneTriangles( )

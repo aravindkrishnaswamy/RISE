@@ -17,6 +17,7 @@
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Observable.h"
+#include "../Utilities/GeometricUtilities.h"
 #include <atomic>
 #include <cassert>
 #include "../Utilities/RenderParallelScope.h"
@@ -332,6 +333,7 @@ void DisplacedGeometry::DestroyMesh() const
 {
 	safe_release( m_pMesh );
 	m_pMesh = 0;
+	GeometricUtilities::BumpPatchCertificateEpoch();
 }
 
 bool DisplacedGeometry::TessellateToMesh(
@@ -696,6 +698,16 @@ bool DisplacedGeometry::IsProvablyOpenSheet(bool allowGeneralProof) const
     Realize();
     const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
     return mesh && (allowGeneralProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet());
+}
+
+int DisplacedGeometry::TopologicalOpenness() const
+{
+    if( m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad() ) {
+        return 1;
+    }
+    Realize();
+    const auto* mesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pMesh );
+    return mesh ? mesh->TopologicalOpenness() : -1;
 }
 
 // Preserve the pre-DL-382 proof for consumers other than clear refraction.

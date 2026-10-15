@@ -64,7 +64,7 @@ namespace RISE
 			CSG_OP									op;
 
 			//! DL-617 certificate cache (see `ComputeCertificateBits`):
-			//! -1 = not computed, else (patch-certificate epoch << 8) | the
+			//! -1 = not computed, else (patch-certificate epoch << 16) | the
 			//! kCert* mask below.  Recomputed by `Realize` (every
 			//! preparation), dropped by `AssignObjects` / `SetOperation`, and
 			//! STALE whenever `GeometricUtilities::PatchCertificateEpoch()`
@@ -78,7 +78,9 @@ namespace RISE
 				kCertNegativeVolume	= 8,	//!< the sheet operand's negative-winding warning
 				kTrimSheetA			= 16,	//!< render as operand A's sheet trimmed by B (certified or not)
 				kTrimSheetB			= 32,	//!< render as operand B's sheet trimmed by A
-				kTopologicallyClosed	= 64	//!< both operands closed by topology (no free boundary)
+				kTopologicallyClosed	= 64,	//!< both operands closed by topology (no free boundary)
+				kUnionSheetA		= 128,	//!< DL-621(c): union of open sheet A and closed solid B
+				kUnionSheetB		= 256	//!< DL-621(c): union of closed solid A and open sheet B
 			};
 			mutable std::atomic<long long>			m_certBits;
 			int CertificateBits() const;

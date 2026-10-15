@@ -195,6 +195,8 @@ namespace RISE
             bool HasUncertifiedOpenness(bool allowGeneralProof=true) const;
             bool IsCertifiedWatertight() const;
             bool IsProvablyOpenSheet(bool allowGeneralProof=true) const;
+            //! DL-621(a): topological openness (see GeometricUtilities::TriangleMeshOpenness).
+            int TopologicalOpenness() const;
             bool HasLegacyOpenSheetProof() const;
             bool HasNegativeOpenSignedVolume() const;
 			static unsigned int GetBuildMeshCount();

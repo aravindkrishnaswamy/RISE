@@ -21,6 +21,7 @@
 #include "MeshSignalBake.h"
 #include "../Acceleration/BVH.h"
 #include "../Acceleration/AccelerationConfig.h"
+#include <atomic>
 #include <vector>
 
 namespace RISE
@@ -197,6 +198,7 @@ namespace RISE
 			std::vector<unsigned int> m_watertightTopologyWeldedId;
 			bool m_cachedTopologicalWatertightRefusal = false;
 			std::vector<WatertightEdgeWitness> m_watertightEdges;
+			mutable std::atomic<int> m_topologicalOpenness{ -2 };
 
 			void InvalidateTopologyProofCaches();
 
@@ -273,6 +275,8 @@ namespace RISE
             //! DL-382: certified closed (DL-143/150/197).  Neither this nor
             //! IsProvablyOpenSheet() -> the mesh is UNCERTIFIED.
             bool IsCertifiedWatertight() const {return m_bWatertight;}
+            //! DL-621(a): topological openness (see GeometricUtilities::TriangleMeshOpenness).
+            int TopologicalOpenness() const;
             unsigned long long SMSOrientationAudits() const {return smsOrientationAudits;}
             unsigned long long SMSOrientationTriangleVisits() const {return smsOrientationTriangleVisits;}
 			TriangleMeshGeometryIndexed(

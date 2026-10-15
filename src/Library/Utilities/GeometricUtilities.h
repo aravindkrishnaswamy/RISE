@@ -810,6 +810,21 @@ namespace RISE
 		extern int BezierPatchSetOpenness( const std::vector<BezierPatch>& patches );
 		extern int BilinearPatchSetOpenness( const std::vector<BilinearPatch>& patches );
 
+		//! DL-621(a): TOPOLOGICAL openness of a triangle mesh from its
+		//! position-welded edge graph alone -- no altitude, normal-agreement,
+		//! coplanar-opposed or Step-4 embedding proof: +1 some edge is used
+		//! by a single triangle (a free boundary) and free-face peeling
+		//! removes every triangle (no closed 2-cycle component alongside it),
+		//! 0 every edge is shared by two oppositely oriented triangles with
+		//! distinct third welded vertices (no free boundary), -1 undecidable
+		//! (empty, non-finite, a triangle with repeated welded corners, an
+		//! edge used by more than two triangles or traversed the same way
+		//! twice, two triangles sharing all three welded corners, or a closed
+		//! 2-cycle mixed with a free boundary).  Decides a composite's
+		//! operand ROLES for meshes and displaced surfaces, which must not
+		//! flip when a geometric certificate comes or goes.
+		extern int TriangleMeshOpenness( const std::vector<Point3>& corners );
+
 		//! DL-616: a process-wide counter bumped whenever any patch set's
 		//! certificate may have changed (a patch added, a set re-prepared),
 		//! so a composite's cached certificate can tell it is stale.

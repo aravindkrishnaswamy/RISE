@@ -275,6 +275,8 @@ void TriangleMeshGeometryIndexed::InvalidateTopologyProofCaches()
 	m_watertightTopologyWeldedId.clear();
 	m_cachedTopologicalWatertightRefusal = false;
 	m_watertightEdges.clear();
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	GeometricUtilities::BumpPatchCertificateEpoch();
 }
 
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
@@ -325,6 +327,7 @@ void TriangleMeshGeometryIndexed::AddNormal( const Vector3& normal )
     openGraphAxis=-1;
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
+	GeometricUtilities::BumpPatchCertificateEpoch();
 	if( !bUseFaceNormals ) {
 		pNormals.push_back( normal );
 	}
@@ -357,6 +360,7 @@ void TriangleMeshGeometryIndexed::AddNormals( const NormalsListType& normals )
     openGraphAxis=-1;
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
+	GeometricUtilities::BumpPatchCertificateEpoch();
 	if( !bUseFaceNormals ) {
 		pNormals.insert( pNormals.end(), normals.begin(), normals.end() );
 	}
@@ -513,6 +517,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	}
 	if( positionsChanged ) {
 		m_lastWeldValid = false;
+		m_topologicalOpenness.store( -2, std::memory_order_release );
 	}
 
 	// Recompute triangle areas + CDF (vertex positions changed).
@@ -529,6 +534,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
         else
             ComputeWatertightness();
     }
+	GeometricUtilities::BumpPatchCertificateEpoch();
 
 
 	// The mesh has genuinely CHANGED SHAPE under a stable IGeometry*, which
@@ -1062,11 +1068,34 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	// above), so perform the initial watertightness proof from live state.
 	// Changed positions refresh it in UpdateVertices.
 	ComputeWatertightness();
+	GeometricUtilities::BumpPatchCertificateEpoch();
 
 	// Vertex arrays and topology are final only now (the block above
 	// re-points every PointerTriangle into pPoints/pNormals), so anything
 	// baked before this call describes storage that no longer exists.
 	InvalidateSignalBakes();
+}
+
+int TriangleMeshGeometryIndexed::TopologicalOpenness() const
+{
+	const int cached = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( cached >= -1 ) {
+		return cached;
+	}
+	std::vector<Point3> corners;
+	corners.reserve( ptr_polygons.size() * 3 );
+	for( std::size_t t = 0; t < ptr_polygons.size(); ++t ) {
+		for( int k = 0; k < 3; ++k ) {
+			if( !ptr_polygons[t].pVertices[k] ) {
+				m_topologicalOpenness.store( -1, std::memory_order_release );
+				return -1;
+			}
+			corners.push_back( *ptr_polygons[t].pVertices[k] );
+		}
+	}
+	const int open = GeometricUtilities::TriangleMeshOpenness( corners );
+	m_topologicalOpenness.store( open, std::memory_order_release );
+	return open;
 }
 
 //! DL-31/DL-143.  Every edge of `ptr_polygons`, keyed by its two
@@ -2360,6 +2389,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
     // Neither may inherit a closed certificate from the previous mesh.
     if(version>=4) ComputeWatertightness();
     else m_bWatertight=false;
+	GeometricUtilities::BumpPatchCertificateEpoch();
 	// Replacing a mesh under the same geometry identity also invalidates
 	// geometry-owned signal tables and their cached per-position normals.
 	InvalidateSignalBakes();
@@ -2377,6 +2407,7 @@ void TriangleMeshGeometryIndexed::ComputeVertexNormals()
     openGraphAxis=-1;
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
+	GeometricUtilities::BumpPatchCertificateEpoch();
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );

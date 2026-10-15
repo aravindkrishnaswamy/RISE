@@ -3517,6 +3517,128 @@ int GeometricUtilities::BilinearPatchSetOpenness( const std::vector<BilinearPatc
 	return NetSetOpenness( nets );
 }
 
+int GeometricUtilities::TriangleMeshOpenness( const std::vector<Point3>& corners )
+{
+	const std::size_t nTris = corners.size() / 3;
+	if( nTris == 0 || corners.size() % 3 != 0 || nTris > 0x3FFFFFFFu ) {
+		return -1;
+	}
+	for( const Point3& p : corners ) {
+		if( !std::isfinite( p.x ) || !std::isfinite( p.y ) || !std::isfinite( p.z ) ) {
+			return -1;
+		}
+	}
+	std::vector<unsigned int> wid;
+	if( !WeldVertexPositions( corners, wid ) ) {
+		return -1;
+	}
+
+	for( std::size_t t = 0; t < nTris; ++t ) {
+		const unsigned int* I = &wid[3 * t];
+		if( I[0] == I[1] || I[1] == I[2] || I[0] == I[2] ) {
+			return -1;
+		}
+		const Point3* P = &corners[3 * t];
+		const Scalar twiceArea = Vector3Ops::Magnitude( Vector3Ops::Cross(
+			Vector3Ops::mkVector3( P[1], P[0] ), Vector3Ops::mkVector3( P[2], P[0] ) ) );
+		Scalar longest = 0;
+		for( int k = 0; k < 3; ++k ) {
+			longest = std::max( longest, Vector3Ops::Magnitude( Vector3Ops::mkVector3( P[(k + 1) % 3], P[k] ) ) );
+		}
+		if( !( twiceArea > NEARZERO * longest ) ) {
+			return -1;
+		}
+	}
+
+	struct EdgeUse
+	{
+		std::uint64_t key = ~std::uint64_t( 0 );
+		unsigned int tri[2] = { 0, 0 };
+		unsigned int opp[2] = { 0, 0 };
+		bool forward[2] = { false, false };
+		unsigned int count = 0;
+	};
+	std::size_t edgeCap = 16;
+	while( edgeCap < nTris * 4 ) {
+		edgeCap <<= 1;
+	}
+	const std::size_t edgeMask = edgeCap - 1;
+	std::vector<EdgeUse> edgeTable( edgeCap );
+	std::vector<unsigned int> triEdgeSlot( 3 * nTris, 0u );
+	const auto triEdge = [&]( const std::size_t i ) -> EdgeUse* { return &edgeTable[triEdgeSlot[i]]; };
+	for( std::size_t t = 0; t < nTris; ++t ) {
+		for( int k = 0; k < 3; ++k ) {
+			const unsigned int a = wid[3 * t + k];
+			const unsigned int b = wid[3 * t + ( k + 1 ) % 3];
+			const unsigned int c = wid[3 * t + ( k + 2 ) % 3];
+			const std::uint64_t key = a < b ? ( ( std::uint64_t( a ) << 32 ) | b ) : ( ( std::uint64_t( b ) << 32 ) | a );
+			std::size_t slot = static_cast<std::size_t>( ( key ^ ( key >> 33 ) ) * 0xff51afd7ed558ccdULL ) & edgeMask;
+			while( edgeTable[slot].key != ~std::uint64_t( 0 ) && edgeTable[slot].key != key ) {
+				slot = ( slot + 1 ) & edgeMask;
+			}
+			EdgeUse& e = edgeTable[slot];
+			if( e.key == ~std::uint64_t( 0 ) ) {
+				e.key = key;
+			}
+			if( e.count >= 2 ) {
+				return -1;
+			}
+			e.tri[e.count] = static_cast<unsigned int>( t );
+			e.opp[e.count] = c;
+			e.forward[e.count] = ( a < b );
+			++e.count;
+			triEdgeSlot[3 * t + k] = static_cast<unsigned int>( slot );
+		}
+	}
+
+	bool anyFree = false;
+	for( std::size_t i = 0; i < 3 * nTris; ++i ) {
+		const EdgeUse* e = triEdge( i );
+		if( e->count == 1 ) {
+			anyFree = true;
+		} else if( e->count == 2 ) {
+			if( e->forward[0] == e->forward[1] || e->opp[0] == e->opp[1] ) {
+				return -1;
+			}
+		}
+	}
+	if( !anyFree ) {
+		return 0;
+	}
+
+	std::vector<unsigned char> alive( nTris, 1 );
+	std::vector<unsigned int> queue;
+	queue.reserve( nTris );
+	for( std::size_t t = 0; t < nTris; ++t ) {
+		for( int k = 0; k < 3; ++k ) {
+			if( triEdge( 3 * t + k )->count == 1 ) {
+				queue.push_back( static_cast<unsigned int>( t ) );
+				break;
+			}
+		}
+	}
+	std::size_t removed = 0;
+	for( std::size_t q = 0; q < queue.size(); ++q ) {
+		const unsigned int t = queue[q];
+		if( !alive[t] ) {
+			continue;
+		}
+		alive[t] = 0;
+		++removed;
+		for( int k = 0; k < 3; ++k ) {
+			EdgeUse* e = triEdge( 3 * t + k );
+			--e->count;
+			if( e->count == 1 ) {
+				const unsigned int other = alive[e->tri[0]] ? e->tri[0] : e->tri[1];
+				if( alive[other] ) {
+					queue.push_back( other );
+				}
+			}
+		}
+	}
+	return ( removed == nTris ) ? 1 : -1;
+}
+
 unsigned int GeometricUtilities::PatchCertificateEpoch()
 {
 	return s_patchCertificateEpoch.load( std::memory_order_acquire );

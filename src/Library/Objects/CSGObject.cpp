@@ -811,6 +811,9 @@ namespace
 				dst.signals.bComplementedField = !dst.signals.bComplementedField;
 			}
 		}
+		if( !dst.bGeomNormalRayDerived ) {
+			dst.bGeomNormalOrientedToRay = false;
+		}
 		return true;
 	}
 }
@@ -1096,12 +1099,12 @@ namespace
 		if( pSolid->SignedDistanceLower( pt, scale, f, exact ) && f != 0 && std::isfinite( f ) ) {
 			return f < 0 ? 1 : -1;
 		}
-		Scalar firstRange = RISE_INFINITY;
+		Scalar firstRange = ( knownFirstHit && knownFirstHit->geometric.bHit ) ?
+			knownFirstHit->geometric.range : RISE_INFINITY;
 		if( IsCertifiedClosedPatchLeaf( pSolid ) ) {
 			int side = 0;
 			if( knownFirstHit ) {
 				side = FirstCrossingSide( *knownFirstHit, dir );
-				firstRange = knownFirstHit->geometric.bHit ? knownFirstHit->geometric.range : RISE_INFINITY;
 			} else {
 				RayIntersection probe( Ray( pt, dir ), nullRasterizerState );
 				pSolid->IntersectRay( probe, RISE_INFINITY, true, true, false );
@@ -1219,21 +1222,139 @@ namespace
 			tBase = tStart;
 		}
 	}
+
+	//! DL-621(b): when a non-convex or multi-lobe closed operand's first
+	//! [range, range2] interval along `localRay` ends in empty space at or
+	//! before `targetRange` (the other operand's entry), advance along the
+	//! ray past `range2` so a later lobe that overlaps the other operand is
+	//! not missed by the single-interval CSG switch.
+	void AdvanceOperandPast(
+		const IObjectPriv* pOperand,
+		const Ray& localRay,
+		const Scalar dHowFar2,
+		const Scalar scale,
+		const Scalar targetRange,
+		const RayIntersectionGeometric* castInputs,
+		const RasterizerState& rast,
+		RayIntersection& riOperand )
+	{
+		for( unsigned int k = 0;
+			k < kMaxOpenSheetWalk &&
+			riOperand.geometric.bHit &&
+			riOperand.geometric.range2 > 0 &&
+			riOperand.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+			riOperand.geometric.range2 <= targetRange;
+			++k )
+		{
+			const Scalar tStart = riOperand.geometric.range2 + OpenSheetRecastStep( riOperand.geometric.range2, scale );
+			if( !( tStart < dHowFar2 ) ) {
+				riOperand.geometric.bHit = false;
+				break;
+			}
+			Ray next( localRay );
+			next.origin = localRay.PointAtLength( tStart );
+			if( next.hasDifferentials ) {
+				next.diffs.rxOrigin = next.diffs.rxOrigin + next.diffs.rxDir * tStart;
+				next.diffs.ryOrigin = next.diffs.ryOrigin + next.diffs.ryDir * tStart;
+			}
+			RayIntersection riNext( next, rast );
+			if( castInputs ) {
+				riNext.geometric.PropagateCastInputs( *castInputs );
+			}
+			const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
+			pOperand->IntersectRay( riNext, remFar, true, true, true );
+			RecoverContainedOperand( pOperand, riNext );
+			if( !riNext.geometric.bHit ) {
+				riOperand.geometric.bHit = false;
+				break;
+			}
+			if( riNext.geometric.range2 == 0 ) {
+				// `tStart` stepped directly into an adjacent lobe touching
+				// the previous exit: extend the current lobe's exit to the
+				// adjacent lobe's exit.
+				riOperand.geometric.range2 = tStart + riNext.geometric.range;
+				if( riNext.hasBoundaryRange ) {
+					riOperand.boundaryRange2 = tStart + riNext.boundaryRange;
+					riOperand.hasBoundaryRange2 = true;
+				} else {
+					riOperand.hasBoundaryRange2 = false;
+				}
+				riOperand.geometric.vNormal2 = riNext.geometric.vNormal;
+				riOperand.geometric.vGeomNormal2 = riNext.geometric.vGeomNormal;
+			} else {
+				riOperand = riNext;
+				riOperand.geometric.ray = localRay;
+				riOperand.geometric.range += tStart;
+				if( riOperand.hasBoundaryRange ) {
+					riOperand.boundaryRange += tStart;
+				}
+				if( riOperand.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY ) {
+					riOperand.geometric.range2 += tStart;
+					if( riOperand.hasBoundaryRange2 ) {
+						riOperand.boundaryRange2 += tStart;
+					}
+				}
+			}
+		}
+	}
+
+	//! DL-617 / DL-621(a): an operand's ROLE in a sheet-trimming or
+	//! sheet-union composite, decided without any embedding proof: +1 an
+	//! open surface (it has a free boundary), 0 a closed one (no free
+	//! boundary), -1 unknown.  Patch sets and triangle meshes / displaced
+	//! surfaces are decided by seam / welded-edge topology alone; a
+	//! clipped plane is always an open sheet; a geometry that answers a
+	//! signed distance is closed by type.
+	int OperandOpenness( const IObject* operand )
+	{
+		if( !operand ) {
+			return -1;
+		}
+		if( const auto* csg = dynamic_cast<const CSGObject*>( operand ) ) {
+			if( csg->TrimsSheet() ) {
+				return 1;
+			}
+			return csg->IsTopologicallyClosed() ? 0 : -1;
+		}
+		const IGeometry* g = operand->GetGeometry();
+		if( !g ) {
+			return -1;
+		}
+		if( dynamic_cast<const ClippedPlaneGeometry*>( g ) ) {
+			return 1;
+		}
+		if( const auto* bez = dynamic_cast<const BezierPatchGeometry*>( g ) ) {
+			return bez->TopologicalOpenness();
+		}
+		if( const auto* bil = dynamic_cast<const BilinearPatchGeometry*>( g ) ) {
+			return bil->TopologicalOpenness();
+		}
+		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( g ) ) {
+			return mesh->TopologicalOpenness();
+		}
+		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometry*>( g ) ) {
+			return mesh->TopologicalOpenness();
+		}
+		if( const auto* disp = dynamic_cast<const DisplacedGeometry*>( g ) ) {
+			return disp->TopologicalOpenness();
+		}
+		Scalar d = Scalar( 0 );
+		bool exact = false;
+		return g->SignedDistanceLower( Point3( 0, 0, 0 ), RISE_INFINITY, d, exact ) ? 0 : -1;
+	}
 }
 
 // DL-411: meshes publish only the nearest root, even when asked for
 // exit information. Recover the contained-origin interval convention from
 // certified geometry instead of interpreting its infinite range2 as outside.
 //
-// DL-617: a certified-closed PATCH set refuses SignedDistanceLower and
-// publishes no exit either, so the interval algebra used to read it as
-// "outside, entering at the first hit and never leaving" -- a cavity it
-// carves never closed, and a ray starting inside read as entering.  Its
-// first hit's ORIENTATION settles the ray's initial state
-// (`FirstCrossingSide`, no extra cast); an entry is then completed with
-// its exit by one re-cast past it (the next crossing of an embedded
-// closed surface after an entry is its exit).  A certified-closed
-// composite answers containment by `CSGObject::OperandContainsPoint`.
+// DL-617 / DL-621(b): closed patch sets and closed mesh / displaced solids
+// publish no exit in IGeometry::IntersectRay, so the interval algebra used
+// to read an outside hit on them as "entering at the first hit and never
+// leaving" -- a cavity they carve never closed.  Complete an outside entry
+// with its exit by one re-cast past it (`OrientExitNormalsAlongRay`
+// normals); a certified-closed or topologically-closed composite answers
+// containment by `CSGObject::OperandContainsPoint`.
 static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection& hit )
 {
 	if( !hit.geometric.bHit || hit.hasBoundaryRange2 ) {
@@ -1263,74 +1384,130 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 	const Scalar tMid = Scalar( 0.5 ) * hit.geometric.range;
 	const Point3 pMid = ( tMid > 0 && std::isfinite( tMid ) ) ?
 		hit.geometric.ray.PointAtLength( tMid ) : hit.geometric.ray.origin;
+	const CSGObject* csg = dynamic_cast<const CSGObject*>( operand );
+	const bool patch = !csg && IsCertifiedClosedPatchLeaf( operand );
+	const bool closedOperand = patch ||
+		( csg ? ( csg->IsCertifiedWatertight() || csg->IsTopologicallyClosed() ) :
+			( OperandOpenness( operand ) == 0 || IsOperandCertifiedWatertight( operand ) ) );
+	const BoundingBox box = operand->getBoundingBox();
+	Scalar scale = Vector3Ops::Magnitude( Vector3Ops::mkVector3( box.ur, box.ll ) );
+	if( !( scale > 0 ) || !std::isfinite( scale ) ) {
+		scale = 1;
+	}
 	Scalar distance = 0;
 	bool exact = false;
 	int side = 0;
-	if( operand->SignedDistanceLower( pMid, Scalar( 1e-3 ), distance, exact ) && distance != 0 ) {
+	if( operand->SignedDistanceLower( pMid, Scalar( 1e-3 ), distance, exact ) && distance != 0 && std::isfinite( distance ) ) {
 		side = distance < 0 ? 1 : -1;
 	} else {
-		const CSGObject* csg = dynamic_cast<const CSGObject*>( operand );
-		const bool patch = !csg && IsCertifiedClosedPatchLeaf( operand );
-		if( !patch && !( csg && csg->IsCertifiedWatertight() ) ) {
+		if( !closedOperand ) {
 			return;
 		}
-		const BoundingBox box = operand->getBoundingBox();
-		Scalar scale = Vector3Ops::Magnitude( Vector3Ops::mkVector3( box.ur, box.ll ) );
-		if( !( scale > 0 ) || !std::isfinite( scale ) ) {
-			scale = 1;
-		}
-		side = patch ?
-			LeafContains( operand, hit.geometric.ray.origin, hit.geometric.ray.Dir(), scale, &hit ) :
-			CSGObject::OperandContainsPoint( operand, pMid, hit.geometric.ray.Dir(), scale );
-		if( patch && side < 0 ) {
-			// Outside: complete the entry at `range` with its exit.
-			const Scalar t0 = hit.geometric.range + OpenSheetRecastStep( hit.geometric.range, scale );
-			RayIntersection exitHit( Ray( hit.geometric.ray.PointAtLength( t0 ), hit.geometric.ray.Dir() ), nullRasterizerState );
-			operand->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
-			// Accept it only if it really is an exit (outward normal along
-			// the ray); anything else leaves the record as the operand
-			// published it.  The interval algebra reads vNormal2 /
-			// vGeomNormal2 as the OUTWARD normal at the exit (what a sphere
-			// or box publishes), but a patch set reports a back-face hit
-			// with its normals flipped toward the ray
-			// (bGeomNormalOrientedToRay), so un-flip both.  range2 follows
-			// Object::IntersectRay's exit convention -- published a hair
-			// PAST the face (`range2 + SURFACE_INTERSEC_ERROR`), which
-			// AdoptCsgExitFacePayloadViaProbe relies on -- whereas the
-			// re-cast's `range` is backed off a hair SHORT of it, hence the
-			// two back-off terms.
-			//
-			// Any strictly positive cosine is an exit here: the near-tangent
-			// threshold of `FirstCrossingSide` is for INFERRING a side, and
-			// refusing a genuine grazing exit would leave range2 unset (a
-			// hole or streak on a non-convex body).
-			const bool isExit = exitHit.geometric.bHit &&
-				exitHit.geometric.range < Scalar( 0.5 ) * RISE_INFINITY &&
-				exitHit.geometric.HasTrueGeomSide() &&
-				Vector3Ops::Dot( exitHit.geometric.UnflippedGeomNormal(), hit.geometric.ray.Dir() ) > 0;
-			if( isExit ) {
-				// The back-off is applied in the operand's OWN units, so it
-				// is converted into this composite's frame (the operand's
-				// parent frame) by the operand's stretch along the ray,
-				// |M^-1 dir| (operand-local units per parent unit).
-				Scalar backoff = 0;
-				if( const Object* operandObject = dynamic_cast<const Object*>( operand ) ) {
-					const Scalar stretch = Vector3Ops::Magnitude(
-						Vector3Ops::Transform( operandObject->GetFinalInverseTransformMatrix(), hit.geometric.ray.Dir() ) );
-					backoff = ( stretch > 0 && std::isfinite( stretch ) ) ?
-						operandObject->GetSurfaceIntersecError() / stretch : operandObject->GetSurfaceIntersecError();
+		side = csg ?
+			CSGObject::OperandContainsPoint( operand, pMid, hit.geometric.ray.Dir(), scale ) :
+			LeafContains( operand, hit.geometric.ray.origin, hit.geometric.ray.Dir(), scale, &hit );
+	}
+	if( !csg && closedOperand && side < 0 ) {
+		// Outside: complete the entry at `range` with its exit.
+		const Scalar t0 = hit.geometric.range + OpenSheetRecastStep( hit.geometric.range, scale );
+		RayIntersection exitHit( Ray( hit.geometric.ray.PointAtLength( t0 ), hit.geometric.ray.Dir() ), nullRasterizerState );
+		operand->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+		// Accept it only if it really is an exit (outward normal along
+		// the ray, or opposite an inward-wound entry whose midpoint lies
+		// inside the operand); anything else leaves the record as the
+		// operand published it.  The interval algebra reads vNormal2 /
+		// vGeomNormal2 as the OUTWARD normal at the exit (what a sphere
+		// or box publishes), but a patch set or double-sided mesh reports
+		// a back-face hit with its normals flipped toward the ray
+		// (bGeomNormalOrientedToRay), so un-flip both.  range2 follows
+		// Object::IntersectRay's exit convention -- published a hair
+		// PAST the face (`range2 + SURFACE_INTERSEC_ERROR`), which
+		// AdoptCsgExitFacePayloadViaProbe relies on -- whereas the
+		// re-cast's `range` is backed off a hair SHORT of it, hence the
+		// two back-off terms.
+		//
+		// Any strictly positive cosine is an exit here: the near-tangent
+		// threshold of `FirstCrossingSide` is for INFERRING a side, and
+		// refusing a genuine grazing exit would leave range2 unset (a
+		// hole or streak on a non-convex body).
+		bool isExit = false;
+		bool inwardEntry = false;
+		if( exitHit.geometric.bHit &&
+			exitHit.geometric.range < Scalar( 0.5 ) * RISE_INFINITY &&
+			exitHit.geometric.HasTrueGeomSide() )
+		{
+			const Scalar cEntry = Vector3Ops::Dot( hit.geometric.UnflippedGeomNormal(), hit.geometric.ray.Dir() );
+			const Scalar cExit = Vector3Ops::Dot( exitHit.geometric.UnflippedGeomNormal(), hit.geometric.ray.Dir() );
+			if( patch ) {
+				isExit = ( cExit > 0 );
+			} else if( cExit > 0 && cEntry <= 0 ) {
+				isExit = true;
+			} else if( cExit < 0 && cEntry > 0 ) {
+				const Point3 pBetween = hit.geometric.ray.PointAtLength(
+					Scalar( 0.5 ) * ( hit.geometric.range + t0 + exitHit.geometric.range ) );
+				Scalar dBetween = 0;
+				bool exactBetween = false;
+				int betweenSide = 0;
+				if( operand->SignedDistanceLower( pBetween, Scalar( 1e-3 ), dBetween, exactBetween ) &&
+					dBetween != 0 && std::isfinite( dBetween ) ) {
+					betweenSide = dBetween < 0 ? 1 : -1;
+				} else {
+					betweenSide = LeafContains( operand, pBetween, hit.geometric.ray.Dir(), scale );
 				}
-				hit.geometric.range2 = t0 + exitHit.geometric.range + Scalar( 2 ) * backoff;
-				const ExitNormals exitN = OrientExitNormalsAlongRay(
-					exitHit.geometric.vNormal, exitHit.geometric.vGeomNormal, hit.geometric.ray.Dir(),
-					exitHit.geometric.bGeomNormalOrientedToRay );
-				hit.geometric.vNormal2 = exitN.shade;
-				hit.geometric.vGeomNormal2 = exitN.geom;
-				hit.boundaryRange2 = hit.geometric.range2;
-				hit.hasBoundaryRange2 = true;
+				if( betweenSide > 0 ) {
+					isExit = true;
+					inwardEntry = true;
+				}
 			}
-			return;
 		}
+		if( isExit ) {
+			// The back-off is applied in the operand's OWN units, so it
+			// is converted into this composite's frame (the operand's
+			// parent frame) by the operand's stretch along the ray,
+			// |M^-1 dir| (operand-local units per parent unit).
+			Scalar backoff = 0;
+			if( const Object* operandObject = dynamic_cast<const Object*>( operand ) ) {
+				const Scalar stretch = Vector3Ops::Magnitude(
+					Vector3Ops::Transform( operandObject->GetFinalInverseTransformMatrix(), hit.geometric.ray.Dir() ) );
+				backoff = ( stretch > 0 && std::isfinite( stretch ) ) ?
+					operandObject->GetSurfaceIntersecError() / stretch : operandObject->GetSurfaceIntersecError();
+			}
+			hit.geometric.range2 = t0 + exitHit.geometric.range + Scalar( 2 ) * backoff;
+			const ExitNormals exitN = OrientExitNormalsAlongRay(
+				exitHit.geometric.vNormal, exitHit.geometric.vGeomNormal, hit.geometric.ray.Dir(),
+				exitHit.geometric.bGeomNormalOrientedToRay );
+			hit.geometric.vNormal2 = exitN.shade;
+			hit.geometric.vGeomNormal2 = exitN.geom;
+			hit.boundaryRange2 = hit.geometric.range2;
+			hit.hasBoundaryRange2 = true;
+			if( inwardEntry && !hit.geometric.bGeomNormalRayDerived ) {
+				const ExitNormals entryN = OrientExitNormalsAlongRay(
+					hit.geometric.vNormal, hit.geometric.vGeomNormal, -hit.geometric.ray.Dir(),
+					!hit.geometric.bGeomNormalOrientedToRay );
+				hit.geometric.vNormal = entryN.shade;
+				hit.geometric.vGeomNormal = entryN.geom;
+				if( entryN.shadeNegated ) {
+					SurfaceDerivativesInfo& d = hit.geometric.derivatives;
+					if( d.valid ) {
+						d.dndu = -d.dndu;
+						d.dndv = -d.dndv;
+					}
+					if( d.curvatureValid ) {
+						d.curvature = -d.curvature;
+					}
+				}
+				if( hit.geometric.derivatives.valid ) {
+					const Scalar mirror = OperandMirrorSign( operand );
+					if( mirror * Vector3Ops::Dot( Vector3Ops::Cross(
+							hit.geometric.derivatives.dpdu, hit.geometric.derivatives.dpdv ),
+							hit.geometric.vNormal ) < 0 ) {
+						hit.geometric.derivatives.valid = false;
+					}
+				}
+				hit.geometric.bGeomNormalOrientedToRay = false;
+			}
+		}
+		return;
 	}
 	if( side > 0 ) {
 		hit.geometric.range2 = 0;
@@ -1458,59 +1635,6 @@ int CSGObject::OperandContainsPoint( const IObjectPriv* operand, const Point3& p
 	}
 }
 
-namespace
-{
-	//! DL-617: an operand's ROLE in a sheet-trimming composite, decided
-	//! without any embedding proof: +1 an open surface (it has a free
-	//! boundary), 0 a closed one (no free boundary), -1 unknown.  Patch
-	//! sets are decided by exact seam topology; a clipped plane is always
-	//! an open sheet; a geometry that answers a signed distance is closed
-	//! by type.  Topology is EXACT seam identity: a body that encloses a
-	//! volume but has a T-junction (a side glued to two half-sides) reads
-	//! as OPEN, so it is trimmed rather than trimming -- conservative (it
-	//! never acts as an inside test), and its closed certificate is
-	//! refused anyway.  Meshes and displaced surfaces expose only their
-	//! certificates, so for them the role still follows certification
-	//! (an uncertified one is unknown and is never trimmed or trimming).
-	int OperandOpenness( const IObject* operand )
-	{
-		if( !operand ) {
-			return -1;
-		}
-		if( const auto* csg = dynamic_cast<const CSGObject*>( operand ) ) {
-			if( csg->TrimsSheet() ) {
-				return 1;
-			}
-			return csg->IsTopologicallyClosed() ? 0 : -1;
-		}
-		const IGeometry* g = operand->GetGeometry();
-		if( !g ) {
-			return -1;
-		}
-		if( dynamic_cast<const ClippedPlaneGeometry*>( g ) ) {
-			return 1;
-		}
-		if( const auto* bez = dynamic_cast<const BezierPatchGeometry*>( g ) ) {
-			return bez->TopologicalOpenness();
-		}
-		if( const auto* bil = dynamic_cast<const BilinearPatchGeometry*>( g ) ) {
-			return bil->TopologicalOpenness();
-		}
-		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( g ) ) {
-			return mesh->IsProvablyOpenSheet() ? 1 : ( mesh->IsCertifiedWatertight() ? 0 : -1 );
-		}
-		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometry*>( g ) ) {
-			return mesh->IsProvablyOpenSheet() ? 1 : -1;
-		}
-		if( const auto* disp = dynamic_cast<const DisplacedGeometry*>( g ) ) {
-			return disp->IsProvablyOpenSheet( true ) ? 1 : ( disp->IsCertifiedWatertight() ? 0 : -1 );
-		}
-		Scalar d = Scalar( 0 );
-		bool exact = false;
-		return g->SignedDistanceLower( Point3( 0, 0, 0 ), RISE_INFINITY, d, exact ) ? 0 : -1;
-	}
-}
-
 bool CSGObject::TrimsSheet() const
 {
 	return ( CertificateBits() & ( kTrimSheetA | kTrimSheetB ) ) != 0;
@@ -1525,46 +1649,16 @@ int CSGObject::CertificateBits() const
 {
 	const long long epoch = static_cast<long long>( GeometricUtilities::PatchCertificateEpoch() );
 	const long long cached = m_certBits.load( std::memory_order_acquire );
-	if( cached >= 0 && ( cached >> 8 ) == epoch ) {
-		return static_cast<int>( cached & 0xff );
+	if( cached >= 0 && ( cached >> 16 ) == epoch ) {
+		return static_cast<int>( cached & 0xffff );
 	}
 	const int bits = ComputeCertificateBits();
-	m_certBits.store( ( epoch << 8 ) | bits, std::memory_order_release );
+	m_certBits.store( ( epoch << 16 ) | bits, std::memory_order_release );
 	return bits;
 }
 
-//! DL-617, computed once per preparation (`Realize`) or on first use, and
-//! dropped by `AssignObjects` / `SetOperation`: per-ray recomputation
-//! cost a signed-distance query, a displaced realize and a nested
-//! composite's recursion on every intersection.  The certificates read
-//! only the operands' own (geometry-level, transform-independent)
-//! certificates, so no transform change can stale them.
-//!
-//! Policy:
-//!  - WATERTIGHT: both operands certified closed solids (the regularized
-//!    boolean of two solids is a solid).
-//!  - OPEN: sheet INTERSECT closed (either order) and sheet MINUS closed:
-//!    a subset of one certified open sheet encloses no volume, and its
-//!    medium convention is that sheet's own.
-//!  - GEOMETRY follows the operand ROLES, which are decided by topology
-//!    alone (`OperandOpenness`: a free boundary or not), never by the
-//!    embedding proof: whenever one operand of an intersection /
-//!    subtraction is OPEN and the other CLOSED, the composite renders as
-//!    the open one trimmed by the closed one (kTrimSheet*), so its shape
-//!    does not change when either certificate comes or goes.  An open
-//!    operand never trims (an open "solid" has no inside), and an operand
-//!    of unknown role leaves the composite on the solid algebra.  Only the
-//!    TRANSPORT claim (the open-sheet face rule, bProvablyNoInterior)
-//!    waits for both certificates; with an uncertified closed trimmer the
-//!    inside test is still the signed-distance sign or voted crossing
-//!    parity, exact for an embedded closed surface the certifier could not
-//!    prove and a best effort for a self-crossing one.
-//!  - A UNION of sheets is NOT certified, even when disjoint: like the
-//!    mesh certificate, which refuses disconnected pieces, the
-//!    certification of individual pieces does not define their combined
-//!    medium convention (two sheets with one shared material and stack
-//!    key, possibly from opposite sides), so the union keeps the
-//!    IOR-stack rule and the uncertified warning.
+//! DL-617 / DL-621, computed once per preparation (`Realize`) or on first
+//! use, and dropped by `AssignObjects` / `SetOperation`.
 int CSGObject::ComputeCertificateBits() const
 {
 	if( !pObjectA || !pObjectB ) {
@@ -1593,6 +1687,11 @@ int CSGObject::ComputeCertificateBits() const
 		break;
 	default:
 	case CSG_UNION:
+		if( roleA == 1 && roleB == 0 ) {
+			bits |= kUnionSheetA;
+		} else if( roleB == 1 && roleA == 0 ) {
+			bits |= kUnionSheetB;
+		}
 		break;
 	}
 	if( trimA ) {
@@ -1744,6 +1843,43 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			ri = kept;
 		}
 	}
+	else if( certBits & ( kUnionSheetA | kUnionSheetB ) )
+	{
+		// DL-621(c): sheet UNION closed solid.  The sheet's semi-infinite
+		// [range, RISE_INFINITY) sentinel must never enter the solid interval
+		// algebra below: the union consists of the closed solid (with its own
+		// finite [range, range2] interval, or [range, 0] when the ray starts
+		// inside it) together with the zero-thickness sheet strictly OUTSIDE
+		// the solid.
+		const bool sheetIsA = ( certBits & kUnionSheetA ) != 0;
+		const IObjectPriv* const pSheet = sheetIsA ? pObjectA : pObjectB;
+		const IObjectPriv* const pSolid = sheetIsA ? pObjectB : pObjectA;
+		const RayIntersection& riSheet = sheetIsA ? riObjA : riObjB;
+		const RayIntersection& riSolid = sheetIsA ? riObjB : riObjA;
+		if( riSolid.geometric.bHit && riSolid.geometric.range2 == 0 ) {
+			ri = riSolid;
+		} else {
+			Scalar scale = 1;
+			if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+				scale = 1;
+			}
+			Scalar tKept = 0;
+			RayIntersection kept( ri.geometric.ray, ri.geometric.rast );
+			const bool hasSheet =
+				riSheet.geometric.bHit &&
+				( !riSolid.geometric.bHit || riSheet.geometric.range < riSolid.geometric.range ) &&
+				WalkTrimmedSheet(
+					pSheet, pSolid, false,
+					ri.geometric.ray, dHowFar2, scale,
+					riSheet, &ri.geometric, ri.geometric.rast,
+					&kept, tKept );
+			if( hasSheet && ( !riSolid.geometric.bHit || tKept < riSolid.geometric.range ) ) {
+				ri = kept;
+			} else if( riSolid.geometric.bHit ) {
+				ri = riSolid;
+			}
+		}
+	}
 	else switch( op )
 	{
 	default:
@@ -1781,6 +1917,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.boundaryRange = riObjB.boundaryRange2; ri.hasBoundaryRange = riObjB.hasBoundaryRange2;
 					ri.geometric.vNormal = riObjB.geometric.vNormal2;
 					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal2;
+					if( !ri.geometric.bGeomNormalRayDerived ) {
+						ri.geometric.bGeomNormalOrientedToRay = false;
+					}
 					// EXIT-designated boundary (union, origin inside an
 					// operand): recover B's real payload for this exit face
 					// via a reverse probe (P2-e); on a probe miss, fall back
@@ -1806,6 +1945,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.boundaryRange = riObjA.boundaryRange2; ri.hasBoundaryRange = riObjA.hasBoundaryRange2;
 					ri.geometric.vNormal = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal2;
+					if( !ri.geometric.bGeomNormalRayDerived ) {
+						ri.geometric.bGeomNormalOrientedToRay = false;
+					}
 					// EXIT-designated boundary (union, origin inside an
 					// operand): recover A's real payload for this exit face
 					// via a reverse probe (P2-e); on a probe miss, fall back
@@ -1864,6 +2006,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// intersection
 		if( riObjA.geometric.bHit && riObjB.geometric.bHit )
 		{
+			if( riObjA.geometric.range2 > 0 && riObjB.geometric.range2 == 0 &&
+				riObjB.geometric.range <= riObjA.geometric.range ) {
+				riObjB.geometric.range2 = riObjB.geometric.range;
+			} else if( riObjB.geometric.range2 > 0 && riObjA.geometric.range2 == 0 &&
+				riObjA.geometric.range <= riObjB.geometric.range ) {
+				riObjA.geometric.range2 = riObjA.geometric.range;
+			}
 			const bool insideA = (riObjA.geometric.range2 == 0);
 			const bool insideB = (riObjB.geometric.range2 == 0);
 
@@ -1930,10 +2079,33 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			}
 			else
 			{
-				// Outside both objects.
+				// Outside both objects.  Advance past any non-convex lobe that
+				// ends in empty space before the other operand's entry.
+				Scalar scale = 1;
+				if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+					scale = 1;
+				}
+				for( unsigned int step = 0;
+					step < kMaxOpenSheetWalk && riObjA.geometric.bHit && riObjB.geometric.bHit;
+					++step )
+				{
+					if( riObjA.geometric.range2 > 0 &&
+						riObjA.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+						riObjA.geometric.range2 < riObjB.geometric.range ) {
+						AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, scale,
+							riObjB.geometric.range - NEARZERO, &ri.geometric, ri.geometric.rast, riObjA );
+					} else if( riObjB.geometric.range2 > 0 &&
+						riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+						riObjB.geometric.range2 < riObjA.geometric.range ) {
+						AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
+							riObjA.geometric.range - NEARZERO, &ri.geometric, ri.geometric.rast, riObjB );
+					} else {
+						break;
+					}
+				}
 				// CSG intersection entry = max(A.range, B.range)
 				// CSG intersection exit  = min(A.range2, B.range2)
-				if(
+				if( riObjA.geometric.bHit && riObjB.geometric.bHit &&
 					(riObjA.geometric.range <= riObjB.geometric.range) &&
 					(riObjB.geometric.range <= riObjA.geometric.range2) )
 				{
@@ -1959,7 +2131,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					}
 				}
-				else if(
+				else if( riObjA.geometric.bHit && riObjB.geometric.bHit &&
 					(riObjB.geometric.range <= riObjA.geometric.range) &&
 					(riObjA.geometric.range <= riObjB.geometric.range2) )
 				{
@@ -1992,6 +2164,14 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// If we don't hit A, then no possible intersection
 		if( riObjA.geometric.bHit )
 		{
+			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit &&
+				riObjB.geometric.range2 == 0 && riObjB.geometric.range <= riObjA.geometric.range ) {
+				// Origin is inside a lobe of B that exits in empty space at or
+				// before A's entry: treat that exit as the end of B's first
+				// interval and let the outside-both path advance to any later
+				// lobe of B.
+				riObjB.geometric.range2 = riObjB.geometric.range;
+			}
 			if( riObjA.geometric.range2 == 0 && riObjB.geometric.range2 == 0 ) {
 				// If we are inside both objects, then as long as we hit B before leaving A
 				if( riObjB.geometric.range < riObjA.geometric.range ) {
@@ -2188,7 +2368,21 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				}
 			} else {
 				// Neither A nor B contains the ray origin -- both hits are
-				// plain entry/exit interval pairs [range, range2].
+				// plain entry/exit interval pairs [range, range2].  DL-621(b):
+				// if B is a multi-lobe solid whose first lobe ends in empty
+				// space at or before A's entry, advance B along the ray so a
+				// later lobe overlapping A is not missed.
+				if( riObjB.geometric.bHit &&
+					riObjB.geometric.range2 > 0 &&
+					riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+					riObjB.geometric.range2 <= riObjA.geometric.range ) {
+					Scalar scale = 1;
+					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+						scale = 1;
+					}
+					AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
+						riObjA.geometric.range, &ri.geometric, ri.geometric.rast, riObjB );
+				}
 				if( !riObjB.geometric.bHit ) {
 					// Never hit B at all -- composite is just A.
 					ri = riObjA;
@@ -2285,6 +2479,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						// Reverse the normal
 						ri.geometric.vNormal = -riObjB.geometric.vNormal2;
 						ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal2;
+						if( !ri.geometric.bGeomNormalRayDerived ) {
+							ri.geometric.bGeomNormalOrientedToRay = false;
+						}
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 						if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
@@ -2806,6 +3003,33 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 		}
 		return tKept > 0 && tKept < dHowFar2;
 	}
+	if( certBits & ( kUnionSheetA | kUnionSheetB ) )
+	{
+		const bool sheetIsA = ( certBits & kUnionSheetA ) != 0;
+		const IObjectPriv* const pSheet = sheetIsA ? pObjectA : pObjectB;
+		const IObjectPriv* const pSolid = sheetIsA ? pObjectB : pObjectA;
+		const RayIntersection& riSheet = sheetIsA ? riObjA : riObjB;
+		const RayIntersection& riSolid = sheetIsA ? riObjB : riObjA;
+		if( riSolid.geometric.bHit && riSolid.geometric.range > 0 && riSolid.geometric.range < dHowFar2 ) {
+			return true;
+		}
+		if( !riSheet.geometric.bHit ) {
+			return false;
+		}
+		Scalar scale = 1;
+		if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+			scale = 1;
+		}
+		Scalar tKept = 0;
+		if( !WalkTrimmedSheet(
+				pSheet, pSolid, false,
+				orig, dHowFar2, scale,
+				riSheet, 0, nullRasterizerState,
+				0, tKept ) ) {
+			return false;
+		}
+		return tKept > 0 && tKept < dHowFar2;
+	}
 
 	// Do different things depending on the type of CSG operation
 	switch( op )
@@ -2820,6 +3044,13 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 		// If both the objects don't intersect, then there can't be an
 		// intersection
 		if( riObjA.geometric.bHit && riObjB.geometric.bHit ) {
+			if( riObjA.geometric.range2 > 0 && riObjB.geometric.range2 == 0 &&
+				riObjB.geometric.range <= riObjA.geometric.range ) {
+				riObjB.geometric.range2 = riObjB.geometric.range;
+			} else if( riObjB.geometric.range2 > 0 && riObjA.geometric.range2 == 0 &&
+				riObjA.geometric.range <= riObjB.geometric.range ) {
+				riObjA.geometric.range2 = riObjA.geometric.range;
+			}
 			const bool insideA = (riObjA.geometric.range2 == 0);
 			const bool insideB = (riObjB.geometric.range2 == 0);
 
@@ -2841,10 +3072,34 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				}
 			} else {
 				// Outside both. CSG entry = max(A.range, B.range).
-				if( (riObjA.geometric.range <= riObjB.geometric.range) && (riObjB.geometric.range <= riObjA.geometric.range2) ) {
+				Scalar scale = 1;
+				if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+					scale = 1;
+				}
+				for( unsigned int step = 0;
+					step < kMaxOpenSheetWalk && riObjA.geometric.bHit && riObjB.geometric.bHit;
+					++step )
+				{
+					if( riObjA.geometric.range2 > 0 &&
+						riObjA.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+						riObjA.geometric.range2 < riObjB.geometric.range ) {
+						AdvanceOperandPast( pObjectA, orig, dHowFar2, scale,
+							riObjB.geometric.range - NEARZERO, 0, nullRasterizerState, riObjA );
+					} else if( riObjB.geometric.range2 > 0 &&
+						riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+						riObjB.geometric.range2 < riObjA.geometric.range ) {
+						AdvanceOperandPast( pObjectB, orig, dHowFar2, scale,
+							riObjA.geometric.range - NEARZERO, 0, nullRasterizerState, riObjB );
+					} else {
+						break;
+					}
+				}
+				if( riObjA.geometric.bHit && riObjB.geometric.bHit &&
+					(riObjA.geometric.range <= riObjB.geometric.range) && (riObjB.geometric.range <= riObjA.geometric.range2) ) {
 					return (riObjB.geometric.range < dHowFar2 && riObjB.geometric.range > 0);
 				}
-				else if( (riObjB.geometric.range <= riObjA.geometric.range) && (riObjA.geometric.range <= riObjB.geometric.range2) ) {
+				else if( riObjA.geometric.bHit && riObjB.geometric.bHit &&
+					(riObjB.geometric.range <= riObjA.geometric.range) && (riObjA.geometric.range <= riObjB.geometric.range2) ) {
 					return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
 				}
 			}
@@ -2854,6 +3109,10 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 		// If we don't hit A, then no possible intersection
 		if( riObjA.geometric.bHit )
 		{
+			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit &&
+				riObjB.geometric.range2 == 0 && riObjB.geometric.range <= riObjA.geometric.range ) {
+				riObjB.geometric.range2 = riObjB.geometric.range;
+			}
 			if( riObjA.geometric.range2 == 0 && riObjB.geometric.range2 == 0 ) {
 				// If we are inside both objects, then as long as we hit A before leaving B
 				// B before we exit A we are ok
@@ -2868,6 +3127,17 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				// If we are inside B but not inside A, then as long as we exit B before dHowFar2 its all good
 				return (riObjB.geometric.range < dHowFar2 );
 			} else {
+				if( riObjB.geometric.bHit &&
+					riObjB.geometric.range2 > 0 &&
+					riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+					riObjB.geometric.range2 <= riObjA.geometric.range ) {
+					Scalar scale = 1;
+					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+						scale = 1;
+					}
+					AdvanceOperandPast( pObjectB, orig, dHowFar2, scale,
+						riObjA.geometric.range, 0, nullRasterizerState, riObjB );
+				}
 				// If we never hit B, or if B begins after A ends, or if B ends before A can begin
 				// then we only have A
 				if( !riObjB.geometric.bHit ||
