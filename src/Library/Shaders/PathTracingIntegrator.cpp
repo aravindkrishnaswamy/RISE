@@ -5892,7 +5892,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     IORStack laneStack(initialIorStack.EnvironmentIOR());
                     const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
                         firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
-                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    // DL-618: the hero's seed point and rule when they reproduce
+                    // the hero's membership, else the midpoint as before.
+                    IORStackSeeding::SeedCompanionLane(laneStack, initialIorStack,
+                        firstHit.geometric.ray.origin, probePoint, scene, swl.lambda[i]);
                     // DL-292: the midpoint seed recorded a graded medium's
                     // index at the MIDPOINT; the delegated walk's first
                     // Advance must telescope from the segment's start.
@@ -5947,7 +5950,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     IORStack laneStack(initialIorStack.EnvironmentIOR());
                     const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
                         firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
-                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    // DL-618: the hero's seed point and rule when they reproduce
+                    // the hero's membership, else the midpoint as before.
+                    IORStackSeeding::SeedCompanionLane(laneStack, initialIorStack,
+                        firstHit.geometric.ray.origin, probePoint, scene, swl.lambda[i]);
                     // DL-292: the midpoint seed recorded a graded medium's
                     // index at the MIDPOINT; the delegated walk's first
                     // Advance must telescope from the segment's start.
@@ -6727,7 +6733,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					IORStack laneStack(iorStack.EnvironmentIOR());
                     const Point3 probePoint = Point3Ops::mkPoint3(ri.geometric.ray.origin,
                         ri.geometric.ray.Dir() * (ri.geometric.range * 0.5));
-                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[w]);
+                    // DL-618: the hero's membership where a seed reproduces it.
+                    IORStackSeeding::SeedCompanionLane(laneStack, iorStack,
+                        ri.geometric.ray.origin, probePoint, scene, swl.lambda[w]);
                     // DL-292: the hero stack was already Advanced to this hit
                     // (its factor is in throughputComp), so the delegated walk's
                     // Advance here must be a no-op, not a midpoint-to-hit factor.
