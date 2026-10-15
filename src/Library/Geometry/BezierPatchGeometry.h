@@ -15,6 +15,7 @@
 #define BEZIERPATCH_GEOMETRY_
 
 #include "Geometry.h"
+#include <atomic>
 #include "../Interfaces/IBezierPatchGeometry.h"
 #include "../Octree.h"
 #include <memory>
@@ -79,10 +80,42 @@ namespace RISE
 			//! accepts a uniform point in it with probability J / bound, so
 			//! its density is exactly J / integral(J) = 1/GetArea().
 			static const unsigned int nAreaCells = 4;
-			mutable std::unique_ptr<std::once_flag>	m_areaOnce;
+			// Versioned like the certificate slot below (never a once_flag
+			// reset by an edit while another thread may be inside
+			// call_once): an edit bumps m_areaGeneration and the table is
+			// rebuilt in place under m_areaMutex when
+			// m_areaComputedGeneration lags.  Like that slot it only removes
+			// the once_flag undefined behaviour; scenes are immutable while
+			// a render runs.
+			mutable std::mutex				m_areaMutex;
+			std::atomic<unsigned int>		m_areaGeneration;
+			mutable std::atomic<unsigned int>	m_areaComputedGeneration;
 			mutable std::vector<Scalar>		m_cellCdf;
 			mutable std::vector<Scalar>		m_cellBound;
 			mutable Scalar					m_area;
+			// DL-616: the patch-set certificate is computed LAZILY, on the
+			// first query of the accessors below.  Only consumers that need
+			// it ask (the object manager's open-sheet pass for clear
+			// transmissive materials; a CSG composite certifying its
+			// operands), so an opaque patch model never pays for it.  The
+			// per-hit stamp reads the stored flag without forcing it: an
+			// uncertified set reads "not open", the conservative answer.
+			// A VERSIONED slot, never a once_flag that an edit resets: an
+			// edit bumps m_certGeneration, and the certificate is recomputed
+			// under m_certMutex when m_certComputedGeneration lags behind it.
+			// This only removes the undefined behaviour of resetting a
+			// once_flag another thread may be inside; it does NOT make
+			// editing during a render safe (AddPatch / Prepare still change
+			// `patches` under readers) -- scenes are immutable while a
+			// render runs.
+			mutable std::mutex				m_certMutex;
+			std::atomic<unsigned int>		m_certGeneration;
+			mutable std::atomic<unsigned int>	m_certComputedGeneration;
+			mutable std::atomic<bool>	m_bCertifiedWatertight;
+			mutable std::atomic<bool>	m_bProvablyOpenSheet;
+			mutable std::atomic<bool>	m_bNegativeOpenSignedVolume;
+			void EnsureCertified() const;
+			void InvalidateCertificate();
 			void EnsureAreaTable() const;
 
 			virtual ~BezierPatchGeometry( );
@@ -127,6 +160,11 @@ namespace RISE
 			Scalar GetArea( ) const override;
 			//! DL-320: every accepted back-face hit is flipped toward the ray (see IGeometry).
 			bool IsDoubleSided() const override { return true; }
+			bool IsCertifiedWatertight() const { EnsureCertified(); return m_bCertifiedWatertight.load( std::memory_order_acquire ); }
+			bool IsProvablyOpenSheet() const { EnsureCertified(); return m_bProvablyOpenSheet.load( std::memory_order_acquire ); }
+			bool HasNegativeOpenSignedVolume() const { EnsureCertified(); return m_bNegativeOpenSignedVolume.load( std::memory_order_acquire ); }
+			//! DL-617: topological openness (see GeometricUtilities::BezierPatchSetOpenness).
+			int TopologicalOpenness() const;
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 

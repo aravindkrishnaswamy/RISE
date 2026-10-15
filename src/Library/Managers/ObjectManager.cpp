@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "ObjectManager.h"
 #include "../Utilities/ExpressionMemo.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
@@ -196,27 +197,11 @@ bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
 // certificate; 3: patches/CSG with no sound open-versus-closed certificate;
 // 4: certified open mesh with the negative signed-volume winding risk.
 // An uncertainty warning must never confer an open-sheet transport flag.
-int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
+bool IsClearTransmissiveMaterial(const IMaterial* material, bool& outBroadProof)
 {
-    if(const auto* csg=dynamic_cast<const CSGObject*>(&object)) {
-        for(const IObject* operand : {csg->GetOperandA(),csg->GetOperandB()}) {
-            if(!operand) continue;
-            if(ObjectUncertifiedOpenTransmissiveMesh(*operand)) return 3;
-            const IMaterial* m=operand->GetMaterial();
-            const ISPF* f=m ? m->GetSPF() : nullptr;
-            if(!dynamic_cast<const DielectricSPF*>(f) && !dynamic_cast<const PerfectRefractorSPF*>(f)) continue;
-            const IGeometry* g=operand->GetGeometry();
-            if(dynamic_cast<const ClippedPlaneGeometry*>(g) || dynamic_cast<const DisplacedGeometry*>(g)) return 3;
-            if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(g)) if(mesh->IsProvablyOpenSheet()) return 3;
-            if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(g)) if(mesh->IsProvablyOpenSheet()) return 3;
-        }
-        return 0;
-    }
-    const IMaterial* material = object.GetMaterial();
-    const ISPF* spf = material ? material->GetSPF() : nullptr;
-    if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) return 0;
-    // Match Object::IntersectRay's admission by scattering material identity:
-    // a sole-layer composite can forward a clear SPF without receiving the rule.
+    outBroadProof=false;
+    const ISPF* spf=material ? material->GetSPF() : nullptr;
+    if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) return false;
     const IMaterial* proofMaterial=material;
     while(proofMaterial) {
         if(const auto* lum=dynamic_cast<const LambertianLuminaireMaterial*>(proofMaterial))
@@ -225,8 +210,43 @@ int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
             proofMaterial=&lum->GetBaseMaterial();
         else break;
     }
-    const bool broadProof=dynamic_cast<const DielectricMaterial*>(proofMaterial)
+    outBroadProof=dynamic_cast<const DielectricMaterial*>(proofMaterial)
         || dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial);
+    return true;
+}
+void CollectCSGClearMaterials(const CSGObject& csg, const IMaterial* inheritedMat, bool& anyClear, bool& allBroadProof)
+{
+    // The OUTERMOST material override wins: CSGObject::IntersectRay stamps
+    // its own pMaterial after the child composite has stamped its own, so
+    // an enclosing composite's material is what renders.
+    const IMaterial* effMat=inheritedMat ? inheritedMat : csg.GetMaterial();
+    for(const IObject* operand : {csg.GetOperandA(),csg.GetOperandB()}) {
+        if(!operand) continue;
+        if(const auto* childCsg=dynamic_cast<const CSGObject*>(operand)) {
+            CollectCSGClearMaterials(*childCsg,effMat,anyClear,allBroadProof);
+        } else {
+            const IMaterial* opMat=effMat ? effMat : operand->GetMaterial();
+            bool broad=false;
+            if(IsClearTransmissiveMaterial(opMat,broad)) {
+                anyClear=true;
+                if(!broad) allBroadProof=false;
+            }
+        }
+    }
+}
+int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
+{
+    if(const auto* csg=dynamic_cast<const CSGObject*>(&object)) {
+        bool anyClear=false, allBroadProof=true;
+        CollectCSGClearMaterials(*csg,nullptr,anyClear,allBroadProof);
+        if(!anyClear) return 0;
+        if(csg->IsCertifiedWatertight()) return 0;
+        if(allBroadProof && csg->IsProvablyOpenSheet(true))
+            return csg->HasNegativeOpenSignedVolume() ? 4 : 0;
+        return 3;
+    }
+    bool broadProof=false;
+    if(!IsClearTransmissiveMaterial(object.GetMaterial(),broadProof)) return 0;
     const IGeometry* geometry = object.GetGeometry();
     if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
         return broadProof && mesh->IsProvablyOpenSheet() && mesh->HasNegativeOpenSignedVolume() ? 4 :
@@ -237,7 +257,12 @@ int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
     if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(geometry))
         return broadProof && displaced->HasNegativeOpenSignedVolume() ? 4
             : (displaced->HasUncertifiedOpenness(broadProof) ? 1 : 0);
-    if(dynamic_cast<const BezierPatchGeometry*>(geometry) || dynamic_cast<const BilinearPatchGeometry*>(geometry)) return 3;
+    if(const auto* bezier=dynamic_cast<const BezierPatchGeometry*>(geometry))
+        return broadProof && bezier->IsProvablyOpenSheet() && bezier->HasNegativeOpenSignedVolume() ? 4 :
+            ((!bezier->IsCertifiedWatertight() && !(broadProof ? bezier->IsProvablyOpenSheet() : false)) ? 3 : 0);
+    if(const auto* bilinear=dynamic_cast<const BilinearPatchGeometry*>(geometry))
+        return broadProof && bilinear->IsProvablyOpenSheet() && bilinear->HasNegativeOpenSignedVolume() ? 4 :
+            ((!bilinear->IsCertifiedWatertight() && !(broadProof ? bilinear->IsProvablyOpenSheet() : false)) ? 3 : 0);
     if(const auto* plane=dynamic_cast<const ClippedPlaneGeometry*>(geometry)) return plane->IsPlanarConvexQuad() ? 0 : 3;
     return 0;
 }
@@ -2571,6 +2596,9 @@ void ObjectManager::PrepareForRendering() const
 	// provider -- but nothing today depends on it.  (ExpressionMemo.h's
 	// Invalidate() comment is the single account.)
 	ExpressionMemo::Invalidate();
+	// DL-618: every thread's open-sheet catalog (IORStackSeeding::OpenSheetsOf)
+	// rebuilds on its next use, so a material-only edit is seen.
+	IORStackSeeding::InvalidateOpenSheetCatalogs();
 
 	// EXPRESSION MEMO, the SECOND bump, and the reason there are two.
 	// Objects are about to be realized and the hierarchy re-baked, so any

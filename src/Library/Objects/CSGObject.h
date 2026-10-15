@@ -16,6 +16,7 @@
 
 #include "Object.h"
 #include "../Utilities/RString.h"
+#include <atomic>
 
 namespace RISE
 {
@@ -61,6 +62,27 @@ namespace RISE
 			IObjectPriv*							pObjectB;
 
 			CSG_OP									op;
+
+			//! DL-617 certificate cache (see `ComputeCertificateBits`):
+			//! -1 = not computed, else (patch-certificate epoch << 8) | the
+			//! kCert* mask below.  Recomputed by `Realize` (every
+			//! preparation), dropped by `AssignObjects` / `SetOperation`, and
+			//! STALE whenever `GeometricUtilities::PatchCertificateEpoch()`
+			//! has moved (a patch was added to, or re-prepared in, any patch
+			//! set -- possibly an operand's -- since it was computed).
+			enum
+			{
+				kCertWatertight		= 1,	//!< both operands certified closed solids
+				kCertOpenSheetA		= 2,	//!< certified open sheet; operand A is the sheet
+				kCertOpenSheetB		= 4,	//!< certified open sheet; operand B is the sheet
+				kCertNegativeVolume	= 8,	//!< the sheet operand's negative-winding warning
+				kTrimSheetA			= 16,	//!< render as operand A's sheet trimmed by B (certified or not)
+				kTrimSheetB			= 32,	//!< render as operand B's sheet trimmed by A
+				kTopologicallyClosed	= 64	//!< both operands closed by topology (no free boundary)
+			};
+			mutable std::atomic<long long>			m_certBits;
+			int CertificateBits() const;
+			int ComputeCertificateBits() const;
 
 			virtual ~CSGObject( );
 
@@ -175,6 +197,25 @@ namespace RISE
 			//! one-line forward to it, so there is one code path.
 			bool DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar maxDistWorld,
 				Scalar& outDist, CsgLandingArm& outArm ) const;
+
+			//! DL-617: closed-volume vs open-sheet certification for CSG
+			//! trees, cached per preparation (policy on
+			//! `ComputeCertificateBits`).
+			bool IsCertifiedWatertight() const;
+
+			//! DL-617: +1 when `pt` (in `operand`'s PARENT frame) is inside
+			//! the certified-closed `operand`, -1 outside, 0 undecided.
+			//! Composites recurse by their operation; leaves use the
+			//! signed-distance sign, else crossing parity voted over three
+			//! directions (see the .cpp).
+			static int OperandContainsPoint( const IObjectPriv* operand, const Point3& pt, const Vector3& dir, const Scalar scale );
+			bool IsProvablyOpenSheet( const bool allowGeneralProof = true ) const;
+			//! DL-617: the composite renders as a trimmed sheet (operand
+			//! roles by topology; see ComputeCertificateBits).
+			bool TrimsSheet() const;
+			//! DL-617: both operands closed by topology (no free boundary).
+			bool IsTopologicallyClosed() const;
+			bool HasNegativeOpenSignedVolume() const;
 
 		protected:
 			//! THE DIAGONAL OF THIS COMPOSITE'S OWN LOCAL BOX -- A's box

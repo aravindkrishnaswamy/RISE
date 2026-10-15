@@ -679,24 +679,36 @@ namespace RISE
 		}
 
 		//! DL-143.  Welds `points` to a shared id per PHYSICAL corner:
-		//! `outWeldedId[i]` is the welded id of `points[i]`; two positions
-		//! share an id iff they are within `eps = max(1e-9, 1e-6 x bbox
-		//! diagonal)` of each other (grid of cell `eps`, 3x3x3 neighbour
-		//! scan).  `outEps`, when non-null, receives that epsilon.  False
-		//! on a non-finite input.  (Moved here unchanged from
-		//! TriangleMeshGeometryIndexed.cpp so the DL-382 certificate below
-		//! welds with exactly the watertightness weld's rule; the full
-		//! rationale is on TriangleMeshGeometryIndexed::ComputeWatertightness.)
+		//! `outWeldedId[i]` is the welded id of `points[i]`: points are
+		//! visited in order and each joins the NEAREST earlier
+		//! representative within `eps = max(1e-9, 1e-6 x bbox diagonal,
+		//! minEps)` (ties: lowest id), else founds a new one.  The partition
+		//! is a pure function of the input sequence.  It is not an
+		//! equivalence on positions: points within `eps` can fall in
+		//! different classes.  `outTransitive` reports an UNAMBIGUOUS weld
+		//! (each point within `eps/2` of its representative, representatives
+		//! more than `1.5 eps` apart, so every point had exactly one
+		//! candidate); even then different classes are only guaranteed
+		//! `eps/2` apart.  `outEps`, when non-null, receives `eps`.  False
+		//! on a non-finite input.  (Shared with the DL-382 certificate below
+		//! so it welds with exactly the watertightness weld's rule; the full
+		//! rationale is on the definition.)
 		extern bool WeldVertexPositions(
 			const std::vector<Point3>& points,
 			std::vector<unsigned int>& outWeldedId,
-			Scalar* outEps = nullptr
+			Scalar* outEps = nullptr,
+			Scalar minEps = Scalar( 0 ),
+			bool* outTransitive = nullptr
 			);
 
 		//! Result of IsEmbeddedOpenOrientedSurface.
 		struct OpenSurfaceCertificate
 		{
 			bool	certified = false;	//!< every test passed
+			bool	topologicalRefusal = false;	//!< refused at Step 2/2b/3 (depends only on post-weld vertex partition)
+			bool	budgetRefusal = false;	//!< refused because Step 4's insertion or pair budget was exceeded (no geometric witness)
+			std::size_t	refusalTriA = std::size_t( -1 );	//!< Step 1 (A == B) or Step 4 (A != B) failure witness
+			std::size_t	refusalTriB = std::size_t( -1 );
 			//! Signed volume of the triangles about their bounding-box
 			//! centre (sum of (a-c).((b-c)x(d-c))/6).  For a closed
 			//! outward-wound solid it is the enclosed volume; negative on a
@@ -705,6 +717,14 @@ namespace RISE
 			//! section 2.1).  Filled only when `certified`.
 			Scalar	signedVolumeAboutCentre = 0;
 		};
+
+		extern bool CheckOpenSurfaceStep4Pair(
+			const Point3* Pi,
+			const unsigned int* Ii,
+			const Point3* Pj,
+			const unsigned int* Ij,
+			Scalar epsSq
+			);
 
 		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
 		//! consistently oriented (readable) face?  The general certificate
@@ -728,7 +748,82 @@ namespace RISE
 		//! normals agreeing with the winding is the CALLER's check.
 		//! Conservative: anything it cannot prove is refused.
 		extern OpenSurfaceCertificate IsEmbeddedOpenOrientedSurface(
-			const std::vector<Point3>& corners
+			const std::vector<Point3>& corners,
+			std::vector<unsigned int>* outWeldedId = nullptr,
+			Scalar minEps = Scalar( 0 ),
+			const std::vector<unsigned int>* preWeldedId = nullptr,
+			Scalar preWeldEps = Scalar( 0 )
+			);
+
+		//! DL-616: analytic open-versus-closed certification for a PATCH
+		//! SET (one geometry holding many patches).  Exactly one of the
+		//! two outputs can be TRUE, and only when proved:
+		//!  - `outCertifiedWatertight`: the set is a connected, consistently
+		//!    oriented, EMBEDDED closed 2-manifold with positive enclosed
+		//!    volume (outward winding);
+		//!  - `outProvablyOpenSheet`: the set is a connected, consistently
+		//!    oriented, EMBEDDED 2-manifold with non-empty boundary, so it
+		//!    encloses no volume.
+		//! Topology comes only from EXACT seam identity (every matched side
+		//! is the bitwise-reversed control polygon of exactly one other
+		//! side); nothing is welded by tolerance.  Embedding is proved on a
+		//! grid of sub-patches: each sub-patch is injective (every
+		//! cross product of a u- and a v-derivative control vector lies in
+		//! one open half-space, which by the mean-value theorem makes the
+		//! map injective), every pair sharing a side is injective as a
+		//! union (the same test over both nets), every pair sharing only a
+		//! vertex is strictly separated by a plane through it, and every
+		//! other pair is disjoint by recursive control-hull boxes.  A
+		//! collapsed (degenerate) side, a T-junction, a pinch vertex or a
+		//! crossing anywhere is refused.  `outNegativeOpenSignedVolume`
+		//! reports an open sheet whose exact signed volume about its
+		//! bounding-box centre is negative (the inward-winding warning).
+		//! `diag`, when given, supplies an optional work-budget override
+		//! and receives the first failed proof step (a static string; ""
+		//! when certified), the sub-patch grid that decided and the work
+		//! spent.  The work budget and a sub-patch count cap bound time and
+		//! memory BEFORE anything large is allocated; past either the set
+		//! is refused.
+		struct PatchSetCertDiagnostics
+		{
+			std::size_t		workBudget = 0;	//!< [in] 0 = the default budget
+			const char*		reason = "";	//!< [out]
+			unsigned int	grid = 0;		//!< [out] 4 or 8 (0: refused before subdividing)
+			std::size_t		workUsed = 0;	//!< [out]
+		};
+
+		extern void CertifyBilinearPatchSet(
+			const std::vector<BilinearPatch>& patches,
+			bool& outCertifiedWatertight,
+			bool& outProvablyOpenSheet,
+			bool& outNegativeOpenSignedVolume,
+			PatchSetCertDiagnostics* diag = nullptr
+			);
+
+		//! DL-617: TOPOLOGICAL openness of a patch set from exact seam
+		//! identity alone -- no embedding proof: +1 some side has no glued
+		//! partner (a free boundary), 0 every side is glued (no free
+		//! boundary), -1 undecidable (collapsed / looping / non-manifold /
+		//! mismatched seams).  Cheap (one sort); decides a composite's
+		//! operand ROLES, which must not depend on whether the embedding
+		//! proof happens to succeed.
+		extern int BezierPatchSetOpenness( const std::vector<BezierPatch>& patches );
+		extern int BilinearPatchSetOpenness( const std::vector<BilinearPatch>& patches );
+
+		//! DL-616: a process-wide counter bumped whenever any patch set's
+		//! certificate may have changed (a patch added, a set re-prepared),
+		//! so a composite's cached certificate can tell it is stale.
+		extern unsigned int PatchCertificateEpoch();
+		extern void BumpPatchCertificateEpoch();
+
+		//! DL-616: as `CertifyBilinearPatchSet`, for bicubic Bezier patches
+		//! (a bilinear patch is certified as its exact degree elevation).
+		extern void CertifyBezierPatchSet(
+			const std::vector<BezierPatch>& patches,
+			bool& outCertifiedWatertight,
+			bool& outProvablyOpenSheet,
+			bool& outNegativeOpenSignedVolume,
+			PatchSetCertDiagnostics* diag = nullptr
 			);
 	}
 }

@@ -193,6 +193,8 @@ namespace RISE
             //! base). Set allowGeneralProof=false for legacy-only material consumers.
             //! Such an uncertified transmissive surface keeps the IOR-stack rule.
             bool HasUncertifiedOpenness(bool allowGeneralProof=true) const;
+            bool IsCertifiedWatertight() const;
+            bool IsProvablyOpenSheet(bool allowGeneralProof=true) const;
             bool HasLegacyOpenSheetProof() const;
             bool HasNegativeOpenSignedVolume() const;
 			static unsigned int GetBuildMeshCount();

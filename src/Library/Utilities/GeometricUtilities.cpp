@@ -20,6 +20,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 
@@ -1388,129 +1390,262 @@ char GeometricUtilities::WhichSideOfPlane(
 	}
 }
 
-//! (Moved unchanged from TriangleMeshGeometryIndexed.cpp, DL-382.)
+//! (Moved from TriangleMeshGeometryIndexed.cpp, DL-382.)
 //! DL-143.  Welds `points` to a shared id per PHYSICAL corner, so
 //! that watertightness (and anything else that needs "is this the
 //! same vertex") can be decided by position rather than by which
 //! array slot a per-corner import/tessellation pipeline happened to
-//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`;
-//! two positions land in the same id iff they are within `eps` of
-//! each other under the grid below.
+//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`.
 //!
-//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal)`, i.e. relative
-//! to THIS mesh's own scale, not an absolute constant -- an absolute
-//! epsilon would either be too coarse for a millimetre-scale asset
-//! or too fine to absorb import float noise on a kilometre-scale
-//! one.  A cell size of `eps` with a 3x3x3 neighbour-cell scan finds
-//! every prior welded point within `eps` regardless of which side of
-//! a cell boundary two near-duplicate positions fall on; an exact
-//! (bit-identical) duplicate -- the common case, both for a
-//! deliberately shared corner and for this engine's own
-//! `TessellateToMesh` producers, which copy the source position
-//! verbatim rather than recomputing it -- is necessarily caught by
-//! this same scan (distance 0 <= eps), so no separate exact-match
-//! fast path is needed for correctness; it would only change the
-//! constant factor, not the result.
+//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal, minEps)`, i.e.
+//! relative to THIS point set's own scale, not an absolute constant --
+//! an absolute epsilon would either be too coarse for a millimetre-scale
+//! asset or too fine to absorb import float noise on a kilometre-scale
+//! one.
 //!
-//! O(n) expected (each point does one grid-bucket insert/lookup plus
-//! a bounded 27-cell scan whose average occupancy is O(1) for a
-//! well-formed mesh); see ComputeWatertightness's own build-cost
-//! measurement for the wall-clock this adds on a real asset.
-//! DL-197.  `outEps`, when non-null, receives the SAME relative
-//! epsilon this function used for its own weld -- so a caller that
-//! needs a second geometric test at "the same tolerance the weld
-//! itself trusted" (the coplanarity test below) doesn't re-derive
-//! the formula and risk drifting from it.
-bool GeometricUtilities::WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId, Scalar* outEps )
+//! The partition (DL-620 review, P3-2).  Points are visited in input
+//! order.  A point joins the NEAREST existing representative within
+//! `eps` (ties: the lowest id); with none within `eps` it becomes a
+//! new representative, numbered in creation order.  The result is
+//! therefore a pure function of the input sequence -- it does not
+//! depend on the grid's cell size, hash-table capacity or bucket scan
+//! order (an earlier first-match scan did, so two equally valid grids
+//! could produce two different partitions for the same mesh).  The
+//! weld is NOT an equivalence relation on raw positions: two points
+//! within `eps` of each other can land in different classes, and two
+//! points in one class can be up to `2 eps` apart.
+//!
+//! `outTransitive` (when non-null) reports whether the weld was
+//! UNAMBIGUOUS: every point lies within `eps/2` of its representative
+//! and representatives are pairwise more than `1.5 eps` apart.  Then
+//! every point had exactly one representative within `eps`, so no
+//! tie-break or visiting-order choice influenced its class, and points
+//! in DIFFERENT classes are at least `eps/2` apart (not `eps`: a
+//! transitive weld still does not certify that the classes are
+//! `eps`-separated).  Callers use it to decide when an earlier weld's
+//! labels can be compared against a new one.
+//!
+//! Grid: cell `6 eps` over coordinates RELATIVE to the bounding box's
+//! low corner (always, DL-620 review P3-4: relative coordinates lie in
+//! [0, diagonal], so the cell arithmetic's rounding error is a few ulps
+//! of the diagonal -- about 1e-10 of `eps` -- however far the mesh is
+//! translated; absolute coordinates at 1e9 x the mesh size made
+//! `rx - floor(rx/cell)*cell` lose whole multiples of `eps`).  The home
+//! cell is scanned first; an exact (bit-identical) duplicate, the common
+//! case for shared corners, is its own nearest representative at
+//! distance 0 and ends the scan there.  Otherwise, unless the point's
+//! search box (`1.5 eps`, or `eps` once the weld is known to be
+//! ambiguous, plus the rounding bound) lies inside its home cell, every
+//! cell overlapping the box is scanned.  The cell is small (`6 eps`)
+//! because each visited cell is scanned in full and representatives are
+//! only `eps` apart: the per-cell count is what a dense mesh can blow up.
+//!
+//! O(n) expected.  DL-197: `outEps`, when non-null, receives the SAME
+//! epsilon this function used, so a caller that needs a second
+//! geometric test at "the tolerance the weld itself trusted" does not
+//! re-derive the formula.
+bool GeometricUtilities::WeldVertexPositions(
+	const std::vector<Point3>& points,
+	std::vector<unsigned int>& outWeldedId,
+	Scalar* outEps,
+	const Scalar minEps,
+	bool* outTransitive
+	)
 {
 	outWeldedId.assign( points.size(), 0u );
+	if( outTransitive ) { *outTransitive = true; }
 	if( points.empty() ) {
-		if( outEps ) { *outEps = Scalar( 1e-9 ); }
+		if( outEps ) { *outEps = std::max( Scalar( 1e-9 ), minEps ); }
 		return true;
 	}
 
 	BoundingBox bbox( points[0], points[0] );
-	for( const auto& p : points ) {
+	for( std::size_t i = 0; i < points.size(); ++i ) {
+		const Point3& p = points[i];
 		if( !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ) return false;
-	}
-	for( std::size_t i = 1; i < points.size(); ++i ) {
-		bbox.Include( points[i] );
+		if( i > 0 ) {
+			bbox.Include( p );
+		}
 	}
 	const Vector3 extents = bbox.GetExtents();
 	const Scalar diag = Vector3Ops::Magnitude( extents );
-	const Scalar eps = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag );
-	const Scalar cell = eps;
-	if( !std::isfinite(cell) || !(cell > 0) ) return false;
+	const Scalar eps = std::max( std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag ), minEps );
+	// Cell size (DL-620 review round 2, P2).  Each lookup scans every
+	// representative in the cells it visits, and representatives are only
+	// guaranteed to be more than eps apart, so a cell of k eps can hold
+	// ~k^2 representatives on a surface and ~k^3 in a volume.  32 eps let a
+	// vertex spacing just above eps (the DL-150 regime: a dense model whose
+	// epsilon one stray far vertex has inflated) put ~1,000 representatives
+	// in a cell and slowed the weld by ~20x on a 490k-vertex sheet.  Smaller
+	// cells cost hash lookups instead: the 1.5 eps search box spans up to
+	// two cells per axis, and only a point more than that far inside its
+	// home cell on every axis can skip its neighbours.  Measured on 490k
+	// vertices (OpenSheetCertificateTiming, weld alone, n=5): 3 eps reads
+	// 18 / 48 ms (dense / ordinary sheet), 6 eps 15 / 21 ms, 8 eps 36 / 24
+	// ms, 32 eps 237 / 12 ms.  6 eps keeps the dense case bounded (about
+	// 30 representatives per cell on a surface) for ~10 ms on an ordinary
+	// one.
+	const Scalar cell = Scalar( 6 ) * eps;
+	if( !std::isfinite( diag ) || !std::isfinite( cell ) || !( cell > 0 ) ) return false;
 	if( outEps ) { *outEps = eps; }
 
-	// Keep the existing grid for representable absolute coordinates. When
-	// translation exceeds its integer range, use a mesh-local origin.
-	// Relative coordinates are bounded by diag/eps <= 1e6. Strict bounds
-	// below also leave room for the signed +/-1 neighbor additions.
-	const auto safeCoordinate = [cell](Scalar v) {
-		const double c=std::floor(double(v/cell));
-		return std::isfinite(c) && c > double(std::numeric_limits<std::int64_t>::min())
-			&& c < double(std::numeric_limits<std::int64_t>::max());
-	};
-	bool localGrid=false;
-	for( const auto& p : points ) {
-		if( !safeCoordinate(p.x) || !safeCoordinate(p.y) || !safeCoordinate(p.z) ) {localGrid=true;break;}
-	}
-	const Point3 origin=localGrid?bbox.ll:Point3(0,0,0);
+	// Relative coordinates lie in [0, extent] with extent <= diag <= 1e6 eps,
+	// so cell indices are at most ~167,000 (or 0 when minEps dominates): no
+	// integer range concern.  `slack` bounds the rounding of the relative
+	// coordinate, of its quotient by `cell` and of `fx * cell` -- all a few
+	// ulps of a magnitude <= extent + cell -- and is added to the search
+	// radius below.
+	const Point3 origin = bbox.ll;
+	const Scalar maxExtent = std::max( extents.x, std::max( extents.y, extents.z ) );
+	const Scalar slack = Scalar( 64 ) * std::numeric_limits<Scalar>::epsilon() * ( maxExtent + cell );
+	if( !( maxExtent / cell < Scalar( 1e15 ) ) ) return false;
 	auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
-		return static_cast<std::int64_t>(std::floor(double(v/cell)));
+		return static_cast<std::int64_t>( std::floor( double( v / cell ) ) );
 	};
 	// A simple, well-distributed combine for the 3D cell key -- collisions are
-	// fine (unordered_map handles them; a false-positive bucket collision only
-	// costs an extra distance check, never a wrong weld, since every candidate
-	// found is still distance-checked against `eps` below).
+	// fine (a false-positive bucket collision only costs an extra distance
+	// check, never a wrong weld, since every candidate found is still
+	// distance-checked against `eps` below).
 	auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::uint64_t {
-            // Hash products intentionally wrap modulo 2^64. Convert before
-            // multiplication so large translated cells have defined arithmetic.
 		return static_cast<std::uint64_t>(x) * 73856093ULL
-                ^ static_cast<std::uint64_t>(y) * 19349663ULL
-                ^ static_cast<std::uint64_t>(z) * 83492791ULL;
+			^ static_cast<std::uint64_t>(y) * 19349663ULL
+			^ static_cast<std::uint64_t>(z) * 83492791ULL;
 	};
 
-	std::unordered_map<std::uint64_t, std::vector<unsigned int>> grid;
-	grid.reserve( points.size() );
+	struct CellBucket
+	{
+		std::uint64_t key = 0;
+		unsigned int head = 0xFFFFFFFFu;
+		unsigned int tail = 0xFFFFFFFFu;
+	};
+	std::size_t tableCap = 16;
+	while( tableCap < points.size() * 2 ) {
+		tableCap <<= 1;
+	}
+	const std::size_t tableMask = tableCap - 1;
+	std::vector<CellBucket> grid( tableCap );
 	std::vector<Point3> weldedPos;
 	weldedPos.reserve( points.size() );
+	std::vector<unsigned int> nextInCell;
+	nextInCell.reserve( points.size() );
 	const Scalar epsSq = eps * eps;
+	const Scalar halfEpsSq = Scalar( 0.25 ) * epsSq;
+	const Scalar sepEps = Scalar( 1.5 ) * eps;
+	const Scalar sepEpsSq = Scalar( 2.25 ) * epsSq;
+	bool transitive = true;
+
+	auto mixKey = []( std::uint64_t k ) -> std::size_t {
+		k ^= k >> 33;
+		k *= 0xff51afd7ed558ccdULL;
+		k ^= k >> 33;
+		return static_cast<std::size_t>( k );
+	};
+	auto findBucketHead = [&]( const std::uint64_t key ) -> unsigned int {
+		std::size_t slot = mixKey( key ) & tableMask;
+		while( grid[slot].head != 0xFFFFFFFFu ) {
+			if( grid[slot].key == key ) {
+				return grid[slot].head;
+			}
+			slot = ( slot + 1 ) & tableMask;
+		}
+		return 0xFFFFFFFFu;
+	};
 
 	for( std::size_t i = 0; i < points.size(); ++i ) {
 		const Point3& p = points[i];
-		const std::int64_t cx = cellCoord( p.x-origin.x );
-		const std::int64_t cy = cellCoord( p.y-origin.y );
-		const std::int64_t cz = cellCoord( p.z-origin.z );
+		const Scalar rx = p.x - origin.x;
+		const Scalar ry = p.y - origin.y;
+		const Scalar rz = p.z - origin.z;
+		const std::int64_t cx = cellCoord( rx );
+		const std::int64_t cy = cellCoord( ry );
+		const std::int64_t cz = cellCoord( rz );
+		const std::uint64_t homeKey = cellKey( cx, cy, cz );
 
-		unsigned int foundId = 0xFFFFFFFFu;
-		for( int dz = -1; dz <= 1 && foundId == 0xFFFFFFFFu; ++dz ) {
-			for( int dy = -1; dy <= 1 && foundId == 0xFFFFFFFFu; ++dy ) {
-				for( int dx = -1; dx <= 1 && foundId == 0xFFFFFFFFu; ++dx ) {
-					const std::uint64_t key = cellKey( cx + dx, cy + dy, cz + dz );
-					std::unordered_map<std::uint64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
-					if( git == grid.end() ) { continue; }
-					const std::vector<unsigned int>& candidates = git->second;
-					for( std::size_t c = 0; c < candidates.size(); ++c ) {
-						const unsigned int cand = candidates[c];
-						const Vector3 d = Vector3Ops::mkVector3( weldedPos[cand], p );
-						if( Vector3Ops::SquaredModulus( d ) <= epsSq ) {
-							foundId = cand;
-							break;
+		std::size_t homeSlot = mixKey( homeKey ) & tableMask;
+		while( grid[homeSlot].head != 0xFFFFFFFFu && grid[homeSlot].key != homeKey ) {
+			homeSlot = ( homeSlot + 1 ) & tableMask;
+		}
+
+		// Nearest representative within eps (ties: lowest id), plus the
+		// ambiguity bookkeeping behind `outTransitive`.
+		unsigned int bestId = 0xFFFFFFFFu;
+		Scalar bestSq = 0;
+		unsigned int withinEps = 0;
+		bool exactMatch = false;
+		const auto consider = [&]( const unsigned int cand ) {
+			const Point3& wp = weldedPos[cand];
+			if( wp.x == p.x && wp.y == p.y && wp.z == p.z ) {
+				bestId = cand;
+				bestSq = 0;
+				exactMatch = true;
+				return;
+			}
+			const Scalar dSq = Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( wp, p ) );
+			if( dSq <= epsSq ) {
+				++withinEps;
+				if( bestId == 0xFFFFFFFFu || dSq < bestSq || ( dSq == bestSq && cand < bestId ) ) {
+					bestId = cand;
+					bestSq = dSq;
+				}
+			} else if( dSq <= sepEpsSq ) {
+				transitive = false;
+			}
+		};
+
+		for( unsigned int cand = grid[homeSlot].head; cand != 0xFFFFFFFFu && !exactMatch; cand = nextInCell[cand] ) {
+			consider( cand );
+		}
+
+		if( !exactMatch ) {
+			// Within eps decides membership; within 1.5 eps decides only
+			// the transitivity report, so once that is false eps suffices.
+			const Scalar searchRad = ( transitive ? sepEps : eps ) + slack;
+			// A point whose search box lies inside its home cell (with the
+			// rounding slack once more for `cx * cell`, an integer below 2^53
+			// times `cell`, rounded once) has already seen every candidate.
+			const Scalar inLo = searchRad + slack;
+			const Scalar inHi = cell - inLo;
+			const Scalar dx = rx - Scalar( cx ) * cell;
+			const Scalar dy = ry - Scalar( cy ) * cell;
+			const Scalar dz = rz - Scalar( cz ) * cell;
+			const bool insideHome = dx > inLo && dx < inHi && dy > inLo && dy < inHi && dz > inLo && dz < inHi;
+			const std::int64_t cx0 = cellCoord( rx - searchRad ), cx1 = insideHome ? cx0 - 1 : cellCoord( rx + searchRad );
+			const std::int64_t cy0 = cellCoord( ry - searchRad ), cy1 = cellCoord( ry + searchRad );
+			const std::int64_t cz0 = cellCoord( rz - searchRad ), cz1 = cellCoord( rz + searchRad );
+			for( std::int64_t nz = cz0; nz <= cz1 && !exactMatch; ++nz ) {
+				for( std::int64_t ny = cy0; ny <= cy1 && !exactMatch; ++ny ) {
+					for( std::int64_t nx = cx0; nx <= cx1 && !exactMatch; ++nx ) {
+						if( nx == cx && ny == cy && nz == cz ) {
+							continue;
+						}
+						for( unsigned int cand = findBucketHead( cellKey( nx, ny, nz ) );
+							cand != 0xFFFFFFFFu && !exactMatch; cand = nextInCell[cand] ) {
+							consider( cand );
 						}
 					}
 				}
 			}
+			if( withinEps > 1 || ( withinEps == 1 && bestSq > halfEpsSq ) ) {
+				transitive = false;
+			}
 		}
 
+		unsigned int foundId = bestId;
 		if( foundId == 0xFFFFFFFFu ) {
 			foundId = (unsigned int)weldedPos.size();
 			weldedPos.push_back( p );
-			grid[ cellKey( cx, cy, cz ) ].push_back( foundId );
+			nextInCell.push_back( 0xFFFFFFFFu );
+			if( grid[homeSlot].head == 0xFFFFFFFFu ) {
+				grid[homeSlot].key = homeKey;
+				grid[homeSlot].head = grid[homeSlot].tail = foundId;
+			} else {
+				nextInCell[grid[homeSlot].tail] = foundId;
+				grid[homeSlot].tail = foundId;
+			}
 		}
 		outWeldedId[i] = foundId;
 	}
+	if( outTransitive ) { *outTransitive = transitive; }
 	return true;
 }
 
@@ -1709,15 +1844,34 @@ namespace
 	{
 		std::size_t operator()( const CellKey& k ) const
 		{
-			return static_cast<std::size_t>( static_cast<std::uint64_t>( k.x ) * 73856093ULL
+			std::uint64_t h = static_cast<std::uint64_t>( k.x ) * 73856093ULL
 				^ static_cast<std::uint64_t>( k.y ) * 19349663ULL
-				^ static_cast<std::uint64_t>( k.z ) * 83492791ULL );
+				^ static_cast<std::uint64_t>( k.z ) * 83492791ULL;
+			h ^= h >> 33;
+			h *= 0xff51afd7ed558ccdULL;
+			h ^= h >> 33;
+			return static_cast<std::size_t>( h );
 		}
 	};
 }
 
+bool GeometricUtilities::CheckOpenSurfaceStep4Pair(
+	const Point3* Pi,
+	const unsigned int* Ii,
+	const Point3* Pj,
+	const unsigned int* Ij,
+	const Scalar epsSq
+	)
+{
+	return PairMeetsOnlyInSharedFaces( Pi, Ii, Pj, Ij, epsSq );
+}
+
 GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOrientedSurface(
-	const std::vector<Point3>& corners
+	const std::vector<Point3>& corners,
+	std::vector<unsigned int>* outWeldedId,
+	const Scalar minEps,
+	const std::vector<unsigned int>* preWeldedId,
+	const Scalar preWeldEps
 	)
 {
 	OpenSurfaceCertificate result;
@@ -1725,11 +1879,25 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 	if( nTris == 0 || corners.size() % 3 != 0 || nTris > 0x3FFFFFFFu ) {
 		return result;
 	}
-	std::vector<unsigned int> wid;
+	std::vector<unsigned int> localWid;
 	Scalar eps = 0;
-	if( !WeldVertexPositions( corners, wid, &eps ) ) {
-		return result;
+	const std::vector<unsigned int>* pWid = nullptr;
+	if( preWeldedId && preWeldedId->size() == corners.size() && preWeldEps > Scalar( 0 ) ) {
+		pWid = preWeldedId;
+		eps = std::max( preWeldEps, minEps );
+		if( outWeldedId ) {
+			*outWeldedId = *preWeldedId;
+		}
+	} else {
+		if( !WeldVertexPositions( corners, localWid, &eps, minEps ) ) {
+			return result;
+		}
+		if( outWeldedId ) {
+			*outWeldedId = localWid;
+		}
+		pWid = &localWid;
 	}
+	const std::vector<unsigned int>& wid = *pWid;
 	const Scalar epsSq = eps * eps;
 
 	// 1. Non-degenerate: distinct welded corners, smallest altitude > eps
@@ -1737,6 +1905,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 	for( std::size_t t = 0; t < nTris; ++t ) {
 		const unsigned int* I = &wid[3 * t];
 		if( I[0] == I[1] || I[1] == I[2] || I[0] == I[2] ) {
+			result.refusalTriA = result.refusalTriB = t;
 			return result;
 		}
 		const Point3* P = &corners[3 * t];
@@ -1747,38 +1916,66 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			longest = std::max( longest, Vector3Ops::Magnitude( Vector3Ops::mkVector3( P[(k + 1) % 3], P[k] ) ) );
 		}
 		if( !( twiceArea > eps * longest ) ) {
+			result.refusalTriA = result.refusalTriB = t;
 			return result;
 		}
 	}
 
-	// 2. Manifold edges, consistently oriented.
+	// 2. Manifold edges, consistently oriented (flat open-addressed table).
 	struct EdgeUse
 	{
+		std::uint64_t key = ~std::uint64_t( 0 );
 		unsigned int tri[2] = { 0, 0 };
 		bool forward[2] = { false, false };
 		unsigned int count = 0;
 	};
-	std::unordered_map<std::uint64_t, EdgeUse> edges;
-	edges.reserve( nTris * 2 );
-	std::vector<EdgeUse*> triEdges( 3 * nTris, nullptr );
+	// At most 3 nTris distinct edges (a manifold mesh has about 1.5 nTris),
+	// so a capacity of at least 4 nTris keeps the worst-case load below 3/4
+	// and the typical one near 3/8 (DL-620 review P3-1: 6 nTris cost ~200 MB
+	// at 980k triangles for a typical load of 0.18).
+	std::size_t edgeCap = 16;
+	while( edgeCap < nTris * 4 ) {
+		edgeCap <<= 1;
+	}
+	const std::size_t edgeMask = edgeCap - 1;
+	std::vector<EdgeUse> edgeTable( edgeCap );
+	std::vector<unsigned int> triEdgeSlot( 3 * nTris, 0u );
+	const auto triEdge = [&]( const std::size_t i ) -> EdgeUse* { return &edgeTable[triEdgeSlot[i]]; };
 	for( std::size_t t = 0; t < nTris; ++t ) {
 		for( int k = 0; k < 3; ++k ) {
 			const unsigned int a = wid[3 * t + k], b = wid[3 * t + ( k + 1 ) % 3];
 			const std::uint64_t key = a < b ? ( ( std::uint64_t( a ) << 32 ) | b ) : ( ( std::uint64_t( b ) << 32 ) | a );
-			EdgeUse& e = edges[key];
+			std::size_t slot = static_cast<std::size_t>( ( key ^ ( key >> 33 ) ) * 0xff51afd7ed558ccdULL ) & edgeMask;
+			while( edgeTable[slot].key != ~std::uint64_t( 0 ) && edgeTable[slot].key != key ) {
+				slot = ( slot + 1 ) & edgeMask;
+			}
+			EdgeUse& e = edgeTable[slot];
+			if( e.key == ~std::uint64_t( 0 ) ) {
+				e.key = key;
+			}
 			if( e.count >= 2 ) {
+				result.topologicalRefusal = true;
 				return result;		// non-manifold edge
 			}
 			e.tri[e.count] = (unsigned int)t;
 			e.forward[e.count] = a < b;
 			++e.count;
-			triEdges[3 * t + k] = &e;	// element addresses are stable in unordered_map
+			triEdgeSlot[3 * t + k] = static_cast<unsigned int>( slot );
 		}
 	}
-	for( const auto& kv : edges ) {
-		if( kv.second.count == 2 && kv.second.forward[0] == kv.second.forward[1] ) {
+	bool hasBoundaryEdge = false;
+	for( std::size_t i = 0; i < 3 * nTris; ++i ) {
+		const EdgeUse* e = triEdge( i );
+		if( e->count == 1 ) {
+			hasBoundaryEdge = true;
+		} else if( e->count == 2 && e->forward[0] == e->forward[1] ) {
+			result.topologicalRefusal = true;
 			return result;			// traversed the same way twice: inconsistent orientation
 		}
+	}
+	if( !hasBoundaryEdge ) {
+		result.topologicalRefusal = true;
+		return result;				// no boundary edge: closed 2-cycle (H_2 != 0)
 	}
 
 	// 2b. Single connected component: all triangles connected via manifold edges.
@@ -1794,7 +1991,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		for( std::size_t i = 0; i < q.size(); ++i ) {
 			const unsigned int t = q[i];
 			for( int k = 0; k < 3; ++k ) {
-				const EdgeUse* e = triEdges[3 * t + k];
+				const EdgeUse* e = triEdge( 3 * t + k );
 				if( e->count == 2 ) {
 					const unsigned int other = ( e->tri[0] == t ) ? e->tri[1] : e->tri[0];
 					if( !visited[other] ) {
@@ -1805,6 +2002,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			}
 		}
 		if( q.size() != nTris ) {
+			result.topologicalRefusal = true;
 			return result;			// multiple disconnected components
 		}
 	}
@@ -1816,7 +2014,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		queue.reserve( nTris );
 		for( std::size_t t = 0; t < nTris; ++t ) {
 			for( int k = 0; k < 3; ++k ) {
-				if( triEdges[3 * t + k]->count == 1 ) {
+				if( triEdge( 3 * t + k )->count == 1 ) {
 					queue.push_back( (unsigned int)t );
 					break;
 				}
@@ -1831,7 +2029,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			alive[t] = 0;
 			++removed;
 			for( int k = 0; k < 3; ++k ) {
-				EdgeUse* e = triEdges[3 * t + k];
+				EdgeUse* e = triEdge( 3 * t + k );
 				--e->count;
 				if( e->count == 1 ) {
 					const unsigned int other = alive[e->tri[0]] ? e->tri[0] : e->tri[1];
@@ -1842,6 +2040,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			}
 		}
 		if( removed != nTris ) {
+			result.topologicalRefusal = true;
 			return result;			// a closed 2-cycle survives
 		}
 	}
@@ -1852,6 +2051,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 	{
 		std::vector<Point3> lo( nTris ), hi( nTris );
 		Point3 gLo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+		Point3 gHi( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 		Scalar meanExtent = 0;
 		for( std::size_t t = 0; t < nTris; ++t ) {
 			const Point3* P = &corners[3 * t];
@@ -1862,13 +2062,37 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			}
 			l = Point3( l.x - eps, l.y - eps, l.z - eps );
 			h = Point3( h.x + eps, h.y + eps, h.z + eps );
+			if( !std::isfinite( l.x ) || !std::isfinite( l.y ) || !std::isfinite( l.z ) ||
+				!std::isfinite( h.x ) || !std::isfinite( h.y ) || !std::isfinite( h.z ) ) {
+				return result;	// P3-5: non-finite geometry is never certified
+			}
 			lo[t] = l;
 			hi[t] = h;
 			gLo.x = std::min( gLo.x, l.x ); gLo.y = std::min( gLo.y, l.y ); gLo.z = std::min( gLo.z, l.z );
+			gHi.x = std::max( gHi.x, h.x ); gHi.y = std::max( gHi.y, h.y ); gHi.z = std::max( gHi.z, h.z );
 			meanExtent += std::max( h.x - l.x, std::max( h.y - l.y, h.z - l.z ) );
 		}
+		// DL-620 review P3-5: the grid index of every box corner must be a
+		// finite integer well inside int64 before it is cast (an out-of-range
+		// float-to-integer conversion is undefined behaviour), and the
+		// insertion count must actually meet its budget.  Steps 2b-3 have
+		// proved the surface connected through welded corners, and welded
+		// corners lie within 2 eps of each other, so along any axis the span
+		// is at most the sum of all box extents: span <= nTris * cell < 2^30
+		// cells.  A wider span means the weld labels join geometrically
+		// distant corners (only a caller-supplied weld can do that) or the
+		// coordinates are degenerate; like non-finite or overflowing input,
+		// or a budget that cannot be met, it is REFUSED (conservative) rather
+		// than tested on a grid whose single huge cell would make the pair
+		// search quadratic.
+		const Scalar span = std::max( gHi.x - gLo.x, std::max( gHi.y - gLo.y, gHi.z - gLo.z ) );
 		Scalar cell = meanExtent / Scalar( nTris );
-		if( !( cell > 0 ) || !std::isfinite( cell ) ) {
+		if( !( cell > 0 ) || !std::isfinite( cell ) || !std::isfinite( span ) ) {
+			return result;
+		}
+		// 2^40 cells per axis keeps every index, and the +1 / product
+		// arithmetic below, exact in double and far inside int64.
+		if( !( span / cell <= Scalar( 1099511627776.0 ) ) ) {
 			return result;
 		}
 		const auto coord = [&]( const Scalar v, const Scalar o ) -> std::int64_t {
@@ -1876,7 +2100,11 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		};
 		// Bound the insertions: a few huge triangles in a fine mesh would
 		// otherwise touch very many cells; coarsen until the total is linear.
+		// Doubling ends with at most 8 cells per triangle once the cell
+		// exceeds the span, so 64 attempts always suffice for valid input.
 		const double budget = 64.0 * double( nTris ) + 4096.0;
+		double finalTotal = 0;
+		bool withinBudget = false;
 		for( int attempt = 0; attempt < 64; ++attempt ) {
 			double total = 0;
 			for( std::size_t t = 0; t < nTris && total <= budget; ++t ) {
@@ -1884,43 +2112,156 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 					* double( coord( hi[t].y, gLo.y ) - coord( lo[t].y, gLo.y ) + 1 )
 					* double( coord( hi[t].z, gLo.z ) - coord( lo[t].z, gLo.z ) + 1 );
 			}
+			finalTotal = total;
 			if( total <= budget ) {
+				withinBudget = true;
 				break;
 			}
 			cell *= 2;
+			if( !std::isfinite( cell ) ) {
+				break;
+			}
 		}
-		std::unordered_map<CellKey, std::vector<unsigned int>, CellKeyHash> grid;
-		grid.reserve( nTris * 2 );
+		if( !withinBudget ) {
+			result.budgetRefusal = true;
+			return result;
+		}
+		// DL-620 review round 2, P3-a.  Entry nodes, cell slots and the
+		// 0xFFFFFFFF end-of-list sentinel are 32-bit: past 2^31 insertions a
+		// node index (or, at half load, a slot index) could wrap or alias the
+		// sentinel and silently drop pairs from the test.  The budget allows
+		// up to 64 nTris + 4096 entries, which exceeds that for nTris above
+		// ~33.5M, so refuse there rather than test a truncated list.
+		if( !( finalTotal < 2147483648.0 ) ) {
+			return result;
+		}
+		struct CellSlot
+		{
+			CellKey key{ 0, 0, 0 };
+			unsigned int head = 0xFFFFFFFFu;
+			unsigned int tail = 0xFFFFFFFFu;
+			unsigned int count = 0;
+		};
+		const std::size_t estInsertions = ( finalTotal > 0.0 && finalTotal <= budget )
+			? static_cast<std::size_t>( finalTotal )
+			: nTris * 4;
+		// Occupied cells are typically about nTris / 2 (measured: 488,601 for
+		// a 980,000-triangle sheet), and the table doubles whenever it
+		// reaches half load, so start at nTris rather than 4 nTris (DL-620
+		// review P3-1: 168 MB of mostly empty slots at that size).
+		std::size_t cellCap = 16;
+		while( cellCap < nTris ) {
+			cellCap <<= 1;
+		}
+		std::size_t cellMask = cellCap - 1;
+		std::vector<CellSlot> cellTable( cellCap );
+		std::size_t usedCells = 0;
+		std::vector<unsigned int> multiCellSlots;
+		multiCellSlots.reserve( nTris );
+		std::vector<unsigned int> entryTri;
+		entryTri.reserve( estInsertions );
+		std::vector<unsigned int> entryNext;
+		entryNext.reserve( estInsertions );
+		std::vector<CellKey> triLoCell( nTris );
+
 		for( std::size_t t = 0; t < nTris; ++t ) {
 			const std::int64_t x0 = coord( lo[t].x, gLo.x ), x1 = coord( hi[t].x, gLo.x );
 			const std::int64_t y0 = coord( lo[t].y, gLo.y ), y1 = coord( hi[t].y, gLo.y );
 			const std::int64_t z0 = coord( lo[t].z, gLo.z ), z1 = coord( hi[t].z, gLo.z );
+			triLoCell[t] = CellKey{ x0, y0, z0 };
 			for( std::int64_t z = z0; z <= z1; ++z ) {
 				for( std::int64_t y = y0; y <= y1; ++y ) {
 					for( std::int64_t x = x0; x <= x1; ++x ) {
-						grid[CellKey{ x, y, z }].push_back( (unsigned int)t );
+						if( usedCells * 2 >= cellCap ) {
+							cellCap <<= 1;
+							cellMask = cellCap - 1;
+							std::vector<CellSlot> newTable( cellCap );
+							multiCellSlots.clear();
+							for( const CellSlot& old : cellTable ) {
+								if( old.head == 0xFFFFFFFFu ) continue;
+								std::size_t s = CellKeyHash()( old.key ) & cellMask;
+								while( newTable[s].head != 0xFFFFFFFFu ) {
+									s = ( s + 1 ) & cellMask;
+								}
+								newTable[s] = old;
+								if( old.count >= 2 ) {
+									multiCellSlots.push_back( static_cast<unsigned int>( s ) );
+								}
+							}
+							cellTable.swap( newTable );
+						}
+						const CellKey ck{ x, y, z };
+						std::size_t slotIdx = CellKeyHash()( ck ) & cellMask;
+						while( cellTable[slotIdx].head != 0xFFFFFFFFu && !( cellTable[slotIdx].key == ck ) ) {
+							slotIdx = ( slotIdx + 1 ) & cellMask;
+						}
+						const unsigned int nodeIdx = static_cast<unsigned int>( entryTri.size() );
+						entryTri.push_back( static_cast<unsigned int>( t ) );
+						entryNext.push_back( 0xFFFFFFFFu );
+						CellSlot& slot = cellTable[slotIdx];
+						if( slot.head == 0xFFFFFFFFu ) {
+							slot.key = ck;
+							slot.head = slot.tail = nodeIdx;
+							slot.count = 1;
+							++usedCells;
+						} else {
+							entryNext[slot.tail] = nodeIdx;
+							slot.tail = nodeIdx;
+							++slot.count;
+							if( slot.count == 2 ) {
+								multiCellSlots.push_back( static_cast<unsigned int>( slotIdx ) );
+							}
+						}
 					}
 				}
 			}
 		}
-		for( const auto& kv : grid ) {
-			const std::vector<unsigned int>& list = kv.second;
-			for( std::size_t a = 0; a < list.size(); ++a ) {
-				const unsigned int i = list[a];
-				for( std::size_t b = a + 1; b < list.size(); ++b ) {
-					const unsigned int j = list[b];
-					if( lo[i].x > hi[j].x || lo[j].x > hi[i].x ||
-						lo[i].y > hi[j].y || lo[j].y > hi[i].y ||
-						lo[i].z > hi[j].z || lo[j].z > hi[i].z ) {
+		// DL-620 review round 2, P3-b.  The insertion budget bounds entries,
+		// not pairs: when a few huge triangles force the cell to double far
+		// past the size of the small ones, many small triangles share one
+		// cell and the all-pairs scan below goes quadratic (a 1e5-wide
+		// triangle on a 180k-triangle unit sheet puts the whole sheet in one
+		// or two cells: ~1.6e10 pairs).  Count the candidate pairs first and
+		// refuse past a linear budget.  Refusal is the conservative answer:
+		// this certificate never claims a surface it has not fully tested.
+		{
+			double pairs = 0;
+			for( const unsigned int slotIdx : multiCellSlots ) {
+				const double c = double( cellTable[slotIdx].count );
+				pairs += 0.5 * c * ( c - 1.0 );
+			}
+			if( pairs > 1024.0 * double( nTris ) + 16777216.0 ) {
+				result.budgetRefusal = true;
+				return result;
+			}
+		}
+		for( const unsigned int slotIdx : multiCellSlots ) {
+			const CellSlot& slot = cellTable[slotIdx];
+			for( unsigned int a = slot.head; a != 0xFFFFFFFFu; a = entryNext[a] ) {
+				const unsigned int i = entryTri[a];
+				const Point3& loi = lo[i];
+				const Point3& hii = hi[i];
+				const CellKey& ci = triLoCell[i];
+				for( unsigned int b = entryNext[a]; b != 0xFFFFFFFFu; b = entryNext[b] ) {
+					const unsigned int j = entryTri[b];
+					const Point3& loj = lo[j];
+					const Point3& hij = hi[j];
+					if( loi.x > hij.x || loj.x > hii.x ||
+						loi.y > hij.y || loj.y > hii.y ||
+						loi.z > hij.z || loj.z > hii.z ) {
 						continue;	// inflated boxes apart: the gap exceeds eps
 					}
-					const CellKey ref{ coord( std::max( lo[i].x, lo[j].x ), gLo.x ),
-						coord( std::max( lo[i].y, lo[j].y ), gLo.y ),
-						coord( std::max( lo[i].z, lo[j].z ), gLo.z ) };
-					if( !( ref == kv.first ) ) {
+					const CellKey& cj = triLoCell[j];
+					if( std::max( ci.x, cj.x ) != slot.key.x ||
+						std::max( ci.y, cj.y ) != slot.key.y ||
+						std::max( ci.z, cj.z ) != slot.key.z ) {
 						continue;	// tested in the reference cell
 					}
-					if( !PairMeetsOnlyInSharedFaces( &corners[3 * i], &wid[3 * i], &corners[3 * j], &wid[3 * j], epsSq ) ) {
+					if( !PairMeetsOnlyInSharedFaces(
+						&corners[3 * i], &wid[3 * i],
+						&corners[3 * j], &wid[3 * j], epsSq ) ) {
+						result.refusalTriA = i;
+						result.refusalTriB = j;
 						return result;
 					}
 				}
@@ -1945,4 +2286,1243 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 	result.signedVolumeAboutCentre = vol / Scalar( 6 );
 	result.certified = true;
 	return result;
+}
+
+namespace
+{
+	//////////////////////////////////////////////////////////////////////
+	// DL-616: patch-set certifier.
+	//
+	// The claim either output makes is about the WHOLE set, so every step
+	// below is a proof, and anything a step cannot prove is a refusal:
+	//
+	//  T. TOPOLOGY from exact seam identity only.  Every side is a cubic
+	//     control polygon; two sides are glued iff one is the bitwise
+	//     reverse of the other (the reversal is the orientation check).
+	//     A side shared by more than two patches, a self-glued patch, a
+	//     side whose endpoints coincide (collapsed / looping) or a patch
+	//     with two coincident corners is refused.  Nothing is welded by a
+	//     tolerance: two corners that merely coincide in space without a
+	//     glued seam between them are DIFFERENT vertices, so the geometric
+	//     steps below must prove them apart -- which is how a T-junction,
+	//     a pinch vertex or a corner that touches without a seam is
+	//     refused rather than silently stitched.
+	//  G. EMBEDDING on an n x n grid of sub-patches per patch (n = 4, then
+	//     8 on a geometric refusal).  Sub-patch vertices are identified by
+	//     union-find over the glued seams (exact topology again), and
+	//     glued sub-patch boundaries are ASSIGNED bitwise equal (after a
+	//     tolerance sanity check), never left to two rounding sequences.
+	//     Then:
+	//      - every sub-patch is INJECTIVE: if every cross product
+	//        du_i x dv_k of a u- and a v-derivative control vector has a
+	//        positive component along one direction V, the map is
+	//        injective, because P(x) - P(y) = a du + b dv with a in the
+	//        convex hull of the u-derivatives and b in that of the
+	//        v-derivatives (mean-value theorem along the segment), and
+	//        (a x b).V is bilinear, so its minimum over the two hulls is
+	//        attained at control vectors and is positive -- a x b != 0;
+	//      - every pair of sub-patches sharing a SIDE is injective as a
+	//        union: the two nets, rotated so the shared side is v = 1 of
+	//        one and v = 0 of the other, parameterize one continuous
+	//        piecewise-polynomial map of a rectangle, and the same
+	//        argument applies to the pooled derivative vectors;
+	//      - every pair sharing only a VERTEX X is strictly separated by
+	//        a plane through X: every control point but the corner on one
+	//        side, every one of the other's on the other side; a convex
+	//        combination with weight off the corner is then strictly on
+	//        its own side, so the two meet only at X;
+	//      - every other pair is DISJOINT, proved by recursive subdivision
+	//        of control-point boxes (inflated by a relative epsilon).
+	//     Together: the map from the glued topological complex to space is
+	//     injective, i.e. an embedding.
+	//  C. CLASSIFICATION.  The complex is connected.  No free side: an
+	//     embedded closed oriented surface bounds a region, and the EXACT
+	//     signed volume (1/3 of the integral of P.(Pu x Pv), integrated in
+	//     Bernstein form) gives its orientation; positive certifies
+	//     watertight, negative or tiny is refused.  With a free side: a
+	//     connected compact surface with non-empty boundary encloses no
+	//     volume -> provably open; the signed volume about the bbox centre
+	//     drives the inward-winding warning.
+	//
+	// Cost: sub-patch pairs come from a sort-and-sweep over boxes, and a
+	// work budget refuses (never certifies) a set it cannot finish.
+	//////////////////////////////////////////////////////////////////////
+
+	typedef std::array<Point3, 4> PatchCurve;
+
+	inline bool PatchPointFinite( const Point3& p )
+	{
+		return std::isfinite( p.x ) && std::isfinite( p.y ) && std::isfinite( p.z );
+	}
+
+	inline bool PatchPointEqual( const Point3& a, const Point3& b )
+	{
+		return a.x == b.x && a.y == b.y && a.z == b.z;
+	}
+
+	inline bool PatchPointLess( const Point3& a, const Point3& b )
+	{
+		if( a.x != b.x ) return a.x < b.x;
+		if( a.y != b.y ) return a.y < b.y;
+		return a.z < b.z;
+	}
+
+	inline bool PatchCurveEqual( const PatchCurve& a, const PatchCurve& b )
+	{
+		for( int k = 0; k < 4; ++k ) {
+			if( !PatchPointEqual( a[k], b[k] ) ) return false;
+		}
+		return true;
+	}
+
+	inline PatchCurve ReversePatchCurve( const PatchCurve& c )
+	{
+		return PatchCurve{ { c[3], c[2], c[1], c[0] } };
+	}
+
+	inline Point3 BlossomCubic( const PatchCurve& P, Scalar t1, Scalar t2, Scalar t3 )
+	{
+		Point3 a[3], b[2];
+		for( int k = 0; k < 3; ++k ) a[k] = Point3Ops::WeightedAverage2( P[k + 1], P[k], t1 );
+		for( int k = 0; k < 2; ++k ) b[k] = Point3Ops::WeightedAverage2( a[k + 1], a[k], t2 );
+		return Point3Ops::WeightedAverage2( b[1], b[0], t3 );
+	}
+
+	//! Control polygon of the cubic `P` restricted to [s0, s1] (blossoming).
+	//! The endpoints are exact at s = 0 and s = 1.
+	inline PatchCurve SubCubicSegment( const PatchCurve& P, Scalar s0, Scalar s1 )
+	{
+		return PatchCurve{ {
+			BlossomCubic( P, s0, s0, s0 ),
+			BlossomCubic( P, s0, s0, s1 ),
+			BlossomCubic( P, s0, s1, s1 ),
+			BlossomCubic( P, s1, s1, s1 ) } };
+	}
+
+	inline BezierPatch SubdivideBezierPatchRange(
+		const BezierPatch& p,
+		Scalar u0, Scalar u1,
+		Scalar v0, Scalar v1 )
+	{
+		PatchCurve R[4];
+		BezierPatch out;
+		for( int i = 0; i < 4; ++i ) {
+			const PatchCurve row = { { p.c[i].pts[0], p.c[i].pts[1], p.c[i].pts[2], p.c[i].pts[3] } };
+			R[i] = SubCubicSegment( row, v0, v1 );
+		}
+		for( int l = 0; l < 4; ++l ) {
+			const PatchCurve col = { { R[0][l], R[1][l], R[2][l], R[3][l] } };
+			const PatchCurve sub = SubCubicSegment( col, u0, u1 );
+			for( int k = 0; k < 4; ++k ) {
+				out.c[k].pts[l] = sub[k];
+			}
+		}
+		return out;
+	}
+
+	//! Bernstein coefficients N[a][b] (degree 5 x 5) of (Pu x Pv) / 9.
+	inline void ComputeBezierNormalBernsteinCoeffs( const BezierPatch& subPatch, Vector3 (&c)[6][6] )
+	{
+		static const Scalar C2[3] = { 1, 2, 1 };
+		static const Scalar C3[4] = { 1, 3, 3, 1 };
+		static const Scalar C5[6] = { 1, 5, 10, 10, 5, 1 };
+		Vector3 du[3][4], dv[4][3];
+		for( int i = 0; i < 3; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				du[i][j] = Vector3Ops::mkVector3( subPatch.c[i + 1].pts[j], subPatch.c[i].pts[j] );
+			}
+		}
+		for( int k = 0; k < 4; ++k ) {
+			for( int l = 0; l < 3; ++l ) {
+				dv[k][l] = Vector3Ops::mkVector3( subPatch.c[k].pts[l + 1], subPatch.c[k].pts[l] );
+			}
+		}
+		for( int a = 0; a < 6; ++a ) {
+			for( int b = 0; b < 6; ++b ) {
+				c[a][b] = Vector3( 0, 0, 0 );
+			}
+		}
+		for( int i = 0; i < 3; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				for( int k = 0; k < 4; ++k ) {
+					for( int l = 0; l < 3; ++l ) {
+						const Scalar w = ( C2[i] * C3[k] / C5[i + k] ) * ( C3[j] * C2[l] / C5[j + l] );
+						c[i + k][j + l] = c[i + k][j + l] + Vector3Ops::Cross( du[i][j], dv[k][l] ) * w;
+					}
+				}
+			}
+		}
+	}
+
+	// Net corners / sides, counter-clockwise in (u, v): corner k is where
+	// side k starts; side k runs from corner k to corner k+1.
+	inline void NetCornerIndex( int k, int& i, int& j )
+	{
+		static const int I[4] = { 0, 3, 3, 0 };
+		static const int J[4] = { 0, 0, 3, 3 };
+		i = I[k]; j = J[k];
+	}
+
+	inline const Point3& NetCorner( const BezierPatch& q, int k )
+	{
+		int i, j;
+		NetCornerIndex( k, i, j );
+		return q.c[i].pts[j];
+	}
+
+	inline void NetSideIndex( int s, int m, int& i, int& j )
+	{
+		switch( s ) {
+		default:
+		case 0: i = m;     j = 0;     break;
+		case 1: i = 3;     j = m;     break;
+		case 2: i = 3 - m; j = 3;     break;
+		case 3: i = 0;     j = 3 - m; break;
+		}
+	}
+
+	inline PatchCurve NetSide( const BezierPatch& q, int s )
+	{
+		PatchCurve c;
+		for( int m = 0; m < 4; ++m ) {
+			int i, j;
+			NetSideIndex( s, m, i, j );
+			c[m] = q.c[i].pts[j];
+		}
+		return c;
+	}
+
+	inline void SetNetSide( BezierPatch& q, int s, const PatchCurve& c )
+	{
+		for( int m = 0; m < 4; ++m ) {
+			int i, j;
+			NetSideIndex( s, m, i, j );
+			q.c[i].pts[j] = c[m];
+		}
+	}
+
+	//! Rotate the parameter domain a quarter turn r times (orientation
+	//! preserving): the result's side k is the input's side (k + r) % 4
+	//! and its corner k is the input's corner (k + r) % 4.
+	inline BezierPatch RotateNet( const BezierPatch& q, int r )
+	{
+		BezierPatch cur = q;
+		for( int t = 0; t < ( r & 3 ); ++t ) {
+			BezierPatch nxt;
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 0; j < 4; ++j ) {
+					nxt.c[i].pts[j] = cur.c[3 - j].pts[i];
+				}
+			}
+			cur = nxt;
+		}
+		return cur;
+	}
+
+	struct PatchCertWork
+	{
+		std::size_t	remaining;
+		bool		exhausted = false;
+		bool Spend( std::size_t units )
+		{
+			if( units > remaining ) {
+				remaining = 0;
+				exhausted = true;
+				return false;
+			}
+			remaining -= units;
+			return true;
+		}
+	};
+
+	inline BoundingBox InflatedNetBox( const BezierPatch& q, Scalar inflate )
+	{
+		BoundingBox b = GeometricUtilities::BezierPatchBoundingBox( q );
+		b.ll = Point3( b.ll.x - inflate, b.ll.y - inflate, b.ll.z - inflate );
+		b.ur = Point3( b.ur.x + inflate, b.ur.y + inflate, b.ur.z + inflate );
+		return b;
+	}
+
+	//! Closed comparison on inflated boxes: touching reads as overlapping.
+	inline bool PatchBoxesOverlap( const BoundingBox& a, const BoundingBox& b )
+	{
+		return !( a.ur.x < b.ll.x || b.ur.x < a.ll.x ||
+		          a.ur.y < b.ll.y || b.ur.y < a.ll.y ||
+		          a.ur.z < b.ll.z || b.ur.z < a.ll.z );
+	}
+
+	//! TRUE only when the two nets' surfaces are proved disjoint.
+	bool NetsProvablyDisjoint(
+		const BezierPatch& a, int levelA,
+		const BezierPatch& b, int levelB,
+		Scalar inflate,
+		PatchCertWork& work )
+	{
+		if( !work.Spend( 1 ) ) {
+			return false;
+		}
+		const BoundingBox boxA = InflatedNetBox( a, inflate );
+		const BoundingBox boxB = InflatedNetBox( b, inflate );
+		if( !PatchBoxesOverlap( boxA, boxB ) ) {
+			return true;
+		}
+		static const int kMaxLevel = 5;
+		const Scalar diagA = Vector3Ops::Magnitude( Vector3Ops::mkVector3( boxA.ur, boxA.ll ) );
+		const Scalar diagB = Vector3Ops::Magnitude( Vector3Ops::mkVector3( boxB.ur, boxB.ll ) );
+		const bool splitA = ( levelA < kMaxLevel ) && ( diagA >= diagB || levelB >= kMaxLevel );
+		const bool splitB = !splitA && ( levelB < kMaxLevel );
+		if( !splitA && !splitB ) {
+			return false;
+		}
+		const BezierPatch& big = splitA ? a : b;
+		for( int iu = 0; iu < 2; ++iu ) {
+			for( int iv = 0; iv < 2; ++iv ) {
+				const Scalar u0 = Scalar( 0.5 ) * Scalar( iu );
+				const Scalar v0 = Scalar( 0.5 ) * Scalar( iv );
+				const BezierPatch sub = SubdivideBezierPatchRange( big, u0, u0 + Scalar( 0.5 ), v0, v0 + Scalar( 0.5 ) );
+				const bool ok = splitA ?
+					NetsProvablyDisjoint( sub, levelA + 1, b, levelB, inflate, work ) :
+					NetsProvablyDisjoint( a, levelA, sub, levelB + 1, inflate, work );
+				if( !ok ) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	//! The injectivity proof (see the header comment): every
+	//! u-derivative control vector crossed with every v-derivative control
+	//! vector, over all the nets given, has a strictly positive component
+	//! along one direction.  `outV` receives that direction.
+	bool CrossConeProof( const BezierPatch* nets, int count, Vector3& outV )
+	{
+		Vector3 du[2 * 12], dv[2 * 12];
+		int nu = 0, nv = 0;
+		for( int q = 0; q < count; ++q ) {
+			const BezierPatch& net = nets[q];
+			for( int i = 0; i < 3; ++i ) {
+				for( int j = 0; j < 4; ++j ) {
+					du[nu++] = Vector3Ops::mkVector3( net.c[i + 1].pts[j], net.c[i].pts[j] );
+				}
+			}
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 0; j < 3; ++j ) {
+					dv[nv++] = Vector3Ops::mkVector3( net.c[i].pts[j + 1], net.c[i].pts[j] );
+				}
+			}
+		}
+		Vector3 sum( 0, 0, 0 );
+		for( int a = 0; a < nu; ++a ) {
+			for( int b = 0; b < nv; ++b ) {
+				const Vector3 c = Vector3Ops::Cross( du[a], dv[b] );
+				const Scalar len = Vector3Ops::Magnitude( c );
+				if( !( len > 0 ) ) {
+					return false;	// a vanishing or parallel derivative pair: not provably immersed
+				}
+				sum = sum + c * ( Scalar( 1 ) / len );
+			}
+		}
+		const Scalar sumLen = Vector3Ops::Magnitude( sum );
+		if( !( sumLen > 0 ) || !std::isfinite( sumLen ) ) {
+			return false;
+		}
+		const Vector3 V = sum * ( Scalar( 1 ) / sumLen );
+		for( int a = 0; a < nu; ++a ) {
+			for( int b = 0; b < nv; ++b ) {
+				const Vector3 c = Vector3Ops::Cross( du[a], dv[b] );
+				if( !( Vector3Ops::Dot( c, V ) > Scalar( 1e-12 ) * Vector3Ops::Magnitude( c ) ) ) {
+					return false;
+				}
+			}
+		}
+		outV = V;
+		return true;
+	}
+
+	//! TRUE when `w` puts every control point of `a` but its corner `ka`
+	//! strictly on the positive side of the plane through `X`, and every
+	//! control point of `b` but its corner `kb` strictly on the negative
+	//! side.
+	bool PlaneSeparatesAtCorner(
+		const BezierPatch& a, int ka,
+		const BezierPatch& b, int kb,
+		const Point3& X,
+		const Vector3& w )
+	{
+		const Scalar wLen = Vector3Ops::Magnitude( w );
+		if( !( wLen > 0 ) || !std::isfinite( wLen ) ) {
+			return false;
+		}
+		int ia, ja, ib, jb;
+		NetCornerIndex( ka, ia, ja );
+		NetCornerIndex( kb, ib, jb );
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				if( !( i == ia && j == ja ) ) {
+					const Vector3 d = Vector3Ops::mkVector3( a.c[i].pts[j], X );
+					if( !( Vector3Ops::Dot( d, w ) > Scalar( 1e-12 ) * wLen * Vector3Ops::Magnitude( d ) ) ) {
+						return false;
+					}
+				}
+				if( !( i == ib && j == jb ) ) {
+					const Vector3 d = Vector3Ops::mkVector3( b.c[i].pts[j], X );
+					if( !( -Vector3Ops::Dot( d, w ) > Scalar( 1e-12 ) * wLen * Vector3Ops::Magnitude( d ) ) ) {
+						return false;
+					}
+				}
+			}
+		}
+		return true;
+	}
+
+	//! Bisector of a net's two sides at corner k (unit edge directions).
+	inline Vector3 CornerBisector( const BezierPatch& q, int k )
+	{
+		const Point3& X = NetCorner( q, k );
+		const PatchCurve out = NetSide( q, k );
+		const PatchCurve in = NetSide( q, ( k + 3 ) & 3 );
+		Vector3 e1 = Vector3Ops::mkVector3( out[1], X );
+		Vector3 e2 = Vector3Ops::mkVector3( in[2], X );
+		const Scalar l1 = Vector3Ops::Magnitude( e1 );
+		const Scalar l2 = Vector3Ops::Magnitude( e2 );
+		if( l1 > 0 ) e1 = e1 * ( Scalar( 1 ) / l1 );
+		if( l2 > 0 ) e2 = e2 * ( Scalar( 1 ) / l2 );
+		return e1 + e2;
+	}
+
+	inline Vector3 NetCentroidOffset( const BezierPatch& q, const Point3& X )
+	{
+		Vector3 s( 0, 0, 0 );
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				s = s + Vector3Ops::mkVector3( q.c[i].pts[j], X );
+			}
+		}
+		const Scalar l = Vector3Ops::Magnitude( s );
+		return l > 0 ? s * ( Scalar( 1 ) / l ) : s;
+	}
+
+	bool CornerPairSeparated(
+		const BezierPatch& a, int ka,
+		const BezierPatch& b, int kb,
+		const Vector3& normalHint )
+	{
+		const Point3& X = NetCorner( a, ka );
+		if( !PatchPointEqual( X, NetCorner( b, kb ) ) ) {
+			return false;
+		}
+		Vector3 bisA = CornerBisector( a, ka );
+		Vector3 bisB = CornerBisector( b, kb );
+		const Scalar la = Vector3Ops::Magnitude( bisA );
+		const Scalar lb = Vector3Ops::Magnitude( bisB );
+		if( la > 0 ) bisA = bisA * ( Scalar( 1 ) / la );
+		if( lb > 0 ) bisB = bisB * ( Scalar( 1 ) / lb );
+		const Vector3 candidates[2] = {
+			bisA - bisB,
+			NetCentroidOffset( a, X ) - NetCentroidOffset( b, X )
+		};
+		const Scalar nLen = Vector3Ops::Magnitude( normalHint );
+		const Vector3 n = nLen > 0 ? normalHint * ( Scalar( 1 ) / nLen ) : Vector3( 0, 0, 0 );
+		for( const Vector3& w : candidates ) {
+			if( PlaneSeparatesAtCorner( a, ka, b, kb, X, w ) ) {
+				return true;
+			}
+			// The same direction with the shared normal projected out, so
+			// curvature away from the tangent plane cannot tip a point
+			// across the separating plane.
+			const Vector3 wt = w - n * Vector3Ops::Dot( w, n );
+			if( PlaneSeparatesAtCorner( a, ka, b, kb, X, wt ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	//! Exact signed volume terms of one patch about `c`:
+	//! (1/3) * integral over [0,1]^2 of (P - c).(Pu x Pv), from the
+	//! Bernstein product integral  int B3_i B5_a = C3_i C5_a / (9 C8_{i+a}).
+	inline void AccumulatePatchVolume( const BezierPatch& p, const Point3& c, Scalar& vol, Scalar& absSum )
+	{
+		static const Scalar C3[4] = { 1, 3, 3, 1 };
+		static const Scalar C5[6] = { 1, 5, 10, 10, 5, 1 };
+		static const Scalar C8[9] = { 1, 8, 28, 56, 70, 56, 28, 8, 1 };
+		Vector3 N[6][6];
+		ComputeBezierNormalBernsteinCoeffs( p, N );
+		for( int i = 0; i < 4; ++i ) {
+			for( int a = 0; a < 6; ++a ) {
+				const Scalar Iia = C3[i] * C5[a] / ( Scalar( 9 ) * C8[i + a] );
+				for( int j = 0; j < 4; ++j ) {
+					const Vector3 pc = Vector3Ops::mkVector3( p.c[i].pts[j], c );
+					for( int b = 0; b < 6; ++b ) {
+						const Scalar Ijb = C3[j] * C5[b] / ( Scalar( 9 ) * C8[j + b] );
+						// Pu x Pv = 9 * sum N_ab B5_a B5_b, and the volume is a third of the integral
+						const Scalar t = Scalar( 3 ) * Vector3Ops::Dot( pc, N[a][b] ) * Iia * Ijb;
+						vol += t;
+						absSum += std::fabs( t );
+					}
+				}
+			}
+		}
+	}
+
+	class UnionFindNodes
+	{
+	public:
+		explicit UnionFindNodes( std::size_t n ) : parent( n )
+		{
+			for( std::size_t i = 0; i < n; ++i ) parent[i] = static_cast<unsigned int>( i );
+		}
+		unsigned int Find( unsigned int x )
+		{
+			while( parent[x] != x ) {
+				parent[x] = parent[parent[x]];
+				x = parent[x];
+			}
+			return x;
+		}
+		void Unite( unsigned int a, unsigned int b )
+		{
+			a = Find( a ); b = Find( b );
+			if( a != b ) parent[a < b ? b : a] = ( a < b ? a : b );
+		}
+	private:
+		std::vector<unsigned int> parent;
+	};
+
+	// Work units per certification attempt (one per candidate pair, per
+	// recursive box test, per hashed cell).  A set that needs more is
+	// REFUSED, never certified.  Measured worst case so far (a 600-turn
+	// coil of 2400 patches whose tilted turns overlap in every box, both
+	// grid attempts exhausting the budget): 1.1 s in total.  The costlier
+	// per-unit steps (pooled cone, corner separation) are bounded by a
+	// small multiple of the sub-patch count, itself capped below.
+	static const std::size_t kPatchCertWorkBudget = std::size_t( 20000000 );
+
+	// Cap on sub-patch records per attempt (memory; see CertifyBezierNets).
+	static const std::size_t kMaxSubPatches = std::size_t( 1 ) << 18;
+
+	std::atomic<unsigned int> s_patchCertificateEpoch( 1 );
+
+	struct PatchSetVerdict
+	{
+		bool		watertight = false;
+		bool		open = false;
+		bool		negative = false;
+		const char*	reason = "";
+		bool		geometric = false;	//!< refused by an embedding step (a finer grid may succeed)
+		unsigned int	grid = 0;		//!< sub-patch grid of the attempt that decided
+		std::size_t		workUsed = 0;	//!< work units that attempt spent
+	};
+
+	struct SubPatchRec
+	{
+		BezierPatch		net;
+		BoundingBox		box;
+		Vector3			V;
+		unsigned int	corner[4];	//!< union-find vertex id of each corner
+	};
+
+	PatchSetVerdict CertifyBezierNets( const std::vector<BezierPatch>& patches, unsigned int n, std::size_t workBudget )
+	{
+		PatchSetVerdict r;
+		const std::size_t nPatches = patches.size();
+		if( nPatches == 0 ) {
+			r.reason = "empty patch set";
+			return r;
+		}
+		r.grid = n;
+		// Memory cap, checked BEFORE anything is allocated: a sub-patch
+		// record is ~470 bytes, so kMaxSubPatches bounds the dominant
+		// allocation near 125 MB (the node arrays add ~30 % at most).  A
+		// set past it is refused, never certified.
+		if( nPatches > kMaxSubPatches / ( std::size_t( n ) * n ) ) {
+			r.reason = "patch set too large to certify at this sub-patch grid";
+			return r;
+		}
+
+		// Finite control points; global box and scale.
+		Point3 lo = patches[0].c[0].pts[0], hi = lo;
+		Scalar maxAbs = 0;
+		for( const BezierPatch& p : patches ) {
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 0; j < 4; ++j ) {
+					const Point3& q = p.c[i].pts[j];
+					if( !PatchPointFinite( q ) ) {
+						r.reason = "non-finite control point";
+						return r;
+					}
+					lo = Point3( std::min( lo.x, q.x ), std::min( lo.y, q.y ), std::min( lo.z, q.z ) );
+					hi = Point3( std::max( hi.x, q.x ), std::max( hi.y, q.y ), std::max( hi.z, q.z ) );
+					maxAbs = std::max( maxAbs, std::max( std::fabs( q.x ), std::max( std::fabs( q.y ), std::fabs( q.z ) ) ) );
+				}
+			}
+		}
+		const Scalar diag = Vector3Ops::Magnitude( Vector3Ops::mkVector3( hi, lo ) );
+		if( !( diag > 0 ) || !std::isfinite( diag ) ) {
+			r.reason = "degenerate extent";
+			return r;
+		}
+		// One positional tolerance for the whole proof.  It absorbs the
+		// rounding of the sub-patch nets against the surface the renderer
+		// intersects (subdivision differs from it by a few hundred ulps),
+		// and the glued-seam assignment below may move a boundary control
+		// point by up to the same amount -- so the disjointness boxes must
+		// be inflated by at least that much, or a seam correction could
+		// carry a net across a gap the boxes claimed was clear.
+		const Scalar seamTol = Scalar( 1e-9 ) * ( diag + maxAbs );
+		const Scalar inflate = seamTol;
+
+		// T: sides and exact seam matching.
+		struct SideRec
+		{
+			Point3			a, b;	//!< endpoints in lexicographic order
+			unsigned int	id;		//!< patch * 4 + side
+		};
+		std::vector<SideRec> sides;
+		sides.reserve( nPatches * 4 );
+		for( std::size_t p = 0; p < nPatches; ++p ) {
+			for( int k = 0; k < 4; ++k ) {
+				for( int m = k + 1; m < 4; ++m ) {
+					if( PatchPointEqual( NetCorner( patches[p], k ), NetCorner( patches[p], m ) ) ) {
+						r.reason = "patch with coincident corners (collapsed side or loop)";
+						return r;
+					}
+				}
+			}
+			for( int s = 0; s < 4; ++s ) {
+				const PatchCurve c = NetSide( patches[p], s );
+				SideRec rec;
+				const bool fwd = PatchPointLess( c[0], c[3] );
+				rec.a = fwd ? c[0] : c[3];
+				rec.b = fwd ? c[3] : c[0];
+				rec.id = static_cast<unsigned int>( p * 4 + s );
+				sides.push_back( rec );
+			}
+		}
+		std::sort( sides.begin(), sides.end(), []( const SideRec& x, const SideRec& y ) {
+			if( PatchPointLess( x.a, y.a ) ) return true;
+			if( PatchPointLess( y.a, x.a ) ) return false;
+			if( PatchPointLess( x.b, y.b ) ) return true;
+			if( PatchPointLess( y.b, x.b ) ) return false;
+			return x.id < y.id;
+		} );
+		std::vector<int> match( nPatches * 4, -1 );
+		std::size_t freeSides = 0;
+		for( std::size_t i = 0; i < sides.size(); ) {
+			std::size_t j = i + 1;
+			while( j < sides.size() && PatchPointEqual( sides[j].a, sides[i].a ) && PatchPointEqual( sides[j].b, sides[i].b ) ) {
+				++j;
+			}
+			if( j - i > 2 ) {
+				r.reason = "non-manifold seam (more than two sides share endpoints)";
+				return r;
+			}
+			if( j - i == 2 ) {
+				const unsigned int s0 = sides[i].id, s1 = sides[i + 1].id;
+				if( s0 / 4 == s1 / 4 ) {
+					r.reason = "self-glued patch";
+					return r;
+				}
+				const PatchCurve c0 = NetSide( patches[s0 / 4], s0 % 4 );
+				const PatchCurve c1 = NetSide( patches[s1 / 4], s1 % 4 );
+				if( !PatchCurveEqual( c0, ReversePatchCurve( c1 ) ) ) {
+					r.reason = "sides share endpoints but are not one reversed seam (crack, curve mismatch or inconsistent winding)";
+					return r;
+				}
+				match[s0] = static_cast<int>( s1 );
+				match[s1] = static_cast<int>( s0 );
+			} else {
+				++freeSides;
+			}
+			i = j;
+		}
+
+		// A single seam-connected component.
+		{
+			std::vector<unsigned char> seen( nPatches, 0 );
+			std::vector<unsigned int> stack( 1, 0 );
+			seen[0] = 1;
+			std::size_t reached = 1;
+			while( !stack.empty() ) {
+				const unsigned int p = stack.back();
+				stack.pop_back();
+				for( int s = 0; s < 4; ++s ) {
+					const int m = match[p * 4 + s];
+					if( m >= 0 && !seen[m / 4] ) {
+						seen[m / 4] = 1;
+						++reached;
+						stack.push_back( static_cast<unsigned int>( m / 4 ) );
+					}
+				}
+			}
+			if( reached != nPatches ) {
+				r.reason = "patch set is not one seam-connected piece";
+				return r;
+			}
+		}
+
+		// Vertex identities of the sub-patch grid, from glued seams only.
+		const unsigned int n1 = n + 1;
+		const std::size_t nodesPerPatch = std::size_t( n1 ) * n1;
+		auto nodeAt = [&]( std::size_t p, unsigned int iu, unsigned int iv ) {
+			return static_cast<unsigned int>( p * nodesPerPatch + iv * n1 + iu );
+		};
+		auto sideNode = [&]( std::size_t p, int s, unsigned int k ) {
+			switch( s ) {
+			default:
+			case 0: return nodeAt( p, k, 0 );
+			case 1: return nodeAt( p, n, k );
+			case 2: return nodeAt( p, n - k, n );
+			case 3: return nodeAt( p, 0, n - k );
+			}
+		};
+		UnionFindNodes uf( nPatches * nodesPerPatch );
+		for( std::size_t id = 0; id < match.size(); ++id ) {
+			const int m = match[id];
+			if( m > static_cast<int>( id ) ) {
+				for( unsigned int k = 0; k <= n; ++k ) {
+					uf.Unite( sideNode( id / 4, static_cast<int>( id % 4 ), k ),
+					          sideNode( static_cast<std::size_t>( m ) / 4, m % 4, n - k ) );
+				}
+			}
+		}
+
+		// G1: sub-patch nets.  Glued boundaries are then made BITWISE
+		// equal by assignment, not by hoping two rounding sequences agree
+		// (the build's -ffast-math may contract the same expression
+		// differently at different inline sites): every vertex takes its
+		// first-seen position and every glued sub-patch side its owner's
+		// control points.  Before assignment each copy must agree with the
+		// owner to `seamTol` -- a sanity check only, since the glue itself
+		// was proved exactly on the input control points above.
+		std::vector<SubPatchRec> subs( nPatches * n * n );
+		auto subIndex = [&]( std::size_t p, unsigned int iu, unsigned int iv ) {
+			return ( p * n + iv ) * n + iu;
+		};
+		for( std::size_t p = 0; p < nPatches; ++p ) {
+			for( unsigned int iv = 0; iv < n; ++iv ) {
+				for( unsigned int iu = 0; iu < n; ++iu ) {
+					SubPatchRec& rec = subs[subIndex( p, iu, iv )];
+					rec.net = SubdivideBezierPatchRange( patches[p],
+						Scalar( iu ) / Scalar( n ), Scalar( iu + 1 ) / Scalar( n ),
+						Scalar( iv ) / Scalar( n ), Scalar( iv + 1 ) / Scalar( n ) );
+					const unsigned int cn[4] = {
+						nodeAt( p, iu, iv ), nodeAt( p, iu + 1, iv ),
+						nodeAt( p, iu + 1, iv + 1 ), nodeAt( p, iu, iv + 1 ) };
+					for( int k = 0; k < 4; ++k ) {
+						rec.corner[k] = uf.Find( cn[k] );
+					}
+					for( int k = 0; k < 4; ++k ) {
+						for( int m = k + 1; m < 4; ++m ) {
+							if( rec.corner[k] == rec.corner[m] ) {
+								r.reason = "sub-patch with identified corners";
+								return r;
+							}
+						}
+					}
+				}
+			}
+		}
+		{
+			std::vector<Point3> nodePos( nPatches * nodesPerPatch );
+			std::vector<unsigned char> nodePosSet( nPatches * nodesPerPatch, 0 );
+			for( SubPatchRec& rec : subs ) {
+				for( int k = 0; k < 4; ++k ) {
+					int ci, cj;
+					NetCornerIndex( k, ci, cj );
+					Point3& pos = rec.net.c[ci].pts[cj];
+					const unsigned int root = rec.corner[k];
+					if( !nodePosSet[root] ) {
+						nodePosSet[root] = 1;
+						nodePos[root] = pos;
+					} else {
+						if( !( Vector3Ops::Magnitude( Vector3Ops::mkVector3( pos, nodePos[root] ) ) <= seamTol ) ) {
+							r.reason = "glued seam nodes disagree in position";
+							return r;
+						}
+						pos = nodePos[root];
+					}
+				}
+			}
+		}
+		// Glued sub-patch side pairs: (owner, side) -> (partner, side),
+		// the partner's side being the owner's reversed.
+		auto glueSide = [&]( std::size_t owner, int so, std::size_t partner, int sp ) {
+			const PatchCurve co = NetSide( subs[owner].net, so );
+			const PatchCurve cp = NetSide( subs[partner].net, sp );
+			for( int m = 0; m < 4; ++m ) {
+				if( !( Vector3Ops::Magnitude( Vector3Ops::mkVector3( cp[m], co[3 - m] ) ) <= seamTol ) ) {
+					return false;
+				}
+			}
+			SetNetSide( subs[partner].net, sp, ReversePatchCurve( co ) );
+			return true;
+		};
+		for( std::size_t p = 0; p < nPatches; ++p ) {
+			for( unsigned int iv = 0; iv < n; ++iv ) {
+				for( unsigned int iu = 0; iu < n; ++iu ) {
+					if( iu + 1 < n && !glueSide( subIndex( p, iu, iv ), 1, subIndex( p, iu + 1, iv ), 3 ) ) {
+						r.reason = "glued seam sides disagree in position";
+						return r;
+					}
+					if( iv + 1 < n && !glueSide( subIndex( p, iu, iv ), 2, subIndex( p, iu, iv + 1 ), 0 ) ) {
+						r.reason = "glued seam sides disagree in position";
+						return r;
+					}
+				}
+			}
+		}
+		auto sideSub = [&]( std::size_t p, int s, unsigned int k ) {
+			switch( s ) {
+			default:
+			case 0: return subIndex( p, k, 0 );
+			case 1: return subIndex( p, n - 1, k );
+			case 2: return subIndex( p, n - 1 - k, n - 1 );
+			case 3: return subIndex( p, 0, n - 1 - k );
+			}
+		};
+		for( std::size_t id = 0; id < match.size(); ++id ) {
+			const int m = match[id];
+			if( m > static_cast<int>( id ) ) {
+				for( unsigned int k = 0; k < n; ++k ) {
+					if( !glueSide( sideSub( id / 4, static_cast<int>( id % 4 ), k ), static_cast<int>( id % 4 ),
+					               sideSub( static_cast<std::size_t>( m ) / 4, m % 4, n - 1 - k ), m % 4 ) ) {
+						r.reason = "glued seam sides disagree in position";
+						return r;
+					}
+				}
+			}
+		}
+		for( SubPatchRec& rec : subs ) {
+			rec.box = InflatedNetBox( rec.net, inflate );
+			if( !CrossConeProof( &rec.net, 1, rec.V ) ) {
+				r.reason = "sub-patch not provably injective (degenerate, folded or too curved)";
+				r.geometric = true;
+				return r;
+			}
+		}
+
+		// G2: pairwise embedding.  Candidate pairs come from a uniform
+		// grid hash (cell = the median sub-patch box extent): every pair
+		// whose boxes overlap shares at least one cell, and is tested once,
+		// in the cell holding the low corner of the two boxes' overlap.  A
+		// box spanning more than kMaxCellsPerBox cells is tested against
+		// every sub-patch instead.  Every candidate costs one work unit, so
+		// a dense set exhausts the budget and is refused.
+		PatchCertWork work;
+		work.remaining = workBudget;
+		const std::size_t nSubs = subs.size();
+		std::vector<Scalar> extents( nSubs );
+		for( std::size_t i = 0; i < nSubs; ++i ) {
+			const BoundingBox& bb = subs[i].box;
+			extents[i] = std::max( bb.ur.x - bb.ll.x, std::max( bb.ur.y - bb.ll.y, bb.ur.z - bb.ll.z ) );
+		}
+		std::nth_element( extents.begin(), extents.begin() + nSubs / 2, extents.end() );
+		Scalar cell = extents[nSubs / 2];
+		const Scalar boxSpan = diag + Scalar( 4 ) * inflate;
+		if( !( cell > boxSpan * Scalar( 1.0 / 1048576.0 ) ) ) {
+			cell = boxSpan * Scalar( 1.0 / 1048576.0 );	// keeps every index below 2^21
+		}
+		const Point3 gridLo( lo.x - Scalar( 2 ) * inflate, lo.y - Scalar( 2 ) * inflate, lo.z - Scalar( 2 ) * inflate );
+		struct CellRange { std::uint32_t lo[3], hi[3]; };
+		std::vector<CellRange> ranges( nSubs );
+		auto cellIndex = [&]( Scalar v, Scalar origin ) {
+			const Scalar t = std::floor( ( v - origin ) / cell );
+			return static_cast<std::uint32_t>( std::min( Scalar( 2097151 ), std::max( Scalar( 0 ), t ) ) );
+		};
+		auto cellKey = []( std::uint32_t x, std::uint32_t y, std::uint32_t z ) {
+			return ( std::uint64_t( x ) << 42 ) | ( std::uint64_t( y ) << 21 ) | std::uint64_t( z );
+		};
+		static const std::uint64_t kMaxCellsPerBox = 64;
+		std::unordered_map<std::uint64_t, std::vector<unsigned int> > cells;
+		std::vector<unsigned int> oversize;
+		for( std::size_t i = 0; i < nSubs; ++i ) {
+			const BoundingBox& bb = subs[i].box;
+			CellRange& cr = ranges[i];
+			cr.lo[0] = cellIndex( bb.ll.x, gridLo.x ); cr.hi[0] = cellIndex( bb.ur.x, gridLo.x );
+			cr.lo[1] = cellIndex( bb.ll.y, gridLo.y ); cr.hi[1] = cellIndex( bb.ur.y, gridLo.y );
+			cr.lo[2] = cellIndex( bb.ll.z, gridLo.z ); cr.hi[2] = cellIndex( bb.ur.z, gridLo.z );
+			const std::uint64_t count = std::uint64_t( cr.hi[0] - cr.lo[0] + 1 ) *
+				( cr.hi[1] - cr.lo[1] + 1 ) * ( cr.hi[2] - cr.lo[2] + 1 );
+			if( count > kMaxCellsPerBox ) {
+				oversize.push_back( static_cast<unsigned int>( i ) );
+				continue;
+			}
+			if( !work.Spend( count ) ) {
+				r.reason = "certification work budget exhausted";
+				r.workUsed = workBudget;
+				return r;
+			}
+			for( std::uint32_t x = cr.lo[0]; x <= cr.hi[0]; ++x ) {
+				for( std::uint32_t y = cr.lo[1]; y <= cr.hi[1]; ++y ) {
+					for( std::uint32_t z = cr.lo[2]; z <= cr.hi[2]; ++z ) {
+						cells[cellKey( x, y, z )].push_back( static_cast<unsigned int>( i ) );
+					}
+				}
+			}
+		}
+		std::vector<unsigned char> isOversize( nSubs, 0 );
+		for( const unsigned int i : oversize ) isOversize[i] = 1;
+
+		// The per-pair proof; FALSE (with r filled) refuses the set.
+		auto testPair = [&]( const SubPatchRec& A, const SubPatchRec& B ) -> bool {
+			if( !PatchBoxesOverlap( A.box, B.box ) ) {
+				return true;
+			}
+			int shared = 0, ka = -1, kb = -1;
+			for( int a = 0; a < 4; ++a ) {
+				for( int b = 0; b < 4; ++b ) {
+					if( A.corner[a] == B.corner[b] ) {
+						++shared;
+						if( ka < 0 ) { ka = a; kb = b; }
+					}
+				}
+			}
+			if( shared == 0 ) {
+				if( !NetsProvablyDisjoint( A.net, 0, B.net, 0, inflate, work ) ) {
+					r.reason = work.exhausted ? "certification work budget exhausted" :
+						"sub-patches without a shared vertex are not provably disjoint (touching, crossing or T-junction)";
+					r.geometric = !work.exhausted;
+					return false;
+				}
+			} else if( shared == 1 ) {
+				if( !CornerPairSeparated( A.net, ka, B.net, kb, A.V + B.V ) ) {
+					r.reason = "sub-patches sharing one vertex are not provably separated there";
+					r.geometric = true;
+					return false;
+				}
+			} else if( shared == 2 ) {
+				// The two shared vertices must be the ends of one side of
+				// each, traversed in opposite directions.
+				int sa = -1, sb = -1;
+				for( int s = 0; s < 4 && sa < 0; ++s ) {
+					for( int t = 0; t < 4; ++t ) {
+						if( A.corner[s] == B.corner[( t + 1 ) & 3] && A.corner[( s + 1 ) & 3] == B.corner[t] ) {
+							sa = s; sb = t;
+							break;
+						}
+					}
+				}
+				if( sa < 0 ) {
+					r.reason = "sub-patches share two vertices that are not one oppositely-traversed side";
+					return false;
+				}
+				BezierPatch pair[2] = { RotateNet( A.net, ( sa + 2 ) & 3 ), RotateNet( B.net, sb ) };
+				for( int i = 0; i < 4; ++i ) {
+					if( !PatchPointEqual( pair[0].c[i].pts[3], pair[1].c[i].pts[0] ) ) {
+						r.reason = "glued sub-patch sides disagree in position";
+						return false;
+					}
+				}
+				Vector3 V;
+				if( !CrossConeProof( pair, 2, V ) ) {
+					r.reason = "sub-patches sharing a side are not provably injective as a union (fold or sharp crease)";
+					r.geometric = true;
+					return false;
+				}
+			} else {
+				r.reason = "sub-patches share more than one side";
+				return false;
+			}
+			return true;
+		};
+
+		// Visit cells in key order so the first refusal (and its reason)
+		// does not depend on the hash table's iteration order.
+		std::vector<std::uint64_t> keys;
+		keys.reserve( cells.size() );
+		for( const auto& entry : cells ) keys.push_back( entry.first );
+		std::sort( keys.begin(), keys.end() );
+		for( const std::uint64_t key : keys ) {
+			const std::vector<unsigned int>& list = cells[key];
+			for( std::size_t ii = 0; ii < list.size(); ++ii ) {
+				for( std::size_t jj = ii + 1; jj < list.size(); ++jj ) {
+					const CellRange& ra = ranges[list[ii]];
+					const CellRange& rb = ranges[list[jj]];
+					// Test each pair once: in the cell at the low corner of
+					// the overlap of the two cell ranges.
+					if( cellKey( std::max( ra.lo[0], rb.lo[0] ), std::max( ra.lo[1], rb.lo[1] ),
+					             std::max( ra.lo[2], rb.lo[2] ) ) != key ) {
+						continue;
+					}
+					if( !work.Spend( 1 ) ) {
+						r.reason = "certification work budget exhausted";
+						r.workUsed = workBudget;
+						return r;
+					}
+					if( !testPair( subs[list[ii]], subs[list[jj]] ) ) {
+						r.workUsed = workBudget - work.remaining;
+						return r;
+					}
+				}
+			}
+		}
+		for( const unsigned int i : oversize ) {
+			for( std::size_t j = 0; j < nSubs; ++j ) {
+				if( j == i || ( isOversize[j] && j < i ) ) {
+					continue;
+				}
+				if( !work.Spend( 1 ) ) {
+					r.reason = "certification work budget exhausted";
+					r.workUsed = workBudget;
+					return r;
+				}
+				if( !testPair( subs[i], subs[j] ) ) {
+					r.workUsed = workBudget - work.remaining;
+					return r;
+				}
+			}
+		}
+		r.workUsed = workBudget - work.remaining;
+
+		// C: classification by the exact signed volume.
+		const Point3 centre( Scalar( 0.5 ) * ( lo.x + hi.x ), Scalar( 0.5 ) * ( lo.y + hi.y ), Scalar( 0.5 ) * ( lo.z + hi.z ) );
+		Scalar vol = 0, absSum = 0;
+		for( const BezierPatch& p : patches ) {
+			AccumulatePatchVolume( p, centre, vol, absSum );
+		}
+		if( freeSides == 0 ) {
+			if( !( vol > Scalar( 1e-9 ) * absSum ) ) {
+				r.reason = "closed surface is inward-wound or encloses no resolvable volume";
+				return r;
+			}
+			r.watertight = true;
+			return r;
+		}
+		r.open = true;
+		r.negative = vol < 0;
+		return r;
+	}
+
+	PatchSetVerdict CertifyBezierNetsAdaptive( const std::vector<BezierPatch>& patches, std::size_t workBudget )
+	{
+		if( workBudget == 0 ) {
+			workBudget = kPatchCertWorkBudget;
+		}
+		PatchSetVerdict r = CertifyBezierNets( patches, 4, workBudget );
+		if( !r.watertight && !r.open && r.geometric ) {
+			r = CertifyBezierNets( patches, 8, workBudget );
+		}
+		return r;
+	}
+
+	//! The cubic control polygon of the segment E0 -> E1, computed from
+	//! the lexicographically smaller end so the glued partner (E1 -> E0)
+	//! gets the bitwise reverse; the ends are exact.
+	inline PatchCurve ElevatedSegment( const Point3& E0, const Point3& E1 )
+	{
+		const bool fwd = !PatchPointLess( E1, E0 );
+		const Point3& A = fwd ? E0 : E1;
+		const Point3& B = fwd ? E1 : E0;
+		const PatchCurve c = { {
+			A,
+			Point3Ops::WeightedAverage2( B, A, Scalar( 1 ) / Scalar( 3 ) ),
+			Point3Ops::WeightedAverage2( B, A, Scalar( 2 ) / Scalar( 3 ) ),
+			B } };
+		return fwd ? c : ReversePatchCurve( c );
+	}
+
+	//! Exact degree elevation of a bilinear patch (pts[0] = (0,0),
+	//! pts[1] = (0,1), pts[2] = (1,0), pts[3] = (1,1)) to a bicubic net
+	//! with the same (u, v) and hence the same normal Pu x Pv.
+	BezierPatch ElevateBilinear( const BilinearPatch& b )
+	{
+		BezierPatch q;
+		const PatchCurve v0 = ElevatedSegment( b.pts[0], b.pts[2] );	// side v = 0, u increasing
+		const PatchCurve u1 = ElevatedSegment( b.pts[2], b.pts[3] );	// side u = 1, v increasing
+		const PatchCurve v1 = ElevatedSegment( b.pts[1], b.pts[3] );	// v = 1, u increasing
+		const PatchCurve u0 = ElevatedSegment( b.pts[0], b.pts[1] );	// u = 0, v increasing
+		for( int j = 0; j < 4; ++j ) {
+			q.c[0].pts[j] = u0[j];
+			q.c[3].pts[j] = u1[j];
+		}
+		for( int i = 0; i < 4; ++i ) {
+			q.c[i].pts[0] = v0[i];
+			q.c[i].pts[3] = v1[i];
+		}
+		for( int i = 1; i < 3; ++i ) {
+			for( int j = 1; j < 3; ++j ) {
+				q.c[i].pts[j] = Point3Ops::WeightedAverage2( q.c[3].pts[j], q.c[0].pts[j], Scalar( i ) / Scalar( 3 ) );
+			}
+		}
+		return q;
+	}
+
+	void PublishVerdict(
+		const PatchSetVerdict& v,
+		bool& outCertifiedWatertight,
+		bool& outProvablyOpenSheet,
+		bool& outNegativeOpenSignedVolume,
+		GeometricUtilities::PatchSetCertDiagnostics* diag )
+	{
+		outCertifiedWatertight = v.watertight;
+		outProvablyOpenSheet = v.open;
+		outNegativeOpenSignedVolume = v.open && v.negative;
+		if( diag ) {
+			diag->reason = v.reason;
+			diag->grid = v.grid;
+			diag->workUsed = v.workUsed;
+		}
+	}
+}
+
+namespace
+{
+	//! Bilinear patches as their exact degree elevations, with every side
+	//! sharing an endpoint pair given ONE canonical polygon (two bilinear
+	//! sides with the same endpoints ARE the same segment, but their
+	//! elevated interior points come from different call sites).  FALSE on
+	//! a non-finite corner.
+	bool BilinearNets( const std::vector<BilinearPatch>& patches, std::vector<BezierPatch>& nets )
+	{
+		nets.clear();
+		nets.reserve( patches.size() );
+		for( const BilinearPatch& b : patches ) {
+			for( int k = 0; k < 4; ++k ) {
+				if( !PatchPointFinite( b.pts[k] ) ) {
+					return false;
+				}
+			}
+			nets.push_back( ElevateBilinear( b ) );
+		}
+		struct Key
+		{
+			Point3 a, b;
+			bool operator<( const Key& o ) const
+			{
+				if( PatchPointLess( a, o.a ) ) return true;
+				if( PatchPointLess( o.a, a ) ) return false;
+				return PatchPointLess( b, o.b );
+			}
+		};
+		std::map<Key, PatchCurve> canonical;
+		for( BezierPatch& q : nets ) {
+			for( int s = 0; s < 4; ++s ) {
+				const PatchCurve c = NetSide( q, s );
+				const bool fwd = !PatchPointLess( c[3], c[0] );
+				const Key key = { fwd ? c[0] : c[3], fwd ? c[3] : c[0] };
+				const PatchCurve oriented = fwd ? c : ReversePatchCurve( c );
+				const auto it = canonical.insert( std::make_pair( key, oriented ) ).first;
+				SetNetSide( q, s, fwd ? it->second : ReversePatchCurve( it->second ) );
+			}
+		}
+		return true;
+	}
+
+	//! Topological openness of a patch set from EXACT seam identity alone
+	//! (no geometry, no embedding proof): +1 at least one side has no
+	//! glued partner; 0 every side is glued to exactly one reversed partner
+	//! (no free boundary); -1 undecidable (empty, non-finite, a collapsed
+	//! or looping side, a side shared by more than two patches, or two
+	//! sides sharing endpoints without being one reversed seam).
+	int NetSetOpenness( const std::vector<BezierPatch>& patches )
+	{
+		if( patches.empty() ) {
+			return -1;
+		}
+		struct SideKey
+		{
+			Point3 a, b;
+			unsigned int id;
+		};
+		std::vector<SideKey> sides;
+		sides.reserve( patches.size() * 4 );
+		for( std::size_t p = 0; p < patches.size(); ++p ) {
+			for( int s = 0; s < 4; ++s ) {
+				const PatchCurve c = NetSide( patches[p], s );
+				for( const Point3& q : c ) {
+					if( !PatchPointFinite( q ) ) {
+						return -1;
+					}
+				}
+				if( PatchPointEqual( c[0], c[3] ) ) {
+					return -1;
+				}
+				const bool fwd = PatchPointLess( c[0], c[3] );
+				sides.push_back( { fwd ? c[0] : c[3], fwd ? c[3] : c[0], static_cast<unsigned int>( p * 4 + s ) } );
+			}
+		}
+		std::sort( sides.begin(), sides.end(), []( const SideKey& x, const SideKey& y ) {
+			if( PatchPointLess( x.a, y.a ) ) return true;
+			if( PatchPointLess( y.a, x.a ) ) return false;
+			if( PatchPointLess( x.b, y.b ) ) return true;
+			if( PatchPointLess( y.b, x.b ) ) return false;
+			return x.id < y.id;
+		} );
+		bool anyFree = false;
+		for( std::size_t i = 0; i < sides.size(); ) {
+			std::size_t j = i + 1;
+			while( j < sides.size() && PatchPointEqual( sides[j].a, sides[i].a ) && PatchPointEqual( sides[j].b, sides[i].b ) ) {
+				++j;
+			}
+			if( j - i > 2 ) {
+				return -1;
+			}
+			if( j - i == 2 ) {
+				const PatchCurve c0 = NetSide( patches[sides[i].id / 4], sides[i].id % 4 );
+				const PatchCurve c1 = NetSide( patches[sides[i + 1].id / 4], sides[i + 1].id % 4 );
+				if( !PatchCurveEqual( c0, ReversePatchCurve( c1 ) ) ) {
+					return -1;
+				}
+			} else {
+				anyFree = true;
+			}
+			i = j;
+		}
+		return anyFree ? 1 : 0;
+	}
+}
+
+void GeometricUtilities::CertifyBilinearPatchSet(
+	const std::vector<BilinearPatch>& patches,
+	bool& outCertifiedWatertight,
+	bool& outProvablyOpenSheet,
+	bool& outNegativeOpenSignedVolume,
+	GeometricUtilities::PatchSetCertDiagnostics* diag )
+{
+	std::vector<BezierPatch> nets;
+	if( !BilinearNets( patches, nets ) ) {
+		PatchSetVerdict v;
+		v.reason = "non-finite control point";
+		PublishVerdict( v, outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
+		return;
+	}
+	PublishVerdict( CertifyBezierNetsAdaptive( nets, diag ? diag->workBudget : 0 ),
+		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
+}
+
+void GeometricUtilities::CertifyBezierPatchSet(
+	const std::vector<BezierPatch>& patches,
+	bool& outCertifiedWatertight,
+	bool& outProvablyOpenSheet,
+	bool& outNegativeOpenSignedVolume,
+	GeometricUtilities::PatchSetCertDiagnostics* diag )
+{
+	PublishVerdict( CertifyBezierNetsAdaptive( patches, diag ? diag->workBudget : 0 ),
+		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
+}
+
+int GeometricUtilities::BezierPatchSetOpenness( const std::vector<BezierPatch>& patches )
+{
+	return NetSetOpenness( patches );
+}
+
+int GeometricUtilities::BilinearPatchSetOpenness( const std::vector<BilinearPatch>& patches )
+{
+	std::vector<BezierPatch> nets;
+	if( !BilinearNets( patches, nets ) ) {
+		return -1;
+	}
+	return NetSetOpenness( nets );
+}
+
+unsigned int GeometricUtilities::PatchCertificateEpoch()
+{
+	return s_patchCertificateEpoch.load( std::memory_order_acquire );
+}
+
+void GeometricUtilities::BumpPatchCertificateEpoch()
+{
+	s_patchCertificateEpoch.fetch_add( 1, std::memory_order_acq_rel );
 }

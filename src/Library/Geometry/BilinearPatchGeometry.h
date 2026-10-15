@@ -15,6 +15,9 @@
 #define BILINEARPATCH_GEOMETRY_
 
 #include "Geometry.h"
+#include <atomic>
+#include <mutex>
+#include <memory>
 #include "../Interfaces/IBilinearPatchGeometry.h"
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
@@ -57,6 +60,29 @@ namespace RISE
 			static const unsigned int nAreaCells = 8;
 			std::vector<Scalar>		vAreaCDF;
 			Scalar					dTotalArea;
+			// DL-616: the patch-set certificate is computed LAZILY, on the
+			// first query of the accessors below.  Only consumers that need
+			// it ask (the object manager's open-sheet pass for clear
+			// transmissive materials; a CSG composite certifying its
+			// operands), so an opaque patch model never pays for it.  The
+			// per-hit stamp reads the stored flag without forcing it: an
+			// uncertified set reads "not open", the conservative answer.
+			// A VERSIONED slot, never a once_flag that an edit resets: an
+			// edit bumps m_certGeneration, and the certificate is recomputed
+			// under m_certMutex when m_certComputedGeneration lags behind it.
+			// This only removes the undefined behaviour of resetting a
+			// once_flag another thread may be inside; it does NOT make
+			// editing during a render safe (AddPatch / Prepare still change
+			// `patches` under readers) -- scenes are immutable while a
+			// render runs.
+			mutable std::mutex				m_certMutex;
+			std::atomic<unsigned int>		m_certGeneration;
+			mutable std::atomic<unsigned int>	m_certComputedGeneration;
+			mutable std::atomic<bool>	m_bCertifiedWatertight;
+			mutable std::atomic<bool>	m_bProvablyOpenSheet;
+			mutable std::atomic<bool>	m_bNegativeOpenSignedVolume;
+			void EnsureCertified() const;
+			void InvalidateCertificate();
 
 			virtual ~BilinearPatchGeometry( );
 
@@ -101,6 +127,11 @@ namespace RISE
 			//! an emissive material became a silently broken area light whose
 			//! every NEE sample landed on the object's local origin.
 			bool CanBeAreaLight() const override { return !patches.empty() && dTotalArea > 0; }
+			bool IsCertifiedWatertight() const { EnsureCertified(); return m_bCertifiedWatertight.load( std::memory_order_acquire ); }
+			bool IsProvablyOpenSheet() const { EnsureCertified(); return m_bProvablyOpenSheet.load( std::memory_order_acquire ); }
+			bool HasNegativeOpenSignedVolume() const { EnsureCertified(); return m_bNegativeOpenSignedVolume.load( std::memory_order_acquire ); }
+			//! DL-617: topological openness (see GeometricUtilities::BilinearPatchSetOpenness).
+			int TopologicalOpenness() const;
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 

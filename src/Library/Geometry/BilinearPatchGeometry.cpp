@@ -65,6 +65,9 @@ void BilinearPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 		ri.ptCoord = Point2( h.u, h.v );
 		ri.vNormal = Vector3Ops::Normalize(GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v ));
 		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+		if( m_bProvablyOpenSheet.load( std::memory_order_relaxed ) ) {
+			ri.bProvablyNoInterior = true;
+		}
 
 		// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
 		// this hit already knows exactly which PATCH and (u, v) it landed
@@ -142,7 +145,12 @@ BilinearPatchGeometry::BilinearPatchGeometry(
   nMaxPerOctantNode( max_polys_per_node ),
   nMaxRecursionLevel( max_recursion_level ),
   bUseBSP( bUseBSP_ ),
-  dTotalArea( 0 )
+  dTotalArea( 0 ),
+  m_certGeneration( 1 ),
+  m_certComputedGeneration( 0 ),
+  m_bCertifiedWatertight( false ),
+  m_bProvablyOpenSheet( false ),
+  m_bNegativeOpenSignedVolume( false )
 {
 }
 
@@ -155,6 +163,7 @@ BilinearPatchGeometry::~BilinearPatchGeometry( )
 void BilinearPatchGeometry::AddPatch( const BilinearPatch& patch )
 {
 	patches.push_back( patch );
+	InvalidateCertificate();
 }
 
 void BilinearPatchGeometry::Prepare()
@@ -162,6 +171,7 @@ void BilinearPatchGeometry::Prepare()
 	// Prepare for rendering
 	// Optimize the patch container
 	stl_utils::container_optimize< BilinearPatchList >( patches );
+	InvalidateCertificate();	// DL-616: recomputed lazily on first query
 
 	// First create the pointer patches list
 	BilinearPatchPtrList		patchptrs;
@@ -462,4 +472,39 @@ Scalar BilinearPatchGeometry::GetArea( ) const
 	// its true area (and, since consumers divide by it, silently rescaled
 	// every estimator built on this geometry).
 	return dTotalArea;
+}
+
+void BilinearPatchGeometry::InvalidateCertificate()
+{
+	// Clear the flags BEFORE publishing the new generation, so no query
+	// that sees the new generation can still read the old answer.
+	m_bCertifiedWatertight.store( false, std::memory_order_release );
+	m_bProvablyOpenSheet.store( false, std::memory_order_release );
+	m_bNegativeOpenSignedVolume.store( false, std::memory_order_release );
+	m_certGeneration.fetch_add( 1, std::memory_order_acq_rel );
+	GeometricUtilities::BumpPatchCertificateEpoch();	// cached composite certificates are stale
+}
+
+void BilinearPatchGeometry::EnsureCertified() const
+{
+	const unsigned int wanted = m_certGeneration.load( std::memory_order_acquire );
+	if( m_certComputedGeneration.load( std::memory_order_acquire ) == wanted ) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock( m_certMutex );
+	const unsigned int current = m_certGeneration.load( std::memory_order_acquire );
+	if( m_certComputedGeneration.load( std::memory_order_acquire ) == current ) {
+		return;
+	}
+	bool watertight = false, open = false, negative = false;
+	GeometricUtilities::CertifyBilinearPatchSet( patches, watertight, open, negative );
+	m_bCertifiedWatertight.store( watertight, std::memory_order_release );
+	m_bProvablyOpenSheet.store( open, std::memory_order_release );
+	m_bNegativeOpenSignedVolume.store( negative, std::memory_order_release );
+	m_certComputedGeneration.store( current, std::memory_order_release );
+}
+
+int BilinearPatchGeometry::TopologicalOpenness() const
+{
+	return GeometricUtilities::BilinearPatchSetOpenness( patches );
 }

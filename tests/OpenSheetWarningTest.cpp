@@ -13,14 +13,45 @@ public:
 int main() {
  auto* capture=new CaptureWarnings();GlobalLogPriv()->AddPrinter(capture);
  const auto path=TestTempPath("dl382_patch.bezier");
- {std::ofstream out(path);out<<"1\n";for(int j=0;j<4;++j)for(int i=0;i<4;++i)out<<i<<' '<<j<<" 0\n";}
+ {
+  std::ofstream out(path);
+  out<<"2\n";
+  for(int j=0;j<4;++j)for(int i=0;i<4;++i)out<<i<<' '<<j<<" "<<(i*j)<<"\n";
+  for(int j=0;j<4;++j)for(int i=0;i<4;++i)out<<(i+10)<<' '<<j<<" "<<(i*j)<<"\n";
+ }
  {
   LoadedScene loaded(Materials(false)+"bezierpatch_geometry\n{\n name shape\n file "+path+"\n}\nstandard_object\n{\n name patch\n geometry shape\n material glass\n}\n");
-  Check(capture->count==1,"uncertified transmitting Bezier warns once");
+  Check(capture->count==1,"uncertified disconnected non-coplanar transmitting Bezier warns once");
   loaded.Scene().GetObjects()->PrepareForRendering();
   Check(capture->count==1,"repeated preparation does not spam warning");
  }
+ const auto certPath=TestTempPath("dl616_certified_patch.bezier");
+ {std::ofstream out(certPath);out<<"1\n";for(int j=0;j<4;++j)for(int i=0;i<4;++i)out<<i<<' '<<j<<" 0\n";}
  unsigned before=capture->count;
+ {
+  LoadedScene loaded(Materials(false)+"bezierpatch_geometry\n{\n name shape\n file "+certPath+"\n}\nstandard_object\n{\n name patch\n geometry shape\n material glass\n}\n");
+  Check(capture->count==before,"certified single open Bezier patch does not warn (DL-616)");
+ }
+ {
+  LoadedScene loaded(Materials(false)+
+   "clippedplane_geometry\n{\n name sheet_g\npta -2 -2 0\nptb 2 -2 0\nptc 2 2 0\nptd -2 2 0\n}\n"
+   "sphere_geometry\n{\n name hole_g\n radius 0.5\n}\n"
+   "standard_object\n{\n name sheet_o\n geometry sheet_g\n material glass\n}\n"
+   "standard_object\n{\n name hole_o\n geometry hole_g\n material glass\n}\n"
+   "csg_object\n{\n name csg_sheet\n obja sheet_o\n objb hole_o\n operation subtraction\n material glass\n}\n");
+  Check(capture->count==before,"certified open-sheet CSG subtraction does not warn (DL-617)");
+ }
+ {
+  LoadedScene loaded(Materials(false)+
+   "clippedplane_geometry\n{\n name sheet_g\npta -2 -2 0\nptb 2 -2 0\nptc 2 2 0\nptd -2 2 0\n}\n"
+   "sphere_geometry\n{\n name solid_g\n radius 0.5\n}\n"
+   "standard_object\n{\n name sheet_o\n geometry sheet_g\n material glass\n}\n"
+   "standard_object\n{\n name solid_o\n geometry solid_g\n material glass\n position 4 0 0\n}\n"
+   "csg_object\n{\n name csg_mixed\n obja sheet_o\n objb solid_o\n operation union\n material glass\n}\n");
+  Check(capture->count==before+1,"uncertified mixed open+closed CSG union warns once (DL-617)");
+ }
+ std::remove(certPath.c_str());
+ before=capture->count;
  {LoadedScene loaded(Materials(false)+"sphere_geometry\n{\n name shape\n radius 1\n}\nstandard_object\n{\n name solid\n geometry shape\n material glass\n}\n");Check(capture->count==before,"certified analytical solid does not warn");}
  for(int inward=0;inward<2;++inward) {
   const std::string fixture="tests/fixtures/dl382/holedglass"+std::to_string(inward)+".RISEscene";
@@ -54,6 +85,22 @@ int main() {
    loaded.Scene().GetObjects()->PrepareForRendering();
    Check(capture->count==previous+expected,"scoped warning does not repeat");
   }
+ }
+ // DL-617 review: a nested composite renders with the OUTERMOST material
+ // override, so the warning must judge clarity by that material too.
+ for(int outerGlass=0;outerGlass<2;++outerGlass) {
+  const std::string inner=outerGlass?"matte":"glass", outer=outerGlass?"glass":"matte";
+  const unsigned previous=capture->count;
+  LoadedScene loaded(Materials(false)+"lambertian_material\n{\n name matte\n reflectance white\n}\n"
+   "clippedplane_geometry\n{\n name sheet_g\npta -2 -2 0\nptb 2 -2 0\nptc 2 2 0\nptd -2 2 0\n}\n"
+   "sphere_geometry\n{\n name ball_g\n radius 0.5\n}\n"
+   "standard_object\n{\n name s1\n geometry sheet_g\n material glass\n}\n"
+   "standard_object\n{\n name s2\n geometry sheet_g\n material glass\n position 0 0 3\n}\n"
+   "csg_object\n{\n name inner_union\n obja s1\n objb s2\n operation union\n material "+inner+"\n}\n"
+   "standard_object\n{\n name far_ball\n geometry ball_g\n material glass\n position 10 0 0\n}\n"
+   "csg_object\n{\n name outer_union\n obja inner_union\n objb far_ball\n operation union\n material "+outer+"\n}\n");
+  Check(capture->count==previous+unsigned(outerGlass),
+   outerGlass?"nested CSG whose OUTER override is clear glass warns":"nested CSG whose OUTER override is matte does not warn");
  }
  std::remove(path.c_str());GlobalLogPriv()->RemoveAllPrinters();capture->release();
  std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;

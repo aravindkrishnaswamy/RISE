@@ -192,7 +192,7 @@ namespace RISE
 						// shared ior_stack could carry residual state
 						// between unrelated photons.
 						IORStack ior_stack( 1.0 );
-						IORStackSeeding::SeedFromPoint( ior_stack, r.origin, *pScene );
+						IORStackSeeding::SeedFromPoint( ior_stack, r.origin, *pScene, 0, true, object );
 
 						// Now shoot that ray as a photon
 						TraceSinglePhoton( r, power, *pPhotonMap, ior_stack );

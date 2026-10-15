@@ -13,7 +13,6 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include <map>
 #include "TriangleMeshGeometryIndexed.h"
 #include "../Utilities/ExpressionMemo.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -35,6 +34,7 @@
 #include <cmath>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <unordered_map>
 #include <utility>
@@ -262,6 +262,21 @@ Scalar TriangleMeshGeometryIndexed::GetArea( ) const
 	return totalArea;
 }
 
+void TriangleMeshGeometryIndexed::InvalidateTopologyProofCaches()
+{
+	m_faceNormals.clear();
+	m_lastWeldedId.clear();
+	m_lastWeldEps = Scalar( 0 );
+	m_lastWeldTransitive = false;
+	m_lastWeldValid = false;
+	m_cachedOpenTopologyWeldedId.clear();
+	m_cachedTopologicalOpenRefusal = false;
+	openRefusalTris[0] = openRefusalTris[1] = size_t( -1 );
+	m_watertightTopologyWeldedId.clear();
+	m_cachedTopologicalWatertightRefusal = false;
+	m_watertightEdges.clear();
+}
+
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
     smsUncertainNormalOrientation=true;
@@ -272,6 +287,7 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
     m_bOpenSignedVolumeNegative=false;
+	InvalidateTopologyProofCaches();
 	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -296,6 +312,7 @@ void TriangleMeshGeometryIndexed::AddVertex( const Point3& point )
     openGraphAxis=-1;
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
+	InvalidateTopologyProofCaches();
 	pPoints.push_back( point );
 }
 
@@ -327,6 +344,7 @@ void TriangleMeshGeometryIndexed::AddVertices( const VerticesListType& points )
     openGraphAxis=-1;
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
+	InvalidateTopologyProofCaches();
 	pPoints.insert( pPoints.end(), points.begin(), points.end() );
 }
 
@@ -397,6 +415,7 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri
     openGraphAxis=-1;
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
+	InvalidateTopologyProofCaches();
 	indexedtris.push_back( tri );
 }
 
@@ -409,6 +428,7 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangles( const IndexTriangleListTy
     openGraphAxis=-1;
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
+	InvalidateTopologyProofCaches();
 	indexedtris.insert( indexedtris.end(), tris.begin(), tris.end() );
 }
 
@@ -491,15 +511,20 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 			pNormals[i] = newNormals[i];
 		}
 	}
+	if( positionsChanged ) {
+		m_lastWeldValid = false;
+	}
 
 	// Recompute triangle areas + CDF (vertex positions changed).
 	ComputeAreas(positionsChanged,graphProofReusable,refusalProofReusable);
     // Array indices stay fixed, but the position-weld partition and folded
-    // face discriminator do not. Re-prove closed membership after motion.
-    // These two retained proofs already establish refusal of closed certification:
-    // an embedded open graph, or a triangle with exact coincident corners.
+    // face discriminator do not. Re-prove closed membership after motion,
+    // under exactly the rule DoneIndexedTriangles applies (P2-1): a
+    // certified open sheet is never watertight, which ComputeWatertightness
+    // itself enforces.  Exactly coincident triangle corners weld to one id,
+    // so the full proof would refuse them as degenerate; skip it there.
     if(positionsChanged) {
-        if(refusalProofReusable || (graphProofReusable && m_bShapeOpenSheet))
+        if(refusalProofReusable)
             m_bWatertight=false;
         else
             ComputeWatertightness();
@@ -571,23 +596,60 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
 	// 2026-04-27.
 	areas.clear();
 	areasCDF.clear();
+	m_faceNormals.clear();
+	areas.reserve( ptr_polygons.size() );
+	areasCDF.reserve( ptr_polygons.size() );
+	m_faceNormals.reserve( ptr_polygons.size() );
 	totalArea = 0;
     smsUncertainNormalOrientation = ptr_polygons.empty();
     ++smsOrientationAudits;
     smsOrientationTriangleVisits += ptr_polygons.size();
 
-	// Compute triangle areas
+	// Compute triangle areas, unit face normals, and referenced-corner bounds.
+	int axisSign[3] = { 0, 0, 0 };
+	const bool needAxisSign = positionsChanged && !graphProofReusable && !refusalProofReusable;
+	Point3 refLo( 0, 0, 0 ), refHi( 0, 0, 0 );
 	{
-		MyPointerTriangleList::const_iterator i, e;
-		for( i=ptr_polygons.begin(), e=ptr_polygons.end(); i!=e; i++ ) {
-			const PointerTriangle&	thisTri = (*i);
-			Vector3 vEdgeA = Vector3Ops::mkVector3( *thisTri.pVertices[1], *thisTri.pVertices[0] );
-			Vector3 vEdgeB = Vector3Ops::mkVector3( *thisTri.pVertices[2], *thisTri.pVertices[0] );
+		for( std::size_t t = 0; t < ptr_polygons.size(); ++t ) {
+			const PointerTriangle& thisTri = ptr_polygons[t];
+			const Point3& p0 = *thisTri.pVertices[0];
+			const Point3& p1 = *thisTri.pVertices[1];
+			const Point3& p2 = *thisTri.pVertices[2];
+			if( t == 0 ) {
+				refLo = refHi = p0;
+			} else {
+				refLo.x = std::min( refLo.x, p0.x ); refLo.y = std::min( refLo.y, p0.y ); refLo.z = std::min( refLo.z, p0.z );
+				refHi.x = std::max( refHi.x, p0.x ); refHi.y = std::max( refHi.y, p0.y ); refHi.z = std::max( refHi.z, p0.z );
+			}
+			refLo.x = std::min( refLo.x, std::min( p1.x, p2.x ) );
+			refLo.y = std::min( refLo.y, std::min( p1.y, p2.y ) );
+			refLo.z = std::min( refLo.z, std::min( p1.z, p2.z ) );
+			refHi.x = std::max( refHi.x, std::max( p1.x, p2.x ) );
+			refHi.y = std::max( refHi.y, std::max( p1.y, p2.y ) );
+			refHi.z = std::max( refHi.z, std::max( p1.z, p2.z ) );
+
+			Vector3 vEdgeA = Vector3Ops::mkVector3( p1, p0 );
+			Vector3 vEdgeB = Vector3Ops::mkVector3( p2, p0 );
 			const Vector3 face=Vector3Ops::Cross(vEdgeA,vEdgeB);
+			if( needAxisSign ) {
+				const Scalar fc[3] = { face.x, face.y, face.z };
+				for( int a = 0; a < 3; ++a ) {
+					const int s = ( fc[a] > Scalar( 0 ) ) ? 1 : ( ( fc[a] < Scalar( 0 ) ) ? -1 : 2 );
+					if( s == 2 || !std::isfinite( fc[a] ) ) {
+						axisSign[a] = 2;
+					} else if( axisSign[a] == 0 ) {
+						axisSign[a] = s;
+					} else if( axisSign[a] != s ) {
+						axisSign[a] = 2;
+					}
+				}
+			}
             const Scalar faceLength=Vector3Ops::Magnitude(face);
+            const Vector3 unitFace=faceLength>Scalar(0)?face*(Scalar(1)/faceLength):Vector3(0,0,0);
+            m_faceNormals.push_back( unitFace );
             // Match the native face-normal tessellation convention, including
-            // its degenerate-face fallback, without materializing arrays.
-            const Vector3 faceNormal=faceLength>NEARZERO?face*(1/faceLength):Vector3(0,0,1);
+            // its degenerate-face fallback, without materializing extra arrays.
+            const Vector3 faceNormal=faceLength>NEARZERO?unitFace:Vector3(0,0,1);
             for(unsigned k=0;k<3;++k) {
                 const Scalar orientation=Vector3Ops::Dot(face,thisTri.pNormals[k]?*thisTri.pNormals[k]:faceNormal);
                 if(!std::isfinite(orientation) || orientation<0) smsUncertainNormalOrientation=true;
@@ -629,13 +691,7 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
             ptr_polygons.size(),[this](size_t t,int k)->const Point3& {return *ptr_polygons[t].pVertices[k];});
         // Match the full certificate's centre: unused storage vertices are
         // not part of this open surface and cannot affect its warning sign.
-        Point3 lo=*ptr_polygons[0].pVertices[0],hi=lo;
-        for(const auto& triangle : ptr_polygons) for(int k=0;k<3;++k) {
-            const Point3& p=*triangle.pVertices[k];
-            lo.x=std::min(lo.x,p.x); lo.y=std::min(lo.y,p.y); lo.z=std::min(lo.z,p.z);
-            hi.x=std::max(hi.x,p.x); hi.y=std::max(hi.y,p.y); hi.z=std::max(hi.z,p.z);
-        }
-        const Point3 centre((lo.x+hi.x)/2,(lo.y+hi.y)/2,(lo.z+hi.z)/2);
+        const Point3 centre((refLo.x+refHi.x)/2,(refLo.y+refHi.y)/2,(refLo.z+refHi.z)/2);
         Scalar volume=0;
         for(const auto& triangle : ptr_polygons) {
             volume+=Vector3Ops::Dot(Vector3Ops::mkVector3(*triangle.pVertices[0],centre),
@@ -646,79 +702,259 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
     }
     if(positionsChanged && !graphProofReusable && !refusalProofReusable) {
         openGraphAxis=-1;
-    openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
+        openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
         openGraphCoincidentPairs.clear();
-        ++openCertificateAudits;
         m_bZeroVolumeSheet = GeometricUtilities::IsPlanarConsistentlyWoundSheet(
             ptr_polygons.size(), [this](size_t t, int k) -> const Point3& { return *ptr_polygons[t].pVertices[k]; });
         m_bShapeOpenSheet = m_bZeroVolumeSheet;
         m_bOpenSignedVolumeNegative = false;
-        if(!m_bZeroVolumeSheet) {
-            std::vector<Point3> corners;
-            corners.reserve(ptr_polygons.size()*3);
-            for(size_t t=0;t<ptr_polygons.size();++t)
-                for(int k=0;k<3;++k) corners.push_back(*ptr_polygons[t].pVertices[k]);
-            const auto cert=GeometricUtilities::IsEmbeddedOpenOrientedSurface(corners);
-            m_bShapeOpenSheet=cert.certified;
-            m_bOpenSignedVolumeNegative=cert.certified && cert.signedVolumeAboutCentre<0;
-            if(!cert.certified) {
-                // Store a cheap, exact failure witness where one exists. No
-                // refusal is cached merely because topology stayed constant.
-                for(const auto& triangle : ptr_polygons) {
-                    for(int k=0;k<3;++k) {
-                        const Point3& a=*triangle.pVertices[k];
-                        const Point3& b=*triangle.pVertices[(k+1)%3];
-                        if(a.x==b.x && a.y==b.y && a.z==b.z) {
-                            openRefusalPair[0]=triangle.pVertices[k]-pPoints.data();
-                            openRefusalPair[1]=triangle.pVertices[(k+1)%3]-pPoints.data();
+        if( m_bZeroVolumeSheet ) {
+            ++openCertificateAudits;
+            m_cachedOpenTopologyWeldedId.clear();
+            m_cachedTopologicalOpenRefusal = false;
+            openRefusalTris[0] = openRefusalTris[1] = size_t( -1 );
+        } else if( !ptr_polygons.empty() && !pPoints.empty() ) {
+            m_lastWeldValid = GeometricUtilities::WeldVertexPositions(
+                pPoints, m_lastWeldedId, &m_lastWeldEps, Scalar( 0 ), &m_lastWeldTransitive );
+            // The point weld can stand in for the certificate's own corner
+            // weld when it is unambiguous and its tolerance is the corners'
+            // tolerance, i.e. when unused storage vertices do not widen the
+            // bounding box.  Compare the boxes exactly (min/max never round)
+            // and then take the weld's own epsilon: re-deriving it here and
+            // comparing bit patterns was fragile -- under -ffast-math the two
+            // expressions can contract differently and differ by an ulp, which
+            // silently disabled every refusal-witness reuse after a
+            // deformation that changed the box (DL-620 review, P2-2).
+            Point3 allLo = pPoints[0], allHi = pPoints[0];
+            for( const Point3& q : pPoints ) {
+                allLo.x = std::min( allLo.x, q.x ); allLo.y = std::min( allLo.y, q.y ); allLo.z = std::min( allLo.z, q.z );
+                allHi.x = std::max( allHi.x, q.x ); allHi.y = std::max( allHi.y, q.y ); allHi.z = std::max( allHi.z, q.z );
+            }
+            const bool sameBox = allLo.x == refLo.x && allLo.y == refLo.y && allLo.z == refLo.z
+                && allHi.x == refHi.x && allHi.y == refHi.y && allHi.z == refHi.z;
+            const Scalar diag3D = Vector3Ops::Magnitude(
+                Vector3( refHi.x - refLo.x, refHi.y - refLo.y, refHi.z - refLo.z ) );
+            const Scalar eps3D = ( m_lastWeldValid && sameBox ) ? m_lastWeldEps
+                : std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag3D );
+            const bool pointWeldMatchesCorners = m_lastWeldValid && m_lastWeldTransitive
+                && sameBox && std::isfinite( eps3D );
+            const Point3* const pBase = pPoints.data();
+
+            // Check cached topological / triangle-pair refusal witnesses before
+            // materializing corners or running the full surface certificate.
+            bool reusedOpenRefusal = false;
+            if( pointWeldMatchesCorners && !m_cachedOpenTopologyWeldedId.empty()
+                && m_lastWeldedId == m_cachedOpenTopologyWeldedId )
+            {
+                if( m_cachedTopologicalOpenRefusal ) {
+                    reusedOpenRefusal = true;
+                } else if( openRefusalTris[0] < ptr_polygons.size() && openRefusalTris[1] < ptr_polygons.size() ) {
+                    if( openRefusalTris[0] == openRefusalTris[1] ) {
+                        const std::size_t t = openRefusalTris[0];
+                        const PointerTriangle& tri = ptr_polygons[t];
+                        const unsigned int I[3] = {
+                            m_lastWeldedId[static_cast<std::size_t>( tri.pVertices[0] - pBase )],
+                            m_lastWeldedId[static_cast<std::size_t>( tri.pVertices[1] - pBase )],
+                            m_lastWeldedId[static_cast<std::size_t>( tri.pVertices[2] - pBase )]
+                        };
+                        if( I[0] == I[1] || I[1] == I[2] || I[0] == I[2] ) {
+                            reusedOpenRefusal = true;
+                        } else {
+                            const Scalar twiceArea = Scalar( 2 ) * areas[t];
+                            Scalar longest = 0;
+                            for( int k = 0; k < 3; ++k ) {
+                                longest = std::max( longest, Vector3Ops::Magnitude(
+                                    Vector3Ops::mkVector3( *tri.pVertices[(k + 1) % 3], *tri.pVertices[k] ) ) );
+                            }
+                            if( !( twiceArea > eps3D * longest ) ) {
+                                reusedOpenRefusal = true;
+                            }
+                        }
+                    } else {
+                        const std::size_t ti = openRefusalTris[0];
+                        const std::size_t tj = openRefusalTris[1];
+                        const PointerTriangle& triI = ptr_polygons[ti];
+                        const PointerTriangle& triJ = ptr_polygons[tj];
+                        const Point3 Pi[3] = { *triI.pVertices[0], *triI.pVertices[1], *triI.pVertices[2] };
+                        const Point3 Pj[3] = { *triJ.pVertices[0], *triJ.pVertices[1], *triJ.pVertices[2] };
+                        const unsigned int Ii[3] = {
+                            m_lastWeldedId[static_cast<std::size_t>( triI.pVertices[0] - pBase )],
+                            m_lastWeldedId[static_cast<std::size_t>( triI.pVertices[1] - pBase )],
+                            m_lastWeldedId[static_cast<std::size_t>( triI.pVertices[2] - pBase )]
+                        };
+                        const unsigned int Ij[3] = {
+                            m_lastWeldedId[static_cast<std::size_t>( triJ.pVertices[0] - pBase )],
+                            m_lastWeldedId[static_cast<std::size_t>( triJ.pVertices[1] - pBase )],
+                            m_lastWeldedId[static_cast<std::size_t>( triJ.pVertices[2] - pBase )]
+                        };
+                        if( Ii[0] != Ii[1] && Ii[1] != Ii[2] && Ii[0] != Ii[2] &&
+                            Ij[0] != Ij[1] && Ij[1] != Ij[2] && Ij[0] != Ij[2] &&
+                            !GeometricUtilities::CheckOpenSurfaceStep4Pair( Pi, Ii, Pj, Ij, eps3D * eps3D ) )
+                        {
+                            reusedOpenRefusal = true;
+                        }
+                    }
+                }
+            }
+
+            if( !reusedOpenRefusal ) {
+                ++openCertificateAudits;
+                m_cachedOpenTopologyWeldedId.clear();
+                m_cachedTopologicalOpenRefusal = false;
+                openRefusalTris[0] = openRefusalTris[1] = size_t( -1 );
+
+                std::vector<Point3> corners;
+                corners.reserve( ptr_polygons.size() * 3 );
+                std::vector<unsigned int> cornerWeldedId;
+                if( pointWeldMatchesCorners ) {
+                    cornerWeldedId.reserve( ptr_polygons.size() * 3 );
+                }
+                for( size_t t = 0; t < ptr_polygons.size(); ++t ) {
+                    for( int k = 0; k < 3; ++k ) {
+                        corners.push_back( *ptr_polygons[t].pVertices[k] );
+                        if( pointWeldMatchesCorners ) {
+                            cornerWeldedId.push_back(
+                                m_lastWeldedId[static_cast<std::size_t>( ptr_polygons[t].pVertices[k] - pBase )] );
+                        }
+                    }
+                }
+
+                // Single-pass projected graph proof: if all triangles have a strict
+                // consistent 2D normal sign along `axis`, pPoints is a single-valued
+                // height function over (u,v), every 3D triangle has altitude > eps3D,
+                // and the 2D projection certifies at tolerance >= eps3D with exact
+                // projected weld aliases, then by contraction of orthogonal projection
+                // the 3D surface is provably embedded too -- certifying both the 3D
+                // surface and the reusable projection cache in one pass.
+                const auto coordinate=[](const Point3& p,int k) {return k==0?p.x:k==1?p.y:p.z;};
+                const auto scalarBits=[](Scalar v)->std::uint64_t {
+                    if(v==Scalar(0)) v=Scalar(0);
+                    std::uint64_t b=0;
+                    std::memcpy(&b,&v,sizeof(Scalar)<sizeof(std::uint64_t)?sizeof(Scalar):sizeof(std::uint64_t));
+                    return b;
+                };
+                if( std::isfinite( eps3D ) && eps3D > Scalar( 0 ) &&
+                    ( axisSign[0] == 1 || axisSign[0] == -1 ||
+                      axisSign[1] == 1 || axisSign[1] == -1 ||
+                      axisSign[2] == 1 || axisSign[2] == -1 ) )
+                {
+                    bool altitudesValid3D = true;
+                    for( std::size_t t = 0; t < ptr_polygons.size(); ++t ) {
+                        const Point3* P = &corners[3 * t];
+                        const Scalar twiceArea = Scalar( 2 ) * areas[t];
+                        Scalar longest = 0;
+                        for( int k = 0; k < 3; ++k ) {
+                            longest = std::max( longest, Vector3Ops::Magnitude( Vector3Ops::mkVector3( P[(k + 1) % 3], P[k] ) ) );
+                        }
+                        if( !( twiceArea > eps3D * longest ) ) {
+                            altitudesValid3D = false;
                             break;
                         }
                     }
-                    if(openRefusalPair[0]<pPoints.size()) break;
-                }
-            }
-            if(cert.certified) {
-                // Certify a planar projection once. This is stronger than
-                // merely keeping triangle indices: folded projections fail.
-                for(int axis=0;axis<3 && openGraphAxis<0;++axis) {
-                    auto projected=corners;
-                    for(auto& point : projected) {
-                        if(axis==0) point.x=0; else if(axis==1) point.y=0; else point.z=0;
-                    }
-                    if(!GeometricUtilities::IsEmbeddedOpenOrientedSurface(projected).certified) continue;
-                    // A tolerance-only seam is insufficient for an exact
-                    // graph: height motion could separate its two aliases.
-                    std::vector<unsigned int> welded;
-                    if(!GeometricUtilities::WeldVertexPositions(projected,welded)) continue;
-                    std::vector<size_t> first(projected.size(),projected.size());
-                    bool exactProjection=true;
-                    for(size_t i=0;i<projected.size();++i) {
-                        size_t& representative=first[welded[i]];
-                        if(representative==projected.size()) representative=i;
-                        else {
-                            const auto& a=projected[representative]; const auto& b=projected[i];
-                            if(a.x!=b.x || a.y!=b.y || a.z!=b.z) {exactProjection=false;break;}
+                    if( altitudesValid3D ) {
+                        for( int axis = 0; axis < 3 && openGraphAxis < 0; ++axis ) {
+                            if( axisSign[axis] != 1 && axisSign[axis] != -1 ) continue;
+                            struct SeenSlot {
+                                Scalar u = 0;
+                                Scalar v = 0;
+                                size_t idx = size_t(-1);
+                            };
+                            size_t seenCap = 16;
+                            while( seenCap < pPoints.size() * 2 ) seenCap <<= 1;
+                            const size_t seenMask = seenCap - 1;
+                            std::vector<SeenSlot> seen( seenCap );
+                            std::vector<std::pair<size_t,size_t>> coincident;
+                            bool graph = true;
+                            for( size_t i = 0; i < pPoints.size(); ++i ) {
+                                const auto& point = pPoints[i];
+                                if( !std::isfinite( point.x ) || !std::isfinite( point.y ) || !std::isfinite( point.z ) ) { graph = false; break; }
+                                const Scalar u = coordinate( point, (axis + 1) % 3 );
+                                const Scalar v = coordinate( point, (axis + 2) % 3 );
+                                std::uint64_t h = ( scalarBits( u ) * 0x9e3779b97f4a7c15ULL ) ^ ( scalarBits( v ) * 0xbf58476d1ce4e5b9ULL );
+                                h ^= h >> 33;
+                                size_t slot = static_cast<size_t>( h ) & seenMask;
+                                while( seen[slot].idx != size_t(-1) && !( seen[slot].u == u && seen[slot].v == v ) ) {
+                                    slot = ( slot + 1 ) & seenMask;
+                                }
+                                if( seen[slot].idx == size_t(-1) ) {
+                                    seen[slot].u = u;
+                                    seen[slot].v = v;
+                                    seen[slot].idx = i;
+                                } else {
+                                    const size_t other = seen[slot].idx;
+                                    if( coordinate( point, axis ) != coordinate( pPoints[other], axis ) ) { graph = false; break; }
+                                    coincident.emplace_back( other, i );
+                                }
+                            }
+                            if( !graph ) continue;
+
+                            auto projected = corners;
+                            for( auto& point : projected ) {
+                                if( axis == 0 ) point.x = 0; else if( axis == 1 ) point.y = 0; else point.z = 0;
+                            }
+                            std::vector<unsigned int> welded;
+                            const std::vector<unsigned int>* pPreWeld = pointWeldMatchesCorners ? &cornerWeldedId : nullptr;
+                            if( !GeometricUtilities::IsEmbeddedOpenOrientedSurface(
+                                projected, &welded, eps3D, pPreWeld, eps3D ).certified ) {
+                                continue;
+                            }
+                            const std::vector<unsigned int>& checkWeld = pPreWeld ? *pPreWeld : welded;
+                            std::vector<size_t> first( projected.size(), projected.size() );
+                            bool exactProjection = true;
+                            for( size_t i = 0; i < projected.size(); ++i ) {
+                                size_t& representative = first[checkWeld[i]];
+                                if( representative == projected.size() ) representative = i;
+                                else {
+                                    const auto& a = projected[representative]; const auto& b = projected[i];
+                                    if( a.x != b.x || a.y != b.y || a.z != b.z ) { exactProjection = false; break; }
+                                }
+                            }
+                            if( !exactProjection ) continue;
+
+                            openGraphAxis = axis;
+                            openGraphCoincidentPairs = std::move( coincident );
+                            m_bShapeOpenSheet = true;
+                            const Point3 centre( 0.5 * ( refLo.x + refHi.x ), 0.5 * ( refLo.y + refHi.y ), 0.5 * ( refLo.z + refHi.z ) );
+                            Scalar vol = 0;
+                            for( std::size_t t = 0; t < ptr_polygons.size(); ++t ) {
+                                const Point3* P = &corners[3 * t];
+                                vol += Vector3Ops::Dot( Vector3Ops::mkVector3( P[0], centre ),
+                                    Vector3Ops::Cross( Vector3Ops::mkVector3( P[1], centre ), Vector3Ops::mkVector3( P[2], centre ) ) );
+                            }
+                            m_bOpenSignedVolumeNegative = ( vol < Scalar( 0 ) );
                         }
                     }
-                    if(!exactProjection) continue;
-                    std::map<std::pair<Scalar,Scalar>,size_t> seen;
-                    std::vector<std::pair<size_t,size_t>> coincident;
-                    bool graph=true;
-                    const auto coordinate=[](const Point3& p,int k) {return k==0?p.x:k==1?p.y:p.z;};
-                    for(size_t i=0;i<pPoints.size();++i) {
-                        const auto& point=pPoints[i];
-                        if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {graph=false;break;}
-                        const auto key=std::make_pair(coordinate(pPoints[i],(axis+1)%3),coordinate(pPoints[i],(axis+2)%3));
-                        const auto inserted=seen.emplace(key,i);
-                        if(!inserted.second) {
-                            const size_t other=inserted.first->second;
-                            if(coordinate(pPoints[i],axis)!=coordinate(pPoints[other],axis)) {graph=false;break;}
-                            coincident.emplace_back(other,i);
+                }
+
+                if( !m_bShapeOpenSheet ) {
+                    const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface(
+                        corners, nullptr, Scalar( 0 ), pointWeldMatchesCorners ? &cornerWeldedId : nullptr, eps3D );
+                    m_bShapeOpenSheet = cert.certified;
+                    m_bOpenSignedVolumeNegative = cert.certified && cert.signedVolumeAboutCentre < 0;
+                    if( !cert.certified ) {
+                        for( const auto& triangle : ptr_polygons ) {
+                            for( int k = 0; k < 3; ++k ) {
+                                const Point3& a = *triangle.pVertices[k];
+                                const Point3& b = *triangle.pVertices[(k + 1) % 3];
+                                if( a.x == b.x && a.y == b.y && a.z == b.z ) {
+                                    openRefusalPair[0] = triangle.pVertices[k] - pPoints.data();
+                                    openRefusalPair[1] = triangle.pVertices[(k + 1) % 3] - pPoints.data();
+                                    break;
+                                }
+                            }
+                            if( openRefusalPair[0] < pPoints.size() ) break;
+                        }
+                        if( pointWeldMatchesCorners ) {
+                            m_cachedOpenTopologyWeldedId = m_lastWeldedId;
+                            m_cachedTopologicalOpenRefusal = cert.topologicalRefusal;
+                            openRefusalTris[0] = cert.refusalTriA;
+                            openRefusalTris[1] = cert.refusalTriB;
                         }
                     }
-                    if(graph) {openGraphAxis=axis;openGraphCoincidentPairs=std::move(coincident);}
                 }
             }
+        } else {
+            ++openCertificateAudits;
         }
     }
     m_bProvablyOpenSheet = m_bShapeOpenSheet && !smsUncertainNormalOrientation;
@@ -1011,15 +1247,50 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	if( ptr_polygons.empty() || pPoints.empty() ) {
 		return;
 	}
+	// DL-620 review P2-1.  "Provably open" and "watertight" are mutually
+	// exclusive claims about one surface, yet they are decided at two
+	// tolerances: the open certificate (ComputeAreas) welds at eps from the
+	// bounding box of the USED corners, this proof at eps from ALL of
+	// pPoints, unused storage included.  A crack wider than the first but
+	// narrower than the second (one far unused vertex suffices) used to
+	// certify BOTH, and since UpdateVertices skips this proof for an open
+	// sheet, any later deformation silently changed the answer.  The open
+	// certificate wins: it has proved a real boundary at the finer
+	// tolerance, and a signed parity test on a cracked surface can be
+	// wrong for rays through the crack, while refusing interior() only
+	// falls back to the honest unsigned distance.  Every caller (build,
+	// deformation, deserialization) reaches this check after ComputeAreas,
+	// so all three agree by construction.
+	if( m_bShapeOpenSheet ) {
+		return;
+	}
 
-	std::vector<unsigned int> weldedId;
-	Scalar weldEps = Scalar( 1e-9 );
-	if( !GeometricUtilities::WeldVertexPositions( pPoints, weldedId, &weldEps ) ) return;
+	if( !m_lastWeldValid || m_lastWeldedId.size() != pPoints.size() ) {
+		m_lastWeldValid = GeometricUtilities::WeldVertexPositions(
+			pPoints, m_lastWeldedId, &m_lastWeldEps, Scalar( 0 ), &m_lastWeldTransitive );
+	}
+	if( !m_lastWeldValid ) {
+		return;
+	}
+	const std::vector<unsigned int>& weldedId = m_lastWeldedId;
+	const Scalar weldEps = m_lastWeldEps;
+	const std::size_t nTris = ptr_polygons.size();
+	if( m_faceNormals.size() != nTris ) {
+		m_faceNormals.resize( nTris );
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			const PointerTriangle& tri = ptr_polygons[t];
+			m_faceNormals[t] = Vector3Ops::Normalize( Vector3Ops::Cross(
+				Vector3Ops::mkVector3( *tri.pVertices[1], *tri.pVertices[0] ),
+				Vector3Ops::mkVector3( *tri.pVertices[2], *tri.pVertices[0] ) ) );
+		}
+	}
 
 	// DL-150.  Report the weld's own vertex-count reduction so an author
 	// can see an over-aggressive weld even when the discriminator below
 	// does not (or cannot) catch it. Certification-time, never per query,
-	// like the diagnostics below.
+	// like the diagnostics below.  Printed before the cached-topology
+	// shortcut so every proof -- full or reused -- reports it (DL-620
+	// review round 2, P3-d).
 	{
 		unsigned int weldedCount = 0;
 		for( std::size_t i = 0; i < weldedId.size(); ++i ) {
@@ -1033,62 +1304,89 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 			pPoints.empty() ? 0.0 : 100.0 * ( 1.0 - (double)weldedCount / (double)pPoints.size() ) );
 	}
 
+	if( m_lastWeldTransitive && !m_watertightTopologyWeldedId.empty()
+		&& weldedId == m_watertightTopologyWeldedId )
+	{
+		if( m_cachedTopologicalWatertightRefusal ) {
+			// The refusal diagnostic printed when this partition was first
+			// proved still applies; say so rather than repeat its counts.
+			GlobalLog()->PrintEx( eLog_Info,
+				"TriangleMeshGeometryIndexed:: weld partition unchanged since the last "
+				"watertightness proof, which refused it -- interior() stays unsigned "
+				"(DL-31/DL-150)." );
+			return;
+		}
+		if( !m_watertightEdges.empty() ) {
+			bool coplanarOpposedFound = false;
+			std::array<unsigned int, 3> worstEdgeTriple = { 0, 0, 0 };
+			for( const WatertightEdgeWitness& e : m_watertightEdges ) {
+				const Vector3& n1 = m_faceNormals[e.t1];
+				const Vector3& n2 = m_faceNormals[e.t2];
+				if( !( Vector3Ops::Dot( n1, n2 ) < Scalar( 0 ) ) ) {
+					continue;
+				}
+				const PointerTriangle& tri1 = ptr_polygons[e.t1];
+				const PointerTriangle& tri2 = ptr_polygons[e.t2];
+				const Point3& third1 = *tri1.pVertices[e.opp1];
+				const Point3& third2 = *tri2.pVertices[e.opp2];
+				const Scalar dist1 = Vector3Ops::Dot( Vector3Ops::mkVector3( third2, *tri1.pVertices[0] ), n1 );
+				const Scalar dist2 = Vector3Ops::Dot( Vector3Ops::mkVector3( third1, *tri2.pVertices[0] ), n2 );
+				if( std::fabs( dist1 ) <= weldEps && std::fabs( dist2 ) <= weldEps ) {
+					coplanarOpposedFound = true;
+					worstEdgeTriple = { e.edgeA, e.edgeB, e.thirdW1 };
+					break;
+				}
+			}
+			if( coplanarOpposedFound ) {
+				GlobalLog()->PrintEx( eLog_Info,
+					"TriangleMeshGeometryIndexed:: this mesh's position weld produced a pair of "
+					"COPLANAR, OPPOSITELY WOUND triangles sharing an edge (e.g. edge {%u,%u}, third "
+					"vertex %u) that are not literally coincident -- this looks like two "
+					"independently tessellated sheets folded flat against each other (a false "
+					"stitch, or a zero-thickness double layer), not a legitimate seam or crease, so "
+					"it will answer proximity() (an honest unsigned distance) but REFUSE interior() "
+					"(no certified inside test).  See docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 "
+					"(DL-197).",
+					worstEdgeTriple[0], worstEdgeTriple[1], worstEdgeTriple[2] );
+				return;
+			}
+			m_bWatertight = true;
+			return;
+		}
+	}
+
+	m_watertightTopologyWeldedId.clear();
+	m_cachedTopologicalWatertightRefusal = false;
+	m_watertightEdges.clear();
+
 	const Point3* const pBase = &pPoints[0];
 
 	// DL-150/DL-197.  One entry per edge: a running COUNT (DL-31's own
 	// closed-2-manifold check) plus the index of the first two triangles
 	// seen at this edge (DL-197's coplanar/oppositely-wound discriminator
-	// below).  A single `unordered_map` with a small fixed-size value
-	// (no per-edge heap allocation, unlike a `vector<unsigned int>`
-	// value) instead of two separate maps -- measured ~30% faster
-	// `DoneIndexedTriangles` on the ~96k-triangle sphere / ~91k-triangle
-	// Dragon benchmarks below than the two-map version, since a mesh of
-	// that size has on the order of 1.5x as many edges as triangles and
-	// a `vector`-valued map pays a heap allocation per DISTINCT edge.
-	// `triIdx[2]` beyond the first two is never read: an edge with a
-	// third triangle is already refused by the `nonManifoldEdges` check
-	// below before the discriminator ever runs.
+	// below).  A flat open-addressed table avoids per-edge heap node
+	// allocations (~1.47M nodes on a 980k-triangle mesh).
 	struct EdgeInfo
 	{
+		std::uint64_t key = ~std::uint64_t( 0 );
 		unsigned int count = 0;
 		unsigned int triIdx[2] = { 0, 0 };
 	};
-	std::unordered_map<std::uint64_t, EdgeInfo> edgeInfo;
-	edgeInfo.reserve( ptr_polygons.size() * 3 );
+	// At most 3 nTris distinct edges, about 1.5 nTris on a closed mesh: a
+	// capacity of at least 4 nTris keeps the worst-case load below 3/4
+	// (DL-620 review P3-1: 6 nTris cost ~200 MB at 980k triangles).
+	std::size_t edgeCap = 16;
+	while( edgeCap < nTris * 4 ) {
+		edgeCap <<= 1;
+	}
+	const std::size_t edgeMask = edgeCap - 1;
+	std::vector<EdgeInfo> edgeTable( edgeCap );
+	std::vector<unsigned int> edgeSlots;
+	edgeSlots.reserve( nTris * 2 );
 
-	// DL-150.  One sorted (order-independent) post-weld vertex-id triple
-	// per triangle, collected in the SAME loop that already builds the
-	// edge map -- see this function's own header comment for the
-	// coincident-triangle mechanism this feeds, and for why it replaced
-	// an earlier per-corner-orientation discriminator.
-	std::vector<std::array<unsigned int, 3> > sortedTriangleIds;
-	sortedTriangleIds.reserve( ptr_polygons.size() );
-
-	// DL-197.  Per-triangle RAW (pre-weld) positions, welded vertex ids,
-	// and a geometric normal (from the triangle's own winding) -- feeds
-	// the coplanar/oppositely-wound discriminator below, which needs the
-	// mesh's real geometry, not just its post-weld topology, to tell a
-	// genuinely closed sharp crease from a false stitch (see that
-	// discriminator's own comment).  Cost disclosure: `sizeof(TriGeom)`
-	// is 108 bytes (3 Point3 + 3 unsigned int + 1 Vector3), ~9x
-	// `sortedTriangleIds`' own 12 bytes/triangle above -- a genuinely new
-	// TEMPORARY allocation (~10.4 MB on the 96360-triangle sphere this
-	// function's own cost measurement uses), freed when this function
-	// returns.  Not a persistent or per-query cost; see the ledger's
-	// DL-197 entry for the originally measured build overhead this adds.
-	struct TriGeom
-	{
-		Point3 p[3];
-		unsigned int w[3];
-		Vector3 normal;	// zero vector if the raw triangle is degenerate
-	};
-	std::vector<TriGeom> triGeoms;
-	triGeoms.reserve( ptr_polygons.size() );
-
-	for( MyPointerTriangleList::const_iterator i = ptr_polygons.begin(), e = ptr_polygons.end(); i != e; ++i ) {
-		const PointerTriangle& tri = *i;
+	for( std::size_t t = 0; t < nTris; ++t ) {
+		const PointerTriangle& tri = ptr_polygons[t];
 		unsigned int idx[3];
-		Point3 rawP[3];
 		for( int k = 0; k < 3; ++k ) {
 			const std::ptrdiff_t off = tri.pVertices[k] - pBase;
 			if( off < 0 || (std::size_t)off >= pPoints.size() ) {
@@ -1101,18 +1399,7 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 			// see the function's own comment for why these differ on
 			// almost every imported/tessellated mesh.
 			idx[k] = weldedId[(std::size_t)off];
-			rawP[k] = pPoints[(std::size_t)off];
 		}
-
-		{
-			TriGeom g;
-			g.p[0] = rawP[0]; g.p[1] = rawP[1]; g.p[2] = rawP[2];
-			g.w[0] = idx[0];  g.w[1] = idx[1];  g.w[2] = idx[2];
-			g.normal = Vector3Ops::Normalize( Vector3Ops::Cross(
-				Vector3Ops::mkVector3( rawP[1], rawP[0] ), Vector3Ops::mkVector3( rawP[2], rawP[0] ) ) );
-			triGeoms.push_back( g );
-		}
-		const unsigned int triIndex = (unsigned int)( triGeoms.size() - 1 );
 
 		bool degenerate = false;
 		for( int k = 0; k < 3; ++k ) {
@@ -1121,11 +1408,23 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 			if( a == b ) { degenerate = true; continue; }
 			if( a > b ) { std::swap( a, b ); }
 			const std::uint64_t key = ( (std::uint64_t)a << 32 ) | (std::uint64_t)b;
-			EdgeInfo& info = edgeInfo[key];
-			if( info.count < 2 ) { info.triIdx[info.count] = triIndex; }
+			std::size_t slot = static_cast<std::size_t>( ( key ^ ( key >> 33 ) ) * 0xff51afd7ed558ccdULL ) & edgeMask;
+			while( edgeTable[slot].key != ~std::uint64_t( 0 ) && edgeTable[slot].key != key ) {
+				slot = ( slot + 1 ) & edgeMask;
+			}
+			EdgeInfo& info = edgeTable[slot];
+			if( info.key == ~std::uint64_t( 0 ) ) {
+				info.key = key;
+				edgeSlots.push_back( static_cast<unsigned int>( slot ) );
+			}
+			if( info.count < 2 ) { info.triIdx[info.count] = static_cast<unsigned int>( t ); }
 			++info.count;
 		}
 		if( degenerate ) {
+			if( m_lastWeldTransitive ) {
+				m_watertightTopologyWeldedId = weldedId;
+				m_cachedTopologicalWatertightRefusal = true;
+			}
 			GlobalLog()->PrintEx( eLog_Info,
 				"TriangleMeshGeometryIndexed:: this mesh has a degenerate (repeated-vertex) "
 				"triangle, so it cannot be certified watertight -- interior() will read its "
@@ -1133,10 +1432,6 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 				"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-31)." );
 			return;
 		}
-
-		std::array<unsigned int, 3> sorted = { idx[0], idx[1], idx[2] };
-		std::sort( sorted.begin(), sorted.end() );
-		sortedTriangleIds.push_back( sorted );
 	}
 
 	// DL-31.  A closed 2-manifold with no boundary has EVERY edge shared
@@ -1152,12 +1447,17 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	// author what "unsigned only" traces back to. Animated geometry may
 	// repeat this information when its shape needs reproof.
 	unsigned int boundaryEdges = 0, nonManifoldEdges = 0;
-	for( std::unordered_map<std::uint64_t, EdgeInfo>::const_iterator i = edgeInfo.begin(), e = edgeInfo.end(); i != e; ++i ) {
-		if( i->second.count == 1 ) { ++boundaryEdges; }
-		else if( i->second.count > 2 ) { ++nonManifoldEdges; }
+	for( std::size_t i = 0; i < edgeSlots.size(); ++i ) {
+		const EdgeInfo& info = edgeTable[edgeSlots[i]];
+		if( info.count == 1 ) { ++boundaryEdges; }
+		else if( info.count > 2 ) { ++nonManifoldEdges; }
 	}
 
 	if( boundaryEdges > 0 || nonManifoldEdges > 0 ) {
+		if( m_lastWeldTransitive ) {
+			m_watertightTopologyWeldedId = weldedId;
+			m_cachedTopologicalWatertightRefusal = true;
+		}
 		GlobalLog()->PrintEx( eLog_Info,
 			"TriangleMeshGeometryIndexed:: this mesh is not watertight (%u boundary edge%s, "
 			"%u non-manifold edge%s) -- it will answer proximity() (an honest unsigned "
@@ -1168,19 +1468,108 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 		return;
 	}
 
-	// DL-150.  The edge-count check above cannot distinguish "one seam,
-	// welded to two coincident array slots" from "two independent sheets,
-	// welded to each other by an epsilon that happens to exceed their
-	// physical gap" -- see this function's own header comment for the
-	// full mechanism and for why an earlier orientation-based
-	// discriminator was replaced with this one (it falsely refused a
-	// legitimately closed solid with a sharp convex crease).  Sort the
-	// per-triangle id triples collected above and scan for adjacent
-	// duplicates: two DISTINCT triangles resolving to the SAME three
-	// post-weld vertices is the geometric signature of a false stitch --
-	// no legitimate mesh, at any dihedral angle, has two topologically
-	// distinct faces occupying the same three vertices.
-	{
+	// DL-150 / DL-197: Only reached when every edge has count == 2.
+	// Since every edge is shared by exactly two triangles, two distinct
+	// triangles share all 3 post-weld vertices iff at their shared edge
+	// their third post-weld vertex is identical.  Check this in O(1) per
+	// edge alongside the DL-197 coplanar/oppositely-wound discriminator;
+	// only materialize and sort `sortedTriangleIds` when a coincident pair
+	// is actually detected so the diagnostic reports the exact same count
+	// and triple.
+	bool hasCoincidentPair = false;
+	bool coplanarOpposedFound = false;
+	std::array<unsigned int, 3> worstEdgeTriple = { 0, 0, 0 };
+	std::vector<WatertightEdgeWitness> candidateEdges;
+	if( m_lastWeldTransitive ) {
+		candidateEdges.reserve( edgeSlots.size() );
+	}
+
+	for( std::size_t i = 0; i < edgeSlots.size(); ++i ) {
+		const EdgeInfo& info = edgeTable[edgeSlots[i]];
+		if( info.count != 2 ) {
+			continue;
+		}
+		const unsigned int t1 = info.triIdx[0];
+		const unsigned int t2 = info.triIdx[1];
+		const PointerTriangle& tri1 = ptr_polygons[t1];
+		const PointerTriangle& tri2 = ptr_polygons[t2];
+		const unsigned int w1[3] = {
+			weldedId[static_cast<std::size_t>( tri1.pVertices[0] - pBase )],
+			weldedId[static_cast<std::size_t>( tri1.pVertices[1] - pBase )],
+			weldedId[static_cast<std::size_t>( tri1.pVertices[2] - pBase )]
+		};
+		const unsigned int w2[3] = {
+			weldedId[static_cast<std::size_t>( tri2.pVertices[0] - pBase )],
+			weldedId[static_cast<std::size_t>( tri2.pVertices[1] - pBase )],
+			weldedId[static_cast<std::size_t>( tri2.pVertices[2] - pBase )]
+		};
+		const std::uint64_t key = info.key;
+		const unsigned int edgeA = static_cast<unsigned int>( key >> 32 );
+		const unsigned int edgeB = static_cast<unsigned int>( key & 0xFFFFFFFFu );
+		const unsigned int thirdW1 = w1[0] + w1[1] + w1[2] - edgeA - edgeB;
+		const unsigned int thirdW2 = w2[0] + w2[1] + w2[2] - edgeA - edgeB;
+		if( thirdW1 == thirdW2 ) {
+			hasCoincidentPair = true;
+			break;
+		}
+
+		unsigned char opp1 = 3, opp2 = 3;
+		for( unsigned char k = 0; k < 3; ++k ) {
+			if( w1[k] != edgeA && w1[k] != edgeB ) { opp1 = k; break; }
+		}
+		for( unsigned char k = 0; k < 3; ++k ) {
+			if( w2[k] != edgeA && w2[k] != edgeB ) { opp2 = k; break; }
+		}
+		if( opp1 >= 3 || opp2 >= 3 ) {
+			continue;
+		}
+		if( m_lastWeldTransitive ) {
+			WatertightEdgeWitness w;
+			w.t1 = t1;
+			w.t2 = t2;
+			w.opp1 = opp1;
+			w.opp2 = opp2;
+			w.edgeA = edgeA;
+			w.edgeB = edgeB;
+			w.thirdW1 = thirdW1;
+			candidateEdges.push_back( w );
+		}
+
+		if( coplanarOpposedFound ) {
+			continue;
+		}
+		const Vector3& n1 = m_faceNormals[t1];
+		const Vector3& n2 = m_faceNormals[t2];
+		const Scalar normalDot = Vector3Ops::Dot( n1, n2 );
+		if( !( normalDot < Scalar( 0 ) ) ) {
+			continue;
+		}
+		const Point3& third1 = *tri1.pVertices[opp1];
+		const Point3& third2 = *tri2.pVertices[opp2];
+		const Scalar dist1 = Vector3Ops::Dot( Vector3Ops::mkVector3( third2, *tri1.pVertices[0] ), n1 );
+		const Scalar dist2 = Vector3Ops::Dot( Vector3Ops::mkVector3( third1, *tri2.pVertices[0] ), n2 );
+		if( std::fabs( dist1 ) <= weldEps && std::fabs( dist2 ) <= weldEps ) {
+			coplanarOpposedFound = true;
+			worstEdgeTriple = { edgeA, edgeB, thirdW1 };
+		}
+	}
+
+	if( hasCoincidentPair ) {
+		if( m_lastWeldTransitive ) {
+			m_watertightTopologyWeldedId = weldedId;
+			m_cachedTopologicalWatertightRefusal = true;
+		}
+		std::vector<std::array<unsigned int, 3> > sortedTriangleIds( nTris );
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			const PointerTriangle& tri = ptr_polygons[t];
+			std::array<unsigned int, 3> sorted = {
+				weldedId[static_cast<std::size_t>( tri.pVertices[0] - pBase )],
+				weldedId[static_cast<std::size_t>( tri.pVertices[1] - pBase )],
+				weldedId[static_cast<std::size_t>( tri.pVertices[2] - pBase )]
+			};
+			std::sort( sorted.begin(), sorted.end() );
+			sortedTriangleIds[t] = sorted;
+		}
 		std::sort( sortedTriangleIds.begin(), sortedTriangleIds.end() );
 		unsigned int coincidentPairs = 0;
 		std::array<unsigned int, 3> worstTriple = { 0, 0, 0 };
@@ -1190,7 +1579,6 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 				++coincidentPairs;
 			}
 		}
-
 		if( coincidentPairs > 0 ) {
 			GlobalLog()->PrintEx( eLog_Info,
 				"TriangleMeshGeometryIndexed:: this mesh's position weld produced %u pair%s of "
@@ -1205,83 +1593,24 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 		}
 	}
 
-	// DL-197.  See this function's own header comment (the paragraphs
-	// dated 2026-09-18) for the full derivation.  At every edge -- known
-	// by this point to be shared by exactly two triangles with distinct
-	// vertex triples (both checked above) -- test whether the two
-	// triangles are geometrically coplanar AND oppositely wound, the
-	// physical signature of a false stitch regardless of how the two
-	// sheets' diagonals happen to be split.  The dot-product test is a
-	// cheap, NECESSARY pre-filter (an ordinary internal diagonal or a
-	// flat continuation always has dot >= 0); the plane-distance test
-	// against the SAME `weldEps` the vertex weld itself used is what
-	// actually discriminates a false stitch from a genuinely sharp
-	// convex crease, whose dot can ALSO be very negative as its apex
-	// angle shrinks.
-	{
-		bool coplanarOpposedFound = false;
-		std::array<unsigned int, 3> worstEdgeTriple = { 0, 0, 0 };
-		for( std::unordered_map<std::uint64_t, EdgeInfo>::const_iterator ei = edgeInfo.begin(), ee = edgeInfo.end();
-			 ei != ee && !coplanarOpposedFound; ++ei ) {
-			if( ei->second.count != 2 ) {
-				// Already refused above (count 1 or 3+) -- this can't
-				// happen (we wouldn't have reached this loop at all if
-				// any edge had count != 2), but skip defensively rather
-				// than read a stale/unset `triIdx` slot.
-				continue;
-			}
-			const TriGeom& g1 = triGeoms[ei->second.triIdx[0]];
-			const TriGeom& g2 = triGeoms[ei->second.triIdx[1]];
+	if( m_lastWeldTransitive ) {
+		m_watertightTopologyWeldedId = weldedId;
+		m_cachedTopologicalWatertightRefusal = false;
+		m_watertightEdges = std::move( candidateEdges );
+	}
 
-			const Scalar normalDot = Vector3Ops::Dot( g1.normal, g2.normal );
-			if( !( normalDot < Scalar( 0 ) ) ) {
-				// Same-facing (an ordinary internal diagonal or a flat
-				// continuation) or a degenerate zero-length normal:
-				// never a false-stitch signature.  Skip the more
-				// expensive plane-distance test below.
-				continue;
-			}
-
-			const std::uint64_t key = ei->first;
-			const unsigned int edgeA = (unsigned int)( key >> 32 );
-			const unsigned int edgeB = (unsigned int)( key & 0xFFFFFFFFu );
-			auto thirdVertex = [edgeA, edgeB]( const TriGeom& g, Point3& outP ) -> bool {
-				for( int k = 0; k < 3; ++k ) {
-					if( g.w[k] != edgeA && g.w[k] != edgeB ) { outP = g.p[k]; return true; }
-				}
-				return false;
-			};
-			Point3 third1, third2;
-			if( !thirdVertex( g1, third1 ) || !thirdVertex( g2, third2 ) ) {
-				// Can't happen for a non-degenerate triangle sharing
-				// exactly this edge, but refuse to guess rather than
-				// read garbage.
-				continue;
-			}
-
-			// Signed distance from a point to a plane (origin g.p[0],
-			// normal g.normal) -- same formula as RISE::Plane::Distance.
-			const Scalar dist1 = Vector3Ops::Dot( Vector3Ops::mkVector3( third2, g1.p[0] ), g1.normal );
-			const Scalar dist2 = Vector3Ops::Dot( Vector3Ops::mkVector3( third1, g2.p[0] ), g2.normal );
-			if( std::fabs( dist1 ) <= weldEps && std::fabs( dist2 ) <= weldEps ) {
-				coplanarOpposedFound = true;
-				worstEdgeTriple = { edgeA, edgeB, g1.w[0] + g1.w[1] + g1.w[2] - edgeA - edgeB };
-			}
-		}
-
-		if( coplanarOpposedFound ) {
-			GlobalLog()->PrintEx( eLog_Info,
-				"TriangleMeshGeometryIndexed:: this mesh's position weld produced a pair of "
-				"COPLANAR, OPPOSITELY WOUND triangles sharing an edge (e.g. edge {%u,%u}, third "
-				"vertex %u) that are not literally coincident -- this looks like two "
-				"independently tessellated sheets folded flat against each other (a false "
-				"stitch, or a zero-thickness double layer), not a legitimate seam or crease, so "
-				"it will answer proximity() (an honest unsigned distance) but REFUSE interior() "
-				"(no certified inside test).  See docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 "
-				"(DL-197).",
-				worstEdgeTriple[0], worstEdgeTriple[1], worstEdgeTriple[2] );
-			return;
-		}
+	if( coplanarOpposedFound ) {
+		GlobalLog()->PrintEx( eLog_Info,
+			"TriangleMeshGeometryIndexed:: this mesh's position weld produced a pair of "
+			"COPLANAR, OPPOSITELY WOUND triangles sharing an edge (e.g. edge {%u,%u}, third "
+			"vertex %u) that are not literally coincident -- this looks like two "
+			"independently tessellated sheets folded flat against each other (a false "
+			"stitch, or a zero-thickness double layer), not a legitimate seam or crease, so "
+			"it will answer proximity() (an honest unsigned distance) but REFUSE interior() "
+			"(no certified inside test).  See docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 "
+			"(DL-197).",
+			worstEdgeTriple[0], worstEdgeTriple[1], worstEdgeTriple[2] );
+		return;
 	}
 
 	m_bWatertight = true;
@@ -1789,6 +2118,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	bUseFaceNormals = !!buffer.getChar();
 
 	pShaderDirections.clear(); // live-only payload cannot survive topology deserialization
+	InvalidateTopologyProofCaches();
 	pPoints.clear();
 	pNormals.clear();
 	pCoords.clear();

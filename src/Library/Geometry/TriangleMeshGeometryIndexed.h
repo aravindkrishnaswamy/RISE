@@ -176,6 +176,29 @@ namespace RISE
             // A pair of coincident corners in one triangle is a necessary
             // refusal witness for the general (non-degenerate) certificate.
             size_t openRefusalPair[2] = {size_t(-1),size_t(-1)};
+			struct WatertightEdgeWitness
+			{
+				unsigned int t1 = 0;
+				unsigned int t2 = 0;
+				unsigned char opp1 = 0;
+				unsigned char opp2 = 0;
+				unsigned int edgeA = 0;
+				unsigned int edgeB = 0;
+				unsigned int thirdW1 = 0;
+			};
+			std::vector<Vector3> m_faceNormals;
+			std::vector<unsigned int> m_lastWeldedId;
+			Scalar m_lastWeldEps = Scalar( 0 );
+			bool m_lastWeldTransitive = false;
+			bool m_lastWeldValid = false;
+			std::vector<unsigned int> m_cachedOpenTopologyWeldedId;
+			bool m_cachedTopologicalOpenRefusal = false;
+			size_t openRefusalTris[2] = { size_t( -1 ), size_t( -1 ) };
+			std::vector<unsigned int> m_watertightTopologyWeldedId;
+			bool m_cachedTopologicalWatertightRefusal = false;
+			std::vector<WatertightEdgeWitness> m_watertightEdges;
+
+			void InvalidateTopologyProofCaches();
 
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas(bool positionsChanged = true, bool graphProofReusable = false, bool refusalProofReusable = false);
