@@ -461,6 +461,7 @@ static void TestOpenSheetCSG()
 	const std::string framePath = WriteBilinear( "dl616_frame.bilinear", MakeBilinearFrame() );
 	const std::string tcubePath = WriteBilinear( "dl616_tcube.bilinear", MakeTJunctionCube() );
 	const std::string ballInPath = WriteBezier( "dl616_ballin.bezier", MakeCubeSphere( 1, false ) );
+	const std::string bcubePath = WriteBilinear( "dl616_bcube.bilinear", MakeBilinearCube() );
 	const std::string sheetZ =
 		"clippedplane_geometry\n{\n name sheet_z\n pta -3 -3 0\n ptb 3 -3 0\n ptc 3 3 0\n ptd -3 3 0\n}\n";
 	const std::string sheetX =
@@ -506,6 +507,13 @@ static void TestOpenSheetCSG()
 	// leaves a hemispherical dimple.
 	scene += "box_geometry\n{\n name cube2\n width 2\n height 2\n depth 2\n}\n";
 	obj( "da", "cube2" ); obj( "db", "ball", " position 0 0 1\n" ); csg( "dimple", "da", "db", "subtraction" );
+	// Final review P1: a union entered from inside the analytic sphere
+	// whose exit is the completed exit of an overlapping Bezier ball.
+	obj( "ua", "sph" ); obj( "ub", "ball", " position 1.2 0 0\n" ); csg( "union_exit", "ua", "ub", "union" );
+	// ... and a bilinear (unflipped-normal) operand: box minus a unit
+	// bilinear cube poking out of its top face leaves a square pit.
+	scene += "bilinearpatch_geometry\n{\n name bcube\n file " + bcubePath + "\n}\n";
+	obj( "pa", "cube2" ); obj( "pb", "bcube", " position -0.5 -0.5 0.5\n" ); csg( "pit", "pa", "pb", "subtraction" );
 	// P3-b: the same trimming geometry when the solid is closed but NOT
 	// certified (the T-junction cube).
 	// The uncertified closed trimmer is the INWARD-wound cube-sphere: closed
@@ -629,6 +637,9 @@ static void TestOpenSheetCSG()
 			// lies within the ball's self-hit floor of its surface.
 			const RayIntersection floorHit = Cast( *dimple, Point3( 0.2, 0, 3 ), down );
 			Check( floorHit.geometric.bHit, "R3: camera ray lands on the dimple floor" );
+			Check( floorHit.geometric.bHit && Vector3Ops::Dot( floorHit.geometric.vNormal, down ) < 0 &&
+				Vector3Ops::Dot( floorHit.geometric.UnflippedGeomNormal(), Vector3( 0, 0, 1 ) ) > 0,
+				"P1: the dimple floor's shading normal faces the camera and its true outward normal points up" );
 			const Point3 o = floorHit.geometric.ptIntersection;
 			int phantomHits = 0, phantomShadows = 0, total = 0;
 			for( int k = 0; k < 16; ++k ) {
@@ -656,6 +667,26 @@ static void TestOpenSheetCSG()
 				<< wall.geometric.ptIntersection.z << ")" << std::endl;
 			Check( wall.geometric.bHit && wall.geometric.ptIntersection.x < -0.3 && wall.geometric.ptIntersection.z < 0.5,
 				"R3: a grazing ray across the dimple meets the far dimple wall" );
+		}
+	}
+	{	// Final review P1: the completed exit's normal is OUTWARD.
+		const IObject* ue = loaded.Object( "union_exit" );
+		Check( ue != nullptr, "P1: union composite loads" );
+		if( ue ) {
+			const Vector3 east( 1, 0, 0 );
+			const RayIntersection h = Cast( *ue, Point3( 0, 0.05, 0.03 ), east );
+			std::cout << "    union exit from inside: hit " << h.geometric.bHit << " x " << h.geometric.ptIntersection.x
+				<< " n.d " << Vector3Ops::Dot( h.geometric.vNormal, east )
+				<< " trueN.d " << Vector3Ops::Dot( h.geometric.UnflippedGeomNormal(), east ) << std::endl;
+			const IObject* pit = loaded.Object( "pit" );
+			const RayIntersection pf = pit ? Cast( *pit, Point3( 0.1, 0.2, 3 ), Vector3( 0, 0, -1 ) ) : RayIntersection( Ray(), nullRasterizerState );
+			Check( pit && pf.geometric.bHit && std::fabs( pf.geometric.ptIntersection.z - 0.5 ) < 1e-6 &&
+				Vector3Ops::Dot( pf.geometric.vNormal, Vector3( 0, 0, 1 ) ) > 0 &&
+				Vector3Ops::Dot( pf.geometric.UnflippedGeomNormal(), Vector3( 0, 0, 1 ) ) > 0,
+				"P1: a box minus a bilinear cube shows its pit floor with an upward normal" );
+			Check( h.geometric.bHit && h.geometric.ptIntersection.x > 2.0 &&
+				Vector3Ops::Dot( h.geometric.UnflippedGeomNormal(), east ) > 0,
+				"P1: a union exit through a Bezier operand reports the true OUTWARD normal" );
 		}
 	}
 	{	// P3-e: AddPatch after preparation stales the composite's cache.
@@ -690,7 +721,7 @@ static void TestOpenSheetCSG()
 		Check( ic && io && AsCSG( ic )->IsProvablyOpenSheet() && AsCSG( ic )->TrimsSheet() && AsCSG( it )->TrimsSheet(),
 			"P3-1: trimming roles agree for a certified and an uncertified closed trimmer" );
 		Check( io && !AsCSG( io )->TrimsSheet() && !AsCSG( io )->IsProvablyOpenSheet(),
-			"P3-1: a topologically OPEN operand never trims a sheet" );
+			"P3-1: a closed T-junction body reads as topologically OPEN and never trims a sheet" );
 		if( it && mt && ic ) {
 			for( const Scalar x : { 0.3, 0.6, 0.85, 1.2 } ) {
 				const RayIntersection a = Cast( *it, Point3( x, 0.4, 3 ), down );
@@ -747,6 +778,7 @@ static void TestOpenSheetCSG()
 	std::remove( framePath.c_str() );
 	std::remove( tcubePath.c_str() );
 	std::remove( ballInPath.c_str() );
+	std::remove( bcubePath.c_str() );
 }
 
 //////////////////////////////////////////////////////////////////////

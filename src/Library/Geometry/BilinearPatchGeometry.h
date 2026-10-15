@@ -70,7 +70,11 @@ namespace RISE
 			// A VERSIONED slot, never a once_flag that an edit resets: an
 			// edit bumps m_certGeneration, and the certificate is recomputed
 			// under m_certMutex when m_certComputedGeneration lags behind it.
-			// Nothing a querying thread may be using is ever destroyed.
+			// This only removes the undefined behaviour of resetting a
+			// once_flag another thread may be inside; it does NOT make
+			// editing during a render safe (AddPatch / Prepare still change
+			// `patches` under readers) -- scenes are immutable while a
+			// render runs.
 			mutable std::mutex				m_certMutex;
 			std::atomic<unsigned int>		m_certGeneration;
 			mutable std::atomic<unsigned int>	m_certComputedGeneration;

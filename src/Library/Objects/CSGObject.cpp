@@ -980,7 +980,13 @@ namespace
 	//! surface's self-hit floor (a reflection or shadow ray leaving the
 	//! surface): the suppressed self root is the surface the ray is
 	//! leaving, and the first REPORTED crossing is the next real one.  0 for
-	//! a grazing crossing (no reliable side).
+	//! a near-tangent crossing (|cos| <= 1e-3), which goes to the voted
+	//! parity instead.  Why one crossing rather than always voting: a
+	//! dropped or doubled root corrupts a parity walk exactly as it
+	//! corrupts a first crossing, and the vote runs three walks of many
+	//! crossings each (and gets the self-hit-floor start wrong); dropped
+	//! roots concentrate at near-tangent contacts, which this rule hands
+	//! to the vote.
 	int FirstCrossingSide( const RayIntersection& firstHit, const Vector3& dir )
 	{
 		if( !firstHit.geometric.bHit || !( firstHit.geometric.range < Scalar( 0.5 ) * RISE_INFINITY ) ) {
@@ -991,8 +997,10 @@ namespace
 		}
 		const Vector3 n = Vector3Ops::Normalize( firstHit.geometric.UnflippedGeomNormal() );
 		const Scalar c = Vector3Ops::Dot( n, dir );
-		if( c > Scalar( 1e-6 ) ) return 1;
-		if( c < Scalar( -1e-6 ) ) return -1;
+		// Near-tangent crossings are where a root can be dropped or doubled
+		// (silhouettes, seams); leave those to the voted fallback.
+		if( c > Scalar( 1e-3 ) ) return 1;
+		if( c < Scalar( -1e-3 ) ) return -1;
 		return 0;
 	}
 
@@ -1197,10 +1205,27 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 			const Scalar t0 = hit.geometric.range + OpenSheetRecastStep( hit.geometric.range, scale );
 			RayIntersection exitHit( Ray( hit.geometric.ray.PointAtLength( t0 ), hit.geometric.ray.Dir() ), nullRasterizerState );
 			operand->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
-			if( exitHit.geometric.bHit && exitHit.geometric.range < Scalar( 0.5 ) * RISE_INFINITY ) {
-				hit.geometric.range2 = t0 + exitHit.geometric.range;
-				hit.geometric.vNormal2 = exitHit.geometric.vNormal;
-				hit.geometric.vGeomNormal2 = exitHit.geometric.vGeomNormal;
+			// Accept it only if it really is an exit (outward normal along
+			// the ray); anything else leaves the record as the operand
+			// published it.  The interval algebra reads vNormal2 /
+			// vGeomNormal2 as the OUTWARD normal at the exit (what a sphere
+			// or box publishes), but a patch set reports a back-face hit
+			// with its normals flipped toward the ray
+			// (bGeomNormalOrientedToRay), so un-flip both.  range2 follows
+			// Object::IntersectRay's exit convention -- published a hair
+			// PAST the face (`range2 + SURFACE_INTERSEC_ERROR`), which
+			// AdoptCsgExitFacePayloadViaProbe relies on -- whereas the
+			// re-cast's `range` is backed off a hair SHORT of it, hence the
+			// two back-off terms.
+			if( FirstCrossingSide( exitHit, hit.geometric.ray.Dir() ) > 0 ) {
+				const bool flipped = exitHit.geometric.bGeomNormalOrientedToRay && !exitHit.geometric.bGeomNormalRayDerived;
+				// (The back-off is in the operand's own units; under a
+				// scaled operand this is approximate, at the 1e-12 level.)
+				const Object* operandObject = dynamic_cast<const Object*>( operand );
+				const Scalar backoff = operandObject ? operandObject->GetSurfaceIntersecError() : Scalar( 0 );
+				hit.geometric.range2 = t0 + exitHit.geometric.range + Scalar( 2 ) * backoff;
+				hit.geometric.vNormal2 = flipped ? -exitHit.geometric.vNormal : exitHit.geometric.vNormal;
+				hit.geometric.vGeomNormal2 = exitHit.geometric.UnflippedGeomNormal();
 				hit.boundaryRange2 = hit.geometric.range2;
 				hit.hasBoundaryRange2 = true;
 			}
@@ -1275,7 +1300,11 @@ namespace
 	//! boundary), 0 a closed one (no free boundary), -1 unknown.  Patch
 	//! sets are decided by exact seam topology; a clipped plane is always
 	//! an open sheet; a geometry that answers a signed distance is closed
-	//! by type.  Meshes and displaced surfaces expose only their
+	//! by type.  Topology is EXACT seam identity: a body that encloses a
+	//! volume but has a T-junction (a side glued to two half-sides) reads
+	//! as OPEN, so it is trimmed rather than trimming -- conservative (it
+	//! never acts as an inside test), and its closed certificate is
+	//! refused anyway.  Meshes and displaced surfaces expose only their
 	//! certificates, so for them the role still follows certification
 	//! (an uncertified one is unknown and is never trimmed or trimming).
 	int OperandOpenness( const IObject* operand )

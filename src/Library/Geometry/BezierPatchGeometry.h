@@ -83,7 +83,10 @@ namespace RISE
 			// Versioned like the certificate slot below (never a once_flag
 			// reset by an edit while another thread may be inside
 			// call_once): an edit bumps m_areaGeneration and the table is
-			// rebuilt under m_areaMutex when m_areaComputedGeneration lags.
+			// rebuilt in place under m_areaMutex when
+			// m_areaComputedGeneration lags.  Like that slot it only removes
+			// the once_flag undefined behaviour; scenes are immutable while
+			// a render runs.
 			mutable std::mutex				m_areaMutex;
 			std::atomic<unsigned int>		m_areaGeneration;
 			mutable std::atomic<unsigned int>	m_areaComputedGeneration;
@@ -100,7 +103,11 @@ namespace RISE
 			// A VERSIONED slot, never a once_flag that an edit resets: an
 			// edit bumps m_certGeneration, and the certificate is recomputed
 			// under m_certMutex when m_certComputedGeneration lags behind it.
-			// Nothing a querying thread may be using is ever destroyed.
+			// This only removes the undefined behaviour of resetting a
+			// once_flag another thread may be inside; it does NOT make
+			// editing during a render safe (AddPatch / Prepare still change
+			// `patches` under readers) -- scenes are immutable while a
+			// render runs.
 			mutable std::mutex				m_certMutex;
 			std::atomic<unsigned int>		m_certGeneration;
 			mutable std::atomic<unsigned int>	m_certComputedGeneration;

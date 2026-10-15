@@ -476,10 +476,12 @@ Scalar BilinearPatchGeometry::GetArea( ) const
 
 void BilinearPatchGeometry::InvalidateCertificate()
 {
-	m_certGeneration.fetch_add( 1, std::memory_order_acq_rel );
+	// Clear the flags BEFORE publishing the new generation, so no query
+	// that sees the new generation can still read the old answer.
 	m_bCertifiedWatertight.store( false, std::memory_order_release );
 	m_bProvablyOpenSheet.store( false, std::memory_order_release );
 	m_bNegativeOpenSignedVolume.store( false, std::memory_order_release );
+	m_certGeneration.fetch_add( 1, std::memory_order_acq_rel );
 	GeometricUtilities::BumpPatchCertificateEpoch();	// cached composite certificates are stale
 }
 
