@@ -125,6 +125,7 @@
 #include "GradedIndexMedium.h"
 #include "../Animation/TimeIndexedView.h"
 #include <algorithm>
+#include <atomic>
 #include <vector>
 #include <cstdlib>
 #include <cmath>
@@ -498,11 +499,12 @@ namespace RISE
 		//!
 		//! Thread-local, keyed on the object manager, its spatial-structure
 		//! generation (process-unique, advanced by every spatial edit) and its
-		//! item count.  RESIDUAL: an edit that changes only an object's
-		//! MATERIAL (opaque <-> glass) without a spatial invalidation keeps the
-		//! old listing until the next spatial edit; the correct home for this
-		//! list is the object manager's PrepareForRendering, which this file
-		//! does not own.
+		//! item count, and on `OpenSheetCatalogEpoch`, which the object
+		//! manager's PrepareForRendering advances so a MATERIAL-only edit
+		//! (opaque <-> glass, invisible to the spatial generation) rebuilds
+		//! the listing at the next render pass.  An edit made between
+		//! passes and observed before the next PrepareForRendering keeps
+		//! the old listing until then.
 		//!
 		//! MOTION BLUR (round 2, P3-b): inside a time-indexed pass every
 		//! render thread re-poses its own clones per pixel sample while the
@@ -514,11 +516,28 @@ namespace RISE
 		{
 			const IObjectManager* pObjects;
 			unsigned long long generation;
+			unsigned long long epoch;
 			unsigned int itemCount;
 			std::vector<OpenSheetCatalogEntry> sheets;
 
-			OpenSheetCatalog() : pObjects( 0 ), generation( 0 ), itemCount( 0 ) {}
+			OpenSheetCatalog() : pObjects( 0 ), generation( 0 ), epoch( 0 ), itemCount( 0 ) {}
 		};
+
+		//! DL-618 (round 3): a process-wide epoch every thread's catalog is
+		//! keyed on.  `ObjectManager::PrepareForRendering` advances it, so an
+		//! edit the spatial generation does not see -- an object's MATERIAL
+		//! swapped opaque <-> glass -- is picked up by the next render pass
+		//! (every rasterizer prepares the object manager before rendering).
+		inline std::atomic<unsigned long long>& OpenSheetCatalogEpoch()
+		{
+			static std::atomic<unsigned long long> epoch( 1 );
+			return epoch;
+		}
+
+		inline void InvalidateOpenSheetCatalogs()
+		{
+			OpenSheetCatalogEpoch().fetch_add( 1, std::memory_order_acq_rel );
+		}
 
 		inline bool MaterialMayRefract( const IMaterial* pMaterial )
 		{
@@ -539,11 +558,14 @@ namespace RISE
 			static thread_local OpenSheetCatalog catalog;
 			const unsigned long long generation = pObjects->GetSpatialStructureGeneration();
 			const unsigned int itemCount = pObjects->getItemCount();
-			if( catalog.pObjects == pObjects && catalog.generation == generation && catalog.itemCount == itemCount ) {
+			const unsigned long long epoch = OpenSheetCatalogEpoch().load( std::memory_order_acquire );
+			if( catalog.pObjects == pObjects && catalog.generation == generation &&
+				catalog.epoch == epoch && catalog.itemCount == itemCount ) {
 				return catalog.sheets;
 			}
 			catalog.pObjects = pObjects;
 			catalog.generation = generation;
+			catalog.epoch = epoch;
 			catalog.itemCount = itemCount;
 			catalog.sheets.clear();
 
@@ -1272,6 +1294,42 @@ namespace RISE
 			// then telescopes from whatever it holds.  No-op unless the
 			// innermost medium is graded.
 			GradedIndexMedium::RecordAt( stack, pos );
+		}
+
+		//! DL-618 (round 3, P3-c): the stack an HWSS COMPANION lane delegates
+		//! with when the hero walk hands its first segment (from @a origin to
+		//! the hit) to per-wavelength walks.  The lanes used to be seeded at
+		//! the segment's MIDPOINT while the hero kept a stack seeded at (or
+		//! carried to) @a origin; for an open sheet the two points can lie on
+		//! opposite sides of its normal-prism boundary (or an occluder's
+		//! shadow along its normal), so hero and companions disagreed on the
+		//! medium.  Same rule, same point: a lane seeded at @a origin whose
+		//! MEMBERSHIP (objects and open-sheet flags, not the possibly
+		//! dispersive indices) equals @a hero's is used.  Otherwise the hero's
+		//! stack is not a seed at @a origin (it carries walk history, or
+		//! @a origin lies on a surface, where containment is ambiguous) and
+		//! the lane falls back to the midpoint seed as before.
+		inline void SeedCompanionLane(
+			IORStack& lane,
+			const IORStack& hero,
+			const Point3& origin,
+			const Point3& midpoint,
+			const IScene& scene,
+			const Scalar nm
+			)
+		{
+			IORStack atOrigin( hero.EnvironmentIOR() );
+			SeedFromPoint( atOrigin, origin, scene, nm );
+			bool same = atOrigin.Depth() == hero.Depth();
+			for( std::size_t i = 0; same && i < hero.Depth(); i++ ) {
+				same = atOrigin.ObjectAt( i ) == hero.ObjectAt( i ) && atOrigin.isOpenSheetAt( i ) == hero.isOpenSheetAt( i );
+			}
+			if( same ) {
+				lane = atOrigin;
+				return;
+			}
+			lane = IORStack( hero.EnvironmentIOR() );
+			SeedFromPoint( lane, midpoint, scene, nm );
 		}
 
 		//! DL-345: does object @a pY ENCLOSE the crossing at @a p (the walk

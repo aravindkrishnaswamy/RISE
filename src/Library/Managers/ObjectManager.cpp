@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "ObjectManager.h"
 #include "../Utilities/ExpressionMemo.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
@@ -2595,6 +2596,9 @@ void ObjectManager::PrepareForRendering() const
 	// provider -- but nothing today depends on it.  (ExpressionMemo.h's
 	// Invalidate() comment is the single account.)
 	ExpressionMemo::Invalidate();
+	// DL-618: every thread's open-sheet catalog (IORStackSeeding::OpenSheetsOf)
+	// rebuilds on its next use, so a material-only edit is seen.
+	IORStackSeeding::InvalidateOpenSheetCatalogs();
 
 	// EXPRESSION MEMO, the SECOND bump, and the reason there are two.
 	// Objects are about to be realized and the hierarchy re-baked, so any

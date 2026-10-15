@@ -554,6 +554,45 @@ static void PartA()
 		}
 	}
 
+	// A16 (round 3): a material-only edit (opaque -> glass) does not move the
+	// spatial generation; the next PrepareForRendering must rebuild the
+	// open-sheet catalog.
+	{
+		Loaded edit( Header() + HSheet( "g_pane", 2, 3, true ) + Obj( "pane", "g_pane", "matte" ) );
+		Check( edit.ok, "A16 scene loads" );
+		if( edit.ok ) {
+			Check( edit.Seed( Point3( 0, 0, 0 ) ).Depth() == 1, "A16 control: an opaque pane is not an open sheet" );
+			IObjectPriv* pane = edit.job->GetObjects()->GetItem( "pane" );
+			const IMaterial* glass = edit.job->GetMaterials()->GetItem( "glass15" );
+			Check( pane && glass, "A16: pane and glass found" );
+			if( pane && glass ) pane->AssignMaterial( *glass );   // returns false by contract (Object::AssignMaterial)
+			edit.job->GetScene()->GetObjects()->PrepareForRendering();
+			const IORStack after = edit.Seed( Point3( 0, 0, 0 ) );
+			Check( after.Depth() == 2 && Close( after.top(), 1.5 ),
+				"A16: after PrepareForRendering the swapped-in glass pane seeds the point under it" );
+		}
+	}
+
+	// A17 (round 3, P3-c): an HWSS companion lane delegating the first
+	// segment.  The camera (0.9, 0, 0) is inside a pane's normal prism
+	// (pane half-extent 1 at height 2); the segment's midpoint toward a wall
+	// at x 5 is outside it.  The lane must follow the hero's seed.
+	{
+		Loaded prism( Header() + HSheet( "g_pane", 2, 1, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		Check( prism.ok, "A17 scene loads" );
+		if( prism.ok ) {
+			const Point3 origin( 0.9, 0, 0 ), midpoint( 2.95, 0, 0 );
+			const IORStack hero = prism.Seed( origin );
+			IORStack lane( 1.0 );
+			IORStackSeeding::SeedCompanionLane( lane, hero, origin, midpoint, prism.Scene(), 550 );
+			const IORStack atMid = prism.Seed( midpoint );
+			char label[200];
+			std::snprintf( label, sizeof(label), "A17: hero depth %zu, companion lane depth %zu (midpoint seed alone: %zu)",
+				hero.Depth(), lane.Depth(), atMid.Depth() );
+			Check( hero.Depth() == 2 && lane.Depth() == 2 && lane.topObject() == hero.topObject() && atMid.Depth() == 1, label );
+		}
+	}
+
 	// A15 (round 2, P2-4): a point on a sheet's FRONT side is rejected
 	// without a scene walk.
 	{
