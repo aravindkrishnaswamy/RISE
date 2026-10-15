@@ -615,6 +615,92 @@ static void PartA()
 		}
 	}
 
+	// A19 (round 3 review, P2-a): a TESSELLATED sphere luminaire (a mesh,
+	// whose intersector may report the point's own facet at t ~ 0) under a
+	// sea sheet.  A near-origin self-hit must not consume the own-body
+	// exemption that the later exit through the sphere's top needs.
+	{
+		Loaded mesh( Header() + HSheet( "g_sea", 4, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ "lambertian_luminaire_material\n{\n\tname m_lamp\n\texitance white\n\tscale 1\n\tmaterial matte\n}\n\n"
+			+ "uniformcolor_painter\n{\n\tname pnt_zero\n\tcolor 0 0 0\n}\n\n"
+			+ "sphere_geometry\n{\n\tname g_ball\n\tradius 0.5\n}\n\n"
+			+ "displaced_geometry\n{\n\tname g_mesh\n\tbase_geometry g_ball\n\tdetail 24\n\tdisplacement pnt_zero\n\tdisp_scale 0.0\n}\n\n"
+			+ "sdf_geometry\n{\n\tname g_sdf\n\tpart sphere union 0 0 0 0 0 0 0 1 1 1 0.5 0 0 0\n\tsampling_detail 64\n}\n\n"
+			+ Obj( "lamp", "g_mesh", "m_lamp", "0 1 0" ) + Obj( "sdflamp", "g_sdf", "m_lamp", "3 1 0" ) );
+		Check( mesh.ok, "A19 scene loads" );
+		if( mesh.ok ) {
+			int seeded = 0, total = 0;
+			for( int k = 0; k < 12; k++ ) {
+				const bool sdf = k >= 6;
+				const double ox = sdf ? 3.0 : 0.0;
+				RayIntersection hit( Ray( Point3( ox + 0.05 * ( k % 6 ) - 0.12, -2, 0.03 * ( k % 6 ) - 0.07 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				mesh.O( sdf ? "sdflamp" : "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+				if( !hit.geometric.bHit ) continue;
+				total++;
+				const IORStack st = mesh.Seed( hit.geometric.ptIntersection );
+				if( st.Depth() == 2 && Close( st.top(), 1.33 ) ) seeded++;
+			}
+			char label[160];
+			std::snprintf( label, sizeof(label), "A19: %d of %d points on the lower halves of a tessellated and an SDF luminaire are seeded", seeded, total );
+			Check( total > 0 && seeded == total, label );
+		}
+	}
+
+	// A20 (round 3 review, P2-b): keyframed clipped-plane corners move a
+	// sheet without moving its transform, outside any time-indexed pass.
+	// PosedOpenSheet must re-describe it.
+	{
+		Loaded kf( Header() + HSheet( "g_pane", 2, 1, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		Check( kf.ok, "A20 scene loads" );
+		if( kf.ok ) {
+			IORStackSeeding::OpenSheetCatalogEntry before;
+			const bool found = IORStackSeeding::FindOpenSheet( kf.Scene().GetObjects(), kf.O( "pane" ), before );
+			IKeyframable* geom = dynamic_cast<IKeyframable*>( kf.job->GetGeometries()->GetItem( "g_pane" ) );
+			Check( found && geom, "A20: pane catalogued and keyframable" );
+			if( found && geom ) {
+				// Tilt the pane 40 deg about z by moving its corners.
+				double p[4][3] = { { -1, 0, 1 }, { 1, 0, 1 }, { 1, 0, -1 }, { -1, 0, -1 } };
+				const char* names[4] = { "pta", "ptb", "ptc", "ptd" };
+				for( int c = 0; c < 4; c++ ) {
+					RotZ( -40, p[c][0], p[c][1] );
+					p[c][1] += 2;
+					char value[96];
+					std::snprintf( value, sizeof(value), "%g %g %g", p[c][0], p[c][1], p[c][2] );
+					IKeyframeParameter* kp = geom->KeyframeFromParameters( names[c], value );
+					if( kp ) { geom->SetIntermediateValue( *kp ); kp->release(); }
+				}
+				geom->RegenerateData();
+				const IORStackSeeding::OpenSheetCatalogEntry after = IORStackSeeding::PosedOpenSheet( before );
+				char label[200];
+				std::snprintf( label, sizeof(label), "A20: re-posed normal (%.3f, %.3f, %.3f), expected (0.643, 0.766, 0)",
+					after.normal.x, after.normal.y, after.normal.z );
+				Check( std::fabs( after.normal.x - 0.6428 ) < 0.01 && std::fabs( after.normal.y - 0.7660 ) < 0.01, label );
+			}
+		}
+	}
+
+	// A21 (round 3 review, P3-1): an emitter quad lying 1e-3 above
+	// the floor of a closed opaque room, a pond sheet above the room.  The
+	// room's ceiling is the normal ray's first opaque event, an exit; the
+	// room's floor passes within the back probe's reach but not through the
+	// seed point, so the room is not the seed's own body and blocks.
+	{
+		Loaded flush( Header() + HSheet( "g_pond", 6, 6, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" )
+			+ "lambertian_luminaire_material\n{\n\tname m_lamp\n\texitance white\n\tscale 1\n\tmaterial matte\n}\n\n"
+			+ HSheet( "g_lamp", 0.001, 0.5, true ) + Obj( "lamp", "g_lamp", "m_lamp" ) );
+		Check( flush.ok, "A21 scene loads" );
+		if( flush.ok ) {
+			RayIntersection hit( Ray( Point3( 0.1, 1, 0.05 ), Vector3( 0, -1, 0 ) ), nullRasterizerState );
+			flush.O( "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+			Check( hit.geometric.bHit, "A21: probe meets the flush emitter" );
+			if( hit.geometric.bHit ) {
+				Check( flush.Seed( hit.geometric.ptIntersection ).Depth() == 1,
+					"A21: a flush emitter inside a closed room is not seeded into the pond above the room" );
+			}
+		}
+	}
+
 	// A15 (round 2, P2-4): a point on a sheet's FRONT side is rejected
 	// without a scene walk.
 	{

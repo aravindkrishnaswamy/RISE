@@ -10946,6 +10946,104 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 //////////////////////////////////////////////////////////////////////
 
 namespace {
+//! DL-619 (round 2, P3-d; round 3 review P3-2/P3-3): the legacy wavelength
+//! refresh of a chain's interfaces when the native replay declines.  Replays
+//! the receiver walk's stack at THIS wavelength so BOTH sides of every
+//! refraction -- the material side and the exterior a walk returns to --
+//! and the radiance index are the wavelength's, not the RGB seed's.  Same
+//! bookkeeping as SnellContinueChain: closed media push on entry and pop on
+//! exit (an exit through an object not on the stack leaves it unchanged);
+//! an open sheet is crossed by its face; a reflection leaves the stack
+//! alone and refreshes only its material side.
+//!
+//! The STARTING stack is re-indexed at this wavelength first: for an HWSS
+//! companion it is the hero's stack, carrying the hero's indices for
+//! enclosing media the chain may never cross.  Each entry that is a scene
+//! object (a composite's internal layer keys are never dereferenced) is
+//! re-queried with the stack's current object set to it, at the RECEIVER
+//! (the context of an object-only principal-axis hit, moved to `start`, so
+//! a position-varying index reads the walk's tracked value there, DL-09 /
+//! DL-292); an entry no axis ray meets keeps its index (documented
+//! residual), and a non-refracting entry (DL-46 re-push) takes its parent's
+//! refreshed index.
+void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVertex>& chain,RISE::Scalar nm,
+    const RISE::Point3& start,const RISE::IScene& scene,const RISE::IORStack* starting)
+{
+	using namespace RISE;
+	using namespace RISE::Implementation;
+	IORStack replay = starting ? *starting : IORStack( Scalar( 1 ) );
+	if( replay.Depth() > 1 && scene.GetObjects() ) {
+		struct Objects : IEnumCallback<IObject> {
+			std::vector<const IObject*> items;
+			bool operator()(const IObject& object) override { items.push_back(&object); return true; }
+		} objects;
+		scene.GetObjects()->EnumerateObjects( objects );
+		static const Vector3 kAxes[6] = { Vector3(1,0,0), Vector3(-1,0,0), Vector3(0,1,0),
+			Vector3(0,-1,0), Vector3(0,0,1), Vector3(0,0,-1) };
+		IORStack partial( replay.EnvironmentIOR() );
+		for( std::size_t e = 1; e < replay.Depth(); e++ ) {
+			const IObject* obj = replay.ObjectAt( e );
+			const bool inScene = obj && std::find( objects.items.begin(), objects.items.end(), obj ) != objects.items.end();
+			Scalar index = 0;
+			for( int a = 0; inScene && a < 6 && index <= 0; a++ ) {
+				RayIntersection hit( Ray( start, kAxes[a] ), nullRasterizerState );
+				obj->IntersectRay( hit, RISE_INFINITY, true, true, false );
+				if( !hit.geometric.bHit || !hit.pMaterial ) continue;
+				RayIntersectionGeometric atReceiver( hit.geometric );
+				atReceiver.ptIntersection = start;
+				atReceiver.ptObjIntersec = Point3Ops::Transform( obj->GetFinalInverseTransformMatrix(), start );
+				IORStack query( partial );
+				query.SetCurrentObject( obj );
+				const SpecularInfo info = hit.pMaterial->GetSpecularInfoNM( atReceiver, query, nm );
+				if( !info.valid ) continue;
+				index = info.canRefract ? info.ior : partial.top();
+			}
+			if( index > 0 && std::isfinite( index ) ) {
+				replay.SetIORAt( e, index );
+			}
+			if( obj ) {
+				partial.SetCurrentObject( obj );
+				partial.push( index > 0 ? index : partial.top() );
+			}
+		}
+	}
+	for( unsigned int i = 0; i < chain.size(); i++ )
+	{
+		ManifoldVertex& v = chain[i];
+		if( !v.pMaterial || !v.pObject ) {
+			continue;
+		}
+		if( v.isReflection ) {
+			if( v.isExiting ) v.etaI = v.eta; else v.etaT = v.eta;
+			continue;
+		}
+		const Scalar before = replay.top();
+		const Scalar index = v.eta;
+		replay.SetCurrentObject( v.pObject );
+		if( !v.isExiting ) {
+			if( v.isOpenSheet && replay.containsCurrent() ) {
+				replay.pop();
+			}
+			v.etaI = replay.top();
+			if( v.isOpenSheet ) {
+				replay.pushOpenSheet( index );
+			} else {
+				replay.push( index );
+			}
+			v.etaT = index;
+		} else {
+			v.etaI = index;
+			if( replay.containsCurrent() ) {
+				replay.pop();
+			}
+			v.etaT = replay.top();
+		}
+		v.radianceEtaI = v.isOpenSheet ? v.etaI : before;
+	}
+}
+}
+
+namespace {
 void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm,
     const Point3& start,const IScene& scene,const IORStack* starting) {
 
@@ -10978,120 +11076,51 @@ void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm,
 				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
 			}
 		}
-		// Fallback for contexts declined by native replay below (DL-619
-		// round 2, P3-d): replay the receiver walk's stack at THIS
-		// wavelength so BOTH sides of every refraction -- the material side
-		// and the exterior a walk returns to -- and the radiance index are
-		// the wavelength's, not the RGB seed's.  Same bookkeeping as
-		// SnellContinueChain: closed media push on entry and pop on exit
-		// (an exit through an object not on the stack leaves it unchanged);
-		// an open sheet is crossed by its face; a reflection leaves the
-		// stack alone and refreshes only its material side.
-		//
-		// The STARTING stack is re-indexed at this wavelength too (round 3,
-		// P3-3): for an HWSS companion it is the hero's stack, carrying the
-		// hero's indices for enclosing media the chain may never cross.  Each
-		// entry's material is re-queried where an object-only principal-axis
-		// ray from the receiver meets it; an entry no such ray meets keeps
-		// its index (documented residual), and a non-refracting entry
-		// (DL-46 re-push) takes its parent's refreshed index.
-		IORStack replay = starting ? *starting : IORStack( Scalar( 1 ) );
-		{
-			static const Vector3 kAxes[6] = { Vector3(1,0,0), Vector3(-1,0,0), Vector3(0,1,0),
-				Vector3(0,-1,0), Vector3(0,0,1), Vector3(0,0,-1) };
-			IORStack partial( replay.EnvironmentIOR() );
-			for( std::size_t e = 1; e < replay.Depth(); e++ ) {
-				const IObject* obj = replay.ObjectAt( e );
-				Scalar index = 0;
-				bool refracts = true;
-				for( int a = 0; obj && a < 6 && index <= 0; a++ ) {
-					RayIntersection hit( Ray( start, kAxes[a] ), nullRasterizerState );
-					obj->IntersectRay( hit, RISE_INFINITY, true, true, false );
-					if( !hit.geometric.bHit || !hit.pMaterial ) continue;
-					const SpecularInfo info = hit.pMaterial->GetSpecularInfoNM( hit.geometric, partial, nm );
-					if( !info.valid ) continue;
-					refracts = info.canRefract;
-					index = refracts ? info.ior : partial.top();
-				}
-				if( index > 0 && std::isfinite( index ) ) {
-					replay.SetIORAt( e, index );
-				}
-				if( obj ) {
-					partial.SetCurrentObject( obj );
-					partial.push( index > 0 ? index : partial.top() );
-				}
-			}
-		}
-		for( unsigned int i = 0; i < chain.size(); i++ )
-		{
-			ManifoldVertex& v = chain[i];
-			if( !v.pMaterial || !v.pObject ) {
-				continue;
-			}
-			if( v.isReflection ) {
-				if( v.isExiting ) v.etaI = v.eta; else v.etaT = v.eta;
-				continue;
-			}
-			const Scalar before = replay.top();
-			const Scalar index = v.eta;
-			replay.SetCurrentObject( v.pObject );
-			if( !v.isExiting ) {
-				if( v.isOpenSheet && replay.containsCurrent() ) {
-					replay.pop();
-				}
-				v.etaI = replay.top();
-				if( v.isOpenSheet ) {
-					replay.pushOpenSheet( index );
-				} else {
-					replay.push( index );
-				}
-				v.etaT = index;
-			} else {
-				v.etaI = index;
-				if( replay.containsCurrent() ) {
-					replay.pop();
-				}
-				v.etaT = replay.top();
-			}
-			v.radianceEtaI = v.isOpenSheet ? v.etaI : before;
-		}
 	}
 
     if(!(nm>0) || chain.empty()) return;
-    const IORStack air(1);
-    SMSStartingMedia media;
-    IORStack replay(1);
-    const auto domain=SMSQueryDomain::NM(nm);
-    // Reuse the audited membership capture, including enclosing objects
-    // absent from the chain. Unsupported contexts retain legacy behavior.
-    if(!SMSDomainReplay::Capture(scene,start,starting?*starting:air,media)
-        || !SMSDomainReplay::BuildStack(media,domain,replay)) return;
-    auto refreshed=chain;
-    Point3 previous=start;
-    Scalar scale=1;
-    for(const auto& vertex:chain) scale=std::max(scale,Point3Ops::Distance(start,vertex.position));
-    for(auto& vertex:refreshed) {
-        if(!vertex.pObject || !vertex.pMaterial) return;
-        const Vector3 direction=Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position,previous));
-        RayIntersection hit(Ray(previous,direction),nullRasterizerState);
-        if(&vertex!=&refreshed.front()) hit.geometric.ray.Advance(1e-8);
-        vertex.pObject->IntersectRay(hit,RISE_INFINITY,true,true,false);
-        SMSCompleteNativeHit(hit,scene.GetObjects());
-        if(!hit.geometric.bHit || hit.pMaterial!=vertex.pMaterial
-            || Point3Ops::Distance(hit.geometric.ptIntersection,vertex.position)>1e-5*scale) return;
-        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
-        const Scalar beforeTop = replay.top();
-        bool exiting;
-        if(!SMSDomainReplay::Cross(*vertex.pMaterial,vertex.pObject,hit.geometric,
-            domain,vertex.isReflection,replay,vertex.etaI,vertex.etaT,exiting)
-            || exiting!=vertex.isExiting) return;
-        vertex.radianceEtaI = hit.geometric.bProvablyNoInterior ? vertex.etaI : beforeTop;
-        previous=vertex.position;
-    }
-    chain.swap(refreshed);
 
+    // Native replay first: the audited membership capture, including
+    // enclosing objects absent from the chain.  It overwrites every vertex's
+    // interface pair and radiance index, so the legacy replay below runs
+    // only when it declines (round 3 review, P3-2).
+    auto nativeReplay = [&]() -> bool {
+        const IORStack air(1);
+        SMSStartingMedia media;
+        IORStack replay(1);
+        const auto domain=SMSQueryDomain::NM(nm);
+        if(!SMSDomainReplay::Capture(scene,start,starting?*starting:air,media)
+            || !SMSDomainReplay::BuildStack(media,domain,replay)) return false;
+        auto refreshed=chain;
+        Point3 previous=start;
+        Scalar scale=1;
+        for(const auto& vertex:chain) scale=std::max(scale,Point3Ops::Distance(start,vertex.position));
+        for(auto& vertex:refreshed) {
+            if(!vertex.pObject || !vertex.pMaterial) return false;
+            const Vector3 direction=Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position,previous));
+            RayIntersection hit(Ray(previous,direction),nullRasterizerState);
+            if(&vertex!=&refreshed.front()) hit.geometric.ray.Advance(1e-8);
+            vertex.pObject->IntersectRay(hit,RISE_INFINITY,true,true,false);
+            SMSCompleteNativeHit(hit,scene.GetObjects());
+            if(!hit.geometric.bHit || hit.pMaterial!=vertex.pMaterial
+                || Point3Ops::Distance(hit.geometric.ptIntersection,vertex.position)>1e-5*scale) return false;
+            if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+            const Scalar beforeTop = replay.top();
+            bool exiting;
+            if(!SMSDomainReplay::Cross(*vertex.pMaterial,vertex.pObject,hit.geometric,
+                domain,vertex.isReflection,replay,vertex.etaI,vertex.etaT,exiting)
+                || exiting!=vertex.isExiting) return false;
+            vertex.radianceEtaI = hit.geometric.bProvablyNoInterior ? vertex.etaI : beforeTop;
+            previous=vertex.position;
+        }
+        chain.swap(refreshed);
+        return true;
+    };
+    if(nativeReplay()) return;
+    RefreshLegacySeedFallbackNM(chain,nm,start,scene,starting);
 }
 }
+
 ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const Point3& pos,
 	const Vector3& geomNormal,
