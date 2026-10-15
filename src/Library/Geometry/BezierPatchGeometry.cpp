@@ -248,7 +248,8 @@ BezierPatchGeometry::BezierPatchGeometry(
   bUseBSP( bUseBSP_ ),
   m_areaOnce( new std::once_flag ),
   m_area( 0 ),
-  m_certOnce( new std::once_flag ),
+  m_certGeneration( 1 ),
+  m_certComputedGeneration( 0 ),
   m_bCertifiedWatertight( false ),
   m_bProvablyOpenSheet( false ),
   m_bNegativeOpenSignedVolume( false )
@@ -635,7 +636,7 @@ Scalar BezierPatchGeometry::GetArea( ) const
 
 void BezierPatchGeometry::InvalidateCertificate()
 {
-	m_certOnce.reset( new std::once_flag );
+	m_certGeneration.fetch_add( 1, std::memory_order_acq_rel );
 	m_bCertifiedWatertight.store( false, std::memory_order_release );
 	m_bProvablyOpenSheet.store( false, std::memory_order_release );
 	m_bNegativeOpenSignedVolume.store( false, std::memory_order_release );
@@ -644,11 +645,24 @@ void BezierPatchGeometry::InvalidateCertificate()
 
 void BezierPatchGeometry::EnsureCertified() const
 {
-	std::call_once( *m_certOnce, [this]() {
-		bool watertight = false, open = false, negative = false;
-		GeometricUtilities::CertifyBezierPatchSet( patches, watertight, open, negative );
-		m_bCertifiedWatertight.store( watertight, std::memory_order_release );
-		m_bProvablyOpenSheet.store( open, std::memory_order_release );
-		m_bNegativeOpenSignedVolume.store( negative, std::memory_order_release );
-	} );
+	const unsigned int wanted = m_certGeneration.load( std::memory_order_acquire );
+	if( m_certComputedGeneration.load( std::memory_order_acquire ) == wanted ) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock( m_certMutex );
+	const unsigned int current = m_certGeneration.load( std::memory_order_acquire );
+	if( m_certComputedGeneration.load( std::memory_order_acquire ) == current ) {
+		return;
+	}
+	bool watertight = false, open = false, negative = false;
+	GeometricUtilities::CertifyBezierPatchSet( patches, watertight, open, negative );
+	m_bCertifiedWatertight.store( watertight, std::memory_order_release );
+	m_bProvablyOpenSheet.store( open, std::memory_order_release );
+	m_bNegativeOpenSignedVolume.store( negative, std::memory_order_release );
+	m_certComputedGeneration.store( current, std::memory_order_release );
+}
+
+int BezierPatchGeometry::TopologicalOpenness() const
+{
+	return GeometricUtilities::BezierPatchSetOpenness( patches );
 }

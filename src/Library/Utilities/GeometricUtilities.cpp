@@ -2123,6 +2123,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 			}
 		}
 		if( !withinBudget ) {
+			result.budgetRefusal = true;
 			return result;
 		}
 		// DL-620 review round 2, P3-a.  Entry nodes, cell slots and the
@@ -2230,6 +2231,7 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 				pairs += 0.5 * c * ( c - 1.0 );
 			}
 			if( pairs > 1024.0 * double( nTris ) + 16777216.0 ) {
+				result.budgetRefusal = true;
 				return result;
 			}
 		}
@@ -3365,31 +3367,25 @@ namespace
 	}
 }
 
-void GeometricUtilities::CertifyBilinearPatchSet(
-	const std::vector<BilinearPatch>& patches,
-	bool& outCertifiedWatertight,
-	bool& outProvablyOpenSheet,
-	bool& outNegativeOpenSignedVolume,
-	GeometricUtilities::PatchSetCertDiagnostics* diag )
+namespace
 {
-	std::vector<BezierPatch> nets;
-	nets.reserve( patches.size() );
-	for( const BilinearPatch& b : patches ) {
-		for( int k = 0; k < 4; ++k ) {
-			if( !PatchPointFinite( b.pts[k] ) ) {
-				PatchSetVerdict v;
-				v.reason = "non-finite control point";
-				PublishVerdict( v, outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
-				return;
-			}
-		}
-		nets.push_back( ElevateBilinear( b ) );
-	}
-	// Two bilinear sides with the same endpoints ARE the same segment, but
-	// their elevated interior control points come from different call
-	// sites; give every side with a given endpoint pair one canonical
-	// polygon so the exact seam matching sees the glue that is there.
+	//! Bilinear patches as their exact degree elevations, with every side
+	//! sharing an endpoint pair given ONE canonical polygon (two bilinear
+	//! sides with the same endpoints ARE the same segment, but their
+	//! elevated interior points come from different call sites).  FALSE on
+	//! a non-finite corner.
+	bool BilinearNets( const std::vector<BilinearPatch>& patches, std::vector<BezierPatch>& nets )
 	{
+		nets.clear();
+		nets.reserve( patches.size() );
+		for( const BilinearPatch& b : patches ) {
+			for( int k = 0; k < 4; ++k ) {
+				if( !PatchPointFinite( b.pts[k] ) ) {
+					return false;
+				}
+			}
+			nets.push_back( ElevateBilinear( b ) );
+		}
 		struct Key
 		{
 			Point3 a, b;
@@ -3411,6 +3407,86 @@ void GeometricUtilities::CertifyBilinearPatchSet(
 				SetNetSide( q, s, fwd ? it->second : ReversePatchCurve( it->second ) );
 			}
 		}
+		return true;
+	}
+
+	//! Topological openness of a patch set from EXACT seam identity alone
+	//! (no geometry, no embedding proof): +1 at least one side has no
+	//! glued partner; 0 every side is glued to exactly one reversed partner
+	//! (no free boundary); -1 undecidable (empty, non-finite, a collapsed
+	//! or looping side, a side shared by more than two patches, or two
+	//! sides sharing endpoints without being one reversed seam).
+	int NetSetOpenness( const std::vector<BezierPatch>& patches )
+	{
+		if( patches.empty() ) {
+			return -1;
+		}
+		struct SideKey
+		{
+			Point3 a, b;
+			unsigned int id;
+		};
+		std::vector<SideKey> sides;
+		sides.reserve( patches.size() * 4 );
+		for( std::size_t p = 0; p < patches.size(); ++p ) {
+			for( int s = 0; s < 4; ++s ) {
+				const PatchCurve c = NetSide( patches[p], s );
+				for( const Point3& q : c ) {
+					if( !PatchPointFinite( q ) ) {
+						return -1;
+					}
+				}
+				if( PatchPointEqual( c[0], c[3] ) ) {
+					return -1;
+				}
+				const bool fwd = PatchPointLess( c[0], c[3] );
+				sides.push_back( { fwd ? c[0] : c[3], fwd ? c[3] : c[0], static_cast<unsigned int>( p * 4 + s ) } );
+			}
+		}
+		std::sort( sides.begin(), sides.end(), []( const SideKey& x, const SideKey& y ) {
+			if( PatchPointLess( x.a, y.a ) ) return true;
+			if( PatchPointLess( y.a, x.a ) ) return false;
+			if( PatchPointLess( x.b, y.b ) ) return true;
+			if( PatchPointLess( y.b, x.b ) ) return false;
+			return x.id < y.id;
+		} );
+		bool anyFree = false;
+		for( std::size_t i = 0; i < sides.size(); ) {
+			std::size_t j = i + 1;
+			while( j < sides.size() && PatchPointEqual( sides[j].a, sides[i].a ) && PatchPointEqual( sides[j].b, sides[i].b ) ) {
+				++j;
+			}
+			if( j - i > 2 ) {
+				return -1;
+			}
+			if( j - i == 2 ) {
+				const PatchCurve c0 = NetSide( patches[sides[i].id / 4], sides[i].id % 4 );
+				const PatchCurve c1 = NetSide( patches[sides[i + 1].id / 4], sides[i + 1].id % 4 );
+				if( !PatchCurveEqual( c0, ReversePatchCurve( c1 ) ) ) {
+					return -1;
+				}
+			} else {
+				anyFree = true;
+			}
+			i = j;
+		}
+		return anyFree ? 1 : 0;
+	}
+}
+
+void GeometricUtilities::CertifyBilinearPatchSet(
+	const std::vector<BilinearPatch>& patches,
+	bool& outCertifiedWatertight,
+	bool& outProvablyOpenSheet,
+	bool& outNegativeOpenSignedVolume,
+	GeometricUtilities::PatchSetCertDiagnostics* diag )
+{
+	std::vector<BezierPatch> nets;
+	if( !BilinearNets( patches, nets ) ) {
+		PatchSetVerdict v;
+		v.reason = "non-finite control point";
+		PublishVerdict( v, outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
+		return;
 	}
 	PublishVerdict( CertifyBezierNetsAdaptive( nets, diag ? diag->workBudget : 0 ),
 		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
@@ -3425,6 +3501,20 @@ void GeometricUtilities::CertifyBezierPatchSet(
 {
 	PublishVerdict( CertifyBezierNetsAdaptive( patches, diag ? diag->workBudget : 0 ),
 		outCertifiedWatertight, outProvablyOpenSheet, outNegativeOpenSignedVolume, diag );
+}
+
+int GeometricUtilities::BezierPatchSetOpenness( const std::vector<BezierPatch>& patches )
+{
+	return NetSetOpenness( patches );
+}
+
+int GeometricUtilities::BilinearPatchSetOpenness( const std::vector<BilinearPatch>& patches )
+{
+	std::vector<BezierPatch> nets;
+	if( !BilinearNets( patches, nets ) ) {
+		return -1;
+	}
+	return NetSetOpenness( nets );
 }
 
 unsigned int GeometricUtilities::PatchCertificateEpoch()
