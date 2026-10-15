@@ -482,6 +482,14 @@ static Scalar NormalFieldDivergence( const RayIntersection& h )
 	return Vector3Ops::Dot( d.dndu, d.dpdu ) + Vector3Ops::Dot( d.dndv, d.dpdv );
 }
 
+//! Derivatives either withheld or describing a right-handed
+//! (dpdu, dpdv, n) frame with the reported shading normal.
+static bool FrameHonest( const RayIntersection& h )
+{
+	const SurfaceDerivativesInfo& d = h.geometric.derivatives;
+	return !d.valid || Vector3Ops::Dot( Vector3Ops::Cross( d.dpdu, d.dpdv ), h.geometric.vNormal ) > 0;
+}
+
 static const CSGObject* AsCSG( const IObject* o )
 {
 	return dynamic_cast<const CSGObject*>( o );
@@ -562,6 +570,8 @@ static void TestOpenSheetCSG()
 	scene += NamedMeshCube( "shape_smooth", false, false );
 	scene += "sphere_geometry\n{\n name huge2\n radius 100000\n}\n";
 	obj( "sa", "shape_smooth" ); obj( "sz", "huge2" ); csg( "smooth_lens", "sa", "sz", "intersection" );
+	// Review of 8309af4f4 (P3-2): the inward-wound mesh exited from inside.
+	obj( "wa", "shape_in" ); obj( "wz", "huge2" ); csg( "inward_lens", "wa", "wz", "intersection" );
 	// Review P3-2: a genuine grazing exit through the bilinear cube's top.
 	obj( "ga", "cube2" ); obj( "gb", "bcube" ); csg( "graze_lens", "ga", "gb", "intersection" );
 	// Review P3-2: a Bezier operand scaled 1000x (back-off in its frame).
@@ -802,6 +812,7 @@ static void TestOpenSheetCSG()
 				"P2-1: a smooth double-sided mesh exited from inside reports the OUTWARD normals" );
 			Check( e.geometric.derivatives.valid && NormalFieldDivergence( e ) > 0,
 				"P2-1: its normal derivatives are re-paired with the outward shading normal" );
+			Check( FrameHonest( e ), "P3-2: the smooth exit's derivative frame is right-handed with its normal" );
 			// Grazing exit near the +x edge of the bottom face: the outward
 			// GEOMETRIC normal is along the ray (the mesh flipped it) while
 			// the outward interpolated SHADING normal, tilted toward +x, is
@@ -816,6 +827,14 @@ static void TestOpenSheetCSG()
 				"P2-1: a GRAZING smooth exit keeps both normals outward, in one hemisphere" );
 			Check( ge.geometric.derivatives.valid && NormalFieldDivergence( ge ) > 0,
 				"P2-1: the grazing exit's normal derivatives pair with the outward shading normal" );
+		}
+		const IObject* iwl = loaded.Object( "inward_lens" );
+		if( iwl ) {
+			const RayIntersection w = Cast( *iwl, Point3( 0.1, 0.1, 0.2 ), down );
+			std::cout << "    inward-wound exit: derivatives " << w.geometric.derivatives.valid << std::endl;
+			Check( w.geometric.bHit && std::fabs( w.geometric.ptIntersection.z + 1 ) < 1e-6 &&
+				Vector3Ops::Dot( w.geometric.vGeomNormal, down ) > 0 && Coherent( w ) && FrameHonest( w ),
+				"P3-2: an inward-wound mesh exit is outward and never publishes a mirrored derivative frame" );
 		}
 		const IObject* gl = loaded.Object( "graze_lens" );
 		if( gl ) {
@@ -1013,6 +1032,95 @@ static std::vector<BilinearPatch> ReadBilinearFile( const std::string& path )
 	}
 	std::fclose( f );
 	return out;
+}
+
+//! A watertight double-sided mesh with two disjoint cube lobes, [-1,1]^3
+//! and the same cube moved to y in [-5,-3]: closed, but not convex.
+static std::string TwoLobeMesh( const std::string& name )
+{
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n name " << name << "\n double_sided TRUE\n face_normals TRUE\n";
+	const Point3 vertices[] = { Point3(-1,-1,-1), Point3(1,-1,-1), Point3(1,1,-1), Point3(-1,1,-1),
+		Point3(-1,-1,1), Point3(1,-1,1), Point3(1,1,1), Point3(-1,1,1) };
+	for( int lobe = 0; lobe < 2; ++lobe ) {
+		for( const auto& p : vertices ) {
+			s << " vertex " << p.x << ' ' << ( p.y - 4 * lobe ) << ' ' << p.z << '\n';
+		}
+	}
+	for( int i = 0; i < 16; ++i ) {
+		s << " uv " << ( i % 2 ) << ' ' << ( ( i / 2 ) % 2 ) << '\n';
+	}
+	const int triangles[][3] = { {0,2,1},{0,3,2},{4,5,6},{4,6,7},
+		{0,1,5},{0,5,4},{3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5} };
+	for( int lobe = 0; lobe < 2; ++lobe ) {
+		for( const auto& t : triangles ) {
+			s << " triangle " << ( t[0] + 8 * lobe ) << ' ' << ( t[1] + 8 * lobe ) << ' ' << ( t[2] + 8 * lobe ) << '\n';
+		}
+	}
+	return s.str() + "}\n";
+}
+
+//! Review of 8309af4f4 (P2): a secondary ray leaving a non-convex
+//! watertight mesh operand.  Its origin sits a back-off off the face it
+//! just left, so containment must be decided for the segment actually
+//! travelled, never at that origin: a reflection leaving the upper
+//! lobe's outside toward the lower lobe ENTERS the lower lobe, and its
+//! entry normal must survive the contained-origin path.
+static void TestNonConvexMeshUnion()
+{
+	std::cout << "H2. secondary rays leaving a non-convex watertight mesh operand" << std::endl;
+	std::string scene = Materials( false ) + TwoLobeMesh( "lobes" ) +
+		"sphere_geometry\n{\n name far_sph\n radius 0.5\n}\n" +
+		"standard_object\n{\n name la\n geometry lobes\n material glass\n}\n" +
+		"standard_object\n{\n name lb\n geometry far_sph\n material glass\n position 20 0 0\n}\n" +
+		"csg_object\n{\n name lobe_union\n obja la\n objb lb\n operation union\n material glass\n}\n";
+	LoadedScene loaded( scene );
+	const IObject* u = loaded.Object( "lobe_union" );
+	const IObject* la = u ? AsCSG( u )->GetOperandA() : nullptr;
+	const auto* meshG = la ? dynamic_cast<const TriangleMeshGeometryIndexed*>( la->GetGeometry() ) : nullptr;
+	Check( meshG && meshG->IsCertifiedWatertight(), "P2: the two-lobe mesh is certified watertight" );
+	if( !u ) {
+		return;
+	}
+	const Vector3 up( 0, 1, 0 ), downY( 0, -1, 0 );
+	// Reflection: hit the upper lobe's bottom face from outside, then
+	// leave from that (backed-off) point back down toward the lower lobe.
+	// Several x offsets vary the triangle hit.
+	int reflectOk = 0, transmitOk = 0;
+	const Scalar xs[] = { 0.1, -0.3, 0.55, -0.7 };
+	for( const Scalar x : xs ) {
+		const RayIntersection in = Cast( *u, Point3( x, -2, 0.2 ), up );
+		const RayIntersection refl = Cast( *u, in.geometric.ptIntersection, downY );
+		const bool entry = in.geometric.bHit && refl.geometric.bHit &&
+			std::fabs( refl.geometric.ptIntersection.y + 3 ) < 1e-6 &&
+			Vector3Ops::Dot( refl.geometric.UnflippedGeomNormal(), downY ) < 0 &&
+			Vector3Ops::Dot( refl.geometric.vNormal, downY ) < 0;
+		if( entry ) {
+			++reflectOk;
+		} else {
+			std::cout << "    reflection x " << x << ": y " << refl.geometric.ptIntersection.y
+				<< " geom.y " << refl.geometric.UnflippedGeomNormal().y << " n.y " << refl.geometric.vNormal.y
+				<< " flag " << refl.geometric.bGeomNormalOrientedToRay << std::endl;
+		}
+		// Transmission: leave the upper lobe through its bottom face from
+		// inside and continue down from the (backed-off) exit point.  The
+		// first crossing is either that face again (an exit) or the lower
+		// lobe's top (an entry); the true facing must say which.
+		const RayIntersection out = Cast( *u, Point3( x, 0, 0.2 ), downY );
+		const RayIntersection tr = Cast( *u, out.geometric.ptIntersection, downY );
+		const Scalar y = tr.geometric.ptIntersection.y;
+		const Scalar facing = Vector3Ops::Dot( tr.geometric.UnflippedGeomNormal(), downY );
+		const bool ok = out.geometric.bHit && tr.geometric.bHit &&
+			( ( std::fabs( y + 3 ) < 1e-6 && facing < 0 ) || ( std::fabs( y + 1 ) < 1e-6 && facing > 0 ) ) &&
+			Vector3Ops::Dot( tr.geometric.vNormal, tr.geometric.UnflippedGeomNormal() ) > 0;
+		if( ok ) {
+			++transmitOk;
+		} else {
+			std::cout << "    transmission x " << x << ": y " << y << " facing " << facing << std::endl;
+		}
+	}
+	Check( reflectOk == 4, "P2: a reflection leaving one mesh lobe keeps the ENTRY normal of the lobe it enters" );
+	Check( transmitOk == 4, "P2: a transmission leaving a mesh lobe reports the true facing of its first crossing" );
 }
 
 static void TestCostAndShippedModels()
@@ -1262,6 +1370,7 @@ int main()
 	TestTJunction();
 	TestFanCrossingAtVertex();
 	TestOpenSheetCSG();
+	TestNonConvexMeshUnion();
 	TestCostAndShippedModels();
 	TestProofStepCoverage();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

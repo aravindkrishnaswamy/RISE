@@ -989,10 +989,18 @@ namespace
 		bool shadeNegated;
 	};
 
-	ExitNormals OrientExitNormalsAlongRay( const Vector3& shade, const Vector3& geom, const Vector3& dir )
+	ExitNormals OrientExitNormalsAlongRay( const Vector3& shade, const Vector3& geom, const Vector3& dir,
+		const bool flaggedTowardRay )
 	{
 		ExitNormals e{ shade, geom, false };
-		if( Vector3Ops::Dot( e.geom, dir ) < 0 ) {
+		// A record flagged as flipped toward the ray is un-flipped at any
+		// negative cosine; an unflagged one (an analytic operand's outward
+		// normal, an inward-wound mesh's) only when the cosine is clearly
+		// negative, so rounding at a tangent exit never inverts a correct
+		// outward normal.
+		const Scalar c = Vector3Ops::Dot( e.geom, dir );
+		const Scalar tol = Scalar( 1e-9 ) * Vector3Ops::Magnitude( e.geom ) * Vector3Ops::Magnitude( dir );
+		if( c < ( flaggedTowardRay ? Scalar( 0 ) : -tol ) ) {
 			e.geom = -e.geom;
 		}
 		if( Vector3Ops::Dot( e.shade, e.geom ) < 0 ) {
@@ -1213,10 +1221,27 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 	if( !hit.geometric.bHit || hit.hasBoundaryRange2 ) {
 		return;
 	}
+	// Containment is decided for the segment the ray actually travels
+	// before its first crossing -- the open segment (origin, first hit)
+	// crosses no boundary of the operand, so its MIDPOINT is on the
+	// origin's side and as far from both ends as the segment allows --
+	// never at the origin itself.  A secondary ray starts a back-off
+	// (~1e-12) off the face it just left, and a containment query at that
+	// point (a mesh's parity cast in a fixed direction) suppresses that
+	// face as a self-hit, so its answer depends on the face's orientation
+	// against the query direction rather than on the segment: a
+	// reflection leaving a non-convex mesh's outside toward another lobe
+	// read "inside", and its genuine ENTRY normal was then re-oriented as
+	// an exit.  A patch leaf reads the side from its first crossing's
+	// orientation instead (`LeafContains` with the known first hit), which
+	// is already a property of the segment.
+	const Scalar tMid = Scalar( 0.5 ) * hit.geometric.range;
+	const Point3 pMid = ( tMid > 0 && std::isfinite( tMid ) ) ?
+		hit.geometric.ray.PointAtLength( tMid ) : hit.geometric.ray.origin;
 	Scalar distance = 0;
 	bool exact = false;
 	int side = 0;
-	if( operand->SignedDistanceLower( hit.geometric.ray.origin, Scalar( 1e-3 ), distance, exact ) && distance != 0 ) {
+	if( operand->SignedDistanceLower( pMid, Scalar( 1e-3 ), distance, exact ) && distance != 0 ) {
 		side = distance < 0 ? 1 : -1;
 	} else {
 		const CSGObject* csg = dynamic_cast<const CSGObject*>( operand );
@@ -1231,7 +1256,7 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 		}
 		side = patch ?
 			LeafContains( operand, hit.geometric.ray.origin, hit.geometric.ray.Dir(), scale, &hit ) :
-			CSGObject::OperandContainsPoint( operand, hit.geometric.ray.origin, hit.geometric.ray.Dir(), scale );
+			CSGObject::OperandContainsPoint( operand, pMid, hit.geometric.ray.Dir(), scale );
 		if( patch && side < 0 ) {
 			// Outside: complete the entry at `range` with its exit.
 			const Scalar t0 = hit.geometric.range + OpenSheetRecastStep( hit.geometric.range, scale );
@@ -1272,7 +1297,8 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 				}
 				hit.geometric.range2 = t0 + exitHit.geometric.range + Scalar( 2 ) * backoff;
 				const ExitNormals exitN = OrientExitNormalsAlongRay(
-					exitHit.geometric.vNormal, exitHit.geometric.vGeomNormal, hit.geometric.ray.Dir() );
+					exitHit.geometric.vNormal, exitHit.geometric.vGeomNormal, hit.geometric.ray.Dir(),
+					exitHit.geometric.bGeomNormalOrientedToRay );
 				hit.geometric.vNormal2 = exitN.shade;
 				hit.geometric.vGeomNormal2 = exitN.geom;
 				hit.boundaryRange2 = hit.geometric.range2;
@@ -1303,18 +1329,38 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 		// perturbed normal is touched here.
 		if( !hit.geometric.bGeomNormalRayDerived ) {
 			const ExitNormals exitN = OrientExitNormalsAlongRay(
-				hit.geometric.vNormal, hit.geometric.vGeomNormal, hit.geometric.ray.Dir() );
+				hit.geometric.vNormal, hit.geometric.vGeomNormal, hit.geometric.ray.Dir(),
+				hit.geometric.bGeomNormalOrientedToRay );
 			hit.geometric.vNormal = exitN.shade;
 			hit.geometric.vGeomNormal = exitN.geom;
 			if( exitN.shadeNegated ) {
-				if( hit.geometric.derivatives.valid ) {
-					hit.geometric.derivatives.dndu = -hit.geometric.derivatives.dndu;
-					hit.geometric.derivatives.dndv = -hit.geometric.derivatives.dndv;
+				SurfaceDerivativesInfo& d = hit.geometric.derivatives;
+				if( d.valid ) {
+					d.dndu = -d.dndu;
+					d.dndv = -d.dndv;
+					// The parametric tangents are not negated, so the
+					// (dpdu, dpdv, n) frame may now be left-handed (an
+					// inward-wound mesh).  Withhold the derivatives rather
+					// than publish a mirrored frame as valid (DL-20's rule
+					// for a flipped Bezier hit).  Certified-closed patch
+					// sets are outward-wound by certificate (a negative
+					// signed volume is refused), and a flipped Bezier hit
+					// already withholds them.
+					if( Vector3Ops::Dot( Vector3Ops::Cross( d.dpdu, d.dpdv ), hit.geometric.vNormal ) < 0 ) {
+						d.valid = false;
+					}
 				}
-				if( hit.geometric.derivatives.curvatureValid ) {
-					hit.geometric.derivatives.curvature = -hit.geometric.derivatives.curvature;
+				if( d.curvatureValid ) {
+					d.curvature = -d.curvature;
 				}
 			}
+			// `signals.nObject` is intentionally NOT re-paired: it is the
+			// provider's own object-space normal (a mesh stamps its
+			// winding-interpolated normal before any ray-facing flip),
+			// describing the provider's field, and the solid has not
+			// changed sense here (the subtraction branches, where it does,
+			// negate it).  SDF operands never reach this path re-oriented:
+			// they report outward normals from inside.
 			hit.geometric.bGeomNormalOrientedToRay = false;
 		}
 	}
@@ -1988,18 +2034,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri.geometric.signals.bComplementedField = !ri.geometric.signals.bComplementedField;
 					}
 					// The exit is A's own first hit (the ray starts inside A),
-					// not A's (unused, from inside) second normal; its
-					// OUTWARD normals are derived from the ray, like every
-					// other exit normal (`OrientExitNormalsAlongRay`).
-					if( riObjA.geometric.bGeomNormalRayDerived ) {
-						ri.geometric.vNormal2 = riObjA.geometric.vNormal;
-						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
-					} else {
-						const ExitNormals exitN = OrientExitNormalsAlongRay(
-							riObjA.geometric.vNormal, riObjA.geometric.vGeomNormal, riObjA.geometric.ray.Dir() );
-						ri.geometric.vNormal2 = exitN.shade;
-						ri.geometric.vGeomNormal2 = exitN.geom;
-					}
+					// not A's (unused, from inside) second normal.  Its
+					// normals are already OUTWARD: an analytic operand
+					// reports them so from inside, and every other record
+					// reaching range2 == 0 was oriented by
+					// `RecoverContainedOperand` (`OrientExitNormalsAlongRay`).
+					ri.geometric.vNormal2 = riObjA.geometric.vNormal;
+					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
 				}
 			} else if( riObjA.geometric.range2 == 0 ) {
 				// If we are inside A but not inside B
