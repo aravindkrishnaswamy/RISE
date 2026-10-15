@@ -64,6 +64,8 @@
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -537,8 +539,13 @@ static bool RenderOnce( const std::string& sceneText, double& mean )
 			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
 			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
-			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( g_seedBase + g_renderIndex, 0x459u ) );
-			std::srand( g_seedBase + g_renderIndex++ );
+			if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
+				pRas->ForTest_SetThreadCountOverride( 1 );
+			}
+			const unsigned int renderSeed = g_seedBase + g_renderIndex++;
+			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( renderSeed, 0x459u ) );
+			std::srand( renderSeed );
+			GlobalRNG().Reseed( renderSeed );
 			const bool bRendered = pJob->Rasterize();
 			SobolSamplerTestHooks::ValueSalt().store( 0u );
 			if( bRendered && !pCap->pixels.empty() ) {
@@ -579,9 +586,66 @@ static Stat RenderN( const std::string& text, int n )
 
 static int g_spp = 1024;
 static int g_repeats = 4;
+static int g_trapRepeats = 12;
 static std::string RasPT() { return "pathtracing_pel_rasterizer\n{\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n"; }
 static std::string RasBDPT() { return "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n"; }
 static std::string RasVCM() { return "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n}\n\n"; }
+
+//! Independent 4D Gauss-Legendre quadrature of the exact rendering-equation
+//! integral for the DL-460 planar trapezoid luminary scene:
+//!   mean = (1 / A_film) * int_{[-2,2]^2} dx int_{Trap} dy (rho / pi) * L_e * cos(theta_x) * cos(theta_y) / |x - y|^2
+//! With rho = 0.5, L_e = 10 / pi, A_film = 16, and Trap at z = 2.6:
+//!   mean = (5 / (16 * pi^2)) * int_{[-2,2]^2} dx int_{Trap} dy z^2 / |x - y|^4.
+static double TrapezoidSceneExactQuadrature()
+{
+	const int N = 32;
+	double xi[N], wi[N];
+	for( int i = 0; i < N; i++ ) {
+		double z = std::cos( kPi * ( i + 0.75 ) / ( N + 0.5 ) );
+		double dp = 0.0;
+		for( int it = 0; it < 100; it++ ) {
+			double p0 = 1.0, p1 = z;
+			for( int k = 2; k <= N; k++ ) {
+				const double p2 = ( ( 2.0 * k - 1.0 ) * z * p1 - ( k - 1.0 ) * p0 ) / k;
+				p0 = p1;
+				p1 = p2;
+			}
+			dp = N * ( z * p1 - p0 ) / ( z * z - 1.0 );
+			const double dz = p1 / dp;
+			z -= dz;
+			if( std::fabs( dz ) < 1e-15 ) break;
+		}
+		xi[i] = z;
+		wi[i] = 2.0 / ( ( 1.0 - z * z ) * dp * dp );
+	}
+	const double ze = 2.6;
+	const double ze2 = ze * ze;
+	double total = 0.0;
+	for( int iv = 0; iv < N; iv++ ) {
+		const double y_loc = xi[iv];
+		const double wy = wi[iv];
+		const double half_w = 0.65 - 0.35 * y_loc;
+		const double ye = y_loc - 0.1;
+		for( int iu = 0; iu < N; iu++ ) {
+			const double x_loc = half_w * xi[iu];
+			const double wx = wi[iu] * half_w;
+			const double xe = x_loc + 0.2;
+			const double w_lum = wx * wy;
+			for( int iy = 0; iy < N; iy++ ) {
+				const double yf = 2.0 * xi[iy];
+				const double wyf = 2.0 * wi[iy];
+				const double dy2 = ( yf - ye ) * ( yf - ye ) + ze2;
+				for( int ix = 0; ix < N; ix++ ) {
+					const double xf = 2.0 * xi[ix];
+					const double wxf = 2.0 * wi[ix];
+					const double r2 = ( xf - xe ) * ( xf - xe ) + dy2;
+					total += w_lum * wxf * wyf * ( ze2 / ( r2 * r2 ) );
+				}
+			}
+		}
+	}
+	return total * ( 0.5 * 10.0 / ( kPi * kPi ) ) / 16.0;
+}
 
 //! Floor (rho 0.5) at z = 0 seen by an orthographic camera at z = 1
 //! looking down; the emitter (geometry chunk named geo_e) hangs at
@@ -640,10 +704,10 @@ static bool Agree( const Stat& a, const Stat& b )
 
 static void Report( const char* label, const Stat& s ) { std::cout << "    " << label << " " << s.mean << " +/- " << s.se << "\n"; }
 
-static void RenderCase( const char* label, const std::string& emitter, const std::string* reference )
+static void RenderCase( const char* label, const std::string& emitter, const std::string* reference, int repeatsOverride = 0, const double* exactOracle = nullptr )
 {
 	std::cout << "  C " << label << "\n";
-	const int n = g_repeats;
+	const int n = repeatsOverride > 0 ? repeatsOverride : g_repeats;
 	const Stat pt = RenderN( RenderScene( emitter, RasPT() ), n );
 	const Stat bd = RenderN( RenderScene( emitter, RasBDPT() ), n );
 	const Stat vc = RenderN( RenderScene( emitter, RasVCM() ), n );
@@ -651,21 +715,38 @@ static void RenderCase( const char* label, const std::string& emitter, const std
 	Check( pt.ok && bd.ok && vc.ok, std::string( "renders: " ) + label );
 	Check( Agree( pt, bd ), std::string( "PT vs BDPT: " ) + label );
 	Check( Agree( pt, vc ), std::string( "PT vs VCM: " ) + label );
+	if( exactOracle ) {
+		const Stat ex{ *exactOracle, 0.0, true };
+		std::cout << "    exact quadrature " << *exactOracle << "\n";
+		Check( Agree( pt, ex ), std::string( "PT vs exact quadrature: " ) + label );
+		Check( Agree( bd, ex ), std::string( "BDPT vs exact quadrature: " ) + label );
+		Check( Agree( vc, ex ), std::string( "VCM vs exact quadrature: " ) + label );
+	}
 	if( reference ) {
 		const Stat ref = RenderN( RenderScene( *reference, RasPT() ), n );
 		Report( "mesh reference PT", ref );
 		Check( ref.ok && Agree( pt, ref ), std::string( "PT vs mesh reference: " ) + label );
 		Check( ref.ok && Agree( bd, ref ), std::string( "BDPT vs mesh reference: " ) + label );
+		Check( ref.ok && Agree( vc, ref ), std::string( "VCM vs mesh reference: " ) + label );
 	}
 }
 
-static void TestRenders()
+static void TestRenders( bool trapOnly = false )
 {
 	std::cout << "C: renders\n";
 	{
+		// DL-625: with only n = 4 salted repeats (3 degrees of freedom), the
+		// fixed Sobol realization draw at g_seedBase = 4590 (VCM 0.103733 vs
+		// PT 0.103721, +1.4 true sigma) failed ~10-20% of runs whenever
+		// multi-threaded sub-pixel screen jitter nudged the 3-df VCM sample
+		// SE below ~2.5e-6 (< 0.5x the true 4-repeat SE ~7.6e-6).  Use 12
+		// salted repeats (11 df per estimator) and also check PT, BDPT, and
+		// VCM against independent 4D Gauss-Legendre quadrature (0.10372060).
 		const std::string mesh = MeshChunk( { kTrapezoid[0], kTrapezoid[1], kTrapezoid[2], kTrapezoid[3] }, { 0, 1, 2, 0, 2, 3 } );
-		RenderCase( "DL-460 trapezoid clippedplane luminary", QuadChunk( kTrapezoid ), &mesh );
+		const double exact = TrapezoidSceneExactQuadrature();
+		RenderCase( "DL-460 trapezoid clippedplane luminary", QuadChunk( kTrapezoid ), &mesh, std::max( g_repeats, g_trapRepeats ), &exact );
 	}
+	if( trapOnly ) return;
 	{
 		const std::string mesh = MeshChunk( { Point3(-1,-1,0), Point3(1,-1,0), Point3(1,1,0), Point3(-1,1,0) }, { 0, 1, 2, 0, 2, 3 } );
 		const std::string file = TempPath( "warped", "bezier" );
@@ -740,14 +821,23 @@ static void PrintSdfCost()
 int main( int argc, char** argv )
 {
 	std::setvbuf( stdout, nullptr, _IONBF, 0 );
-	if( argc > 1 ) g_seedBase = unsigned( std::strtoul( argv[1], nullptr, 10 ) );
-	const std::string only = argc > 2 ? argv[2] : "all";
-	if( argc > 3 ) g_spp = std::atoi( argv[3] );
-	if( argc > 4 ) g_repeats = std::atoi( argv[4] );
+	int argIdx = 1;
+	if( argc > argIdx ) {
+		char* end = nullptr;
+		const unsigned long parsed = std::strtoul( argv[argIdx], &end, 10 );
+		if( end != argv[argIdx] && *end == '\0' ) {
+			g_seedBase = unsigned( parsed );
+			argIdx++;
+		}
+	}
+	const std::string only = argc > argIdx ? argv[argIdx++] : "all";
+	if( argc > argIdx ) g_spp = std::atoi( argv[argIdx++] );
+	if( argc > argIdx ) { g_repeats = std::atoi( argv[argIdx++] ); g_trapRepeats = g_repeats; }
 	std::cout << "LuminarySamplerAreaTest (DL-459 / DL-460)\n";
 	if( only == "all" || only == "A" ) TestAreas();
 	if( only == "all" || only == "B" ) TestUniformity();
-	if( only == "all" || only == "C" ) TestRenders();
+	if( only == "all" || only == "C" ) TestRenders( false );
+	if( only == "C_trap" ) TestRenders( true );
 	if( only == "all" || only == "H" ) PrintHashes();
 	if( only == "T" ) PrintSdfCost();
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";
