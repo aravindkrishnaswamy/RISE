@@ -7093,7 +7093,9 @@ unsigned int GenerateLightSubpathImpl(
 	// which for an IOR-matched inner boundary turns into a noise-
 	// Fresnel reflection that destroys throughput by ~32 orders of
 	// magnitude and leaves the walls unlit.
-	IORStackSeeding::SeedFromPoint( iorStack, ls.position, scene, NmOrZero<Tag>(tag) );
+	// DL-618: a mesh luminary's sample lies ON that object; passing it lets
+	// open-sheet seeding exempt exactly the luminary's own body.
+	IORStackSeeding::SeedFromPoint( iorStack, ls.position, scene, NmOrZero<Tag>(tag), true, ls.pLuminary );
 
 	vertices.reserve( maxLightDepth + 1 );
 

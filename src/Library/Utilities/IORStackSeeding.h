@@ -908,8 +908,14 @@ namespace RISE
 						continue;
 					}
 					bool own = false;
-					if( !ownChecked && ri.pObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0 &&
-						( !pSeedObject || ri.pObject == pSeedObject ) ) {
+					if( !ownChecked && pSeedObject ) {
+						// The caller KNOWS the seed's own object (a light
+						// sample's luminary): it alone is exempt, and only on
+						// the ray's first exit from it -- no geometric guess, so
+						// a coplanar enclosing surface (a room's floor under a
+						// flush emitter) is never mistaken for it.
+						own = ri.pObject == pSeedObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0;
+					} else if( !ownChecked && ri.pObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
 						// The object's surface must pass through `pos` itself:
 						// the object ALONE, probed from `pos` the other way
 						// (-n), is missed or met within a surface tolerance
@@ -921,7 +927,9 @@ namespace RISE
 						// A closer separation cannot be told from an SDF's own
 						// surface geometrically -- the documented residual; a
 						// caller that knows the seed's own object passes it
-						// (`pSeedObject`) and only that object qualifies.
+						// (`pSeedObject`; the luminaire roots of BDPT/VCM/MLT
+						// light subpaths and the photon tracers do) and this
+						// guess is not used.
 						RayIntersection back( Ray( pos, -normal ), nullRasterizerState );
 						ri.pObject->IntersectRay( back, RISE_INFINITY, true, true, false );
 						own = !back.geometric.bHit || back.geometric.range <= Scalar( 1e-4 ) * scale;
