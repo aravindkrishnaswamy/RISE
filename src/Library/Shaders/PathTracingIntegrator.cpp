@@ -6733,9 +6733,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					IORStack laneStack(iorStack.EnvironmentIOR());
                     const Point3 probePoint = Point3Ops::mkPoint3(ri.geometric.ray.origin,
                         ri.geometric.ray.Dir() * (ri.geometric.range * 0.5));
-                    // DL-618: the hero's membership where a seed reproduces it.
+                    // DL-618: the hero's membership where a seed at the segment
+                    // start reproduces it (first segment only: a deeper
+                    // segment starts on a surface vertex).
                     IORStackSeeding::SeedCompanionLane(laneStack, iorStack,
-                        ri.geometric.ray.origin, probePoint, scene, swl.lambda[w]);
+                        ri.geometric.ray.origin, probePoint, scene, swl.lambda[w],
+                        depth == startDepth);
                     // DL-292: the hero stack was already Advanced to this hit
                     // (its factor is in throughputComp), so the delegated walk's
                     // Advance here must be a no-op, not a midpoint-to-hit factor.

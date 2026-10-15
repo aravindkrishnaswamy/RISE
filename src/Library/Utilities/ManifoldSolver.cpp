@@ -10987,7 +10987,41 @@ void RefreshLegacySeedNM(std::vector<ManifoldVertex>& chain,Scalar nm,
 		// (an exit through an object not on the stack leaves it unchanged);
 		// an open sheet is crossed by its face; a reflection leaves the
 		// stack alone and refreshes only its material side.
+		//
+		// The STARTING stack is re-indexed at this wavelength too (round 3,
+		// P3-3): for an HWSS companion it is the hero's stack, carrying the
+		// hero's indices for enclosing media the chain may never cross.  Each
+		// entry's material is re-queried where an object-only principal-axis
+		// ray from the receiver meets it; an entry no such ray meets keeps
+		// its index (documented residual), and a non-refracting entry
+		// (DL-46 re-push) takes its parent's refreshed index.
 		IORStack replay = starting ? *starting : IORStack( Scalar( 1 ) );
+		{
+			static const Vector3 kAxes[6] = { Vector3(1,0,0), Vector3(-1,0,0), Vector3(0,1,0),
+				Vector3(0,-1,0), Vector3(0,0,1), Vector3(0,0,-1) };
+			IORStack partial( replay.EnvironmentIOR() );
+			for( std::size_t e = 1; e < replay.Depth(); e++ ) {
+				const IObject* obj = replay.ObjectAt( e );
+				Scalar index = 0;
+				bool refracts = true;
+				for( int a = 0; obj && a < 6 && index <= 0; a++ ) {
+					RayIntersection hit( Ray( start, kAxes[a] ), nullRasterizerState );
+					obj->IntersectRay( hit, RISE_INFINITY, true, true, false );
+					if( !hit.geometric.bHit || !hit.pMaterial ) continue;
+					const SpecularInfo info = hit.pMaterial->GetSpecularInfoNM( hit.geometric, partial, nm );
+					if( !info.valid ) continue;
+					refracts = info.canRefract;
+					index = refracts ? info.ior : partial.top();
+				}
+				if( index > 0 && std::isfinite( index ) ) {
+					replay.SetIORAt( e, index );
+				}
+				if( obj ) {
+					partial.SetCurrentObject( obj );
+					partial.push( index > 0 ? index : partial.top() );
+				}
+			}
+		}
 		for( unsigned int i = 0; i < chain.size(); i++ )
 		{
 			ManifoldVertex& v = chain[i];

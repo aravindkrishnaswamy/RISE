@@ -125,6 +125,7 @@
 #include "GradedIndexMedium.h"
 #include "../Animation/TimeIndexedView.h"
 #include <algorithm>
+#include <cstring>
 #include <atomic>
 #include <vector>
 #include <cstdlib>
@@ -341,6 +342,7 @@ namespace RISE
 			Point3 p0;				//!< a representative point on the sheet
 			Scalar heightAbove;		//!< max over the sheet's bounds of dot(x - p0, normal)
 			BoundingBox box;		//!< the sheet's world bounds
+			Matrix4 xform;			//!< the object's world transform when described (its pose)
 		};
 
 		//! DL-618: describes @a object if it is a certified open refractive
@@ -360,7 +362,9 @@ namespace RISE
 		//! and which flank won decided the answer.  For a planar sheet every
 		//! hit normal is the plane's; for a gently curved one (a sea surface,
 		//! a curved open mesh) the plane fit follows its large-scale tilt and
-		//! not the local slopes of its relief.
+		//! not the local slopes of its relief.  When the hits along that axis
+		//! span too thin a band for the fit to be conditioned (1:100
+		//! eigenvalue ratio of their spread), the mean hit normal is kept.
 		inline bool DescribeOpenSheet( const IObject& object, OpenSheetCatalogEntry& out )
 		{
 			const BoundingBox box = object.getBoundingBox();
@@ -458,7 +462,15 @@ namespace RISE
 					const Scalar cuu = suu / n - mu * mu, cvv = svv / n - mv * mv, cuv = suv / n - mu * mv;
 					const Scalar cua = sua / n - mu * ma, cva = sva / n - mv * ma;
 					const Scalar det = cuu * cvv - cuv * cuv;
-					if( det > NEARZERO * ( Scalar( 1 ) + cuu * cvv ) ) {
+					// Conditioning (round 3, P3-4): the fit's slope across the
+					// sample spread's NARROW direction is unreliable when the
+					// hits span a thin band (a narrow strip, or a sheet the grid
+					// mostly misses); below a 1:100 eigenvalue ratio keep the
+					// mean hit normal.
+					const Scalar tr = cuu + cvv;
+					const Scalar disc = std::sqrt( std::max( Scalar( 0 ), tr * tr - 4 * det ) );
+					const Scalar lmax = ( tr + disc ) / 2, lmin = ( tr - disc ) / 2;
+					if( det > NEARZERO * ( Scalar( 1 ) + cuu * cvv ) && lmin >= Scalar( 0.01 ) * lmax ) {
 						const Scalar c1 = ( cua * cvv - cva * cuv ) / det;
 						const Scalar c2 = ( cva * cuu - cua * cuv ) / det;
 						Scalar nn[3];
@@ -478,6 +490,7 @@ namespace RISE
 			out.normal = bestNormal;
 			out.p0 = bestPoint;
 			out.box = box;
+			out.xform = object.GetFinalTransformMatrix();
 			out.heightAbove = -RISE_INFINITY;
 			for( int corner = 0; corner < 8; corner++ ) {
 				const Point3 q( ( corner & 1 ) ? box.ur.x : box.ll.x, ( corner & 2 ) ? box.ur.y : box.ll.y, ( corner & 4 ) ? box.ur.z : box.ll.z );
@@ -519,9 +532,18 @@ namespace RISE
 			unsigned long long epoch;
 			unsigned int itemCount;
 			std::vector<OpenSheetCatalogEntry> sheets;
+			//! Re-posed descriptions of listed sheets (motion blur), one per
+			//! sheet object, each valid for the pose it records.
+			std::vector<OpenSheetCatalogEntry> posed;
 
 			OpenSheetCatalog() : pObjects( 0 ), generation( 0 ), epoch( 0 ), itemCount( 0 ) {}
 		};
+
+		inline OpenSheetCatalog& ThreadOpenSheetCatalog()
+		{
+			static thread_local OpenSheetCatalog catalog;
+			return catalog;
+		}
 
 		//! DL-618 (round 3): a process-wide epoch every thread's catalog is
 		//! keyed on.  `ObjectManager::PrepareForRendering` advances it, so an
@@ -555,7 +577,7 @@ namespace RISE
 
 		inline const std::vector<OpenSheetCatalogEntry>& OpenSheetsOf( const IObjectManager* pObjects )
 		{
-			static thread_local OpenSheetCatalog catalog;
+			OpenSheetCatalog& catalog = ThreadOpenSheetCatalog();
 			const unsigned long long generation = pObjects->GetSpatialStructureGeneration();
 			const unsigned int itemCount = pObjects->getItemCount();
 			const unsigned long long epoch = OpenSheetCatalogEpoch().load( std::memory_order_acquire );
@@ -568,6 +590,7 @@ namespace RISE
 			catalog.epoch = epoch;
 			catalog.itemCount = itemCount;
 			catalog.sheets.clear();
+			catalog.posed.clear();
 
 			struct Collect : IEnumCallback<IObject>
 			{
@@ -590,13 +613,43 @@ namespace RISE
 		}
 
 		//! DL-618 round 2 (P3-b): @a entry at the calling thread's pose.
+		//!
+		//! Round 3 (P2-1): only a sheet whose OWN pose differs from the one it
+		//! was described at is re-described -- a time-indexed pass is entered
+		//! for any keyframed frame (a moving camera alone sets the thread's
+		//! slot table), and re-describing every sheet on every seed cost ~100
+		//! object rays per sheet per seed.  A re-posed description is kept
+		//! per thread, keyed on the sheet's world transform, so a pixel
+		//! sample's seeds (hero, companions, subpath roots, crossings) share
+		//! it and a static sheet costs one transform read and compare.
 		inline OpenSheetCatalogEntry PosedOpenSheet( const OpenSheetCatalogEntry& entry )
 		{
 			if( !TimeIndexed::tlsSlots ) {
 				return entry;
 			}
-			OpenSheetCatalogEntry posed;
-			return DescribeOpenSheet( *entry.pObj, posed ) ? posed : entry;
+			const Matrix4 now = entry.pObj->GetFinalTransformMatrix();
+			if( std::memcmp( &now, &entry.xform, sizeof( Matrix4 ) ) == 0 ) {
+				return entry;
+			}
+			std::vector<OpenSheetCatalogEntry>& posed = ThreadOpenSheetCatalog().posed;
+			for( std::size_t i = 0; i < posed.size(); i++ ) {
+				if( posed[i].pObj == entry.pObj ) {
+					if( std::memcmp( &now, &posed[i].xform, sizeof( Matrix4 ) ) != 0 ) {
+						OpenSheetCatalogEntry fresh;
+						if( !DescribeOpenSheet( *entry.pObj, fresh ) ) {
+							return entry;
+						}
+						posed[i] = fresh;
+					}
+					return posed[i];
+				}
+			}
+			OpenSheetCatalogEntry fresh;
+			if( !DescribeOpenSheet( *entry.pObj, fresh ) ) {
+				return entry;
+			}
+			posed.push_back( fresh );
+			return fresh;
 		}
 
 		//! DL-618: the catalog's description of @a pObj, or a fresh one when
@@ -765,11 +818,13 @@ namespace RISE
 		//! BDPT light root lies on its luminaire, and from a point on the
 		//! lower half of an opaque sphere luminaire the normal ray meets the
 		//! sphere's upper half from inside.  A hit closer than a self-hit
-		//! tolerance, and every hit on an object whose surface passes through
-		//! `pos` (an object-only ray from just inside, back toward `pos`,
-		//! meets it within the tolerance), are skipped.  A point strictly
-		//! inside an opaque closed object (a camera in a room) is not on its
-		//! surface, so the room still blocks.
+		//! tolerance is skipped, and so is the ray's FIRST opaque event when
+		//! it is an exit (back face) from an object whose surface passes
+		//! through `pos` (an object-only ray from just inside, back toward
+		//! `pos`, meets it within the tolerance) -- the ray started inside
+		//! that body.  A later event, even on the same object, blocks.  A
+		//! point strictly inside an opaque closed object (a camera in a
+		//! room) is not on its surface, so the room still blocks.
 		inline bool OpenSheetNormalRayReaches(
 			const IObjectManager* pObjects,
 			const Point3& pos,
@@ -791,8 +846,7 @@ namespace RISE
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			const Scalar scale = Scalar( 1 ) + std::fabs( pos.x ) + std::fabs( pos.y ) + std::fabs( pos.z );
 			const Scalar selfTol = Scalar( 1e-5 ) * scale;
-			const IObject* ownSurface = 0;
-			const IObject* notOwnSurface = 0;
+			bool ownChecked = false;
 			Ray probe( pos, normal );
 			for( int step = 0; step < kMaxProbeSteps; step++ )
 			{
@@ -808,17 +862,19 @@ namespace RISE
 					return membership == kMembershipSheetBack;
 				}
 				if( membership == kMembershipBlock ) {
-					bool own = ( step == 0 && ri.geometric.range < selfTol ) || ( ri.pObject && ri.pObject == ownSurface );
-					if( !own && ri.pObject && ri.pObject != notOwnSurface ) {
+					// Only the ray's FIRST opaque event can be the seed's own
+					// body, and only if it is an EXIT (a back face): the ray
+					// then started inside the solid whose surface `pos` lies
+					// on.  Anything after that -- including a later ENTRY into
+					// the same object (a thick-walled room's roof above a light
+					// flush with its floor, round 3 P3-1) -- blocks as usual.
+					bool own = step == 0 && ri.geometric.range < selfTol;
+					if( !own && !ownChecked && ri.pObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
 						RayIntersection back( Ray( Point3Ops::mkPoint3( pos, normal * selfTol ), -normal ), nullRasterizerState );
 						ri.pObject->IntersectRay( back, Scalar( 2 ) * selfTol, true, true, false );
-						if( back.geometric.bHit && back.geometric.range <= Scalar( 2 ) * selfTol ) {
-							ownSurface = ri.pObject;
-							own = true;
-						} else {
-							notOwnSurface = ri.pObject;
-						}
+						own = back.geometric.bHit && back.geometric.range <= Scalar( 2 ) * selfTol;
 					}
+					ownChecked = true;
 					if( !own ) {
 						return false;
 					}
@@ -1309,15 +1365,26 @@ namespace RISE
 		//! stack is not a seed at @a origin (it carries walk history, or
 		//! @a origin lies on a surface, where containment is ambiguous) and
 		//! the lane falls back to the midpoint seed as before.
+		//!
+		//! @a tryOrigin false skips the origin attempt where @a origin is a
+		//! surface vertex of the walk (mid-path; round 3 P3-2), where it
+		//! would rarely reproduce the hero's history-carried stack and only
+		//! cost a second seed.
 		inline void SeedCompanionLane(
 			IORStack& lane,
 			const IORStack& hero,
 			const Point3& origin,
 			const Point3& midpoint,
 			const IScene& scene,
-			const Scalar nm
+			const Scalar nm,
+			const bool tryOrigin = true
 			)
 		{
+			if( !tryOrigin ) {
+				lane = IORStack( hero.EnvironmentIOR() );
+				SeedFromPoint( lane, midpoint, scene, nm );
+				return;
+			}
 			IORStack atOrigin( hero.EnvironmentIOR() );
 			SeedFromPoint( atOrigin, origin, scene, nm );
 			bool same = atOrigin.Depth() == hero.Depth();
