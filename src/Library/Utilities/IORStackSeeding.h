@@ -898,15 +898,24 @@ namespace RISE
 		//! The seed point's OWN surface does not block (round 2, P2-3): a
 		//! BDPT light root lies on its luminaire, and from a point on the
 		//! lower half of an opaque sphere luminaire the normal ray meets the
-		//! sphere's upper half from inside.  A hit closer than a self-hit
-		//! tolerance is skipped, and so is the ray's FIRST opaque event when
-		//! it is an exit (back face) from an object whose surface passes
-		//! through `pos` (the object alone, probed from `pos` along -n, is
-		//! missed or met within 1e-4 of the scene scale) -- the ray started
-		//! inside that body.  With @a pSeedObject only that object
-		//! qualifies.  A later event, even on the same object, blocks.  A
-		//! point strictly inside an opaque closed object (a camera in a
-		//! room) is not on its surface, so the room still blocks.
+		//! sphere's upper half from inside.  The ray's FIRST opaque event is
+		//! exempt when it is the seed's own body being left:
+		//!  - with @a pSeedObject (the luminaire light roots and photon
+		//!    tracers pass it): an exit (back face) from that object, and
+		//!    nothing else;
+		//!  - without it: an exit from a CLOSED body (never an open surface:
+		//!    `bProvablyNoInterior` / `bOpenSheet`) whose surface passes
+		//!    through `pos` -- the object alone, probed from `pos` along -n,
+		//!    is MET within the self-hit tolerance.  A miss does not qualify,
+		//!    and since a point exactly on a surface is usually missed by its
+		//!    own backward probe (no t ~ 0 root), this guess rarely fires;
+		//!    callers on a luminaire pass the object instead.
+		//! One hit closer than the self-hit tolerance may be stepped over
+		//! first (an intersector reporting the point's own facet at t ~ 0),
+		//! subject to the same object / closed-back-face conditions.  A later
+		//! event, even on the same object, blocks.  A point strictly inside
+		//! an opaque closed object (a camera in a room) is not on its
+		//! surface, so the room still blocks.
 		//!
 		//! Note the occlusion rule's consequence for opaque objects INSIDE
 		//! a sheet's half-space: a point directly beneath an opaque body (a
@@ -939,7 +948,10 @@ namespace RISE
 			// swallow a real surface (an opaque ceiling 0.05 above a camera in
 			// a kilometre-sized scene) -- capped by 1e-5 of the scene's
 			// bounded size (unbounded geometry such as an infinite plane does
-			// not size the scene).
+			// not size the scene; without that filter its +-DBL_MAX box would
+			// make the cap infinite).  The cap is what binds for a SMALL scene
+			// FAR from the origin: there the tolerance is at most 1e-5 of the
+			// scene's diagonal rather than 1e-7 of the coordinates.
 			const Scalar posMax = std::max( { Scalar( 1 ), std::fabs( pos.x ), std::fabs( pos.y ), std::fabs( pos.z ) } );
 			const Scalar selfTol = std::min( Scalar( 1e-7 ) * posMax, Scalar( 1e-5 ) * SceneLengthScale( pObjects ) );
 			bool ownChecked = false;
@@ -1002,10 +1014,10 @@ namespace RISE
 						// And its surface must pass through `pos`: the object
 						// ALONE, probed from `pos` the other way (-n), is MET
 						// within the self-hit tolerance.  A miss is not evidence of anything and does
-						// not qualify.  (Sphere-traced SDF hits lie up to ~6e-5
-						// inside their surface, so a point on an SDF body is
-						// recognized only through `pSeedObject`, which the
-						// luminaire callers pass.)  A point strictly inside the object (a
+						// not qualify.  (A point exactly on a body's surface is
+						// usually missed by this probe, so it is recognized
+						// through `pSeedObject`, which the luminaire callers
+						// pass.)  A point strictly inside the object (a
 						// camera in a room) meets its far wall; a flush emitter
 						// more than the tolerance above a room's floor meets
 						// the floor (round 3 review, P3-1).

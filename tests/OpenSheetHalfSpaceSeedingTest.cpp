@@ -806,6 +806,27 @@ static void PartA()
 		}
 	}
 
+	// A26 (round 3 review): the infinite-bounds filter on the scene size.
+	// A small scene FAR from the origin (x = 1e6) holding an infinite plane:
+	// the scene diagonal must be the bounded objects' (finite), so the
+	// self-hit cap (1e-5 x diagonal ~ 2e-4) binds instead of 1e-7 x 1e6 =
+	// 0.1, which would step over a closed room's ceiling 0.05 above the
+	// camera and seed it into the pond above the room.
+	{
+		Loaded farScene( Header() + HSheet( "g_pond", 6, 8, true ) + Obj( "pond", "g_pond", "glass133", "1000000 0 0" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "1000000 1.5 0" )
+			+ "infiniteplane_geometry\n{\n\tname g_inf\n\txtile 1\n\tytile 1\n}\n\n" + Obj( "inf", "g_inf", "matte", "1000000 -10 -50" ) );
+		Check( farScene.ok, "A26 scene loads" );
+		if( farScene.ok ) {
+			const Scalar diag = IORStackSeeding::SceneLengthScale( farScene.Scene().GetObjects() );
+			char label[200];
+			std::snprintf( label, sizeof(label), "A26: scene diagonal %g is the bounded objects' (finite, < 100)", diag );
+			Check( std::isfinite( diag ) && diag > 1 && diag < 100, label );
+			Check( farScene.Seed( Point3( 1000000.1, 2.95, 0.05 ) ).Depth() == 1,
+				"A26: a camera 0.05 below the ceiling of a room at x = 1e6 (infinite plane in the scene) is not seeded" );
+		}
+	}
+
 	// A15 (round 2, P2-4): a point on a sheet's FRONT side is rejected
 	// without a scene walk.
 	{
