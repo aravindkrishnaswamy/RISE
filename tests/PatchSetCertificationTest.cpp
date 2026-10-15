@@ -458,6 +458,30 @@ static bool Coherent( const RayIntersection& h )
 		Vector3Ops::Dot( h.geometric.vGeomNormal, h.geometric.vNormal ) > 0;
 }
 
+//! The fixture library's closed double-sided mesh cube under a new
+//! geometry name, optionally inward-wound and/or smooth-shaded.
+static std::string NamedMeshCube( const std::string& name, bool reverse, bool faceNormals )
+{
+	std::string m = Mesh( true, reverse );
+	const std::string nameTag = " name shape\n";
+	m.replace( m.find( nameTag ), nameTag.size(), " name " + name + "\n" );
+	if( !faceNormals ) {
+		const std::string tag = " face_normals TRUE\n";
+		m.replace( m.find( tag ), tag.size(), " face_normals FALSE\n" );
+	}
+	return m;
+}
+
+//! Normal derivatives paired with the reported shading normal: on a
+//! convex (smooth-shaded) body the OUTWARD normal field diverges, so
+//! dn/du . dp/du + dn/dv . dp/dv > 0 exactly when the derivatives belong
+//! to the outward field.
+static Scalar NormalFieldDivergence( const RayIntersection& h )
+{
+	const SurfaceDerivativesInfo& d = h.geometric.derivatives;
+	return Vector3Ops::Dot( d.dndu, d.dpdu ) + Vector3Ops::Dot( d.dndv, d.dpdv );
+}
+
 static const CSGObject* AsCSG( const IObject* o )
 {
 	return dynamic_cast<const CSGObject*>( o );
@@ -529,6 +553,15 @@ static void TestOpenSheetCSG()
 	// of the box's top face (the DL-411 signed-distance path).
 	scene += Mesh( true, false );
 	obj( "ma", "cube2" ); obj( "mb", "shape", " position 0 0 1\n scale 0.5 0.5 0.5\n" ); csg( "mesh_pit", "ma", "mb", "subtraction" );
+	// Review round 7 P2-2: an INWARD-wound watertight double-sided mesh
+	// (certified: manifold edges, not winding) poking out of the top face.
+	scene += NamedMeshCube( "shape_in", true, true );
+	obj( "ia", "cube2" ); obj( "ib", "shape_in", " position 0 0 1\n scale 0.5 0.5 0.5\n" ); csg( "mesh_pit_in", "ia", "ib", "subtraction" );
+	// Review round 7 P2-1: a smooth-shaded (interpolated-normal) mesh cube
+	// exited from inside, intersected with a huge sphere.
+	scene += NamedMeshCube( "shape_smooth", false, false );
+	scene += "sphere_geometry\n{\n name huge2\n radius 100000\n}\n";
+	obj( "sa", "shape_smooth" ); obj( "sz", "huge2" ); csg( "smooth_lens", "sa", "sz", "intersection" );
 	// Review P3-2: a genuine grazing exit through the bilinear cube's top.
 	obj( "ga", "cube2" ); obj( "gb", "bcube" ); csg( "graze_lens", "ga", "gb", "intersection" );
 	// Review P3-2: a Bezier operand scaled 1000x (back-off in its frame).
@@ -746,6 +779,43 @@ static void TestOpenSheetCSG()
 				Vector3Ops::Dot( f.geometric.vNormal, down ) < 0 &&
 				Vector3Ops::Dot( f.geometric.UnflippedGeomNormal(), down ) < 0 && Coherent( f ),
 				"P2: box minus a double-sided watertight mesh, seen from inside both, faces the ray" );
+		}
+		const IObject* mpi = loaded.Object( "mesh_pit_in" );
+		const IObject* mbi = mpi ? AsCSG( mpi )->GetOperandB() : nullptr;
+		const auto* meshIn = mbi ? dynamic_cast<const TriangleMeshGeometryIndexed*>( mbi->GetGeometry() ) : nullptr;
+		Check( meshIn && meshIn->IsCertifiedWatertight(), "P2-2: the inward-wound double-sided mesh cube is certified watertight" );
+		if( mpi ) {
+			const RayIntersection f = Cast( *mpi, Point3( 0.1, 0.1, 0.8 ), down );
+			Check( f.geometric.bHit && std::fabs( f.geometric.ptIntersection.z - 0.5 ) < 1e-6 &&
+				Vector3Ops::Dot( f.geometric.vNormal, down ) < 0 &&
+				Vector3Ops::Dot( f.geometric.UnflippedGeomNormal(), down ) < 0 && Coherent( f ),
+				"P2-2: box minus an INWARD-wound watertight mesh, seen from inside both, faces the ray" );
+		}
+		const IObject* sml = loaded.Object( "smooth_lens" );
+		if( sml ) {
+			const RayIntersection e = Cast( *sml, Point3( 0.1, 0.1, 0.2 ), down );
+			std::cout << "    smooth exit: derivatives " << e.geometric.derivatives.valid
+				<< " divergence " << NormalFieldDivergence( e ) << std::endl;
+			Check( e.geometric.bHit && std::fabs( e.geometric.ptIntersection.z + 1 ) < 1e-6 &&
+				Vector3Ops::Dot( e.geometric.vGeomNormal, down ) > 0 &&
+				Vector3Ops::Dot( e.geometric.vNormal, down ) > 0 && Coherent( e ),
+				"P2-1: a smooth double-sided mesh exited from inside reports the OUTWARD normals" );
+			Check( e.geometric.derivatives.valid && NormalFieldDivergence( e ) > 0,
+				"P2-1: its normal derivatives are re-paired with the outward shading normal" );
+			// Grazing exit near the +x edge of the bottom face: the outward
+			// GEOMETRIC normal is along the ray (the mesh flipped it) while
+			// the outward interpolated SHADING normal, tilted toward +x, is
+			// against it (the mesh did not flip it).
+			const Vector3 g = Vector3Ops::Normalize( Vector3( -1, 0, -0.01 ) );
+			const RayIntersection ge = Cast( *sml, Point3( 0.9, 0, -0.995 ), g );
+			std::cout << "    grazing smooth exit: x " << ge.geometric.ptIntersection.x
+				<< " shade.dir " << Vector3Ops::Dot( ge.geometric.vNormal, g ) << std::endl;
+			Check( ge.geometric.bHit && std::fabs( ge.geometric.ptIntersection.z + 1 ) < 1e-6 &&
+				Vector3Ops::Dot( ge.geometric.vGeomNormal, g ) > 0 &&
+				Vector3Ops::Dot( ge.geometric.vNormal, Vector3( 0, 0, -1 ) ) > 0 && Coherent( ge ),
+				"P2-1: a GRAZING smooth exit keeps both normals outward, in one hemisphere" );
+			Check( ge.geometric.derivatives.valid && NormalFieldDivergence( ge ) > 0,
+				"P2-1: the grazing exit's normal derivatives pair with the outward shading normal" );
 		}
 		const IObject* gl = loaded.Object( "graze_lens" );
 		if( gl ) {

@@ -970,27 +970,36 @@ namespace
 		return false;
 	}
 
-	//! Any operand whose closed certificate makes "outward" well defined
-	//! and whose hits may arrive flipped toward the ray: a certified
-	//! patch set, a certified-watertight (possibly double-sided) indexed
-	//! mesh, a displaced surface over a closed base, or a certified-closed
-	//! composite.
-	bool IsCertifiedClosedOperandForUnflip( const IObject* operand )
+	//! The OUTWARD normals at an EXIT, derived from the ray alone: at an
+	//! exit the outward side is the one the ray leaves through, so the
+	//! geometric normal is oriented along the ray direction and the
+	//! shading normal into the geometric normal's hemisphere.  This reads
+	//! neither the winding (a watertight mesh certificate proves manifold
+	//! edges, not consistent outward winding) nor
+	//! `bGeomNormalOrientedToRay` (a double-sided mesh flips its shading
+	//! and geometric normals on independent tests, so the flag describes
+	//! only the geometric one).  `shadeNegated` reports whether the
+	//! shading normal was negated, so a caller re-pairs the normal
+	//! derivatives with it exactly then -- never on the flag.  A
+	//! ray-derived (hair) normal has no true side: the caller skips it.
+	struct ExitNormals
 	{
-		if( const auto* csg = dynamic_cast<const CSGObject*>( operand ) ) {
-			return csg->IsCertifiedWatertight();
+		Vector3 shade;
+		Vector3 geom;
+		bool shadeNegated;
+	};
+
+	ExitNormals OrientExitNormalsAlongRay( const Vector3& shade, const Vector3& geom, const Vector3& dir )
+	{
+		ExitNormals e{ shade, geom, false };
+		if( Vector3Ops::Dot( e.geom, dir ) < 0 ) {
+			e.geom = -e.geom;
 		}
-		if( IsCertifiedClosedPatchLeaf( operand ) ) {
-			return true;
+		if( Vector3Ops::Dot( e.shade, e.geom ) < 0 ) {
+			e.shade = -e.shade;
+			e.shadeNegated = true;
 		}
-		const IGeometry* g = operand->GetGeometry();
-		if( const auto* mesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( g ) ) {
-			return mesh->IsCertifiedWatertight();
-		}
-		if( const auto* disp = dynamic_cast<const DisplacedGeometry*>( g ) ) {
-			return disp->IsCertifiedWatertight();
-		}
-		return false;
+		return e;
 	}
 
 	//! Side of a ray's start against a certified-closed patch leaf, read
@@ -1250,7 +1259,6 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 				exitHit.geometric.HasTrueGeomSide() &&
 				Vector3Ops::Dot( exitHit.geometric.UnflippedGeomNormal(), hit.geometric.ray.Dir() ) > 0;
 			if( isExit ) {
-				const bool flipped = exitHit.geometric.bGeomNormalOrientedToRay && !exitHit.geometric.bGeomNormalRayDerived;
 				// The back-off is applied in the operand's OWN units, so it
 				// is converted into this composite's frame (the operand's
 				// parent frame) by the operand's stretch along the ray,
@@ -1263,8 +1271,10 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 						operandObject->GetSurfaceIntersecError() / stretch : operandObject->GetSurfaceIntersecError();
 				}
 				hit.geometric.range2 = t0 + exitHit.geometric.range + Scalar( 2 ) * backoff;
-				hit.geometric.vNormal2 = flipped ? -exitHit.geometric.vNormal : exitHit.geometric.vNormal;
-				hit.geometric.vGeomNormal2 = exitHit.geometric.UnflippedGeomNormal();
+				const ExitNormals exitN = OrientExitNormalsAlongRay(
+					exitHit.geometric.vNormal, exitHit.geometric.vGeomNormal, hit.geometric.ray.Dir() );
+				hit.geometric.vNormal2 = exitN.shade;
+				hit.geometric.vGeomNormal2 = exitN.geom;
 				hit.boundaryRange2 = hit.geometric.range2;
 				hit.hasBoundaryRange2 = true;
 			}
@@ -1279,18 +1289,32 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 		// algebra expects every operand normal to be OUTWARD (what an
 		// analytic sphere or box reports even from inside; the subtraction
 		// branches negate it, the union / intersection branches keep it),
-		// but a patch set, a double-sided watertight mesh (the DL-411 path
-		// above) and a composite passing such a record on all report a
-		// back-face hit flipped toward the ray.  Un-flip it (shading and
-		// geometric normal alike) and clear the flag, so the record matches
-		// an analytic operand's.  This runs on the RAW operand record:
-		// surface modifiers (normal / bump maps) are applied later, to the
-		// composite's final record (RayCaster), so no perturbed normal is
-		// negated here.
-		if( hit.geometric.bGeomNormalOrientedToRay && !hit.geometric.bGeomNormalRayDerived &&
-			IsCertifiedClosedOperandForUnflip( operand ) ) {
-			hit.geometric.vNormal = -hit.geometric.vNormal;
-			hit.geometric.vGeomNormal = -hit.geometric.vGeomNormal;
+		// but a patch set, a double-sided mesh (the DL-411 path above) and
+		// a composite passing such a record on may report it flipped toward
+		// the ray -- and a mesh flips its shading and geometric normals on
+		// independent tests, with an inward-wound watertight mesh reporting
+		// the inward normal unflipped.  So the outward normals are derived
+		// from the ray (`OrientExitNormalsAlongRay`), the normal
+		// derivatives and direct curvature are negated exactly when the
+		// shading normal is, and the flag is cleared.  An already-outward
+		// record (every analytic operand) is untouched.  This runs on the
+		// RAW operand record: surface modifiers (normal / bump maps) are
+		// applied later, to the composite's final record (RayCaster), so no
+		// perturbed normal is touched here.
+		if( !hit.geometric.bGeomNormalRayDerived ) {
+			const ExitNormals exitN = OrientExitNormalsAlongRay(
+				hit.geometric.vNormal, hit.geometric.vGeomNormal, hit.geometric.ray.Dir() );
+			hit.geometric.vNormal = exitN.shade;
+			hit.geometric.vGeomNormal = exitN.geom;
+			if( exitN.shadeNegated ) {
+				if( hit.geometric.derivatives.valid ) {
+					hit.geometric.derivatives.dndu = -hit.geometric.derivatives.dndu;
+					hit.geometric.derivatives.dndv = -hit.geometric.derivatives.dndv;
+				}
+				if( hit.geometric.derivatives.curvatureValid ) {
+					hit.geometric.derivatives.curvature = -hit.geometric.derivatives.curvature;
+				}
+			}
 			hit.geometric.bGeomNormalOrientedToRay = false;
 		}
 	}
@@ -1964,10 +1988,18 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri.geometric.signals.bComplementedField = !ri.geometric.signals.bComplementedField;
 					}
 					// The exit is A's own first hit (the ray starts inside A),
-					// so its OUTWARD normal is A's reported normal there, not
-					// A's (unused, from inside) second normal.
-					ri.geometric.vNormal2 = riObjA.geometric.vNormal;
-					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
+					// not A's (unused, from inside) second normal; its
+					// OUTWARD normals are derived from the ray, like every
+					// other exit normal (`OrientExitNormalsAlongRay`).
+					if( riObjA.geometric.bGeomNormalRayDerived ) {
+						ri.geometric.vNormal2 = riObjA.geometric.vNormal;
+						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
+					} else {
+						const ExitNormals exitN = OrientExitNormalsAlongRay(
+							riObjA.geometric.vNormal, riObjA.geometric.vGeomNormal, riObjA.geometric.ray.Dir() );
+						ri.geometric.vNormal2 = exitN.shade;
+						ri.geometric.vGeomNormal2 = exitN.geom;
+					}
 				}
 			} else if( riObjA.geometric.range2 == 0 ) {
 				// If we are inside A but not inside B
