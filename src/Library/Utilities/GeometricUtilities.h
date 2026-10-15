@@ -716,6 +716,10 @@ namespace RISE
 			//! (diagnostic only -- see docs/DL382_OPEN_SHEET_CERTIFICATE.md
 			//! section 2.1).  Filled only when `certified`.
 			Scalar	signedVolumeAboutCentre = 0;
+			//! DL-623: certified lower bound on the Step-4 Euclidean
+			//! separation across all triangle pairs at the certified
+			//! positions (> eps when `certified`).
+			Scalar	separationLowerBound = 0;
 		};
 
 		extern bool CheckOpenSurfaceStep4Pair(
@@ -752,7 +756,8 @@ namespace RISE
 			std::vector<unsigned int>* outWeldedId = nullptr,
 			Scalar minEps = Scalar( 0 ),
 			const std::vector<unsigned int>* preWeldedId = nullptr,
-			Scalar preWeldEps = Scalar( 0 )
+			Scalar preWeldEps = Scalar( 0 ),
+			bool preWeldTopologyVerified = false
 			);
 
 		//! DL-616: analytic open-versus-closed certification for a PATCH

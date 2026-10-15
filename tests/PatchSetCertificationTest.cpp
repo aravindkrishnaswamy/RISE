@@ -1390,8 +1390,10 @@ static void TestProofStepCoverage()
 {
 	std::cout << "H. proof-step coverage" << std::endl;
 
-	{	// Round 3 P3-3: a Step-4 budget refusal carries its own flag (no
-		// geometric witness), distinct from a geometric refusal.
+	{	// Round 3 P3-3 + DL-623 (1): a fine sheet + 1e5 flap now certifies
+		// via oversize-triangle subdivision, while a genuine Step-4 pair-budget
+		// refusal (connected accordion stack in one cell) carries budgetRefusal
+		// with no geometric witness, distinct from a geometric refusal.
 		const int N = 300;
 		std::vector<Point3> pts;
 		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
@@ -1411,7 +1413,32 @@ static void TestProofStepCoverage()
 			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
 		}
 		add( id( N, 1 ), id( N, 0 ), apex );
-		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		const auto flapCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		Check( flapCert.certified && !flapCert.budgetRefusal,
+			"DL-623 (1): fine sheet + 1e5 flap certifies via oversize-triangle subdivision" );
+
+		std::vector<Point3> stackCorners;
+		std::vector<unsigned int> stackWeld;
+		const int M = 3500;
+		stackCorners.reserve( 6 * M );
+		stackWeld.reserve( 6 * M );
+		for( int k = 0; k < M; ++k ) {
+			const double z0 = 2e-5 * double( k );
+			const double z1 = 2e-5 * double( k + 1 );
+			const double y0 = ( k & 1 ) ? 1.0 : 0.0;
+			const double y1 = ( ( k + 1 ) & 1 ) ? 1.0 : 0.0;
+			const unsigned int a0 = (unsigned int)( 2 * k );
+			const unsigned int b0 = (unsigned int)( 2 * k + 1 );
+			const unsigned int a1 = (unsigned int)( 2 * ( k + 1 ) );
+			const unsigned int b1 = (unsigned int)( 2 * ( k + 1 ) + 1 );
+			const Point3 pa0( 0.0, y0, z0 ), pb0( 1.0, y0, z0 );
+			const Point3 pa1( 0.0, y1, z1 ), pb1( 1.0, y1, z1 );
+			stackCorners.push_back( pa0 ); stackCorners.push_back( pb0 ); stackCorners.push_back( pb1 );
+			stackWeld.push_back( a0 ); stackWeld.push_back( b0 ); stackWeld.push_back( b1 );
+			stackCorners.push_back( pa0 ); stackCorners.push_back( pb1 ); stackCorners.push_back( pa1 );
+			stackWeld.push_back( a0 ); stackWeld.push_back( b1 ); stackWeld.push_back( a1 );
+		}
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( stackCorners, nullptr, Scalar( 0 ), &stackWeld, Scalar( 1e-6 ) );
 		Check( !cert.certified && cert.budgetRefusal && cert.refusalTriA == std::size_t( -1 ),
 			"P3-3: a Step-4 pair-budget refusal is flagged as a budget refusal, with no witness" );
 

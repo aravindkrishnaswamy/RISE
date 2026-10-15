@@ -188,18 +188,27 @@ namespace RISE
 				unsigned int thirdW1 = 0;
 			};
 			std::vector<Vector3> m_faceNormals;
+			std::vector<unsigned char> m_vertexReferenced;
+			std::size_t m_referencedVertexCount = 0;
 			std::vector<unsigned int> m_lastWeldedId;
 			Scalar m_lastWeldEps = Scalar( 0 );
 			bool m_lastWeldTransitive = false;
 			bool m_lastWeldValid = false;
 			std::vector<unsigned int> m_cachedOpenTopologyWeldedId;
 			bool m_cachedTopologicalOpenRefusal = false;
+			bool m_cachedOpenTopologyPassed = false;
+			bool m_certifiedOpenExactSeams = false;
+			Scalar m_certifiedOpenSeparation = Scalar( 0 );
+			MyPointsList m_certifiedOpenPositions;
+			std::vector<std::pair<std::size_t, std::size_t>> m_certifiedOpenSeamPairs;
 			size_t openRefusalTris[2] = { size_t( -1 ), size_t( -1 ) };
 			std::vector<unsigned int> m_watertightTopologyWeldedId;
 			bool m_cachedTopologicalWatertightRefusal = false;
 			std::vector<WatertightEdgeWitness> m_watertightEdges;
 			mutable std::atomic<int> m_topologicalOpenness{ -2 };
 
+			void EnsureReferencedVertices();
+			bool WeldReferencedVertices();
 			void InvalidateTopologyProofCaches();
 
 			//! Computes the triangle areas and the CDF

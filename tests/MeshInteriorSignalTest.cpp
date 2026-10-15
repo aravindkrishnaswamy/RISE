@@ -2535,10 +2535,13 @@ static void TestDL620ReviewFindings()
 			"Round 2 P2: weld in the DL-150 dense regime costs within 10x of the ordinary weld" );
 	}
 
-	// Round 2, P3-b.  A huge triangle attached to a fine sheet forces the
-	// Step-4 cell to grow until the whole sheet shares one or two cells;
-	// the all-pairs scan used to go quadratic (~1.6e10 pairs here).  It is
-	// now bounded and refused promptly.
+	// Round 2, P3-b + DL-623 (1).  A huge triangle attached to a fine sheet
+	// previously forced the Step-4 cell to grow until the whole sheet shared
+	// one or two cells; DL-623 (1) keeps the fine sheet in its typicalExtent
+	// grid and recursively subdivides the huge flap against gridBoxLo..gridBoxHi,
+	// so the embedded fine sheet + 1e5 flap now certifies promptly, while a
+	// genuinely quadratic single-cell stack of uniform-extent triangles still
+	// trips pairBudget and refuses with budgetRefusal.
 	{
 		const int N = 300;
 		std::vector<Point3> pts;
@@ -2565,8 +2568,348 @@ static void TestDL620ReviewFindings()
 		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
 		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
 		std::cout << "    fine sheet + 1e5 flap: certified=" << cert.certified << " in " << ms << " ms" << std::endl;
-		Check( !cert.certified && ms < 5000.0,
-			"Round 2 P3-b: quadratic Step-4 cell occupancy is refused promptly, not scanned" );
+		Check( cert.certified && !cert.budgetRefusal && ms < 5000.0,
+			"Round 2 P3-b + DL-623 (1): fine sheet + 1e5 flap certifies promptly via oversize-triangle subdivision" );
+
+		// Genuine quadratic single-cell occupancy: a connected oriented accordion
+		// ribbon of 7000 unit-extent triangles in [0,1]^2 x [0, 0.07] sharing one
+		// grid cell (~2.45e7 pairs > pairBudget = 1024*7000 + 16777216 = 2.39e7)
+		// passes Steps 1-3 and triggers budgetRefusal promptly in Step 4.
+		std::vector<Point3> stackCorners;
+		std::vector<unsigned int> stackWeld;
+		const int M = 3500; // 2 * M = 7000 connected triangles
+		stackCorners.reserve( 6 * M );
+		stackWeld.reserve( 6 * M );
+		for( int k = 0; k < M; ++k ) {
+			const double z0 = 2e-5 * double( k );
+			const double z1 = 2e-5 * double( k + 1 );
+			const double y0 = ( k & 1 ) ? 1.0 : 0.0;
+			const double y1 = ( ( k + 1 ) & 1 ) ? 1.0 : 0.0;
+			const unsigned int a0 = (unsigned int)( 2 * k );
+			const unsigned int b0 = (unsigned int)( 2 * k + 1 );
+			const unsigned int a1 = (unsigned int)( 2 * ( k + 1 ) );
+			const unsigned int b1 = (unsigned int)( 2 * ( k + 1 ) + 1 );
+			const Point3 pa0( 0.0, y0, z0 ), pb0( 1.0, y0, z0 );
+			const Point3 pa1( 0.0, y1, z1 ), pb1( 1.0, y1, z1 );
+			stackCorners.push_back( pa0 ); stackCorners.push_back( pb0 ); stackCorners.push_back( pb1 );
+			stackWeld.push_back( a0 ); stackWeld.push_back( b0 ); stackWeld.push_back( b1 );
+			stackCorners.push_back( pa0 ); stackCorners.push_back( pb1 ); stackCorners.push_back( pa1 );
+			stackWeld.push_back( a0 ); stackWeld.push_back( b1 ); stackWeld.push_back( a1 );
+		}
+		const auto t1 = std::chrono::steady_clock::now();
+		const auto stackCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( stackCorners, nullptr, Scalar( 0 ), &stackWeld, Scalar( 1e-6 ) );
+		const double stackMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t1 ).count();
+		Check( !stackCert.certified && stackCert.budgetRefusal && stackMs < 5000.0,
+			"Round 2 P3-b: genuine quadratic single-cell occupancy triggers budgetRefusal promptly" );
+	}
+}
+
+static void TestDL623MeshCertificateReuseAndSubdivision()
+{
+	std::cout << "  [DL-623] Testing oversize-triangle subdivision, non-graph 3D proof reuse, referenced-only welding, and refusal-witness stability..." << std::endl;
+
+	// (1) Oversize triangle subdivision: a huge flap that folds back and pierces
+	// the interior of a fine sheet must be refused by Step 4 (not budgetRefusal),
+	// and two huge flaps crossing each other far outside gridBoxLo..gridBoxHi
+	// must also be refused by the oversize-vs-oversize check.
+	{
+		const int N = 80;
+		std::vector<Point3> pts;
+		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
+			pts.push_back( Point3( double( i ) / N, double( j ) / N, 0 ) );
+		}
+		const unsigned int badApex = (unsigned int)pts.size();
+		pts.push_back( Point3( 1e4, 0.5, 1.0 ) );
+		const unsigned int badApex2 = (unsigned int)pts.size();
+		pts.push_back( Point3( -1e4, 0.5, -1.0 ) );
+		std::vector<Point3> corners;
+		std::vector<unsigned int> weld;
+		const auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			corners.push_back( pts[a] ); corners.push_back( pts[b] ); corners.push_back( pts[c] );
+			weld.push_back( a ); weld.push_back( b ); weld.push_back( c );
+		};
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) for( int i = 0; i < N; ++i ) {
+			add( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		// Flap 1 from boundary edge (1,0)-(1,1/N) to badApex=(1e4, 0.5, 1),
+		// Flap 2 from shared edge badApex-(1,0) to badApex2=(-1e4, 0.5, -1),
+		// which passes directly through the fine sheet near (0.5, 0.25, 0).
+		add( id( N, 1 ), id( N, 0 ), badApex );
+		add( badApex, id( N, 0 ), badApex2 );
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		Check( !cert.certified && !cert.budgetRefusal && !cert.topologicalRefusal &&
+			cert.refusalTriA != cert.refusalTriB,
+			"DL-623 (1): oversize triangle piercing the fine sheet is refused by Step-4 subdivision" );
+
+		// Two oversize triangles intersecting each other far outside the fine sheet's
+		// gridBoxLo..gridBoxHi (around x = 5e4).
+		std::vector<Point3> ptsFar = pts;
+		ptsFar[badApex] = Point3( 1e5, 0.0, 1e4 );
+		ptsFar[badApex2] = Point3( 1e5, 1.0, -1e4 );
+		const unsigned int farApex3 = (unsigned int)ptsFar.size();
+		ptsFar.push_back( Point3( 1e5, 0.0, -1e4 ) );
+		const unsigned int farApex4 = (unsigned int)ptsFar.size();
+		ptsFar.push_back( Point3( 1e5, 1.0, 1e4 ) );
+		std::vector<Point3> cornersFar;
+		std::vector<unsigned int> weldFar;
+		const auto addFar = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			cornersFar.push_back( ptsFar[a] ); cornersFar.push_back( ptsFar[b] ); cornersFar.push_back( ptsFar[c] );
+			weldFar.push_back( a ); weldFar.push_back( b ); weldFar.push_back( c );
+		};
+		for( int j = 0; j < N; ++j ) for( int i = 0; i < N; ++i ) {
+			addFar( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			addFar( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		// One huge flap on the right boundary (x=1) and one on the left boundary (x=0)
+		// that cross each other near x = 5e4, far outside [0,1]^2 x {0}.
+		addFar( id( N, 1 ), id( N, 0 ), badApex );
+		addFar( id( N, 0 ), badApex2, badApex );
+		addFar( id( 0, 0 ), id( 0, 1 ), farApex3 );
+		addFar( id( 0, 1 ), farApex4, farApex3 );
+		const auto certFar = GeometricUtilities::IsEmbeddedOpenOrientedSurface( cornersFar, nullptr, Scalar( 0 ), &weldFar, Scalar( 1e-6 ) );
+		Check( !certFar.certified && !certFar.budgetRefusal && !certFar.topologicalRefusal,
+			"DL-623 (1): two oversize flaps crossing outside gridBoxLo..gridBoxHi are refused" );
+	}
+
+	// (2) Non-graph 3D open-sheet proof reuse (`reusedOpenCertified`):
+	// Build a curved C-shell wrapping > 240 deg in theta and tilted in 3D so
+	// face normals change sign along all three coordinate axes (not a graph
+	// over x, y, or z).
+	{
+		const int Nu = 24, Nv = 16;
+		const double pi = 3.14159265358979323846;
+		VerticesListType v0;
+		NormalsListType n0;
+		TexCoordsListType c0;
+		IndexTriangleListType tris;
+		for( int j = 0; j <= Nv; ++j ) {
+			const double v = -0.8 + 1.6 * double( j ) / Nv;
+			for( int i = 0; i <= Nu; ++i ) {
+				const double u = -0.75 * pi + 1.5 * pi * double( i ) / Nu;
+				const double r = 1.0 + 0.25 * std::cos( v * pi * 0.5 );
+				const double x = r * std::cos( u );
+				const double y = r * std::sin( u ) + 0.35 * std::sin( 2.0 * v );
+				const double z = v + 0.45 * std::sin( u );
+				v0.push_back( Point3( x, y, z ) );
+				n0.push_back( Vector3( 0, 0, 1 ) );
+				c0.push_back( Point2( double( i ) / Nu, double( j ) / Nv ) );
+			}
+		}
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( Nu + 1 ) + i ); };
+		for( int j = 0; j < Nv; ++j ) {
+			for( int i = 0; i < Nu; ++i ) {
+				IndexedTriangle a;
+				a.iVertices[0] = a.iNormals[0] = a.iCoords[0] = id( i, j );
+				a.iVertices[1] = a.iNormals[1] = a.iCoords[1] = id( i + 1, j );
+				a.iVertices[2] = a.iNormals[2] = a.iCoords[2] = id( i + 1, j + 1 );
+				tris.push_back( a );
+				IndexedTriangle b;
+				b.iVertices[0] = b.iNormals[0] = b.iCoords[0] = id( i, j );
+				b.iVertices[1] = b.iNormals[1] = b.iCoords[1] = id( i + 1, j + 1 );
+				b.iVertices[2] = b.iNormals[2] = b.iCoords[2] = id( i, j + 1 );
+				tris.push_back( b );
+			}
+		}
+		auto* m = new TriangleMeshGeometryIndexed( true, true );
+		m->addref();
+		m->BeginIndexedTriangles();
+		m->AddVertices( v0 );
+		m->AddNormals( n0 );
+		m->AddTexCoords( c0 );
+		m->AddIndexedTriangles( tris );
+		m->DoneIndexedTriangles();
+
+		Check( m->IsProvablyOpenSheet() && !m->IsCertifiedWatertight() && m->OpenCertificateAudits() == 1,
+			"DL-623 (2): non-graph 3D open shell certifies at build in 1 audit" );
+
+		// (2a) Translation + small smooth nonlinear perturbation within the
+		// separation lower bound -> certified via the fast A = I_3 span bound
+		// without re-running IsEmbeddedOpenOrientedSurface (audits stays 1).
+		VerticesListType vSmall = v0;
+		for( std::size_t k = 0; k < vSmall.size(); ++k ) {
+			Point3& p = vSmall[k];
+			p.x += 2.5 + 1e-3 * std::sin( p.y );
+			p.y += -1.25 + 1e-3 * std::cos( p.z );
+			p.z += 0.75 + 1e-3 * std::sin( p.x );
+		}
+		m->UpdateVertices( vSmall, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() && !m->IsCertifiedWatertight() && m->OpenCertificateAudits() == 1,
+			"DL-623 (2a): non-graph 3D open shell reuses certificate under translation + small nonlinear wave (audits=1)" );
+
+		// (2b) Large 3D rotation + anisotropic linear scaling + small smooth
+		// wave -> spanI is O(1) so A = I_3 cannot certify, but the 3x3 affine
+		// least-squares fit A + Sylvester singular-value lower bound sigmaLo
+		// certifies in O(V) without re-running IsEmbeddedOpenOrientedSurface!
+		VerticesListType vRot = v0;
+		const double ca = std::cos( 0.65 ), sa = std::sin( 0.65 );
+		const double cb = std::cos( -0.45 ), sb = std::sin( -0.45 );
+		for( std::size_t k = 0; k < vRot.size(); ++k ) {
+			const Point3& q = v0[k];
+			const double x1 = 1.15 * q.x, y1 = 1.08 * q.y, z1 = 1.22 * q.z;
+			const double x2 = ca * x1 - sa * y1;
+			const double y2 = sa * x1 + ca * y1;
+			const double z2 = z1;
+			const double x3 = cb * x2 + sb * z2;
+			const double y3 = y2;
+			const double z3 = -sb * x2 + cb * z2;
+			vRot[k] = Point3(
+				x3 + 0.5 + 5e-4 * std::sin( q.y ),
+				y3 - 0.3 + 5e-4 * std::cos( q.z ),
+				z3 + 0.8 + 5e-4 * std::sin( q.x ) );
+		}
+		m->UpdateVertices( vRot, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() && !m->IsCertifiedWatertight() && m->OpenCertificateAudits() == 1,
+			"DL-623 (2b): non-graph 3D open shell reuses certificate under 3D rotation + scaling + wave via Sylvester affine bound (audits=1)" );
+
+		// (2c) Large nonlinear fold that creates a real self-intersection:
+		// reuse must decline, re-audit runs with pre-verified topology, and
+		// IsProvablyOpenSheet() becomes false.
+		VerticesListType vFold = v0;
+		for( int j = 0; j <= Nv; ++j ) {
+			const double v = -0.8 + 1.6 * double( j ) / Nv;
+			for( int i = 0; i <= Nu; ++i ) {
+				const double s = -0.4 + ( pi + 0.8 ) * double( i ) / Nu;
+				vFold[id( i, j )] = Point3( std::sin( s ), v, 0.5 * std::sin( 2.0 * s ) );
+			}
+		}
+		m->UpdateVertices( vFold, NormalsListType() );
+		Check( !m->IsProvablyOpenSheet() && !m->IsCertifiedWatertight() && m->OpenCertificateAudits() == 2,
+			"DL-623 (2c): large self-intersecting fold declines certificate reuse and refuses on re-audit (audits=2)" );
+		m->release();
+	}
+
+	// (3) & (4): Referenced-only welding (`EnsureReferencedVertices`,
+	// `WeldReferencedVertices`) and adaptive `WeldVertexPositions` cell sizing
+	// with an unreferenced far outlier vertex at 1e6.
+	{
+		const int N = 20;
+		VerticesListType v0;
+		NormalsListType n0;
+		TexCoordsListType c0;
+		IndexTriangleListType tris;
+		for( int j = 0; j <= N; ++j ) {
+			for( int i = 0; i <= N; ++i ) {
+				const double x = -1.0 + 2.0 * double( i ) / N;
+				const double y = -1.0 + 2.0 * double( j ) / N;
+				v0.push_back( Point3( x, y, 0.2 * ( x * x + y * y ) ) );
+				n0.push_back( Vector3( 0, 0, 1 ) );
+				c0.push_back( Point2( 0, 0 ) );
+			}
+		}
+		// Unreferenced far outlier vertex that would inflate a whole-pPoints
+		// bounding box diagonal by 5e5x.
+		v0.push_back( Point3( 1e6, -1e6, 5e5 ) );
+		n0.push_back( Vector3( 0, 0, 1 ) );
+		c0.push_back( Point2( 0, 0 ) );
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) {
+			for( int i = 0; i < N; ++i ) {
+				IndexedTriangle a;
+				a.iVertices[0] = a.iNormals[0] = a.iCoords[0] = id( i, j );
+				a.iVertices[1] = a.iNormals[1] = a.iCoords[1] = id( i + 1, j );
+				a.iVertices[2] = a.iNormals[2] = a.iCoords[2] = id( i + 1, j + 1 );
+				tris.push_back( a );
+				IndexedTriangle b;
+				b.iVertices[0] = b.iNormals[0] = b.iCoords[0] = id( i, j );
+				b.iVertices[1] = b.iNormals[1] = b.iCoords[1] = id( i + 1, j + 1 );
+				b.iVertices[2] = b.iNormals[2] = b.iCoords[2] = id( i, j + 1 );
+				tris.push_back( b );
+			}
+		}
+		auto* m = new TriangleMeshGeometryIndexed( true, true );
+		m->addref();
+		m->BeginIndexedTriangles();
+		m->AddVertices( v0 );
+		m->AddNormals( n0 );
+		m->AddTexCoords( c0 );
+		m->AddIndexedTriangles( tris );
+		m->DoneIndexedTriangles();
+
+		Check( m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == 1,
+			"DL-623 (3): unreferenced far outlier vertex does not collapse referenced sheet or inflate weld tolerance" );
+
+		// Moving only the unreferenced outlier vertex does not trigger a re-audit.
+		VerticesListType vOutlierMoved = v0;
+		vOutlierMoved.back() = Point3( -2e6, 3e6, -1e6 );
+		m->UpdateVertices( vOutlierMoved, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == 1,
+			"DL-623 (3): mutating only an unreferenced vertex preserves cached open-sheet proof" );
+		m->release();
+	}
+
+	// (5) Deterministic cell visitation + transverse interior-crossing witness
+	// selection (`crossingScore`) so `fold` reuses its refusal witness across
+	// non-planar deformations (`audits = 1/1/1`).
+	{
+		const int N = 60;
+		const double pi = 3.14159265358979323846;
+		VerticesListType vFold;
+		NormalsListType n0;
+		TexCoordsListType c0;
+		IndexTriangleListType tris;
+		for( int j = 0; j <= N; ++j ) {
+			const double y = -1.0 + 2.0 * double( j ) / N;
+			for( int i = 0; i <= N; ++i ) {
+				const double s = -0.3 + ( pi + 0.6 ) * double( i ) / N;
+				vFold.push_back( Point3( std::sin( s ), y, 0.5 * std::sin( 2.0 * s ) ) );
+				n0.push_back( Vector3( 0, 0, 1 ) );
+				c0.push_back( Point2( 0, 0 ) );
+			}
+		}
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) {
+			for( int i = 0; i < N; ++i ) {
+				IndexedTriangle a;
+				a.iVertices[0] = a.iNormals[0] = a.iCoords[0] = id( i, j );
+				a.iVertices[1] = a.iNormals[1] = a.iCoords[1] = id( i + 1, j );
+				a.iVertices[2] = a.iNormals[2] = a.iCoords[2] = id( i + 1, j + 1 );
+				tris.push_back( a );
+				IndexedTriangle b;
+				b.iVertices[0] = b.iNormals[0] = b.iCoords[0] = id( i, j );
+				b.iVertices[1] = b.iNormals[1] = b.iCoords[1] = id( i + 1, j + 1 );
+				b.iVertices[2] = b.iNormals[2] = b.iCoords[2] = id( i, j + 1 );
+				tris.push_back( b );
+			}
+		}
+
+		// Direct witness check on the figure-8 fold: IsEmbeddedOpenOrientedSurface
+		// upgrades past column-0 coplanar pairs to the transverse crossing near x = 0.
+		std::vector<Point3> foldCorners;
+		foldCorners.reserve( tris.size() * 3 );
+		for( const IndexedTriangle& tri : tris ) {
+			foldCorners.push_back( vFold[tri.iVertices[0]] );
+			foldCorners.push_back( vFold[tri.iVertices[1]] );
+			foldCorners.push_back( vFold[tri.iVertices[2]] );
+		}
+		const auto foldCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( foldCorners );
+		Check( !foldCert.certified && !foldCert.budgetRefusal && !foldCert.topologicalRefusal &&
+			foldCert.refusalTriA < tris.size() && foldCert.refusalTriB < tris.size() &&
+			foldCert.refusalTriA != 0 && foldCert.refusalTriA != foldCert.refusalTriB,
+			"DL-623 (5a): IsEmbeddedOpenOrientedSurface selects the transverse interior-crossing witness over an earlier coplanar boundary pair" );
+
+		// Self-intersecting figure-8 fold: build picks the true self-intersection
+		// witness rather than a bogus coplanar column pair, so both def1 and def2
+		// reuse the refusal witness in O(1) pair checks (`audits = 1/1/1`).
+		auto* mFold = new TriangleMeshGeometryIndexed( true, true );
+		mFold->addref();
+		mFold->BeginIndexedTriangles();
+		mFold->AddVertices( vFold );
+		mFold->AddNormals( n0 );
+		mFold->AddTexCoords( c0 );
+		mFold->AddIndexedTriangles( tris );
+		mFold->DoneIndexedTriangles();
+		const unsigned long long a0 = mFold->OpenCertificateAudits();
+		for( Point3& p : vFold ) { p.z += 0.03 * ( p.x * p.x + p.y * p.y ); }
+		mFold->UpdateVertices( vFold, NormalsListType() );
+		const unsigned long long a1 = mFold->OpenCertificateAudits();
+		for( Point3& p : vFold ) { p.z += 0.01 * p.y; }
+		mFold->UpdateVertices( vFold, NormalsListType() );
+		const unsigned long long a2 = mFold->OpenCertificateAudits();
+		Check( !mFold->IsProvablyOpenSheet() && a0 == 1 && a1 == 1 && a2 == 1,
+			"DL-623 (5b): figure-8 fold caches true self-intersection witness at build and reuses it across def1 and def2 (audits=1/1/1)" );
+		mFold->release();
 	}
 }
 
@@ -2597,6 +2940,7 @@ int main()
 	TestDeserializedClosedCertificate();
 	TestPatchSetCertification();
 	TestDL620ReviewFindings();
+	TestDL623MeshCertificateReuseAndSubdivision();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
