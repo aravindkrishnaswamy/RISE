@@ -1217,12 +1217,28 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 			// AdoptCsgExitFacePayloadViaProbe relies on -- whereas the
 			// re-cast's `range` is backed off a hair SHORT of it, hence the
 			// two back-off terms.
-			if( FirstCrossingSide( exitHit, hit.geometric.ray.Dir() ) > 0 ) {
+			//
+			// Any strictly positive cosine is an exit here: the near-tangent
+			// threshold of `FirstCrossingSide` is for INFERRING a side, and
+			// refusing a genuine grazing exit would leave range2 unset (a
+			// hole or streak on a non-convex body).
+			const bool isExit = exitHit.geometric.bHit &&
+				exitHit.geometric.range < Scalar( 0.5 ) * RISE_INFINITY &&
+				exitHit.geometric.HasTrueGeomSide() &&
+				Vector3Ops::Dot( exitHit.geometric.UnflippedGeomNormal(), hit.geometric.ray.Dir() ) > 0;
+			if( isExit ) {
 				const bool flipped = exitHit.geometric.bGeomNormalOrientedToRay && !exitHit.geometric.bGeomNormalRayDerived;
-				// (The back-off is in the operand's own units; under a
-				// scaled operand this is approximate, at the 1e-12 level.)
-				const Object* operandObject = dynamic_cast<const Object*>( operand );
-				const Scalar backoff = operandObject ? operandObject->GetSurfaceIntersecError() : Scalar( 0 );
+				// The back-off is applied in the operand's OWN units, so it
+				// is converted into this composite's frame (the operand's
+				// parent frame) by the operand's stretch along the ray,
+				// |M^-1 dir| (operand-local units per parent unit).
+				Scalar backoff = 0;
+				if( const Object* operandObject = dynamic_cast<const Object*>( operand ) ) {
+					const Scalar stretch = Vector3Ops::Magnitude(
+						Vector3Ops::Transform( operandObject->GetFinalInverseTransformMatrix(), hit.geometric.ray.Dir() ) );
+					backoff = ( stretch > 0 && std::isfinite( stretch ) ) ?
+						operandObject->GetSurfaceIntersecError() / stretch : operandObject->GetSurfaceIntersecError();
+				}
 				hit.geometric.range2 = t0 + exitHit.geometric.range + Scalar( 2 ) * backoff;
 				hit.geometric.vNormal2 = flipped ? -exitHit.geometric.vNormal : exitHit.geometric.vNormal;
 				hit.geometric.vGeomNormal2 = exitHit.geometric.UnflippedGeomNormal();
@@ -1236,6 +1252,23 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 		hit.geometric.range2 = 0;
 		hit.boundaryRange2 = 0;
 		hit.hasBoundaryRange2 = true;
+		// From inside, the first hit IS the operand's exit.  The interval
+		// algebra expects every operand normal to be OUTWARD (what an
+		// analytic sphere or box reports even from inside; the subtraction
+		// branches negate it, the union / intersection branches keep it),
+		// but a patch set reports a back-face hit flipped toward the ray.
+		// Un-flip it (shading and geometric normal alike) and clear the
+		// flag, so the record matches an analytic operand's.
+		//
+		// The DL-411 mesh path (SignedDistanceLower above) has the same
+		// latent issue for a DOUBLE-SIDED mesh operand, whose hits from
+		// inside are flipped the same way; it is left as it was here.
+		if( hit.geometric.bGeomNormalOrientedToRay && !hit.geometric.bGeomNormalRayDerived &&
+			IsCertifiedClosedPatchLeaf( operand ) ) {
+			hit.geometric.vNormal = -hit.geometric.vNormal;
+			hit.geometric.vGeomNormal = -hit.geometric.vGeomNormal;
+			hit.geometric.bGeomNormalOrientedToRay = false;
+		}
 	}
 }
 

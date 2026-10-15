@@ -510,6 +510,8 @@ static void TestOpenSheetCSG()
 	// Final review P1: a union entered from inside the analytic sphere
 	// whose exit is the completed exit of an overlapping Bezier ball.
 	obj( "ua", "sph" ); obj( "ub", "ball", " position 1.2 0 0\n" ); csg( "union_exit", "ua", "ub", "union" );
+	// The ray origin INSIDE the Bezier ball (the contained-origin path).
+	obj( "ui", "ball" ); obj( "uj", "sph", " position 5 0 0\n" ); csg( "union_in", "ui", "uj", "union" );
 	// ... and a bilinear (unflipped-normal) operand: box minus a unit
 	// bilinear cube poking out of its top face leaves a square pit.
 	scene += "bilinearpatch_geometry\n{\n name bcube\n file " + bcubePath + "\n}\n";
@@ -667,6 +669,19 @@ static void TestOpenSheetCSG()
 				<< wall.geometric.ptIntersection.z << ")" << std::endl;
 			Check( wall.geometric.bHit && wall.geometric.ptIntersection.x < -0.3 && wall.geometric.ptIntersection.z < 0.5,
 				"R3: a grazing ray across the dimple meets the far dimple wall" );
+			// That ray starts inside the box AND the ball; the far wall is
+			// where it enters the composite's material, so both the shading
+			// normal and the true outward normal must face back along it.
+			Check( wall.geometric.bHit && Vector3Ops::Dot( wall.geometric.vNormal, across ) < 0 &&
+				Vector3Ops::Dot( wall.geometric.UnflippedGeomNormal(), across ) < 0,
+				"P1: the far bowl wall seen from inside the ball faces the ray (shading and true normal)" );
+			// Camera inside the ball, above the box, looking down: the ray
+			// leaves the ball at the dimple floor inside the box.
+			const RayIntersection fromBall = Cast( *dimple, Point3( 0.1, 0, 1.5 ), down );
+			Check( fromBall.geometric.bHit && fromBall.geometric.ptIntersection.z < 0.2 &&
+				Vector3Ops::Dot( fromBall.geometric.vNormal, down ) < 0 &&
+				Vector3Ops::Dot( fromBall.geometric.UnflippedGeomNormal(), down ) < 0,
+				"P1: a camera inside the ball sees the dimple floor facing it (shading and true normal)" );
 		}
 	}
 	{	// Final review P1: the completed exit's normal is OUTWARD.
@@ -685,8 +700,15 @@ static void TestOpenSheetCSG()
 				Vector3Ops::Dot( pf.geometric.UnflippedGeomNormal(), Vector3( 0, 0, 1 ) ) > 0,
 				"P1: a box minus a bilinear cube shows its pit floor with an upward normal" );
 			Check( h.geometric.bHit && h.geometric.ptIntersection.x > 2.0 &&
+				Vector3Ops::Dot( h.geometric.vNormal, east ) > 0 &&
 				Vector3Ops::Dot( h.geometric.UnflippedGeomNormal(), east ) > 0,
-				"P1: a union exit through a Bezier operand reports the true OUTWARD normal" );
+				"P1: a union exit through a Bezier operand reports the OUTWARD normal (shading and true)" );
+			const IObject* ui = loaded.Object( "union_in" );
+			const RayIntersection hi = ui ? Cast( *ui, Point3( 0, 0.05, 0.03 ), east ) : RayIntersection( Ray(), nullRasterizerState );
+			Check( ui && hi.geometric.bHit && hi.geometric.ptIntersection.x > 0.7 &&
+				Vector3Ops::Dot( hi.geometric.vNormal, east ) > 0 &&
+				Vector3Ops::Dot( hi.geometric.UnflippedGeomNormal(), east ) > 0,
+				"P1: a union exited from INSIDE its Bezier operand reports the OUTWARD normal (shading and true)" );
 		}
 	}
 	{	// P3-e: AddPatch after preparation stales the composite's cache.
