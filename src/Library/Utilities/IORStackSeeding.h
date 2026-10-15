@@ -343,7 +343,25 @@ namespace RISE
 			Scalar heightAbove;		//!< max over the sheet's bounds of dot(x - p0, normal)
 			BoundingBox box;		//!< the sheet's world bounds
 			Matrix4 xform;			//!< the object's world transform when described (its pose)
+			bool valid;				//!< false: a cached FAILED re-description (negative cache)
+
+			OpenSheetCatalogEntry() : pObj( 0 ), heightAbove( 0 ), valid( true ) {}
 		};
+
+		//! Value comparisons (+0 == -0) for the pose key.
+		inline bool SamePose( const Matrix4& a, const Matrix4& b )
+		{
+			return a._00 == b._00 && a._01 == b._01 && a._02 == b._02 && a._03 == b._03 &&
+				a._10 == b._10 && a._11 == b._11 && a._12 == b._12 && a._13 == b._13 &&
+				a._20 == b._20 && a._21 == b._21 && a._22 == b._22 && a._23 == b._23 &&
+				a._30 == b._30 && a._31 == b._31 && a._32 == b._32 && a._33 == b._33;
+		}
+
+		inline bool SameBox( const BoundingBox& a, const BoundingBox& b )
+		{
+			return a.ll.x == b.ll.x && a.ll.y == b.ll.y && a.ll.z == b.ll.z &&
+				a.ur.x == b.ur.x && a.ur.y == b.ur.y && a.ur.z == b.ur.z;
+		}
 
 		//! DL-618: describes @a object if it is a certified open refractive
 		//! sheet (returns false otherwise).
@@ -614,42 +632,46 @@ namespace RISE
 
 		//! DL-618 round 2 (P3-b): @a entry at the calling thread's pose.
 		//!
-		//! Round 3 (P2-1): only a sheet whose OWN pose differs from the one it
-		//! was described at is re-described -- a time-indexed pass is entered
-		//! for any keyframed frame (a moving camera alone sets the thread's
-		//! slot table), and re-describing every sheet on every seed cost ~100
-		//! object rays per sheet per seed.  A re-posed description is kept
-		//! per thread, keyed on the sheet's world transform, so a pixel
-		//! sample's seeds (hero, companions, subpath roots, crossings) share
-		//! it and a static sheet costs one transform read and compare.
+		//! A sheet is re-described only when its pose differs from the one it
+		//! was described at; the pose is its world transform AND its world
+		//! bounds (round 3 review, P2-b: a keyframed clipped plane's corners
+		//! move the sheet without moving its transform).  The compare runs
+		//! whether or not the thread is in a time-indexed pass (the
+		//! single-threaded motion-blur fallback re-animates the SHARED scene
+		//! per sample).  A re-description -- or a failed one (P3-5, negative
+		//! cache) -- is kept per thread per sheet for that pose, so a static
+		//! sheet costs one transform and bounds read and compare.
 		inline OpenSheetCatalogEntry PosedOpenSheet( const OpenSheetCatalogEntry& entry )
 		{
-			if( !TimeIndexed::tlsSlots ) {
-				return entry;
-			}
 			const Matrix4 now = entry.pObj->GetFinalTransformMatrix();
-			if( std::memcmp( &now, &entry.xform, sizeof( Matrix4 ) ) == 0 ) {
+			const BoundingBox box = entry.pObj->getBoundingBox();
+			if( SamePose( now, entry.xform ) && SameBox( box, entry.box ) ) {
 				return entry;
 			}
 			std::vector<OpenSheetCatalogEntry>& posed = ThreadOpenSheetCatalog().posed;
+			std::size_t slot = posed.size();
 			for( std::size_t i = 0; i < posed.size(); i++ ) {
 				if( posed[i].pObj == entry.pObj ) {
-					if( std::memcmp( &now, &posed[i].xform, sizeof( Matrix4 ) ) != 0 ) {
-						OpenSheetCatalogEntry fresh;
-						if( !DescribeOpenSheet( *entry.pObj, fresh ) ) {
-							return entry;
-						}
-						posed[i] = fresh;
+					if( SamePose( now, posed[i].xform ) && SameBox( box, posed[i].box ) ) {
+						return posed[i].valid ? posed[i] : entry;
 					}
-					return posed[i];
+					slot = i;
+					break;
 				}
 			}
 			OpenSheetCatalogEntry fresh;
 			if( !DescribeOpenSheet( *entry.pObj, fresh ) ) {
-				return entry;
+				fresh = entry;
+				fresh.valid = false;
+				fresh.xform = now;
+				fresh.box = box;
 			}
-			posed.push_back( fresh );
-			return fresh;
+			if( slot < posed.size() ) {
+				posed[slot] = fresh;
+			} else {
+				posed.push_back( fresh );
+			}
+			return fresh.valid ? fresh : entry;
 		}
 
 		//! DL-618: the catalog's description of @a pObj, or a fresh one when
@@ -820,11 +842,18 @@ namespace RISE
 		//! sphere's upper half from inside.  A hit closer than a self-hit
 		//! tolerance is skipped, and so is the ray's FIRST opaque event when
 		//! it is an exit (back face) from an object whose surface passes
-		//! through `pos` (an object-only ray from just inside, back toward
-		//! `pos`, meets it within the tolerance) -- the ray started inside
-		//! that body.  A later event, even on the same object, blocks.  A
+		//! through `pos` (the object alone, probed from `pos` along -n, is
+		//! missed or met within 1e-4 of the scene scale) -- the ray started
+		//! inside that body.  With @a pSeedObject only that object
+		//! qualifies.  A later event, even on the same object, blocks.  A
 		//! point strictly inside an opaque closed object (a camera in a
 		//! room) is not on its surface, so the room still blocks.
+		//!
+		//! Note the occlusion rule's consequence for opaque objects INSIDE
+		//! a sheet's half-space: a point directly beneath an opaque body (a
+		//! rock under the sea) is not in the sheet's medium under this
+		//! convention, although a walk that swam around the rock carries
+		//! the sheet's index there.
 		inline bool OpenSheetNormalRayReaches(
 			const IObjectManager* pObjects,
 			const Point3& pos,
@@ -837,7 +866,8 @@ namespace RISE
 			std::size_t* crossedCount = 0,
 			const std::size_t cap = 0,
 			Scalar* sheetIor = 0,
-			bool* overflow = 0
+			bool* overflow = 0,
+			const IObject* pSeedObject = 0
 			)
 		{
 			Diagnostics::ProbeTraceCounter()++;
@@ -868,11 +898,33 @@ namespace RISE
 					// on.  Anything after that -- including a later ENTRY into
 					// the same object (a thick-walled room's roof above a light
 					// flush with its floor, round 3 P3-1) -- blocks as usual.
-					bool own = step == 0 && ri.geometric.range < selfTol;
-					if( !own && !ownChecked && ri.pObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
-						RayIntersection back( Ray( Point3Ops::mkPoint3( pos, normal * selfTol ), -normal ), nullRasterizerState );
-						ri.pObject->IntersectRay( back, Scalar( 2 ) * selfTol, true, true, false );
-						own = back.geometric.bHit && back.geometric.range <= Scalar( 2 ) * selfTol;
+					// A self-hit at the origin (an intersector returning the
+					// point's own surface at t ~ 0: tessellated or SDF bodies)
+					// is skipped WITHOUT consuming the own-body exemption
+					// (round 3 review, P2-a).
+					if( !ownChecked && ri.geometric.range < selfTol ) {
+						probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
+						probe.Advance( kSeedEps );
+						continue;
+					}
+					bool own = false;
+					if( !ownChecked && ri.pObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0 &&
+						( !pSeedObject || ri.pObject == pSeedObject ) ) {
+						// The object's surface must pass through `pos` itself:
+						// the object ALONE, probed from `pos` the other way
+						// (-n), is missed or met within a surface tolerance
+						// (1e-4 of the scene scale: sphere-traced SDF hits lie
+						// up to ~6e-5 inside their surface).  A point strictly
+						// inside the object (a camera in a room) meets its far
+						// wall; a flush emitter more than the tolerance above a
+						// room's floor meets the floor (round 3 review, P3-1).
+						// A closer separation cannot be told from an SDF's own
+						// surface geometrically -- the documented residual; a
+						// caller that knows the seed's own object passes it
+						// (`pSeedObject`) and only that object qualifies.
+						RayIntersection back( Ray( pos, -normal ), nullRasterizerState );
+						ri.pObject->IntersectRay( back, RISE_INFINITY, true, true, false );
+						own = !back.geometric.bHit || back.geometric.range <= Scalar( 1e-4 ) * scale;
 					}
 					ownChecked = true;
 					if( !own ) {
@@ -924,7 +976,8 @@ namespace RISE
 			std::size_t* crossedCount = 0,
 			const std::size_t cap = 0,
 			Scalar* sheetIor = 0,
-			bool* overflow = 0
+			bool* overflow = 0,
+			const IObject* pSeedObject = 0
 			)
 		{
 			const Vector3& n = sheet.normal;
@@ -965,7 +1018,7 @@ namespace RISE
 				}
 			}
 			return OpenSheetNormalRayReaches( pObjects, pos, n, sheet.pObj, nm,
-				passedSheets, passedCount, crossedClosed, crossedCount, cap, sheetIor, overflow );
+				passedSheets, passedCount, crossedClosed, crossedCount, cap, sheetIor, overflow, pSeedObject );
 		}
 
 		// DL-76: a single axis's forward+reverse probe PAIR is only a
@@ -1027,13 +1080,16 @@ namespace RISE
 		///
 		/// @a seedOpenSheets false seeds closed media only (round 2, P2-4:
 		/// SMSDomainReplay::Capture reads only the closed membership and
-		/// need not pay for the sheets).
+		/// need not pay for the sheets).  @a pSeedObject, when known (a light
+		/// sample's luminary), is the object whose surface `pos` lies on: only
+		/// its body may be exempted from blocking an open sheet's normal ray.
 		inline void SeedFromPoint(
 			IORStack& stack,
 			const Point3& pos,
 			const IScene& scene,
             const Scalar nm = 0,
-			const bool seedOpenSheets = true
+			const bool seedOpenSheets = true,
+			const IObject* pSeedObject = 0
 			)
 		{
 			stack.SetMediumProbeScene( &scene );
@@ -1233,7 +1289,7 @@ namespace RISE
 				c.ior = 0;
 				bool overflow = false;
 				if( !OpenSheetHoldsPoint( sheet, pObjects, pos, nm,
-						c.passed, &c.passedCount, c.crossed, &c.crossedCount, kMaxSeededOpenSheets, &c.ior, &overflow ) ) {
+						c.passed, &c.passedCount, c.crossed, &c.crossedCount, kMaxSeededOpenSheets, &c.ior, &overflow, pSeedObject ) ) {
 					continue;
 				}
 				if( overflow || confirmedCount >= kMaxSeededOpenSheets ) {
