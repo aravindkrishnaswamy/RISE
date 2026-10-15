@@ -460,6 +460,7 @@ static void TestOpenSheetCSG()
 	const std::string spherePath = WriteBezier( "dl616_cubesphere.bezier", MakeCubeSphere( 1, true ) );
 	const std::string framePath = WriteBilinear( "dl616_frame.bilinear", MakeBilinearFrame() );
 	const std::string tcubePath = WriteBilinear( "dl616_tcube.bilinear", MakeTJunctionCube() );
+	const std::string ballInPath = WriteBezier( "dl616_ballin.bezier", MakeCubeSphere( 1, false ) );
 	const std::string sheetZ =
 		"clippedplane_geometry\n{\n name sheet_z\n pta -3 -3 0\n ptb 3 -3 0\n ptc 3 3 0\n ptd -3 3 0\n}\n";
 	const std::string sheetX =
@@ -475,6 +476,7 @@ static void TestOpenSheetCSG()
 		"bilinearpatch_geometry\n{\n name frame\n file " + framePath + "\n}\n"
 		"bezierpatch_geometry\n{\n name ball_edit\n file " + spherePath + "\n}\n"
 		"bilinearpatch_geometry\n{\n name tcube\n file " + tcubePath + "\n}\n"
+		"bezierpatch_geometry\n{\n name ballin\n file " + ballInPath + "\n}\n"
 		"clippedplane_geometry\n{\n name sheet_half\n pta -1 -1 0.5\n ptb 2 -1 0.5\n ptc 2 2 0.5\n ptd -1 2 0.5\n}\n"
 		"sphere_geometry\n{\n name sph\n radius 0.5\n}\n";
 	auto obj = [&]( const std::string& name, const std::string& geom, const std::string& extra = "" ) {
@@ -499,10 +501,21 @@ static void TestOpenSheetCSG()
 	obj( "c3", "sheet_z" ); csg( "minus_solids", "c3", "solids", "subtraction" );
 	// P3-e: a composite whose patch operand is edited after preparation.
 	obj( "es", "sheet_z" ); obj( "eb", "ball_edit" ); csg( "epoch_probe", "es", "eb", "subtraction" );
+	// Round 3 P2-1: secondary rays leaving a certified-closed patch
+	// operand.  A 2-unit box MINUS the Bezier ball centred on its top face
+	// leaves a hemispherical dimple.
+	scene += "box_geometry\n{\n name cube2\n width 2\n height 2\n depth 2\n}\n";
+	obj( "da", "cube2" ); obj( "db", "ball", " position 0 0 1\n" ); csg( "dimple", "da", "db", "subtraction" );
 	// P3-b: the same trimming geometry when the solid is closed but NOT
 	// certified (the T-junction cube).
-	obj( "ts1", "sheet_half" ); obj( "tc1", "tcube" ); csg( "inter_tcube", "ts1", "tc1", "intersection" );
-	obj( "ts2", "sheet_half" ); obj( "tc2", "tcube" ); csg( "minus_tcube", "ts2", "tc2", "subtraction" );
+	// The uncertified closed trimmer is the INWARD-wound cube-sphere: closed
+	// by topology, refused by the certifier (negative volume).
+	obj( "ts1", "sheet_half" ); obj( "tc1", "ballin" ); csg( "inter_tcube", "ts1", "tc1", "intersection" );
+	obj( "ts2", "sheet_half" ); obj( "tc2", "ballin" ); csg( "minus_tcube", "ts2", "tc2", "subtraction" );
+	obj( "ts3", "sheet_half" ); obj( "tc3", "ball" ); csg( "inter_ballcert", "ts3", "tc3", "intersection" );
+	// Round 3 P3-1: the T-junction cube has free sides by exact topology,
+	// so it is OPEN and must never act as a trimmer.
+	obj( "ts4", "sheet_half" ); obj( "tc4", "tcube" ); csg( "inter_open", "ts4", "tc4", "intersection" );
 	// P2-1: sheet minus (Bezier ball UNION a sphere overlapping the ball's
 	// exit along the ray).  A ray down x = 0.3 enters the ball at z ~ 0.95,
 	// leaves it at z ~ -0.95 inside the sphere (centre z = -1, r = 0.5) and
@@ -577,6 +590,74 @@ static void TestOpenSheetCSG()
 		Check( std::isfinite( t.geometric.ptExit.x ) && std::isfinite( t.geometric.ptExit.z ),
 			"E: a transformed open-sheet composite reports a finite ptExit" );
 	}
+	{	// Round 3 P2-1: the inside test from a point within the self-hit
+		// floor of a certified-closed patch surface.  Points just off the
+		// frame's inner wall x = 1, in the hole (truly OUTSIDE the frame),
+		// probed along many directions -- some grazing, some across the
+		// hole: every answer must be "outside".  Directions are nudged off
+		// the frame's edges: a ray through an edge exactly is a degenerate
+		// double contact that no first-hit or parity rule settles.
+		const IObject* interFrameObj = loaded.Object( "inter_frame" );
+		const IObjectPriv* frameLeaf = interFrameObj ? AsCSG( interFrameObj )->GetOperandB() : nullptr;
+		Check( frameLeaf != nullptr, "R3: frame leaf operand available" );
+		if( frameLeaf ) {
+			int wrong = 0, total = 0;
+			for( const Scalar off : { 1e-13, 1e-12 } ) {
+				const Point3 p( 1 - off, 0.1, 0.05 );
+				for( int a = -3; a <= 3; ++a ) {
+					for( int b = -3; b <= 3; ++b ) {
+						const Vector3 d = Vector3Ops::Normalize( Vector3( -1, 0.3 * a + 0.0137, 0.3 * b + 0.0071 ) );
+						++total;
+						if( CSGObject::OperandContainsPoint( frameLeaf, p, d, 5 ) != -1 ) ++wrong;
+						// Grazing along the wall, leaving it.
+						const Vector3 g = Vector3Ops::Normalize( Vector3( -0.05, 0.3 * a + 0.01, 0.3 * b + 0.01 ) );
+						++total;
+						if( CSGObject::OperandContainsPoint( frameLeaf, p, g, 5 ) != -1 ) ++wrong;
+					}
+				}
+			}
+			std::cout << "    inside test just off a patch surface: " << wrong << " of " << total << " wrong" << std::endl;
+			Check( wrong == 0, "R3: a point within a patch surface's self-hit floor reads the side its ray leaves into" );
+		}
+	}
+	{	// Round 3 P2-1: secondary rays from a surface point of a patch operand.
+		const IObject* dimple = loaded.Object( "dimple" );
+		Check( dimple != nullptr, "R3: dimple composite loads" );
+		if( dimple ) {
+			// Land on the dimple floor (the ball's surface inside the box);
+			// the hit point is backed off a hair into the cavity, i.e. it
+			// lies within the ball's self-hit floor of its surface.
+			const RayIntersection floorHit = Cast( *dimple, Point3( 0.2, 0, 3 ), down );
+			Check( floorHit.geometric.bHit, "R3: camera ray lands on the dimple floor" );
+			const Point3 o = floorHit.geometric.ptIntersection;
+			int phantomHits = 0, phantomShadows = 0, total = 0;
+			for( int k = 0; k < 16; ++k ) {
+				// Up and out through the open top at assorted azimuths and
+				// grazing elevations: nothing of the composite is in the way.
+				const Scalar az = Scalar( k ) * 3.14159265358979323846 / 8;
+				const Scalar el = Scalar( 1.0 ) + Scalar( 0.1 ) * Scalar( k % 4 );
+				const Vector3 d = Vector3Ops::Normalize( Vector3( std::cos( az ) * std::cos( el ), std::sin( az ) * std::cos( el ), std::sin( el ) ) );
+				// Keep only directions that really leave through the opening.
+				const Scalar tx = o.x + d.x * ( 1 - o.z ) / d.z, ty = o.y + d.y * ( 1 - o.z ) / d.z;
+				if( tx * tx + ty * ty > 0.9 ) continue;
+				++total;
+				if( Cast( *dimple, o, d ).geometric.bHit ) ++phantomHits;
+				if( Shadow( *dimple, o, d, 10 ) ) ++phantomShadows;
+			}
+			std::cout << "    dimple rays leaving through the opening: " << total << " cast, "
+				<< phantomHits << " phantom hits, " << phantomShadows << " phantom occluders" << std::endl;
+			Check( total >= 4 && phantomHits == 0 && phantomShadows == 0,
+				"R3: reflection / shadow rays leaving a patch operand's surface see no phantom geometry" );
+			// And a grazing ray across the dimple that DOES meet its far wall.
+			const Vector3 across = Vector3Ops::Normalize( Vector3( -0.99, 0, 0.14 ) );
+			const RayIntersection wall = Cast( *dimple, o, across );
+			std::cout << "    grazing ray across the dimple: hit " << wall.geometric.bHit << " at ("
+				<< wall.geometric.ptIntersection.x << ", " << wall.geometric.ptIntersection.y << ", "
+				<< wall.geometric.ptIntersection.z << ")" << std::endl;
+			Check( wall.geometric.bHit && wall.geometric.ptIntersection.x < -0.3 && wall.geometric.ptIntersection.z < 0.5,
+				"R3: a grazing ray across the dimple meets the far dimple wall" );
+		}
+	}
 	{	// P3-e: AddPatch after preparation stales the composite's cache.
 		const IObject* probe = loaded.Object( "epoch_probe" );
 		Check( probe && AsCSG( probe )->IsProvablyOpenSheet(), "P3-e: probe composite starts certified open" );
@@ -604,7 +685,19 @@ static void TestOpenSheetCSG()
 		const IObject* mt = loaded.Object( "minus_tcube" );
 		Check( it && mt && !AsCSG( it )->IsProvablyOpenSheet() && !AsCSG( mt )->IsProvablyOpenSheet(),
 			"P3-b: sheet trimmed by an UNCERTIFIED closed solid carries no open-sheet certificate" );
-		if( it && mt ) {
+		const IObject* ic = loaded.Object( "inter_ballcert" );
+		const IObject* io = loaded.Object( "inter_open" );
+		Check( ic && io && AsCSG( ic )->IsProvablyOpenSheet() && AsCSG( ic )->TrimsSheet() && AsCSG( it )->TrimsSheet(),
+			"P3-1: trimming roles agree for a certified and an uncertified closed trimmer" );
+		Check( io && !AsCSG( io )->TrimsSheet() && !AsCSG( io )->IsProvablyOpenSheet(),
+			"P3-1: a topologically OPEN operand never trims a sheet" );
+		if( it && mt && ic ) {
+			for( const Scalar x : { 0.3, 0.6, 0.85, 1.2 } ) {
+				const RayIntersection a = Cast( *it, Point3( x, 0.4, 3 ), down );
+				const RayIntersection b = Cast( *ic, Point3( x, 0.4, 3 ), down );
+				Check( a.geometric.bHit == b.geometric.bHit && ( !a.geometric.bHit || std::fabs( a.geometric.range - b.geometric.range ) < 1e-9 ),
+					"P3-1: the trimmed sheet's shape does not depend on the trimmer's certificate" );
+			}
 			const RayIntersection in = Cast( *it, Point3( 0.3, 0.4, 3 ), down );
 			Check( in.geometric.bHit && std::fabs( in.geometric.range - 2.5 ) < 1e-6 && in.geometric.range2 == RISE_INFINITY &&
 				!in.geometric.bProvablyNoInterior,
@@ -653,6 +746,7 @@ static void TestOpenSheetCSG()
 	std::remove( spherePath.c_str() );
 	std::remove( framePath.c_str() );
 	std::remove( tcubePath.c_str() );
+	std::remove( ballInPath.c_str() );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -892,6 +986,39 @@ static std::vector<BilinearPatch> MakeInvertedCube()
 static void TestProofStepCoverage()
 {
 	std::cout << "H. proof-step coverage" << std::endl;
+
+	{	// Round 3 P3-3: a Step-4 budget refusal carries its own flag (no
+		// geometric witness), distinct from a geometric refusal.
+		const int N = 300;
+		std::vector<Point3> pts;
+		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
+			pts.push_back( Point3( double( i ) / N, double( j ) / N, 0 ) );
+		}
+		const unsigned int apex = (unsigned int)pts.size();
+		pts.push_back( Point3( 1e5, 0.5, 1e5 ) );
+		std::vector<Point3> corners;
+		std::vector<unsigned int> weld;
+		const auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			corners.push_back( pts[a] ); corners.push_back( pts[b] ); corners.push_back( pts[c] );
+			weld.push_back( a ); weld.push_back( b ); weld.push_back( c );
+		};
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) for( int i = 0; i < N; ++i ) {
+			add( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		add( id( N, 1 ), id( N, 0 ), apex );
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		Check( !cert.certified && cert.budgetRefusal && cert.refusalTriA == std::size_t( -1 ),
+			"P3-3: a Step-4 pair-budget refusal is flagged as a budget refusal, with no witness" );
+
+		// Control: two crossing triangles are a GEOMETRIC refusal.
+		std::vector<Point3> x = {
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 0, 1, 0 ),
+			Point3( 0.2, 0.2, -0.5 ), Point3( 0.2, 0.2, 0.5 ), Point3( 0.9, 0.9, 0 ) };
+		const auto cx = GeometricUtilities::IsEmbeddedOpenOrientedSurface( x );
+		Check( !cx.certified && !cx.budgetRefusal, "P3-3: a geometric refusal is not flagged as a budget refusal" );
+	}
 
 	const Verdict fold = CertBezier( MakeInRowFold() );
 	std::cout << "    in-row fold: " << Describe( fold ) << std::endl;

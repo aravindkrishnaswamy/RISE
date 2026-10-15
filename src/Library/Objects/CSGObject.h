@@ -77,7 +77,8 @@ namespace RISE
 				kCertOpenSheetB		= 4,	//!< certified open sheet; operand B is the sheet
 				kCertNegativeVolume	= 8,	//!< the sheet operand's negative-winding warning
 				kTrimSheetA			= 16,	//!< render as operand A's sheet trimmed by B (certified or not)
-				kTrimSheetB			= 32	//!< render as operand B's sheet trimmed by A
+				kTrimSheetB			= 32,	//!< render as operand B's sheet trimmed by A
+				kTopologicallyClosed	= 64	//!< both operands closed by topology (no free boundary)
 			};
 			mutable std::atomic<long long>			m_certBits;
 			int CertificateBits() const;
@@ -209,6 +210,11 @@ namespace RISE
 			//! directions (see the .cpp).
 			static int OperandContainsPoint( const IObjectPriv* operand, const Point3& pt, const Vector3& dir, const Scalar scale );
 			bool IsProvablyOpenSheet( const bool allowGeneralProof = true ) const;
+			//! DL-617: the composite renders as a trimmed sheet (operand
+			//! roles by topology; see ComputeCertificateBits).
+			bool TrimsSheet() const;
+			//! DL-617: both operands closed by topology (no free boundary).
+			bool IsTopologicallyClosed() const;
 			bool HasNegativeOpenSignedVolume() const;
 
 		protected:

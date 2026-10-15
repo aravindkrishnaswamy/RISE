@@ -67,7 +67,13 @@ namespace RISE
 			// operands), so an opaque patch model never pays for it.  The
 			// per-hit stamp reads the stored flag without forcing it: an
 			// uncertified set reads "not open", the conservative answer.
-			mutable std::unique_ptr<std::once_flag>	m_certOnce;
+			// A VERSIONED slot, never a once_flag that an edit resets: an
+			// edit bumps m_certGeneration, and the certificate is recomputed
+			// under m_certMutex when m_certComputedGeneration lags behind it.
+			// Nothing a querying thread may be using is ever destroyed.
+			mutable std::mutex				m_certMutex;
+			std::atomic<unsigned int>		m_certGeneration;
+			mutable std::atomic<unsigned int>	m_certComputedGeneration;
 			mutable std::atomic<bool>	m_bCertifiedWatertight;
 			mutable std::atomic<bool>	m_bProvablyOpenSheet;
 			mutable std::atomic<bool>	m_bNegativeOpenSignedVolume;
@@ -120,6 +126,8 @@ namespace RISE
 			bool IsCertifiedWatertight() const { EnsureCertified(); return m_bCertifiedWatertight.load( std::memory_order_acquire ); }
 			bool IsProvablyOpenSheet() const { EnsureCertified(); return m_bProvablyOpenSheet.load( std::memory_order_acquire ); }
 			bool HasNegativeOpenSignedVolume() const { EnsureCertified(); return m_bNegativeOpenSignedVolume.load( std::memory_order_acquire ); }
+			//! DL-617: topological openness (see GeometricUtilities::BilinearPatchSetOpenness).
+			int TopologicalOpenness() const;
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 

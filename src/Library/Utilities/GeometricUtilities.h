@@ -706,6 +706,7 @@ namespace RISE
 		{
 			bool	certified = false;	//!< every test passed
 			bool	topologicalRefusal = false;	//!< refused at Step 2/2b/3 (depends only on post-weld vertex partition)
+			bool	budgetRefusal = false;	//!< refused because Step 4's insertion or pair budget was exceeded (no geometric witness)
 			std::size_t	refusalTriA = std::size_t( -1 );	//!< Step 1 (A == B) or Step 4 (A != B) failure witness
 			std::size_t	refusalTriB = std::size_t( -1 );
 			//! Signed volume of the triangles about their bounding-box
@@ -798,6 +799,16 @@ namespace RISE
 			bool& outNegativeOpenSignedVolume,
 			PatchSetCertDiagnostics* diag = nullptr
 			);
+
+		//! DL-617: TOPOLOGICAL openness of a patch set from exact seam
+		//! identity alone -- no embedding proof: +1 some side has no glued
+		//! partner (a free boundary), 0 every side is glued (no free
+		//! boundary), -1 undecidable (collapsed / looping / non-manifold /
+		//! mismatched seams).  Cheap (one sort); decides a composite's
+		//! operand ROLES, which must not depend on whether the embedding
+		//! proof happens to succeed.
+		extern int BezierPatchSetOpenness( const std::vector<BezierPatch>& patches );
+		extern int BilinearPatchSetOpenness( const std::vector<BilinearPatch>& patches );
 
 		//! DL-616: a process-wide counter bumped whenever any patch set's
 		//! certificate may have changed (a patch added, a set re-prepared),
