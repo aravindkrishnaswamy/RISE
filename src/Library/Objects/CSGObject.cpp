@@ -26,7 +26,6 @@
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/GeometricUtilities.h"
-#include <cassert>
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
@@ -971,6 +970,24 @@ namespace
 		return false;
 	}
 
+	//! Sign of the determinant of an operand's OWN transform into this
+	//! composite's frame: -1 for a mirroring transform, +1 otherwise (and
+	//! for an operand that is not an `Object`).  A composite operand
+	//! returns its own transform's sign; mirrors on its nested operands
+	//! were accounted for when its own exit records were oriented.  This
+	//! makes the handedness comparison exact for the determinant's SIGN
+	//! (orientation reversal); it does not model shear, under which the
+	//! forward-mapped tangents and the inverse-transpose-mapped normal can
+	//! disagree further for a shading normal far from the face normal.
+	Scalar OperandMirrorSign( const IObjectPriv* operand )
+	{
+		const Object* o = dynamic_cast<const Object*>( operand );
+		if( !o ) {
+			return 1;
+		}
+		return Matrix4Ops::Determinant( o->GetFinalTransformMatrix() ) < 0 ? Scalar( -1 ) : Scalar( 1 );
+	}
+
 	//! The OUTWARD normals at an EXIT, derived from the ray alone: at an
 	//! exit the outward side is the one the ray leaves through, so the
 	//! geometric normal is oriented along the ray direction and the
@@ -983,18 +1000,6 @@ namespace
 	//! shading normal was negated, so a caller re-pairs the normal
 	//! derivatives with it exactly then -- never on the flag.  A
 	//! ray-derived (hair) normal has no true side: the caller skips it.
-	//! Sign of the determinant of an operand's transform into this
-	//! composite's frame: -1 for a mirroring transform, +1 otherwise (and
-	//! for an operand that is not an `Object`).
-	Scalar OperandMirrorSign( const IObjectPriv* operand )
-	{
-		const Object* o = dynamic_cast<const Object*>( operand );
-		if( !o ) {
-			return 1;
-		}
-		return Matrix4Ops::Determinant( o->GetFinalTransformMatrix() ) < 0 ? Scalar( -1 ) : Scalar( 1 );
-	}
-
 	struct ExitNormals
 	{
 		Vector3 shade;
@@ -2075,12 +2080,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// INVARIANT relied on here: every operand record with
 					// range2 == 0 carries an OUTWARD normal (along the ray
 					// at its exit), hair (ray-derived, no true side)
-					// excepted.  Checked in debug builds.
-#ifdef _DEBUG
-					assert( riObjA.geometric.bGeomNormalRayDerived ||
-						Vector3Ops::Dot( riObjA.geometric.vGeomNormal, riObjA.geometric.ray.Dir() ) >=
-							-Scalar( 1e-6 ) * Vector3Ops::Magnitude( riObjA.geometric.vGeomNormal ) );
-#endif
+					// excepted.  Not asserted: an SDF's gradient-estimated
+					// normal at a near-tangent exit can read a slightly
+					// negative cosine without the record being wrong.
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
 				}

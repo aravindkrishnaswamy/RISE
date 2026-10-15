@@ -626,6 +626,21 @@ static void TestOpenSheetCSG()
 	if( !( interBall && minusBall && ballInter && interFrame && minusFrame && moved && sheetUnion && nested && minusSolids ) ) {
 		return;
 	}
+	{	// Every later fixture is read behind an `if( ptr )` guard, so a parse
+		// failure must fail here, loudly, instead of silently skipping rows.
+		const char* const guarded[] = { "epoch_probe", "dimple", "union_exit", "union_in", "pit", "mesh_pit",
+			"mesh_pit_in", "smooth_lens", "inward_lens", "mirror_lens", "mirror_in_lens", "graze_lens",
+			"scaled_lens", "nested_exit", "inter_tcube", "minus_tcube", "inter_ballcert", "inter_open",
+			"minus_ovl0", "minus_ovl1", "minus_ovl2" };
+		bool all = true;
+		for( const char* name : guarded ) {
+			if( !loaded.Object( name ) ) {
+				std::cout << "    missing fixture " << name << std::endl;
+				all = false;
+			}
+		}
+		Check( all, "E: every guarded CSG fixture loads" );
+	}
 	Check( AsCSG( interBall )->IsProvablyOpenSheet() && AsCSG( minusBall )->IsProvablyOpenSheet() &&
 		AsCSG( ballInter )->IsProvablyOpenSheet(), "E: sheet ∩/− a certified-closed Bezier solid is a certified open sheet" );
 	Check( AsCSG( interFrame )->IsProvablyOpenSheet(), "E: sheet ∩ a certified-closed genus-1 bilinear solid is a certified open sheet" );
