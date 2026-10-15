@@ -403,6 +403,170 @@ static void PartA()
 				"A9: an OPEN-SHEET key off every axis is captured toward its bounds" );
 		}
 	}
+
+	// A10 (round 2, P2-1): a displaced (Gerstner) sea surface.  Its
+	// representative normal must be the surface's, not a flank's, and every
+	// submerged point must be seeded.
+	{
+		const std::string sea =
+			"uniformcolor_painter\n{\n\tname pnt_lo\n\tcolor 0 0 0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_hi\n\tcolor 1 1 1\n}\n\n"
+			"gerstnerwave_painter\n{\n\tname pnt_waves\n\tcolora pnt_lo\n\tcolorb pnt_hi\n\tnum_waves 6\n\tmedian_wavelength 1.0\n"
+			"\twavelength_range 2.0\n\tmedian_amplitude 0.3\n\tamplitude_power 0.8\n\twind_dir 1.0 0.35\n\tdirectional_spread 1.6\n"
+			"\tdispersion_speed 1.0\n\tseed 9\n\ttime 0.0\n}\n\n"
+			"clippedplane_geometry\n{\n\tname g_base\n\tpta -6 0 -6\n\tptb -6 0 6\n\tptc 6 0 6\n\tptd 6 0 -6\n}\n\n"
+			"displaced_geometry\n{\n\tname g_sea\n\tbase_geometry g_base\n\tdetail 64\n\tdisplacement pnt_waves\n\tdisp_scale 0.6\n\tuv_seam_fold FALSE\n}\n\n";
+		Loaded wavy( Header() + sea + Obj( "sea", "g_sea", "glass133", "0 3 0" ) );
+		Check( wavy.ok, "A10 scene loads" );
+		if( wavy.ok ) {
+			IORStackSeeding::OpenSheetCatalogEntry entry;
+			const bool found = IORStackSeeding::FindOpenSheet( wavy.Scene().GetObjects(), wavy.O( "sea" ), entry );
+			char label[200];
+			std::snprintf( label, sizeof(label), "A10: the displaced sea is catalogued with a near-vertical normal (%.4f, %.4f, %.4f)",
+				found ? entry.normal.x : -2.0, found ? entry.normal.y : -2.0, found ? entry.normal.z : -2.0 );
+			if( std::getenv( "HALF_SPACE_DEBUG" ) ) std::printf( "  debug: %s\n", label );
+			Check( found && entry.normal.y > 0.95, label );
+			{
+				const BoundingBox b = wavy.O( "sea" )->getBoundingBox();
+				const Point3 c = b.GetCenter();
+				RayIntersection xr( Ray( Point3( c.x - 20, c.y, c.z ), Vector3( 1, 0, 0 ) ), nullRasterizerState );
+				wavy.O( "sea" )->IntersectRay( xr, RISE_INFINITY, true, true, false );
+				std::printf( "  [recorded] first X-ray hit normal of the sea (the round-1 catalog normal): (%.3f, %.3f, %.3f)\n",
+					xr.geometric.bHit ? xr.geometric.UnflippedGeomNormal().x : 0.0,
+					xr.geometric.bHit ? xr.geometric.UnflippedGeomNormal().y : 0.0,
+					xr.geometric.bHit ? xr.geometric.UnflippedGeomNormal().z : 0.0 );
+			}
+			int seeded = 0, total = 0;
+			// Includes points near the sheet's edges, where a normal tilted
+			// toward a flank leaves the sheet before reaching it.
+			for( int ix = -4; ix <= 4; ix += 2 ) {
+				for( int iz = -4; iz <= 4; iz += 2 ) {
+					total++;
+					const IORStack st = wavy.Seed( Point3( 0.7 * ix, 1.0, 0.7 * iz ) );
+					if( st.Depth() == 2 && Close( st.top(), 1.33 ) ) seeded++;
+					else if( std::getenv( "HALF_SPACE_DEBUG" ) ) std::printf( "  debug: A10 miss at (%g, %g)\n", 0.7 * ix, 0.7 * iz );
+				}
+			}
+			std::snprintf( label, sizeof(label), "A10: %d of %d submerged points under the displaced sea are seeded", seeded, total );
+			Check( seeded == total, label );
+		}
+	}
+
+	// A10b (round 2, P2-1): a curved open mesh -- a symmetric tent (ridge
+	// along z at x = 0, height 1.5 over a half-width of 4).  An X ray toward
+	// the centre meets a flank (normal tilted ~21 deg toward -x); the
+	// sheet's large-scale normal is vertical.  Points under the far -x side,
+	// 3 units down, leave the sheet along the flank normal.
+	{
+		const std::string tent =
+			"indexedmesh_geometry\n{\n\tname g_tent\n"
+			"\tvertex -4 0 4\n\tvertex 0 1.5 4\n\tvertex 4 0 4\n\tvertex -4 0 -4\n\tvertex 0 1.5 -4\n\tvertex 4 0 -4\n"
+			"\ttriangle 0 1 4\n\ttriangle 0 4 3\n\ttriangle 1 2 5\n\ttriangle 1 5 4\n\tdouble_sided TRUE\n}\n\n";
+		Loaded tentScene( Header() + tent + Obj( "tent", "g_tent", "glass15", "0 3 0" ) );
+		Check( tentScene.ok, "A10b scene loads" );
+		if( tentScene.ok ) {
+			int seeded = 0, total = 0;
+			for( int iz = -2; iz <= 2; iz++ ) {
+				for( double x : { -3.6, -3.2, 3.2, 3.6 } ) {
+					total++;
+					if( tentScene.Seed( Point3( x, 0.0, 1.2 * iz ) ).Depth() == 2 ) seeded++;
+				}
+			}
+			char label[160];
+			std::snprintf( label, sizeof(label), "A10b: %d of %d points under a curved (tent) open mesh are seeded", seeded, total );
+			Check( seeded == total, label );
+		}
+	}
+
+	// A11 (round 2, P2-2): a narrow strip (width 0.2) tilted 45 deg; the
+	// point lies 1 unit behind its centre along its normal, so no axis ray
+	// from the point meets the strip.  The walk's exit resolution
+	// (PointInOpenSheetMedium) must agree with SeedFromPoint.
+	{
+		double p[4][3] = { { -0.1, 0, 3 }, { 0.1, 0, 3 }, { 0.1, 0, -3 }, { -0.1, 0, -3 } };
+		for( auto& q : p ) { RotZ( -45, q[0], q[1] ); q[1] += 2; }
+		Loaded strip( Header() + SheetQuad( "g_strip", p[0], p[1], p[2], p[3] ) + Obj( "strip", "g_strip", "glass15" ) );
+		Check( strip.ok, "A11 scene loads" );
+		if( strip.ok ) {
+			const double s45 = std::sqrt( 0.5 );
+			const Point3 behind( -s45, 2 - s45, 0 );
+			Check( strip.Seed( behind ).Depth() == 2, "A11: SeedFromPoint seeds a point behind a narrow tilted strip" );
+			Check( IORStackSeeding::PointInOpenSheetMedium( strip.O( "strip" ), strip.Scene().GetObjects(), behind ),
+				"A11: PointInOpenSheetMedium agrees with SeedFromPoint (catalog normal, not the nearest axis hit)" );
+		}
+	}
+
+	// A12 (round 2, P2-3): an opaque sphere luminaire under a sea sheet.  A
+	// BDPT light root lies ON the sphere; from its lower half the normal ray
+	// meets the sphere's own upper half from inside, which must not block.
+	{
+		Loaded lamp( Header() + HSheet( "g_sea", 4, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ "lambertian_luminaire_material\n{\n\tname m_lamp\n\texitance white\n\tscale 1\n\tmaterial matte\n}\n\n"
+			+ "sphere_geometry\n{\n\tname g_lamp\n\tradius 0.5\n}\n\n" + Obj( "lamp", "g_lamp", "m_lamp", "0 1 0" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 2\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "6 1 0" ) );
+		Check( lamp.ok, "A12 scene loads" );
+		if( lamp.ok ) {
+			RayIntersection hit( Ray( Point3( 0.1, -2, 0.05 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			lamp.O( "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+			Check( hit.geometric.bHit, "A12: probe meets the lamp's lower half" );
+			if( hit.geometric.bHit ) {
+				const IORStack low = lamp.Seed( hit.geometric.ptIntersection );
+				Check( low.Depth() == 2 && Close( low.top(), 1.33 ),
+					"A12: a point on the lower half of an opaque luminaire under the sea is seeded" );
+			}
+			const IORStack inRoom = lamp.Seed( Point3( 6, 1, 0 ) );
+			Check( inRoom.Depth() == 1, "A12 control: a point strictly inside a closed opaque box is still blocked" );
+		}
+	}
+
+	// A13 (round 2, P2-5): the walk is in the sea (Y, up-facing at 5) and
+	// leaves an underwater pane of another material through its back face
+	// below an opaque rock overhang.  The sea's back face lies beyond the
+	// rock: the sea's medium continues.
+	{
+		Loaded reef( Header() + HSheet( "g_sea", 5, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ HSheet( "g_pane", 1, 1, true ) + Obj( "pane", "g_pane", "glass15" )
+			+ "box_geometry\n{\n\tname g_rock\n\twidth 2\n\theight 1\n\tdepth 2\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 2.5 0" ) );
+		Check( reef.ok, "A13 scene loads" );
+		if( reef.ok ) {
+			Check( IORStackSeeding::OpenSheetEnclosesCrossing( reef.O( "sea" ), reef.O( "pane" ), &reef.Scene(),
+					Point3( 0.2, 1, 0.1 ), Vector3( 0, 1, 0 ) ),
+				"A13: an opaque overhang between the crossing and the sea's back face does not pop the sea" );
+		}
+	}
+
+	// A14 (round 2, P3-a): more nested sheets than can be ordered soundly
+	// are declined, not truncated in catalog order.
+	{
+		std::string many = Header(), few = Header();
+		for( int k = 1; k <= 9; k++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_s%d", k );
+			std::snprintf( o, sizeof(o), "s%d", k );
+			many += HSheet( g, k, 5, true ) + Obj( o, g, "glass15" );
+			if( k <= 3 ) few += HSheet( g, k, 5, true ) + Obj( o, g, "glass15" );
+		}
+		Loaded l9( many ), l3( few );
+		Check( l9.ok && l3.ok, "A14 scenes load" );
+		if( l9.ok && l3.ok ) {
+			Check( l3.Seed( Point3( 0, 0, 0 ) ).Depth() == 4, "A14 control: three nested sheets seed three entries" );
+			Check( l9.Seed( Point3( 0, 0, 0 ) ).Depth() == 1, "A14: nine nested sheets (over the cap) are declined, not truncated" );
+		}
+	}
+
+	// A15 (round 2, P2-4): a point on a sheet's FRONT side is rejected
+	// without a scene walk.
+	{
+		Loaded above( Header() + HSheet( "g_pane", -1, 3, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		if( above.ok ) {
+			IORStackSeeding::DebugResetProbeTraceCount();
+			above.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t c = IORStackSeeding::DebugGetProbeTraceCount();
+			char label[160];
+			std::snprintf( label, sizeof(label), "A15: probe walks above a sheet: %zu (want 1, no normal-ray walk)", c );
+			Check( c == 1, label );
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
