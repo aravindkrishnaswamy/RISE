@@ -767,6 +767,18 @@ static void PartA()
 			std::snprintf( o, sizeof(o), "wall%d", f );
 			room += SheetQuad( g, faces[f][0], faces[f][1], faces[f][2], faces[f][3] ) + Obj( o, g, "matte" );
 		}
+		// A24 (round 3 review, P1): the same room in a scene that also holds
+		// an infinite plane (unbounded bounds must not inflate the self-hit
+		// tolerance into one that skips the ceiling).
+		{
+			Loaded withPlane( room + "infiniteplane_geometry\n{\n\tname g_inf\n\txtile 1\n\tytile 1\n}\n\n"
+				+ Obj( "inf", "g_inf", "matte", "0 -10 -50" ) );
+			Check( withPlane.ok, "A24 scene loads" );
+			if( withPlane.ok ) {
+				Check( withPlane.Seed( Point3( 0.1, 1, 0.05 ) ).Depth() == 1,
+					"A24: with an infinite plane in the scene, the camera in the quad room is still not seeded" );
+			}
+		}
 		Loaded quads( room );
 		Check( quads.ok, "A23 scene loads" );
 		if( quads.ok ) {
@@ -776,6 +788,21 @@ static void PartA()
 				"A23 fixture: the ceiling quad's true normal points up (outward)" );
 			Check( quads.Seed( Point3( 0.1, 1, 0.05 ) ).Depth() == 1,
 				"A23: a camera inside a room of outward-wound quads is not seeded into the pond above" );
+		}
+	}
+
+	// A25 (round 3 review, P2): a camera 0.05 below the ceiling of a closed
+	// opaque room in a scene ~7000 units across, a pond above the room.  The
+	// self-hit tolerance must not grow with the scene's size into a length
+	// that skips the ceiling.
+	{
+		Loaded big( Header() + HSheet( "g_pond", 6, 8, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" )
+			+ "sphere_geometry\n{\n\tname g_far\n\tradius 1\n}\n\n" + Obj( "far", "g_far", "matte", "7000 0 0" ) );
+		Check( big.ok, "A25 scene loads" );
+		if( big.ok ) {
+			Check( big.Seed( Point3( 0.1, 2.95, 0.05 ) ).Depth() == 1,
+				"A25: a camera 0.05 below a closed room's ceiling in a 7000-unit scene is not seeded into the pond" );
 		}
 	}
 

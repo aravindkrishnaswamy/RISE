@@ -631,8 +631,12 @@ namespace RISE
 						return true;
 					}
 					const BoundingBox b = object.getBoundingBox();
-					if( std::isfinite( b.ll.x ) && std::isfinite( b.ll.y ) && std::isfinite( b.ll.z ) &&
-						std::isfinite( b.ur.x ) && std::isfinite( b.ur.y ) && std::isfinite( b.ur.z ) ) {
+					// Unbounded geometry (an infinite plane reports
+					// +-RISE_INFINITY = +-DBL_MAX, finite but overflowing any
+					// extent) does not size the scene.
+					const Scalar kHuge = Scalar( 1e300 );
+					if( std::fabs( b.ll.x ) < kHuge && std::fabs( b.ll.y ) < kHuge && std::fabs( b.ll.z ) < kHuge &&
+						std::fabs( b.ur.x ) < kHuge && std::fabs( b.ur.y ) < kHuge && std::fabs( b.ur.z ) < kHuge ) {
 						if( !any ) {
 							bounds = b;
 							any = true;
@@ -929,12 +933,15 @@ namespace RISE
 			if( passedCount ) *passedCount = 0;
 			if( crossedCount ) *crossedCount = 0;
 			const Scalar kSeedEps = Scalar( 1e-4 );
-			// Self-hit scale (round 3 review, P3-1): the SCENE's size, not the
-			// distance from the origin, plus an ulp-aware term for far-off
-			// coordinates.
-			const Scalar posMag = std::fabs( pos.x ) + std::fabs( pos.y ) + std::fabs( pos.z );
-			const Scalar scale = SceneLengthScale( pObjects ) + Scalar( 1e6 ) * std::numeric_limits<Scalar>::epsilon() * posMag;
-			const Scalar selfTol = Scalar( 1e-5 ) * scale;
+			// Self-hit tolerance (round 3 reviews): a small RELATIVE constant
+			// on the seed's own coordinate magnitude -- enough to cover
+			// double-precision self-hit offsets, never a length that could
+			// swallow a real surface (an opaque ceiling 0.05 above a camera in
+			// a kilometre-sized scene) -- capped by 1e-5 of the scene's
+			// bounded size (unbounded geometry such as an infinite plane does
+			// not size the scene).
+			const Scalar posMax = std::max( { Scalar( 1 ), std::fabs( pos.x ), std::fabs( pos.y ), std::fabs( pos.z ) } );
+			const Scalar selfTol = std::min( Scalar( 1e-7 ) * posMax, Scalar( 1e-5 ) * SceneLengthScale( pObjects ) );
 			bool ownChecked = false;
 			bool selfHitSkipped = false;
 			Ray probe( pos, normal );
@@ -964,8 +971,14 @@ namespace RISE
 					// (round 3 review, P2-a).
 					// At most ONE such skip, and with a known seed object
 					// only a hit on it (round 3 review, P3-1 / P3-2).
-					if( !ownChecked && !selfHitSkipped && ri.geometric.range < selfTol &&
-						( !pSeedObject || ri.pObject == pSeedObject ) ) {
+					// Without a seed object the skipped hit must look like the
+					// seed's own CLOSED body being left (a back face, not an
+					// open surface) -- the same evidence the own-body guess
+					// below requires.
+					const bool selfCandidate = pSeedObject ? ri.pObject == pSeedObject
+						: ( ri.pObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0 &&
+							!ri.geometric.bProvablyNoInterior && !ri.geometric.bOpenSheet );
+					if( !ownChecked && !selfHitSkipped && ri.geometric.range < selfTol && selfCandidate ) {
 						selfHitSkipped = true;
 						probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
 						probe.Advance( kSeedEps );
@@ -988,8 +1001,7 @@ namespace RISE
 						// of outward-wound quads was otherwise "on" the ceiling).
 						// And its surface must pass through `pos`: the object
 						// ALONE, probed from `pos` the other way (-n), is MET
-						// within the self-hit tolerance (1e-5 of the scene's
-						// size).  A miss is not evidence of anything and does
+						// within the self-hit tolerance.  A miss is not evidence of anything and does
 						// not qualify.  (Sphere-traced SDF hits lie up to ~6e-5
 						// inside their surface, so a point on an SDF body is
 						// recognized only through `pSeedObject`, which the
