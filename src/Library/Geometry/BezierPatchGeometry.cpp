@@ -246,7 +246,8 @@ BezierPatchGeometry::BezierPatchGeometry(
   nMaxPerOctantNode( max_patches_per_node ),
   nMaxRecursionLevel( max_recursion_level ),
   bUseBSP( bUseBSP_ ),
-  m_areaOnce( new std::once_flag ),
+  m_areaGeneration( 1 ),
+  m_areaComputedGeneration( 0 ),
   m_area( 0 ),
   m_certGeneration( 1 ),
   m_certComputedGeneration( 0 ),
@@ -265,7 +266,7 @@ BezierPatchGeometry::~BezierPatchGeometry( )
 void BezierPatchGeometry::AddPatch( const BezierPatch& patch )
 {
 	patches.push_back( patch );
-	m_areaOnce.reset( new std::once_flag );	// DL-459: the area table is stale
+	m_areaGeneration.fetch_add( 1, std::memory_order_acq_rel );	// DL-459: the area table is stale
 	InvalidateCertificate();
 }
 
@@ -274,7 +275,7 @@ void BezierPatchGeometry::Prepare()
 	// Prepare for rendering
 	// Optimize the patch container
 	stl_utils::container_optimize< BezierPatchList >( patches );
-	m_areaOnce.reset( new std::once_flag );	// DL-459: rebuilt lazily on first surface sample
+	m_areaGeneration.fetch_add( 1, std::memory_order_acq_rel );	// DL-459: rebuilt lazily on first surface sample
 	InvalidateCertificate();	// DL-616: recomputed lazily on first query
 
 	// First create the pointer patches list
@@ -507,44 +508,52 @@ namespace
 
 void BezierPatchGeometry::EnsureAreaTable() const
 {
-	std::call_once( *m_areaOnce, [this]() {
-		static const Scalar xg[5] = { -0.9061798459386640, -0.5384693101056831, 0.0, 0.5384693101056831, 0.9061798459386640 };
-		static const Scalar wg[5] = { 0.2369268850561891, 0.4786286704993665, 0.5688888888888889, 0.4786286704993665, 0.2369268850561891 };
-		const Scalar h = Scalar( 1 ) / Scalar( nAreaCells );
-		m_cellCdf.clear();
-		m_cellBound.clear();
-		m_cellCdf.reserve( patches.size() * nAreaCells * nAreaCells );
-		m_cellBound.reserve( patches.size() * nAreaCells * nAreaCells );
-		Scalar area = 0, acc = 0;
-		for( const BezierPatch& p : patches ) {
-			for( unsigned int cj = 0; cj < nAreaCells; ++cj ) {
-				for( unsigned int ci = 0; ci < nAreaCells; ++ci ) {
-					const Scalar u0 = h * Scalar( ci ), v0 = h * Scalar( cj );
-					Scalar cellSum = 0;
-					for( int a = 0; a < 5; ++a ) {
-						const Scalar u = u0 + h * Scalar( 0.5 ) * ( xg[a] + 1 );
-						for( int b = 0; b < 5; ++b ) {
-							const Scalar v = v0 + h * Scalar( 0.5 ) * ( xg[b] + 1 );
-							cellSum += wg[a] * wg[b] * PatchJacobian( p, u, v );
-						}
+	const unsigned int wanted = m_areaGeneration.load( std::memory_order_acquire );
+	if( m_areaComputedGeneration.load( std::memory_order_acquire ) == wanted ) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock( m_areaMutex );
+	const unsigned int current = m_areaGeneration.load( std::memory_order_acquire );
+	if( m_areaComputedGeneration.load( std::memory_order_acquire ) == current ) {
+		return;
+	}
+	static const Scalar xg[5] = { -0.9061798459386640, -0.5384693101056831, 0.0, 0.5384693101056831, 0.9061798459386640 };
+	static const Scalar wg[5] = { 0.2369268850561891, 0.4786286704993665, 0.5688888888888889, 0.4786286704993665, 0.2369268850561891 };
+	const Scalar h = Scalar( 1 ) / Scalar( nAreaCells );
+	m_cellCdf.clear();
+	m_cellBound.clear();
+	m_cellCdf.reserve( patches.size() * nAreaCells * nAreaCells );
+	m_cellBound.reserve( patches.size() * nAreaCells * nAreaCells );
+	Scalar area = 0, acc = 0;
+	for( const BezierPatch& p : patches ) {
+		for( unsigned int cj = 0; cj < nAreaCells; ++cj ) {
+			for( unsigned int ci = 0; ci < nAreaCells; ++ci ) {
+				const Scalar u0 = h * Scalar( ci ), v0 = h * Scalar( cj );
+				Scalar cellSum = 0;
+				for( int a = 0; a < 5; ++a ) {
+					const Scalar u = u0 + h * Scalar( 0.5 ) * ( xg[a] + 1 );
+					for( int b = 0; b < 5; ++b ) {
+						const Scalar v = v0 + h * Scalar( 0.5 ) * ( xg[b] + 1 );
+						cellSum += wg[a] * wg[b] * PatchJacobian( p, u, v );
 					}
-					area += cellSum * Scalar( 0.25 ) * h * h;
-					const Scalar bound = CellJacobianBound( p, u0, u0 + h, v0, v0 + h );
-					m_cellBound.push_back( bound );
-					acc += bound;
-					m_cellCdf.push_back( acc );
 				}
+				area += cellSum * Scalar( 0.25 ) * h * h;
+				const Scalar bound = CellJacobianBound( p, u0, u0 + h, v0, v0 + h );
+				m_cellBound.push_back( bound );
+				acc += bound;
+				m_cellCdf.push_back( acc );
 			}
 		}
-		if( acc > 0 ) {
-			for( Scalar& c : m_cellCdf ) c /= acc;
-			m_cellCdf.back() = 1;
-		} else {
-			m_cellCdf.clear();
-			m_cellBound.clear();
-		}
-		m_area = area;
-	} );
+	}
+	if( acc > 0 ) {
+		for( Scalar& c : m_cellCdf ) c /= acc;
+		m_cellCdf.back() = 1;
+	} else {
+		m_cellCdf.clear();
+		m_cellBound.clear();
+	}
+	m_area = area;
+	m_areaComputedGeneration.store( current, std::memory_order_release );
 }
 
 void BezierPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const

@@ -80,7 +80,13 @@ namespace RISE
 			//! accepts a uniform point in it with probability J / bound, so
 			//! its density is exactly J / integral(J) = 1/GetArea().
 			static const unsigned int nAreaCells = 4;
-			mutable std::unique_ptr<std::once_flag>	m_areaOnce;
+			// Versioned like the certificate slot below (never a once_flag
+			// reset by an edit while another thread may be inside
+			// call_once): an edit bumps m_areaGeneration and the table is
+			// rebuilt under m_areaMutex when m_areaComputedGeneration lags.
+			mutable std::mutex				m_areaMutex;
+			std::atomic<unsigned int>		m_areaGeneration;
+			mutable std::atomic<unsigned int>	m_areaComputedGeneration;
 			mutable std::vector<Scalar>		m_cellCdf;
 			mutable std::vector<Scalar>		m_cellBound;
 			mutable Scalar					m_area;
