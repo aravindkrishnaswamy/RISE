@@ -26,6 +26,7 @@
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/GeometricUtilities.h"
+#include <cassert>
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
@@ -982,6 +983,18 @@ namespace
 	//! shading normal was negated, so a caller re-pairs the normal
 	//! derivatives with it exactly then -- never on the flag.  A
 	//! ray-derived (hair) normal has no true side: the caller skips it.
+	//! Sign of the determinant of an operand's transform into this
+	//! composite's frame: -1 for a mirroring transform, +1 otherwise (and
+	//! for an operand that is not an `Object`).
+	Scalar OperandMirrorSign( const IObjectPriv* operand )
+	{
+		const Object* o = dynamic_cast<const Object*>( operand );
+		if( !o ) {
+			return 1;
+		}
+		return Matrix4Ops::Determinant( o->GetFinalTransformMatrix() ) < 0 ? Scalar( -1 ) : Scalar( 1 );
+	}
+
 	struct ExitNormals
 	{
 		Vector3 shade;
@@ -1235,6 +1248,13 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 	// an exit.  A patch leaf reads the side from its first crossing's
 	// orientation instead (`LeafContains` with the known first hit), which
 	// is already a property of the segment.
+	// `range` is the parameter of the first hit along this record's ray
+	// (the caller's ray in this composite's frame, re-published by the
+	// operand), whose direction CSGObject::IntersectRay normalizes before
+	// casting to its operands.  So PointAtLength( range ) is the first
+	// hit and PointAtLength( range / 2 ) the segment's midpoint -- which
+	// would hold for any direction length, since both use the same
+	// parameter.
 	const Scalar tMid = Scalar( 0.5 ) * hit.geometric.range;
 	const Point3 pMid = ( tMid > 0 && std::isfinite( tMid ) ) ?
 		hit.geometric.ray.PointAtLength( tMid ) : hit.geometric.ray.origin;
@@ -1346,7 +1366,20 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 					// sets are outward-wound by certificate (a negative
 					// signed volume is refused), and a flipped Bezier hit
 					// already withholds them.
-					if( Vector3Ops::Dot( Vector3Ops::Cross( d.dpdu, d.dpdv ), hit.geometric.vNormal ) < 0 ) {
+					//
+					// Handedness is judged in the operand's OBJECT space:
+					// Object::IntersectRay carries dpdu / dpdv with the
+					// forward matrix and the normal with the inverse
+					// transpose, so a mirroring operand transform
+					// (negative determinant, `scale -1 1 1`) reverses the
+					// frame's handedness in this composite's frame without
+					// anything being wrong (the mirror is tracked by
+					// m_tangentFrameSign / bitangentSign).  The operand's
+					// transform sign undoes that.  A composite operand's
+					// own exit records were already oriented at its own
+					// level, against its own leaves' transforms.
+					const Scalar mirror = OperandMirrorSign( operand );
+					if( mirror * Vector3Ops::Dot( Vector3Ops::Cross( d.dpdu, d.dpdv ), hit.geometric.vNormal ) < 0 ) {
 						d.valid = false;
 					}
 				}
@@ -2039,6 +2072,15 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// reports them so from inside, and every other record
 					// reaching range2 == 0 was oriented by
 					// `RecoverContainedOperand` (`OrientExitNormalsAlongRay`).
+					// INVARIANT relied on here: every operand record with
+					// range2 == 0 carries an OUTWARD normal (along the ray
+					// at its exit), hair (ray-derived, no true side)
+					// excepted.  Checked in debug builds.
+#ifdef _DEBUG
+					assert( riObjA.geometric.bGeomNormalRayDerived ||
+						Vector3Ops::Dot( riObjA.geometric.vGeomNormal, riObjA.geometric.ray.Dir() ) >=
+							-Scalar( 1e-6 ) * Vector3Ops::Magnitude( riObjA.geometric.vGeomNormal ) );
+#endif
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
 				}
