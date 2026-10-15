@@ -593,6 +593,28 @@ static void PartA()
 		}
 	}
 
+	// A18 (round 3, P3-1): a point on the inside of a standing opaque ring
+	// (a torus, axis along z), at the bottom of its hole.  The normal ray up
+	// crosses the hole and ENTERS the same ring at the top before reaching a
+	// pond sheet above: the ring blocks.  Only the ray's first exit from the
+	// seed's own body is skipped (A12).
+	{
+		Loaded ring( Header() + HSheet( "g_pond", 4, 5, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "torus_geometry\n{\n\tname g_ring\n\tmajorradius 1.0\n\tminorratio 0.3\n}\n\n"
+			+ "standard_object\n{\n\tname ring\n\tgeometry g_ring\n\tposition 0 1.5 0\n\torientation 90 0 0\n\tmaterial matte\n}\n\n" );
+		Check( ring.ok, "A18 scene loads" );
+		if( ring.ok ) {
+			RayIntersection hit( Ray( Point3( 0.02, 1.5, 0.01 ), Vector3( 0, -1, 0 ) ), nullRasterizerState );
+			ring.O( "ring" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+			Check( hit.geometric.bHit && std::fabs( hit.geometric.ptIntersection.y - 0.8 ) < 0.05,
+				"A18: probe meets the ring's inner surface at the bottom of its hole" );
+			if( hit.geometric.bHit ) {
+				Check( ring.Seed( hit.geometric.ptIntersection ).Depth() == 1,
+					"A18: the seed's own object blocks once the normal ray re-enters it" );
+			}
+		}
+	}
+
 	// A15 (round 2, P2-4): a point on a sheet's FRONT side is rejected
 	// without a scene walk.
 	{
