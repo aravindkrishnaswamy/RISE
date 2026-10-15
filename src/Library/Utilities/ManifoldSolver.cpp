@@ -10973,17 +10973,14 @@ void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVerte
 	using namespace RISE::Implementation;
 	IORStack replay = starting ? *starting : IORStack( Scalar( 1 ) );
 	if( replay.Depth() > 1 && scene.GetObjects() ) {
-		struct Objects : IEnumCallback<IObject> {
-			std::vector<const IObject*> items;
-			bool operator()(const IObject& object) override { items.push_back(&object); return true; }
-		} objects;
-		scene.GetObjects()->EnumerateObjects( objects );
 		static const Vector3 kAxes[6] = { Vector3(1,0,0), Vector3(-1,0,0), Vector3(0,1,0),
 			Vector3(0,-1,0), Vector3(0,0,1), Vector3(0,0,-1) };
 		IORStack partial( replay.EnvironmentIOR() );
 		for( std::size_t e = 1; e < replay.Depth(); e++ ) {
 			const IObject* obj = replay.ObjectAt( e );
-			const bool inScene = obj && std::find( objects.items.begin(), objects.items.end(), obj ) != objects.items.end();
+			// Scene-object identity from the cached sorted set (round 3
+			// review, P3-3), not a per-call enumeration.
+			const bool inScene = IORStackSeeding::IsSceneObject( scene.GetObjects(), obj );
 			Scalar index = 0;
 			for( int a = 0; inScene && a < 6 && index <= 0; a++ ) {
 				RayIntersection hit( Ray( start, kAxes[a] ), nullRasterizerState );

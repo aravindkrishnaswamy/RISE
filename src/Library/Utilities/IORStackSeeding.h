@@ -125,6 +125,7 @@
 #include "GradedIndexMedium.h"
 #include "../Animation/TimeIndexedView.h"
 #include <algorithm>
+#include <limits>
 #include <cstring>
 #include <atomic>
 #include <vector>
@@ -553,8 +554,14 @@ namespace RISE
 			//! Re-posed descriptions of listed sheets (motion blur), one per
 			//! sheet object, each valid for the pose it records.
 			std::vector<OpenSheetCatalogEntry> posed;
+			//! Every enumerated scene object, sorted (identity checks for
+			//! stack keys that must not be dereferenced unless they are one).
+			std::vector<const IObject*> objects;
+			//! Diagonal of the union of the world-visible objects' bounds: the
+			//! scene's length scale for self-hit tolerances.
+			Scalar sceneDiagonal;
 
-			OpenSheetCatalog() : pObjects( 0 ), generation( 0 ), epoch( 0 ), itemCount( 0 ) {}
+			OpenSheetCatalog() : pObjects( 0 ), generation( 0 ), epoch( 0 ), itemCount( 0 ), sceneDiagonal( 1 ) {}
 		};
 
 		inline OpenSheetCatalog& ThreadOpenSheetCatalog()
@@ -609,13 +616,31 @@ namespace RISE
 			catalog.itemCount = itemCount;
 			catalog.sheets.clear();
 			catalog.posed.clear();
+			catalog.objects.clear();
 
 			struct Collect : IEnumCallback<IObject>
 			{
 				std::vector<OpenSheetCatalogEntry>* out;
+				std::vector<const IObject*>* objects;
+				BoundingBox bounds;
+				bool any;
 				bool operator()( const IObject& object ) override
 				{
-					if( !object.IsWorldVisible() || !MaterialMayRefract( object.GetMaterial() ) ) {
+					objects->push_back( &object );
+					if( !object.IsWorldVisible() ) {
+						return true;
+					}
+					const BoundingBox b = object.getBoundingBox();
+					if( std::isfinite( b.ll.x ) && std::isfinite( b.ll.y ) && std::isfinite( b.ll.z ) &&
+						std::isfinite( b.ur.x ) && std::isfinite( b.ur.y ) && std::isfinite( b.ur.z ) ) {
+						if( !any ) {
+							bounds = b;
+							any = true;
+						} else {
+							bounds.Include( b );
+						}
+					}
+					if( !MaterialMayRefract( object.GetMaterial() ) ) {
 						return true;
 					}
 					OpenSheetCatalogEntry entry;
@@ -626,7 +651,11 @@ namespace RISE
 				}
 			} collect;
 			collect.out = &catalog.sheets;
+			collect.objects = &catalog.objects;
+			collect.any = false;
 			pObjects->EnumerateObjects( collect );
+			std::sort( catalog.objects.begin(), catalog.objects.end() );
+			catalog.sceneDiagonal = collect.any ? std::max( Scalar( 1e-6 ), Vector3Ops::Magnitude( collect.bounds.GetExtents() ) ) : Scalar( 1 );
 			return catalog.sheets;
 		}
 
@@ -641,19 +670,23 @@ namespace RISE
 		//! per sample).  A re-description -- or a failed one (P3-5, negative
 		//! cache) -- is kept per thread per sheet for that pose, so a static
 		//! sheet costs one transform and bounds read and compare.
-		inline OpenSheetCatalogEntry PosedOpenSheet( const OpenSheetCatalogEntry& entry )
+		//! Returns false -- the sheet is ABSENT at this pose -- when its
+		//! re-description fails (round 3 review, P3-4), never a stale entry.
+		inline bool PosedOpenSheet( const OpenSheetCatalogEntry& entry, OpenSheetCatalogEntry& out )
 		{
 			const Matrix4 now = entry.pObj->GetFinalTransformMatrix();
 			const BoundingBox box = entry.pObj->getBoundingBox();
 			if( SamePose( now, entry.xform ) && SameBox( box, entry.box ) ) {
-				return entry;
+				out = entry;
+				return true;
 			}
 			std::vector<OpenSheetCatalogEntry>& posed = ThreadOpenSheetCatalog().posed;
 			std::size_t slot = posed.size();
 			for( std::size_t i = 0; i < posed.size(); i++ ) {
 				if( posed[i].pObj == entry.pObj ) {
 					if( SamePose( now, posed[i].xform ) && SameBox( box, posed[i].box ) ) {
-						return posed[i].valid ? posed[i] : entry;
+						out = posed[i];
+						return posed[i].valid;
 					}
 					slot = i;
 					break;
@@ -671,7 +704,30 @@ namespace RISE
 			} else {
 				posed.push_back( fresh );
 			}
-			return fresh.valid ? fresh : entry;
+			out = fresh;
+			return fresh.valid;
+		}
+
+		//! True when @a pObj is one of the scene's objects (a stack key that
+		//! may be dereferenced).  Uses the catalog's sorted object set.
+		inline bool IsSceneObject( const IObjectManager* pObjects, const IObject* pObj )
+		{
+			if( !pObjects || !pObj ) {
+				return false;
+			}
+			OpenSheetsOf( pObjects );
+			const std::vector<const IObject*>& objs = ThreadOpenSheetCatalog().objects;
+			return std::binary_search( objs.begin(), objs.end(), pObj );
+		}
+
+		//! The scene's length scale (bounds diagonal) for self-hit tolerances.
+		inline Scalar SceneLengthScale( const IObjectManager* pObjects )
+		{
+			if( !pObjects ) {
+				return Scalar( 1 );
+			}
+			OpenSheetsOf( pObjects );
+			return ThreadOpenSheetCatalog().sceneDiagonal;
 		}
 
 		//! DL-618: the catalog's description of @a pObj, or a fresh one when
@@ -682,8 +738,7 @@ namespace RISE
 				const std::vector<OpenSheetCatalogEntry>& sheets = OpenSheetsOf( pObjects );
 				for( std::size_t i = 0; i < sheets.size(); i++ ) {
 					if( sheets[i].pObj == pObj ) {
-						out = PosedOpenSheet( sheets[i] );
-						return true;
+						return PosedOpenSheet( sheets[i], out );
 					}
 				}
 			}
@@ -874,9 +929,14 @@ namespace RISE
 			if( passedCount ) *passedCount = 0;
 			if( crossedCount ) *crossedCount = 0;
 			const Scalar kSeedEps = Scalar( 1e-4 );
-			const Scalar scale = Scalar( 1 ) + std::fabs( pos.x ) + std::fabs( pos.y ) + std::fabs( pos.z );
+			// Self-hit scale (round 3 review, P3-1): the SCENE's size, not the
+			// distance from the origin, plus an ulp-aware term for far-off
+			// coordinates.
+			const Scalar posMag = std::fabs( pos.x ) + std::fabs( pos.y ) + std::fabs( pos.z );
+			const Scalar scale = SceneLengthScale( pObjects ) + Scalar( 1e6 ) * std::numeric_limits<Scalar>::epsilon() * posMag;
 			const Scalar selfTol = Scalar( 1e-5 ) * scale;
 			bool ownChecked = false;
+			bool selfHitSkipped = false;
 			Ray probe( pos, normal );
 			for( int step = 0; step < kMaxProbeSteps; step++ )
 			{
@@ -902,7 +962,11 @@ namespace RISE
 					// point's own surface at t ~ 0: tessellated or SDF bodies)
 					// is skipped WITHOUT consuming the own-body exemption
 					// (round 3 review, P2-a).
-					if( !ownChecked && ri.geometric.range < selfTol ) {
+					// At most ONE such skip, and with a known seed object
+					// only a hit on it (round 3 review, P3-1 / P3-2).
+					if( !ownChecked && !selfHitSkipped && ri.geometric.range < selfTol &&
+						( !pSeedObject || ri.pObject == pSeedObject ) ) {
+						selfHitSkipped = true;
 						probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
 						probe.Advance( kSeedEps );
 						continue;
@@ -915,15 +979,24 @@ namespace RISE
 						// a coplanar enclosing surface (a room's floor under a
 						// flush emitter) is never mistaken for it.
 						own = ri.pObject == pSeedObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0;
-					} else if( !ownChecked && ri.pObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
-						// The object's surface must pass through `pos` itself:
-						// the object ALONE, probed from `pos` the other way
-						// (-n), is missed or met within a surface tolerance
-						// (1e-4 of the scene scale: sphere-traced SDF hits lie
-						// up to ~6e-5 inside their surface).  A point strictly
-						// inside the object (a camera in a room) meets its far
-						// wall; a flush emitter more than the tolerance above a
-						// room's floor meets the floor (round 3 review, P3-1).
+					} else if( !ownChecked && ri.pObject && ri.geometric.TrueGeomFacing( probe.Dir() ) > 0 &&
+						!ri.geometric.bProvablyNoInterior && !ri.geometric.bOpenSheet ) {
+						// Only a CLOSED body has an inside the seed can be on
+						// the boundary of: an open surface (a quad, an
+						// uncertified open mesh) never qualifies, however its
+						// normal faces (round 3 review, P2-1: a camera in a room
+						// of outward-wound quads was otherwise "on" the ceiling).
+						// And its surface must pass through `pos`: the object
+						// ALONE, probed from `pos` the other way (-n), is MET
+						// within the self-hit tolerance (1e-5 of the scene's
+						// size).  A miss is not evidence of anything and does
+						// not qualify.  (Sphere-traced SDF hits lie up to ~6e-5
+						// inside their surface, so a point on an SDF body is
+						// recognized only through `pSeedObject`, which the
+						// luminaire callers pass.)  A point strictly inside the object (a
+						// camera in a room) meets its far wall; a flush emitter
+						// more than the tolerance above a room's floor meets
+						// the floor (round 3 review, P3-1).
 						// A closer separation cannot be told from an SDF's own
 						// surface geometrically -- the documented residual; a
 						// caller that knows the seed's own object passes it
@@ -932,7 +1005,7 @@ namespace RISE
 						// guess is not used.
 						RayIntersection back( Ray( pos, -normal ), nullRasterizerState );
 						ri.pObject->IntersectRay( back, RISE_INFINITY, true, true, false );
-						own = !back.geometric.bHit || back.geometric.range <= Scalar( 1e-4 ) * scale;
+						own = back.geometric.bHit && back.geometric.range <= selfTol;
 					}
 					ownChecked = true;
 					if( !own ) {
@@ -1292,7 +1365,10 @@ namespace RISE
 			for( std::size_t i = 0; pSheets && i < pSheets->size() && !declineSheets; i++ ) {
 				ConfirmedSheet scratch;
 				ConfirmedSheet& c = confirmedCount < kMaxSeededOpenSheets ? confirmed[confirmedCount] : scratch;
-				const OpenSheetCatalogEntry sheet = PosedOpenSheet( ( *pSheets )[i] );
+				OpenSheetCatalogEntry sheet;
+				if( !PosedOpenSheet( ( *pSheets )[i], sheet ) ) {
+					continue;
+				}
 				c.pObj = sheet.pObj;
 				c.ior = 0;
 				bool overflow = false;

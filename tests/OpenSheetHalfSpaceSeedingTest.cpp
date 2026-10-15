@@ -510,7 +510,12 @@ static void PartA()
 			lamp.O( "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
 			Check( hit.geometric.bHit, "A12: probe meets the lamp's lower half" );
 			if( hit.geometric.bHit ) {
-				const IORStack low = lamp.Seed( hit.geometric.ptIntersection );
+				// A light root passes its luminary (BDPTIntegrator, photon
+				// tracers); the geometric guess alone is recorded below.
+				IORStack low( 1.0 );
+				IORStackSeeding::SeedFromPoint( low, hit.geometric.ptIntersection, lamp.Scene(), 0, true, lamp.O( "lamp" ) );
+				std::printf( "  [recorded] A12 without the luminary (geometric guess): depth %zu\n",
+					lamp.Seed( hit.geometric.ptIntersection ).Depth() );
 				Check( low.Depth() == 2 && Close( low.top(), 1.33 ),
 					"A12: a point on the lower half of an opaque luminaire under the sea is seeded" );
 			}
@@ -637,7 +642,8 @@ static void PartA()
 				mesh.O( sdf ? "sdflamp" : "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
 				if( !hit.geometric.bHit ) continue;
 				total++;
-				const IORStack st = mesh.Seed( hit.geometric.ptIntersection );
+				IORStack st( 1.0 );
+				IORStackSeeding::SeedFromPoint( st, hit.geometric.ptIntersection, mesh.Scene(), 0, true, mesh.O( sdf ? "sdflamp" : "lamp" ) );
 				if( st.Depth() == 2 && Close( st.top(), 1.33 ) ) seeded++;
 			}
 			char label[160];
@@ -670,7 +676,8 @@ static void PartA()
 					if( kp ) { geom->SetIntermediateValue( *kp ); kp->release(); }
 				}
 				geom->RegenerateData();
-				const IORStackSeeding::OpenSheetCatalogEntry after = IORStackSeeding::PosedOpenSheet( before );
+				IORStackSeeding::OpenSheetCatalogEntry after;
+				Check( IORStackSeeding::PosedOpenSheet( before, after ), "A20: re-posed sheet present" );
 				char label[200];
 				std::snprintf( label, sizeof(label), "A20: re-posed normal (%.3f, %.3f, %.3f), expected (0.643, 0.766, 0)",
 					after.normal.x, after.normal.y, after.normal.z );
@@ -736,6 +743,39 @@ static void PartA()
 				Check( sdfSeed.Depth() == 2 && Close( sdfSeed.top(), 1.33 ),
 					"A22: an SDF luminaire's lower half under the pond is seeded with the luminary passed" );
 			}
+		}
+	}
+
+	// A23 (round 3 review, P2-1): a camera inside a closed room built from
+	// SEPARATE outward-wound clipped-plane quads, a pond above.  A quad is an
+	// open surface: an exit through it never makes the seed "on its body",
+	// so the ceiling blocks.
+	{
+		std::string room = Header() + HSheet( "g_pond", 5, 6, true ) + Obj( "pond", "g_pond", "glass133" );
+		// Six quads of the box x,z in [-2,2], y in [0,3], normals outward.
+		const double faces[6][4][3] = {
+			{ { -2, 3, 2 }, { 2, 3, 2 }, { 2, 3, -2 }, { -2, 3, -2 } },		// ceiling, +y
+			{ { -2, 0, -2 }, { 2, 0, -2 }, { 2, 0, 2 }, { -2, 0, 2 } },		// floor, -y
+			{ { 2, 0, -2 }, { 2, 3, -2 }, { 2, 3, 2 }, { 2, 0, 2 } },		// +x
+			{ { -2, 0, 2 }, { -2, 3, 2 }, { -2, 3, -2 }, { -2, 0, -2 } },	// -x
+			{ { -2, 0, 2 }, { 2, 0, 2 }, { 2, 3, 2 }, { -2, 3, 2 } },		// +z
+			{ { 2, 0, -2 }, { -2, 0, -2 }, { -2, 3, -2 }, { 2, 3, -2 } }		// -z
+		};
+		for( int f = 0; f < 6; f++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_wall%d", f );
+			std::snprintf( o, sizeof(o), "wall%d", f );
+			room += SheetQuad( g, faces[f][0], faces[f][1], faces[f][2], faces[f][3] ) + Obj( o, g, "matte" );
+		}
+		Loaded quads( room );
+		Check( quads.ok, "A23 scene loads" );
+		if( quads.ok ) {
+			RayIntersection up( Ray( Point3( 0.1, 1, 0.05 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			quads.O( "wall0" )->IntersectRay( up, RISE_INFINITY, true, true, false );
+			Check( up.geometric.bHit && up.geometric.TrueGeomFacing( Vector3( 0, 1, 0 ) ) > 0,
+				"A23 fixture: the ceiling quad's true normal points up (outward)" );
+			Check( quads.Seed( Point3( 0.1, 1, 0.05 ) ).Depth() == 1,
+				"A23: a camera inside a room of outward-wound quads is not seeded into the pond above" );
 		}
 	}
 
