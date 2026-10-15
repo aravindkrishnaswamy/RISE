@@ -2392,6 +2392,9 @@ namespace
 	//! The endpoints are exact at s = 0 and s = 1.
 	inline PatchCurve SubCubicSegment( const PatchCurve& P, Scalar s0, Scalar s1 )
 	{
+		if( PatchPointEqual( P[0], P[1] ) && PatchPointEqual( P[0], P[2] ) && PatchPointEqual( P[0], P[3] ) ) {
+			return P;
+		}
 		return PatchCurve{ {
 			BlossomCubic( P, s0, s0, s0 ),
 			BlossomCubic( P, s0, s0, s1 ),
@@ -2479,6 +2482,14 @@ namespace
 		case 2: i = 3 - m; j = 3;     break;
 		case 3: i = 0;     j = 3 - m; break;
 		}
+	}
+
+	inline bool IsOnNetSide( int s, int i, int j )
+	{
+		return ( s == 0 && j == 0 ) ||
+		       ( s == 1 && i == 3 ) ||
+		       ( s == 2 && j == 3 ) ||
+		       ( s == 3 && i == 0 );
 	}
 
 	inline PatchCurve NetSide( const BezierPatch& q, int s )
@@ -2591,23 +2602,34 @@ namespace
 		return true;
 	}
 
-	//! The injectivity proof (see the header comment): every
-	//! u-derivative control vector crossed with every v-derivative control
-	//! vector, over all the nets given, has a strictly positive component
-	//! along one direction.  `outV` receives that direction.
-	bool CrossConeProof( const BezierPatch* nets, int count, Vector3& outV )
+	//! The injectivity proof (see the header comment): every active
+	//! u-derivative control vector crossed with every active v-derivative
+	//! control vector, over all the nets given, has a strictly positive
+	//! component along one direction.  On a net with a collapsed pole side
+	//! `collapsedSides[q]`, the three tangent-difference vectors along the
+	//! collapsed side are identically zero and carry zero weight in the
+	//! factored Bernstein derivative, so the remaining 9 x 12 pairs govern
+	//! injectivity on the quotient domain.  `outV` receives that direction.
+	bool CrossConeProof( const BezierPatch* nets, const int* collapsedSides, int count, Vector3& outV )
 	{
 		Vector3 du[2 * 12], dv[2 * 12];
 		int nu = 0, nv = 0;
 		for( int q = 0; q < count; ++q ) {
 			const BezierPatch& net = nets[q];
+			const int cs = collapsedSides ? collapsedSides[q] : -1;
 			for( int i = 0; i < 3; ++i ) {
 				for( int j = 0; j < 4; ++j ) {
+					if( ( cs == 0 && j == 0 ) || ( cs == 2 && j == 3 ) ) {
+						continue;
+					}
 					du[nu++] = Vector3Ops::mkVector3( net.c[i + 1].pts[j], net.c[i].pts[j] );
 				}
 			}
 			for( int i = 0; i < 4; ++i ) {
 				for( int j = 0; j < 3; ++j ) {
+					if( ( cs == 3 && i == 0 ) || ( cs == 1 && i == 3 ) ) {
+						continue;
+					}
 					dv[nv++] = Vector3Ops::mkVector3( net.c[i].pts[j + 1], net.c[i].pts[j] );
 				}
 			}
@@ -2640,13 +2662,14 @@ namespace
 		return true;
 	}
 
-	//! TRUE when `w` puts every control point of `a` but its corner `ka`
-	//! strictly on the positive side of the plane through `X`, and every
-	//! control point of `b` but its corner `kb` strictly on the negative
-	//! side.
+	//! TRUE when `w` puts every control point of `a` not at `X` (either the
+	//! single corner `ka` or the 4 control points of its collapsed side
+	//! `csA` at `X`) strictly on the positive side of the plane through
+	//! `X`, and every control point of `b` not at `X` strictly on the
+	//! negative side.
 	bool PlaneSeparatesAtCorner(
-		const BezierPatch& a, int ka,
-		const BezierPatch& b, int kb,
+		const BezierPatch& a, int csA, int ka,
+		const BezierPatch& b, int csB, int kb,
 		const Point3& X,
 		const Vector3& w )
 	{
@@ -2659,13 +2682,15 @@ namespace
 		NetCornerIndex( kb, ib, jb );
 		for( int i = 0; i < 4; ++i ) {
 			for( int j = 0; j < 4; ++j ) {
-				if( !( i == ia && j == ja ) ) {
+				const bool skipA = csA >= 0 ? IsOnNetSide( csA, i, j ) : ( i == ia && j == ja );
+				if( !skipA ) {
 					const Vector3 d = Vector3Ops::mkVector3( a.c[i].pts[j], X );
 					if( !( Vector3Ops::Dot( d, w ) > Scalar( 1e-12 ) * wLen * Vector3Ops::Magnitude( d ) ) ) {
 						return false;
 					}
 				}
-				if( !( i == ib && j == jb ) ) {
+				const bool skipB = csB >= 0 ? IsOnNetSide( csB, i, j ) : ( i == ib && j == jb );
+				if( !skipB ) {
 					const Vector3 d = Vector3Ops::mkVector3( b.c[i].pts[j], X );
 					if( !( -Vector3Ops::Dot( d, w ) > Scalar( 1e-12 ) * wLen * Vector3Ops::Magnitude( d ) ) ) {
 						return false;
@@ -2676,19 +2701,19 @@ namespace
 		return true;
 	}
 
-	//! Bisector of a net's two sides at corner k (unit edge directions).
-	inline Vector3 CornerBisector( const BezierPatch& q, int k )
+	//! Unit radial edge directions leaving corner `k` (or collapsed pole
+	//! side `csAtX >= 0`) of net `q`.
+	inline void CornerRadialEdges( const BezierPatch& q, int csAtX, int k, Vector3& e1, Vector3& e2 )
 	{
-		const Point3& X = NetCorner( q, k );
-		const PatchCurve out = NetSide( q, k );
-		const PatchCurve in = NetSide( q, ( k + 3 ) & 3 );
-		Vector3 e1 = Vector3Ops::mkVector3( out[1], X );
-		Vector3 e2 = Vector3Ops::mkVector3( in[2], X );
+		const Point3& X = NetCorner( q, csAtX >= 0 ? csAtX : k );
+		const PatchCurve out = NetSide( q, csAtX >= 0 ? ( ( csAtX + 1 ) & 3 ) : k );
+		const PatchCurve in = NetSide( q, csAtX >= 0 ? ( ( csAtX + 3 ) & 3 ) : ( ( k + 3 ) & 3 ) );
+		e1 = Vector3Ops::mkVector3( out[1], X );
+		e2 = Vector3Ops::mkVector3( in[2], X );
 		const Scalar l1 = Vector3Ops::Magnitude( e1 );
 		const Scalar l2 = Vector3Ops::Magnitude( e2 );
 		if( l1 > 0 ) e1 = e1 * ( Scalar( 1 ) / l1 );
 		if( l2 > 0 ) e2 = e2 * ( Scalar( 1 ) / l2 );
-		return e1 + e2;
 	}
 
 	inline Vector3 NetCentroidOffset( const BezierPatch& q, const Point3& X )
@@ -2704,35 +2729,64 @@ namespace
 	}
 
 	bool CornerPairSeparated(
-		const BezierPatch& a, int ka,
-		const BezierPatch& b, int kb,
+		const BezierPatch& a, int csA, int ka,
+		const BezierPatch& b, int csB, int kb,
 		const Vector3& normalHint )
 	{
-		const Point3& X = NetCorner( a, ka );
-		if( !PatchPointEqual( X, NetCorner( b, kb ) ) ) {
+		const Point3& X = NetCorner( a, csA >= 0 ? csA : ka );
+		if( !PatchPointEqual( X, NetCorner( b, csB >= 0 ? csB : kb ) ) ) {
 			return false;
 		}
-		Vector3 bisA = CornerBisector( a, ka );
-		Vector3 bisB = CornerBisector( b, kb );
+		Vector3 e1A, e2A, e1B, e2B;
+		CornerRadialEdges( a, csA, ka, e1A, e2A );
+		CornerRadialEdges( b, csB, kb, e1B, e2B );
+		Vector3 bisA = e1A + e2A;
+		Vector3 bisB = e1B + e2B;
 		const Scalar la = Vector3Ops::Magnitude( bisA );
 		const Scalar lb = Vector3Ops::Magnitude( bisB );
 		if( la > 0 ) bisA = bisA * ( Scalar( 1 ) / la );
 		if( lb > 0 ) bisB = bisB * ( Scalar( 1 ) / lb );
-		const Vector3 candidates[2] = {
+		const Vector3 candidates[4] = {
 			bisA - bisB,
-			NetCentroidOffset( a, X ) - NetCentroidOffset( b, X )
+			NetCentroidOffset( a, X ) - NetCentroidOffset( b, X ),
+			e2A - e1B,
+			e1A - e2B
 		};
-		const Scalar nLen = Vector3Ops::Magnitude( normalHint );
-		const Vector3 n = nLen > 0 ? normalHint * ( Scalar( 1 ) / nLen ) : Vector3( 0, 0, 0 );
+		const Vector3 normalCandidates[4] = {
+			normalHint,
+			Vector3Ops::Cross( e1A, e2A ) + Vector3Ops::Cross( e1B, e2B ),
+			Vector3Ops::Cross( e2A - e1A, e1B - e1A ),
+			Vector3Ops::Cross( e2B - e1B, e1A - e1B )
+		};
 		for( const Vector3& w : candidates ) {
-			if( PlaneSeparatesAtCorner( a, ka, b, kb, X, w ) ) {
+			if( PlaneSeparatesAtCorner( a, csA, ka, b, csB, kb, X, w ) ) {
 				return true;
 			}
-			// The same direction with the shared normal projected out, so
-			// curvature away from the tangent plane cannot tip a point
-			// across the separating plane.
-			const Vector3 wt = w - n * Vector3Ops::Dot( w, n );
-			if( PlaneSeparatesAtCorner( a, ka, b, kb, X, wt ) ) {
+		}
+		for( const Vector3& nh : normalCandidates ) {
+			const Scalar nLen = Vector3Ops::Magnitude( nh );
+			if( !( nLen > 0 ) || !std::isfinite( nLen ) ) {
+				continue;
+			}
+			const Vector3 n = nh * ( Scalar( 1 ) / nLen );
+			for( const Vector3& w : candidates ) {
+				// The same direction with the shared normal / pole axis
+				// projected out, so curvature or cone slope away from the
+				// tangent plane cannot tip a point across the separating plane.
+				const Vector3 wt = w - n * Vector3Ops::Dot( w, n );
+				if( PlaneSeparatesAtCorner( a, csA, ka, b, csB, kb, X, wt ) ) {
+					return true;
+				}
+			}
+			auto projUnit = [&]( const Vector3& e ) {
+				const Vector3 p = e - n * Vector3Ops::Dot( e, n );
+				const Scalar pl = Vector3Ops::Magnitude( p );
+				return pl > 0 ? p * ( Scalar( 1 ) / pl ) : p;
+			};
+			const Vector3 u1A = projUnit( e1A ), u2A = projUnit( e2A );
+			const Vector3 u1B = projUnit( e1B ), u2B = projUnit( e2B );
+			if( PlaneSeparatesAtCorner( a, csA, ka, b, csB, kb, X, u2A - u1B ) ||
+			    PlaneSeparatesAtCorner( a, csA, ka, b, csB, kb, X, u1A - u2B ) ) {
 				return true;
 			}
 		}
@@ -2820,8 +2874,151 @@ namespace
 		BezierPatch		net;
 		BoundingBox		box;
 		Vector3			V;
-		unsigned int	corner[4];	//!< union-find vertex id of each corner
+		unsigned int	corner[4];			//!< union-find vertex id of each corner
+		int				collapsedSide = -1;	//!< 0..3 when one side of this sub-patch is collapsed to a pole
 	};
+
+	//! Inspects a patch's four sides and corners for pole-fan topology:
+	//! at most one side may have all four control points bitwise equal to a
+	//! single pole position (`outSide` in `0..3`, or `-1` when all four
+	//! corners are distinct), no non-constant side may loop (`c[0] == c[3]`
+	//! with `c[1] != c[0]` or `c[2] != c[0]`), non-adjacent corners must be
+	//! distinct, and on a polar patch none of the 12 control points outside
+	//! `outSide` may coincide with the pole.
+	bool FindCollapsedSide( const BezierPatch& p, int& outSide )
+	{
+		outSide = -1;
+		for( int s = 0; s < 4; ++s ) {
+			const PatchCurve c = NetSide( p, s );
+			if( PatchPointEqual( c[0], c[3] ) ) {
+				if( !PatchPointEqual( c[0], c[1] ) || !PatchPointEqual( c[0], c[2] ) ) {
+					return false;
+				}
+				if( outSide >= 0 ) {
+					return false;
+				}
+				outSide = s;
+			}
+		}
+		for( int k = 0; k < 4; ++k ) {
+			for( int m = k + 1; m < 4; ++m ) {
+				if( PatchPointEqual( NetCorner( p, k ), NetCorner( p, m ) ) ) {
+					const bool isCollapsedPair = ( outSide >= 0 ) &&
+						( ( k == outSide && m == ( ( outSide + 1 ) & 3 ) ) ||
+						  ( k == 0 && m == 3 && outSide == 3 ) );
+					if( !isCollapsedPair ) {
+						return false;
+					}
+				}
+			}
+		}
+		if( outSide >= 0 ) {
+			const Point3 pole = NetCorner( p, outSide );
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 0; j < 4; ++j ) {
+					if( !IsOnNetSide( outSide, i, j ) && PatchPointEqual( p.c[i].pts[j], pole ) ) {
+						return false;
+					}
+				}
+			}
+		}
+		return true;
+	}
+
+	//! Verifies that at every corner / pole position shared by one or more
+	//! patches, the incident wedges are linked by matched non-collapsed
+	//! seams into a single manifold fan (either one closed cycle of glued
+	//! radial seams or one open chain with two boundary radial sides).
+	//! Rejects tip-to-tip double cones, closed cones with extra flaps, and
+	//! multi-fan pinch vertices.
+	bool CheckManifoldVertexLinks(
+		const std::vector<BezierPatch>& patches,
+		const std::vector<int>& collapsedSide,
+		const std::vector<int>& match )
+	{
+		struct Incidence
+		{
+			Point3			pos;
+			unsigned int	inSide;		//!< non-collapsed side entering `pos` around patch boundary
+			unsigned int	outSide;	//!< non-collapsed side leaving `pos` around patch boundary
+		};
+		std::vector<Incidence> inc;
+		inc.reserve( patches.size() * 4 );
+		for( std::size_t p = 0; p < patches.size(); ++p ) {
+			const int cs = collapsedSide[p];
+			for( int k = 0; k < 4; ++k ) {
+				if( cs >= 0 && k == ( ( cs + 1 ) & 3 ) ) {
+					continue;
+				}
+				Incidence rec;
+				rec.pos = NetCorner( patches[p], k );
+				rec.inSide = static_cast<unsigned int>( p * 4 + ( ( k + 3 ) & 3 ) );
+				rec.outSide = static_cast<unsigned int>( p * 4 + ( ( k == cs ) ? ( ( cs + 1 ) & 3 ) : k ) );
+				inc.push_back( rec );
+			}
+		}
+		std::sort( inc.begin(), inc.end(), []( const Incidence& a, const Incidence& b ) {
+			if( PatchPointLess( a.pos, b.pos ) ) return true;
+			if( PatchPointLess( b.pos, a.pos ) ) return false;
+			return a.inSide < b.inSide;
+		} );
+		for( std::size_t i = 0; i < inc.size(); ) {
+			std::size_t j = i + 1;
+			while( j < inc.size() && PatchPointEqual( inc[j].pos, inc[i].pos ) ) {
+				++j;
+			}
+			const std::size_t M = j - i;
+			std::vector<int> next( M, -1 );
+			std::vector<int> inDeg( M, 0 );
+			std::size_t edges = 0;
+			for( std::size_t a = 0; a < M; ++a ) {
+				const int m = match[inc[i + a].outSide];
+				if( m < 0 ) {
+					continue;
+				}
+				for( std::size_t b = 0; b < M; ++b ) {
+					if( inc[i + b].inSide == static_cast<unsigned int>( m ) ) {
+						next[a] = static_cast<int>( b );
+						++inDeg[b];
+						++edges;
+						break;
+					}
+				}
+			}
+			if( edges == M ) {
+				std::size_t cur = 0, visited = 0;
+				do {
+					cur = static_cast<std::size_t>( next[cur] );
+					++visited;
+				} while( cur != 0 && visited <= M );
+				if( visited != M ) {
+					return false;
+				}
+			} else if( edges + 1 == M ) {
+				int start = -1;
+				for( std::size_t a = 0; a < M; ++a ) {
+					if( inDeg[a] == 0 ) {
+						start = static_cast<int>( a );
+						break;
+					}
+				}
+				if( start < 0 ) {
+					return false;
+				}
+				std::size_t visited = 0;
+				for( int cur = start; cur >= 0 && visited <= M; cur = next[static_cast<std::size_t>( cur )] ) {
+					++visited;
+				}
+				if( visited != M ) {
+					return false;
+				}
+			} else {
+				return false;
+			}
+			i = j;
+		}
+		return true;
+	}
 
 	PatchSetVerdict CertifyBezierNets( const std::vector<BezierPatch>& patches, unsigned int n, std::size_t workBudget )
 	{
@@ -2879,18 +3076,18 @@ namespace
 			Point3			a, b;	//!< endpoints in lexicographic order
 			unsigned int	id;		//!< patch * 4 + side
 		};
+		std::vector<int> collapsedSide( nPatches, -1 );
 		std::vector<SideRec> sides;
 		sides.reserve( nPatches * 4 );
 		for( std::size_t p = 0; p < nPatches; ++p ) {
-			for( int k = 0; k < 4; ++k ) {
-				for( int m = k + 1; m < 4; ++m ) {
-					if( PatchPointEqual( NetCorner( patches[p], k ), NetCorner( patches[p], m ) ) ) {
-						r.reason = "patch with coincident corners (collapsed side or loop)";
-						return r;
-					}
-				}
+			if( !FindCollapsedSide( patches[p], collapsedSide[p] ) ) {
+				r.reason = "patch with coincident corners (collapsed side or loop)";
+				return r;
 			}
 			for( int s = 0; s < 4; ++s ) {
+				if( s == collapsedSide[p] ) {
+					continue;
+				}
 				const PatchCurve c = NetSide( patches[p], s );
 				SideRec rec;
 				const bool fwd = PatchPointLess( c[0], c[3] );
@@ -2937,6 +3134,10 @@ namespace
 			}
 			i = j;
 		}
+		if( !CheckManifoldVertexLinks( patches, collapsedSide, match ) ) {
+			r.reason = "non-manifold pole or pinch vertex";
+			return r;
+		}
 
 		// A single seam-connected component.
 		{
@@ -2962,7 +3163,7 @@ namespace
 			}
 		}
 
-		// Vertex identities of the sub-patch grid, from glued seams only.
+		// Vertex identities of the sub-patch grid, from collapsed poles and glued seams.
 		const unsigned int n1 = n + 1;
 		const std::size_t nodesPerPatch = std::size_t( n1 ) * n1;
 		auto nodeAt = [&]( std::size_t p, unsigned int iu, unsigned int iv ) {
@@ -2978,6 +3179,15 @@ namespace
 			}
 		};
 		UnionFindNodes uf( nPatches * nodesPerPatch );
+		for( std::size_t p = 0; p < nPatches; ++p ) {
+			const int cs = collapsedSide[p];
+			if( cs >= 0 ) {
+				const unsigned int poleNode = sideNode( p, cs, 0 );
+				for( unsigned int k = 1; k <= n; ++k ) {
+					uf.Unite( poleNode, sideNode( p, cs, k ) );
+				}
+			}
+		}
 		for( std::size_t id = 0; id < match.size(); ++id ) {
 			const int m = match[id];
 			if( m > static_cast<int>( id ) ) {
@@ -3001,12 +3211,18 @@ namespace
 			return ( p * n + iv ) * n + iu;
 		};
 		for( std::size_t p = 0; p < nPatches; ++p ) {
+			const int cs = collapsedSide[p];
 			for( unsigned int iv = 0; iv < n; ++iv ) {
 				for( unsigned int iu = 0; iu < n; ++iu ) {
 					SubPatchRec& rec = subs[subIndex( p, iu, iv )];
 					rec.net = SubdivideBezierPatchRange( patches[p],
 						Scalar( iu ) / Scalar( n ), Scalar( iu + 1 ) / Scalar( n ),
 						Scalar( iv ) / Scalar( n ), Scalar( iv + 1 ) / Scalar( n ) );
+					rec.collapsedSide =
+						( cs == 0 && iv == 0 ) ? 0 :
+						( cs == 1 && iu + 1 == n ) ? 1 :
+						( cs == 2 && iv + 1 == n ) ? 2 :
+						( cs == 3 && iu == 0 ) ? 3 : -1;
 					const unsigned int cn[4] = {
 						nodeAt( p, iu, iv ), nodeAt( p, iu + 1, iv ),
 						nodeAt( p, iu + 1, iv + 1 ), nodeAt( p, iu, iv + 1 ) };
@@ -3015,7 +3231,10 @@ namespace
 					}
 					for( int k = 0; k < 4; ++k ) {
 						for( int m = k + 1; m < 4; ++m ) {
-							if( rec.corner[k] == rec.corner[m] ) {
+							const bool isPolePair = ( rec.collapsedSide >= 0 ) &&
+								( ( k == rec.collapsedSide && m == ( ( rec.collapsedSide + 1 ) & 3 ) ) ||
+								  ( k == 0 && m == 3 && rec.collapsedSide == 3 ) );
+							if( !isPolePair && rec.corner[k] == rec.corner[m] ) {
 								r.reason = "sub-patch with identified corners";
 								return r;
 							}
@@ -3042,6 +3261,18 @@ namespace
 							return r;
 						}
 						pos = nodePos[root];
+					}
+				}
+				if( rec.collapsedSide >= 0 ) {
+					const Point3& polePos = nodePos[rec.corner[rec.collapsedSide]];
+					for( int m = 0; m < 4; ++m ) {
+						int si, sj;
+						NetSideIndex( rec.collapsedSide, m, si, sj );
+						if( !( Vector3Ops::Magnitude( Vector3Ops::mkVector3( rec.net.c[si].pts[sj], polePos ) ) <= seamTol ) ) {
+							r.reason = "glued seam nodes disagree in position";
+							return r;
+						}
+						rec.net.c[si].pts[sj] = polePos;
 					}
 				}
 			}
@@ -3096,7 +3327,7 @@ namespace
 		}
 		for( SubPatchRec& rec : subs ) {
 			rec.box = InflatedNetBox( rec.net, inflate );
-			if( !CrossConeProof( &rec.net, 1, rec.V ) ) {
+			if( !CrossConeProof( &rec.net, &rec.collapsedSide, 1, rec.V ) ) {
 				r.reason = "sub-patch not provably injective (degenerate, folded or too curved)";
 				r.geometric = true;
 				return r;
@@ -3170,12 +3401,21 @@ namespace
 			if( !PatchBoxesOverlap( A.box, B.box ) ) {
 				return true;
 			}
-			int shared = 0, ka = -1, kb = -1;
+			unsigned int sharedVerts[4];
+			int shared = 0;
 			for( int a = 0; a < 4; ++a ) {
 				for( int b = 0; b < 4; ++b ) {
 					if( A.corner[a] == B.corner[b] ) {
-						++shared;
-						if( ka < 0 ) { ka = a; kb = b; }
+						bool dup = false;
+						for( int k = 0; k < shared; ++k ) {
+							if( sharedVerts[k] == A.corner[a] ) {
+								dup = true;
+								break;
+							}
+						}
+						if( !dup ) {
+							sharedVerts[shared++] = A.corner[a];
+						}
 					}
 				}
 			}
@@ -3187,17 +3427,30 @@ namespace
 					return false;
 				}
 			} else if( shared == 1 ) {
-				if( !CornerPairSeparated( A.net, ka, B.net, kb, A.V + B.V ) ) {
+				const unsigned int v = sharedVerts[0];
+				const int csA_at_v = ( A.collapsedSide >= 0 && A.corner[A.collapsedSide] == v ) ? A.collapsedSide : -1;
+				const int csB_at_v = ( B.collapsedSide >= 0 && B.corner[B.collapsedSide] == v ) ? B.collapsedSide : -1;
+				int ka = ( csA_at_v >= 0 ) ? csA_at_v : -1;
+				int kb = ( csB_at_v >= 0 ) ? csB_at_v : -1;
+				for( int a = 0; a < 4 && ka < 0; ++a ) {
+					if( A.corner[a] == v ) ka = a;
+				}
+				for( int b = 0; b < 4 && kb < 0; ++b ) {
+					if( B.corner[b] == v ) kb = b;
+				}
+				if( !CornerPairSeparated( A.net, csA_at_v, ka, B.net, csB_at_v, kb, A.V + B.V ) ) {
 					r.reason = "sub-patches sharing one vertex are not provably separated there";
 					r.geometric = true;
 					return false;
 				}
 			} else if( shared == 2 ) {
-				// The two shared vertices must be the ends of one side of
-				// each, traversed in opposite directions.
+				// The two shared vertices must be the ends of one non-collapsed
+				// side of each, traversed in opposite directions.
 				int sa = -1, sb = -1;
 				for( int s = 0; s < 4 && sa < 0; ++s ) {
+					if( s == A.collapsedSide ) continue;
 					for( int t = 0; t < 4; ++t ) {
+						if( t == B.collapsedSide ) continue;
 						if( A.corner[s] == B.corner[( t + 1 ) & 3] && A.corner[( s + 1 ) & 3] == B.corner[t] ) {
 							sa = s; sb = t;
 							break;
@@ -3208,7 +3461,13 @@ namespace
 					r.reason = "sub-patches share two vertices that are not one oppositely-traversed side";
 					return false;
 				}
-				BezierPatch pair[2] = { RotateNet( A.net, ( sa + 2 ) & 3 ), RotateNet( B.net, sb ) };
+				const int rotA = ( sa + 2 ) & 3;
+				const int rotB = sb & 3;
+				BezierPatch pair[2] = { RotateNet( A.net, rotA ), RotateNet( B.net, rotB ) };
+				const int pairCS[2] = {
+					( A.collapsedSide >= 0 ) ? ( ( A.collapsedSide - rotA ) & 3 ) : -1,
+					( B.collapsedSide >= 0 ) ? ( ( B.collapsedSide - rotB ) & 3 ) : -1
+				};
 				for( int i = 0; i < 4; ++i ) {
 					if( !PatchPointEqual( pair[0].c[i].pts[3], pair[1].c[i].pts[0] ) ) {
 						r.reason = "glued sub-patch sides disagree in position";
@@ -3216,7 +3475,7 @@ namespace
 					}
 				}
 				Vector3 V;
-				if( !CrossConeProof( pair, 2, V ) ) {
+				if( !CrossConeProof( pair, pairCS, 2, V ) ) {
 					r.reason = "sub-patches sharing a side are not provably injective as a union (fold or sharp crease)";
 					r.geometric = true;
 					return false;
@@ -3312,6 +3571,10 @@ namespace
 	//! gets the bitwise reverse; the ends are exact.
 	inline PatchCurve ElevatedSegment( const Point3& E0, const Point3& E1 )
 	{
+		if( PatchPointEqual( E0, E1 ) ) {
+			const PatchCurve c = { { E0, E0, E0, E0 } };
+			return c;
+		}
 		const bool fwd = !PatchPointLess( E1, E0 );
 		const Point3& A = fwd ? E0 : E1;
 		const Point3& B = fwd ? E1 : E0;
@@ -3411,34 +3674,45 @@ namespace
 	}
 
 	//! Topological openness of a patch set from EXACT seam identity alone
-	//! (no geometry, no embedding proof): +1 at least one side has no
-	//! glued partner; 0 every side is glued to exactly one reversed partner
-	//! (no free boundary); -1 undecidable (empty, non-finite, a collapsed
-	//! or looping side, a side shared by more than two patches, or two
-	//! sides sharing endpoints without being one reversed seam).
+	//! (no geometry, no embedding proof): +1 at least one non-collapsed
+	//! side has no glued partner; 0 every non-collapsed side is glued to
+	//! exactly one reversed partner and every vertex/pole link is a single
+	//! manifold cycle (no free boundary); -1 undecidable (empty,
+	//! non-finite, a non-constant loop side, more than one collapsed side
+	//! on a patch, a side shared by more than two patches, two sides
+	//! sharing endpoints without being one reversed seam, or a non-manifold
+	//! pole/pinch vertex).
 	int NetSetOpenness( const std::vector<BezierPatch>& patches )
 	{
 		if( patches.empty() ) {
 			return -1;
+		}
+		for( const BezierPatch& p : patches ) {
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 0; j < 4; ++j ) {
+					if( !PatchPointFinite( p.c[i].pts[j] ) ) {
+						return -1;
+					}
+				}
+			}
 		}
 		struct SideKey
 		{
 			Point3 a, b;
 			unsigned int id;
 		};
+		std::vector<int> collapsedSide( patches.size(), -1 );
 		std::vector<SideKey> sides;
 		sides.reserve( patches.size() * 4 );
 		for( std::size_t p = 0; p < patches.size(); ++p ) {
+			if( !FindCollapsedSide( patches[p], collapsedSide[p] ) ) {
+				return -1;
+			}
 			for( int s = 0; s < 4; ++s ) {
+				if( s == collapsedSide[p] ) {
+					continue;
+				}
 				const PatchCurve c = NetSide( patches[p], s );
-				for( const Point3& q : c ) {
-					if( !PatchPointFinite( q ) ) {
-						return -1;
-					}
-				}
-				if( PatchPointEqual( c[0], c[3] ) ) {
-					return -1;
-				}
 				const bool fwd = PatchPointLess( c[0], c[3] );
 				sides.push_back( { fwd ? c[0] : c[3], fwd ? c[3] : c[0], static_cast<unsigned int>( p * 4 + s ) } );
 			}
@@ -3450,6 +3724,7 @@ namespace
 			if( PatchPointLess( y.b, x.b ) ) return false;
 			return x.id < y.id;
 		} );
+		std::vector<int> match( patches.size() * 4, -1 );
 		bool anyFree = false;
 		for( std::size_t i = 0; i < sides.size(); ) {
 			std::size_t j = i + 1;
@@ -3460,15 +3735,24 @@ namespace
 				return -1;
 			}
 			if( j - i == 2 ) {
-				const PatchCurve c0 = NetSide( patches[sides[i].id / 4], sides[i].id % 4 );
-				const PatchCurve c1 = NetSide( patches[sides[i + 1].id / 4], sides[i + 1].id % 4 );
+				const unsigned int s0 = sides[i].id, s1 = sides[i + 1].id;
+				if( s0 / 4 == s1 / 4 ) {
+					return -1;
+				}
+				const PatchCurve c0 = NetSide( patches[s0 / 4], s0 % 4 );
+				const PatchCurve c1 = NetSide( patches[s1 / 4], s1 % 4 );
 				if( !PatchCurveEqual( c0, ReversePatchCurve( c1 ) ) ) {
 					return -1;
 				}
+				match[s0] = static_cast<int>( s1 );
+				match[s1] = static_cast<int>( s0 );
 			} else {
 				anyFree = true;
 			}
 			i = j;
+		}
+		if( !CheckManifoldVertexLinks( patches, collapsedSide, match ) ) {
+			return -1;
 		}
 		return anyFree ? 1 : 0;
 	}

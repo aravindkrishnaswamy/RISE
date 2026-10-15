@@ -764,26 +764,29 @@ namespace RISE
 		//!  - `outProvablyOpenSheet`: the set is a connected, consistently
 		//!    oriented, EMBEDDED 2-manifold with non-empty boundary, so it
 		//!    encloses no volume.
-		//! Topology comes only from EXACT seam identity (every matched side
-		//! is the bitwise-reversed control polygon of exactly one other
-		//! side); nothing is welded by tolerance.  Embedding is proved on a
-		//! grid of sub-patches: each sub-patch is injective (every
-		//! cross product of a u- and a v-derivative control vector lies in
-		//! one open half-space, which by the mean-value theorem makes the
-		//! map injective), every pair sharing a side is injective as a
-		//! union (the same test over both nets), every pair sharing only a
-		//! vertex is strictly separated by a plane through it, and every
-		//! other pair is disjoint by recursive control-hull boxes.  A
-		//! collapsed (degenerate) side, a T-junction, a pinch vertex or a
-		//! crossing anywhere is refused.  `outNegativeOpenSignedVolume`
-		//! reports an open sheet whose exact signed volume about its
-		//! bounding-box centre is negative (the inward-winding warning).
-		//! `diag`, when given, supplies an optional work-budget override
-		//! and receives the first failed proof step (a static string; ""
-		//! when certified), the sub-patch grid that decided and the work
-		//! spent.  The work budget and a sub-patch count cap bound time and
-		//! memory BEFORE anything large is allocated; past either the set
-		//! is refused.
+		//! Topology comes only from EXACT seam identity (every matched
+		//! non-collapsed side is the bitwise-reversed control polygon of
+		//! exactly one other side, and a patch may have at most one collapsed
+		//! side whose four control points are bitwise equal to a pole vertex
+		//! where all incident patches form one manifold cycle or chain);
+		//! nothing is welded by tolerance.  Embedding is proved on a grid of
+		//! sub-patches: each sub-patch is injective (every active cross
+		//! product of a u- and a v-derivative control vector lies in one open
+		//! half-space, which by the mean-value theorem makes the map
+		//! injective), every pair sharing a side is injective as a union (the
+		//! same test over both nets), every pair sharing only a vertex or pole
+		//! is strictly separated by a plane through it, and every other pair
+		//! is disjoint by recursive control-hull boxes.  A non-constant
+		//! looping side, a patch with two collapsed sides, a T-junction, a
+		//! non-manifold pole / pinch vertex or a crossing anywhere is refused.
+		//! `outNegativeOpenSignedVolume` reports an open sheet whose exact
+		//! signed volume about its bounding-box centre is negative (the
+		//! inward-winding warning).  `diag`, when given, supplies an optional
+		//! work-budget override and receives the first failed proof step (a
+		//! static string; "" when certified), the sub-patch grid that decided
+		//! and the work spent.  The work budget and a sub-patch count cap
+		//! bound time and memory BEFORE anything large is allocated; past
+		//! either the set is refused.
 		struct PatchSetCertDiagnostics
 		{
 			std::size_t		workBudget = 0;	//!< [in] 0 = the default budget
@@ -800,13 +803,14 @@ namespace RISE
 			PatchSetCertDiagnostics* diag = nullptr
 			);
 
-		//! DL-617: TOPOLOGICAL openness of a patch set from exact seam
-		//! identity alone -- no embedding proof: +1 some side has no glued
-		//! partner (a free boundary), 0 every side is glued (no free
-		//! boundary), -1 undecidable (collapsed / looping / non-manifold /
-		//! mismatched seams).  Cheap (one sort); decides a composite's
-		//! operand ROLES, which must not depend on whether the embedding
-		//! proof happens to succeed.
+		//! DL-617 / DL-624: TOPOLOGICAL openness of a patch set from exact
+		//! seam identity and pole-fan link topology alone -- no embedding
+		//! proof: +1 some non-collapsed side has no glued partner (a free
+		//! boundary), 0 every non-collapsed side is glued (no free boundary),
+		//! -1 undecidable (looping or multi-collapsed patch, non-manifold or
+		//! mismatched seams, or a non-manifold pole / pinch vertex).  Cheap
+		//! (two sorts); decides a composite's operand ROLES, which must not
+		//! depend on whether the embedding proof happens to succeed.
 		extern int BezierPatchSetOpenness( const std::vector<BezierPatch>& patches );
 		extern int BilinearPatchSetOpenness( const std::vector<BilinearPatch>& patches );
 

@@ -1257,16 +1257,24 @@ static void TestCostAndShippedModels()
 		const auto t1 = std::chrono::steady_clock::now();
 		const double ms = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
 		std::cout << "    " << m << " (" << p.size() << " patches): " << Describe( v ) << " in " << ms << " ms" << std::endl;
-		Check( !p.empty() && !v.watertight && !v.open && ReasonIs( v, kCollapsed ),
-			std::string( "G: shipped model refused at the collapsed-side topology step: " ) + m );
+		// teapot.bezier has a non-constant loop side on its lid knob (c[0]==c[3]==(0,3,0) with c[1],c[2] offset by 0.002),
+		// so it is still refused at kCollapsed; aphrodite/f16/balanza have genuine constant collapsed poles that now pass
+		// FindCollapsedSide and are refused at the inconsistent-seam step.
+		const char* expectedReason = ( std::strcmp( m, "models/raw/teapot.bezier" ) == 0 )
+			? kCollapsed
+			: "sides share endpoints but are not one reversed seam (crack, curve mismatch or inconsistent winding)";
+		Check( !p.empty() && !v.watertight && !v.open && ReasonIs( v, expectedReason ),
+			std::string( "G: shipped model refused with pinned reason: " ) + m );
 	}
 	for( const char* m : { "models/raw/teapot.bilinear", "models/raw/test.bilinear" } ) {
 		const std::vector<BilinearPatch> p = ReadBilinearFile( m );
 		const Verdict v = CertBilinear( p );
 		std::cout << "    " << m << " (" << p.size() << " patches): " << Describe( v ) << std::endl;
 		const bool single = std::strcmp( m, "models/raw/test.bilinear" ) == 0;
+		// teapot.bilinear's 4 polar lid patches have a genuine constant pole at (0,3,0); the full 28-patch file advances
+		// past the collapsed-side step and is refused at the 4-way handle/spout seam in z=0.
 		Check( !p.empty() && ( single ? ( v.open && v.negative && ReasonIs( v, "" ) )
-		                              : ( !v.watertight && !v.open && ReasonIs( v, kCollapsed ) ) ),
+		                              : ( !v.watertight && !v.open && ReasonIs( v, "non-manifold seam (more than two sides share endpoints)" ) ) ),
 			std::string( "G: shipped bilinear model verdict pinned: " ) + m );
 	}
 }
@@ -2044,10 +2052,428 @@ static void TestMeshAndDisplacedCSG_DL621()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// J. DL-624: polar patch sets (degenerate collapsed sides / pole fans)
+//////////////////////////////////////////////////////////////////////
+
+static BezierPatch RotateTestNet( const BezierPatch& q, int r )
+{
+	BezierPatch cur = q;
+	for( int t = 0; t < ( r & 3 ); ++t ) {
+		BezierPatch nxt;
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				nxt.c[i].pts[j] = cur.c[3 - j].pts[i];
+			}
+		}
+		cur = nxt;
+	}
+	return cur;
+}
+
+//! Builds an 8-patch polar UV Bezier sphere (4 northern wedges collapsed at
+//! north pole (0,0,1) + 4 southern wedges collapsed at south pole (0,0,-1)),
+//! or the 4-patch northern hemisphere dome when `northernHemisphereOnly` is true.
+//! `rot` rotates each patch's parameter domain so collapsed sides on all four
+//! parameter boundaries (s = 0, 1, 2, 3) are exercised.
+static std::vector<BezierPatch> MakePolarUVSphere( bool outward, int rot = 0, bool northernHemisphereOnly = false )
+{
+	static const Vector3 kDir[4] = {
+		Vector3( 1, 0, 0 ), Vector3( 0, 1, 0 ), Vector3( -1, 0, 0 ), Vector3( 0, -1, 0 )
+	};
+	const Scalar kappa = Scalar( 0.55 );
+	const Point3 northPole( 0, 0, 1 );
+	const Point3 southPole( 0, 0, -1 );
+	std::vector<BezierPatch> out;
+	for( int w = 0; w < 4; ++w ) {
+		const Vector3 d0 = outward ? kDir[( w + 1 ) & 3] : kDir[w];
+		const Vector3 d1 = outward ? kDir[w] : kDir[( w + 1 ) & 3];
+		const Vector3 H[4] = {
+			d0,
+			d0 + d1 * kappa,
+			d1 + d0 * kappa,
+			d1
+		};
+		// Northern wedge: j = 0 collapsed at northPole, j = 3 on equator z = 0.
+		BezierPatch north;
+		for( int i = 0; i < 4; ++i ) {
+			north.c[i].pts[0] = northPole;
+			north.c[i].pts[1] = Point3( kappa * H[i].x, kappa * H[i].y, 1 );
+			north.c[i].pts[2] = Point3( H[i].x, H[i].y, kappa );
+			north.c[i].pts[3] = Point3( H[i].x, H[i].y, 0 );
+		}
+		out.push_back( RotateTestNet( north, rot ) );
+		if( !northernHemisphereOnly ) {
+			// Southern wedge: j = 0 on equator z = 0, j = 3 collapsed at southPole.
+			BezierPatch south;
+			for( int i = 0; i < 4; ++i ) {
+				south.c[i].pts[0] = Point3( H[i].x, H[i].y, 0 );
+				south.c[i].pts[1] = Point3( H[i].x, H[i].y, -kappa );
+				south.c[i].pts[2] = Point3( kappa * H[i].x, kappa * H[i].y, -1 );
+				south.c[i].pts[3] = southPole;
+			}
+			out.push_back( RotateTestNet( south, rot ) );
+		}
+	}
+	return out;
+}
+
+//! Builds an 8-patch polar bilinear octahedron (4 top triangular bilinear
+//! patches with a collapsed side at (0,0,1) + 4 bottom triangular bilinear
+//! patches with a collapsed side at (0,0,-1)), or just the 4-patch top
+//! pyramid when `topPyramidOnly` is true.
+static std::vector<BilinearPatch> MakePolarBilinearOctahedron( bool outward, bool topPyramidOnly = false )
+{
+	static const Point3 kEq[4] = {
+		Point3( 1, 0, 0 ), Point3( 0, 1, 0 ), Point3( -1, 0, 0 ), Point3( 0, -1, 0 )
+	};
+	const Point3 northPole( 0, 0, 1 );
+	const Point3 southPole( 0, 0, -1 );
+	std::vector<BilinearPatch> out;
+	for( int w = 0; w < 4; ++w ) {
+		const Point3& e0 = outward ? kEq[( w + 1 ) & 3] : kEq[w];
+		const Point3& e1 = outward ? kEq[w] : kEq[( w + 1 ) & 3];
+		// BilinearPatch layout: pts[0]=(0,0), pts[1]=(0,1), pts[2]=(1,0), pts[3]=(1,1).
+		// Collapse v = 0 (pts[0] == pts[2] == northPole), v = 1 on equator (pts[1] = e0, pts[3] = e1).
+		BilinearPatch top;
+		top.pts[0] = northPole;
+		top.pts[1] = e0;
+		top.pts[2] = northPole;
+		top.pts[3] = e1;
+		out.push_back( top );
+		if( !topPyramidOnly ) {
+			// Collapse v = 1 (pts[1] == pts[3] == southPole), v = 0 on equator (pts[0] = e0, pts[2] = e1).
+			BilinearPatch bot;
+			bot.pts[0] = e0;
+			bot.pts[1] = southPole;
+			bot.pts[2] = e1;
+			bot.pts[3] = southPole;
+			out.push_back( bot );
+		}
+	}
+	return out;
+}
+
+static void TestPolarPatchSets_DL624()
+{
+	std::cout << "J. DL-624: polar patch sets (degenerate collapsed sides / pole fans)" << std::endl;
+
+	// 1. Closed polar UV Bezier sphere across all 4 collapsed-side rotations (s = 0, 1, 2, 3),
+	//    plus inward-wound twin and open polar hemisphere / partial fan / single triangular patch.
+	for( int rot = 0; rot < 4; ++rot ) {
+		const std::vector<BezierPatch> sphOut = MakePolarUVSphere( true, rot, false );
+		const Verdict vOut = CertBezier( sphOut );
+		Check( vOut.watertight && !vOut.open && GeometricUtilities::BezierPatchSetOpenness( sphOut ) == 0,
+			"J1: outward polar UV Bezier sphere certifies watertight (rot=" + std::to_string( rot ) + ")" );
+
+		const std::vector<BezierPatch> sphIn = MakePolarUVSphere( false, rot, false );
+		const Verdict vIn = CertBezier( sphIn );
+		Check( !vIn.watertight && !vIn.open &&
+			ReasonIs( vIn, "closed surface is inward-wound or encloses no resolvable volume" ) &&
+			GeometricUtilities::BezierPatchSetOpenness( sphIn ) == 0,
+			"J1: inward polar UV Bezier sphere is topologically closed (0) and refused by signed volume (rot=" + std::to_string( rot ) + ")" );
+
+		const std::vector<BezierPatch> dome = MakePolarUVSphere( true, rot, true );
+		const Verdict vDome = CertBezier( dome );
+		Check( !vDome.watertight && vDome.open && GeometricUtilities::BezierPatchSetOpenness( dome ) == 1,
+			"J1: polar UV Bezier hemisphere dome certifies as an open sheet (rot=" + std::to_string( rot ) + ")" );
+
+		// Single triangular Bezier patch (1 collapsed side, 3 free sides):
+		const std::vector<BezierPatch> tri( 1, dome[0] );
+		const Verdict vTri = CertBezier( tri );
+		Check( !vTri.watertight && vTri.open && GeometricUtilities::BezierPatchSetOpenness( tri ) == 1,
+			"J1: single triangular Bezier patch with one collapsed side certifies open (rot=" + std::to_string( rot ) + ")" );
+	}
+	{
+		// Open 3-wedge polar fan (radial boundary seams at the start and end of the fan are free):
+		std::vector<BezierPatch> fan3 = MakePolarUVSphere( true, 0, true );
+		fan3.pop_back();
+		const Verdict vFan3 = CertBezier( fan3 );
+		Check( !vFan3.watertight && vFan3.open && GeometricUtilities::BezierPatchSetOpenness( fan3 ) == 1,
+			"J1: 3-wedge partial polar fan with free radial seams certifies as an open sheet" );
+	}
+
+	// 2. Polar bilinear patch sets: closed outward octahedron, inward octahedron, and open 4-wedge pyramid.
+	{
+		const std::vector<BilinearPatch> octOut = MakePolarBilinearOctahedron( true, false );
+		const Verdict vOctOut = CertBilinear( octOut );
+		Check( vOctOut.watertight && !vOctOut.open && GeometricUtilities::BilinearPatchSetOpenness( octOut ) == 0,
+			"J2: outward polar bilinear octahedron certifies watertight" );
+
+		const std::vector<BilinearPatch> octIn = MakePolarBilinearOctahedron( false, false );
+		const Verdict vOctIn = CertBilinear( octIn );
+		Check( !vOctIn.watertight && !vOctIn.open &&
+			ReasonIs( vOctIn, "closed surface is inward-wound or encloses no resolvable volume" ) &&
+			GeometricUtilities::BilinearPatchSetOpenness( octIn ) == 0,
+			"J2: inward polar bilinear octahedron is topologically closed (0) and refused by signed volume" );
+
+		const std::vector<BilinearPatch> pyr = MakePolarBilinearOctahedron( true, true );
+		const Verdict vPyr = CertBilinear( pyr );
+		Check( !vPyr.watertight && vPyr.open && GeometricUtilities::BilinearPatchSetOpenness( pyr ) == 1,
+			"J2: open 4-wedge polar bilinear pyramid certifies as an open sheet" );
+
+		// Mixed polar-side + regular-corner fan at the pole (0,0,1): replace wedge 0 with a 4-corner
+		// bilinear quad whose regular corner pts[0] is at (0,0,1) while wedges 1..3 have collapsed sides at (0,0,1).
+		std::vector<BilinearPatch> mixedPyr = pyr;
+		mixedPyr[0].pts[0] = Point3( 0, 0, 1 );
+		mixedPyr[0].pts[1] = Point3( 0, 1, 0 );
+		mixedPyr[0].pts[2] = Point3( 1, 0, 0 );
+		mixedPyr[0].pts[3] = Point3( 1, 1, -0.5 );
+		const Verdict vMixed = CertBilinear( mixedPyr );
+		Check( !vMixed.watertight && vMixed.open && GeometricUtilities::BilinearPatchSetOpenness( mixedPyr ) == 1,
+			"J2: mixed fan of 3 collapsed-side wedges and 1 regular-corner quad at a shared pole certifies open" );
+	}
+
+	// 3. Shipped teapot polar lid (patches 20..27 of teapot.bilinear and teapot.bezier).
+	{
+		const std::vector<BilinearPatch> teaBil = ReadBilinearFile( "models/raw/teapot.bilinear" );
+		Check( teaBil.size() == 28, "J3: models/raw/teapot.bilinear has 28 patches" );
+		if( teaBil.size() == 28 ) {
+			const std::vector<BilinearPatch> lidBil( teaBil.begin() + 20, teaBil.begin() + 28 );
+			const Verdict vLidBil = CertBilinear( lidBil );
+			std::cout << "    teapot.bilinear polar lid (patches 20..27): " << Describe( vLidBil ) << std::endl;
+			Check( !vLidBil.watertight && vLidBil.open && GeometricUtilities::BilinearPatchSetOpenness( lidBil ) == 1,
+				"J3: teapot.bilinear 8-patch polar lid (4-wedge pole fan at (0,3,0) + 4-patch skirt) certifies open" );
+		}
+
+		const std::vector<BezierPatch> teaBez = ReadBezierFile( "models/raw/teapot.bezier" );
+		Check( teaBez.size() == 28, "J3: models/raw/teapot.bezier has 28 patches" );
+		if( teaBez.size() == 28 ) {
+			std::vector<BezierPatch> lidBez( teaBez.begin() + 20, teaBez.begin() + 28 );
+			// Unmodified teapot.bezier lid has side j=0 (s=0) with c[0].pts[0]==c[3].pts[0]==(0,3,0) and
+			// c[1].pts[0], c[2].pts[0] offset by 0.002 (a non-constant loop side):
+			const Verdict vRawLid = CertBezier( lidBez );
+			Check( !vRawLid.watertight && !vRawLid.open && ReasonIs( vRawLid, kCollapsed ) &&
+				GeometricUtilities::BezierPatchSetOpenness( lidBez ) == -1,
+				"J3: unmodified teapot.bezier lid is refused for its 0.002 non-constant loop side at the pole" );
+			// Snapping side j=0 on the 4 lid knob patches to the exact pole (0,3,0) yields a valid 4-wedge
+			// pole fan (even though column j=2 of the input control polygon sits on the axis at (0,2.7,0),
+			// the cubic curve r(v) = 2.4*v*(1-v)^2 + 0.2*v^3 > 0 for all v in (0,1], so every sub-patch net
+			// has strictly positive radius away from the pole and certifies as an open sheet!):
+			for( int p = 0; p < 4; ++p ) {
+				for( int i = 0; i < 4; ++i ) {
+					lidBez[p].c[i].pts[0] = Point3( 0, 3, 0 );
+				}
+			}
+			const Verdict vSnappedLid = CertBezier( lidBez );
+			std::cout << "    teapot.bezier snapped polar lid (patches 20..27): " << Describe( vSnappedLid ) << std::endl;
+			Check( !vSnappedLid.watertight && vSnappedLid.open && GeometricUtilities::BezierPatchSetOpenness( lidBez ) == 1,
+				"J3: teapot.bezier 8-patch polar lid with exact pole at (0,3,0) certifies open" );
+		}
+	}
+
+	// 4. Adversarial refusal cases for degenerate sides and pole fans.
+	{
+		// 4a. Patch with TWO collapsed sides (both j = 0 and j = 3 collapsed):
+		BezierPatch twoPoles = MakePolarUVSphere( true, 0, true )[0];
+		for( int i = 0; i < 4; ++i ) {
+			twoPoles.c[i].pts[3] = Point3( 0, 0, -1 );
+		}
+		const std::vector<BezierPatch> twoPolesVec( 1, twoPoles );
+		const Verdict vTwoPoles = CertBezier( twoPolesVec );
+		Check( !vTwoPoles.watertight && !vTwoPoles.open && ReasonIs( vTwoPoles, kCollapsed ) &&
+			GeometricUtilities::BezierPatchSetOpenness( twoPolesVec ) == -1,
+			"J4a: a single patch with two collapsed sides is refused at kCollapsed" );
+
+		// 4b. Patch with a non-constant loop side (c[0] == c[3] but c[1] != c[0]):
+		BezierPatch loopSide = MakePolarUVSphere( true, 0, true )[0];
+		loopSide.c[1].pts[0] = Point3( 0.01, 0, 1 );
+		const std::vector<BezierPatch> loopVec( 1, loopSide );
+		const Verdict vLoop = CertBezier( loopVec );
+		Check( !vLoop.watertight && !vLoop.open && ReasonIs( vLoop, kCollapsed ) &&
+			GeometricUtilities::BezierPatchSetOpenness( loopVec ) == -1,
+			"J4b: a patch whose collapsed-side interior control point wanders off the pole is refused at kCollapsed" );
+
+		// 4c. Polar patch where a control point outside the collapsed side coincides with the pole:
+		BezierPatch interiorAtPole = MakePolarUVSphere( true, 0, true )[0];
+		interiorAtPole.c[1].pts[1] = Point3( 0, 0, 1 );
+		const std::vector<BezierPatch> intPoleVec( 1, interiorAtPole );
+		const Verdict vIntPole = CertBezier( intPoleVec );
+		Check( !vIntPole.watertight && !vIntPole.open && ReasonIs( vIntPole, kCollapsed ) &&
+			GeometricUtilities::BezierPatchSetOpenness( intPoleVec ) == -1,
+			"J4c: a polar patch with a non-pole control point equal to the pole is refused at kCollapsed" );
+
+		// 4d. Tip-to-tip double cone (two closed 4-wedge cones sharing the pole (0,0,1)):
+		std::vector<BezierPatch> doubleCone = MakePolarUVSphere( true, 0, true );
+		const std::vector<BezierPatch> upperCone = MakePolarUVSphere( true, 0, true );
+		for( BezierPatch p : upperCone ) {
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 1; j < 4; ++j ) {
+					p.c[i].pts[j].z = Scalar( 2 ) - p.c[i].pts[j].z;
+				}
+			}
+			doubleCone.push_back( p );
+		}
+		const Verdict vDoubleCone = CertBezier( doubleCone );
+		Check( !vDoubleCone.watertight && !vDoubleCone.open &&
+			ReasonIs( vDoubleCone, "non-manifold pole or pinch vertex" ) &&
+			GeometricUtilities::BezierPatchSetOpenness( doubleCone ) == -1,
+			"J4d: tip-to-tip double cone sharing a pole is refused as a non-manifold pole" );
+
+		// 4e. Closed 4-wedge cone + extra 5th flap touching the pole:
+		std::vector<BezierPatch> conePlusFlap = MakePolarUVSphere( true, 0, true );
+		conePlusFlap.push_back( doubleCone[4] );
+		const Verdict vFlap = CertBezier( conePlusFlap );
+		Check( !vFlap.watertight && !vFlap.open &&
+			ReasonIs( vFlap, "non-manifold pole or pinch vertex" ) &&
+			GeometricUtilities::BezierPatchSetOpenness( conePlusFlap ) == -1,
+			"J4e: closed polar cone with an extra flap at the pole is refused as a non-manifold pole" );
+
+		// 4f. Bowtie polar fan (two opposite wedges sharing only the pole (0,0,1), no shared radial seam):
+		const std::vector<BezierPatch> dome4 = MakePolarUVSphere( true, 0, true );
+		const std::vector<BezierPatch> bowtie = { dome4[0], dome4[2] };
+		const Verdict vBowtie = CertBezier( bowtie );
+		Check( !vBowtie.watertight && !vBowtie.open &&
+			ReasonIs( vBowtie, "non-manifold pole or pinch vertex" ) &&
+			GeometricUtilities::BezierPatchSetOpenness( bowtie ) == -1,
+			"J4f: two opposite polar wedges touching only at the pole are refused as a non-manifold pole" );
+
+		// 4g. Polar cusp fold across a shared radial seam at the pole (polar analogue of MakeCuspFold):
+		// Both patches have side s=3 (i=0) collapsed to the pole (0,0,0), and share the radial seam at
+		// j=3 of `a` / j=0 of `b` along (u, u, 0); `b` turns straight back over `a` with z = c * u * v^2,
+		// so non-seam sub-patches are strictly separated in z > 0 and only the paired CrossConeProof
+		// along the shared radial seam refuses the cusp fold.
+		{
+			BezierPatch a, b;
+			const Scalar c = Scalar( 0.2 );
+			const Scalar zc[4] = { 0, 0, c / 3, c };
+			for( int i = 0; i < 4; ++i ) {
+				const Scalar u = Scalar( i ) / 3;
+				for( int j = 0; j < 4; ++j ) {
+					const Scalar v = Scalar( j ) / 3;
+					a.c[i].pts[j] = Point3( u, u * v, 0 );
+					b.c[i].pts[j] = Point3( u, u * ( 1 - Scalar( 0.5 ) * v ), u * zc[j] );
+				}
+			}
+			const std::vector<BezierPatch> foldedSeam = { a, b };
+			const Verdict vFoldedSeam = CertBezier( foldedSeam );
+			Check( !vFoldedSeam.watertight && !vFoldedSeam.open && ReasonIs( vFoldedSeam, kConePair ) &&
+				GeometricUtilities::BezierPatchSetOpenness( foldedSeam ) == 1,
+				"J4g: two polar wedges with a cusp fold across their shared radial seam are refused by the paired CrossConeProof" );
+		}
+
+		// 4h. Polar helicoid fan around the pole O=(0,0,0) (polar analogue of Section D's MakeFan):
+		// 5 quarter-turn polar bilinear wedges with v=0 collapsed at O; when `cross` is false the 1.25-turn
+		// polar helicoid fan certifies open, and when `cross` is true the 5th wedge drops through the 1st wedge
+		// at the pole and is refused by CornerPairSeparated.
+		auto makePolarHelicoidFan = []( bool cross ) {
+			const Scalar pi = 3.14159265358979323846;
+			const Scalar R = 1, h = 0.1;
+			const Point3 O( 0, 0, 0 );
+			auto rim = [&]( int q, Scalar z ) {
+				const Scalar th = Scalar( q ) * pi / 2;
+				return Point3( R * std::cos( th ), R * std::sin( th ), z );
+			};
+			std::vector<BilinearPatch> f;
+			for( int k = 0; k < 5; ++k ) {
+				const Scalar z0 = h * Scalar( k ) * pi / 2 * R;
+				Scalar z1 = h * Scalar( k + 1 ) * pi / 2 * R;
+				if( k == 4 && cross ) {
+					z1 = -0.8;
+				}
+				BilinearPatch w;
+				w.pts[0] = O;
+				w.pts[1] = rim( k, z0 );
+				w.pts[2] = O;
+				w.pts[3] = rim( k + 1, z1 );
+				f.push_back( w );
+			}
+			return f;
+		};
+		const std::vector<BilinearPatch> polarFanOk = makePolarHelicoidFan( false );
+		const Verdict vPolarFanOk = CertBilinear( polarFanOk );
+		Check( !vPolarFanOk.watertight && vPolarFanOk.open &&
+			GeometricUtilities::BilinearPatchSetOpenness( polarFanOk ) == 1,
+			"J4h: embedded 1.25-turn polar bilinear helicoid fan around a pole certifies open" );
+
+		const std::vector<BilinearPatch> polarFanCross = makePolarHelicoidFan( true );
+		const Verdict vPolarFanCross = CertBilinear( polarFanCross );
+		Check( !vPolarFanCross.watertight && !vPolarFanCross.open &&
+			ReasonIs( vPolarFanCross, "sub-patches sharing one vertex are not provably separated there" ) &&
+			GeometricUtilities::BilinearPatchSetOpenness( polarFanCross ) == 1,
+			"J4h: polar bilinear fan whose 5th wedge crosses the 1st at the pole is refused by CornerPairSeparated" );
+	}
+
+	// 5. End-to-end CSG over polar Bezier and bilinear solids and sheets.
+	{
+		const std::string polarSpherePath = WriteBezier( "dl624_polar_sphere.bezier", MakePolarUVSphere( true, 0, false ) );
+		const std::string polarDomePath = WriteBezier( "dl624_polar_dome.bezier", MakePolarUVSphere( true, 0, true ) );
+		const std::string polarOctPath = WriteBilinear( "dl624_polar_oct.bilinear", MakePolarBilinearOctahedron( true, false ) );
+
+		std::string scene = Materials( false ) +
+			"bezierpatch_geometry\n{\n name g_psphere\n file " + polarSpherePath + "\n}\n"
+			"bezierpatch_geometry\n{\n name g_pdome\n file " + polarDomePath + "\n}\n"
+			"bilinearpatch_geometry\n{\n name g_poct\n file " + polarOctPath + "\n}\n"
+			"box_geometry\n{\n name g_box\n width 2\n height 2\n depth 2\n}\n";
+		auto obj = [&]( const std::string& name, const std::string& geom, const std::string& extra = "" ) {
+			scene += "standard_object\n{\n name " + name + "\n geometry " + geom + "\n material glass\n" + extra + "}\n";
+		};
+		auto csg = [&]( const std::string& name, const std::string& a, const std::string& b, const std::string& op ) {
+			scene += "csg_object\n{\n name " + name + "\n obja " + a + "\n objb " + b + "\n operation " + op + "\n material glass\n}\n";
+		};
+		// Solid box [-1,1]^3 minus polar Bezier sphere centred at (0, 0, 1): carves a polar-sphere dimple in the top face.
+		obj( "box_a", "g_box" );
+		obj( "psph_b", "g_psphere", " position 0 0 1\n" );
+		csg( "box_minus_psphere", "box_a", "psph_b", "subtraction" );
+
+		// Polar Bezier dome trimmed by a solid box shifted to x in [0, 2]:
+		obj( "pdome_a", "g_pdome" );
+		obj( "box_trim", "g_box", " position 1 0 0\n" );
+		csg( "pdome_inter_box", "pdome_a", "box_trim", "intersection" );
+
+		// Polar Bezier dome minus polar bilinear octahedron centered at the north pole (0, 0, 1) with scale 0.6:
+		obj( "pdome_c", "g_pdome" );
+		obj( "poct_punch", "g_poct", " position 0 0 1\n scale 0.6 0.6 0.6\n" );
+		csg( "pdome_minus_poct", "pdome_c", "poct_punch", "subtraction" );
+
+		LoadedScene loaded( scene );
+		const IObject* bmp = loaded.Object( "box_minus_psphere" );
+		const IObject* pib = loaded.Object( "pdome_inter_box" );
+		const IObject* pmp = loaded.Object( "pdome_minus_poct" );
+
+		Check( bmp && AsCSG( bmp )->IsCertifiedWatertight() && !AsCSG( bmp )->IsProvablyOpenSheet(),
+			"J5: box minus polar Bezier sphere is a certified watertight solid" );
+		Check( pib && AsCSG( pib )->IsProvablyOpenSheet() && !AsCSG( pib )->IsCertifiedWatertight(),
+			"J5: polar Bezier dome intersect solid box is a certified open sheet" );
+		Check( pmp && AsCSG( pmp )->IsProvablyOpenSheet() && !AsCSG( pmp )->IsCertifiedWatertight(),
+			"J5: polar Bezier dome minus polar bilinear octahedron is a certified open sheet" );
+
+		if( bmp && pib && pmp ) {
+			const Vector3 down( 0, 0, -1 );
+			// Ray down along (0.2, 0.1, 3) into box_minus_psphere hits the carved dimple floor near z ~ 0.025 (below z = 1):
+			const RayIntersection hDimple = Cast( *bmp, Point3( 0.2, 0.1, 3 ), down );
+			Check( hDimple.geometric.bHit &&
+				hDimple.geometric.ptIntersection.z < 0.2 &&
+				hDimple.geometric.ptIntersection.z > -0.1 &&
+				std::fabs( hDimple.geometric.ptExit.z + 1.0 ) < 1e-6 &&
+				Vector3Ops::Dot( hDimple.geometric.vNormal, down ) < 0 &&
+				Coherent( hDimple ),
+				"J5: ray into box minus polar Bezier sphere hits the carved dimple floor and exits the box bottom" );
+
+			// Ray down into pdome_inter_box hits on the +x side (x = 0.4) and misses on the -x side (x = -0.4):
+			const RayIntersection hKeep = Cast( *pib, Point3( 0.4, 0.1, 3 ), down );
+			const RayIntersection hTrimmed = Cast( *pib, Point3( -0.4, 0.1, 3 ), down );
+			Check( hKeep.geometric.bHit && hKeep.geometric.range2 == RISE_INFINITY && !hTrimmed.geometric.bHit,
+				"J5: polar Bezier dome intersect box keeps the +x half and trims the -x half" );
+
+			// Ray down into pdome_minus_poct misses near the pole (x = 0.1, y = 0.1, inside the octahedron punch)
+			// and hits near the outer skirt (x = 0.7, y = 0.1, outside the octahedron punch):
+			const RayIntersection hPunched = Cast( *pmp, Point3( 0.1, 0.1, 3 ), down );
+			const RayIntersection hSkirt = Cast( *pmp, Point3( 0.7, 0.1, 3 ), down );
+			Check( !hPunched.geometric.bHit && hSkirt.geometric.bHit && hSkirt.geometric.range2 == RISE_INFINITY,
+				"J5: polar Bezier dome minus polar bilinear octahedron punches out the pole cap and keeps the skirt" );
+		}
+
+		std::remove( polarSpherePath.c_str() );
+		std::remove( polarDomePath.c_str() );
+		std::remove( polarOctPath.c_str() );
+	}
+}
+
 #ifndef PATCHSET_NO_MAIN
 int main()
 {
-	std::cout << "=== PatchSetCertificationTest (DL-616 / DL-617 / DL-621) ===" << std::endl;
+	std::cout << "=== PatchSetCertificationTest (DL-616 / DL-617 / DL-621 / DL-624) ===" << std::endl;
 	TestClosedSolids();
 	TestCrossingStrip();
 	TestTJunction();
@@ -2057,6 +2483,7 @@ int main()
 	TestCostAndShippedModels();
 	TestProofStepCoverage();
 	TestMeshAndDisplacedCSG_DL621();
+	TestPolarPatchSets_DL624();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }
