@@ -572,6 +572,10 @@ static void TestOpenSheetCSG()
 	obj( "sa", "shape_smooth" ); obj( "sz", "huge2" ); csg( "smooth_lens", "sa", "sz", "intersection" );
 	// Review of 8309af4f4 (P3-2): the inward-wound mesh exited from inside.
 	obj( "wa", "shape_in" ); obj( "wz", "huge2" ); csg( "inward_lens", "wa", "wz", "intersection" );
+	// Review of 4f3183984 (P2): the same two meshes under a MIRRORING
+	// operand transform (negative determinant).
+	obj( "ma2", "shape_smooth", " scale -1 1 1\n" ); obj( "mz2", "huge2" ); csg( "mirror_lens", "ma2", "mz2", "intersection" );
+	obj( "mi2", "shape_in", " scale -1 1 1\n" ); obj( "mj2", "huge2" ); csg( "mirror_in_lens", "mi2", "mj2", "intersection" );
 	// Review P3-2: a genuine grazing exit through the bilinear cube's top.
 	obj( "ga", "cube2" ); obj( "gb", "bcube" ); csg( "graze_lens", "ga", "gb", "intersection" );
 	// Review P3-2: a Bezier operand scaled 1000x (back-off in its frame).
@@ -835,6 +839,25 @@ static void TestOpenSheetCSG()
 			Check( w.geometric.bHit && std::fabs( w.geometric.ptIntersection.z + 1 ) < 1e-6 &&
 				Vector3Ops::Dot( w.geometric.vGeomNormal, down ) > 0 && Coherent( w ) && FrameHonest( w ),
 				"P3-2: an inward-wound mesh exit is outward and never publishes a mirrored derivative frame" );
+		}
+		const IObject* mlz = loaded.Object( "mirror_lens" );
+		if( mlz ) {
+			const RayIntersection m = Cast( *mlz, Point3( 0.1, 0.1, 0.2 ), down );
+			std::cout << "    mirrored smooth exit: derivatives " << m.geometric.derivatives.valid
+				<< " divergence " << NormalFieldDivergence( m ) << std::endl;
+			Check( m.geometric.bHit && std::fabs( m.geometric.ptIntersection.z + 1 ) < 1e-6 &&
+				Vector3Ops::Dot( m.geometric.vGeomNormal, down ) > 0 && Coherent( m ) &&
+				m.geometric.derivatives.valid && NormalFieldDivergence( m ) > 0,
+				"P2: a MIRRORED outward-wound mesh exit keeps its (object-space right-handed) derivatives" );
+		}
+		const IObject* mil = loaded.Object( "mirror_in_lens" );
+		if( mil ) {
+			const RayIntersection m = Cast( *mil, Point3( 0.1, 0.1, 0.2 ), down );
+			std::cout << "    mirrored inward-wound exit: derivatives " << m.geometric.derivatives.valid << std::endl;
+			Check( m.geometric.bHit && std::fabs( m.geometric.ptIntersection.z + 1 ) < 1e-6 &&
+				Vector3Ops::Dot( m.geometric.vGeomNormal, down ) > 0 && Coherent( m ) &&
+				!m.geometric.derivatives.valid,
+				"P2: a MIRRORED inward-wound mesh exit withholds its mirrored derivative frame" );
 		}
 		const IObject* gl = loaded.Object( "graze_lens" );
 		if( gl ) {
