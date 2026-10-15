@@ -701,6 +701,44 @@ static void PartA()
 		}
 	}
 
+	// A22 (round 3 final, P3-1): an emitter quad 5e-5 above the floor of a
+	// closed opaque room, a pond above the room.  The geometric own-body
+	// guess cannot tell that floor from an SDF luminaire's own surface; the
+	// light-root callers pass the luminary (pSeedObject), and then only it is
+	// exempt: the room's ceiling blocks.  The same call for a point on an
+	// SDF/tessellated luminaire with the luminary passed still seeds (A19's
+	// geometry), so the explicit path loses nothing.
+	{
+		Loaded flush( Header() + HSheet( "g_pond", 6, 6, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" )
+			+ "lambertian_luminaire_material\n{\n\tname m_lamp\n\texitance white\n\tscale 1\n\tmaterial matte\n}\n\n"
+			+ HSheet( "g_lamp", 0.00005, 0.5, true ) + Obj( "lamp", "g_lamp", "m_lamp" )
+			+ "sdf_geometry\n{\n\tname g_sdf\n\tpart sphere union 0 0 0 0 0 0 0 1 1 1 0.5 0 0 0\n\tsampling_detail 64\n}\n\n"
+			+ Obj( "sdflamp", "g_sdf", "m_lamp", "3.5 1 0" ) );
+		Check( flush.ok, "A22 scene loads" );
+		if( flush.ok ) {
+			RayIntersection hit( Ray( Point3( 0.1, 1, 0.05 ), Vector3( 0, -1, 0 ) ), nullRasterizerState );
+			flush.O( "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+			Check( hit.geometric.bHit, "A22: probe meets the flush emitter" );
+			if( hit.geometric.bHit ) {
+				IORStack withObject( 1.0 );
+				IORStackSeeding::SeedFromPoint( withObject, hit.geometric.ptIntersection, flush.Scene(), 0, true, flush.O( "lamp" ) );
+				Check( withObject.Depth() == 1,
+					"A22: with the luminary passed, an emitter 5e-5 above a closed room's floor is not seeded into the pond" );
+				const IORStack guessed = flush.Seed( hit.geometric.ptIntersection );
+				std::printf( "  [recorded] the same point without the luminary (geometric guess): depth %zu (residual)\n", guessed.Depth() );
+			}
+			RayIntersection sdfHit( Ray( Point3( 3.48, -2, -0.07 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			flush.O( "sdflamp" )->IntersectRay( sdfHit, RISE_INFINITY, true, true, false );
+			if( sdfHit.geometric.bHit ) {
+				IORStack sdfSeed( 1.0 );
+				IORStackSeeding::SeedFromPoint( sdfSeed, sdfHit.geometric.ptIntersection, flush.Scene(), 0, true, flush.O( "sdflamp" ) );
+				Check( sdfSeed.Depth() == 2 && Close( sdfSeed.top(), 1.33 ),
+					"A22: an SDF luminaire's lower half under the pond is seeded with the luminary passed" );
+			}
+		}
+	}
+
 	// A15 (round 2, P2-4): a point on a sheet's FRONT side is rejected
 	// without a scene walk.
 	{
@@ -858,6 +896,27 @@ static std::string RoomScene( Integrator which, bool pane )
 	return s;
 }
 
+//! B4: a one-sided emitter quad lying 5e-5 above the floor of a closed
+//! opaque room (facing up into it), a 2.0 sphere beside it, camera inside;
+//! optionally an up-facing glass pane above the room.
+static std::string FlushRoomScene( Integrator which, bool pane )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "pinhole_camera\n{\n\tlocation 0 1.5 1.5\n\tlookat -0.8 0.4 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n";
+	s += "lambertian_luminaire_material\n{\n\tname m_emit\n\texitance white\n\tscale 4\n\tmaterial none\n}\n\n";
+	{
+		std::string q = HSheet( "g_emit", 0.00005, 0.5, true );
+		q.replace( q.find( "doublesided TRUE" ), 16, "doublesided FALSE" );
+		s += q + Obj( "emit", "g_emit", "m_emit", "-0.8 0 0" );
+	}
+	s += "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.6\n}\n\n" + Obj( "ball", "g_ball", "glass20", "-0.8 0.62 0" );
+	if( pane ) {
+		s += HSheet( "g_pane", 6, 8, true ) + Obj( "pane", "g_pane", "glass15" );
+	}
+	return s;
+}
+
 struct Stat { double mean, sd; };
 
 static Stat Measure( const std::string& scene, unsigned int n )
@@ -895,7 +954,9 @@ static std::string ReadFile( const char* path )
 static void PartB( unsigned int n )
 {
 	std::cout << "Part B: renders (n = " << n << ")" << std::endl;
+	const bool onlyB4 = std::getenv( "HALF_SPACE_ONLY_B4" ) != nullptr;
 
+	if( !onlyB4 ) {
 	std::cout << "B1: camera under a lone glass pane, glass sphere below it" << std::endl;
 	const Stat pt = Measure( PaneScene( kPT, false ), n );
 	const Stat ptBox = Measure( PaneScene( kPT, true ), n );
@@ -911,6 +972,17 @@ static void PartB( unsigned int n )
 		RatioRow( std::string( "B2 room with pane / without, " ) + kName[i], with, without, 0.02 );
 	}
 
+	}
+	std::cout << "B4: emitter 5e-5 above a closed room's floor, pane above the room" << std::endl;
+	for( Integrator i : { kPT, kBDPT } ) {
+		const Stat with = Measure( FlushRoomScene( i, true ), n );
+		const Stat without = Measure( FlushRoomScene( i, false ), n );
+		RatioRow( std::string( "B4 flush-emitter room with pane / without, " ) + kName[i], with, without, 0.02 );
+	}
+
+	if( onlyB4 ) {
+		return;
+	}
 	std::cout << "B3: DL-619 fixture, PT+SMS / PT" << std::endl;
 	const std::string ptText = ReadFile( "tests/fixtures/dl382/PT_closed_below_ldn.RISEscene" );
 	const std::string smsText = ReadFile( "tests/fixtures/dl382/SMS_closed_below_ldn.RISEscene" );

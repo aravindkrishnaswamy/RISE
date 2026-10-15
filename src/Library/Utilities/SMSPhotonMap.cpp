@@ -528,7 +528,7 @@ unsigned int SMSPhotonMap::Build(
 			// sign check and every photon dies on bounce 1.  Mirrors
 			// BDPT's light-subpath seeding (BDPTIntegrator.cpp:1356).
 			IORStack iorStack( 1.0 );
-			IORStackSeeding::SeedFromPoint( iorStack, r.origin, scene );
+			IORStackSeeding::SeedFromPoint( iorStack, r.origin, scene, 0, true, i->pLum );
 			SMSPhoton out;
 			if( TraceSMSPhoton( scene, r, power, rng, iorStack, out ) ) {
 				mPhotons.push_back( out );
