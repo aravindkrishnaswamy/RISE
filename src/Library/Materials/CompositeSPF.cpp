@@ -676,7 +676,7 @@ namespace RISE
 				if( internalSt.topObject() == BottomKey( s ) ) {
 					p = new IORStack( out );
 					if( out.currentObject() ) {
-						p->push( internalSt.top(), internalSt.TopContext() );
+						p->push( internalSt.top() );
 					}
 				} else {
 					p = new IORStack( internalSt );
@@ -835,7 +835,7 @@ namespace RISE
 			{
 				IORStack below( out );
 				if( out.currentObject() ) {
-					below.push( s.BelowMediumIOR( ri, out, nm, out.top() ), IORStack::EntryContext::FromGeometric( ri, 0, false ) );
+					below.push( s.BelowMediumIOR( ri, out, nm, out.top() ) );
 				}
 				return below;
 			}

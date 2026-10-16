@@ -74,14 +74,23 @@ namespace RISE
 	class IORStack
 	{
 	public:
-		//! DL-622: Surface intersection context recorded when an object or
-		//! open sheet is pushed onto the IOR stack.  Allows companion-
-		//! wavelength seeding (`ReindexStackForWavelength`), walk-carried
-		//! open-sheet continuation (`OpenSheetEnclosesCrossing`), and
-		//! spectral manifold replay (`SMSDomainReplay`, `RefreshLegacySeedFallbackNM`)
-		//! to re-evaluate the medium's refractive index at any wavelength or
-		//! walk position directly from the walk's recorded entry state
-		//! without re-walking the scene.
+		//! DL-622: the surface crossing an OPEN-SHEET entry was pushed at
+		//! (the material and the hit's geometric payload), so a consumer that
+		//! holds the walk's stack -- an HWSS companion lane
+		//! (`IORStackSeeding::ReindexStackForWavelength`), the SMS starting-
+		//! media capture and `RefreshLegacySeedFallbackNM` -- can re-evaluate
+		//! the sheet's index at another wavelength without re-probing for it.
+		//!
+		//! COST CONTRACT (DL-622 review): contexts are stored OUT OF LINE (see
+		//! `MyIORStack::ctx`), and only an entry pushed WITH one has one.  The
+		//! production pushers are the open-sheet ones (`SeedFromPoint`'s
+		//! confirmed sheets, `ResolveOpenSheetCrossing`, the SMS walks' sheet
+		//! pushes); an ordinary closed-medium push carries none, so a scene
+		//! without open sheets copies exactly the stack it copied before
+		//! DL-622 (`IORDATA` stays a 24-byte trivially copyable record and the
+		//! side vector stays empty, i.e. never allocates).  A consumer that
+		//! needs a closed entry's index at another wavelength probes the
+		//! object (`IORStackSeeding::ProbeObjectSurfaceHit`).
 		struct EntryContext
 		{
 			const IMaterial* pMaterial;
@@ -107,6 +116,7 @@ namespace RISE
 			  vNormal( 0, 1, 0 ),
 			  vGeomNormal( 0, 1, 0 ),
 			  rayDir( 0, -1, 0 ),
+			  rast( nullRasterizerState ),
 			  bHasContext( false ),
 			  bRepushParentIor( false ),
 			  bGeomNormalOrientedToRay( false ),
@@ -163,25 +173,15 @@ namespace RISE
 			const IObject* pObj;
 			Scalar ior;
 			bool bOpenSheet;
-			EntryContext ctx;
 
 			IORDATA(
 				const IObject* pObj_,
 				Scalar ior_,
-				bool bOpenSheet_ = false,
-				const EntryContext& ctx_ = EntryContext()
+				bool bOpenSheet_ = false
 				) : 
 			pObj( pObj_ ),
 			ior( ior_ ),
-			bOpenSheet( bOpenSheet_ ),
-			ctx( ctx_ )
-			{}
-
-			IORDATA( const IORDATA& that ) : 
-			  pObj( that.pObj ),
-			  ior( that.ior ),
-			  bOpenSheet( that.bOpenSheet ),
-			  ctx( that.ctx )
+			bOpenSheet( bOpenSheet_ )
 			{}
 		};
 
@@ -189,10 +189,45 @@ namespace RISE
 		{
 		public:
 
+			//! DL-622: per-entry EntryContexts, parallel to `c` (same size)
+			//! once ANY entry carries one, EMPTY otherwise -- so a stack with
+			//! no context-carrying entry (every stack in a scene without open
+			//! sheets) copies and pushes exactly as before DL-622.
+			std::vector<EntryContext> ctxs;
+
 			MyIORStack(){};
 			MyIORStack( const MyIORStack& s ) : 
-			  std::stack< IORDATA, std::vector<IORDATA> >( s )
+			  std::stack< IORDATA, std::vector<IORDATA> >( s ),
+			  ctxs( s.ctxs )
 			{}
+			MyIORStack& operator=( const MyIORStack& s )
+			{
+				c = s.c;
+				ctxs = s.ctxs;
+				return *this;
+			}
+
+			static const EntryContext& NoContext()
+			{
+				static const EntryContext none;
+				return none;
+			}
+
+			void pushEntry( const IORDATA& d, const EntryContext* pCtx )
+			{
+				if( pCtx && pCtx->bHasContext ) {
+					if( ctxs.empty() ) {
+						ctxs.resize( c.size() );
+					}
+					c.push_back( d );
+					ctxs.push_back( *pCtx );
+				} else {
+					c.push_back( d );
+					if( !ctxs.empty() ) {
+						ctxs.push_back( EntryContext() );
+					}
+				}
+			}
 
             std::vector<const IObject*> ObjectKeys() const {
                 std::vector<const IObject*> result;
@@ -207,13 +242,20 @@ namespace RISE
             void setIORAt( std::size_t i, Scalar ior ) { c[i].ior = ior; }
             bool topIsOpenSheet() const { return c.empty() ? false : c.back().bOpenSheet; }
             bool isOpenSheetAt( std::size_t i ) const { return i < c.size() ? c[i].bOpenSheet : false; }
-            const EntryContext& contextAt( std::size_t i ) const { return c[i].ctx; }
-            void setContextAt( std::size_t i, const EntryContext& ctx ) { c[i].ctx = ctx; }
-            const EntryContext& topContext() const { return c.back().ctx; }
+            const EntryContext& contextAt( std::size_t i ) const { return i < ctxs.size() ? ctxs[i] : NoContext(); }
+            void setContextAt( std::size_t i, const EntryContext& ctx ) {
+                if( i >= c.size() ) return;
+                if( ctxs.empty() ) {
+                    if( !ctx.bHasContext ) return;
+                    ctxs.resize( c.size() );
+                }
+                ctxs[i] = ctx;
+            }
+            const EntryContext& topContext() const { return contextAt( c.size() - 1 ); }
             const EntryContext* findContext( const IObject* r ) const {
-                for( std::vector<IORDATA>::const_reverse_iterator i = c.rbegin(), e = c.rend(); i != e; ++i ) {
-                    if( i->pObj == r && i->ctx.bHasContext ) {
-                        return &i->ctx;
+                for( std::size_t i = ctxs.size(); i-- > 0; ) {
+                    if( c[i].pObj == r && ctxs[i].bHasContext ) {
+                        return &ctxs[i];
                     }
                 }
                 return 0;
@@ -234,7 +276,11 @@ namespace RISE
 				std::vector<IORDATA>::reverse_iterator i, e;
 				for( i=c.rbegin(), e=c.rend(); i!=e; i++ ) {
 					if( i->pObj == r ) {
-						c.erase( (i.base())-1 );
+						const std::vector<IORDATA>::iterator it = (i.base())-1;
+						if( !ctxs.empty() ) {
+							ctxs.erase( ctxs.begin() + ( it - c.begin() ) );
+						}
+						c.erase( it );
 						return true;
 					}
 				}
@@ -327,7 +373,7 @@ namespace RISE
 			if( !pCurrentObject ) {
 				GlobalLog()->PrintEasyWarning( "IORStack::push Asked to push item onto stack with no object" );
 			} else {
-				iorstack.push( IORDATA(pCurrentObject,ior,false) );
+				iorstack.pushEntry( IORDATA(pCurrentObject,ior,false), 0 );
 			}
 		}
 
@@ -336,7 +382,7 @@ namespace RISE
 			if( !pCurrentObject ) {
 				GlobalLog()->PrintEasyWarning( "IORStack::push Asked to push item onto stack with no object" );
 			} else {
-				iorstack.push( IORDATA(pCurrentObject,ior,false,ctx) );
+				iorstack.pushEntry( IORDATA(pCurrentObject,ior,false), &ctx );
 			}
 		}
 
@@ -346,7 +392,7 @@ namespace RISE
 			if( !pCurrentObject ) {
 				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
 			} else {
-				iorstack.push( IORDATA(pCurrentObject,ior,true) );
+				iorstack.pushEntry( IORDATA(pCurrentObject,ior,true), 0 );
 			}
 		}
 
@@ -355,7 +401,7 @@ namespace RISE
 			if( !pCurrentObject ) {
 				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
 			} else {
-				iorstack.push( IORDATA(pCurrentObject,ior,true,ctx) );
+				iorstack.pushEntry( IORDATA(pCurrentObject,ior,true), &ctx );
 			}
 		}
 

@@ -956,7 +956,7 @@ void TranslucentSPF::Scatter(
 					// returns exactly 1) rather than fabricating a jump to
 					// air's 1.0, which would misprice a translucent object
 					// nested inside water or glass.
-					trans.ior_stack->push( ior_stack.top(), IORStack::EntryContext::FromGeometric( ri, 0, true ) );
+					trans.ior_stack->push( ior_stack.top() );
 					GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 					scattered.AddScatteredRay( trans );
 				}
@@ -1024,7 +1024,7 @@ void TranslucentSPF::Scatter(
 					// See the comment on the single-color-component branch
 					// above: translucent_material has no ior, so re-push
 					// the enclosing medium's own IOR rather than 1.0.
-					trans.ior_stack->push( ior_stack.top(), IORStack::EntryContext::FromGeometric( ri, 0, true ) );
+					trans.ior_stack->push( ior_stack.top() );
 					GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 					scattered.AddScatteredRay( trans );
 				}
@@ -1232,7 +1232,7 @@ void TranslucentSPF::ScatterNM(
 				// NM twin of the RGB entry lobe above: translucent_material has
 				// no ior parameter, so re-push the enclosing medium's own IOR
 				// rather than fabricating a jump to air's 1.0.
-				trans.ior_stack->push( ior_stack.top(), IORStack::EntryContext::FromGeometric( ri, 0, true ) );
+				trans.ior_stack->push( ior_stack.top() );
 				GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 				scattered.AddScatteredRay( trans );
 			}

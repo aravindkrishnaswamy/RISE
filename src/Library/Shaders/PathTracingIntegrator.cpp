@@ -7585,9 +7585,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
     for(unsigned int w=0; iorStack.topObject() && w<SampledWavelengths::N; ++w) {
         if(swl.terminated[w]) continue;
         IORStack laneStack(iorStack.EnvironmentIOR());
-        if(!IORStackSeeding::ReindexStackForWavelength(iorStack, laneStack, swl.lambda[w])) {
-            IORStackSeeding::SeedFromPoint(laneStack, cameraRay.origin, scene, swl.lambda[w]);
-        }
+        IORStackSeeding::SeedFromPoint(laneStack, cameraRay.origin, scene, swl.lambda[w]);
         if(!laneStack.SameInterfaces(iorStack)) dispersiveContainment = true;
     }
     if(dispersiveContainment) {
