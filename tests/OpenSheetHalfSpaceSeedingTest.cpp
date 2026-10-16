@@ -40,6 +40,16 @@
 //        pane, per integrator
 //    B3  DL-619 fixture (closed 2.2 box sliced by a down-facing 1.5
 //        sheet): PT+SMS == PT
+//    B5  DL-622 review: an unpushed exit off a sheet's normal prism is
+//        priced by the crossing, not the walk's history: PT == BDPT
+//    B6  DL-622 Gap 1: a camera under a rock under a pane is seeded via
+//        the free-space detour (matches the closed-box reference)
+//    B7  DL-622: HWSS companion lanes re-indexed from a hero stack
+//        holding an open sheet match independent wavelengths
+//    B8  DL-622 review: no open sheet -- HWSS companion lanes seeded as
+//        before DL-622 match independent wavelengths
+//
+//  HALF_SPACE_ONLY_NEW (env): Part B rows B5..B8 only.
 //
 //  argv[1]: seed base (default 2000).  HALF_SPACE_N (env): repeats
 //  (default 4).  HALF_SPACE_UNIT_ONLY (env): Part A only.
@@ -207,6 +217,18 @@ struct Loaded
 };
 
 static bool Close( double a, double b ) { return std::fabs( a - b ) < 1e-12; }
+
+//! The index of stack entry @a i (0 = environment) through public pop/top
+//! only, so the file also builds against DL-622's parent for red-proofs.
+static Scalar IorAt( const IORStack& st, std::size_t i )
+{
+	IORStack c( st );
+	while( c.Depth() > i + 1 ) {
+		c.SetCurrentObject( c.topObject() );
+		c.pop();
+	}
+	return c.top();
+}
 
 //////////////////////////////////////////////////////////////////////
 // Part A
@@ -874,19 +896,31 @@ static void PartA()
 			Check( underCanopy.Depth() == 2 && underCanopy.topObject() == sub.O( "sea" ) && Close( underCanopy.top(), 1.33 ),
 				"A27: a point under a submerged open opaque canopy is seeded into the sea via lateral detour" );
 
-			// Walk-carried continuation outside the sea's normal prism (x = 12,
-			// sea half-extent = 6, still in sea's back half-space y = 1 < 5):
-			IORStack walkStack = underRock;
-			walkStack.SetMediumProbeScene( &sub.Scene() );
-			walkStack.SetCurrentObject( sub.O( "pane" ) );
-			RayIntersection exitHit( Ray( Point3( 12, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
-			sub.O( "pane" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
-			Check( exitHit.geometric.bHit, "A27: probe hits off-prism underwater pane" );
-			if( exitHit.geometric.bHit ) {
-				const IORStackSeeding::OpenSheetCrossing cross =
-					IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.5, walkStack, exitHit.pMaterial );
-				Check( !cross.bEntering && walkStack.Depth() == 2 && walkStack.topObject() == sub.O( "sea" ) && Close( cross.etaTo, 1.33 ),
-					"A27: walk-carried sea membership continues across an unrelated open sheet outside the sea's normal prism" );
+			// DL-622 review: an unpushed exit is resolved by the CROSSING, not
+			// by the walk's history.  Two walks that entered the sea at
+			// different points (above the rock; above the canopy) cross an
+			// unrelated pane's back face at x = 12, outside the sea's normal
+			// prism: both leave the sea there, exactly as a seed just past
+			// the crossing is not in it (the eye walk, a light walk and a
+			// seed must price one point with one index).
+			const Point3 pAfter( 12, 1.001, 0 );
+			const IORStack seedAfter = sub.Seed( pAfter );
+			Check( seedAfter.Depth() == 1, "A27 fixture: a seed just above the off-prism pane is not in the sea" );
+			const IORStack histories[2] = { underRock, underCanopy };
+			for( int h = 0; h < 2; h++ ) {
+				IORStack walkStack = histories[h];
+				walkStack.SetMediumProbeScene( &sub.Scene() );
+				walkStack.SetCurrentObject( sub.O( "pane" ) );
+				RayIntersection exitHit( Ray( Point3( 12, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				sub.O( "pane" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+				Check( exitHit.geometric.bHit, "A27: probe hits off-prism underwater pane" );
+				if( exitHit.geometric.bHit ) {
+					const IORStackSeeding::OpenSheetCrossing cross =
+						IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.5, walkStack );
+					Check( !cross.bEntering && walkStack.Depth() == seedAfter.Depth() && Close( cross.etaTo, seedAfter.top() ),
+						h == 0 ? "A27: an unpushed exit off the sea's prism agrees with a seed past it (walk entered above the rock)"
+							: "A27: an unpushed exit off the sea's prism agrees with a seed past it (walk entered above the canopy)" );
+				}
 			}
 		}
 		// Nested narrower inner sheet (y=1.5, half-width 0.5) below two stacked
@@ -900,8 +934,8 @@ static void PartA()
 		if( subNested.ok ) {
 			const IORStack stNested = subNested.Seed( Point3( 0, 0, 0 ) );
 			Check( stNested.Depth() == 3 &&
-				stNested.ObjectAt( 1 ) == subNested.O( "sea" ) && Close( stNested.IORAt( 1 ), 1.33 ) &&
-				stNested.ObjectAt( 2 ) == subNested.O( "inner" ) && Close( stNested.IORAt( 2 ), 1.5 ),
+				stNested.ObjectAt( 1 ) == subNested.O( "sea" ) && Close( IorAt( stNested, 1 ), 1.33 ) &&
+				stNested.ObjectAt( 2 ) == subNested.O( "inner" ) && Close( IorAt( stNested, 2 ), 1.5 ),
 				"A27: detour around stacked obstacles preserves pre-obstacle inner sheet in passedSheets ordering" );
 		}
 	}
@@ -1013,7 +1047,7 @@ static void PartA()
 				char o[16];
 				std::snprintf( o, sizeof(o), "n%d", k );
 				const std::size_t slot = std::size_t( 13 - k );
-				orderOk = ( st.ObjectAt( slot ) == l12.O( o ) ) && Close( st.IORAt( slot ), iors[k % 3] );
+				orderOk = ( st.ObjectAt( slot ) == l12.O( o ) ) && Close( IorAt( st, slot ), iors[k % 3] );
 			}
 			Check( orderOk, "A30: 12 nested open sheets seed all 12 entries in outer-to-inner order" );
 		}
@@ -1170,6 +1204,184 @@ static void PartA()
 			}
 		}
 	}
+
+	// A34 (DL-622 review, P2): the free-space detour's lateral leg must be
+	// FREE space.  A camera in a sealed habitat -- opaque roof slab, opaque
+	// walls, one wall a closed GLASS box (a window) -- under a sea sheet:
+	// its normal ray meets the roof (an entry face, so the detour runs), and
+	// the only waypoint not behind an opaque wall lies beyond the window.
+	// Crossing the window does not carry the sea's index into the habitat.
+	// Control: the same habitat with no +x wall at all is open water, and
+	// the detour seeds it.
+	{
+		const std::string boxes =
+			"box_geometry\n{\n\tname g_roof\n\twidth 4.4\n\theight 0.2\n\tdepth 4.4\n}\n\n"
+			"box_geometry\n{\n\tname g_wallx\n\twidth 0.2\n\theight 3.2\n\tdepth 4.4\n}\n\n"
+			"box_geometry\n{\n\tname g_wallz\n\twidth 4.0\n\theight 3.2\n\tdepth 0.2\n}\n\n";
+		const std::string shell = Header()
+			+ HSheet( "g_sea", 6, 12, true ) + Obj( "sea", "g_sea", "glass133" ) + boxes
+			+ Obj( "roof", "g_roof", "matte", "0 3.1 0" )
+			+ Obj( "wallmx", "g_wallx", "matte", "-2.1 1.6 0" )
+			+ Obj( "wallpz", "g_wallz", "matte", "0 1.6 2.1" )
+			+ Obj( "wallmz", "g_wallz", "matte", "0 1.6 -2.1" );
+		Loaded sealed( shell + Obj( "window", "g_wallx", "glass15", "2.1 1.6 0" ) );
+		Loaded opened( shell );
+		Check( sealed.ok && opened.ok, "A34 scenes load" );
+		if( sealed.ok && opened.ok ) {
+			const IORStack inSealed = sealed.Seed( Point3( 0, 1, 0 ) );
+			Check( inSealed.Depth() == 1,
+				"A34: a camera in a sealed habitat (glass window wall) under a sea is NOT seeded into the sea" );
+			const IORStack inOpened = opened.Seed( Point3( 0, 1, 0 ) );
+			Check( inOpened.Depth() == 2 && inOpened.topObject() == opened.O( "sea" ) && Close( inOpened.top(), 1.33 ),
+				"A34 control: the same habitat with its +x side open is seeded into the sea by the detour" );
+		}
+	}
+
+	// A35 (DL-622 review, P2): the detour certificate's cost is bounded.
+	// 50 co-normal glass panes over a submerged rock: every pane's normal
+	// ray from the seed meets the rock, and an unbounded certificate tries
+	// a detour per pane, each walking up the pane column (measured at the
+	// DL-622 commit: 2652 scene rays per seed, every camera sample).  The detour budget
+	// refuses instead (the seed declines every open sheet -- the refusal
+	// SeedFromPoint makes for ambiguous configurations).  A 3-pane stack
+	// over the same rock fits the budget and is still seeded through it.
+	{
+		auto stacked = []( int count, bool rock ) {
+			std::string t = Header();
+			for( int k = 1; k <= count; k++ ) {
+				char g[16], o[16];
+				std::snprintf( g, sizeof(g), "g_p%d", k );
+				std::snprintf( o, sizeof(o), "p%d", k );
+				t += HSheet( g, 2 + k, 5, true ) + Obj( o, g, "glass15" );
+			}
+			if( rock ) {
+				t += "box_geometry\n{\n\tname g_rock\n\twidth 2\n\theight 0.5\n\tdepth 2\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.5 0" );
+			}
+			return t;
+		};
+		Loaded deep( stacked( 50, true ) );
+		Loaded shallow( stacked( 3, true ) );
+		Check( deep.ok && shallow.ok, "A35 scenes load" );
+		if( deep.ok && shallow.ok ) {
+			deep.Seed( Point3( 0, 0, 0 ) );	// warm the catalog
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack stDeep = deep.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			char label[240];
+			std::snprintf( label, sizeof(label),
+				"A35: 50 panes over a rock: %zu scene rays per seed (bound %d + 16), depth %zu (refused: 1)",
+				rays, IORStackSeeding::kDetourSceneRayBudget, stDeep.Depth() );
+			std::cout << "  [recorded] " << label << std::endl;
+			Check( rays <= std::size_t( IORStackSeeding::kDetourSceneRayBudget + 16 ) && stDeep.Depth() == 1, label );
+			const IORStack stShallow = shallow.Seed( Point3( 0, 0, 0 ) );
+			Check( stShallow.Depth() == 4 && stShallow.topObject() == shallow.O( "p1" ),
+				"A35 control: 3 panes over the same rock are seeded through the detour (depth 4, p1 innermost)" );
+		}
+	}
+
+	// A36 (DL-622 review, P2): a companion lane's re-index keeps a GRADED
+	// enclosing medium at the value the walk tracked (DL-335's
+	// RecordEnclosingAt), not the index at the point it was entered: the
+	// field is wavelength-independent and the walk's value is the one its
+	// next exit refracts into.  Fixture: a graded box (ior 1.2 + 0.05 z)
+	// enclosing a dispersive open pane, the walk moved to z = 3.
+	{
+		Loaded graded( Header()
+			+ "scalar_painter\n{\n\tname ior_ramp\n\texpression 1.2+0.05*P.z\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_graded\n\trefractance white\n\tior ior_ramp\n}\n\n"
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ "box_geometry\n{\n\tname g_tank\n\twidth 12\n\theight 12\n\tdepth 12\n}\n\n" + Obj( "tank", "g_tank", "glass_graded" )
+			+ HSheet( "g_pane", 2, 4, true ) + Obj( "pane", "g_pane", "glass_disp" ) );
+		Check( graded.ok, "A36 scene loads" );
+		if( graded.ok ) {
+			IORStack hero( 1.0 );
+			IORStackSeeding::SeedFromPoint( hero, Point3( 0, 0, 0 ), graded.Scene(), 550 );
+			Check( hero.Depth() == 3 && hero.ObjectAt( 1 ) == graded.O( "tank" ) && hero.ObjectAt( 2 ) == graded.O( "pane" ),
+				"A36 fixture: hero seeded [tank, pane]" );
+			if( hero.Depth() == 3 ) {
+				GradedIndexMedium::RecordEnclosingAt( hero, Point3( 0, 0, 3 ) );
+				const Scalar tracked = IorAt( hero, 1 );
+				Check( Close( tracked, 1.35 ), "A36 fixture: the walk's tracked tank index is n(z = 3) = 1.35" );
+				IORStack lane( 1.0 );
+				IORStackSeeding::SeedCompanionLane( lane, hero, Point3( 0, 0, 3 ), Point3( 0, 0.5, 3 ), graded.Scene(), 450, false );
+				char label[200];
+				std::snprintf( label, sizeof(label), "A36: companion lane keeps the graded tank at the tracked %.4f (got %.4f)",
+					tracked, lane.Depth() == 3 ? IorAt( lane, 1 ) : -1.0 );
+				Check( lane.Depth() == 3 && lane.ObjectAt( 1 ) == graded.O( "tank" ) && Close( IorAt( lane, 1 ), tracked ), label );
+			}
+		}
+	}
+
+	// A37 (DL-622 review, P2): a companion lane for a stack with NO open-
+	// sheet entry keeps the pre-DL-622 rule (seed at the segment's point),
+	// so HWSS output on closed-medium scenes is unchanged.  A stale hero
+	// stack holding a glass box the walk is not in: the lane follows the
+	// seed (air), not the hero's membership.
+	{
+		Loaded box( Header() + "box_geometry\n{\n\tname g_box\n\twidth 2\n\theight 2\n\tdepth 2\n}\n\n" + Obj( "box", "g_box", "glass15" ) );
+		Check( box.ok, "A37 scene loads" );
+		if( box.ok ) {
+			IORStack hero( 1.0 );
+			hero.SetMediumProbeScene( &box.Scene() );
+			hero.SetCurrentObject( box.O( "box" ) );
+			hero.push( 1.5 );
+			IORStack lane( 1.0 );
+			IORStackSeeding::SeedCompanionLane( lane, hero, Point3( 5, 0, 0 ), Point3( 6, 0, 0 ), box.Scene(), 450, false );
+			Check( lane.Depth() == 1,
+				"A37: a closed-medium hero stack's companion lane is re-seeded at the segment point (pre-DL-622 rule)" );
+		}
+	}
+
+	// A38 (DL-622 review, P1): re-generating a clipped plane (every
+	// keyframed pose under time-indexed motion blur) does not invalidate
+	// every thread's open-sheet catalog; a re-posed sheet is re-described
+	// per thread (PosedOpenSheet) at the pose it is used.
+	{
+		const Point3 pts[4] = { Point3( -1, 0, 1 ), Point3( 1, 0, 1 ), Point3( 1, 0, -1 ), Point3( -1, 0, -1 ) };
+		IGeometry* pGeom = 0;
+		const unsigned long long before = IORStackSeeding::OpenSheetCatalogEpoch().load();
+		const bool made = RISE_API_CreateClippedPlaneGeometry( &pGeom, pts, true ) && pGeom;
+		if( made ) {
+			pGeom->RegenerateData();
+			pGeom->RegenerateData();
+		}
+		const unsigned long long after = IORStackSeeding::OpenSheetCatalogEpoch().load();
+		Check( made && before == after,
+			"A38: ClippedPlaneGeometry::RegenerateData leaves the open-sheet catalog epoch unchanged" );
+		safe_release( pGeom );
+	}
+
+	// A39 (DL-622 review, P3): a probe table never silently drops a met
+	// object.  With open sheets in the scene the probe's step budget grows
+	// past kMaxProbeEntries; a probe that meets 33 small glass spheres
+	// before leaving the big glass tank around the seed must still see the
+	// tank (34 distinct objects; 20 sheets far away raise the budget to 72).
+	{
+		std::string t = Header()
+			+ "box_geometry\n{\n\tname g_tank\n\twidth 90\n\theight 90\n\tdepth 90\n}\n\n" + Obj( "tank", "g_tank", "glass15" )
+			+ "sphere_geometry\n{\n\tname g_bead\n\tradius 0.2\n}\n\n";
+		for( int k = 1; k <= 33; k++ ) {
+			char o[16], pos[48];
+			std::snprintf( o, sizeof(o), "bead%d", k );
+			std::snprintf( pos, sizeof(pos), "0 0 %d", k );
+			t += Obj( o, "g_bead", "glass20", pos );
+		}
+		for( int k = 1; k <= 20; k++ ) {
+			char g[16], o[16], pos[48];
+			std::snprintf( g, sizeof(g), "g_far%d", k );
+			std::snprintf( o, sizeof(o), "far%d", k );
+			std::snprintf( pos, sizeof(pos), "300 %d 0", 3 * k );
+			t += HSheet( g, 0, 1, true ) + Obj( o, g, "glass133", pos );
+		}
+		Loaded beads( t );
+		Check( beads.ok, "A39 scene loads" );
+		if( beads.ok ) {
+			const IORStack st = beads.Seed( Point3( 0, 0, 0 ) );
+			Check( st.Depth() == 2 && st.topObject() == beads.O( "tank" ) && Close( st.top(), 1.5 ),
+				"A39: a seed inside a tank behind 33 beads along +z is seeded into the tank (no silent table cap)" );
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1243,8 +1455,8 @@ static double Render( const std::string& sceneText )
 	return result;
 }
 
-enum Integrator { kPT, kPTSMS, kBDPT, kVCM };
-static const char* kName[] = { "PT", "PT+SMS", "BDPT", "VCM" };
+enum Integrator { kPT, kPTSMS, kBDPT, kVCM, kPTSpectral, kPTSpectralHWSS };
+static const char* kName[] = { "PT", "PT+SMS", "BDPT", "VCM", "PT spectral", "PT spectral HWSS" };
 
 static std::string Rasterizer( Integrator which )
 {
@@ -1258,6 +1470,12 @@ static std::string Rasterizer( Integrator which )
 		break;
 	case kBDPT:
 		ss << "bdpt_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+		break;
+	case kPTSpectral:
+	case kPTSpectralHWSS:
+		ss << "pathtracing_spectral_rasterizer\n{\n\tsamples 128\n\tspectral_samples 1\n\tnum_wavelengths 160\n"
+		   << "\tnmbegin 380\n\tnmend 780\n\thwss " << ( which == kPTSpectralHWSS ? "TRUE" : "FALSE" ) << "\n"
+		   << "\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 		break;
 	default:
 		ss << "vcm_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
@@ -1335,6 +1553,93 @@ static std::string FlushRoomScene( Integrator which, bool pane )
 	return s;
 }
 
+//! B5 (DL-622 review): an unpushed exit is resolved by the crossing, not
+//! the walk's history.  The camera sits in a sea sheet's medium (inside
+//! its normal prism, y 4, |x|,|z| <= 3); it views a receiver at x = 5,
+//! outside the prism, lit only THROUGH a glass pane above it (y 2) by an
+//! emitter in air (y 3.5).  PT's eye walk crosses the pane's back face
+//! carrying the sea on its stack; a rule that kept the sea there because
+//! the walk could still see where it entered priced that crossing
+//! 1.5 -> 1.33 while BDPT's light walk (seeded at the emitter, not in the
+//! sea) priced it 1.0 -> 1.5: PT and BDPT disagreed.
+static std::string OffPrismScene( Integrator which )
+{
+	// The receiver is lit only by BSDF-sampled hits on the emitter through
+	// the pane (PT) or by light tracing (BDPT): 16x the base sample count
+	// keeps each render's sd near 1 %.
+	std::string r = Rasterizer( which );
+	const std::size_t at = r.find( "\tsamples " );
+	if( at != std::string::npos ) {
+		const std::size_t eol = r.find( '\n', at );
+		const int spp = std::atoi( r.substr( at + 9, eol - at - 9 ).c_str() );
+		r.replace( at, eol - at, "\tsamples " + std::to_string( 16 * spp ) );
+	}
+	std::string s = "RISE ASCII SCENE 7\n" + r + HeaderBody();
+	s += "pinhole_camera\n{\n\tlocation 0 1 2.5\n\tlookat 5 0 0\n\tup 0 1 0\n\tfov 18.0\n}\n\n";
+	s += "lambertian_luminaire_material\n{\n\tname m_emit\n\texitance white\n\tscale 6\n\tmaterial none\n}\n\n";
+	{
+		std::string q = HSheet( "g_emit", 3.5, 0.7, false );
+		q.replace( q.find( "doublesided TRUE" ), 16, "doublesided FALSE" );
+		s += q + Obj( "emit", "g_emit", "m_emit", "5 0 0" );
+	}
+	s += HSheet( "g_sea", 4, 3, true ) + Obj( "sea", "g_sea", "glass133" );
+	s += HSheet( "g_pane", 2, 1, true ) + Obj( "pane", "g_pane", "glass15", "5 0 0" );
+	s += HSheet( "g_recv", 0, 0.9, true ) + Obj( "recv", "g_recv", "matte", "5 0 0" );
+	s += HSheet( "g_floor", -0.25, 20, true ) + Obj( "floor", "g_floor", "soot" );
+	return s;
+}
+
+//! B6 (DL-622 Gap 1): B1's scene with a small opaque rock between the
+//! camera and the pane, over the camera.  The camera is seeded into the
+//! pane's medium through the free-space detour around the rock, so the
+//! image matches the same scene with the pane replaced by a closed glass
+//! box (which seeds the camera by parity); before DL-622 the rock blocked
+//! the camera's normal ray and the camera was left in air.
+static std::string RockPaneScene( Integrator which, bool closedBox )
+{
+	std::string s = PaneScene( which, closedBox );
+	s += "box_geometry\n{\n\tname g_rock\n\twidth 0.6\n\theight 0.2\n\tdepth 0.6\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.7 1.0" );
+	return s;
+}
+
+//! B7 (DL-622 companion re-index): the camera above a constant-index water
+//! sheet looks down at a DISPERSIVE glass ball under it; at the ball the
+//! HWSS hero hands off to its companions with the sheet on its stack, and
+//! each lane takes the hero's membership re-indexed at its wavelength.
+//! HWSS must match independent per-wavelength paths (hwss FALSE).
+static std::string DispersiveUnderSheetScene( Integrator which )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n";
+	s += "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n";
+	s += "pinhole_camera\n{\n\tlocation 0 2.6 1.2\n\tlookat 0 0.3 0\n\tup 0 1 0\n\tfov 35.0\n}\n\n";
+	s += Emitter( 4, 2, 4 );
+	s += HSheet( "g_sea", 2, 8, true ) + Obj( "sea", "g_sea", "glass133" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.35\n}\n\n" + Obj( "ball", "g_ball", "glass_disp", "0 0.6 0" );
+	s += HSheet( "g_recv", 0, 1, true ) + Obj( "recv", "g_recv", "matte" );
+	s += HSheet( "g_floor", -0.25, 8, true ) + Obj( "floor", "g_floor", "soot" );
+	return s;
+}
+
+//! B8 (DL-622 review): NO open sheet.  A dispersive glass ball inside a
+//! closed water box, camera outside: the HWSS hero enters the box and hands
+//! off at the ball with a closed-medium stack, which SeedCompanionLane
+//! seeds exactly as before DL-622 (the parent commit renders this row with
+//! the same means).  HWSS must match independent wavelengths.
+static std::string DispersiveInBoxScene( Integrator which )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n";
+	s += "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n";
+	s += "pinhole_camera\n{\n\tlocation 0 2.6 1.2\n\tlookat 0 0.3 0\n\tup 0 1 0\n\tfov 35.0\n}\n\n";
+	s += Emitter( 4, 2, 4 );
+	s += "box_geometry\n{\n\tname g_tank\n\twidth 4\n\theight 2.25\n\tdepth 4\n}\n\n" + Obj( "tank", "g_tank", "glass133", "0 0.875 0" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.35\n}\n\n" + Obj( "ball", "g_ball", "glass_disp", "0 0.6 0" );
+	s += HSheet( "g_recv", 0, 1, true ) + Obj( "recv", "g_recv", "matte" );
+	s += HSheet( "g_floor", -0.25, 8, true ) + Obj( "floor", "g_floor", "soot" );
+	return s;
+}
+
 struct Stat { double mean, sd; };
 
 static Stat Measure( const std::string& scene, unsigned int n )
@@ -1373,8 +1678,10 @@ static void PartB( unsigned int n )
 {
 	std::cout << "Part B: renders (n = " << n << ")" << std::endl;
 	const bool onlyB4 = std::getenv( "HALF_SPACE_ONLY_B4" ) != nullptr;
+	// HALF_SPACE_ONLY_NEW: only the DL-622 review rows (B5..B8).
+	const bool onlyNew = std::getenv( "HALF_SPACE_ONLY_NEW" ) != nullptr;
 
-	if( !onlyB4 ) {
+	if( !onlyB4 && !onlyNew ) {
 	std::cout << "B1: camera under a lone glass pane, glass sphere below it" << std::endl;
 	const Stat pt = Measure( PaneScene( kPT, false ), n );
 	const Stat ptBox = Measure( PaneScene( kPT, true ), n );
@@ -1391,14 +1698,38 @@ static void PartB( unsigned int n )
 	}
 
 	}
+	if( !onlyNew ) {
 	std::cout << "B4: emitter 5e-5 above a closed room's floor, pane above the room" << std::endl;
 	for( Integrator i : { kPT, kBDPT } ) {
 		const Stat with = Measure( FlushRoomScene( i, true ), n );
 		const Stat without = Measure( FlushRoomScene( i, false ), n );
 		RatioRow( std::string( "B4 flush-emitter room with pane / without, " ) + kName[i], with, without, 0.02 );
 	}
+	}
 
 	if( onlyB4 ) {
+		return;
+	}
+
+	std::cout << "B5: unpushed exit off a sheet's prism, PT vs BDPT" << std::endl;
+	RatioRow( "B5 off-prism pane exit, PT / BDPT", Measure( OffPrismScene( kPT ), n ), Measure( OffPrismScene( kBDPT ), n ), 0.03 );
+
+	std::cout << "B6: camera under a rock under a pane" << std::endl;
+	{
+		const Stat pt = Measure( RockPaneScene( kPT, false ), n );
+		RatioRow( "B6 rock+pane PT / rock+closed-box PT", pt, Measure( RockPaneScene( kPT, true ), n ), 0.03 );
+		RatioRow( "B6 rock+pane BDPT / PT", Measure( RockPaneScene( kBDPT, false ), n ), pt, 0.03 );
+	}
+
+	std::cout << "B7: dispersive ball under a water sheet, HWSS vs independent wavelengths" << std::endl;
+	RatioRow( "B7 PT spectral hwss TRUE / FALSE", Measure( DispersiveUnderSheetScene( kPTSpectralHWSS ), n ),
+		Measure( DispersiveUnderSheetScene( kPTSpectral ), n ), 0.03 );
+
+	std::cout << "B8: dispersive ball in a closed water box (no open sheet), HWSS vs independent wavelengths" << std::endl;
+	RatioRow( "B8 PT spectral hwss TRUE / FALSE", Measure( DispersiveInBoxScene( kPTSpectralHWSS ), n ),
+		Measure( DispersiveInBoxScene( kPTSpectral ), n ), 0.03 );
+
+	if( onlyNew ) {
 		return;
 	}
 	std::cout << "B3: DL-619 fixture, PT+SMS / PT" << std::endl;

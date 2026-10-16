@@ -881,10 +881,12 @@ bool RISE::Implementation::SMSDomainReplay::BuildStack(const SMSStartingMedia& m
         SMSNativeMaterialQuery query;
         if(!Query(*entry.material, entry.context, replay, domain, query)
             || !query.transmission) return false;
-        const IORStack::EntryContext ctx =
-            IORStack::EntryContext::FromGeometric(entry.context, entry.material, false);
-        if(entry.context.bProvablyNoInterior) replay.pushOpenSheet(query.index, ctx);
-        else replay.push(query.index, ctx);
+        // DL-622: only an open-sheet entry records its crossing (the cost
+        // contract on IORStack::EntryContext).
+        if(entry.context.bProvablyNoInterior)
+            replay.pushOpenSheet(query.index,
+                IORStack::EntryContext::FromGeometric(entry.context, entry.material, false));
+        else replay.push(query.index);
     }
     result = replay;
     return true;
@@ -919,9 +921,7 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
         etaI = exiting ? query.index : next.top();
         if(exiting) next.pop();
         etaT = exiting ? next.top() : query.index;
-        if(!reflection && !exiting) {
-            next.push(query.index, IORStack::EntryContext::FromGeometric(hit, &material, false));
-        }
+        if(!reflection && !exiting) next.push(query.index);
     }
     if(!std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0) return false;
     if(!reflection && !SMSNativeDirections(hit.ray.Dir(),SMSNativeEventNormal(material,hit),hit.UnflippedGeomNormal(),
@@ -5695,12 +5695,11 @@ unsigned int ManifoldSolver::SnellContinueChain(
 				if( bStaleReentry ) {
 					destIor.pop();
 				}
-				const IORStack::EntryContext entryCtx =
-					IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, false );
 				if( bOpenSheetHit ) {
-					destIor.pushOpenSheet( specInfo.ior, entryCtx );
+					destIor.pushOpenSheet( specInfo.ior,
+						IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, false ) );
 				} else {
-					destIor.push( specInfo.ior, entryCtx );
+					destIor.push( specInfo.ior );
 				}
 			} else if( sameObjectAgain ) {
 				// Only pop if we pushed earlier.  The legacy
@@ -10991,15 +10990,17 @@ namespace {
 //! enclosing media the chain may never cross.  Each entry that is a scene
 //! object (a composite's internal layer keys are never dereferenced) is
 //! re-queried with the stack's current object set to it, at the RECEIVER:
-//! first using the walk-carried `IORStack::EntryContext` (evaluated at
-//! `start` so a position-varying index reads the walk's tracked value
-//! there, DL-09 / DL-292 / DL-622 (7)), and for manually constructed
-//! stacks without an `EntryContext`, falling back to the 6 principal-axis
-//! rays, `IORStackSeeding::ProbeObjectSurfaceHit` (26 directions +
-//! deterministic surface-point probe), and direct material evaluation at
-//! `start`.  A non-refracting entry (DL-46 re-push) takes its parent's
-//! refreshed index.  Unpushed open-sheet exits along the chain resolve
-//! through `IORStackSeeding::ResolveUnpushedExit`.
+//! first using the walk-carried `IORStack::EntryContext` an open-sheet
+//! entry records (evaluated at `start` so a position-varying index reads
+//! the walk's tracked value there, DL-09 / DL-292 / DL-622 (7)), and for
+//! an entry without one (every closed medium: contexts are recorded only
+//! at open-sheet pushes), the 6 principal-axis rays,
+//! `IORStackSeeding::ProbeObjectSurfaceHit` (bounded object-only probe),
+//! and direct material evaluation at `start`.  A non-refracting entry
+//! (DL-46 re-push) takes its parent's refreshed index, and an entry
+//! nothing resolves stands in the query stack as its parent's index.
+//! Unpushed open-sheet exits along the chain resolve through
+//! `IORStackSeeding::ResolveUnpushedExit`.
 void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVertex>& chain,RISE::Scalar nm,
     const RISE::Point3& start,const RISE::IScene& scene,const RISE::IORStack* starting)
 {
@@ -11096,11 +11097,15 @@ void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVerte
 			}
 			if( obj ) {
 				partial.SetCurrentObject( obj );
-				const Scalar pushedIdx = ( index > 0 && std::isfinite( index ) ) ? index : replay.IORAt( e );
+				// An entry no probe resolves stands in the query stack as its
+				// parent's index (the pre-DL-622 rule): a DL-46 translucent
+				// child above it then re-pushes a refreshed ancestor, not the
+				// hero-wavelength value.
+				const Scalar pushedIdx = ( index > 0 && std::isfinite( index ) ) ? index : partial.top();
 				if( replay.isOpenSheetAt( e ) ) {
-					partial.pushOpenSheet( pushedIdx > 0 ? pushedIdx : partial.top(), ctx );
+					partial.pushOpenSheet( pushedIdx );
 				} else {
-					partial.push( pushedIdx > 0 ? pushedIdx : partial.top(), ctx );
+					partial.push( pushedIdx );
 				}
 			}
 		}
@@ -11123,18 +11128,10 @@ void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVerte
 				replay.pop();
 			}
 			v.etaI = replay.top();
-			RayIntersectionGeometric enterHit( Ray( v.position, Vector3( 1, 0, 0 ) ), nullRasterizerState );
-			enterHit.bHit = true;
-			enterHit.ptIntersection = v.position;
-			enterHit.vNormal = v.normal;
-			enterHit.vGeomNormal = v.geomNormal;
-			enterHit.bProvablyNoInterior = v.isOpenSheet;
-			const IORStack::EntryContext vCtx =
-				IORStack::EntryContext::FromGeometric( enterHit, v.pMaterial, false );
 			if( v.isOpenSheet ) {
-				replay.pushOpenSheet( index, vCtx );
+				replay.pushOpenSheet( index );
 			} else {
-				replay.push( index, vCtx );
+				replay.push( index );
 			}
 			v.etaT = index;
 		} else {

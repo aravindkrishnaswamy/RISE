@@ -42,7 +42,6 @@
 #include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
-#include "../Utilities/IORStackSeeding.h"
 #include "../Interfaces/ILog.h"
 #include "../Animation/KeyframableHelper.h"
 #include <atomic>
@@ -893,8 +892,6 @@ void ClippedPlaneGeometry::RegenerateData( )
 	}
 
 	BuildAreaData();
-	GeometricUtilities::BumpPatchCertificateEpoch();
-	IORStackSeeding::InvalidateOpenSheetCatalogs();
 }
 
 bool ClippedPlaneGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const

@@ -123,7 +123,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		Nt = newIOR;
 		if( Optics::CalculateRefractedRay( ri.onb.w(), Ni, newIOR, vRefracted ) ) {
 			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), Ni, newIOR );
-			specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, newIOR, &ri );
+			specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, newIOR );
 		} else {
 			// TIR, so reflect
 			ref = 1.0;
@@ -151,7 +151,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	}
 	else
 	{
-		specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, newIOR, &ri );
+		specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, newIOR );
 
 		// Coming out, IOR becomes air
 		Ni = newIOR;
@@ -349,7 +349,7 @@ void PerfectRefractorSPF::ScatterNM(
 		Nt = newIOR;
 		if( Optics::CalculateRefractedRay( ri.onb.w(), Ni, newIOR, vRefracted ) ) {
 			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), Ni, newIOR );
-			specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, newIOR, &ri );
+			specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, newIOR );
 		} else {
 			// TIR, so reflect
 			ref = 1.0;
@@ -377,7 +377,7 @@ void PerfectRefractorSPF::ScatterNM(
 	}
 	else
 	{
-		specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, newIOR, &ri );
+		specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, newIOR );
 
 		// Coming out, IOR becomes whatever was there before
 		const Scalar exitIOR = specular.ior_stack ? specular.ior_stack->top() : 1.0;
