@@ -85,7 +85,12 @@ namespace RISE
 		//! most scattered rays carry no stack, and a ScatteredRayContainer
 		//! destroys every slot (DL-622 review: the destructor had become an
 		//! out-of-line frame once IORStack's destruction grew).
-		RISE_IORSTACK_COLD static void DeleteStack( IORStack*& p )
+#if defined(_MSC_VER)
+		__declspec(noinline)
+#else
+		__attribute__((noinline))
+#endif
+		static void DeleteStack( IORStack*& p )
 		{
 			safe_delete( p );
 		}

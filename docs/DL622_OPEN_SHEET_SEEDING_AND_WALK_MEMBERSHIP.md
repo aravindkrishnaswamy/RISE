@@ -337,7 +337,9 @@ sheet confirmation at the point just past the crossing --
 run once per crossing (`CrossingMedia`, shared by every entry
 `ResolveUnpushedExit` considers popping), at the walk's wavelength, with
 the sheet just crossed left out.  pY stays iff that confirmation holds pY,
-or holds a sheet of pY's material and index that the walk's stack does NOT
+or holds a sheet of pY's MATERIAL (identity; review round 4 dropped an
+exact index match, which a dispersive RGB SPF's per-channel exit resolution
+failed against the nm-0 entry index -- A50) that the walk's stack does NOT
 already carry (the seed keeps one entry for same-material siblings, so pY
 standing for that medium prices the same index; round 2 also counted a
 same-material sheet pY is NESTED in, which is already on the stack -- A44:
@@ -455,7 +457,8 @@ walk-history exception.
   opaque obstacle to the sheets beyond it -- its box joins theirs -- as in
   each sheet's own certificate, instead of ending the shared column (A47,
   red at `1340f1ddb`).  And one group certificate spends at most
-  `kGroupDetourRayBudget` = 1024 scene rays after its column walk (bounded
+  `kGroupDetourRayBudget` = 1024 scene rays after its column walk (review
+  round 4: the single-sheet certificate spends the same budget; bounded
   by `MaxSceneWalkSteps`): when waypoints keep failing, trying every
   obstacle box costs O(N * 8 * (32 + 2N)) rays (interleaved obstacles give
   each sheet its own box).  On exhaustion the sheets it has not confirmed
@@ -613,4 +616,11 @@ of the round-3 build (372 samples against `~ScatteredRayContainer`'s 191 at
 master, of ~50k busy samples): the remaining no-context cost of the
 pointer member is the compiler's inlining decision for that destructor
 (declared in `ISPF.h`, outside this change).
+
+Review round 4: `ScatteredRay::~ScatteredRay` (ISPF.h) deletes its stack
+through an out-of-line `DeleteStack`, so its inline body is two compares
+and it inlines into `~ScatteredRayContainer` again (a prism `sample` shows
+no `~ScatteredRay` frame; the container destructor 128 samples plus
+`DeleteStack` 10, against master's 191).  `hwss_prism_dispersion_pt`,
+interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
 

@@ -62,18 +62,19 @@
 #ifndef IOR_STACK_
 #define IOR_STACK_
 
-#include "../Interfaces/IReference.h"
-#include "../Interfaces/IObject.h"
-#include <atomic>
-#include <stack>
-#include <vector>
-
 // Out-of-line marker for IORStack's context slow paths (DL-622 review).
 #if defined(_MSC_VER)
 	#define RISE_IORSTACK_COLD __declspec(noinline)
 #else
 	#define RISE_IORSTACK_COLD __attribute__((noinline))
 #endif
+
+
+#include "../Interfaces/IReference.h"
+#include "../Interfaces/IObject.h"
+#include <atomic>
+#include <stack>
+#include <vector>
 
 namespace RISE
 {
