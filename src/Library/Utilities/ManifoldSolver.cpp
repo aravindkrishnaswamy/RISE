@@ -835,6 +835,30 @@ bool SMSCaptureUncached(const RISE::IScene& scene,
                 }
             }
         }
+        if(!captured && keyIsOpenSheet) {
+            if(const IORStack::EntryContext* pCtx = live.FindEntryContext(key)) {
+                RayIntersectionGeometric rig(Ray(pCtx->ptIntersection, pCtx->rayDir), pCtx->rast);
+                pCtx->PopulateGeometric(rig);
+                rig.bProvablyNoInterior = true;
+                rig.bOpenSheet = true;
+                const IMaterial* pMat = pCtx->pMaterial ? pCtx->pMaterial : key->GetMaterial();
+                if(pMat) {
+                    result.enclosing.emplace_back(key, pMat, rig);
+                    captured = true;
+                }
+            }
+        }
+        if(!captured && keyIsOpenSheet) {
+            RayIntersection hit(Ray(anchor, Vector3(1,0,0)), nullRasterizerState);
+            if(IORStackSeeding::ProbeObjectSurfaceHit(key, anchor, hit)) {
+                SMSCompleteNativeHit(hit,scene.GetObjects());
+                if(hit.geometric.bHit && hit.geometric.bProvablyNoInterior) {
+                    if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+                    result.enclosing.emplace_back(key, hit.pMaterial, hit.geometric);
+                    captured = true;
+                }
+            }
+        }
         if(!captured) return false;
     }
     result.reconstructible = true;
@@ -857,8 +881,10 @@ bool RISE::Implementation::SMSDomainReplay::BuildStack(const SMSStartingMedia& m
         SMSNativeMaterialQuery query;
         if(!Query(*entry.material, entry.context, replay, domain, query)
             || !query.transmission) return false;
-        if(entry.context.bProvablyNoInterior) replay.pushOpenSheet(query.index);
-        else replay.push(query.index);
+        const IORStack::EntryContext ctx =
+            IORStack::EntryContext::FromGeometric(entry.context, entry.material, false);
+        if(entry.context.bProvablyNoInterior) replay.pushOpenSheet(query.index, ctx);
+        else replay.push(query.index, ctx);
     }
     result = replay;
     return true;
@@ -882,7 +908,7 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
         // membership or reverses ambient/coat indices on a back face.
         exiting=false;etaI=next.top();etaT=query.index;
     } else if(hit.bProvablyNoInterior) {
-        const auto crossing = IORStackSeeding::ResolveOpenSheetCrossing(hit, query.index, next);
+        const auto crossing = IORStackSeeding::ResolveOpenSheetCrossing(hit, query.index, next, &material);
         etaI = crossing.etaFrom;
         etaT = crossing.etaTo;
         exiting = !crossing.bEntering;
@@ -893,7 +919,9 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
         etaI = exiting ? query.index : next.top();
         if(exiting) next.pop();
         etaT = exiting ? next.top() : query.index;
-        if(!reflection && !exiting) next.push(query.index);
+        if(!reflection && !exiting) {
+            next.push(query.index, IORStack::EntryContext::FromGeometric(hit, &material, false));
+        }
     }
     if(!std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0) return false;
     if(!reflection && !SMSNativeDirections(hit.ray.Dir(),SMSNativeEventNormal(material,hit),hit.UnflippedGeomNormal(),
@@ -5667,10 +5695,12 @@ unsigned int ManifoldSolver::SnellContinueChain(
 				if( bStaleReentry ) {
 					destIor.pop();
 				}
+				const IORStack::EntryContext entryCtx =
+					IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, false );
 				if( bOpenSheetHit ) {
-					destIor.pushOpenSheet( specInfo.ior );
+					destIor.pushOpenSheet( specInfo.ior, entryCtx );
 				} else {
-					destIor.push( specInfo.ior );
+					destIor.push( specInfo.ior, entryCtx );
 				}
 			} else if( sameObjectAgain ) {
 				// Only pop if we pushed earlier.  The legacy
@@ -10960,28 +10990,61 @@ namespace {
 //! companion it is the hero's stack, carrying the hero's indices for
 //! enclosing media the chain may never cross.  Each entry that is a scene
 //! object (a composite's internal layer keys are never dereferenced) is
-//! re-queried with the stack's current object set to it, at the RECEIVER
-//! (the context of an object-only principal-axis hit, moved to `start`, so
-//! a position-varying index reads the walk's tracked value there, DL-09 /
-//! DL-292); an entry no axis ray meets keeps its index (documented
-//! residual), and a non-refracting entry (DL-46 re-push) takes its parent's
-//! refreshed index.
+//! re-queried with the stack's current object set to it, at the RECEIVER:
+//! first using the walk-carried `IORStack::EntryContext` (evaluated at
+//! `start` so a position-varying index reads the walk's tracked value
+//! there, DL-09 / DL-292 / DL-622 (7)), and for manually constructed
+//! stacks without an `EntryContext`, falling back to the 6 principal-axis
+//! rays, `IORStackSeeding::ProbeObjectSurfaceHit` (26 directions +
+//! deterministic surface-point probe), and direct material evaluation at
+//! `start`.  A non-refracting entry (DL-46 re-push) takes its parent's
+//! refreshed index.  Unpushed open-sheet exits along the chain resolve
+//! through `IORStackSeeding::ResolveUnpushedExit`.
 void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVertex>& chain,RISE::Scalar nm,
     const RISE::Point3& start,const RISE::IScene& scene,const RISE::IORStack* starting)
 {
 	using namespace RISE;
 	using namespace RISE::Implementation;
 	IORStack replay = starting ? *starting : IORStack( Scalar( 1 ) );
+	if( !replay.MediumProbeScene() ) {
+		replay.SetMediumProbeScene( &scene );
+	}
 	if( replay.Depth() > 1 && scene.GetObjects() ) {
 		static const Vector3 kAxes[6] = { Vector3(1,0,0), Vector3(-1,0,0), Vector3(0,1,0),
 			Vector3(0,-1,0), Vector3(0,0,1), Vector3(0,0,-1) };
 		IORStack partial( replay.EnvironmentIOR() );
+		partial.SetMediumProbeScene( &scene );
 		for( std::size_t e = 1; e < replay.Depth(); e++ ) {
 			const IObject* obj = replay.ObjectAt( e );
+			const IORStack::EntryContext ctx = replay.ContextAt( e );
 			// Scene-object identity from the cached sorted set (round 3
 			// review, P3-3), not a per-call enumeration.
 			const bool inScene = IORStackSeeding::IsSceneObject( scene.GetObjects(), obj );
 			Scalar index = 0;
+
+			// 1. Walk-carried EntryContext (DL-622 (7)): re-evaluate the
+			// entry's material at the receiver position `start` in 0 ray
+			// traces, even when `obj` is off all 6 principal axes.
+			if( ctx.bHasContext && ctx.bRepushParentIor ) {
+				index = partial.top();
+			} else if( ctx.bHasContext && inScene ) {
+				const IMaterial* pMat = ctx.pMaterial ? ctx.pMaterial : obj->GetMaterial();
+				if( pMat ) {
+					RayIntersectionGeometric atReceiver( Ray( start, Vector3( 1, 0, 0 ) ), nullRasterizerState );
+					ctx.PopulateGeometric( atReceiver );
+					atReceiver.ptIntersection = start;
+					atReceiver.ptObjIntersec = Point3Ops::Transform( obj->GetFinalInverseTransformMatrix(), start );
+					IORStack query( partial );
+					query.SetCurrentObject( obj );
+					const SpecularInfo info = pMat->GetSpecularInfoNM( atReceiver, query, nm );
+					if( info.valid ) {
+						index = info.canRefract ? info.ior : partial.top();
+					}
+				}
+			}
+
+			// 2. Fallback for manually constructed stacks without EntryContext:
+			// try the 6 principal-axis rays from `start`.
 			for( int a = 0; inScene && a < 6 && index <= 0; a++ ) {
 				RayIntersection hit( Ray( start, kAxes[a] ), nullRasterizerState );
 				obj->IntersectRay( hit, RISE_INFINITY, true, true, false );
@@ -10995,12 +11058,50 @@ void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVerte
 				if( !info.valid ) continue;
 				index = info.canRefract ? info.ior : partial.top();
 			}
+
+			// 3. Off-axis fallback: 26-direction + deterministic surface-point
+			// probe (`ProbeObjectSurfaceHit`), so an off-axis or hollow object
+			// in a manually constructed stack is still reached.
+			if( inScene && index <= 0 ) {
+				RayIntersection hit( Ray( start, Vector3( 1, 0, 0 ) ), nullRasterizerState );
+				if( IORStackSeeding::ProbeObjectSurfaceHit( obj, start, hit ) && hit.pMaterial ) {
+					RayIntersectionGeometric atReceiver( hit.geometric );
+					atReceiver.ptIntersection = start;
+					atReceiver.ptObjIntersec = Point3Ops::Transform( obj->GetFinalInverseTransformMatrix(), start );
+					IORStack query( partial );
+					query.SetCurrentObject( obj );
+					const SpecularInfo info = hit.pMaterial->GetSpecularInfoNM( atReceiver, query, nm );
+					if( info.valid ) {
+						index = info.canRefract ? info.ior : partial.top();
+					}
+				}
+			}
+
+			// 4. Direct material query at `start` if all geometric probes miss.
+			if( inScene && index <= 0 && obj->GetMaterial() ) {
+				RayIntersectionGeometric atReceiver( Ray( start, Vector3( 1, 0, 0 ) ), nullRasterizerState );
+				atReceiver.bHit = true;
+				atReceiver.ptIntersection = start;
+				atReceiver.ptObjIntersec = Point3Ops::Transform( obj->GetFinalInverseTransformMatrix(), start );
+				IORStack query( partial );
+				query.SetCurrentObject( obj );
+				const SpecularInfo info = obj->GetMaterial()->GetSpecularInfoNM( atReceiver, query, nm );
+				if( info.valid ) {
+					index = info.canRefract ? info.ior : partial.top();
+				}
+			}
+
 			if( index > 0 && std::isfinite( index ) ) {
 				replay.SetIORAt( e, index );
 			}
 			if( obj ) {
 				partial.SetCurrentObject( obj );
-				partial.push( index > 0 ? index : partial.top() );
+				const Scalar pushedIdx = ( index > 0 && std::isfinite( index ) ) ? index : replay.IORAt( e );
+				if( replay.isOpenSheetAt( e ) ) {
+					partial.pushOpenSheet( pushedIdx > 0 ? pushedIdx : partial.top(), ctx );
+				} else {
+					partial.push( pushedIdx > 0 ? pushedIdx : partial.top(), ctx );
+				}
 			}
 		}
 	}
@@ -11022,16 +11123,39 @@ void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVerte
 				replay.pop();
 			}
 			v.etaI = replay.top();
+			RayIntersectionGeometric enterHit( Ray( v.position, Vector3( 1, 0, 0 ) ), nullRasterizerState );
+			enterHit.bHit = true;
+			enterHit.ptIntersection = v.position;
+			enterHit.vNormal = v.normal;
+			enterHit.vGeomNormal = v.geomNormal;
+			enterHit.bProvablyNoInterior = v.isOpenSheet;
+			const IORStack::EntryContext vCtx =
+				IORStack::EntryContext::FromGeometric( enterHit, v.pMaterial, false );
 			if( v.isOpenSheet ) {
-				replay.pushOpenSheet( index );
+				replay.pushOpenSheet( index, vCtx );
 			} else {
-				replay.push( index );
+				replay.push( index, vCtx );
 			}
 			v.etaT = index;
 		} else {
 			v.etaI = index;
 			if( replay.containsCurrent() ) {
 				replay.pop();
+			} else if( v.isOpenSheet ) {
+				const Point3 prevPos = ( i > 0 ) ? chain[i - 1].position : start;
+				Vector3 incDir = Vector3Ops::mkVector3( v.position, prevPos );
+				if( Vector3Ops::NormalizeMag( incDir ) <= NEARZERO ) {
+					incDir = -v.geomNormal;
+				}
+				RayIntersectionGeometric exitHit( Ray( prevPos, incDir ), nullRasterizerState );
+				exitHit.bHit = true;
+				exitHit.ptIntersection = v.position;
+				exitHit.vNormal = v.normal;
+				exitHit.vGeomNormal = v.geomNormal;
+				exitHit.bGeomNormalOrientedToRay = false;
+				exitHit.bGeomNormalRayDerived = false;
+				exitHit.bProvablyNoInterior = true;
+				IORStackSeeding::ResolveUnpushedExit( exitHit, v.pObject, replay );
 			}
 			v.etaT = replay.top();
 		}

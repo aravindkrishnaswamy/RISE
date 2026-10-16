@@ -281,7 +281,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
 			if( bAllocateStacks ) {
-				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, rIndex );
+				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, rIndex, &ri );
 			}
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
@@ -309,7 +309,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), Ni, rIndex );
 			}
 			if( bAllocateStacks ) {
-				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, rIndex );
+				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, rIndex, &ri );
 			}
 		} else {
 			ref = 1.0;

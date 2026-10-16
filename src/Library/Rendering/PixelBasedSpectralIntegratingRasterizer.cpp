@@ -243,7 +243,9 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
         if(attachedScene && cameraIorStack.topObject()) {
             for(unsigned w=0; w<SampledWavelengths::N; ++w) {
                 IORStack laneStack(cameraIorStack.EnvironmentIOR());
-                IORStackSeeding::SeedFromPoint(laneStack, ray.origin, *attachedScene, swl.lambda[w]);
+                if(!IORStackSeeding::ReindexStackForWavelength(cameraIorStack, laneStack, swl.lambda[w])) {
+                    IORStackSeeding::SeedFromPoint(laneStack, ray.origin, *attachedScene, swl.lambda[w]);
+                }
                 if(!laneStack.SameInterfaces(cameraIorStack)) dispersiveContainment = true;
             }
         }
@@ -251,7 +253,9 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
         if(dispersiveContainment) {
             for(unsigned w=0; w<SampledWavelengths::N; ++w) {
                 IORStack laneStack(cameraIorStack.EnvironmentIOR());
-                IORStackSeeding::SeedFromPoint(laneStack, ray.origin, *attachedScene, swl.lambda[w]);
+                if(!IORStackSeeding::ReindexStackForWavelength(cameraIorStack, laneStack, swl.lambda[w])) {
+                    IORStackSeeding::SeedFromPoint(laneStack, ray.origin, *attachedScene, swl.lambda[w]);
+                }
                 bThisHit = pCaster->CastRayNM(rc, rast, ray, cHWSS[w], rs,
                     swl.lambda[w], 0, 0, laneStack) || bThisHit;
             }

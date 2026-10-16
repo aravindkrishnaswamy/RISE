@@ -2924,7 +2924,7 @@ bool RayCaster::WalkShadowSegment(
 		if( openSheetStack ) {
 			ior_stack = *openSheetStack;
 		} else if( bEntering ) {
-			ior_stack.push( mediumIOR );
+			ior_stack.push( mediumIOR, IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, false ) );
 		} else if( ior_stack.containsCurrent() ) {
 			ior_stack.pop();
 		}

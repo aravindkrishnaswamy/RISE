@@ -397,7 +397,9 @@ namespace RISE
 							generatedStack.SetCurrentObject( ri.pObject );
 							const bool bEntering = !generatedStack.containsCurrent();
 							if( bEntering ) {
-								generatedStack.push( info.canRefract ? info.ior : generatedStack.top() );
+								generatedStack.push(
+									info.canRefract ? info.ior : generatedStack.top(),
+									IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, !info.canRefract ) );
 							} else {
 								generatedStack.pop();
 							}

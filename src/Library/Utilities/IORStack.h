@@ -73,6 +73,89 @@ namespace RISE
 
 	class IORStack
 	{
+	public:
+		//! DL-622: Surface intersection context recorded when an object or
+		//! open sheet is pushed onto the IOR stack.  Allows companion-
+		//! wavelength seeding (`ReindexStackForWavelength`), walk-carried
+		//! open-sheet continuation (`OpenSheetEnclosesCrossing`), and
+		//! spectral manifold replay (`SMSDomainReplay`, `RefreshLegacySeedFallbackNM`)
+		//! to re-evaluate the medium's refractive index at any wavelength or
+		//! walk position directly from the walk's recorded entry state
+		//! without re-walking the scene.
+		struct EntryContext
+		{
+			const IMaterial* pMaterial;
+			Point3           ptIntersection;
+			Point3           ptObjIntersec;
+			Point2           ptCoord;
+			Vector3          vNormal;
+			Vector3          vGeomNormal;
+			Vector3          rayDir;
+			RasterizerState  rast;
+			bool             bHasContext;
+			bool             bRepushParentIor;
+			bool             bGeomNormalOrientedToRay;
+			bool             bGeomNormalRayDerived;
+			bool             bProvablyNoInterior;
+			bool             bOpenSheet;
+
+			EntryContext() :
+			  pMaterial( 0 ),
+			  ptIntersection( 0, 0, 0 ),
+			  ptObjIntersec( 0, 0, 0 ),
+			  ptCoord( 0, 0 ),
+			  vNormal( 0, 1, 0 ),
+			  vGeomNormal( 0, 1, 0 ),
+			  rayDir( 0, -1, 0 ),
+			  bHasContext( false ),
+			  bRepushParentIor( false ),
+			  bGeomNormalOrientedToRay( false ),
+			  bGeomNormalRayDerived( false ),
+			  bProvablyNoInterior( false ),
+			  bOpenSheet( false )
+			{}
+
+			static EntryContext FromGeometric(
+				const RayIntersectionGeometric& rig,
+				const IMaterial* pMat,
+				const bool bRepushParent = false
+				)
+			{
+				EntryContext ctx;
+				ctx.pMaterial                = pMat;
+				ctx.ptIntersection           = rig.ptIntersection;
+				ctx.ptObjIntersec            = rig.ptObjIntersec;
+				ctx.ptCoord                  = rig.ptCoord;
+				ctx.vNormal                  = rig.vNormal;
+				ctx.vGeomNormal              = rig.vGeomNormal;
+				ctx.rayDir                   = rig.ray.Dir();
+				ctx.rast                     = rig.rast;
+				ctx.bHasContext              = true;
+				ctx.bRepushParentIor         = bRepushParent;
+				ctx.bGeomNormalOrientedToRay = rig.bGeomNormalOrientedToRay;
+				ctx.bGeomNormalRayDerived    = rig.bGeomNormalRayDerived;
+				ctx.bProvablyNoInterior      = rig.bProvablyNoInterior;
+				ctx.bOpenSheet               = rig.bOpenSheet;
+				return ctx;
+			}
+
+			void PopulateGeometric( RayIntersectionGeometric& rig ) const
+			{
+				rig.bHit                     = true;
+				rig.ptIntersection           = ptIntersection;
+				rig.ptObjIntersec            = ptObjIntersec;
+				rig.ptCoord                  = ptCoord;
+				rig.vNormal                  = vNormal;
+				rig.vGeomNormal              = vGeomNormal;
+				rig.ray                      = Ray( ptIntersection, rayDir );
+				rig.rast                     = rast;
+				rig.bGeomNormalOrientedToRay = bGeomNormalOrientedToRay;
+				rig.bGeomNormalRayDerived    = bGeomNormalRayDerived;
+				rig.bProvablyNoInterior      = bProvablyNoInterior;
+				rig.bOpenSheet               = bOpenSheet;
+			}
+		};
+
 	protected:
 
 		struct IORDATA
@@ -80,21 +163,25 @@ namespace RISE
 			const IObject* pObj;
 			Scalar ior;
 			bool bOpenSheet;
+			EntryContext ctx;
 
 			IORDATA(
 				const IObject* pObj_,
 				Scalar ior_,
-				bool bOpenSheet_ = false
+				bool bOpenSheet_ = false,
+				const EntryContext& ctx_ = EntryContext()
 				) : 
 			pObj( pObj_ ),
 			ior( ior_ ),
-			bOpenSheet( bOpenSheet_ )
+			bOpenSheet( bOpenSheet_ ),
+			ctx( ctx_ )
 			{}
 
 			IORDATA( const IORDATA& that ) : 
 			  pObj( that.pObj ),
 			  ior( that.ior ),
-			  bOpenSheet( that.bOpenSheet )
+			  bOpenSheet( that.bOpenSheet ),
+			  ctx( that.ctx )
 			{}
 		};
 
@@ -116,9 +203,21 @@ namespace RISE
             Scalar EnvironmentIOR() const { return c.front().ior; }
             std::size_t depth() const { return c.size(); }
             const IObject* objectAt( std::size_t i ) const { return c[i].pObj; }
+            Scalar iorAt( std::size_t i ) const { return c[i].ior; }
             void setIORAt( std::size_t i, Scalar ior ) { c[i].ior = ior; }
             bool topIsOpenSheet() const { return c.empty() ? false : c.back().bOpenSheet; }
             bool isOpenSheetAt( std::size_t i ) const { return i < c.size() ? c[i].bOpenSheet : false; }
+            const EntryContext& contextAt( std::size_t i ) const { return c[i].ctx; }
+            void setContextAt( std::size_t i, const EntryContext& ctx ) { c[i].ctx = ctx; }
+            const EntryContext& topContext() const { return c.back().ctx; }
+            const EntryContext* findContext( const IObject* r ) const {
+                for( std::vector<IORDATA>::const_reverse_iterator i = c.rbegin(), e = c.rend(); i != e; ++i ) {
+                    if( i->pObj == r && i->ctx.bHasContext ) {
+                        return &i->ctx;
+                    }
+                }
+                return 0;
+            }
             bool SameInterfaces(const MyIORStack& other) const {
                 if(c.size() != other.c.size()) return false;
                 for(std::size_t i=0; i<c.size(); ++i)
@@ -232,6 +331,15 @@ namespace RISE
 			}
 		}
 
+		inline void push( const Scalar ior, const EntryContext& ctx )
+		{
+			if( !pCurrentObject ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::push Asked to push item onto stack with no object" );
+			} else {
+				iorstack.push( IORDATA(pCurrentObject,ior,false,ctx) );
+			}
+		}
+
 		//! DL-382: pushes an entry marked as entered through an open sheet face.
 		inline void pushOpenSheet( const Scalar ior )
 		{
@@ -239,6 +347,15 @@ namespace RISE
 				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
 			} else {
 				iorstack.push( IORDATA(pCurrentObject,ior,true) );
+			}
+		}
+
+		inline void pushOpenSheet( const Scalar ior, const EntryContext& ctx )
+		{
+			if( !pCurrentObject ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
+			} else {
+				iorstack.push( IORDATA(pCurrentObject,ior,true,ctx) );
 			}
 		}
 
@@ -316,11 +433,24 @@ namespace RISE
 		// n(exit point) on every walk (eye and light alike).
 		inline std::size_t Depth() const { return iorstack.depth(); }
 		inline const IObject* ObjectAt( const std::size_t i ) const { return iorstack.objectAt( i ); }
+		inline Scalar IORAt( const std::size_t i ) const { return iorstack.iorAt( i ); }
 		inline void SetIORAt( const std::size_t i, const Scalar ior )
 		{
 			if( i > 0 && i < iorstack.depth() ) {
 				iorstack.setIORAt( i, ior );
 			}
+		}
+		inline const EntryContext& ContextAt( const std::size_t i ) const { return iorstack.contextAt( i ); }
+		inline void SetContextAt( const std::size_t i, const EntryContext& ctx )
+		{
+			if( i > 0 && i < iorstack.depth() ) {
+				iorstack.setContextAt( i, ctx );
+			}
+		}
+		inline const EntryContext& TopContext() const { return iorstack.topContext(); }
+		inline const EntryContext* FindEntryContext( const IObject* pObj ) const
+		{
+			return pObj ? iorstack.findContext( pObj ) : 0;
 		}
 
 		// Returns the object at the top of the IOR stack (innermost enclosing object).
