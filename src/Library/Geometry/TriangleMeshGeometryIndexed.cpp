@@ -977,29 +977,26 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
                                         }
                                     }
                                     const Scalar trG = G[0][0] + G[1][1] + G[2][2];
-                                    const Scalar minDiagG = std::min( G[0][0], std::min( G[1][1], G[2][2] ) );
-                                    if( std::isfinite( trG ) && minDiagG > Scalar( 0 ) ) {
-                                        Scalar lo = Scalar( 0 ), hi = minDiagG;
-                                        for( int it = 0; it < 32; ++it ) {
-                                            const Scalar mid = Scalar( 0.5 ) * ( lo + hi );
-                                            const Scalar d0 = G[0][0] - mid;
-                                            const Scalar d1 = G[1][1] - mid;
-                                            const Scalar d2 = G[2][2] - mid;
-                                            const Scalar m2 = d0 * d1 - G[0][1] * G[0][1];
-                                            const Scalar m3 = d0 * ( d1 * d2 - G[1][2] * G[1][2] )
-                                                - G[0][1] * ( G[0][1] * d2 - G[1][2] * G[0][2] )
-                                                + G[0][2] * ( G[0][1] * G[1][2] - d1 * G[0][2] );
-                                            if( d0 > Scalar( 0 ) && d1 > Scalar( 0 ) && d2 > Scalar( 0 ) &&
-                                                m2 > Scalar( 0 ) && m3 > Scalar( 0 ) )
-                                            {
-                                                lo = mid;
-                                            } else {
-                                                hi = mid;
-                                            }
-                                        }
-                                        const Scalar epsMach = std::numeric_limits<Scalar>::epsilon();
+                                    const Scalar epsMach = std::numeric_limits<Scalar>::epsilon();
+                                    if( std::isfinite( trG ) && trG > Scalar( 0 ) ) {
+                                        // DL-623 review: lambda_min(A^T A) by a rigorous
+                                        // bound.  SymmetricMinEigenvalueLowerBound3 proves a
+                                        // lower bound on the eigenvalues of the STORED G
+                                        // (Cholesky with a backward-error margin; the old
+                                        // bisection on the signs of computed Sylvester
+                                        // minors was not rigorous when two eigenvalues are
+                                        // small: the minors' rounding error relative to
+                                        // their value grows like tr(G)^2 / lambda).  The
+                                        // stored G differs from the exact A^T A of the
+                                        // stored A by at most gamma_3 sqrt(G_rr G_cc) per
+                                        // entry (Cauchy-Schwarz; each op charged 2u, so
+                                        // gamma_3 <= 3 eps), i.e. by at most 9 eps tr(G) in
+                                        // the 2-norm (Frobenius over nine entries); Weyl's
+                                        // inequality moves the eigenvalue by no more, and
+                                        // 16 eps tr(G) covers it with the rounding of trG.
                                         const Scalar eigLo = std::max( Scalar( 0 ),
-                                            lo * Scalar( 1.0 - 1e-12 ) - Scalar( 16 ) * epsMach * trG );
+                                            GeometricUtilities::SymmetricMinEigenvalueLowerBound3( G )
+                                            - Scalar( 16 ) * epsMach * trG );
                                         const Scalar sigmaLo = std::sqrt( eigLo );
                                         if( sigmaLo * m_certifiedOpenSeparation > eps3D ) {
                                             Point3 rMin( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
@@ -1620,19 +1617,19 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 		return;
 	}
 	// DL-620 review P2-1.  "Provably open" and "watertight" are mutually
-	// exclusive claims about one surface, yet they are decided at two
-	// tolerances: the open certificate (ComputeAreas) welds at eps from the
-	// bounding box of the USED corners, this proof at eps from ALL of
-	// pPoints, unused storage included.  A crack wider than the first but
-	// narrower than the second (one far unused vertex suffices) used to
-	// certify BOTH, and since UpdateVertices skips this proof for an open
-	// sheet, any later deformation silently changed the answer.  The open
-	// certificate wins: it has proved a real boundary at the finer
-	// tolerance, and a signed parity test on a cracked surface can be
-	// wrong for rays through the crack, while refusing interior() only
-	// falls back to the honest unsigned distance.  Every caller (build,
-	// deformation, deserialization) reaches this check after ComputeAreas,
-	// so all three agree by construction.
+	// exclusive claims about one surface.  They were once decided at two
+	// tolerances (the open certificate welded the USED corners, this proof
+	// ALL of pPoints, unused storage included), so a crack wider than the
+	// first eps but narrower than the second -- one far unused vertex
+	// sufficed -- certified BOTH.  Since DL-623 both proofs weld only the
+	// referenced vertices (WeldReferencedVertices, one shared partition
+	// and eps), but this guard stays: the open certificate has proved a
+	// real boundary, UpdateVertices skips this proof for an open sheet,
+	// and a signed parity test on a cracked surface can be wrong for rays
+	// through the crack while refusing interior() only falls back to the
+	// honest unsigned distance.  Every caller (build, deformation,
+	// deserialization) reaches this check after ComputeAreas, so all three
+	// agree by construction.
 	if( m_bShapeOpenSheet ) {
 		return;
 	}

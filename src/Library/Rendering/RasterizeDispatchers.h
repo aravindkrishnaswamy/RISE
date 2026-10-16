@@ -17,6 +17,8 @@
 #include "ThreadLocalSplatBuffer.h"
 
 #include <atomic>
+#include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 namespace RISE
@@ -57,6 +59,38 @@ namespace RISE
 			double lastReportedNum;
 
 			RMutex progressMut;		// Only for progress callback serialization
+
+			// Tile RNG seeds (DL-625 review).  Each worker used to
+			// default-construct its RandomNumberGenerator, whose seed is
+			// `rand()`: N workers calling libc rand() at once is a data race
+			// on its hidden state (undefined behaviour; in practice workers
+			// could receive equal or reordered seeds), and even without the
+			// race which seed drew which tile depended on thread scheduling,
+			// so one std::srand gave different multi-threaded renders.  The
+			// libc stream is now read ONCE, here, on the thread that builds
+			// the dispatcher, and each worker RESEEDS its generator at the
+			// start of every tile from (that value, the tile's corner): the
+			// random stream a tile consumes is a pure function of std::srand's
+			// state and the tile, whichever worker renders it and in whatever
+			// order the (shuffled) sequence hands the tiles out, and no worker touches
+			// libc state.  The generator stays per worker (one MT state, the
+			// RuntimeContext keeps a reference to it); a reseed is ~600 word
+			// operations per tile.
+			const unsigned int tileSeedBase;
+
+			unsigned int TileSeed( const Rect& tile ) const
+			{
+				// splitmix64 finalizer of (base, tile corner).  Keyed on the
+				// tile's PIXEL position, not its place in the sequence: the
+				// default block sequence is shuffled from std::random_device,
+				// so a sequence index names a different tile every render.
+				const std::uint64_t corner = ( std::uint64_t( tile.top ) << 32 ) | std::uint64_t( tile.left );
+				std::uint64_t z = ( std::uint64_t( tileSeedBase ) << 32 ) ^ ( ( corner + 1 ) * 0x9E3779B97F4A7C15ULL );
+				z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+				z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+				z ^= z >> 31;
+				return static_cast<unsigned int>( z ^ ( z >> 32 ) );
+			}
 
 			bool GetNextBlock( Rect& rc )
 			{
@@ -130,7 +164,8 @@ namespace RISE
 			  progressBase( progressBase_ ),
 			  progressWeight( progressWeight_ ),
 			  progressTotal( progressTotal_ ),
-			  lastReportedNum( 0 )
+			  lastReportedNum( 0 ),
+			  tileSeedBase( static_cast<unsigned int>( std::rand() ) )
 			{
 				numTiles = seq_.NumRegions();
 				tiles.reserve( numTiles );
@@ -144,13 +179,14 @@ namespace RISE
 				const unsigned int height = image.GetHeight();
 
 				// Create a runtime context for this thread
-				RandomNumberGenerator random;
+				RandomNumberGenerator random( tileSeedBase );
 				RuntimeContext rc( random, pass, true );
 				rasterizer.PrepareRuntimeContext( rc );
 
 				// This thread will execute until we ask for another block and we're told there are no more
 				Rect rect(0,0,0,0);
-				while( GetNextBlock(rect) ) {
+				while( GetNextBlock( rect ) ) {
+					random.Reseed( TileSeed( rect ) );
 					// Operate on this block
 					rasterizer.SPRasterizeSingleBlock( rc, image, scene, rect, height );
 				}
@@ -206,13 +242,14 @@ namespace RISE
 				TimeIndexedThread timeView( pTimeFrame );
 
 				// Create a runtime context for this thread
-				RandomNumberGenerator random;
+				RandomNumberGenerator random( tileSeedBase );
 				RuntimeContext rc( random, pass, true );
 				rasterizer.PrepareRuntimeContext( rc );
 
 				// This thread will execute until we ask for another block and we're told there are no more
 				Rect rect(0,0,0,0);
-				while( GetNextBlock(rect) ) {
+				while( GetNextBlock( rect ) ) {
+					random.Reseed( TileSeed( rect ) );
 					// Operate on this block
 					rasterizer.SPRasterizeSingleBlockOfAnimation( rc, image, scene, rect, height, animData );
 				}

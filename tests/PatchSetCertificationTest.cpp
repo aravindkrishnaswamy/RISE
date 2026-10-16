@@ -35,6 +35,7 @@
 #include "SMSDomainReplayTest.cpp"
 #undef main
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -2498,9 +2499,159 @@ static void TestPolarPatchSets_DL624()
 }
 
 #ifndef PATCHSET_NO_MAIN
+//! Seam census of a patch set, independent of the certifier: per side group
+//! (sides with the same unordered endpoint pair), whether the two sides of
+//! a pair are the same control polygon traversed the SAME way (an
+//! orientation conflict), and how many groups hold more than two sides (a
+//! non-manifold seam); plus non-constant loop sides (c0 == c3 but not all
+//! four equal).
+struct SeamCensus
+{
+	std::size_t sameDirection = 0;
+	std::size_t reversedMismatch = 0;
+	std::size_t nonManifoldGroups = 0;
+	std::size_t loopSides = 0;
+};
+
+static SeamCensus CensusOf( const std::vector<BezierPatch>& patches )
+{
+	struct S { Point3 a, b; unsigned int id; };
+	const auto less = []( const Point3& x, const Point3& y ) {
+		if( x.x != y.x ) return x.x < y.x;
+		if( x.y != y.y ) return x.y < y.y;
+		return x.z < y.z;
+	};
+	const auto same = []( const Point3& x, const Point3& y ) { return x.x == y.x && x.y == y.y && x.z == y.z; };
+	const auto sideAt = []( const BezierPatch& q, int s, int m ) -> const Point3& {
+		switch( s ) {
+		default:
+		case 0: return q.c[m].pts[0];
+		case 1: return q.c[3].pts[m];
+		case 2: return q.c[3 - m].pts[3];
+		case 3: return q.c[0].pts[3 - m];
+		}
+	};
+	SeamCensus c;
+	std::vector<S> sides;
+	for( std::size_t p = 0; p < patches.size(); ++p ) {
+		for( int s = 0; s < 4; ++s ) {
+			const Point3& a = sideAt( patches[p], s, 0 );
+			const Point3& b = sideAt( patches[p], s, 3 );
+			if( same( a, b ) ) {
+				if( !same( a, sideAt( patches[p], s, 1 ) ) || !same( a, sideAt( patches[p], s, 2 ) ) ) ++c.loopSides;
+				continue;
+			}
+			sides.push_back( { less( a, b ) ? a : b, less( a, b ) ? b : a, (unsigned int)( p * 4 + s ) } );
+		}
+	}
+	std::sort( sides.begin(), sides.end(), [&]( const S& x, const S& y ) {
+		if( less( x.a, y.a ) ) return true;
+		if( less( y.a, x.a ) ) return false;
+		if( less( x.b, y.b ) ) return true;
+		if( less( y.b, x.b ) ) return false;
+		return x.id < y.id;
+	} );
+	for( std::size_t i = 0; i < sides.size(); ) {
+		std::size_t j = i + 1;
+		while( j < sides.size() && same( sides[j].a, sides[i].a ) && same( sides[j].b, sides[i].b ) ) ++j;
+		if( j - i > 2 ) {
+			++c.nonManifoldGroups;
+		} else if( j - i == 2 ) {
+			const unsigned int s0 = sides[i].id, s1 = sides[i + 1].id;
+			bool fwd = true, rev = true;
+			for( int m = 0; m < 4; ++m ) {
+				fwd = fwd && same( sideAt( patches[s0 / 4], s0 % 4, m ), sideAt( patches[s1 / 4], s1 % 4, m ) );
+				rev = rev && same( sideAt( patches[s0 / 4], s0 % 4, m ), sideAt( patches[s1 / 4], s1 % 4, 3 - m ) );
+			}
+			if( fwd ) ++c.sameDirection;
+			else if( !rev ) ++c.reversedMismatch;
+		}
+		i = j;
+	}
+	return c;
+}
+
+//! DL-623 review.  (17) The vertex-link check was quadratic in the number
+//! of wedges meeting at one point and the openness query had no cap: a
+//! 200,000-wedge pole fan (a disk) took ~2e10 comparisons.  (16) Why no
+//! shipped Bezier/bilinear model certifies, pinned by an independent seam
+//! census so a future certifier extension is checked against what the
+//! data actually contains.
+static void TestDL623ReviewPatchFindings()
+{
+	std::cout << "DL-623 review: pole-fan cost and shipped-model seam census" << std::endl;
+	{
+		const int K = 200000;
+		const Scalar pi = 3.14159265358979323846;
+		std::vector<BilinearPatch> fan;
+		fan.reserve( K );
+		const Point3 pole( 0, 0, 1 );
+		for( int k = 0; k < K; ++k ) {
+			const Scalar t0 = 2 * pi * Scalar( k ) / K, t1 = 2 * pi * Scalar( ( k + 1 ) % K ) / K;
+			BilinearPatch b;
+			b.pts[0] = pole;
+			b.pts[2] = pole;
+			b.pts[1] = Point3( std::cos( t0 ), std::sin( t0 ), 0 );
+			b.pts[3] = Point3( std::cos( t1 ), std::sin( t1 ), 0 );
+			fan.push_back( b );
+		}
+		// Shuffle the wedges (fixed permutation): in angular order every
+		// matched seam enters the next incidence in side-id order, which
+		// would let a linear scan stop at once and hide its cost.
+		unsigned int rng = 2463534242u;
+		for( int k = K - 1; k > 0; --k ) {
+			rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+			std::swap( fan[std::size_t( k )], fan[std::size_t( rng % unsigned( k + 1 ) )] );
+		}
+		const auto t0 = std::chrono::steady_clock::now();
+		const int o = GeometricUtilities::BilinearPatchSetOpenness( fan );
+		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+		std::cout << "    " << K << "-wedge pole fan: openness " << o << " in " << ms << " ms" << std::endl;
+		Check( o == 1 && ms < 2000.0,
+			"DL-623 review (17): a 200,000-wedge pole fan is classified open in bounded time (linear vertex links)" );
+	}
+	{
+		const char* models[] = { "models/raw/teapot.bezier", "models/bezier/aphrodite.bezier",
+			"models/bezier/f16.bezier", "models/bezier/balanza.bezier" };
+		for( const char* m : models ) {
+			const std::vector<BezierPatch> p = ReadBezierFile( m );
+			const SeamCensus c = CensusOf( p );
+			const int openness = GeometricUtilities::BezierPatchSetOpenness( p );
+			std::cout << "    " << m << ": same-direction seams " << c.sameDirection << ", reversed-but-different "
+				<< c.reversedMismatch << ", non-manifold groups " << c.nonManifoldGroups << ", loop sides "
+				<< c.loopSides << ", openness " << openness << std::endl;
+			const bool teapot = std::strcmp( m, "models/raw/teapot.bezier" ) == 0;
+			// teapot: the lid knob's four sides are tiny non-constant loops
+			// (c0 == c3 == (0,3,0), c1/c2 0.002 away): the rendered surface
+			// has four overlapping petals there, not a pole, so treating them
+			// as a pole would certify a surface the renderer does not
+			// intersect.  Its handle/spout ends share endpoints with
+			// curve-mismatched sides (0.2-0.6 apart) and meet the body in
+			// 4-side groups, and the handle and spout pierce the body: it is
+			// not embedded and must never certify.  aphrodite/f16/balanza:
+			// thousands of seams are the SAME polygon traversed the same way
+			// (no consistent orientation, which the face rule needs) and
+			// dozens of seams are shared by 3-4 patches (fins): no sound
+			// manifold certificate exists for them.
+			if( teapot ) {
+				Check( c.loopSides == 4 && c.reversedMismatch == 4 && c.nonManifoldGroups == 2 && openness == -1,
+					std::string( "DL-623 review (16): seam census pinned: " ) + m );
+			} else {
+				Check( c.sameDirection > 100 && c.nonManifoldGroups > 30 && c.loopSides == 0 && openness == -1,
+					std::string( "DL-623 review (16): seam census pinned: " ) + m );
+			}
+		}
+		const std::vector<BilinearPatch> tb = ReadBilinearFile( "models/raw/teapot.bilinear" );
+		std::cout << "    models/raw/teapot.bilinear: openness " << GeometricUtilities::BilinearPatchSetOpenness( tb ) << std::endl;
+		Check( GeometricUtilities::BilinearPatchSetOpenness( tb ) == -1,
+			"DL-623 review (16): teapot.bilinear openness undecidable (4-side seam groups at the handle and spout)" );
+	}
+}
+
 int main()
 {
 	std::cout << "=== PatchSetCertificationTest (DL-616 / DL-617 / DL-621 / DL-624) ===" << std::endl;
+	TestDL623ReviewPatchFindings();
 	TestClosedSolids();
 	TestCrossingStrip();
 	TestTJunction();

@@ -167,7 +167,9 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <iostream>
 #include <random>
 #include <string>
@@ -2673,6 +2675,126 @@ static void TestDL623MeshCertificateReuseAndSubdivision()
 			"DL-623 (1): two oversize flaps crossing outside gridBoxLo..gridBoxHi are refused" );
 	}
 
+	// (1b) DL-623 review: nothing caps how many triangles are oversize, and
+	// the oversize-vs-oversize scan used to box-test every pair.  A flat
+	// sheet whose last 80 columns are 4000x wider than its 600 unit columns
+	// (a terrain LOD seam; the parts share the seam column, so it is one
+	// connected, embedded open sheet) puts 96,000 of its 816,000 triangles
+	// in the oversize set (a triangle is oversize only when the largest
+	// extent exceeds 8x the mean, so at most ~1/8 can be): ~4.6e9 box tests
+	// at the reviewed commit (~3 s).  The sweep runs across the slivers (y),
+	// where the boxes barely overlap, and certifies.
+	{
+		const int H = 600, C = 80, R = 600;
+		std::vector<Point3> pts;
+		for( int j = 0; j <= R; ++j ) for( int i = 0; i <= H + C; ++i ) {
+			const double x = i <= H ? double( i ) : double( H ) + 4000.0 * double( i - H );
+			pts.push_back( Point3( x, double( j ), 0 ) );
+		}
+		std::vector<Point3> corners;
+		std::vector<unsigned int> weld;
+		corners.reserve( 6 * R * ( H + C ) );
+		weld.reserve( 6 * R * ( H + C ) );
+		const auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			corners.push_back( pts[a] ); corners.push_back( pts[b] ); corners.push_back( pts[c] );
+			weld.push_back( a ); weld.push_back( b ); weld.push_back( c );
+		};
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( H + C + 1 ) + i ); };
+		for( int j = 0; j < R; ++j ) for( int i = 0; i < H + C; ++i ) {
+			add( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		const auto t0 = std::chrono::steady_clock::now();
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+		std::cout << "    two-density sheet (" << corners.size() / 3 << " triangles): certified=" << cert.certified
+			<< " budgetRefusal=" << cert.budgetRefusal << " in " << ms << " ms" << std::endl;
+		Check( cert.certified && ms < 1500.0,
+			"DL-623 review (1b): a two-density sheet with 96,000 oversize slivers certifies promptly (sweep across the slivers)" );
+
+		// (1c) Boxes that overlap on EVERY axis keep any sweep quadratic: the
+		// fine sheet plus an accordion of 40,000 huge strips (4000 long,
+		// stacked 1e-3 apart) folded off the sheet's boundary edge and
+		// tilted 45 degrees about it, so every strip's box overlaps every
+		// other's in x, y and z.  Embedded and connected, but its 8e8
+		// overlapping oversize pairs are all exact pair tests at the
+		// reviewed commit (refused only when pairBudget ran out, ~1 min);
+		// the visit budget refuses it in bounded time.
+		{
+			std::vector<Point3> accCorners;
+			std::vector<unsigned int> accWeld;
+			for( std::size_t k = 0; k < corners.size(); k += 3 ) {
+				if( corners[k].x <= double( H ) && corners[k + 1].x <= double( H ) && corners[k + 2].x <= double( H ) ) {
+					for( int m = 0; m < 3; ++m ) { accCorners.push_back( corners[k + m] ); accWeld.push_back( weld[k + m] ); }
+				}
+			}
+			const int M = 20000;
+			const double c45 = std::sqrt( 0.5 );
+			// Strip vertex k at (u, y_k, w_k) in the frame of the shared edge
+			// x = H, z = 0: u along the strip, w the stacking direction.
+			const auto at = [&]( double u, double y, double w ) {
+				return Point3( double( H ) + c45 * ( u - w ), y, c45 * ( u + w ) );
+			};
+			const unsigned int base = (unsigned int)pts.size() + 16u;
+			const auto aId = [&]( int k ) { return k == 0 ? id( H, 0 ) : ( k == 1 ? id( H, 1 ) : base + 2u * (unsigned int)k ); };
+			const auto bId = [&]( int k ) { return base + 2u * (unsigned int)k + 1u; };
+			const auto yk = [&]( int k ) { return ( k & 1 ) ? 1.0 : 0.0; };
+			const auto wk = [&]( int k ) { return k <= 1 ? 0.0 : 1e-3 * double( k - 1 ); };
+			const auto addA = [&]( const Point3& p0, unsigned int i0, const Point3& p1, unsigned int i1, const Point3& p2, unsigned int i2 ) {
+				accCorners.push_back( p0 ); accCorners.push_back( p1 ); accCorners.push_back( p2 );
+				accWeld.push_back( i0 ); accWeld.push_back( i1 ); accWeld.push_back( i2 );
+			};
+			for( int k = 0; k < M; ++k ) {
+				// The sheet triangle (id(H-1,0), id(H,0), id(H,1)) uses the
+				// shared edge forward, a_0 -> a_1; strip 0's second triangle
+				// uses it backward (a_1 -> a_0), and consecutive strips share
+				// b_{k+1} - a_{k+1} the same consistent way.
+				const Point3 a0 = at( 0, yk( k ), wk( k ) ), a1 = at( 0, yk( k + 1 ), wk( k + 1 ) );
+				const Point3 b0 = at( 4000, yk( k ), wk( k ) ), b1 = at( 4000, yk( k + 1 ), wk( k + 1 ) );
+				addA( a0, aId( k ), b0, bId( k ), b1, bId( k + 1 ) );
+				addA( a0, aId( k ), b1, bId( k + 1 ), a1, aId( k + 1 ) );
+			}
+			const auto t2 = std::chrono::steady_clock::now();
+			const auto accCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( accCorners, nullptr, Scalar( 0 ), &accWeld, Scalar( 1e-6 ) );
+			const double accMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t2 ).count();
+			std::cout << "    sheet + tilted accordion (" << accCorners.size() / 3 << " triangles): certified=" << accCert.certified
+				<< " budgetRefusal=" << accCert.budgetRefusal << " topological=" << accCert.topologicalRefusal << " in " << accMs << " ms" << std::endl;
+			Check( !accCert.certified && accCert.budgetRefusal && accMs < 5000.0,
+				"DL-623 review (1c): 40,000 oversize strips whose boxes overlap on every axis are refused by the oversize visit budget in bounded time" );
+		}
+
+		// Control: the fine part alone certifies.
+		std::vector<Point3> fineCorners;
+		std::vector<unsigned int> fineWeld;
+		for( std::size_t k = 0; k < corners.size(); k += 3 ) {
+			if( corners[k].x <= double( H ) && corners[k + 1].x <= double( H ) && corners[k + 2].x <= double( H ) ) {
+				for( int m = 0; m < 3; ++m ) { fineCorners.push_back( corners[k + m] ); fineWeld.push_back( weld[k + m] ); }
+			}
+		}
+		const auto fineCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( fineCorners, nullptr, Scalar( 0 ), &fineWeld, Scalar( 1e-6 ) );
+		Check( fineCert.certified,
+			"DL-623 review (1b) control: the fine part alone certifies" );
+
+		// Control: a FEW huge triangles (the case the oversize path exists
+		// for) still certify -- the visit budget is linear in the mesh, not
+		// a cap on the oversize count.  Two coarse columns over three rows.
+		std::vector<Point3> fewCorners;
+		std::vector<unsigned int> fewWeld;
+		for( std::size_t k = 0; k < corners.size(); k += 3 ) {
+			bool keep = true;
+			for( int m = 0; m < 3; ++m ) {
+				const Point3& p = corners[k + m];
+				if( p.x > double( H ) + 8000.0 || ( p.x > double( H ) && p.y > 3.0 ) ) keep = false;
+			}
+			if( keep ) {
+				for( int m = 0; m < 3; ++m ) { fewCorners.push_back( corners[k + m] ); fewWeld.push_back( weld[k + m] ); }
+			}
+		}
+		const auto fewCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( fewCorners, nullptr, Scalar( 0 ), &fewWeld, Scalar( 1e-6 ) );
+		Check( fewCert.certified && fewCorners.size() / 3 == std::size_t( 2 * R * H + 12 ),
+			"DL-623 review (1b) control: a fine sheet with 12 oversize triangles still certifies" );
+	}
+
 	// (2) Non-graph 3D open-sheet proof reuse (`reusedOpenCertified`):
 	// Build a curved C-shell wrapping > 240 deg in theta and tilted in 3D so
 	// face normals change sign along all three coordinate axes (not a graph
@@ -2913,6 +3035,163 @@ static void TestDL623MeshCertificateReuseAndSubdivision()
 	}
 }
 
+//! DL-623 review: the deformation-reuse proof needs a RIGOROUS lower bound
+//! on lambda_min(A^T A).  Oracle: integer symmetric G = B^T B (entries
+//! below 2^30), whose lambda_min is bracketed EXACTLY by bisection on the
+//! signs of the leading minors of the integer matrix 2^m G - p I in 128-bit
+//! arithmetic; the helper sees G scaled by an exact power of two.  B has one
+//! huge row and two small ones, so G has one large and two small
+//! eigenvalues -- the regime where computed Sylvester minors lose their
+//! sign (relative error ~ tr(G)^2 / lambda).
+static bool ExactLeadingMinorsPositive( const __int128 M[3][3] )
+{
+	if( !( M[0][0] > 0 ) ) return false;
+	if( !( M[0][0] * M[1][1] - M[0][1] * M[0][1] > 0 ) ) return false;
+	const __int128 d = M[0][0] * ( M[1][1] * M[2][2] - M[1][2] * M[1][2] )
+		- M[0][1] * ( M[0][1] * M[2][2] - M[1][2] * M[0][2] )
+		+ M[0][2] * ( M[0][1] * M[1][2] - M[1][1] * M[0][2] );
+	return d > 0;
+}
+
+static void TestDL623RigorousEigenvalueBound()
+{
+	std::cout << "  [DL-623 review] Testing the rigorous lambda_min(A^T A) bound behind certificate reuse..." << std::endl;
+	unsigned int rng = 12345u;
+	const auto next = [&]() { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+	int tested = 0, over = 0, loose = 0;
+	double worstOver = 0, worstSlack = 0;
+	const int m = 12, s = 30;
+	for( int trial = 0; trial < 4000; ++trial ) {
+		long long w[3], u[3], z[3];
+		for( int k = 0; k < 3; ++k ) {
+			w[k] = (long long)( next() % 7 ) - 3;
+			u[k] = (long long)( next() % 7 ) - 3;
+			z[k] = (long long)( next() % 7 ) - 3;
+		}
+		const long long big = 2048 + (long long)( next() % 2048 );
+		const long long s1 = 1 + (long long)( next() % 4 ), s2 = 1 + (long long)( next() % 4 );
+		long long B[3][3], G[3][3];
+		for( int k = 0; k < 3; ++k ) { B[0][k] = big * w[k]; B[1][k] = s1 * u[k]; B[2][k] = s2 * z[k]; }
+		for( int r = 0; r < 3; ++r ) for( int c = 0; c < 3; ++c ) {
+			G[r][c] = 0;
+			for( int k = 0; k < 3; ++k ) G[r][c] += B[k][r] * B[k][c];
+		}
+		__int128 M[3][3];
+		const auto pd = [&]( long long p ) {
+			for( int r = 0; r < 3; ++r ) for( int c = 0; c < 3; ++c ) {
+				M[r][c] = ( (__int128)G[r][c] << m ) - ( r == c ? (__int128)p : 0 );
+			}
+			return ExactLeadingMinorsPositive( M );
+		};
+		if( !pd( 0 ) ) continue;		// singular B
+		long long lo = 0, hi = std::min( G[0][0], std::min( G[1][1], G[2][2] ) ) << m;
+		while( hi - lo > 1 ) {
+			const long long mid = ( lo + hi ) / 2;
+			if( pd( mid ) ) lo = mid; else hi = mid;
+		}
+		// Exact lambda_min(G) lies in (lo, lo + 1] / 2^m.
+		Scalar Gd[3][3];
+		for( int r = 0; r < 3; ++r ) for( int c = 0; c < 3; ++c ) Gd[r][c] = std::ldexp( Scalar( G[r][c] ), -s );
+		const Scalar L = GeometricUtilities::SymmetricMinEigenvalueLowerBound3( Gd );
+		const Scalar Lscaled = std::ldexp( L, s + m );	// exact
+		++tested;
+		if( Lscaled > Scalar( lo + 1 ) ) {
+			++over;
+			worstOver = std::max( worstOver, double( Lscaled ) / double( lo + 1 ) );
+		}
+		// Tightness: within 64 eps tr(G) of the exact value.
+		const double trG = double( G[0][0] + G[1][1] + G[2][2] );
+		const double slack = ( double( lo ) - double( Lscaled ) ) / ( std::numeric_limits<double>::epsilon() * trG * double( 1 << m ) );
+		worstSlack = std::max( worstSlack, slack );
+		if( slack > 64.0 ) ++loose;
+	}
+	std::cout << "    " << tested << " strongly anisotropic G: bound above exact lambda_min in " << over
+		<< " (worst ratio " << worstOver << "), worst slack " << worstSlack << " eps tr(G)" << std::endl;
+	Check( tested > 3000 && over == 0,
+		"DL-623 review: SymmetricMinEigenvalueLowerBound3 never exceeds the exact lambda_min (128-bit oracle)" );
+	Check( loose == 0,
+		"DL-623 review: SymmetricMinEigenvalueLowerBound3 is within 64 eps tr(G) of the exact lambda_min" );
+	// Non-positive-definite and non-finite inputs prove nothing.
+	{
+		const Scalar Gsing[3][3] = { { 1, 1, 0 }, { 1, 1, 0 }, { 0, 0, 1 } };
+		const Scalar Gneg[3][3] = { { 1, 2, 0 }, { 2, 1, 0 }, { 0, 0, 1 } };
+		const Scalar Gnan[3][3] = { { 1, 0, 0 }, { 0, std::numeric_limits<Scalar>::quiet_NaN(), 0 }, { 0, 0, 1 } };
+		Check( GeometricUtilities::SymmetricMinEigenvalueLowerBound3( Gsing ) == 0 &&
+			GeometricUtilities::SymmetricMinEigenvalueLowerBound3( Gneg ) == 0 &&
+			GeometricUtilities::SymmetricMinEigenvalueLowerBound3( Gnan ) == 0,
+			"DL-623 review: singular, indefinite and non-finite G give no positive bound" );
+	}
+
+	// End to end: a strongly anisotropic deformation (a near-collapse of two
+	// axes) of a certified non-graph shell must not reuse the certificate
+	// unless the fresh proof agrees; the reused verdict is compared with a
+	// fresh mesh built at the deformed positions.
+	{
+		const int Nu = 24, Nv = 16;
+		const double pi = 3.14159265358979323846;
+		VerticesListType v0;
+		NormalsListType n0;
+		TexCoordsListType c0;
+		IndexTriangleListType tris;
+		for( int j = 0; j <= Nv; ++j ) {
+			const double v = -0.8 + 1.6 * double( j ) / Nv;
+			for( int i = 0; i <= Nu; ++i ) {
+				const double uu = -0.75 * pi + 1.5 * pi * double( i ) / Nu;
+				const double r = 1.0 + 0.25 * std::cos( v * pi * 0.5 );
+				v0.push_back( Point3( r * std::cos( uu ), r * std::sin( uu ) + 0.35 * std::sin( 2.0 * v ), v + 0.45 * std::sin( uu ) ) );
+				n0.push_back( Vector3( 0, 0, 1 ) );
+				c0.push_back( Point2( 0, 0 ) );
+			}
+		}
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( Nu + 1 ) + i ); };
+		for( int j = 0; j < Nv; ++j ) for( int i = 0; i < Nu; ++i ) {
+			IndexedTriangle a;
+			a.iVertices[0] = a.iNormals[0] = a.iCoords[0] = id( i, j );
+			a.iVertices[1] = a.iNormals[1] = a.iCoords[1] = id( i + 1, j );
+			a.iVertices[2] = a.iNormals[2] = a.iCoords[2] = id( i + 1, j + 1 );
+			tris.push_back( a );
+			IndexedTriangle b;
+			b.iVertices[0] = b.iNormals[0] = b.iCoords[0] = id( i, j );
+			b.iVertices[1] = b.iNormals[1] = b.iCoords[1] = id( i + 1, j + 1 );
+			b.iVertices[2] = b.iNormals[2] = b.iCoords[2] = id( i, j + 1 );
+			tris.push_back( b );
+		}
+		const auto build = [&]( const VerticesListType& v ) {
+			auto* mm = new TriangleMeshGeometryIndexed( true, true );
+			mm->addref();
+			mm->BeginIndexedTriangles();
+			mm->AddVertices( v );
+			mm->AddNormals( n0 );
+			mm->AddTexCoords( c0 );
+			mm->AddIndexedTriangles( tris );
+			mm->DoneIndexedTriangles();
+			return mm;
+		};
+		bool allAgree = true;
+		for( const double squash : { 1e-2, 1e-4, 1e-6 } ) {
+			auto* mm = build( v0 );
+			// Squash two axes of a rotated frame: A = R diag(1, squash, squash) R^T.
+			VerticesListType vs = v0;
+			const double ca = std::cos( 0.7 ), sa = std::sin( 0.7 );
+			for( Point3& p : vs ) {
+				const double x1 = ca * p.x - sa * p.y, y1 = sa * p.x + ca * p.y;
+				const double x2 = x1, y2 = squash * y1, z2 = squash * p.z;
+				p = Point3( ca * x2 + sa * y2, -sa * x2 + ca * y2, z2 );
+			}
+			mm->UpdateVertices( vs, NormalsListType() );
+			auto* fresh = build( vs );
+			const bool agree = mm->IsProvablyOpenSheet() == fresh->IsProvablyOpenSheet();
+			std::cout << "    squash " << squash << ": reused/updated open=" << mm->IsProvablyOpenSheet()
+				<< " (audits " << mm->OpenCertificateAudits() << "), fresh open=" << fresh->IsProvablyOpenSheet() << std::endl;
+			allAgree = allAgree && agree;
+			mm->release();
+			fresh->release();
+		}
+		Check( allAgree,
+			"DL-623 review: a strongly anisotropic deformation never carries an open certificate a fresh proof refuses" );
+	}
+}
+
 int main()
 {
 	std::cout << "=== MeshInteriorSignalTest (DL-31, DL-143, DL-136, DL-150, DL-197) ===" << std::endl;
@@ -2941,6 +3220,7 @@ int main()
 	TestPatchSetCertification();
 	TestDL620ReviewFindings();
 	TestDL623MeshCertificateReuseAndSubdivision();
+	TestDL623RigorousEigenvalueBound();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

@@ -527,7 +527,12 @@ static std::string TempPath( const char* tag, const char* ext )
 	return Fmt( "/tmp/dl459_%s_%d.%s", tag, static_cast<int>( ::getpid() ), ext );
 }
 
-static bool RenderOnce( const std::string& sceneText, double& mean )
+//! Renders `sceneText` once.  By default single-threaded (deterministic,
+//! DL-625) with the next seed of the g_seedBase sequence; `multiThreaded`
+//! keeps the rasterizer's own worker count, `fixedSeed` replaces the
+//! sequence, and `outPixels` receives the captured pixels.
+static bool RenderOnce( const std::string& sceneText, double& mean, bool multiThreaded = false,
+	const unsigned int* fixedSeed = nullptr, std::vector<RISEColor>* outPixels = nullptr )
 {
 	const std::string path = TempPath( "render", "RISEscene" );
 	{ std::ofstream ofs( path ); ofs << sceneText; }
@@ -539,10 +544,12 @@ static bool RenderOnce( const std::string& sceneText, double& mean )
 			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
 			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
-			if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
-				pRas->ForTest_SetThreadCountOverride( 1 );
+			if( !multiThreaded ) {
+				if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
+					pRas->ForTest_SetThreadCountOverride( 1 );
+				}
 			}
-			const unsigned int renderSeed = g_seedBase + g_renderIndex++;
+			const unsigned int renderSeed = fixedSeed ? *fixedSeed : g_seedBase + g_renderIndex++;
 			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( renderSeed, 0x459u ) );
 			std::srand( renderSeed );
 			GlobalRNG().Reseed( renderSeed );
@@ -556,6 +563,7 @@ static bool RenderOnce( const std::string& sceneText, double& mean )
 					sum += v;
 				}
 				mean = sum / double( pCap->pixels.size() );
+				if( outPixels ) *outPixels = pCap->pixels;
 			}
 			safe_release( pCap );
 		}
@@ -702,7 +710,7 @@ static bool Agree( const Stat& a, const Stat& b )
 	return std::fabs( a.mean - b.mean ) <= 3 * se + 1e-12;
 }
 
-static void Report( const char* label, const Stat& s ) { std::cout << "    " << label << " " << s.mean << " +/- " << s.se << "\n"; }
+static void Report( const char* label, const Stat& s ) { std::printf( "    %s %.9f +/- %.3g\n", label, s.mean, s.se ); }
 
 static void RenderCase( const char* label, const std::string& emitter, const std::string* reference, int repeatsOverride = 0, const double* exactOracle = nullptr )
 {
@@ -717,12 +725,22 @@ static void RenderCase( const char* label, const std::string& emitter, const std
 	Check( Agree( pt, vc ), std::string( "PT vs VCM: " ) + label );
 	if( exactOracle ) {
 		const Stat ex{ *exactOracle, 0.0, true };
-		std::cout << "    exact quadrature " << *exactOracle << "\n";
+		std::printf( "    exact quadrature %.12f\n", *exactOracle );
 		Check( Agree( pt, ex ), std::string( "PT vs exact quadrature: " ) + label );
 		Check( Agree( bd, ex ), std::string( "BDPT vs exact quadrature: " ) + label );
 		Check( Agree( vc, ex ), std::string( "VCM vs exact quadrature: " ) + label );
+		// DL-625 review: what these 3-sigma gates can see.  The renders are
+		// deterministic for a seed base, so each gate is ONE draw: a bias b
+		// in an estimator with standard error se is caught with probability
+		// Phi( b / se - 3 ), i.e. reliably (95 %) only from b >= 4.64 se.
+		const double z95 = 3.0 + 1.645;
+		std::cout << "    bias caught with 95 % power vs exact: PT >= " << z95 * pt.se << ", BDPT >= " << z95 * bd.se
+			<< ", VCM >= " << z95 * vc.se << " (PT vs VCM >= " << z95 * std::sqrt( pt.se * pt.se + vc.se * vc.se ) << ")\n";
 	}
-	if( reference ) {
+	// With an exact oracle a second noisy reference adds nothing the exact
+	// checks do not already gate (DL-625 review: it cost a quarter of the
+	// trapezoid case's renders).
+	if( reference && !exactOracle ) {
 		const Stat ref = RenderN( RenderScene( *reference, RasPT() ), n );
 		Report( "mesh reference PT", ref );
 		Check( ref.ok && Agree( pt, ref ), std::string( "PT vs mesh reference: " ) + label );
@@ -742,9 +760,13 @@ static void TestRenders( bool trapOnly = false )
 		// SE below ~2.5e-6 (< 0.5x the true 4-repeat SE ~7.6e-6).  Use 12
 		// salted repeats (11 df per estimator) and also check PT, BDPT, and
 		// VCM against independent 4D Gauss-Legendre quadrature (0.10372060).
-		const std::string mesh = MeshChunk( { kTrapezoid[0], kTrapezoid[1], kTrapezoid[2], kTrapezoid[3] }, { 0, 1, 2, 0, 2, 3 } );
+		// Renders are single-threaded and deterministic per seed base, so at
+		// the default base each gate is one fixed realization; the printed
+		// 95 %-power bias floors say what it can and cannot catch (VCM vs
+		// exact ~1.6e-5 at n = 12).  The mesh-luminary reference the case
+		// used before the exact oracle existed is no longer rendered.
 		const double exact = TrapezoidSceneExactQuadrature();
-		RenderCase( "DL-460 trapezoid clippedplane luminary", QuadChunk( kTrapezoid ), &mesh, std::max( g_repeats, g_trapRepeats ), &exact );
+		RenderCase( "DL-460 trapezoid clippedplane luminary", QuadChunk( kTrapezoid ), nullptr, std::max( g_repeats, g_trapRepeats ), &exact );
 	}
 	if( trapOnly ) return;
 	{
@@ -759,6 +781,51 @@ static void TestRenders( bool trapOnly = false )
 		const std::string file = TempPath( "dome", "bezier" );
 		RenderCase( "DL-459 curved Bezier dome luminary", BezierChunk( { d }, file ), nullptr );
 		std::remove( file.c_str() );
+	}
+}
+
+//! D (DL-625 review): a MULTI-threaded pixel-based render seeded the same
+//! way twice must give the same pixels.  Each RasterizeBlockDispatcher
+//! worker used to seed its RandomNumberGenerator from libc rand(), called
+//! concurrently by every worker (a data race), and which worker -- hence
+//! which seed -- took which tile depended on scheduling; the generator now
+//! reseeds per tile, keyed on the tile's pixel corner (the default block
+//! sequence is shuffled from std::random_device), from one value read on
+//! the dispatching thread.  One discarded warm-up render first: the first
+//! render in a process also draws libc rand() for one-time statics, so it
+//! sees a different libc state after the same std::srand (not a race).
+static void TestMultiThreadDeterminism()
+{
+	std::cout << "D: multi-threaded render determinism\n";
+	const std::string ras = "pathtracing_pel_rasterizer\n{\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
+	{
+		const unsigned int seed = 777u;
+		double mean = 0;
+		RenderOnce( RenderScene( QuadChunk( kTrapezoid ), ras ), mean, true, &seed );
+	}
+	for( const int res : { 24, 96 } ) {
+		std::string scene = RenderScene( QuadChunk( kTrapezoid ), ras );
+		const std::string from = "width 24\n\theight 24";
+		scene.replace( scene.find( from ), from.size(), Fmt( "width %d\n\theight %d", res, res ) );
+		std::vector<RISEColor> first;
+		bool ok = true, same = true;
+		for( int r = 0; r < 6 && ok; ++r ) {
+			const unsigned int seed = 777u;
+			std::vector<RISEColor> px;
+			double mean = 0;
+			ok = RenderOnce( scene, mean, true, &seed, &px );
+			if( !ok ) break;
+			if( r == 0 ) {
+				first = px;
+				continue;
+			}
+			for( std::size_t i = 0; i < px.size() && same; ++i ) {
+				same = px[i].base.r == first[i].base.r && px[i].base.g == first[i].base.g &&
+					px[i].base.b == first[i].base.b && px[i].a == first[i].a;
+			}
+		}
+		std::cout << "    " << res << "x" << res << ": 6 multi-threaded renders at one seed " << ( same ? "bit-identical" : "DIFFER" ) << "\n";
+		Check( ok && same, Fmt( "D: multi-threaded %dx%d render is a function of the seed", res, res ) );
 	}
 }
 
@@ -838,6 +905,7 @@ int main( int argc, char** argv )
 	if( only == "all" || only == "B" ) TestUniformity();
 	if( only == "all" || only == "C" ) TestRenders( false );
 	if( only == "C_trap" ) TestRenders( true );
+	if( only == "all" || only == "D" ) TestMultiThreadDeterminism();
 	if( only == "all" || only == "H" ) PrintHashes();
 	if( only == "T" ) PrintSdfCost();
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";

@@ -18,8 +18,16 @@
 //              DL-150 regime (dense model, one stray far vertex), where
 //              every grid vertex is a separate representative barely more
 //              than eps from its neighbours.
+//   twodensity flat sheet whose last N/9 columns are 4000x wider than the
+//              rest, sharing the seam column (a terrain LOD seam): about
+//              1/9 of the triangles are Step-4 "oversize" (DL-623 review;
+//              at most ~1/8 can be, since a triangle is oversize only
+//              when the largest extent exceeds 8x the mean): the direct
+//              certificate row shows the oversize sweep's bounded refusal.
 // Every fixture also reports GeometricUtilities::WeldVertexPositions alone
-// on its vertex list (weld).
+// on its vertex list (weld), and GeometricUtilities::IsEmbeddedOpenOrientedSurface
+// called directly on its corners (cert; the mesh may decide by a cheaper
+// planar or graph proof and never reach it).
 // and every row reports the mean and sample standard deviation over `reps`
 // fresh meshes of the WHOLE call: DoneIndexedTriangles (build), an
 // UpdateVertices with identical positions (same), and two successive
@@ -64,6 +72,10 @@ namespace
 				// passes through the origin at s = 0 and s = pi.
 				const double s = -0.3 + ( pi + 0.6 ) * i / N;
 				v.push_back( Point3( std::sin( s ), y, 0.5 * std::sin( 2 * s ) ) );
+			} else if( kind == "twodensity" ) {
+				const int h = N - N / 9;
+				const double xi = i <= h ? double( i ) : double( h ) + 4000.0 * double( i - h );
+				v.push_back( Point3( -1 + 2.0 * xi / N, y, 0 ) );
 			} else {
 				v.push_back( Point3( x, y, kind == "planar" ? 0 : 0.2 * ( x * x + y * y ) ) );
 			}
@@ -96,12 +108,13 @@ int main( int argc, char** argv )
 	const int N = argc > 1 ? std::atoi( argv[1] ) : 700;
 	const int reps = argc > 2 ? std::atoi( argv[2] ) : 5;
 	const std::string only = argc > 3 ? argv[3] : "all";
-	const char* kinds[] = { "planar", "curved", "closedish", "closed", "fold", "dense" };
+	const char* kinds[] = { "planar", "curved", "closedish", "closed", "fold", "dense", "twodensity" };
 	for( const char* kind : kinds ) {
 		if( only != "all" && only != kind ) continue;
 		VerticesListType v0; NormalsListType n; TexCoordsListType c; IndexTriangleListType t;
 		BuildFixture( kind, N, v0, n, c, t );
-		Stat build, same, def1, def2, weld;
+		Stat build, same, def1, def2, weld, cert;
+		bool certified = false, budgetRefusal = false;
 		const size_t moved = kind == std::string( "dense" ) ? v0.size() - 1 : v0.size();
 		bool open = false, wt = false, open1 = false, wt1 = false, open2 = false, wt2 = false;
 		unsigned long long audits[3] = { 0, 0, 0 };
@@ -132,6 +145,19 @@ int main( int argc, char** argv )
 				const auto w1 = std::chrono::steady_clock::now();
 				weld.add( Ms( w0, w1 ) );
 			}
+			{
+				std::vector<Point3> corners;
+				corners.reserve( 3 * t.size() );
+				for( const IndexedTriangle& tri : t ) {
+					for( int k = 0; k < 3; ++k ) corners.push_back( v0[tri.iVertices[k]] );
+				}
+				const auto c0 = std::chrono::steady_clock::now();
+				const GeometricUtilities::OpenSurfaceCertificate oc = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners );
+				const auto c1 = std::chrono::steady_clock::now();
+				cert.add( Ms( c0, c1 ) );
+				certified = oc.certified;
+				budgetRefusal = oc.budgetRefusal;
+			}
 			m->release();
 		}
 		std::cout << kind << " tris=" << t.size() << " reps=" << reps
@@ -142,6 +168,8 @@ int main( int argc, char** argv )
 			<< "\n  def1  ms " << def1.mean() << " +- " << def1.sd()
 			<< "\n  def2  ms " << def2.mean() << " +- " << def2.sd() << "\n";
 		if( !weld.v.empty() ) std::cout << "  weld  ms " << weld.mean() << " +- " << weld.sd() << " (WeldVertexPositions alone)\n";
+		if( !cert.v.empty() ) std::cout << "  cert  ms " << cert.mean() << " +- " << cert.sd()
+			<< " (IsEmbeddedOpenOrientedSurface direct: certified=" << certified << " budgetRefusal=" << budgetRefusal << ")\n";
 	}
 	struct rusage ru; getrusage( RUSAGE_SELF, &ru );
 #ifdef __APPLE__

@@ -1929,6 +1929,78 @@ bool GeometricUtilities::CheckOpenSurfaceStep4Pair(
 	return PairMeetsOnlyInSharedFaces( Pi, Ii, Pj, Ij, epsSq );
 }
 
+namespace
+{
+	//! Floating-point Cholesky of the symmetric 3x3 `B` (upper triangle):
+	//! TRUE iff every computed pivot is positive.
+	bool Cholesky3Succeeds( const Scalar B[3][3] )
+	{
+		const Scalar d0 = B[0][0];
+		if( !( d0 > Scalar( 0 ) ) ) return false;
+		const Scalar l00 = std::sqrt( d0 );
+		const Scalar l01 = B[0][1] / l00;
+		const Scalar l02 = B[0][2] / l00;
+		const Scalar d1 = B[1][1] - l01 * l01;
+		if( !( d1 > Scalar( 0 ) ) ) return false;
+		const Scalar l11 = std::sqrt( d1 );
+		const Scalar l12 = ( B[1][2] - l01 * l02 ) / l11;
+		const Scalar d2 = B[2][2] - l02 * l02 - l12 * l12;
+		return d2 > Scalar( 0 );
+	}
+}
+
+//! The margin.  If floating-point Cholesky of a symmetric n x n `A`
+//! completes, then L L^T = A + E with |E| <= gamma_{n+1} |L| |L^T|
+//! entrywise, and || |L| |L^T| ||_2 <= ||L||_F^2 = tr(A + E), so
+//! ||E||_2 <= gamma/(1 - gamma) tr(A) and lambda_min(A) >= -||E||_2.  Here
+//! n = 3; every elementary operation is charged 2u (u = eps/2: a quotient
+//! may be computed as a product with a reciprocal under fast-math, and
+//! contraction or reassociation of the two-term sums only tightens the
+//! sum's own gamma bound), so gamma_4 ~ 8u = 4 eps.  The tested matrix is
+//! B = fl(fl(G_ii - t) - c) on the diagonal: two more roundings of at most
+//! eps tr(G) together.  With c = 8 eps tr(G) a successful Cholesky gives
+//! lambda_min(G - t I) >= c - 4 eps tr(G) - eps tr(G) > 0, i.e.
+//! lambda_min(G) > t.  Bisection over t keeps the largest proved t.
+Scalar GeometricUtilities::SymmetricMinEigenvalueLowerBound3( const Scalar G[3][3] )
+{
+	for( int r = 0; r < 3; ++r ) {
+		for( int c = r; c < 3; ++c ) {
+			if( !std::isfinite( G[r][c] ) ) return Scalar( 0 );
+		}
+	}
+	const Scalar trG = G[0][0] + G[1][1] + G[2][2];
+	const Scalar minDiag = std::min( G[0][0], std::min( G[1][1], G[2][2] ) );
+	// Normal range with room for the squares inside the factorization: the
+	// backward-error bound above ignores underflow.
+	if( !( minDiag > Scalar( 0 ) ) || !( trG > Scalar( 1e-140 ) ) || !( trG < Scalar( 1e140 ) ) ) {
+		return Scalar( 0 );
+	}
+	const Scalar margin = Scalar( 8 ) * std::numeric_limits<Scalar>::epsilon() * trG;
+	const auto provedAbove = [&]( const Scalar t ) -> bool {
+		Scalar B[3][3];
+		for( int r = 0; r < 3; ++r ) {
+			for( int c = 0; c < 3; ++c ) {
+				B[r][c] = G[r][c];
+			}
+			B[r][r] = ( G[r][r] - t ) - margin;
+		}
+		return Cholesky3Succeeds( B );
+	};
+	if( !provedAbove( Scalar( 0 ) ) ) {
+		return Scalar( 0 );
+	}
+	Scalar lo = Scalar( 0 ), hi = minDiag;	// lambda_min <= min diagonal
+	for( int it = 0; it < 48; ++it ) {
+		const Scalar mid = Scalar( 0.5 ) * ( lo + hi );
+		if( provedAbove( mid ) ) {
+			lo = mid;
+		} else {
+			hi = mid;
+		}
+	}
+	return lo;
+}
+
 GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOrientedSurface(
 	const std::vector<Point3>& corners,
 	std::vector<unsigned int>* outWeldedId,
@@ -2490,17 +2562,81 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		// DL-623 (1): test oversize triangles (those spanning > 64 fine cells)
 		// without coarsening the grid for the rest of the mesh.
 		if( !oversizeTris.empty() ) {
-			// 1. Oversize vs. oversize pairs.
+			// 1. Oversize vs. oversize pairs, by a sort-and-sweep on the
+			// boxes' low corner along one axis (DL-623 review).  Nothing caps
+			// how many triangles are oversize (up to ~1/8 of a mesh mixing
+			// two densities, e.g. a terrain LOD seam), and the earlier
+			// all-pairs scan box-tested every pair (~7e9 tests for 120k
+			// oversize triangles).  The sweep axis is the one along which
+			// the boxes overlap least -- the sum of box extents over the
+			// set's span, which estimates how many boxes cover a point -- so
+			// long slivers lying side by side are swept across, not along.
+			// Two linear budgets bound the work, and a set that exceeds
+			// either is refused (sound: a refusal never certifies): EVERY
+			// visited pair, overlapping or not, is charged to
+			// `oversizeVisitBudget` (a cheap box test each), and every pair
+			// whose boxes overlap -- an exact triangle-pair test each, ~100x
+			// dearer -- to `oversizeTestBudget` as well as to `pairBudget`.
+			// Boxes that overlap on every axis keep any sweep quadratic; a
+			// side-by-side sliver strip overlaps ~6 neighbours per triangle.
+			// The order is a pure function of the boxes (ties by triangle
+			// index), so the counts -- and with them the refusal point -- do
+			// not depend on input order.
+			int axis = 0;
+			{
+				Scalar extSum[3] = { 0, 0, 0 };
+				Point3 oLo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+				Point3 oHi( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
+				for( const unsigned int t : oversizeTris ) {
+					extSum[0] += hi[t].x - lo[t].x;
+					extSum[1] += hi[t].y - lo[t].y;
+					extSum[2] += hi[t].z - lo[t].z;
+					oLo.x = std::min( oLo.x, lo[t].x ); oLo.y = std::min( oLo.y, lo[t].y ); oLo.z = std::min( oLo.z, lo[t].z );
+					oHi.x = std::max( oHi.x, hi[t].x ); oHi.y = std::max( oHi.y, hi[t].y ); oHi.z = std::max( oHi.z, hi[t].z );
+				}
+				const Scalar spanA[3] = { oHi.x - oLo.x, oHi.y - oLo.y, oHi.z - oLo.z };
+				Scalar best = RISE_INFINITY;
+				for( int a = 0; a < 3; ++a ) {
+					// Boxes are padded, so every span is positive.
+					const Scalar cover = extSum[a] / spanA[a];
+					if( cover < best ) {
+						best = cover;
+						axis = a;
+					}
+				}
+			}
+			const auto axLo = [&]( const unsigned int t ) -> Scalar {
+				return axis == 0 ? lo[t].x : ( axis == 1 ? lo[t].y : lo[t].z );
+			};
+			const auto axHi = [&]( const unsigned int t ) -> Scalar {
+				return axis == 0 ? hi[t].x : ( axis == 1 ? hi[t].y : hi[t].z );
+			};
+			std::sort( oversizeTris.begin(), oversizeTris.end(), [&]( const unsigned int a, const unsigned int b ) {
+				const Scalar la = axLo( a ), lb = axLo( b );
+				return la < lb || ( la == lb && a < b );
+			} );
+			const double oversizeVisitBudget = 64.0 * double( nTris ) + 65536.0;
+			const double oversizeTestBudget = 4.0 * double( nTris ) + 65536.0;
+			double oversizeVisits = 0;
+			double oversizeTests = 0;
 			for( std::size_t a = 0; a < oversizeTris.size(); ++a ) {
 				const unsigned int i = oversizeTris[a];
+				const Scalar iHi = axHi( i );
 				for( std::size_t b = a + 1; b < oversizeTris.size(); ++b ) {
 					const unsigned int j = oversizeTris[b];
+					if( axLo( j ) > iHi ) {
+						break;	// sorted along `axis`: no later box overlaps i there
+					}
+					if( ++oversizeVisits > oversizeVisitBudget ) {
+						result.budgetRefusal = true;
+						return result;
+					}
 					if( lo[i].x > hi[j].x || lo[j].x > hi[i].x ||
 						lo[i].y > hi[j].y || lo[j].y > hi[i].y ||
 						lo[i].z > hi[j].z || lo[j].z > hi[i].z ) {
 						continue;
 					}
-					if( ++pairs > pairBudget ) {
+					if( ++oversizeTests > oversizeTestBudget || ++pairs > pairBudget ) {
 						result.budgetRefusal = true;
 						return result;
 					}
@@ -3290,10 +3426,22 @@ namespace
 	//! radial seams or one open chain with two boundary radial sides).
 	//! Rejects tip-to-tip double cones, closed cones with extra flaps, and
 	//! multi-fan pinch vertices.
+	//!
+	//! Cost (DL-623 review): O(I log I) for I incidences (at most 4 per
+	//! patch) -- the sort -- and linear after it: a side id is the
+	//! `inSide` of exactly one incidence, so the wedge a matched seam
+	//! leads to is found through the side-id -> incidence table, not by
+	//! scanning the position's group (which was quadratic in the number of
+	//! patches meeting at one point: a fan of 16k wedges at a pole is ~1e9
+	//! comparisons).  When `work` is given, the incidences are charged to
+	//! it up front and an exhausted budget returns FALSE with
+	//! `work->exhausted` set, so the caller can tell a refusal for budget
+	//! from a non-manifold vertex.
 	bool CheckManifoldVertexLinks(
 		const std::vector<BezierPatch>& patches,
 		const std::vector<int>& collapsedSide,
-		const std::vector<int>& match )
+		const std::vector<int>& match,
+		PatchCertWork* work = nullptr )
 	{
 		struct Incidence
 		{
@@ -3301,6 +3449,9 @@ namespace
 			unsigned int	inSide;		//!< non-collapsed side entering `pos` around patch boundary
 			unsigned int	outSide;	//!< non-collapsed side leaving `pos` around patch boundary
 		};
+		if( work && !work->Spend( patches.size() * 4 ) ) {
+			return false;
+		}
 		std::vector<Incidence> inc;
 		inc.reserve( patches.size() * 4 );
 		for( std::size_t p = 0; p < patches.size(); ++p ) {
@@ -3321,41 +3472,45 @@ namespace
 			if( PatchPointLess( b.pos, a.pos ) ) return false;
 			return a.inSide < b.inSide;
 		} );
+		// Side id -> the (unique) incidence it enters.
+		std::vector<unsigned int> incOfInSide( patches.size() * 4, 0xFFFFFFFFu );
+		for( std::size_t a = 0; a < inc.size(); ++a ) {
+			incOfInSide[inc[a].inSide] = static_cast<unsigned int>( a );
+		}
+		std::vector<int> next( inc.size(), -1 );
+		std::vector<int> inDeg( inc.size(), 0 );
 		for( std::size_t i = 0; i < inc.size(); ) {
 			std::size_t j = i + 1;
 			while( j < inc.size() && PatchPointEqual( inc[j].pos, inc[i].pos ) ) {
 				++j;
 			}
 			const std::size_t M = j - i;
-			std::vector<int> next( M, -1 );
-			std::vector<int> inDeg( M, 0 );
 			std::size_t edges = 0;
-			for( std::size_t a = 0; a < M; ++a ) {
-				const int m = match[inc[i + a].outSide];
+			for( std::size_t a = i; a < j; ++a ) {
+				const int m = match[inc[a].outSide];
 				if( m < 0 ) {
 					continue;
 				}
-				for( std::size_t b = 0; b < M; ++b ) {
-					if( inc[i + b].inSide == static_cast<unsigned int>( m ) ) {
-						next[a] = static_cast<int>( b );
-						++inDeg[b];
-						++edges;
-						break;
-					}
+				const unsigned int b = incOfInSide[static_cast<std::size_t>( m )];
+				if( b == 0xFFFFFFFFu || b < i || b >= j ) {
+					continue;	// the matched seam enters a different position
 				}
+				next[a] = static_cast<int>( b );
+				++inDeg[b];
+				++edges;
 			}
 			if( edges == M ) {
-				std::size_t cur = 0, visited = 0;
+				std::size_t cur = i, visited = 0;
 				do {
 					cur = static_cast<std::size_t>( next[cur] );
 					++visited;
-				} while( cur != 0 && visited <= M );
+				} while( cur != i && visited <= M );
 				if( visited != M ) {
 					return false;
 				}
 			} else if( edges + 1 == M ) {
 				int start = -1;
-				for( std::size_t a = 0; a < M; ++a ) {
+				for( std::size_t a = i; a < j; ++a ) {
 					if( inDeg[a] == 0 ) {
 						start = static_cast<int>( a );
 						break;
@@ -3396,6 +3551,12 @@ namespace
 			r.reason = "patch set too large to certify at this sub-patch grid";
 			return r;
 		}
+
+		// One work budget for the whole attempt: the vertex-link check of
+		// the topology step charges its incidences to it (DL-623 review),
+		// the embedding steps below their candidates.
+		PatchCertWork work;
+		work.remaining = workBudget;
 
 		// Finite control points; global box and scale.
 		Point3 lo = patches[0].c[0].pts[0], hi = lo;
@@ -3493,7 +3654,12 @@ namespace
 			}
 			i = j;
 		}
-		if( !CheckManifoldVertexLinks( patches, collapsedSide, match ) ) {
+		if( !CheckManifoldVertexLinks( patches, collapsedSide, match, &work ) ) {
+			if( work.exhausted ) {
+				r.reason = "certification work budget exhausted";
+				r.workUsed = workBudget;
+				return r;
+			}
 			r.reason = "non-manifold pole or pinch vertex";
 			return r;
 		}
@@ -3700,8 +3866,6 @@ namespace
 		// box spanning more than kMaxCellsPerBox cells is tested against
 		// every sub-patch instead.  Every candidate costs one work unit, so
 		// a dense set exhausts the budget and is refused.
-		PatchCertWork work;
-		work.remaining = workBudget;
 		const std::size_t nSubs = subs.size();
 		std::vector<Scalar> extents( nSubs );
 		for( std::size_t i = 0; i < nSubs; ++i ) {
@@ -4043,7 +4207,14 @@ namespace
 	//! pole/pinch vertex).
 	int NetSetOpenness( const std::vector<BezierPatch>& patches )
 	{
-		if( patches.empty() ) {
+		// DL-623 review: a cap.  Everything below is O(P log P) for P
+		// patches (two sorts, then linear scans; the vertex-link check
+		// charges its <= 4 P incidences to the same work budget the
+		// certifier uses), so the cap is that budget: a set with more
+		// incidences than kPatchCertWorkBudget is undecidable (-1), never
+		// guessed.  It also keeps the 32-bit side ids (patch * 4 + side)
+		// far from overflow.
+		if( patches.empty() || patches.size() > kPatchCertWorkBudget / 4 ) {
 			return -1;
 		}
 		for( const BezierPatch& p : patches ) {
@@ -4110,7 +4281,9 @@ namespace
 			}
 			i = j;
 		}
-		if( !CheckManifoldVertexLinks( patches, collapsedSide, match ) ) {
+		PatchCertWork work;
+		work.remaining = kPatchCertWorkBudget;
+		if( !CheckManifoldVertexLinks( patches, collapsedSide, match, &work ) ) {
 			return -1;
 		}
 		return anyFree ? 1 : 0;
