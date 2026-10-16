@@ -22,7 +22,12 @@
 //   E. a first openness query from many threads at once builds the
 //      topology once (finding 13).
 //
-//  Red-proof: every section but the controls fails on d47c91cac.
+//  Red-proof: against d47c91cac 34 passed, 12 failed (sections B-E).
+//  Section A is a PIN, green on d47c91cac too: an analytic leaf
+//  publishes its exit, `Object::IntersectRay` sets `hasBoundaryRange2`,
+//  and `RecoverContainedOperand` returns before any completion -- the
+//  explicit gate makes that structural.  B's last row pins the one
+//  rendered difference DL-621 makes on the shipped CSG scenes.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -281,6 +286,20 @@ static void TestNoAdvancePastSingleLobe()
 		c.Reset();
 		const bool occ = c.csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true );
 		Check( occ && c.gA->casts == 1 && c.gB->casts == 1, "B: subtraction shadow pre-pass costs no re-cast" );
+	}
+	// The one place the shipped CSG scenes render differently from
+	// pre-DL-621 master (irradiance_cache_torture, csg_comprehensive): a
+	// ray that STARTS inside the subtracted B, leaves B, and only then
+	// meets A.  The composite there is A alone; the pre-DL-621 algebra
+	// reported a miss (a hole through A wherever B protrudes from it).
+	{
+		CountedCsg c;
+		MakeCountedCsg( c, CSG_SUBTRACTION, Point3( 0, 0, -2 ), Point3( 0, 0, 10 ) );
+		const RayIntersection h = CastObj( *c.csg, o, down );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range - ( 12 - std::sqrt( 1 - 0.0125 ) ) ) < 1e-6,
+			"B: a ray leaving the subtracted B before it meets A hits A" );
+		Check( c.csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true ),
+			"B: ... and is occluded by A" );
 	}
 }
 
