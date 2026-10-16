@@ -75,7 +75,14 @@ namespace RISE
 			// order the (shuffled) sequence hands the tiles out, and no worker touches
 			// libc state.  The generator stays per worker (one MT state, the
 			// RuntimeContext keeps a reference to it); a reseed is ~600 word
-			// operations per tile.
+			// operations per tile.  Scope of the claim: a render with the
+			// same std::srand and the SAME worker count reproduces; a one-
+			// thread render takes PixelBasedRasterizerHelper's SP path
+			// (GlobalRNG(), no tiles seeded here) and differs from an
+			// N-thread one, and tile size (hence tile corners) depends on
+			// the worker count.  Worker-side generators must not read libc
+			// either (ThreadLocalSeed), or the stream position after a pass
+			// would depend on how many workers ran.
 			const unsigned int tileSeedBase;
 
 			unsigned int TileSeed( const Rect& tile ) const

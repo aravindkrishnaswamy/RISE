@@ -80,7 +80,7 @@ namespace RISE
 				owns( preferred == 0 )
 			{
 				if( owns ) {
-					RandomNumberGenerator* rng = new( rngStorage ) RandomNumberGenerator();
+					RandomNumberGenerator* rng = new( rngStorage ) RandomNumberGenerator( ThreadLocalSeed() );
 					p = new( samplerStorage ) IndependentSampler( *rng );
 				}
 			}

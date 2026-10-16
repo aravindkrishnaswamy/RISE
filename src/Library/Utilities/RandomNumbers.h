@@ -36,14 +36,18 @@ namespace RISE
 	//! (RasterizeBlockDispatcher, the VCM light pass, AOV passes).
 	extern unsigned int LockedLibcRand();
 
-	//! A cheap, race-free seed for a generator constructed per call on a
-	//! render worker (fallback samplers in hot integrator code): a
-	//! thread_local splitmix64 stream seeded ONCE per thread from
-	//! LockedLibcRand().  No lock after the thread's first call, unlike the
-	//! default constructor's LockedLibcRand() seed (a global mutex per
-	//! construction cost +34 % user CPU on an SMS scene).  Like the racy
-	//! rand() it replaces, the values a thread sees depend on scheduling,
-	//! so results drawn from it are not reproducible run to run.
+	//! A cheap, race-free seed for a generator constructed on a render
+	//! worker (per-call fallback samplers in hot integrator code, the
+	//! media's thread_local generators): a thread_local splitmix64 stream
+	//! started from a process-wide atomic counter.  It never reads libc --
+	//! the number of workers that make a first call is scheduling-
+	//! dependent, so a libc read here would move the libc stream the
+	//! reproducible seeding sites read next -- and takes no lock (the
+	//! default constructor's LockedLibcRand() seed, a global mutex per
+	//! construction, cost +34 % user CPU on an SMS scene).  Like the racy
+	//! rand() it replaces, which counter value a thread gets depends on
+	//! scheduling, so results drawn from it are not reproducible run to
+	//! run.
 	extern unsigned int ThreadLocalSeed();
 
 	//! A seed derived from (base, key) by the splitmix64 finalizer: distinct
@@ -101,7 +105,11 @@ namespace RISE
 			#elif defined MERSENNE
 				return mt.genrand_real2();
 			#else
-				return rand() * (0.9999999 / double(RAND_MAX));  
+				// Fallback build only (neither MERSENNE53 nor MERSENNE; the
+				// shipped Config.common defines MERSENNE53): this draws from
+				// the shared libc stream, serialized but NOT per generator,
+				// so draws interleave across threads.
+				return LockedLibcRand() * (0.9999999 / double(RAND_MAX));  
 			#endif
 		}
 

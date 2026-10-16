@@ -3436,7 +3436,12 @@ namespace
 	//! comparisons).  When `work` is given, the incidences are charged to
 	//! it up front and an exhausted budget returns FALSE with
 	//! `work->exhausted` set, so the caller can tell a refusal for budget
-	//! from a non-manifold vertex.
+	//! from a non-manifold vertex.  Behaviour change (DL-623 review): these
+	//! 4 P units now come out of the SAME per-attempt budget the embedding
+	//! steps use (they used to be free), so a caller-supplied
+	//! PatchSetCertDiagnostics::workBudget smaller than 4 x the patch count
+	//! refuses at topology with "certification work budget exhausted", and
+	//! the embedding steps have 4 P fewer units than before.
 	bool CheckManifoldVertexLinks(
 		const std::vector<BezierPatch>& patches,
 		const std::vector<int>& collapsedSide,

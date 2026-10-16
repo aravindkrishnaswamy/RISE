@@ -544,7 +544,7 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 
 	// Thread-local RNG for stochastic sampling.
 	// Each thread gets its own Mersenne Twister to avoid contention.
-	static thread_local RandomNumberGenerator tl_rng;
+	static thread_local RandomNumberGenerator tl_rng( ThreadLocalSeed() );	// never libc: see ThreadLocalSeed
 
 	RISEPel w( 1, 1, 1 );
 	const HeterogeneousMedium* self = this;
@@ -640,7 +640,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 	const Scalar majorantRatio = (m_sigma_t_majorant > 0)
 		? sigma_t_max_nm / m_sigma_t_majorant : 1.0;
 
-	static thread_local RandomNumberGenerator tl_rng_nm;
+	static thread_local RandomNumberGenerator tl_rng_nm( ThreadLocalSeed() );	// never libc: see ThreadLocalSeed
 
 	Scalar w = 1.0;
 	const HeterogeneousMedium* self = this;

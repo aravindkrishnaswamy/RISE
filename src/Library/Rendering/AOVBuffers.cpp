@@ -273,7 +273,10 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 	GlobalThreadPool().ParallelFor( rowCount, [&]( unsigned int row ) {
 		const unsigned int y = firstRow + row * rowStride;
 		if( y < startY || y > endY ) return;
-		static thread_local RandomNumberGenerator tl_rng;
+		// Constant initial seed: it is reseeded per row below, and a
+		// default (libc) seed on a worker's first row would move the libc
+		// stream by a scheduling-dependent count.
+		static thread_local RandomNumberGenerator tl_rng( 0u );
 		tl_rng.Reseed( DeriveSeed( rowSeedBase, y ) );
 		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
 		rc.aovPrefilterMode = prefilterMode;
