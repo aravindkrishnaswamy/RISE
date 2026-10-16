@@ -32,6 +32,7 @@
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/GeometricUtilities.h"
+#include <optional>
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
@@ -945,11 +946,21 @@ namespace
 		return Scalar( 1e-7 ) * ( scale + std::fabs( t ) );
 	}
 
-	//! Upper bound on boundary crossings walked per query.  A certified
+	//! Upper bound on boundary crossings walked per query (and the default
+	//! per-query re-cast allowance of the lobe walks below).  A certified
 	//! closed or open operand is a finite set of patches/triangles, so a
-	//! walk that reaches this bound is degenerate; the callers then answer
-	//! CONSERVATIVELY (inside unknown -> report the hit / the occlusion)
-	//! instead of inventing a miss.
+	//! walk that reaches this bound is degenerate.
+	//!
+	//! THE EXHAUSTION RULE, for every walk in this file: when the allowance
+	//! runs out BEFORE a walk finishes, a query KEEPS a surface the walk
+	//! already established as real and DROPS one it could not confirm --
+	//! and radiance and shadow queries make the same choice.  So a trimmed
+	//! sheet's hit whose inside/outside stayed undecided is kept (it is the
+	//! sheet's own surface), an interval whose far end could not be
+	//! tightened keeps its untightened end, and a subtraction surface that
+	//! an unvisited later lobe of the subtracted operand might hide is
+	//! dropped (a conservative miss).  A walk that FINISHES on its last
+	//! unit has not run out (the walks report running out explicitly).
 	static const unsigned int kMaxOpenSheetWalk = 4096;
 
 	//! Crossing parity of one closed surface from `pt` to infinity along
@@ -1254,10 +1265,12 @@ namespace
 	//! convex analytic leaf, for which a re-cast past its only interval
 	//! can only miss).  `budget` is the query's TOTAL re-cast allowance,
 	//! shared with the caller's own loop, so one query costs at most
-	//! `kMaxOpenSheetWalk` re-casts however the two loops nest; when it
-	//! runs out the operand keeps its current interval (a later lobe is
-	//! then missed, the pre-DL-621 answer).
-	void AdvanceOperandPast(
+	//! `kMaxOpenSheetWalk` re-casts however the two loops nest.  Returns
+	//! TRUE when the allowance ran out while the walk still had to go on
+	//! (the operand then holds an intermediate interval; see the
+	//! exhaustion rule at `kMaxOpenSheetWalk`), FALSE when it finished --
+	//! including on its last unit.
+	bool AdvanceOperandPast(
 		const IObjectPriv* pOperand,
 		const Ray& localRay,
 		const Scalar dHowFar2,
@@ -1327,6 +1340,11 @@ namespace
 				}
 			}
 		}
+		return budget == 0 &&
+			riOperand.geometric.bHit &&
+			riOperand.geometric.range2 > 0 &&
+			riOperand.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+			riOperand.geometric.range2 <= targetRange;
 	}
 
 	//! Test hook (`CSGObject::SetAdvanceBudgetForTesting`): 0 = the
@@ -1345,7 +1363,14 @@ namespace
 	//! the solid, not a surface.  Re-cast just past it, and while the ray
 	//! is still inside (the re-cast also reports an inside origin), move
 	//! the exit on to the touching lobe's exit.
-	void ExtendInsideExitThroughTouchingLobes(
+	//!
+	//! The re-cast that finds the ray OUTSIDE is exactly the first step an
+	//! `AdvanceOperandPast` past that exit would take (same start, same
+	//! cast), so it is handed back through `outNextLobe` -- the operand's
+	//! next lobe in this frame, or a record with `bHit == false` when it has
+	//! none -- for the caller to reuse instead of re-casting.  Returns TRUE
+	//! when the allowance ran out while the ray was still inside.
+	bool ExtendInsideExitThroughTouchingLobes(
 		const IObjectPriv* pOperand,
 		const Ray& localRay,
 		const Scalar dHowFar2,
@@ -1354,12 +1379,20 @@ namespace
 		const RasterizerState& rast,
 		const OperandFacts& facts,
 		unsigned int& budget,
-		RayIntersection& riOperand )
+		RayIntersection& riOperand,
+		std::optional<RayIntersection>* outNextLobe )
 	{
-		while( budget > 0 && riOperand.geometric.bHit && riOperand.geometric.range2 == 0 ) {
+		while( riOperand.geometric.bHit && riOperand.geometric.range2 == 0 ) {
+			if( budget == 0 ) {
+				return true;
+			}
 			const Scalar tStart = riOperand.geometric.range + OpenSheetRecastStep( riOperand.geometric.range, scale );
 			if( !( tStart < dHowFar2 ) ) {
-				break;
+				if( outNextLobe ) {
+					*outNextLobe = riOperand;
+					( *outNextLobe )->geometric.bHit = false;
+				}
+				return false;
 			}
 			Ray next( localRay );
 			next.origin = localRay.PointAtLength( tStart );
@@ -1376,7 +1409,25 @@ namespace
 			RecoverContainedOperand( pOperand, riNext, facts );
 			--budget;
 			if( !riNext.geometric.bHit || riNext.geometric.range2 != 0 ) {
-				break;	// left the operand: the exit is real
+				// Left the operand: the exit is real, and riNext is its
+				// next lobe (or none), as an advance would have found it.
+				if( outNextLobe ) {
+					riNext.geometric.ray = localRay;
+					if( riNext.geometric.bHit ) {
+						riNext.geometric.range += tStart;
+						if( riNext.hasBoundaryRange ) {
+							riNext.boundaryRange += tStart;
+						}
+						if( riNext.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY ) {
+							riNext.geometric.range2 += tStart;
+							if( riNext.hasBoundaryRange2 ) {
+								riNext.boundaryRange2 += tStart;
+							}
+						}
+					}
+					*outNextLobe = riNext;
+				}
+				return false;
 			}
 			riOperand = riNext;
 			riOperand.geometric.ray = localRay;
@@ -1385,6 +1436,7 @@ namespace
 				riOperand.boundaryRange += tStart;
 			}
 		}
+		return false;
 	}
 
 	//! DL-617 / DL-621(a): an operand's ROLE in a sheet-trimming or
@@ -2396,43 +2448,56 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				subScale = 1;
 			}
 			// A touching later lobe makes an inside operand's reported exit
-			// a seam, not a surface: carry the exit on through it.
+			// a seam, not a surface: carry the exit on through it.  B's
+			// probe past its (final) exit is kept as `nextB`, its next lobe.
+			bool ranOut = false;
+			std::optional<RayIntersection> nextB;
 			if( !( certBits & kSingleLobeA ) && riObjA.geometric.range2 == 0 ) {
-				ExtendInsideExitThroughTouchingLobes( pObjectA, ri.geometric.ray, dHowFar2, subScale, &ri.geometric, ri.geometric.rast,
-					factsA, advanceBudget, riObjA );
+				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectA, ri.geometric.ray, dHowFar2, subScale, &ri.geometric, ri.geometric.rast,
+					factsA, advanceBudget, riObjA, 0 ) || ranOut;
 			}
 			if( riObjB.geometric.bHit && !( certBits & kSingleLobeB ) && riObjB.geometric.range2 == 0 ) {
-				ExtendInsideExitThroughTouchingLobes( pObjectB, ri.geometric.ray, dHowFar2, subScale, &ri.geometric, ri.geometric.rast,
-					factsB, advanceBudget, riObjB );
+				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectB, ri.geometric.ray, dHowFar2, subScale, &ri.geometric, ri.geometric.rast,
+					factsB, advanceBudget, riObjB, &nextB ) || ranOut;
 			}
-			// Inside BOTH, and A is left first: A's first interval lies
-			// inside B and contributes nothing.  Read it as the zero-length
-			// interval [A.range, A.range] so the inside-B logic below
-			// advances a multi-lobe A past B's exit (straddle / later lobe)
-			// and a single-lobe A reports nothing.
+			// Inside BOTH, and A is left first or at the same distance:
+			// A's first interval lies inside B and contributes nothing.
+			// Read it as the zero-length interval [A.range, A.range] so the
+			// inside-B logic below advances a multi-lobe A past B's exit
+			// (straddle / later lobe).  On a tie both operands end together:
+			// whatever follows is outside B, so it is A's later lobe if A
+			// has one -- the same reading.  A collapsed A that is never
+			// advanced past it (single-lobe) leaves nothing.
+			bool aCollapsed = false;
 			if( riObjA.geometric.range2 == 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
-				riObjA.geometric.range < riObjB.geometric.range ) {
+				riObjA.geometric.range <= riObjB.geometric.range ) {
 				riObjA.geometric.range2 = riObjA.geometric.range;
+				aCollapsed = true;
 			}
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
-				riObjA.geometric.range < riObjB.geometric.range &&
+				riObjA.geometric.range <= riObjB.geometric.range &&
 				!( riObjB.geometric.range < riObjA.geometric.range2 ) &&
 				!( certBits & kSingleLobeA ) ) {
-				AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, subScale,
+				ranOut = AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, subScale,
 					riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
-					factsA, advanceBudget, riObjA );
+					factsA, advanceBudget, riObjA ) || ranOut;
 				if( !riObjA.geometric.bHit ) {
 					break;
 				}
 			}
-			// Out of re-cast allowance: an operand may hold a stale interval
-			// (an unvisited later lobe of B could hide A), so answer a
-			// conservative miss -- the same for radiance and shadow rays.
-			if( advanceBudget == 0 ) {
+			// Ran out before a walk that decides WHETHER there is a surface
+			// finished: drop the unconfirmed surface (the exhaustion rule at
+			// `kMaxOpenSheetWalk`).
+			if( ranOut ) {
 				break;
 			}
+			if( aCollapsed && !( riObjA.geometric.range2 > riObjA.geometric.range ) ) {
+				break;
+			}
+			bool bLeftFromInside = false;
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit &&
 				riObjB.geometric.range2 == 0 && riObjB.geometric.range <= riObjA.geometric.range ) {
+				bLeftFromInside = true;
 				// Origin is inside a lobe of B that exits in empty space at or
 				// before A's entry: treat that exit as the end of B's first
 				// interval and let the outside-both path advance to any later
@@ -2535,16 +2600,19 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// A multi-lobe B may re-enter before A's exit: the
 					// composite interval then closes at that entry.
 					if( !( certBits & kSingleLobeB ) ) {
+						// Only TIGHTENS an established interval: on running out
+						// it keeps the untightened end (the exhaustion rule).
 						RayIntersection riNextB = riObjB;
 						riNextB.geometric.range2 = riNextB.geometric.range;
-						AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
-							riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
-							factsB, advanceBudget, riNextB );
-						if( advanceBudget == 0 ) {
-							ri.geometric.bHit = false;	// conservative miss: see the top of this case
-							break;
+						bool clampRanOut = false;
+						if( nextB ) {
+							riNextB = *nextB;
+						} else {
+							clampRanOut = AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+								riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
+								factsB, advanceBudget, riNextB );
 						}
-						if( riNextB.geometric.bHit && riNextB.geometric.range > riObjB.geometric.range &&
+						if( !clampRanOut && riNextB.geometric.bHit && riNextB.geometric.range > riObjB.geometric.range &&
 							riNextB.geometric.range < ri.geometric.range2 ) {
 							ri.geometric.range2 = riNextB.geometric.range;
 							ri.boundaryRange2 = riNextB.boundaryRange; ri.hasBoundaryRange2 = riNextB.hasBoundaryRange;
@@ -2669,16 +2737,19 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
 							scale = 1;
 						}
+						// Only TIGHTENS an established interval: on running out
+						// it keeps the untightened end (the exhaustion rule).
 						RayIntersection riNextB = riObjB;
 						riNextB.geometric.range2 = riNextB.geometric.range;
-						AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
-							riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
-							factsB, advanceBudget, riNextB );
-						if( advanceBudget == 0 ) {
-							ri.geometric.bHit = false;	// conservative miss: see the top of this case
-							break;
+						bool clampRanOut = false;
+						if( nextB ) {
+							riNextB = *nextB;
+						} else {
+							clampRanOut = AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
+								riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
+								factsB, advanceBudget, riNextB );
 						}
-						if( riNextB.geometric.bHit && riNextB.geometric.range > riObjB.geometric.range &&
+						if( !clampRanOut && riNextB.geometric.bHit && riNextB.geometric.range > riObjB.geometric.range &&
 							riNextB.geometric.range < ri.geometric.range2 ) {
 							ri.geometric.range2 = riNextB.geometric.range;
 							ri.boundaryRange2 = riNextB.boundaryRange; ri.hasBoundaryRange2 = riNextB.hasBoundaryRange;
@@ -2693,6 +2764,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				// if B is a multi-lobe solid whose first lobe ends in empty
 				// space at or before A's entry, advance B along the ray so a
 				// later lobe overlapping A is not missed.
+				// B was left from inside: its first step past that exit
+				// was already taken by the touching-lobe probe.
+				if( bLeftFromInside && nextB &&
+					riObjB.geometric.range2 <= riObjA.geometric.range ) {
+					riObjB = *nextB;
+				}
 				if( riObjB.geometric.bHit &&
 					!( certBits & kSingleLobeB ) &&
 					riObjB.geometric.range2 > 0 &&
@@ -2702,11 +2779,10 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
 						scale = 1;
 					}
-					AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
-						riObjA.geometric.range, &ri.geometric, ri.geometric.rast,
-						factsB, advanceBudget, riObjB );
-					if( advanceBudget == 0 ) {
-						break;	// conservative miss: see the top of this case
+					if( AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
+							riObjA.geometric.range, &ri.geometric, ri.geometric.rast,
+							factsB, advanceBudget, riObjB ) ) {
+						break;	// ran out: an unvisited lobe of B may hide A (see the top of this case)
 					}
 				}
 				if( !riObjB.geometric.bHit ) {
@@ -3500,43 +3576,56 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				subScale = 1;
 			}
 			// A touching later lobe makes an inside operand's reported exit
-			// a seam, not a surface: carry the exit on through it.
+			// a seam, not a surface: carry the exit on through it.  B's
+			// probe past its (final) exit is kept as `nextB`, its next lobe.
+			bool ranOut = false;
+			std::optional<RayIntersection> nextB;
 			if( !( certBits & kSingleLobeA ) && riObjA.geometric.range2 == 0 ) {
-				ExtendInsideExitThroughTouchingLobes( pObjectA, orig, dHowFar2, subScale, 0, nullRasterizerState,
-					factsA, advanceBudget, riObjA );
+				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectA, orig, dHowFar2, subScale, 0, nullRasterizerState,
+					factsA, advanceBudget, riObjA, 0 ) || ranOut;
 			}
 			if( riObjB.geometric.bHit && !( certBits & kSingleLobeB ) && riObjB.geometric.range2 == 0 ) {
-				ExtendInsideExitThroughTouchingLobes( pObjectB, orig, dHowFar2, subScale, 0, nullRasterizerState,
-					factsB, advanceBudget, riObjB );
+				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectB, orig, dHowFar2, subScale, 0, nullRasterizerState,
+					factsB, advanceBudget, riObjB, &nextB ) || ranOut;
 			}
-			// Inside BOTH, and A is left first: A's first interval lies
-			// inside B and contributes nothing.  Read it as the zero-length
-			// interval [A.range, A.range] so the inside-B logic below
-			// advances a multi-lobe A past B's exit (straddle / later lobe)
-			// and a single-lobe A reports nothing.
+			// Inside BOTH, and A is left first or at the same distance:
+			// A's first interval lies inside B and contributes nothing.
+			// Read it as the zero-length interval [A.range, A.range] so the
+			// inside-B logic below advances a multi-lobe A past B's exit
+			// (straddle / later lobe).  On a tie both operands end together:
+			// whatever follows is outside B, so it is A's later lobe if A
+			// has one -- the same reading.  A collapsed A that is never
+			// advanced past it (single-lobe) leaves nothing.
+			bool aCollapsed = false;
 			if( riObjA.geometric.range2 == 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
-				riObjA.geometric.range < riObjB.geometric.range ) {
+				riObjA.geometric.range <= riObjB.geometric.range ) {
 				riObjA.geometric.range2 = riObjA.geometric.range;
+				aCollapsed = true;
 			}
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
-				riObjA.geometric.range < riObjB.geometric.range &&
+				riObjA.geometric.range <= riObjB.geometric.range &&
 				!( riObjB.geometric.range < riObjA.geometric.range2 ) &&
 				!( certBits & kSingleLobeA ) ) {
-				AdvanceOperandPast( pObjectA, orig, dHowFar2, subScale,
+				ranOut = AdvanceOperandPast( pObjectA, orig, dHowFar2, subScale,
 					riObjB.geometric.range, 0, nullRasterizerState,
-					factsA, advanceBudget, riObjA );
+					factsA, advanceBudget, riObjA ) || ranOut;
 				if( !riObjA.geometric.bHit ) {
 					return false;
 				}
 			}
-			// Out of re-cast allowance: an operand may hold a stale interval
-			// (an unvisited later lobe of B could hide A), so answer a
-			// conservative miss -- the same for radiance and shadow rays.
-			if( advanceBudget == 0 ) {
+			// Ran out before a walk that decides WHETHER there is a surface
+			// finished: drop the unconfirmed surface (the exhaustion rule at
+			// `kMaxOpenSheetWalk`).
+			if( ranOut ) {
 				return false;
 			}
+			if( aCollapsed && !( riObjA.geometric.range2 > riObjA.geometric.range ) ) {
+				return false;
+			}
+			bool bLeftFromInside = false;
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit &&
 				riObjB.geometric.range2 == 0 && riObjB.geometric.range <= riObjA.geometric.range ) {
+				bLeftFromInside = true;
 				riObjB.geometric.range2 = riObjB.geometric.range;
 			}
 			if( riObjA.geometric.range2 == 0 && riObjB.geometric.range2 == 0 ) {
@@ -3564,6 +3653,12 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				}
 				return false;
 			} else {
+				// B was left from inside: its first step past that exit
+				// was already taken by the touching-lobe probe.
+				if( bLeftFromInside && nextB &&
+					riObjB.geometric.range2 <= riObjA.geometric.range ) {
+					riObjB = *nextB;
+				}
 				if( riObjB.geometric.bHit &&
 					!( certBits & kSingleLobeB ) &&
 					riObjB.geometric.range2 > 0 &&
@@ -3573,11 +3668,10 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
 						scale = 1;
 					}
-					AdvanceOperandPast( pObjectB, orig, dHowFar2, scale,
-						riObjA.geometric.range, 0, nullRasterizerState,
-						factsB, advanceBudget, riObjB );
-					if( advanceBudget == 0 ) {
-						return false;	// conservative miss: see the top of this case
+					if( AdvanceOperandPast( pObjectB, orig, dHowFar2, scale,
+							riObjA.geometric.range, 0, nullRasterizerState,
+							factsB, advanceBudget, riObjB ) ) {
+						return false;	// ran out: an unvisited lobe of B may hide A (see the top of this case)
 					}
 				}
 				// If we never hit B, or if B begins after A ends, or if B ends before A can begin

@@ -980,6 +980,107 @@ static void TestSubtractionInsideBoth()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// K. ties, and small re-cast allowances (radiance == shadow)
+//////////////////////////////////////////////////////////////////////
+
+static CSGObject* UnionOf( Object* a, Object* b )
+{
+	CSGObject* u = new CSGObject( CSG_UNION );
+	u->AssignObjects( a, b );
+	u->FinalizeTransformations();
+	safe_release( a );
+	safe_release( b );
+	return u;
+}
+
+//! A and B share their first lobe exactly (the same sphere), so the ray
+//! that starts inside it leaves A and B at the SAME distance (1.5).  A's
+//! second lobe [2, 3] is outside B; B's second lobe is far ([8, 9]).
+static CSGObject* MakeTieSubtraction( bool multiLobeA )
+{
+	CSGObject* uniB = UnionOf( MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ), MakeSphereObject( 0.5, Point3( 5, 0, 0 ) ) );
+	IObjectPriv* a = multiLobeA ?
+		static_cast<IObjectPriv*>( UnionOf( MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ), MakeSphereObject( 0.5, Point3( -1.0, 0, 0 ) ) ) ) :
+		static_cast<IObjectPriv*>( MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ) );
+	return Subtract( a, uniB );
+}
+
+//! Radiance and shadow agree: the shadow ray occludes exactly when the
+//! radiance hit lies within it.
+static void CheckAgreement( const CSGObject& csg, const Point3& o, const Vector3& d, const std::string& label )
+{
+	const RayIntersection h = CastObj( csg, o, d );
+	bool ok = ( csg.IntersectRay_IntersectionOnly( Ray( o, d ), 20, true, true ) == ( h.geometric.bHit && h.geometric.range < 20 ) );
+	if( h.geometric.bHit && h.geometric.range < 20 ) {
+		ok = ok && !csg.IntersectRay_IntersectionOnly( Ray( o, d ), Scalar( 0.99 ) * h.geometric.range, true, true ) &&
+			csg.IntersectRay_IntersectionOnly( Ray( o, d ), Scalar( 1.01 ) * h.geometric.range, true, true );
+	}
+	Check( ok, "K: " + label + ": shadow and radiance agree (radiance " +
+		( h.geometric.bHit ? "hit at " + std::to_string( h.geometric.range ) : std::string( "miss" ) ) + ")" );
+}
+
+static void TestTiesAndSmallBudgets()
+{
+	std::cout << "K. tied exits; small re-cast allowances" << std::endl;
+	const Point3 o( -3.5, 0, 0 );
+	const Vector3 dx( 1, 0, 0 );
+	// P3-e: tie, multi-lobe A -> A's second lobe [2, 3] is the surface.
+	{
+		CSGObject* csg = MakeTieSubtraction( true );
+		CheckShadowAgreesWithHit( *csg, o, dx, "A and B exit together, A's later lobe outside B", 2.0 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 3.0 ) < 1e-6,
+			"K: tie: the later lobe's interval is [2, 3] (got range2 " + std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+	{
+		// Single-lobe A against the same sphere as B (both plain leaves,
+		// so the two exits are bit-identical): A - B is empty.
+		CSGObject* csg = Subtract( MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ), MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ) );
+		CheckMiss( *csg, o, dx, "A and B exit together, single-lobe A and B" );
+		safe_release( csg );
+	}
+	// P3-b: the straddle fixture (A lobes [0.7, 1.1], [1.3, 6.0]; torus B)
+	// needs exactly two re-casts (B's exit probe, A's advance).  A walk
+	// that finishes on its last unit has NOT run out.
+	{
+		CSGObject::SetAdvanceBudgetForTesting( 2 );
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 1.3, 6.0 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "allowance 2 finishes the straddle walk on its last unit", 1.5 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"K: allowance 2: the clamp reuses B's exit probe (interval closes at 5.5, got " +
+			std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+		// P3-c: one unit runs out before A's advance: the real surface at
+		// 1.5 is dropped, by radiance and shadow alike.
+		CSGObject::SetAdvanceBudgetForTesting( 1 );
+		csg = MakeTorusSubtraction( 0.7, 1.1, 1.3, 6.0 );
+		CheckMiss( *csg, o, dx, "allowance 1 runs out before A's advance (surface dropped, consistently)" );
+		safe_release( csg );
+	}
+	// P3-c: agreement at every small allowance over the fixtures.
+	for( unsigned int budget = 1; budget <= 6; ++budget ) {
+		CSGObject::SetAdvanceBudgetForTesting( budget );
+		const std::string b = " @ allowance " + std::to_string( budget );
+		CSGObject* f[] = {
+			MakeTorusSubtraction( 0.7, 1.1, 1.3, 6.0 ),
+			MakeTorusSubtraction( 0.7, 1.1, 5.7, 6.3 ),
+			MakeTorusSubtraction( 0.7, 1.1, 2.0, 6.0 ),
+			MakeTorusSubtraction( 0.7, 1.1, 7.8, 8.4 ),
+			MakeTorusSubtraction( -1, 1.0, 1.3, 6.0 ),
+			MakeTieSubtraction( true )
+		};
+		const char* names[] = { "straddle", "phantom", "after B exit", "past B's second lobe", "inside both straddle", "tie" };
+		for( int k = 0; k < 6; ++k ) {
+			CheckAgreement( *f[k], o, dx, std::string( names[k] ) + b );
+			safe_release( f[k] );
+		}
+	}
+	CSGObject::SetAdvanceBudgetForTesting( 0 );
+}
+
 int main()
 {
 	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13) ===" << std::endl;
@@ -993,6 +1094,7 @@ int main()
 	TestShadowLengthFromInside();
 	TestSubtractionInsideMultiLobeB();
 	TestSubtractionInsideBoth();
+	TestTiesAndSmallBudgets();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }
