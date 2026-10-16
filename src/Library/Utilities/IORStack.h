@@ -64,6 +64,7 @@
 
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IObject.h"
+#include <memory>
 #include <stack>
 #include <vector>
 
@@ -81,16 +82,20 @@ namespace RISE
 		//! media capture and `RefreshLegacySeedFallbackNM` -- can re-evaluate
 		//! the sheet's index at another wavelength without re-probing for it.
 		//!
-		//! COST CONTRACT (DL-622 review): contexts are stored OUT OF LINE (see
-		//! `MyIORStack::ctx`), and only an entry pushed WITH one has one.  The
-		//! production pushers are the open-sheet ones (`SeedFromPoint`'s
-		//! confirmed sheets, `ResolveOpenSheetCrossing`, the SMS walks' sheet
-		//! pushes); an ordinary closed-medium push carries none, so a scene
-		//! without open sheets copies exactly the stack it copied before
-		//! DL-622 (`IORDATA` stays a 24-byte trivially copyable record and the
-		//! side vector is never allocated).  A consumer that
-		//! needs a closed entry's index at another wavelength probes the
-		//! object (`IORStackSeeding::ProbeObjectSurfaceHit`).
+		//! COST CONTRACT (DL-622 review): contexts are stored OUT OF LINE, as
+		//! a sparse copy-on-write list (see `MyIORStack::ctxs`), and only an
+		//! entry pushed WITH one has one.  The production pushers are the
+		//! open-sheet ones (`SeedFromPoint`'s confirmed sheets,
+		//! `ResolveOpenSheetCrossing`, `ManifoldSolver::SnellContinueChain` and
+		//! `SMSDomainReplay::BuildStack` on a sheet); an ordinary closed-medium
+		//! push carries none, and neither does the local replay in
+		//! `RefreshLegacySeedFallbackNM` (nothing reads it).  A scene without
+		//! open sheets copies exactly the stack it copied before DL-622 plus a
+		//! null shared pointer (`IORDATA` stays a 24-byte trivially copyable
+		//! record).  A stack that does carry contexts copies the shared pointer,
+		//! not the contexts.  A consumer that needs a closed entry's index at
+		//! another wavelength probes the object
+		//! (`IORStackSeeding::ProbeObjectSurfaceHit`).
 		struct EntryContext
 		{
 			const IMaterial* pMaterial;
@@ -185,39 +190,35 @@ namespace RISE
 			{}
 		};
 
-		class MyIORStack : public std::stack< IORDATA, std::vector<IORDATA> >
+		//! The stack proper.  `std::stack` is a PROTECTED base so only this
+		//! class's members touch the entry vector: every push and erase goes
+		//! through `pushEntry` / `find_and_destroy`, which keep the context
+		//! indices below in step (DL-622 review).
+		class MyIORStack : protected std::stack< IORDATA, std::vector<IORDATA> >
 		{
+			typedef std::stack< IORDATA, std::vector<IORDATA> > Base;
+
 		public:
 
-			//! DL-622: per-entry EntryContexts, parallel to `c` (same size),
-			//! allocated when the FIRST context-carrying entry is pushed and
-			//! null before that -- so a stack with no such entry (every stack
-			//! in a scene without open sheets) copies one extra null pointer
-			//! and otherwise pushes, pops and copies exactly as before DL-622.
-			std::vector<EntryContext>* pCtxs;
+			//! DL-622: the entries that carry an EntryContext, as (stack
+			//! index, context) pairs in increasing index order -- SPARSE (only
+			//! open-sheet entries carry one) and COPY-ON-WRITE: the vector is
+			//! immutable once built and shared between copies, so copying a
+			//! stack copies a shared_ptr (one atomic increment, none when it
+			//! is null) instead of the contexts.  A stack with no context-
+			//! carrying entry (every stack in a scene without open sheets)
+			//! holds a null pointer and pushes, pops and copies as before
+			//! DL-622.  Only a push WITH a context, an erase at or below a
+			//! context-carrying index, or SetContextAt rebuilds the vector.
+			typedef std::pair<std::size_t, EntryContext> IndexedContext;
+			typedef std::vector<IndexedContext> ContextList;
+			std::shared_ptr<const ContextList> ctxs;
 
-			MyIORStack() : pCtxs( 0 ) {};
-			MyIORStack( const MyIORStack& s ) : 
-			  std::stack< IORDATA, std::vector<IORDATA> >( s ),
-			  pCtxs( s.pCtxs ? new std::vector<EntryContext>( *s.pCtxs ) : 0 )
-			{}
-			MyIORStack& operator=( const MyIORStack& s )
-			{
-				if( this != &s ) {
-					c = s.c;
-					if( s.pCtxs ) {
-						if( pCtxs ) {
-							*pCtxs = *s.pCtxs;
-						} else {
-							pCtxs = new std::vector<EntryContext>( *s.pCtxs );
-						}
-					} else if( pCtxs ) {
-						delete pCtxs;
-						pCtxs = 0;
-					}
-				}
-				return *this;
-			}
+			MyIORStack() {};
+
+			using Base::top;
+			using Base::size;
+			using Base::empty;
 
 			static const EntryContext& NoContext()
 			{
@@ -228,17 +229,12 @@ namespace RISE
 			void pushEntry( const IORDATA& d, const EntryContext* pCtx )
 			{
 				if( pCtx && pCtx->bHasContext ) {
-					if( !pCtxs ) {
-						pCtxs = new std::vector<EntryContext>( c.size() );
-					}
-					c.push_back( d );
-					pCtxs->push_back( *pCtx );
-				} else {
-					c.push_back( d );
-					if( pCtxs ) {
-						pCtxs->push_back( EntryContext() );
-					}
+					std::shared_ptr<ContextList> next = ctxs
+						? std::make_shared<ContextList>( *ctxs ) : std::make_shared<ContextList>();
+					next->push_back( IndexedContext( c.size(), *pCtx ) );
+					ctxs = next;
 				}
+				c.push_back( d );
 			}
 
             std::vector<const IObject*> ObjectKeys() const {
@@ -254,21 +250,40 @@ namespace RISE
             void setIORAt( std::size_t i, Scalar ior ) { c[i].ior = ior; }
             bool topIsOpenSheet() const { return c.empty() ? false : c.back().bOpenSheet; }
             bool isOpenSheetAt( std::size_t i ) const { return i < c.size() ? c[i].bOpenSheet : false; }
-            const EntryContext& contextAt( std::size_t i ) const { return ( pCtxs && i < pCtxs->size() ) ? ( *pCtxs )[i] : NoContext(); }
+            const EntryContext& contextAt( std::size_t i ) const {
+                if( ctxs ) {
+                    for( std::size_t k = 0; k < ctxs->size(); ++k ) {
+                        if( ( *ctxs )[k].first == i ) return ( *ctxs )[k].second;
+                    }
+                }
+                return NoContext();
+            }
             void setContextAt( std::size_t i, const EntryContext& ctx ) {
                 if( i >= c.size() ) return;
-                if( !pCtxs ) {
-                    if( !ctx.bHasContext ) return;
-                    pCtxs = new std::vector<EntryContext>( c.size() );
+                if( !ctxs && !ctx.bHasContext ) return;
+                std::shared_ptr<ContextList> next = std::make_shared<ContextList>();
+                bool placed = false;
+                if( ctxs ) {
+                    for( std::size_t k = 0; k < ctxs->size(); ++k ) {
+                        const IndexedContext& e = ( *ctxs )[k];
+                        if( !placed && e.first >= i ) {
+                            if( ctx.bHasContext ) next->push_back( IndexedContext( i, ctx ) );
+                            placed = true;
+                            if( e.first == i ) continue;
+                        }
+                        next->push_back( e );
+                    }
                 }
-                ( *pCtxs )[i] = ctx;
+                if( !placed && ctx.bHasContext ) next->push_back( IndexedContext( i, ctx ) );
+                if( next->empty() ) ctxs.reset(); else ctxs = next;
             }
             const EntryContext& topContext() const { return contextAt( c.size() - 1 ); }
             const EntryContext* findContext( const IObject* r ) const {
-                if( !pCtxs ) return 0;
-                for( std::size_t i = pCtxs->size(); i-- > 0; ) {
-                    if( c[i].pObj == r && ( *pCtxs )[i].bHasContext ) {
-                        return &( *pCtxs )[i];
+                if( !ctxs ) return 0;
+                for( std::size_t k = ctxs->size(); k-- > 0; ) {
+                    const IndexedContext& e = ( *ctxs )[k];
+                    if( e.first < c.size() && c[e.first].pObj == r ) {
+                        return &e.second;
                     }
                 }
                 return 0;
@@ -280,11 +295,8 @@ namespace RISE
                 return true;
             }
 
-
 			~MyIORStack()
-			{
-				delete pCtxs;
-			};
+			{};
 
 			bool find_and_destroy( const IObject* r )
 			{
@@ -292,8 +304,17 @@ namespace RISE
 				for( i=c.rbegin(), e=c.rend(); i!=e; i++ ) {
 					if( i->pObj == r ) {
 						const std::vector<IORDATA>::iterator it = (i.base())-1;
-						if( pCtxs ) {
-							pCtxs->erase( pCtxs->begin() + ( it - c.begin() ) );
+						const std::size_t idx = static_cast<std::size_t>( it - c.begin() );
+						// Re-index the contexts only when one sits at or above
+						// the erased entry (the list is in increasing order).
+						if( ctxs && !ctxs->empty() && ctxs->back().first >= idx ) {
+							std::shared_ptr<ContextList> next = std::make_shared<ContextList>();
+							for( std::size_t k = 0; k < ctxs->size(); ++k ) {
+								const IndexedContext& ec = ( *ctxs )[k];
+								if( ec.first < idx ) next->push_back( ec );
+								else if( ec.first > idx ) next->push_back( IndexedContext( ec.first - 1, ec.second ) );
+							}
+							if( next->empty() ) ctxs.reset(); else ctxs = next;
 						}
 						c.erase( it );
 						return true;
@@ -351,7 +372,7 @@ namespace RISE
 		  pProbeScene( 0 )
 		{
 			// An empty IOR stack always has the environment's IOR
-			iorstack.push( IORDATA(0,ior,false) );
+			iorstack.pushEntry( IORDATA(0,ior,false), 0 );
 		}
 
 		IORStack( const IORStack& s ) : 

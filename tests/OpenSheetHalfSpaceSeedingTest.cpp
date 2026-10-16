@@ -1239,12 +1239,12 @@ static void PartA()
 
 	// A35 (DL-622 review, P2): the detour certificate's cost is bounded.
 	// 50 co-normal glass panes over a submerged rock: every pane's normal
-	// ray from the seed meets the rock, and an unbounded certificate tries
-	// a detour per pane, each walking up the pane column (measured at the
-	// DL-622 commit: 2652 scene rays per seed, every camera sample).  The detour budget
-	// refuses instead (the seed declines every open sheet -- the refusal
-	// SeedFromPoint makes for ambiguous configurations).  A 3-pane stack
-	// over the same rock fits the budget and is still seeded through it.
+	// ray from the seed meets the rock.  One certificate per pane walks the
+	// pane column again and again (measured at the DL-622 commit: 2652 scene
+	// rays per seed, every camera sample); the group certificate
+	// (HasFreeSpaceDetourToSheets) walks it once and seeds all 50 panes, and
+	// each pane's answer is the one its own certificate gives
+	// (PointInOpenSheetMedium, which runs the single-sheet certificate).
 	{
 		auto stacked = []( int count, bool rock ) {
 			std::string t = Header();
@@ -1269,10 +1269,22 @@ static void PartA()
 			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
 			char label[240];
 			std::snprintf( label, sizeof(label),
-				"A35: 50 panes over a rock: %zu scene rays per seed (bound %d + 16), depth %zu (refused: 1)",
-				rays, IORStackSeeding::kDetourSceneRayBudget, stDeep.Depth() );
+				"A35: 50 panes over a rock: %zu scene rays per seed (bound 300), depth %zu (want 51, p1 innermost)",
+				rays, stDeep.Depth() );
 			std::cout << "  [recorded] " << label << std::endl;
-			Check( rays <= std::size_t( IORStackSeeding::kDetourSceneRayBudget + 16 ) && stDeep.Depth() == 1, label );
+			Check( rays <= 300 && stDeep.Depth() == 51 && stDeep.topObject() == deep.O( "p1" ), label );
+			bool agree = true;
+			for( int k = 1; k <= 50; k += 7 ) {
+				char o[16];
+				std::snprintf( o, sizeof(o), "p%d", k );
+				bool inSeed = false;
+				for( std::size_t i = 1; i < stDeep.Depth(); i++ ) {
+					if( stDeep.ObjectAt( i ) == deep.O( o ) ) inSeed = true;
+				}
+				agree = agree && ( inSeed == IORStackSeeding::PointInOpenSheetMedium(
+					deep.O( o ), deep.Scene().GetObjects(), Point3( 0, 0, 0 ) ) );
+			}
+			Check( agree, "A35: each pane's group-certificate answer equals its own certificate's (PointInOpenSheetMedium)" );
 			const IORStack stShallow = shallow.Seed( Point3( 0, 0, 0 ) );
 			Check( stShallow.Depth() == 4 && stShallow.topObject() == shallow.O( "p1" ),
 				"A35 control: 3 panes over the same rock are seeded through the detour (depth 4, p1 innermost)" );
@@ -1350,6 +1362,173 @@ static void PartA()
 		Check( made && before == after,
 			"A38: ClippedPlaneGeometry::RegenerateData leaves the open-sheet catalog epoch unchanged" );
 		safe_release( pGeom );
+	}
+
+	// A40 (DL-622 review round 2, P2-1): a sheet confirmed by a CLEAR normal
+	// ray never depends on another sheet's detour.  An underwater camera
+	// sees a tilted sea's back face along the sea's own normal; a stack of
+	// co-normal panes above it is blocked by a small rock (a detour).  The
+	// shared ray budget of the previous round ran out on the panes and
+	// declined EVERY sheet, the sea included (the camera seeded in air).
+	// And a seed and an exit resolution must agree sheet by sheet.
+	{
+		std::string t = Header();
+		{
+			const double h = 20;
+			double p[4][3] = { { -h, 30, h }, { h, 30, h }, { h, 30, -h }, { -h, 30, -h } };
+			for( auto& q : p ) RotZ( -30, q[0], q[1] );
+			t += SheetQuad( "g_sea", p[0], p[1], p[2], p[3] ) + Obj( "sea", "g_sea", "glass133" );
+		}
+		for( int k = 1; k <= 50; k++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_p%d", k );
+			std::snprintf( o, sizeof(o), "p%d", k );
+			t += HSheet( g, 2 + 0.2 * k, 10, true ) + Obj( o, g, "glass15" );
+		}
+		t += "box_geometry\n{\n\tname g_rock\n\twidth 0.6\n\theight 0.4\n\tdepth 0.6\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.2 0" );
+		Loaded mix( t );
+		Check( mix.ok, "A40 scene loads" );
+		if( mix.ok ) {
+			const IObjectManager* objs = mix.Scene().GetObjects();
+			const IORStack st = mix.Seed( Point3( 0, 0, 0 ) );
+			bool seaIn = false;
+			for( std::size_t i = 1; i < st.Depth(); i++ ) {
+				if( st.ObjectAt( i ) == mix.O( "sea" ) ) seaIn = true;
+			}
+			Check( IORStackSeeding::PointInOpenSheetMedium( mix.O( "sea" ), objs, Point3( 0, 0, 0 ) ),
+				"A40 fixture: the sea's normal ray from the camera is clear (the sea holds the camera)" );
+			Check( seaIn, "A40: the sea is seeded whatever the pane stack's detours cost" );
+			bool agree = true;
+			const char* names[4] = { "sea", "p1", "p25", "p50" };
+			for( int k = 0; k < 4; k++ ) {
+				bool inSeed = false;
+				for( std::size_t i = 1; i < st.Depth(); i++ ) {
+					if( st.ObjectAt( i ) == mix.O( names[k] ) ) inSeed = true;
+				}
+				agree = agree && ( inSeed == IORStackSeeding::PointInOpenSheetMedium( mix.O( names[k] ), objs, Point3( 0, 0, 0 ) ) );
+			}
+			Check( agree, "A40: seed and PointInOpenSheetMedium agree for the sea and the panes" );
+		}
+	}
+
+	// A41 (DL-622 review round 2, P2-2): an unpushed exit is decided by the
+	// seed convention at the point past the crossing -- not by walking along
+	// the walk's direction through opaque surfaces until the sheet is met.
+	// A walk in the sea's medium (seeded above an opaque roof slab that
+	// spans the sea's whole prism) leaves a small pane under the roof
+	// through its back face going up: the sea's back face IS straight ahead,
+	// past the roof, but the sea's normal ray from there is blocked by the
+	// roof, so a seed there is not in the sea, and the walk leaves it too.
+	{
+		Loaded roofed( Header()
+			+ HSheet( "g_sea", 5, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ "box_geometry\n{\n\tname g_roof\n\twidth 14\n\theight 0.2\n\tdepth 14\n}\n\n" + Obj( "roof", "g_roof", "matte", "0 3.1 0" )
+			+ HSheet( "g_pane", 1, 1, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		Check( roofed.ok, "A41 scene loads" );
+		if( roofed.ok ) {
+			IORStack walk = roofed.Seed( Point3( 0, 4, 0 ) );
+			Check( walk.Depth() == 2 && walk.topObject() == roofed.O( "sea" ), "A41 fixture: a seed above the roof is in the sea" );
+			const IORStack seedAfter = roofed.Seed( Point3( 0, 1.001, 0 ) );
+			walk.SetMediumProbeScene( &roofed.Scene() );
+			walk.SetCurrentObject( roofed.O( "pane" ) );
+			RayIntersection exitHit( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			roofed.O( "pane" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+			if( exitHit.geometric.bHit ) {
+				const IORStackSeeding::OpenSheetCrossing cross =
+					IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.5, walk );
+				char label[200];
+				std::snprintf( label, sizeof(label),
+					"A41: exit under the roof agrees with a seed past it (walk depth %zu, seed depth %zu)",
+					walk.Depth(), seedAfter.Depth() );
+				Check( !cross.bEntering && walk.Depth() == seedAfter.Depth() && Close( cross.etaTo, seedAfter.top() ), label );
+			} else {
+				Check( false, "A41: probe hits the pane" );
+			}
+		}
+	}
+
+	// A42 (DL-622 review round 2, P3): entry contexts are shared copy-on-
+	// write: a copy that pushes, pops or re-indexes never changes the
+	// original's contexts, and popping an entry below a context re-indexes
+	// it.
+	{
+		Loaded two( Header() + HSheet( "g_a", 2, 3, true ) + Obj( "a", "g_a", "glass15" )
+			+ HSheet( "g_b", 4, 3, true ) + Obj( "b", "g_b", "glass133" )
+			+ "box_geometry\n{\n\tname g_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n" + Obj( "box", "g_box", "glass20", "0 -5 0" ) );
+		Check( two.ok, "A42 scene loads" );
+		if( two.ok ) {
+			const IORStack orig = two.Seed( Point3( 0, 0, 0 ) );
+			const bool fixtureOk = orig.Depth() == 3 && orig.ContextAt( 1 ).bHasContext && orig.ContextAt( 2 ).bHasContext;
+			Check( fixtureOk, "A42 fixture: [b, a] seeded with contexts" );
+			if( fixtureOk ) {
+				const Point3 aAt = orig.ContextAt( 2 ).ptIntersection;
+				IORStack copy( orig );
+				copy.SetCurrentObject( two.O( "box" ) );
+				copy.push( 2.0 );
+				IORStack::EntryContext moved = copy.ContextAt( 2 );
+				moved.ptIntersection = Point3( 9, 9, 9 );
+				copy.SetContextAt( 2, moved );
+				copy.SetCurrentObject( two.O( "b" ) );
+				copy.pop();		// erase b (index 1) below a's context
+				Check( orig.Depth() == 3 && orig.ContextAt( 2 ).ptIntersection.x == aAt.x &&
+					orig.ContextAt( 1 ).bHasContext && orig.FindEntryContext( two.O( "a" ) ) == &orig.ContextAt( 2 ),
+					"A42: mutating a copy leaves the original's contexts untouched" );
+				Check( copy.Depth() == 3 && copy.ObjectAt( 1 ) == two.O( "a" ) && copy.ContextAt( 1 ).ptIntersection.x == 9 &&
+					!copy.ContextAt( 2 ).bHasContext && copy.FindEntryContext( two.O( "b" ) ) == 0,
+					"A42: popping an entry below a context re-indexes the copy's contexts" );
+			}
+		}
+	}
+
+	// A43 (DL-622 review round 2, P3): RefreshLegacySeedFallbackNM, an entry
+	// it cannot re-index (a key that is not a scene object) stands in its
+	// query stack as its PARENT's index, so a DL-46 translucent entry above
+	// it re-pushes the refreshed ancestor at the companion wavelength (the
+	// first DL-622 landing pushed the hero value 1.7 there).
+	{
+		Loaded tl( Header()
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ "translucent_material\n{\n\tname mat_trans\n\tref white\n\ttau white\n\text 0\n\tN 1.0\n\tscattering 0.3\n}\n\n"
+			+ "box_geometry\n{\n\tname g_tank\n\twidth 12\n\theight 12\n\tdepth 12\n}\n\n" + Obj( "tank", "g_tank", "glass_disp" )
+			+ "box_geometry\n{\n\tname g_card\n\twidth 3\n\theight 3\n\tdepth 3\n}\n\n" + Obj( "card", "g_card", "mat_trans" )
+			+ HSheet( "g_slab_top", 2, 4, true ) + Obj( "slab_top", "g_slab_top", "glass15" ) );
+		Check( tl.ok, "A43 scene loads" );
+		if( tl.ok ) {
+			RayIntersection probe( Ray( Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) ), nullRasterizerState );
+			tl.O( "tank" )->IntersectRay( probe, RISE_INFINITY, true, true, false );
+			IORStack empty( 1.0 );
+			const Scalar ior400 = tl.O( "tank" )->GetMaterial()->GetSpecularInfoNM( probe.geometric, empty, 400 ).ior;
+			static int notASceneObject = 0;
+			IORStack start( 1.0 );
+			start.SetMediumProbeScene( &tl.Scene() );
+			start.SetCurrentObject( tl.O( "tank" ) );
+			start.push( 1.5 );
+			start.SetCurrentObject( reinterpret_cast<const IObject*>( &notASceneObject ) );
+			start.push( 1.7 );
+			start.SetCurrentObject( tl.O( "card" ) );
+			start.push( 1.7 );
+			std::vector<IShaderOp*> ops;
+			IShader* shader = nullptr;
+			RISE_API_CreateStandardShader( &shader, ops );
+			RayCaster* caster = new RayCaster( false, 16, *shader, true );
+			caster->AttachScene( &tl.Scene() );
+			ManifoldSolverConfig cfg;
+			cfg.enabled = true;
+			ManifoldSolver* solver = new ManifoldSolver( cfg );
+			std::vector<ManifoldVertex> chain;
+			solver->BuildSnellBaseSeed(
+				Point3( 0, 3, 0 ), Vector3( 0, -1, 0 ), Point3( 0, 1.0, 0 ),
+				tl.Scene(), *caster, chain, &start, nullptr, 400 );
+			char label[220];
+			std::snprintf( label, sizeof(label),
+				"A43: translucent entry above an unresolvable key re-pushes the refreshed ancestor (etaI %.4f, want ior(400) %.4f)",
+				chain.empty() ? -1.0 : chain[0].etaI, ior400 );
+			Check( chain.size() >= 1 && Close( chain[0].etaI, ior400 ), label );
+			solver->release();
+			caster->release();
+			shader->release();
+		}
 	}
 
 	// A39 (DL-622 review, P3): a probe table never silently drops a met
