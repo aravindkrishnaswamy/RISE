@@ -829,8 +829,22 @@ namespace
 // certified geometry instead of interpreting its infinite range2 as outside.
 //
 // DL-617: patch and composite operands -- see the definition below.
-static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection& hit,
-	const bool closedOperand, const bool completeExit );
+namespace
+{
+	//! A composite's cached facts about ONE operand (`CSGObject`'s
+	//! kClosed / kCompleteExit / kCsg / kPatchLeaf / kMirror bits), handed
+	//! to the per-ray helpers so no ray re-derives them by dynamic_cast.
+	struct OperandFacts
+	{
+		bool closed = false;		//!< may answer containment by its closed-surface fallback
+		bool completeExit = false;	//!< closed leaf that publishes no exit: complete it
+		bool csg = false;			//!< the operand is itself a composite
+		bool patchLeaf = false;		//!< certified-closed patch-set leaf
+		Scalar mirror = 1;			//!< sign of the operand transform's determinant
+	};
+}
+
+static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection& hit, const OperandFacts& facts );
 
 namespace
 {
@@ -1090,7 +1104,7 @@ namespace
 	//!     third direction: strict majority of the decided votes, else
 	//!     undecided.
 	int LeafContains( const IObjectPriv* pSolid, const Point3& pt, const Vector3& dir, const Scalar scale,
-		const RayIntersection* knownFirstHit = 0 )
+		const RayIntersection* knownFirstHit = 0, const int knownPatchLeaf = -1 )
 	{
 		{
 			const BoundingBox box = pSolid->getBoundingBox();
@@ -1108,7 +1122,7 @@ namespace
 		}
 		Scalar firstRange = ( knownFirstHit && knownFirstHit->geometric.bHit ) ?
 			knownFirstHit->geometric.range : RISE_INFINITY;
-		if( IsCertifiedClosedPatchLeaf( pSolid ) ) {
+		if( knownPatchLeaf >= 0 ? ( knownPatchLeaf != 0 ) : IsCertifiedClosedPatchLeaf( pSolid ) ) {
 			int side = 0;
 			if( knownFirstHit ) {
 				side = FirstCrossingSide( *knownFirstHit, dir );
@@ -1251,8 +1265,7 @@ namespace
 		const Scalar targetRange,
 		const RayIntersectionGeometric* castInputs,
 		const RasterizerState& rast,
-		const bool closedOperand,
-		const bool completeExit,
+		const OperandFacts& facts,
 		unsigned int& budget,
 		RayIntersection& riOperand )
 	{
@@ -1281,7 +1294,7 @@ namespace
 			}
 			const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
 			pOperand->IntersectRay( riNext, remFar, true, true, true );
-			RecoverContainedOperand( pOperand, riNext, closedOperand, completeExit );
+			RecoverContainedOperand( pOperand, riNext, facts );
 			if( !riNext.geometric.bHit ) {
 				riOperand.geometric.bHit = false;
 				break;
@@ -1432,9 +1445,10 @@ namespace
 // runs only for the latter.  An analytic leaf publishes its own exit and
 // has already returned through `hasBoundaryRange2`; the gate makes that
 // explicit instead of leaving it to the convention.
-static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection& hit,
-	const bool closedOperand, const bool completeExit )
+static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection& hit, const OperandFacts& facts )
 {
+	const bool closedOperand = facts.closed;
+	const bool completeExit = facts.completeExit;
 	if( !hit.geometric.bHit || hit.hasBoundaryRange2 ) {
 		return;
 	}
@@ -1462,8 +1476,8 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 	const Scalar tMid = Scalar( 0.5 ) * hit.geometric.range;
 	const Point3 pMid = ( tMid > 0 && std::isfinite( tMid ) ) ?
 		hit.geometric.ray.PointAtLength( tMid ) : hit.geometric.ray.origin;
-	const CSGObject* csg = dynamic_cast<const CSGObject*>( operand );
-	const bool patch = !csg && IsCertifiedClosedPatchLeaf( operand );
+	const CSGObject* csg = facts.csg ? dynamic_cast<const CSGObject*>( operand ) : nullptr;	// virtual base: only composites pay the cast
+	const bool patch = !csg && facts.patchLeaf;
 	const BoundingBox box = operand->getBoundingBox();
 	Scalar scale = Vector3Ops::Magnitude( Vector3Ops::mkVector3( box.ur, box.ll ) );
 	if( !( scale > 0 ) || !std::isfinite( scale ) ) {
@@ -1480,7 +1494,7 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 		}
 		side = csg ?
 			CSGObject::OperandContainsPoint( operand, pMid, hit.geometric.ray.Dir(), scale ) :
-			LeafContains( operand, hit.geometric.ray.origin, hit.geometric.ray.Dir(), scale, &hit );
+			LeafContains( operand, hit.geometric.ray.origin, hit.geometric.ray.Dir(), scale, &hit, patch ? 1 : 0 );
 	}
 	if( !csg && completeExit && side < 0 ) {
 		// Outside: complete the entry at `range` with its exit.
@@ -1527,7 +1541,7 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 					dBetween != 0 && std::isfinite( dBetween ) ) {
 					betweenSide = dBetween < 0 ? 1 : -1;
 				} else {
-					betweenSide = LeafContains( operand, pBetween, hit.geometric.ray.Dir(), scale );
+					betweenSide = LeafContains( operand, pBetween, hit.geometric.ray.Dir(), scale, 0, patch ? 1 : 0 );
 				}
 				if( betweenSide > 0 ) {
 					isExit = true;
@@ -1572,7 +1586,7 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 					}
 				}
 				if( hit.geometric.derivatives.valid ) {
-					const Scalar mirror = OperandMirrorSign( operand );
+					const Scalar mirror = facts.mirror;
 					if( mirror * Vector3Ops::Dot( Vector3Ops::Cross(
 							hit.geometric.derivatives.dpdu, hit.geometric.derivatives.dpdv ),
 							hit.geometric.vNormal ) < 0 ) {
@@ -1635,7 +1649,7 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 					// transform sign undoes that.  A composite operand's
 					// own exit records were already oriented at its own
 					// level, against its own leaves' transforms.
-					const Scalar mirror = OperandMirrorSign( operand );
+					const Scalar mirror = facts.mirror;
 					if( mirror * Vector3Ops::Dot( Vector3Ops::Cross( d.dpdu, d.dpdv ), hit.geometric.vNormal ) < 0 ) {
 						d.valid = false;
 					}
@@ -1722,13 +1736,15 @@ bool CSGObject::IsTopologicallyClosed() const
 
 int CSGObject::CertificateBits() const
 {
-	const long long epoch = static_cast<long long>( GeometricUtilities::PatchCertificateEpoch() );
+	// Epoch in bits 32..62 (31 bits, so the packed value stays positive and
+	// -1 keeps meaning "not computed"), flags in bits 0..30.
+	const long long epoch = static_cast<long long>( GeometricUtilities::PatchCertificateEpoch() & 0x7fffffffu );
 	const long long cached = m_certBits.load( std::memory_order_acquire );
-	if( cached >= 0 && ( cached >> 16 ) == epoch ) {
-		return static_cast<int>( cached & 0xffff );
+	if( cached >= 0 && ( cached >> 32 ) == epoch ) {
+		return static_cast<int>( cached & 0x7fffffffLL );
 	}
 	const int bits = ComputeCertificateBits();
-	m_certBits.store( ( epoch << 16 ) | bits, std::memory_order_release );
+	m_certBits.store( ( epoch << 32 ) | static_cast<long long>( bits ), std::memory_order_release );
 	return bits;
 }
 
@@ -1749,15 +1765,32 @@ int CSGObject::ComputeCertificateBits() const
 		bits |= kTopologicallyClosed;
 	}
 	// Per-operand facts for the per-ray code (`RecoverContainedOperand`,
-	// `AdvanceOperandPast`), decided here once per preparation so no ray
-	// pays for the dynamic_casts or triggers a lazy topology build.
+	// `AdvanceOperandPast`, `LeafContains`), decided here once per
+	// preparation so no ray re-derives an operand's role, closedness,
+	// patch certificate or mirror sign, or triggers a lazy topology build.
+	// Two casts remain per ray, each only where it is needed: the cast to
+	// the composite type for an operand that IS a composite (virtual base,
+	// so it cannot be a static_cast), and the cast to `Object` for the
+	// back-off on the exit-completion path, which itself re-casts the
+	// operand.
 	const auto operandFacts = [&]( const IObjectPriv* operand, const int role,
-		const int closedBit, const int completeBit, const int singleLobeBit )
+		const int closedBit, const int completeBit, const int singleLobeBit,
+		const int csgBit, const int patchBit, const int mirrorBit )
 	{
 		const CSGObject* csg = dynamic_cast<const CSGObject*>( operand );
+		const bool patch = !csg && IsCertifiedClosedPatchLeaf( operand );
+		if( csg ) {
+			bits |= csgBit;
+		}
+		if( patch ) {
+			bits |= patchBit;
+		}
+		if( OperandMirrorSign( operand ) < 0 ) {
+			bits |= mirrorBit;
+		}
 		const bool closed = csg ?
 			( csg->IsCertifiedWatertight() || csg->IsTopologicallyClosed() ) :
-			( IsCertifiedClosedPatchLeaf( operand ) || role == 0 || IsOperandCertifiedWatertight( operand ) );
+			( patch || role == 0 || IsOperandCertifiedWatertight( operand ) );
 		if( closed ) {
 			bits |= closedBit;
 			if( OperandPublishesNoExit( operand ) ) {
@@ -1768,8 +1801,8 @@ int CSGObject::ComputeCertificateBits() const
 			bits |= singleLobeBit;
 		}
 	};
-	operandFacts( pObjectA, roleA, kClosedA, kCompleteExitA, kSingleLobeA );
-	operandFacts( pObjectB, roleB, kClosedB, kCompleteExitB, kSingleLobeB );
+	operandFacts( pObjectA, roleA, kClosedA, kCompleteExitA, kSingleLobeA, kCsgA, kPatchLeafA, kMirrorA );
+	operandFacts( pObjectB, roleB, kClosedB, kCompleteExitB, kSingleLobeB, kCsgB, kPatchLeafB, kMirrorB );
 	bool neg = false;
 	// Roles first (topology only), then the certificate on top of them.
 	bool trimA = false, trimB = false;
@@ -1910,10 +1943,21 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	riObjB.geometric.PropagateCastInputs( ri.geometric );
 
 	const int certBits = CertificateBits();
+	const auto factsFromBits = [certBits]( const bool a ) {
+		OperandFacts f;
+		f.closed = ( certBits & ( a ? kClosedA : kClosedB ) ) != 0;
+		f.completeExit = ( certBits & ( a ? kCompleteExitA : kCompleteExitB ) ) != 0;
+		f.csg = ( certBits & ( a ? kCsgA : kCsgB ) ) != 0;
+		f.patchLeaf = ( certBits & ( a ? kPatchLeafA : kPatchLeafB ) ) != 0;
+		f.mirror = ( certBits & ( a ? kMirrorA : kMirrorB ) ) ? Scalar( -1 ) : Scalar( 1 );
+		return f;
+	};
+	const OperandFacts factsA = factsFromBits( true );
+	const OperandFacts factsB = factsFromBits( false );
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
 	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
-	RecoverContainedOperand( pObjectA, riObjA, ( certBits & kClosedA ) != 0, ( certBits & kCompleteExitA ) != 0 );
-	RecoverContainedOperand( pObjectB, riObjB, ( certBits & kClosedB ) != 0, ( certBits & kCompleteExitB ) != 0 );
+	RecoverContainedOperand( pObjectA, riObjA, factsA );
+	RecoverContainedOperand( pObjectB, riObjB, factsB );
 	// One re-cast allowance for every `AdvanceOperandPast` this query makes.
 	unsigned int advanceBudget = kMaxOpenSheetWalk;
 
@@ -2199,7 +2243,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						}
 						AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, scale,
 							riObjB.geometric.range - NEARZERO, &ri.geometric, ri.geometric.rast,
-							( certBits & kClosedA ) != 0, ( certBits & kCompleteExitA ) != 0, advanceBudget, riObjA );
+							factsA, advanceBudget, riObjA );
 					} else if( riObjB.geometric.range2 > 0 &&
 						riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
 						riObjB.geometric.range2 < riObjA.geometric.range ) {
@@ -2208,7 +2252,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						}
 						AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
 							riObjA.geometric.range - NEARZERO, &ri.geometric, ri.geometric.rast,
-							( certBits & kClosedB ) != 0, ( certBits & kCompleteExitB ) != 0, advanceBudget, riObjB );
+							factsB, advanceBudget, riObjB );
 					} else {
 						break;
 					}
@@ -2427,7 +2471,26 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				ri.boundaryRange2 = 0; ri.hasBoundaryRange2 = true;
 			} else if( riObjB.geometric.range2 == 0 ) {
 				// If we are inside B but not inside A, then as long as we hit A before exiting B
-				if( riObjA.geometric.range < riObjB.geometric.range ) {
+				// -- and are still inside A when B ends.  When A's interval
+				// ends at or before B's exit, A lies wholly inside the
+				// subtracted B along the ray: that interval contributes
+				// nothing.  A later lobe of a multi-lobe A that begins after
+				// B's exit is then the composite's surface.
+				if( riObjA.geometric.range < riObjB.geometric.range &&
+					!( riObjB.geometric.range < riObjA.geometric.range2 ) ) {
+					if( !( certBits & kSingleLobeA ) ) {
+						Scalar scale = 1;
+						if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+							scale = 1;
+						}
+						AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, scale,
+							riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
+							factsA, advanceBudget, riObjA );
+						if( riObjA.geometric.bHit && riObjA.geometric.range >= riObjB.geometric.range ) {
+							ri = riObjA;
+						}
+					}
+				} else if( riObjA.geometric.range < riObjB.geometric.range ) {
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range2;
 					ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
@@ -2496,7 +2559,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					}
 					AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
 						riObjA.geometric.range, &ri.geometric, ri.geometric.rast,
-						( certBits & kClosedB ) != 0, ( certBits & kCompleteExitB ) != 0, advanceBudget, riObjB );
+						factsB, advanceBudget, riObjB );
 				}
 				if( !riObjB.geometric.bHit ) {
 					// Never hit B at all -- composite is just A.
@@ -3092,10 +3155,21 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	// under an expanding one, occlusion could wrongly extend past the
 	// light.
 	const int certBits = CertificateBits();
+	const auto factsFromBits = [certBits]( const bool a ) {
+		OperandFacts f;
+		f.closed = ( certBits & ( a ? kClosedA : kClosedB ) ) != 0;
+		f.completeExit = ( certBits & ( a ? kCompleteExitA : kCompleteExitB ) ) != 0;
+		f.csg = ( certBits & ( a ? kCsgA : kCsgB ) ) != 0;
+		f.patchLeaf = ( certBits & ( a ? kPatchLeafA : kPatchLeafB ) ) != 0;
+		f.mirror = ( certBits & ( a ? kMirrorA : kMirrorB ) ) ? Scalar( -1 ) : Scalar( 1 );
+		return f;
+	};
+	const OperandFacts factsA = factsFromBits( true );
+	const OperandFacts factsB = factsFromBits( false );
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
 	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
-	RecoverContainedOperand( pObjectA, riObjA, ( certBits & kClosedA ) != 0, ( certBits & kCompleteExitA ) != 0 );
-	RecoverContainedOperand( pObjectB, riObjB, ( certBits & kClosedB ) != 0, ( certBits & kCompleteExitB ) != 0 );
+	RecoverContainedOperand( pObjectA, riObjA, factsA );
+	RecoverContainedOperand( pObjectB, riObjB, factsB );
 	unsigned int advanceBudget = kMaxOpenSheetWalk;
 
 	// DL-617: sheet-trimming composite -- see IntersectRay.
@@ -3207,7 +3281,7 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 						}
 						AdvanceOperandPast( pObjectA, orig, dHowFar2, scale,
 							riObjB.geometric.range - NEARZERO, 0, nullRasterizerState,
-							( certBits & kClosedA ) != 0, ( certBits & kCompleteExitA ) != 0, advanceBudget, riObjA );
+							factsA, advanceBudget, riObjA );
 					} else if( riObjB.geometric.range2 > 0 &&
 						riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
 						riObjB.geometric.range2 < riObjA.geometric.range ) {
@@ -3216,7 +3290,7 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 						}
 						AdvanceOperandPast( pObjectB, orig, dHowFar2, scale,
 							riObjA.geometric.range - NEARZERO, 0, nullRasterizerState,
-							( certBits & kClosedB ) != 0, ( certBits & kCompleteExitB ) != 0, advanceBudget, riObjB );
+							factsB, advanceBudget, riObjB );
 					} else {
 						break;
 					}
@@ -3254,8 +3328,27 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				return true;
 //				return (riObjB.geometric.range < dHowFar2 );
 			} else if( riObjB.geometric.range2 == 0 ) {
-				// If we are inside B but not inside A, then as long as we exit B before dHowFar2 its all good
-				return (riObjB.geometric.range < dHowFar2 );
+				// If we are inside B but not inside A: the composite starts at
+				// B's exit only if the ray is inside A there.  An A interval
+				// that ends at or before B's exit lies wholly inside the
+				// subtracted B (see IntersectRay); only a later lobe of a
+				// multi-lobe A can still occlude.
+				if( riObjB.geometric.range < riObjA.geometric.range2 ) {
+					return (riObjB.geometric.range < dHowFar2 );
+				}
+				if( !( certBits & kSingleLobeA ) ) {
+					Scalar scale = 1;
+					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+						scale = 1;
+					}
+					AdvanceOperandPast( pObjectA, orig, dHowFar2, scale,
+						riObjB.geometric.range, 0, nullRasterizerState,
+						factsA, advanceBudget, riObjA );
+					if( riObjA.geometric.bHit && riObjA.geometric.range >= riObjB.geometric.range ) {
+						return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
+					}
+				}
+				return false;
 			} else {
 				if( riObjB.geometric.bHit &&
 					!( certBits & kSingleLobeB ) &&
@@ -3268,7 +3361,7 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 					}
 					AdvanceOperandPast( pObjectB, orig, dHowFar2, scale,
 						riObjA.geometric.range, 0, nullRasterizerState,
-						( certBits & kClosedB ) != 0, ( certBits & kCompleteExitB ) != 0, advanceBudget, riObjB );
+						factsB, advanceBudget, riObjB );
 				}
 				// If we never hit B, or if B begins after A ends, or if B ends before A can begin
 				// then we only have A

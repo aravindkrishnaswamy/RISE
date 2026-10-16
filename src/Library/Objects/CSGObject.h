@@ -64,12 +64,16 @@ namespace RISE
 			CSG_OP									op;
 
 			//! DL-617 certificate cache (see `ComputeCertificateBits`):
-			//! -1 = not computed, else (patch-certificate epoch << 16) | the
-			//! kCert* mask below.  Recomputed by `Realize` (every
+			//! -1 = not computed, else ((patch-certificate epoch mod 2^31)
+			//! << 32) | the flag mask below.  Recomputed by `Realize` (every
 			//! preparation), dropped by `AssignObjects` / `SetOperation`, and
 			//! STALE whenever `GeometricUtilities::PatchCertificateEpoch()`
-			//! has moved (a patch was added to, or re-prepared in, any patch
-			//! set -- possibly an operand's -- since it was computed).
+			//! has moved: a patch was added to, or re-prepared in, any patch
+			//! set, or any triangle mesh's vertices / triangles / normals were
+			//! edited (every mesh mutation that drops its cached
+			//! `TopologicalOpenness` bumps the same epoch) -- possibly an
+			//! operand's -- since it was computed.  The operand TRANSFORM
+			//! facts (`kMirrorA/B`) are re-derived by `Realize` only.
 			enum
 			{
 				kCertWatertight		= 1,	//!< both operands certified closed solids
@@ -82,15 +86,25 @@ namespace RISE
 				kUnionSheetA		= 128,	//!< DL-621(c): union of open sheet A and closed solid B
 				kUnionSheetB		= 256,	//!< DL-621(c): union of closed solid A and open sheet B
 				// Per-operand facts the per-ray code reads instead of
-				// re-deriving them (dynamic_casts, lazy topology builds) on
-				// every ray -- see `ComputeCertificateBits`.
+				// re-deriving them (type tests, lazy topology builds) on
+				// every ray -- see `ComputeCertificateBits` for what stays.
 				kClosedA			= 512,	//!< A may answer containment by its closed-surface fallback
 				kClosedB			= 1024,	//!< B may answer containment by its closed-surface fallback
 				kCompleteExitA		= 2048,	//!< A is a closed leaf that publishes no exit: complete it
 				kCompleteExitB		= 4096,	//!< B is a closed leaf that publishes no exit: complete it
 				kSingleLobeA		= 8192,	//!< A is a convex analytic leaf: a line meets it in one interval
-				kSingleLobeB		= 16384	//!< B is a convex analytic leaf: a line meets it in one interval
+				kSingleLobeB		= 16384,	//!< B is a convex analytic leaf: a line meets it in one interval
+				kCsgA				= 1 << 15,	//!< A is itself a CSG composite
+				kCsgB				= 1 << 16,	//!< B is itself a CSG composite
+				kPatchLeafA			= 1 << 17,	//!< A is a certified-closed patch-set leaf
+				kPatchLeafB			= 1 << 18,	//!< B is a certified-closed patch-set leaf
+				kMirrorA			= 1 << 19,	//!< A's own transform mirrors (negative determinant)
+				kMirrorB			= 1 << 20,	//!< B's own transform mirrors (negative determinant)
+				kCertBitsEnd		= 1 << 21	//!< one past the highest flag
 			};
+			//! `m_certBits` packs the epoch above bit 32 and the flags below
+			//! it; every flag must stay inside the low 31 bits (an int).
+			static_assert( kCertBitsEnd <= ( 1 << 30 ), "CSGObject certificate flags overflow their 31-bit field" );
 			mutable std::atomic<long long>			m_certBits;
 			int CertificateBits() const;
 			int ComputeCertificateBits() const;

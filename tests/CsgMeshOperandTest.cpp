@@ -345,6 +345,17 @@ static void TestNearClosedMeshRole()
 		PushTri( quad, Point3( -1, -1, 0 ), Point3( 1, -1, 0 ), Point3( 1, 1, 0 ) );
 		PushTri( quad, Point3( -1, -1, 0 ), Point3( 1, 1, 0 ), Point3( -1, 1, 0 ) );
 		Check( GeometricUtilities::TriangleMeshOpenness( quad ) == 1, "C: flat quad is a sheet (control)" );
+		// Two flat quads touching at ONE vertex and wound against each
+		// other: each is a sheet, and their boundary loops must not cancel
+		// just because they meet at a vertex.
+		std::vector<Point3> bow;
+		PushTri( bow, Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 1, 1, 0 ) );
+		PushTri( bow, Point3( 0, 0, 0 ), Point3( 1, 1, 0 ), Point3( 0, 1, 0 ) );
+		PushTri( bow, Point3( 0, 0, 0 ), Point3( -1, -1, 0 ), Point3( -1, 0, 0 ) );
+		PushTri( bow, Point3( 0, 0, 0 ), Point3( 0, -1, 0 ), Point3( -1, -1, 0 ) );
+		Check( GeometricUtilities::TriangleMeshOpenness( bow ) == 1,
+			"C: two opposite-wound quads touching at a vertex are a sheet (got " +
+			std::to_string( GeometricUtilities::TriangleMeshOpenness( bow ) ) + ")" );
 	}
 
 	// Composite: intersection( pinhole sphere mesh, ball centred on its
@@ -507,6 +518,145 @@ static void TestConcurrentFirstQuery()
 		"E: concurrent first queries cost about one build, not one per thread" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// F. subtraction from inside B through all of A
+//////////////////////////////////////////////////////////////////////
+
+static Object* MakeSphereObject( Scalar r, const Point3& p )
+{
+	SphereGeometry* g = new SphereGeometry( r );
+	Object* o = new Object( g );
+	safe_release( g );
+	o->SetPosition( p );
+	o->FinalizeTransformations();
+	return o;
+}
+
+static void TestInsideBThroughA()
+{
+	std::cout << "F. subtraction: a ray inside B that crosses all of A before leaving B" << std::endl;
+	const Vector3 down( 0, 0, -1 );
+	const Point3 o( 0.1, 0.05, 4 );
+	const Scalar h = std::sqrt( 1 - 0.0125 );
+	// A: unit sphere at the origin (z in [-1, 1]); B: radius 4 at z = 2,
+	// containing the ray origin and all of A along the ray.  A - B is
+	// empty along the ray.
+	{
+		Object* oA = MakeSphereObject( 1, Point3( 0, 0, 0 ) );
+		Object* oB = MakeSphereObject( 4, Point3( 0, 0, 2 ) );
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		csg->AssignObjects( oA, oB );
+		csg->FinalizeTransformations();
+		safe_release( oA );
+		safe_release( oB );
+		const RayIntersection hit = CastObj( *csg, o, down );
+		Check( !hit.geometric.bHit, "F: A wholly inside B along the ray: A - B is missed (got range " +
+			std::to_string( hit.geometric.range ) + ")" );
+		Check( !csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true ),
+			"F: ... and does not occlude" );
+		// Control: B ends inside A (B radius 2.5 -> exit at z = -0.5).
+		safe_release( csg );
+	}
+	{
+		Object* oA = MakeSphereObject( 1, Point3( 0, 0, 0 ) );
+		Object* oB = MakeSphereObject( 2.5, Point3( 0, 0, 2 ) );
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		csg->AssignObjects( oA, oB );
+		csg->FinalizeTransformations();
+		safe_release( oA );
+		safe_release( oB );
+		const RayIntersection hit = CastObj( *csg, o, down );
+		const Scalar bExit = 2 + std::sqrt( 6.25 - 0.0125 );
+		Check( hit.geometric.bHit && std::fabs( hit.geometric.range - bExit ) < 1e-6,
+			"F: B exits inside A: the composite starts at B's exit (control)" );
+		Check( csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true ),
+			"F: ... and occludes (control)" );
+		safe_release( csg );
+	}
+	// A two-lobe A (a union: lobes z in [-1,1] and [-9,-7]); the second
+	// lobe lies past B's exit, so it is the composite's surface.
+	{
+		Object* l0 = MakeSphereObject( 1, Point3( 0, 0, 0 ) );
+		Object* l1 = MakeSphereObject( 1, Point3( 0, 0, -8 ) );
+		CSGObject* uni = new CSGObject( CSG_UNION );
+		uni->AssignObjects( l0, l1 );
+		uni->FinalizeTransformations();
+		safe_release( l0 );
+		safe_release( l1 );
+		Object* oB = MakeSphereObject( 4, Point3( 0, 0, 2 ) );
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		csg->AssignObjects( uni, oB );
+		csg->FinalizeTransformations();
+		safe_release( uni );
+		safe_release( oB );
+		const RayIntersection hit = CastObj( *csg, o, down );
+		const Scalar expect = 4 + 8 - h;
+		Check( hit.geometric.bHit && std::fabs( hit.geometric.range - expect ) < 1e-6,
+			"F: two-lobe A: the lobe past B's exit is hit (got hit=" + std::to_string( hit.geometric.bHit ) +
+			" range " + std::to_string( hit.geometric.range ) + ")" );
+		Check( csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true ),
+			"F: two-lobe A: the lobe past B's exit occludes" );
+		Check( !csg->IntersectRay_IntersectionOnly( Ray( o, down ), Scalar( 10 ), true, true ),
+			"F: two-lobe A: ... but not before it" );
+		safe_release( csg );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// G. a mesh edit re-derives the parent composite's cached roles
+//////////////////////////////////////////////////////////////////////
+
+static void FillMesh( TriangleMeshGeometry* g, const std::vector<Point3>& corners )
+{
+	g->BeginTriangles();
+	for( std::size_t k = 0; k < corners.size(); k += 3 ) {
+		Triangle tri;
+		const Vector3 n = Vector3Ops::Normalize( Vector3Ops::Cross(
+			Vector3Ops::mkVector3( corners[k + 1], corners[k] ), Vector3Ops::mkVector3( corners[k + 2], corners[k] ) ) );
+		for( int m = 0; m < 3; ++m ) {
+			tri.vertices[m] = corners[k + m];
+			tri.normals[m] = n;
+			tri.coords[m] = Point2( 0, 0 );
+		}
+		g->AddTriangle( tri );
+	}
+	g->DoneTriangles();
+}
+
+static void TestMeshEditRefreshesComposite()
+{
+	std::cout << "G. a mesh edit re-derives the composite's cached operand roles" << std::endl;
+	// Start as the cube [-1,1]^3 without its +Z face (an open box: a
+	// sheet), intersected with a ball; then append the two +Z triangles
+	// (`FillMesh` appends -- BeginTriangles does not clear) so the same
+	// geometry becomes the closed cube.
+	const std::vector<Point3> cube = CubeCorners( false );
+	std::vector<Point3> openBox( cube.begin(), cube.begin() + 6 );
+	openBox.insert( openBox.end(), cube.begin() + 12, cube.end() );
+	const std::vector<Point3> lid( cube.begin() + 6, cube.begin() + 12 );
+	TriangleMeshGeometry* g = new TriangleMeshGeometry( true );
+	FillMesh( g, openBox );
+	Object* oMesh = new Object( g );
+	oMesh->FinalizeTransformations();
+	Object* oBall = MakeSphereObject( 1, Point3( 0, 0, 0 ) );
+	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
+	csg->AssignObjects( oMesh, oBall );
+	csg->FinalizeTransformations();
+	safe_release( oMesh );
+	safe_release( oBall );
+	csg->Realize();
+	Check( csg->TrimsSheet(), "G: open box ∩ ball trims the sheet" );
+	// Edit: close the box (no Realize).
+	FillMesh( g, lid );
+	Check( !csg->TrimsSheet() && csg->IsTopologicallyClosed(),
+		"G: after the mesh becomes closed, the composite re-derives its roles without a Realize" );
+	const RayIntersection hit = CastObj( *csg, Point3( 0.1, 0.05, 5 ), Vector3( 0, 0, -1 ) );
+	Check( hit.geometric.bHit && std::fabs( hit.geometric.range - ( 5 - std::sqrt( 1 - 0.0125 ) ) ) < 1e-6,
+		"G: ... and renders the cube ∩ ball solid (enters at the ball)" );
+	safe_release( g );
+	safe_release( csg );
+}
+
 int main()
 {
 	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13) ===" << std::endl;
@@ -515,6 +665,8 @@ int main()
 	TestNearClosedMeshRole();
 	TestPillowRole();
 	TestConcurrentFirstQuery();
+	TestInsideBThroughA();
+	TestMeshEditRefreshesComposite();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }
