@@ -910,7 +910,8 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
         // membership or reverses ambient/coat indices on a back face.
         exiting=false;etaI=next.top();etaT=query.index;
     } else if(hit.bProvablyNoInterior) {
-        const auto crossing = IORStackSeeding::ResolveOpenSheetCrossing(hit, query.index, next, &material);
+        const auto crossing = IORStackSeeding::ResolveOpenSheetCrossing(hit, query.index, next, &material,
+            domain.kind == SMSQueryDomain::Wavelength ? domain.nm : 0);
         etaI = crossing.etaFrom;
         etaT = crossing.etaTo;
         exiting = !crossing.bEntering;
@@ -11152,7 +11153,7 @@ void RefreshLegacySeedFallbackNM(std::vector<RISE::Implementation::ManifoldVerte
 				exitHit.bGeomNormalOrientedToRay = false;
 				exitHit.bGeomNormalRayDerived = false;
 				exitHit.bProvablyNoInterior = true;
-				IORStackSeeding::ResolveUnpushedExit( exitHit, v.pObject, replay );
+				IORStackSeeding::ResolveUnpushedExit( exitHit, v.pObject, replay, nm );
 			}
 			v.etaT = replay.top();
 		}

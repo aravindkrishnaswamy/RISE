@@ -309,7 +309,7 @@ void PerfectRefractorSPF::ScatterNM(
 	IORStackSeeding::OpenSheetCrossing openSheet = { false, Scalar( 1 ), Scalar( 1 ) };
 	if( ri.bProvablyNoInterior ) {
 		pOpenSheetStack.reset( new IORStack( ior_stack ) );
-		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, newIOR, *pOpenSheetStack );
+		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, newIOR, *pOpenSheetStack, 0, nm );
 	}
 	const bool bEntering = pOpenSheetStack ? openSheet.bEntering : !ior_stack.containsCurrent();
 

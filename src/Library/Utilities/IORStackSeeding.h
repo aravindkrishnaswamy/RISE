@@ -1743,6 +1743,21 @@ namespace RISE
 			return false;
 		}
 
+		//! The most scene rays one group certificate spends (see
+		//! HasFreeSpaceDetourToSheets).
+		static const int kGroupDetourRayBudget = 1024;
+
+		namespace Diagnostics
+		{
+			//! Test hook: the group certificate's ray budget on this thread
+			//! (defaults to kGroupDetourRayBudget).
+			inline int& GroupDetourRayBudget()
+			{
+				static thread_local int budget = kGroupDetourRayBudget;
+				return budget;
+			}
+		}
+
 		//! One sheet's answer from `HasFreeSpaceDetourToSheets`.
 		struct DetourResult
 		{
@@ -1844,11 +1859,14 @@ namespace RISE
 			}
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			const int maxSteps = MaxSceneWalkSteps( pObjects );
+			int raysSpent = 0;
+			const int rayBudget = Diagnostics::GroupDetourRayBudget();
 			Ray vertProbe( obstacleHit.geometric.ptIntersection, normal );
 			vertProbe.Advance( kSeedEps );
 			for( int step = 0; step < maxSteps && open > 0; ++step ) {
 				RayIntersection vri( vertProbe, nullRasterizerState );
 				Diagnostics::SceneRayCounter()++;
+				raysSpent++;
 				pObjects->IntersectRay( vri, true, true, false );
 				if( !vri.geometric.bHit ) {
 					break;
@@ -1856,7 +1874,7 @@ namespace RISE
 				SpecularInfo vInfo;
 				const MembershipHit vMem = ClassifyMembershipHit( vri, normal, nm, vInfo );
 				const std::size_t t = ( vMem != kMembershipSkip ) ? indexOf( vri.pObject ) : n;
-				if( t < n && !resolved[t] ) {
+				if( t < n && !resolved[t] && vMem != kMembershipBlock ) {
 					resolved[t] = true;
 					open--;
 					if( vMem == kMembershipSheetBack ) {
@@ -1878,6 +1896,14 @@ namespace RISE
 						break;
 					}
 				} else if( vMem == kMembershipBlock ) {
+					// A group sheet not trackable here (e.g. its ior reads <= 0
+					// at this wavelength) fails, and is an opaque obstacle to
+					// every later sheet, exactly as in each later sheet's own
+					// certificate.
+					if( t < n && !resolved[t] ) {
+						resolved[t] = true;
+						open--;
+					}
 					if( pSeedObject && vri.pObject == pSeedObject ) {
 						break;
 					}
@@ -1915,7 +1941,18 @@ namespace RISE
 				vertProbe.Advance( kSeedEps );
 			}
 
-			// Waypoints, per distinct obstacle box.
+			// Waypoints, per distinct obstacle box.  Interleaved opaque
+			// obstacles (glass shelves carrying vases) give every sheet its
+			// own box, and when waypoints keep failing trying them all costs
+			// O(N * 8 * MaxSceneWalkSteps) scene rays.  So the certificate
+			// spends at most kGroupDetourRayBudget scene rays (column walk
+			// included); once they are spent every sheet it has not yet
+			// confirmed is REFUSED (not in its medium).  The refusal is
+			// deterministic in (point, group), touches only this group's
+			// detour-confirmed sheets (a sheet its shared normal ray reached
+			// directly is unaffected), and seeds and unpushed-exit resolutions
+			// both decide membership through ConfirmOpenSheetsAt, so they
+			// refuse alike.
 			std::vector<bool> boxDone( n, false );
 			Vector3 U( 1, 0, 0 ), V( 0, 1, 0 );
 			MakeOrthonormalTangents( normal, U, V );
@@ -1930,6 +1967,9 @@ namespace RISE
 						cluster.push_back( k );
 						boxDone[k] = true;
 					}
+				}
+				if( raysSpent >= rayBudget ) {
+					break;
 				}
 				const BoundingBox& box = snap[lead].box;
 				if( !std::isfinite( box.ll.x ) || !std::isfinite( box.ll.y ) || !std::isfinite( box.ll.z ) ||
@@ -2008,8 +2048,13 @@ namespace RISE
 					bool ownChecked = false;
 					bool selfHitSkipped = false;
 					for( int step = 0; step < maxSteps && travelled < segLen; ++step ) {
+						if( raysSpent >= rayBudget ) {
+							segBlocked = true;
+							break;
+						}
 						RayIntersection sri( segProbe, nullRasterizerState );
 						Diagnostics::SceneRayCounter()++;
+						raysSpent++;
 						pObjects->IntersectRay( sri, true, true, false );
 						if( !sri.geometric.bHit || travelled + sri.geometric.range >= segLen ) {
 							break;
@@ -2047,9 +2092,10 @@ namespace RISE
 					std::vector<const IObject*> wPassed;
 					std::vector<const IObject*> wCrossed;
 					Ray probe( wm, normal );
-					for( int step = 0; step < maxSteps; ++step ) {
+					for( int step = 0; step < maxSteps && raysSpent < rayBudget; ++step ) {
 						RayIntersection ri( probe, nullRasterizerState );
 						Diagnostics::SceneRayCounter()++;
+						raysSpent++;
 						pObjects->IntersectRay( ri, true, true, false );
 						if( !ri.geometric.bHit ) {
 							break;
@@ -2488,6 +2534,145 @@ namespace RISE
 			}
 		}
 
+		//! DL-618 / DL-622: the certified open sheets whose medium holds @a pos
+		//! under the sheet-normal convention, with the pairwise relations the
+		//! seed uses (same-material siblings keep one; different-material
+		//! siblings or mutual nesting set @a declineSheets).  Shared by
+		//! `SeedFromPointImpl` and `OpenSheetEnclosesCrossing`, so a seed and
+		//! an unpushed-exit resolution at the same point agree by construction
+		//! (DL-622 review round 3).  @a ordered / @a orderedCount (the closed
+		//! media containing @a pos) only feed each sheet's `closedInner`.
+		inline void ConfirmOpenSheetsAt(
+			const IObjectManager* pObjects,
+			const std::vector<OpenSheetCatalogEntry>& sceneSheets,
+			const Point3& pos,
+			const Scalar nm,
+			const IObject* pSeedObject,
+			ProbeEntry* const* ordered,
+			const std::size_t orderedCount,
+			std::vector<ConfirmedSheet>& confirmed,
+			bool& declineSheets,
+			const IObject* pExclude = 0
+			)
+		{
+			// DL-618 / DL-622: confirm each of the scene's open sheets by its
+			// normal ray (using shared normal-ray walks for multi-sheet planar
+			// groups and dynamic vectors so arbitrary sheet counts are ordered
+			// without an 8-sheet cap).
+			const std::vector<OpenSheetCatalogEntry>* pSheets = &sceneSheets;
+			if( pSheets && !pSheets->empty() && !declineSheets ) {
+				const std::vector<OpenSheetNormalGroup>& groups = ThreadOpenSheetCatalog().normalGroups;
+				std::vector<bool> handledByGroup( pSheets->size(), false );
+
+				for( std::size_t gIdx = 0; gIdx < groups.size(); ++gIdx ) {
+					const OpenSheetNormalGroup& grp = groups[gIdx];
+					if( grp.sheetIndices.size() <= 1 ) {
+						continue;
+					}
+					// Verify no member sheet was re-posed since catalog build (`A20`).
+					bool poseValid = true;
+					for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
+						const OpenSheetCatalogEntry& ce = ( *pSheets )[grp.sheetIndices[k]];
+						if( !SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ||
+							!SameBox( ce.pObj->getBoundingBox(), ce.box ) ) {
+							poseValid = false;
+							break;
+						}
+					}
+					if( !poseValid ) {
+						continue;
+					}
+					for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
+						handledByGroup[grp.sheetIndices[k]] = true;
+					}
+					const Vector3 relPos = Vector3Ops::mkVector3( pos, grp.origin );
+					const Scalar hPos = Vector3Ops::Dot( relPos, grp.normal );
+					if( hPos >= grp.maxHeight ) {
+						continue;
+					}
+					const Scalar uPos = Vector3Ops::Dot( relPos, grp.planeU );
+					const Scalar vPos = Vector3Ops::Dot( relPos, grp.planeV );
+					std::vector<const IObject*> activeObjects;
+					for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
+						if( hPos >= grp.heights[k] ||
+							uPos < grp.uMin[k] || uPos > grp.uMax[k] ||
+							vPos < grp.vMin[k] || vPos > grp.vMax[k] ) {
+							continue;
+						}
+						const OpenSheetCatalogEntry& ce = ( *pSheets )[grp.sheetIndices[k]];
+						if( ce.pObj != pExclude && CheckSheetAloneAlongRay( ce.pObj, pos, grp.normal, true ) ) {
+							activeObjects.push_back( ce.pObj );
+						}
+					}
+					if( !activeObjects.empty() ) {
+						ConfirmSharedNormalRay(
+							pObjects, pos, grp.normal, activeObjects,
+							nm, pSeedObject, ordered, orderedCount, confirmed );
+					}
+				}
+
+				for( std::size_t i = 0; i < pSheets->size() && !declineSheets; i++ ) {
+					if( handledByGroup[i] || ( *pSheets )[i].pObj == pExclude ) {
+						continue;
+					}
+					OpenSheetCatalogEntry sheet;
+					if( !PosedOpenSheet( ( *pSheets )[i], sheet ) ) {
+						continue;
+					}
+					ConfirmedSheet c;
+					c.pObj = sheet.pObj;
+					if( !OpenSheetHoldsPoint(
+							sheet, pObjects, pos, nm,
+							&c.passed, &c.crossed, &c.ior, pSeedObject, &c.entryCtx ) ) {
+						continue;
+					}
+					c.closedInner = 0;
+					for( std::size_t k = 0; k < c.crossed.size(); k++ ) {
+						for( std::size_t m = 0; m < orderedCount; m++ ) {
+							if( ordered[m]->pObj == c.crossed[k] ) {
+								c.closedInner++;
+								break;
+							}
+						}
+					}
+					c.keep = true;
+					confirmed.push_back( c );
+				}
+			}
+
+			// Pairwise relations: `a` nested inside `b` when `a` is on
+			// `b`'s normal ray before `b`.  Siblings (neither) of one
+			// material keep the nearer-proposed one; siblings of different
+			// materials, and mutual nesting, decline every sheet.
+			auto passes = []( const ConfirmedSheet& on, const IObject* pObj ) {
+				for( std::size_t k = 0; k < on.passed.size(); k++ ) {
+					if( on.passed[k] == pObj ) return true;
+				}
+				return false;
+			};
+			const std::size_t confirmedCount = confirmed.size();
+			for( std::size_t a = 0; a < confirmedCount && !declineSheets; a++ ) {
+				for( std::size_t b = a + 1; b < confirmedCount && !declineSheets; b++ ) {
+					const bool aInB = passes( confirmed[b], confirmed[a].pObj );
+					const bool bInA = passes( confirmed[a], confirmed[b].pObj );
+					if( aInB && bInA ) {
+						declineSheets = true;
+					} else if( !aInB && !bInA ) {
+						const IMaterial* ma = confirmed[a].pObj->GetMaterial();
+						const IMaterial* mb = confirmed[b].pObj->GetMaterial();
+						if( ma && ma == mb && confirmed[a].ior == confirmed[b].ior ) {
+							if( confirmed[b].keep ) {
+								confirmed[b].keep = false;
+							}
+						} else {
+							declineSheets = true;
+						}
+					}
+				}
+			}
+
+		}
+
 		/// Populate `stack` with the dielectric objects that physically
 		/// contain `pos`, so that subsequent scatters at the first
 		/// enclosing boundary see bFromInside==true, and (DL-618 / DL-622)
@@ -2598,97 +2783,13 @@ namespace RISE
 				orderedCount++;
 			}
 
-			// DL-618 / DL-622: confirm each of the scene's open sheets by its
-			// normal ray (using shared normal-ray walks for multi-sheet planar
-			// groups and dynamic vectors so arbitrary sheet counts are ordered
-			// without an 8-sheet cap).
+			// DL-618 / DL-622: the open sheets whose medium holds `pos`.
 			std::vector<ConfirmedSheet> confirmed;
 			bool declineSheets = !seedOpenSheets;
-			const std::vector<OpenSheetCatalogEntry>* pSheets = seedOpenSheets ? &sceneSheets : 0;
-			if( pSheets && !pSheets->empty() && !declineSheets ) {
-				const std::vector<OpenSheetNormalGroup>& groups = ThreadOpenSheetCatalog().normalGroups;
-				std::vector<bool> handledByGroup( pSheets->size(), false );
-
-				for( std::size_t gIdx = 0; gIdx < groups.size(); ++gIdx ) {
-					const OpenSheetNormalGroup& grp = groups[gIdx];
-					if( grp.sheetIndices.size() <= 1 ) {
-						continue;
-					}
-					// Verify no member sheet was re-posed since catalog build (`A20`).
-					bool poseValid = true;
-					for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
-						const OpenSheetCatalogEntry& ce = ( *pSheets )[grp.sheetIndices[k]];
-						if( !SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ||
-							!SameBox( ce.pObj->getBoundingBox(), ce.box ) ) {
-							poseValid = false;
-							break;
-						}
-					}
-					if( !poseValid ) {
-						continue;
-					}
-					for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
-						handledByGroup[grp.sheetIndices[k]] = true;
-					}
-					const Vector3 relPos = Vector3Ops::mkVector3( pos, grp.origin );
-					const Scalar hPos = Vector3Ops::Dot( relPos, grp.normal );
-					if( hPos >= grp.maxHeight ) {
-						continue;
-					}
-					const Scalar uPos = Vector3Ops::Dot( relPos, grp.planeU );
-					const Scalar vPos = Vector3Ops::Dot( relPos, grp.planeV );
-					std::vector<const IObject*> activeObjects;
-					for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
-						if( hPos >= grp.heights[k] ||
-							uPos < grp.uMin[k] || uPos > grp.uMax[k] ||
-							vPos < grp.vMin[k] || vPos > grp.vMax[k] ) {
-							continue;
-						}
-						const OpenSheetCatalogEntry& ce = ( *pSheets )[grp.sheetIndices[k]];
-						if( CheckSheetAloneAlongRay( ce.pObj, pos, grp.normal, true ) ) {
-							activeObjects.push_back( ce.pObj );
-						}
-					}
-					if( !activeObjects.empty() ) {
-						ConfirmSharedNormalRay(
-							pObjects, pos, grp.normal, activeObjects,
-							nm, pSeedObject, ordered, orderedCount, confirmed );
-					}
-				}
-
-				for( std::size_t i = 0; i < pSheets->size() && !declineSheets; i++ ) {
-					if( handledByGroup[i] ) {
-						continue;
-					}
-					OpenSheetCatalogEntry sheet;
-					if( !PosedOpenSheet( ( *pSheets )[i], sheet ) ) {
-						continue;
-					}
-					ConfirmedSheet c;
-					c.pObj = sheet.pObj;
-					if( !OpenSheetHoldsPoint(
-							sheet, pObjects, pos, nm,
-							&c.passed, &c.crossed, &c.ior, pSeedObject, &c.entryCtx ) ) {
-						continue;
-					}
-					c.closedInner = 0;
-					for( std::size_t k = 0; k < c.crossed.size(); k++ ) {
-						for( std::size_t m = 0; m < orderedCount; m++ ) {
-							if( ordered[m]->pObj == c.crossed[k] ) {
-								c.closedInner++;
-								break;
-							}
-						}
-					}
-					c.keep = true;
-					confirmed.push_back( c );
-				}
+			if( seedOpenSheets ) {
+				ConfirmOpenSheetsAt( pObjects, sceneSheets, pos, nm, pSeedObject,
+					ordered, orderedCount, confirmed, declineSheets );
 			}
-
-			// Pairwise relations: `a` nested inside `b` when `a` is on
-			// `b`'s normal ray before `b`.  Siblings (neither) of one
-			// material keep the nearer-proposed one; siblings of different
-			// materials, and mutual nesting, decline every sheet.
 			auto passes = []( const ConfirmedSheet& on, const IObject* pObj ) {
 				for( std::size_t k = 0; k < on.passed.size(); k++ ) {
 					if( on.passed[k] == pObj ) return true;
@@ -2696,25 +2797,6 @@ namespace RISE
 				return false;
 			};
 			const std::size_t confirmedCount = confirmed.size();
-			for( std::size_t a = 0; a < confirmedCount && !declineSheets; a++ ) {
-				for( std::size_t b = a + 1; b < confirmedCount && !declineSheets; b++ ) {
-					const bool aInB = passes( confirmed[b], confirmed[a].pObj );
-					const bool bInA = passes( confirmed[a], confirmed[b].pObj );
-					if( aInB && bInA ) {
-						declineSheets = true;
-					} else if( !aInB && !bInA ) {
-						const IMaterial* ma = confirmed[a].pObj->GetMaterial();
-						const IMaterial* mb = confirmed[b].pObj->GetMaterial();
-						if( ma && ma == mb && confirmed[a].ior == confirmed[b].ior ) {
-							if( confirmed[b].keep ) {
-								confirmed[b].keep = false;
-							}
-						} else {
-							declineSheets = true;
-						}
-					}
-				}
-			}
 
 			// Merge OUTERMOST-FIRST.
 			std::vector<const ConfirmedSheet*> sheetOrder;
@@ -3011,31 +3093,101 @@ namespace RISE
 			return OpenSheetHoldsPoint( sheet, pObjects, p, 0 );
 		}
 
+		//! The open sheets a seed just past an unpushed-exit crossing would hold
+		//! (`ConfirmOpenSheetsAt`), computed ONCE per crossing and asked about
+		//! each stack entry `ResolveUnpushedExit` considers popping (DL-622
+		//! review round 3: one confirmation per pop, each with its own detours,
+		//! cost ~2.6k scene rays per pop under 50 panes over a rock).
+		struct CrossingMedia
+		{
+			std::vector<ConfirmedSheet> confirmed;
+			bool decline;
+			bool done;
+			CrossingMedia() : decline( false ), done( false ) {}
+
+			void Confirm( const IObjectManager* pObjects, const Point3& p, const Vector3& dir, const Scalar nm,
+				const IObject* pCrossed )
+			{
+				if( done ) {
+					return;
+				}
+				done = true;
+				const Scalar scale = Scalar( 1 ) + std::fabs( p.x ) + std::fabs( p.y ) + std::fabs( p.z );
+				const Point3 pAfter = Point3Ops::mkPoint3( p, dir * ( Scalar( 1e-5 ) * scale ) );
+				// The sheet just crossed is left out: an exit through its back face
+				// puts pAfter on its front side, outside its medium.
+				ConfirmOpenSheetsAt( pObjects, OpenSheetsOf( pObjects ), pAfter, nm, 0, 0, 0, confirmed, decline, pCrossed );
+			}
+
+			//! Does open sheet @a pY (on @a pStack) stay past the crossing?
+			bool Keeps( const IObject* pY, const IObject* pSheet, const IORStack* pStack ) const
+			{
+				if( decline ) {
+					return false;
+				}
+				Scalar yIor = -1;
+				if( pStack ) {
+					for( std::size_t i = pStack->Depth(); i-- > 1; ) {
+						if( pStack->ObjectAt( i ) == pY ) {
+							yIor = pStack->IORAt( i );
+							break;
+						}
+					}
+			}
+			const IMaterial* pMat = pY->GetMaterial();
+			for( std::size_t c = 0; c < confirmed.size(); ++c ) {
+				const ConfirmedSheet& cs = confirmed[c];
+				if( cs.pObj == pY ) {
+					return true;
+				}
+				if( cs.pObj == pSheet || !pMat || cs.pObj->GetMaterial() != pMat ) {
+					continue;
+				}
+				if( yIor > 0 && cs.ior != yIor ) {
+					continue;
+				}
+				bool onStack = false;
+				for( std::size_t i = 1; pStack && i < pStack->Depth(); ++i ) {
+					if( pStack->ObjectAt( i ) == cs.pObj ) {
+						onStack = true;
+						break;
+					}
+				}
+				if( !onStack ) {
+					return true;
+				}
+			}
+			return false;
+			}
+		};
+
 		//! DL-382 / DL-618: does open sheet @a pY's medium continue past the
 		//! crossing at @a p (walk travelling along @a dir, leaving sheet
 		//! @a pSheet through its back face while pY is on the stack)?
 		//!
-		//! The answer is the SEED CONVENTION's at the point just past the
-		//! crossing (DL-622 review): pY's medium holds it
-		//! (`PointInOpenSheetMedium`), or a sheet of pY's own material other
-		//! than @a pSheet does -- the seed keeps one entry for same-material
-		//! siblings, so pY standing for that medium prices the same index.
-		//! Nothing here depends on where the walk entered pY, and nothing walks
-		//! along the walk's own direction (an earlier stage did, skipping
-		//! opaque surfaces until it met pY, and disagreed with a seed whenever
-		//! pY's normal ray from that point was blocked or missed pY).  So a PT
-		//! eye walk, a BDPT/VCM light walk and a seed price every point with
-		//! one index.  Consequences: leaving a two-sheet slab through its far
-		//! sheet leaves the slab's medium (the near sheet's normal ray now meets
-		//! the far sheet's front face), and a walk that moved outside pY's
-		//! normal prism leaves pY at the next unpushed exit, as a seed there is
-		//! not in pY.
+		//! The answer is the SEED's at the point just past the crossing: the
+		//! same sheet confirmation `SeedFromPoint` runs there
+		//! (`ConfirmOpenSheetsAt`, at the walk's wavelength @a nm) holds pY, or
+		//! holds a sheet S of pY's material and index that is NOT already on the
+		//! walk's stack @a pStack -- the seed keeps one entry for same-material
+		//! siblings, so pY standing for S's medium prices the same index; an S
+		//! the stack already carries (a same-material sheet pY is nested in)
+		//! must not be counted twice (DL-622 review round 3: a stale inner pane
+		//! kept alive by its own outer pane left the walk at the inner pane's
+		//! index after the outer one was exited).  Nothing depends on where the
+		//! walk entered pY and nothing walks along the walk's direction, so a PT
+		//! eye walk, a BDPT/VCM light walk and a seed price every point with one
+		//! index; the seed's declines (ambiguous siblings) pop pY.  A key that is
+		//! not (or no longer) a certified open sheet bounds a volume and is
+		//! decided as a closed entry is (`ClosedObjectEnclosesCrossing`).
 		inline bool OpenSheetEnclosesCrossing(
 			const IObject* pY,
 			const IObject* pSheet,
 			const IScene* pScene,
 			const Point3& p,
-			const Vector3& dir
+			const Vector3& dir,
+			const IORStack* pStack = 0,
+			const Scalar nm = 0
 			)
 		{
 			if( !pY ) {
@@ -3045,34 +3197,13 @@ namespace RISE
 				return ObjectEnclosesCrossing( pY, p, dir );
 			}
 			const IObjectManager* pObjects = pScene->GetObjects();
-			const Scalar scale = Scalar( 1 ) + std::fabs( p.x ) + std::fabs( p.y ) + std::fabs( p.z );
-			const Point3 pAfter = Point3Ops::mkPoint3( p, dir * ( Scalar( 1e-5 ) * scale ) );
 			OpenSheetCatalogEntry sheetY;
 			if( !FindOpenSheet( pObjects, pY, sheetY ) ) {
-				// pY is not (or no longer) a certified open sheet: it bounds a
-				// volume, so decide it as ResolveUnpushedExit decides a closed
-				// entry (parity of pY's own crossings ahead).
 				return ClosedObjectEnclosesCrossing( pY, p, dir );
 			}
-			if( OpenSheetHoldsPoint( sheetY, pObjects, pAfter, 0 ) ) {
-				return true;
-			}
-			const IMaterial* pMat = pY->GetMaterial();
-			if( !pMat ) {
-				return false;
-			}
-			const std::vector<OpenSheetCatalogEntry>& sheets = OpenSheetsOf( pObjects );
-			for( std::size_t i = 0; i < sheets.size(); ++i ) {
-				const IObject* pS = sheets[i].pObj;
-				if( pS == pY || pS == pSheet || pS->GetMaterial() != pMat ) {
-					continue;
-				}
-				OpenSheetCatalogEntry posed;
-				if( PosedOpenSheet( sheets[i], posed ) && OpenSheetHoldsPoint( posed, pObjects, pAfter, 0 ) ) {
-					return true;
-				}
-			}
-			return false;
+			CrossingMedia media;
+			media.Confirm( pObjects, p, dir, nm, pSheet );
+			return media.Keeps( pY, pSheet, pStack );
 		}
 
 		//! DL-382: resolves an unpushed exit on certified sheet @a pSheet.
@@ -3080,12 +3211,14 @@ namespace RISE
 		inline void ResolveUnpushedExit(
 			const RayIntersectionGeometric& ri,
 			const IObject* pSheet,
-			IORStack& dest
+			IORStack& dest,
+			const Scalar nm = 0
 			)
 		{
 			const Vector3& dir = ri.ray.Dir();
 			const Point3& pt = ri.ptIntersection;
 			const IScene* pScene = dest.MediumProbeScene();
+			CrossingMedia media;	// one sheet confirmation per crossing
 
 			while( const IObject* pY = dest.topObject() ) {
 				if( pY == pSheet ) {
@@ -3093,7 +3226,15 @@ namespace RISE
 				}
 				bool bEncloses = false;
 				if( dest.topIsOpenSheet() ) {
-					bEncloses = OpenSheetEnclosesCrossing( pY, pSheet, pScene, pt, dir );
+					OpenSheetCatalogEntry sheetY;
+					if( !pScene || !pScene->GetObjects() ) {
+						bEncloses = ObjectEnclosesCrossing( pY, pt, dir );
+					} else if( !FindOpenSheet( pScene->GetObjects(), pY, sheetY ) ) {
+						bEncloses = ClosedObjectEnclosesCrossing( pY, pt, dir );
+					} else {
+						media.Confirm( pScene->GetObjects(), pt, dir, nm, pSheet );
+						bEncloses = media.Keeps( pY, pSheet, &dest );
+					}
 				} else {
 					bEncloses = ClosedObjectEnclosesCrossing( pY, pt, dir );
 				}
@@ -3124,7 +3265,8 @@ namespace RISE
 			const RayIntersectionGeometric& ri,
 			const Scalar sheetIOR,
 			IORStack& dest,
-			const IMaterial* pMat = 0
+			const IMaterial* pMat = 0,
+			const Scalar nm = 0
 			)
 		{
 			OpenSheetCrossing c;
@@ -3145,7 +3287,7 @@ namespace RISE
 				if( dest.containsCurrent() ) {
 					dest.pop();
 				} else {
-					ResolveUnpushedExit( ri, dest.currentObject(), dest );
+					ResolveUnpushedExit( ri, dest.currentObject(), dest, nm );
 				}
 				c.bEntering = false;
 				c.etaFrom = sheetIOR;

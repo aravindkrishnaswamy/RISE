@@ -324,12 +324,24 @@ two different walk histories (red at `8ab4124e7`: 2 checks).
 Review round 2 found that round 1's FIRST stage still disagreed with a seed:
 it walked along the WALK's direction for up to 64 steps, skipping every
 surface that was not pY or a same-material sibling -- opaque walls included
--- and answered "encloses" on reaching pY's back face.  It is gone too.  The
-answer is now exactly the seed convention at the point just past the
-crossing: pY holds it (`PointInOpenSheetMedium`), or another catalogued
-sheet of pY's own material other than the one being crossed holds it (the
-seed keeps one entry for same-material siblings, so pY standing for that
-medium prices the same index).  A stack key that is not (or no longer) a
+-- and answered "encloses" on reaching pY's back face.  It is gone too.
+
+Review round 3 tightened the replacement: the answer is now the SEED's own
+sheet confirmation at the point just past the crossing --
+`ConfirmOpenSheetsAt`, the function `SeedFromPointImpl` itself calls,
+run once per crossing (`CrossingMedia`, shared by every entry
+`ResolveUnpushedExit` considers popping), at the walk's wavelength, with
+the sheet just crossed left out.  pY stays iff that confirmation holds pY,
+or holds a sheet of pY's material and index that the walk's stack does NOT
+already carry (the seed keeps one entry for same-material siblings, so pY
+standing for that medium prices the same index; round 2 also counted a
+same-material sheet pY is NESTED in, which is already on the stack -- A44:
+a stale inner pane kept alive by its own outer pane, so the walk read 1.5
+after leaving the outer one).  The seed's declines pop pY.  Round 2's
+version also ran one confirmation per popped entry and one single-sheet
+certificate per same-material sheet: A45 (an exit under a rock wider than
+a 50-pane stack, popping all 50) cost **68750** scene rays at `1340f1ddb`
+and **52** now.  A stack key that is not (or no longer) a
 certified open sheet bounds a volume and is decided as `ResolveUnpushedExit`
 decides a closed entry (`ClosedObjectEnclosesCrossing`).  A41: a walk in a sea's medium leaving a pane
 under an opaque roof that spans the sea's prism, going straight up at the
@@ -409,12 +421,42 @@ walk-history exception.
   its back face, the first confirming waypoint winning as before.  A35: 50
   co-normal panes over a rock cost **2652** scene rays per seed at
   `8ab4124e7`, 258 under round 1 (which then declined: depth 1), and **104**
-  now, seeded 51 deep, every sampled pane agreeing with its own
+  after round 2, seeded 51 deep, every sampled pane agreeing with its own
   single-sheet certificate.  A40: a tilted sea confirmed by a clear normal
   ray over a 50-pane stack blocked by a rock is seeded (round 1 declined it),
   and seed and `PointInOpenSheetMedium` agree for the sea and the panes.
   `Diagnostics::SceneRayCounter` counts every scene ray the seeding header
   makes.  There is no exhaustion to log.
+- Review round 3: a group sheet that is not trackable at the seed's
+  wavelength (classified as a blocker: its ior reads <= 0 there) is an
+  opaque obstacle to the sheets beyond it -- its box joins theirs -- as in
+  each sheet's own certificate, instead of ending the shared column (A47,
+  red at `1340f1ddb`).  And one group certificate spends at most
+  `kGroupDetourRayBudget` = 1024 scene rays after its column walk (bounded
+  by `MaxSceneWalkSteps`): when waypoints keep failing, trying every
+  obstacle box costs O(N * 8 * (32 + 2N)) rays (interleaved obstacles give
+  each sheet its own box).  On exhaustion the sheets it has not confirmed
+  are refused -- only this group's detour candidates, never a sheet its
+  shared normal ray reached directly -- deterministically in (point, group),
+  and since seeds and exit resolutions both decide through
+  `ConfirmOpenSheetsAt` they refuse alike (A48, budget forced to 60: a
+  partial seed, and an exit resolution at the same point keeping exactly
+  the seeded panes).  A46, 20 glass shelves each carrying an opaque vase
+  over the camera's column (every shelf its own box): **287** scene rays per
+  seed, all 20 shelves seeded (a 4-box cap, tried first, read 109 rays but
+  refused 15 shelves, so it was replaced by the ray budget).  Ungrouped
+  sheets (no co-normal partner) still run one single-sheet certificate each
+  (at most 17 walks of `MaxSceneWalkSteps` steps).
+- Stack depth (review round 3, P3-2): `SeedFromPointImpl`'s ~12.8 KB frame
+  (six 64-entry probe tables) exists only while a seed runs and is a LEAF:
+  every caller (camera and light roots, photon emission, HWSS lane
+  delegation, `SMSCaptureUncached`'s membership probe) gets control back
+  before tracing further, so the frame can sit on top of a deep recursion
+  (an SMS capture at a vertex reached through PT's SSS re-entry into
+  `CastRay`) but never underneath one, and it is ~10 % of the 128 KB
+  DL-315 keeps free at every `CastRay` entry.  The function that does run
+  inside a walk, `ConfirmOpenSheetsAt` (via `ResolveUnpushedExit` in a
+  transmissive SPF), uses no probe tables (its storage is heap vectors).
 - `ProbeObjectSurfaceHit` is bounded at `kMaxSurfaceProbeRays` = 70
   object-only rays (26 directions, 1 toward the centre, 16 Halton surface
   samples, a 3 x 3 grid per axis), down from up to 422.
@@ -464,6 +506,11 @@ instrumentation patch for A35):
 | A41 exit under a roof agrees with a seed (round 2) | -- | FAIL | pass (round 1: FAIL) |
 | A42 context copy-on-write independence (round 2), 2 checks | -- | pass | pass (red under a write-through mutation) |
 | A43 unresolved entry stands as its parent's index (round 2) | -- | FAIL | pass |
+| A44 nested same-material sheet not double counted (round 3) | -- | -- | pass (round 2 code: FAIL) |
+| A45 one exit popping 50 panes, cost (round 3) | -- | -- | pass, 52 rays (round 2 code: FAIL, 68750) |
+| A46 20 shelves with vases, cost (round 3) | -- | -- | pass, 287 rays |
+| A47 untrackable group sheet is an obstacle (round 3) | -- | -- | pass (round 2 code: FAIL) |
+| A48 spent group budget: seed and exit refuse alike (round 3) | -- | -- | pass (new mechanism) |
 | Totals (round 1 file) | 113 / 16 | 121 / 8 | 129 / 0 |
 | Totals (round 2 file, Part A) | -- | 133 / 10 | 143 / 0 (round 1 code: 138 / 5) |
 

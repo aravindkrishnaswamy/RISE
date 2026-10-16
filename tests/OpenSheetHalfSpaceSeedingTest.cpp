@@ -1285,6 +1285,32 @@ static void PartA()
 					deep.O( o ), deep.Scene().GetObjects(), Point3( 0, 0, 0 ) ) );
 			}
 			Check( agree, "A35: each pane's group-certificate answer equals its own certificate's (PointInOpenSheetMedium)" );
+
+			// A48 (DL-622 review round 3): when the group certificate's ray
+			// budget runs out, the panes it has not confirmed are refused --
+			// and an unpushed-exit resolution at the same point refuses the
+			// same panes (both go through ConfirmOpenSheetsAt).  Budget forced
+			// down to 60 rays (the column walk alone takes ~51).
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 60;
+			const IORStack st60 = deep.Seed( Point3( 0, 0, 0 ) );
+			bool same = true;
+			for( int k = 1; k <= 50; k++ ) {
+				char o[16];
+				std::snprintf( o, sizeof(o), "p%d", k );
+				bool inSeed = false;
+				for( std::size_t i = 1; i < st60.Depth(); i++ ) {
+					if( st60.ObjectAt( i ) == deep.O( o ) ) inSeed = true;
+				}
+				const bool kept = IORStackSeeding::OpenSheetEnclosesCrossing( deep.O( o ), 0, &deep.Scene(),
+					Point3( -1e-5, 0, 0 ), Vector3( 1, 0, 0 ), &st60 );
+				same = same && ( inSeed == kept );
+			}
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = IORStackSeeding::kGroupDetourRayBudget;
+			char label2[200];
+			std::snprintf( label2, sizeof(label2),
+				"A48: a spent group budget refuses panes (depth %zu of 51) and an exit resolution there refuses the same ones",
+				st60.Depth() );
+			Check( st60.Depth() > 1 && st60.Depth() < 51 && same, label2 );
 			const IORStack stShallow = shallow.Seed( Point3( 0, 0, 0 ) );
 			Check( stShallow.Depth() == 4 && stShallow.topObject() == shallow.O( "p1" ),
 				"A35 control: 3 panes over the same rock are seeded through the detour (depth 4, p1 innermost)" );
@@ -1528,6 +1554,153 @@ static void PartA()
 			solver->release();
 			caster->release();
 			shader->release();
+		}
+	}
+
+	// A44 (DL-622 review round 3, P2-A): an unpushed exit must not keep a
+	// sheet because a same-material sheet it is NESTED in holds the point --
+	// that sheet is already on the stack.  pane2 (large, y 1) and pane1
+	// (small, y 0) are one glass, both facing +y; a camera below seeds
+	// [pane2, pane1].  The walk leaves pane1's prism and crosses the back
+	// face of an unrelated small sheet X: past it pane2 holds the point and
+	// pane1 does not, so the seed there is [pane2]; the walk must match it
+	// (keeping pane1 too left it at 1.5 after it later exited pane2).
+	{
+		Loaded nest( Header()
+			+ HSheet( "g_p2", 1, 10, true ) + Obj( "pane2", "g_p2", "glass15" )
+			+ HSheet( "g_p1", 0, 1, true ) + Obj( "pane1", "g_p1", "glass15" )
+			+ HSheet( "g_x", -0.5, 0.5, true ) + Obj( "xs", "g_x", "glass133", "5 0 5" ) );
+		Check( nest.ok, "A44 scene loads" );
+		if( nest.ok ) {
+			IORStack walk = nest.Seed( Point3( 0, -1, 0 ) );
+			Check( walk.Depth() == 3 && walk.ObjectAt( 1 ) == nest.O( "pane2" ) && walk.ObjectAt( 2 ) == nest.O( "pane1" ),
+				"A44 fixture: the camera seeds [pane2, pane1]" );
+			const IORStack seedAfter = nest.Seed( Point3( 5, -0.499, 5 ) );
+			walk.SetMediumProbeScene( &nest.Scene() );
+			walk.SetCurrentObject( nest.O( "xs" ) );
+			RayIntersection exitHit( Ray( Point3( 5, -1, 5 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			nest.O( "xs" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+			if( exitHit.geometric.bHit ) {
+				IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.33, walk );
+				char label[220];
+				std::snprintf( label, sizeof(label),
+					"A44: exit off pane1's prism under pane2 leaves [pane2] like the seed (walk depth %zu, seed depth %zu)",
+					walk.Depth(), seedAfter.Depth() );
+				Check( seedAfter.Depth() == 2 && walk.Depth() == 2 && walk.topObject() == nest.O( "pane2" ), label );
+			} else {
+				Check( false, "A44: probe hits X" );
+			}
+		}
+	}
+
+	// A45 (DL-622 review round 3, P2-B): an unpushed exit's cost.  A walk
+	// that seeded 50 deep in a pane stack (above a rock wider than the
+	// panes) crosses an unrelated sheet's back face under the rock: no pane
+	// holds that point, and each pane's detour walks the whole column.  One
+	// confirmation per crossing (not per popped entry, not per same-
+	// material sheet) bounds it.
+	{
+		std::string t = Header();
+		for( int k = 1; k <= 50; k++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_p%d", k );
+			std::snprintf( o, sizeof(o), "p%d", k );
+			t += HSheet( g, 2 + k, 5, true ) + Obj( o, g, "glass15" );
+		}
+		t += "box_geometry\n{\n\tname g_rock\n\twidth 12\n\theight 0.5\n\tdepth 12\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.5 0" );
+		t += HSheet( "g_x", 0.5, 0.5, true ) + Obj( "xs", "g_x", "glass133" );
+		Loaded cost( t );
+		Check( cost.ok, "A45 scene loads" );
+		if( cost.ok ) {
+			IORStack walk = cost.Seed( Point3( 0, 2.5, 0 ) );
+			Check( walk.Depth() == 51, "A45 fixture: a seed between the rock and the panes is 50 deep" );
+			walk.SetMediumProbeScene( &cost.Scene() );
+			walk.SetCurrentObject( cost.O( "xs" ) );
+			RayIntersection exitHit( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			cost.O( "xs" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.33, walk );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			const IORStack seedAfter = cost.Seed( Point3( 0, 0.501, 0 ) );
+			char label[220];
+			std::snprintf( label, sizeof(label),
+				"A45: one unpushed exit popping 50 panes costs %zu scene rays (bound 300); walk depth %zu == seed depth %zu",
+				rays, walk.Depth(), seedAfter.Depth() );
+			std::cout << "  [recorded] " << label << std::endl;
+			Check( rays <= 300 && walk.Depth() == seedAfter.Depth(), label );
+		}
+	}
+
+	// A46 (DL-622 review round 3): the group certificate's cost bound with
+	// interleaved obstacles.  20 glass shelves, each carrying an opaque vase,
+	// camera below: every shelf is reached with its own obstacle box, so an
+	// unbounded certificate may try 8 waypoints per shelf, each walking the
+	// column.  The certificate spends at most kGroupDetourRayBudget scene
+	// rays (then refuses the rest, identically for a seed and an exit
+	// resolution, which both decide membership through ConfirmOpenSheetsAt);
+	// here the first waypoint confirms every shelf well inside it.
+	{
+		std::string t = Header() + "box_geometry\n{\n\tname g_vase\n\twidth 0.4\n\theight 0.6\n\tdepth 0.4\n}\n\n";
+		for( int k = 1; k <= 20; k++ ) {
+			char g[16], o[16], v[16], pos[48];
+			std::snprintf( g, sizeof(g), "g_s%d", k );
+			std::snprintf( o, sizeof(o), "s%d", k );
+			std::snprintf( v, sizeof(v), "v%d", k );
+			std::snprintf( pos, sizeof(pos), "%g %g 0", 0.005 * k, 1.0 * k + 0.35 );
+			t += HSheet( g, 1.0 * k, 4, true ) + Obj( o, g, "glass15" ) + Obj( v, "g_vase", "matte", pos );
+		}
+		Loaded shelves( t );
+		Check( shelves.ok, "A46 scene loads" );
+		if( shelves.ok ) {
+			shelves.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack st = shelves.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			const std::size_t steps = 32 + 2 * 20;
+			const std::size_t bound = 6 * steps + IORStackSeeding::kGroupDetourRayBudget;
+			char label[240];
+			std::snprintf( label, sizeof(label),
+				"A46: 20 glass shelves with vases, camera below: %zu scene rays per seed (bound %zu), depth %zu (want 21)",
+				rays, bound, st.Depth() );
+			std::cout << "  [recorded] " << label << std::endl;
+			Check( rays <= bound && st.Depth() == 21, label );
+		}
+	}
+
+	// A47 (DL-622 review round 3, P3-1): a group sheet that is NOT trackable
+	// at the seed's wavelength (its ior reads -1 at 465 nm) is an opaque
+	// obstacle to the sheets beyond it, in the group certificate as in each
+	// sheet's own certificate, instead of ending the shared column.
+	{
+		Loaded odd( Header()
+			+ "scalar_painter\n{\n\tname pnt_neg\n\tvalues 1.5 1.5 -1\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_neg\n\trefractance white\n\tior pnt_neg\n}\n\n"
+			+ HSheet( "g_pa", 3, 1, true ) + Obj( "pa", "g_pa", "glass_neg" )
+			+ HSheet( "g_pb", 5, 5, true ) + Obj( "pb", "g_pb", "glass15" )
+			+ HSheet( "g_pc", 6, 5, true ) + Obj( "pc", "g_pc", "glass15" )
+			+ "box_geometry\n{\n\tname g_rock\n\twidth 1\n\theight 0.4\n\tdepth 1\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.5 0" ) );
+		Check( odd.ok, "A47 scene loads" );
+		if( odd.ok ) {
+			const IObjectManager* objs = odd.Scene().GetObjects();
+			RayIntersection h( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			odd.O( "pa" )->IntersectRay( h, RISE_INFINITY, true, true, false );
+			IORStack q( 1.0 );
+			Check( h.geometric.bHit && odd.O( "pa" )->GetMaterial()->GetSpecularInfoNM( h.geometric, q, 465 ).ior <= 0,
+				"A47 fixture: pa's ior is not positive at 465 nm" );
+			IORStack st( 1.0 );
+			IORStackSeeding::SeedFromPoint( st, Point3( 0, 0, 0 ), odd.Scene(), 465 );
+			bool agree = true;
+			for( const char* name : { "pb", "pc" } ) {
+				IORStackSeeding::OpenSheetCatalogEntry e;
+				const bool own = IORStackSeeding::FindOpenSheet( objs, odd.O( name ), e ) &&
+					IORStackSeeding::OpenSheetHoldsPoint( e, objs, Point3( 0, 0, 0 ), 465 );
+				bool inSeed = false;
+				for( std::size_t i = 1; i < st.Depth(); i++ ) {
+					if( st.ObjectAt( i ) == odd.O( name ) ) inSeed = true;
+				}
+				agree = agree && own && inSeed == own;
+			}
+			Check( agree, "A47: pb and pc beyond the untrackable pa are seeded, as their own certificates say" );
 		}
 	}
 
