@@ -1,0 +1,501 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  CsgMeshOperandTest.cpp - DL-621 review round (findings 10-13).
+//
+//  CSG over mesh / displaced operands after DL-621 (d47c91cac):
+//
+//   A. exit completion (`RecoverContainedOperand`) re-casts only an
+//      operand that publishes no exit of its own (mesh, displaced, patch
+//      set); an analytic leaf is cast exactly once per query and keeps
+//      the exit it published (finding 10);
+//   B. `AdvanceOperandPast` is not called for a single-lobe (convex
+//      analytic) operand, so the common "intervals in sequence" miss
+//      costs no extra re-cast, in the radiance and the shadow query
+//      (finding 11);
+//   C. a mesh takes a SHEET role only when its free boundary is
+//      substantial: a closed mesh left open by a pinhole or an unwelded
+//      T-junction is UNDECIDED, so intersection( near-closed mesh, ball )
+//      is the solid lens, not a capless skin (finding 12);
+//   D. two open sheets welded into a zero-volume "pillow" are not a
+//      closed solid (the DL-197 coplanar-opposed guard), while a closed
+//      cube with a flat pleat stays closed (finding 13);
+//   E. a first openness query from many threads at once builds the
+//      topology once (finding 13).
+//
+//  Red-proof: every section but the controls fails on d47c91cac.
+//
+//////////////////////////////////////////////////////////////////////
+
+#define main DomainFixtureMain
+#include "SMSDomainReplayTest.cpp"
+#undef main
+
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <ctime>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "../src/Library/Polygon.h"
+#include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Objects/CSGObject.h"
+#include "../src/Library/Objects/Object.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+//////////////////////////////////////////////////////////////////////
+// Helpers
+//////////////////////////////////////////////////////////////////////
+
+//! A sphere that counts how often it is intersected.
+class CountingSphere : public SphereGeometry
+{
+public:
+	mutable std::atomic<unsigned int> casts{ 0 };
+	explicit CountingSphere( Scalar r ) : SphereGeometry( r ) {}
+	void IntersectRay( RayIntersectionGeometric& ri, const bool f, const bool b, const bool e ) const override
+	{
+		casts.fetch_add( 1, std::memory_order_relaxed );
+		SphereGeometry::IntersectRay( ri, f, b, e );
+	}
+protected:
+	virtual ~CountingSphere() {}
+};
+
+struct CountedCsg
+{
+	CountingSphere* gA = nullptr;
+	CountingSphere* gB = nullptr;
+	CSGObject* csg = nullptr;
+	void Reset() { gA->casts = 0; gB->casts = 0; }
+	~CountedCsg() { safe_release( csg ); }
+};
+
+static void MakeCountedCsg( CountedCsg& c, const CSG_OP op, const Point3& pA, const Point3& pB, Scalar rA = 1, Scalar rB = 1 )
+{
+	c.gA = new CountingSphere( rA );
+	c.gB = new CountingSphere( rB );
+	Object* oA = new Object( c.gA );
+	Object* oB = new Object( c.gB );
+	oA->SetPosition( pA );
+	oB->SetPosition( pB );
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+	c.csg = new CSGObject( op );
+	Check( c.csg->AssignObjects( oA, oB ), "fixture: composite takes its operands" );
+	c.csg->FinalizeTransformations();
+	safe_release( oA );
+	safe_release( oB );
+	// c.gA / c.gB stay alive through the operands' references.
+	c.gA->release();
+	c.gB->release();
+}
+
+static RayIntersection CastObj( const IObject& o, const Point3& origin, const Vector3& dir )
+{
+	RayIntersection hit( Ray( origin, dir ), nullRasterizerState );
+	o.IntersectRay( hit, RISE_INFINITY, true, true, false );
+	return hit;
+}
+
+//! Lat-long triangle sphere, outward wound, single pole vertices.
+//! `skipTri` >= 0 drops that one triangle (a pinhole).
+static std::vector<Point3> LatLongSphereCorners( int rings, int segs, Scalar r, int skipTri,
+	std::vector<Point3>* outVerts = nullptr, std::vector<int>* outTris = nullptr )
+{
+	std::vector<Point3> v;
+	v.push_back( Point3( 0, 0, r ) );
+	for( int i = 1; i < rings; ++i ) {
+		const Scalar th = PI * Scalar( i ) / Scalar( rings );
+		for( int j = 0; j < segs; ++j ) {
+			const Scalar ph = TWO_PI * Scalar( j ) / Scalar( segs );
+			v.push_back( Point3( r * std::sin( th ) * std::cos( ph ), r * std::sin( th ) * std::sin( ph ), r * std::cos( th ) ) );
+		}
+	}
+	v.push_back( Point3( 0, 0, -r ) );
+	const int south = static_cast<int>( v.size() ) - 1;
+	auto ring = [&]( int i, int j ) { return 1 + ( i - 1 ) * segs + ( ( j % segs ) + segs ) % segs; };
+	std::vector<int> t;
+	for( int j = 0; j < segs; ++j ) {
+		t.insert( t.end(), { 0, ring( 1, j ), ring( 1, j + 1 ) } );
+	}
+	for( int i = 1; i < rings - 1; ++i ) {
+		for( int j = 0; j < segs; ++j ) {
+			t.insert( t.end(), { ring( i, j ), ring( i + 1, j ), ring( i + 1, j + 1 ) } );
+			t.insert( t.end(), { ring( i, j ), ring( i + 1, j + 1 ), ring( i, j + 1 ) } );
+		}
+	}
+	for( int j = 0; j < segs; ++j ) {
+		t.insert( t.end(), { south, ring( rings - 1, j + 1 ), ring( rings - 1, j ) } );
+	}
+	std::vector<int> kept;
+	for( std::size_t k = 0; k < t.size() / 3; ++k ) {
+		if( static_cast<int>( k ) == skipTri ) {
+			continue;
+		}
+		kept.insert( kept.end(), { t[3 * k], t[3 * k + 1], t[3 * k + 2] } );
+	}
+	std::vector<Point3> corners;
+	for( int idx : kept ) {
+		corners.push_back( v[idx] );
+	}
+	if( outVerts ) *outVerts = v;
+	if( outTris ) *outTris = kept;
+	return corners;
+}
+
+static std::string IndexedMeshText( const std::string& name, const std::vector<Point3>& v, const std::vector<int>& t )
+{
+	std::ostringstream s;
+	s.precision( 17 );
+	s << "indexedmesh_geometry\n{\n name " << name << "\n double_sided TRUE\n face_normals TRUE\n";
+	for( const Point3& p : v ) {
+		s << " vertex " << p.x << ' ' << p.y << ' ' << p.z << '\n';
+	}
+	for( std::size_t i = 0; i < v.size(); ++i ) {
+		s << " uv 0 0\n";
+	}
+	for( std::size_t k = 0; k < t.size() / 3; ++k ) {
+		s << " triangle " << t[3 * k] << ' ' << t[3 * k + 1] << ' ' << t[3 * k + 2] << '\n';
+	}
+	return s.str() + "}\n";
+}
+
+static void PushTri( std::vector<Point3>& c, const Point3& a, const Point3& b, const Point3& d )
+{
+	c.push_back( a ); c.push_back( b ); c.push_back( d );
+}
+
+//! Unit cube [-1,1]^3, outward wound, as 12 corner triangles; when
+//! `tJunction`, the +X face's top edge carries a midpoint vertex the +Z
+//! face does not share (an unwelded T-junction: three free edges that
+//! run back along each other).
+static std::vector<Point3> CubeCorners( bool tJunction )
+{
+	const Point3 v[8] = { Point3(-1,-1,-1), Point3(1,-1,-1), Point3(1,1,-1), Point3(-1,1,-1),
+		Point3(-1,-1,1), Point3(1,-1,1), Point3(1,1,1), Point3(-1,1,1) };
+	const int tris[12][3] = { {0,2,1},{0,3,2},{4,5,6},{4,6,7},
+		{0,1,5},{0,5,4},{3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5} };
+	std::vector<Point3> c;
+	for( int k = 0; k < 12; ++k ) {
+		if( tJunction && ( k == 10 || k == 11 ) ) {
+			continue;
+		}
+		PushTri( c, v[tris[k][0]], v[tris[k][1]], v[tris[k][2]] );
+	}
+	if( tJunction ) {
+		// +X face (1,2,6,5) re-triangulated around M, the midpoint of the
+		// top edge 5-6 that the +Z face (4,5,6,7) keeps whole.
+		const Point3 m( 1, 0, 1 );
+		PushTri( c, v[1], v[2], m );
+		PushTri( c, v[2], v[6], m );
+		PushTri( c, v[1], m, v[5] );
+	}
+	return c;
+}
+
+//////////////////////////////////////////////////////////////////////
+// A. exit completion only for operands that publish no exit
+//////////////////////////////////////////////////////////////////////
+
+static void TestAnalyticOperandsCastOnce()
+{
+	std::cout << "A. analytic operands: no exit-completion re-cast" << std::endl;
+	const Vector3 down( 0, 0, -1 );
+	// Overlapping spheres: the ray crosses both, the composite hits.
+	for( const CSG_OP op : { CSG_UNION, CSG_INTERSECTION, CSG_SUBTRACTION } ) {
+		CountedCsg c;
+		MakeCountedCsg( c, op, Point3( 0, 0, 0.5 ), Point3( 0, 0, -0.5 ) );
+		c.Reset();
+		const RayIntersection h = CastObj( *c.csg, Point3( 0.1, 0.05, 5 ), down );
+		Check( h.geometric.bHit, "A: overlapping-sphere composite is hit" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1,
+			"A: each analytic operand is intersected exactly once per radiance query (op " +
+			std::to_string( int( op ) ) + ": " + std::to_string( c.gA->casts ) + "/" + std::to_string( c.gB->casts ) + ")" );
+		c.Reset();
+		const bool occ = c.csg->IntersectRay_IntersectionOnly( Ray( Point3( 0.1, 0.05, 5 ), down ), RISE_INFINITY, true, true );
+		Check( occ, "A: overlapping-sphere composite occludes" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1,
+			"A: each analytic operand is intersected exactly once per shadow query" );
+		// The exit published by the composite is the sphere's own.
+		if( op == CSG_UNION ) {
+			Check( std::fabs( h.geometric.range2 - ( 5 + 0.5 + std::sqrt( 1 - 0.0125 ) ) ) < 1e-6,
+				"A: union exit is the lower sphere's published exit" );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// B. no AdvanceOperandPast re-cast past a single-lobe operand
+//////////////////////////////////////////////////////////////////////
+
+static void TestNoAdvancePastSingleLobe()
+{
+	std::cout << "B. single-lobe operands: no advance re-cast on the sequential miss" << std::endl;
+	const Vector3 down( 0, 0, -1 );
+	const Point3 o( 0.1, 0.05, 10 );
+
+	// Intersection, A's interval [7.x, 9.x] wholly before B's [11.x, 13.x].
+	{
+		CountedCsg c;
+		MakeCountedCsg( c, CSG_INTERSECTION, Point3( 0, 0, 2 ), Point3( 0, 0, -2 ) );
+		c.Reset();
+		const RayIntersection h = CastObj( *c.csg, o, down );
+		Check( !h.geometric.bHit, "B: disjoint-in-sequence intersection misses" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1,
+			"B: intersection miss costs one cast per operand (A " + std::to_string( c.gA->casts ) +
+			", B " + std::to_string( c.gB->casts ) + ")" );
+		c.Reset();
+		const bool occ = c.csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true );
+		Check( !occ, "B: disjoint-in-sequence intersection does not occlude" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1, "B: intersection shadow miss costs one cast per operand" );
+	}
+	// Same with the operands swapped (B's interval first).
+	{
+		CountedCsg c;
+		MakeCountedCsg( c, CSG_INTERSECTION, Point3( 0, 0, -2 ), Point3( 0, 0, 2 ) );
+		c.Reset();
+		const RayIntersection h = CastObj( *c.csg, o, down );
+		Check( !h.geometric.bHit && c.gA->casts == 1 && c.gB->casts == 1,
+			"B: swapped intersection miss costs one cast per operand" );
+	}
+	// Subtraction, the subtracted B's interval wholly before A's: the
+	// composite is A, unchanged.
+	{
+		CountedCsg c;
+		MakeCountedCsg( c, CSG_SUBTRACTION, Point3( 0, 0, -2 ), Point3( 0, 0, 2 ) );
+		c.Reset();
+		const RayIntersection h = CastObj( *c.csg, o, down );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range - ( 12 - std::sqrt( 1 - 0.0125 ) ) ) < 1e-6,
+			"B: subtraction with B before A is A" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1,
+			"B: subtraction pre-pass costs no re-cast of a single-lobe B (B " + std::to_string( c.gB->casts ) + ")" );
+		c.Reset();
+		const bool occ = c.csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true );
+		Check( occ && c.gA->casts == 1 && c.gB->casts == 1, "B: subtraction shadow pre-pass costs no re-cast" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// C. a near-closed mesh is not a sheet
+//////////////////////////////////////////////////////////////////////
+
+static void TestNearClosedMeshRole()
+{
+	std::cout << "C. near-closed meshes: pinhole / T-junction are undecided, real sheets stay sheets" << std::endl;
+	// Classification.
+	{
+		const std::vector<Point3> closed = LatLongSphereCorners( 16, 32, 1, -1 );
+		Check( GeometricUtilities::TriangleMeshOpenness( closed ) == 0, "C: closed lat-long sphere is closed (control)" );
+		// Drop one quad-half on ring 7 (near the equator): a pinhole of
+		// ~1/1000 of the area.
+		const std::vector<Point3> pinhole = LatLongSphereCorners( 16, 32, 1, 32 + 2 * 32 * 6 + 3 );
+		Check( GeometricUtilities::TriangleMeshOpenness( pinhole ) == -1,
+			"C: sphere with a one-triangle pinhole is undecided (-1), not a sheet (got " +
+			std::to_string( GeometricUtilities::TriangleMeshOpenness( pinhole ) ) + ")" );
+		const std::vector<Point3> tj = CubeCorners( true );
+		Check( GeometricUtilities::TriangleMeshOpenness( tj ) == -1,
+			"C: cube with an unwelded T-junction is undecided (-1), not a sheet (got " +
+			std::to_string( GeometricUtilities::TriangleMeshOpenness( tj ) ) + ")" );
+		Check( GeometricUtilities::TriangleMeshOpenness( CubeCorners( false ) ) == 0, "C: closed cube is closed (control)" );
+
+		// Controls that ARE sheets: a hemispherical bowl, a cube missing
+		// one face, a flat quad.
+		std::vector<Point3> bowl;
+		{
+			const std::vector<Point3> all = LatLongSphereCorners( 16, 32, 1, -1 );
+			for( std::size_t k = 0; k < all.size(); k += 3 ) {
+				if( all[k].z + all[k + 1].z + all[k + 2].z > 0 ) {
+					PushTri( bowl, all[k], all[k + 1], all[k + 2] );
+				}
+			}
+		}
+		Check( GeometricUtilities::TriangleMeshOpenness( bowl ) == 1, "C: hemispherical bowl is a sheet (control)" );
+		std::vector<Point3> openBox = CubeCorners( false );
+		openBox.erase( openBox.begin() + 6, openBox.begin() + 12 );	// drop the +Z face (triangles 2, 3)
+		Check( GeometricUtilities::TriangleMeshOpenness( openBox ) == 1, "C: cube missing a face is a sheet (control)" );
+		std::vector<Point3> quad;
+		PushTri( quad, Point3( -1, -1, 0 ), Point3( 1, -1, 0 ), Point3( 1, 1, 0 ) );
+		PushTri( quad, Point3( -1, -1, 0 ), Point3( 1, 1, 0 ), Point3( -1, 1, 0 ) );
+		Check( GeometricUtilities::TriangleMeshOpenness( quad ) == 1, "C: flat quad is a sheet (control)" );
+	}
+
+	// Composite: intersection( pinhole sphere mesh, ball centred on its
+	// surface ).  The lens they share is solid; trimmed as a sheet, the
+	// ray at x = 0.8 would see no surface of the mesh inside the ball and
+	// miss outright.
+	{
+		std::vector<Point3> v;
+		std::vector<int> t;
+		LatLongSphereCorners( 16, 32, 1, 32 + 2 * 32 * 6 + 3, &v, &t );
+		std::string scene = Materials( false ) + IndexedMeshText( "pinsphere", v, t ) +
+			"sphere_geometry\n{\n name ball\n radius 0.5\n}\n"
+			"standard_object\n{\n name o_pin\n geometry pinsphere\n material glass\n}\n"
+			"standard_object\n{\n name o_ball\n geometry ball\n material glass\n position 1 0 0\n}\n"
+			"csg_object\n{\n name lens\n obja o_pin\n objb o_ball\n operation intersection\n material glass\n}\n";
+		LoadedScene loaded( scene );
+		const CSGObject* lens = dynamic_cast<const CSGObject*>( loaded.Object( "lens" ) );
+		Check( lens != nullptr, "C: near-closed lens fixture loads" );
+		if( lens ) {
+			Check( !lens->TrimsSheet(), "C: intersection( pinhole sphere, ball ) does not trim the mesh as a sheet" );
+			const RayIntersection h = CastObj( *lens, Point3( 0.8, 0, 5 ), Vector3( 0, 0, -1 ) );
+			const Scalar expect = 5 - std::sqrt( 0.25 - 0.04 );
+			Check( h.geometric.bHit && std::fabs( h.geometric.range - expect ) < 1e-6,
+				"C: the ray through the lens enters it at the ball's surface (got hit=" +
+				std::to_string( h.geometric.bHit ) + " range=" + std::to_string( h.geometric.range ) + ")" );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// D. zero-volume pillow is not closed
+//////////////////////////////////////////////////////////////////////
+
+static void TestPillowRole()
+{
+	std::cout << "D. pillow of two coincident sheets is not a closed solid" << std::endl;
+	// Two unit quads 1e-12 apart (inside the weld epsilon), split on
+	// DIFFERENT diagonals and wound oppositely, so after the weld every
+	// edge is shared by exactly two triangles and no two triangles share
+	// all three corners -- the 2-triangle pillow test cannot see it.
+	const Scalar g = 1e-12;
+	std::vector<Point3> pillow;
+	PushTri( pillow, Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 1, 1, 0 ) );
+	PushTri( pillow, Point3( 0, 0, 0 ), Point3( 1, 1, 0 ), Point3( 0, 1, 0 ) );
+	PushTri( pillow, Point3( 0, 0, g ), Point3( 0, 1, g ), Point3( 1, 0, g ) );
+	PushTri( pillow, Point3( 1, 0, g ), Point3( 0, 1, g ), Point3( 1, 1, g ) );
+	Check( GeometricUtilities::TriangleMeshOpenness( pillow ) == -1,
+		"D: welded zero-volume pillow is undecided (-1), not closed (got " +
+		std::to_string( GeometricUtilities::TriangleMeshOpenness( pillow ) ) + ")" );
+
+	// Control: a closed cube whose bottom face carries a flat pleat (a
+	// coplanar fold inside a face) encloses volume and stays closed.
+	std::vector<Point3> pleat = CubeCorners( false );
+	pleat.erase( pleat.begin(), pleat.begin() + 6 );	// drop the -Z face
+	const Point3 a( -1, -1, -1 ), b( 1, -1, -1 ), c( 1, 1, -1 ), d( -1, 1, -1 );
+	const Point3 p8( 0, -0.90, -1 ), p9( 0, -0.95, -1 );
+	PushTri( pleat, a, p8, b );
+	PushTri( pleat, a, p9, p8 );
+	PushTri( pleat, p8, p9, b );
+	PushTri( pleat, a, c, p9 );
+	PushTri( pleat, p9, c, b );
+	PushTri( pleat, a, d, c );
+	Check( GeometricUtilities::TriangleMeshOpenness( pleat ) == 0, "D: pleated closed cube stays closed (control)" );
+
+	// Composite: the pillow is no longer a closed operand, so a sheet
+	// unioned with it is not given the sheet-union-solid path.
+	TriangleMeshGeometry* gp = new TriangleMeshGeometry( true );
+	gp->BeginTriangles();
+	for( std::size_t k = 0; k < pillow.size(); k += 3 ) {
+		Triangle tri;
+		for( int m = 0; m < 3; ++m ) {
+			tri.vertices[m] = pillow[k + m];
+			tri.normals[m] = Vector3( 0, 0, 1 );
+			tri.coords[m] = Point2( 0, 0 );
+		}
+		gp->AddTriangle( tri );
+	}
+	gp->DoneTriangles();
+	Check( gp->TopologicalOpenness() == -1, "D: TriangleMeshGeometry pillow reports TopologicalOpenness -1" );
+	safe_release( gp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// E. concurrent first query builds once
+//////////////////////////////////////////////////////////////////////
+
+static TriangleMeshGeometry* MakeGridSheet( int n )
+{
+	TriangleMeshGeometry* g = new TriangleMeshGeometry( true );
+	g->BeginTriangles();
+	for( int i = 0; i < n; ++i ) {
+		for( int j = 0; j < n; ++j ) {
+			const Point3 p00( i, j, 0 ), p10( i + 1, j, 0 ), p11( i + 1, j + 1, 0 ), p01( i, j + 1, 0 );
+			const Point3 q[2][3] = { { p00, p10, p11 }, { p00, p11, p01 } };
+			for( int s = 0; s < 2; ++s ) {
+				Triangle tri;
+				for( int m = 0; m < 3; ++m ) {
+					tri.vertices[m] = q[s][m];
+					tri.normals[m] = Vector3( 0, 0, 1 );
+					tri.coords[m] = Point2( 0, 0 );
+				}
+				g->AddTriangle( tri );
+			}
+		}
+	}
+	g->DoneTriangles();
+	return g;
+}
+
+static double ProcessCpuSeconds()
+{
+	return double( std::clock() ) / double( CLOCKS_PER_SEC );
+}
+
+static void TestConcurrentFirstQuery()
+{
+	std::cout << "E. concurrent first openness query builds the topology once" << std::endl;
+	const int n = 500;	// 500000 triangles
+	TriangleMeshGeometry* single = MakeGridSheet( n );
+	const double c0 = ProcessCpuSeconds();
+	const int r0 = single->TopologicalOpenness();
+	const double oneBuild = ProcessCpuSeconds() - c0;
+	safe_release( single );
+
+	TriangleMeshGeometry* shared = MakeGridSheet( n );
+	const unsigned int nThreads = 8;
+	std::atomic<unsigned int> ready{ 0 };
+	std::atomic<bool> go{ false };
+	std::vector<int> results( nThreads, -3 );
+	std::vector<std::thread> threads;
+	const double c1 = ProcessCpuSeconds();
+	for( unsigned int k = 0; k < nThreads; ++k ) {
+		threads.emplace_back( [&, k]() {
+			ready.fetch_add( 1 );
+			while( !go.load() ) {
+				std::this_thread::yield();
+			}
+			results[k] = shared->TopologicalOpenness();
+		} );
+	}
+	while( ready.load() < nThreads ) {
+		std::this_thread::yield();
+	}
+	const double c2 = ProcessCpuSeconds();
+	go.store( true );
+	for( std::thread& t : threads ) {
+		t.join();
+	}
+	const double concurrent = ProcessCpuSeconds() - c2;
+	(void)c1;
+	safe_release( shared );
+	bool agree = ( r0 == 1 );
+	for( const int r : results ) {
+		agree = agree && ( r == r0 );
+	}
+	std::cout << "    one build " << oneBuild * 1e3 << " ms CPU; " << nThreads << " concurrent first queries "
+		<< concurrent * 1e3 << " ms CPU" << std::endl;
+	Check( agree, "E: every thread reads the same openness (+1 sheet)" );
+	Check( concurrent < Scalar( 3 ) * oneBuild + 0.02,
+		"E: concurrent first queries cost about one build, not one per thread" );
+}
+
+int main()
+{
+	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13) ===" << std::endl;
+	TestAnalyticOperandsCastOnce();
+	TestNoAdvancePastSingleLobe();
+	TestNearClosedMeshRole();
+	TestPillowRole();
+	TestConcurrentFirstQuery();
+	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+	return failCount ? 1 : 0;
+}

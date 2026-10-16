@@ -4160,6 +4160,201 @@ int GeometricUtilities::BilinearPatchSetOpenness( const std::vector<BilinearPatc
 	return NetSetOpenness( nets );
 }
 
+namespace
+{
+	//! Union-find root with path halving.
+	unsigned int OpennessFindRoot( std::vector<unsigned int>& parent, unsigned int x )
+	{
+		while( parent[x] != x ) {
+			parent[x] = parent[parent[x]];
+			x = parent[x];
+		}
+		return x;
+	}
+
+	//! DL-621 review (P2): the fraction of a mesh's area its free boundary
+	//! must span before the mesh takes a SHEET role in a composite.  Each
+	//! boundary component's vector area |sum (a - c) x (b - c)| / 2 (a
+	//! closed, oriented 1-cycle, so independent of the reference point c)
+	//! is a lower bound on the area of any surface that caps it; the mesh
+	//! is a sheet only when those caps add up to at least this fraction of
+	//! its own area.  A pinhole caps with ~ its own (tiny) area, and a
+	//! crack or an unwelded T-junction with ~ zero (its two sides run back
+	//! along each other), so a "solid" that is not quite closed -- most
+	//! real imported ones (DL-143) -- is left UNDECIDED (the composite
+	//! falls back to its solid interval algebra), not trimmed as a skin.
+	//! For scale: a flat sheet or a twisted strip reads ~1, a hemispherical
+	//! bowl 0.5, an open-top cup of height h and radius r  r / (r + 2h), an
+	//! open tube of length L  r / L (so a tube longer than 50 radii is left
+	//! undecided too), one missing triangle of an N-triangle closed mesh
+	//! ~1/N.
+	const Scalar kMinSheetBoundaryCapFraction = Scalar( 0.02 );
+
+	template<class IsFree>
+	bool TriangleMeshBoundaryIsSubstantial(
+		const std::vector<Point3>& corners,
+		const std::vector<unsigned int>& wid,
+		const std::size_t nTris,
+		const IsFree& isFree )
+	{
+		unsigned int nIds = 0;
+		for( const unsigned int w : wid ) {
+			nIds = std::max( nIds, w + 1 );
+		}
+		std::vector<unsigned int> parent( nIds );
+		for( unsigned int k = 0; k < nIds; ++k ) {
+			parent[k] = k;
+		}
+		std::vector<Point3> rep( nIds );
+		std::vector<unsigned char> seen( nIds, 0 );
+		for( std::size_t i = 0; i < 3 * nTris; ++i ) {
+			if( !seen[wid[i]] ) {
+				seen[wid[i]] = 1;
+				rep[wid[i]] = corners[i];
+			}
+		}
+		Scalar area = 0;
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			const Point3* P = &corners[3 * t];
+			area += Scalar( 0.5 ) * Vector3Ops::Magnitude( Vector3Ops::Cross(
+				Vector3Ops::mkVector3( P[1], P[0] ), Vector3Ops::mkVector3( P[2], P[0] ) ) );
+			for( int k = 0; k < 3; ++k ) {
+				if( isFree( 3 * t + k ) ) {
+					const unsigned int a = OpennessFindRoot( parent, wid[3 * t + k] );
+					const unsigned int b = OpennessFindRoot( parent, wid[3 * t + ( k + 1 ) % 3] );
+					if( a != b ) {
+						parent[a] = b;
+					}
+				}
+			}
+		}
+		if( !( area > 0 ) ) {
+			return false;
+		}
+		// Per component: a reference point (its root's position) and the
+		// summed cross products of its directed free edges.
+		std::vector<Vector3> vecArea( nIds, Vector3( 0, 0, 0 ) );
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			for( int k = 0; k < 3; ++k ) {
+				if( !isFree( 3 * t + k ) ) {
+					continue;
+				}
+				const unsigned int wa = wid[3 * t + k];
+				const unsigned int wb = wid[3 * t + ( k + 1 ) % 3];
+				const unsigned int root = OpennessFindRoot( parent, wa );
+				const Point3& c = rep[root];
+				const Vector3 x = Vector3Ops::Cross(
+					Vector3Ops::mkVector3( rep[wa], c ), Vector3Ops::mkVector3( rep[wb], c ) );
+				vecArea[root] = vecArea[root] + x;
+			}
+		}
+		Scalar caps = 0;
+		for( unsigned int k = 0; k < nIds; ++k ) {
+			caps += Scalar( 0.5 ) * Vector3Ops::Magnitude( vecArea[k] );
+		}
+		return caps >= kMinSheetBoundaryCapFraction * area;
+	}
+
+	//! DL-621 review (P3): the DL-197 coplanar-opposed guard for a mesh
+	//! with no free boundary.  Two independent sheets closer than the weld
+	//! epsilon weld into a closed "pillow" that encloses no volume, and
+	//! across their seam two triangles fold back onto each other (opposed
+	//! normals, each one's third vertex within `weldEps` of the other's
+	//! plane).  A connected component containing such a fold is refused
+	//! (false) when its enclosed volume is also degenerate: 2|V|/A, a thin
+	//! slab's thickness, at most `weldEps`.  A genuine closed solid whose
+	//! surface merely carries a flat pleat (a fold inside a face) keeps its
+	//! closed role, which the watertightness certificate's own DL-197 check
+	//! refuses; this is a role, not that certificate.
+	template<class EdgePartner>
+	bool TriangleMeshClosedComponentsHaveVolume(
+		const std::vector<Point3>& corners,
+		const std::vector<unsigned int>& wid,
+		const Scalar weldEps,
+		const std::size_t nTris,
+		const EdgePartner& partner )
+	{
+		std::vector<unsigned int> parent( nTris );
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			parent[t] = static_cast<unsigned int>( t );
+		}
+		std::vector<unsigned char> fold( nTris, 0 );
+		bool anyFold = false;
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			const Point3* P = &corners[3 * t];
+			const Vector3 n1 = Vector3Ops::Cross(
+				Vector3Ops::mkVector3( P[1], P[0] ), Vector3Ops::mkVector3( P[2], P[0] ) );
+			const Scalar l1 = Vector3Ops::Magnitude( n1 );
+			for( int k = 0; k < 3; ++k ) {
+				unsigned int u = 0, oppOther = 0, oppSelf = 0;
+				if( !partner( 3 * t + k, u, oppOther, oppSelf ) ) {
+					continue;
+				}
+				const unsigned int a = OpennessFindRoot( parent, static_cast<unsigned int>( t ) );
+				const unsigned int b = OpennessFindRoot( parent, u );
+				if( a != b ) {
+					parent[a] = b;
+				}
+				if( u <= t ) {
+					continue;
+				}
+				const Point3* Q = &corners[3 * static_cast<std::size_t>( u )];
+				const Vector3 n2 = Vector3Ops::Cross(
+					Vector3Ops::mkVector3( Q[1], Q[0] ), Vector3Ops::mkVector3( Q[2], Q[0] ) );
+				const Scalar l2 = Vector3Ops::Magnitude( n2 );
+				if( !( l1 > 0 && l2 > 0 ) || !( Vector3Ops::Dot( n1, n2 ) < 0 ) ) {
+					continue;
+				}
+				// The third (welded) vertex of each triangle, located by id.
+				const Point3* third1 = 0;
+				const Point3* third2 = 0;
+				for( int m = 0; m < 3; ++m ) {
+					if( wid[3 * t + m] == oppSelf ) third1 = &P[m];
+					if( wid[3 * static_cast<std::size_t>( u ) + m] == oppOther ) third2 = &Q[m];
+				}
+				if( !third1 || !third2 ) {
+					continue;
+				}
+				const Scalar d1 = Vector3Ops::Dot( Vector3Ops::mkVector3( *third2, P[0] ), n1 ) / l1;
+				const Scalar d2 = Vector3Ops::Dot( Vector3Ops::mkVector3( *third1, Q[0] ), n2 ) / l2;
+				if( std::fabs( d1 ) <= weldEps && std::fabs( d2 ) <= weldEps ) {
+					fold[t] = fold[u] = 1;
+					anyFold = true;
+				}
+			}
+		}
+		if( !anyFold ) {
+			return true;
+		}
+		Point3 lo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+		Point3 hi( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
+		for( const Point3& p : corners ) {
+			lo.x = std::min( lo.x, p.x ); lo.y = std::min( lo.y, p.y ); lo.z = std::min( lo.z, p.z );
+			hi.x = std::max( hi.x, p.x ); hi.y = std::max( hi.y, p.y ); hi.z = std::max( hi.z, p.z );
+		}
+		const Point3 centre( 0.5 * ( lo.x + hi.x ), 0.5 * ( lo.y + hi.y ), 0.5 * ( lo.z + hi.z ) );
+		std::vector<Scalar> vol( nTris, 0 ), area( nTris, 0 );
+		std::vector<unsigned char> compFold( nTris, 0 );
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			const Point3* P = &corners[3 * t];
+			const unsigned int r = OpennessFindRoot( parent, static_cast<unsigned int>( t ) );
+			vol[r] += Vector3Ops::Dot( Vector3Ops::mkVector3( P[0], centre ),
+				Vector3Ops::Cross( Vector3Ops::mkVector3( P[1], centre ), Vector3Ops::mkVector3( P[2], centre ) ) ) / Scalar( 6 );
+			area[r] += Scalar( 0.5 ) * Vector3Ops::Magnitude( Vector3Ops::Cross(
+				Vector3Ops::mkVector3( P[1], P[0] ), Vector3Ops::mkVector3( P[2], P[0] ) ) );
+			if( fold[t] ) {
+				compFold[r] = 1;
+			}
+		}
+		for( std::size_t r = 0; r < nTris; ++r ) {
+			if( compFold[r] && !( Scalar( 2 ) * std::fabs( vol[r] ) > weldEps * area[r] ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+}
+
 int GeometricUtilities::TriangleMeshOpenness( const std::vector<Point3>& corners )
 {
 	const std::size_t nTris = corners.size() / 3;
@@ -4172,7 +4367,8 @@ int GeometricUtilities::TriangleMeshOpenness( const std::vector<Point3>& corners
 		}
 	}
 	std::vector<unsigned int> wid;
-	if( !WeldVertexPositions( corners, wid ) ) {
+	Scalar weldEps = 0;
+	if( !WeldVertexPositions( corners, wid, &weldEps ) ) {
 		return -1;
 	}
 
@@ -4246,7 +4442,24 @@ int GeometricUtilities::TriangleMeshOpenness( const std::vector<Point3>& corners
 		}
 	}
 	if( !anyFree ) {
-		return 0;
+		return TriangleMeshClosedComponentsHaveVolume( corners, wid, weldEps, nTris,
+			[&]( const std::size_t i, unsigned int& otherTri, unsigned int& otherOpp, unsigned int& thisOpp ) -> bool {
+				const EdgeUse* e = triEdge( i );
+				const unsigned int t = static_cast<unsigned int>( i / 3 );
+				const int self = ( e->tri[0] == t ) ? 0 : 1;
+				otherTri = e->tri[1 - self];
+				otherOpp = e->opp[1 - self];
+				thisOpp = e->opp[self];
+				return e->count == 2;
+			} ) ? 0 : -1;
+	}
+
+	// A free boundary decides nothing on its own: a pinhole, a crack or an
+	// unwelded T-junction leaves one in most real "solids" (DL-143).  The
+	// boundary must be SUBSTANTIAL before the mesh takes a sheet's role.
+	if( !TriangleMeshBoundaryIsSubstantial( corners, wid, nTris,
+		[&]( const std::size_t i ) -> bool { return triEdge( i )->count == 1; } ) ) {
+		return -1;
 	}
 
 	std::vector<unsigned char> alive( nTris, 1 );

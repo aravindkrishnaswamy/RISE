@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
 #ifdef RISE_ENABLE_MAILBOXING
@@ -1415,6 +1416,14 @@ int TriangleMeshGeometryIndexed::TopologicalOpenness() const
 	const int cached = m_topologicalOpenness.load( std::memory_order_acquire );
 	if( cached >= -1 ) {
 		return cached;
+	}
+	// One build, however many threads ask at once (see
+	// TriangleMeshGeometry::TopologicalOpenness).
+	static std::mutex s_buildMutex;
+	std::lock_guard<std::mutex> lock( s_buildMutex );
+	const int recheck = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( recheck >= -1 ) {
+		return recheck;
 	}
 	std::vector<Point3> corners;
 	corners.reserve( ptr_polygons.size() * 3 );

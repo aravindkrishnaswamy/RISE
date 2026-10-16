@@ -832,6 +832,19 @@ namespace RISE
 		//! 2-cycle mixed with a free boundary).  Decides a composite's
 		//! operand ROLES for meshes and displaced surfaces, which must not
 		//! flip when a geometric certificate comes or goes.
+		//!
+		//! DL-621 review: two guards make the role CONSERVATIVE -- an
+		//! uncertain mesh answers -1, which leaves the composite on its
+		//! solid interval algebra.  (1) +1 additionally needs a SUBSTANTIAL
+		//! free boundary: the vector areas of its boundary components must
+		//! total at least 2 % of the mesh's area, so a "solid" left open by
+		//! a pinhole, a crack or an unwelded T-junction (most imported ones,
+		//! DL-143) is not trimmed as a capless skin.  (2) 0 is refused for a
+		//! closed component that folds flat onto itself across an edge (the
+		//! DL-197 coplanar-opposed discriminator at the weld epsilon) AND
+		//! encloses no volume (thickness 2|V|/A at most the weld epsilon):
+		//! two open sheets welded into a pillow.  Neither guard reads an
+		//! embedding proof.
 		extern int TriangleMeshOpenness( const std::vector<Point3>& corners );
 
 		//! DL-616: a process-wide counter bumped whenever any patch set's

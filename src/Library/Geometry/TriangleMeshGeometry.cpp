@@ -28,6 +28,7 @@
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
 #include <cmath>
+#include <mutex>
 
 inline unsigned int VoidPtrToUInt( const void* v )
 {
@@ -265,6 +266,16 @@ int TriangleMeshGeometry::TopologicalOpenness() const
 	const int cached = m_topologicalOpenness.load( std::memory_order_acquire );
 	if( cached >= -1 ) {
 		return cached;
+	}
+	// One build, however many threads ask at once: `CSGObject` caches the
+	// role at preparation, but a first query from render threads must not
+	// have every one of them copy and weld the whole mesh.  Process-wide,
+	// since the build runs once per mesh per edit.
+	static std::mutex s_buildMutex;
+	std::lock_guard<std::mutex> lock( s_buildMutex );
+	const int recheck = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( recheck >= -1 ) {
+		return recheck;
 	}
 	std::vector<Point3> corners;
 	corners.reserve( polygons.size() * 3 );
