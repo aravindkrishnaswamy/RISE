@@ -80,7 +80,16 @@ namespace RISE
 				kTrimSheetB			= 32,	//!< render as operand B's sheet trimmed by A
 				kTopologicallyClosed	= 64,	//!< both operands closed by topology (no free boundary)
 				kUnionSheetA		= 128,	//!< DL-621(c): union of open sheet A and closed solid B
-				kUnionSheetB		= 256	//!< DL-621(c): union of closed solid A and open sheet B
+				kUnionSheetB		= 256,	//!< DL-621(c): union of closed solid A and open sheet B
+				// Per-operand facts the per-ray code reads instead of
+				// re-deriving them (dynamic_casts, lazy topology builds) on
+				// every ray -- see `ComputeCertificateBits`.
+				kClosedA			= 512,	//!< A may answer containment by its closed-surface fallback
+				kClosedB			= 1024,	//!< B may answer containment by its closed-surface fallback
+				kCompleteExitA		= 2048,	//!< A is a closed leaf that publishes no exit: complete it
+				kCompleteExitB		= 4096,	//!< B is a closed leaf that publishes no exit: complete it
+				kSingleLobeA		= 8192,	//!< A is a convex analytic leaf: a line meets it in one interval
+				kSingleLobeB		= 16384	//!< B is a convex analytic leaf: a line meets it in one interval
 			};
 			mutable std::atomic<long long>			m_certBits;
 			int CertificateBits() const;
