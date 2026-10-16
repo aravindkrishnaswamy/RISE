@@ -293,6 +293,22 @@ namespace RISE
 		return static_cast<unsigned int>( rand() );
 	}
 
+	unsigned int ThreadLocalSeed()
+	{
+		static thread_local bool seeded = false;
+		static thread_local unsigned long long state = 0;
+		if( !seeded ) {
+			state = ( static_cast<unsigned long long>( LockedLibcRand() ) << 32 ) ^ LockedLibcRand();
+			seeded = true;
+		}
+		state += 0x9E3779B97F4A7C15ULL;
+		unsigned long long z = state;
+		z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+		z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+		z ^= z >> 31;
+		return static_cast<unsigned int>( z ^ ( z >> 32 ) );
+	}
+
 	/// This is just a place to stick the global RNG function
 	RandomNumberGenerator& GlobalRNG()
 	{

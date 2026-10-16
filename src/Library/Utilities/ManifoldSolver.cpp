@@ -5276,7 +5276,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	const IORStack* pStartStack, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
+    RandomNumberGenerator alphaRandom( ThreadLocalSeed() );
     IndependentSampler alphaFallback(alphaRandom);
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	chain.clear();
@@ -5371,7 +5371,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 	bool applyEmitterStop, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
+    RandomNumberGenerator alphaRandom( ThreadLocalSeed() );
     IndependentSampler alphaFallback(alphaRandom);
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	(void)caster;   // reserved for future visibility queries
@@ -7920,7 +7920,7 @@ bool ManifoldSolver::ComputeTrialContribution(
 	const IORStack* pIorStack, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
+    RandomNumberGenerator alphaRandom( ThreadLocalSeed() );
     IndependentSampler alphaFallback(alphaRandom);
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	outContribution = RISEPel( 0, 0, 0 );
@@ -8050,7 +8050,7 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	const IORStack* pIorStack, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
+    RandomNumberGenerator alphaRandom( ThreadLocalSeed() );
     IndependentSampler alphaFallback(alphaRandom);
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	outContribution = 0;
@@ -11868,7 +11868,7 @@ SMSChainCoverage ManifoldSolver::ClassifyEmitterHitCoverage(
 	// intersection draws only at partial coverage) and a biased Solve
 	// (its sampler feeds only EstimatePDF and the disabled phys-fail
 	// restart).  A local sampler keeps PT's own stream untouched anyway.
-	RandomNumberGenerator localRng;
+	RandomNumberGenerator localRng( ThreadLocalSeed() );
 	IndependentSampler localSampler( localRng );
 
 	// SMS's own seed for this (anchor, emitter point) pair.
@@ -12070,7 +12070,7 @@ bool ManifoldSolver::CheckChainVisibility(
 	const IRayCaster& caster, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
+    RandomNumberGenerator alphaRandom( ThreadLocalSeed() );
     IndependentSampler alphaFallback(alphaRandom);
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	if( chain.empty() ) return true;

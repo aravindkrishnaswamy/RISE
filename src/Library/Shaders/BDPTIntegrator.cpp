@@ -5757,9 +5757,8 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 	const Point2& cameraLensSample, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
-    IndependentSampler alphaFallback(alphaRandom);
-    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	return ConnectAndEvaluateImpl<PelTag>(
 		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
 		cameraLensSample, PelTag{}, sampler );
@@ -5907,9 +5906,8 @@ EvaluateAllStrategiesImpl(
 #endif
 	Tag tag )
 {
-    RandomNumberGenerator alphaRandom;
-    IndependentSampler alphaFallback(alphaRandom);
-    ISampler& sampler = pSampler ? *pSampler : static_cast<ISampler&>(alphaFallback);
+    FallbackSampler alphaFallback( pSampler );
+    ISampler& sampler = alphaFallback.Get();
 	typedef SpectralValueTraits<Tag> Traits;
 	typedef typename ConnectionResultFor<Tag>::type CR;
 	// DL-375: the by-path partition between the two subsurface-jump
@@ -8754,9 +8752,8 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	const Scalar nm, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
-    IndependentSampler alphaFallback(alphaRandom);
-    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	return ConnectAndEvaluateImpl<NMTag>(
 		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
 		cameraLensSample, NMTag( nm ), sampler );
@@ -8776,9 +8773,8 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 	const Scalar nm, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
-    IndependentSampler alphaFallback(alphaRandom);
-    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	return EvaluateAllStrategiesImpl<NMTag>(
 		*this, lightVerts, eyeVerts, scene, caster, camera, cameraLensSample, &sampler,
 #ifdef RISE_ENABLE_OPENPGL

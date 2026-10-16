@@ -2891,9 +2891,8 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	const IPixelFilter* pixelFilter, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
-    IndependentSampler alphaFallback(alphaRandom);
-    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<PelTag>(
 		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
@@ -3193,9 +3192,8 @@ RISEPel VCMIntegrator::EvaluateInteriorConnections(
 	const VCMNormalization& norm, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
-    IndependentSampler alphaFallback(alphaRandom);
-    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	return EvaluateInteriorConnectionsImpl<PelTag>(
 		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{}, sampler );
 }
@@ -3757,9 +3755,8 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const Scalar splatScale, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
-    IndependentSampler alphaFallback(alphaRandom);
-    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<NMTag>(
 		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
@@ -3782,9 +3779,8 @@ Scalar VCMIntegrator::EvaluateInteriorConnectionsNM(
 	const Scalar nm, ISampler* alphaSampler
 	) const
 {
-    RandomNumberGenerator alphaRandom;
-    IndependentSampler alphaFallback(alphaRandom);
-    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	return EvaluateInteriorConnectionsImpl<NMTag>(
 		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ), sampler );
 }

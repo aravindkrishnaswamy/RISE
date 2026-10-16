@@ -19,19 +19,32 @@
 
 namespace RISE
 {
-	//! libc rand(), serialized (DL-625 review).  Every default-constructed
+	//! libc rand(), serialized (DL-625 review).  A default-constructed
 	//! RandomNumberGenerator seeds from libc rand(), and render workers
-	//! construct them concurrently (per-call fallback samplers in the
-	//! integrators, thread_local generators in media and AOV passes): calls
-	//! to rand() from several threads at once race on its hidden state
-	//! (undefined behaviour).  Every library read of the libc stream goes
-	//! through this one mutex, so the stream stays the one std::srand
-	//! controls -- a single-threaded program draws exactly what it drew
-	//! before -- while concurrent readers no longer race.  Which concurrent
-	//! reader gets which value still depends on scheduling: sites whose
-	//! result must be reproducible derive their seeds on the constructing
-	//! thread (RasterizeBlockDispatcher, the VCM light pass, AOV passes).
+	//! construct generators concurrently (thread_local generators in media
+	//! and AOV passes; formerly per-call fallback samplers in the
+	//! integrators, now FallbackSampler / ThreadLocalSeed): calls to rand()
+	//! from several threads at once race on its hidden state (undefined
+	//! behaviour).  The default seed and the render-time seeding sites read
+	//! the libc stream through this one mutex, so it stays the stream
+	//! std::srand controls while concurrent readers no longer race.  (Code
+	//! outside the render path -- detector-sphere tools, AutoRasterizer's
+	//! fixed-probe test hook, the Win32 UI -- still calls rand() / srand()
+	//! directly.)  Which concurrent reader gets which value still depends on
+	//! scheduling: sites whose result must be reproducible read once on the
+	//! constructing thread and derive per-tile / per-row seeds
+	//! (RasterizeBlockDispatcher, the VCM light pass, AOV passes).
 	extern unsigned int LockedLibcRand();
+
+	//! A cheap, race-free seed for a generator constructed per call on a
+	//! render worker (fallback samplers in hot integrator code): a
+	//! thread_local splitmix64 stream seeded ONCE per thread from
+	//! LockedLibcRand().  No lock after the thread's first call, unlike the
+	//! default constructor's LockedLibcRand() seed (a global mutex per
+	//! construction cost +34 % user CPU on an SMS scene).  Like the racy
+	//! rand() it replaces, the values a thread sees depend on scheduling,
+	//! so results drawn from it are not reproducible run to run.
+	extern unsigned int ThreadLocalSeed();
 
 	//! A seed derived from (base, key) by the splitmix64 finalizer: distinct
 	//! keys (tiles, rows, workers) of one base get decorrelated seeds, and

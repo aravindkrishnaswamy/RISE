@@ -276,13 +276,13 @@ void PointLight::ComputeDirectLighting(const RayIntersectionGeometric& ri,
     const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, RISEPel& amount,
     const bool fullSphere, const bool volume, const IORStack* stack) const
 {
-    RandomNumberGenerator random; IndependentSampler sampler(random);
+    RandomNumberGenerator random( ThreadLocalSeed() ); IndependentSampler sampler(random);
     ComputeDirectLightingSampled(ri, caster, bsdf, shadows, amount, fullSphere, volume, stack, sampler, nullptr);
 }
 Scalar PointLight::ComputeDirectLightingNM(const RayIntersectionGeometric& ri,
     const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, const Scalar nm,
     const bool fullSphere, const bool volume, const IORStack* stack) const
 {
-    RandomNumberGenerator random; IndependentSampler sampler(random);
+    RandomNumberGenerator random( ThreadLocalSeed() ); IndependentSampler sampler(random);
     return ComputeDirectLightingSampledNM(ri, caster, bsdf, shadows, nm, fullSphere, volume, stack, sampler, nullptr);
 }

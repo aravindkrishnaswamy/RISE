@@ -19,6 +19,7 @@
 
 #include "ISampler.h"
 #include "RandomNumbers.h"
+#include <new>
 
 namespace RISE
 {
@@ -54,6 +55,45 @@ namespace RISE
 			void StartStream( int /*streamIndex*/ )
 			{
 			}
+		};
+
+		//! `preferred` when it is non-null, otherwise an IndependentSampler
+		//! over a generator of its own -- and that generator is constructed
+		//! ONLY in the fallback case (DL-625 review).  Integrator entry
+		//! points used to default-construct a RandomNumberGenerator on every
+		//! call just in case the caller passed no sampler: a Mersenne
+		//! Twister initialization plus a read of the (serialized) libc
+		//! stream per connection, on every render worker.
+		class FallbackSampler
+		{
+			alignas( RandomNumberGenerator ) unsigned char rngStorage[sizeof( RandomNumberGenerator )];
+			alignas( IndependentSampler ) unsigned char samplerStorage[sizeof( IndependentSampler )];
+			ISampler* p;
+			bool owns;
+
+			FallbackSampler( const FallbackSampler& );
+			FallbackSampler& operator=( const FallbackSampler& );
+
+		public:
+			explicit FallbackSampler( ISampler* preferred ) :
+				p( preferred ),
+				owns( preferred == 0 )
+			{
+				if( owns ) {
+					RandomNumberGenerator* rng = new( rngStorage ) RandomNumberGenerator();
+					p = new( samplerStorage ) IndependentSampler( *rng );
+				}
+			}
+
+			~FallbackSampler()
+			{
+				if( owns ) {
+					reinterpret_cast<IndependentSampler*>( samplerStorage )->~IndependentSampler();
+					reinterpret_cast<RandomNumberGenerator*>( rngStorage )->~RandomNumberGenerator();
+				}
+			}
+
+			ISampler& Get() { return *p; }
 		};
 	}
 }
