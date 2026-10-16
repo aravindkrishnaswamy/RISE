@@ -878,6 +878,111 @@ static void TestMultiThreadDeterminism()
 	}
 }
 
+//! F (DL-625 review round 2): the same, in a FRESH process with no warm-up
+//! render, through several progressive passes, in scenes whose workers seed
+//! generators on first use (SMS's per-call generators via ThreadLocalSeed;
+//! HeterogeneousMedium's thread_local ratio-tracking generators).  Those
+//! first-use seeds used to read libc, and how many workers render in a pass
+//! is scheduling-dependent (9 tiles of a 24 x 24 film, more workers than
+//! that), so the libc stream position -- what the next pass's or render's
+//! tile seeds read -- varied run to run.  Mode F runs F_child_<scene> as
+//! three separate processes per scene and compares what they print
+//! (pixel hash, and rand() right after the render); F_child_<scene> alone
+//! renders once and prints it.  D's warm-up render does not hide this
+//! here: every child is a fresh process.
+static std::string GlassScene()
+{
+	std::string scene = RenderScene( QuadChunk( kTrapezoid ),
+		"pathtracing_pel_rasterizer\n{\n\tsamples 96\n\toidn_denoise FALSE\n\tpixel_filter box\n\tsms_enabled TRUE\n\tsms_biased TRUE\n}\n\n" );
+	scene.insert( scene.find( "standard_shader\n" ),
+		"perfectrefractor_material\n{\n\tname glass_mat\n\trefractance white\n\tior 1.5\n}\n\n"
+		"sphere_geometry\n{\n\tname geo_glass\n\tradius 0.3\n}\n\n"
+		"standard_object\n{\n\tname glass\n\tgeometry geo_glass\n\tmaterial glass_mat\n\tposition 0.2 -0.1 0.5\n}\n\n" );
+	return scene;
+}
+
+//! A box of heterogeneous fog over the floor: every worker that renders a
+//! fog pixel constructs HeterogeneousMedium's thread_local generators.
+static std::string FogScene()
+{
+	std::string scene = RenderScene( QuadChunk( kTrapezoid ),
+		"pathtracing_pel_rasterizer\n{\n\tsamples 96\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" );
+	scene.insert( scene.find( "standard_shader\n" ),
+		"uniformcolor_painter\n{\n\tname fog_dense\n\tcolor 1 1 1\n}\n\n"
+		"uniformcolor_painter\n{\n\tname fog_sparse\n\tcolor 0 0 0\n}\n\n"
+		"wavelet3d_painter\n{\n\tname fog_density\n\ttile_size 32\n\tpersistence 0.65\n\toctaves 3\n\tcolora fog_dense\n\tcolorb fog_sparse\n\tscale 1.5 1.5 1.5\n\tshift 0 0 0\n}\n\n"
+		"painter_heterogeneous_medium\n{\n\tname fog\n\tabsorption 0.3 0.3 0.3\n\tscattering 1.5 1.5 1.5\n\tphase isotropic\n\tdensity_painter fog_density\n\tresolution 16\n\tcolor_to_scalar luminance\n\tbbox_min -3 -3 0.05\n\tbbox_max 3 3 0.85\n}\n\n"
+		"perfectrefractor_material\n{\n\tname fog_air\n\trefractance white\n\tior 1.0\n}\n\n"
+		"box_geometry\n{\n\tname geo_fog\n\twidth 6\n\theight 6\n\tdepth 0.8\n}\n\n"
+		"standard_object\n{\n\tname fogbox\n\tgeometry geo_fog\n\tmaterial fog_air\n\tposition 0 0 0.45\n\tinterior_medium fog\n\tcasts_shadows FALSE\n}\n\n" );
+	return scene;
+}
+
+static void FreshProcessChild( const std::string& which )
+{
+	const unsigned int seed = 777u;
+	std::vector<RISEColor> px;
+	double mean = 0;
+	const bool ok = RenderOnce( which == "fog" ? FogScene() : GlassScene(), mean, true, &seed, &px );
+	// The libc stream position after the render: what the NEXT render's (or
+	// pass's) seeding sites would read.
+	const int next = std::rand();
+	unsigned long long h = 1469598103934665603ull;
+	for( const RISEColor& c : px ) {
+		const double v[4] = { c.base.r, c.base.g, c.base.b, c.a };
+		for( const double d : v ) {
+			unsigned long long b;
+			std::memcpy( &b, &d, 8 );
+			h = ( h ^ b ) * 1099511628211ull;
+		}
+	}
+	std::printf( "FCHILD ok=%d next=%d mean=%.17g hash=%016llx\n", ok ? 1 : 0, next, mean, h );
+}
+
+static std::string FieldOf( const std::string& line, const char* key )
+{
+	const std::size_t p = line.find( key );
+	if( p == std::string::npos ) return std::string();
+	const std::size_t e = line.find_first_of( " \n", p );
+	return line.substr( p, e == std::string::npos ? std::string::npos : e - p );
+}
+
+static void TestFreshProcessDeterminism( const char* self )
+{
+	std::cout << "F: fresh-process multi-threaded determinism (progressive passes, first-use worker generators)\n";
+	for( const char* which : { "glass", "fog" } ) {
+		std::vector<std::string> lines;
+		for( int r = 0; r < 3; ++r ) {
+			const std::string cmd = std::string( "\"" ) + self + "\" F_child_" + which;
+			std::FILE* f = ::popen( cmd.c_str(), "r" );
+			std::string line;
+			if( f ) {
+				char buf[512];
+				while( std::fgets( buf, sizeof( buf ), f ) ) {
+					if( std::strncmp( buf, "FCHILD", 6 ) == 0 ) line = buf;
+				}
+				::pclose( f );
+			}
+			std::cout << "    " << which << " process " << r << ": " << ( line.empty() ? std::string( "(no result)\n" ) : line );
+			lines.push_back( line );
+		}
+		const bool ok = !lines[0].empty() && lines[0].find( "ok=1" ) != std::string::npos;
+		bool sameNext = ok, sameHash = ok;
+		for( int r = 1; r < 3; ++r ) {
+			sameNext = sameNext && FieldOf( lines[r], "next=" ) == FieldOf( lines[0], "next=" );
+			sameHash = sameHash && FieldOf( lines[r], "hash=" ) == FieldOf( lines[0], "hash=" );
+		}
+		// Every scene: no worker-side first use may move the libc stream.
+		Check( sameNext, Fmt( "F: %s: the libc stream position after a multi-threaded render is a function of std::srand", which ) );
+		// The glass (SMS) scene's pixels too.  The fog's pixels are NOT
+		// gated: the medium's ratio-tracking generator is per worker, not
+		// per tile, so its estimate depends on which worker renders a tile.
+		if( std::strcmp( which, "glass" ) == 0 ) {
+			Check( sameHash, "F: glass: three fresh processes render the SMS glass scene bit-identically after the same std::srand" );
+		}
+	}
+}
+
 //! H: hashes of GetArea and 4096 samples of shapes whose arithmetic must
 //! not change (rectangle, parallelogram sampler) -- compare across builds.
 static void PrintHashes()
@@ -955,6 +1060,8 @@ int main( int argc, char** argv )
 	if( only == "all" || only == "C" ) TestRenders( false );
 	if( only == "C_trap" ) TestRenders( true );
 	if( only == "all" || only == "D" ) TestMultiThreadDeterminism();
+	if( only == "all" || only == "F" ) TestFreshProcessDeterminism( argv[0] );
+	if( only.rfind( "F_child_", 0 ) == 0 ) FreshProcessChild( only.substr( 8 ) );
 	if( only == "all" || only == "H" ) PrintHashes();
 	if( only == "T" ) PrintSdfCost();
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";

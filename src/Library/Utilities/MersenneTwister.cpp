@@ -282,6 +282,7 @@ double MersenneTwister::genrand_res53(void)
 
 
 #include "RandomNumbers.h"
+#include <atomic>
 #include <mutex>
 
 namespace RISE
@@ -295,10 +296,17 @@ namespace RISE
 
 	unsigned int ThreadLocalSeed()
 	{
+		// Each thread's stream starts from a process-wide counter, never
+		// from libc: how many workers make a first call is scheduling-
+		// dependent, and a libc read there would shift the libc stream that
+		// the reproducible seeding sites (RasterizeBlockDispatcher, the VCM
+		// light pass, AOV passes) read next.
+		static std::atomic<unsigned long long> threadCounter( 0 );
 		static thread_local bool seeded = false;
 		static thread_local unsigned long long state = 0;
 		if( !seeded ) {
-			state = ( static_cast<unsigned long long>( LockedLibcRand() ) << 32 ) ^ LockedLibcRand();
+			const unsigned long long k = threadCounter.fetch_add( 1, std::memory_order_relaxed );
+			state = ( static_cast<unsigned long long>( DeriveSeed( 0x5EED7105u, k ) ) << 32 ) ^ DeriveSeed( 0x7105EED5u, k );
 			seeded = true;
 		}
 		state += 0x9E3779B97F4A7C15ULL;
