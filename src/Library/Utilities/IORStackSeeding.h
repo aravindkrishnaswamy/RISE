@@ -1246,6 +1246,34 @@ namespace RISE
 			return kMaxProbeSteps + static_cast<int>( 2 * nSheets );
 		}
 
+		//! DL-622 review round 3: several wavelengths seeded by ONE probe walk.
+		//! The probes' paths and every membership decision depend on the
+		//! wavelength only through each hit's classification
+		//! (`ClassifyMembershipHit`: trackable or not, refracting or a re-push)
+		//! and the index it reports.  `SeedFromPointImpl` given a LaneSeed
+		//! classifies every hit at each lane's wavelength too; when every
+		//! classification agrees with the primary one (`diverged` false) each
+		//! lane's seed has the primary's membership exactly, and only the
+		//! indices differ -- recorded per lane at the same hit the primary
+		//! took its index from.  Open sheets are not covered (their
+		//! confirmation compares indices between sheets): a scene with any
+		//! sets `diverged`, and the caller seeds each lane on its own.
+		static const unsigned int kMaxSeedLanes = 8;
+		struct LaneSeed
+		{
+			unsigned int K;
+			Scalar nm[kMaxSeedLanes];
+			bool diverged;
+			struct Rec
+			{
+				const IObject* pObj;
+				bool repush;
+				Scalar ior[kMaxSeedLanes];
+			};
+			std::vector<Rec> recs;
+			LaneSeed() : K( 0 ), diverged( false ) {}
+		};
+
 		/// Walks one probe ray from `pos` along `dir` and fills `out` with
 		/// the per-object exit/entry parity tally of the CLOSED trackable
 		/// objects it meets (certified open refractive sheets have no
@@ -1258,7 +1286,9 @@ namespace RISE
 			ProbeEntry* out,
 			const Scalar nm = 0,
 			const std::size_t capacity = kMaxProbeEntries,
-			const int walkSteps = -1
+			const int walkSteps = -1,
+			LaneSeed* pLanes = 0,
+			const bool recordLanes = false
 			)
 		{
 			Diagnostics::ProbeTraceCounter()++;
@@ -1286,6 +1316,18 @@ namespace RISE
 
 				SpecularInfo info;
 				const MembershipHit membership = ClassifyMembershipHit( ri, probe.Dir(), nm, info );
+				Scalar laneIor[kMaxSeedLanes];
+				if( pLanes && !pLanes->diverged ) {
+					for( unsigned int k = 0; k < pLanes->K; ++k ) {
+						SpecularInfo infoK;
+						const MembershipHit mk = ClassifyMembershipHit( ri, probe.Dir(), pLanes->nm[k], infoK );
+						laneIor[k] = infoK.ior;
+						if( mk != membership ||
+							( membership == kMembershipTransparent && infoK.canRefract != info.canRefract ) ) {
+							pLanes->diverged = true;
+						}
+					}
+				}
 
 				if( membership == kMembershipTransparent )
 				{
@@ -1304,6 +1346,15 @@ namespace RISE
 						e->firstExitStep = -1;
 						e->firstEntryStep = -1;
 						e->repushParentIor = !info.canRefract;
+						if( recordLanes && pLanes && !pLanes->diverged ) {
+							LaneSeed::Rec rec;
+							rec.pObj = ri.pObject;
+							rec.repush = !info.canRefract;
+							for( unsigned int k = 0; k < pLanes->K; ++k ) {
+								rec.ior[k] = laneIor[k];
+							}
+							pLanes->recs.push_back( rec );
+						}
 					}
 					if( e )
 					{
@@ -2683,7 +2734,8 @@ namespace RISE
 			const IScene& scene,
 			const Scalar nm = 0,
 			const bool seedOpenSheets = true,
-			const IObject* pSeedObject = 0
+			const IObject* pSeedObject = 0,
+			LaneSeed* pLanes = 0
 			)
 		{
 			stack.SetMediumProbeScene( &scene );
@@ -2706,6 +2758,10 @@ namespace RISE
 			// used below) and the walk budget it implies.
 			const std::vector<OpenSheetCatalogEntry>& sceneSheets = OpenSheetsOf( pObjects );
 			const int walkSteps = kMaxProbeSteps + static_cast<int>( 2 * sceneSheets.size() );
+			if( pLanes && seedOpenSheets && !sceneSheets.empty() ) {
+				pLanes->diverged = true;	// open sheets: lanes seed on their own
+				pLanes = 0;
+			}
 			const std::size_t probeCap = static_cast<std::size_t>( walkSteps );
 			ProbeEntry stackTables[6][kStackProbeEntries];
 			std::vector<ProbeEntry> heapTables;
@@ -2719,7 +2775,7 @@ namespace RISE
 			const std::size_t tableCap = probeCap <= kStackProbeEntries ? kStackProbeEntries : probeCap;
 			ProbeEntry* const containing = tables[0];
 			const std::size_t containingCount =
-				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing, nm, tableCap, walkSteps );
+				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing, nm, tableCap, walkSteps, pLanes, true );
 
 			ProbeEntry* const reverse = tables[1];
 			std::size_t reverseCount = 0;
@@ -2728,7 +2784,7 @@ namespace RISE
 				if( containing[i].parity > 0 ) { anyCandidate = true; break; }
 			}
 			if( anyCandidate ) {
-				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse, nm, tableCap, walkSteps );
+				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse, nm, tableCap, walkSteps, pLanes, false );
 			}
 
 			ProbeEntry* const xForward = tables[2];
@@ -2746,10 +2802,10 @@ namespace RISE
 				}
 			}
 			if( anyZConfirmed ) {
-				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward, nm, tableCap, walkSteps );
-				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse, nm, tableCap, walkSteps );
-				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward, nm, tableCap, walkSteps );
-				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse, nm, tableCap, walkSteps );
+				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward, nm, tableCap, walkSteps, pLanes, false );
+				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse, nm, tableCap, walkSteps, pLanes, false );
+				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward, nm, tableCap, walkSteps, pLanes, false );
+				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse, nm, tableCap, walkSteps, pLanes, false );
 			}
 
 			ProbeEntry* orderedStack[kStackProbeEntries];
@@ -3036,6 +3092,144 @@ namespace RISE
 			}
 			lane = IORStack( hero.EnvironmentIOR() );
 			SeedFromPoint( lane, midpoint, scene, nm );
+		}
+
+		//! DL-622 review round 3: seeds @a K stacks at @a pos, one per
+		//! wavelength in @a nms, with ONE probe walk when that is provably what
+		//! @a K separate `SeedFromPoint` calls would produce (see LaneSeed),
+		//! and with K separate calls otherwise.  @a out points at K stacks,
+		//! each freshly constructed with the environment index.
+		inline void SeedLanesFromPoint(
+			IORStack* const* out,
+			const unsigned int K,
+			const Scalar* nms,
+			const Point3& pos,
+			const IScene& scene
+			)
+		{
+			if( K == 0 ) {
+				return;
+			}
+			if( K > kMaxSeedLanes ) {
+				for( unsigned int k = 0; k < K; ++k ) {
+					SeedFromPoint( *out[k], pos, scene, nms[k] );
+				}
+				return;
+			}
+			LaneSeed lanes;
+			lanes.K = K;
+			for( unsigned int k = 0; k < K; ++k ) {
+				lanes.nm[k] = nms[k];
+			}
+			SeedFromPointImpl( *out[0], pos, scene, nms[0], true, 0, &lanes );
+			if( lanes.diverged ) {
+				for( unsigned int k = 1; k < K; ++k ) {
+					SeedFromPoint( *out[k], pos, scene, nms[k] );
+				}
+				return;
+			}
+			for( unsigned int k = 1; k < K; ++k ) {
+				IORStack& lane = *out[k];
+				const IORStack& primary = *out[0];
+				lane.SetMediumProbeScene( &scene );
+				bool ok = true;
+				for( std::size_t i = 1; i < primary.Depth() && ok; ++i ) {
+					const IObject* pObj = primary.ObjectAt( i );
+					const LaneSeed::Rec* rec = 0;
+					for( std::size_t r = 0; r < lanes.recs.size(); ++r ) {
+						if( lanes.recs[r].pObj == pObj ) {
+							rec = &lanes.recs[r];
+							break;
+						}
+					}
+					if( !rec ) {
+						ok = false;
+						break;
+					}
+					lane.SetCurrentObject( pObj );
+					lane.push( rec->repush ? lane.top() : rec->ior[k] );
+				}
+				if( !ok ) {
+					lane = IORStack( primary.EnvironmentIOR() );
+					SeedFromPoint( lane, pos, scene, nms[k] );
+					continue;
+				}
+				GradedIndexMedium::RecordAt( lane, pos );
+			}
+		}
+
+		//! `SeedCompanionLane` for every active lane at once (@a active[k],
+		//! wavelength @a nms[k], K lanes): one shared probe walk per seed point
+		//! where `SeedLanesFromPoint` proves the lanes' membership equal, the
+		//! per-lane rule otherwise.  @a lanes holds K stacks constructed with
+		//! the environment index; inactive ones are left untouched.
+		inline void SeedCompanionLanes(
+			IORStack* lanes,
+			const bool* active,
+			const Scalar* nms,
+			const unsigned int K,
+			const IORStack& hero,
+			const Point3& origin,
+			const Point3& midpoint,
+			const IScene& scene,
+			const bool tryOrigin = true
+			)
+		{
+			unsigned int idx[kMaxSeedLanes];
+			Scalar lnm[kMaxSeedLanes];
+			unsigned int n = 0;
+			for( unsigned int k = 0; k < K; ++k ) {
+				if( active[k] ) {
+					if( n == kMaxSeedLanes || StackHasOpenSheet( hero ) ) {
+						n = kMaxSeedLanes + 1;
+						break;
+					}
+					idx[n] = k;
+					lnm[n] = nms[k];
+					++n;
+				}
+			}
+			if( n > kMaxSeedLanes ) {
+				for( unsigned int k = 0; k < K; ++k ) {
+					if( active[k] ) {
+						SeedCompanionLane( lanes[k], hero, origin, midpoint, scene, nms[k], tryOrigin );
+					}
+				}
+				return;
+			}
+			if( n == 0 ) {
+				return;
+			}
+			IORStack* targets[kMaxSeedLanes];
+			for( unsigned int j = 0; j < n; ++j ) {
+				targets[j] = &lanes[idx[j]];
+			}
+			IORStack* midTargets[kMaxSeedLanes];
+			Scalar midNm[kMaxSeedLanes];
+			unsigned int m = 0;
+			if( tryOrigin ) {
+				SeedLanesFromPoint( targets, n, lnm, origin, scene );
+				for( unsigned int j = 0; j < n; ++j ) {
+					const IORStack& seeded = *targets[j];
+					bool same = seeded.Depth() == hero.Depth();
+					for( std::size_t i = 0; same && i < hero.Depth(); i++ ) {
+						same = seeded.ObjectAt( i ) == hero.ObjectAt( i ) && seeded.isOpenSheetAt( i ) == hero.isOpenSheetAt( i );
+					}
+					if( !same ) {
+						*targets[j] = IORStack( hero.EnvironmentIOR() );
+						midTargets[m] = targets[j];
+						midNm[m] = lnm[j];
+						++m;
+					}
+				}
+			} else {
+				for( unsigned int j = 0; j < n; ++j ) {
+					midTargets[j] = targets[j];
+					midNm[j] = lnm[j];
+				}
+				m = n;
+			}
+			SeedLanesFromPoint( midTargets, m, midNm, midpoint, scene );
 		}
 
 		//! DL-345: does object @a pY ENCLOSE the crossing at @a p (the walk

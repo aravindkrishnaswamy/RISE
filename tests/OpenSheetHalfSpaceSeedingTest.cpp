@@ -1704,6 +1704,54 @@ static void PartA()
 		}
 	}
 
+	// A49 (DL-622 review round 3, HWSS cost): SeedLanesFromPoint seeds four
+	// wavelengths with ONE probe walk when every hit classifies alike at
+	// every lane, and its stacks equal four separate SeedFromPoint calls
+	// exactly (objects, order and per-lane indices); when a lane classifies
+	// a hit differently (an ior reading -1 at 465 nm) it seeds per lane.
+	{
+		Loaded nestBox( Header()
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ "scalar_painter\n{\n\tname pnt_neg\n\tvalues 1.5 1.5 -1\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_neg\n\trefractance white\n\tior pnt_neg\n}\n\n"
+			+ "translucent_material\n{\n\tname mat_trans\n\tref white\n\ttau white\n\text 0\n\tN 1.0\n\tscattering 0.3\n}\n\n"
+			+ "box_geometry\n{\n\tname g_outer\n\twidth 8\n\theight 8\n\tdepth 8\n}\n\n" + Obj( "outer", "g_outer", "glass_disp" )
+			+ "box_geometry\n{\n\tname g_mid\n\twidth 4\n\theight 4\n\tdepth 4\n}\n\n" + Obj( "mid", "g_mid", "mat_trans" )
+			+ "box_geometry\n{\n\tname g_inner\n\twidth 2\n\theight 2\n\tdepth 2\n}\n\n" + Obj( "inner", "g_inner", "glass133" )
+			+ "box_geometry\n{\n\tname g_neg\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n" + Obj( "negbox", "g_neg", "glass_neg", "20 20 20" ) );
+		Check( nestBox.ok, "A49 scene loads" );
+		if( nestBox.ok ) {
+			const Scalar nms[4] = { 450, 520, 610, 680 };
+			auto check = [&]( const Point3& p, const char* label, const bool expectShared ) {
+				IORStack lanes[4] = { IORStack( 1.0 ), IORStack( 1.0 ), IORStack( 1.0 ), IORStack( 1.0 ) };
+				IORStack* targets[4] = { &lanes[0], &lanes[1], &lanes[2], &lanes[3] };
+				IORStackSeeding::DebugResetProbeTraceCount();
+				IORStackSeeding::SeedLanesFromPoint( targets, 4, nms, p, nestBox.Scene() );
+				const std::size_t shared = IORStackSeeding::DebugGetProbeTraceCount();
+				IORStackSeeding::DebugResetProbeTraceCount();
+				bool equal = true;
+				for( int k = 0; k < 4; k++ ) {
+					IORStack own( 1.0 );
+					IORStackSeeding::SeedFromPoint( own, p, nestBox.Scene(), nms[k] );
+					equal = equal && own.Depth() == lanes[k].Depth();
+					for( std::size_t i = 0; equal && i < own.Depth(); i++ ) {
+						equal = own.ObjectAt( i ) == lanes[k].ObjectAt( i ) && IorAt( own, i ) == IorAt( lanes[k], i );
+					}
+				}
+				const std::size_t separate = IORStackSeeding::DebugGetProbeTraceCount();
+				char buf[240];
+				std::snprintf( buf, sizeof(buf), "%s: lanes equal per-lane seeds (%d), probe walks shared %zu vs separate %zu",
+					label, int( equal ), shared, separate );
+				std::cout << "  [recorded] " << buf << std::endl;
+				Check( equal && ( expectShared ? shared * 4 == separate : shared == separate ), buf );
+			};
+			check( Point3( 0, 0, 0 ), "A49: point inside outer/mid/inner", true );
+			check( Point3( 20, 20, 20 ), "A49: point inside a box whose ior is -1 at one lane", false );
+			check( Point3( 10, -10, 10 ), "A49: point in air", true );
+		}
+	}
+
 	// A39 (DL-622 review, P3): a probe table never silently drops a met
 	// object.  With open sheets in the scene the probe's step budget grows
 	// past kMaxProbeEntries; a probe that meets 33 small glass spheres

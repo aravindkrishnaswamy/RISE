@@ -267,9 +267,14 @@ keeps every DL-622 gap fix that has a red-proof and changes the following.
 - `IORStack::IORDATA` is back to the pre-DL-622 `{pObj, ior, bOpenSheet}`
   record (24 bytes, trivially copyable).  Contexts live in
   `MyIORStack::ctxs`, a SPARSE COPY-ON-WRITE list: (stack index, context)
-  pairs for the entries that carry one, in an immutable vector shared by
-  every copy (`std::shared_ptr<const ...>`).  Copying a stack copies the
-  shared pointer -- nothing when it is null, one atomic increment otherwise
+  pairs for the entries that carry one, in an immutable list shared by every
+  copy through an intrusive atomic count (round 3: a `std::shared_ptr`
+  member made the inlined copy/destroy bodies non-trivial, and the head
+  profile showed `ScatteredRay::~ScatteredRay` and `find_and_destroy` as new
+  out-of-line frames on a scene with no open sheet; now a null pointer is
+  the whole no-context cost, and every count, allocation and re-index sits
+  in `RISE_IORSTACK_COLD` (noinline) helpers).  Copying a stack copies the
+  pointer -- nothing more when it is null, one atomic increment otherwise
   -- never the ~200-byte contexts (review round 2: the round-1 pointer to a
   parallel vector deep-copied every context on every copy of a stack whose
   walk had crossed a sheet).  Only a push WITH a context, an erase at or
@@ -378,6 +383,24 @@ walk-history exception.
   seed recorded at the same probe hit a per-lane seed evaluates, so the two
   produce the same lane stacks; the revert is a cost and simplicity change
   (B7/B8 render identically at all three builds).
+- Review round 3 (HWSS cost): lanes that provably share their membership
+  are seeded with ONE probe walk.  The probes' paths and every membership
+  decision depend on the wavelength only through each hit's classification
+  (`ClassifyMembershipHit`: trackable or not, refracting or a re-push) and
+  the index it reports; `SeedLanesFromPoint` classifies every hit at each
+  lane's wavelength during the primary seed (`LaneSeed`, threaded through
+  `TallyProbe` as a parameter -- no thread-local state) and, when every
+  classification agrees, builds each lane's stack from the primary's
+  membership with the index that lane's own seed would have taken at the
+  same hit; otherwise (or in a scene with any open sheet, whose
+  confirmation compares indices between sheets) it seeds each lane on its
+  own.  A49 pins exact equality with four separate seeds (objects, order,
+  per-lane indices) and the walk count: 6 vs 24 for a point inside three
+  nested closed media (dispersive, translucent, constant), 1 vs 4 in air,
+  and the per-lane fallback for a box whose ior reads -1 at one lane.
+  `SeedCompanionLanes` (every HWSS hand-off in `PathTracingIntegrator`, via
+  its `HWSSLaneSeeds`) and the PT camera's lane check use it; the legacy
+  `PixelBasedSpectralIntegratingRasterizer` keeps per-lane seeds.
 - `ReindexStackForWavelength( source, dest, nm, anchor, scene )`: a GRADED
   entry (`GradedIndexMedium::FieldOf`) keeps `source`'s recorded value --
   the field is wavelength-independent and that value is the one the walk
