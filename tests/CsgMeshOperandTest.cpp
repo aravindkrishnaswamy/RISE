@@ -877,6 +877,109 @@ static void TestSubtractionInsideMultiLobeB()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// J. subtraction from inside both; budget exhaustion; touching lobes
+//////////////////////////////////////////////////////////////////////
+
+static Object* MakeTorusObject()
+{
+	TorusGeometry* gt = new TorusGeometry( 3, 1 );
+	Object* o = new Object( gt );
+	safe_release( gt );
+	o->FinalizeTransformations();
+	return o;
+}
+
+static CSGObject* Subtract( IObjectPriv* a, IObjectPriv* b )
+{
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	csg->AssignObjects( a, b );
+	csg->FinalizeTransformations();
+	safe_release( a );
+	safe_release( b );
+	return csg;
+}
+
+static void CheckMiss( const CSGObject& csg, const Point3& o, const Vector3& d, const std::string& label )
+{
+	const RayIntersection h = CastObj( csg, o, d );
+	Check( !h.geometric.bHit, "J: " + label + ": no hit (got range " + std::to_string( h.geometric.range ) + ")" );
+	Check( !csg.IntersectRay_IntersectionOnly( Ray( o, d ), 20, true, true ), "J: " + label + ": no occlusion" );
+}
+
+static void TestSubtractionInsideBoth()
+{
+	std::cout << "J. subtraction from inside both / budget / touching lobes" << std::endl;
+	const Point3 o( -3.5, 0, 0 );
+	const Vector3 dx( 1, 0, 0 );
+	// P2: inside both, multi-lobe A (lobes [-1, 1.0] and [1.3, 6.0]) and
+	// torus B (exits 1.5, re-enters 5.5): A's first lobe ends inside B,
+	// its second straddles B's exit -> surface at 1.5, closed at 5.5.
+	{
+		CSGObject* csg = MakeTorusSubtraction( -1, 1.0, 1.3, 6.0 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "inside both, A's second lobe straddles B's exit", 1.5 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"J: inside both, straddle: interval closes at B's re-entry (got " + std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+	// P3-1: inside both, B exits first (1.5) and re-enters (5.5) before
+	// A's exit (6.0): interval [1.5, 5.5].
+	{
+		CSGObject* csg = Subtract( MakeSphereObject( 3.5, Point3( -1, 0, 0 ) ), MakeTorusObject() );
+		CheckShadowAgreesWithHit( *csg, o, dx, "inside both, B exits first", 1.5 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"J: inside both, B exits first: interval closes at B's re-entry (got " + std::to_string( h.geometric.range2 ) + ")" );
+		Check( h.geometric.bHit && h.geometric.vNormal2.x > 0,
+			"J: inside both, B exits first: the closing normal points along the ray" );
+		safe_release( csg );
+	}
+	// P3-2: the re-cast allowance runs out after A's advance; B's second
+	// lobe (which hides A's second lobe) is never visited -> conservative miss.
+	{
+		CSGObject::SetAdvanceBudgetForTesting( 1 );
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 5.7, 6.3 );
+		CheckMiss( *csg, o, dx, "budget exhausted after A's advance" );
+		safe_release( csg );
+		CSGObject::SetAdvanceBudgetForTesting( 0 );
+		CSGObject* full = MakeTorusSubtraction( 0.7, 1.1, 7.8, 8.4 );
+		CheckShadowAgreesWithHit( *full, o, dx, "full budget restored (control)", 7.8 );
+		safe_release( full );
+	}
+	// P3-3: B is two spheres touching on the ray at t = 1 (a union, so
+	// the ray starting inside the first reports its exit at the seam).
+	// A (t in [-1.5, 2]) lies wholly inside B -> nothing.
+	{
+		Object* b0 = MakeSphereObject( 1, Point3( -3.5, 0, 0 ) );
+		Object* b1 = MakeSphereObject( 1, Point3( -1.5, 0, 0 ) );
+		CSGObject* uniB = new CSGObject( CSG_UNION );
+		uniB->AssignObjects( b0, b1 );
+		uniB->FinalizeTransformations();
+		safe_release( b0 );
+		safe_release( b1 );
+		CSGObject* csg = Subtract( MakeSphereObject( 1.75, Point3( -3.25, 0, 0 ) ), uniB );
+		CheckMiss( *csg, o, dx, "B continues through a touching lobe past A" );
+		safe_release( csg );
+	}
+	// P3-4 pins: single-lobe operands through the new top logic.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_SUBTRACTION, 1, Point3( -3.5, 0, 0 ), 2, Point3( -3.5, 0, 0 ) );
+		CheckMiss( *csg, o, dx, "inside both single-lobe, A left first" );
+		safe_release( csg );
+	}
+	{
+		CSGObject* csg = Subtract( MakeSphereObject( 0.2, Point3( -2.6, 0, 0 ) ), MakeTorusObject() );
+		CheckMiss( *csg, o, dx, "single-lobe A inside torus B" );
+		safe_release( csg );
+	}
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_SUBTRACTION, 2, Point3( -3.5, 0, 0 ), 1, Point3( -3.5, 0, 0 ) );
+		CheckShadowAgreesWithHit( *csg, o, dx, "inside both single-lobe, B left first", 1.0 );
+		safe_release( csg );
+	}
+}
+
 int main()
 {
 	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13) ===" << std::endl;
@@ -889,6 +992,7 @@ int main()
 	TestMeshEditRefreshesComposite();
 	TestShadowLengthFromInside();
 	TestSubtractionInsideMultiLobeB();
+	TestSubtractionInsideBoth();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }

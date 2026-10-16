@@ -238,6 +238,11 @@ namespace RISE
 			//! DL-617: the composite renders as a trimmed sheet (operand
 			//! roles by topology; see ComputeCertificateBits).
 			bool TrimsSheet() const;
+
+			//! Test hook: the per-query re-cast allowance shared by every
+			//! lobe advance in one IntersectRay / IntersectRay_IntersectionOnly
+			//! (0 restores the default).  Process-wide; tests only.
+			static void SetAdvanceBudgetForTesting( unsigned int budget );
 			//! DL-617: both operands closed by topology (no free boundary).
 			bool IsTopologicallyClosed() const;
 			bool HasNegativeOpenSignedVolume() const;
