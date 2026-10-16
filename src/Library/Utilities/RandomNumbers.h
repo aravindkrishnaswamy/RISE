@@ -50,6 +50,18 @@ namespace RISE
 	//! run.
 	extern unsigned int ThreadLocalSeed();
 
+	//! Restarts ThreadLocalSeed's per-thread tickets from a base read ONCE
+	//! from libc on the calling thread (so std::srand pins it).  A thread
+	//! whose FIRST ThreadLocalSeed() call -- e.g. its first heterogeneous-
+	//! medium transmittance estimate -- comes after this call, as the
+	//! k-th such thread, gets a stream that is a pure function of
+	//! (std::srand state at the call, k).  Threads already seeded keep
+	//! their streams.  Production never calls it (a libc read there would
+	//! move the stream the render's own seeding sites read); a test that
+	//! drives a walk on one fresh thread after std::srand calls it to make
+	//! that walk's medium generator a property of the seed.
+	extern void ReseedThreadLocalSeedEpoch();
+
 	//! A seed derived from (base, key) by the splitmix64 finalizer: distinct
 	//! keys (tiles, rows, workers) of one base get decorrelated seeds, and
 	//! the result is a pure function of its arguments.

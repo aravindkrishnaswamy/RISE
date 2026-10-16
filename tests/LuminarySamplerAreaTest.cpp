@@ -939,6 +939,24 @@ static void FreshProcessChild( const std::string& which )
 	std::printf( "FCHILD ok=%d next=%d mean=%.17g hash=%016llx\n", ok ? 1 : 0, next, mean, h );
 }
 
+static std::FILE* OpenReadPipe( const char* command )
+{
+#if defined( _WIN32 )
+	return _popen( command, "r" );
+#else
+	return popen( command, "r" );
+#endif
+}
+
+static int ClosePipe( std::FILE* pipe )
+{
+#if defined( _WIN32 )
+	return _pclose( pipe );
+#else
+	return pclose( pipe );
+#endif
+}
+
 static std::string FieldOf( const std::string& line, const char* key )
 {
 	const std::size_t p = line.find( key );
@@ -954,14 +972,14 @@ static void TestFreshProcessDeterminism( const char* self )
 		std::vector<std::string> lines;
 		for( int r = 0; r < 3; ++r ) {
 			const std::string cmd = std::string( "\"" ) + self + "\" F_child_" + which;
-			std::FILE* f = ::popen( cmd.c_str(), "r" );
+			std::FILE* f = OpenReadPipe( cmd.c_str() );
 			std::string line;
 			if( f ) {
 				char buf[512];
 				while( std::fgets( buf, sizeof( buf ), f ) ) {
 					if( std::strncmp( buf, "FCHILD", 6 ) == 0 ) line = buf;
 				}
-				::pclose( f );
+				ClosePipe( f );
 			}
 			std::cout << "    " << which << " process " << r << ": " << ( line.empty() ? std::string( "(no result)\n" ) : line );
 			lines.push_back( line );
