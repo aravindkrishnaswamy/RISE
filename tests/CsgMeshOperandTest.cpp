@@ -715,6 +715,70 @@ static void TestShadowLengthFromInside()
 			"A u B from outside (control)", 5 - std::sqrt( 1 - r2 ) );
 		safe_release( csg );
 	}
+	// Union coverage: inside A with B past a gap; inside B only; a ray
+	// that meets only one operand.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_UNION, 1, Point3( 0, 0, 0 ), 1, Point3( 0, 0, -3 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 0 ), Vector3( 0, 0, -1 ),
+			"A u B from inside A, B past a gap", std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_UNION, 1, Point3( 0, 0, -1.5 ), 1, Point3( 0, 0, 0 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 0.5 ), Vector3( 0, 0, -1 ),
+			"A u B from inside B only", 2 + std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_UNION, 1, Point3( 0, 0, 0 ), 1, Point3( 5, 0, 0 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 5 ), Vector3( 0, 0, -1 ),
+			"A u B, the ray meets A only", 5 - std::sqrt( 1 - r2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 0 ), Vector3( 0, 0, -1 ),
+			"A u B, from inside A, the ray meets A only", std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+	// Subtraction from inside B: B (r 2.5 at z = 2) ends inside A.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_SUBTRACTION, 1, Point3( 0, 0, 0 ), 2.5, Point3( 0, 0, 2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 4 ), Vector3( 0, 0, -1 ),
+			"A - B from inside B", 2 + std::sqrt( 6.25 - r2 ) );
+		safe_release( csg );
+	}
+	// Multi-lobe A (a union composite, so the advance paths run):
+	// lobes r 0.5 at the origin and r 1 at z = zLobe; B r 4 at z = 2
+	// contains the ray origin and all of the first lobe.
+	for( const Scalar zLobe : { Scalar( -2.5 ), Scalar( -8 ) } ) {
+		Object* l0 = MakeSphereObject( 0.5, Point3( 0, 0, 0 ) );
+		Object* l1 = MakeSphereObject( 1, Point3( 0, 0, zLobe ) );
+		CSGObject* uni = new CSGObject( CSG_UNION );
+		uni->AssignObjects( l0, l1 );
+		uni->FinalizeTransformations();
+		safe_release( l0 );
+		safe_release( l1 );
+		Object* oB = MakeSphereObject( 4, Point3( 0, 0, 2 ) );
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		csg->AssignObjects( uni, oB );
+		csg->FinalizeTransformations();
+		safe_release( uni );
+		safe_release( oB );
+		const Scalar bExit = 2 + std::sqrt( 16 - r2 );
+		if( zLobe > -4 ) {
+			// The second lobe [5.5, 7.5] straddles B's exit (~6): the
+			// surface is B's exit, closed by the lobe's exit.
+			CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 4 ), Vector3( 0, 0, -1 ),
+				"multi-lobe A - B, second lobe straddles B's exit", bExit );
+			const RayIntersection h = CastObj( *csg, Point3( 0.1, 0.05, 4 ), Vector3( 0, 0, -1 ) );
+			Check( h.geometric.bHit && std::fabs( h.geometric.range2 - ( 4 - zLobe + std::sqrt( 1 - r2 ) ) ) < 1e-6,
+				"H: multi-lobe A - B, straddling lobe: the interval closes at the lobe's exit (got " +
+				std::to_string( h.geometric.range2 ) + ")" );
+			Check( h.geometric.bHit && h.geometric.vNormal.z > 0,
+				"H: multi-lobe A - B, straddling lobe: B's exit normal faces back into the cavity" );
+		} else {
+			CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 4 ), Vector3( 0, 0, -1 ),
+				"multi-lobe A - B, second lobe past B's exit", 4 - zLobe - std::sqrt( 1 - r2 ) );
+		}
+		safe_release( csg );
+	}
 	// Intersection and subtraction from outside (controls).
 	{
 		CSGObject* csg = MakeTwoSphereCsg( CSG_INTERSECTION, 1, Point3( 0, 0, 0 ), 1, Point3( 0, 0, -1.5 ) );

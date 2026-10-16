@@ -2474,23 +2474,31 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				// -- and are still inside A when B ends.  When A's interval
 				// ends at or before B's exit, A lies wholly inside the
 				// subtracted B along the ray: that interval contributes
-				// nothing.  A later lobe of a multi-lobe A that begins after
-				// B's exit is then the composite's surface.
+				// nothing, and a multi-lobe A is advanced to its next lobe
+				// (stopping at the first lobe whose exit lies past B's exit).
+				// That lobe either STRADDLES B's exit -- the ray is inside it
+				// when B ends, so the surface is B's exit as below, closed by
+				// the lobe's exit -- or begins after it, and is then the
+				// composite's surface on its own.
 				if( riObjA.geometric.range < riObjB.geometric.range &&
-					!( riObjB.geometric.range < riObjA.geometric.range2 ) ) {
-					if( !( certBits & kSingleLobeA ) ) {
-						Scalar scale = 1;
-						if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
-							scale = 1;
-						}
-						AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, scale,
-							riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
-							factsA, advanceBudget, riObjA );
-						if( riObjA.geometric.bHit && riObjA.geometric.range >= riObjB.geometric.range ) {
-							ri = riObjA;
-						}
+					!( riObjB.geometric.range < riObjA.geometric.range2 ) &&
+					!( certBits & kSingleLobeA ) ) {
+					Scalar scale = 1;
+					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+						scale = 1;
 					}
-				} else if( riObjA.geometric.range < riObjB.geometric.range ) {
+					AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, scale,
+						riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
+						factsA, advanceBudget, riObjA );
+				}
+				if( riObjA.geometric.bHit && riObjA.geometric.range >= riObjB.geometric.range ) {
+					// Only after an advance: the earlier B.range <= A.range
+					// normalization sends the un-advanced case to the
+					// outside-both path.
+					ri = riObjA;
+				} else if( riObjA.geometric.bHit &&
+					riObjA.geometric.range < riObjB.geometric.range &&
+					riObjB.geometric.range < riObjA.geometric.range2 ) {
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range2;
 					ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
@@ -3377,6 +3385,10 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 						factsA, advanceBudget, riObjA );
 					if( riObjA.geometric.bHit && riObjA.geometric.range >= riObjB.geometric.range ) {
 						return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
+					}
+					// A lobe straddling B's exit: the surface is B's exit.
+					if( riObjA.geometric.bHit && riObjB.geometric.range < riObjA.geometric.range2 ) {
+						return (riObjB.geometric.range < dHowFar2 );
 					}
 				}
 				return false;
