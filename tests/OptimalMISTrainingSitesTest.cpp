@@ -189,8 +189,12 @@ static OptimalMISAccumulator::Config MakeConfig()
 // THE MECHANISM (measured, not inferred).  `HeterogeneousMedium`'s
 // ratio-tracking transmittance estimator keeps ONE per-thread Mersenne
 // Twister -- `static thread_local RandomNumberGenerator tl_rng` /
-// `tl_rng_nm` in `HeterogeneousMedium.cpp` -- default-constructed, i.e.
-// seeded from libc `rand()` on first use on that thread.  `Fixture::
+// `tl_rng_nm` in `HeterogeneousMedium.cpp` -- seeded on first use on that
+// thread.  (Until the DL-625 review the seed was libc `rand()` read on that
+// thread; it is now `ThreadLocalSeed()`, the next ticket of a process
+// epoch, and `DriveOnFreshThread` restarts that epoch from libc with
+// `ReseedThreadLocalSeedEpoch()` right after its `std::srand`, so a fresh
+// thread's seed is still a property of the seed alone.)  `Fixture::
 // Build`'s throwaway `Rasterize()` is multithreaded AND the CALLING
 // thread participates in the work (`ThreadPool.cpp`: "The caller thread
 // participates in ParallelFor by draining"), so by the time a driven
@@ -225,6 +229,11 @@ template< typename F >
 static void DriveOnFreshThread( unsigned int randSeed, F body )
 {
 	std::srand( randSeed );
+	// DL-625 review: the medium generator no longer reads libc on the
+	// worker; it takes ThreadLocalSeed's next ticket.  Restart the tickets
+	// from this srand so the fresh thread below is ticket 0 of a seed-
+	// pinned epoch -- the property the bright-fixture replay relies on.
+	ReseedThreadLocalSeedEpoch();
 	std::thread worker( body );
 	worker.join();
 }
