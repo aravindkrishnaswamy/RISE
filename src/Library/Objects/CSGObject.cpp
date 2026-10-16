@@ -2321,6 +2321,28 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// If we don't hit A, then no possible intersection
 		if( riObjA.geometric.bHit )
 		{
+			// Origin inside B, outside A, and A's first interval ends at or
+			// before B's exit: that interval lies wholly inside the
+			// subtracted B and contributes nothing.  Advance a multi-lobe A
+			// to its first lobe that ends past B's exit; the normalization
+			// below then hands a lobe that BEGINS at or after B's exit to the
+			// outside-both path (which advances B to its later lobes), and a
+			// lobe that straddles B's exit stays with the inside-B branch.
+			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
+				riObjA.geometric.range < riObjB.geometric.range &&
+				!( riObjB.geometric.range < riObjA.geometric.range2 ) &&
+				!( certBits & kSingleLobeA ) ) {
+				Scalar scale = 1;
+				if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+					scale = 1;
+				}
+				AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, scale,
+					riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
+					factsA, advanceBudget, riObjA );
+				if( !riObjA.geometric.bHit ) {
+					break;
+				}
+			}
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit &&
 				riObjB.geometric.range2 == 0 && riObjB.geometric.range <= riObjA.geometric.range ) {
 				// Origin is inside a lobe of B that exits in empty space at or
@@ -2474,30 +2496,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				// -- and are still inside A when B ends.  When A's interval
 				// ends at or before B's exit, A lies wholly inside the
 				// subtracted B along the ray: that interval contributes
-				// nothing, and a multi-lobe A is advanced to its next lobe
-				// (stopping at the first lobe whose exit lies past B's exit).
-				// That lobe either STRADDLES B's exit -- the ray is inside it
-				// when B ends, so the surface is B's exit as below, closed by
-				// the lobe's exit -- or begins after it, and is then the
-				// composite's surface on its own.
+				// nothing (a multi-lobe A was advanced at the top of this
+				// case; a lobe it reached that begins after B's exit went to
+				// the outside-both path).  Here A's interval STRADDLES B's
+				// exit: the ray is inside A when B ends, so the surface is
+				// B's exit, closed by A's exit or by a later lobe of B
+				// re-entering first.
 				if( riObjA.geometric.range < riObjB.geometric.range &&
-					!( riObjB.geometric.range < riObjA.geometric.range2 ) &&
-					!( certBits & kSingleLobeA ) ) {
-					Scalar scale = 1;
-					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
-						scale = 1;
-					}
-					AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, scale,
-						riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
-						factsA, advanceBudget, riObjA );
-				}
-				if( riObjA.geometric.bHit && riObjA.geometric.range >= riObjB.geometric.range ) {
-					// Only after an advance: the earlier B.range <= A.range
-					// normalization sends the un-advanced case to the
-					// outside-both path.
-					ri = riObjA;
-				} else if( riObjA.geometric.bHit &&
-					riObjA.geometric.range < riObjB.geometric.range &&
 					riObjB.geometric.range < riObjA.geometric.range2 ) {
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range2;
@@ -2549,6 +2554,26 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
+					// A multi-lobe B may re-enter before A's lobe ends: the
+					// composite interval then closes at that entry.
+					if( !( certBits & kSingleLobeB ) ) {
+						Scalar scale = 1;
+						if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+							scale = 1;
+						}
+						RayIntersection riNextB = riObjB;
+						riNextB.geometric.range2 = riNextB.geometric.range;
+						AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
+							riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
+							factsB, advanceBudget, riNextB );
+						if( riNextB.geometric.bHit && riNextB.geometric.range > riObjB.geometric.range &&
+							riNextB.geometric.range < ri.geometric.range2 ) {
+							ri.geometric.range2 = riNextB.geometric.range;
+							ri.boundaryRange2 = riNextB.boundaryRange; ri.hasBoundaryRange2 = riNextB.hasBoundaryRange;
+							ri.geometric.vNormal2 = -riNextB.geometric.vNormal;
+							ri.geometric.vGeomNormal2 = -riNextB.geometric.vGeomNormal;
+						}
+					}
 				}
 			} else {
 				// Neither A nor B contains the ray origin -- both hits are
@@ -3348,6 +3373,28 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 		// If we don't hit A, then no possible intersection
 		if( riObjA.geometric.bHit )
 		{
+			// Origin inside B, outside A, and A's first interval ends at or
+			// before B's exit: that interval lies wholly inside the
+			// subtracted B and contributes nothing.  Advance a multi-lobe A
+			// to its first lobe that ends past B's exit; the normalization
+			// below then hands a lobe that BEGINS at or after B's exit to the
+			// outside-both path (which advances B to its later lobes), and a
+			// lobe that straddles B's exit stays with the inside-B branch.
+			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
+				riObjA.geometric.range < riObjB.geometric.range &&
+				!( riObjB.geometric.range < riObjA.geometric.range2 ) &&
+				!( certBits & kSingleLobeA ) ) {
+				Scalar scale = 1;
+				if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
+					scale = 1;
+				}
+				AdvanceOperandPast( pObjectA, orig, dHowFar2, scale,
+					riObjB.geometric.range, 0, nullRasterizerState,
+					factsA, advanceBudget, riObjA );
+				if( !riObjA.geometric.bHit ) {
+					return false;
+				}
+			}
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit &&
 				riObjB.geometric.range2 == 0 && riObjB.geometric.range <= riObjA.geometric.range ) {
 				riObjB.geometric.range2 = riObjB.geometric.range;
@@ -3374,22 +3421,6 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				// multi-lobe A can still occlude.
 				if( riObjB.geometric.range < riObjA.geometric.range2 ) {
 					return (riObjB.geometric.range < dHowFar2 );
-				}
-				if( !( certBits & kSingleLobeA ) ) {
-					Scalar scale = 1;
-					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
-						scale = 1;
-					}
-					AdvanceOperandPast( pObjectA, orig, dHowFar2, scale,
-						riObjB.geometric.range, 0, nullRasterizerState,
-						factsA, advanceBudget, riObjA );
-					if( riObjA.geometric.bHit && riObjA.geometric.range >= riObjB.geometric.range ) {
-						return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
-					}
-					// A lobe straddling B's exit: the surface is B's exit.
-					if( riObjA.geometric.bHit && riObjB.geometric.range < riObjA.geometric.range2 ) {
-						return (riObjB.geometric.range < dHowFar2 );
-					}
 				}
 				return false;
 			} else {

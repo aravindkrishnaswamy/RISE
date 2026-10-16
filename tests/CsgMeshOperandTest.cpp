@@ -788,6 +788,95 @@ static void TestShadowLengthFromInside()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// I. subtraction from inside a multi-lobe B (a torus)
+//////////////////////////////////////////////////////////////////////
+
+#include "../src/Library/Geometry/TorusGeometry.h"
+
+//! A = union of two spheres on the x axis, given as ray-parameter
+//! intervals [lo, hi] along the ray from (-3.5, 0, 0) toward +x.
+static CSGObject* MakeTorusSubtraction( Scalar lo0, Scalar hi0, Scalar lo1, Scalar hi1 )
+{
+	const Scalar ox = -3.5;
+	Object* l0 = MakeSphereObject( 0.5 * ( hi0 - lo0 ), Point3( ox + 0.5 * ( lo0 + hi0 ), 0, 0 ) );
+	Object* l1 = MakeSphereObject( 0.5 * ( hi1 - lo1 ), Point3( ox + 0.5 * ( lo1 + hi1 ), 0, 0 ) );
+	CSGObject* uni = new CSGObject( CSG_UNION );
+	uni->AssignObjects( l0, l1 );
+	uni->FinalizeTransformations();
+	safe_release( l0 );
+	safe_release( l1 );
+	TorusGeometry* gt = new TorusGeometry( 3, 1 );
+	Object* oB = new Object( gt );
+	safe_release( gt );
+	oB->FinalizeTransformations();
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	csg->AssignObjects( uni, oB );
+	csg->FinalizeTransformations();
+	safe_release( uni );
+	safe_release( oB );
+	return csg;
+}
+
+static void TestSubtractionInsideMultiLobeB()
+{
+	std::cout << "I. subtraction from inside a torus B (B exits 1.5, re-enters 5.5, exits 7.5)" << std::endl;
+	const Point3 o( -3.5, 0, 0 );
+	const Vector3 dx( 1, 0, 0 );
+	// Precondition: the torus intervals along this ray.
+	{
+		TorusGeometry* gt = new TorusGeometry( 3, 1 );
+		Object* oB = new Object( gt );
+		safe_release( gt );
+		oB->FinalizeTransformations();
+		const RayIntersection h0 = CastObj( *oB, o, dx );
+		const RayIntersection h1 = CastObj( *oB, Point3( -1, 0, 0 ), dx );
+		Check( h0.geometric.bHit && std::fabs( h0.geometric.range - 1.5 ) < 1e-6 &&
+			h1.geometric.bHit && std::fabs( h1.geometric.range - 3.0 ) < 1e-6,
+			"I: (precondition) torus R 3 r 1 is crossed at 1.5 and re-entered at 5.5 along the ray" );
+		safe_release( oB );
+	}
+	// Phantom: A's lobes [0.7, 1.1] and [5.7, 6.3] both lie inside B.
+	{
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 5.7, 6.3 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( !h.geometric.bHit, "I: A - torus with every A lobe inside B is missed (got range " +
+			std::to_string( h.geometric.range ) + ")" );
+		Check( !csg->IntersectRay_IntersectionOnly( Ray( o, dx ), 20, true, true ),
+			"I: ... and does not occlude" );
+		safe_release( csg );
+	}
+	// Straddle: lobe [1.3, 6.0] straddles B's exit (1.5) and B re-enters
+	// (5.5) inside it -- the interval is [1.5, 5.5].
+	{
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 1.3, 6.0 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "A - torus, straddling lobe", 1.5 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"I: A - torus, straddling lobe: the interval closes at B's re-entry (got " +
+			std::to_string( h.geometric.range2 ) + ")" );
+		Check( h.geometric.bHit && h.geometric.vNormal2.x > 0,
+			"I: A - torus, straddling lobe: the closing normal points along the ray" );
+		safe_release( csg );
+	}
+	// A entry outside B, B covering its tail: lobe [2.0, 6.0] -> [2.0, 5.5].
+	{
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 2.0, 6.0 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "A - torus, lobe entered after B's exit", 2.0 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"I: A - torus, lobe after B's exit: the interval closes at B's re-entry (got " +
+			std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+	// A lobe past B's second lobe: [7.8, 8.4] is the surface.
+	{
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 7.8, 8.4 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "A - torus, lobe past B's second lobe", 7.8 );
+		safe_release( csg );
+	}
+}
+
 int main()
 {
 	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13) ===" << std::endl;
@@ -799,6 +888,7 @@ int main()
 	TestInsideBThroughA();
 	TestMeshEditRefreshesComposite();
 	TestShadowLengthFromInside();
+	TestSubtractionInsideMultiLobeB();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }
