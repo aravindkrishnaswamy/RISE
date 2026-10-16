@@ -730,6 +730,20 @@ namespace RISE
 			Scalar epsSq
 			);
 
+		//! DL-623 review: a RIGOROUS lower bound on the smallest eigenvalue
+		//! of the symmetric 3x3 matrix `G` (its stored floating-point
+		//! entries taken as exact; only the upper triangle is read), proved
+		//! by floating-point Cholesky of `G - (t + c) I` with a backward-
+		//! error margin `c` (Higham, Accuracy and Stability, Thm 10.3; Rump,
+		//! "Verification of positive definiteness", 2006).  Unlike the
+		//! signs of computed Sylvester minors, whose rounding error relative
+		//! to the minor grows like tr(G)^2 / lambda when two eigenvalues are
+		//! small, the margin is a fixed multiple of eps * tr(G), so the
+		//! bound holds for any conditioning.  Returns 0 when no POSITIVE
+		//! bound can be proved (0 is then NOT a claim that `G` is PSD), and
+		//! for non-finite or out-of-range input.
+		extern Scalar SymmetricMinEigenvalueLowerBound3( const Scalar G[3][3] );
+
 		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
 		//! consistently oriented (readable) face?  The general certificate
 		//! behind the open-sheet face rule for meshes; the full proof is in
