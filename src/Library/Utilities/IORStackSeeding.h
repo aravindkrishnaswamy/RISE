@@ -1313,7 +1313,8 @@ namespace RISE
 			const Vector3& dir,
 			ProbeEntry* out,
 			const Scalar nm = 0,
-			const std::size_t capacity = kMaxProbeEntries
+			const std::size_t capacity = kMaxProbeEntries,
+			const int walkSteps = -1
 			)
 		{
 			Diagnostics::ProbeTraceCounter()++;
@@ -1322,9 +1323,11 @@ namespace RISE
 			Ray probe( pos, dir );
 			// One step adds at most one entry: never walk more steps than
 			// the table holds, so no met object is ever silently dropped
-			// (the caller sizes the table to MaxSceneWalkSteps).
+			// (the caller sizes the table to MaxSceneWalkSteps, which it
+			// passes as @a walkSteps to spare a catalog lookup per probe).
+			const int budget = walkSteps >= 0 ? walkSteps : MaxSceneWalkSteps( pObjects );
 			const int maxSteps = static_cast<int>( std::min<std::size_t>(
-				static_cast<std::size_t>( MaxSceneWalkSteps( pObjects ) ), capacity ) );
+				static_cast<std::size_t>( budget ), capacity ) );
 
 			for( int step = 0; step < maxSteps; step++ )
 			{
@@ -1492,6 +1495,10 @@ namespace RISE
 		//! Preserves closed-room blocking (both single `box_geometry` rooms and
 		//! 6-quad rooms `A23`/`A24`) and self-reentry blocking (`A18` torus
 		//! hole) while seeding points beneath submerged opaque bodies (`A27`).
+		//! The lateral leg `pos -> w_m` must cross NO surface with a side (a
+		//! sealed habitat's glass window is not a way out, `A34`), and every
+		//! scene ray it and its walks spend is charged to the caller's
+		//! DetourBudgetScope (`A35`).
 		inline bool HasFreeSpaceDetourToSheet(
 			const IObjectManager* pObjects,
 			const Point3& pos,
@@ -1707,7 +1714,7 @@ namespace RISE
 					continue;
 				}
 
-				// Segment 1: lateral ray from `pos` to `wm`.
+				// Segment 1: lateral ray from `pos` to `wm`, through free space only.
 				const Vector3 segVec = Vector3Ops::mkVector3( wm, pos );
 				const Scalar segLen = Vector3Ops::Magnitude( segVec );
 				if( segLen <= NEARZERO ) {
@@ -2236,7 +2243,11 @@ namespace RISE
 			// Six probe tables, each sized to the probe's step budget: on the
 			// stack while that budget is the base kMaxProbeSteps (no open
 			// sheets -- the pre-DL-622 cost), on the heap otherwise.
-			const std::size_t probeCap = static_cast<std::size_t>( MaxSceneWalkSteps( pObjects ) );
+			// One catalog lookup per seed: the open-sheet list (DL-618, also
+			// used below) and the walk budget it implies.
+			const std::vector<OpenSheetCatalogEntry>& sceneSheets = OpenSheetsOf( pObjects );
+			const int walkSteps = kMaxProbeSteps + static_cast<int>( 2 * sceneSheets.size() );
+			const std::size_t probeCap = static_cast<std::size_t>( walkSteps );
 			ProbeEntry stackTables[6][kMaxProbeEntries];
 			std::vector<ProbeEntry> heapTables;
 			ProbeEntry* tables[6];
@@ -2249,7 +2260,7 @@ namespace RISE
 			const std::size_t tableCap = probeCap <= kMaxProbeEntries ? kMaxProbeEntries : probeCap;
 			ProbeEntry* const containing = tables[0];
 			const std::size_t containingCount =
-				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing, nm, tableCap );
+				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing, nm, tableCap, walkSteps );
 
 			ProbeEntry* const reverse = tables[1];
 			std::size_t reverseCount = 0;
@@ -2258,7 +2269,7 @@ namespace RISE
 				if( containing[i].parity > 0 ) { anyCandidate = true; break; }
 			}
 			if( anyCandidate ) {
-				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse, nm, tableCap );
+				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse, nm, tableCap, walkSteps );
 			}
 
 			ProbeEntry* const xForward = tables[2];
@@ -2276,10 +2287,10 @@ namespace RISE
 				}
 			}
 			if( anyZConfirmed ) {
-				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward, nm, tableCap );
-				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse, nm, tableCap );
-				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward, nm, tableCap );
-				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse, nm, tableCap );
+				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward, nm, tableCap, walkSteps );
+				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse, nm, tableCap, walkSteps );
+				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward, nm, tableCap, walkSteps );
+				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse, nm, tableCap, walkSteps );
 			}
 
 			ProbeEntry* orderedStack[kMaxProbeEntries];
@@ -2319,9 +2330,12 @@ namespace RISE
 			// without an 8-sheet cap).
 			std::vector<ConfirmedSheet> confirmed;
 			bool declineSheets = !seedOpenSheets;
-			DetourBudgetScope detourBudget;
-			const std::vector<OpenSheetCatalogEntry>* pSheets = seedOpenSheets ? &OpenSheetsOf( pObjects ) : 0;
+			bool detourBudgetExhausted = false;
+			const std::vector<OpenSheetCatalogEntry>* pSheets = seedOpenSheets ? &sceneSheets : 0;
 			if( pSheets && !pSheets->empty() && !declineSheets ) {
+				// Every detour of this seed shares one budget (a scene without
+				// open sheets never opens one).
+				DetourBudgetScope detourBudget;
 				const std::vector<OpenSheetNormalGroup>& groups = ThreadOpenSheetCatalog().normalGroups;
 				std::vector<bool> handledByGroup( pSheets->size(), false );
 
@@ -2399,9 +2413,10 @@ namespace RISE
 					c.keep = true;
 					confirmed.push_back( c );
 				}
+				detourBudgetExhausted = detourBudget.Exhausted();
 			}
 
-			if( detourBudget.Exhausted() ) {
+			if( detourBudgetExhausted ) {
 				declineSheets = true;
 			}
 

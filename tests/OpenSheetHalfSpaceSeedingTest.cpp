@@ -46,8 +46,10 @@
 //        the free-space detour (matches the closed-box reference)
 //    B7  DL-622: HWSS companion lanes re-indexed from a hero stack
 //        holding an open sheet match independent wavelengths
+//    B8  DL-622 review: no open sheet -- HWSS companion lanes seeded as
+//        before DL-622 match independent wavelengths
 //
-//  HALF_SPACE_ONLY_NEW (env): Part B rows B5..B7 only.
+//  HALF_SPACE_ONLY_NEW (env): Part B rows B5..B8 only.
 //
 //  argv[1]: seed base (default 2000).  HALF_SPACE_N (env): repeats
 //  (default 4).  HALF_SPACE_UNIT_ONLY (env): Part A only.
@@ -1238,8 +1240,8 @@ static void PartA()
 	// A35 (DL-622 review, P2): the detour certificate's cost is bounded.
 	// 50 co-normal glass panes over a submerged rock: every pane's normal
 	// ray from the seed meets the rock, and an unbounded certificate tries
-	// a detour per pane, each walking the 50-pane column 9 times (measured
-	// at the DL-622 commit: 2652 scene rays per seed).  The detour budget
+	// a detour per pane, each walking up the pane column (measured at the
+	// DL-622 commit: 2652 scene rays per seed, every camera sample).  The detour budget
 	// refuses instead (the seed declines every open sheet -- the refusal
 	// SeedFromPoint makes for ambiguous configurations).  A 3-pane stack
 	// over the same rock fits the budget and is still seeded through it.
@@ -1619,6 +1621,25 @@ static std::string DispersiveUnderSheetScene( Integrator which )
 	return s;
 }
 
+//! B8 (DL-622 review): NO open sheet.  A dispersive glass ball inside a
+//! closed water box, camera outside: the HWSS hero enters the box and hands
+//! off at the ball with a closed-medium stack, which SeedCompanionLane
+//! seeds exactly as before DL-622 (the parent commit renders this row with
+//! the same means).  HWSS must match independent wavelengths.
+static std::string DispersiveInBoxScene( Integrator which )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n";
+	s += "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n";
+	s += "pinhole_camera\n{\n\tlocation 0 2.6 1.2\n\tlookat 0 0.3 0\n\tup 0 1 0\n\tfov 35.0\n}\n\n";
+	s += Emitter( 4, 2, 4 );
+	s += "box_geometry\n{\n\tname g_tank\n\twidth 4\n\theight 2.25\n\tdepth 4\n}\n\n" + Obj( "tank", "g_tank", "glass133", "0 0.875 0" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.35\n}\n\n" + Obj( "ball", "g_ball", "glass_disp", "0 0.6 0" );
+	s += HSheet( "g_recv", 0, 1, true ) + Obj( "recv", "g_recv", "matte" );
+	s += HSheet( "g_floor", -0.25, 8, true ) + Obj( "floor", "g_floor", "soot" );
+	return s;
+}
+
 struct Stat { double mean, sd; };
 
 static Stat Measure( const std::string& scene, unsigned int n )
@@ -1657,7 +1678,7 @@ static void PartB( unsigned int n )
 {
 	std::cout << "Part B: renders (n = " << n << ")" << std::endl;
 	const bool onlyB4 = std::getenv( "HALF_SPACE_ONLY_B4" ) != nullptr;
-	// HALF_SPACE_ONLY_NEW: only the DL-622 review rows (B5..B7).
+	// HALF_SPACE_ONLY_NEW: only the DL-622 review rows (B5..B8).
 	const bool onlyNew = std::getenv( "HALF_SPACE_ONLY_NEW" ) != nullptr;
 
 	if( !onlyB4 && !onlyNew ) {
@@ -1703,6 +1724,10 @@ static void PartB( unsigned int n )
 	std::cout << "B7: dispersive ball under a water sheet, HWSS vs independent wavelengths" << std::endl;
 	RatioRow( "B7 PT spectral hwss TRUE / FALSE", Measure( DispersiveUnderSheetScene( kPTSpectralHWSS ), n ),
 		Measure( DispersiveUnderSheetScene( kPTSpectral ), n ), 0.03 );
+
+	std::cout << "B8: dispersive ball in a closed water box (no open sheet), HWSS vs independent wavelengths" << std::endl;
+	RatioRow( "B8 PT spectral hwss TRUE / FALSE", Measure( DispersiveInBoxScene( kPTSpectralHWSS ), n ),
+		Measure( DispersiveInBoxScene( kPTSpectral ), n ), 0.03 );
 
 	if( onlyNew ) {
 		return;

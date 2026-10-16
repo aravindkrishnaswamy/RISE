@@ -88,7 +88,7 @@ namespace RISE
 		//! pushes); an ordinary closed-medium push carries none, so a scene
 		//! without open sheets copies exactly the stack it copied before
 		//! DL-622 (`IORDATA` stays a 24-byte trivially copyable record and the
-		//! side vector stays empty, i.e. never allocates).  A consumer that
+		//! side vector is never allocated).  A consumer that
 		//! needs a closed entry's index at another wavelength probes the
 		//! object (`IORStackSeeding::ProbeObjectSurfaceHit`).
 		struct EntryContext
@@ -189,21 +189,33 @@ namespace RISE
 		{
 		public:
 
-			//! DL-622: per-entry EntryContexts, parallel to `c` (same size)
-			//! once ANY entry carries one, EMPTY otherwise -- so a stack with
-			//! no context-carrying entry (every stack in a scene without open
-			//! sheets) copies and pushes exactly as before DL-622.
-			std::vector<EntryContext> ctxs;
+			//! DL-622: per-entry EntryContexts, parallel to `c` (same size),
+			//! allocated when the FIRST context-carrying entry is pushed and
+			//! null before that -- so a stack with no such entry (every stack
+			//! in a scene without open sheets) copies one extra null pointer
+			//! and otherwise pushes, pops and copies exactly as before DL-622.
+			std::vector<EntryContext>* pCtxs;
 
-			MyIORStack(){};
+			MyIORStack() : pCtxs( 0 ) {};
 			MyIORStack( const MyIORStack& s ) : 
 			  std::stack< IORDATA, std::vector<IORDATA> >( s ),
-			  ctxs( s.ctxs )
+			  pCtxs( s.pCtxs ? new std::vector<EntryContext>( *s.pCtxs ) : 0 )
 			{}
 			MyIORStack& operator=( const MyIORStack& s )
 			{
-				c = s.c;
-				ctxs = s.ctxs;
+				if( this != &s ) {
+					c = s.c;
+					if( s.pCtxs ) {
+						if( pCtxs ) {
+							*pCtxs = *s.pCtxs;
+						} else {
+							pCtxs = new std::vector<EntryContext>( *s.pCtxs );
+						}
+					} else if( pCtxs ) {
+						delete pCtxs;
+						pCtxs = 0;
+					}
+				}
 				return *this;
 			}
 
@@ -216,15 +228,15 @@ namespace RISE
 			void pushEntry( const IORDATA& d, const EntryContext* pCtx )
 			{
 				if( pCtx && pCtx->bHasContext ) {
-					if( ctxs.empty() ) {
-						ctxs.resize( c.size() );
+					if( !pCtxs ) {
+						pCtxs = new std::vector<EntryContext>( c.size() );
 					}
 					c.push_back( d );
-					ctxs.push_back( *pCtx );
+					pCtxs->push_back( *pCtx );
 				} else {
 					c.push_back( d );
-					if( !ctxs.empty() ) {
-						ctxs.push_back( EntryContext() );
+					if( pCtxs ) {
+						pCtxs->push_back( EntryContext() );
 					}
 				}
 			}
@@ -242,20 +254,21 @@ namespace RISE
             void setIORAt( std::size_t i, Scalar ior ) { c[i].ior = ior; }
             bool topIsOpenSheet() const { return c.empty() ? false : c.back().bOpenSheet; }
             bool isOpenSheetAt( std::size_t i ) const { return i < c.size() ? c[i].bOpenSheet : false; }
-            const EntryContext& contextAt( std::size_t i ) const { return i < ctxs.size() ? ctxs[i] : NoContext(); }
+            const EntryContext& contextAt( std::size_t i ) const { return ( pCtxs && i < pCtxs->size() ) ? ( *pCtxs )[i] : NoContext(); }
             void setContextAt( std::size_t i, const EntryContext& ctx ) {
                 if( i >= c.size() ) return;
-                if( ctxs.empty() ) {
+                if( !pCtxs ) {
                     if( !ctx.bHasContext ) return;
-                    ctxs.resize( c.size() );
+                    pCtxs = new std::vector<EntryContext>( c.size() );
                 }
-                ctxs[i] = ctx;
+                ( *pCtxs )[i] = ctx;
             }
             const EntryContext& topContext() const { return contextAt( c.size() - 1 ); }
             const EntryContext* findContext( const IObject* r ) const {
-                for( std::size_t i = ctxs.size(); i-- > 0; ) {
-                    if( c[i].pObj == r && ctxs[i].bHasContext ) {
-                        return &ctxs[i];
+                if( !pCtxs ) return 0;
+                for( std::size_t i = pCtxs->size(); i-- > 0; ) {
+                    if( c[i].pObj == r && ( *pCtxs )[i].bHasContext ) {
+                        return &( *pCtxs )[i];
                     }
                 }
                 return 0;
@@ -269,7 +282,9 @@ namespace RISE
 
 
 			~MyIORStack()
-			{};
+			{
+				delete pCtxs;
+			};
 
 			bool find_and_destroy( const IObject* r )
 			{
@@ -277,8 +292,8 @@ namespace RISE
 				for( i=c.rbegin(), e=c.rend(); i!=e; i++ ) {
 					if( i->pObj == r ) {
 						const std::vector<IORDATA>::iterator it = (i.base())-1;
-						if( !ctxs.empty() ) {
-							ctxs.erase( ctxs.begin() + ( it - c.begin() ) );
+						if( pCtxs ) {
+							pCtxs->erase( pCtxs->begin() + ( it - c.begin() ) );
 						}
 						c.erase( it );
 						return true;
