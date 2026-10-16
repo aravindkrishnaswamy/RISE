@@ -1290,8 +1290,9 @@ static void PartA()
 			// budget runs out, the panes it has not confirmed are refused --
 			// and an unpushed-exit resolution at the same point refuses the
 			// same panes (both go through ConfirmOpenSheetsAt).  Budget forced
-			// down to 60 rays (the column walk alone takes ~51).
-			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 60;
+			// down to 10 rays beyond the column walk (a waypoint's normal walk
+			// up the 50-pane stack alone needs ~50).
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 10;
 			const IORStack st60 = deep.Seed( Point3( 0, 0, 0 ) );
 			bool same = true;
 			for( int k = 1; k <= 50; k++ ) {
@@ -1749,6 +1750,43 @@ static void PartA()
 			check( Point3( 0, 0, 0 ), "A49: point inside outer/mid/inner", true );
 			check( Point3( 20, 20, 20 ), "A49: point inside a box whose ior is -1 at one lane", false );
 			check( Point3( 10, -10, 10 ), "A49: point in air", true );
+		}
+	}
+
+	// A50 (DL-622 review round 4): a same-material sibling stands in for the
+	// walk's sheet by MATERIAL identity, not by an exact index match.  A walk
+	// seeded under dispersive pane pA (RGB convention, nm 0) moves under its
+	// same-material sibling pB and leaves an unrelated sheet X through its
+	// back face; a dispersive RGB SPF resolves that crossing at a channel
+	// wavelength (611 nm), where pB's index differs from pA's recorded one.
+	// A seed past the crossing holds pB's medium, so the walk must keep it.
+	{
+		Loaded sib( Header()
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ HSheet( "g_pa", 2, 1, true ) + Obj( "pa", "g_pa", "glass_disp" )
+			+ HSheet( "g_pb", 2, 1, true ) + Obj( "pb", "g_pb", "glass_disp", "3 0 0" )
+			+ HSheet( "g_x", 0.5, 0.3, true ) + Obj( "xs", "g_x", "glass133", "3 0 0" ) );
+		Check( sib.ok, "A50 scene loads" );
+		if( sib.ok ) {
+			for( const Scalar nm : { Scalar( 611 ), Scalar( 549 ), Scalar( 465 ) } ) {
+				IORStack walk = sib.Seed( Point3( 0, 0, 0 ) );
+				const IORStack seedAfter = sib.Seed( Point3( 3, 0.501, 0 ) );
+				walk.SetMediumProbeScene( &sib.Scene() );
+				walk.SetCurrentObject( sib.O( "xs" ) );
+				RayIntersection exitHit( Ray( Point3( 3, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				sib.O( "xs" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+				if( !exitHit.geometric.bHit ) {
+					Check( false, "A50: probe hits X" );
+					continue;
+				}
+				IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.33, walk, 0, nm );
+				char label[200];
+				std::snprintf( label, sizeof(label),
+					"A50: at %g nm the walk keeps the sibling medium like the seed (walk depth %zu, seed depth %zu)",
+					double( nm ), walk.Depth(), seedAfter.Depth() );
+				Check( seedAfter.Depth() == 2 && walk.Depth() == 2 && walk.topObject() == sib.O( "pa" ), label );
+			}
 		}
 	}
 

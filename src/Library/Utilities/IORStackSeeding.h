@@ -243,6 +243,21 @@ namespace RISE
 			}
 		}
 
+		//! The most scene rays one detour certificate (group or single-sheet)
+		//! spends beyond its column walk.
+		static const int kGroupDetourRayBudget = 1024;
+
+		namespace Diagnostics
+		{
+			//! Test hook: the group certificate's ray budget on this thread
+			//! (defaults to kGroupDetourRayBudget).
+			inline int& GroupDetourRayBudget()
+			{
+				static thread_local int budget = kGroupDetourRayBudget;
+				return budget;
+			}
+		}
+
 		inline void DebugResetProbeTraceCount() {
 			Diagnostics::ProbeTraceCounter() = 0;
 		}
@@ -251,18 +266,32 @@ namespace RISE
 			return Diagnostics::ProbeTraceCounter();
 		}
 
-		//! DL-622 review: the free-space detour certificate
-		//! (`HasFreeSpaceDetourToSheet`) is a PURE function of (seed point,
-		//! sheet): no shared ray budget decides it, so `SeedFromPoint` and an
-		//! exit resolution (`PointInOpenSheetMedium`) asking about the same
-		//! sheet at the same point always agree, and a sheet confirmed by a
-		//! clear normal ray never depends on another sheet's detour.  Its cost
-		//! is bounded by construction -- one column walk plus at most eight
-		//! waypoints, each a lateral and a normal walk of at most
-		//! `MaxSceneWalkSteps` steps -- and a co-normal group whose shared
-		//! normal ray is blocked runs ONE such certificate for all of its
-		//! sheets (`HasFreeSpaceDetourToSheets`), which answers each sheet
-		//! exactly as its own certificate would.
+		//! DL-622 review: the free-space detour certificate.  A sheet whose
+		//! normal ray from the seed is blocked by an opaque body may still hold
+		//! the seed if a free-space walk around the body reaches its back face.
+		//! A co-normal group whose SHARED normal ray is blocked runs ONE group
+		//! certificate for its remaining sheets (`HasFreeSpaceDetourToSheets`);
+		//! every other sheet runs the single-sheet certificate
+		//! (`HasFreeSpaceDetourToSheet`) -- including a group's sheets when a
+		//! member was re-posed since the catalog was built (the group path's
+		//! `poseValid` check: motion blur re-poses per sample).  Each
+		//! certificate spends at most `GroupDetourRayBudget()` (default
+		//! `kGroupDetourRayBudget`) scene rays beyond its column walk and then
+		//! REFUSES whatever it has not yet confirmed, so:
+		//!  - a sheet confirmed by a clear normal ray never depends on any
+		//!    certificate;
+		//!  - while no budget is exhausted the group certificate answers each
+		//!    sheet exactly as its own single-sheet certificate would (A35);
+		//!  - once a group's budget is exhausted the refused sheets depend on
+		//!    the order the certificate visits them (the catalog's order of the
+		//!    group's sheets and of their obstacle boxes), and the same point
+		//!    can be answered differently by the group path and by the
+		//!    re-posed single-sheet fallback (a per-sheet budget each), i.e.
+		//!    across motion-blur samples that do and do not re-pose a member.
+		//!    Both refusals mean "not in that medium".
+		//! Seeds and unpushed-exit resolutions both decide membership through
+		//! `ConfirmOpenSheetsAt`, so they make the same choices at a point
+		//! (see that function for the two exceptions).
 
 		//////////////////////////////////////////////////////////////////
 		// DL-618: medium membership of a certified OPEN refractive sheet.
@@ -1516,6 +1545,8 @@ namespace RISE
 			if( pSeedObject && pObstacle == pSeedObject ) {
 				return false;
 			}
+			// The same per-certificate budget the group certificate spends.
+			const std::size_t rayBudget = static_cast<std::size_t>( Diagnostics::GroupDetourRayBudget() );
 			// An EXIT hit (`TrueGeomFacing > 0`) on a non-open obstacle means
 			// `pos` is strictly inside a closed opaque room (`A1`, `A12`,
 			// `A21`, `A22`, `A25`, `A26`): reject in 0 rays.
@@ -1685,8 +1716,12 @@ namespace RISE
 				{ uHi, vHi, uHi * uHi + vHi * vHi }
 			};
 
+			const std::size_t raysAfterColumn = Diagnostics::SceneRayCounter();
 			const bool sheetIsPlanar = ( expectedSheetCrossings == 1 );
 			for( int m = 0; m < 8; ++m ) {
+				if( Diagnostics::SceneRayCounter() - raysAfterColumn >= rayBudget ) {
+					return false;	// budget spent: refused
+				}
 				const Point3 wm = Point3Ops::mkPoint3(
 					Point3Ops::mkPoint3( pos, U * waypoints[m].du ),
 					V * waypoints[m].dv );
@@ -1792,21 +1827,6 @@ namespace RISE
 				}
 			}
 			return false;
-		}
-
-		//! The most scene rays one group certificate spends (see
-		//! HasFreeSpaceDetourToSheets).
-		static const int kGroupDetourRayBudget = 1024;
-
-		namespace Diagnostics
-		{
-			//! Test hook: the group certificate's ray budget on this thread
-			//! (defaults to kGroupDetourRayBudget).
-			inline int& GroupDetourRayBudget()
-			{
-				static thread_local int budget = kGroupDetourRayBudget;
-				return budget;
-			}
 		}
 
 		//! One sheet's answer from `HasFreeSpaceDetourToSheets`.
@@ -1916,8 +1936,7 @@ namespace RISE
 			vertProbe.Advance( kSeedEps );
 			for( int step = 0; step < maxSteps && open > 0; ++step ) {
 				RayIntersection vri( vertProbe, nullRasterizerState );
-				Diagnostics::SceneRayCounter()++;
-				raysSpent++;
+				Diagnostics::SceneRayCounter()++;	// the column walk is not charged
 				pObjects->IntersectRay( vri, true, true, false );
 				if( !vri.geometric.bHit ) {
 					break;
@@ -1996,8 +2015,8 @@ namespace RISE
 			// obstacles (glass shelves carrying vases) give every sheet its
 			// own box, and when waypoints keep failing trying them all costs
 			// O(N * 8 * MaxSceneWalkSteps) scene rays.  So the certificate
-			// spends at most kGroupDetourRayBudget scene rays (column walk
-			// included); once they are spent every sheet it has not yet
+			// spends at most kGroupDetourRayBudget scene rays beyond its
+			// column walk; once they are spent every sheet it has not yet
 			// confirmed is REFUSED (not in its medium).  The refusal is
 			// deterministic in (point, group), touches only this group's
 			// detour-confirmed sheets (a sheet its shared normal ray reached
@@ -2589,10 +2608,19 @@ namespace RISE
 		//! under the sheet-normal convention, with the pairwise relations the
 		//! seed uses (same-material siblings keep one; different-material
 		//! siblings or mutual nesting set @a declineSheets).  Shared by
-		//! `SeedFromPointImpl` and `OpenSheetEnclosesCrossing`, so a seed and
-		//! an unpushed-exit resolution at the same point agree by construction
-		//! (DL-622 review round 3).  @a ordered / @a orderedCount (the closed
-		//! media containing @a pos) only feed each sheet's `closedInner`.
+		//! `SeedFromPointImpl` and `OpenSheetEnclosesCrossing` (DL-622 review
+		//! round 3), so a seed at a point and an unpushed-exit resolution there
+		//! run the same confirmation, with two exceptions:
+		//!  - the exit leaves out the sheet it is crossing (@a pExclude),
+		//!    which the seed would hold only if the point just past the
+		//!    crossing were still in the crossed sheet's medium -- impossible
+		//!    for a planar sheet left through its back face, possible for a
+		//!    CURVED one whose representative (or auxiliary) normal ray from
+		//!    that point still meets it on a back face;
+		//!  - a seed at a luminaire passes its own object as @a pSeedObject
+		//!    (exempt on its first self-hit), the exit passes none.
+		//! @a ordered / @a orderedCount (the closed media containing @a pos)
+		//! only feed each sheet's `closedInner`.
 		inline void ConfirmOpenSheetsAt(
 			const IObjectManager* pObjects,
 			const std::vector<OpenSheetCatalogEntry>& sceneSheets,
@@ -3314,44 +3342,43 @@ namespace RISE
 			}
 
 			//! Does open sheet @a pY (on @a pStack) stay past the crossing?
+			//!
+			//! A confirmed sheet S stands in for pY when it is the same
+			//! MATERIAL (identity, no index comparison) and not already on the
+			//! stack.  The index is deliberately not compared: the walk's entry
+			//! for pY was recorded at whatever wavelength convention the walk
+			//! used (an RGB walk's nm = 0, a dispersive RGB SPF's per-channel
+			//! 611/549/465 nm, a spatially varying painter at pY's own hit),
+			//! while S's confirmation reads S's hit at the exit's wavelength, so
+			//! an exact index match would pop pY on two of three RGB channels
+			//! where a seed keeps the medium (DL-622 review round 4).  pY keeps
+			//! its recorded index for that medium.
 			bool Keeps( const IObject* pY, const IObject* pSheet, const IORStack* pStack ) const
 			{
 				if( decline ) {
 					return false;
 				}
-				Scalar yIor = -1;
-				if( pStack ) {
-					for( std::size_t i = pStack->Depth(); i-- > 1; ) {
-						if( pStack->ObjectAt( i ) == pY ) {
-							yIor = pStack->IORAt( i );
+				const IMaterial* pMat = pY->GetMaterial();
+				for( std::size_t c = 0; c < confirmed.size(); ++c ) {
+					const ConfirmedSheet& cs = confirmed[c];
+					if( cs.pObj == pY ) {
+						return true;
+					}
+					if( cs.pObj == pSheet || !pMat || cs.pObj->GetMaterial() != pMat ) {
+						continue;
+					}
+					bool onStack = false;
+					for( std::size_t i = 1; pStack && i < pStack->Depth(); ++i ) {
+						if( pStack->ObjectAt( i ) == cs.pObj ) {
+							onStack = true;
 							break;
 						}
 					}
-			}
-			const IMaterial* pMat = pY->GetMaterial();
-			for( std::size_t c = 0; c < confirmed.size(); ++c ) {
-				const ConfirmedSheet& cs = confirmed[c];
-				if( cs.pObj == pY ) {
-					return true;
-				}
-				if( cs.pObj == pSheet || !pMat || cs.pObj->GetMaterial() != pMat ) {
-					continue;
-				}
-				if( yIor > 0 && cs.ior != yIor ) {
-					continue;
-				}
-				bool onStack = false;
-				for( std::size_t i = 1; pStack && i < pStack->Depth(); ++i ) {
-					if( pStack->ObjectAt( i ) == cs.pObj ) {
-						onStack = true;
-						break;
+					if( !onStack ) {
+						return true;
 					}
 				}
-				if( !onStack ) {
-					return true;
-				}
-			}
-			return false;
+				return false;
 			}
 		};
 
@@ -3362,9 +3389,9 @@ namespace RISE
 		//! The answer is the SEED's at the point just past the crossing: the
 		//! same sheet confirmation `SeedFromPoint` runs there
 		//! (`ConfirmOpenSheetsAt`, at the walk's wavelength @a nm) holds pY, or
-		//! holds a sheet S of pY's material and index that is NOT already on the
-		//! walk's stack @a pStack -- the seed keeps one entry for same-material
-		//! siblings, so pY standing for S's medium prices the same index; an S
+		//! holds a sheet S of pY's material that is NOT already on the walk's
+		//! stack @a pStack -- the seed keeps one entry for same-material
+		//! siblings, so pY stands for S's medium (CrossingMedia::Keeps); an S
 		//! the stack already carries (a same-material sheet pY is nested in)
 		//! must not be counted twice (DL-622 review round 3: a stale inner pane
 		//! kept alive by its own outer pane left the walk at the inner pane's

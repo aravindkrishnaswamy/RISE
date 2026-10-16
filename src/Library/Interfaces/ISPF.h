@@ -81,10 +81,19 @@ namespace RISE
 		  ior_stack( 0 )
 		{}
 
+		//! Out of line so the destructor's inlined body stays two compares:
+		//! most scattered rays carry no stack, and a ScatteredRayContainer
+		//! destroys every slot (DL-622 review: the destructor had become an
+		//! out-of-line frame once IORStack's destruction grew).
+		RISE_IORSTACK_COLD static void DeleteStack( IORStack*& p )
+		{
+			safe_delete( p );
+		}
+
 		virtual ~ScatteredRay()
 		{
-			if( delete_stack ) {
-				safe_delete( ior_stack );
+			if( delete_stack && ior_stack ) {
+				DeleteStack( ior_stack );
 			}
 		}
 	};

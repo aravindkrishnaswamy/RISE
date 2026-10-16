@@ -305,13 +305,16 @@ namespace RISE
 				ctxs = next;
 			}
 
+			//! Attaches @a ctx to the TOP entry (already pushed, so a failed
+			//! allocation here leaves the entry without a context, never a
+			//! context indexing an entry that does not exist).
 			RISE_IORSTACK_COLD void AppendContext( const EntryContext& ctx )
 			{
 				std::vector<IndexedContext> items;
 				if( ctxs ) {
 					items = ctxs->items;
 				}
-				items.push_back( IndexedContext( c.size(), ctx ) );
+				items.push_back( IndexedContext( c.size() - 1, ctx ) );
 				ReplaceContexts( items );
 			}
 
@@ -332,10 +335,10 @@ namespace RISE
 
 			void pushEntry( const IORDATA& d, const EntryContext* pCtx )
 			{
+				c.push_back( d );
 				if( pCtx && pCtx->bHasContext ) {
 					AppendContext( *pCtx );
 				}
-				c.push_back( d );
 			}
 
             std::vector<const IObject*> ObjectKeys() const {
