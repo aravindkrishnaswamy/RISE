@@ -297,12 +297,12 @@ namespace RISE
 	namespace
 	{
 		// The epoch base and the per-thread ticket behind ThreadLocalSeed.
-		// The base is 0 until ReseedThreadLocalSeedEpoch() sets it.
+		// The base is 0 until ReseedThreadLocalSeedEpochForTesting() sets it.
 		std::atomic<unsigned int> s_threadSeedEpoch( 0u );
 		std::atomic<unsigned long long> s_threadSeedTicket( 0ull );
 	}
 
-	void ReseedThreadLocalSeedEpoch()
+	void ReseedThreadLocalSeedEpochForTesting()
 	{
 		// One libc read, on the CALLING thread: std::srand pins it.
 		s_threadSeedEpoch.store( LockedLibcRand(), std::memory_order_relaxed );

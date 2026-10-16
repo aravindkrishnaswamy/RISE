@@ -59,8 +59,12 @@ namespace RISE
 	//! their streams.  Production never calls it (a libc read there would
 	//! move the stream the render's own seeding sites read); a test that
 	//! drives a walk on one fresh thread after std::srand calls it to make
-	//! that walk's medium generator a property of the seed.
-	extern void ReseedThreadLocalSeedEpoch();
+	//! that walk's medium generator a property of the seed.  TEST-ONLY.
+	//! Call it only while no other thread can make its first
+	//! ThreadLocalSeed() call: the base and the ticket counter are separate
+	//! atomics, so a concurrent first draw could pair an old base with a
+	//! reset ticket and duplicate another thread's stream.
+	extern void ReseedThreadLocalSeedEpochForTesting();
 
 	//! A seed derived from (base, key) by the splitmix64 finalizer: distinct
 	//! keys (tiles, rows, workers) of one base get decorrelated seeds, and
