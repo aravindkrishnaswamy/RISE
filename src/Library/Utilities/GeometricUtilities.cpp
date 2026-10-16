@@ -4363,28 +4363,25 @@ namespace
 	//! ~1/N.
 	const Scalar kMinSheetBoundaryCapFraction = Scalar( 0.02 );
 
-	template<class IsFree>
+	//!
+	//! Free edges are directed by their own triangle's winding.  That makes
+	//! each boundary loop an oriented 1-cycle only because the caller has
+	//! already refused (-1) any edge two triangles traverse the same way,
+	//! so every edge-connected component is consistently wound.  Separate
+	//! components may still be wound against each other and touch at a
+	//! vertex, so loops are grouped per (component, welded vertex): a loop
+	//! never sums with another component's loop and cancels against it.
+	template<class EdgeQuery>
 	bool TriangleMeshBoundaryIsSubstantial(
 		const std::vector<Point3>& corners,
 		const std::vector<unsigned int>& wid,
 		const std::size_t nTris,
-		const IsFree& isFree )
+		const EdgeQuery& edgeUse )
 	{
-		unsigned int nIds = 0;
-		for( const unsigned int w : wid ) {
-			nIds = std::max( nIds, w + 1 );
-		}
-		std::vector<unsigned int> parent( nIds );
-		for( unsigned int k = 0; k < nIds; ++k ) {
-			parent[k] = k;
-		}
-		std::vector<Point3> rep( nIds );
-		std::vector<unsigned char> seen( nIds, 0 );
-		for( std::size_t i = 0; i < 3 * nTris; ++i ) {
-			if( !seen[wid[i]] ) {
-				seen[wid[i]] = 1;
-				rep[wid[i]] = corners[i];
-			}
+		// Edge-connected triangle components.
+		std::vector<unsigned int> comp( nTris );
+		for( std::size_t t = 0; t < nTris; ++t ) {
+			comp[t] = static_cast<unsigned int>( t );
 		}
 		Scalar area = 0;
 		for( std::size_t t = 0; t < nTris; ++t ) {
@@ -4392,11 +4389,12 @@ namespace
 			area += Scalar( 0.5 ) * Vector3Ops::Magnitude( Vector3Ops::Cross(
 				Vector3Ops::mkVector3( P[1], P[0] ), Vector3Ops::mkVector3( P[2], P[0] ) ) );
 			for( int k = 0; k < 3; ++k ) {
-				if( isFree( 3 * t + k ) ) {
-					const unsigned int a = OpennessFindRoot( parent, wid[3 * t + k] );
-					const unsigned int b = OpennessFindRoot( parent, wid[3 * t + ( k + 1 ) % 3] );
-					if( a != b ) {
-						parent[a] = b;
+				unsigned int other = 0;
+				if( edgeUse( 3 * t + k, other ) == 2 ) {
+					const unsigned int ra = OpennessFindRoot( comp, static_cast<unsigned int>( t ) );
+					const unsigned int rb = OpennessFindRoot( comp, other );
+					if( ra != rb ) {
+						comp[ra] = rb;
 					}
 				}
 			}
@@ -4404,26 +4402,52 @@ namespace
 		if( !( area > 0 ) ) {
 			return false;
 		}
-		// Per component: a reference point (its root's position) and the
-		// summed cross products of its directed free edges.
-		std::vector<Vector3> vecArea( nIds, Vector3( 0, 0, 0 ) );
+		// Boundary nodes: one per (component, welded vertex) on a free edge.
+		std::map<std::pair<unsigned int, unsigned int>, unsigned int> nodeOf;
+		std::vector<Point3> rep;
+		std::vector<unsigned int> parent;
+		const auto node = [&]( const std::size_t t, const std::size_t corner ) -> unsigned int {
+			const std::pair<unsigned int, unsigned int> key(
+				OpennessFindRoot( comp, static_cast<unsigned int>( t ) ), wid[corner] );
+			const auto it = nodeOf.find( key );
+			if( it != nodeOf.end() ) {
+				return it->second;
+			}
+			const unsigned int id = static_cast<unsigned int>( rep.size() );
+			nodeOf.emplace( key, id );
+			rep.push_back( corners[corner] );
+			parent.push_back( id );
+			return id;
+		};
+		std::vector<std::pair<unsigned int, unsigned int> > freeEdges;
 		for( std::size_t t = 0; t < nTris; ++t ) {
 			for( int k = 0; k < 3; ++k ) {
-				if( !isFree( 3 * t + k ) ) {
+				unsigned int other = 0;
+				if( edgeUse( 3 * t + k, other ) != 1 ) {
 					continue;
 				}
-				const unsigned int wa = wid[3 * t + k];
-				const unsigned int wb = wid[3 * t + ( k + 1 ) % 3];
-				const unsigned int root = OpennessFindRoot( parent, wa );
-				const Point3& c = rep[root];
-				const Vector3 x = Vector3Ops::Cross(
-					Vector3Ops::mkVector3( rep[wa], c ), Vector3Ops::mkVector3( rep[wb], c ) );
-				vecArea[root] = vecArea[root] + x;
+				const unsigned int na = node( t, 3 * t + k );
+				const unsigned int nb = node( t, 3 * t + ( k + 1 ) % 3 );
+				freeEdges.emplace_back( na, nb );
+				const unsigned int ra = OpennessFindRoot( parent, na );
+				const unsigned int rb = OpennessFindRoot( parent, nb );
+				if( ra != rb ) {
+					parent[ra] = rb;
+				}
 			}
 		}
+		// Per loop group: a reference point (its root's position) and the
+		// summed cross products of its directed free edges.
+		std::vector<Vector3> vecArea( rep.size(), Vector3( 0, 0, 0 ) );
+		for( const auto& e : freeEdges ) {
+			const unsigned int root = OpennessFindRoot( parent, e.first );
+			const Point3& c = rep[root];
+			vecArea[root] = vecArea[root] + Vector3Ops::Cross(
+				Vector3Ops::mkVector3( rep[e.first], c ), Vector3Ops::mkVector3( rep[e.second], c ) );
+		}
 		Scalar caps = 0;
-		for( unsigned int k = 0; k < nIds; ++k ) {
-			caps += Scalar( 0.5 ) * Vector3Ops::Magnitude( vecArea[k] );
+		for( const Vector3& v : vecArea ) {
+			caps += Scalar( 0.5 ) * Vector3Ops::Magnitude( v );
 		}
 		return caps >= kMinSheetBoundaryCapFraction * area;
 	}
@@ -4631,7 +4655,12 @@ int GeometricUtilities::TriangleMeshOpenness( const std::vector<Point3>& corners
 	// unwelded T-junction leaves one in most real "solids" (DL-143).  The
 	// boundary must be SUBSTANTIAL before the mesh takes a sheet's role.
 	if( !TriangleMeshBoundaryIsSubstantial( corners, wid, nTris,
-		[&]( const std::size_t i ) -> bool { return triEdge( i )->count == 1; } ) ) {
+		[&]( const std::size_t i, unsigned int& otherTri ) -> unsigned int {
+			const EdgeUse* e = triEdge( i );
+			const unsigned int t = static_cast<unsigned int>( i / 3 );
+			otherTri = ( e->tri[0] == t ) ? e->tri[1] : e->tri[0];
+			return e->count;
+		} ) ) {
 		return -1;
 	}
 
