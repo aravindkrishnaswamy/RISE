@@ -599,3 +599,18 @@ master 291.5 +/- 4.7, merge 297.6 +/- 2.9, now 294.6 +/- 2.4 s; csg
 241.3 +/- 2.7, 241.3 +/- 3.7 s.  Round 2 adds nothing over the merged head;
 the hwss scene's +3.4 % over master is present at that head (and the parent
 read +1-3 % over master on that scene in every round).
+
+Review round 3 (after the intrusive context list and one-walk HWSS lanes;
+the branch now also carries the other workers' DL-621..625 merges, which
+touch the render loop's RNG and dispatch):
+`hwss_prism_dispersion_pt` interleaved n = 10 -- master 235.3 +/- 3.3 s,
+`190beeb98` 241.8 +/- 4.5 s (+2.8 %), round 3 236.4 +/- 3.8 s (+0.5 %).
+The three scenes, n = 4 -- cornellbox master 300.1 +/- 2.3 vs 306.0 +/- 7.2
+(+2.0 %), csg 34.5 +/- 1.1 vs 33.6 +/- 1.0 (-2.6 %), hwss 240.8 +/- 4.5 vs
+244.1 +/- 1.3 (+1.4 %); each inside about two of its run-to-run sds.
+`ScatteredRay::~ScatteredRay` is still an out-of-line frame in a `sample`
+of the round-3 build (372 samples against `~ScatteredRayContainer`'s 191 at
+master, of ~50k busy samples): the remaining no-context cost of the
+pointer member is the compiler's inlining decision for that destructor
+(declared in `ISPF.h`, outside this change).
+
