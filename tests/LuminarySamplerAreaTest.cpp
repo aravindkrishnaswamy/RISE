@@ -64,6 +64,8 @@
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -525,7 +527,12 @@ static std::string TempPath( const char* tag, const char* ext )
 	return Fmt( "/tmp/dl459_%s_%d.%s", tag, static_cast<int>( ::getpid() ), ext );
 }
 
-static bool RenderOnce( const std::string& sceneText, double& mean )
+//! Renders `sceneText` once.  By default single-threaded (deterministic,
+//! DL-625) with the next seed of the g_seedBase sequence; `multiThreaded`
+//! keeps the rasterizer's own worker count, `fixedSeed` replaces the
+//! sequence, and `outPixels` receives the captured pixels.
+static bool RenderOnce( const std::string& sceneText, double& mean, bool multiThreaded = false,
+	const unsigned int* fixedSeed = nullptr, std::vector<RISEColor>* outPixels = nullptr, const unsigned int* libcSeed = nullptr )
 {
 	const std::string path = TempPath( "render", "RISEscene" );
 	{ std::ofstream ofs( path ); ofs << sceneText; }
@@ -537,8 +544,15 @@ static bool RenderOnce( const std::string& sceneText, double& mean )
 			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
 			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
-			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( g_seedBase + g_renderIndex, 0x459u ) );
-			std::srand( g_seedBase + g_renderIndex++ );
+			if( !multiThreaded ) {
+				if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
+					pRas->ForTest_SetThreadCountOverride( 1 );
+				}
+			}
+			const unsigned int renderSeed = fixedSeed ? *fixedSeed : g_seedBase + g_renderIndex++;
+			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( renderSeed, 0x459u ) );
+			std::srand( libcSeed ? *libcSeed : renderSeed );
+			GlobalRNG().Reseed( libcSeed ? *libcSeed : renderSeed );
 			const bool bRendered = pJob->Rasterize();
 			SobolSamplerTestHooks::ValueSalt().store( 0u );
 			if( bRendered && !pCap->pixels.empty() ) {
@@ -549,6 +563,7 @@ static bool RenderOnce( const std::string& sceneText, double& mean )
 					sum += v;
 				}
 				mean = sum / double( pCap->pixels.size() );
+				if( outPixels ) *outPixels = pCap->pixels;
 			}
 			safe_release( pCap );
 		}
@@ -579,9 +594,66 @@ static Stat RenderN( const std::string& text, int n )
 
 static int g_spp = 1024;
 static int g_repeats = 4;
+static int g_trapRepeats = 12;
 static std::string RasPT() { return "pathtracing_pel_rasterizer\n{\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n"; }
 static std::string RasBDPT() { return "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n"; }
 static std::string RasVCM() { return "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n}\n\n"; }
+
+//! Independent 4D Gauss-Legendre quadrature of the exact rendering-equation
+//! integral for the DL-460 planar trapezoid luminary scene:
+//!   mean = (1 / A_film) * int_{[-2,2]^2} dx int_{Trap} dy (rho / pi) * L_e * cos(theta_x) * cos(theta_y) / |x - y|^2
+//! With rho = 0.5, L_e = 10 / pi, A_film = 16, and Trap at z = 2.6:
+//!   mean = (5 / (16 * pi^2)) * int_{[-2,2]^2} dx int_{Trap} dy z^2 / |x - y|^4.
+static double TrapezoidSceneExactQuadrature()
+{
+	const int N = 32;
+	double xi[N], wi[N];
+	for( int i = 0; i < N; i++ ) {
+		double z = std::cos( kPi * ( i + 0.75 ) / ( N + 0.5 ) );
+		double dp = 0.0;
+		for( int it = 0; it < 100; it++ ) {
+			double p0 = 1.0, p1 = z;
+			for( int k = 2; k <= N; k++ ) {
+				const double p2 = ( ( 2.0 * k - 1.0 ) * z * p1 - ( k - 1.0 ) * p0 ) / k;
+				p0 = p1;
+				p1 = p2;
+			}
+			dp = N * ( z * p1 - p0 ) / ( z * z - 1.0 );
+			const double dz = p1 / dp;
+			z -= dz;
+			if( std::fabs( dz ) < 1e-15 ) break;
+		}
+		xi[i] = z;
+		wi[i] = 2.0 / ( ( 1.0 - z * z ) * dp * dp );
+	}
+	const double ze = 2.6;
+	const double ze2 = ze * ze;
+	double total = 0.0;
+	for( int iv = 0; iv < N; iv++ ) {
+		const double y_loc = xi[iv];
+		const double wy = wi[iv];
+		const double half_w = 0.65 - 0.35 * y_loc;
+		const double ye = y_loc - 0.1;
+		for( int iu = 0; iu < N; iu++ ) {
+			const double x_loc = half_w * xi[iu];
+			const double wx = wi[iu] * half_w;
+			const double xe = x_loc + 0.2;
+			const double w_lum = wx * wy;
+			for( int iy = 0; iy < N; iy++ ) {
+				const double yf = 2.0 * xi[iy];
+				const double wyf = 2.0 * wi[iy];
+				const double dy2 = ( yf - ye ) * ( yf - ye ) + ze2;
+				for( int ix = 0; ix < N; ix++ ) {
+					const double xf = 2.0 * xi[ix];
+					const double wxf = 2.0 * wi[ix];
+					const double r2 = ( xf - xe ) * ( xf - xe ) + dy2;
+					total += w_lum * wxf * wyf * ( ze2 / ( r2 * r2 ) );
+				}
+			}
+		}
+	}
+	return total * ( 0.5 * 10.0 / ( kPi * kPi ) ) / 16.0;
+}
 
 //! Floor (rho 0.5) at z = 0 seen by an orthographic camera at z = 1
 //! looking down; the emitter (geometry chunk named geo_e) hangs at
@@ -638,12 +710,12 @@ static bool Agree( const Stat& a, const Stat& b )
 	return std::fabs( a.mean - b.mean ) <= 3 * se + 1e-12;
 }
 
-static void Report( const char* label, const Stat& s ) { std::cout << "    " << label << " " << s.mean << " +/- " << s.se << "\n"; }
+static void Report( const char* label, const Stat& s ) { std::printf( "    %s %.9f +/- %.3g\n", label, s.mean, s.se ); }
 
-static void RenderCase( const char* label, const std::string& emitter, const std::string* reference )
+static void RenderCase( const char* label, const std::string& emitter, const std::string* reference, int repeatsOverride = 0, const double* exactOracle = nullptr )
 {
 	std::cout << "  C " << label << "\n";
-	const int n = g_repeats;
+	const int n = repeatsOverride > 0 ? repeatsOverride : g_repeats;
 	const Stat pt = RenderN( RenderScene( emitter, RasPT() ), n );
 	const Stat bd = RenderN( RenderScene( emitter, RasBDPT() ), n );
 	const Stat vc = RenderN( RenderScene( emitter, RasVCM() ), n );
@@ -651,21 +723,52 @@ static void RenderCase( const char* label, const std::string& emitter, const std
 	Check( pt.ok && bd.ok && vc.ok, std::string( "renders: " ) + label );
 	Check( Agree( pt, bd ), std::string( "PT vs BDPT: " ) + label );
 	Check( Agree( pt, vc ), std::string( "PT vs VCM: " ) + label );
-	if( reference ) {
+	if( exactOracle ) {
+		const Stat ex{ *exactOracle, 0.0, true };
+		std::printf( "    exact quadrature %.12f\n", *exactOracle );
+		Check( Agree( pt, ex ), std::string( "PT vs exact quadrature: " ) + label );
+		Check( Agree( bd, ex ), std::string( "BDPT vs exact quadrature: " ) + label );
+		Check( Agree( vc, ex ), std::string( "VCM vs exact quadrature: " ) + label );
+		// DL-625 review: what these 3-sigma gates can see.  The renders are
+		// deterministic for a seed base, so each gate is ONE draw: a bias b
+		// in an estimator with standard error se is caught with probability
+		// Phi( b / se - 3 ), i.e. reliably (95 %) only from b >= 4.64 se.
+		const double z95 = 3.0 + 1.645;
+		std::cout << "    bias caught with 95 % power vs exact: PT >= " << z95 * pt.se << ", BDPT >= " << z95 * bd.se
+			<< ", VCM >= " << z95 * vc.se << " (PT vs VCM >= " << z95 * std::sqrt( pt.se * pt.se + vc.se * vc.se ) << ")\n";
+	}
+	// With an exact oracle a second noisy reference adds nothing the exact
+	// checks do not already gate (DL-625 review: it cost a quarter of the
+	// trapezoid case's renders).
+	if( reference && !exactOracle ) {
 		const Stat ref = RenderN( RenderScene( *reference, RasPT() ), n );
 		Report( "mesh reference PT", ref );
 		Check( ref.ok && Agree( pt, ref ), std::string( "PT vs mesh reference: " ) + label );
 		Check( ref.ok && Agree( bd, ref ), std::string( "BDPT vs mesh reference: " ) + label );
+		Check( ref.ok && Agree( vc, ref ), std::string( "VCM vs mesh reference: " ) + label );
 	}
 }
 
-static void TestRenders()
+static void TestRenders( bool trapOnly = false )
 {
 	std::cout << "C: renders\n";
 	{
-		const std::string mesh = MeshChunk( { kTrapezoid[0], kTrapezoid[1], kTrapezoid[2], kTrapezoid[3] }, { 0, 1, 2, 0, 2, 3 } );
-		RenderCase( "DL-460 trapezoid clippedplane luminary", QuadChunk( kTrapezoid ), &mesh );
+		// DL-625: with only n = 4 salted repeats (3 degrees of freedom), the
+		// fixed Sobol realization draw at g_seedBase = 4590 (VCM 0.103733 vs
+		// PT 0.103721, +1.4 true sigma) failed ~10-20% of runs whenever
+		// multi-threaded sub-pixel screen jitter nudged the 3-df VCM sample
+		// SE below ~2.5e-6 (< 0.5x the true 4-repeat SE ~7.6e-6).  Use 12
+		// salted repeats (11 df per estimator) and also check PT, BDPT, and
+		// VCM against independent 4D Gauss-Legendre quadrature (0.10372060).
+		// Renders are single-threaded and deterministic per seed base, so at
+		// the default base each gate is one fixed realization; the printed
+		// 95 %-power bias floors say what it can and cannot catch (VCM vs
+		// exact ~1.6e-5 at n = 12).  The mesh-luminary reference the case
+		// used before the exact oracle existed is no longer rendered.
+		const double exact = TrapezoidSceneExactQuadrature();
+		RenderCase( "DL-460 trapezoid clippedplane luminary", QuadChunk( kTrapezoid ), nullptr, std::max( g_repeats, g_trapRepeats ), &exact );
 	}
+	if( trapOnly ) return;
 	{
 		const std::string mesh = MeshChunk( { Point3(-1,-1,0), Point3(1,-1,0), Point3(1,1,0), Point3(-1,1,0) }, { 0, 1, 2, 0, 2, 3 } );
 		const std::string file = TempPath( "warped", "bezier" );
@@ -678,6 +781,223 @@ static void TestRenders()
 		const std::string file = TempPath( "dome", "bezier" );
 		RenderCase( "DL-459 curved Bezier dome luminary", BezierChunk( { d }, file ), nullptr );
 		std::remove( file.c_str() );
+	}
+}
+
+//! D (DL-625 review): a MULTI-threaded pixel-based render seeded the same
+//! way twice must give the same pixels.  Each RasterizeBlockDispatcher
+//! worker used to seed its RandomNumberGenerator from libc rand(), called
+//! concurrently by every worker (a data race), and which worker -- hence
+//! which seed -- took which tile depended on scheduling; the generator now
+//! reseeds per tile, keyed on the tile's pixel corner (the default block
+//! sequence is shuffled from std::random_device), from one value read on
+//! the dispatching thread.  The VCM light pass (VCMRasterizerBase's
+//! LightPassDispatcher) had the same defect and the same fix; only the
+//! rwsss VCM+VM row sees it, because the light pass consumes that
+//! generator only inside a random walk.  Each row also checks that
+//! another libc seed (same Sobol' salt) changes the pixels, so a row
+//! whose generators never reach the image cannot pass vacuously.
+//! One discarded warm-up render first: the first
+//! render in a process also draws libc rand() for one-time statics, so it
+//! sees a different libc state after the same std::srand (not a race).
+static void TestMultiThreadDeterminism()
+{
+	std::cout << "D: multi-threaded render determinism\n";
+	const std::string pt = "pathtracing_pel_rasterizer\n{\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
+	// VCM with merging on: its light pass (VCMRasterizerBase's
+	// LightPassDispatcher) seeded its workers the same racy way.
+	const std::string vcm = "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n\tvc_enabled true\n\tvm_enabled true\n}\n\n";
+	const std::string bdpt = "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
+	{
+		const unsigned int seed = 777u;
+		double mean = 0;
+		RenderOnce( RenderScene( QuadChunk( kTrapezoid ), pt ), mean, true, &seed );
+	}
+	// The rwsss rows hang a random-walk SSS slab between the emitter and
+	// the camera (which looks down and never sees it): every light path to
+	// the floor walks through it, and the walk draws from the RuntimeContext
+	// generator -- for VCM+VM the LIGHT pass's, whose vertices the floor's
+	// eye vertices merge.  The Lambertian scene never consumes it there.
+	struct Row { const char* name; const std::string* ras; int res; bool rwsss; };
+	const Row rows[] = { { "PT", &pt, 24, false }, { "PT", &pt, 96, false }, { "BDPT", &bdpt, 96, false },
+		{ "VCM+VM", &vcm, 96, false }, { "PT rwsss", &pt, 96, true }, { "VCM+VM rwsss", &vcm, 96, true } };
+	for( const Row& row : rows ) {
+		std::string scene = RenderScene( QuadChunk( kTrapezoid ), *row.ras );
+		if( row.rwsss ) {
+			const std::string at = "standard_shader\n";
+			scene.insert( scene.find( at ),
+				"randomwalk_sss_material\n{\n\tname slab_mat\n\tior 1.0\n\tabsorption 0.05 0.05 0.05\n\tscattering 4\n\tg 0.0\n\troughness 0.05\n\tmax_bounces 64\n}\n\n"
+				"box_geometry\n{\n\tname geo_slab\n\twidth 8\n\theight 8\n\tdepth 0.4\n}\n\n"
+				"standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tmaterial slab_mat\n\tposition 0.2 -0.1 1.9\n}\n\n" );
+		}
+		const std::string from = "width 24\n\theight 24";
+		scene.replace( scene.find( from ), from.size(), Fmt( "width %d\n\theight %d", row.res, row.res ) );
+		std::vector<RISEColor> first;
+		bool ok = true, same = true;
+		double maxRel = 0;
+		for( int r = 0; r < 6 && ok; ++r ) {
+			const unsigned int seed = 777u;
+			std::vector<RISEColor> px;
+			double mean = 0;
+			ok = RenderOnce( scene, mean, true, &seed, &px );
+			if( !ok ) break;
+			if( r == 0 ) {
+				first = px;
+				continue;
+			}
+			for( std::size_t i = 0; i < px.size(); ++i ) {
+				const double d[4] = { px[i].base.r - first[i].base.r, px[i].base.g - first[i].base.g,
+					px[i].base.b - first[i].base.b, px[i].a - first[i].a };
+				for( const double v : d ) {
+					if( v != 0 ) {
+						same = false;
+						maxRel = std::max( maxRel, std::fabs( v ) / std::max( 1e-30, double( std::fabs( first[i].base.g ) ) ) );
+					}
+				}
+			}
+		}
+		// The row means something only if the libc-seeded generators reach
+		// the pixels at all: another libc seed (same Sobol salt) must change
+		// them.
+		bool seedSensitive = false;
+		{
+			const unsigned int seed = 777u, other = 778u;
+			std::vector<RISEColor> px;
+			double mean = 0;
+			if( ok && RenderOnce( scene, mean, true, &seed, &px, &other ) ) {
+				for( std::size_t i = 0; i < px.size() && !seedSensitive; ++i ) {
+					seedSensitive = px[i].base.r != first[i].base.r || px[i].base.g != first[i].base.g || px[i].base.b != first[i].base.b;
+				}
+			}
+		}
+		std::cout << "    " << row.name << " " << row.res << "x" << row.res << ": 6 multi-threaded renders at one seed "
+			<< ( same ? "bit-identical" : Fmt( "DIFFER (max rel pixel diff %.3g)", maxRel ) )
+			<< ( seedSensitive ? "; another seed changes it" : "; ANOTHER SEED GIVES THE SAME PIXELS" ) << "\n";
+		Check( ok && same, Fmt( "D: multi-threaded %s %dx%d render is a function of the seed", row.name, row.res, row.res ) );
+		Check( seedSensitive, Fmt( "D: multi-threaded %s %dx%d render depends on the libc seed (the row is not vacuous)", row.name, row.res, row.res ) );
+	}
+}
+
+//! F (DL-625 review round 2): the same, in a FRESH process with no warm-up
+//! render, through several progressive passes, in scenes whose workers seed
+//! generators on first use (SMS's per-call generators via ThreadLocalSeed;
+//! HeterogeneousMedium's thread_local ratio-tracking generators).  Those
+//! first-use seeds used to read libc, and how many workers render in a pass
+//! is scheduling-dependent (9 tiles of a 24 x 24 film, more workers than
+//! that), so the libc stream position -- what the next pass's or render's
+//! tile seeds read -- varied run to run.  Mode F runs F_child_<scene> as
+//! three separate processes per scene and compares what they print
+//! (pixel hash, and rand() right after the render); F_child_<scene> alone
+//! renders once and prints it.  D's warm-up render does not hide this
+//! here: every child is a fresh process.
+static std::string GlassScene()
+{
+	std::string scene = RenderScene( QuadChunk( kTrapezoid ),
+		"pathtracing_pel_rasterizer\n{\n\tsamples 96\n\toidn_denoise FALSE\n\tpixel_filter box\n\tsms_enabled TRUE\n\tsms_biased TRUE\n}\n\n" );
+	scene.insert( scene.find( "standard_shader\n" ),
+		"perfectrefractor_material\n{\n\tname glass_mat\n\trefractance white\n\tior 1.5\n}\n\n"
+		"sphere_geometry\n{\n\tname geo_glass\n\tradius 0.3\n}\n\n"
+		"standard_object\n{\n\tname glass\n\tgeometry geo_glass\n\tmaterial glass_mat\n\tposition 0.2 -0.1 0.5\n}\n\n" );
+	return scene;
+}
+
+//! A box of heterogeneous fog over the floor: every worker that renders a
+//! fog pixel constructs HeterogeneousMedium's thread_local generators.
+static std::string FogScene()
+{
+	std::string scene = RenderScene( QuadChunk( kTrapezoid ),
+		"pathtracing_pel_rasterizer\n{\n\tsamples 96\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" );
+	scene.insert( scene.find( "standard_shader\n" ),
+		"uniformcolor_painter\n{\n\tname fog_dense\n\tcolor 1 1 1\n}\n\n"
+		"uniformcolor_painter\n{\n\tname fog_sparse\n\tcolor 0 0 0\n}\n\n"
+		"wavelet3d_painter\n{\n\tname fog_density\n\ttile_size 32\n\tpersistence 0.65\n\toctaves 3\n\tcolora fog_dense\n\tcolorb fog_sparse\n\tscale 1.5 1.5 1.5\n\tshift 0 0 0\n}\n\n"
+		"painter_heterogeneous_medium\n{\n\tname fog\n\tabsorption 0.3 0.3 0.3\n\tscattering 1.5 1.5 1.5\n\tphase isotropic\n\tdensity_painter fog_density\n\tresolution 16\n\tcolor_to_scalar luminance\n\tbbox_min -3 -3 0.05\n\tbbox_max 3 3 0.85\n}\n\n"
+		"perfectrefractor_material\n{\n\tname fog_air\n\trefractance white\n\tior 1.0\n}\n\n"
+		"box_geometry\n{\n\tname geo_fog\n\twidth 6\n\theight 6\n\tdepth 0.8\n}\n\n"
+		"standard_object\n{\n\tname fogbox\n\tgeometry geo_fog\n\tmaterial fog_air\n\tposition 0 0 0.45\n\tinterior_medium fog\n\tcasts_shadows FALSE\n}\n\n" );
+	return scene;
+}
+
+static void FreshProcessChild( const std::string& which )
+{
+	const unsigned int seed = 777u;
+	std::vector<RISEColor> px;
+	double mean = 0;
+	const bool ok = RenderOnce( which == "fog" ? FogScene() : GlassScene(), mean, true, &seed, &px );
+	// The libc stream position after the render: what the NEXT render's (or
+	// pass's) seeding sites would read.
+	const int next = std::rand();
+	unsigned long long h = 1469598103934665603ull;
+	for( const RISEColor& c : px ) {
+		const double v[4] = { c.base.r, c.base.g, c.base.b, c.a };
+		for( const double d : v ) {
+			unsigned long long b;
+			std::memcpy( &b, &d, 8 );
+			h = ( h ^ b ) * 1099511628211ull;
+		}
+	}
+	std::printf( "FCHILD ok=%d next=%d mean=%.17g hash=%016llx\n", ok ? 1 : 0, next, mean, h );
+}
+
+static std::FILE* OpenReadPipe( const char* command )
+{
+#if defined( _WIN32 )
+	return _popen( command, "r" );
+#else
+	return popen( command, "r" );
+#endif
+}
+
+static int ClosePipe( std::FILE* pipe )
+{
+#if defined( _WIN32 )
+	return _pclose( pipe );
+#else
+	return pclose( pipe );
+#endif
+}
+
+static std::string FieldOf( const std::string& line, const char* key )
+{
+	const std::size_t p = line.find( key );
+	if( p == std::string::npos ) return std::string();
+	const std::size_t e = line.find_first_of( " \n", p );
+	return line.substr( p, e == std::string::npos ? std::string::npos : e - p );
+}
+
+static void TestFreshProcessDeterminism( const char* self )
+{
+	std::cout << "F: fresh-process multi-threaded determinism (progressive passes, first-use worker generators)\n";
+	for( const char* which : { "glass", "fog" } ) {
+		std::vector<std::string> lines;
+		for( int r = 0; r < 3; ++r ) {
+			const std::string cmd = std::string( "\"" ) + self + "\" F_child_" + which;
+			std::FILE* f = OpenReadPipe( cmd.c_str() );
+			std::string line;
+			if( f ) {
+				char buf[512];
+				while( std::fgets( buf, sizeof( buf ), f ) ) {
+					if( std::strncmp( buf, "FCHILD", 6 ) == 0 ) line = buf;
+				}
+				ClosePipe( f );
+			}
+			std::cout << "    " << which << " process " << r << ": " << ( line.empty() ? std::string( "(no result)\n" ) : line );
+			lines.push_back( line );
+		}
+		const bool ok = !lines[0].empty() && lines[0].find( "ok=1" ) != std::string::npos;
+		bool sameNext = ok, sameHash = ok;
+		for( int r = 1; r < 3; ++r ) {
+			sameNext = sameNext && FieldOf( lines[r], "next=" ) == FieldOf( lines[0], "next=" );
+			sameHash = sameHash && FieldOf( lines[r], "hash=" ) == FieldOf( lines[0], "hash=" );
+		}
+		// Every scene: no worker-side first use may move the libc stream.
+		Check( sameNext, Fmt( "F: %s: the libc stream position after a multi-threaded render is a function of std::srand", which ) );
+		// The glass (SMS) scene's pixels too.  The fog's pixels are NOT
+		// gated: the medium's ratio-tracking generator is per worker, not
+		// per tile, so its estimate depends on which worker renders a tile.
+		if( std::strcmp( which, "glass" ) == 0 ) {
+			Check( sameHash, "F: glass: three fresh processes render the SMS glass scene bit-identically after the same std::srand" );
+		}
 	}
 }
 
@@ -740,14 +1060,26 @@ static void PrintSdfCost()
 int main( int argc, char** argv )
 {
 	std::setvbuf( stdout, nullptr, _IONBF, 0 );
-	if( argc > 1 ) g_seedBase = unsigned( std::strtoul( argv[1], nullptr, 10 ) );
-	const std::string only = argc > 2 ? argv[2] : "all";
-	if( argc > 3 ) g_spp = std::atoi( argv[3] );
-	if( argc > 4 ) g_repeats = std::atoi( argv[4] );
+	int argIdx = 1;
+	if( argc > argIdx ) {
+		char* end = nullptr;
+		const unsigned long parsed = std::strtoul( argv[argIdx], &end, 10 );
+		if( end != argv[argIdx] && *end == '\0' ) {
+			g_seedBase = unsigned( parsed );
+			argIdx++;
+		}
+	}
+	const std::string only = argc > argIdx ? argv[argIdx++] : "all";
+	if( argc > argIdx ) g_spp = std::atoi( argv[argIdx++] );
+	if( argc > argIdx ) { g_repeats = std::atoi( argv[argIdx++] ); g_trapRepeats = g_repeats; }
 	std::cout << "LuminarySamplerAreaTest (DL-459 / DL-460)\n";
 	if( only == "all" || only == "A" ) TestAreas();
 	if( only == "all" || only == "B" ) TestUniformity();
-	if( only == "all" || only == "C" ) TestRenders();
+	if( only == "all" || only == "C" ) TestRenders( false );
+	if( only == "C_trap" ) TestRenders( true );
+	if( only == "all" || only == "D" ) TestMultiThreadDeterminism();
+	if( only == "all" || only == "F" ) TestFreshProcessDeterminism( argv[0] );
+	if( only.rfind( "F_child_", 0 ) == 0 ) FreshProcessChild( only.substr( 8 ) );
 	if( only == "all" || only == "H" ) PrintHashes();
 	if( only == "T" ) PrintSdfCost();
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";

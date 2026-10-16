@@ -282,9 +282,57 @@ double MersenneTwister::genrand_res53(void)
 
 
 #include "RandomNumbers.h"
+#include <atomic>
+#include <mutex>
 
 namespace RISE
 {
+	unsigned int LockedLibcRand()
+	{
+		static std::mutex m;
+		std::lock_guard<std::mutex> lock( m );
+		return static_cast<unsigned int>( rand() );
+	}
+
+	namespace
+	{
+		// The epoch base and the per-thread ticket behind ThreadLocalSeed.
+		// The base is 0 until ReseedThreadLocalSeedEpochForTesting() sets it.
+		std::atomic<unsigned int> s_threadSeedEpoch( 0u );
+		std::atomic<unsigned long long> s_threadSeedTicket( 0ull );
+	}
+
+	void ReseedThreadLocalSeedEpochForTesting()
+	{
+		// One libc read, on the CALLING thread: std::srand pins it.
+		s_threadSeedEpoch.store( LockedLibcRand(), std::memory_order_relaxed );
+		s_threadSeedTicket.store( 0ull, std::memory_order_relaxed );
+	}
+
+	unsigned int ThreadLocalSeed()
+	{
+		// Each thread's stream starts from (epoch base, ticket), never from
+		// a libc read on the worker itself: how many workers make a first
+		// call is scheduling-dependent, and a libc read there would shift
+		// the libc stream that the reproducible seeding sites
+		// (RasterizeBlockDispatcher, the VCM light pass, AOV passes) read
+		// next.
+		static thread_local bool seeded = false;
+		static thread_local unsigned long long state = 0;
+		if( !seeded ) {
+			const unsigned int epoch = s_threadSeedEpoch.load( std::memory_order_relaxed );
+			const unsigned long long k = s_threadSeedTicket.fetch_add( 1, std::memory_order_relaxed );
+			state = ( static_cast<unsigned long long>( DeriveSeed( epoch ^ 0x5EED7105u, k ) ) << 32 ) ^ DeriveSeed( epoch ^ 0x7105EED5u, k );
+			seeded = true;
+		}
+		state += 0x9E3779B97F4A7C15ULL;
+		unsigned long long z = state;
+		z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+		z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+		z ^= z >> 31;
+		return static_cast<unsigned int>( z ^ ( z >> 32 ) );
+	}
+
 	/// This is just a place to stick the global RNG function
 	RandomNumberGenerator& GlobalRNG()
 	{

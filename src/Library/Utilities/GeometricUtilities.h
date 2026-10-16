@@ -716,6 +716,10 @@ namespace RISE
 			//! (diagnostic only -- see docs/DL382_OPEN_SHEET_CERTIFICATE.md
 			//! section 2.1).  Filled only when `certified`.
 			Scalar	signedVolumeAboutCentre = 0;
+			//! DL-623: certified lower bound on the Step-4 Euclidean
+			//! separation across all triangle pairs at the certified
+			//! positions (> eps when `certified`).
+			Scalar	separationLowerBound = 0;
 		};
 
 		extern bool CheckOpenSurfaceStep4Pair(
@@ -725,6 +729,20 @@ namespace RISE
 			const unsigned int* Ij,
 			Scalar epsSq
 			);
+
+		//! DL-623 review: a RIGOROUS lower bound on the smallest eigenvalue
+		//! of the symmetric 3x3 matrix `G` (its stored floating-point
+		//! entries taken as exact; only the upper triangle is read), proved
+		//! by floating-point Cholesky of `G - (t + c) I` with a backward-
+		//! error margin `c` (Higham, Accuracy and Stability, Thm 10.3; Rump,
+		//! "Verification of positive definiteness", 2006).  Unlike the
+		//! signs of computed Sylvester minors, whose rounding error relative
+		//! to the minor grows like tr(G)^2 / lambda when two eigenvalues are
+		//! small, the margin is a fixed multiple of eps * tr(G), so the
+		//! bound holds for any conditioning.  Returns 0 when no POSITIVE
+		//! bound can be proved (0 is then NOT a claim that `G` is PSD), and
+		//! for non-finite or out-of-range input.
+		extern Scalar SymmetricMinEigenvalueLowerBound3( const Scalar G[3][3] );
 
 		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
 		//! consistently oriented (readable) face?  The general certificate
@@ -752,7 +770,8 @@ namespace RISE
 			std::vector<unsigned int>* outWeldedId = nullptr,
 			Scalar minEps = Scalar( 0 ),
 			const std::vector<unsigned int>* preWeldedId = nullptr,
-			Scalar preWeldEps = Scalar( 0 )
+			Scalar preWeldEps = Scalar( 0 ),
+			bool preWeldTopologyVerified = false
 			);
 
 		//! DL-616: analytic open-versus-closed certification for a PATCH
@@ -764,26 +783,29 @@ namespace RISE
 		//!  - `outProvablyOpenSheet`: the set is a connected, consistently
 		//!    oriented, EMBEDDED 2-manifold with non-empty boundary, so it
 		//!    encloses no volume.
-		//! Topology comes only from EXACT seam identity (every matched side
-		//! is the bitwise-reversed control polygon of exactly one other
-		//! side); nothing is welded by tolerance.  Embedding is proved on a
-		//! grid of sub-patches: each sub-patch is injective (every
-		//! cross product of a u- and a v-derivative control vector lies in
-		//! one open half-space, which by the mean-value theorem makes the
-		//! map injective), every pair sharing a side is injective as a
-		//! union (the same test over both nets), every pair sharing only a
-		//! vertex is strictly separated by a plane through it, and every
-		//! other pair is disjoint by recursive control-hull boxes.  A
-		//! collapsed (degenerate) side, a T-junction, a pinch vertex or a
-		//! crossing anywhere is refused.  `outNegativeOpenSignedVolume`
-		//! reports an open sheet whose exact signed volume about its
-		//! bounding-box centre is negative (the inward-winding warning).
-		//! `diag`, when given, supplies an optional work-budget override
-		//! and receives the first failed proof step (a static string; ""
-		//! when certified), the sub-patch grid that decided and the work
-		//! spent.  The work budget and a sub-patch count cap bound time and
-		//! memory BEFORE anything large is allocated; past either the set
-		//! is refused.
+		//! Topology comes only from EXACT seam identity (every matched
+		//! non-collapsed side is the bitwise-reversed control polygon of
+		//! exactly one other side, and a patch may have at most one collapsed
+		//! side whose four control points are bitwise equal to a pole vertex
+		//! where all incident patches form one manifold cycle or chain);
+		//! nothing is welded by tolerance.  Embedding is proved on a grid of
+		//! sub-patches: each sub-patch is injective (every active cross
+		//! product of a u- and a v-derivative control vector lies in one open
+		//! half-space, which by the mean-value theorem makes the map
+		//! injective), every pair sharing a side is injective as a union (the
+		//! same test over both nets), every pair sharing only a vertex or pole
+		//! is strictly separated by a plane through it, and every other pair
+		//! is disjoint by recursive control-hull boxes.  A non-constant
+		//! looping side, a patch with two collapsed sides, a T-junction, a
+		//! non-manifold pole / pinch vertex or a crossing anywhere is refused.
+		//! `outNegativeOpenSignedVolume` reports an open sheet whose exact
+		//! signed volume about its bounding-box centre is negative (the
+		//! inward-winding warning).  `diag`, when given, supplies an optional
+		//! work-budget override and receives the first failed proof step (a
+		//! static string; "" when certified), the sub-patch grid that decided
+		//! and the work spent.  The work budget and a sub-patch count cap
+		//! bound time and memory BEFORE anything large is allocated; past
+		//! either the set is refused.
 		struct PatchSetCertDiagnostics
 		{
 			std::size_t		workBudget = 0;	//!< [in] 0 = the default budget
@@ -800,15 +822,44 @@ namespace RISE
 			PatchSetCertDiagnostics* diag = nullptr
 			);
 
-		//! DL-617: TOPOLOGICAL openness of a patch set from exact seam
-		//! identity alone -- no embedding proof: +1 some side has no glued
-		//! partner (a free boundary), 0 every side is glued (no free
-		//! boundary), -1 undecidable (collapsed / looping / non-manifold /
-		//! mismatched seams).  Cheap (one sort); decides a composite's
-		//! operand ROLES, which must not depend on whether the embedding
-		//! proof happens to succeed.
+		//! DL-617 / DL-624: TOPOLOGICAL openness of a patch set from exact
+		//! seam identity and pole-fan link topology alone -- no embedding
+		//! proof: +1 some non-collapsed side has no glued partner (a free
+		//! boundary), 0 every non-collapsed side is glued (no free boundary),
+		//! -1 undecidable (looping or multi-collapsed patch, non-manifold or
+		//! mismatched seams, or a non-manifold pole / pinch vertex).  Cheap
+		//! (two sorts); decides a composite's operand ROLES, which must not
+		//! depend on whether the embedding proof happens to succeed.
 		extern int BezierPatchSetOpenness( const std::vector<BezierPatch>& patches );
 		extern int BilinearPatchSetOpenness( const std::vector<BilinearPatch>& patches );
+
+		//! DL-621(a): TOPOLOGICAL openness of a triangle mesh from its
+		//! position-welded edge graph alone -- no altitude, normal-agreement,
+		//! coplanar-opposed or Step-4 embedding proof: +1 some edge is used
+		//! by a single triangle (a free boundary) and free-face peeling
+		//! removes every triangle (no closed 2-cycle component alongside it),
+		//! 0 every edge is shared by two oppositely oriented triangles with
+		//! distinct third welded vertices (no free boundary), -1 undecidable
+		//! (empty, non-finite, a triangle with repeated welded corners, an
+		//! edge used by more than two triangles or traversed the same way
+		//! twice, two triangles sharing all three welded corners, or a closed
+		//! 2-cycle mixed with a free boundary).  Decides a composite's
+		//! operand ROLES for meshes and displaced surfaces, which must not
+		//! flip when a geometric certificate comes or goes.
+		//!
+		//! DL-621 review: two guards make the role CONSERVATIVE -- an
+		//! uncertain mesh answers -1, which leaves the composite on its
+		//! solid interval algebra.  (1) +1 additionally needs a SUBSTANTIAL
+		//! free boundary: the vector areas of its boundary components must
+		//! total at least 2 % of the mesh's area, so a "solid" left open by
+		//! a pinhole, a crack or an unwelded T-junction (most imported ones,
+		//! DL-143) is not trimmed as a capless skin.  (2) 0 is refused for a
+		//! closed component that folds flat onto itself across an edge (the
+		//! DL-197 coplanar-opposed discriminator at the weld epsilon) AND
+		//! encloses no volume (thickness 2|V|/A at most the weld epsilon):
+		//! two open sheets welded into a pillow.  Neither guard reads an
+		//! embedding proof.
+		extern int TriangleMeshOpenness( const std::vector<Point3>& corners );
 
 		//! DL-616: a process-wide counter bumped whenever any patch set's
 		//! certificate may have changed (a patch added, a set re-prepared),

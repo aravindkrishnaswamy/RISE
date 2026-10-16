@@ -155,6 +155,13 @@ namespace
 		std::vector<Rect>		tiles;
 		std::atomic<unsigned int>	nextTile;
 
+		// DL-625 review: per-tile RNG seeds, as RasterizeBlockDispatcher.
+		// Workers used to default-construct their generator, each calling
+		// libc rand() concurrently (a data race), and which seed served
+		// which tile depended on scheduling.  One value is read on the
+		// constructing thread; each tile reseeds from (value, tile corner).
+		const unsigned int		tileSeedBase;
+
 		// Per-thread output buffers (one per worker).
 		std::vector<std::vector<LightVertex>>	perThreadOutput;
 		// DL-470: each worker's light-subpath step records, in fixed-size
@@ -196,6 +203,7 @@ namespace
 			baseSampleIndex( baseSampleIndex_ ),
 			samplesPerSuperIter( std::max( 1u, samplesPerSuperIter_ ) ),
 			nextTile( 0 ),
+			tileSeedBase( LockedLibcRand() ),
 			perThreadOutput( numWorkers ),
 			perThreadStepBlocks( numWorkers ),
 			perThreadPathsShot( numWorkers, 0 )
@@ -227,8 +235,9 @@ namespace
 
 		void RunWorker( unsigned int workerIdx )
 		{
-			// Each worker has its own RNG (for RR) and scratch buffers.
-			RandomNumberGenerator localRng;
+			// Each worker has its own RNG (for RR) and scratch buffers;
+			// the RNG is reseeded per tile below.
+			RandomNumberGenerator localRng( tileSeedBase );
 			RuntimeContext rc( localRng, RuntimeContext::PASS_NORMAL, true );
 
 			ThreadLocal tl;
@@ -253,6 +262,8 @@ namespace
 			Rect rect( 0, 0, 0, 0 );
 			while( GetNextBlock( rect ) )
 			{
+				localRng.Reseed( DeriveSeed( tileSeedBase,
+					( static_cast<unsigned long long>( rect.top ) << 32 ) | static_cast<unsigned long long>( rect.left ) ) );
 				for( unsigned int y = rect.top; y <= rect.bottom; y++ )
 				{
 					for( unsigned int x = rect.left; x <= rect.right; x++ )

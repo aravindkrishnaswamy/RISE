@@ -17,6 +17,8 @@
 #include "ThreadLocalSplatBuffer.h"
 
 #include <atomic>
+#include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 namespace RISE
@@ -57,6 +59,41 @@ namespace RISE
 			double lastReportedNum;
 
 			RMutex progressMut;		// Only for progress callback serialization
+
+			// Tile RNG seeds (DL-625 review).  Each worker used to
+			// default-construct its RandomNumberGenerator, whose seed is
+			// `rand()`: N workers calling libc rand() at once is a data race
+			// on its hidden state (undefined behaviour; in practice workers
+			// could receive equal or reordered seeds), and even without the
+			// race which seed drew which tile depended on thread scheduling,
+			// so one std::srand gave different multi-threaded renders.  The
+			// libc stream is now read ONCE, here, on the thread that builds
+			// the dispatcher, and each worker RESEEDS its generator at the
+			// start of every tile from (that value, the tile's corner): the
+			// random stream a tile consumes is a pure function of std::srand's
+			// state and the tile, whichever worker renders it and in whatever
+			// order the (shuffled) sequence hands the tiles out, and no worker touches
+			// libc state.  The generator stays per worker (one MT state, the
+			// RuntimeContext keeps a reference to it); a reseed is ~600 word
+			// operations per tile.  Scope of the claim: a render with the
+			// same std::srand and the SAME worker count reproduces; a one-
+			// thread render takes PixelBasedRasterizerHelper's SP path
+			// (GlobalRNG(), no tiles seeded here) and differs from an
+			// N-thread one, and tile size (hence tile corners) depends on
+			// the worker count.  Worker-side generators must not read libc
+			// either (ThreadLocalSeed), or the stream position after a pass
+			// would depend on how many workers ran.
+			const unsigned int tileSeedBase;
+
+			unsigned int TileSeed( const Rect& tile ) const
+			{
+				// Keyed on the tile's PIXEL position, not its place in the
+				// sequence: the default block sequence is shuffled from
+				// std::random_device, so a sequence index names a different
+				// tile every render.
+				return DeriveSeed( tileSeedBase,
+					( static_cast<unsigned long long>( tile.top ) << 32 ) | static_cast<unsigned long long>( tile.left ) );
+			}
 
 			bool GetNextBlock( Rect& rc )
 			{
@@ -130,7 +167,8 @@ namespace RISE
 			  progressBase( progressBase_ ),
 			  progressWeight( progressWeight_ ),
 			  progressTotal( progressTotal_ ),
-			  lastReportedNum( 0 )
+			  lastReportedNum( 0 ),
+			  tileSeedBase( LockedLibcRand() )
 			{
 				numTiles = seq_.NumRegions();
 				tiles.reserve( numTiles );
@@ -144,13 +182,14 @@ namespace RISE
 				const unsigned int height = image.GetHeight();
 
 				// Create a runtime context for this thread
-				RandomNumberGenerator random;
+				RandomNumberGenerator random( tileSeedBase );
 				RuntimeContext rc( random, pass, true );
 				rasterizer.PrepareRuntimeContext( rc );
 
 				// This thread will execute until we ask for another block and we're told there are no more
 				Rect rect(0,0,0,0);
-				while( GetNextBlock(rect) ) {
+				while( GetNextBlock( rect ) ) {
+					random.Reseed( TileSeed( rect ) );
 					// Operate on this block
 					rasterizer.SPRasterizeSingleBlock( rc, image, scene, rect, height );
 				}
@@ -206,13 +245,14 @@ namespace RISE
 				TimeIndexedThread timeView( pTimeFrame );
 
 				// Create a runtime context for this thread
-				RandomNumberGenerator random;
+				RandomNumberGenerator random( tileSeedBase );
 				RuntimeContext rc( random, pass, true );
 				rasterizer.PrepareRuntimeContext( rc );
 
 				// This thread will execute until we ask for another block and we're told there are no more
 				Rect rect(0,0,0,0);
-				while( GetNextBlock(rect) ) {
+				while( GetNextBlock( rect ) ) {
+					random.Reseed( TileSeed( rect ) );
 					// Operate on this block
 					rasterizer.SPRasterizeSingleBlockOfAnimation( rc, image, scene, rect, height, animData );
 				}

@@ -2848,7 +2848,7 @@ bool RayCaster::WalkShadowSegment(
 		if( ri.geometric.bProvablyNoInterior ) {
 			openSheetStack.reset( new IORStack( ior_stack ) );
 			const IORStackSeeding::OpenSheetCrossing c =
-				IORStackSeeding::ResolveOpenSheetCrossing( ri.geometric, mediumIOR, *openSheetStack );
+				IORStackSeeding::ResolveOpenSheetCrossing( ri.geometric, mediumIOR, *openSheetStack, 0, bNM ? nm : 0 );
 			Ni = c.etaFrom;
 			Nt = c.etaTo;
 		}

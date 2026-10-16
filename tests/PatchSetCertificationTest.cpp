@@ -35,6 +35,7 @@
 #include "SMSDomainReplayTest.cpp"
 #undef main
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -47,7 +48,12 @@
 #include "../src/Library/Polygon.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Objects/CSGObject.h"
+#include "../src/Library/Objects/Object.h"
 #include "../src/Library/Geometry/BezierPatchGeometry.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
+#include "../src/Library/Geometry/DisplacedGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 
 using namespace RISE;
@@ -92,6 +98,47 @@ static Verdict CertBilinear( const std::vector<BilinearPatch>& p, std::size_t bu
 	v.grid = d.grid;
 #endif
 	return v;
+}
+
+static int MeshOpenness( const std::vector<Point3>& corners )
+{
+#ifdef DL621_BASELINE_SIGNATURE
+	(void)corners;
+	return -2;
+#else
+	return GeometricUtilities::TriangleMeshOpenness( corners );
+#endif
+}
+
+template<typename GeomT>
+static int TopOpenness( const GeomT* g )
+{
+#ifdef DL621_BASELINE_SIGNATURE
+	if( !g ) {
+		return -2;
+	}
+	if( g->IsProvablyOpenSheet() ) {
+		return 1;
+	}
+	if( g->IsCertifiedWatertight() ) {
+		return 0;
+	}
+	return -1;
+#else
+	return g ? g->TopologicalOpenness() : -2;
+#endif
+}
+
+static int TopOpenness( const TriangleMeshGeometry* g )
+{
+#ifdef DL621_BASELINE_SIGNATURE
+	if( !g ) {
+		return -2;
+	}
+	return g->IsProvablyOpenSheet() ? 1 : -1;
+#else
+	return g ? g->TopologicalOpenness() : -2;
+#endif
 }
 
 static std::string Describe( const Verdict& v )
@@ -1211,16 +1258,24 @@ static void TestCostAndShippedModels()
 		const auto t1 = std::chrono::steady_clock::now();
 		const double ms = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
 		std::cout << "    " << m << " (" << p.size() << " patches): " << Describe( v ) << " in " << ms << " ms" << std::endl;
-		Check( !p.empty() && !v.watertight && !v.open && ReasonIs( v, kCollapsed ),
-			std::string( "G: shipped model refused at the collapsed-side topology step: " ) + m );
+		// teapot.bezier has a non-constant loop side on its lid knob (c[0]==c[3]==(0,3,0) with c[1],c[2] offset by 0.002),
+		// so it is still refused at kCollapsed; aphrodite/f16/balanza have genuine constant collapsed poles that now pass
+		// FindCollapsedSide and are refused at the inconsistent-seam step.
+		const char* expectedReason = ( std::strcmp( m, "models/raw/teapot.bezier" ) == 0 )
+			? kCollapsed
+			: "sides share endpoints but are not one reversed seam (crack, curve mismatch or inconsistent winding)";
+		Check( !p.empty() && !v.watertight && !v.open && ReasonIs( v, expectedReason ),
+			std::string( "G: shipped model refused with pinned reason: " ) + m );
 	}
 	for( const char* m : { "models/raw/teapot.bilinear", "models/raw/test.bilinear" } ) {
 		const std::vector<BilinearPatch> p = ReadBilinearFile( m );
 		const Verdict v = CertBilinear( p );
 		std::cout << "    " << m << " (" << p.size() << " patches): " << Describe( v ) << std::endl;
 		const bool single = std::strcmp( m, "models/raw/test.bilinear" ) == 0;
+		// teapot.bilinear's 4 polar lid patches have a genuine constant pole at (0,3,0); the full 28-patch file advances
+		// past the collapsed-side step and is refused at the 4-way handle/spout seam in z=0.
 		Check( !p.empty() && ( single ? ( v.open && v.negative && ReasonIs( v, "" ) )
-		                              : ( !v.watertight && !v.open && ReasonIs( v, kCollapsed ) ) ),
+		                              : ( !v.watertight && !v.open && ReasonIs( v, "non-manifold seam (more than two sides share endpoints)" ) ) ),
 			std::string( "G: shipped bilinear model verdict pinned: " ) + m );
 	}
 }
@@ -1336,8 +1391,10 @@ static void TestProofStepCoverage()
 {
 	std::cout << "H. proof-step coverage" << std::endl;
 
-	{	// Round 3 P3-3: a Step-4 budget refusal carries its own flag (no
-		// geometric witness), distinct from a geometric refusal.
+	{	// Round 3 P3-3 + DL-623 (1): a fine sheet + 1e5 flap now certifies
+		// via oversize-triangle subdivision, while a genuine Step-4 pair-budget
+		// refusal (connected accordion stack in one cell) carries budgetRefusal
+		// with no geometric witness, distinct from a geometric refusal.
 		const int N = 300;
 		std::vector<Point3> pts;
 		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
@@ -1357,7 +1414,32 @@ static void TestProofStepCoverage()
 			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
 		}
 		add( id( N, 1 ), id( N, 0 ), apex );
-		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		const auto flapCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		Check( flapCert.certified && !flapCert.budgetRefusal,
+			"DL-623 (1): fine sheet + 1e5 flap certifies via oversize-triangle subdivision" );
+
+		std::vector<Point3> stackCorners;
+		std::vector<unsigned int> stackWeld;
+		const int M = 3500;
+		stackCorners.reserve( 6 * M );
+		stackWeld.reserve( 6 * M );
+		for( int k = 0; k < M; ++k ) {
+			const double z0 = 2e-5 * double( k );
+			const double z1 = 2e-5 * double( k + 1 );
+			const double y0 = ( k & 1 ) ? 1.0 : 0.0;
+			const double y1 = ( ( k + 1 ) & 1 ) ? 1.0 : 0.0;
+			const unsigned int a0 = (unsigned int)( 2 * k );
+			const unsigned int b0 = (unsigned int)( 2 * k + 1 );
+			const unsigned int a1 = (unsigned int)( 2 * ( k + 1 ) );
+			const unsigned int b1 = (unsigned int)( 2 * ( k + 1 ) + 1 );
+			const Point3 pa0( 0.0, y0, z0 ), pb0( 1.0, y0, z0 );
+			const Point3 pa1( 0.0, y1, z1 ), pb1( 1.0, y1, z1 );
+			stackCorners.push_back( pa0 ); stackCorners.push_back( pb0 ); stackCorners.push_back( pb1 );
+			stackWeld.push_back( a0 ); stackWeld.push_back( b0 ); stackWeld.push_back( b1 );
+			stackCorners.push_back( pa0 ); stackCorners.push_back( pb1 ); stackCorners.push_back( pa1 );
+			stackWeld.push_back( a0 ); stackWeld.push_back( b1 ); stackWeld.push_back( a1 );
+		}
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( stackCorners, nullptr, Scalar( 0 ), &stackWeld, Scalar( 1e-6 ) );
 		Check( !cert.certified && cert.budgetRefusal && cert.refusalTriA == std::size_t( -1 ),
 			"P3-3: a Step-4 pair-budget refusal is flagged as a budget refusal, with no witness" );
 
@@ -1399,10 +1481,1177 @@ static void TestProofStepCoverage()
 	Check( helixSteep.open && helixSteep.grid == 4, "H: a steeper helicoid strip certifies on the first (4 x 4) grid" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// I. DL-621: CSG over mesh and displaced operands
+//
+//  (a) GeometricUtilities::TriangleMeshOpenness / TopologicalOpenness()
+//      decides sheet-vs-trimmer role by welded-edge topology alone so
+//      CSG geometry never flips when a mesh's certificate comes or goes;
+//  (b) RecoverContainedOperand completes exit range2 (and orients exit
+//      normals with OrientExitNormalsAlongRay) for certified, uncertified,
+//      inward-wound, and non-convex mesh and displaced solids;
+//  (c) sheet UNION closed solid (both operand orders) uses WalkTrimmedSheet
+//      outside the solid and the solid's own finite interval inside/through
+//      the solid instead of semi-infinite interval algebra.
+//////////////////////////////////////////////////////////////////////
+
+static std::string OpenMeshSheet( const std::string& name, Scalar z, bool faceNormals = true )
+{
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n name " << name << "\n double_sided TRUE\n face_normals "
+	  << ( faceNormals ? "TRUE" : "FALSE" ) << "\n"
+	  << " vertex -3 -3 " << z << "\n vertex 3 -3 " << z << "\n vertex 3 3 " << z << "\n vertex -3 3 " << z << "\n"
+	  << " normal 0 0 1\n normal 0 0 1\n normal 0 0 1\n normal 0 0 1\n"
+	  << " uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n"
+	  << " triangle 0 1 2\n triangle 0 2 3\n}\n";
+	return s.str();
+}
+
+//! An open 4-triangle mesh strip in [-3, 3]^2 at z whose extra fold flap
+//! crosses through it at x = 2.5 (away from the test rays near x = 0..1.5),
+//! so IsProvablyOpenSheet() is FALSE while TopologicalOpenness() is +1.
+static std::string UncertifiedOpenMeshSheet( const std::string& name, Scalar z )
+{
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n name " << name << "\n double_sided TRUE\n face_normals TRUE\n"
+	  << " vertex -3 -3 " << z << "\n vertex 3 -3 " << z << "\n vertex 3 3 " << z << "\n vertex -3 3 " << z << "\n"
+	  << " vertex 2.5 -1 " << ( z - 0.5 ) << "\n vertex 2.5 1 " << ( z + 0.5 ) << "\n"
+	  << " uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n uv 0 0\n uv 1 1\n"
+	  << " triangle 0 1 2\n triangle 0 2 3\n"
+	  << " triangle 2 1 4\n triangle 2 4 5\n}\n";
+	return s.str();
+}
+
+//! A closed 2-manifold mesh cube on [-1, 1]^3 with a zero-thickness coplanar
+//! opposed pleat along edge (0,8) at z = -1, so DL-197 refuses
+//! IsCertifiedWatertight() while TopologicalOpenness() is 0 (closed) and
+//! every ray through the interior [-0.8, 0.8]^2 sees the unit cube [-1, 1]^3.
+static std::string UncertifiedClosedMeshCube( const std::string& name, bool pleated = true )
+{
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n name " << name << "\n double_sided TRUE\n face_normals TRUE\n"
+	  << " vertex -1 -1 -1\n vertex 1 -1 -1\n vertex 1 1 -1\n vertex -1 1 -1\n"
+	  << " vertex -1 -1 1\n vertex 1 -1 1\n vertex 1 1 1\n vertex -1 1 1\n"
+	  << " vertex 0 " << ( pleated ? "-0.90" : "-0.95" ) << " -1\n"
+	  << " vertex 0 " << ( pleated ? "-0.95" : "-0.90" ) << " -1\n"
+	  << " uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n uv 0.5 0\n uv 0.5 0\n"
+	  // Bottom face with a flat fold back and forth across y = -0.90..-0.95 at z = -1 when pleated:
+	  << " triangle 0 8 1\n"
+	  << " triangle 0 9 8\n"
+	  << " triangle 8 9 1\n"
+	  << " triangle 0 2 9\n"
+	  << " triangle 9 2 1\n"
+	  << " triangle 0 3 2\n"
+	  // Remaining 5 cube faces:
+	  << " triangle 4 5 6\n triangle 4 6 7\n"
+	  << " triangle 0 1 5\n triangle 0 5 4\n"
+	  << " triangle 3 7 6\n triangle 3 6 2\n"
+	  << " triangle 0 4 7\n triangle 0 7 3\n"
+	  << " triangle 1 2 6\n triangle 1 6 5\n}\n";
+	return s.str();
+}
+
+static TriangleMeshGeometry* MakeRawTriangleMeshCube( Scalar halfExtent, const Point3& center )
+{
+	TriangleMeshGeometry* g = new TriangleMeshGeometry( true );
+	g->BeginTriangles();
+	const Point3 v[8] = {
+		Point3( center.x - halfExtent, center.y - halfExtent, center.z - halfExtent ),
+		Point3( center.x + halfExtent, center.y - halfExtent, center.z - halfExtent ),
+		Point3( center.x + halfExtent, center.y + halfExtent, center.z - halfExtent ),
+		Point3( center.x - halfExtent, center.y + halfExtent, center.z - halfExtent ),
+		Point3( center.x - halfExtent, center.y - halfExtent, center.z + halfExtent ),
+		Point3( center.x + halfExtent, center.y - halfExtent, center.z + halfExtent ),
+		Point3( center.x + halfExtent, center.y + halfExtent, center.z + halfExtent ),
+		Point3( center.x - halfExtent, center.y + halfExtent, center.z + halfExtent )
+	};
+	const int tris[12][3] = {
+		{0,2,1}, {0,3,2}, {4,5,6}, {4,6,7},
+		{0,1,5}, {0,5,4}, {3,7,6}, {3,6,2},
+		{0,4,7}, {0,7,3}, {1,2,6}, {1,6,5}
+	};
+	for( const auto& t : tris ) {
+		Triangle tri;
+		const Vector3 fn = Vector3Ops::Normalize( Vector3Ops::Cross(
+			Vector3Ops::mkVector3( v[t[1]], v[t[0]] ),
+			Vector3Ops::mkVector3( v[t[2]], v[t[0]] ) ) );
+		for( int k = 0; k < 3; ++k ) {
+			tri.vertices[k] = v[t[k]];
+			tri.normals[k] = fn;
+			tri.coords[k] = Point2( 0, 0 );
+		}
+		g->AddTriangle( tri );
+	}
+	g->DoneTriangles();
+	return g;
+}
+
+static TriangleMeshGeometry* MakeRawTriangleMeshSheet( Scalar halfExtent, Scalar z )
+{
+	TriangleMeshGeometry* g = new TriangleMeshGeometry( true );
+	g->BeginTriangles();
+	const Point3 v[4] = {
+		Point3( -halfExtent, -halfExtent, z ),
+		Point3(  halfExtent, -halfExtent, z ),
+		Point3(  halfExtent,  halfExtent, z ),
+		Point3( -halfExtent,  halfExtent, z )
+	};
+	const int tris[2][3] = { {0,1,2}, {0,2,3} };
+	for( const auto& t : tris ) {
+		Triangle tri;
+		for( int k = 0; k < 3; ++k ) {
+			tri.vertices[k] = v[t[k]];
+			tri.normals[k] = ( k == 0 ) ? Vector3( 0, 0, -1 ) : Vector3( 0, 0, 1 );
+			tri.coords[k] = Point2( 0, 0 );
+		}
+		g->AddTriangle( tri );
+	}
+	g->DoneTriangles();
+	return g;
+}
+
+static void TestMeshAndDisplacedCSG_DL621()
+{
+	std::cout << "I. DL-621: CSG over mesh and displaced operands" << std::endl;
+
+	// 1. Direct GeometricUtilities::TriangleMeshOpenness classification.
+	{
+		std::vector<Point3> empty;
+		Check( MeshOpenness( empty ) == -1,
+			"I(a): empty corner list has unknown openness (-1)" );
+
+		std::vector<Point3> openQuad = {
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 1, 1, 0 ),
+			Point3( 0, 0, 0 ), Point3( 1, 1, 0 ), Point3( 0, 1, 0 )
+		};
+		Check( MeshOpenness( openQuad ) == 1,
+			"I(a): 2-triangle quad is topologically open (+1)" );
+
+		const Point3 cv[8] = {
+			Point3(-1,-1,-1), Point3(1,-1,-1), Point3(1,1,-1), Point3(-1,1,-1),
+			Point3(-1,-1,1), Point3(1,-1,1), Point3(1,1,1), Point3(-1,1,1)
+		};
+		const int ctris[12][3] = {
+			{0,2,1},{0,3,2},{4,5,6},{4,6,7},
+			{0,1,5},{0,5,4},{3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5}
+		};
+		std::vector<Point3> closedCube, inwardCube;
+		for( const auto& t : ctris ) {
+			closedCube.push_back( cv[t[0]] );
+			closedCube.push_back( cv[t[1]] );
+			closedCube.push_back( cv[t[2]] );
+			inwardCube.push_back( cv[t[0]] );
+			inwardCube.push_back( cv[t[2]] );
+			inwardCube.push_back( cv[t[1]] );
+		}
+		Check( MeshOpenness( closedCube ) == 0,
+			"I(a): closed 12-triangle cube is topologically closed (0)" );
+		Check( MeshOpenness( inwardCube ) == 0,
+			"I(a): inward-wound 12-triangle cube is topologically closed (0)" );
+
+		std::vector<Point3> openBox( closedCube.begin() + 6, closedCube.end() );
+		Check( MeshOpenness( openBox ) == 1,
+			"I(a): cube missing one face is topologically open (+1)" );
+
+		std::vector<Point3> degen = {
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 2, 0, 0 )
+		};
+		Check( MeshOpenness( degen ) == -1,
+			"I(a): collinear triangle is refused (-1)" );
+
+		std::vector<Point3> pillow = {
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 0, 1, 0 ),
+			Point3( 0, 0, 0 ), Point3( 0, 1, 0 ), Point3( 1, 0, 0 )
+		};
+		Check( MeshOpenness( pillow ) == -1,
+			"I(a): 2-triangle coincident pillow is refused (-1), never closed" );
+
+		std::vector<Point3> threeFin = {
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 0, 1, 0 ),
+			Point3( 1, 0, 0 ), Point3( 0, 0, 0 ), Point3( 0, -1, 0 ),
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 0, 0, 1 )
+		};
+		Check( MeshOpenness( threeFin ) == -1,
+			"I(a): non-manifold 3-fin edge is refused (-1)" );
+
+		std::vector<Point3> orientConflict = {
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 0, 1, 0 ),
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 0, -1, 0 )
+		};
+		Check( MeshOpenness( orientConflict ) == -1,
+			"I(a): orientation-conflicting shared edge is refused (-1)" );
+
+		std::vector<Point3> cubePlusFlap = closedCube;
+		cubePlusFlap.push_back( Point3( 5, 0, 0 ) );
+		cubePlusFlap.push_back( Point3( 6, 0, 0 ) );
+		cubePlusFlap.push_back( Point3( 5, 1, 0 ) );
+		Check( MeshOpenness( cubePlusFlap ) == -1,
+			"I(a): closed cube plus disjoint open triangle is refused (-1)" );
+	}
+
+	// 2. Scene fixtures covering DL-621(a), DL-621(b), and DL-621(c).
+	std::string scene = Materials( false ) +
+		OpenMeshSheet( "msheet", 0.5 ) +
+		OpenMeshSheet( "msheet_edit", 0.5, false ) +
+		UncertifiedOpenMeshSheet( "msheet_uncert", 0.5 ) +
+		NamedMeshCube( "mcube_cert", false, true ) +
+		UncertifiedClosedMeshCube( "mcube_edit", false ) +
+		NamedMeshCube( "mcube_in", true, true ) +
+		UncertifiedClosedMeshCube( "mcube_uncert", true ) +
+		TwoLobeMesh( "lobes" ) +
+		"clippedplane_geometry\n{\n name cplane\n pta -3 -3 0.5\n ptb 3 -3 0.5\n ptc 3 3 0.5\n ptd -3 3 0.5\n}\n"
+		"box_geometry\n{\n name cube2\n width 2\n height 2\n depth 2\n}\n"
+		"sphere_geometry\n{\n name sph1\n radius 1\n}\n"
+		"displaced_geometry\n{\n name disp_sheet\n base_geometry cplane\n detail 4\n disp_scale 0\n}\n"
+		"displaced_geometry\n{\n name disp_cube\n base_geometry cube2\n detail 4\n disp_scale 0\n}\n"
+		"displaced_geometry\n{\n name disp_uncert_cube\n base_geometry mcube_uncert\n detail 2\n disp_scale 0\n}\n";
+
+	auto obj = [&]( const std::string& name, const std::string& geom, const std::string& extra = "" ) {
+		scene += "standard_object\n{\n name " + name + "\n geometry " + geom + "\n material glass\n" + extra + "}\n";
+	};
+	auto csg = [&]( const std::string& name, const std::string& a, const std::string& b, const std::string& op, const std::string& extra = "" ) {
+		scene += "csg_object\n{\n name " + name + "\n obja " + a + "\n objb " + b + "\n operation " + op + "\n material glass\n" + extra + "}\n";
+	};
+
+	// DL-621(a): certified vs uncertified mesh sheets and mesh/displaced solids in trimming & union.
+	obj( "o_ms_c1", "msheet" ); obj( "o_mc_c1", "mcube_cert" ); csg( "msheet_inter_mcert", "o_ms_c1", "o_mc_c1", "intersection" );
+	obj( "o_ms_c2", "msheet" ); obj( "o_mc_c2", "mcube_cert" ); csg( "msheet_minus_mcert", "o_ms_c2", "o_mc_c2", "subtraction" );
+	obj( "o_ms_u1", "msheet_uncert" ); obj( "o_mc_c3", "mcube_cert" ); csg( "muncert_inter_mcert", "o_ms_u1", "o_mc_c3", "intersection" );
+	obj( "o_ms_u2", "msheet_uncert" ); obj( "o_mc_c4", "mcube_cert" ); csg( "muncert_minus_mcert", "o_ms_u2", "o_mc_c4", "subtraction" );
+	obj( "o_ms_c5", "msheet" ); obj( "o_mc_u1", "mcube_uncert" ); csg( "msheet_inter_muncert", "o_ms_c5", "o_mc_u1", "intersection" );
+	obj( "o_ms_c6", "msheet" ); obj( "o_mc_u2", "mcube_uncert" ); csg( "msheet_minus_muncert", "o_ms_c6", "o_mc_u2", "subtraction" );
+	// Live deformation / normal-edit probes:
+	obj( "o_ms_ed", "msheet_edit" ); obj( "o_mc_ed1", "mcube_cert" ); csg( "edit_sheet_csg", "o_ms_ed", "o_mc_ed1", "intersection" );
+	obj( "o_ms_ed2", "msheet" ); obj( "o_mc_ed2", "mcube_edit" ); csg( "edit_solid_csg", "o_ms_ed2", "o_mc_ed2", "subtraction" );
+	// Displaced sheet & displaced solid:
+	obj( "o_ds1", "disp_sheet" ); obj( "o_dc1", "disp_cube" ); csg( "dsheet_inter_dcube", "o_ds1", "o_dc1", "intersection" );
+	obj( "o_ds2", "disp_sheet" ); obj( "o_duc1", "disp_uncert_cube" ); csg( "dsheet_minus_duncert", "o_ds2", "o_duc1", "subtraction" );
+
+	// DL-621(b): solid minus mesh/displaced solids from outside and inside, including uncertified & non-convex two-lobe meshes.
+	obj( "o_mp_a", "cube2" ); obj( "o_mp_b", "mcube_cert", " position 0 0 1\n scale 0.5 0.5 0.5\n" ); csg( "mesh_pit", "o_mp_a", "o_mp_b", "subtraction" );
+	obj( "o_mpi_a", "cube2" ); obj( "o_mpi_b", "mcube_in", " position 0 0 1\n scale 0.5 0.5 0.5\n" ); csg( "mesh_pit_in", "o_mpi_a", "o_mpi_b", "subtraction" );
+	obj( "o_mpu_a", "cube2" ); obj( "o_mpu_b", "mcube_uncert", " position 0 0 1\n scale 0.5 0.5 0.5\n" ); csg( "mesh_pit_uncert", "o_mpu_a", "o_mpu_b", "subtraction" );
+	obj( "o_dp_a", "cube2" ); obj( "o_dp_b", "disp_uncert_cube", " position 0 0 1\n scale 0.5 0.5 0.5\n" ); csg( "disp_pit_uncert", "o_dp_a", "o_dp_b", "subtraction" );
+	// Non-convex TwoLobeMesh: lobe 0 is y in [-1, 1], lobe 1 is y in [-5, -3].
+	// Place box at y in [-4, -2] (position 0 -3 0), so lobe 1 carves y in [-4, -3] out of the box.
+	obj( "o_lb_box", "cube2", " position 0 -3 0\n" ); obj( "o_lb_m1", "lobes" ); csg( "box_minus_lobes", "o_lb_box", "o_lb_m1", "subtraction" );
+	obj( "o_lbi_box", "cube2", " position 0 -3 0\n" ); obj( "o_lbi_m", "lobes" ); csg( "box_inter_lobes", "o_lbi_box", "o_lbi_m", "intersection" );
+	// Sheet at y = -3.5 (inside lobe 1 of TwoLobeMesh):
+	scene += "clippedplane_geometry\n{\n name sheet_y35\n pta -3 -3.5 -3\n ptb 3 -3.5 -3\n ptc 3 -3.5 3\n ptd -3 -3.5 3\n}\n";
+	obj( "o_sy35", "sheet_y35" ); obj( "o_lb_m2", "lobes" ); csg( "sheet_minus_lobes", "o_sy35", "o_lb_m2", "subtraction" );
+
+	// DL-621(c): sheet UNION solid (and solid UNION sheet) with mesh/plane sheets and analytic/mesh solids.
+	obj( "o_su_s1", "msheet" ); obj( "o_su_b1", "mcube_cert" ); csg( "msheet_union_mcube", "o_su_s1", "o_su_b1", "union" );
+	obj( "o_su_b2", "mcube_cert" ); obj( "o_su_s2", "msheet" ); csg( "mcube_union_msheet", "o_su_b2", "o_su_s2", "union" );
+	obj( "o_su_s3", "msheet_uncert" ); obj( "o_su_b3", "mcube_uncert" ); csg( "muncert_union_muncert", "o_su_s3", "o_su_b3", "union" );
+	// Sheet above solid (at z = 1.5, outside cube [-1, 1]^3):
+	scene += OpenMeshSheet( "msheet_top", 1.5 );
+	obj( "o_sut_s", "msheet_top" ); obj( "o_sut_b", "mcube_cert" ); csg( "msheet_top_union_mcube", "o_sut_s", "o_sut_b", "union" );
+
+	LoadedScene loaded( scene );
+	const Vector3 down( 0, 0, -1 ), up( 0, 0, 1 ), downY( 0, -1, 0 ), upY( 0, 1, 0 );
+
+	// Verify all fixtures loaded.
+	const char* const names[] = {
+		"msheet_inter_mcert", "msheet_minus_mcert", "muncert_inter_mcert", "muncert_minus_mcert",
+		"msheet_inter_muncert", "msheet_minus_muncert", "edit_sheet_csg", "edit_solid_csg",
+		"dsheet_inter_dcube", "dsheet_minus_duncert",
+		"mesh_pit", "mesh_pit_in", "mesh_pit_uncert", "disp_pit_uncert",
+		"box_minus_lobes", "box_inter_lobes", "sheet_minus_lobes",
+		"msheet_union_mcube", "mcube_union_msheet", "muncert_union_muncert", "msheet_top_union_mcube"
+	};
+	bool allLoaded = true;
+	for( const char* n : names ) {
+		if( !loaded.Object( n ) ) {
+			std::cout << "    missing DL-621 fixture: " << n << std::endl;
+			allLoaded = false;
+		}
+	}
+	Check( allLoaded, "I: all DL-621 CSG fixtures load" );
+	if( !allLoaded ) {
+		return;
+	}
+
+	// DL-621(a): verify topological openness vs geometric certification on the operands and composites.
+	{
+		const IObject* cCert = loaded.Object( "msheet_inter_mcert" );
+		const IObject* cUncertSheet = loaded.Object( "muncert_inter_mcert" );
+		const IObject* cUncertSolid = loaded.Object( "msheet_inter_muncert" );
+		const auto* gSheetCert = dynamic_cast<const TriangleMeshGeometryIndexed*>( AsCSG( cCert )->GetOperandA()->GetGeometry() );
+		const auto* gSheetUncert = dynamic_cast<const TriangleMeshGeometryIndexed*>( AsCSG( cUncertSheet )->GetOperandA()->GetGeometry() );
+		const auto* gSolidCert = dynamic_cast<const TriangleMeshGeometryIndexed*>( AsCSG( cCert )->GetOperandB()->GetGeometry() );
+		const auto* gSolidUncert = dynamic_cast<const TriangleMeshGeometryIndexed*>( AsCSG( cUncertSolid )->GetOperandB()->GetGeometry() );
+
+		Check( gSheetCert && gSheetCert->IsProvablyOpenSheet() && TopOpenness( gSheetCert ) == 1,
+			"I(a): certified open mesh sheet has IsProvablyOpenSheet=true and TopologicalOpenness=1" );
+		Check( gSheetUncert && !gSheetUncert->IsProvablyOpenSheet() && !gSheetUncert->IsCertifiedWatertight() &&
+			TopOpenness( gSheetUncert ) == 1,
+			"I(a): self-crossing open mesh sheet has IsProvablyOpenSheet=false and TopologicalOpenness=1" );
+		Check( gSolidCert && gSolidCert->IsCertifiedWatertight() && TopOpenness( gSolidCert ) == 0,
+			"I(a): certified mesh cube has IsCertifiedWatertight=true and TopologicalOpenness=0" );
+		Check( gSolidUncert && !gSolidUncert->IsCertifiedWatertight() && !gSolidUncert->IsProvablyOpenSheet() &&
+			TopOpenness( gSolidUncert ) == 0,
+			"I(a): coplanar-pleated closed mesh cube is refused watertightness but has TopologicalOpenness=0" );
+
+		Check( AsCSG( cCert )->TrimsSheet() && AsCSG( cCert )->IsProvablyOpenSheet(),
+			"I(a): certified mesh sheet ∩ certified mesh solid both trims and certifies open" );
+		Check( AsCSG( cUncertSheet )->TrimsSheet() && !AsCSG( cUncertSheet )->IsProvablyOpenSheet(),
+			"I(a): uncertified mesh sheet ∩ certified mesh solid still trims the sheet (without open certificate)" );
+		Check( AsCSG( cUncertSolid )->TrimsSheet() && !AsCSG( cUncertSolid )->IsProvablyOpenSheet(),
+			"I(a): certified mesh sheet ∩ uncertified closed mesh solid still trims the sheet (without open certificate)" );
+
+		for( const Scalar x : { 0.2, 0.7, 1.5 } ) {
+			const RayIntersection hCert = Cast( *cCert, Point3( x, 0.1, 3 ), down );
+			const RayIntersection hUSheet = Cast( *cUncertSheet, Point3( x, 0.1, 3 ), down );
+			const RayIntersection hUSolid = Cast( *cUncertSolid, Point3( x, 0.1, 3 ), down );
+			const bool expectHit = ( x < 1.0 );
+			Check( hCert.geometric.bHit == expectHit && hUSheet.geometric.bHit == expectHit && hUSolid.geometric.bHit == expectHit &&
+				( !expectHit || ( std::fabs( hCert.geometric.range - 2.5 ) < 1e-6 &&
+				                  std::fabs( hUSheet.geometric.range - 2.5 ) < 1e-6 &&
+				                  std::fabs( hUSolid.geometric.range - 2.5 ) < 1e-6 &&
+				                  hUSheet.geometric.range2 == RISE_INFINITY &&
+				                  hUSolid.geometric.range2 == RISE_INFINITY ) ),
+				"I(a): sheet ∩ solid geometry is identical whether the sheet or solid mesh is certified or uncertified" );
+		}
+
+		const IObject* mCert = loaded.Object( "msheet_minus_mcert" );
+		const IObject* mUSheet = loaded.Object( "muncert_minus_mcert" );
+		const IObject* mUSolid = loaded.Object( "msheet_minus_muncert" );
+		for( const Scalar x : { 0.2, 1.5 } ) {
+			const RayIntersection hCert = Cast( *mCert, Point3( x, 0.1, 3 ), down );
+			const RayIntersection hUSheet = Cast( *mUSheet, Point3( x, 0.1, 3 ), down );
+			const RayIntersection hUSolid = Cast( *mUSolid, Point3( x, 0.1, 3 ), down );
+			const bool expectHit = ( x > 1.0 );
+			Check( hCert.geometric.bHit == expectHit && hUSheet.geometric.bHit == expectHit && hUSolid.geometric.bHit == expectHit &&
+				( !expectHit || ( std::fabs( hUSheet.geometric.range - 2.5 ) < 1e-6 &&
+				                  std::fabs( hUSolid.geometric.range - 2.5 ) < 1e-6 &&
+				                  hUSheet.geometric.range2 == RISE_INFINITY &&
+				                  hUSolid.geometric.range2 == RISE_INFINITY ) ),
+				"I(a): sheet − solid geometry is identical whether the sheet or solid mesh is certified or uncertified" );
+		}
+
+		// Displaced sheet & displaced solid (certified and uncertified base):
+		const IObject* dInter = loaded.Object( "dsheet_inter_dcube" );
+		const IObject* dMinus = loaded.Object( "dsheet_minus_duncert" );
+		const auto* gDispSheet = dynamic_cast<const DisplacedGeometry*>( AsCSG( dInter )->GetOperandA()->GetGeometry() );
+		const auto* gDispCube = dynamic_cast<const DisplacedGeometry*>( AsCSG( dInter )->GetOperandB()->GetGeometry() );
+		const auto* gDispUncert = dynamic_cast<const DisplacedGeometry*>( AsCSG( dMinus )->GetOperandB()->GetGeometry() );
+		Check( gDispSheet && TopOpenness( gDispSheet ) == 1 &&
+			gDispCube && TopOpenness( gDispCube ) == 0 &&
+			gDispUncert && !gDispUncert->IsCertifiedWatertight() && TopOpenness( gDispUncert ) == 0,
+			"I(a): DisplacedGeometry reports TopologicalOpenness from its tessellated/base topology even when uncertified" );
+		Check( AsCSG( dInter )->TrimsSheet() && AsCSG( dMinus )->TrimsSheet() && !AsCSG( dMinus )->IsProvablyOpenSheet(),
+			"I(a): DisplacedGeometry operands preserve their sheet/trimmer role regardless of watertight certification" );
+		Check( Cast( *dInter, Point3( 0.2, 0.1, 3 ), down ).geometric.bHit &&
+			!Cast( *dInter, Point3( 1.5, 0.1, 3 ), down ).geometric.bHit &&
+			!Cast( *dMinus, Point3( 0.2, 0.1, 3 ), down ).geometric.bHit &&
+			Cast( *dMinus, Point3( 1.5, 0.1, 3 ), down ).geometric.bHit,
+			"I(a): displaced sheet trimmed by displaced solid keeps/removes the expected regions" );
+
+		// Live mutation test: losing a mesh operand's certificate via UpdateVertices / ComputeVertexNormals
+		// updates the CSG certificate epoch immediately without flipping the CSG's sheet-trimming role or hits.
+		const IObject* edSheetCSG = loaded.Object( "edit_sheet_csg" );
+		auto* edSheetGeom = const_cast<TriangleMeshGeometryIndexed*>(
+			dynamic_cast<const TriangleMeshGeometryIndexed*>( AsCSG( edSheetCSG )->GetOperandA()->GetGeometry() ) );
+		Check( edSheetGeom && edSheetGeom->IsProvablyOpenSheet() && AsCSG( edSheetCSG )->IsProvablyOpenSheet(),
+			"I(a): editable mesh sheet composite starts certified open" );
+		const RayIntersection preSheetIn = Cast( *edSheetCSG, Point3( 0.2, 0.1, 3 ), down );
+		const RayIntersection preSheetOut = Cast( *edSheetCSG, Point3( 1.5, 0.1, 3 ), down );
+		if( edSheetGeom ) {
+			// Supply opposing vertex normals so Step 2 of IsEmbeddedOpenOrientedSurface refuses the sheet,
+			// while vertex positions and welded-edge topology stay unchanged.
+			const std::vector<Point3> pts = {
+				Point3( -3, -3, 0.5 ), Point3( 3, -3, 0.5 ), Point3( 3, 3, 0.5 ), Point3( -3, 3, 0.5 )
+			};
+			const std::vector<Vector3> badNormals = {
+				Vector3( 0, 0, -1 ), Vector3( 0, 0, 1 ), Vector3( 0, 0, 1 ), Vector3( 0, 0, 1 )
+			};
+			edSheetGeom->UpdateVertices( pts, badNormals );
+			Check( !edSheetGeom->IsProvablyOpenSheet() && TopOpenness( edSheetGeom ) == 1,
+				"I(a): after normal flip, mesh sheet loses its open-sheet certificate but keeps TopologicalOpenness=1" );
+			Check( !AsCSG( edSheetCSG )->IsProvablyOpenSheet() && AsCSG( edSheetCSG )->TrimsSheet(),
+				"I(a): composite drops its open-sheet certificate via epoch bump while keeping its sheet-trimming role" );
+			const RayIntersection postSheetIn = Cast( *edSheetCSG, Point3( 0.2, 0.1, 3 ), down );
+			const RayIntersection postSheetOut = Cast( *edSheetCSG, Point3( 1.5, 0.1, 3 ), down );
+			Check( preSheetIn.geometric.bHit && postSheetIn.geometric.bHit &&
+				std::fabs( preSheetIn.geometric.range - postSheetIn.geometric.range ) < 1e-9 &&
+				postSheetIn.geometric.range2 == RISE_INFINITY &&
+				!preSheetOut.geometric.bHit && !postSheetOut.geometric.bHit,
+				"I(a): sheet ∩ solid geometry does not flip when the mesh sheet loses its certificate" );
+			// Review P1-2: when m_topologicalOpenness is already cached >= 0 (here 1), a subsequent
+			// UpdateVertices that changes vertex positions (collapsing a triangle, then restoring it)
+			// must invalidate m_topologicalOpenness and refresh TrimsSheet().
+			const std::vector<Point3> collapsedPts = {
+				Point3( -3, -3, 0.5 ), Point3( -3, -3, 0.5 ), Point3( 3, 3, 0.5 ), Point3( -3, 3, 0.5 )
+			};
+			edSheetGeom->UpdateVertices( collapsedPts, badNormals );
+			const bool collapsedInvalidated = ( TopOpenness( edSheetGeom ) == -1 && !AsCSG( edSheetCSG )->TrimsSheet() );
+			edSheetGeom->UpdateVertices( pts, badNormals );
+			Check( collapsedInvalidated && TopOpenness( edSheetGeom ) == 1 && AsCSG( edSheetCSG )->TrimsSheet(),
+				"I(a): UpdateVertices invalidates cached TopologicalOpenness >= 0 when vertex positions change (review P1-2)" );
+		}
+
+		const IObject* edSolidCSG = loaded.Object( "edit_solid_csg" );
+		auto* edSolidGeom = const_cast<TriangleMeshGeometryIndexed*>(
+			dynamic_cast<const TriangleMeshGeometryIndexed*>( AsCSG( edSolidCSG )->GetOperandB()->GetGeometry() ) );
+		Check( edSolidGeom && edSolidGeom->IsCertifiedWatertight() && AsCSG( edSolidCSG )->IsProvablyOpenSheet(),
+			"I(a): editable mesh solid composite starts certified open" );
+		const RayIntersection preSolidIn = Cast( *edSolidCSG, Point3( 0.2, 0.1, 3 ), down );
+		const RayIntersection preSolidOut = Cast( *edSolidCSG, Point3( 1.5, 0.1, 3 ), down );
+		if( edSolidGeom ) {
+			const std::vector<Point3> pleatedPts = {
+				Point3( -1, -1, -1 ), Point3( 1, -1, -1 ), Point3( 1, 1, -1 ), Point3( -1, 1, -1 ),
+				Point3( -1, -1,  1 ), Point3( 1, -1,  1 ), Point3( 1, 1,  1 ), Point3( -1, 1,  1 ),
+				Point3(  0, -0.90, -1 ), Point3( 0, -0.95, -1 )
+			};
+			edSolidGeom->UpdateVertices( pleatedPts, NormalsListType() );
+			Check( !edSolidGeom->IsCertifiedWatertight() && TopOpenness( edSolidGeom ) == 0,
+				"I(a): after bottom-face coplanar pleat, mesh solid loses watertight certificate but keeps TopologicalOpenness=0" );
+			Check( !AsCSG( edSolidCSG )->IsProvablyOpenSheet() && AsCSG( edSolidCSG )->TrimsSheet(),
+				"I(a): sheet − solid drops its open-sheet certificate via epoch bump while keeping its sheet-trimming role" );
+			const RayIntersection postSolidIn = Cast( *edSolidCSG, Point3( 0.2, 0.1, 3 ), down );
+			const RayIntersection postSolidOut = Cast( *edSolidCSG, Point3( 1.5, 0.1, 3 ), down );
+			Check( !preSolidIn.geometric.bHit && !postSolidIn.geometric.bHit &&
+				preSolidOut.geometric.bHit && postSolidOut.geometric.bHit &&
+				std::fabs( preSolidOut.geometric.range - postSolidOut.geometric.range ) < 1e-9 &&
+				postSolidOut.geometric.range2 == RISE_INFINITY,
+				"I(a): sheet − solid geometry does not flip when the trimming mesh solid loses its watertight certificate" );
+		}
+	}
+
+	// DL-621(b): exit completion (range2 and outward exit normals) for certified, uncertified,
+	// inward-wound, non-indexed, and non-convex mesh & displaced solids.
+	{
+		for( const char* pitName : { "mesh_pit", "mesh_pit_in", "mesh_pit_uncert", "disp_pit_uncert" } ) {
+			const IObject* mp = loaded.Object( pitName );
+			const RayIntersection outsideHit = Cast( *mp, Point3( 0.1, 0.1, 3 ), down );
+			Check( outsideHit.geometric.bHit &&
+				std::fabs( outsideHit.geometric.ptIntersection.z - 0.5 ) < 1e-6 &&
+				std::fabs( outsideHit.geometric.ptExit.z + 1.0 ) < 1e-6 &&
+				Vector3Ops::Dot( outsideHit.geometric.vNormal, up ) > 0 &&
+				Vector3Ops::Dot( outsideHit.geometric.UnflippedGeomNormal(), up ) > 0 &&
+				Coherent( outsideHit ) &&
+				Shadow( *mp, Point3( 0.1, 0.1, 3 ), down, 10 ) &&
+				!Shadow( *mp, Point3( 0.1, 0.1, 3 ), down, 2.2 ),
+				std::string( "I(b): outside ray into " ) + pitName + " completes range2 and hits the pit floor at z=0.5 with upward normal" );
+
+			const RayIntersection insideHit = Cast( *mp, Point3( 0.1, 0.1, 0.8 ), down );
+			Check( insideHit.geometric.bHit &&
+				std::fabs( insideHit.geometric.ptIntersection.z - 0.5 ) < 1e-6 &&
+				Vector3Ops::Dot( insideHit.geometric.vNormal, up ) > 0 &&
+				Vector3Ops::Dot( insideHit.geometric.UnflippedGeomNormal(), up ) > 0 &&
+				Coherent( insideHit ),
+				std::string( "I(b): inside-both ray into " ) + pitName + " hits the pit floor at z=0.5 with upward normal" );
+		}
+
+		// Non-indexed TriangleMeshGeometry (always uncertified) in sheet-trimming and solid-minus-solid:
+		TriangleMeshGeometry* rawCubeGeom = MakeRawTriangleMeshCube( 0.5, Point3( 0, 0, 1 ) );
+		TriangleMeshGeometry* rawCubeOriginGeom = MakeRawTriangleMeshCube( 1.0, Point3( 0, 0, 0 ) );
+		TriangleMeshGeometry* rawSheetGeom = MakeRawTriangleMeshSheet( 3.0, 0.2 );
+		BoxGeometry* boxGeom = new BoxGeometry( 2, 2, 2 );
+		Check( TopOpenness( rawCubeGeom ) == 0 &&
+			!rawSheetGeom->IsProvablyOpenSheet() && TopOpenness( rawSheetGeom ) == 1,
+			"I(a/b): non-indexed TriangleMeshGeometry cube/sheet report TopologicalOpenness 0 and 1" );
+
+		Object* objBox = new Object( boxGeom );
+		Object* objRawCube = new Object( rawCubeGeom );
+		Object* objRawSheet = new Object( rawSheetGeom );
+		CSGObject* rawPit = new CSGObject( CSG_SUBTRACTION );
+		rawPit->AssignObjects( objBox, objRawCube );
+		const RayIntersection rawPitOut = Cast( *rawPit, Point3( 0.1, 0.1, 3 ), down );
+		const RayIntersection rawPitIn = Cast( *rawPit, Point3( 0.1, 0.1, 0.8 ), down );
+		Check( rawPitOut.geometric.bHit &&
+			std::fabs( rawPitOut.geometric.ptIntersection.z - 0.5 ) < 1e-6 &&
+			std::fabs( rawPitOut.geometric.ptExit.z + 1.0 ) < 1e-6 &&
+			Vector3Ops::Dot( rawPitOut.geometric.vNormal, up ) > 0 &&
+			Vector3Ops::Dot( rawPitOut.geometric.UnflippedGeomNormal(), up ) > 0 &&
+			Coherent( rawPitOut ) &&
+			rawPitIn.geometric.bHit &&
+			std::fabs( rawPitIn.geometric.ptIntersection.z - 0.5 ) < 1e-6 &&
+			Vector3Ops::Dot( rawPitIn.geometric.vNormal, up ) > 0 &&
+			Coherent( rawPitIn ),
+			"I(b): box minus non-indexed TriangleMeshGeometry cube completes exit from outside and inside" );
+
+		Object* objRawCube2 = new Object( rawCubeOriginGeom );
+		CSGObject* rawTrim = new CSGObject( CSG_SUBTRACTION );
+		rawTrim->AssignObjects( objRawSheet, objRawCube2 );
+		Check( rawTrim->TrimsSheet() && !rawTrim->IsProvablyOpenSheet() &&
+			!Cast( *rawTrim, Point3( 0.1, 0.1, 3 ), down ).geometric.bHit &&
+			Cast( *rawTrim, Point3( 1.5, 0.1, 3 ), down ).geometric.bHit,
+			"I(a/b): non-indexed TriangleMeshGeometry sheet minus non-indexed TriangleMeshGeometry cube trims the hole" );
+		rawTrim->release();
+		rawPit->release();
+		rawSheetGeom->release();
+		rawCubeOriginGeom->release();
+		rawCubeGeom->release();
+		boxGeom->release();
+
+		// Non-convex TwoLobeMesh (lobe 0: y in [-1, 1], lobe 1: y in [-5, -3]; box: y in [-4, -2]):
+		const IObject* bml = loaded.Object( "box_minus_lobes" );
+		const IObject* bil = loaded.Object( "box_inter_lobes" );
+		const IObject* sml = loaded.Object( "sheet_minus_lobes" );
+		// Ray from y = 3 along -y passes through lobe 0 [-1, 1] in empty space before hitting the box [-4, -2]
+		// where lobe 1 [-5, -3] carves [-4, -3], leaving [-3, -2].
+		const RayIntersection hitAcrossLobe0 = Cast( *bml, Point3( 0.1, 3, 0.2 ), downY );
+		Check( hitAcrossLobe0.geometric.bHit &&
+			std::fabs( hitAcrossLobe0.geometric.ptIntersection.y + 2.0 ) < 1e-6 &&
+			std::fabs( hitAcrossLobe0.geometric.ptExit.y + 3.0 ) < 1e-6 &&
+			Vector3Ops::Dot( hitAcrossLobe0.geometric.vNormal2, downY ) > 0,
+			"I(b): box minus TwoLobeMesh advances past the disjoint first lobe in empty space and carves the second lobe" );
+		// Ray from y = -6 along +y enters lobe 1 at y = -5 (before box at y = -4) and exits lobe 1 at y = -3 (inside box):
+		const RayIntersection hitFromBelow = Cast( *bml, Point3( 0.1, -6, 0.2 ), upY );
+		Check( hitFromBelow.geometric.bHit &&
+			std::fabs( hitFromBelow.geometric.ptIntersection.y + 3.0 ) < 1e-6 &&
+			std::fabs( hitFromBelow.geometric.ptExit.y + 2.0 ) < 1e-6 &&
+			Vector3Ops::Dot( hitFromBelow.geometric.vNormal, downY ) > 0 &&
+			Vector3Ops::Dot( hitFromBelow.geometric.UnflippedGeomNormal(), downY ) > 0 &&
+			Coherent( hitFromBelow ) &&
+			Shadow( *bml, Point3( 0.1, -6, 0.2 ), upY, 10 ) &&
+			!Shadow( *bml, Point3( 0.1, -6, 0.2 ), upY, 2.5 ),
+			"I(b): box minus TwoLobeMesh seen through the carving lobe reports the cavity floor at y=-3 with outward normal" );
+		// Box intersect TwoLobeMesh from y = 3 along -y: skips lobe 0 [-1, 1] and hits the overlap [-4, -3] at y = -3:
+		const RayIntersection interHit = Cast( *bil, Point3( 0.1, 3, 0.2 ), downY );
+		Check( interHit.geometric.bHit &&
+			std::fabs( interHit.geometric.ptIntersection.y + 3.0 ) < 1e-6 &&
+			std::fabs( interHit.geometric.ptExit.y + 4.0 ) < 1e-6 &&
+			Shadow( *bil, Point3( 0.1, 3, 0.2 ), downY, 10 ) &&
+			!Shadow( *bil, Point3( 0.1, 3, 0.2 ), downY, 5.5 ),
+			"I(b): box intersect TwoLobeMesh advances past the disjoint first lobe to report the second lobe's overlap" );
+		// Sheet at y = -3.5 minus TwoLobeMesh from y = 3 along -y:
+		Check( !Cast( *sml, Point3( 0.1, 3, 0.2 ), downY ).geometric.bHit &&
+			!Shadow( *sml, Point3( 0.1, 3, 0.2 ), downY, 10 ) &&
+			Cast( *sml, Point3( 1.5, 3, 0.2 ), downY ).geometric.bHit &&
+			Shadow( *sml, Point3( 1.5, 3, 0.2 ), downY, 10 ),
+			"I(b): sheet minus TwoLobeMesh removes the sheet inside the second lobe and keeps it outside" );
+	}
+
+	// DL-621(c): sheet UNION solid (both operand orders, certified and uncertified).
+	{
+		for( const char* uName : { "msheet_union_mcube", "mcube_union_msheet", "muncert_union_muncert" } ) {
+			const IObject* u = loaded.Object( uName );
+			Check( !AsCSG( u )->IsCertifiedWatertight() && !AsCSG( u )->IsProvablyOpenSheet() && !AsCSG( u )->TrimsSheet(),
+				std::string( "I(c): " ) + uName + " is neither purely watertight nor purely open" );
+
+			// 1. Ray outside the solid (x = 1.5) hits the sheet at z = 0.5 as a zero-thickness hit:
+			const RayIntersection hSheet = Cast( *u, Point3( 1.5, 0.1, 3 ), down );
+			Check( hSheet.geometric.bHit &&
+				std::fabs( hSheet.geometric.range - 2.5 ) < 1e-6 &&
+				hSheet.geometric.range2 == RISE_INFINITY &&
+				!hSheet.hasBoundaryRange2 &&
+				Shadow( *u, Point3( 1.5, 0.1, 3 ), down, 10 ) &&
+				!Shadow( *u, Point3( 1.5, 0.1, 3 ), down, 2.0 ),
+				std::string( "I(c): " ) + uName + " outside the solid reports the zero-thickness sheet hit" );
+
+			// 2. Ray hitting the solid [-1, 1]^3 first from z = 3 (with the sheet buried at z = 0.5 inside the solid)
+			// must report the solid's entry at z = 1 AND its finite exit at z = -1 (range2 = 4, NOT RISE_INFINITY):
+			const RayIntersection hSolid = Cast( *u, Point3( 0.2, 0.1, 3 ), down );
+			Check( hSolid.geometric.bHit &&
+				std::fabs( hSolid.geometric.ptIntersection.z - 1.0 ) < 1e-6 &&
+				std::fabs( hSolid.geometric.ptExit.z + 1.0 ) < 1e-6 &&
+				std::fabs( hSolid.geometric.range - 2.0 ) < 1e-6 &&
+				std::fabs( hSolid.geometric.range2 - 4.0 ) < 1e-6 &&
+				Shadow( *u, Point3( 0.2, 0.1, 3 ), down, 2.5 ),
+				std::string( "I(c): " ) + uName + " entering the solid keeps the solid's finite exit range2 despite the buried sheet" );
+
+			// 3. Ray starting INSIDE the solid at z = 0.8 (above the buried sheet at z = 0.5) looking down
+			// must ignore the buried sheet at z = 0.5 and exit the solid at z = -1 with range2 = 0 and outward normal:
+			const RayIntersection hInside = Cast( *u, Point3( 0.2, 0.1, 0.8 ), down );
+			Check( hInside.geometric.bHit &&
+				std::fabs( hInside.geometric.ptIntersection.z + 1.0 ) < 1e-6 &&
+				hInside.geometric.range2 == 0 &&
+				Vector3Ops::Dot( hInside.geometric.vNormal, down ) > 0 &&
+				Vector3Ops::Dot( hInside.geometric.UnflippedGeomNormal(), down ) > 0 &&
+				Coherent( hInside ) &&
+				!Shadow( *u, Point3( 0.2, 0.1, 0.8 ), down, 0.5 ) &&
+				Shadow( *u, Point3( 0.2, 0.1, 0.8 ), down, 2.5 ),
+				std::string( "I(c): " ) + uName + " from inside the solid ignores the buried sheet and exits at z=-1" );
+		}
+
+		// 4. Ray hitting an unburied sheet at z = 1.5 BEFORE the solid [-1, 1]^3:
+		const IObject* uTop = loaded.Object( "msheet_top_union_mcube" );
+		const RayIntersection hBefore = Cast( *uTop, Point3( 0.2, 0.1, 3 ), down );
+		Check( hBefore.geometric.bHit &&
+			std::fabs( hBefore.geometric.ptIntersection.z - 1.5 ) < 1e-6 &&
+			hBefore.geometric.range2 == RISE_INFINITY &&
+			!hBefore.hasBoundaryRange2 &&
+			Shadow( *uTop, Point3( 0.2, 0.1, 3 ), down, 1.6 ) &&
+			!Shadow( *uTop, Point3( 0.2, 0.1, 3 ), down, 1.4 ),
+			"I(c): sheet union solid when the sheet is in front of the solid reports the front sheet hit" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// J. DL-624: polar patch sets (degenerate collapsed sides / pole fans)
+//////////////////////////////////////////////////////////////////////
+
+static BezierPatch RotateTestNet( const BezierPatch& q, int r )
+{
+	BezierPatch cur = q;
+	for( int t = 0; t < ( r & 3 ); ++t ) {
+		BezierPatch nxt;
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				nxt.c[i].pts[j] = cur.c[3 - j].pts[i];
+			}
+		}
+		cur = nxt;
+	}
+	return cur;
+}
+
+//! Builds an 8-patch polar UV Bezier sphere (4 northern wedges collapsed at
+//! north pole (0,0,1) + 4 southern wedges collapsed at south pole (0,0,-1)),
+//! or the 4-patch northern hemisphere dome when `northernHemisphereOnly` is true.
+//! `rot` rotates each patch's parameter domain so collapsed sides on all four
+//! parameter boundaries (s = 0, 1, 2, 3) are exercised.
+static std::vector<BezierPatch> MakePolarUVSphere( bool outward, int rot = 0, bool northernHemisphereOnly = false )
+{
+	static const Vector3 kDir[4] = {
+		Vector3( 1, 0, 0 ), Vector3( 0, 1, 0 ), Vector3( -1, 0, 0 ), Vector3( 0, -1, 0 )
+	};
+	const Scalar kappa = Scalar( 0.55 );
+	const Point3 northPole( 0, 0, 1 );
+	const Point3 southPole( 0, 0, -1 );
+	std::vector<BezierPatch> out;
+	for( int w = 0; w < 4; ++w ) {
+		const Vector3 d0 = outward ? kDir[( w + 1 ) & 3] : kDir[w];
+		const Vector3 d1 = outward ? kDir[w] : kDir[( w + 1 ) & 3];
+		const Vector3 H[4] = {
+			d0,
+			d0 + d1 * kappa,
+			d1 + d0 * kappa,
+			d1
+		};
+		// Northern wedge: j = 0 collapsed at northPole, j = 3 on equator z = 0.
+		BezierPatch north;
+		for( int i = 0; i < 4; ++i ) {
+			north.c[i].pts[0] = northPole;
+			north.c[i].pts[1] = Point3( kappa * H[i].x, kappa * H[i].y, 1 );
+			north.c[i].pts[2] = Point3( H[i].x, H[i].y, kappa );
+			north.c[i].pts[3] = Point3( H[i].x, H[i].y, 0 );
+		}
+		out.push_back( RotateTestNet( north, rot ) );
+		if( !northernHemisphereOnly ) {
+			// Southern wedge: j = 0 on equator z = 0, j = 3 collapsed at southPole.
+			BezierPatch south;
+			for( int i = 0; i < 4; ++i ) {
+				south.c[i].pts[0] = Point3( H[i].x, H[i].y, 0 );
+				south.c[i].pts[1] = Point3( H[i].x, H[i].y, -kappa );
+				south.c[i].pts[2] = Point3( kappa * H[i].x, kappa * H[i].y, -1 );
+				south.c[i].pts[3] = southPole;
+			}
+			out.push_back( RotateTestNet( south, rot ) );
+		}
+	}
+	return out;
+}
+
+//! Builds an 8-patch polar bilinear octahedron (4 top triangular bilinear
+//! patches with a collapsed side at (0,0,1) + 4 bottom triangular bilinear
+//! patches with a collapsed side at (0,0,-1)), or just the 4-patch top
+//! pyramid when `topPyramidOnly` is true.
+static std::vector<BilinearPatch> MakePolarBilinearOctahedron( bool outward, bool topPyramidOnly = false )
+{
+	static const Point3 kEq[4] = {
+		Point3( 1, 0, 0 ), Point3( 0, 1, 0 ), Point3( -1, 0, 0 ), Point3( 0, -1, 0 )
+	};
+	const Point3 northPole( 0, 0, 1 );
+	const Point3 southPole( 0, 0, -1 );
+	std::vector<BilinearPatch> out;
+	for( int w = 0; w < 4; ++w ) {
+		const Point3& e0 = outward ? kEq[( w + 1 ) & 3] : kEq[w];
+		const Point3& e1 = outward ? kEq[w] : kEq[( w + 1 ) & 3];
+		// BilinearPatch layout: pts[0]=(0,0), pts[1]=(0,1), pts[2]=(1,0), pts[3]=(1,1).
+		// Collapse v = 0 (pts[0] == pts[2] == northPole), v = 1 on equator (pts[1] = e0, pts[3] = e1).
+		BilinearPatch top;
+		top.pts[0] = northPole;
+		top.pts[1] = e0;
+		top.pts[2] = northPole;
+		top.pts[3] = e1;
+		out.push_back( top );
+		if( !topPyramidOnly ) {
+			// Collapse v = 1 (pts[1] == pts[3] == southPole), v = 0 on equator (pts[0] = e0, pts[2] = e1).
+			BilinearPatch bot;
+			bot.pts[0] = e0;
+			bot.pts[1] = southPole;
+			bot.pts[2] = e1;
+			bot.pts[3] = southPole;
+			out.push_back( bot );
+		}
+	}
+	return out;
+}
+
+static void TestPolarPatchSets_DL624()
+{
+	std::cout << "J. DL-624: polar patch sets (degenerate collapsed sides / pole fans)" << std::endl;
+
+	// 1. Closed polar UV Bezier sphere across all 4 collapsed-side rotations (s = 0, 1, 2, 3),
+	//    plus inward-wound twin and open polar hemisphere / partial fan / single triangular patch.
+	for( int rot = 0; rot < 4; ++rot ) {
+		const std::vector<BezierPatch> sphOut = MakePolarUVSphere( true, rot, false );
+		const Verdict vOut = CertBezier( sphOut );
+		Check( vOut.watertight && !vOut.open && GeometricUtilities::BezierPatchSetOpenness( sphOut ) == 0,
+			"J1: outward polar UV Bezier sphere certifies watertight (rot=" + std::to_string( rot ) + ")" );
+
+		const std::vector<BezierPatch> sphIn = MakePolarUVSphere( false, rot, false );
+		const Verdict vIn = CertBezier( sphIn );
+		Check( !vIn.watertight && !vIn.open &&
+			ReasonIs( vIn, "closed surface is inward-wound or encloses no resolvable volume" ) &&
+			GeometricUtilities::BezierPatchSetOpenness( sphIn ) == 0,
+			"J1: inward polar UV Bezier sphere is topologically closed (0) and refused by signed volume (rot=" + std::to_string( rot ) + ")" );
+
+		const std::vector<BezierPatch> dome = MakePolarUVSphere( true, rot, true );
+		const Verdict vDome = CertBezier( dome );
+		Check( !vDome.watertight && vDome.open && GeometricUtilities::BezierPatchSetOpenness( dome ) == 1,
+			"J1: polar UV Bezier hemisphere dome certifies as an open sheet (rot=" + std::to_string( rot ) + ")" );
+
+		// Single triangular Bezier patch (1 collapsed side, 3 free sides):
+		const std::vector<BezierPatch> tri( 1, dome[0] );
+		const Verdict vTri = CertBezier( tri );
+		Check( !vTri.watertight && vTri.open && GeometricUtilities::BezierPatchSetOpenness( tri ) == 1,
+			"J1: single triangular Bezier patch with one collapsed side certifies open (rot=" + std::to_string( rot ) + ")" );
+	}
+	{
+		// Open 3-wedge polar fan (radial boundary seams at the start and end of the fan are free):
+		std::vector<BezierPatch> fan3 = MakePolarUVSphere( true, 0, true );
+		fan3.pop_back();
+		const Verdict vFan3 = CertBezier( fan3 );
+		Check( !vFan3.watertight && vFan3.open && GeometricUtilities::BezierPatchSetOpenness( fan3 ) == 1,
+			"J1: 3-wedge partial polar fan with free radial seams certifies as an open sheet" );
+	}
+
+	// 2. Polar bilinear patch sets: closed outward octahedron, inward octahedron, and open 4-wedge pyramid.
+	{
+		const std::vector<BilinearPatch> octOut = MakePolarBilinearOctahedron( true, false );
+		const Verdict vOctOut = CertBilinear( octOut );
+		Check( vOctOut.watertight && !vOctOut.open && GeometricUtilities::BilinearPatchSetOpenness( octOut ) == 0,
+			"J2: outward polar bilinear octahedron certifies watertight" );
+
+		const std::vector<BilinearPatch> octIn = MakePolarBilinearOctahedron( false, false );
+		const Verdict vOctIn = CertBilinear( octIn );
+		Check( !vOctIn.watertight && !vOctIn.open &&
+			ReasonIs( vOctIn, "closed surface is inward-wound or encloses no resolvable volume" ) &&
+			GeometricUtilities::BilinearPatchSetOpenness( octIn ) == 0,
+			"J2: inward polar bilinear octahedron is topologically closed (0) and refused by signed volume" );
+
+		const std::vector<BilinearPatch> pyr = MakePolarBilinearOctahedron( true, true );
+		const Verdict vPyr = CertBilinear( pyr );
+		Check( !vPyr.watertight && vPyr.open && GeometricUtilities::BilinearPatchSetOpenness( pyr ) == 1,
+			"J2: open 4-wedge polar bilinear pyramid certifies as an open sheet" );
+
+		// Mixed polar-side + regular-corner fan at the pole (0,0,1): replace wedge 0 with a 4-corner
+		// bilinear quad whose regular corner pts[0] is at (0,0,1) while wedges 1..3 have collapsed sides at (0,0,1).
+		std::vector<BilinearPatch> mixedPyr = pyr;
+		mixedPyr[0].pts[0] = Point3( 0, 0, 1 );
+		mixedPyr[0].pts[1] = Point3( 0, 1, 0 );
+		mixedPyr[0].pts[2] = Point3( 1, 0, 0 );
+		mixedPyr[0].pts[3] = Point3( 1, 1, -0.5 );
+		const Verdict vMixed = CertBilinear( mixedPyr );
+		Check( !vMixed.watertight && vMixed.open && GeometricUtilities::BilinearPatchSetOpenness( mixedPyr ) == 1,
+			"J2: mixed fan of 3 collapsed-side wedges and 1 regular-corner quad at a shared pole certifies open" );
+	}
+
+	// 3. Shipped teapot polar lid (patches 20..27 of teapot.bilinear and teapot.bezier).
+	{
+		const std::vector<BilinearPatch> teaBil = ReadBilinearFile( "models/raw/teapot.bilinear" );
+		Check( teaBil.size() == 28, "J3: models/raw/teapot.bilinear has 28 patches" );
+		if( teaBil.size() == 28 ) {
+			const std::vector<BilinearPatch> lidBil( teaBil.begin() + 20, teaBil.begin() + 28 );
+			const Verdict vLidBil = CertBilinear( lidBil );
+			std::cout << "    teapot.bilinear polar lid (patches 20..27): " << Describe( vLidBil ) << std::endl;
+			Check( !vLidBil.watertight && vLidBil.open && GeometricUtilities::BilinearPatchSetOpenness( lidBil ) == 1,
+				"J3: teapot.bilinear 8-patch polar lid (4-wedge pole fan at (0,3,0) + 4-patch skirt) certifies open" );
+		}
+
+		const std::vector<BezierPatch> teaBez = ReadBezierFile( "models/raw/teapot.bezier" );
+		Check( teaBez.size() == 28, "J3: models/raw/teapot.bezier has 28 patches" );
+		if( teaBez.size() == 28 ) {
+			std::vector<BezierPatch> lidBez( teaBez.begin() + 20, teaBez.begin() + 28 );
+			// Unmodified teapot.bezier lid has side j=0 (s=0) with c[0].pts[0]==c[3].pts[0]==(0,3,0) and
+			// c[1].pts[0], c[2].pts[0] offset by 0.002 (a non-constant loop side):
+			const Verdict vRawLid = CertBezier( lidBez );
+			Check( !vRawLid.watertight && !vRawLid.open && ReasonIs( vRawLid, kCollapsed ) &&
+				GeometricUtilities::BezierPatchSetOpenness( lidBez ) == -1,
+				"J3: unmodified teapot.bezier lid is refused for its 0.002 non-constant loop side at the pole" );
+			// Snapping side j=0 on the 4 lid knob patches to the exact pole (0,3,0) yields a valid 4-wedge
+			// pole fan (even though column j=2 of the input control polygon sits on the axis at (0,2.7,0),
+			// the cubic curve r(v) = 2.4*v*(1-v)^2 + 0.2*v^3 > 0 for all v in (0,1], so every sub-patch net
+			// has strictly positive radius away from the pole and certifies as an open sheet!):
+			for( int p = 0; p < 4; ++p ) {
+				for( int i = 0; i < 4; ++i ) {
+					lidBez[p].c[i].pts[0] = Point3( 0, 3, 0 );
+				}
+			}
+			const Verdict vSnappedLid = CertBezier( lidBez );
+			std::cout << "    teapot.bezier snapped polar lid (patches 20..27): " << Describe( vSnappedLid ) << std::endl;
+			Check( !vSnappedLid.watertight && vSnappedLid.open && GeometricUtilities::BezierPatchSetOpenness( lidBez ) == 1,
+				"J3: teapot.bezier 8-patch polar lid with exact pole at (0,3,0) certifies open" );
+		}
+	}
+
+	// 4. Adversarial refusal cases for degenerate sides and pole fans.
+	{
+		// 4a. Patch with TWO collapsed sides (both j = 0 and j = 3 collapsed):
+		BezierPatch twoPoles = MakePolarUVSphere( true, 0, true )[0];
+		for( int i = 0; i < 4; ++i ) {
+			twoPoles.c[i].pts[3] = Point3( 0, 0, -1 );
+		}
+		const std::vector<BezierPatch> twoPolesVec( 1, twoPoles );
+		const Verdict vTwoPoles = CertBezier( twoPolesVec );
+		Check( !vTwoPoles.watertight && !vTwoPoles.open && ReasonIs( vTwoPoles, kCollapsed ) &&
+			GeometricUtilities::BezierPatchSetOpenness( twoPolesVec ) == -1,
+			"J4a: a single patch with two collapsed sides is refused at kCollapsed" );
+
+		// 4b. Patch with a non-constant loop side (c[0] == c[3] but c[1] != c[0]):
+		BezierPatch loopSide = MakePolarUVSphere( true, 0, true )[0];
+		loopSide.c[1].pts[0] = Point3( 0.01, 0, 1 );
+		const std::vector<BezierPatch> loopVec( 1, loopSide );
+		const Verdict vLoop = CertBezier( loopVec );
+		Check( !vLoop.watertight && !vLoop.open && ReasonIs( vLoop, kCollapsed ) &&
+			GeometricUtilities::BezierPatchSetOpenness( loopVec ) == -1,
+			"J4b: a patch whose collapsed-side interior control point wanders off the pole is refused at kCollapsed" );
+
+		// 4c. Polar patch where a control point outside the collapsed side coincides with the pole:
+		BezierPatch interiorAtPole = MakePolarUVSphere( true, 0, true )[0];
+		interiorAtPole.c[1].pts[1] = Point3( 0, 0, 1 );
+		const std::vector<BezierPatch> intPoleVec( 1, interiorAtPole );
+		const Verdict vIntPole = CertBezier( intPoleVec );
+		Check( !vIntPole.watertight && !vIntPole.open && ReasonIs( vIntPole, kCollapsed ) &&
+			GeometricUtilities::BezierPatchSetOpenness( intPoleVec ) == -1,
+			"J4c: a polar patch with a non-pole control point equal to the pole is refused at kCollapsed" );
+
+		// 4d. Tip-to-tip double cone (two closed 4-wedge cones sharing the pole (0,0,1)):
+		std::vector<BezierPatch> doubleCone = MakePolarUVSphere( true, 0, true );
+		const std::vector<BezierPatch> upperCone = MakePolarUVSphere( true, 0, true );
+		for( BezierPatch p : upperCone ) {
+			for( int i = 0; i < 4; ++i ) {
+				for( int j = 1; j < 4; ++j ) {
+					p.c[i].pts[j].z = Scalar( 2 ) - p.c[i].pts[j].z;
+				}
+			}
+			doubleCone.push_back( p );
+		}
+		const Verdict vDoubleCone = CertBezier( doubleCone );
+		Check( !vDoubleCone.watertight && !vDoubleCone.open &&
+			ReasonIs( vDoubleCone, "non-manifold pole or pinch vertex" ) &&
+			GeometricUtilities::BezierPatchSetOpenness( doubleCone ) == -1,
+			"J4d: tip-to-tip double cone sharing a pole is refused as a non-manifold pole" );
+
+		// 4e. Closed 4-wedge cone + extra 5th flap touching the pole:
+		std::vector<BezierPatch> conePlusFlap = MakePolarUVSphere( true, 0, true );
+		conePlusFlap.push_back( doubleCone[4] );
+		const Verdict vFlap = CertBezier( conePlusFlap );
+		Check( !vFlap.watertight && !vFlap.open &&
+			ReasonIs( vFlap, "non-manifold pole or pinch vertex" ) &&
+			GeometricUtilities::BezierPatchSetOpenness( conePlusFlap ) == -1,
+			"J4e: closed polar cone with an extra flap at the pole is refused as a non-manifold pole" );
+
+		// 4f. Bowtie polar fan (two opposite wedges sharing only the pole (0,0,1), no shared radial seam):
+		const std::vector<BezierPatch> dome4 = MakePolarUVSphere( true, 0, true );
+		const std::vector<BezierPatch> bowtie = { dome4[0], dome4[2] };
+		const Verdict vBowtie = CertBezier( bowtie );
+		Check( !vBowtie.watertight && !vBowtie.open &&
+			ReasonIs( vBowtie, "non-manifold pole or pinch vertex" ) &&
+			GeometricUtilities::BezierPatchSetOpenness( bowtie ) == -1,
+			"J4f: two opposite polar wedges touching only at the pole are refused as a non-manifold pole" );
+
+		// 4g. Polar cusp fold across a shared radial seam at the pole (polar analogue of MakeCuspFold):
+		// Both patches have side s=3 (i=0) collapsed to the pole (0,0,0), and share the radial seam at
+		// j=3 of `a` / j=0 of `b` along (u, u, 0); `b` turns straight back over `a` with z = c * u * v^2,
+		// so non-seam sub-patches are strictly separated in z > 0 and only the paired CrossConeProof
+		// along the shared radial seam refuses the cusp fold.
+		{
+			BezierPatch a, b;
+			const Scalar c = Scalar( 0.2 );
+			const Scalar zc[4] = { 0, 0, c / 3, c };
+			for( int i = 0; i < 4; ++i ) {
+				const Scalar u = Scalar( i ) / 3;
+				for( int j = 0; j < 4; ++j ) {
+					const Scalar v = Scalar( j ) / 3;
+					a.c[i].pts[j] = Point3( u, u * v, 0 );
+					b.c[i].pts[j] = Point3( u, u * ( 1 - Scalar( 0.5 ) * v ), u * zc[j] );
+				}
+			}
+			const std::vector<BezierPatch> foldedSeam = { a, b };
+			const Verdict vFoldedSeam = CertBezier( foldedSeam );
+			Check( !vFoldedSeam.watertight && !vFoldedSeam.open && ReasonIs( vFoldedSeam, kConePair ) &&
+				GeometricUtilities::BezierPatchSetOpenness( foldedSeam ) == 1,
+				"J4g: two polar wedges with a cusp fold across their shared radial seam are refused by the paired CrossConeProof" );
+		}
+
+		// 4h. Polar helicoid fan around the pole O=(0,0,0) (polar analogue of Section D's MakeFan):
+		// 5 quarter-turn polar bilinear wedges with v=0 collapsed at O; when `cross` is false the 1.25-turn
+		// polar helicoid fan certifies open, and when `cross` is true the 5th wedge drops through the 1st wedge
+		// at the pole and is refused by CornerPairSeparated.
+		auto makePolarHelicoidFan = []( bool cross ) {
+			const Scalar pi = 3.14159265358979323846;
+			const Scalar R = 1, h = 0.1;
+			const Point3 O( 0, 0, 0 );
+			auto rim = [&]( int q, Scalar z ) {
+				const Scalar th = Scalar( q ) * pi / 2;
+				return Point3( R * std::cos( th ), R * std::sin( th ), z );
+			};
+			std::vector<BilinearPatch> f;
+			for( int k = 0; k < 5; ++k ) {
+				const Scalar z0 = h * Scalar( k ) * pi / 2 * R;
+				Scalar z1 = h * Scalar( k + 1 ) * pi / 2 * R;
+				if( k == 4 && cross ) {
+					z1 = -0.8;
+				}
+				BilinearPatch w;
+				w.pts[0] = O;
+				w.pts[1] = rim( k, z0 );
+				w.pts[2] = O;
+				w.pts[3] = rim( k + 1, z1 );
+				f.push_back( w );
+			}
+			return f;
+		};
+		const std::vector<BilinearPatch> polarFanOk = makePolarHelicoidFan( false );
+		const Verdict vPolarFanOk = CertBilinear( polarFanOk );
+		Check( !vPolarFanOk.watertight && vPolarFanOk.open &&
+			GeometricUtilities::BilinearPatchSetOpenness( polarFanOk ) == 1,
+			"J4h: embedded 1.25-turn polar bilinear helicoid fan around a pole certifies open" );
+
+		const std::vector<BilinearPatch> polarFanCross = makePolarHelicoidFan( true );
+		const Verdict vPolarFanCross = CertBilinear( polarFanCross );
+		Check( !vPolarFanCross.watertight && !vPolarFanCross.open &&
+			ReasonIs( vPolarFanCross, "sub-patches sharing one vertex are not provably separated there" ) &&
+			GeometricUtilities::BilinearPatchSetOpenness( polarFanCross ) == 1,
+			"J4h: polar bilinear fan whose 5th wedge crosses the 1st at the pole is refused by CornerPairSeparated" );
+	}
+
+	// 5. End-to-end CSG over polar Bezier and bilinear solids and sheets.
+	{
+		const std::string polarSpherePath = WriteBezier( "dl624_polar_sphere.bezier", MakePolarUVSphere( true, 0, false ) );
+		const std::string polarDomePath = WriteBezier( "dl624_polar_dome.bezier", MakePolarUVSphere( true, 0, true ) );
+		const std::string polarOctPath = WriteBilinear( "dl624_polar_oct.bilinear", MakePolarBilinearOctahedron( true, false ) );
+
+		std::string scene = Materials( false ) +
+			"bezierpatch_geometry\n{\n name g_psphere\n file " + polarSpherePath + "\n}\n"
+			"bezierpatch_geometry\n{\n name g_pdome\n file " + polarDomePath + "\n}\n"
+			"bilinearpatch_geometry\n{\n name g_poct\n file " + polarOctPath + "\n}\n"
+			"box_geometry\n{\n name g_box\n width 2\n height 2\n depth 2\n}\n";
+		auto obj = [&]( const std::string& name, const std::string& geom, const std::string& extra = "" ) {
+			scene += "standard_object\n{\n name " + name + "\n geometry " + geom + "\n material glass\n" + extra + "}\n";
+		};
+		auto csg = [&]( const std::string& name, const std::string& a, const std::string& b, const std::string& op ) {
+			scene += "csg_object\n{\n name " + name + "\n obja " + a + "\n objb " + b + "\n operation " + op + "\n material glass\n}\n";
+		};
+		// Solid box [-1,1]^3 minus polar Bezier sphere centred at (0, 0, 1): carves a polar-sphere dimple in the top face.
+		obj( "box_a", "g_box" );
+		obj( "psph_b", "g_psphere", " position 0 0 1\n" );
+		csg( "box_minus_psphere", "box_a", "psph_b", "subtraction" );
+
+		// Polar Bezier dome trimmed by a solid box shifted to x in [0, 2]:
+		obj( "pdome_a", "g_pdome" );
+		obj( "box_trim", "g_box", " position 1 0 0\n" );
+		csg( "pdome_inter_box", "pdome_a", "box_trim", "intersection" );
+
+		// Polar Bezier dome minus polar bilinear octahedron centered at the north pole (0, 0, 1) with scale 0.6:
+		obj( "pdome_c", "g_pdome" );
+		obj( "poct_punch", "g_poct", " position 0 0 1\n scale 0.6 0.6 0.6\n" );
+		csg( "pdome_minus_poct", "pdome_c", "poct_punch", "subtraction" );
+
+		LoadedScene loaded( scene );
+		const IObject* bmp = loaded.Object( "box_minus_psphere" );
+		const IObject* pib = loaded.Object( "pdome_inter_box" );
+		const IObject* pmp = loaded.Object( "pdome_minus_poct" );
+
+		Check( bmp && AsCSG( bmp )->IsCertifiedWatertight() && !AsCSG( bmp )->IsProvablyOpenSheet(),
+			"J5: box minus polar Bezier sphere is a certified watertight solid" );
+		Check( pib && AsCSG( pib )->IsProvablyOpenSheet() && !AsCSG( pib )->IsCertifiedWatertight(),
+			"J5: polar Bezier dome intersect solid box is a certified open sheet" );
+		Check( pmp && AsCSG( pmp )->IsProvablyOpenSheet() && !AsCSG( pmp )->IsCertifiedWatertight(),
+			"J5: polar Bezier dome minus polar bilinear octahedron is a certified open sheet" );
+
+		if( bmp && pib && pmp ) {
+			const Vector3 down( 0, 0, -1 );
+			// Ray down along (0.2, 0.1, 3) into box_minus_psphere hits the carved dimple floor near z ~ 0.025 (below z = 1):
+			const RayIntersection hDimple = Cast( *bmp, Point3( 0.2, 0.1, 3 ), down );
+			Check( hDimple.geometric.bHit &&
+				hDimple.geometric.ptIntersection.z < 0.2 &&
+				hDimple.geometric.ptIntersection.z > -0.1 &&
+				std::fabs( hDimple.geometric.ptExit.z + 1.0 ) < 1e-6 &&
+				Vector3Ops::Dot( hDimple.geometric.vNormal, down ) < 0 &&
+				Coherent( hDimple ),
+				"J5: ray into box minus polar Bezier sphere hits the carved dimple floor and exits the box bottom" );
+
+			// Ray down into pdome_inter_box hits on the +x side (x = 0.4) and misses on the -x side (x = -0.4):
+			const RayIntersection hKeep = Cast( *pib, Point3( 0.4, 0.1, 3 ), down );
+			const RayIntersection hTrimmed = Cast( *pib, Point3( -0.4, 0.1, 3 ), down );
+			Check( hKeep.geometric.bHit && hKeep.geometric.range2 == RISE_INFINITY && !hTrimmed.geometric.bHit,
+				"J5: polar Bezier dome intersect box keeps the +x half and trims the -x half" );
+
+			// Ray down into pdome_minus_poct misses near the pole (x = 0.1, y = 0.1, inside the octahedron punch)
+			// and hits near the outer skirt (x = 0.7, y = 0.1, outside the octahedron punch):
+			const RayIntersection hPunched = Cast( *pmp, Point3( 0.1, 0.1, 3 ), down );
+			const RayIntersection hSkirt = Cast( *pmp, Point3( 0.7, 0.1, 3 ), down );
+			Check( !hPunched.geometric.bHit && hSkirt.geometric.bHit && hSkirt.geometric.range2 == RISE_INFINITY,
+				"J5: polar Bezier dome minus polar bilinear octahedron punches out the pole cap and keeps the skirt" );
+		}
+
+		std::remove( polarSpherePath.c_str() );
+		std::remove( polarDomePath.c_str() );
+		std::remove( polarOctPath.c_str() );
+	}
+}
+
 #ifndef PATCHSET_NO_MAIN
+//! Seam census of a patch set, independent of the certifier: per side group
+//! (sides with the same unordered endpoint pair), whether the two sides of
+//! a pair are the same control polygon traversed the SAME way (an
+//! orientation conflict), and how many groups hold more than two sides (a
+//! non-manifold seam); plus non-constant loop sides (c0 == c3 but not all
+//! four equal).
+struct SeamCensus
+{
+	std::size_t sameDirection = 0;
+	std::size_t reversedMismatch = 0;
+	std::size_t nonManifoldGroups = 0;
+	std::size_t loopSides = 0;
+};
+
+static SeamCensus CensusOf( const std::vector<BezierPatch>& patches )
+{
+	struct S { Point3 a, b; unsigned int id; };
+	const auto less = []( const Point3& x, const Point3& y ) {
+		if( x.x != y.x ) return x.x < y.x;
+		if( x.y != y.y ) return x.y < y.y;
+		return x.z < y.z;
+	};
+	const auto same = []( const Point3& x, const Point3& y ) { return x.x == y.x && x.y == y.y && x.z == y.z; };
+	const auto sideAt = []( const BezierPatch& q, int s, int m ) -> const Point3& {
+		switch( s ) {
+		default:
+		case 0: return q.c[m].pts[0];
+		case 1: return q.c[3].pts[m];
+		case 2: return q.c[3 - m].pts[3];
+		case 3: return q.c[0].pts[3 - m];
+		}
+	};
+	SeamCensus c;
+	std::vector<S> sides;
+	for( std::size_t p = 0; p < patches.size(); ++p ) {
+		for( int s = 0; s < 4; ++s ) {
+			const Point3& a = sideAt( patches[p], s, 0 );
+			const Point3& b = sideAt( patches[p], s, 3 );
+			if( same( a, b ) ) {
+				if( !same( a, sideAt( patches[p], s, 1 ) ) || !same( a, sideAt( patches[p], s, 2 ) ) ) ++c.loopSides;
+				continue;
+			}
+			sides.push_back( { less( a, b ) ? a : b, less( a, b ) ? b : a, (unsigned int)( p * 4 + s ) } );
+		}
+	}
+	std::sort( sides.begin(), sides.end(), [&]( const S& x, const S& y ) {
+		if( less( x.a, y.a ) ) return true;
+		if( less( y.a, x.a ) ) return false;
+		if( less( x.b, y.b ) ) return true;
+		if( less( y.b, x.b ) ) return false;
+		return x.id < y.id;
+	} );
+	for( std::size_t i = 0; i < sides.size(); ) {
+		std::size_t j = i + 1;
+		while( j < sides.size() && same( sides[j].a, sides[i].a ) && same( sides[j].b, sides[i].b ) ) ++j;
+		if( j - i > 2 ) {
+			++c.nonManifoldGroups;
+		} else if( j - i == 2 ) {
+			const unsigned int s0 = sides[i].id, s1 = sides[i + 1].id;
+			bool fwd = true, rev = true;
+			for( int m = 0; m < 4; ++m ) {
+				fwd = fwd && same( sideAt( patches[s0 / 4], s0 % 4, m ), sideAt( patches[s1 / 4], s1 % 4, m ) );
+				rev = rev && same( sideAt( patches[s0 / 4], s0 % 4, m ), sideAt( patches[s1 / 4], s1 % 4, 3 - m ) );
+			}
+			if( fwd ) ++c.sameDirection;
+			else if( !rev ) ++c.reversedMismatch;
+		}
+		i = j;
+	}
+	return c;
+}
+
+//! DL-623 review.  (17) The vertex-link check was quadratic in the number
+//! of wedges meeting at one point and the openness query had no cap: a
+//! 200,000-wedge pole fan (a disk) took ~2e10 comparisons.  (16) Why no
+//! shipped Bezier/bilinear model certifies, pinned by an independent seam
+//! census so a future certifier extension is checked against what the
+//! data actually contains.
+static void TestDL623ReviewPatchFindings()
+{
+	std::cout << "DL-623 review: pole-fan cost and shipped-model seam census" << std::endl;
+	{
+		const int K = 200000;
+		const Scalar pi = 3.14159265358979323846;
+		std::vector<BilinearPatch> fan;
+		fan.reserve( K );
+		const Point3 pole( 0, 0, 1 );
+		for( int k = 0; k < K; ++k ) {
+			const Scalar t0 = 2 * pi * Scalar( k ) / K, t1 = 2 * pi * Scalar( ( k + 1 ) % K ) / K;
+			BilinearPatch b;
+			b.pts[0] = pole;
+			b.pts[2] = pole;
+			b.pts[1] = Point3( std::cos( t0 ), std::sin( t0 ), 0 );
+			b.pts[3] = Point3( std::cos( t1 ), std::sin( t1 ), 0 );
+			fan.push_back( b );
+		}
+		// Shuffle the wedges (fixed permutation): in angular order every
+		// matched seam enters the next incidence in side-id order, which
+		// would let a linear scan stop at once and hide its cost.
+		unsigned int rng = 2463534242u;
+		for( int k = K - 1; k > 0; --k ) {
+			rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+			std::swap( fan[std::size_t( k )], fan[std::size_t( rng % unsigned( k + 1 ) )] );
+		}
+		const auto t0 = std::chrono::steady_clock::now();
+		const int o = GeometricUtilities::BilinearPatchSetOpenness( fan );
+		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+		std::cout << "    " << K << "-wedge pole fan: openness " << o << " in " << ms << " ms" << std::endl;
+		Check( o == 1 && ms < 2000.0,
+			"DL-623 review (17): a 200,000-wedge pole fan is classified open in bounded time (linear vertex links)" );
+	}
+	{
+		const char* models[] = { "models/raw/teapot.bezier", "models/bezier/aphrodite.bezier",
+			"models/bezier/f16.bezier", "models/bezier/balanza.bezier" };
+		for( const char* m : models ) {
+			const std::vector<BezierPatch> p = ReadBezierFile( m );
+			const SeamCensus c = CensusOf( p );
+			const int openness = GeometricUtilities::BezierPatchSetOpenness( p );
+			std::cout << "    " << m << ": same-direction seams " << c.sameDirection << ", reversed-but-different "
+				<< c.reversedMismatch << ", non-manifold groups " << c.nonManifoldGroups << ", loop sides "
+				<< c.loopSides << ", openness " << openness << std::endl;
+			const bool teapot = std::strcmp( m, "models/raw/teapot.bezier" ) == 0;
+			// teapot: the lid knob's four sides are tiny non-constant loops
+			// (c0 == c3 == (0,3,0), c1/c2 0.002 away): the rendered surface
+			// has four overlapping petals there, not a pole, so treating them
+			// as a pole would certify a surface the renderer does not
+			// intersect.  Its handle/spout ends share endpoints with
+			// curve-mismatched sides (0.2-0.6 apart) and meet the body in
+			// 4-side groups, and the handle and spout pierce the body: it is
+			// not embedded and must never certify.  aphrodite/f16/balanza:
+			// thousands of seams are the SAME polygon traversed the same way
+			// (no consistent orientation, which the face rule needs) and
+			// dozens of seams are shared by 3-4 patches (fins): no sound
+			// manifold certificate exists for them.
+			if( teapot ) {
+				Check( c.loopSides == 4 && c.reversedMismatch == 4 && c.nonManifoldGroups == 2 && openness == -1,
+					std::string( "DL-623 review (16): seam census pinned: " ) + m );
+			} else {
+				Check( c.sameDirection > 100 && c.nonManifoldGroups > 30 && c.loopSides == 0 && openness == -1,
+					std::string( "DL-623 review (16): seam census pinned: " ) + m );
+			}
+		}
+		const std::vector<BilinearPatch> tb = ReadBilinearFile( "models/raw/teapot.bilinear" );
+		std::cout << "    models/raw/teapot.bilinear: openness " << GeometricUtilities::BilinearPatchSetOpenness( tb ) << std::endl;
+		Check( GeometricUtilities::BilinearPatchSetOpenness( tb ) == -1,
+			"DL-623 review (16): teapot.bilinear openness undecidable (4-side seam groups at the handle and spout)" );
+	}
+}
+
 int main()
 {
-	std::cout << "=== PatchSetCertificationTest (DL-616 / DL-617) ===" << std::endl;
+	std::cout << "=== PatchSetCertificationTest (DL-616 / DL-617 / DL-621 / DL-624) ===" << std::endl;
+	TestDL623ReviewPatchFindings();
 	TestClosedSolids();
 	TestCrossingStrip();
 	TestTJunction();
@@ -1411,6 +2660,8 @@ int main()
 	TestNonConvexMeshUnion();
 	TestCostAndShippedModels();
 	TestProofStepCoverage();
+	TestMeshAndDisplacedCSG_DL621();
+	TestPolarPatchSets_DL624();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }

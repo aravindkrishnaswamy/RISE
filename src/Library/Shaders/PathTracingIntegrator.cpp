@@ -69,6 +69,38 @@ using RISE::SpectralDispatch::SpectralValueTraits;
 
 namespace
 {
+	//! HWSS companion-lane stacks for one hand-off, seeded for every active
+	//! lane at once (IORStackSeeding::SeedCompanionLanes: one probe walk per
+	//! seed point when the lanes provably share their membership -- DL-622
+	//! review round 3, the per-lane SeedFromPoint walks were a measurable
+	//! share of a dispersive HWSS render's cost).
+	struct HWSSLaneSeeds
+	{
+		static_assert( SampledWavelengths::N == 4, "HWSSLaneSeeds lists four lanes" );
+		IORStack s[SampledWavelengths::N];
+
+		HWSSLaneSeeds(
+			const IORStack& hero,
+			const SampledWavelengths& swl,
+			const Point3& origin,
+			const Point3& midpoint,
+			const IScene& scene,
+			const bool tryOrigin
+			) :
+		  s{ IORStack( hero.EnvironmentIOR() ), IORStack( hero.EnvironmentIOR() ),
+			 IORStack( hero.EnvironmentIOR() ), IORStack( hero.EnvironmentIOR() ) }
+		{
+			bool active[SampledWavelengths::N];
+			Scalar nms[SampledWavelengths::N];
+			for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+				active[w] = !swl.terminated[w];
+				nms[w] = swl.lambda[w];
+			}
+			IORStackSeeding::SeedCompanionLanes( s, active, nms, SampledWavelengths::N,
+				hero, origin, midpoint, scene, tryOrigin );
+		}
+	};
+
 	inline unsigned int EffectivePathTracingMaxDepth( const RuntimeContext& rc,
 	                                                  unsigned int configured )
 	{
@@ -5883,19 +5915,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// ================================================================
 	if( !pBRDF )
 	{
+		HWSSLaneSeeds laneSeeds( initialIorStack, swl,
+			firstHit.geometric.ray.origin,
+			Point3Ops::mkPoint3( firstHit.geometric.ray.origin, firstHit.geometric.ray.Dir() * ( firstHit.geometric.range * 0.5 ) ),
+			scene, true );
 		for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 		{
 			if( !swl.terminated[i] )
 			{
-				// Replay physical containment for each lane: a camera already
-				// inside a dispersive ambient must not inherit the hero index.
-                    IORStack laneStack(initialIorStack.EnvironmentIOR());
-                    const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
-                        firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
-                    // DL-618: the hero's seed point and rule when they reproduce
-                    // the hero's membership, else the midpoint as before.
-                    IORStackSeeding::SeedCompanionLane(laneStack, initialIorStack,
-                        firstHit.geometric.ray.origin, probePoint, scene, swl.lambda[i]);
+				// Replay physical containment for each lane (seeded for every
+				// lane at once above): a camera already inside a dispersive
+				// ambient must not inherit the hero index.
+                    IORStack& laneStack = laneSeeds.s[i];
                     // DL-292: the midpoint seed recorded a graded medium's
                     // index at the MIDPOINT; the delegated walk's first
                     // Advance must telescope from the segment's start.
@@ -5941,19 +5972,17 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// to represent.
 		if( ( pProfile || pRWParams || hasRWNM ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 		{
+			HWSSLaneSeeds laneSeeds( initialIorStack, swl,
+				firstHit.geometric.ray.origin,
+				Point3Ops::mkPoint3( firstHit.geometric.ray.origin, firstHit.geometric.ray.Dir() * ( firstHit.geometric.range * 0.5 ) ),
+				scene, true );
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 			{
 				if( !swl.terminated[i] )
 				{
-					// Replay physical containment for each lane: a camera already
-				// inside a dispersive ambient must not inherit the hero index.
-                    IORStack laneStack(initialIorStack.EnvironmentIOR());
-                    const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
-                        firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
-                    // DL-618: the hero's seed point and rule when they reproduce
-                    // the hero's membership, else the midpoint as before.
-                    IORStackSeeding::SeedCompanionLane(laneStack, initialIorStack,
-                        firstHit.geometric.ray.origin, probePoint, scene, swl.lambda[i]);
+					// Replay physical containment for each lane (seeded for
+					// every lane at once above).
+                    IORStack& laneStack = laneSeeds.s[i];
                     // DL-292: the midpoint seed recorded a graded medium's
                     // index at the MIDPOINT; the delegated walk's first
                     // Advance must telescope from the segment's start.
@@ -6724,21 +6753,19 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			// under clay_lights.
 			if( ( pProfile || pRWParams || hasRWNM ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 			{
+				HWSSLaneSeeds laneSeeds( iorStack, swl, ri.geometric.ray.origin,
+					Point3Ops::mkPoint3( ri.geometric.ray.origin, ri.geometric.ray.Dir() * ( ri.geometric.range * 0.5 ) ),
+					scene, depth == startDepth );
 				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 				{
 					if( swl.terminated[w] )
 					{
 						continue;
 					}
-					IORStack laneStack(iorStack.EnvironmentIOR());
-                    const Point3 probePoint = Point3Ops::mkPoint3(ri.geometric.ray.origin,
-                        ri.geometric.ray.Dir() * (ri.geometric.range * 0.5));
-                    // DL-618: the hero's membership where a seed at the segment
-                    // start reproduces it (first segment only: a deeper
-                    // segment starts on a surface vertex).
-                    IORStackSeeding::SeedCompanionLane(laneStack, iorStack,
-                        ri.geometric.ray.origin, probePoint, scene, swl.lambda[w],
-                        depth == startDepth);
+					// DL-618: the hero's membership where a seed at the segment
+					// start reproduces it (first segment only: a deeper segment
+					// starts on a surface vertex); seeded for every lane at once.
+					IORStack& laneStack = laneSeeds.s[w];
                     // DL-292: the hero stack was already Advanced to this hit
                     // (its factor is in throughputComp), so the delegated walk's
                     // Advance here must be a no-op, not a midpoint-to-hit factor.
@@ -7581,12 +7608,25 @@ void PathTracingIntegrator::IntegrateRayHWSS(
     // interfaces before the first hit. Trace independent NM paths in that case:
     // a hero stack cannot price a companion's eventual exit or radiance scaling.
     // Compare the whole chain, including outer media hidden by a constant inner one.
+    // The lanes are seeded together (IORStackSeeding::SeedLanesFromPoint:
+    // one probe walk when their membership provably matches; DL-622 review).
     bool dispersiveContainment = false;
-    for(unsigned int w=0; iorStack.topObject() && w<SampledWavelengths::N; ++w) {
-        if(swl.terminated[w]) continue;
-        IORStack laneStack(iorStack.EnvironmentIOR());
-        IORStackSeeding::SeedFromPoint(laneStack, cameraRay.origin, scene, swl.lambda[w]);
-        if(!laneStack.SameInterfaces(iorStack)) dispersiveContainment = true;
+    if(iorStack.topObject()) {
+        IORStack lanes[SampledWavelengths::N] = { IORStack(iorStack.EnvironmentIOR()), IORStack(iorStack.EnvironmentIOR()),
+            IORStack(iorStack.EnvironmentIOR()), IORStack(iorStack.EnvironmentIOR()) };
+        IORStack* targets[SampledWavelengths::N];
+        Scalar nms[SampledWavelengths::N];
+        unsigned int n = 0;
+        for(unsigned int w=0; w<SampledWavelengths::N; ++w) {
+            if(swl.terminated[w]) continue;
+            targets[n] = &lanes[n];
+            nms[n] = swl.lambda[w];
+            ++n;
+        }
+        IORStackSeeding::SeedLanesFromPoint(targets, n, nms, cameraRay.origin, scene);
+        for(unsigned int j=0; j<n; ++j) {
+            if(!lanes[j].SameInterfaces(iorStack)) dispersiveContainment = true;
+        }
     }
     if(dispersiveContainment) {
         for(unsigned int w=0; w<SampledWavelengths::N; ++w) {

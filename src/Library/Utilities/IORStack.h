@@ -62,8 +62,17 @@
 #ifndef IOR_STACK_
 #define IOR_STACK_
 
+// Out-of-line marker for IORStack's context slow paths (DL-622 review).
+#if defined(_MSC_VER)
+	#define RISE_IORSTACK_COLD __declspec(noinline)
+#else
+	#define RISE_IORSTACK_COLD __attribute__((noinline))
+#endif
+
+
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IObject.h"
+#include <atomic>
 #include <stack>
 #include <vector>
 
@@ -73,6 +82,103 @@ namespace RISE
 
 	class IORStack
 	{
+	public:
+		//! DL-622: the surface crossing an OPEN-SHEET entry was pushed at
+		//! (the material and the hit's geometric payload), so a consumer that
+		//! holds the walk's stack -- an HWSS companion lane
+		//! (`IORStackSeeding::ReindexStackForWavelength`), the SMS starting-
+		//! media capture and `RefreshLegacySeedFallbackNM` -- can re-evaluate
+		//! the sheet's index at another wavelength without re-probing for it.
+		//!
+		//! COST CONTRACT (DL-622 review): contexts are stored OUT OF LINE, as
+		//! a sparse copy-on-write list (see `MyIORStack::ctxs`), and only an
+		//! entry pushed WITH one has one.  The production pushers are the
+		//! open-sheet ones (`SeedFromPoint`'s confirmed sheets,
+		//! `ResolveOpenSheetCrossing`, `ManifoldSolver::SnellContinueChain` and
+		//! `SMSDomainReplay::BuildStack` on a sheet); an ordinary closed-medium
+		//! push carries none, and neither does the local replay in
+		//! `RefreshLegacySeedFallbackNM` (nothing reads it).  A scene without
+		//! open sheets copies exactly the stack it copied before DL-622 plus a
+		//! null pointer (`IORDATA` stays a 24-byte trivially copyable record).
+		//! A stack that does carry contexts copies the counted pointer, not the
+		//! contexts.  A consumer that needs a closed entry's index at
+		//! another wavelength probes the object
+		//! (`IORStackSeeding::ProbeObjectSurfaceHit`).
+		struct EntryContext
+		{
+			const IMaterial* pMaterial;
+			Point3           ptIntersection;
+			Point3           ptObjIntersec;
+			Point2           ptCoord;
+			Vector3          vNormal;
+			Vector3          vGeomNormal;
+			Vector3          rayDir;
+			RasterizerState  rast;
+			bool             bHasContext;
+			bool             bRepushParentIor;
+			bool             bGeomNormalOrientedToRay;
+			bool             bGeomNormalRayDerived;
+			bool             bProvablyNoInterior;
+			bool             bOpenSheet;
+
+			EntryContext() :
+			  pMaterial( 0 ),
+			  ptIntersection( 0, 0, 0 ),
+			  ptObjIntersec( 0, 0, 0 ),
+			  ptCoord( 0, 0 ),
+			  vNormal( 0, 1, 0 ),
+			  vGeomNormal( 0, 1, 0 ),
+			  rayDir( 0, -1, 0 ),
+			  rast( nullRasterizerState ),
+			  bHasContext( false ),
+			  bRepushParentIor( false ),
+			  bGeomNormalOrientedToRay( false ),
+			  bGeomNormalRayDerived( false ),
+			  bProvablyNoInterior( false ),
+			  bOpenSheet( false )
+			{}
+
+			static EntryContext FromGeometric(
+				const RayIntersectionGeometric& rig,
+				const IMaterial* pMat,
+				const bool bRepushParent = false
+				)
+			{
+				EntryContext ctx;
+				ctx.pMaterial                = pMat;
+				ctx.ptIntersection           = rig.ptIntersection;
+				ctx.ptObjIntersec            = rig.ptObjIntersec;
+				ctx.ptCoord                  = rig.ptCoord;
+				ctx.vNormal                  = rig.vNormal;
+				ctx.vGeomNormal              = rig.vGeomNormal;
+				ctx.rayDir                   = rig.ray.Dir();
+				ctx.rast                     = rig.rast;
+				ctx.bHasContext              = true;
+				ctx.bRepushParentIor         = bRepushParent;
+				ctx.bGeomNormalOrientedToRay = rig.bGeomNormalOrientedToRay;
+				ctx.bGeomNormalRayDerived    = rig.bGeomNormalRayDerived;
+				ctx.bProvablyNoInterior      = rig.bProvablyNoInterior;
+				ctx.bOpenSheet               = rig.bOpenSheet;
+				return ctx;
+			}
+
+			void PopulateGeometric( RayIntersectionGeometric& rig ) const
+			{
+				rig.bHit                     = true;
+				rig.ptIntersection           = ptIntersection;
+				rig.ptObjIntersec            = ptObjIntersec;
+				rig.ptCoord                  = ptCoord;
+				rig.vNormal                  = vNormal;
+				rig.vGeomNormal              = vGeomNormal;
+				rig.ray                      = Ray( ptIntersection, rayDir );
+				rig.rast                     = rast;
+				rig.bGeomNormalOrientedToRay = bGeomNormalOrientedToRay;
+				rig.bGeomNormalRayDerived    = bGeomNormalRayDerived;
+				rig.bProvablyNoInterior      = bProvablyNoInterior;
+				rig.bOpenSheet               = bOpenSheet;
+			}
+		};
+
 	protected:
 
 		struct IORDATA
@@ -90,22 +196,151 @@ namespace RISE
 			ior( ior_ ),
 			bOpenSheet( bOpenSheet_ )
 			{}
-
-			IORDATA( const IORDATA& that ) : 
-			  pObj( that.pObj ),
-			  ior( that.ior ),
-			  bOpenSheet( that.bOpenSheet )
-			{}
 		};
 
-		class MyIORStack : public std::stack< IORDATA, std::vector<IORDATA> >
+		//! The stack proper.  `std::stack` is a PROTECTED base so only this
+		//! class's members touch the entry vector: every push and erase goes
+		//! through `pushEntry` / `find_and_destroy`, which keep the context
+		//! indices below in step (DL-622 review).
+		class MyIORStack : protected std::stack< IORDATA, std::vector<IORDATA> >
 		{
+			typedef std::stack< IORDATA, std::vector<IORDATA> > Base;
+
 		public:
 
-			MyIORStack(){};
-			MyIORStack( const MyIORStack& s ) : 
-			  std::stack< IORDATA, std::vector<IORDATA> >( s )
-			{}
+			typedef std::pair<std::size_t, EntryContext> IndexedContext;
+
+			//! DL-622: the entries that carry an EntryContext, as (stack
+			//! index, context) pairs in increasing index order -- SPARSE (only
+			//! open-sheet entries carry one) and COPY-ON-WRITE: immutable once
+			//! built and shared between copies through an intrusive count, so
+			//! copying a stack that carries contexts costs one atomic
+			//! increment, never a copy of the contexts.
+			struct ContextList
+			{
+				std::atomic<int> refs;
+				std::vector<IndexedContext> items;
+				ContextList() : refs( 1 ) {}
+			};
+
+			//! Null for every stack with no context-carrying entry -- every
+			//! stack in a scene without open sheets.  On that path a copy, a
+			//! destruction, a push and an erase each test this one pointer and
+			//! nothing else; everything that allocates, counts or re-indexes
+			//! lives in the out-of-line (RISE_IORSTACK_COLD) helpers below, so
+			//! the inlined code a hot caller (an SPF's scattered-ray stack,
+			//! `ScatteredRay::~ScatteredRay`) carries is the pre-DL-622 code
+			//! plus one compare (DL-622 review round 3: a `shared_ptr` member
+			//! made those inlined bodies non-trivial and moved
+			//! `ScatteredRay`'s destructor and `find_and_destroy` out of line).
+			ContextList* ctxs;
+
+			MyIORStack() : ctxs( 0 ) {};
+			MyIORStack( const MyIORStack& s ) :
+			  Base( s ),
+			  ctxs( s.ctxs )
+			{
+				if( ctxs ) {
+					Retain( ctxs );
+				}
+			}
+			MyIORStack& operator=( const MyIORStack& s )
+			{
+				c = s.c;
+				if( ctxs != s.ctxs ) {
+					AssignContexts( s.ctxs );
+				}
+				return *this;
+			}
+			~MyIORStack()
+			{
+				if( ctxs ) {
+					Release( ctxs );
+				}
+			}
+
+			using Base::top;
+			using Base::size;
+			using Base::empty;
+
+			static const EntryContext& NoContext()
+			{
+				static const EntryContext none;
+				return none;
+			}
+
+			RISE_IORSTACK_COLD static void Retain( ContextList* p )
+			{
+				p->refs.fetch_add( 1, std::memory_order_relaxed );
+			}
+
+			RISE_IORSTACK_COLD static void Release( ContextList* p )
+			{
+				if( p->refs.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+					delete p;
+				}
+			}
+
+			RISE_IORSTACK_COLD void AssignContexts( ContextList* p )
+			{
+				if( p ) {
+					Retain( p );
+				}
+				if( ctxs ) {
+					Release( ctxs );
+				}
+				ctxs = p;
+			}
+
+			//! Replaces the context list by @a items (empty -> null).
+			RISE_IORSTACK_COLD void ReplaceContexts( std::vector<IndexedContext>& items )
+			{
+				ContextList* next = 0;
+				if( !items.empty() ) {
+					next = new ContextList();
+					next->items.swap( items );
+				}
+				if( ctxs ) {
+					Release( ctxs );
+				}
+				ctxs = next;
+			}
+
+			//! Attaches @a ctx to the TOP entry (already pushed, so a failed
+			//! allocation here leaves the entry without a context, never a
+			//! context indexing an entry that does not exist).
+			RISE_IORSTACK_COLD void AppendContext( const EntryContext& ctx )
+			{
+				std::vector<IndexedContext> items;
+				if( ctxs ) {
+					items = ctxs->items;
+				}
+				items.push_back( IndexedContext( c.size() - 1, ctx ) );
+				ReplaceContexts( items );
+			}
+
+			//! Drops the context at @a idx (if any) and shifts those above it.
+			RISE_IORSTACK_COLD void EraseContextIndex( const std::size_t idx )
+			{
+				if( ctxs->items.empty() || ctxs->items.back().first < idx ) {
+					return;
+				}
+				std::vector<IndexedContext> items;
+				for( std::size_t k = 0; k < ctxs->items.size(); ++k ) {
+					const IndexedContext& ec = ctxs->items[k];
+					if( ec.first < idx ) items.push_back( ec );
+					else if( ec.first > idx ) items.push_back( IndexedContext( ec.first - 1, ec.second ) );
+				}
+				ReplaceContexts( items );
+			}
+
+			void pushEntry( const IORDATA& d, const EntryContext* pCtx )
+			{
+				c.push_back( d );
+				if( pCtx && pCtx->bHasContext ) {
+					AppendContext( *pCtx );
+				}
+			}
 
             std::vector<const IObject*> ObjectKeys() const {
                 std::vector<const IObject*> result;
@@ -116,9 +351,48 @@ namespace RISE
             Scalar EnvironmentIOR() const { return c.front().ior; }
             std::size_t depth() const { return c.size(); }
             const IObject* objectAt( std::size_t i ) const { return c[i].pObj; }
+            Scalar iorAt( std::size_t i ) const { return c[i].ior; }
             void setIORAt( std::size_t i, Scalar ior ) { c[i].ior = ior; }
             bool topIsOpenSheet() const { return c.empty() ? false : c.back().bOpenSheet; }
             bool isOpenSheetAt( std::size_t i ) const { return i < c.size() ? c[i].bOpenSheet : false; }
+            const EntryContext& contextAt( std::size_t i ) const {
+                if( ctxs ) {
+                    for( std::size_t k = 0; k < ctxs->items.size(); ++k ) {
+                        if( ctxs->items[k].first == i ) return ctxs->items[k].second;
+                    }
+                }
+                return NoContext();
+            }
+            RISE_IORSTACK_COLD void setContextAt( std::size_t i, const EntryContext& ctx ) {
+                if( i >= c.size() ) return;
+                if( !ctxs && !ctx.bHasContext ) return;
+                std::vector<IndexedContext> items;
+                bool placed = false;
+                if( ctxs ) {
+                    for( std::size_t k = 0; k < ctxs->items.size(); ++k ) {
+                        const IndexedContext& e = ctxs->items[k];
+                        if( !placed && e.first >= i ) {
+                            if( ctx.bHasContext ) items.push_back( IndexedContext( i, ctx ) );
+                            placed = true;
+                            if( e.first == i ) continue;
+                        }
+                        items.push_back( e );
+                    }
+                }
+                if( !placed && ctx.bHasContext ) items.push_back( IndexedContext( i, ctx ) );
+                ReplaceContexts( items );
+            }
+            const EntryContext& topContext() const { return contextAt( c.size() - 1 ); }
+            const EntryContext* findContext( const IObject* r ) const {
+                if( !ctxs ) return 0;
+                for( std::size_t k = ctxs->items.size(); k-- > 0; ) {
+                    const IndexedContext& e = ctxs->items[k];
+                    if( e.first < c.size() && c[e.first].pObj == r ) {
+                        return &e.second;
+                    }
+                }
+                return 0;
+            }
             bool SameInterfaces(const MyIORStack& other) const {
                 if(c.size() != other.c.size()) return false;
                 for(std::size_t i=0; i<c.size(); ++i)
@@ -126,16 +400,16 @@ namespace RISE
                 return true;
             }
 
-
-			~MyIORStack()
-			{};
-
 			bool find_and_destroy( const IObject* r )
 			{
 				std::vector<IORDATA>::reverse_iterator i, e;
 				for( i=c.rbegin(), e=c.rend(); i!=e; i++ ) {
 					if( i->pObj == r ) {
-						c.erase( (i.base())-1 );
+						const std::vector<IORDATA>::iterator it = (i.base())-1;
+						if( ctxs ) {
+							EraseContextIndex( static_cast<std::size_t>( it - c.begin() ) );
+						}
+						c.erase( it );
 						return true;
 					}
 				}
@@ -191,7 +465,7 @@ namespace RISE
 		  pProbeScene( 0 )
 		{
 			// An empty IOR stack always has the environment's IOR
-			iorstack.push( IORDATA(0,ior,false) );
+			iorstack.pushEntry( IORDATA(0,ior,false), 0 );
 		}
 
 		IORStack( const IORStack& s ) : 
@@ -228,7 +502,16 @@ namespace RISE
 			if( !pCurrentObject ) {
 				GlobalLog()->PrintEasyWarning( "IORStack::push Asked to push item onto stack with no object" );
 			} else {
-				iorstack.push( IORDATA(pCurrentObject,ior,false) );
+				iorstack.pushEntry( IORDATA(pCurrentObject,ior,false), 0 );
+			}
+		}
+
+		inline void push( const Scalar ior, const EntryContext& ctx )
+		{
+			if( !pCurrentObject ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::push Asked to push item onto stack with no object" );
+			} else {
+				iorstack.pushEntry( IORDATA(pCurrentObject,ior,false), &ctx );
 			}
 		}
 
@@ -238,7 +521,16 @@ namespace RISE
 			if( !pCurrentObject ) {
 				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
 			} else {
-				iorstack.push( IORDATA(pCurrentObject,ior,true) );
+				iorstack.pushEntry( IORDATA(pCurrentObject,ior,true), 0 );
+			}
+		}
+
+		inline void pushOpenSheet( const Scalar ior, const EntryContext& ctx )
+		{
+			if( !pCurrentObject ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
+			} else {
+				iorstack.pushEntry( IORDATA(pCurrentObject,ior,true), &ctx );
 			}
 		}
 
@@ -316,11 +608,24 @@ namespace RISE
 		// n(exit point) on every walk (eye and light alike).
 		inline std::size_t Depth() const { return iorstack.depth(); }
 		inline const IObject* ObjectAt( const std::size_t i ) const { return iorstack.objectAt( i ); }
+		inline Scalar IORAt( const std::size_t i ) const { return iorstack.iorAt( i ); }
 		inline void SetIORAt( const std::size_t i, const Scalar ior )
 		{
 			if( i > 0 && i < iorstack.depth() ) {
 				iorstack.setIORAt( i, ior );
 			}
+		}
+		inline const EntryContext& ContextAt( const std::size_t i ) const { return iorstack.contextAt( i ); }
+		inline void SetContextAt( const std::size_t i, const EntryContext& ctx )
+		{
+			if( i > 0 && i < iorstack.depth() ) {
+				iorstack.setContextAt( i, ctx );
+			}
+		}
+		inline const EntryContext& TopContext() const { return iorstack.topContext(); }
+		inline const EntryContext* FindEntryContext( const IObject* pObj ) const
+		{
+			return pObj ? iorstack.findContext( pObj ) : 0;
 		}
 
 		// Returns the object at the top of the IOR stack (innermost enclosing object).

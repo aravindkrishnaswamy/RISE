@@ -19,6 +19,7 @@
 #include "Geometry.h"
 #include "../Acceleration/BVH.h"
 #include "../Acceleration/AccelerationConfig.h"
+#include <atomic>
 #include <vector>
 
 namespace RISE
@@ -69,6 +70,7 @@ namespace RISE
             bool m_bOpenSignedVolumeNegative = false;
             bool m_bShapeOpenSheet = false;
             unsigned long long openCertificateAudits = 0;
+			mutable std::atomic<int> m_topologicalOpenness{ -2 };
 
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas();
@@ -79,6 +81,8 @@ namespace RISE
             bool IsZeroVolumeSheet() const {return m_bZeroVolumeSheet && !smsUncertainNormalOrientation;}
             unsigned long long OpenCertificateAudits() const {return openCertificateAudits;}
             bool HasNegativeOpenSignedVolume() const {return m_bOpenSignedVolumeNegative;}
+            //! DL-621(a): topological openness (see GeometricUtilities::TriangleMeshOpenness).
+            int TopologicalOpenness() const;
             unsigned long long SMSOrientationAudits() const {return smsOrientationAudits;}
             unsigned long long SMSOrientationTriangleVisits() const {return smsOrientationTriangleVisits;}
 			TriangleMeshGeometry(

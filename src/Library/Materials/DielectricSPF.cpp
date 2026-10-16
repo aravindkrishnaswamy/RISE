@@ -263,7 +263,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	IORStackSeeding::OpenSheetCrossing openSheet = { false, Scalar( 1 ), Scalar( 1 ) };
 	if( ri.bProvablyNoInterior ) {
 		pOpenSheetStack.reset( new IORStack( ior_stack ) );
-		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, rIndex, *pOpenSheetStack );
+		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, rIndex, *pOpenSheetStack, 0, nm );
 	}
 
 	if( bFromInside )

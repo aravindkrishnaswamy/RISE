@@ -1833,10 +1833,14 @@ namespace
 	//!
 	//! 64 SPP + OIDN, and the number was MEASURED rather than picked.  This
 	//! look's whole value is that two of them are comparable, so the figure
-	//! that decided it is RUN-TO-RUN AGREEMENT, not smoothness: RISE's PT
-	//! workers each seed their own RandomNumberGenerator
-	//! (RasterizeDispatchers.h's DoWork), so a render carries a noise floor
-	//! that a model comparing iterations would read as change.  At 24 spp
+	//! that decided it is RUN-TO-RUN AGREEMENT, not smoothness: when the
+	//! figure was measured, RISE's PT workers each seeded their own
+	//! RandomNumberGenerator from libc concurrently (RasterizeDispatchers.h's
+	//! DoWork), so a render carried a noise floor that a model comparing
+	//! iterations would read as change.  (Since the DL-625 review the
+	//! dispatcher seeds per tile from one libc read, so two renders after the
+	//! same std::srand agree; renders without a common srand still differ by
+	//! that floor.)  At 24 spp
 	//! two renders of one glossy sphere differed by up to 44/255 per pixel;
 	//! at 64 the same measurement is 13/255 worst and 0.09/255 mean -- below
 	//! anything a reader would call a difference.  The cost of that is small
