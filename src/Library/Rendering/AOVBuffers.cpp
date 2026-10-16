@@ -263,11 +263,18 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 	const AOVBuffers::Plan missing = selected;
 	const Scalar invSamples = Scalar( 1.0 ) / Scalar( samplesPerPixel );
 	const unsigned int rowCount = 1u + ( height - 1u - firstRow ) / rowStride;
+	// DL-625 review: each row reseeds the worker's generator from (one value
+	// read here, on the calling thread, row), so the guide buffers are a
+	// function of std::srand's state and not of which worker took which
+	// row (the generator used to keep whatever state its first,
+	// concurrently seeded, construction left).
+	const unsigned int rowSeedBase = LockedLibcRand();
 
 	GlobalThreadPool().ParallelFor( rowCount, [&]( unsigned int row ) {
 		const unsigned int y = firstRow + row * rowStride;
 		if( y < startY || y > endY ) return;
 		static thread_local RandomNumberGenerator tl_rng;
+		tl_rng.Reseed( DeriveSeed( rowSeedBase, y ) );
 		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
 		rc.aovPrefilterMode = prefilterMode;
 

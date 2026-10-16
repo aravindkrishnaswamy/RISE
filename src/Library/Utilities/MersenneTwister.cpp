@@ -282,9 +282,17 @@ double MersenneTwister::genrand_res53(void)
 
 
 #include "RandomNumbers.h"
+#include <mutex>
 
 namespace RISE
 {
+	unsigned int LockedLibcRand()
+	{
+		static std::mutex m;
+		std::lock_guard<std::mutex> lock( m );
+		return static_cast<unsigned int>( rand() );
+	}
+
 	/// This is just a place to stick the global RNG function
 	RandomNumberGenerator& GlobalRNG()
 	{

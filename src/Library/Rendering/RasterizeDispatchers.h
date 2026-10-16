@@ -80,16 +80,12 @@ namespace RISE
 
 			unsigned int TileSeed( const Rect& tile ) const
 			{
-				// splitmix64 finalizer of (base, tile corner).  Keyed on the
-				// tile's PIXEL position, not its place in the sequence: the
-				// default block sequence is shuffled from std::random_device,
-				// so a sequence index names a different tile every render.
-				const std::uint64_t corner = ( std::uint64_t( tile.top ) << 32 ) | std::uint64_t( tile.left );
-				std::uint64_t z = ( std::uint64_t( tileSeedBase ) << 32 ) ^ ( ( corner + 1 ) * 0x9E3779B97F4A7C15ULL );
-				z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
-				z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
-				z ^= z >> 31;
-				return static_cast<unsigned int>( z ^ ( z >> 32 ) );
+				// Keyed on the tile's PIXEL position, not its place in the
+				// sequence: the default block sequence is shuffled from
+				// std::random_device, so a sequence index names a different
+				// tile every render.
+				return DeriveSeed( tileSeedBase,
+					( static_cast<unsigned long long>( tile.top ) << 32 ) | static_cast<unsigned long long>( tile.left ) );
 			}
 
 			bool GetNextBlock( Rect& rc )
@@ -165,7 +161,7 @@ namespace RISE
 			  progressWeight( progressWeight_ ),
 			  progressTotal( progressTotal_ ),
 			  lastReportedNum( 0 ),
-			  tileSeedBase( static_cast<unsigned int>( std::rand() ) )
+			  tileSeedBase( LockedLibcRand() )
 			{
 				numTiles = seq_.NumRegions();
 				tiles.reserve( numTiles );

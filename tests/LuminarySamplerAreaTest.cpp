@@ -532,7 +532,7 @@ static std::string TempPath( const char* tag, const char* ext )
 //! keeps the rasterizer's own worker count, `fixedSeed` replaces the
 //! sequence, and `outPixels` receives the captured pixels.
 static bool RenderOnce( const std::string& sceneText, double& mean, bool multiThreaded = false,
-	const unsigned int* fixedSeed = nullptr, std::vector<RISEColor>* outPixels = nullptr )
+	const unsigned int* fixedSeed = nullptr, std::vector<RISEColor>* outPixels = nullptr, const unsigned int* libcSeed = nullptr )
 {
 	const std::string path = TempPath( "render", "RISEscene" );
 	{ std::ofstream ofs( path ); ofs << sceneText; }
@@ -551,8 +551,8 @@ static bool RenderOnce( const std::string& sceneText, double& mean, bool multiTh
 			}
 			const unsigned int renderSeed = fixedSeed ? *fixedSeed : g_seedBase + g_renderIndex++;
 			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( renderSeed, 0x459u ) );
-			std::srand( renderSeed );
-			GlobalRNG().Reseed( renderSeed );
+			std::srand( libcSeed ? *libcSeed : renderSeed );
+			GlobalRNG().Reseed( libcSeed ? *libcSeed : renderSeed );
 			const bool bRendered = pJob->Rasterize();
 			SobolSamplerTestHooks::ValueSalt().store( 0u );
 			if( bRendered && !pCap->pixels.empty() ) {
@@ -791,24 +791,50 @@ static void TestRenders( bool trapOnly = false )
 //! which seed -- took which tile depended on scheduling; the generator now
 //! reseeds per tile, keyed on the tile's pixel corner (the default block
 //! sequence is shuffled from std::random_device), from one value read on
-//! the dispatching thread.  One discarded warm-up render first: the first
+//! the dispatching thread.  The VCM light pass (VCMRasterizerBase's
+//! LightPassDispatcher) had the same defect and the same fix; only the
+//! rwsss VCM+VM row sees it, because the light pass consumes that
+//! generator only inside a random walk.  Each row also checks that
+//! another libc seed (same Sobol' salt) changes the pixels, so a row
+//! whose generators never reach the image cannot pass vacuously.
+//! One discarded warm-up render first: the first
 //! render in a process also draws libc rand() for one-time statics, so it
 //! sees a different libc state after the same std::srand (not a race).
 static void TestMultiThreadDeterminism()
 {
 	std::cout << "D: multi-threaded render determinism\n";
-	const std::string ras = "pathtracing_pel_rasterizer\n{\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
+	const std::string pt = "pathtracing_pel_rasterizer\n{\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
+	// VCM with merging on: its light pass (VCMRasterizerBase's
+	// LightPassDispatcher) seeded its workers the same racy way.
+	const std::string vcm = "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n\tvc_enabled true\n\tvm_enabled true\n}\n\n";
+	const std::string bdpt = "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
 	{
 		const unsigned int seed = 777u;
 		double mean = 0;
-		RenderOnce( RenderScene( QuadChunk( kTrapezoid ), ras ), mean, true, &seed );
+		RenderOnce( RenderScene( QuadChunk( kTrapezoid ), pt ), mean, true, &seed );
 	}
-	for( const int res : { 24, 96 } ) {
-		std::string scene = RenderScene( QuadChunk( kTrapezoid ), ras );
+	// The rwsss rows hang a random-walk SSS slab between the emitter and
+	// the camera (which looks down and never sees it): every light path to
+	// the floor walks through it, and the walk draws from the RuntimeContext
+	// generator -- for VCM+VM the LIGHT pass's, whose vertices the floor's
+	// eye vertices merge.  The Lambertian scene never consumes it there.
+	struct Row { const char* name; const std::string* ras; int res; bool rwsss; };
+	const Row rows[] = { { "PT", &pt, 24, false }, { "PT", &pt, 96, false }, { "BDPT", &bdpt, 96, false },
+		{ "VCM+VM", &vcm, 96, false }, { "PT rwsss", &pt, 96, true }, { "VCM+VM rwsss", &vcm, 96, true } };
+	for( const Row& row : rows ) {
+		std::string scene = RenderScene( QuadChunk( kTrapezoid ), *row.ras );
+		if( row.rwsss ) {
+			const std::string at = "standard_shader\n";
+			scene.insert( scene.find( at ),
+				"randomwalk_sss_material\n{\n\tname slab_mat\n\tior 1.0\n\tabsorption 0.05 0.05 0.05\n\tscattering 4\n\tg 0.0\n\troughness 0.05\n\tmax_bounces 64\n}\n\n"
+				"box_geometry\n{\n\tname geo_slab\n\twidth 8\n\theight 8\n\tdepth 0.4\n}\n\n"
+				"standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tmaterial slab_mat\n\tposition 0.2 -0.1 1.9\n}\n\n" );
+		}
 		const std::string from = "width 24\n\theight 24";
-		scene.replace( scene.find( from ), from.size(), Fmt( "width %d\n\theight %d", res, res ) );
+		scene.replace( scene.find( from ), from.size(), Fmt( "width %d\n\theight %d", row.res, row.res ) );
 		std::vector<RISEColor> first;
 		bool ok = true, same = true;
+		double maxRel = 0;
 		for( int r = 0; r < 6 && ok; ++r ) {
 			const unsigned int seed = 777u;
 			std::vector<RISEColor> px;
@@ -819,13 +845,36 @@ static void TestMultiThreadDeterminism()
 				first = px;
 				continue;
 			}
-			for( std::size_t i = 0; i < px.size() && same; ++i ) {
-				same = px[i].base.r == first[i].base.r && px[i].base.g == first[i].base.g &&
-					px[i].base.b == first[i].base.b && px[i].a == first[i].a;
+			for( std::size_t i = 0; i < px.size(); ++i ) {
+				const double d[4] = { px[i].base.r - first[i].base.r, px[i].base.g - first[i].base.g,
+					px[i].base.b - first[i].base.b, px[i].a - first[i].a };
+				for( const double v : d ) {
+					if( v != 0 ) {
+						same = false;
+						maxRel = std::max( maxRel, std::fabs( v ) / std::max( 1e-30, double( std::fabs( first[i].base.g ) ) ) );
+					}
+				}
 			}
 		}
-		std::cout << "    " << res << "x" << res << ": 6 multi-threaded renders at one seed " << ( same ? "bit-identical" : "DIFFER" ) << "\n";
-		Check( ok && same, Fmt( "D: multi-threaded %dx%d render is a function of the seed", res, res ) );
+		// The row means something only if the libc-seeded generators reach
+		// the pixels at all: another libc seed (same Sobol salt) must change
+		// them.
+		bool seedSensitive = false;
+		{
+			const unsigned int seed = 777u, other = 778u;
+			std::vector<RISEColor> px;
+			double mean = 0;
+			if( ok && RenderOnce( scene, mean, true, &seed, &px, &other ) ) {
+				for( std::size_t i = 0; i < px.size() && !seedSensitive; ++i ) {
+					seedSensitive = px[i].base.r != first[i].base.r || px[i].base.g != first[i].base.g || px[i].base.b != first[i].base.b;
+				}
+			}
+		}
+		std::cout << "    " << row.name << " " << row.res << "x" << row.res << ": 6 multi-threaded renders at one seed "
+			<< ( same ? "bit-identical" : Fmt( "DIFFER (max rel pixel diff %.3g)", maxRel ) )
+			<< ( seedSensitive ? "; another seed changes it" : "; ANOTHER SEED GIVES THE SAME PIXELS" ) << "\n";
+		Check( ok && same, Fmt( "D: multi-threaded %s %dx%d render is a function of the seed", row.name, row.res, row.res ) );
+		Check( seedSensitive, Fmt( "D: multi-threaded %s %dx%d render depends on the libc seed (the row is not vacuous)", row.name, row.res, row.res ) );
 	}
 }
 
