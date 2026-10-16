@@ -454,13 +454,18 @@ instrumentation patch for A35):
 | A33 `RefreshLegacySeedFallbackNM` (gap 7), 3 checks | FAIL x3 | pass | pass |
 | A34 sealed habitat | pass (no detour) | FAIL | pass |
 | A34 open-habitat control | FAIL (no detour) | pass | pass |
-| A35 detour budget | pass (no detour, 51 rays) | FAIL (2652 rays) | pass (258) |
+| A35 detour cost (round 2: 104 rays, 51 deep, per-pane agreement) | -- | FAIL (2652 rays) | pass (104; round 1 code: FAIL x2) |
 | A35 3-pane control | FAIL | pass | pass |
 | A36 graded companion lane | FAIL | FAIL | pass |
 | A37 closed-medium companion lane | pass | FAIL | pass |
 | A38 catalog epoch | pass | FAIL | pass |
 | A39 no silent table cap | FAIL | FAIL | pass |
-| Totals | 113 / 16 | 121 / 8 | 129 / 0 |
+| A40 clear sea over a blocked pane stack (round 2), 2 checks | -- | pass | pass (round 1: FAIL x2) |
+| A41 exit under a roof agrees with a seed (round 2) | -- | FAIL | pass (round 1: FAIL) |
+| A42 context copy-on-write independence (round 2), 2 checks | -- | pass | pass (red under a write-through mutation) |
+| A43 unresolved entry stands as its parent's index (round 2) | -- | FAIL | pass |
+| Totals (round 1 file) | 113 / 16 | 121 / 8 | 129 / 0 |
+| Totals (round 2 file, Part A) | -- | 133 / 10 | 143 / 0 (round 1 code: 138 / 5) |
 
 A28 passes at the parent: gap (2)'s fold handling has no red-proof in this
 suite (the parent's single-normal rule already seeded those points).
@@ -507,8 +512,20 @@ round), so no remaining DL-622 mechanism accounts for the scene's
 residual; it is reported, not explained.
 
 `ExteriorIndexInvarianceTest` (a suite FULL of open sheets, 319/0 on every
-build), user CPU, n = 1 per build, each pair run concurrently: master
-2102 s vs now 2234 s (+6.3 %); parent 1942 s vs now 2029 s (+4.5 %).  That
-is the cost of the open-sheet machinery this round keeps (per-seed normal
-groups and detours, Stage-2 catalog discovery, sheet contexts) in scenes
-that have sheets; it was not profiled further.
+build), user CPU, n = 1 per build, each pair run concurrently: round 1 --
+master 2102 s vs 2234 s (+6.3 %), parent 1942 s vs 2029 s (+4.5 %); round 2
+(copy-on-write contexts, group certificate, convention exits) -- parent
+1951 s vs 2005 s (+2.8 %).  A 30 s `sample` of both processes ten minutes in
+shows no hotspot: the seeding header's own self time is ~1000 of ~22000 busy
+samples against ~830 at the parent (`OpenSheetNormalRayReaches`,
+`TallyProbe`, `PosedOpenSheet`, `CheckSheetAloneAlongRay`), and no
+`IORStack` copy or `shared_ptr` frame appears.
+
+Round 2, the three scenes again (n = 4, interleaved), against master and
+the merged head `5e9ddc16e` (round 1 plus the other workers' DL-621..625
+merges, which touch the render loop's RNG and dispatch): cornellbox
+master 291.5 +/- 4.7, merge 297.6 +/- 2.9, now 294.6 +/- 2.4 s; csg
+33.4 +/- 1.0, 32.9 +/- 0.4, 33.8 +/- 1.1 s; hwss 233.4 +/- 3.2,
+241.3 +/- 2.7, 241.3 +/- 3.7 s.  Round 2 adds nothing over the merged head;
+the hwss scene's +3.4 % over master is present at that head (and the parent
+read +1-3 % over master on that scene in every round).
