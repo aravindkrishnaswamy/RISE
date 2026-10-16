@@ -3226,10 +3226,37 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	{
 	default:
 	case CSG_UNION:
-		if( riObjA.geometric.bHit || riObjB.geometric.bHit ) {
-			return ((riObjA.geometric.range < dHowFar2) || (riObjB.geometric.range < dHowFar2));
+		// The occluder is the composite's FIRST boundary along the ray, by
+		// the same interval algebra as IntersectRay's union: from inside an
+		// operand that is its exit (pushed out by an operand overlapping
+		// and extending past it), never an operand surface buried inside
+		// the union -- reporting `min(A.range, B.range)` occluded a shadow
+		// ray that ends inside the union before its real boundary.
+		{
+			Scalar tOcc = RISE_INFINITY;
+			if( riObjA.geometric.bHit && riObjB.geometric.bHit ) {
+				const bool insideA = ( riObjA.geometric.range2 == 0 );
+				const bool insideB = ( riObjB.geometric.range2 == 0 );
+				if( insideA && insideB ) {
+					tOcc = std::max( riObjA.geometric.range, riObjB.geometric.range );
+				} else if( insideA ) {
+					tOcc = ( riObjB.geometric.range < riObjA.geometric.range &&
+						riObjB.geometric.range2 > riObjA.geometric.range ) ?
+						riObjB.geometric.range2 : riObjA.geometric.range;
+				} else if( insideB ) {
+					tOcc = ( riObjA.geometric.range < riObjB.geometric.range &&
+						riObjA.geometric.range2 > riObjB.geometric.range ) ?
+						riObjA.geometric.range2 : riObjB.geometric.range;
+				} else {
+					tOcc = std::min( riObjA.geometric.range, riObjB.geometric.range );
+				}
+			} else if( riObjA.geometric.bHit ) {
+				tOcc = riObjA.geometric.range;
+			} else if( riObjB.geometric.bHit ) {
+				tOcc = riObjB.geometric.range;
+			}
+			return tOcc > 0 && tOcc < dHowFar2;
 		}
-		break;
 	case CSG_INTERSECTION:
 		// If both the objects don't intersect, then there can't be an
 		// intersection
@@ -3322,11 +3349,15 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				// B before we exit A we are ok
 				return (riObjB.geometric.range < riObjA.geometric.range && riObjB.geometric.range < dHowFar2 );
 			} else if( riObjA.geometric.range2 == 0 ) {
-				// If we are inside A but not inside B
-				// Then as long as we hit B before dHowFar2 then its all good
-				// should always be true
-				return true;
-//				return (riObjB.geometric.range < dHowFar2 );
+				// Inside A, outside B: the ray is inside the composite, whose
+				// first boundary is B's entry (the carved cavity) or A's exit,
+				// whichever comes first.  It occludes only when that boundary
+				// lies before the shadow ray's end -- this used to return
+				// TRUE unconditionally, so a short shadow ray inside the
+				// composite was blocked by a surface it never reaches.
+				const Scalar tOcc = ( riObjB.geometric.bHit && riObjB.geometric.range < riObjA.geometric.range ) ?
+					riObjB.geometric.range : riObjA.geometric.range;
+				return (tOcc < dHowFar2 && tOcc > 0);
 			} else if( riObjB.geometric.range2 == 0 ) {
 				// If we are inside B but not inside A: the composite starts at
 				// B's exit only if the ray is inside A there.  An A interval

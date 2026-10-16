@@ -657,6 +657,73 @@ static void TestMeshEditRefreshesComposite()
 	safe_release( csg );
 }
 
+//////////////////////////////////////////////////////////////////////
+// H. shadow rays respect their length from inside a composite
+//////////////////////////////////////////////////////////////////////
+
+//! The shadow query must agree with the radiance query: it occludes
+//! exactly when the composite's first boundary lies before `far`.
+static void CheckShadowAgreesWithHit( const CSGObject& csg, const Point3& o, const Vector3& d,
+	const std::string& label, Scalar expectRange )
+{
+	const RayIntersection hit = CastObj( csg, o, d );
+	Check( hit.geometric.bHit && std::fabs( hit.geometric.range - expectRange ) < 1e-6,
+		"H: " + label + ": radiance first boundary at the closed form (got " + std::to_string( hit.geometric.range ) + ")" );
+	for( const Scalar f : { Scalar( 0.25 ) * expectRange, Scalar( 0.75 ) * expectRange,
+			Scalar( 1.25 ) * expectRange, Scalar( 3 ) * expectRange } ) {
+		const bool occ = csg.IntersectRay_IntersectionOnly( Ray( o, d ), f, true, true );
+		Check( occ == ( f > expectRange ),
+			"H: " + label + ": shadow ray of length " + std::to_string( f ) + ( occ ? " occluded" : " not occluded" ) +
+			" (boundary at " + std::to_string( expectRange ) + ")" );
+	}
+}
+
+static CSGObject* MakeTwoSphereCsg( const CSG_OP op, Scalar rA, const Point3& pA, Scalar rB, const Point3& pB )
+{
+	Object* oA = MakeSphereObject( rA, pA );
+	Object* oB = MakeSphereObject( rB, pB );
+	CSGObject* csg = new CSGObject( op );
+	csg->AssignObjects( oA, oB );
+	csg->FinalizeTransformations();
+	safe_release( oA );
+	safe_release( oB );
+	return csg;
+}
+
+static void TestShadowLengthFromInside()
+{
+	std::cout << "H. shadow rays from inside a composite respect their length" << std::endl;
+	const Scalar r2 = 0.0125;	// (0.1, 0.05) offset squared
+	// Subtraction, origin inside A (r 3), outside the small cavity B
+	// (r 0.5 at z = -2).  Down: first boundary is the cavity's entry.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_SUBTRACTION, 3, Point3( 0, 0, 0 ), 0.5, Point3( 0, 0, -2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 1 ), Vector3( 0, 0, -1 ),
+			"A - B from inside A toward B", 3 - std::sqrt( 0.25 - r2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 1 ), Vector3( 0, 0, 1 ),
+			"A - B from inside A away from B", std::sqrt( 9 - r2 ) - 1 );
+		safe_release( csg );
+	}
+	// Union of overlapping unit spheres at z = 0 and z = -1.5.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_UNION, 1, Point3( 0, 0, 0 ), 1, Point3( 0, 0, -1.5 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 0 ), Vector3( 0, 0, -1 ),
+			"A u B from inside A only", 1.5 + std::sqrt( 1 - r2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, -0.75 ), Vector3( 0, 0, -1 ),
+			"A u B from inside both", 0.75 + std::sqrt( 1 - r2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 5 ), Vector3( 0, 0, -1 ),
+			"A u B from outside (control)", 5 - std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+	// Intersection and subtraction from outside (controls).
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_INTERSECTION, 1, Point3( 0, 0, 0 ), 1, Point3( 0, 0, -1.5 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 5 ), Vector3( 0, 0, -1 ),
+			"A n B from outside (control)", 5 + 1.5 - std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+}
+
 int main()
 {
 	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13) ===" << std::endl;
@@ -667,6 +734,7 @@ int main()
 	TestConcurrentFirstQuery();
 	TestInsideBThroughA();
 	TestMeshEditRefreshesComposite();
+	TestShadowLengthFromInside();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }
