@@ -31,6 +31,8 @@
 
 #include "pch.h"
 #include "SceneEditor.h"
+#include <algorithm>
+#include <functional>
 #include "../Objects/CSGObject.h"   // container-vs-CSG discrimination on the runtime binders
 #include <vector>   // P1: atomic composite undo/redo rollback buffer
 #include "CameraIntrospection.h"
@@ -2665,6 +2667,174 @@ bool SceneEditor::RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forw
 	return r >= 1;
 }
 
+// Batched agent edits (2026-10-16, review P2-D): the COMPACT, byte-exact undo payload of an AgentEditBatch.
+//
+// WHY NOT N per-element records (AgentInsertChunk / SetAgentCstParam) bracketed by CompositeBegin/End.  Each of
+// those inverses re-derives the document it lands on and refuses one that does not derive -- and a batch only
+// ever validated its END state, not its prefixes: a material listed before the painter it reads lands (see
+// Job::ApplyCstEditBatch), so undoing the painter first leaves a document that does not derive and the undo
+// refuses midway, while redoing the material first fails the same way.  Per-element inverses are genuinely
+// inexact for a batch, so the record is a DIFF of the two whole documents instead -- but not two whole
+// documents: only the top-level items that changed.
+//
+// Both texts are split into their top-level CST items (the canonical parse of the text, so the split is a
+// function of the bytes alone), aligned with Myers' O(ND) diff, and every non-equal run becomes a hunk carrying
+// its position in BOTH sequences plus the removed and added bytes.  Applying the diff in either direction
+// re-segments the CURRENT document the same way, VERIFIES each hunk's expected bytes are what is there (undo is
+// LIFO, so they are; a mismatch refuses rather than guessing), and splices -- exact by construction.
+namespace
+{
+	std::vector<std::string> SplitTopLevelItems_( const std::string& text )
+	{
+		std::vector<std::string> items;
+		const RISE::Cst::Document doc = RISE::Cst::ParseToCst( text );
+		const int n = RISE::Cst::DocItemCount( doc );
+		std::string joined;
+		for( int i = 0; i < n; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+			items.push_back( it ? RISE::Cst::SerializeNode( it ) : std::string() );
+			joined += items.back();
+		}
+		// The split must reproduce the bytes; if it ever does not, fall back to ONE item (still exact, just not
+		// compact) rather than risk a lossy diff.
+		if( joined != text ) { items.clear(); items.push_back( text ); }
+		return items;
+	}
+
+	struct DocDiffHunk_ { std::size_t a, b, da, db; std::string delText, insText; };
+
+	// Myers' greedy O((N+M)D) shortest edit script over item sequences (equality = identical bytes).
+	std::vector<DocDiffHunk_> DiffItems_( const std::vector<std::string>& A, const std::vector<std::string>& B )
+	{
+		const long N = static_cast<long>( A.size() ), M = static_cast<long>( B.size() ), MAX = N + M;
+		std::vector<std::size_t> ha( A.size() ), hb( B.size() );
+		for( std::size_t i = 0; i < A.size(); ++i ) ha[i] = std::hash<std::string>()( A[i] );
+		for( std::size_t i = 0; i < B.size(); ++i ) hb[i] = std::hash<std::string>()( B[i] );
+		auto eq = [&]( long x, long y ) { return ha[x] == hb[y] && A[x] == B[y]; };
+		std::vector<long> v( static_cast<std::size_t>( 2 * MAX + 2 ), 0 );
+		std::vector< std::vector<long> > trace;
+		long dEnd = -1;
+		for( long d = 0; d <= MAX && dEnd < 0; ++d ) {
+			trace.push_back( v );
+			for( long k = -d; k <= d; k += 2 ) {
+				long x;
+				if( k == -d || ( k != d && v[k - 1 + MAX] < v[k + 1 + MAX] ) ) x = v[k + 1 + MAX];
+				else x = v[k - 1 + MAX] + 1;
+				long y = x - k;
+				while( x < N && y < M && eq( x, y ) ) { ++x; ++y; }
+				v[k + MAX] = x;
+				if( x >= N && y >= M ) { dEnd = d; break; }
+			}
+		}
+		// Backtrack into per-step ops (0 = equal, 1 = delete A[x], 2 = insert B[y]), then group into hunks.
+		std::vector< std::pair<int, std::pair<long, long> > > ops;   // op, (x, y) BEFORE the op
+		long x = N, y = M;
+		for( long d = dEnd; d > 0; --d ) {
+			const std::vector<long>& vp = trace[static_cast<std::size_t>( d )];
+			const long k = x - y;
+			long pk;
+			if( k == -d || ( k != d && vp[k - 1 + MAX] < vp[k + 1 + MAX] ) ) pk = k + 1; else pk = k - 1;
+			const long px = vp[pk + MAX], py = px - pk;
+			while( x > px && y > py ) { --x; --y; ops.push_back( std::make_pair( 0, std::make_pair( x, y ) ) ); }
+			if( pk == k + 1 ) { --y; ops.push_back( std::make_pair( 2, std::make_pair( x, y ) ) ); }
+			else              { --x; ops.push_back( std::make_pair( 1, std::make_pair( x, y ) ) ); }
+		}
+		while( x > 0 && y > 0 ) { --x; --y; ops.push_back( std::make_pair( 0, std::make_pair( x, y ) ) ); }
+		std::reverse( ops.begin(), ops.end() );
+
+		std::vector<DocDiffHunk_> hunks;
+		for( std::size_t i = 0; i < ops.size(); ) {
+			if( ops[i].first == 0 ) { ++i; continue; }
+			DocDiffHunk_ h;
+			h.a = static_cast<std::size_t>( ops[i].second.first );
+			h.b = static_cast<std::size_t>( ops[i].second.second );
+			h.da = h.db = 0;
+			while( i < ops.size() && ops[i].first != 0 ) {
+				if( ops[i].first == 1 ) { h.delText += A[static_cast<std::size_t>( ops[i].second.first )]; ++h.da; }
+				else                    { h.insText += B[static_cast<std::size_t>( ops[i].second.second )]; ++h.db; }
+				++i;
+			}
+			hunks.push_back( h );
+		}
+		return hunks;
+	}
+
+	// Encoding: "RISEDOCDIFF1 <N> <M> <hunks>\n" then per hunk "<a> <b> <da> <db> <delBytes> <insBytes>\n" +
+	// delText + insText.
+	std::string EncodeDocDiff_( const std::string& before, const std::string& after )
+	{
+		const std::vector<std::string> A = SplitTopLevelItems_( before );
+		const std::vector<std::string> B = SplitTopLevelItems_( after );
+		const std::vector<DocDiffHunk_> hunks = DiffItems_( A, B );
+		std::string out;
+		char buf[160];
+		std::snprintf( buf, sizeof( buf ), "RISEDOCDIFF1 %zu %zu %zu\n", A.size(), B.size(), hunks.size() );
+		out += buf;
+		for( std::size_t i = 0; i < hunks.size(); ++i ) {
+			const DocDiffHunk_& h = hunks[i];
+			std::snprintf( buf, sizeof( buf ), "%zu %zu %zu %zu %zu %zu\n", h.a, h.b, h.da, h.db,
+			               h.delText.size(), h.insText.size() );
+			out += buf;
+			out += h.delText;
+			out += h.insText;
+		}
+		return out;
+	}
+
+	bool DecodeDocDiff_( const std::string& enc, std::size_t& N, std::size_t& M, std::vector<DocDiffHunk_>& hunks )
+	{
+		hunks.clear();
+		std::size_t pos = enc.find( '\n' );
+		if( pos == std::string::npos ) return false;
+		std::size_t nh = 0;
+		if( std::sscanf( enc.substr( 0, pos ).c_str(), "RISEDOCDIFF1 %zu %zu %zu", &N, &M, &nh ) != 3 ) return false;
+		++pos;
+		for( std::size_t i = 0; i < nh; ++i ) {
+			const std::size_t nl = enc.find( '\n', pos );
+			if( nl == std::string::npos ) return false;
+			DocDiffHunk_ h;
+			std::size_t dl = 0, il = 0;
+			if( std::sscanf( enc.substr( pos, nl - pos ).c_str(), "%zu %zu %zu %zu %zu %zu",
+			                 &h.a, &h.b, &h.da, &h.db, &dl, &il ) != 6 ) return false;
+			pos = nl + 1;
+			if( pos + dl + il > enc.size() ) return false;
+			h.delText = enc.substr( pos, dl ); pos += dl;
+			h.insText = enc.substr( pos, il ); pos += il;
+			hunks.push_back( h );
+		}
+		return true;
+	}
+
+	// forward = before -> after (Redo); !forward = after -> before (Undo).  False (nothing produced) when the
+	// current document does not have the shape/bytes the diff expects.
+	bool ApplyDocDiff_( const std::string& current, const std::string& enc, bool forward, std::string& out )
+	{
+		std::size_t N = 0, M = 0;
+		std::vector<DocDiffHunk_> hunks;
+		if( !DecodeDocDiff_( enc, N, M, hunks ) ) return false;
+		const std::vector<std::string> cur = SplitTopLevelItems_( current );
+		if( cur.size() != ( forward ? N : M ) ) return false;
+		out.clear();
+		std::size_t cursor = 0;
+		for( std::size_t i = 0; i < hunks.size(); ++i ) {
+			const DocDiffHunk_& h = hunks[i];
+			const std::size_t at   = forward ? h.a : h.b;
+			const std::size_t cnt  = forward ? h.da : h.db;
+			const std::string& expect = forward ? h.delText : h.insText;
+			const std::string& put    = forward ? h.insText : h.delText;
+			if( at < cursor || at + cnt > cur.size() ) return false;
+			for( ; cursor < at; ++cursor ) out += cur[cursor];
+			std::string have;
+			for( std::size_t k = 0; k < cnt; ++k ) have += cur[at + k];
+			if( have != expect ) return false;
+			out += put;
+			cursor = at + cnt;
+		}
+		for( ; cursor < cur.size(); ++cursor ) out += cur[cursor];
+		return true;
+	}
+}
+
 // R2 (2026-08-10, replace_geometry_scaffold): the WHOLE-DOCUMENT prior/post text-swap route -- the
 // AgentReplaceGeometry sibling of RouteAgentRemoveChunksBatch_, see the header doc.  Both directions call
 // the SAME already-full-derivability-gated Job primitive on DIFFERENT recorded bytes, so this is pure
@@ -2680,10 +2850,23 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 {
 	if( outDiagnosed ) *outDiagnosed = false;
 	if( !mJob ) return false;
-	const String& text = forward ? edit.prevPropertyValue : edit.propertyValue;
-	if( text.size() <= 1 ) return false;   // RString::size() counts the trailing NUL; <=1 is empty
 	const bool dup   = ( edit.op == SceneEdit::AgentDuplicateNode );
 	const bool batch = ( edit.op == SceneEdit::AgentEditBatch );
+	// 2026-10-16 (review P2-D): an AgentEditBatch carries a compact item diff, not two documents -- rebuild
+	// the target document from the CURRENT one (verified hunk by hunk; a mismatch refuses).
+	std::string batchText;
+	if( batch ) {
+		const RISE::Cst::Document* cur = mJob->GetCstDocument();
+		if( !cur || !ApplyDocDiff_( RISE::Cst::SerializeCst( *cur ), std::string( edit.propertyValue.c_str() ),
+		                            forward, batchText ) ) {
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: agent edit batch %s refused: the current document does "
+			                      "not match the recorded batch diff", forward ? "redo" : "undo" );
+			return false;
+		}
+	}
+	const String text = batch ? String( batchText.c_str() )
+	                          : ( forward ? edit.prevPropertyValue : edit.propertyValue );
+	if( text.size() <= 1 ) return false;   // RString::size() counts the trailing NUL; <=1 is empty
 	// 2026-10-16: an AgentEditBatch that LANDED a rasterizer insert re-installs (Redo) with the document's
 	// last-wins activation left standing, as its forward commit did (the P1-B rule); every other direction
 	// and op keeps the unconditional restore.
@@ -3307,17 +3490,30 @@ void SceneEditor::PushAgentDuplicateNodeEdit(
 
 // Batched agent edits (2026-10-16): see the header doc.  Same shape as PushAgentReplaceGeometryEdit.
 void SceneEditor::PushAgentEditBatchEdit(
-	const String& label, const String& priorDocText, const String& postDocText,
+	const String& label, const std::string& priorDocText, const std::string& postDocText,
 	bool landedRasterizerInsert )
 {
 	SceneEdit edit;
 	edit.op                      = SceneEdit::AgentEditBatch;
 	edit.objectName              = label;              // DISPLAY-ONLY -- see the op doc
 	// cstEntityKind deliberately left EMPTY: the boolean CST-head dirty channel.
-	edit.propertyValue           = priorDocText;       // Undo payload (byte-exact pre-batch document)
-	edit.prevPropertyValue       = postDocText;        // Redo payload (byte-exact post-batch document)
+	edit.propertyValue           = String( EncodeDocDiff_( priorDocText, postDocText ).c_str() );   // both directions
 	edit.agentChunkWasRasterizer = landedRasterizerInsert;
 	mHistory.Push( edit );
+}
+
+std::string SceneEditor::ForTest_ApplyDocDiff( const std::string& current, const std::string& encodedDiff,
+                                               bool forward, bool* outOk )
+{
+	std::string out;
+	const bool ok = ApplyDocDiff_( current, encodedDiff, forward, out );
+	if( outOk ) *outOk = ok;
+	return out;
+}
+
+std::string SceneEditor::ForTest_EncodeDocDiff( const std::string& before, const std::string& after )
+{
+	return EncodeDocDiff_( before, after );
 }
 
 bool SceneEditor::Apply( const SceneEdit& editIn )

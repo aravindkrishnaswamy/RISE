@@ -53,10 +53,10 @@ unsigned long long EditHistory::HeavyPayloadBytes_( const SceneEdit& e )
 	{
 	case SceneEdit::AgentDuplicateNode:
 	case SceneEdit::AgentReplaceGeometry:
-	case SceneEdit::AgentEditBatch:
 		return static_cast<unsigned long long>( e.propertyValue.size() )
 		     + static_cast<unsigned long long>( e.prevPropertyValue.size() );
 	case SceneEdit::AgentRemoveChunks:
+	case SceneEdit::AgentEditBatch:     // 2026-10-16: the compact diff (both directions in one field)
 		return static_cast<unsigned long long>( e.propertyValue.size() );
 	default:
 		return 0;

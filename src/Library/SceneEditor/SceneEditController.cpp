@@ -7459,32 +7459,13 @@ std::string ContainerBindingInChunkText_( const String& chunkText )
 
 bool SceneEditController::AgentTargetIsContainerObject_( const String& entityName, const String& entityKind )
 {
+	// The rule lives in ONE place, Job::CstTargetIsContainerObject, which the batch path also evaluates against
+	// its evolving document -- so the single and batch routes cannot drift on what a container is.
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
-	const std::string ekind( entityKind.size() > 1 ? entityKind.c_str() : "" );
-	const char* bareName = entityName.size() > 1 ? entityName.c_str() : "";
-	const bool uniqueFallback = ( ekind == "camera" )
-		? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, bareName, mJob.GetActiveCameraName() )
-		: ( entityName.size() <= 1 && !ekind.empty() );
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
-		*doc, bareName, nullptr, ekind, uniqueFallback );
-	if( id == 0 ) return false;
-	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
-	if( !chunk ) return false;
-	if( chunk->role != "standard_object" ) return false;
-	// "No geometry" means NOT RESOLVABLE, not merely absent.  `geometry none`
-	// is a first-class spelling of the same thing -- the standard_object parser
-	// treats it as a container (`geometry.empty() || geometry == "none"`), the
-	// derive's IsContainerGeometryRef_ agrees, and Cst skips `none` as a
-	// reference edge so such a document derives clean.  Testing only for
-	// PRESENCE would let `geometry none` past this gate while every other layer
-	// still calls it a container -- the agent would be told `applied` and the
-	// derive would drop the binding with a warning, which is exactly the state
-	// this gate exists to prevent.
-	bool present = false;
-	const std::string geom = TrimAsciiSpace_( RISE::Cst::ParamValueAsParsed( chunk, "geometry", &present ) );
-	if( !present ) return true;
-	return geom.empty() || geom == "none";
+	return mJob.CstTargetIsContainerObject( *doc,
+	                                        entityName.size() > 1 ? entityName.c_str() : "",
+	                                        entityKind.size() > 1 ? entityKind.c_str() : nullptr );
 }
 
 
@@ -8344,8 +8325,10 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 	}
 
 	// The per-element CONTROLLER-level refusals the single verbs make before reaching Job (see
-	// ApplyAgentChunkCrud_ / ApplyAgentParamEditInner_ for each rule's rationale), judged against the
-	// pre-batch head -- an element refused here never reaches the batch.
+	// ApplyAgentChunkCrud_ / ApplyAgentParamEditInner_ for each rule's rationale).  Only the text-local ones
+	// are judged here; the container gate on a surface-binding param depends on the DOCUMENT, so it is handed
+	// to Job and judged against the batch's evolving document (review P2-A: `X.geometry none` earlier in the
+	// same batch makes X a container; `C.geometry g` earlier makes a container C a leaf).
 	std::vector<CstBatchEdit> admitted;
 	std::vector<std::size_t>  admittedIndex;
 	admitted.reserve( edits.size() );
@@ -8374,6 +8357,7 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 				r.message = String( buf );
 				continue;
 			}
+			admitted.push_back( e );
 		}
 		else
 		{
@@ -8381,32 +8365,36 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 				r.message = String( "param and value must be non-empty, and target may be empty only with a kind (singleton addressing)" );
 				continue;
 			}
-			if( IsObjectSurfaceBindingParamName( String( e.role.c_str() ) )
-			 && e.value != "none"
-			 && AgentTargetIsContainerObject_( String( e.entityName.c_str() ), String( e.entityKind.c_str() ) ) )
-			{
-				char buf[320];
-				std::snprintf( buf, sizeof( buf ),
-					"`%s` is a container node (it names no `geometry`), so it takes no `%s` -- a container is a pure "
-					"transform with no surface.  Put the binding on a child object that has geometry, or give this "
-					"object a `geometry`.",
-					e.entityName.empty() ? "(unnamed)" : e.entityName.c_str(), e.role.c_str() );
-				r.message = String( buf );
-				continue;
-			}
+			CstBatchEdit gated = e;
+			gated.refuseSurfaceBindingOnContainer =
+				IsObjectSurfaceBindingParamName( String( e.role.c_str() ) ) && e.value != "none";
+			admitted.push_back( gated );
 		}
-		admitted.push_back( e );
 		admittedIndex.push_back( i );
 	}
 
-	// UNDO capture under this same lock hold as the mutation (no TOCTOU) -- the whole-document pair the
-	// AgentEditBatch record carries (see its op doc).
-	std::string priorDocText;
-	if( const RISE::Cst::Document* doc = mJob.GetCstDocument() )
-		priorDocText = RISE::Cst::SerializeCst( *doc );
+	// UNDO capture under this same lock hold as the mutation (no TOCTOU): a persistent-structure COPY of the
+	// pre-batch document (cheap -- no serialization unless the batch lands).
+	RISE::Cst::Document priorDoc;
+	const bool havePrior = mJob.CopyCstDocument( priorDoc );
 
 	std::vector<CstBatchOutcome> outcomes;
 	const int code = admitted.empty() ? 0 : mJob.ApplyCstEditBatch( admitted, outcomes );
+
+	if( code == kCstEditBatchNeedsSequential )
+	{
+		// Nothing was committed.  The caller (AgentSession::FlushEditBatch_) commits the elements one at a time
+		// through the single verbs instead, so this lock is released between elements (review P2-C).
+		for( std::size_t k = 0; k < admitted.size(); ++k ) {
+			AgentCommitResult& r = out[ admittedIndex[k] ];
+			r.status = String( "sequential" );
+			r.needsSequential = true;
+			r.message = String( "batch isolation budget exceeded -- commit this element on its own" );
+		}
+		const RISE::Cst::CstHeadVersion head = mJob.GetCstHeadVersion();
+		for( std::size_t i = 0; i < out.size(); ++i ) out[i].headVersion = head;
+		return out;
+	}
 
 	// A landed batch is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's cached pointers
 	// BEFORE releasing the lock, ONCE for the whole batch.
@@ -8414,6 +8402,7 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 		RebindEditorToJob();
 
 	bool anyRasterizerLanded = false;
+	bool diagnosedReported  = false;
 	std::string label;
 	for( std::size_t k = 0; k < admitted.size(); ++k )
 	{
@@ -8439,10 +8428,19 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 					: String( "applied via a full re-derive (Scene + managers were replaced)" );
 				break;
 			case 3:
+				// ONE re-derive realized the whole batch, so its diagnostics belong to the batch, not to any
+				// element we can single out (the dry-run of the identical document was clean).  Say it in full
+				// ONCE, on the first landed element, and point the others at it.
 				r.applied = false;
 				r.status  = String( "diagnosed" );
-				r.message = String( "edit NOT a clean success: the Document was mutated and the live managers were "
-				                    "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied" );
+				if( !diagnosedReported ) {
+					r.message = String( "edit NOT a clean success: the Document was mutated and the live managers were "
+					                    "replaced, BUT the batch's single full re-derive emitted diagnostics (see log) -- "
+					                    "do NOT treat this batch as applied" );
+					diagnosedReported = true;
+				} else {
+					r.message = String( "landed in the same diagnosed batch re-derive (see the first diagnosed element)" );
+				}
 				break;
 			case -1:
 			{
@@ -8474,7 +8472,15 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 			{
 				r.applied = false;
 				r.status  = String( "rejected" );
-				if( e.isInsert ) {
+				if( oc.refusedContainer ) {
+					char buf[320];
+					std::snprintf( buf, sizeof( buf ),
+						"`%s` is a container node (it names no `geometry`), so it takes no `%s` -- a container is a pure "
+						"transform with no surface.  Put the binding on a child object that has geometry, or give this "
+						"object a `geometry`.",
+						e.entityName.empty() ? "(unnamed)" : e.entityName.c_str(), e.role.c_str() );
+					r.message = String( buf );
+				} else if( e.isInsert ) {
 					std::string m = "insert rejected: the chunk would not derive in context -- head unchanged";
 					if( diag[0] ) { m += ": "; m += diag; }
 					r.message = String( m.c_str() );
@@ -8486,11 +8492,7 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 		}
 		if( ( oc.code == 2 || oc.code == 3 ) )
 		{
-			if( e.isInsert ) {
-				const std::string& role = oc.keyword;
-				if( role.size() > 11 && role.compare( role.size() - 11, 11, "_rasterizer" ) == 0 )
-					anyRasterizerLanded = true;
-			}
+			if( e.isInsert && oc.isRasterizer ) anyRasterizerLanded = true;
 			if( !label.empty() ) label += ", ";
 			label += e.isInsert ? ( oc.name.empty() ? oc.keyword : oc.name )
 			                    : ( e.entityName + "." + e.role );
@@ -8525,13 +8527,15 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 			}
 		}
 
-		// ONE history record for the WHOLE batch (one Cmd-Z undoes it -- the remove_chunks rule).
+		// ONE history record for the WHOLE batch (one Cmd-Z undoes it -- the remove_chunks rule), carrying a
+		// COMPACT top-level-item diff rather than two whole documents (review P2-D; see the op doc for why
+		// per-element records are not an exact inverse of a batch).
 		const RISE::Cst::Document* post = mJob.GetCstDocument();
-		if( !priorDocText.empty() && post )
+		if( havePrior && post )
 		{
 			mEditor.PushAgentEditBatchEdit( String( label.c_str() ),
-			                                String( priorDocText.c_str() ),
-			                                String( RISE::Cst::SerializeCst( *post ).c_str() ),
+			                                RISE::Cst::SerializeCst( priorDoc ),
+			                                RISE::Cst::SerializeCst( *post ),
 			                                anyRasterizerLanded );
 		}
 		else
@@ -11005,21 +11009,27 @@ void SceneEditController::ReadAgentSceneSnapshot( bool& outHasDocument,
 }
 
 // Batched agent edits (2026-10-16): see the header doc -- ReadAgentSceneSnapshot's lifecycle refusal and lock,
-// with the document previewed through the deferred batch.
-void SceneEditController::PreviewAgentEditBatch( const std::vector<CstBatchEdit>& edits,
-                                                 bool& outHasDocument,
-                                                 std::string& outDocument,
+// handing back a persistent-structure COPY of the head (no serialization).
+void SceneEditController::CopyAgentHeadDocument( bool& outHasDocument,
+                                                 RISE::Cst::Document& outDocument,
                                                  RISE::Cst::CstHeadVersion& outVersion ) const
 {
 	outHasDocument = false;
-	outDocument.clear();
 	outVersion = RISE::Cst::CstHeadVersion{};
 	if( mInDestructorTeardown.load( std::memory_order_acquire )
 	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return;
 	std::lock_guard<std::mutex> lk( mMutex );
-	outHasDocument = mJob.HasRetainedCstDocument();
-	outDocument    = mJob.PreviewCstEditBatchText( edits );
+	outHasDocument = mJob.CopyCstDocument( outDocument );
 	outVersion     = mJob.GetCstHeadVersion();
+}
+
+int SceneEditController::ApplyAgentBatchElementToDocument( RISE::Cst::Document& doc, const CstBatchEdit& edit,
+                                                           CstBatchOutcome& outcome ) const
+{
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return 0;
+	std::lock_guard<std::mutex> lk( mMutex );   // the element reads live Job state (e.g. the active camera)
+	return mJob.ApplyCstBatchElement( doc, edit, outcome );
 }
 
 RISE::Cst::CstHeadVersion SceneEditController::ReadAgentHeadVersion() const

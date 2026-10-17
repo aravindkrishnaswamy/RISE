@@ -597,6 +597,10 @@ namespace RISE
 			//! parse/resolution so the Agent surface reports what was inserted/removed.
 			String                     chunkKeyword;
 			String                     chunkName;
+			//! Batched agent edits (2026-10-16, ApplyAgentEditBatch only): the batch exceeded its isolation
+			//! budget and committed NOTHING -- the caller must commit this element on its own (status
+			//! "sequential").
+			bool                       needsSequential = false;
 		};
 
 		//! Facet 5 slice 1b: route an agent param-value commit through the
@@ -719,9 +723,13 @@ namespace RISE
 		//! No optimistic-concurrency base: a caller pinning a base head version commits that element through
 		//! the single verb (AgentSession does), so the conflict rules never change shape.
 		//!
-		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentEditBatch, a byte-exact pre/post document
-		//! pair -- the AgentReplaceGeometry shape) for the whole batch, so one Cmd-Z undoes the whole batch,
-		//! matching ApplyAgentRemoveChunks.
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentEditBatch, a compact byte-exact diff of
+		//! the changed top-level items) for the whole batch, so one Cmd-Z undoes the whole batch, matching
+		//! ApplyAgentRemoveChunks.
+		//!
+		//! A batch whose failure isolation exceeds Job's dry-run budget commits NOTHING and returns every
+		//! admitted element with status "sequential" / needsSequential -- the caller then commits them one at
+		//! a time through the single verbs, so this lock is not held for O(N) dry-runs.
 		std::vector<AgentCommitResult> ApplyAgentEditBatch( const std::vector<CstBatchEdit>& edits );
 
 		//! R2 (2026-08-10, replace_geometry_scaffold): install `candidateDocText` -- a WHOLE candidate
@@ -4023,14 +4031,17 @@ namespace RISE
 		//! the result-stamping sites that need only the version.
 		RISE::Cst::CstHeadVersion ReadAgentHeadVersion() const;
 
-		//! Batched agent edits (2026-10-16): ReadAgentSceneSnapshot's document AS A BATCH OF DEFERRED EDITS
-		//! WOULD LEAVE IT -- Job::PreviewCstEditBatchText under the same lock and the same lifecycle refusal.
-		//! `outVersion` is the REAL (unmutated) head.  Lets AgentSession's pre-commit gates judge element i of
-		//! a deferred batch against the document elements 0..i-1 will produce.
-		void PreviewAgentEditBatch( const std::vector<CstBatchEdit>& edits,
-		                            bool& outHasDocument,
-		                            std::string& outDocument,
+		//! Batched agent edits (2026-10-16): ReadAgentSceneSnapshot's lock + lifecycle refusal, returning a
+		//! persistent-structure COPY of the head Document (cheap; no serialization) -- the base of
+		//! AgentSession's incremental preview of a deferred batch.
+		void CopyAgentHeadDocument( bool& outHasDocument,
+		                            RISE::Cst::Document& outDocument,
 		                            RISE::Cst::CstHeadVersion& outVersion ) const;
+
+		//! Batched agent edits (2026-10-16): Job::ApplyCstBatchElement on the CALLER's document, under mMutex
+		//! (the element reads live Job state, e.g. the active camera).  Mutates only `doc`.
+		int ApplyAgentBatchElementToDocument( RISE::Cst::Document& doc, const CstBatchEdit& edit,
+		                                      CstBatchOutcome& outcome ) const;
 
 		//! "Reveal in scene file" (the design comp's ⌗ affordance): resolve
 		//! ENTITY (cat, name) to WHERE it sits in SerializedSceneText() --

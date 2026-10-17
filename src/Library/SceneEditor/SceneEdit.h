@@ -414,14 +414,20 @@ namespace RISE
 			//! inserts and/or param edits realized together by SceneEditController::ApplyAgentEditBatch
 			//! (Job::ApplyCstEditBatch, one full re-derive), pushed AFTER the mutation landed, like every
 			//! other agent op.  One record so a single Cmd-Z undoes the whole batch, the way
-			//! AgentRemoveChunks undoes a whole batch remove.  A whole-document pair rather than N
-			//! AgentInsertChunk / SetAgentCstParam records because that is the only inverse that is exact
-			//! for EVERY batch shape: positioned inserts shift each other's indices and a param edit can
-			//! land on a chunk an earlier element of the same batch inserted.
+			//! AgentRemoveChunks undoes a whole batch remove.
 			//!
-			//! FIELD USE -- identical to AgentReplaceGeometry's:
-			//!   * `propertyValue`     = the BYTE-EXACT pre-batch document (Undo's payload).
-			//!   * `prevPropertyValue` = the BYTE-EXACT post-batch document (Redo's payload).
+			//! WHY NOT N AgentInsertChunk / SetAgentCstParam records bracketed by CompositeBegin/End: each of
+			//! those inverses re-derives the document it lands on and refuses one that does not derive, but a
+			//! batch validates only its END state -- an element listed before what it references lands (see
+			//! Job::ApplyCstEditBatch) -- so replaying per-element inverses can pass through a document that
+			//! does not derive and stop half-way.  Per-element records are not an exact inverse of a batch.
+			//!
+			//! FIELD USE:
+			//!   * `propertyValue`     = a COMPACT, byte-exact diff of the two documents: only the top-level
+			//!                           items that changed, with their positions (SceneEditor.cpp's
+			//!                           EncodeDocDiff_).  Undo and Redo both rebuild their target from the
+			//!                           CURRENT document, verifying every hunk's bytes first.
+			//!   * `prevPropertyValue` = UNUSED.
 			//!   * `objectName`        = a DISPLAY-ONLY label (logs); `cstEntityKind` left EMPTY so
 			//!                           MarkCstHeadDirty routes to the boolean CST-head channel.
 			//!   * `agentChunkWasRasterizer` = true iff the batch LANDED a `*_rasterizer` insert: Redo then

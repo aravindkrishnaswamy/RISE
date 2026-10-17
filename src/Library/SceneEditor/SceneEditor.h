@@ -521,12 +521,19 @@ namespace RISE
 
 		//! Batched agent edits (2026-10-16): push the ONE EditHistory record (SceneEdit::AgentEditBatch) for
 		//! a whole agent edit batch already applied via SceneEditController::ApplyAgentEditBatch.  Same
-		//! "forward already happened" shape and the same byte-exact prior/post document pair as
-		//! PushAgentReplaceGeometryEdit.  `label` is display-only; `landedRasterizerInsert` = the batch
-		//! landed a `*_rasterizer` insert (see the op doc).  Does NOT mark dirty -- the caller does.
+		//! "forward already happened" shape as PushAgentReplaceGeometryEdit, but the record stores only a
+		//! COMPACT diff of the top-level items that changed between `priorDocText` and `postDocText` (see the
+		//! op doc).  `label` is display-only; `landedRasterizerInsert` = the batch landed a `*_rasterizer`
+		//! insert.  Does NOT mark dirty -- the caller does.
 		void PushAgentEditBatchEdit(
-			const String& label, const String& priorDocText, const String& postDocText,
+			const String& label, const std::string& priorDocText, const std::string& postDocText,
 			bool landedRasterizerInsert );
+
+		//! Test hooks (2026-10-16) for the AgentEditBatch diff: encode a before/after pair, and apply an
+		//! encoded diff to `current` (forward = before->after).
+		static std::string ForTest_EncodeDocDiff( const std::string& before, const std::string& after );
+		static std::string ForTest_ApplyDocDiff( const std::string& current, const std::string& encodedDiff,
+		                                         bool forward, bool* outOk );
 
 		//! True when anything MAY need saving since the last load /
 		//! save.  Conservative: it can be true when a Save would NoOp

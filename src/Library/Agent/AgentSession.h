@@ -10650,7 +10650,8 @@ namespace RISE
 				std::string          applyText;         //!< insert: the (possibly auto-parented) chunk text
 				AgentSetPatch        patch;             //!< patch: the element as submitted
 				bool                 haveOrphanPreDoc = false;
-				RISE::Cst::Document  orphanPreDoc;      //!< patch: the document immediately BEFORE it
+				RISE::Cst::Document  orphanPreDoc;      //!< patch: the preview immediately BEFORE it
+				RISE::Cst::Document  orphanPostDoc;     //!< patch: the preview immediately AFTER it (shares NodeIds)
 				std::string          autoParentNotice;  //!< insert only
 				std::string          s1Notice;
 				std::string          g2Notice;
@@ -10666,11 +10667,14 @@ namespace RISE
 				std::vector<AgentPatchResult>*  patchOut = nullptr;
 				std::vector<PendingBatchEdit_>  pending;
 				bool                            flushedAny = false;
-				//! ReadDocumentSnapshot's preview cache: valid while `pending`
-				//! still has `previewForCount` elements and the real head is
-				//! still `previewHead`.
-				std::size_t                     previewForCount = static_cast<std::size_t>( -1 );
-				RISE::Cst::CstHeadVersion       previewHead;
+				//! The INCREMENTAL preview (review P2-E): a persistent copy of
+				//! the head as of `previewBase`, with every deferred element
+				//! applied as it was deferred; `previewText` caches its
+				//! serialization for `previewTextFor` pending elements.
+				bool                            havePreview = false;
+				RISE::Cst::Document             previewDoc;
+				RISE::Cst::CstHeadVersion       previewBase;
+				std::size_t                     previewTextFor = static_cast<std::size_t>( -1 );
 				std::string                     previewText;
 			};
 
@@ -10687,6 +10691,17 @@ namespace RISE
 			//! from inside a gate -- e.g. the element-root mint), so document
 			//! order always equals call order.  No-op when nothing is deferred.
 			void FlushEditBatch_();
+
+			//! Batched agent edits (2026-10-16): the incremental preview
+			//! (review P2-E).  EnsureBatchPreview_ makes sure the open batch's
+			//! preview exists and is based on the CURRENT head (rebuilding it
+			//! -- head copy + every pending element -- only if a co-editor
+			//! moved the head); ApplyToBatchPreview_ applies one element to it;
+			//! DeferBatchEdit_ queues an element, capturing a patch's orphan
+			//! pre/post documents from the preview around its application.
+			bool EnsureBatchPreview_() const;
+			void ApplyToBatchPreview_( const CstBatchEdit& edit ) const;
+			void DeferBatchEdit_( PendingBatchEdit_& pe );
 
 			EditBatchCollector_* mEditBatch = nullptr;
 

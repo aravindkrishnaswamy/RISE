@@ -56,6 +56,10 @@ namespace RISE
 		std::string role;
 		std::string value;
 		int         occ = 0;
+		//! Param edit only: refuse it (outcome.refusedContainer) when the target resolves to a container
+		//! `standard_object` IN THE BATCH'S EVOLVING DOCUMENT -- the agent route's surface-binding-on-a-
+		//! container gate, set by the caller for a surface-binding param with a non-`none` value.
+		bool        refuseSurfaceBindingOnContainer = false;
 	};
 
 	//! Per-element outcome of IJobPriv::ApplyCstEditBatch.  `code` follows the SINGLE-element
@@ -73,7 +77,13 @@ namespace RISE
 		std::string name;
 		std::string diag;
 		int         insertedAt = -1;
+		bool        isRasterizer = false;       //!< insert: the chunk is a `*_rasterizer` (Job's category+suffix rule)
+		bool        refusedContainer = false;   //!< param: refused by the container gate (see CstBatchEdit)
 	};
+
+	//! IJobPriv::ApplyCstEditBatch's "isolation budget exhausted" return: NOTHING was committed, and the caller
+	//! must fall back to committing the elements one at a time through the single primitives.
+	const int kCstEditBatchNeedsSequential = -3;
 
 	//! IJobPriv - Priviledged interface with getters
 	class IJobPriv : public virtual IJob
@@ -162,15 +172,18 @@ namespace RISE
 		// re-derive per element, which is what a loop over ApplyCstInsertChunk / ApplyCstParamEditChecked
 		// costs (each of those dry-runs AND fully re-derives the whole scene).
 		//
-		// PER-ELEMENT semantics are the single primitives' own: every element is validated (parse,
-		// duplicate, owner-walk, ...) against the document as the EARLIER landed elements of this batch
-		// left it, so a later element may reference an earlier one, and a duplicate of an earlier element
-		// is refused exactly as a second single call would refuse it.  An element that would not derive
-		// in context is REFUSED INDIVIDUALLY (outcome code 0, `diag` = first dry-run diagnostic) without
-		// discarding the rest: when the whole batch does not derive, the elements are re-tried in order in
-		// halves against throwaway dry-runs until each offender is isolated (so the common all-good path
-		// costs one dry-run + one live derive, and k offenders cost O(k log N) extra dry-runs).  A refused
-		// insert gets the single primitive's positioned-then-append-at-end retry.
+		// Every element is validated with the single primitives' own rules, in order, against the document
+		// the earlier ACCEPTED elements left (a later element may reference an earlier one; a duplicate of an
+		// earlier one is refused).  An element lands iff it is valid and the accepted document still derives
+		// with it in, judged on the END state (an element listed before what it references lands) -- the same
+		// verdict whatever else the batch holds: when the whole batch does not derive, the elements are
+		// isolated by in-order halving over throwaway dry-runs and every would-not-derive element then gets
+		// ONE in-order retry against the final accepted document.  A refused insert gets the single verb's
+		// positioned-then-append retry.  If the CURRENT document itself does not derive, every element is
+		// refused with that diagnostic.
+		//
+		// Isolation spends at most `maxIsolationDryRuns` dry-runs (< 0 = a default sized for two offenders, 4*ceil(log2 N) + 10, capped at 32);
+		// beyond it NOTHING is committed and kCstEditBatchNeedsSequential is returned.
 		//
 		// Returns 0 when NOTHING landed (retained Document AND live scene byte-identical, head version
 		// unbumped), else 2 (replaced, clean) / 3 (replaced, diagnosed) -- the caller MUST re-point cached
@@ -178,13 +191,25 @@ namespace RISE
 		// `outcomes` is resized to edits.size().  Job is the sole implementer.
 		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
 		virtual int							ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits,
-		                                                       std::vector<CstBatchOutcome>& outcomes ) = 0;
+		                                                       std::vector<CstBatchOutcome>& outcomes,
+		                                                       int maxIsolationDryRuns = -1 ) = 0;
 
-		// The serialized document ApplyCstEditBatch WOULD try to realize for `edits` (every element that
-		// passes validation spliced/written in order; no derive, no mutation).  Empty when no CST Document
-		// is retained.  Lets a caller that DEFERS elements into a batch show its pre-commit gates the
-		// document as the earlier deferred elements will leave it.  Job is the sole implementer.
-		virtual std::string					PreviewCstEditBatchText( const std::vector<CstBatchEdit>& edits ) = 0;
+		// Batched agent edits (2026-10-16): apply ONE element to the caller's `doc` exactly as
+		// ApplyCstEditBatch's validation does (no derive, no mutation of this Job, no refusal logging).
+		// Returns 1 when written, else the refusal code (outcome filled).  Lets a caller that DEFERS
+		// elements keep an incremental preview of the document the batch will produce.
+		virtual int							ApplyCstBatchElement( RISE::Cst::Document& doc, const CstBatchEdit& edit,
+		                                                          CstBatchOutcome& outcome ) = 0;
+
+		// Batched agent edits (2026-10-16): copy the retained CST Document (a cheap persistent-structure
+		// copy).  False when none is retained.
+		virtual bool						CopyCstDocument( RISE::Cst::Document& out ) const = 0;
+
+		// Batched agent edits (2026-10-16): the agent route's CONTAINER rule -- does (entityName, entityKind)
+		// resolve, in `doc`, to a `standard_object` naming no resolvable `geometry` (`geometry none` counts)?
+		virtual bool						CstTargetIsContainerObject( const RISE::Cst::Document& doc,
+		                                                                const char* entityName,
+		                                                                const char* entityKind ) const = 0;
 	};
 
 
