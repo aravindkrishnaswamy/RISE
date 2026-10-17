@@ -6720,6 +6720,11 @@ static DecodedLuma LeftPanelOf( const DecodedLuma& d )
 {
 	DecodedLuma out;
 	if( d.w == 0 || d.h == 0 ) return out;
+	// Precondition (the fixtures here are square): the composite is two SQUARE
+	// panels and a small gap, i.e. h <= w <= 2h + 16.  A different layout would
+	// make "the first h columns" the wrong crop, so fail loudly rather than
+	// silently measure it.
+	Check( d.w > d.h && d.w <= 2 * d.h + 16, "LeftPanelOf precondition: the composite is two square panels side by side" );
 	out.w = ( d.h < d.w ) ? d.h : d.w;
 	out.h = d.h;
 	out.luma.resize( (std::size_t)out.w * out.h );
@@ -12609,6 +12614,24 @@ static void TestInventoryZoomSentence()
 					share = (double)zr.legend[i].pixelCount / (double)( (std::size_t)zr.width * zr.height );
 			std::printf( "V2-REACH: wiz_obj zoom pixel share = %.4f\n", share );
 			Check( share >= 0.2, "V2-REACH and it then fills a readable share of the frame" );
+
+			// Only for a render through the SCENE camera: zoom is refused alongside
+			// `camera` / `view`, so the advice would name a call that cannot
+			// reproduce a frame taken through an override.
+			{
+				Agent::AgentRenderParams cp;
+				cp.camera.hasLocation = true; cp.camera.location = "0 0 3.5";
+				cp.camera.hasLookAt   = true; cp.camera.lookAt   = "0 0 0";
+				cp.camera.hasUp       = true; cp.camera.up       = "0 1 0";
+				const Agent::AgentRenderResult cr = sess->Render( cp );
+				Check( cr.ok && cr.inventoryApplied && cr.inventoryText.find( kSentence ) == std::string::npos,
+				       "MONEY ASSERTION (V2-REACH-4): a render through a `camera` override carries no zoom sentence" );
+				Agent::AgentRenderParams vp;
+				vp.view = "no_such_view";
+				const Agent::AgentRenderResult vr = sess->Render( vp );
+				Check( vr.inventoryText.find( kSentence ) == std::string::npos,
+				       "V2-REACH a render through a `view` carries no zoom sentence either" );
+			}
 
 			// Production only: a draft render carries no such sentence.
 			Agent::AgentRenderParams dp;

@@ -81,6 +81,10 @@
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
+#include "../src/Library/SceneEditor/CameraIntrospection.h"   // doc 91 review: bit-exact camera capture for the restore test
+#include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
+#include <sys/resource.h>   // getrusage: peak RSS of the bounded-gather test
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
@@ -103,6 +107,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -6411,6 +6416,265 @@ static void RunZoomSchemaAndRpcTest()
 }
 
 
+//======================================================================
+// DOC 91 review round 1 (2026-10-17)
+//======================================================================
+
+struct ExactCameraState
+{
+	double v[6][3];
+	bool   ok[6];
+};
+static const char* const kExactCameraFields[6] = { "location", "lookat", "up", "orientation", "target_orientation", "fov" };
+
+static bool ReadActiveCameraExact( Job* job, ExactCameraState& st )
+{
+	ICameraManager* cams = job->GetCameras();
+	const std::string name = job->GetActiveCameraName();
+	const ICamera* cam = ( cams && !name.empty() ) ? cams->GetItem( name.c_str() ) : nullptr;
+	if( !cam ) return false;
+	for( int i = 0; i < 6; ++i )
+		st.ok[i] = CameraIntrospection::CaptureExactValue( *cam, String( kExactCameraFields[i] ), st.v[i] );
+	return true;
+}
+
+static int CountExactDifferences( const ExactCameraState& a, const ExactCameraState& b )
+{
+	int diff = 0;
+	for( int i = 0; i < 6; ++i ) {
+		if( a.ok[i] != b.ok[i] ) { ++diff; continue; }
+		if( !a.ok[i] ) continue;
+		if( std::memcmp( a.v[i], b.v[i], sizeof( double ) * 3 ) != 0 ) {
+			std::printf( "    camera field %s drifted: %.17g %.17g %.17g -> %.17g %.17g %.17g\n", kExactCameraFields[i],
+			             a.v[i][0], a.v[i][1], a.v[i][2], b.v[i][0], b.v[i][1], b.v[i][2] );
+			++diff;
+		}
+	}
+	return diff;
+}
+
+//----------------------------------------------------------------------
+// (R-P1-1) An override render must hand the live camera back BIT-EXACT.
+// The capture used to be the panel's `%.6g` string (and a degree round trip
+// for the angles), so every zoom / isolate / view / camera render rounded the
+// live camera away from the document.
+//----------------------------------------------------------------------
+static void RunCameraOverrideRestoresExactlyTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (R-P1-1) camera override renders restore the live camera bit-exactly ===\n" );
+	std::string scene = kSceneIsolateSmallPart;
+	const std::string oldCam = "pinhole_camera\n{\n\tname cam\n\tlocation 0 0 14\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}";
+	const std::size_t at = scene.find( oldCam );
+	Check( at != std::string::npos, "R-P1-1 fixture camera chunk found" );
+	if( at == std::string::npos ) return;
+	// camB first, camA LAST (the last-added camera is the active one) with
+	// long-digit values in EVERY field the override machinery touches.
+	scene.replace( at, oldCam.size(),
+		"pinhole_camera\n{\n\tname camB\n\tlocation 1.25 2.5 11\n\tlookat 0.5 0.25 0\n\tup 0 1 0\n\tfov 41.0\n}\n\n"
+		"pinhole_camera\n{\n\tname camA\n\tlocation 0.123456789012345 0.34567890123456 14.0987654321098\n"
+		"\tlookat 0.0123456789012 0.0234567890123 0.0345678901234\n"
+		"\tup 0.0123456789012 0.99987654321098 0.0087654321098\n"
+		"\tfov 50.123456789012\n\torientation 1.23456789012 2.34567890123 0.45678901234\n"
+		"\ttarget_orientation 3.45678901234 4.56789012345\n}" );
+	const std::string path = WriteTemp( "rise_cam_exact.RISEscene", scene );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( path.c_str() ), "R-P1-1 scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "R-P1-1 session wraps" ); return; }
+
+	ExactCameraState before;
+	Check( ReadActiveCameraExact( pJob, before ), "R-P1-1 the active camera reads" );
+	bool allFields = true;
+	for( int i = 0; i < 6; ++i ) allFields = allFields && before.ok[i];
+	Check( allFields, "R-P1-1 all six fields are capturable exactly on a pinhole" );
+	Check( before.v[0][0] != 0.123456789012345 + 1.0 && std::fabs( before.v[5][0] - 50.123456789012 * 3.14159265358979323846 / 180.0 ) < 1e-12,
+	       "R-P1-1 sanity: the fixture really carries the long-digit values" );
+
+	auto run = [&]( const char* what, AgentRenderParams p ) {
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok, std::string( "R-P1-1 " ) + what + " renders: " + r.message );
+		ExactCameraState after;
+		ReadActiveCameraExact( pJob, after );
+		const int d = CountExactDifferences( before, after );
+		Check( d == 0, std::string( "MONEY ASSERTION (R-P1-1): after render{" ) + what +
+		       "} every live camera field is bit-identical to its authored value" );
+	};
+	{ AgentRenderParams p; p.zoom = "part"; run( "zoom", p ); }
+	{ AgentRenderParams p; p.isolate = "part"; run( "isolate", p ); }
+	{ AgentRenderParams p; p.view = "camB"; run( "view", p ); }
+	{
+		AgentRenderParams p;
+		p.camera.hasLocation = true; p.camera.location = "1.5 0.5 12";
+		p.camera.hasLookAt   = true; p.camera.lookAt   = "0.25 0.125 0";
+		p.camera.hasUp       = true; p.camera.up       = "0 1 0";
+		p.camera.hasFov      = true; p.camera.fov      = "33.3";
+		run( "camera", p );
+	}
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (R-P2-1) zoom means "what THIS scene's camera sees of the object": an
+// object behind, or far outside the view of, the scene camera is refused
+// (it used to silently turn the view around and report ok at 0 px).
+//----------------------------------------------------------------------
+static void RunZoomRefusesUnseenObjectTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (R-P2-1) zoom refuses an object the scene camera cannot see ===\n" );
+	std::string scene = kSceneIsolateSmallPart;
+	scene += "\nbox_geometry\n{\n\tname behind_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	         "standard_object\n{\n\tname behind\n\tgeometry behind_geo\n\tmaterial mat\n\tposition 0 0 25\n}\n\n"
+	         "standard_object\n{\n\tname aside\n\tgeometry behind_geo\n\tmaterial mat\n\tposition 40 0 0\n}\n\n"
+	         "standard_object\n{\n\tname edge\n\tgeometry part_geo\n\tmaterial mat\n\tposition 8.5 0 0\n}\n";
+	const std::string path = WriteTemp( "rise_zoom_unseen.RISEscene", scene );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( path.c_str() ), "R-P2-1 scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "R-P2-1 session wraps" ); return; }
+
+	ExactCameraState before;
+	ReadActiveCameraExact( pJob, before );
+	for( const char* name : { "behind", "aside" } ) {
+		AgentRenderParams p; p.zoom = name; p.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
+		const AgentRenderResult r = session->Render( p );
+		Check( !r.ok && !r.zoomApplied && r.message.find( "is not in view of the scene camera" ) != std::string::npos &&
+		       r.message.find( "`isolate`" ) != std::string::npos && r.message.find( "`camera`" ) != std::string::npos,
+		       std::string( "MONEY ASSERTION (R-P2-1): zoom on \"" ) + name + "\" is refused, naming isolate / camera as the alternatives" );
+	}
+	// An object near the frame edge (centre ~10% beyond it is tolerated) still zooms.
+	{
+		AgentRenderParams p; p.zoom = "edge"; p.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok && r.zoomApplied, std::string( "R-P2-1 an object at the edge of the frame still zooms: " ) + r.message );
+	}
+	// The refusal changed nothing.
+	ExactCameraState after;
+	ReadActiveCameraExact( pJob, after );
+	Check( CountExactDifferences( before, after ) == 0, "R-P2-1 the refusals left the scene camera untouched" );
+	pJob->release();
+
+	// And over the RPC: a refused zoom is a failed render (it needs the live
+	// scene), not a parse error -- same class as an unknown name.
+	{
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( path.c_str() ), "R-P2-1 rpc scene loads" );
+		std::unique_ptr<AgentSession> s2 = AgentSession::WrapJob( j2 );
+		AgentRpcDispatcher rpc( std::move( s2 ) );
+		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
+		Check( JsonParse( rpc.HandleLine( "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"zoom\":\"behind\"}}" ), env, perr ),
+		       "R-P2-1 rpc response parses" );
+		Check( !env.get( "result" ).get( "ok" ).asBool( true ) && !env.get( "result" ).has( "zoom" ) &&
+		       env.get( "result" ).get( "message" ).asString().find( "not in view" ) != std::string::npos,
+		       "R-P2-1 over the wire: ok:false with the reason and no zoom block" );
+		j2->release();
+	}
+}
+
+//----------------------------------------------------------------------
+// (R-P3-3) An object straight below the eye puts the line of sight parallel
+// to the scene's up vector: zoom falls back to a perpendicular up.
+//----------------------------------------------------------------------
+static void RunZoomOverheadUpFallbackTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (R-P3-3) zoom straight down falls back to a perpendicular up ===\n" );
+	std::string scene = kSceneIsolateSmallPart;
+	const std::string oldCam = "pinhole_camera\n{\n\tname cam\n\tlocation 0 0 14\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}";
+	const std::size_t at = scene.find( oldCam );
+	Check( at != std::string::npos, "R-P3-3 fixture camera chunk found" );
+	if( at == std::string::npos ) return;
+	// Camera above and slightly off to one side, looking nearly (not exactly)
+	// down with world up; `below` sits exactly under the eye, so the line of
+	// sight to it is exactly parallel to the up vector.
+	scene.replace( at, oldCam.size(),
+		"pinhole_camera\n{\n\tname cam\n\tlocation 0 14 0.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}" );
+	scene += "\nbox_geometry\n{\n\tname below_geo\n\twidth 0.8\n\theight 0.2\n\tdepth 0.8\n}\n\n"
+	         "standard_object\n{\n\tname below\n\tgeometry below_geo\n\tmaterial mat\n\tposition 0 0 0.5\n}\n";
+	const std::string path = WriteTemp( "rise_zoom_overhead.RISEscene", scene );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( path.c_str() ), "R-P3-3 scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "R-P3-3 session wraps" ); return; }
+	AgentRenderParams p; p.zoom = "below"; p.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
+	const AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.zoomApplied, std::string( "MONEY ASSERTION (R-P3-3): zoom straight down renders instead of refusing: " ) + r.message );
+	const double share = LegendShareOfFrame( r, "below" );
+	double cx = 0.0, cy = 0.0;
+	const bool got = LegendCentre( r, "below", cx, cy );
+	std::printf( "  overhead zoom: share %.4f centre %.3f,%.3f\n", share, cx, cy );
+	Check( share >= 0.25 && got && std::fabs( cx - 0.5 ) < 0.08 && std::fabs( cy - 0.5 ) < 0.08,
+	       "R-P3-3 and the object fills the frame, centred" );
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (R-P1-2) The surface-point gather is bounded BEFORE it tessellates: a
+// 4040-patch Bezier model used to be tessellated at detail 32 (4.4M
+// vertices, ~1.3 GB peak) before any point was thinned.
+//----------------------------------------------------------------------
+static long PeakRssKB()
+{
+	struct rusage ru;
+	if( getrusage( RUSAGE_SELF, &ru ) != 0 ) return -1;
+#if defined(__APPLE__)
+	return (long)( ru.ru_maxrss / 1024 );   // bytes on macOS
+#else
+	return (long)ru.ru_maxrss;              // kilobytes on Linux
+#endif
+}
+
+static void RunBoundedSurfaceGatherTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (R-P1-2) the surface-point gather is bounded for a many-patch model ===\n" );
+	const char* media = std::getenv( "RISE_MEDIA_PATH" );
+	const std::string scenePath = std::string( media ? media : "" ) + "scenes/FeatureBased/Geometry/aphrodite.RISEscene";
+	{
+		std::ifstream probe( scenePath.c_str() );
+		if( !probe ) { std::printf( "  (aphrodite scene not found at %s -- skipped)\n", scenePath.c_str() ); return; }
+	}
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "R-P1-2 aphrodite loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "R-P1-2 session wraps" ); return; }
+
+	// Warm: realize/Prepare once with a plain objectmap so the measurement below
+	// is the gather's own footprint, not the model's load.
+	{
+		AgentRenderParams w; w.renderTarget = AgentRenderTarget::ObjectMap; w.width = 32; w.height = 32;
+		std::srand( g_renderSeed++ );
+		session->Render( w );
+	}
+	const long rssBefore = PeakRssKB();
+	AgentRenderParams p; p.isolate = "bez"; p.renderTarget = AgentRenderTarget::ObjectMap; p.width = 64; p.height = 64;
+	std::srand( g_renderSeed++ );
+	const AgentRenderResult r = session->Render( p );
+	const long rssAfterIso = PeakRssKB();
+	AgentRenderParams z; z.zoom = "bez"; z.renderTarget = AgentRenderTarget::ObjectMap; z.width = 64; z.height = 64;
+	std::srand( g_renderSeed++ );
+	const AgentRenderResult zr = session->Render( z );
+	const long rssAfterZoom = PeakRssKB();
+	std::printf( "  aphrodite: isolate gather+fit %.1f ms (%u points, basis %s); zoom gather+fit %.1f ms (%u points, basis %s, ok=%d)\n"
+	             "  peak RSS: before %ld MB, after isolate %ld MB, after zoom %ld MB\n",
+	             r.isolateFitMillis, r.isolateSurfacePointCount, r.isolateFitBasis.c_str(),
+	             zr.zoomFitMillis, zr.zoomSurfacePointCount, zr.zoomFitBasis.c_str(), (int)zr.ok,
+	             rssBefore / 1024, rssAfterIso / 1024, rssAfterZoom / 1024 );
+	Check( r.ok && r.isolateFitBasis == "surface", std::string( "R-P1-2 isolate fits aphrodite by its surface: " ) + r.message );
+	Check( r.isolateSurfacePointCount > 100 && r.isolateSurfacePointCount <= 24000 + 26,
+	       "R-P1-2 the retained point set is bounded (<= the fit cap plus the 26 extremes)" );
+	Check( rssAfterIso - rssBefore < 300 * 1024,
+	       "MONEY ASSERTION (R-P1-2): isolating a 4040-patch Bezier model does not balloon the process (< 300 MB of new peak; the unbudgeted tessellation added ~1.1 GB)" );
+	Check( r.isolateFitMillis < 150.0, "R-P1-2 and the gather + fit takes well under 150 ms (was ~220 ms)" );
+	Check( zr.ok && zr.zoomFitBasis == "surface" && zr.zoomSurfacePointCount <= 24000 + 26,
+	       std::string( "R-P1-2 zoom is bounded the same way: " ) + zr.message );
+	pJob->release();
+}
+
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -6466,6 +6730,11 @@ int main()
 	// Doc 91 V2 (2026-10-17) `render{zoom:}`
 	RunZoomTest();
 	RunZoomSchemaAndRpcTest();
+	// Doc 91 review round 1 (2026-10-17)
+	RunCameraOverrideRestoresExactlyTest();
+	RunZoomRefusesUnseenObjectTest();
+	RunZoomOverheadUpFallbackTest();
+	RunBoundedSurfaceGatherTest();
 	// G3b (2026-08-10) `render{isolate:, target:}`
 	RunTargetIouTest();
 	RunTargetMirroredIouTest();
