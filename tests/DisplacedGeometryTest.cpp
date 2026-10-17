@@ -2408,6 +2408,38 @@ static Scalar MaxMove( const VerticesListType& a, const VerticesListType& b )
 	return m;
 }
 
+// An N-segment cone / pyramid import whose APEX is duplicated per segment (the three.js / glTF
+// habit), flat face normals or per-corner tilted smooth normals.  The apex group's normals span far
+// more than 120 degrees end to end, but each NEIGHBOURING pair is inside the cone: it is one surface
+// point, so the crease-cone rule must close it TRANSITIVELY.
+static TriangleMeshGeometryIndexed* BuildApexImport( const int N, const double h, const double r, const bool flat )
+{
+	TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( true, false );
+	VerticesListType V; NormalsListType Nn; TexCoordsListType C; IndexTriangleListType T;
+	const double slope = r / h;
+	for( int sg = 0; sg < N; ++sg ) {
+		const double a0 = 2 * PI * sg / N, a1 = 2 * PI * ( sg + 1 ) / N, am = 0.5 * ( a0 + a1 );
+		const Point3 A( 0, h, 0 ), B( r * std::cos( a0 ), 0, r * std::sin( a0 ) ), Cc( r * std::cos( a1 ), 0, r * std::sin( a1 ) );
+		Vector3 nf = Vector3Ops::Normalize( Vector3( std::cos( am ), slope, std::sin( am ) ) );
+		Vector3 fn = Vector3Ops::Normalize( Vector3Ops::Cross( Vector3Ops::mkVector3( Cc, A ), Vector3Ops::mkVector3( B, A ) ) );
+		if( Vector3Ops::Dot( fn, nf ) < 0 ) fn = fn * -1.0;
+		const unsigned int base = static_cast<unsigned int>( V.size() );
+		V.push_back( A ); V.push_back( B ); V.push_back( Cc );
+		if( flat ) { Nn.push_back( fn ); Nn.push_back( fn ); Nn.push_back( fn ); }
+		else {
+			Nn.push_back( nf );
+			Nn.push_back( Vector3Ops::Normalize( Vector3( std::cos( a0 ), slope, std::sin( a0 ) ) ) );
+			Nn.push_back( Vector3Ops::Normalize( Vector3( std::cos( a1 ), slope, std::sin( a1 ) ) ) );
+		}
+		C.push_back( TexCoord( ( sg + 0.5 ) / N, 1 ) ); C.push_back( TexCoord( double( sg ) / N, 0 ) ); C.push_back( TexCoord( double( sg + 1 ) / N, 0 ) );
+		IndexedTriangle x;
+		x.iVertices[0] = x.iNormals[0] = x.iCoords[0] = base; x.iVertices[1] = x.iNormals[1] = x.iCoords[1] = base + 2; x.iVertices[2] = x.iNormals[2] = x.iCoords[2] = base + 1;
+		T.push_back( x );
+	}
+	m->BeginIndexedTriangles(); m->AddVertices( V ); m->AddNormals( Nn ); m->AddTexCoords( C ); m->AddIndexedTriangles( T ); m->DoneIndexedTriangles();
+	return m;
+}
+
 static void TestWeldPoliciesPerBaseMesh()
 {
 	std::cout << "Test 10s: the weld follows the BASE mesh (builder: every group, at every layer, whatever face_normals; import: crease cone; path instances: none)...\n";
@@ -2449,6 +2481,7 @@ static void TestWeldPoliciesPerBaseMesh()
 
 	// ---- imports: two coincident OPPOSITE sheets stay independent; a 90 degree fold stays closed ----
 	ConstFunction2D* pOne = new ConstFunction2D( 1.0 );
+	WaveFunction2D* pWave2 = new WaveFunction2D();
 	auto buildImport = [&]( const VerticesListType& V, const NormalsListType& N, const IndexTriangleListType& T ) {
 		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( true, false );
 		TexCoordsListType C; for( size_t i = 0; i < V.size(); ++i ) C.push_back( TexCoord( V[i].x, V[i].z ) );
@@ -2492,7 +2525,26 @@ static void TestWeldPoliciesPerBaseMesh()
 		SOFT( groups > 0 && spread < 1e-9 );
 		pFlat->release(); pDisp->release(); pFold->release();
 	}
+	// apexes (and rims) of cones / pyramids: closed TRANSITIVELY, flat and smooth-tilted normals
+	{
+		struct Apex { const char* name; int n; double h, r; bool flat; };
+		const Apex rowsA[] = { { "square pyramid h4 r1, flat", 4, 4, 1, true }, { "16-segment cone h4 r1, flat", 16, 4, 1, true },
+		                       { "32-segment cone h4 r1, smooth tilted normals", 32, 4, 1, false }, { "16-segment cone h1 r1 (squat), flat", 16, 1, 1, true } };
+		for( size_t i = 0; i < sizeof( rowsA ) / sizeof( rowsA[0] ); ++i ) {
+			TriangleMeshGeometryIndexed* pCone = BuildApexImport( rowsA[i].n, rowsA[i].h, rowsA[i].r, rowsA[i].flat );
+			DisplacedGeometry* pFlat = new DisplacedGeometry( pCone, 24, pWave2, 1e-12, true, false, false );
+			DisplacedGeometry* pDisp = new DisplacedGeometry( pCone, 24, pWave2, 0.05, true, false, false );
+			const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
+			size_t groups = 0; const Scalar spread = CoincidentSpread( v0, v1, &groups );
+			std::cout << "  [info] " << rowsA[i].name << ": " << groups << " coincident groups (apex, rim), worst crack " << spread << " (max move " << MaxMove( v0, v1 ) << ")\n";
+			SOFT( groups > 0 && MaxMove( v0, v1 ) > 0.01 );
+			SOFT( spread < 1e-9 );
+			pFlat->release(); pDisp->release(); pCone->release();
+		}
+	}
 	pOne->release();
+
+	pWave2->release();
 
 	// ---- touching path instances: closed INSIDE each instance, independent ACROSS instances ----
 	{
@@ -2565,6 +2617,44 @@ static void TestPathInstancesWeldWithinInstance()
 		SOFT( wg > 0 && MaxMove( v0, v1 ) > 0.01 );
 		SOFT( within < 1e-9 );
 		pFlat->release(); pDisp->release(); pInst->release();
+	}
+	{	// instances OF instances: the inner (touching) instances stay separate bodies inside every outer instance
+		static const double tube[] = { 1.0, 0.0,  1.0, 2.0 };
+		LatheDescriptor td; td.profilePoints = tube; td.numProfilePoints = 2; td.nRadial = 16;
+		ITriangleMeshGeometryIndexed* pTplI = 0;
+		assert( RISE_API_CreateLatheGeometry( &pTplI, td ) );
+		static const double innerPath[] = { 0.0, 0.0, 0.0,   0.0, 0.0, 6.0 };
+		PathInstancesDescriptor inner;
+		inner.pGeometry = dynamic_cast<IGeometry*>( pTplI ); inner.pathPoints = innerPath; inner.numPathPoints = 2;
+		inner.nLen = 8; inner.pitch = 2.0; inner.phase = 1.0; inner.scale = 1.0; inner.detail = 16;		// touching tubes
+		ITriangleMeshGeometryIndexed* pInnerI = 0;
+		assert( RISE_API_CreatePathInstancesGeometry( &pInnerI, inner ) );
+		TriangleMeshGeometryIndexed* pInner = dynamic_cast<TriangleMeshGeometryIndexed*>( pInnerI );
+		assert( pInner );
+		static const double outerPath[] = { 0.0, 0.0, 0.0,   60.0, 0.0, 0.0 };
+		PathInstancesDescriptor outer;
+		outer.pGeometry = dynamic_cast<IGeometry*>( pInner ); outer.pathPoints = outerPath; outer.numPathPoints = 2;
+		outer.nLen = 8; outer.pitch = 30.0; outer.phase = 15.0; outer.scale = 1.0; outer.detail = 16;
+		ITriangleMeshGeometryIndexed* pOuterI = 0;
+		assert( RISE_API_CreatePathInstancesGeometry( &pOuterI, outer ) );
+		TriangleMeshGeometryIndexed* pOuter = dynamic_cast<TriangleMeshGeometryIndexed*>( pOuterI );
+		assert( pOuter );
+		std::set<unsigned int> innerIds( pInner->GetDisplacementWeldDomains().begin(), pInner->GetDisplacementWeldDomains().end() );
+		std::set<unsigned int> outerIds( pOuter->GetDisplacementWeldDomains().begin(), pOuter->GetDisplacementWeldDomains().end() );
+		std::cout << "  [info] nested path_instances: " << innerIds.size() << " inner domains, " << outerIds.size() << " composed domains (2 outer instances)\n";
+		SOFT( innerIds.size() >= 2 && outerIds.size() == 2 * innerIds.size() );
+		VOnlyFunction2D* pV = new VOnlyFunction2D();
+		DisplacedGeometry* pFlat = new DisplacedGeometry( pOuter, 16, pV, 1e-12, false, false, false );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pOuter, 16, pV, 0.05, false, false, false );
+		const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
+		const std::vector<unsigned int> dom = dynamic_cast<const TriangleMeshGeometryIndexed*>( pDisp->GetBakedMesh() )->GetDisplacementWeldDomains();
+		Scalar within = 0, across = 0; size_t wg = 0, ag = 0;
+		if( dom.size() == v0.size() ) CoincidentSpreadByDomain( v0, v1, dom, within, across, wg, ag );
+		else { ++softFails; std::cout << "  [FAIL] the baked mesh lost the weld domains\n"; }
+		std::cout << "  [info] nested instances: " << wg << " groups inside a body (worst crack " << within << "), " << ag << " across touching inner instances (worst separation " << across << ")\n";
+		SOFT( ag > 0 && across > 0.02 );		// the inner instances still touch rim to rim and stay independent
+		SOFT( within < 1e-9 );
+		pFlat->release(); pDisp->release(); pV->release(); pOuter->release(); pInner->release(); pTplI->release();
 	}
 	pBox->release(); pLatheI->release(); pWave->release();
 	assert( softFails == 0 );

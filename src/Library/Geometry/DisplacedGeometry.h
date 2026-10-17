@@ -101,8 +101,9 @@ namespace RISE
 		// welded again by its base's policy.  Consequences: a pinch ring displaces to ~zero
 		// relief (its poles are averaged against each other); knife-edge opposite sheets may
 		// separate.  Smooth-normal TriangleMeshGeometryIndexed bases only -- a face-normal
-		// base, an analytic and an SDF base are not touched (a box's per-face corner
-		// duplicates still crack: a pre-existing limitation of that tessellation) -- and
+		// base, an analytic base used directly and an SDF base are not touched (a box's per-face
+		// corner duplicates still crack: a pre-existing limitation of that tessellation, absent
+		// when the box is a path_instances template, whose instances weld by the crease cone) -- and
 		// gated on the BASE's normal source, not this chunk's own face_normals flag.
 		//
 		// SHADING.  For every smooth-normal mesh base that is displaced (refined or

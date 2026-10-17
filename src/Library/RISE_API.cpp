@@ -4028,11 +4028,12 @@ namespace RISE
 		// Ex where the template carries chart bits (a builder's periodic / polar UV
 		// axes, a displaced base's), so the instanced copies keep them.
 		std::vector<unsigned char> tFlags;
+		std::vector<unsigned int>  tDomains;	// the template's own weld domains (a path_instances / displaced-of-path_instances template)
 		bool bTessellated;
 		if( const TriangleMeshGeometryIndexed* pTplIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( desc.pGeometry ) ) {
-			bTessellated = pTplIdx->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags );
+			bTessellated = pTplIdx->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags, &tDomains );
 		} else if( const DisplacedGeometry* pTplDsp = dynamic_cast<const DisplacedGeometry*>( desc.pGeometry ) ) {
-			bTessellated = pTplDsp->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags );
+			bTessellated = pTplDsp->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags, &tDomains );
 		} else {
 			bTessellated = desc.pGeometry->TessellateToMesh( tTris, tVerts, tNorms, tCoords, detail );
 		}
@@ -4140,11 +4141,22 @@ namespace RISE
 		}
 
 		pGeom->DoneIndexedTriangles();
-		{	// one weld domain per instance (vertex order is the template's, repeated per instance)
+		{	// one weld domain per instance (vertex order is the template's, repeated per instance).  A template
+			// that carries domains itself (instances of instances) COMPOSES them -- outer instance x inner
+			// domain -- so the inner touching instances stay separate bodies inside every outer instance.
+			unsigned int innerCount = 1;
+			const bool nested = tDomains.size() == tVerts.size();
+			if( nested ) {
+				for( size_t v = 0; v < tDomains.size(); ++v ) innerCount = std::max( innerCount, tDomains[v] + 1u );
+			}
 			std::vector<unsigned int> domains;
 			domains.reserve( tVerts.size() * placed );
 			for( unsigned int inst = 0; inst < placed; ++inst ) {
-				domains.insert( domains.end(), tVerts.size(), inst );
+				if( nested ) {
+					for( size_t v = 0; v < tDomains.size(); ++v ) domains.push_back( inst * innerCount + tDomains[v] );
+				} else {
+					domains.insert( domains.end(), tVerts.size(), inst );
+				}
 			}
 			pGeom->SetDisplacementWeldDomains( domains );
 		}

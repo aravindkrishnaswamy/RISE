@@ -1876,8 +1876,10 @@ plumbing:
   never across instances (touching instances are separate bodies).  It applies at every layer (a displaced base is welded
   again by its own base's rule) and does not depend on the displaced chunk's
   own `face_normals`, which only chooses how the result shades; a base that is
-  itself face-normal, an analytic primitive and an SDF are never welded (a
-  box's per-face corner duplicates still crack under displacement).  Costs: a
+  itself face-normal, an analytic primitive used DIRECTLY as the base and an SDF are
+  never welded (a box's per-face corner duplicates still crack under displacement
+  -- unless the box is a `path_instances_geometry` template, whose instances
+  weld by the crease cone).  Costs: a
   pinch's two poles are averaged against each other, so the relief at that
   ring is ~zero; a sweep's or partial lathe's END CAP is refined on its rim
   only, its rim points matching the wall's vertex for vertex, so it carries

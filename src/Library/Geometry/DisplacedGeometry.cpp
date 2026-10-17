@@ -426,12 +426,16 @@ void DisplacedGeometry::WeldCoincidentDisplacement(
 		return;
 	}
 	const bool cone = ( policy == TriangleMeshGeometryIndexed::kWeldCreaseCone );
-	// The crease-cone rule needs the base normals; without them skip the weld rather than silently
-	// degrading into weld-everything.
+	// Inputs that do not describe this mesh skip the weld -- never silently degrade into a coarser rule:
+	// the crease-cone rule needs the base normals, and a weld-domain array of the wrong size cannot say
+	// which vertices are one body (treating them all as one domain would fuse touching instances).
 	if( cone && baseNormals.size() != undisplaced.size() ) {
 		return;
 	}
-	const bool haveDomains = domains.size() == undisplaced.size();
+	if( !domains.empty() && domains.size() != undisplaced.size() ) {
+		return;
+	}
+	const bool haveDomains = !domains.empty();
 	std::vector<unsigned int> wid;
 	if( !GeometricUtilities::WeldVertexPositions( undisplaced, wid ) ) {
 		return;
@@ -446,42 +450,72 @@ void DisplacedGeometry::WeldCoincidentDisplacement(
 	std::vector<unsigned int> members( wid.size() ), fill( start.begin(), start.end() - 1 );
 	for( size_t i = 0; i < wid.size(); ++i ) members[ fill[ wid[i] ]++ ] = static_cast<unsigned int>( i );
 
-	// Within a position group, members are welded in CLUSTERS: members of one weld domain (one
-	// path instance; a single domain otherwise) and -- for the crease-cone rule -- whose base normal
-	// is within 120 degrees (dot > -1/2) of the cluster's FIRST member's.  A builder (kWeldAll) welds
-	// the whole domain.  One pass per group, O(members x clusters) with a handful of clusters, and
-	// the displacement vectors are accumulated per cluster (no pairwise work).
-	struct Cluster { unsigned int domain, leader, first, count; Vector3 sum; };
-	std::vector<Cluster> clusters;
-	std::vector<unsigned int> clusterOf;
+	// A position group splits into weld sets.  Members of different weld DOMAINS (path instances) are
+	// never one set.  kWeldAll: the whole domain is one set (a builder's own crease).  Crease cone: the
+	// TRANSITIVE closure (union-find) of "base normals within 120 degrees (dot > -1/2)" -- transitive on
+	// purpose: the apex of a cone / pyramid / spike has normals spanning far more than 120 degrees
+	// end to end, yet each neighbouring pair is inside the cone, and it is ONE surface point.  The
+	// pairwise pass is O(m^2) in the group size, so above kMaxPairwiseGroup members (the pole of a
+	// ~4000-segment fan) it falls back to clustering against each cluster's FIRST member -- cheaper,
+	// not transitive, and documented as such.  The displacement vectors are accumulated per set
+	// root (one O(m) pass).
+	const unsigned int kMaxPairwiseGroup = 4096;
+	std::vector<unsigned int> parent, firstOf, countOf;
+	std::vector<Vector3> sumOf;
 	for( size_t g = 0; g <= maxId; ++g ) {
 		const unsigned int b = start[g], e = start[g + 1], m = e - b;
 		if( m < 2 ) continue;
-		clusters.clear();
-		clusterOf.assign( m, 0 );
+		parent.resize( m );
+		for( unsigned int k = 0; k < m; ++k ) parent[k] = k;
+		auto find = [&]( unsigned int x ) { while( parent[x] != x ) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+		auto domOf = [&]( const unsigned int k ) { return haveDomains ? domains[ members[b + k] ] : 0u; };
+		if( !cone ) {
+			// one set per domain: link each member to the first member of its domain
+			if( haveDomains ) {
+				for( unsigned int k = 1; k < m; ++k ) {
+					for( unsigned int q = 0; q < k; ++q ) {
+						if( parent[q] == q && domOf( q ) == domOf( k ) ) { parent[k] = q; break; }
+					}
+				}
+			} else {
+				for( unsigned int k = 1; k < m; ++k ) parent[k] = 0;
+			}
+		} else if( m <= kMaxPairwiseGroup ) {
+			for( unsigned int i = 0; i < m; ++i ) {
+				const Vector3& ni = baseNormals[ members[b + i] ];
+				const unsigned int di = domOf( i );
+				for( unsigned int j = i + 1; j < m; ++j ) {
+					if( domOf( j ) != di ) continue;
+					if( Vector3Ops::Dot( ni, baseNormals[ members[b + j] ] ) > -0.5 ) {
+						const unsigned int ri = find( i ), rj = find( j );
+						if( ri != rj ) parent[ri] = rj;
+					}
+				}
+			}
+		} else {
+			// oversized group: cluster against each cluster's first member (not transitive)
+			std::vector<unsigned int> leaders;
+			for( unsigned int k = 0; k < m; ++k ) {
+				bool placed = false;
+				for( size_t q = 0; q < leaders.size(); ++q ) {
+					const unsigned int L = leaders[q];
+					if( domOf( L ) == domOf( k ) && Vector3Ops::Dot( baseNormals[ members[b + L] ], baseNormals[ members[b + k] ] ) > -0.5 ) { parent[k] = L; placed = true; break; }
+				}
+				if( !placed ) leaders.push_back( k );
+			}
+		}
+		// accumulate per root, then write back
+		firstOf.assign( m, 0 ); countOf.assign( m, 0 ); sumOf.assign( m, Vector3( 0, 0, 0 ) );
 		for( unsigned int k = 0; k < m; ++k ) {
-			const unsigned int vi = members[b + k];
-			const unsigned int dom = haveDomains ? domains[vi] : 0u;
-			unsigned int c = static_cast<unsigned int>( clusters.size() );
-			for( unsigned int q = 0; q < clusters.size(); ++q ) {
-				if( clusters[q].domain != dom ) continue;
-				if( cone && !( Vector3Ops::Dot( baseNormals[ clusters[q].leader ], baseNormals[vi] ) > -0.5 ) ) continue;
-				c = q;
-				break;
-			}
-			if( c == clusters.size() ) {
-				Cluster nc; nc.domain = dom; nc.leader = vi; nc.first = vi; nc.count = 0; nc.sum = Vector3( 0, 0, 0 );
-				clusters.push_back( nc );
-			}
-			clusters[c].count++;
-			clusters[c].sum = clusters[c].sum + Vector3Ops::mkVector3( displaced[vi], undisplaced[vi] );
-			clusterOf[k] = c;
+			const unsigned int r = find( k ), vi = members[b + k];
+			if( countOf[r]++ == 0 ) firstOf[r] = vi;
+			sumOf[r] = sumOf[r] + Vector3Ops::mkVector3( displaced[vi], undisplaced[vi] );
 		}
 		for( unsigned int k = 0; k < m; ++k ) {
-			const Cluster& cl = clusters[ clusterOf[k] ];
-			if( cl.count < 2 ) continue;
-			const Vector3 mean = cl.sum * ( 1.0 / Scalar( cl.count ) );
-			const Point3& o = undisplaced[cl.first];
+			const unsigned int r = find( k );
+			if( countOf[r] < 2 ) continue;
+			const Vector3 mean = sumOf[r] * ( 1.0 / Scalar( countOf[r] ) );
+			const Point3& o = undisplaced[ firstOf[r] ];
 			displaced[ members[b + k] ] = Point3( o.x + mean.x, o.y + mean.y, o.z + mean.z );
 		}
 	}
