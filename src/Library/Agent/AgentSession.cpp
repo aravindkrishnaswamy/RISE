@@ -21435,9 +21435,11 @@ namespace RISE
 			// the bake in place on an animated displacement's painter notification, and neither
 			// this read nor the TessellateToMesh copy it replaces is synchronized against that --
 			// both read the same m_pMesh the render's own IntersectRay reads.  The gather runs on
-			// the control thread after PrepareForRendering, between renders, so there is no
-			// concurrent refit on any path today; a caller that animates a displacement painter
-			// from another thread while an isolate / zoom gathers would race either way.
+			// the control thread after PrepareForRendering, between renders.  No concurrent refit
+			// path was found; NOT verified for GUI editor-thread keyframe edits (a painter
+			// notification refits on the editor thread) racing agent tool calls -- a displaced
+			// geometry animated from another thread while an isolate / zoom gathers would race
+			// either way.
 			const Implementation::TriangleMeshGeometryIndexed* mesh =
 				dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>( g );
 			if( !mesh ) {

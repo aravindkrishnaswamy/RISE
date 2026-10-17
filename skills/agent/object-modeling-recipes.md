@@ -1871,8 +1871,9 @@ plumbing:
   members whose base normals are within a 120-degree crease cone (a UV seam, a
   cube edge), so two coincident OPPOSITE-facing sheets (a two-sided leaf,
   cloth) stay independent surfaces that each keep their full relief and may
-  separate; `path_instances_geometry` welds nothing (touching instances are
-  separate bodies).  It applies at every layer (a displaced base is welded
+  separate; `path_instances_geometry` welds WITHIN each instance by its template's own
+  rule (a creased lathe or a box template stays closed inside every instance) and
+  never across instances (touching instances are separate bodies).  It applies at every layer (a displaced base is welded
   again by its own base's rule) and does not depend on the displaced chunk's
   own `face_normals`, which only chooses how the result shades; a base that is
   itself face-normal, an analytic primitive and an SDF are never welded (a

@@ -96,7 +96,8 @@ namespace RISE
 		// points, pinch poles, skin crease stations); an import / hand-built mesh welds members
 		// whose base normals are within a 120-degree crease cone, so coincident OPPOSITE-facing
 		// sheets (leaf, cloth) stay independent and keep their full relief; path_instances_
-		// geometry welds nothing (touching instances are separate bodies).  A displaced base is
+		// geometry welds WITHIN each instance by its template's own rule and never across
+		// instances (touching instances are separate bodies).  A displaced base is
 		// welded again by its base's policy.  Consequences: a pinch ring displaces to ~zero
 		// relief (its poles are averaged against each other); knife-edge opposite sheets may
 		// separate.  Smooth-normal TriangleMeshGeometryIndexed bases only -- a face-normal
@@ -249,7 +250,8 @@ namespace RISE
 				const bool             bLog,
 				NormalsListType&       shading0,
 				NormalsListType&       geom0,
-				std::vector<unsigned char>& uvFlags ) const;
+				std::vector<unsigned char>& uvFlags,
+				std::vector<unsigned int>&  weldDomains ) const;
 
 			// WATERTIGHT DISPLACEMENT at creases.  A mesh base keeps a crease / cap / pinch /
 			// UV seam as SEPARATE vertices -- coincident in position, different in normal and
@@ -264,8 +266,11 @@ namespace RISE
 			// stations); an import or hand-built mesh welds only members whose base normals lie
 			// within a crease cone (< 120 deg) -- coincident OPPOSITE-facing sheets (a two-sided
 			// leaf, cloth) are separate surfaces and stay independent, so each keeps its full
-			// relief -- and path_instances_geometry welds nothing (touching instances are
-			// separate bodies).  Consequences: a pinch's two poles stay together and the relief
+			// relief -- and path_instances_geometry welds WITHIN each instance by its template's
+			// own rule (every instance is a weld domain) and never across instances (touching
+			// instances are separate bodies).  A cone-rule group clusters by the FIRST member's
+			// normal (dot > -1/2).  The crease-cone rule needs the base normals: without them
+			// the weld is skipped.  Consequences: a pinch's two poles stay together and the relief
 			// averages to ~zero on that ring; opposite sheets may separate under displacement.
 			// A displaced base is welded again (its baked mesh inherits the policy of ITS base),
 			// because its coincident vertices leave the inner bake with different transported
@@ -276,7 +281,7 @@ namespace RISE
 			// displacement: a pre-existing limitation of those tessellations).
 			// Returns the base's policy, or -1 for no weld.
 			int  BaseWeldPolicy() const;
-			void WeldCoincidentDisplacement( const VerticesListType& undisplaced, const NormalsListType& baseNormals, const int policy, VerticesListType& displaced ) const;
+			void WeldCoincidentDisplacement( const VerticesListType& undisplaced, const NormalsListType& baseNormals, const std::vector<unsigned int>& domains, const int policy, VerticesListType& displaced ) const;
 
 			// Topology signature (FNV-1a over the triangle index list and vertex
 			// count) of the mesh the current m_pMesh was built from.
@@ -391,7 +396,7 @@ namespace RISE
 			//! TessellateToMesh plus the per-output-vertex chart-periodicity bits of the
 			//! baked mesh (see TriangleMeshGeometryIndexed::SetUVPeriodicRegion) -- how a
 			//! displaced-of-displaced base keeps its wrap through the bake.
-			bool TessellateToMeshEx( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail, std::vector<unsigned char>* pUVPeriodic ) const;
+			bool TessellateToMeshEx( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail, std::vector<unsigned char>* pUVPeriodic, std::vector<unsigned int>* pWeldDomains = 0 ) const;
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 

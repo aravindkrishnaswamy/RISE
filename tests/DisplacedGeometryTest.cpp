@@ -2378,6 +2378,29 @@ static Scalar CoincidentSpread( const VerticesListType& v0, const VerticesListTy
 	return worst;
 }
 
+// As CoincidentSpread, but split by the baked mesh's weld DOMAIN (path_instances: the instance):
+// the worst separation of two coincident vertices of the SAME domain and of DIFFERENT domains.
+static void CoincidentSpreadByDomain( const VerticesListType& v0, const VerticesListType& v1, const std::vector<unsigned int>& dom, Scalar& within, Scalar& across, size_t& withinGroups, size_t& acrossGroups )
+{
+	assert( v0.size() == v1.size() && dom.size() == v0.size() );
+	const Scalar diag = BBoxDiagonal( v0 ), q = 1e-6 * diag;
+	std::map<std::tuple<long long, long long, long long>, std::vector<unsigned int> > g;
+	for( unsigned int k = 0; k < v0.size(); ++k ) g[ std::make_tuple( (long long)std::floor( v0[k].x / q + 0.5 ), (long long)std::floor( v0[k].y / q + 0.5 ), (long long)std::floor( v0[k].z / q + 0.5 ) ) ].push_back( k );
+	within = across = 0; withinGroups = acrossGroups = 0;
+	for( std::map<std::tuple<long long, long long, long long>, std::vector<unsigned int> >::const_iterator it = g.begin(); it != g.end(); ++it ) {
+		const std::vector<unsigned int>& m = it->second;
+		bool anyWithin = false, anyAcross = false;
+		for( size_t a = 0; a < m.size(); ++a ) for( size_t b = a + 1; b < m.size(); ++b ) {
+			const Point3& p = v1[m[a]]; const Point3& r = v1[m[b]];
+			const Scalar d = std::sqrt( ( p.x - r.x )*( p.x - r.x ) + ( p.y - r.y )*( p.y - r.y ) + ( p.z - r.z )*( p.z - r.z ) );
+			if( dom[m[a]] == dom[m[b]] ) { anyWithin = true; within = std::max( within, d ); }
+			else { anyAcross = true; across = std::max( across, d ); }
+		}
+		if( anyWithin ) ++withinGroups;
+		if( anyAcross ) ++acrossGroups;
+	}
+}
+
 static Scalar MaxMove( const VerticesListType& a, const VerticesListType& b )
 {
 	Scalar m = 0;
@@ -2471,7 +2494,7 @@ static void TestWeldPoliciesPerBaseMesh()
 	}
 	pOne->release();
 
-	// ---- touching path instances stay independent bodies ----
+	// ---- touching path instances: closed INSIDE each instance, independent ACROSS instances ----
 	{
 		static const double tube[] = { 1.0, 0.0,  1.0, 2.0 };
 		LatheDescriptor td; td.profilePoints = tube; td.numProfilePoints = 2; td.nRadial = 16;
@@ -2485,18 +2508,65 @@ static void TestWeldPoliciesPerBaseMesh()
 		assert( RISE_API_CreatePathInstancesGeometry( &pInstI, pd ) );
 		TriangleMeshGeometryIndexed* pInst = dynamic_cast<TriangleMeshGeometryIndexed*>( pInstI );
 		assert( pInst );
-		SOFT( pInst->GetDisplacementWeldPolicy() == TriangleMeshGeometryIndexed::kWeldNone );
+		SOFT( pInst->GetDisplacementWeldPolicy() == TriangleMeshGeometryIndexed::kWeldAll );	// the lathe template's own rule
+		SOFT( pInst->GetDisplacementWeldDomains().size() == pInst->getVertices().size() );
 		VOnlyFunction2D* pV = new VOnlyFunction2D();
 		DisplacedGeometry* pFlat = new DisplacedGeometry( pInst, 16, pV, 1e-12, false, false, false );
 		DisplacedGeometry* pDisp = new DisplacedGeometry( pInst, 16, pV, 0.05, false, false, false );
 		const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
-		size_t groups = 0; const Scalar spread = CoincidentSpread( v0, v1, &groups );
-		std::cout << "  [info] touching path instances: " << groups << " coincident groups across/within instances, worst separation " << spread << " (independent: ~disp_scale)\n";
-		SOFT( groups > 0 );
-		SOFT( spread > 0.02 );		// each instance displaced by ITS OWN field at its rim; welding would have fused them to 0
+		const std::vector<unsigned int> dom = dynamic_cast<const TriangleMeshGeometryIndexed*>( pDisp->GetBakedMesh() )->GetDisplacementWeldDomains();
+		Scalar within = 0, across = 0; size_t wg = 0, ag = 0;
+		if( dom.size() == v0.size() ) CoincidentSpreadByDomain( v0, v1, dom, within, across, wg, ag );
+		else { ++softFails; std::cout << "  [FAIL] the baked mesh lost the weld domains\n"; }
+		std::cout << "  [info] touching path instances: " << wg << " coincident groups inside an instance (worst " << within << "), " << ag << " across instances (worst separation " << across << ", ~disp_scale)\n";
+		SOFT( ag > 0 );
+		SOFT( across > 0.02 );		// each instance displaced by ITS OWN field at its rim; welding across would have fused them to 0
 		pFlat->release(); pDisp->release(); pV->release(); pInst->release(); pTplI->release();
 	}
 	pLathe->release();
+	assert( softFails == 0 );
+#undef SOFT
+}
+
+//-----------------------------------------------------------------------------
+// Round-7: displaced_geometry over path_instances_geometry welds WITHIN each instance (by the
+// template's own rule), never across.  Round 6 gave path instances `weld nothing`, which
+// cracked every crease / cap / box corner inside every instance (a faceted lathe template: all
+// groups split, spread 0.24; a box template: all of them).
+//-----------------------------------------------------------------------------
+static void TestPathInstancesWeldWithinInstance()
+{
+	std::cout << "Test 10t: displaced path_instances_geometry is closed inside every instance (creased lathe and box templates)...\n";
+	int softFails = 0;
+#define SOFT( cond ) do { if( !( cond ) ) { ++softFails; std::cout << "  [FAIL] " #cond "\n"; } } while( 0 )
+	WaveFunction2D* pWave = new WaveFunction2D();
+	static const double prof[] = { 0.0,0,  1,0,  1,1.5,  0.6,1.5,  0.6,3,  0,3 };
+	LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 6; ld.nRadial = 16; ld.sweepDegrees = 360; ld.smooth = false;
+	ITriangleMeshGeometryIndexed* pLatheI = 0;
+	assert( RISE_API_CreateLatheGeometry( &pLatheI, ld ) );
+	IGeometry* pBox = 0;
+	assert( RISE_API_CreateBoxGeometry( &pBox, 1, 1, 1 ) );
+	static const double path[] = { 0.0, 0.0, 0.0,   20.0, 0.0, 0.0 };
+	struct T { const char* name; IGeometry* tpl; } templates[] = { { "faceted lathe template", dynamic_cast<IGeometry*>( pLatheI ) }, { "box template", pBox } };
+	for( size_t t = 0; t < 2; ++t ) {
+		PathInstancesDescriptor pd; pd.pGeometry = templates[t].tpl; pd.pathPoints = path; pd.numPathPoints = 2; pd.pitch = 4; pd.scale = 1;
+		ITriangleMeshGeometryIndexed* pInstI = 0;
+		assert( RISE_API_CreatePathInstancesGeometry( &pInstI, pd ) );
+		TriangleMeshGeometryIndexed* pInst = dynamic_cast<TriangleMeshGeometryIndexed*>( pInstI );
+		assert( pInst );
+		DisplacedGeometry* pFlat = new DisplacedGeometry( pInst, 24, pWave, 1e-12, false, false, false );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pInst, 24, pWave, 0.05, false, false, false );
+		const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
+		const std::vector<unsigned int> dom = dynamic_cast<const TriangleMeshGeometryIndexed*>( pDisp->GetBakedMesh() )->GetDisplacementWeldDomains();
+		Scalar within = 0, across = 0; size_t wg = 0, ag = 0;
+		if( dom.size() == v0.size() ) CoincidentSpreadByDomain( v0, v1, dom, within, across, wg, ag );
+		else { ++softFails; std::cout << "  [FAIL] the baked mesh lost the weld domains\n"; }
+		std::cout << "  [info] path_instances of a " << templates[t].name << ": " << wg << " coincident groups inside instances, worst crack " << within << " (max move " << MaxMove( v0, v1 ) << ")\n";
+		SOFT( wg > 0 && MaxMove( v0, v1 ) > 0.01 );
+		SOFT( within < 1e-9 );
+		pFlat->release(); pDisp->release(); pInst->release();
+	}
+	pBox->release(); pLatheI->release(); pWave->release();
 	assert( softFails == 0 );
 #undef SOFT
 }
@@ -3300,6 +3370,7 @@ int main()
 		if( only[0] == 'q' ) { TestRefinementHasNoTJunctions(); return 0; }
 		if( only[0] == 'r' ) { TestDisplacementIsWatertightAtCreases(); return 0; }
 		if( only[0] == 's' ) { TestWeldPoliciesPerBaseMesh(); return 0; }
+		if( only[0] == 't' ) { TestPathInstancesWeldWithinInstance(); return 0; }
 	}
 	TestPureTessellationBBox();
 	TestConstantDisplacement();
@@ -3328,6 +3399,7 @@ int main()
 	TestRefinementHasNoTJunctions();
 	TestDisplacementIsWatertightAtCreases();
 	TestWeldPoliciesPerBaseMesh();
+	TestPathInstancesWeldWithinInstance();
 	TestDisplacedBaseIsNotRefinedAgain();
 	TestShadingTransportIsRotation();
 	TestConcurrentRealize();

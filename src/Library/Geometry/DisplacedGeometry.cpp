@@ -166,7 +166,8 @@ namespace {
 		VerticesListType&      vertices,
 		NormalsListType&       normals,
 		TexCoordsListType&     coords,
-		std::vector<unsigned char>& uvFlags )
+		std::vector<unsigned char>& uvFlags,
+		std::vector<unsigned int>*  pDomains )
 	{
 		std::unordered_map<std::uint64_t, unsigned int> edgeMid;
 		edgeMid.reserve( tris.size() * 2 );
@@ -192,6 +193,7 @@ namespace {
 			const unsigned char fa = uvFlags[a], fb = uvFlags[b];
 			const unsigned char fm = static_cast<unsigned char>( fa & fb );
 			uvFlags.push_back( fm );
+			if( pDomains ) pDomains->push_back( (*pDomains)[a] );		// an edge lies inside one weld domain
 			coords.push_back( TexCoord(
 				AxisMid( ca.x, cb.x, ( fa & TriangleMeshGeometryIndexed::kUPolar ) != 0, ( fb & TriangleMeshGeometryIndexed::kUPolar ) != 0,
 					( fm & TriangleMeshGeometryIndexed::kUPeriodic ) != 0 ),
@@ -228,10 +230,12 @@ namespace {
 		NormalsListType&       normals,
 		TexCoordsListType&     coords,
 		std::vector<unsigned char>& uvFlags,
-		const Scalar           targetLen )
+		const Scalar           targetLen,
+		std::vector<unsigned int>* pDomains = 0 )
 	{
 		RefineResult res;
 		uvFlags.resize( vertices.size(), 0 );
+		if( pDomains && pDomains->size() != vertices.size() ) pDomains = 0;
 		res.trianglesBefore = res.trianglesAfter = tris.size();
 		if( tris.empty() || !( targetLen > 0 ) ||
 			vertices.size() != normals.size() || vertices.size() != coords.size() ) {
@@ -259,7 +263,7 @@ namespace {
 		}
 		res.capped = ( levels < wanted ) || ( median / Scalar( 1u << levels ) > targetLen );
 		for( unsigned int l = 0; l < levels; ++l ) {
-			SubdivideUniformOnce( tris, vertices, normals, coords, uvFlags );
+			SubdivideUniformOnce( tris, vertices, normals, coords, uvFlags, pDomains );
 		}
 		res.levels = levels;
 		res.trianglesAfter = tris.size();
@@ -415,66 +419,70 @@ int DisplacedGeometry::BaseWeldPolicy() const
 }
 
 void DisplacedGeometry::WeldCoincidentDisplacement(
-	const VerticesListType& undisplaced, const NormalsListType& baseNormals, const int policy, VerticesListType& displaced ) const
+	const VerticesListType& undisplaced, const NormalsListType& baseNormals, const std::vector<unsigned int>& domains,
+	const int policy, VerticesListType& displaced ) const
 {
 	if( policy == TriangleMeshGeometryIndexed::kWeldNone || undisplaced.size() != displaced.size() || undisplaced.size() < 2 ) {
 		return;
 	}
+	const bool cone = ( policy == TriangleMeshGeometryIndexed::kWeldCreaseCone );
+	// The crease-cone rule needs the base normals; without them skip the weld rather than silently
+	// degrading into weld-everything.
+	if( cone && baseNormals.size() != undisplaced.size() ) {
+		return;
+	}
+	const bool haveDomains = domains.size() == undisplaced.size();
 	std::vector<unsigned int> wid;
 	if( !GeometricUtilities::WeldVertexPositions( undisplaced, wid ) ) {
 		return;
 	}
-	const bool cone = ( policy == TriangleMeshGeometryIndexed::kWeldCreaseCone ) && baseNormals.size() == undisplaced.size();
 	unsigned int maxId = 0;
 	for( size_t i = 0; i < wid.size(); ++i ) maxId = std::max( maxId, wid[i] );
 
-	// Members of each position group (CSR), then -- for the crease-cone policy -- split the group
-	// into connected components of "base normals within 120 degrees" (dot > -1/2).
+	// Members of each position group (CSR).
 	std::vector<unsigned int> start( size_t( maxId ) + 2, 0 );
 	for( size_t i = 0; i < wid.size(); ++i ) ++start[ size_t( wid[i] ) + 1 ];
 	for( size_t g = 0; g <= maxId; ++g ) start[g + 1] += start[g];
 	std::vector<unsigned int> members( wid.size() ), fill( start.begin(), start.end() - 1 );
 	for( size_t i = 0; i < wid.size(); ++i ) members[ fill[ wid[i] ]++ ] = static_cast<unsigned int>( i );
 
-	std::vector<unsigned int> comp;		// scratch: component label per member of the current group
+	// Within a position group, members are welded in CLUSTERS: members of one weld domain (one
+	// path instance; a single domain otherwise) and -- for the crease-cone rule -- whose base normal
+	// is within 120 degrees (dot > -1/2) of the cluster's FIRST member's.  A builder (kWeldAll) welds
+	// the whole domain.  One pass per group, O(members x clusters) with a handful of clusters, and
+	// the displacement vectors are accumulated per cluster (no pairwise work).
+	struct Cluster { unsigned int domain, leader, first, count; Vector3 sum; };
+	std::vector<Cluster> clusters;
+	std::vector<unsigned int> clusterOf;
 	for( size_t g = 0; g <= maxId; ++g ) {
 		const unsigned int b = start[g], e = start[g + 1], m = e - b;
 		if( m < 2 ) continue;
-		comp.assign( m, 0 );
-		for( unsigned int k = 0; k < m; ++k ) comp[k] = k;
-		if( cone ) {
-			auto find = [&]( unsigned int x ) { while( comp[x] != x ) { comp[x] = comp[comp[x]]; x = comp[x]; } return x; };
-			for( unsigned int i = 0; i < m; ++i ) {
-				const Vector3& ni = baseNormals[ members[b + i] ];
-				for( unsigned int j = i + 1; j < m; ++j ) {
-					const Vector3& nj = baseNormals[ members[b + j] ];
-					if( Vector3Ops::Dot( ni, nj ) > -0.5 ) {
-						const unsigned int ri = find( i ), rj = find( j );
-						if( ri != rj ) comp[ri] = rj;
-					}
-				}
+		clusters.clear();
+		clusterOf.assign( m, 0 );
+		for( unsigned int k = 0; k < m; ++k ) {
+			const unsigned int vi = members[b + k];
+			const unsigned int dom = haveDomains ? domains[vi] : 0u;
+			unsigned int c = static_cast<unsigned int>( clusters.size() );
+			for( unsigned int q = 0; q < clusters.size(); ++q ) {
+				if( clusters[q].domain != dom ) continue;
+				if( cone && !( Vector3Ops::Dot( baseNormals[ clusters[q].leader ], baseNormals[vi] ) > -0.5 ) ) continue;
+				c = q;
+				break;
 			}
-			for( unsigned int k = 0; k < m; ++k ) comp[k] = find( k );
-		} else {
-			for( unsigned int k = 0; k < m; ++k ) comp[k] = 0;		// the whole group is one crease
+			if( c == clusters.size() ) {
+				Cluster nc; nc.domain = dom; nc.leader = vi; nc.first = vi; nc.count = 0; nc.sum = Vector3( 0, 0, 0 );
+				clusters.push_back( nc );
+			}
+			clusters[c].count++;
+			clusters[c].sum = clusters[c].sum + Vector3Ops::mkVector3( displaced[vi], undisplaced[vi] );
+			clusterOf[k] = c;
 		}
-		// weld each component with >= 2 members to its mean displacement vector
-		for( unsigned int root = 0; root < m; ++root ) {
-			unsigned int count = 0, first = 0;
-			Vector3 sum( 0, 0, 0 );
-			for( unsigned int k = 0; k < m; ++k ) {
-				if( comp[k] != root ) continue;
-				const unsigned int vi = members[b + k];
-				if( count++ == 0 ) first = vi;
-				sum = sum + Vector3Ops::mkVector3( displaced[vi], undisplaced[vi] );
-			}
-			if( count < 2 ) continue;
-			const Vector3 mean = sum * ( 1.0 / Scalar( count ) );
-			const Point3& o = undisplaced[first];
-			const Point3 target( o.x + mean.x, o.y + mean.y, o.z + mean.z );
-			for( unsigned int k = 0; k < m; ++k ) {
-				if( comp[k] == root ) displaced[ members[b + k] ] = target;
-			}
+		for( unsigned int k = 0; k < m; ++k ) {
+			const Cluster& cl = clusters[ clusterOf[k] ];
+			if( cl.count < 2 ) continue;
+			const Vector3 mean = cl.sum * ( 1.0 / Scalar( cl.count ) );
+			const Point3& o = undisplaced[cl.first];
+			displaced[ members[b + k] ] = Point3( o.x + mean.x, o.y + mean.y, o.z + mean.z );
 		}
 	}
 }
@@ -492,11 +500,13 @@ bool DisplacedGeometry::TessellateAndRefine(
 	const bool             bLog,
 	NormalsListType&       shading0,
 	NormalsListType&       geom0,
-	std::vector<unsigned char>& uvFlags ) const
+	std::vector<unsigned char>& uvFlags,
+	std::vector<unsigned int>&  weldDomains ) const
 {
 	shading0.clear();
 	geom0.clear();
 	uvFlags.clear();
+	weldDomains.clear();
 
 	// A MESH base (an indexed mesh -- lathe / sweep / skin / imported -- or a
 	// displaced base's re-emitted baked mesh) tessellates to itself: its own
@@ -506,9 +516,9 @@ bool DisplacedGeometry::TessellateAndRefine(
 	const DisplacedGeometry*           pDsp = dynamic_cast<const DisplacedGeometry*>( m_pBase );
 	bool bOk;
 	if( pIdx ) {
-		bOk = pIdx->TessellateToMeshEx( tris, vertices, normals, coords, m_detail, &uvFlags );
+		bOk = pIdx->TessellateToMeshEx( tris, vertices, normals, coords, m_detail, &uvFlags, &weldDomains );
 	} else if( pDsp ) {
-		bOk = pDsp->TessellateToMeshEx( tris, vertices, normals, coords, m_detail, &uvFlags );
+		bOk = pDsp->TessellateToMeshEx( tris, vertices, normals, coords, m_detail, &uvFlags, &weldDomains );
 	} else {
 		bOk = m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail );
 	}
@@ -548,6 +558,7 @@ bool DisplacedGeometry::TessellateAndRefine(
 			const size_t trisBefore = tris.size();
 			if( pIdx->TessellateRefined( target, kMaxRefineTriangles, nt, nv, nn, nc, &nf ) > 0 && !nt.empty() ) {
 				tris.swap( nt ); vertices.swap( nv ); normals.swap( nn ); coords.swap( nc ); uvFlags.swap( nf );
+					weldDomains.clear();		// a builder grid has no weld domains (its policy applies mesh-wide)
 				if( bLog ) {
 					GlobalLog()->PrintEx( eLog_Event,
 						"DisplacedGeometry: refined the builder base's authored grid for detail %u (target edge %g): %u -> %u triangles",
@@ -555,7 +566,7 @@ bool DisplacedGeometry::TessellateAndRefine(
 				}
 			}
 		} else {
-			const RefineResult r = RefineUniform( tris, vertices, normals, coords, uvFlags, target );
+			const RefineResult r = RefineUniform( tris, vertices, normals, coords, uvFlags, target, weldDomains.empty() ? 0 : &weldDomains );
 			if( r.levels > 0 && bLog ) {
 				GlobalLog()->PrintEx( eLog_Event,
 					"DisplacedGeometry: refined the mesh base to detail %u (target edge %g): %u uniform 1->4 level(s), %u -> %u triangles",
@@ -588,14 +599,15 @@ bool DisplacedGeometry::TessellateToMeshEx(
 	NormalsListType&       normals,
 	TexCoordsListType&     coords,
 	const unsigned int     detail,
-	std::vector<unsigned char>* pUVPeriodic ) const
+	std::vector<unsigned char>* pUVPeriodic,
+	std::vector<unsigned int>*  pWeldDomains ) const
 {
 	s_tessellateCopyCount.fetch_add( 1, std::memory_order_relaxed );
 	const TriangleMeshGeometryIndexed* pIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pMesh );
 	if( !pIdx ) {
 		return false;
 	}
-	return pIdx->TessellateToMeshEx( tris, vertices, normals, coords, detail, pUVPeriodic );
+	return pIdx->TessellateToMeshEx( tris, vertices, normals, coords, detail, pUVPeriodic, pWeldDomains );
 }
 
 unsigned int DisplacedGeometry::GetBuildMeshCount()
@@ -845,8 +857,9 @@ void DisplacedGeometry::BuildMesh() const
 
 	NormalsListType       shading0, geom0;
 	std::vector<unsigned char> uvFlags;
+	std::vector<unsigned int>  weldDomains;
 
-	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/true, shading0, geom0, uvFlags ) ) {
+	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/true, shading0, geom0, uvFlags, weldDomains ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry: base geometry does not support tessellation (e.g. InfinitePlaneGeometry)" );
 		return;
 	}
@@ -862,7 +875,7 @@ void DisplacedGeometry::BuildMesh() const
 		{
 			const int weldPolicy = BaseWeldPolicy();
 			if( weldPolicy >= 0 ) {
-				WeldCoincidentDisplacement( preDisplaceVertices, normals, weldPolicy, vertices );
+				WeldCoincidentDisplacement( preDisplaceVertices, normals, weldDomains, weldPolicy, vertices );
 			}
 		}
 	}
@@ -891,6 +904,9 @@ void DisplacedGeometry::BuildMesh() const
 	{
 		const int basePolicy = BaseWeldPolicy();
 		pNewMesh->SetDisplacementWeldPolicy( basePolicy >= 0 ? basePolicy : int( TriangleMeshGeometryIndexed::kWeldNone ) );
+		if( basePolicy >= 0 && weldDomains.size() == vertices.size() ) {
+			pNewMesh->SetDisplacementWeldDomains( weldDomains );		// instances stay separate weld domains in a layer above
+		}
 	}
 }
 
@@ -911,8 +927,9 @@ void DisplacedGeometry::RefreshMeshVertices()
 
 	NormalsListType       shading0, geom0;
 	std::vector<unsigned char> uvFlags;
+	std::vector<unsigned int>  weldDomains;
 
-	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/false, shading0, geom0, uvFlags ) ) {
+	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/false, shading0, geom0, uvFlags, weldDomains ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry::RefreshMeshVertices: base tessellation failed" );
 		return;
 	}
@@ -924,7 +941,7 @@ void DisplacedGeometry::RefreshMeshVertices()
 		{
 			const int weldPolicy = BaseWeldPolicy();
 			if( weldPolicy >= 0 ) {
-				WeldCoincidentDisplacement( preDisplaceVertices, normals, weldPolicy, vertices );
+				WeldCoincidentDisplacement( preDisplaceVertices, normals, weldDomains, weldPolicy, vertices );
 			}
 		}
 	}

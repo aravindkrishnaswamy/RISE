@@ -2014,8 +2014,9 @@ namespace RISE
 
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
-		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 
 		// rings.  frac doubles as the linear-taper parameter and the V texture
 		// coordinate; a closed loop has no start/end to taper toward (end_scale_x/y
@@ -2621,8 +2622,9 @@ namespace RISE
 
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "lathe geometry" );
-		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 
 		std::vector<int>  rowBase( rows.size(), 0 );
 		std::vector<unsigned char> rowIsPole( rows.size(), 0 );
@@ -3894,8 +3896,9 @@ namespace RISE
 		// ---- emit ----------------------------------------------------------
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "skin geometry" );
-		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 
 		for( size_t i = 0; i < nStations; i++ ) {
 			for( size_t j = 0; j < nAcrossSz; j++ ) {
@@ -4053,8 +4056,23 @@ namespace RISE
 
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "path instances geometry" );
-		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldNone );
 		pGeom->BeginIndexedTriangles();
+		// Weld policy: INSIDE each instance, the TEMPLATE's own rule (a creased lathe template stays closed in
+		// every instance); NEVER across instances (each instance is a weld domain).  A face-normal template is flat
+		// per corner by design and welds nothing.
+		int instancePolicy = TriangleMeshGeometryIndexed::kWeldCreaseCone;
+		{
+			const TriangleMeshGeometryIndexed* pTplMesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( desc.pGeometry );
+			if( !pTplMesh ) {
+				if( const DisplacedGeometry* pTplDsp2 = dynamic_cast<const DisplacedGeometry*>( desc.pGeometry ) ) {
+					pTplMesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( pTplDsp2->GetBakedMesh() );
+				}
+			}
+			if( pTplMesh ) {
+				instancePolicy = pTplMesh->UsesFaceNormals() ? int( TriangleMeshGeometryIndexed::kWeldNone ) : pTplMesh->GetDisplacementWeldPolicy();
+			}
+		}
+		pGeom->SetDisplacementWeldPolicy( instancePolicy );
 
 		int vc = 0;
 		unsigned int placed = 0;
@@ -4122,6 +4140,14 @@ namespace RISE
 		}
 
 		pGeom->DoneIndexedTriangles();
+		{	// one weld domain per instance (vertex order is the template's, repeated per instance)
+			std::vector<unsigned int> domains;
+			domains.reserve( tVerts.size() * placed );
+			for( unsigned int inst = 0; inst < placed; ++inst ) {
+				domains.insert( domains.end(), tVerts.size(), inst );
+			}
+			pGeom->SetDisplacementWeldDomains( domains );
+		}
 		// Each instance's copy keeps the template's chart bits (vertex order is the template's).
 		if( tFlags.size() == tVerts.size() ) {
 			bool bAny = false;

@@ -120,12 +120,14 @@ namespace RISE
 			//! for the full account and the current mechanism's documented
 			//! residual.)
 			bool					m_bWatertight;
-			// NOTE: neither the chart bits (m_uvPeriodic) nor the grid structure are carried by
-			// .risemesh Serialize/Deserialize -- both describe what a procedural BUILDER knew when
-			// it built the mesh.  A deserialized (imported) mesh therefore never wraps its chart
-			// and is refined uniformly (median-edge 1->4 levels), never grid-wise.
+			// NOTE: neither the chart bits (m_uvPeriodic), the grid structure, the displacement weld
+			// policy nor the weld domains are carried by .risemesh Serialize/Deserialize -- all of
+			// them describe what a procedural BUILDER knew when it built the mesh.  A deserialized
+			// (imported) mesh therefore never wraps its chart, is refined uniformly (median-edge
+			// 1->4 levels), never grid-wise, and reloads with the default kWeldCreaseCone policy.
 			std::shared_ptr<const MeshGrid>	m_grid;		//!< set by a builder (lathe / sweep / skin); see MeshGrid
 			int							m_weldPolicy;	//!< DisplacementWeldPolicy: how DisplacedGeometry welds this mesh's coincident vertices
+			std::vector<unsigned int>	m_weldDomains;	//!< optional per-position weld DOMAIN id (path_instances: the instance); empty = one domain
 			std::vector<unsigned char>	m_uvPeriodic;	//!< per-position-index kUPeriodic/kVPeriodic bits (see SetUVPeriodicRegion); empty = none
 
 			//! Computes and caches `m_bWatertight`.  Called from
@@ -394,7 +396,9 @@ namespace RISE
 
 			//! TessellateToMesh plus, optionally, the per-OUTPUT-vertex periodicity bits
 			//! (the bits of the vertex's source position), index-parallel to `vertices`.
-			bool TessellateToMeshEx( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail, std::vector<unsigned char>* pUVPeriodic ) const;
+			//! pWeldDomains (optional): the weld-domain id of each output vertex's source position
+			//! (see SetDisplacementWeldDomains); left untouched when the mesh has no domains.
+			bool TessellateToMeshEx( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail, std::vector<unsigned char>* pUVPeriodic, std::vector<unsigned int>* pWeldDomains = 0 ) const;
 
 			//! Install per-position periodicity bits wholesale (DisplacedGeometry's baked mesh).
 			void SetUVPeriodicFlags( const std::vector<unsigned char>& flags ) { m_uvPeriodic = flags; }
@@ -412,11 +416,17 @@ namespace RISE
 			//!                    is, by construction, the builder's own crease / cap rim / duplicated
 			//!                    profile point / pinch pole / skin crease station, so all of it is welded
 			//!                    whatever its normals (a pinch's two poles face opposite ways).
-			//!  kWeldNone       : path_instances_geometry -- coincident vertices of TOUCHING instances
-			//!                    belong to different bodies, so none is welded across (or within) them.
+			//!  kWeldNone       : weld nothing (a face-normal template's instances).
+			//! WELD DOMAINS: when the mesh carries per-position domain ids
+			//! (SetDisplacementWeldDomains), coincident vertices are welded only WITHIN a domain,
+			//! by this policy.  path_instances_geometry makes each instance a domain (policy: the
+			//! template's own), so a creased template stays closed inside every instance while
+			//! TOUCHING instances stay independent bodies.
 			enum DisplacementWeldPolicy { kWeldCreaseCone = 0, kWeldAll = 1, kWeldNone = 2 };
 			void SetDisplacementWeldPolicy( const int p ) { m_weldPolicy = p; }
 			int  GetDisplacementWeldPolicy() const { return m_weldPolicy; }
+			void SetDisplacementWeldDomains( const std::vector<unsigned int>& d ) { m_weldDomains = d; }
+			const std::vector<unsigned int>& GetDisplacementWeldDomains() const { return m_weldDomains; }
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;

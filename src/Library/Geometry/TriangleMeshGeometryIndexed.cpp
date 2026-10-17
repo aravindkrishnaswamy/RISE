@@ -448,7 +448,8 @@ bool TriangleMeshGeometryIndexed::TessellateToMeshEx(
 	NormalsListType&       normals,
 	TexCoordsListType&     coords,
 	const unsigned int     /*detail*/,
-	std::vector<unsigned char>* pUVPeriodic ) const
+	std::vector<unsigned char>* pUVPeriodic,
+	std::vector<unsigned int>* pWeldDomains ) const
 {
 	// Emit the stored triangles with same-index (iVertices == iNormals ==
 	// iCoords) semantics.  The source mesh stores pPoints, pNormals, pCoords as
@@ -535,6 +536,9 @@ bool TriangleMeshGeometryIndexed::TessellateToMeshEx(
 					if( pUVPeriodic ) {
 						pUVPeriodic->push_back( key.v < m_uvPeriodic.size() ? m_uvPeriodic[key.v] : 0 );
 					}
+					if( pWeldDomains && !m_weldDomains.empty() ) {
+						pWeldDomains->push_back( key.v < m_weldDomains.size() ? m_weldDomains[key.v] : 0u );
+					}
 					cornerIdx.insert( std::make_pair( key, idx ) );
 				}
 				t.iVertices[k] = idx;
@@ -568,6 +572,10 @@ bool TriangleMeshGeometryIndexed::TessellateToMeshEx(
 				if( pUVPeriodic ) {
 					const size_t pi = pPointBase ? static_cast<size_t>( src.pVertices[k] - pPointBase ) : 0;
 					pUVPeriodic->push_back( pi < m_uvPeriodic.size() ? m_uvPeriodic[pi] : 0 );
+				}
+				if( pWeldDomains && !m_weldDomains.empty() ) {
+					const size_t pi = pPointBase ? static_cast<size_t>( src.pVertices[k] - pPointBase ) : 0;
+					pWeldDomains->push_back( pi < m_weldDomains.size() ? m_weldDomains[pi] : 0u );
 				}
 				t.iVertices[k] = localIdx;
 				t.iNormals[k]  = localIdx;
@@ -781,6 +789,8 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
     m_uvPeriodic.clear();	// chart bits describe the vertices about to be (re)fed
     m_grid.reset();			// a builder's grid structure describes the mesh it just built, not a re-fed one
+    m_weldPolicy = kWeldCreaseCone;	// the displacement weld rule and its domains describe the mesh a builder
+    m_weldDomains.clear();			// is about to feed (set AFTER this call); a re-fed mesh is an ordinary import
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
     m_bZeroVolumeSheet=false;
