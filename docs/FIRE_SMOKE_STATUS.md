@@ -84,6 +84,25 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
 4. **Cost.** Tier 10 takes about 39 hours. Faster steps would make the
    iteration loop practical, but cost work comes after items 1 and 2.
 
+## Known failing tests (pre-existing)
+
+The branch builds warning-free and every test target links. These 27
+failures were already present in the committed codex code before the
+2026-10-16 cleanup; a baseline build of the pre-cleanup commit produced the
+identical failure set. Hygiene, case, records, optics, projection and
+fuel-budget tests pass.
+
+| Test | Failures | Nature |
+|---|---:|---|
+| `FireSimulationSolverTest` | 1 | V6 owner history: R0 augmented Newton system does not converge under timestep refinement. Investigate first; it may be a real numerics regression. |
+| `FireProductionSolverTest` | 12 | Earlier-milestone gates the later code outgrew: a 2 GiB resident working-set cap the observer additions now exceed, 200 ms timing gates, and source-topology bindings. |
+| `FireProductionCalibrationTest` | 13 | Historical evidence records that pin SHA-256s of source files later commits changed (`UNBOUND_R199_OWNER`, `UNBOUND_R186_OWNER`, and similar). |
+| `FireSequenceTest` | 1 | `r136 full-step a-priori refusal remains an exact normal-suite gate`. |
+
+Apart from the V6 item, these are certification bookkeeping, not physics.
+Decide per test whether to re-baseline it or retire it; do not build new
+machinery to keep historical bindings green.
+
 ## Operating rules
 
 These rules come from the r248 stall, where two weeks went into proving

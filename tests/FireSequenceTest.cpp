@@ -23135,8 +23135,10 @@ int main(int argc,char** argv)
 		// residual enters this obligation. A separate outward atanh-series
 		// interval proves mathematical log; std::log must lie inside it.
 		using Interval=std::array<double,2>;
-		auto down=[](double x){return std::nextafter(x,-std::numeric_limits<double>::infinity());};
-		auto up=[](double x){return std::nextafter(x,std::numeric_limits<double>::infinity());};
+		// Step toward the largest finite magnitude rather than infinity: identical
+		// for every finite x below it, and free of fast-math-foldable sentinels.
+		auto down=[](double x){return std::nextafter(x,std::numeric_limits<double>::lowest());};
+		auto up=[](double x){return std::nextafter(x,std::numeric_limits<double>::max());};
 		auto point=[](double x){return Interval{{x,x}};};
 		auto add=[&](Interval a,Interval b){return Interval{{down(a[0]+b[0]),up(a[1]+b[1])}};};
 		auto multiply=[&](Interval a,Interval b){const std::array<double,4> products={{

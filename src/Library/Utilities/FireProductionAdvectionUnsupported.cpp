@@ -143,5 +143,54 @@ namespace RISE
 		} catch( const std::bad_alloc& ) { error->clear(); }
 		return false;
 	}
+
+	bool EvaluateFireProductionEOSEnergyEnclosureMetalDiagnostic(
+		const std::array<float,9>&,const std::array<float,2>&,bool,
+		std::array<std::array<float,4>,8>& output,std::string& shaderSHA256,std::string* error )
+	{
+		output=std::array<std::array<float,4>,8>();
+		shaderSHA256.clear();
+		if( error ) try {
+			*error="production EOS energy-enclosure Metal diagnostic unavailable: Metal is not linked";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
+	bool EvaluateFireProductionEOSTemperatureMetalDiagnostic(
+		const std::array<float,9>&,unsigned int,float& temperature,bool& accepted,
+		std::string& shaderSHA256,std::string* error,float* alternateTemperature,
+		std::array<std::array<float,4>,2>* tangentPaths )
+	{
+		temperature=0.0f;
+		accepted=false;
+		shaderSHA256.clear();
+		if( alternateTemperature ) *alternateTemperature=0.0f;
+		if( tangentPaths ) *tangentPaths=std::array<std::array<float,4>,2>();
+		if( error ) try {
+			*error="production EOS temperature Metal diagnostic unavailable: Metal is not linked";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
+	// FireProductionAdvection.cpp provides this fallback for non-Apple builds;
+	// Apple builds without Metal need the same honest refusal here.
+	bool FireProductionPayloadDigestMetal(const std::vector<unsigned char>&,
+		unsigned int,FireProductionPayloadDigestV2& result,double& deviceMS,
+		std::string* error,unsigned int)
+	{
+		result=FireProductionPayloadDigestV2();
+		deviceMS=0.0;
+		if( error ) try {
+			*error="digest-v2 Metal device unavailable: Metal is not linked";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
 #endif
+
+	// The Metal build defines this autorelease-pool RED in
+	// FireProductionAdvectionMac.mm; without Metal there is no pool to exercise.
+	bool FireProductionProjectedHeunPoolAllocationFailureRED()
+	{
+		return false;
+	}
 }
