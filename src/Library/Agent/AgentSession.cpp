@@ -22290,6 +22290,11 @@ namespace RISE
 				mBuildPhase = AgentBuildPhase::Compose;
 			}
 			out.phase = BuildPhaseName( mBuildPhase );
+			// Doc 91 review round 4: the SAME three conditions both phase
+			// checks (CheckElementWindowForEdit_, CheckComposePhaseForCreate_)
+			// test before refusing anything.
+			out.phaseRulesEnforced = ConstructionCompulsionActive_() && BuildProtocolActive_() &&
+			                         !mBuildPhaseGaveUp;
 
 			// THE PAYLOAD FACT: an isolate render of the element just closed --
 			// a look the model did not ask for, arriving in the result of a
@@ -24439,7 +24444,16 @@ namespace RISE
 				return landedAny;
 			};
 
+			// Doc 91 review round 4: stamp every rejection and landing with
+			// the attempt that produced it -- a FACT recorded here, so no
+			// reader has to infer order from name membership (one answer can
+			// both land X and have a second X refused as a duplicate).
+			auto stampAttempt = [&]( std::size_t rejectedFrom, int attempt ) {
+				for( std::size_t k = rejectedFrom; k < out.rejected.size(); ++k ) out.rejected[k].attempt = attempt;
+				while( out.landedAttempts.size() < out.landed.size() ) out.landedAttempts.push_back( attempt );
+			};
 			runAttempt( basePrompt );
+			stampAttempt( 0, 1 );
 
 			// THE ONE REPAIR RETRY.  It fires when the first attempt rejected
 			// ANYTHING -- an unbalanced chunk, a prefix violation, an insert
@@ -24458,8 +24472,8 @@ namespace RISE
 				providerFailure.clear();
 				rejectionLines.clear();
 				runAttempt( ComposeBuilderPrompt_( element, height, useNotes, rejectionText ) );
+				stampAttempt( rejectedBefore, 2 );
 				out.retrySucceeded = ( landedNames.size() > landedBefore );
-				(void)rejectedBefore;
 			}
 
 			// A PURE PROVIDER FAILURE (nothing landed AND nothing was rejected,

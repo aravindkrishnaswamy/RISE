@@ -15547,6 +15547,79 @@ static void TestBuildElementReportCompaction()
 	       "S2h-L1 `message` keeps the rejection content" );
 }
 
+//! S2h-L1c (doc 91 review round 4 P1-2): build_element RECORDS which
+//! attempt produced each rejection and each landing, so a reader never has
+//! to infer order from names.  Two one-answer fixtures that inference got
+//! wrong: the same name three times (one lands, two are refused as
+//! duplicates) and [X bad, X good].
+static void TestBuildElementRecordsAttempts()
+{
+	std::printf( "S2h-L1c: build_element records the attempt of every rejection and landing...\n" );
+	auto attemptOf = []( const Agent::JsonValue& arr, const std::string& name, std::vector<int>& out ) {
+		for( std::size_t i = 0; arr.isArray() && i < arr.size(); ++i )
+			if( arr.at( i ).get( "name" ).asString() == name )
+				out.push_back( static_cast<int>( arr.at( i ).get( "attempt" ).asNumber( -1 ) ) );
+	};
+	auto landedAttemptOf = []( const Agent::JsonValue& r, const std::string& name ) -> int {
+		const Agent::JsonValue& landed = r.get( "landed" );
+		const Agent::JsonValue& la = r.get( "landedAttempts" );
+		for( std::size_t i = 0; landed.isArray() && i < landed.size(); ++i )
+			if( landed.at( i ).asString() == name )
+				return ( la.isArray() && i < la.size() ) ? static_cast<int>( la.at( i ).asNumber( -1 ) ) : -2;
+		return -3;
+	};
+
+	// (a) the same name three times in ONE answer.
+	{
+		const std::string dup = "uniformcolor_painter\n{\n\tname wizard_robe_pnt\n\tcolor 0.9 0.1 0.1\n}\n";
+		std::vector<std::string> answers;
+		answers.push_back( std::string( kGoodBuilderAnswer ) + dup + dup );
+		answers.push_back( kGoodBuilderAnswer );
+		const std::string resp = BuildElementWireResponse( answers );
+		Agent::JsonValue r;
+		Check( JsonResultObj( resp, r ) && r.get( "ok" ).asBool( false ), "S2h-L1c(a) the build lands" );
+		std::vector<int> rejAttempts;
+		attemptOf( r.get( "rejected" ), "wizard_robe_pnt", rejAttempts );
+		Check( rejAttempts.size() == 2 && rejAttempts[0] == 1 && rejAttempts[1] == 1,
+		       "S2h-L1c(a) MONEY: both duplicate refusals are recorded against attempt 1" );
+		Check( landedAttemptOf( r, "wizard_robe_pnt" ) == 1,
+		       "S2h-L1c(a) MONEY: ... and the landing of that name is recorded against attempt 1 too" );
+		Check( r.get( "landedAttempts" ).isArray() &&
+		       r.get( "landedAttempts" ).size() == r.get( "landed" ).size(),
+		       "S2h-L1c(a) landedAttempts is index-parallel to landed" );
+	}
+	// (b) [X bad, X good] in ONE answer.
+	{
+		const std::string badGood =
+			"expression_painter\n{\n\tname wizard_x_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n"
+			"uniformcolor_painter\n{\n\tname wizard_x_pnt\n\tcolor 0.6 0.4 0.2\n}\n";
+		std::vector<std::string> answers;
+		answers.push_back( std::string( kGoodBuilderAnswer ) + badGood );
+		answers.push_back( kGoodBuilderAnswer );
+		const std::string resp = BuildElementWireResponse( answers );
+		Agent::JsonValue r;
+		Check( JsonResultObj( resp, r ) && r.get( "ok" ).asBool( false ), "S2h-L1c(b) the build lands" );
+		std::vector<int> rejAttempts;
+		attemptOf( r.get( "rejected" ), "wizard_x_pnt", rejAttempts );
+		Check( rejAttempts.size() == 1 && rejAttempts[0] == 1 && landedAttemptOf( r, "wizard_x_pnt" ) == 1,
+		       "S2h-L1c(b) MONEY: the refusal and the landing of X are BOTH recorded against attempt 1" );
+	}
+	// (c) a genuine retry landing: attempt 1 refuses X, attempt 2 lands it.
+	{
+		std::vector<std::string> answers;
+		answers.push_back( "expression_painter\n{\n\tname wizard_bronze_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n" );
+		answers.push_back( std::string( kGoodBuilderAnswer ) +
+		                   "uniformcolor_painter\n{\n\tname wizard_bronze_pnt\n\tcolor 0.6 0.4 0.2\n}\n" );
+		const std::string resp = BuildElementWireResponse( answers );
+		Agent::JsonValue r;
+		Check( JsonResultObj( resp, r ) && r.get( "ok" ).asBool( false ), "S2h-L1c(c) the build lands" );
+		std::vector<int> rejAttempts;
+		attemptOf( r.get( "rejected" ), "wizard_bronze_pnt", rejAttempts );
+		Check( rejAttempts.size() == 1 && rejAttempts[0] == 1 && landedAttemptOf( r, "wizard_bronze_pnt" ) == 2,
+		       "S2h-L1c(c): refused on attempt 1, landed on attempt 2 -- recorded as exactly that" );
+	}
+}
+
 //! S2h-L1b (review round 1 P1): a success whose `issues` are EMPTY can
 //! still carry a real notice in its message -- the auto-parent disclosure
 //! ("This chunk was NOT parented to the element's root node: ...") or a
@@ -22457,6 +22530,7 @@ int main()
 	TestCleanRoomWireShape();
 	TestBuildElementReportCompaction();
 	TestCleanChunkSuccessClassifier();
+	TestBuildElementRecordsAttempts();
 	TestCleanRoomReplaceGeometryScaffoldGate();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();

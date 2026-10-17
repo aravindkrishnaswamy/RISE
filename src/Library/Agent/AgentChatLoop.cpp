@@ -2257,30 +2257,35 @@ namespace RISE
 				return std::string();
 			}
 
-			//! Doc 91 L2 (review rounds 2-3): the compact record of the
+			//! Doc 91 L2 (review rounds 2-4): the compact record of the
 			//! PER-CHUNK outcomes a build_element / insert_chunks result
 			//! reports that the document does not record, so the
 			//! element-finished stub can carry them.  Each item names the
-			//! chunk ("<name> (<kind>)") and says truthfully what happened to
-			//! it:
-			//!   "refused: <text>"         -- this insert did not land (for a
-			//!                                refused duplicate the NAME may
-			//!                                still exist: another chunk owns it)
-			//!   "rejected first (as K), landed on the retry[ as K2]"
-			//!                             -- build_element's `rejected` spans
-			//!                                BOTH attempts; a name that is in
-			//!                                `landed` is in the document (the
-			//!                                kind-changed re-land disclosure is
-			//!                                this item when K != K2)
+			//! chunk ("<name> (<kind>)") and states only what the result
+			//! RECORDS -- never an order inferred from names:
+			//!   "refused: <text>"  -- this insert did not land (for a refused
+			//!                         duplicate the NAME may still exist:
+			//!                         another chunk owns it)
+			//!   "rejected on attempt A (as K), landed on attempt B[ as K2]"
+			//!                      -- ONLY when build_element's report says so:
+			//!                         `rejected[i].attempt` A and a `landed`
+			//!                         entry of the same name whose
+			//!                         `landedAttempts` B is later than A (the
+			//!                         kind-changed re-land disclosure when
+			//!                         K != K2).  One answer that lands X and
+			//!                         has a second X refused is two facts,
+			//!                         reported as a refusal.
 			//!   "landed with a notice: <text>" / "landed, diagnosed: <text>"
-			//!                             -- in the document, with something
-			//!                                the document does not say
-			//! Each text is capped at 160 bytes (UTF-8-safe); items are
-			//! deduplicated by (name, kind, text), so distinct chunks sharing
-			//! a generic reason are each named; at most kMaxItems are listed,
-			//! then "and N more".  NOT carried: build_element's top-level
-			//! message prose (the give-up fold, the unquoted-name disclosure,
-			//! the total-rejection excerpt) -- only per-chunk records are.
+			//! Each text is capped at 160 bytes (UTF-8-safe); items are keyed by
+			//! (name, kind, text) -- N distinct refusals stay N items, and the
+			//! SAME refusal recorded n > 1 times (one answer naming X four
+			//! times: one lands, three are refused as duplicates) reads
+			//! "refused (x3): ..." -- at most kMaxItems, then "and N more".
+			//! For build_element the `rejected` list is the count of record:
+			//! its chunkResults repeat insertion-time refusals and never add
+			//! to a count.  NOT carried:
+			//! build_element's top-level message prose (the give-up fold, the
+			//! unquoted-name disclosure, the total-rejection excerpt).
 			std::string LifetimeCarryOf( const ChatToolCall& call, const std::string& raw )
 			{
 				if( call.name != "build_element" && call.name != "insert_chunks" ) return std::string();
@@ -2288,85 +2293,95 @@ namespace RISE
 				const JsonValue* r = LifetimeSuccessResult( raw, env );
 				if( !r ) return std::string();
 				static const std::size_t kMaxItems = 12;
-				std::vector<std::string> keys;   // name \x1f kind \x1f text, for dedupe
-				std::vector<std::string> items;
-				std::size_t dropped = 0;
+				struct Item { std::string key, head, verdict, text; std::size_t count; };
+				std::vector<Item> all;   // keyed by name \x1f kind \x1f text
 				auto label = []( const std::string& name, const std::string& kind ) {
 					if( name.empty() ) return kind.empty() ? std::string( "a chunk" ) : ( "an unnamed " + kind );
 					return kind.empty() ? name : ( name + " (" + kind + ")" );
 				};
-				auto add = [&]( const std::string& name, const std::string& kind, const std::string& key,
-				                const std::string& item ) {
-					const std::string k = name + "\x1f" + kind + "\x1f" + key;
-					for( std::size_t i = 0; i < keys.size(); ++i ) if( keys[i] == k ) return;
-					keys.push_back( k );
-					if( items.size() >= kMaxItems ) { ++dropped; return; }
-					items.push_back( item );
+				// `head` names the chunk, `verdict` is the outcome phrase, `text`
+				// the (already capped) reason/notice, "" when the item has none.
+				// A repeat of a key bumps its count only when `counts`.
+				auto add = [&]( const std::string& name, const std::string& kind, const std::string& keyText,
+				                const std::string& head, const std::string& verdict, const std::string& text,
+				                bool counts ) {
+					const std::string k = name + "\x1f" + kind + "\x1f" + keyText;
+					for( std::size_t i = 0; i < all.size(); ++i ) {
+						if( all[i].key != k ) continue;
+						if( counts ) ++all[i].count;
+						return;
+					}
+					all.push_back( Item{ k, head, verdict, text, 1 } );
 				};
 				// One per-chunk entry that carries a message (L1: a clean insert carries none).
-				auto addOutcome = [&]( const JsonValue& it ) {
+				auto addOutcome = [&]( const JsonValue& it, bool counts ) {
 					const std::string msg = it.get( "message" ).asString();
 					if( msg.empty() ) return;
 					const std::string name = it.get( "name" ).asString();
 					const std::string kind = it.get( "kind" ).asString();
 					const std::string status = it.get( "status" ).asString();
 					std::string verdict;
-					if( it.get( "applied" ).asBool( false ) ) verdict = "landed with a notice: ";
-					else if( status == "diagnosed" )          verdict = "landed, diagnosed: ";
-					else                                      verdict = "refused: ";
-					add( name, kind, msg, label( name, kind ) + " " + verdict + TruncateForOutcome( msg, 160 ) );
+					if( it.get( "applied" ).asBool( false ) ) verdict = "landed with a notice";
+					else if( status == "diagnosed" )          verdict = "landed, diagnosed";
+					else                                      verdict = "refused";
+					add( name, kind, msg, label( name, kind ), verdict, TruncateForOutcome( msg, 160 ), counts );
 				};
 				if( call.name == "build_element" ) {
 					const JsonValue& landed = r->get( "landed" );
 					const JsonValue& landedKinds = r->get( "landedKinds" );
-					auto landedIndex = [&]( const std::string& name ) -> long {
-						for( std::size_t i = 0; landed.isArray() && i < landed.size(); ++i )
-							if( !name.empty() && landed.at( i ).asString() == name ) return static_cast<long>( i );
-						return -1;
-					};
+					const JsonValue& landedAttempts = r->get( "landedAttempts" );
 					const JsonValue& rej = r->get( "rejected" );
 					for( std::size_t i = 0; rej.isArray() && i < rej.size(); ++i ) {
 						const JsonValue& it = rej.at( i );
 						const std::string name = it.get( "name" ).asString();
 						const std::string kind = it.get( "kind" ).asString();
 						const std::string reason = it.get( "reason" ).asString();
-						const long li = landedIndex( name );
-						if( li >= 0 ) {
+						const int attempt = static_cast<int>( it.get( "attempt" ).asNumber( 0 ) );
+						// The landing of this name by a LATER attempt, if the
+						// report records one (attempt numbers absent -> none).
+						long later = -1;
+						int laterAttempt = 0;
+						for( std::size_t k = 0; attempt > 0 && !name.empty() && landed.isArray() &&
+						                        k < landed.size() && landedAttempts.isArray() &&
+						                        k < landedAttempts.size(); ++k ) {
+							const int la = static_cast<int>( landedAttempts.at( k ).asNumber( 0 ) );
+							if( landed.at( k ).asString() == name && la > attempt ) {
+								later = static_cast<long>( k );
+								laterAttempt = la;
+								break;
+							}
+						}
+						if( later >= 0 ) {
 							const std::string nowKind = ( landedKinds.isArray() &&
-								static_cast<std::size_t>( li ) < landedKinds.size() )
-								? landedKinds.at( static_cast<std::size_t>( li ) ).asString() : std::string();
-							std::string item = name + " rejected first" +
-								( kind.empty() ? std::string() : ( " (as " + kind + ")" ) ) + ", landed on the retry";
-							if( !nowKind.empty() && nowKind != kind ) item += " as " + nowKind;
-							// One relabel per (name, first kind), whatever the reason text.
-							add( name, kind, "\x1flanded-on-retry", item );
+								static_cast<std::size_t>( later ) < landedKinds.size() )
+								? landedKinds.at( static_cast<std::size_t>( later ) ).asString() : std::string();
+							std::string verdict = "rejected on attempt " + std::to_string( attempt ) +
+								( kind.empty() ? std::string() : ( " (as " + kind + ")" ) ) +
+								", landed on attempt " + std::to_string( laterAttempt );
+							if( !nowKind.empty() && nowKind != kind ) verdict += " as " + nowKind;
+							add( name, kind, reason, name, verdict, std::string(), true );
 						}
 						else {
-							add( name, kind, reason, label( name, kind ) + " refused: " + TruncateForOutcome( reason, 160 ) );
+							add( name, kind, reason, label( name, kind ), "refused", TruncateForOutcome( reason, 160 ), true );
 						}
 					}
+					// A refused chunkResults entry repeats a `rejected` entry
+					// (same name, kind and text) and deduplicates against it.
 					const JsonValue& crs = r->get( "chunkResults" );
-					for( std::size_t i = 0; crs.isArray() && i < crs.size(); ++i ) {
-						const JsonValue& it = crs.at( i );
-						// A refused chunk is already carried from `rejected` (same
-						// name, kind and reason text), or relabelled there if the
-						// retry landed it.
-						const std::string name = it.get( "name" ).asString();
-						if( !it.get( "applied" ).asBool( false ) && it.get( "status" ).asString() != "diagnosed" &&
-						    landedIndex( name ) >= 0 ) continue;
-						addOutcome( it );
-					}
+					for( std::size_t i = 0; crs.isArray() && i < crs.size(); ++i ) addOutcome( crs.at( i ), false );
 				}
 				else {
 					const JsonValue& items2 = r->get( "results" );
-					for( std::size_t i = 0; items2.isArray() && i < items2.size(); ++i ) addOutcome( items2.at( i ) );
+					for( std::size_t i = 0; items2.isArray() && i < items2.size(); ++i ) addOutcome( items2.at( i ), true );
 				}
 				std::string out;
-				for( std::size_t i = 0; i < items.size(); ++i ) {
+				for( std::size_t i = 0; i < all.size() && i < kMaxItems; ++i ) {
 					if( i ) out += "; ";
-					out += items[i];
+					out += all[i].head + " " + all[i].verdict;
+					if( all[i].count > 1 ) out += " (x" + std::to_string( all[i].count ) + ")";
+					if( !all[i].text.empty() ) out += ": " + all[i].text;
 				}
-				if( dropped ) out += "; and " + std::to_string( dropped ) + " more";
+				if( all.size() > kMaxItems ) out += "; and " + std::to_string( all.size() - kMaxItems ) + " more";
 				return out;
 			}
 
@@ -2393,17 +2408,64 @@ namespace RISE
 			//! name is kChatComposePhaseName, which T14c pins equal to
 			//! AgentSession::BuildPhaseName(Compose) -- the loop is sans-IO
 			//! and does not link the session.
+			//! `stubPhase` is what the element-finished stub may say about the
+			//! edit rules -- read from the SAME result's `phase` and
+			//! `phaseRulesEnforced` (review round 4: never inferred; an older
+			//! result without the field reads as Unenforced, the wording that
+			//! claims nothing).
 			bool IsFinishedElementResult( const ChatToolCall& call, const std::string& raw,
-			                              std::string& element, bool& composeReached )
+			                              std::string& element, bool& composeReached,
+			                              ChatElementStubPhase& stubPhase )
 			{
 				composeReached = false;
+				stubPhase = ChatElementStubPhase::Unenforced;
 				if( call.name != "finish_element" ) return false;
 				JsonValue env;
 				const JsonValue* r = LifetimeSuccessResult( raw, env );
 				if( !r || !r->get( "ok" ).asBool( false ) ) return false;
 				element = r->get( "element" ).asString();
 				composeReached = ( r->get( "phase" ).asString() == kChatComposePhaseName );
+				if( r->get( "phaseRulesEnforced" ).asBool( false ) )
+					stubPhase = composeReached ? ChatElementStubPhase::Compose : ChatElementStubPhase::Pieces;
 				return !element.empty();
+			}
+
+			//! Doc 91 L2 review round 4: the facts the element-finished stub
+			//! keeps besides the per-chunk outcomes -- build_element's realised
+			//! world bounding box (no other verb reports it, and composing the
+			//! scene needs it) and insert_chunks' last head version (the next
+			//! call's baseHeadVersion).  Numbers are printed %.4g.
+			std::string LifetimeFactsOf( const ChatToolCall& call, const std::string& raw )
+			{
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r ) return std::string();
+				auto num = []( double v ) {
+					char b[32];
+					std::snprintf( b, sizeof( b ), "%.4g", v );
+					return std::string( b );
+				};
+				if( call.name == "build_element" ) {
+					const JsonValue& bb = r->get( "bbox" );
+					const JsonValue& mn = bb.get( "min" );
+					const JsonValue& mx = bb.get( "max" );
+					if( !mn.isArray() || !mx.isArray() || mn.size() != 3 || mx.size() != 3 ) return std::string();
+					std::string f = "Realised world bounding box: min (" + num( mn.at( 0 ).asNumber() ) + ", " +
+						num( mn.at( 1 ).asNumber() ) + ", " + num( mn.at( 2 ).asNumber() ) + ") max (" +
+						num( mx.at( 0 ).asNumber() ) + ", " + num( mx.at( 1 ).asNumber() ) + ", " +
+						num( mx.at( 2 ).asNumber() ) + ")";
+					if( bb.get( "height" ).isNumber() ) f += ", height " + num( bb.get( "height" ).asNumber() );
+					return f + ".";
+				}
+				if( call.name == "insert_chunks" ) {
+					const JsonValue& items = r->get( "results" );
+					if( !items.isArray() || items.size() == 0 ) return std::string();
+					const JsonValue& hv = items.at( items.size() - 1 ).get( "headVersion" );
+					if( !hv.get( "uuid" ).isNumber() || !hv.get( "revision" ).isNumber() ) return std::string();
+					return "headVersion after that call: {\"uuid\":" + num( hv.get( "uuid" ).asNumber() ) +
+						",\"revision\":" + num( hv.get( "revision" ).asNumber() ) + "}.";
+				}
+				return std::string();
 			}
 
 			//! True for a successful file_build_plan (result filed:true) --
@@ -2577,8 +2639,10 @@ namespace RISE
 					ChatToolResultSupersessionKey( ordered[i].first, ordered[i].second );
 				slot.verb = ordered[i].first.name;
 				slot.lifetimeElement = LifetimeElementOf( ordered[i].first, ordered[i].second );
-				if( !slot.lifetimeElement.empty() )
+				if( !slot.lifetimeElement.empty() ) {
 					slot.lifetimeCarry = LifetimeCarryOf( ordered[i].first, ordered[i].second );
+					slot.lifetimeFacts = LifetimeFactsOf( ordered[i].first, ordered[i].second );
+				}
 				const std::string skillPrefix( kChatReadSkillKeyPrefix );
 				if( slot.supersessionKey.compare( 0, skillPrefix.size(), skillPrefix ) == 0 )
 					slot.lifetimeSkill = slot.supersessionKey.substr( skillPrefix.size() );
@@ -2683,11 +2747,11 @@ namespace RISE
 					targets.push_back( t );
 				}
 			}
-			RewriteToolResultSlots( targets, "tool_result_supersession" );
+			RewriteToolResultSlots( targets, "tool_result_supersession", kChatSupersededNoteKey );
 		}
 
 		void AgentChatLoop::RewriteToolResultSlots( const std::vector<ToolResultSlotRewrite>& targets,
-		                                            const char* reason )
+		                                            const char* reason, const char* noteKey )
 		{
 			// Visit entries in transcript order so the history_edit records
 			// come out in a deterministic order.
@@ -2749,7 +2813,7 @@ namespace RISE
 				for( std::size_t k = 0; k < byNote.size(); ++k ) {
 					const std::string before = entry.rawJson;
 					entry.rawJson = mCodec->RewriteElidedToolResults(
-						entry.rawJson, byNote[k].second, byNote[k].first );
+						entry.rawJson, byNote[k].second, byNote[k].first, noteKey );
 					if( entry.rawJson == before ) continue;
 					anyLanded = true;
 					for( std::size_t j = 0; j < byNote[k].second.size(); ++j )
@@ -2826,14 +2890,16 @@ namespace RISE
 				}
 
 				bool composeReached = false;
-				if( !IsFinishedElementResult( call, raw, element, composeReached ) ) continue;
+				ChatElementStubPhase stubPhase = ChatElementStubPhase::Unenforced;
+				if( !IsFinishedElementResult( call, raw, element, composeReached, stubPhase ) ) continue;
 
 				// L2: a successful finish_element for E settles E -- its
 				// build_element / insert_chunks results are history now.
 				mark( i, "element_finished_retirement",
 				      [&]( const ChatToolResultSlot& slot ) { return slot.lifetimeElement == element; },
 				      [&]( const ChatToolResultSlot& slot ) {
-				          return ChatElementFinishedRetirementNote( slot.verb, element, slot.lifetimeCarry ); } );
+				          return ChatElementFinishedRetirementNote( slot.verb, element, stubPhase,
+				                                                    slot.lifetimeFacts, slot.lifetimeCarry ); } );
 
 				// L3b: the finish that takes the plan into its COMPOSE phase
 				// settles the planning -- every skill read in an EARLIER turn
@@ -2877,7 +2943,7 @@ namespace RISE
 						targets.push_back( t );
 					}
 				}
-				RewriteToolResultSlots( targets, kReasons[r] );
+				RewriteToolResultSlots( targets, kReasons[r], kChatRetiredNoteKey );
 			}
 		}
 

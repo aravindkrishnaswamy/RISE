@@ -546,7 +546,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const = 0;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const = 0;
 
 			//! Build the full HTTP request for the current conversation.
 			//! `apiKey` is used ONLY for the auth header -- it is not
@@ -602,7 +603,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -637,7 +639,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -705,7 +708,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -836,6 +840,15 @@ namespace RISE
 		std::string ChatToolResultSupersessionKey( const ChatToolCall& call,
 		                                           const std::string& rawJsonRpcResponseLine );
 
+		//! The JSON key a superseded-result placeholder rides under on the
+		//! wires whose result payload must stay an object (Gemini, OpenAI);
+		//! Anthropic carries the text as a plain text block and ignores it.
+		inline constexpr char kChatSupersededNoteKey[] = "superseded_note";
+		//! The key a LIFETIME stub (doc 91 L2/L3b) rides under -- distinct
+		//! from supersession's, so a reader of the wire can tell "a newer copy
+		//! exists" from "its subject is settled".
+		inline constexpr char kChatRetiredNoteKey[] = "retired_note";
+
 		//! The honest, actionable placeholder that replaces a superseded
 		//! result's payload -- a pure function of the verb name, so the
 		//! rewrite stays deterministic and replay-safe.  It says WHAT was
@@ -857,19 +870,37 @@ namespace RISE
 		//! the key -- deterministic and replay-safe.
 		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey );
 
+		//! CONTEXT LIFETIMES (doc 91 slice L2): what the finish_element that
+		//! retired a result reported about the build-phase edit rules, read
+		//! off ITS result (`phase`, `phaseRulesEnforced`) -- never inferred.
+		enum class ChatElementStubPhase
+		{
+			Unenforced,   //!< the phase rules were not enforced (refining mode,
+			              //!< protocol off, give-up reached, or not reported)
+			Pieces,       //!< enforced, and the plan was still in the pieces phase
+			Compose       //!< enforced, and the finish reached the compose phase
+		};
+
 		//! CONTEXT LIFETIMES (doc 91 slice L2): the stub an earlier
 		//! build_element / insert_chunks result for `element` is rewritten
 		//! to once a successful finish_element for that element has flowed
-		//! through the chat loop.  Says what was removed, why, and how to get
-		//! it back (read_document; the chunks stay editable in place, and
-		//! reopen_element is needed only to create new geometry for it).
-		//! `carried` is the compact record of what the elided result
-		//! described that is NOT in the document -- rejected chunks and their
-		//! reasons, notices on chunks that did land -- appended verbatim so
-		//! retiring the result never deletes the only copy (review round 2).
+		//! through the chat loop.  Says what was removed, why, how to get it
+		//! back, and -- phrased from `phase`, i.e. from the rules the session
+		//! reported at that finish -- what editing the element requires:
+		//! in the PIECES phase CheckElementWindowForEdit_ refuses edits to
+		//! another element's chunks except the phase-exempt categories
+		//! (materials, painters, lights, cameras, film, rasterizers,
+		//! rasterizer outputs), so the stub says reopen_element first; in
+		//! COMPOSE every element's chunks are editable and only geometry
+		//! CREATION is refused (CheckComposePhaseForCreate_).  `facts` (the
+		//! realised bounding box; insert_chunks' head version) and `carried`
+		//! (per-chunk outcomes the document does not record) are appended
+		//! verbatim so retiring the result never deletes the only copy.
 		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
 		                                               const std::string& element,
-		                                               const std::string& carried = std::string() );
+		                                               ChatElementStubPhase phase,
+		                                               const std::string& facts,
+		                                               const std::string& carried );
 
 		//! CONTEXT LIFETIMES (doc 91 slice L3b): the stub a live named
 		//! read_skill result is rewritten to once a successful

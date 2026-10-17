@@ -1375,7 +1375,7 @@ namespace RISE
 					"geometry is refused. Nothing is required of an element before you finish it, and "
 					"nothing is scored. It changes nothing in the document -- no chunk, no head version, no "
 					"undo step. ok:false means the call did nothing (no build plan filed, or every element "
-					"is already finished) and message says which. Returns {ok,element,phase,nextElement,"
+					"is already finished) and message says which. Returns {ok,element,phase,phaseRulesEnforced,nextElement,"
 					"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
 					"message}.",
 					"{\"type\":\"object\",\"properties\":{}}"
@@ -1433,7 +1433,7 @@ namespace RISE
 					"statement, nothing else changes, and authoring by hand is not blocked. Returns "
 					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
 					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}; "
-					"landed names every chunk that went in (landedKinds gives each one's kind), and "
+					"landed names every chunk that went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the repair retry -- that landed it; each rejected entry carries its attempt too), and "
 					"chunkResults details only the chunks that did not insert cleanly or carry a "
 					"notice.",
 					"{\"type\":\"object\",\"properties\":{"
@@ -2485,21 +2485,35 @@ namespace RISE
 
 		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
 		                                               const std::string& element,
+		                                               ChatElementStubPhase phase,
+		                                               const std::string& facts,
 		                                               const std::string& carried )
 		{
-			// The edit rule, stated as the session enforces it: an element's
-			// chunks stay ordinary editable chunks after it is finished
-			// (propose_patch / remove_chunk work on them anywhere); only
-			// CREATING new geometry for it needs reopen_element (the compose
-			// phase refuses geometry creation, and reopen_element is its
-			// documented way out).
-			std::string note = "[" + verbName + " result for element \"" + element + "\" elided -- \"" +
-				element + "\" is finished; its chunks are in the document (read_document shows them) "
-				"and stay editable in place; reopen_element \"" + element + "\" only to create new "
-				"geometry for it";
+			const std::string q = "\"" + element + "\"";
+			std::string note = "[" + verbName + " result for element " + q + " elided -- " + q +
+				" is finished; its chunks are in the document (read_document shows them).";
+			// The edit rule, phrased from what the triggering finish_element
+			// REPORTED (see ChatElementStubPhase), as of that finish.
+			switch( phase ) {
+				case ChatElementStubPhase::Pieces:
+					note += " When it was finished the plan was still in the pieces phase: while another "
+					        "element is active, edits to " + q + "'s chunks are refused except its materials, "
+					        "painters, lights, cameras, film, rasterizers and rasterizer outputs -- "
+					        "reopen_element " + q + " before editing its geometry, objects or any other "
+					        "chunk of it.";
+					break;
+				case ChatElementStubPhase::Compose:
+					note += " Its finish reached the compose phase: every element's chunks stay editable "
+					        "in place; creating new geometry for " + q + " needs reopen_element " + q + ".";
+					break;
+				case ChatElementStubPhase::Unenforced:
+					note += " They stay editable in place.";
+					break;
+			}
+			if( !facts.empty() ) note += " " + facts;
 			if( !carried.empty() )
-				note += ". Kept from the elided result (per-chunk outcomes the document does not record): " +
-				        carried;
+				note += " Kept from the elided result (per-chunk outcomes the document does not record): " +
+				        carried + ".";
 			return note + "]";
 		}
 
@@ -2932,7 +2946,8 @@ namespace RISE
 		std::string AnthropicChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& /*noteKey: Anthropic carries a plain text block*/ ) const
 		{
 			// Parse + regenerate is LEGAL here: this entry was produced by
 			// PackToolResults above (loop-generated), not by a provider.
@@ -3654,7 +3669,8 @@ namespace RISE
 		std::string GeminiChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
 		{
 			// Parse + regenerate is LEGAL here: this entry was produced by
 			// PackToolResults above (loop-generated), not by a provider.
@@ -3692,7 +3708,7 @@ namespace RISE
 				// cross-rule collision structurally impossible rather than
 				// merely gated.
 				JsonValue newResp = JsonValue::MakeObject();
-				newResp.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+				newResp.set( noteKey, JsonValue::MakeString( placeholderText ) );
 				JsonValue newFr = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
 				for( std::size_t j = 0; j < mem.size(); ++j ) {
@@ -4453,7 +4469,8 @@ namespace RISE
 		std::string OpenAIChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
 		{
 			// PackToolResults emits a loop-owned ARRAY of messages: one per
 			// result IN ORDER, so index i is result i.  (The only element
@@ -4470,7 +4487,7 @@ namespace RISE
 			// uniformly does not hit a lone bare string here.
 			// See the Gemini twin above for why the key is NOT "note".
 			JsonValue note = JsonValue::MakeObject();
-			note.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+			note.set( noteKey, JsonValue::MakeString( placeholderText ) );
 			const std::string notePayload = JsonSerialize( note );
 
 			bool changed = false;

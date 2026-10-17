@@ -4702,6 +4702,10 @@ static void TestContextLifetimeRetirementRound2()
 			Check( CountOccurrences( b2, "BE_PNG_MARKER" ) == 0 && CountOccurrences( b2, b64 ) == 1,
 			       L + ": next flush retires the build but leaves the co-packed PNG live" );
 			Check( LifetimeWireValid( pv, b2 ), L + ": wire-valid after the lifetime rewrite" );
+			if( pv != ChatProvider::Anthropic )
+				Check( b2.find( "retired_note" ) != std::string::npos &&
+				       b2.find( "superseded_note" ) == std::string::npos,
+				       L + ": a lifetime stub rides under retired_note, not supersession's superseded_note" );
 			if( !DriveToolRoundArgs( loop, pv, Vec1( "read_image" ), Vec1( "x2" ), Vec1( "{}" ), Vec1( img2 ) ) ) {
 				Check( false, L + ": newer image round" ); return;
 			}
@@ -4730,16 +4734,16 @@ static void TestContextLifetimeRetirementRound2()
 	//      X IS in the document -- the stub must say so, not "refused".
 	{
 		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
-			"\"landed\":[\"wizard_x\"],\"landedKinds\":[\"uniformcolor_painter\"],"
+			"\"landed\":[\"wizard_x\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[2],"
 			"\"rejected\":[{\"name\":\"wizard_x\",\"kind\":\"expression_painter\","
-			"\"reason\":\"RETRY_REASON_MARKER def did not compile\"}],"
+			"\"reason\":\"RETRY_REASON_MARKER def did not compile\",\"attempt\":1}],"
 			"\"chunkResults\":[{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
 			"\"message\":\"RETRY_REASON_MARKER def did not compile\",\"name\":\"wizard_x\","
 			"\"kind\":\"expression_painter\"}],\"message\":\"E1_BUILD_MARKER " + pad + "\"}" );
 		std::string body;
 		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e1): drive" ); return; }
 		Check( CountOccurrences( body, "E1_BUILD_MARKER" ) == 0, "T14d(e1): the build result is retired" );
-		Check( body.find( "wizard_x rejected first (as expression_painter), landed on the retry as "
+		Check( body.find( "wizard_x rejected on attempt 1 (as expression_painter), landed on attempt 2 as "
 		                  "uniformcolor_painter" ) != std::string::npos,
 		       "T14d(e1) MONEY: a chunk rejected on attempt 1 and landed by the retry is reported LANDED, "
 		       "with the kind change" );
@@ -4791,6 +4795,89 @@ static void TestContextLifetimeRetirementRound2()
 		       body.find( "wizard_ok (k) refused: DUP_MARKER" ) != std::string::npos &&
 		       body.find( "Not in the document" ) == std::string::npos,
 		       "T14d(e4): a refused duplicate is carried as \"refused\", not as absent from the document" );
+		Check( body.find( "headVersion after that call: {\\\"uuid\\\":7,\\\"revision\\\":3}." ) != std::string::npos,
+		       "T14d(e4): the insert_chunks stub keeps the head version (the next baseHeadVersion)" );
+	}
+	// (e5) [X bad, X good] in ONE answer: both attempt 1 -- a refusal, never
+	//      "landed on a later attempt".
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_x\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[1],"
+			"\"rejected\":[{\"name\":\"wizard_x\",\"kind\":\"expression_painter\","
+			"\"reason\":\"BADGOOD_MARKER def did not compile\",\"attempt\":1}],"
+			"\"chunkResults\":[],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e5): drive" ); return; }
+		Check( body.find( "wizard_x (expression_painter) refused: BADGOOD_MARKER" ) != std::string::npos &&
+		       body.find( "landed on attempt" ) == std::string::npos,
+		       "T14d(e5) MONEY: X refused and X landed in the SAME answer is reported as a refusal" );
+	}
+	// (e6) one answer naming X three times: one lands, two are refused as
+	//      duplicates -- one item with its count, never a retry relabel.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_dup\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[1],"
+			"\"rejected\":["
+			"{\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\",\"reason\":\"DUPNAME_MARKER exists\",\"attempt\":1},"
+			"{\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\",\"reason\":\"DUPNAME_MARKER exists\",\"attempt\":1}],"
+			"\"chunkResults\":["
+			"{\"applied\":false,\"status\":\"rejected\",\"message\":\"DUPNAME_MARKER exists\",\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\"},"
+			"{\"applied\":false,\"status\":\"rejected\",\"message\":\"DUPNAME_MARKER exists\",\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\"}],"
+			"\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e6): drive" ); return; }
+		Check( body.find( "wizard_dup (uniformcolor_painter) refused (x2): DUPNAME_MARKER exists" ) != std::string::npos &&
+		       CountOccurrences( body, "DUPNAME_MARKER" ) == 1 && body.find( "landed on attempt" ) == std::string::npos,
+		       "T14d(e6) MONEY: duplicate refusals in one answer are counted (x2, chunkResults not double-counted), "
+		       "never relabelled as landed later" );
+	}
+	// (e7) the stub's edit rule is phrased from what the finish REPORTED.
+	//      Exact text, all three variants, plus the carried bounding box.
+	{
+		auto stubText = [&]( const std::string& finishEnv, std::string& text ) -> bool {
+			AgentChatLoop loop;
+			loop.SetProvider( ChatProvider::Anthropic );
+			loop.AddUserMessage( "build" );
+			const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[\"w\"],"
+				"\"rejected\":[],\"chunkResults\":[],"
+				"\"bbox\":{\"min\":[-1,0,-0.5],\"max\":[1,4,0.5],\"height\":4},\"message\":\"m\"}" );
+			if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+			                         Vec1( kBuildArgs ), Vec1( env ) ) ||
+			    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+			                         Vec1( "{}" ), Vec1( finishEnv ) ) ) return false;
+			const JsonValue msgs = ParseBody( loop.BuildRequest( kApiKey ).body ).get( "messages" );
+			for( std::size_t m = 0; m < msgs.size(); ++m ) {
+				const JsonValue& c = msgs.at( m ).get( "content" );
+				for( std::size_t k = 0; c.isArray() && k < c.size(); ++k ) {
+					if( c.at( k ).get( "type" ).asString() != "tool_result" ||
+					    c.at( k ).get( "tool_use_id" ).asString() != "b1" ) continue;
+					text = c.at( k ).get( "content" ).at( 0 ).get( "text" ).asString();
+					return true;
+				}
+			}
+			return false;
+		};
+		const std::string lead =
+			"[build_element result for element \"wizard\" elided -- \"wizard\" is finished; its chunks are "
+			"in the document (read_document shows them).";
+		const std::string box = " Realised world bounding box: min (-1, 0, -0.5) max (1, 4, 0.5), height 4.]";
+		std::string t;
+		Check( stubText( LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\","
+		                                 "\"phaseRulesEnforced\":true,\"chunks\":[],\"message\":\"m\"}" ), t ) &&
+		       t == lead + " When it was finished the plan was still in the pieces phase: while another element is "
+		                   "active, edits to \"wizard\"'s chunks are refused except its materials, painters, lights, "
+		                   "cameras, film, rasterizers and rasterizer outputs -- reopen_element \"wizard\" before "
+		                   "editing its geometry, objects or any other chunk of it." + box,
+		       "T14d(e7) MONEY: PIECES-phase finish -> the stub names the refusal and reopen_element (exact text)" );
+		Check( stubText( LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"compose\",\"element\":\"wizard\","
+		                                 "\"phaseRulesEnforced\":true,\"chunks\":[],\"message\":\"m\"}" ), t ) &&
+		       t == lead + " Its finish reached the compose phase: every element's chunks stay editable in place; "
+		                   "creating new geometry for \"wizard\" needs reopen_element \"wizard\"." + box,
+		       "T14d(e7): COMPOSE-phase finish -> in-place editing, reopen only to create geometry (exact text)" );
+		Check( stubText( LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\","
+		                                 "\"phaseRulesEnforced\":false,\"chunks\":[],\"message\":\"m\"}" ), t ) &&
+		       t == lead + " They stay editable in place." + box,
+		       "T14d(e7): rules NOT enforced (refining / give-up) -> the stub claims no refusal (exact text)" );
 	}
 }
 

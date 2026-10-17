@@ -4539,6 +4539,13 @@ namespace RISE
 				std::string element;        //!< the element that was closed ("" when !ok)
 				std::string phase;          //!< the phase AFTER this call
 				std::string nextElement;    //!< the newly active element, "" when Compose
+				//! Doc 91 review round 4: whether the build-phase edit rules
+				//! are enforced after this call (building mode, protocol on,
+				//! the 3-refusal give-up not reached) -- in the pieces phase an
+				//! edit to another element's form is refused, in compose the
+				//! creation of geometry is.  Recorded here so a reader never
+				//! has to infer it.
+				bool        phaseRulesEnforced = false;
 				//! Every chunk attributed to the closed element, creation order.
 				std::vector<std::string> chunks;
 				//! The declared pieces whose name appears (case-insensitive
@@ -5049,6 +5056,12 @@ namespace RISE
 				std::string name;    //!< the chunk `name` when it had one, else ""
 				std::string kind;    //!< the chunk keyword when it parsed, else ""
 				std::string reason;  //!< factual, actionable, no advice
+				//! Doc 91 review round 4: which builder attempt produced this
+				//! rejection (1 = the first answer, 2 = the one repair retry),
+				//! so a reader can tell "refused in the same answer that landed
+				//! it" from "refused, then landed by the retry" without
+				//! inferring order from name membership.
+				int         attempt = 1;
 			};
 
 			//! The structured result of BuildElement.  `ok` means the builder
@@ -5075,6 +5088,9 @@ namespace RISE
 				//! these chunks, and once a clean success no longer gets a
 				//! chunkResults entry, this is the only place its kind rides.
 				std::vector<std::string> landedKinds;
+				//! Doc 91 review round 4: the builder attempt (1 or 2) that
+				//! landed each `landed` entry, index-parallel.
+				std::vector<int> landedAttempts;
 				std::vector<AgentBuildElementRejection> rejected;
 				//! One AgentChunkResult per chunk SUBMITTED (both attempts, in
 				//! submission order) -- the same per-element shape

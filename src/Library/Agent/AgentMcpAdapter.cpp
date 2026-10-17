@@ -1019,7 +1019,7 @@ namespace RISE
 						"refused. Nothing is required of an element before you finish it, and nothing is "
 						"scored. It changes nothing in the document -- no chunk, no head version, no undo "
 						"step. ok:false means the call did nothing (no build plan filed, or every element is "
-						"already finished) and message says which. Returns {ok,element,phase,nextElement,"
+						"already finished) and message says which. Returns {ok,element,phase,phaseRulesEnforced,nextElement,"
 						"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
 						"message} -- the isolate render also rides back as an MCP image content block.";
 					tools.push_back( MakeTool( "finish_element", desc, ObjectProp( "", props, required ) ) );
@@ -1119,7 +1119,9 @@ namespace RISE
 						"Returns {ok,element,provider,model,chunksExtracted,landed,"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
 						"sdfPartCount,bbox:{min,max,height},message}; landed names every chunk that "
-						"went in (landedKinds gives each one's kind), and chunkResults details only the "
+						"went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the "
+						"repair retry -- that landed it; each rejected entry carries its attempt too), and "
+						"chunkResults details only the "
 						"chunks that did not insert cleanly or carry a notice." );
 					tools.push_back( MakeTool( "build_element", desc, ObjectProp( "", props, required ) ) );
 				}

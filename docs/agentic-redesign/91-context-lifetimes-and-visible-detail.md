@@ -59,8 +59,16 @@ provider-cache miss — the doc 71 / T1c policy, unchanged.
   for element E flows through the chat loop, earlier live
   `build_element` and `insert_chunks` results that belong to E are
   replaced with a stub naming E and the recovery path (`read_document`
-  shows its chunks, which stay editable in place; `reopen_element` only
-  to create new geometry for E).  Results from EARLIER turns are
+  shows its chunks).  What editing E then requires is phrased from what
+  that finish REPORTED (`phase`, and since review round 4
+  `phaseRulesEnforced`): still in the PIECES phase, edits to E's chunks
+  are refused while another element is active except its materials,
+  painters, lights, cameras, film, rasterizers and rasterizer outputs
+  (`CheckElementWindowForEdit_` / `KindIsPhaseExemptCategory_`), so the
+  stub says `reopen_element` E first; in COMPOSE every element's chunks are
+  editable in place and only geometry creation needs `reopen_element`;
+  with the rules not enforced (refining mode, give-up) the stub claims no
+  refusal.  Results from EARLIER turns are
   rewritten in the same flush that elides the previous image (the finish
   result carries the isolate PNG), so they add no cache miss beyond that
   flush's earliest rewrite.  A build result from the SAME turn as the
@@ -120,16 +128,22 @@ apothecary and 0 on the dragons run (which read no skills).
   `RewriteToolResultSlots` with supersession): slots record `verb`,
   `lifetimeElement` (insert_chunks: from its APPLIED/diagnosed chunks
   only; a batch spanning two elements is never retired), `lifetimeCarry`
-  (reviews 2-3: the per-chunk outcomes the document does not record, each
-  named and labelled truthfully -- "refused: <reason>", "rejected first
-  (as K), landed on the retry[ as K2]" for a `rejected` entry whose name is
-  in `landed` (that IS the kind-changed re-land disclosure), "landed with a
-  notice" / "landed, diagnosed"; deduplicated by (name, kind, text), at
-  most 12 items then "and N more"; build_element's top-level message prose
-  -- give-up fold, unquoted-name disclosure, total-rejection excerpt -- is
-  not carried), which the element-finished stub carries so retiring never
+  (reviews 2-4: the per-chunk outcomes the document does not record, each
+  named and stated only as RECORDED -- "refused: <reason>"; "rejected on
+  attempt A (as K), landed on attempt B[ as K2]" only when build_element's
+  report says so (`rejected[].attempt`, `landedAttempts`, both recorded by
+  BuildElement since round 4 -- one answer that lands X and has a second X
+  refused is a refusal, never a retry); "landed with a notice" / "landed,
+  diagnosed"; keyed by (name, kind, text), a repeated identical refusal
+  shown once with "(xN)", at most 12 items then "and N more";
+  build_element's top-level message prose -- give-up fold, unquoted-name
+  disclosure, total-rejection excerpt -- is not carried), `lifetimeFacts`
+  (build_element's realised world bounding box; insert_chunks' last
+  `headVersion`), which the element-finished stub carries so retiring never
   deletes the only copy, and
-  `lifetimeSkill` at pack time.  A successful `reopen_element` E cancels
+  `lifetimeSkill` at pack time.  Lifetime stubs ride under the JSON key
+  `retired_note` on the Gemini / OpenAI wires (supersession keeps
+  `superseded_note`).  A successful `reopen_element` E cancels
   an element-finished retirement for E that was decided but not yet
   applied.  A lifetime event DECIDES (marks
   `pendingRetireNote` on earlier slots) and the rewrite is APPLIED only to

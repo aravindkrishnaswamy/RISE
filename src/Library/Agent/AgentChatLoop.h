@@ -342,6 +342,11 @@ namespace RISE
 			//! never deletes the only copy of a rejection.
 			std::string lifetimeCarry;
 
+			//! Doc 91 L2 review round 4: the other facts the element-finished
+			//! stub keeps -- build_element's realised world bounding box,
+			//! insert_chunks' last head version -- or "".
+			std::string lifetimeFacts;
+
 			//! Doc 91 slice L3b: the skill name of a successful NAMED
 			//! read_skill result, or "" (every other result, the index form
 			//! included).  The finish_element that reports the build plan's
@@ -1260,8 +1265,11 @@ namespace RISE
 			//! history_edit tagged `reason` per rewritten entry.  Targets on
 			//! already-dead slots are skipped, so every rule built on it
 			//! converges (a slot is rewritten at most once).
+			//! `noteKey` is the JSON key the placeholder rides under on the
+			//! object-payload wires (kChatSupersededNoteKey for supersession,
+			//! kChatRetiredNoteKey for the lifetime rules).
 			void RewriteToolResultSlots( const std::vector<ToolResultSlotRewrite>& targets,
-			                             const char* reason );
+			                             const char* reason, const char* noteKey );
 
 			//! CONTEXT LIFETIMES (doc 91 slices L2 + L3b): run after the
 			//! newly flushed ToolResults entry `newEntry` is in the

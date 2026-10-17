@@ -2726,6 +2726,11 @@ namespace RISE
 					result.set( "phase", JsonValue::MakeString( fr.phase ) );
 					result.set( "mode",  JsonValue::MakeString(
 						AgentSession::SessionModeName( s->SessionMode() ) ) );
+					// Doc 91 review round 4: whether the build-phase edit rules
+					// (another element's form refused in pieces; geometry
+					// creation refused in compose) are enforced from here on --
+					// a FACT the element-finished stub phrases itself from.
+					if( fr.ok ) result.set( "phaseRulesEnforced", JsonValue::MakeBool( fr.phaseRulesEnforced ) );
 					if( !fr.element.empty() )     result.set( "element",     JsonValue::MakeString( fr.element ) );
 					if( !fr.nextElement.empty() ) result.set( "nextElement", JsonValue::MakeString( fr.nextElement ) );
 					if( fr.ok ) {
@@ -2892,6 +2897,12 @@ namespace RISE
 						for( std::size_t i = 0; i < br.landedKinds.size(); ++i )
 							landedKindsArr.push_back( JsonValue::MakeString( br.landedKinds[i] ) );
 						result.set( "landedKinds", landedKindsArr );
+						// Doc 91 review round 4: the attempt (1 or 2) that landed
+						// each `landed` entry, index-parallel.
+						JsonValue landedAttemptsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.landedAttempts.size(); ++i )
+							landedAttemptsArr.push_back( JsonValue::MakeNumber( static_cast<double>( br.landedAttempts[i] ) ) );
+						result.set( "landedAttempts", landedAttemptsArr );
 						JsonValue rejArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < br.rejected.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();
@@ -2900,6 +2911,8 @@ namespace RISE
 							if( !br.rejected[i].kind.empty() )
 								o.set( "kind", JsonValue::MakeString( br.rejected[i].kind ) );
 							o.set( "reason", JsonValue::MakeString( br.rejected[i].reason ) );
+							// Doc 91 review round 4: which attempt (1 or 2).
+							o.set( "attempt", JsonValue::MakeNumber( static_cast<double>( br.rejected[i].attempt ) ) );
 							rejArr.push_back( o );
 						}
 						result.set( "rejected", rejArr );
