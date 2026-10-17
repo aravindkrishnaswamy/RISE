@@ -946,36 +946,88 @@ void SDFGeometry::ComputeBounds()
 	m_eps = std::max( m_diagonal * m_epsFrac, Scalar(1e-6) );
 }
 
-void SDFGeometry::GetAdditivePartExtents( std::vector<PartExtent>& out ) const
+void SDFGeometry::GetThinPartPoints( const Scalar thinThickness, std::vector<Point3>& out ) const
 {
 	out.clear();
-	if( m_isHeightfield ) return;
+	if( m_isHeightfield || !( thinThickness > 0 ) ) return;
 	for( size_t i = 0; i < m_parts.size(); ++i ) {
 		const Part& pt = m_parts[i];
 		if( pt.op != eOpUnion && pt.op != eOpSmin ) continue;
-		Point3 lmin, lmax;
-		primLocalAABB( pt, lmin, lmax );
-		const Scalar xs[2] = { std::min(lmin.x,lmax.x), std::max(lmin.x,lmax.x) };
-		const Scalar ys[2] = { std::min(lmin.y,lmax.y), std::max(lmin.y,lmax.y) };
-		const Scalar zs[2] = { std::min(lmin.z,lmax.z), std::max(lmin.z,lmax.z) };
 		// The same floored scale ComputeBounds uses (see its comment).
 		const Scalar sx = ( std::fabs(pt.scale.x) > Scalar(1e-9) ) ? pt.scale.x : Scalar(1e-9);
 		const Scalar sy = ( std::fabs(pt.scale.y) > Scalar(1e-9) ) ? pt.scale.y : Scalar(1e-9);
 		const Scalar sz = ( std::fabs(pt.scale.z) > Scalar(1e-9) ) ? pt.scale.z : Scalar(1e-9);
-		PartExtent e;
-		int n = 0;
-		for( int a = 0; a < 2; ++a )
-		for( int b = 0; b < 2; ++b )
-		for( int c = 0; c < 2; ++c ) {
-			const Scalar vx = xs[a] * sx, vy = ys[b] * sy, vz = zs[c] * sz;
-			e.corners[n++] = Point3(
+		// Thinnest scale: a local radius r is at most r * this thick in object
+		// space, so comparing against it is the conservative (include-more) side.
+		const Scalar sMin = std::min( std::fabs(sx), std::min( std::fabs(sy), std::fabs(sz) ) );
+		auto toObj = [&]( const Scalar x, const Scalar y, const Scalar z ) -> Point3 {
+			const Scalar vx = x * sx, vy = y * sy, vz = z * sz;
+			return Point3(
 				pt.pos.x + pt.cx.x*vx + pt.cy.x*vy + pt.cz.x*vz,
 				pt.pos.y + pt.cx.y*vx + pt.cy.y*vy + pt.cz.y*vz,
 				pt.pos.z + pt.cx.z*vx + pt.cy.z*vy + pt.cz.z*vz );
+		};
+		// Corners of the local box [-ex,ex] x [y0,y1] x [-ez,ez].
+		auto boxCorners = [&]( const Scalar ex, const Scalar y0, const Scalar y1, const Scalar ez ) {
+			for( int a = 0; a < 2; ++a ) for( int b = 0; b < 2; ++b ) for( int c = 0; c < 2; ++c )
+				out.push_back( toObj( a ? ex : -ex, b ? y1 : y0, c ? ez : -ez ) );
+		};
+		const Scalar A = std::fabs( pt.a ), B = std::fabs( pt.b ), C = std::fabs( pt.c );
+		switch( pt.type )
+		{
+		case ePrimSphere:
+		case ePrimSuperellipsoid:
+			if( 2*A*sMin < thinThickness ) boxCorners( A, -A, A, A );
+			break;
+		case ePrimBox:
+		case ePrimRoundBox: {
+			const Scalar r = ( pt.type == ePrimRoundBox ) ? std::max( pt.round, Scalar(0) ) : Scalar(0);
+			const Scalar ex = std::max( A, r ), ey = std::max( B, r ), ez = std::max( C, r );
+			if( 2*std::min( ex, std::min( ey, ez ) )*sMin < thinThickness ) boxCorners( ex, -ey, ey, ez );
+			break; }
+		case ePrimCylinder:
+			if( 2*std::min( A, B )*sMin < thinThickness ) boxCorners( A, -B, B, A );
+			break;
+		case ePrimCapsule:
+			if( 2*A*sMin < thinThickness ) boxCorners( A, -(B+A), B+A, A );
+			break;
+		case ePrimTorus:
+			if( 2*B*sMin < thinThickness ) {
+				// The ring is large and the tube thin: sample the ring itself
+				// (outer rim and the two flanks of the tube), not its box.
+				const int n = 24;
+				for( int k = 0; k < n; ++k ) {
+					const Scalar th = Scalar(6.283185307179586) * Scalar(k) / Scalar(n);
+					const Scalar cs = std::cos( th ), sn = std::sin( th );
+					out.push_back( toObj( (A+B)*cs, 0, (A+B)*sn ) );
+					out.push_back( toObj( A*cs,  B, A*sn ) );
+					out.push_back( toObj( A*cs, -B, A*sn ) );
+				}
+			}
+			break;
+		case ePrimRoundCone: {
+			// Axis = local Y, base cap (radius A) at y=0, tip cap (radius B) at y=c.
+			const Scalar yEnd[2] = { 0, pt.c };
+			const Scalar rEnd[2] = { A, B };
+			for( int e = 0; e < 2; ++e ) {
+				if( !( 2*rEnd[e]*sMin < thinThickness ) ) continue;
+				// This end's cap sphere.
+				boxCorners( rEnd[e], yEnd[e] - rEnd[e], yEnd[e] + rEnd[e], rEnd[e] );
+				// The cross-section where the radius has grown to thinThickness/2
+				// on the way to the other end (if it is wider): bounds the whole
+				// thin run, not just the tip.
+				const int o = 1 - e;
+				const Scalar rHalf = thinThickness / ( Scalar(2) * sMin );
+				if( rEnd[o] > rEnd[e] && rHalf < rEnd[o] ) {
+					const Scalar t = ( rHalf - rEnd[e] ) / ( rEnd[o] - rEnd[e] );
+					const Scalar y = yEnd[e] + t * ( yEnd[o] - yEnd[e] );
+					boxCorners( rHalf, y - rHalf, y + rHalf, rHalf );
+				}
+			}
+			break; }
+		default:
+			break;
 		}
-		e.minThickness = std::min( ( xs[1]-xs[0] ) * std::fabs(sx),
-		                 std::min( ( ys[1]-ys[0] ) * std::fabs(sy), ( zs[1]-zs[0] ) * std::fabs(sz) ) );
-		out.push_back( e );
 	}
 }
 

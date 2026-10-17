@@ -1738,8 +1738,8 @@ int main()
 					  "does not state WHERE the comparison lands -- the whole design decision is "
 					  "that the target rides the surface models actually visit, and a model that "
 					  "does not know renders carry it will never look for it" },
-					{ "not an isolate render",
-					  "does not state the exclusions (draft / mode: / isolate) -- those renders "
+					{ "not an isolate or zoom render",
+					  "does not state the exclusions (draft / mode: / isolate / zoom) -- those renders "
 					  "carry NO comparison, and a model expecting one there reads its absence as "
 					  "a broken result" },
 					{ "in place of the rendered frame",

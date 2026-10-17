@@ -6310,7 +6310,8 @@ static void RunZoomSchemaAndRpcTest()
 			Check( d.find( "CLOSE UP" ) != std::string::npos && d.find( "NOTHING is hidden" ) != std::string::npos &&
 			       d.find( "Mutually exclusive" ) != std::string::npos && d.find( "UPPER BOUND" ) != std::string::npos &&
 			       d.find( "NOT IN VIEW" ) != std::string::npos && d.find( "on or behind the plane through the camera" ) != std::string::npos &&
-			       d.find( "degenerate or unbounded" ) != std::string::npos,
+			       d.find( "degenerate or unbounded" ) != std::string::npos &&
+			       d.find( "no inventory, anchor, sceneTarget or tonal fact" ) != std::string::npos,
 			       "V2 the chat-codec zoom description states what it does, that nothing is hidden, the exclusions and the coverage caveat" );
 		}
 	}
@@ -6340,7 +6341,8 @@ static void RunZoomSchemaAndRpcTest()
 			Check( d.find( "CLOSE UP" ) != std::string::npos && d.find( "NOTHING is hidden" ) != std::string::npos &&
 			       d.find( "Mutually exclusive" ) != std::string::npos && d.find( "UPPER BOUND" ) != std::string::npos &&
 			       d.find( "NOT IN VIEW" ) != std::string::npos && d.find( "on or behind the plane through the camera" ) != std::string::npos &&
-			       d.find( "degenerate or unbounded" ) != std::string::npos,
+			       d.find( "degenerate or unbounded" ) != std::string::npos &&
+			       d.find( "no inventory, anchor, sceneTarget or tonal fact" ) != std::string::npos,
 			       "V2 the MCP zoom description matches the chat-codec one on every load-bearing sentence" );
 		}
 		pJob->release();
@@ -6764,7 +6766,23 @@ static void RunThinSdfPartFramedTest()
 	         "sdf_geometry\n{\n\tname fat_geo\n"
 	         "\tpart sphere union 0 0 0 0 0 0 0 1 1 1 1.0 0 0 0\n"
 	         "\tpart capsule union 0 0 0.75 0 0 0 0 1 1 1 0.06 0.69 0 0\n}\n\n"
-	         "standard_object\n{\n\tname fat_obj\n\tgeometry fat_geo\n\tmaterial mat\n\tposition -0.5 -0.3 0\n}\n";
+	         "standard_object\n{\n\tname fat_obj\n\tgeometry fat_geo\n\tmaterial mat\n\tposition -0.5 -0.3 0\n}\n\n"
+	         // A TAPERED part: a roundcone whose base is fat (r 0.2, so its LOCAL BOX is
+	         // fat) and whose tip is a needle (r 0.002) running 8 units out along +X.
+	         "sdf_geometry\n{\n\tname needle_geo\n"
+	         "\tpart sphere union 0 0 0 0 0 0 0 1 1 1 1.0 0 0 0\n"
+	         "\tpart roundcone union 0 0 0.9 0 0 0 -90 1 1 1 0.2 0.002 8.0 0\n}\n\n"
+	         "standard_object\n{\n\tname needle_obj\n\tgeometry needle_geo\n\tmaterial mat\n\tposition -4 -0.3 0\n}\n\n"
+	         // A wire ring (torus tube 0.01) wider than the small sphere it circles.
+	         "sdf_geometry\n{\n\tname ring_geo\n"
+	         "\tpart sphere union 0 0 0 0 0 0 0 1 1 1 0.4 0 0 0\n"
+	         "\tpart torus union 0 0 0 0 0 0 0 1 1 1 1.0 0.01 0 0\n}\n\n"
+	         "standard_object\n{\n\tname ring_obj\n\tgeometry ring_geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	         // A thin plate (half-thickness 0.01) beside a small sphere.
+	         "sdf_geometry\n{\n\tname plate_geo\n"
+	         "\tpart sphere union 0 0 0 0 0 0 0 1 1 1 0.3 0 0 0\n"
+	         "\tpart box union 0 0 0 0 0 0 0 1 1 1 1.0 0.01 1.0 0\n}\n\n"
+	         "standard_object\n{\n\tname plate_obj\n\tgeometry plate_geo\n\tmaterial mat\n\tposition 0.5 0.8 0\n}\n";
 	const std::string path = WriteTemp( "rise_thin_sdf.RISEscene", scene );
 	Job* pJob = new Job();
 	Check( pJob->LoadAsciiSceneViaCst( path.c_str() ), "R2-P2-1 scene loads" );
@@ -6792,6 +6810,14 @@ static void RunThinSdfPartFramedTest()
 	       "MONEY ASSERTION (R2-P2-1): a 0.02-radius rod on a unit sphere is fully inside the ISOLATE frame (its pixels touch no edge)" );
 	Check( framed( "rod_obj", true ),
 	       "MONEY ASSERTION (R2-P2-1): ... and inside the ZOOM frame" );
+	// Round 3: classify by the primitive's real cross-section, per END for a taper.
+	Check( framed( "needle_obj", false ),
+	       "MONEY ASSERTION (R3-P2-1): a needle-tipped roundcone (fat base, 0.002-radius tip) is fully inside the ISOLATE frame" );
+	Check( framed( "needle_obj", true ), "MONEY ASSERTION (R3-P2-1): ... and inside the ZOOM frame" );
+	Check( framed( "ring_obj", false ), "R3 a 0.01-tube torus ring is fully inside the isolate frame" );
+	Check( framed( "ring_obj", true ),  "R3 ... and the zoom frame" );
+	Check( framed( "plate_obj", false ), "R3 a 0.02-thick plate is fully inside the isolate frame" );
+	Check( framed( "plate_obj", true ),  "R3 ... and the zoom frame" );
 	pJob->release();
 }
 

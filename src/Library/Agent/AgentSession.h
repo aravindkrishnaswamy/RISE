@@ -872,7 +872,13 @@ namespace RISE
 			//!
 			//! BUILD CHECKLIST: like `isolate`, a zoom render is an inspection look
 			//! at one object, so it is NOT held behind the compose-phase build
-			//! checklist.  TONAL FACT: not attached to a zoom frame (a close crop of
+			//! checklist.  Accepted loophole, documented rather than closed: the
+			//! gate runs before the camera is solved, so a zoom on an object that
+			//! fills the frame (and so keeps the scene fov) is a near-full-scene
+			//! frame that is not refused -- but the checklist is a ONE-refusal
+			//! nudge ("after which every render proceeds"), and such a frame
+			//! carries no inventory, anchor, sceneTarget or tonal fact, so
+			//! nothing else is bypassed.  TONAL FACT: not attached to a zoom frame (a close crop of
 			//! one object would read as a statement about the scene's picture).
 			std::string          zoom;
 			//! G3b (2026-08-10, "the sketch comparison"): OPTIONAL name of a

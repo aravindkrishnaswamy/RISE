@@ -21496,28 +21496,28 @@ namespace RISE
 
 			// THIN PARTS.  The SDF/skeleton surface comes from a marching grid of
 			// 48 cells along the longest bbox axis, which misses any feature
-			// thinner than about half a cell -- a 0.02-radius rod on a unit
-			// sphere simply is not in the tessellation, and the fit then runs it
-			// off the frame.  So each additive part thinner than kThinCells grid
-			// cells also contributes the corners of its own UNPADDED primitive
-			// box (no smin padding, so the tightness gain over the padded bound is
-			// kept; a thin part's box hugs it, so the corners add little slack).
-			// Fat parts are resolved by the grid and add nothing.
+			// whose cross-section is about a cell or less -- a 0.02-radius rod on
+			// a unit sphere, or the needle tip of a tapered roundcone, simply is
+			// not in the tessellation, and the fit then runs it off the frame.
+			// So the geometry reports (GetThinPartPoints) UNPADDED points bounding
+			// each additive part's thin portion: its primitive box when the whole
+			// primitive is thin, per END for a tapered roundcone (the thin cap
+			// sphere plus the cross-section where the radius reaches half the
+			// threshold), the tube for a torus.  A part whose cross-section the
+			// grid resolves (>= kThinCells cells) adds nothing, which is what keeps
+			// the creature fixture as tight as before.
 			if( const Implementation::SDFGeometry* sdf = dynamic_cast<const Implementation::SDFGeometry*>( g ) ) {
 				const BoundingBox bb = sdf->GenerateBoundingBox();
 				const double longest = std::max( bb.ur.x - bb.ll.x, std::max( bb.ur.y - bb.ll.y, bb.ur.z - bb.ll.z ) );
 				if( longest > 0.0 && RISE::IsFiniteDouble( longest ) ) {
 					const double kThinCells = 1.5;
 					const double thin = kThinCells * longest / static_cast<double>( kSDFFitCells );
-					std::vector<Implementation::SDFGeometry::PartExtent> ext;
-					sdf->GetAdditivePartExtents( ext );
-					for( std::size_t i = 0; i < ext.size(); ++i ) {
-						if( !( ext[i].minThickness < thin ) ) continue;
-						for( int c = 0; c < 8; ++c ) {
-							const Point3 w = Point3Ops::Transform( world, ext[i].corners[c] );
-							if( RISE::IsFiniteDouble( w.x ) && RISE::IsFiniteDouble( w.y ) && RISE::IsFiniteDouble( w.z ) )
-								out.push_back( w );
-						}
+					std::vector<Point3> thinPts;
+					sdf->GetThinPartPoints( thin, thinPts );
+					for( std::size_t i = 0; i < thinPts.size(); ++i ) {
+						const Point3 w = Point3Ops::Transform( world, thinPts[i] );
+						if( RISE::IsFiniteDouble( w.x ) && RISE::IsFiniteDouble( w.y ) && RISE::IsFiniteDouble( w.z ) )
+							out.push_back( w );
 					}
 				}
 			}
@@ -27891,9 +27891,22 @@ namespace RISE
 					// object behind the camera silently turns the view around and the
 					// render reports ok with the object at 0 px.  DirectionInSceneView
 					// is the one acceptance test the inventory's zoom hint shares.
-					if( zAxes.ok ) {
+					if( !zAxes.ok || !zFilm || !( zFilm->GetHeight() > 0 ) ) {
+						res.ok = false;
+						res.message = "zoom \"" + params.zoom + "\" cannot be framed: the scene camera's view axes could not be read "
+							"(no film, or a degenerate projection), so whether the object is in its view cannot be decided.  "
+							"Use `camera` to look at the object from a pose you choose.";
+						specificFailureReported = true;
+						return;
+					}
+					{
+						// The SCENE camera's own aspect (its film, pixel aspect included),
+						// not the aspect this render was requested at: "in view" is a
+						// question about the scene's frame, and the inventory hint asks
+						// it the same way.
+						const double sceneAspect = ( static_cast<double>( zFilm->GetWidth() ) / static_cast<double>( zFilm->GetHeight() ) ) * zFilm->GetPixelAR();
 						double offAxisDeg = 0.0;
-						if( !DirectionInSceneView( zAxes, zForward, std::tan( zoomSnap.fov * 0.5 ), zAspect, kZoomViewMargin, &offAxisDeg ) ) {
+						if( !DirectionInSceneView( zAxes, zForward, std::tan( zoomSnap.fov * 0.5 ), sceneAspect, kZoomViewMargin, &offAxisDeg ) ) {
 							char where[160];
 							std::snprintf( where, sizeof( where ), "%.0f degrees off the scene camera's axis (its vertical field of view is %.0f degrees)",
 							               offAxisDeg, zoomSnap.fov * 180.0 / kPiZ );

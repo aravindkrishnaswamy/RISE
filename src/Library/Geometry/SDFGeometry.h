@@ -157,21 +157,28 @@ namespace RISE
 			//! expansion by hand in a second, driftable copy.
 			const std::vector<Part>& GetParts() const { return m_parts; }
 
-			//! One additive part's UNPADDED extent, for a caller that must know
-			//! where thin features are (the agent's isolate / zoom framing): the
-			//! part's local primitive bounds, scaled and rotated into OBJECT space
-			//! exactly as ComputeBounds does but with NO smin / blend padding.
-			//! `minThickness` is the smallest object-space side of that box, i.e. the
-			//! thickness of the thinnest axis of the primitive.  Subtract and
-			//! intersect parts are omitted (a carve or clip never extends the solid,
-			//! and an intersect part's own box overstates what survives the clip).
-			//! Empty for the heightfield-mode constructor.
-			struct PartExtent
-			{
-				Point3 corners[8];
-				Scalar minThickness;
-			};
-			void GetAdditivePartExtents( std::vector<PartExtent>& out ) const;
+			//! Object-space points bounding the THIN portions of this body's additive
+			//! (union / smin) parts, for a caller that must frame features a
+			//! marching grid can miss (the agent's isolate / zoom framing).
+			//! `thinThickness` is the object-space thickness below which a feature
+			//! counts as thin.  Per primitive, UNPADDED (no smin padding):
+			//!   sphere / superellipsoid / box / roundbox / cylinder / capsule --
+			//!     thin when the smallest cross-section (diameter, plate side) is,
+			//!     and then the corners of the primitive's own box;
+			//!   torus -- thin when the TUBE is (2b): points around the ring
+			//!     centreline and its outer rim, not the ring's (huge) box corners;
+			//!   roundcone -- classified per END, because it TAPERS: the cap sphere
+			//!     of each end thinner than the threshold contributes its own box
+			//!     corners, plus the corners of the cross-section where the cone's
+			//!     radius reaches thinThickness/2 on the way to the fat end, so a
+			//!     needle tip and the whole thin run before it are bounded.
+			//! Subtract and intersect parts are omitted (a carve or clip never
+			//! extends the solid, and an intersect part's own box overstates what
+			//! survives the clip).  KNOWN GAP: a thin union part lying entirely
+			//! inside a LATER subtract / intersect part is still reported, so the
+			//! fit can frame a feature that was carved away.  Empty for the
+			//! heightfield-mode constructor.
+			void GetThinPartPoints( const Scalar thinThickness, std::vector<Point3>& out ) const;
 
 			//! Blend-domain-control slice (2026-08-25): the composed signed
 			//! distance of an ARBITRARY parts list at an arbitrary point,
