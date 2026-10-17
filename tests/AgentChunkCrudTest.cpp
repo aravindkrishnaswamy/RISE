@@ -17578,9 +17578,37 @@ static void TestPopulateSceneSourceClone()
 		"standard_object\n{\n\tname pop_clone_ghost_src\n\tsource no_such_object\n"
 		"\tposition 0 0 1\n}\n"
 		"standard_object\n{\n\tname pop_clone_ghost_mat\n\tsource obj_sph\n"
-		"\tmaterial ghost_mat\n\tposition 0 0 2\n}\n";
+		"\tmaterial ghost_mat\n\tposition 0 0 2\n}\n"
+		"standard_object\n{\n\tname pop_clone_geomsrc\n\tsource sph\n\tposition 0 0 3\n}\n"
+		"standard_object\n{\n\tname pop_clone_countedsrc\n\tsource pop_clone_row\n\tposition 0 0 4\n}\n"
+		"standard_object\n{\n\tname pop_clone_big\n\tsource obj_sph\n\tcount_u 20\n\tcount_v 20\n}\n";
 	sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
 	const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+
+	Check( r.objectCountAfter - r.objectCountBefore == 5,
+	       "A82h objects grew by exactly 3 (count_u 3) + 1 + 1 = 5" );
+	Check( r.created.size() == 3, "A82h exactly three chunks landed" );
+	for( std::size_t i = 0; i < r.created.size(); ++i ) {
+		Check( r.created[i].source.size() > 0 && r.created[i].geometry.empty(),
+		       "A82h a clone's creation record carries `source`, not a fake geometry" );
+		if( r.created[i].name == "pop_clone_row" )
+			Check( r.created[i].expandedCount == 3, "A82h the counted clone reports 3 objects" );
+	}
+	Check( r.message.find( "clone of obj_sph, 3 objects" ) != std::string::npos,
+	       "A82h the human message renders the clone and its expansion" );
+	{
+		bool geomSrc = false, countedSrc = false, big = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
+			const std::string& why = r.rejected[i].reason;
+			if( why.find( "\"sph\", which this scene does not have" ) != std::string::npos ) geomSrc = true;
+			if( why.find( "carries `count_u` / `count_v`" ) != std::string::npos ) countedSrc = true;
+			if( why.find( "over the populate_scene cap of 256" ) != std::string::npos ) big = true;
+		}
+		Check( geomSrc, "A82h a `source` naming a GEOMETRY (not an object) is rejected" );
+		Check( countedSrc, "A82h a `source` that is a counted chunk is rejected" );
+		Check( big, "A82h a 20x20 clone is rejected over the cap" );
+	}
+	Check( pJob->GetObjects()->GetItem( "obj_sph" ) != nullptr, "A82h obj_sph still exists" );
 
 	const std::string doc = sess->ReadDocument();
 	Check( doc.find( "pop_clone_row" ) != std::string::npos,

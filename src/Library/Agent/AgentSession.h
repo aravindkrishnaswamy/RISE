@@ -5610,6 +5610,8 @@ namespace RISE
 			//! population pass per scene, and a real-provider spend bound
 			//! that a repair retry deliberately does not distinguish.
 			static constexpr int kPopulateSceneMaxPerSession = 4;
+			//! Per-chunk cap on objects a `source` clone may create (count_u * count_v * source subtree).
+			static constexpr int kPopulateSceneMaxCloneObjects = 256;
 
 			//! The longest `notes` string a `populate_scene` call may carry
 			//! -- the ONE model-supplied span in the host-composed prompt,
@@ -5642,6 +5644,11 @@ namespace RISE
 				std::string name;
 				std::string geometry;
 				std::string material;
+				//! Non-empty for a `source` clone: the cloned object (and then
+				//! `geometry` is empty). `expandedCount` is how many objects
+				//! the chunk makes (count_u * count_v * source subtree).
+				std::string source;
+				int         expandedCount = 1;
 			};
 
 			//! The structured result of PopulateScene.  `ok` means the pass
