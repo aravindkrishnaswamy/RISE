@@ -547,6 +547,11 @@ place. §3.8's verification tier includes a **timestep-refinement
 convergence test** on the heat-release history — the closure must produce
 Δt-independent physics under the CFL-selected step.
 
+**Pending r249 design revision:** the retained-state parcel/graph comparison
+selects [variant (c)](FIRE_SMOKE_EXTINCTION_PARCEL_R249.md) for implementation
+and a from-zero fuel-balance check. The description below documents the
+currently implemented whole-cell gate; the revision is not implemented yet.
+
 **Ignition and extinction — two separate criteria** (revision 3 conflated
 them; the CFT test alone is an *extinction* model and does not block cold
 fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches

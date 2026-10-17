@@ -73,6 +73,12 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    3.451 g. This is sampled localization, not an exact historical accepted
    boundary integral. An established-flame mixing/combustion closure correction
    is proposed; its causal effectiveness remains untested.
+   **Offline eligibility follow-up:** [four-gate comparison](FIRE_SMOKE_TIER8_ELIGIBILITY_R249.md)
+   gives mean eligible CH4 (a/b/c/d) 0.0360/0.0771/0.5774/0.5774 g.
+   Parcel CFT alone recovers 7.51% of stranded inventory; allowing cold
+   vertices connected to warm seeded components recovers 98.98%.
+   [Variant (c) design revision](FIRE_SMOKE_EXTINCTION_PARCEL_R249.md) is ready
+   for implementation. No solver change or new simulation is claimed.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
    incandescence, only blue chemiluminescence. The zero is methane's

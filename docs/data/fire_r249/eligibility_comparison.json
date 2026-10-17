@@ -1,0 +1,125 @@
+{
+  "scope": "offline_eligibility_counterfactual_on_retained_states_not_new_physics_run",
+  "base_commit": "767fbb2b7",
+  "states": 156,
+  "start_s": 10.543308698033798,
+  "end_s": 25.091040127255837,
+  "duration_s": 14.54773142922204,
+  "time_weighting": "Trapezoidal state integral divided by actual interval duration",
+  "geometry": "Binary32 solver dx, volume and heights",
+  "mean_inventory_kg": 0.0005828765788229239,
+  "mean_positive_inventory_kg": 0.0005829549832530145,
+  "mean_negative_inventory_kg": -7.840443009066792e-08,
+  "variants": {
+    "a": {
+      "mean_eligible_kg": 3.603449733726557e-05,
+      "mean_inventory_fraction": 0.061813516261899515,
+      "mean_stranded_inventory_recovered_fraction": 0.0,
+      "final_eligible_kg": 3.62076127944128e-05,
+      "min_eligible_kg": 2.2767772825870292e-05,
+      "max_eligible_kg": 4.7295207733869095e-05
+    },
+    "b": {
+      "mean_eligible_kg": 7.711468934248138e-05,
+      "mean_inventory_fraction": 0.1322824086898868,
+      "mean_stranded_inventory_recovered_fraction": 0.07511181801214166,
+      "final_eligible_kg": 7.400636614546288e-05,
+      "min_eligible_kg": 5.801457213391284e-05,
+      "max_eligible_kg": 8.952150394568616e-05
+    },
+    "c": {
+      "mean_eligible_kg": 0.0005773974424810475,
+      "mean_inventory_fraction": 0.9904666038860244,
+      "mean_stranded_inventory_recovered_fraction": 0.9898384849076155,
+      "final_eligible_kg": 0.0005893306666643204,
+      "min_eligible_kg": 0.0005412485408285656,
+      "max_eligible_kg": 0.0006481490026200551
+    },
+    "d": {
+      "mean_eligible_kg": 0.0005774016150203269,
+      "mean_inventory_fraction": 0.9904737614529023,
+      "mean_stranded_inventory_recovered_fraction": 0.9898461140591779,
+      "final_eligible_kg": 0.0005893328213710693,
+      "min_eligible_kg": 0.0005412520661163841,
+      "max_eligible_kg": 0.0006481530560038316
+    }
+  },
+  "height_bands": [
+    {
+      "lower_m": 0,
+      "upper_m": 0.25,
+      "total_kg": 0.00012805146871563197,
+      "a_kg": 3.474389774589587e-05,
+      "b_kg": 5.8556836331232735e-05,
+      "c_kg": 0.00012251101874152171,
+      "d_kg": 0.00012251110676614682
+    },
+    {
+      "lower_m": 0.25,
+      "upper_m": 0.5,
+      "total_kg": 3.84265889747365e-05,
+      "a_kg": 1.27341631934356e-06,
+      "b_kg": 1.2295945742891922e-05,
+      "c_kg": 3.8425505242467207e-05,
+      "d_kg": 3.842560270378144e-05
+    },
+    {
+      "lower_m": 0.5,
+      "upper_m": 1,
+      "total_kg": 7.576525388112034e-05,
+      "a_kg": 1.7183272026142414e-08,
+      "b_kg": 6.228566820029904e-06,
+      "c_kg": 7.57748530737701e-05,
+      "d_kg": 7.577500125120083e-05
+    },
+    {
+      "lower_m": 1,
+      "upper_m": 2,
+      "total_kg": 0.00014388541686657528,
+      "a_kg": 0.0,
+      "b_kg": 3.3340448326808575e-08,
+      "c_kg": 0.00014390434869567843,
+      "d_kg": 0.0001439050116935469
+    },
+    {
+      "lower_m": 2,
+      "upper_m": 3.2428702786564827,
+      "total_kg": 0.00019674785038485977,
+      "a_kg": 0.0,
+      "b_kg": 0.0,
+      "c_kg": 0.00019678171672760992,
+      "d_kg": 0.00019678489260565094
+    }
+  ],
+  "fds_source_url": "https://github.com/firemodels/fds/blob/FDS-6.11.1/Manuals/FDS_Technical_Reference_Guide/Combustion_Chapter.tex#L485-L501",
+  "phi_definition": "min(1,s_O2*q_CH4/q_O2); retain all CH4 and phi times every nonfuel constituent, including nitrogen and pre-existing products",
+  "pass_definition": "sum(parcel_before_sensible_enthalpy(T)) + reacted_CH4 * LHV >= sum(parcel_after_sensible_enthalpy(1700 K))",
+  "gate_definitions": {
+    "a": "Unmodified BuildIgnitionEligibility plus existing established-floor-holder exception",
+    "b": "Parcel CFT replaces whole-cell CFT in vertices, seeds and floor-holder exception; T>600 K retained",
+    "c": "Flood parcel-passing vertices of any temperature from b warm seeded graph components; unchanged b floor-holder exception, which does not seed graph expansion",
+    "d": "All parcel-passing cells regardless of temperature or connectivity; upper bound"
+  },
+  "controls": "disconnected cold pocket excluded, seedless graph empty, stoichiometric and lean parcel pass, rich parcel fails",
+  "limitations": [
+    "Eligibility is available fuel inventory, not the amount consumed per step or proof of 95% combustion efficiency.",
+    "The parcel trial is an extinction model. FDS does not justify waiving RISE's 600 K graph gate; that is a separately measured candidate.",
+    "Graph reachability may connect far-apart cells through tiny methane tails. A disconnected pocket stays excluded; physical flame propagation speed is not established.",
+    "The unchanged original source-temperature, source-extent, radiation and expansion constraints have not been evaluated for variant c in an evolving flow."
+  ],
+  "artifact_sha256": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/r249_gate_reduce.py": "3682636b5af9623dce88457c0d1c421d335a1b1d2fa4adc64799c70e1be38e19",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/native_gate_probe.cpp": "13b6f2a7d37b0741521e55fee9671c80a3122d5a384f446042c01c30540f06f7",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/native_gate_probe": "b90193187e6a2352aeaa7b2dd8ab69dc44d87eda92a30bd92f20e9da494d0b49",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/gate_build.sh": "d567aba8f9b2e53e587fdf271bcb8cc0a67640d628231525dac9472a29cc9baa",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/gate_build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/gate_probe.log": "2dd98a0a5c48fc7bb30fcecef2cc0f555fe063dd092e8f036ff5380721915758",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/gate_checkpoints.txt": "748764de4b6dae92dcefabfb82a64a5b8f5346c62fe4a25d9a7d291d7ad34de4",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/gate_height_samples.csv": "906195c6d4380c50db1d8f468bfc30eaa30276dee5b05d5c637594462cc197c2",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/gate_mass_samples.csv": "d36eee414de36b607975219b3932c8fe33e4cd0b0a0f68ac5e750795abe0fe27",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/fds_6_11_1_combustion.tex": "60d3ee21fb5aee27a67c855533e2e62fd688de1a4541c759c64953d7864a3899",
+    "/Volumes/SSD/Working/RISE/tools/fire/r249_eligibility_probe.cpp": "8752fbf28dee439ada7fe2f901f473bf1fd6e8489671879d446d24a64a4fb8f3",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r249/eligibility_mass_samples.csv": "076c9a245bb838c60cfb5670dcd21adbde248f8806a43079caf6f7a75235f95b",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r249/eligibility_height_profile.csv": "ab2c3e1812905f68bbfd688d6ec4a85c47270d464d9a516349ac6fada89ec0ac"
+  }
+}
