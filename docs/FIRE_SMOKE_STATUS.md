@@ -80,7 +80,8 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    The [one-cell follow-up](FIRE_SMOKE_TIER8_EDGE_R249.md) selects (e): mean
    eligible mass 0.136754 g, retaining 57.72% of (c) below 1 m while putting
    99.91% of (e) below 1 m. [Revision (e)](FIRE_SMOKE_EXTINCTION_PARCEL_R249.md)
-   is implemented. The tier-8 from-zero acceptance run is next: ≥95% fuel
+   is implemented. The tier-8 from-zero acceptance run is active in
+   `r250_tier8_parcel_edge` (started 2026-10-17 12:50 UTC): ≥95% fuel
    consumption with closing balance, near-zero top CH4 export, and plausible
    heat-release height against Heskestad. Stop for review before tier 10.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
@@ -153,6 +154,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r238_retained_fuel_budget.v2` | fuel-budget observer replay on r237 |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
+| `r250_tier8_parcel_edge` | active from-zero tier-8 run of the one-cell parcel-edge gate; fuel/export/heat-height acceptance pending |
 | `r249_tier8_fuel_balance` | read-only r241 retained fuel inventory, sampled boundary localization, and native chemistry-state checks |
 | `r243_nonphysical_diagnostic.v3` | temperature-mapped structure clips, labelled non-physical |
 | `r244_tier6_*`, `r245_*`, `r246_tier6_top_double.v1`, `r246_recovered_top_*`, `r247_transport.v3`, `r247_source_spatial.v2` | tier-6 domain, budget and top-boundary studies |

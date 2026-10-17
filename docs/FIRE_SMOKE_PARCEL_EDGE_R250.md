@@ -58,4 +58,20 @@ Two small clean-build repairs migrate deprecated Metal family queries and
 exclude make's generated dependency file from Xcode's synchronized source set.
 They do not change simulation arithmetic or Apple-device family selection.
 
-Status: verification/review preceding launch; acceptance measurements pending.
+## Launch
+
+Started 2026-10-17 at approximately 12:50 UTC from committed `ed6757e23`
+(after rebuilding the executable to refresh its build identity). Both independent
+reviewers found no P1/P2 issues. Command:
+
+```sh
+./bin/tests/FireSequenceTest --fire-production-temporal-capstone 8 0.0625 /Volumes/SSD/RISE/fire_production_calibration/r250_tier8_parcel_edge/
+```
+
+The sibling `r250_tier8_parcel_edge.log` contains progress and the existing
+32 GiB memory guard. First accepted step: time 0.001646266 s, RSS 1.87 GB,
+no memory stop. The prior tier-8 window took 21.8 hours; this run's elapsed
+cost remains to be measured.
+
+Status: from-zero run active; all three physical acceptance measurements pending.
+No tier-10 run has been started.
