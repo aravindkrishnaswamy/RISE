@@ -794,6 +794,9 @@ namespace RISE
 			// A fresh session may target a different, image-capable model --
 			// the text-only proof does not carry across a Reset/SetProvider.
 			mElideAllImages = false;
+			// Doc 91 L3b: the Compose signal describes the transcript just
+			// cleared, so a fresh conversation retires its skills afresh.
+			mComposeSkillRetirementDone = false;
 			// Likewise, a fresh session may target a different model that
 			// has no reasoning-vs-tools conflict at all -- but re-arm from
 			// the process-wide cache rather than blindly clearing: if THIS
@@ -2185,6 +2188,339 @@ namespace RISE
 					summaries[i].carriesImage = false;
 				}
 			}
+
+			//! CONTEXT LIFETIMES (doc 91): the `result` object of a parseable
+			//! JSON-RPC SUCCESS envelope, or nullptr (error envelope, the
+			//! loop's synthesized "not executed" envelope, unparseable line).
+			//! `env` owns the storage.
+			const JsonValue* LifetimeSuccessResult( const std::string& raw, JsonValue& env )
+			{
+				std::string perr;
+				if( !JsonParse( raw, env, perr ) || !env.isObject() ) return nullptr;
+				if( env.find( "error" ) ) return nullptr;
+				const JsonValue* result = env.find( "result" );
+				return ( result && result->isObject() ) ? result : nullptr;
+			}
+
+			//! The call's string argument `key`, or "".
+			std::string LifetimeArgString( const ChatToolCall& call, const char* key )
+			{
+				JsonValue args;
+				std::string perr;
+				if( !JsonParse( call.argsJson, args, perr ) || !args.isObject() ) return std::string();
+				return args.get( key ).asString();
+			}
+
+			//! Doc 91 slice L2: the element a build_element / insert_chunks
+			//! result describes, or "".  build_element: the result's
+			//! `element` (the session's own spelling), else the call's
+			//! `element` argument -- so an error envelope or an ok:false
+			//! refusal for E is retired with E too.  insert_chunks: the
+			//! per-chunk `element` attribution (AgentRpc.cpp's
+			//! ChunkResultJson), taken only when every attributed chunk names
+			//! the SAME element -- an unattributed batch (no element window)
+			//! or a mixed one is never retired.
+			std::string LifetimeElementOf( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name == "build_element" ) {
+					JsonValue env;
+					if( const JsonValue* r = LifetimeSuccessResult( raw, env ) ) {
+						const std::string e = r->get( "element" ).asString();
+						if( !e.empty() ) return e;
+					}
+					return LifetimeArgString( call, "element" );
+				}
+				if( call.name == "insert_chunks" ) {
+					JsonValue env;
+					const JsonValue* r = LifetimeSuccessResult( raw, env );
+					if( !r ) return std::string();
+					const JsonValue& items = r->get( "results" );
+					if( !items.isArray() ) return std::string();
+					std::string element;
+					for( std::size_t i = 0; i < items.size(); ++i ) {
+						// Review round 1 P3: attribute ONLY from chunks that are
+						// in the document (applied, or diagnosed -- landed with
+						// diagnostics).  A REJECTED chunk's `element` is looked
+						// up by its name, which may be ANOTHER element's chunk
+						// (a refused duplicate), so it says nothing about this
+						// batch.
+						const JsonValue& it = items.at( i );
+						if( !it.get( "applied" ).asBool( false ) &&
+						    it.get( "status" ).asString() != "diagnosed" ) continue;
+						const std::string e = it.get( "element" ).asString();
+						if( e.empty() ) continue;
+						if( element.empty() ) element = e;
+						else if( element != e ) return std::string();
+					}
+					return element;
+				}
+				return std::string();
+			}
+
+			//! Doc 91 L2 (review rounds 2-4): the compact record of the
+			//! PER-CHUNK outcomes a build_element / insert_chunks result
+			//! reports that the document does not record, so the
+			//! element-finished stub can carry them.  Each item names the
+			//! chunk ("<name> (<kind>)") and states only what the result
+			//! RECORDS -- never an order inferred from names:
+			//!   "refused: <text>"  -- this insert did not land (for a refused
+			//!                         duplicate the NAME may still exist:
+			//!                         another chunk owns it)
+			//!   "rejected on attempt A (as K), landed on attempt B[ as K2]"
+			//!                      -- ONLY when build_element's report says so:
+			//!                         `rejected[i].attempt` A and a `landed`
+			//!                         entry of the same name whose
+			//!                         `landedAttempts` B is later than A (the
+			//!                         kind-changed re-land disclosure when
+			//!                         K != K2).  One answer that lands X and
+			//!                         has a second X refused is two facts,
+			//!                         reported as a refusal.
+			//!   "landed with a notice: <text>" / "landed, diagnosed: <text>"
+			//!                      -- the notice with the canonical insert
+			//!                         prefix stripped, plus any `issues`
+			//!   "staged as a proposal: <text>" -- External authority
+			//! Each text is capped at 160 bytes (UTF-8-safe); items are keyed by
+			//! (name, kind, text) -- N distinct refusals stay N items, and the
+			//! SAME refusal recorded n > 1 times (one answer naming X four
+			//! times: one lands, three are refused as duplicates) reads
+			//! "refused (x3): ..." -- at most kMaxItems, then "and N more".
+			//! For build_element the `rejected` list is the count of record:
+			//! its chunkResults repeat insertion-time refusals and never add
+			//! to a count.  NOT carried:
+			//! build_element's top-level message prose (the give-up fold, the
+			//! unquoted-name disclosure, the total-rejection excerpt).
+			std::string LifetimeCarryOf( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name != "build_element" && call.name != "insert_chunks" ) return std::string();
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r ) return std::string();
+				static const std::size_t kMaxItems = 12;
+				struct Item { std::string key, head, verdict, text; std::size_t count; };
+				std::vector<Item> all;   // keyed by name \x1f kind \x1f text
+				auto label = []( const std::string& name, const std::string& kind ) {
+					if( name.empty() ) return kind.empty() ? std::string( "a chunk" ) : ( "an unnamed " + kind );
+					return kind.empty() ? name : ( name + " (" + kind + ")" );
+				};
+				// `head` names the chunk, `verdict` is the outcome phrase, `text`
+				// the (already capped) reason/notice, "" when the item has none.
+				// A repeat of a key bumps its count only when `counts`.
+				auto add = [&]( const std::string& name, const std::string& kind, const std::string& keyText,
+				                const std::string& head, const std::string& verdict, const std::string& text,
+				                bool counts ) {
+					const std::string k = name + "\x1f" + kind + "\x1f" + keyText;
+					for( std::size_t i = 0; i < all.size(); ++i ) {
+						if( all[i].key != k ) continue;
+						if( counts ) ++all[i].count;
+						return;
+					}
+					all.push_back( Item{ k, head, verdict, text, 1 } );
+				};
+				// One per-chunk entry that carries a message (L1: a clean insert carries none).
+				// Review round 5: a landed chunk's message OPENS with the
+				// canonical insert text when a notice was appended to it -- strip
+				// that (and the separating whitespace) so the 160-byte budget goes
+				// to the notice; a landed chunk whose only extra is `issues`
+				// (e.g. a forward-reference warning) carries those instead.
+				auto noticeText = [&]( const JsonValue& it ) {
+					std::string msg = it.get( "message" ).asString();
+					const std::string canon( kChatChunkInsertedMessage );
+					if( msg.compare( 0, canon.size(), canon ) == 0 ) {
+						std::size_t k = canon.size();
+						while( k < msg.size() && ( msg[k] == ' ' || msg[k] == ';' || msg[k] == ':' ) ) ++k;
+						msg = msg.substr( k );
+					}
+					const JsonValue& issues = it.get( "issues" );
+					for( std::size_t k = 0; issues.isArray() && k < issues.size(); ++k ) {
+						const std::string reason = issues.at( k ).get( "reason" ).asString();
+						const std::string param = issues.at( k ).get( "param" ).asString();
+						if( reason.empty() ) continue;
+						if( !msg.empty() ) msg += "; ";
+						msg += reason + ( param.empty() ? std::string() : ( " `" + param + "`" ) );
+					}
+					return msg;
+				};
+				auto addOutcome = [&]( const JsonValue& it, bool counts ) {
+					const std::string full = it.get( "message" ).asString();
+					const std::string text = noticeText( it );
+					if( text.empty() ) return;
+					const std::string name = it.get( "name" ).asString();
+					const std::string kind = it.get( "kind" ).asString();
+					const std::string status = it.get( "status" ).asString();
+					std::string verdict;
+					if( it.get( "applied" ).asBool( false ) ) verdict = "landed with a notice";
+					else if( status == "diagnosed" )          verdict = "landed, diagnosed";
+					else if( status == "staged" )             verdict = "staged as a proposal";
+					else                                      verdict = "refused";
+					// Keyed by the FULL message, so it deduplicates against the
+					// matching `rejected` entry of a build_element report.
+					add( name, kind, full, label( name, kind ), verdict, TruncateForOutcome( text, 160 ), counts );
+				};
+				if( call.name == "build_element" ) {
+					// A `rejected` entry repeats a chunkResults entry for an
+					// insertion-time outcome; a STAGED one (External authority)
+					// is labelled staged, not refused (review round 5).
+					const JsonValue& crsAll = r->get( "chunkResults" );
+					auto stagedTwin = [&]( const std::string& name, const std::string& kind, const std::string& text ) {
+						for( std::size_t k = 0; crsAll.isArray() && k < crsAll.size(); ++k ) {
+							const JsonValue& c = crsAll.at( k );
+							if( c.get( "status" ).asString() == "staged" && c.get( "name" ).asString() == name &&
+							    c.get( "kind" ).asString() == kind && c.get( "message" ).asString() == text ) return true;
+						}
+						return false;
+					};
+					const JsonValue& landed = r->get( "landed" );
+					const JsonValue& landedKinds = r->get( "landedKinds" );
+					const JsonValue& landedAttempts = r->get( "landedAttempts" );
+					const JsonValue& rej = r->get( "rejected" );
+					for( std::size_t i = 0; rej.isArray() && i < rej.size(); ++i ) {
+						const JsonValue& it = rej.at( i );
+						const std::string name = it.get( "name" ).asString();
+						const std::string kind = it.get( "kind" ).asString();
+						const std::string reason = it.get( "reason" ).asString();
+						const int attempt = static_cast<int>( it.get( "attempt" ).asNumber( 0 ) );
+						// The landing of this name by a LATER attempt, if the
+						// report records one (attempt numbers absent -> none).
+						long later = -1;
+						int laterAttempt = 0;
+						for( std::size_t k = 0; attempt > 0 && !name.empty() && landed.isArray() &&
+						                        k < landed.size() && landedAttempts.isArray() &&
+						                        k < landedAttempts.size(); ++k ) {
+							const int la = static_cast<int>( landedAttempts.at( k ).asNumber( 0 ) );
+							if( landed.at( k ).asString() == name && la > attempt ) {
+								later = static_cast<long>( k );
+								laterAttempt = la;
+								break;
+							}
+						}
+						if( later >= 0 ) {
+							const std::string nowKind = ( landedKinds.isArray() &&
+								static_cast<std::size_t>( later ) < landedKinds.size() )
+								? landedKinds.at( static_cast<std::size_t>( later ) ).asString() : std::string();
+							std::string verdict = "rejected on attempt " + std::to_string( attempt ) +
+								( kind.empty() ? std::string() : ( " (as " + kind + ")" ) ) +
+								", landed on attempt " + std::to_string( laterAttempt );
+							if( !nowKind.empty() && nowKind != kind ) verdict += " as " + nowKind;
+							add( name, kind, reason, name, verdict, std::string(), true );
+						}
+						else {
+							add( name, kind, reason, label( name, kind ),
+							     stagedTwin( name, kind, reason ) ? "staged as a proposal" : "refused",
+							     TruncateForOutcome( reason, 160 ), true );
+						}
+					}
+					// A refused chunkResults entry repeats a `rejected` entry
+					// (same name, kind and text) and deduplicates against it.
+					const JsonValue& crs = r->get( "chunkResults" );
+					for( std::size_t i = 0; crs.isArray() && i < crs.size(); ++i ) addOutcome( crs.at( i ), false );
+				}
+				else {
+					const JsonValue& items2 = r->get( "results" );
+					for( std::size_t i = 0; items2.isArray() && i < items2.size(); ++i ) addOutcome( items2.at( i ), true );
+				}
+				std::string out;
+				for( std::size_t i = 0; i < all.size() && i < kMaxItems; ++i ) {
+					if( i ) out += "; ";
+					out += all[i].head + " " + all[i].verdict;
+					if( all[i].count > 1 ) out += " (x" + std::to_string( all[i].count ) + ")";
+					if( !all[i].text.empty() ) out += ": " + all[i].text;
+				}
+				if( all.size() > kMaxItems ) out += "; and " + std::to_string( all.size() - kMaxItems ) + " more";
+				return out;
+			}
+
+			//! True for a successful reopen_element (result ok:true naming its
+			//! element), with the element in `element` -- E is no longer
+			//! settled, so a decided-but-unapplied L2 retirement for it is
+			//! cancelled.
+			bool IsReopenedElementResult( const ChatToolCall& call, const std::string& raw,
+			                              std::string& element )
+			{
+				if( call.name != "reopen_element" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r || !r->get( "ok" ).asBool( false ) ) return false;
+				element = r->get( "element" ).asString();
+				return !element.empty();
+			}
+
+			//! True for a successful finish_element (result ok:true naming
+			//! its element), with the element in `element` and whether the
+			//! result reports that the build plan is now in its COMPOSE phase
+			//! (every element finished) in `composeReached`.  A failed finish
+			//! (ok:false, error envelope) is not a lifetime event.  The phase
+			//! name is kChatComposePhaseName, which T14c pins equal to
+			//! AgentSession::BuildPhaseName(Compose) -- the loop is sans-IO
+			//! and does not link the session.
+			bool IsFinishedElementResult( const ChatToolCall& call, const std::string& raw,
+			                              std::string& element, bool& composeReached )
+			{
+				composeReached = false;
+				if( call.name != "finish_element" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r || !r->get( "ok" ).asBool( false ) ) return false;
+				element = r->get( "element" ).asString();
+				composeReached = ( r->get( "phase" ).asString() == kChatComposePhaseName );
+				return !element.empty();
+			}
+
+			//! Doc 91 L2 review round 4: the facts the element-finished stub
+			//! keeps besides the per-chunk outcomes -- build_element's realised
+			//! world bounding box (no other verb reports it, and composing the
+			//! scene needs it) and insert_chunks' last head version (the next
+			//! call's baseHeadVersion).  Numbers are printed %.4g.
+			std::string LifetimeFactsOf( const ChatToolCall& call, const std::string& raw )
+			{
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r ) return std::string();
+				auto num = []( double v ) {
+					char b[32];
+					std::snprintf( b, sizeof( b ), "%.4g", v );
+					return std::string( b );
+				};
+				if( call.name == "build_element" ) {
+					const JsonValue& bb = r->get( "bbox" );
+					const JsonValue& mn = bb.get( "min" );
+					const JsonValue& mx = bb.get( "max" );
+					if( !mn.isArray() || !mx.isArray() || mn.size() != 3 || mx.size() != 3 ) return std::string();
+					std::string f = "Realised world bounding box when built: min (" + num( mn.at( 0 ).asNumber() ) + ", " +
+						num( mn.at( 1 ).asNumber() ) + ", " + num( mn.at( 2 ).asNumber() ) + ") max (" +
+						num( mx.at( 0 ).asNumber() ) + ", " + num( mx.at( 1 ).asNumber() ) + ", " +
+						num( mx.at( 2 ).asNumber() ) + ")";
+					if( bb.get( "height" ).isNumber() ) f += ", height " + num( bb.get( "height" ).asNumber() );
+					return f + ".";
+				}
+				if( call.name == "insert_chunks" ) {
+					const JsonValue& items = r->get( "results" );
+					if( !items.isArray() || items.size() == 0 ) return std::string();
+					const JsonValue& hv = items.at( items.size() - 1 ).get( "headVersion" );
+					if( !hv.get( "uuid" ).isNumber() || !hv.get( "revision" ).isNumber() ) return std::string();
+					// EXACT integers (review round 6): %.4g turned revision 123456
+					// into 1.235e+05.  Same digits as AgentRpc.cpp's HeadVersionJson
+					// emits (JSON numbers carrying the uint64 values).
+					auto integer = []( double v ) {
+						char b[32];
+						std::snprintf( b, sizeof( b ), "%.0f", v );
+						return std::string( b );
+					};
+					return "headVersion after that call: {\"uuid\":" + integer( hv.get( "uuid" ).asNumber() ) +
+						",\"revision\":" + integer( hv.get( "revision" ).asNumber() ) + "}.";
+				}
+				return std::string();
+			}
+
+			//! True for a successful file_build_plan (result filed:true) --
+			//! a new plan has its own planning phase, so it re-arms the
+			//! compose-phase skill retirement (doc 91 L3b).
+			bool IsFiledBuildPlanResult( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name != "file_build_plan" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				return r && r->get( "filed" ).asBool( false );
+			}
 		}
 
 		void AgentChatLoop::FlushPendingToolResults()
@@ -2335,10 +2671,25 @@ namespace RISE
 			// PackToolResults writes them, and therefore the index space
 			// RewriteElidedToolResults addresses.  Built here (not lazily)
 			// so the key reflects the envelope AS PACKED.
+			// CONTEXT LIFETIMES (doc 91) are recorded on the same slots:
+			// which element a build/insert result describes (L2) and which
+			// skill a named read_skill carries (L3b, read off its
+			// supersession key so the two can never disagree).
 			entry.toolResultSlots.resize( ordered.size() );
-			for( std::size_t i = 0; i < ordered.size(); ++i )
-				entry.toolResultSlots[i].supersessionKey =
+			for( std::size_t i = 0; i < ordered.size(); ++i ) {
+				ChatToolResultSlot& slot = entry.toolResultSlots[i];
+				slot.supersessionKey =
 					ChatToolResultSupersessionKey( ordered[i].first, ordered[i].second );
+				slot.verb = ordered[i].first.name;
+				slot.lifetimeElement = LifetimeElementOf( ordered[i].first, ordered[i].second );
+				if( !slot.lifetimeElement.empty() ) {
+					slot.lifetimeCarry = LifetimeCarryOf( ordered[i].first, ordered[i].second );
+					slot.lifetimeFacts = LifetimeFactsOf( ordered[i].first, ordered[i].second );
+				}
+				const std::string skillPrefix( kChatReadSkillKeyPrefix );
+				if( slot.supersessionKey.compare( 0, skillPrefix.size(), skillPrefix ) == 0 )
+					slot.lifetimeSkill = slot.supersessionKey.substr( skillPrefix.size() );
+			}
 			entry.rawJson = mCodec->PackToolResults( ordered );
 			entry.carriesLiveImage = carriesImage;
 			if( carriesImage ) {
@@ -2365,6 +2716,12 @@ namespace RISE
 			// (4)), and a text-only shrink of rawJson leaves the tracked
 			// image payload correct either way.
 			ElideSupersededToolResults();
+
+			// CONTEXT LIFETIMES (doc 91 L2 + L3b): a result whose subject is
+			// now SETTLED -- an element just finished, the session just
+			// reached Compose -- is retired to a one-line stub.  Runs after
+			// supersession so a slot either rule already killed is skipped.
+			RetireToolResultsByLifetime( mTranscript.size() - 1, ordered );
 
 			mPendingResults.clear();
 			mPendingCalls.clear();
@@ -2406,22 +2763,17 @@ namespace RISE
 			if( lastLive.empty() ) return;
 
 			// PASS 2: every OTHER live slot sharing a surviving key is
-			// superseded.  Collect per entry so each entry's rawJson is
-			// rewritten (and recorded) exactly once, even when it packs
-			// several superseded results.
+			// superseded.  The placeholder is chosen PER KEY (it names its own
+			// verb -- or, for a read_skill key, its skill), and
+			// RewriteToolResultSlots groups the targets per entry and per note,
+			// so each entry's rawJson is rewritten (and recorded) exactly once
+			// even when it packs several superseded results of different keys.
+			std::vector<ToolResultSlotRewrite> targets;
 			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
-				ChatTranscriptEntry& entry = mTranscript[e];
+				const ChatTranscriptEntry& entry = mTranscript[e];
 				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
-
-				// Grouped BY KEY, not one bucket per entry: the placeholder
-				// names its own verb, so an entry that ever packs superseded
-				// results of TWO different allowlisted verbs must not be told
-				// one verb's note for both.  (Today's single-verb allowlist
-				// makes that unreachable -- grouping keeps it correct by
-				// construction rather than by that coincidence.)
-				std::vector<std::pair<std::string, std::vector<std::size_t>>> byKey;
 				for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
-					ChatToolResultSlot& slot = entry.toolResultSlots[s];
+					const ChatToolResultSlot& slot = entry.toolResultSlots[s];
 					if( !slot.live || slot.supersessionKey.empty() ) continue;
 					bool survives = false;
 					for( std::size_t k = 0; k < lastLive.size(); ++k ) {
@@ -2431,10 +2783,40 @@ namespace RISE
 						break;
 					}
 					if( survives ) continue;
+					ToolResultSlotRewrite t;
+					t.entry = e;
+					t.slot = s;
+					t.note = ChatSupersededResultNoteForKey( slot.supersessionKey );
+					targets.push_back( t );
+				}
+			}
+			RewriteToolResultSlots( targets, "tool_result_supersession", kChatSupersededNoteKey );
+		}
+
+		void AgentChatLoop::RewriteToolResultSlots( const std::vector<ToolResultSlotRewrite>& targets,
+		                                            const char* reason, const char* noteKey )
+		{
+			// Visit entries in transcript order so the history_edit records
+			// come out in a deterministic order.
+			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
+				ChatTranscriptEntry& entry = mTranscript[e];
+				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+
+				// Grouped BY NOTE: the codec rewrites a set of indices to ONE
+				// placeholder per call, and two targets in one entry may need
+				// different ones (two verbs, two skills, two elements).
+				std::vector<std::pair<std::string, std::vector<std::size_t>>> byNote;
+				for( std::size_t t = 0; t < targets.size(); ++t ) {
+					if( targets[t].entry != e ) continue;
+					const std::size_t s = targets[t].slot;
+					if( s >= entry.toolResultSlots.size() || !entry.toolResultSlots[s].live ) continue;
 					bool bucketed = false;
-					for( std::size_t k = 0; k < byKey.size(); ++k ) {
-						if( byKey[k].first == slot.supersessionKey ) {
-							byKey[k].second.push_back( s );
+					for( std::size_t k = 0; k < byNote.size(); ++k ) {
+						if( byNote[k].first == targets[t].note ) {
+							bool dup = false;
+							for( std::size_t j = 0; j < byNote[k].second.size(); ++j )
+								if( byNote[k].second[j] == s ) dup = true;
+							if( !dup ) byNote[k].second.push_back( s );
 							bucketed = true;
 							break;
 						}
@@ -2442,17 +2824,17 @@ namespace RISE
 					if( !bucketed ) {
 						std::vector<std::size_t> one;
 						one.push_back( s );
-						byKey.push_back( std::make_pair( slot.supersessionKey, one ) );
+						byNote.push_back( std::make_pair( targets[t].note, one ) );
 					}
 				}
-				if( byKey.empty() ) continue;
+				if( byNote.empty() ) continue;
 
 				// REWRITE FIRST, THEN mark the bucket dead -- and only when
 				// the rewrite actually LANDED.  Every codec returns its input
 				// UNCHANGED when the entry does not parse or its shape guards
 				// miss; clearing `live` before knowing that would leave the
 				// payload riding forever while the bookkeeping believed it
-				// elided, and pass 1 (which skips dead slots) would never
+				// elided, and the callers (which skip dead slots) would never
 				// retry.  A no-op rewrite instead leaves the slots live, so
 				// the next flush tries again -- bounded work, and no
 				// history_edit is emitted for a non-edit.
@@ -2471,15 +2853,14 @@ namespace RISE
 				// signal here.
 				const std::size_t beforeBytes = entry.rawJson.size();
 				bool anyLanded = false;
-				for( std::size_t k = 0; k < byKey.size(); ++k ) {
+				for( std::size_t k = 0; k < byNote.size(); ++k ) {
 					const std::string before = entry.rawJson;
 					entry.rawJson = mCodec->RewriteElidedToolResults(
-						entry.rawJson, byKey[k].second,
-						ChatSupersededResultNote( byKey[k].first ) );
+						entry.rawJson, byNote[k].second, byNote[k].first, noteKey );
 					if( entry.rawJson == before ) continue;
 					anyLanded = true;
-					for( std::size_t j = 0; j < byKey[k].second.size(); ++j )
-						entry.toolResultSlots[ byKey[k].second[j] ].live = false;
+					for( std::size_t j = 0; j < byNote[k].second.size(); ++j )
+						entry.toolResultSlots[ byNote[k].second[j] ].live = false;
 				}
 				if( !anyLanded ) continue;
 				// Eval-harness E1: record the transcript rewrite, exactly as
@@ -2490,9 +2871,121 @@ namespace RISE
 					h.entryIndex = static_cast<int>( e );
 					h.beforeBytes = static_cast<long long>( beforeBytes );
 					h.afterBytes = static_cast<long long>( entry.rawJson.size() );
-					h.reason = "tool_result_supersession";
+					h.reason = reason;
 					mRecorder->EmitHistoryEdit( h );
 				}
+			}
+		}
+
+		void AgentChatLoop::RetireToolResultsByLifetime(
+			std::size_t newEntry,
+			const std::vector<std::pair<ChatToolCall, std::string>>& ordered )
+		{
+			if( newEntry >= mTranscript.size() ) return;
+
+			// Marks every live, not-yet-marked slot that comes BEFORE result
+			// `limitInNew` of the new entry in wire order and satisfies
+			// `wanted`, with the note `noteFor` builds and `reason`.
+			auto mark = [&]( std::size_t limitInNew, const char* reason, auto wanted, auto noteFor ) {
+				for( std::size_t e = 0; e <= newEntry; ++e ) {
+					ChatTranscriptEntry& entry = mTranscript[e];
+					if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+					const std::size_t limit = ( e == newEntry ) ? limitInNew : entry.toolResultSlots.size();
+					for( std::size_t s = 0; s < limit && s < entry.toolResultSlots.size(); ++s ) {
+						ChatToolResultSlot& slot = entry.toolResultSlots[s];
+						if( !slot.live || !slot.pendingRetireNote.empty() || !wanted( slot ) ) continue;
+						slot.pendingRetireNote = noteFor( slot );
+						slot.pendingRetireReason = reason;
+					}
+				}
+			};
+
+			// (1) DECIDE -- walk the new entry's results in wire order.
+			for( std::size_t i = 0; i < ordered.size(); ++i ) {
+				const ChatToolCall& call = ordered[i].first;
+				const std::string& raw = ordered[i].second;
+
+				// A new build plan has its own planning phase: re-arm L3b.
+				if( IsFiledBuildPlanResult( call, raw ) ) {
+					mComposeSkillRetirementDone = false;
+					continue;
+				}
+
+				std::string element;
+
+				// Review round 2: a reopened element is no longer settled --
+				// cancel any element-finished retirement for it that was
+				// decided but not yet applied (a same-turn build+finish whose
+				// build result was still waiting for the next flush).
+				if( IsReopenedElementResult( call, raw, element ) ) {
+					for( std::size_t e = 0; e <= newEntry; ++e ) {
+						ChatTranscriptEntry& entry = mTranscript[e];
+						if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+						for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+							ChatToolResultSlot& slot = entry.toolResultSlots[s];
+							if( !slot.live || slot.lifetimeElement != element ||
+							    slot.pendingRetireReason != "element_finished_retirement" ) continue;
+							slot.pendingRetireNote.clear();
+							slot.pendingRetireReason.clear();
+						}
+					}
+					continue;
+				}
+
+				bool composeReached = false;
+				if( !IsFinishedElementResult( call, raw, element, composeReached ) ) continue;
+
+				// L2: a successful finish_element for E settles E -- its
+				// build_element / insert_chunks results are history now.
+				mark( i, "element_finished_retirement",
+				      [&]( const ChatToolResultSlot& slot ) { return slot.lifetimeElement == element; },
+				      [&]( const ChatToolResultSlot& slot ) {
+				          return ChatElementFinishedRetirementNote( slot.verb, element,
+				                                                    slot.lifetimeFacts, slot.lifetimeCarry ); } );
+
+				// L3b: the finish that takes the plan into its COMPOSE phase
+				// settles the planning -- every skill read in an EARLIER turn
+				// retires, once per plan.  Placing an element is NOT this
+				// signal: place_element is legal (and prescribed) in the
+				// pieces phase, while later elements are still unbuilt.  A
+				// skill read in the SAME turn as the compose finish is
+				// treated as post-compose (limit 0 in the new entry), so
+				// [read_skill X, finish] and [finish, read_skill X] behave
+				// identically: X stays live (review round 2).
+				if( composeReached && !mComposeSkillRetirementDone ) {
+					mComposeSkillRetirementDone = true;
+					mark( 0, "compose_skill_retirement",
+					      []( const ChatToolResultSlot& slot ) { return !slot.lifetimeSkill.empty(); },
+					      []( const ChatToolResultSlot& slot ) {
+					          return ChatComposeSkillRetirementNote( slot.lifetimeSkill ); } );
+				}
+			}
+
+			// (2) APPLY -- every marked, still-live slot in an entry EARLIER
+			// than the one being flushed.  The new entry's own results are
+			// never rewritten here, so a turn that builds and finishes (or
+			// reads a skill and composes) still delivers those results once;
+			// they retire on the next flush.  A rewrite that did not land
+			// leaves its slot live and marked, so it is retried next flush.
+			// Grouped per reason so each history_edit names its rule.
+			static const char* const kReasons[] = { "element_finished_retirement", "compose_skill_retirement" };
+			for( std::size_t r = 0; r < sizeof( kReasons ) / sizeof( kReasons[0] ); ++r ) {
+				std::vector<ToolResultSlotRewrite> targets;
+				for( std::size_t e = 0; e < newEntry; ++e ) {
+					const ChatTranscriptEntry& entry = mTranscript[e];
+					if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+					for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+						const ChatToolResultSlot& slot = entry.toolResultSlots[s];
+						if( !slot.live || slot.pendingRetireNote.empty() ||
+						    slot.pendingRetireReason != kReasons[r] ) continue;
+						ToolResultSlotRewrite t;
+						t.entry = e;
+						t.slot = s;
+						t.note = slot.pendingRetireNote;
+						targets.push_back( t );
+					}
+				}
+				RewriteToolResultSlots( targets, kReasons[r], kChatRetiredNoteKey );
 			}
 		}
 

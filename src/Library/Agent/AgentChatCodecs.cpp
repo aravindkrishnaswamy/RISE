@@ -334,10 +334,14 @@ namespace RISE
 					"baseHeadVersion -- it is checked against the FIRST element only, since "
 					"the whole batch is one logical operation. Returns "
 					"{applied,total,results:[...]}: total is chunks.length, applied is how "
-					"many results have applied=true, and each results[i] is the EXACT same "
-					"shape insert_chunk returns for chunks[i] (applied, rawCode, status, "
+					"many results have applied=true, and each results[i] is the shape "
+					"insert_chunk returns for chunks[i] (applied, rawCode, status, "
 					"retriable, headVersion, message, name, kind, and optional issues with "
-					"the same reasons insert_chunk documents). Check every element's own "
+					"the same reasons insert_chunk documents) -- except that a clean "
+					"success (status applied, no issues, nothing to report beyond the "
+					"standard insert) carries only applied, status, headVersion, name, kind "
+					"and (inside an element window) element; any element with something to report keeps every field. Check "
+					"every element's own "
 					"status -- do not assume the whole batch succeeded just because the "
 					"call returned. Each array element must be EXACTLY ONE `keyword "
 					"{ ... }` block, same grammar as insert_chunk's chunkText. "
@@ -1000,7 +1004,10 @@ namespace RISE
 					"you filed in file_build_plan (an ELEMENT name) and the same call also measures that object's "
 					"silhouette against the sketch you drew for it: it returns iou/mirroredIou plus a "
 					"[sketch | silhouette | overlay] image, rendered from the axis-aligned vantage your "
-					"sketch declared. For the CHEAPEST possible orientation check (is the "
+					"sketch declared. To see how an object's material and fine detail (fur, weave, "
+					"grain, small parts) READ at full resolution from your own camera -- with its "
+					"neighbours and your lighting left in place -- pass `zoom` with its name "
+					"(nothing is hidden, unlike `isolate`). For the CHEAPEST possible orientation check (is the "
 					"geometry/camera roughly right, nothing else), set quality:\"draft\" -- "
 					"it renders through a fixed studio-preview shader that IGNORES the "
 					"scene's authored LIGHTING (a fixed synthetic studio rig stands in "
@@ -1023,7 +1030,7 @@ namespace RISE
 					"full-authored-sample-count render is a GUI action, not something this "
 					"tool can produce -- tell the user to render from the app if that's what "
 					"they need. "
-					"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no isolate, no mode:) "
+					"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no isolate, no zoom, no mode:) "
 					"also comes back with an `inventory` block: how many objects the scene has, how "
 					"many covered at least one pixel, and one line per object saying how much of the "
 					"frame it covers and where it is -- in the frame for the ones that appeared, and "
@@ -1056,8 +1063,10 @@ namespace RISE
 						"\"Optional, default FALSE. Only meaningful when mode is one of the false-colour diagnostics (normals/depth/facets/wireframe) -- when true, resolves the ray THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit, following a STRAIGHT LINE with no refraction bending (deliberately an x-ray, not an optics simulation), up to 16 surfaces skipped. By default the transmissive surface itself is shown; pass xray:true to inspect opaque geometry underneath or inside it. If no opaque surface is ever reached, the LAST transmissive surface is shown instead of a black hole. Silently ignored under mode beauty/objectmap or a production-transport mode (deep_reflect/direct/indirect/clay_lights -- skipping glass would defeat their purpose).\"},"
 						"\"view\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with every mode above. If both view and camera are supplied, view wins. PINHOLE-ONLY: the override carries pose+FOV and cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (ok:false) naming the unsupported type rather than silently using the active camera's optics. An unresolvable name likewise FAILS with the available-name list in message.\"},"
+						"\"zoom\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of ONE standard_object to look at CLOSE UP from the SCENE camera's own position: the camera keeps its location, aims at that object and narrows its field of view until the object fills ~85% of the frame (never wider than the scene's own fov; if the object already fills the frame the fov is kept and the result says so). Unlike `isolate`, NOTHING is hidden -- every other object, every light and the environment stay exactly as they are, so you see what a viewer of THIS scene would see of that object, occlusion included, at a size where its material and fine detail (fur, weave, grain, small parts) can actually be judged. Use it when the full frame shows an object too small to judge (a ~20-pixel cat tells you nothing about its fur). Composes with quality and mode. Mutually exclusive with `isolate`, `view` and `camera` (a clean error). Needs a pinhole active camera. On success (ok:true) the result adds a `zoom` object {object, eye, fovDegrees, sceneFovDegrees, keptSceneFov, coverage?, fitBasis}; `coverage` is the fraction of the frame covered by the projected bounds of the object's surface points (an UPPER BOUND on its silhouette); `fitBasis` is surface when the fit used points on the object's real surface, bbox when it fell back to the bounding box. An unknown name, a generator name covering several instances, or a CSG operand FAILS the render (ok:false) with the available names in message. A zoom render carries no inventory, anchor, sceneTarget or tonal fact (its camera is not the scene camera's full frame). Zoom also FAILS (ok:false, no zoom block) when the object is NOT IN VIEW of the scene camera (behind it, or its surface centre more than ~10% past the frame edge -- use isolate or camera for those), when any part of its surface lies on or behind the plane through the camera (the camera is inside or beside it, e.g. a floor or room around the camera), or when its extent is degenerate or unbounded.\"},"
 						"\"isolate\":{\"type\":\"string\",\"description\":"
-						"\"Optional name of ONE standard_object to render BY ITSELF, with the camera automatically framed on it (a three-quarter view filling the frame). Every other object is hidden for this one render -- it is hit by no camera, bounce, or shadow ray -- and the document is untouched. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full scene: a 20-pixel wing in a wide night shot tells you nothing about its shape. mode:\\\"normals\\\" or mode:\\\"facets\\\" read FORM best here (surface direction / tessellation, no material or lighting to confuse the read); mode:\\\"beauty\\\" still works but note that a hidden emissive object also stops lighting the scene, so a scene lit ONLY by other objects' emissive materials isolates dark -- explicit lights and the environment are unaffected. If you also pass camera or view, YOURS wins and no auto-framing happens (the result says which). On success (ok:true) the result carries an `isolate` object with the resolved name, world bbox/longest edge (omitted if the bbox turned out degenerate/unbounded), autoFramed, and bboxCoverage: the fraction of the frame covered by the object's PROJECTED BOUNDING BOX -- an UPPER BOUND on its silhouette, not a pixel count, so it can OVERSTATE a thin or diagonal silhouette by a large factor (e.g. a wing seen edge-on); for an EXACT per-pixel count use mode:\\\"objectmap\\\" and read the legend's pixelCount instead. bboxCoverage is OMITTED (not approximated) whenever the active camera is not a pinhole, since the projected-bbox formula assumes pinhole projection; message says so when that happens. An unknown name, a generator name that covers several instances (pass one instance's full name), a CSG operand (message names the composite that consumes it), or an object with a degenerate/unbounded bbox and no camera/view of your own FAILS the render (ok:false) with the available names in message.\"},"
+						"\"Optional name of ONE standard_object to render BY ITSELF, with the camera automatically framed on its surface (a three-quarter view filling the frame). Every other object is hidden for this one render -- it is hit by no camera, bounce, or shadow ray -- and the document is untouched. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full scene: a 20-pixel wing in a wide night shot tells you nothing about its shape. mode:\\\"normals\\\" or mode:\\\"facets\\\" read FORM best here (surface direction / tessellation, no material or lighting to confuse the read); mode:\\\"beauty\\\" still works but note that a hidden emissive object also stops lighting the scene, so a scene lit ONLY by other objects' emissive materials isolates dark -- explicit lights and the environment are unaffected. If you also pass camera or view, YOURS wins and no auto-framing happens (the result says which). On success (ok:true) the result carries an `isolate` object with the resolved name, world bbox/longest edge (omitted if the bbox turned out degenerate/unbounded), autoFramed, and bboxCoverage: the fraction of the frame covered by the projected screen bounds of points on the object's real surface (its bounding box only when it has no surface points, e.g. a CSG composite -- isolate.fitBasis says which; a camera-and-geometry calculation, not a pixel count, so identical across modes) -- an UPPER BOUND on its silhouette, not a pixel count, so it can OVERSTATE a thin or diagonal silhouette by a large factor (e.g. a wing seen edge-on); for an EXACT per-pixel count use mode:\\\"objectmap\\\" and read the legend's pixelCount instead. bboxCoverage is OMITTED (not approximated) whenever the active camera is not a pinhole, since the projected-bbox formula assumes pinhole projection; message says so when that happens. An unknown name, a generator name that covers several instances (pass one instance's full name), a CSG operand (message names the composite that consumes it), or an object with a degenerate/unbounded bbox and no camera/view of your own FAILS the render (ok:false) with the available names in message. The fit and bboxCoverage use points on the object's real surface (isolate.fitBasis = surface) or, where it has none (a CSG composite, an infinite plane), its bounding box (bbox).\"},"
 						// G3b fix-round (2026-08-10) FIX 2.  THIS text is the CANONICAL
 						// statement of the `target` contract; AgentMcpAdapter.cpp's `target`
 						// StringProp MIRRORS it, sentence for sentence, with the wording kept
@@ -1358,8 +1367,9 @@ namespace RISE
 					"nothing about what was built or how well), the phase the session is now in, and the "
 					"next active element. It also returns TWO ISOLATE RENDERS of the element side by side -- "
 					"the object recorded against it, alone in the frame and auto-framed AT CLOSE RANGE; when "
-					"several objects were recorded, the one with the largest bounding box, and the message "
-					"says so. LEFT is a DRAFT (studio-preview shading: the material's own BSDF shaded under a "
+					"several objects were recorded, the one with the most authored parts (an sdf_geometry's "
+					"part lines, say), ties going to the larger bounding box and then the name; the message "
+					"says which, and finishing again with no change to the shape shows the next one. LEFT is a DRAFT (studio-preview shading: the material's own BSDF shaded under a "
 					"crude fixed rig, so form, proportion and coarse colour are visible but there is no true "
 					"light response -- no shadows, reflection/refraction, or emission); "
 					"RIGHT is the same object's MATERIALS under a fixed studio light rig that replaces the "
@@ -1428,7 +1438,10 @@ namespace RISE
 					"provider that cannot run a separate completion this returns ok:false with a plain "
 					"statement, nothing else changes, and authoring by hand is not blocked. Returns "
 					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
-					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}.",
+					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}; "
+					"landed names every chunk that went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the repair retry -- that landed it; each rejected entry carries its attempt too), and "
+					"chunkResults details only the chunks that did not insert cleanly or carry a "
+					"notice.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"element\":{\"type\":\"string\",\"description\":"
 						"\"Required. The name of the ACTIVE element, exactly as you filed it in file_build_plan. A name that is not the active element does nothing and says which element is active.\"},"
@@ -1546,7 +1559,7 @@ namespace RISE
 					"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,areaLights,"
 					"zeroAreaLights,skyLights,otherLights,"
 					"sources:[string],"
-					"message}.",
+					"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the lighting pass alongside the inventory and the camera -- anything about the mood or the look this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -1580,7 +1593,7 @@ namespace RISE
 					"ONCE and names this tool -- one refusal, shared with the other build-phase rules "
 					"and capped with them, after which every render proceeds whether or not this ran; "
 					"renders in the pieces phase are never refused, and neither is a render with "
-					"`isolate`. A name already used in the scene is rejected and NOT renamed. If "
+					"`isolate` or `zoom` (inspection looks at one object). A name already used in the scene is rejected and NOT renamed. If "
 					"anything is rejected, ONE repair retry runs automatically with the exact "
 					"rejection text -- one, then it stops, and whatever landed stays landed. Nothing "
 					"is ever dropped silently. The result reports which objects were created and what "
@@ -1592,7 +1605,7 @@ namespace RISE
 					"this returns ok:false saying so without calling the provider. Returns "
 					"{ok,provider,model,chunksExtracted,created:[{name,geometry,material}],"
 					"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,objectsBefore,"
-					"objectsAfter,message}.",
+					"objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the population pass alongside the inventory and the camera -- anything about what this scene is that its own state does not already say. Nothing checks what it says.\"}"
@@ -1632,7 +1645,7 @@ namespace RISE
 					"environment_scene have not yet run -- one refusal for the whole checklist, "
 					"shared with the other build-phase rules and capped with them, after which every "
 					"render proceeds whether or not either ran; renders in the pieces phase are never "
-					"refused, and neither is a render with `isolate`. A name already used in the scene "
+					"refused, and neither is a render with `isolate` or `zoom`. A name already used in the scene "
 					"is rejected and NOT renamed. If anything is rejected, ONE repair retry runs "
 					"automatically with the exact rejection text -- one, then it stops, and whatever "
 					"landed stays landed. Nothing is ever dropped silently. The result reports what "
@@ -1646,7 +1659,7 @@ namespace RISE
 					"retrySucceeded,"
 					"completions,painters,media,boundPainter,bindingApplied,bindingReason,rasterizer,"
 					"radianceMapBefore,radianceMapAfter,globalMediumBefore,globalMediumAfter,"
-					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}.",
+					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the environment pass alongside the inventory and the camera -- anything about the place or the weather this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -1712,7 +1725,7 @@ namespace RISE
 					"against it afterwards. Your words are the SUBJECT; the image is requested in a "
 					"simple, flat-shaded 3D-render style so it is something this renderer can actually "
 					"approach, rather than concept art it cannot. Once a target exists, every full-frame "
-					"production render (not draft, not a mode: render, not an isolate render) also "
+					"production render (not draft, not a mode: render, not an isolate or zoom render) also "
 					"carries a `sceneTarget` block -- {imagined, targetWidth, targetHeight, composite, "
 					"compositeWidth, compositeHeight} -- and any such render you ask an image of shows "
 					"that target ABOVE your render in one picture, separated by a grey rule, in place of "
@@ -1753,7 +1766,7 @@ namespace RISE
 					"the two pictures is better is your judgment, nothing is gated on it, and no "
 					"particular answer is expected. The render that BECAME the anchor carries no "
 					"composite -- there is nothing yet to set it beside. Draft renders, mode: "
-					"renders and isolate renders are never anchored and never compared, because a "
+					"renders, isolate renders and zoom renders are never anchored and never compared, because a "
 					"difference against one of those would be a render setting rather than a "
 					"change to the scene. It changes nothing in the document -- no chunk, no head "
 					"version, no undo step -- so there is no baseHeadVersion and no conflict "
@@ -2396,6 +2409,35 @@ namespace RISE
 			// read_document still gets correct supersession.
 			static const char* const kSupersedableVerbs[] = { "read_document", "list_proposals" };
 
+			// THE ONE ARGUMENT-NORMALIZING KEY (doc 91 slice L3a): a NAMED
+			// read_skill is the whole view of ONE named skill file, so a later
+			// read of the SAME name fully contains the earlier copy (property
+			// (1) holds per name) and the key is "read_skill" + the skill's
+			// name -- the argument-normalizing key function property (3) calls
+			// for.  Two DIFFERENT skills never share a key, and the INDEX form
+			// (no name; result {skills:[...]}) is never keyed.  The name comes
+			// from the RESULT (AgentSession::ReadSkill's canonical `name`) when
+			// present, else from the call's `name` argument.  Property (2) is
+			// NOT what admits it: a skill file is static, so the earlier copy
+			// is redundant rather than stale -- the cost rule doc 91 measured
+			// (three skill reads, 165 KB live to the end of a session).
+			if( call.name == "read_skill" ) {
+				JsonValue env;
+				std::string perr;
+				if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return std::string();
+				if( env.find( "error" ) ) return std::string();
+				const JsonValue& result = env.get( "result" );
+				if( !result.isObject() || !result.get( "markdown" ).isString() ) return std::string();
+				std::string skill = result.get( "name" ).asString();
+				if( skill.empty() ) {
+					JsonValue args;
+					if( JsonParse( call.argsJson, args, perr ) && args.isObject() )
+						skill = args.get( "name" ).asString();
+				}
+				if( skill.empty() ) return std::string();
+				return std::string( kChatReadSkillKeyPrefix ) + skill;
+			}
+
 			bool listed = false;
 			for( std::size_t i = 0; i < sizeof( kSupersedableVerbs ) / sizeof( kSupersedableVerbs[0] ); ++i )
 				if( call.name == kSupersedableVerbs[i] ) { listed = true; break; }
@@ -2433,6 +2475,50 @@ namespace RISE
 		{
 			return "[" + verbName + " result elided -- superseded by a later " + verbName +
 			       " call in this conversation; call " + verbName + " again for the current state]";
+		}
+
+		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey )
+		{
+			const std::string prefix( kChatReadSkillKeyPrefix );
+			if( supersessionKey.compare( 0, prefix.size(), prefix ) == 0 ) {
+				const std::string skill = supersessionKey.substr( prefix.size() );
+				return "[read_skill \"" + skill + "\" result elided -- superseded by a later read_skill "
+				       "of the same skill in this conversation; call read_skill {\"name\":\"" + skill +
+				       "\"} again if you need it]";
+			}
+			return ChatSupersededResultNote( supersessionKey );
+		}
+
+		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
+		                                               const std::string& element,
+		                                               const std::string& facts,
+		                                               const std::string& carried )
+		{
+			// IMMUTABLE FACTS ONLY (review rounds 5-6): nothing about the
+			// CURRENT session or document -- no phase, mode or edit rule, and
+			// no claim that the element HAS chunks (nothing may have landed;
+			// a later edit or undo may remove them).  The stub is never
+			// rewritten, so every sentence is either past tense about this
+			// result or a pointer to where the current state is read.  The
+			// live rule is stated where it applies: the session's own refusal
+			// names reopen_element.
+			const std::string q = "\"" + element + "\"";
+			std::string note = "[" + verbName + " result for element " + q + " elided -- retired when " + q +
+				" was finished; read_document shows the current document; finish_element / reopen_element "
+				"results list the element's chunks.";
+			if( !facts.empty() ) note += " " + facts;
+			if( !carried.empty() )
+				note += " Per-chunk outcomes that call reported: " + carried + ".";
+			return note + "]";
+		}
+
+		std::string ChatComposeSkillRetirementNote( const std::string& skillName )
+		{
+			// Past tense (review round 6): reopen_element or a new plan makes
+			// "every element is finished" false later, and the stub stays.
+			return "[read_skill \"" + skillName + "\" elided -- retired when every element of the build "
+			       "plan was finished (compose phase); call read_skill {\"name\":\"" + skillName +
+			       "\"} again if you need it]";
 		}
 
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )
@@ -2857,7 +2943,8 @@ namespace RISE
 		std::string AnthropicChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& /*noteKey: Anthropic carries a plain text block*/ ) const
 		{
 			// Parse + regenerate is LEGAL here: this entry was produced by
 			// PackToolResults above (loop-generated), not by a provider.
@@ -3579,7 +3666,8 @@ namespace RISE
 		std::string GeminiChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
 		{
 			// Parse + regenerate is LEGAL here: this entry was produced by
 			// PackToolResults above (loop-generated), not by a provider.
@@ -3617,7 +3705,7 @@ namespace RISE
 				// cross-rule collision structurally impossible rather than
 				// merely gated.
 				JsonValue newResp = JsonValue::MakeObject();
-				newResp.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+				newResp.set( noteKey, JsonValue::MakeString( placeholderText ) );
 				JsonValue newFr = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
 				for( std::size_t j = 0; j < mem.size(); ++j ) {
@@ -4378,7 +4466,8 @@ namespace RISE
 		std::string OpenAIChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
 		{
 			// PackToolResults emits a loop-owned ARRAY of messages: one per
 			// result IN ORDER, so index i is result i.  (The only element
@@ -4395,7 +4484,7 @@ namespace RISE
 			// uniformly does not hit a lone bare string here.
 			// See the Gemini twin above for why the key is NOT "note".
 			JsonValue note = JsonValue::MakeObject();
-			note.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+			note.set( noteKey, JsonValue::MakeString( placeholderText ) );
 			const std::string notePayload = JsonSerialize( note );
 
 			bool changed = false;

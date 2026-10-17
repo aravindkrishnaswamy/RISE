@@ -1314,6 +1314,15 @@ static void RunAdoptionPolishScanTest()
 			Check( d->message.find( "param <name> <value>" ) != std::string::npos,
 			       "...teaching the promotion mechanism" );
 		}
+		// 2026-10-17 retune: the clause left the RENDER note (0 of 83
+		// firings across 10 banked runs were acted on) and lives only in
+		// validate.  The same document must produce NO render-note clause
+		// (the fixture's painter is unbound, so condition F's orphan clause
+		// may still legitimately fire -- only E's absence is pinned).
+		const std::string note = AgentSession::ComputeDesignNote( docEroded );
+		Check( note.find( "art-directability" ) == std::string::npos &&
+		       note.find( "param <name> <value>" ) == std::string::npos,
+		       "ITEM 1 RETUNE: the param-erosion clause is absent from the render-result design note" );
 	}
 	{
 		// The calibration exemplar: a fully-annotated body (matching the

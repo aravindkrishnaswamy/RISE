@@ -137,6 +137,10 @@ namespace RISE
 			// Adds a new patch to the list
 			void AddPatch( const BezierPatch& patch ) override;
 
+			//! Number of patches in this set.  Lets a caller budget a tessellation
+			//! (detail^2 x patches) BEFORE asking for one.
+			size_t NumPatches() const { return patches.size(); }
+
 			// Instructs that addition of new patches is complete and that
 			// we can prepare for rendering
 			void Prepare() override;

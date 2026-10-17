@@ -546,7 +546,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const = 0;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const = 0;
 
 			//! Build the full HTTP request for the current conversation.
 			//! `apiKey` is used ONLY for the auth header -- it is not
@@ -602,7 +603,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -637,7 +639,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -705,7 +708,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -778,6 +782,20 @@ namespace RISE
 		//!       both.)
 		//! ON THE LIST TODAY: read_document and list_proposals.
 		//!
+		//! PLUS ONE ARGUMENT-NORMALIZED KEY (doc 91 slice L3a, 2026-10-17):
+		//! a successful NAMED read_skill (result {name, markdown}) is keyed
+		//! kChatReadSkillKeyPrefix + the skill's name, so a later read of the
+		//! SAME skill supersedes the earlier copy while two different skills
+		//! never collide -- exactly the argument-normalizing key function
+		//! property (3) below asks for.  Per name, property (1) holds (the
+		//! later copy is the whole file again).  Property (2) does NOT: a
+		//! skill file is static, so the elided copy is REDUNDANT rather than
+		//! stale -- admitted on cost (doc 91: three skill reads, 165 KB, live
+		//! to the end of a session), not correctness.  The INDEX form (no
+		//! name) is never keyed.  The exclusions below that name read_skill
+		//! are about the verb as a whole (different names = different
+		//! content), and still hold across names.
+		//!
 		//! list_proposals is a parameterless whole-queue read of mutable
 		//! state and is not image-bearing, so it satisfies (1)-(4).  It is
 		//! NOT declared in kToolDefs, so no model is TOLD about it -- but
@@ -822,12 +840,80 @@ namespace RISE
 		std::string ChatToolResultSupersessionKey( const ChatToolCall& call,
 		                                           const std::string& rawJsonRpcResponseLine );
 
+		//! The JSON key a superseded-result placeholder rides under on the
+		//! wires whose result payload must stay an object (Gemini, OpenAI);
+		//! Anthropic carries the text as a plain text block and ignores it.
+		inline constexpr char kChatSupersededNoteKey[] = "superseded_note";
+		//! The key a LIFETIME stub (doc 91 L2/L3b) rides under -- distinct
+		//! from supersession's, so a reader of the wire can tell "a newer copy
+		//! exists" from "its subject is settled".
+		inline constexpr char kChatRetiredNoteKey[] = "retired_note";
+
 		//! The honest, actionable placeholder that replaces a superseded
 		//! result's payload -- a pure function of the verb name, so the
 		//! rewrite stays deterministic and replay-safe.  It says WHAT was
 		//! removed, WHY, and HOW to get it back, exactly as the image
 		//! elision note does.
 		std::string ChatSupersededResultNote( const std::string& verbName );
+
+		//! The prefix of a read_skill supersession key (see
+		//! ChatToolResultSupersessionKey): the key is this prefix followed
+		//! by the skill name.  A unit-separator byte can never appear in a
+		//! skill name (ReadSkill serves bare .md basenames), so a read_skill
+		//! key can never equal a plain verb-name key.
+		inline constexpr char kChatReadSkillKeyPrefix[] = "read_skill\x1f";
+
+		//! The placeholder for a superseded result, given its SUPERSESSION
+		//! KEY rather than its verb: a plain verb key forwards to
+		//! ChatSupersededResultNote, a read_skill key yields a note naming
+		//! the skill and the exact call that gets it back.  Pure function of
+		//! the key -- deterministic and replay-safe.
+		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey );
+
+		//! CONTEXT LIFETIMES (doc 91 slice L2): the stub an earlier
+		//! build_element / insert_chunks result for `element` is rewritten
+		//! to once a successful finish_element for that element has flowed
+		//! through the chat loop.  It states ONLY facts that cannot go stale
+		//! (review rounds 5-6): the result was retired when the element was
+		//! finished, read_document shows the CURRENT document and
+		//! finish_element / reopen_element results list the element's
+		//! chunks (pointers, not a claim that any exist; read_document has
+		//! no element attribution), and `facts` / `carried` --
+		//! recorded from the elided result and labelled as of that result
+		//! (the bounding box "when built", the head version "after that
+		//! call", the per-chunk outcomes "that call reported").
+		//! It never states an edit or reopen rule: the phase, the session
+		//! mode and the plan all change after the finish, and the session's
+		//! own refusal message names reopen_element when an edit is actually
+		//! refused.
+		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
+		                                               const std::string& element,
+		                                               const std::string& facts,
+		                                               const std::string& carried );
+
+		//! The canonical success message of a clean chunk insert, restated
+		//! for the sans-IO chat loop (which does not link IJobPriv.h, where
+		//! the writers' constant kCstChunkInsertedMessage lives); the carried
+		//! per-chunk notices strip it so their byte budget goes to the
+		//! notice itself.  AgentChatLoopTest T14d pins the two equal.
+		inline constexpr char kChatChunkInsertedMessage[] =
+			"chunk inserted via a full re-derive (Scene + managers were replaced)";
+
+		//! CONTEXT LIFETIMES (doc 91 slice L3b): the stub a live named
+		//! read_skill result is rewritten to once a successful
+		//! finish_element has reported the build plan's compose phase.
+		//! Past tense ("retired when every element ... was finished"): a
+		//! later reopen_element or new plan would make a present-tense
+		//! claim false, and the stub is never rewritten.
+		std::string ChatComposeSkillRetirementNote( const std::string& skillName );
+
+		//! The build-protocol phase name finish_element reports (its
+		//! `phase` field) once every element of the filed plan is finished
+		//! -- AgentSession::BuildPhaseName(AgentBuildPhase::Compose).  The
+		//! chat loop is sans-IO and does not link the session, so the
+		//! spelling is restated here and AgentChatLoopTest T14c pins the
+		//! two equal.
+		inline constexpr char kChatComposePhaseName[] = "compose";
 
 		//! Number of LIVE (not-yet-elided) image blocks/parts in a
 		//! MakeUserEntry-produced user entry -- i.e. how many of its

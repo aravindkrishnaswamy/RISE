@@ -764,9 +764,12 @@ namespace RISE
 						"`total` is chunks.size(), `applied` is how many of `results` have "
 						"applied=true (a status=\"diagnosed\" element is ALSO in the document -- the "
 						"batch is realized by ONE re-derive, whose diagnostics mark the element they "
-						"name, or every landed element when they name none; do not resubmit it), and each `results[i]` is the EXACT same shape insert_chunk "
+						"name, or every landed element when they name none; do not resubmit it), and each `results[i]` is the shape insert_chunk "
 						"returns for `chunks[i]` -- {applied,rawCode,status,retriable,headVersion,"
-						"message,name,kind,issues?} -- including insert_chunk's `issues` reasons "
+						"message,name,kind,issues?}, except that a CLEAN success (status applied, no "
+						"issues, nothing to report beyond the standard insert) carries only "
+						"{applied,status,headVersion,name,kind,element?}; any element with something to report "
+						"keeps every field -- including insert_chunk's `issues` reasons "
 						"(\"unresolved_reference\", \"unknown_param\", \"numeric_in_reference_slot\", "
 						"\"unknown_chunk_type\") and its forward-reference-warning-on-success "
 						"behaviour. Check every element's own status; do not assume the whole batch "
@@ -1002,8 +1005,10 @@ namespace RISE
 						"nothing about what was built or how well), the phase the session is now in, and the "
 						"next active element. It also returns TWO ISOLATE RENDERS of the element side by side "
 						"-- the object recorded against it, alone in the frame and auto-framed AT CLOSE RANGE; "
-						"when several objects were recorded, the one with the largest bounding box, and the "
-						"message says so. LEFT is a DRAFT (studio-preview shading: the material's own BSDF "
+						"when several objects were recorded, the one with the most authored parts (an "
+						"sdf_geometry's part lines, say), ties going to the larger bounding box and then the "
+						"name; the message says which, and finishing again with no change to the shape shows "
+						"the next one. LEFT is a DRAFT (studio-preview shading: the material's own BSDF "
 						"shaded under a crude fixed rig, so form, proportion and coarse colour are visible but "
 						"there is no true light response -- no shadows, reflection/refraction, or emission); "
 						"RIGHT is the same object's MATERIALS under a fixed studio light rig that "
@@ -1115,7 +1120,11 @@ namespace RISE
 						"plain statement, nothing else changes, and authoring by hand is not blocked. "
 						"Returns {ok,element,provider,model,chunksExtracted,landed,"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
-						"sdfPartCount,bbox:{min,max,height},message}." );
+						"sdfPartCount,bbox:{min,max,height},message}; landed names every chunk that "
+						"went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the "
+						"repair retry -- that landed it; each rejected entry carries its attempt too), and "
+						"chunkResults details only the "
+						"chunks that did not insert cleanly or carry a notice." );
 					tools.push_back( MakeTool( "build_element", desc, ObjectProp( "", props, required ) ) );
 				}
 				{
@@ -1266,7 +1275,7 @@ namespace RISE
 						"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,"
 						"areaLights,zeroAreaLights,skyLights,otherLights,"
 						"sources:[string],"
-						"message}." );
+						"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds." );
 					tools.push_back( MakeTool( "light_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1319,7 +1328,7 @@ namespace RISE
 						"full-scene render is refused ONCE and names this tool -- one refusal, shared "
 						"with the other build-phase rules and capped with them, after which every render "
 						"proceeds whether or not this ran; renders in the pieces phase are never "
-						"refused, and neither is a render with `isolate`. A name already used in the "
+						"refused, and neither is a render with `isolate` or `zoom`. A name already used in the "
 						"scene is rejected and NOT renamed. If anything is rejected, ONE repair retry "
 						"runs automatically with the exact rejection text -- one, then it stops, and "
 						"whatever landed stays landed. Nothing is ever dropped silently. The result "
@@ -1332,7 +1341,7 @@ namespace RISE
 						"ok:false saying so without calling the provider. Returns {ok,provider,model,"
 						"chunksExtracted,created:[{name,geometry,material}],"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
-						"objectsBefore,objectsAfter,message}." );
+						"objectsBefore,objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind." );
 					tools.push_back( MakeTool( "populate_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1407,7 +1416,7 @@ namespace RISE
 						"completions,painters,media,boundPainter,bindingApplied,bindingReason,"
 						"rasterizer,radianceMapBefore,radianceMapAfter,globalMediumBefore,"
 						"globalMediumAfter,toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},"
-						"toneAfter:{...},message}." );
+						"toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds." );
 					tools.push_back( MakeTool( "environment_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1508,7 +1517,7 @@ namespace RISE
 						"afterwards. Your words are the SUBJECT; the image is requested in a simple, "
 						"flat-shaded 3D-render style so it is something this renderer can actually approach, "
 						"rather than concept art it cannot. Once a target exists, every full-frame production "
-						"render (not draft, not a mode: render, not an isolate render) also carries a "
+						"render (not draft, not a mode: render, not an isolate or zoom render) also carries a "
 						"`sceneTarget` block -- {imagined, targetWidth, targetHeight, composite, "
 						"compositeWidth, compositeHeight} -- and any such render you ask an image of shows "
 						"that target ABOVE your render in one picture, separated by a grey rule, in place of "
@@ -1553,7 +1562,7 @@ namespace RISE
 						"IS NO SCORE and there is deliberately no similarity number: which of the two "
 						"pictures is better is your judgment, nothing is gated on it, and no particular "
 						"answer is expected. The render that BECAME the anchor carries no composite -- there "
-						"is nothing yet to set it beside. Draft renders, mode: renders and isolate renders "
+						"is nothing yet to set it beside. Draft renders, mode: renders, isolate renders and zoom renders "
 						"are never anchored and never compared, because a difference against one of those "
 						"would be a render setting rather than a change to the scene. It changes nothing in "
 						"the document -- no chunk, no head version, no undo step -- so there is no "
@@ -2359,8 +2368,10 @@ namespace RISE
 						"OPTIONAL, default FALSE. ONLY meaningful when `mode` is one of the FALSE-COLOUR diagnostics (normals/depth/facets/wireframe) -- when true, resolves the ray THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit, following a STRAIGHT LINE with NO refraction bending (deliberately an x-ray, not an optics simulation), up to 16 surfaces skipped. By default the transmissive surface itself is shown. Pass xray:true to inspect opaque geometry underneath/inside it. If the ray never reaches an opaque surface after 16 skips, the LAST transmissive surface is shown instead of a black hole -- an honest partial answer. Silently IGNORED (honestly noted) under mode:\"beauty\"/\"objectmap\" or any production-transport BeautyVariant view mode (deep_reflect/direct/indirect/clay_lights -- skipping through glass would defeat their whole purpose)." ) );
 					props.set( "view", StringProp(
 						"OPTIONAL name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with EVERY `mode` above. Equivalent to transferring the full shared pose (location, lookat, up, Euler orientation, target orientation) plus a pinhole FOV, by name instead of raw numbers -- if both are supplied, `view` wins. PINHOLE-ONLY: the override cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (`ok:false`) naming the unsupported type rather than silently rendering with the active camera's optics. An ONB-style active camera that cannot round-trip this pose also fails loudly. An unresolvable name likewise FAILS with the available-name list in `message`. Use this to compare the SAME render mode from several saved angles without re-deriving camera math each time." ) );
+					props.set( "zoom", StringProp(
+						"Optional name of ONE standard_object to look at CLOSE UP from the SCENE camera's own position: the camera keeps its location, aims at that object and narrows its field of view until the object fills ~85% of the frame (never wider than the scene's own fov; if the object already fills the frame the fov is kept and the result says so). Unlike `isolate`, NOTHING is hidden -- every other object, every light and the environment stay exactly as they are, so you see what a viewer of THIS scene would see of that object, occlusion included, at a size where its material and fine detail (fur, weave, grain, small parts) can actually be judged. Use it when the full frame shows an object too small to judge (a ~20-pixel cat tells you nothing about its fur). Composes with quality and mode. Mutually exclusive with `isolate`, `view` and `camera` (a clean error). Needs a pinhole active camera. On success (ok:true) the result adds a `zoom` object {object, eye, fovDegrees, sceneFovDegrees, keptSceneFov, coverage?, fitBasis}; `coverage` is the fraction of the frame covered by the projected bounds of the object's surface points (an UPPER BOUND on its silhouette); `fitBasis` is surface when the fit used points on the object's real surface, bbox when it fell back to the bounding box. An unknown name, a generator name covering several instances, or a CSG operand FAILS the render (ok:false) with the available names in message. A zoom render carries no inventory, anchor, sceneTarget or tonal fact (its camera is not the scene camera's full frame). Zoom also FAILS (ok:false, no zoom block) when the object is NOT IN VIEW of the scene camera (behind it, or its surface centre more than ~10% past the frame edge -- use isolate or camera for those), when any part of its surface lies on or behind the plane through the camera (the camera is inside or beside it, e.g. a floor or room around the camera), or when its extent is degenerate or unbounded." ) );
 					props.set( "isolate", StringProp(
-						"OPTIONAL name of ONE standard_object to render BY ITSELF, with the camera AUTO-FRAMED on that object's bounding box (a fixed three-quarter vantage at the distance that fills ~85% of the frame). Every OTHER object is transiently hidden for this one render -- hit by no camera, secondary, or shadow ray -- and nothing is written to the document, the viewport, or the user's camera. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full frame: a 20-pixel wing in a wide night shot tells you nothing about its shape, and a form you never evaluated is a form you cannot fix. mode:\"normals\" and mode:\"facets\" read FORM best here (surface direction / raw tessellation, with no material or lighting confounding the read); mode:\"beauty\" composes too, but a hidden emissive OBJECT also stops acting as a light, so a scene lit ONLY by other objects' emissive materials isolates DARK -- explicit light chunks and the environment are unaffected. Composes with EVERY `mode` and with quality:\"draft\" (object visibility is Scene state, not rasterizer state), so unlike `light` it is never silently ignored. If `camera` or `view` is ALSO supplied, THAT camera wins and no auto-framing happens -- the result's `isolate.autoFramed` says which. A successful isolate render (ok:true) adds an `isolate` object to the result: {object, bboxMin[3]?, bboxMax[3]?, longestEdge?, autoFramed, bboxCoverage?} -- bboxMin/bboxMax/longestEdge are OMITTED if the object's bounding box turned out degenerate/unbounded (only reachable when you also supplied `camera`/`view`, since that case otherwise fails the render outright). `bboxCoverage` is the fraction of the frame covered by the object's PROJECTED BOUNDING BOX (an upper bound on its silhouette, exact and identical across modes -- it can OVERSTATE a thin or diagonal silhouette by a large factor, e.g. a wing seen edge-on; for an EXACT per-pixel count use mode:\"objectmap\" and read the legend's pixelCount). `bboxCoverage` is OMITTED (not an approximation) whenever the ACTIVE camera is not a pinhole -- the projected-bbox formula assumes a pinhole's tan(fov/2) projection, which does not apply to thin-lens/fisheye/orthographic; `message` says so when it happens. An unknown name, a GENERATOR name covering several instances (isolate one instance's full name instead), a CSG operand (isolate the composite the message names), or an object whose bounding box is degenerate/unbounded with NO caller-supplied camera FAILS the render (ok:false) with the available object names in `message`." ) );
+						"OPTIONAL name of ONE standard_object to render BY ITSELF, with the camera AUTO-FRAMED on that object's surface (points on its real geometry; its bounding box only where it has none -- a fixed three-quarter vantage at the distance that fills ~85% of the frame). Every OTHER object is transiently hidden for this one render -- hit by no camera, secondary, or shadow ray -- and nothing is written to the document, the viewport, or the user's camera. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full frame: a 20-pixel wing in a wide night shot tells you nothing about its shape, and a form you never evaluated is a form you cannot fix. mode:\"normals\" and mode:\"facets\" read FORM best here (surface direction / raw tessellation, with no material or lighting confounding the read); mode:\"beauty\" composes too, but a hidden emissive OBJECT also stops acting as a light, so a scene lit ONLY by other objects' emissive materials isolates DARK -- explicit light chunks and the environment are unaffected. Composes with EVERY `mode` and with quality:\"draft\" (object visibility is Scene state, not rasterizer state), so unlike `light` it is never silently ignored. If `camera` or `view` is ALSO supplied, THAT camera wins and no auto-framing happens -- the result's `isolate.autoFramed` says which. A successful isolate render (ok:true) adds an `isolate` object to the result: {object, bboxMin[3]?, bboxMax[3]?, longestEdge?, autoFramed, bboxCoverage?} -- bboxMin/bboxMax/longestEdge are OMITTED if the object's bounding box turned out degenerate/unbounded (only reachable when you also supplied `camera`/`view`, since that case otherwise fails the render outright). `bboxCoverage` is the fraction of the frame covered by the projected screen bounds of points on the object's real surface (its bounding box only when it has none, e.g. a CSG composite -- isolate.fitBasis says which; an upper bound on its silhouette; a camera-and-geometry calculation, not a pixel count, so identical across modes -- it can OVERSTATE a thin or diagonal silhouette by a large factor, e.g. a wing seen edge-on; for an EXACT per-pixel count use mode:\"objectmap\" and read the legend's pixelCount). `bboxCoverage` is OMITTED (not an approximation) whenever the ACTIVE camera is not a pinhole -- the projected-bbox formula assumes a pinhole's tan(fov/2) projection, which does not apply to thin-lens/fisheye/orthographic; `message` says so when it happens. An unknown name, a GENERATOR name covering several instances (isolate one instance's full name instead), a CSG operand (isolate the composite the message names), or an object whose bounding box is degenerate/unbounded with NO caller-supplied camera FAILS the render (ok:false) with the available object names in `message`. The fit and bboxCoverage use points on the object's real surface (isolate.fitBasis = surface) or, where it has none (a CSG composite, an infinite plane), its bounding box (bbox)." ) );
 					// G3b fix-round (2026-08-10) FIX 2: this text MIRRORS AgentChatCodecs.cpp's
 					// `target` description, which is the CANONICAL one -- change that first, then
 					// mirror here, keeping the sentences literally identical.  SourceHygieneTest
@@ -2379,7 +2390,7 @@ namespace RISE
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
 						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode} (plus a "
 						"per-object `legend` when mode:\"objectmap\", an `isolate` object when "
-						"`isolate` was applied, a `target` object with the measured sketch "
+						"`isolate` was applied, a `zoom` object when `zoom` was applied, a `target` object with the measured sketch "
 						"comparison when `target` was applied, an `inventory` object on every "
 						"full-scene beauty render -- see below -- and an `agentRenderCap` object "
 						"when the agent-surface cap described next actually reduced this render). "
@@ -2424,7 +2435,7 @@ namespace RISE
 						"and a render really can queue behind (or be refused by) another render "
 						"-- see read_viewport's `render_in_progress` note below for what that "
 						"means in practice. "
-						"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no `isolate`, no "
+						"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no `isolate`, no `zoom`, no "
 						"`mode`) also carries an `inventory` object: {objects, covered, passWidth, "
 						"passHeight, notAreaSampled, text}. `text` is one line per object saying how "
 						"much of the frame it covers and where it is -- in the frame for the ones that "
