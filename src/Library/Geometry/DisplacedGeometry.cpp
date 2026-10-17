@@ -20,6 +20,10 @@
 #include "../Utilities/GeometricUtilities.h"
 #include <atomic>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
 #include "../Utilities/RenderParallelScope.h"
 
 using namespace RISE;
@@ -29,6 +33,277 @@ namespace {
 	// Diagnostic counter: total BuildMesh() invocations process-wide.  See
 	// the GetBuildMeshCount()/ResetBuildMeshCount() doc in the header.
 	std::atomic<unsigned int> s_buildMeshCount( 0 );
+
+	// ---- Mesh refinement for `detail` on mesh bases --------------------------
+	//
+	// A base that is already a MESH (lathe / sweep / skin / imported) ignores
+	// `detail` in its TessellateToMesh and would be displaced only at its own
+	// vertices -- a 4-point-profile lathe has 4 rows however fine the relief.
+	// RefineMeshToEdgeLength() subdivides it until every edge is <= `targetLen`
+	// (or a hard cap is hit).
+	//
+	// ADAPTIVE EDGE SPLITTING, not blind 1->4: each level splits ONLY the edges
+	// that are still too long.  The split decision is per UNORDERED edge (keyed
+	// by the combined-index pair), so the two triangles sharing an edge always
+	// agree -- the result is crack-free by construction, and a long cap edge or
+	// one coarse ring does not drag the whole mesh to 4^levels triangles.  A
+	// triangle with 3 / 2 / 1 split edges becomes 4 / 3 / 2 triangles (winding
+	// preserved).  Midpoints are keyed by the combined index pair, so a crease /
+	// cap / pinch vertex -- a DISTINCT combined index from its geometric twin --
+	// keeps its midpoints split too: nothing is welded by position.
+	//
+	// Attributes at a midpoint: position LINEAR, normal = normalize(na + nb)
+	// (falls back to na for opposed normals), UV LINEAR except across a
+	// periodic wrap (|du| > 0.5 or |dv| > 0.5 means the edge crosses the chart's
+	// u=1 -> u=0 stitch, the lathe/sweep wrap with no duplicated seam column;
+	// the midpoint is taken on the short way round so it does not land on the
+	// opposite side of the texture).  TRADEOFF: for a surface of revolution the
+	// chord midpoint lies a sagitta (~ edge^2 / 8R) inside the true surface and
+	// the displacement runs along the averaged normal, which is the true normal
+	// of the arc midpoint for a circular section -- accurate enough that the
+	// error is far below any relief this is used for, and exactly what makes
+	// the result independent of which builder produced the mesh.
+	//
+	// Requires iVertices == iNormals == iCoords on every triangle (the
+	// TessellateToMesh contract); otherwise the mesh is left unrefined.
+	struct RefineResult
+	{
+		unsigned int levels;
+		size_t       trianglesBefore;
+		size_t       trianglesAfter;
+		bool         capped;			//!< stopped by the triangle / level cap with edges still too long
+		RefineResult() : levels( 0 ), trianglesBefore( 0 ), trianglesAfter( 0 ), capped( false ) {}
+	};
+
+	const unsigned int kMaxRefineLevels    = 6;
+	const size_t       kMaxRefineTriangles = 1500000;
+
+	inline std::uint64_t EdgeKey( const unsigned int a, const unsigned int b )
+	{
+		return ( a < b ) ? ( ( std::uint64_t( a ) << 32 ) | b ) : ( ( std::uint64_t( b ) << 32 ) | a );
+	}
+
+	inline Scalar WrapMid( Scalar a, Scalar b )
+	{
+		if( std::fabs( a - b ) > 0.5 ) {
+			if( a < b ) a += 1.0; else b += 1.0;
+			Scalar m = 0.5 * ( a + b );
+			if( m >= 1.0 ) m -= 1.0;
+			return m;
+		}
+		return 0.5 * ( a + b );
+	}
+
+	RefineResult RefineMeshToEdgeLength(
+		IndexTriangleListType& tris,
+		VerticesListType&      vertices,
+		NormalsListType&       normals,
+		TexCoordsListType&     coords,
+		const Scalar           targetLen )
+	{
+		RefineResult res;
+		res.trianglesBefore = res.trianglesAfter = tris.size();
+		if( tris.empty() || !( targetLen > 0 ) ||
+			vertices.size() != normals.size() || vertices.size() != coords.size() ) {
+			return res;
+		}
+		for( size_t t = 0; t < tris.size(); ++t ) {
+			for( int k = 0; k < 3; ++k ) {
+				if( tris[t].iVertices[k] != tris[t].iNormals[k] || tris[t].iVertices[k] != tris[t].iCoords[k] ||
+					tris[t].iVertices[k] >= vertices.size() ) {
+					return res;
+				}
+			}
+		}
+
+		const Scalar target2 = targetLen * targetLen;
+		const unsigned int kNotSplit = 0xFFFFFFFFu;
+
+		for( unsigned int level = 0; level < kMaxRefineLevels; ++level ) {
+			// Pass 1: which unordered edges are still too long?  (insertion-ordered
+			// so midpoint indices are deterministic)
+			std::unordered_map<std::uint64_t, unsigned int> edgeMid;
+			edgeMid.reserve( tris.size() * 2 );
+			std::vector<std::uint64_t> splitOrder;
+			for( size_t t = 0; t < tris.size(); ++t ) {
+				for( int k = 0; k < 3; ++k ) {
+					const unsigned int a = tris[t].iVertices[k], b = tris[t].iVertices[( k + 1 ) % 3];
+					if( a == b ) continue;
+					const std::uint64_t key = EdgeKey( a, b );
+					if( edgeMid.find( key ) != edgeMid.end() ) continue;
+					const Vector3 e = Vector3Ops::mkVector3( vertices[a], vertices[b] );
+					if( Vector3Ops::Dot( e, e ) > target2 ) {
+						edgeMid[key] = 0;	// split; real index assigned below
+						splitOrder.push_back( key );
+					} else {
+						edgeMid[key] = kNotSplit;
+					}
+				}
+			}
+			if( splitOrder.empty() ) {
+				return res;		// every edge is short enough
+			}
+
+			// Triangle budget for this level.
+			size_t newCount = 0;
+			for( size_t t = 0; t < tris.size(); ++t ) {
+				int n = 0;
+				for( int k = 0; k < 3; ++k ) {
+					const unsigned int a = tris[t].iVertices[k], b = tris[t].iVertices[( k + 1 ) % 3];
+					if( a != b && edgeMid[ EdgeKey( a, b ) ] != kNotSplit ) ++n;
+				}
+				newCount += size_t( n + 1 );		// 0 -> 1, 1 -> 2, 2 -> 3, 3 -> 4
+			}
+			if( newCount > kMaxRefineTriangles ) {
+				res.capped = true;
+				return res;
+			}
+
+			// Pass 2: create the midpoint vertices.
+			for( size_t i = 0; i < splitOrder.size(); ++i ) {
+				const std::uint64_t key = splitOrder[i];
+				const unsigned int a = static_cast<unsigned int>( key >> 32 ), b = static_cast<unsigned int>( key & 0xFFFFFFFFull );
+				const unsigned int mid = static_cast<unsigned int>( vertices.size() );
+				edgeMid[key] = mid;
+				const Point3  pa = vertices[a], pb = vertices[b];
+				const Vector3 na = normals[a],  nb = normals[b];
+				const TexCoord ca = coords[a],  cb = coords[b];
+				vertices.push_back( Point3( 0.5 * ( pa.x + pb.x ), 0.5 * ( pa.y + pb.y ), 0.5 * ( pa.z + pb.z ) ) );
+				Vector3 nm = na + nb;
+				const Scalar nl = Vector3Ops::Magnitude( nm );
+				normals.push_back( nl > 1e-12 ? nm * ( 1.0 / nl ) : na );
+				coords.push_back( TexCoord( WrapMid( ca.x, cb.x ), WrapMid( ca.y, cb.y ) ) );
+			}
+
+			// Pass 3: emit the refined triangles.
+			IndexTriangleListType out;
+			out.reserve( newCount );
+			auto emit = [&]( const unsigned int a, const unsigned int b, const unsigned int c ) {
+				IndexedTriangle nt;
+				nt.iVertices[0] = nt.iNormals[0] = nt.iCoords[0] = a;
+				nt.iVertices[1] = nt.iNormals[1] = nt.iCoords[1] = b;
+				nt.iVertices[2] = nt.iNormals[2] = nt.iCoords[2] = c;
+				out.push_back( nt );
+			};
+			for( size_t t = 0; t < tris.size(); ++t ) {
+				const unsigned int p[3] = { tris[t].iVertices[0], tris[t].iVertices[1], tris[t].iVertices[2] };
+				unsigned int m[3];		// m[k] = midpoint of edge (p[k], p[k+1]) or kNotSplit
+				int n = 0;
+				for( int k = 0; k < 3; ++k ) {
+					const unsigned int a = p[k], b = p[( k + 1 ) % 3];
+					m[k] = ( a != b ) ? edgeMid[ EdgeKey( a, b ) ] : kNotSplit;
+					if( m[k] != kNotSplit ) ++n;
+				}
+				if( n == 0 ) {
+					emit( p[0], p[1], p[2] );
+				} else if( n == 3 ) {
+					emit( p[0], m[0], m[2] );
+					emit( m[0], p[1], m[1] );
+					emit( m[2], m[1], p[2] );
+					emit( m[0], m[1], m[2] );
+				} else if( n == 1 ) {
+					int k = 0;
+					while( m[k] == kNotSplit ) ++k;
+					const unsigned int A = p[k], B = p[( k + 1 ) % 3], C = p[( k + 2 ) % 3];
+					emit( A, m[k], C );
+					emit( m[k], B, C );
+				} else {
+					// Two split edges: rotate so the UNSPLIT edge is (A,B); the
+					// split ones are (B,C) and (C,A).  Corner C becomes one
+					// triangle; the remaining quad A,B,mBC,mCA is cut along its
+					// shorter diagonal.
+					int u = 0;
+					while( m[u] != kNotSplit ) ++u;
+					const unsigned int A = p[u], B = p[( u + 1 ) % 3], C = p[( u + 2 ) % 3];
+					const unsigned int mBC = m[( u + 1 ) % 3], mCA = m[( u + 2 ) % 3];
+					emit( mBC, C, mCA );
+					const Vector3 dA = Vector3Ops::mkVector3( vertices[A], vertices[mBC] );
+					const Vector3 dB = Vector3Ops::mkVector3( vertices[B], vertices[mCA] );
+					if( Vector3Ops::Dot( dA, dA ) <= Vector3Ops::Dot( dB, dB ) ) {
+						emit( A, B, mBC );
+						emit( A, mBC, mCA );
+					} else {
+						emit( A, B, mCA );
+						emit( B, mBC, mCA );
+					}
+				}
+			}
+			tris.swap( out );
+			res.levels = level + 1;
+			res.trianglesAfter = tris.size();
+		}
+
+		// Out of levels: did any edge stay too long?
+		for( size_t t = 0; t < tris.size() && !res.capped; ++t ) {
+			for( int k = 0; k < 3; ++k ) {
+				const Vector3 e = Vector3Ops::mkVector3( vertices[ tris[t].iVertices[k] ], vertices[ tris[t].iVertices[( k + 1 ) % 3] ] );
+				if( Vector3Ops::Dot( e, e ) > target2 ) { res.capped = true; break; }
+			}
+		}
+		return res;
+	}
+
+	inline std::uint64_t TopologySignature( const IndexTriangleListType& tris, const size_t vertexCount )
+	{
+		std::uint64_t h = 1469598103934665603ull;
+		auto mix = [&]( const std::uint64_t x ) { h ^= x; h *= 1099511628211ull; };
+		mix( tris.size() );
+		mix( vertexCount );
+		for( size_t t = 0; t < tris.size(); ++t ) {
+			mix( tris[t].iVertices[0] ); mix( tris[t].iVertices[1] ); mix( tris[t].iVertices[2] );
+		}
+		return h ? h : 1ull;	// 0 is reserved for "not refined"
+	}
+}
+
+bool DisplacedGeometry::WillDisplaceVertices() const
+{
+	return ( m_pDisplacement || m_pHeight ) && m_dispScale != 0.0;
+}
+
+bool DisplacedGeometry::TessellateAndRefine(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const bool             bLog ) const
+{
+	if( !m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail ) ) {
+		return false;
+	}
+
+	// Only a base whose own TessellateToMesh IGNORES `detail` needs refining:
+	// an indexed mesh (lathe / sweep / skin / imported) or a displaced base's
+	// re-emitted baked mesh.  Spheres, boxes, SDFs, ... tessellate AT `detail`
+	// already and are left alone.  And only when vertices will actually move.
+	const bool bMeshBase =
+		dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pBase ) != 0 ||
+		dynamic_cast<const DisplacedGeometry*>( m_pBase ) != 0;
+	if( !bMeshBase || m_detail == 0 || !WillDisplaceVertices() || vertices.empty() ) {
+		return true;
+	}
+
+	Point3 lo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), hi( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
+	for( size_t i = 0; i < vertices.size(); ++i ) {
+		lo.x = r_min( lo.x, vertices[i].x ); lo.y = r_min( lo.y, vertices[i].y ); lo.z = r_min( lo.z, vertices[i].z );
+		hi.x = r_max( hi.x, vertices[i].x ); hi.y = r_max( hi.y, vertices[i].y ); hi.z = r_max( hi.z, vertices[i].z );
+	}
+	const Scalar diag = Vector3Ops::Magnitude( Vector3Ops::mkVector3( hi, lo ) );
+	const Scalar target = diag / Scalar( m_detail );
+
+	const RefineResult r = RefineMeshToEdgeLength( tris, vertices, normals, coords, target );
+	if( r.levels > 0 && bLog ) {
+		GlobalLog()->PrintEx( eLog_Event,
+			"DisplacedGeometry: refined the mesh base to detail %u (target edge %g): %u level(s), %u -> %u triangles",
+			m_detail, (double)target, r.levels, (unsigned)r.trianglesBefore, (unsigned)r.trianglesAfter );
+	}
+	if( r.capped && bLog ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"DisplacedGeometry: mesh refinement for detail %u stopped at the %u-level / %u-triangle cap (%u triangles); "
+			"some edges are still longer than the target %g -- raise the base's own tessellation or lower `detail`",
+			m_detail, kMaxRefineLevels, (unsigned)kMaxRefineTriangles, (unsigned)tris.size(), (double)target );
+	}
+	return true;
 }
 
 unsigned int DisplacedGeometry::GetBuildMeshCount()
@@ -62,7 +337,8 @@ DisplacedGeometry::DisplacedGeometry(
   m_pPlaneBase( dynamic_cast<const ClippedPlaneGeometry*>( pBase ) ),
   m_pMesh( 0 ),
   m_bRealized( false ),
-  m_displacementSubscription()
+  m_displacementSubscription(),
+  m_topologySignature( 0 )
 {
 	if( m_pBase ) {
 		m_pBase->addref();
@@ -207,8 +483,7 @@ bool DisplacedGeometry::ApplyHeightField(
 	// of an otherwise analytic shape" idiom: with this shortcut the tessellated
 	// sphere's |∂N/∂u|/|∂P/∂u| ratio lands on 1/R (exactly the analytic value)
 	// everywhere except the pole-cap degenerate triangles.
-	const bool bVerticesDisplaced =
-		( ( m_pDisplacement || m_pHeight ) && m_dispScale != 0.0 );
+	const bool bVerticesDisplaced = WillDisplaceVertices();
 	if( !bVerticesDisplaced ) {
 		return false;
 	}
@@ -266,10 +541,14 @@ void DisplacedGeometry::BuildMesh() const
 	NormalsListType       normals;
 	TexCoordsListType     coords;
 
-	if( !m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail ) ) {
+	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/true ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry: base geometry does not support tessellation (e.g. InfinitePlaneGeometry)" );
 		return;
 	}
+
+	// Remember the topology this mesh is built from so the refit path can tell
+	// a stable topology from a changed one (see m_topologySignature).
+	m_topologySignature = TopologySignature( tris, vertices.size() );
 
 	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
 
@@ -303,7 +582,7 @@ void DisplacedGeometry::RefreshMeshVertices()
 	NormalsListType       normals;
 	TexCoordsListType     coords;
 
-	if( !m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail ) ) {
+	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/false ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry::RefreshMeshVertices: base tessellation failed" );
 		return;
 	}
@@ -314,11 +593,22 @@ void DisplacedGeometry::RefreshMeshVertices()
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
 	}
 
-	// Topology assumption: tri count and vertex count match what
-	// the existing m_pMesh has.  m_detail is a const constructor arg,
-	// so this holds across every painter notification.  If a future
-	// change makes detail keyframable, the mismatch path inside
-	// UpdateVertices logs an error and we fall back to full rebuild.
+	// Topology assumption: the (possibly refined) triangle list is the one the
+	// existing m_pMesh was built from.  m_detail is a const constructor arg, so
+	// for a static base this holds across every painter notification.  The
+	// mesh-base refinement is driven by edge lengths, so a base that itself
+	// moved (an animated displaced base) can change topology at an UNCHANGED
+	// vertex count, which UpdateVertices cannot see -- compare the signature and
+	// rebuild instead of refitting.  (A vertex-count change is still caught by
+	// UpdateVertices' own mismatch path below.)
+	if( TopologySignature( tris, vertices.size() ) != m_topologySignature ) {
+		GlobalLog()->PrintEasyWarning(
+			"DisplacedGeometry::RefreshMeshVertices: base topology changed; rebuilding from scratch" );
+		DestroyMesh();
+		BuildMesh();
+		return;
+	}
+
 	const unsigned int refitMs = m_pMesh->UpdateVertices( vertices, normals );
 	if( refitMs == 0 ) {
 		// Mismatch (vertex count differs) — fall back to full rebuild.

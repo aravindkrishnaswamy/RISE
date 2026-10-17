@@ -12,6 +12,7 @@
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Interfaces/IFunction2D.h"
+#include "../src/Library/Utilities/Observable.h"
 // Doc 89 slice D (displaced-detail composition audit): builds a lathe_geometry
 // base mesh via the same RISE_API factory the scene parser uses, so the
 // composition tests below exercise the REAL builder output, not a hand-rolled
@@ -543,24 +544,36 @@ static void TestDisplacedOverLatheAppliesDisplacement()
 
 	IndexTriangleListType dTris; VerticesListType dVerts; NormalsListType dNorms; TexCoordsListType dCoords;
 	assert( pDisp->TessellateToMesh( dTris, dVerts, dNorms, dCoords, 0 ) );
-	assert( dVerts.size() == baseVerts.size() );
+	// `detail` (32) now REFINES a mesh base whose edges exceed bbox-diagonal /
+	// detail, so the baked mesh is finer than the 4-ring-row base.  The
+	// original vertices keep indices [0, baseVerts.size()); midpoints are
+	// appended after them.  Exact count expectation WITHOUT replicating the
+	// algorithm: the vase is a closed genus-0 surface (a pole at each end), so
+	// Euler gives V - E + F = 2 with E = 3F/2, i.e. V = F/2 + 2 -- true of the
+	// base (98 = 192/2 + 2) and true of a crack-free refinement, but NOT of one
+	// that duplicates a midpoint per incident triangle or leaves T-junctions.
+	assert( baseVerts.size() == baseTris.size() / 2 + 2 );
+	assert( dTris.size() > baseTris.size() );
+	assert( dVerts.size() > baseVerts.size() );
+	assert( dVerts.size() == dTris.size() / 2 + 2 );
 
-	Scalar maxDev = 0.0, minDev = 1e30;
-	for( size_t i = 0; i < dVerts.size(); ++i ) {
-		const Scalar dx = dVerts[i].x - baseVerts[i].x;
-		const Scalar dy = dVerts[i].y - baseVerts[i].y;
-		const Scalar dz = dVerts[i].z - baseVerts[i].z;
-		const Scalar dev = std::sqrt( dx*dx + dy*dy + dz*dz );
-		maxDev = std::max( maxDev, dev );
-		minDev = std::min( minDev, dev );
+	// Every ORIGINAL base vertex must reappear (displaced indices are NOT
+	// preserved: TessellateToMesh re-emits in first-seen order over the refined
+	// triangles) displaced by exactly k along its own unit normal.
+	Scalar worstErr = 0.0;
+	for( size_t i = 0; i < baseVerts.size(); ++i ) {
+		const Vector3 n = Vector3Ops::Normalize( baseNorms[i] );
+		const Point3 expected( baseVerts[i].x + n.x * k, baseVerts[i].y + n.y * k, baseVerts[i].z + n.z * k );
+		Scalar best = 1e30;
+		for( size_t j = 0; j < dVerts.size(); ++j ) {
+			const Scalar dx = dVerts[j].x - expected.x, dy = dVerts[j].y - expected.y, dz = dVerts[j].z - expected.z;
+			best = std::min( best, std::sqrt( dx*dx + dy*dy + dz*dz ) );
+		}
+		worstErr = std::max( worstErr, best );
 	}
-	std::cout << "  [info] lathe displacement deviation: min=" << minDev << " max=" << maxDev << " (amplitude k=" << k << ")\n";
-	// Displacement actually applied (not a no-op)...
-	assert( maxDev > 0.0 );
-	// ...and bounded by the painter's own amplitude (every vertex moves by
-	// disp_scale along a UNIT normal; 5% slack for FP/normal-magnitude noise).
-	assert( maxDev <= k * 1.05 );
-	assert( minDev >= k * 0.95 );
+	std::cout << "  [info] lathe: " << baseVerts.size() << " base vertices -> " << dVerts.size()
+		<< " baked (" << baseTris.size() << " -> " << dTris.size() << " tris); worst |displaced - (base + k n)| = " << worstErr << " (amplitude k=" << k << ")\n";
+	assert( worstErr < 1e-9 );
 
 	pDisp->release();
 	pConst->release();
@@ -659,7 +672,9 @@ static void TestDisplacedOverPinchedLatheTears()
 // their normal indices differ).
 //
 // Three witnesses, each of which FAILS on the flattening and PASSES now:
-//  (a) the baked vertex count equals the base's own unique count (it was 3N);
+//  (a) the baked mesh shares vertices (V ~ F/2, it was 3F) and the `detail`
+//      refinement of the mesh base is crack-free (Euler characteristic equals
+//      the base's);
 //  (b) no two baked vertices share a POSITION (they all did: ~6 per interior
 //      vertex) -- for builders with no intentional duplicate (a seamless
 //      lathe, a capless sweep, a skin sheet);
@@ -667,6 +682,23 @@ static void TestDisplacedOverPinchedLatheTears()
 //      angle between a corner's stored normal and its triangle's geometric
 //      normal is well above zero (it was exactly zero -- flat shading).
 //-----------------------------------------------------------------------------
+// V - E + F over the REFERENCED vertices and unordered index-pair edges.
+static long long EulerCharacteristic( const IndexTriangleListType& tris )
+{
+	std::vector<unsigned int> verts;
+	std::vector< std::pair<unsigned int,unsigned int> > edges;
+	for( size_t t = 0; t < tris.size(); ++t ) {
+		for( int k = 0; k < 3; ++k ) {
+			const unsigned int a = tris[t].iVertices[k], b = tris[t].iVertices[(k+1)%3];
+			verts.push_back( a );
+			edges.push_back( a < b ? std::make_pair( a, b ) : std::make_pair( b, a ) );
+		}
+	}
+	std::sort( verts.begin(), verts.end() ); verts.erase( std::unique( verts.begin(), verts.end() ), verts.end() );
+	std::sort( edges.begin(), edges.end() ); edges.erase( std::unique( edges.begin(), edges.end() ), edges.end() );
+	return (long long)verts.size() - (long long)edges.size() + (long long)tris.size();
+}
+
 static void CheckDisplacedBuilderIsSmooth(
 	const char*                  name,
 	TriangleMeshGeometryIndexed* pBase,
@@ -686,14 +718,19 @@ static void CheckDisplacedBuilderIsSmooth(
 
 	IndexTriangleListType dTris; VerticesListType dVerts; NormalsListType dNorms; TexCoordsListType dCoords;
 	assert( pDisp->TessellateToMesh( dTris, dVerts, dNorms, dCoords, 0 ) );
-	assert( dTris.size() == bTris.size() );
 	assert( dVerts.size() == dNorms.size() && dVerts.size() == dCoords.size() );
 
-	// (a) shared topology: the builder's own unique vertex count survives the bake.
-	std::cout << "  [info] " << name << ": " << dTris.size() << " tris, base unique corners "
-		<< pBase->numPoints() << ", baked vertices " << dVerts.size() << " (flattened would be " << 3*dTris.size() << ")\n";
-	assert( dVerts.size() == pBase->numPoints() );
+	// (a) shared topology.  The old flattening gave 3 vertices per triangle; a
+	// shared-topology bake of ANY manifold-ish mesh has V ~ F/2.  And, because
+	// `detail` now refines a mesh base, the CRACK-FREE property of that
+	// refinement: edge splitting never changes the Euler characteristic
+	// V - E + F, whereas a midpoint duplicated per incident triangle (or a
+	// T-junction) would.
+	std::cout << "  [info] " << name << ": base " << bTris.size() << " tris / " << pBase->numPoints()
+		<< " vertices -> baked " << dTris.size() << " tris / " << dVerts.size()
+		<< " vertices (flattened would be " << 3*dTris.size() << ")\n";
 	assert( dVerts.size() * 2 < dTris.size() * 3 );
+	assert( EulerCharacteristic( dTris ) == EulerCharacteristic( bTris ) );
 
 	// (b) no coincident positions (quantised to 1e-7).
 	{
@@ -800,6 +837,227 @@ static void TestDisplacedBuildersShadeSmooth()
 		CheckDisplacedBuilderIsSmooth( "skin", p, 0.04, 24 );
 		p->release();
 	}
+}
+
+static Scalar MaxEdgeLength( const IndexTriangleListType& tris, const VerticesListType& verts )
+{
+	Scalar m = 0.0;
+	for( size_t t = 0; t < tris.size(); ++t ) {
+		for( int k = 0; k < 3; ++k ) {
+			const Point3& a = verts[ tris[t].iVertices[k] ];
+			const Point3& b = verts[ tris[t].iVertices[(k+1)%3] ];
+			m = std::max( m, std::sqrt( (a.x-b.x)*(a.x-b.x) + (a.y-b.y)*(a.y-b.y) + (a.z-b.z)*(a.z-b.z) ) );
+		}
+	}
+	return m;
+}
+
+static Scalar BBoxDiagonal( const VerticesListType& verts )
+{
+	Point3 lo( 1e30, 1e30, 1e30 ), hi( -1e30, -1e30, -1e30 );
+	for( size_t i = 0; i < verts.size(); ++i ) {
+		lo.x = std::min( lo.x, verts[i].x ); lo.y = std::min( lo.y, verts[i].y ); lo.z = std::min( lo.z, verts[i].z );
+		hi.x = std::max( hi.x, verts[i].x ); hi.y = std::max( hi.y, verts[i].y ); hi.z = std::max( hi.z, verts[i].z );
+	}
+	return std::sqrt( (hi.x-lo.x)*(hi.x-lo.x) + (hi.y-lo.y)*(hi.y-lo.y) + (hi.z-lo.z)*(hi.z-lo.z) );
+}
+
+static TriangleMeshGeometryIndexed* MakeCoarseLathe( const int nRadial )
+{
+	// FOUR profile points -> three bands: a coarse tank-shaped lathe whose
+	// own vertical resolution is the profile point count and nothing else.
+	static const double prof[] = { 0.0, 0.0,  1.0, 0.25,  1.0, 1.75,  0.0, 2.0 };
+	LatheDescriptor ld;
+	ld.profilePoints = prof; ld.numProfilePoints = 4;
+	ld.nRadial = nRadial;
+	ld.smooth = true;
+	ITriangleMeshGeometryIndexed* pI = 0;
+	assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+	TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+	assert( p );
+	return p;
+}
+
+//-----------------------------------------------------------------------------
+// `detail` REFINES a mesh base.  A lathe/sweep/skin/imported mesh ignores
+// `detail` in its own TessellateToMesh, so it used to be displaced only at its
+// OWN vertices: a 4-point-profile lathe has 4 vertex rows however fine the
+// relief, and `detail 48` did nothing.  DisplacedGeometry::BuildMesh now splits
+// every edge longer than (base bbox diagonal / detail) before displacing.
+//
+// RED on the unrefined bake (vertical spacing = the profile rows, ~1.5 vs a
+// 0.072 target); GREEN now.  Also pins: crack-free (Euler characteristic of
+// the base kept), the pinch/crease vertices stay split (no position weld --
+// see Test 10), and analytic/SDF-style bases that already honour `detail`
+// are NOT touched.
+//-----------------------------------------------------------------------------
+static void TestDetailRefinesMeshBases()
+{
+	std::cout << "Test 10c: `detail` refines a coarse mesh base (lathe vertical resolution) and leaves detail-honouring bases alone...\n";
+
+	// ---- (1) the coarse lathe, detail 48 --------------------------------
+	{
+		TriangleMeshGeometryIndexed* pLathe = MakeCoarseLathe( 24 );
+		IndexTriangleListType bTris; VerticesListType bVerts; NormalsListType bNorms; TexCoordsListType bCoords;
+		assert( pLathe->TessellateToMesh( bTris, bVerts, bNorms, bCoords, 0 ) );
+		const unsigned int detail = 48;
+		const Scalar target = BBoxDiagonal( bVerts ) / Scalar( detail );
+		const Scalar baseMaxEdge = MaxEdgeLength( bTris, bVerts );
+		std::cout << "  [info] base: " << bTris.size() << " tris, longest edge " << baseMaxEdge << ", target (diag/detail) " << target << "\n";
+		assert( baseMaxEdge > 5.0 * target );		// the premise: the base really is far coarser than `detail`
+
+		const Scalar k = 0.002;						// tiny: edge lengths are measured in the displaced frame
+		ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, detail, pConst, k, false, false );
+		pDisp->Realize();
+
+		IndexTriangleListType dTris; VerticesListType dVerts; NormalsListType dNorms; TexCoordsListType dCoords;
+		assert( pDisp->TessellateToMesh( dTris, dVerts, dNorms, dCoords, 0 ) );
+		const Scalar maxEdge = MaxEdgeLength( dTris, dVerts );
+		std::vector<Scalar> ys;
+		for( size_t i = 0; i < dVerts.size(); ++i ) ys.push_back( dVerts[i].y );
+		std::sort( ys.begin(), ys.end() );
+		Scalar maxGap = 0.0;
+		for( size_t i = 1; i < ys.size(); ++i ) maxGap = std::max( maxGap, ys[i] - ys[i-1] );
+		std::cout << "  [info] displaced: " << dTris.size() << " tris, longest edge " << maxEdge << ", largest vertical gap between vertices " << maxGap << "\n";
+
+		// MONEY ASSERTIONS (red before the refinement: maxEdge ~ 1.5, maxGap ~ 1.5).
+		assert( maxEdge <= 1.3 * target );
+		assert( maxGap  <= 1.3 * target );
+		// crack-free: refinement preserves the Euler characteristic of the base.
+		assert( EulerCharacteristic( dTris ) == EulerCharacteristic( bTris ) );
+		assert( dVerts.size() == dTris.size() / 2 + 2 );	// closed genus-0 (pole at each end)
+		// the refined, displaced mesh is still a valid, queryable mesh: a ray
+		// from outside along +X at mid-height hits the displaced wall near r = 1 + k.
+		RayIntersectionGeometric ri = MakeRI( Point3( 5.0, 1.0, 0.0 ), Vector3( -1.0, 0.0, 0.0 ) );
+		pDisp->IntersectRay( ri, true, true, false );
+		std::cout << "  [info] ray hit=" << ri.bHit << " at x=" << 5.0 - ri.range << " (wall r = " << 1.0 + k << ")\n";
+		assert( ri.bHit );
+		assert( std::fabs( ( 5.0 - ri.range ) - ( 1.0 + k ) ) < 0.02 );
+
+		pDisp->release();
+		pConst->release();
+		pLathe->release();
+	}
+
+	// ---- (2) bases that already honour `detail` are untouched -----------
+	{
+		SphereGeometry* pSphere = new SphereGeometry( 1.0 );
+		const unsigned int detail = 16;
+		IndexTriangleListType sT; VerticesListType sV; NormalsListType sN; TexCoordsListType sC;
+		assert( pSphere->TessellateToMesh( sT, sV, sN, sC, detail ) );
+
+		ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pSphere, detail, pConst, 0.05, false, false );
+		pDisp->Realize();
+		IndexTriangleListType dT; VerticesListType dV; NormalsListType dN; TexCoordsListType dC;
+		assert( pDisp->TessellateToMesh( dT, dV, dN, dC, 0 ) );
+		std::cout << "  [info] sphere detail " << detail << ": base tessellation " << sT.size() << " tris / " << sV.size()
+			<< " verts, displaced " << dT.size() << " tris / " << dV.size() << " verts\n";
+		assert( dT.size() == sT.size() );
+		assert( dV.size() == sV.size() );
+
+		pDisp->release();
+		pConst->release();
+		pSphere->release();
+	}
+	{
+		BoxGeometry* pBox = new BoxGeometry( 2.0, 2.0, 2.0 );
+		const unsigned int detail = 12;
+		IndexTriangleListType bT; VerticesListType bV; NormalsListType bN; TexCoordsListType bC;
+		assert( pBox->TessellateToMesh( bT, bV, bN, bC, detail ) );
+		ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pBox, detail, pConst, 0.05, false, false );
+		pDisp->Realize();
+		IndexTriangleListType dT; VerticesListType dV; NormalsListType dN; TexCoordsListType dC;
+		assert( pDisp->TessellateToMesh( dT, dV, dN, dC, 0 ) );
+		std::cout << "  [info] box detail " << detail << ": base tessellation " << bT.size() << " tris, displaced " << dT.size() << " tris\n";
+		assert( dT.size() == bT.size() );
+		assert( dV.size() == bV.size() );
+		pDisp->release();
+		pConst->release();
+		pBox->release();
+	}
+
+	// ---- (3) disp_scale 0 ("force tessellation" idiom) is not refined ---
+	{
+		TriangleMeshGeometryIndexed* pLathe = MakeCoarseLathe( 24 );
+		IndexTriangleListType bTris; VerticesListType bVerts; NormalsListType bNorms; TexCoordsListType bCoords;
+		assert( pLathe->TessellateToMesh( bTris, bVerts, bNorms, bCoords, 0 ) );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, 48, 0, 0.0, false, false );
+		pDisp->Realize();
+		IndexTriangleListType dT; VerticesListType dV; NormalsListType dN; TexCoordsListType dC;
+		assert( pDisp->TessellateToMesh( dT, dV, dN, dC, 0 ) );
+		assert( dT.size() == bTris.size() && dV.size() == bVerts.size() );
+		pDisp->release();
+		pLathe->release();
+	}
+
+	// ---- (4) the hard cap: absurd detail stops at the level/triangle cap
+	{
+		TriangleMeshGeometryIndexed* pLathe = MakeCoarseLathe( 24 );
+		ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, 100000, pConst, 0.002, false, false );
+		pDisp->Realize();
+		IndexTriangleListType dT; VerticesListType dV; NormalsListType dN; TexCoordsListType dC;
+		assert( pDisp->TessellateToMesh( dT, dV, dN, dC, 0 ) );
+		std::cout << "  [info] detail 100000 capped at " << dT.size() << " triangles\n";
+		assert( dT.size() <= 1500000 );
+		assert( dT.size() > 1000 );
+		pDisp->release();
+		pConst->release();
+		pLathe->release();
+	}
+}
+
+// An IFunction2D that is also Observable (like every in-tree painter), so a
+// value change drives DisplacedGeometry's animation REFIT path.
+class ObservableConstFunction2D : public virtual IFunction2D, public virtual Reference, public Observable
+{
+public:
+	Scalar value;
+	ObservableConstFunction2D( const Scalar v ) : value( v ) {}
+	Scalar Evaluate( const Scalar /*x*/, const Scalar /*y*/ ) const { return value; }
+	void SetValue( const Scalar v ) { value = v; NotifyObservers(); }
+};
+
+//-----------------------------------------------------------------------------
+// The refined topology is DETERMINISTIC and STABLE across refreshes: a painter
+// notification re-tessellates + re-refines and refits the existing mesh in
+// place (no rebuild: BuildMesh count unchanged), the triangle/vertex counts
+// stay put, and the vertices move by the new amplitude.
+//-----------------------------------------------------------------------------
+static void TestRefinedTopologyStableAcrossRefresh()
+{
+	std::cout << "Test 10d: a painter-driven refresh refits the refined mesh in place (stable topology)...\n";
+
+	TriangleMeshGeometryIndexed* pLathe = MakeCoarseLathe( 24 );
+	ObservableConstFunction2D* pFn = new ObservableConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, 32, pFn, 0.05, false, false );
+	pDisp->Realize();
+
+	IndexTriangleListType t0; VerticesListType v0; NormalsListType n0; TexCoordsListType c0;
+	assert( pDisp->TessellateToMesh( t0, v0, n0, c0, 0 ) );
+
+	DisplacedGeometry::ResetBuildMeshCount();
+	pFn->SetValue( 3.0 );		// 0.05 -> 0.15 amplitude, through the observer path
+	assert( DisplacedGeometry::GetBuildMeshCount() == 0 && "refresh must REFIT, not rebuild" );
+
+	IndexTriangleListType t1; VerticesListType v1; NormalsListType n1; TexCoordsListType c1;
+	assert( pDisp->TessellateToMesh( t1, v1, n1, c1, 0 ) );
+	std::cout << "  [info] " << t0.size() << " tris / " << v0.size() << " verts before, " << t1.size() << " / " << v1.size() << " after the refresh\n";
+	assert( t1.size() == t0.size() && v1.size() == v0.size() );
+
+	// A wall vertex (r = 1 band, |y - 1| small) moved outward by the extra 0.10.
+	Scalar maxR0 = 0.0, maxR1 = 0.0;
+	for( size_t i = 0; i < v0.size(); ++i ) maxR0 = std::max( maxR0, std::sqrt( v0[i].x*v0[i].x + v0[i].z*v0[i].z ) );
+	for( size_t i = 0; i < v1.size(); ++i ) maxR1 = std::max( maxR1, std::sqrt( v1[i].x*v1[i].x + v1[i].z*v1[i].z ) );
+	std::cout << "  [info] max radius " << maxR0 << " -> " << maxR1 << "\n";
+	assert( maxR1 > maxR0 + 0.05 );
+
+	pDisp->release();
+	pFn->release();
+	pLathe->release();
 }
 
 //-----------------------------------------------------------------------------
@@ -1608,6 +1866,8 @@ int main()
 	TestDisplacedOverLatheAppliesDisplacement();
 	TestDisplacedOverPinchedLatheTears();
 	TestDisplacedBuildersShadeSmooth();
+	TestDetailRefinesMeshBases();
+	TestRefinedTopologyStableAcrossRefresh();
 	TestConcurrentRealize();
 	TestScalarHeightIsObjectSpaceAndExact();
 	TestScalarHeightThroughTheChunk();

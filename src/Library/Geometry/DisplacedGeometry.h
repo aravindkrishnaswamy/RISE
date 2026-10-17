@@ -23,6 +23,7 @@
 #include "../Interfaces/ITriangleMeshGeometry.h"
 #include "../Utilities/Observable.h"
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 
 namespace RISE
@@ -33,6 +34,17 @@ namespace RISE
 		// base's TessellateToMesh, and displaces every vertex along its normal by
 		// `displacement(u,v) * disp_scale`.  The resulting mesh is built into an internal
 		// TriangleMeshGeometryIndexed and used for all intersection / sampling queries.
+		//
+		// MESH BASES ARE REFINED TO `detail`.  A base that is already a mesh
+		// (a TriangleMeshGeometryIndexed -- lathe / sweep / skin / imported -- or another
+		// DisplacedGeometry) ignores `detail` in its own TessellateToMesh, which would
+		// leave it displaced only at its own vertices.  Before displacing,
+		// TessellateAndRefine() splits every edge longer than (base bbox diagonal /
+		// detail): adaptive edge-midpoint subdivision with midpoints shared per
+		// unordered combined-index pair (crack-free; crease / cap / pinch vertices are
+		// distinct combined indices so they stay split; no position welding), capped at
+		// 6 levels / 1.5M triangles.  Analytic and SDF bases already honour `detail`
+		// and are untouched, as is any bake with disp_scale == 0.
 		//
 		// TWO HEIGHT ROUTES, MUTUALLY EXCLUSIVE (2026-09-06).  The offset scalar comes
 		// from EXACTLY ONE of:
@@ -121,6 +133,39 @@ namespace RISE
 			// before TessellateToMesh re-emits its mesh).
 			void BuildMesh() const;
 			void DestroyMesh() const;
+
+			// TRUE iff a height route is bound AND disp_scale != 0 -- i.e. the
+			// vertices will actually move (the one predicate shared by
+			// ApplyHeightField's shortcut and the refinement gate).
+			bool WillDisplaceVertices() const;
+
+			// Tessellate the base via TessellateToMesh and, when the base is a
+			// MESH whose own tessellation ignores `detail` (a
+			// TriangleMeshGeometryIndexed -- lathe / sweep / skin / imported
+			// mesh -- or another DisplacedGeometry re-emitting its baked mesh)
+			// AND vertices will be displaced, refine it so its longest edges
+			// are <= (base bbox diagonal / m_detail): without this a mesh base
+			// is displaced only at its OWN vertices and `detail` has no effect.
+			// Bases that already honour `detail` (spheres, boxes, SDFs, ...)
+			// are never touched.  Shared by BuildMesh and RefreshMeshVertices
+			// so the two cannot drift; bLog suppresses the "refinement capped"
+			// warning on the refit path.  Returns FALSE iff the base cannot
+			// tessellate.
+			bool TessellateAndRefine(
+				IndexTriangleListType& tris,
+				VerticesListType&      vertices,
+				NormalsListType&       normals,
+				TexCoordsListType&     coords,
+				const bool             bLog ) const;
+
+			// Topology signature (FNV-1a over the triangle index list and vertex
+			// count) of the mesh the current m_pMesh was built from.
+			// RefreshMeshVertices re-tessellates (and re-refines) the base and
+			// refits only when the signature matches -- the mesh-base refinement
+			// is edge-length driven, so a base whose vertices moved (an animated
+			// displaced base) could otherwise change topology while keeping the
+			// same vertex COUNT, which UpdateVertices cannot detect.
+			mutable std::uint64_t                    m_topologySignature;
 
 			// The ONE place either height route touches vertex positions --
 			// shared by BuildMesh() and RefreshMeshVertices() so the

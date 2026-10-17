@@ -735,7 +735,10 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 		GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH (rebuilt after SAH-degradation)" );
 	}
 
-	return refitMs;
+	// 0 means FAILURE to the caller (vertex-count mismatch / no BVH above), but a
+	// refit of a small mesh really can take under a millisecond; report 1 so a
+	// fast successful refit is not mistaken for a failed one and rebuilt.
+	return refitMs ? refitMs : 1;
 }
 
 void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graphProofReusable, bool refusalProofReusable)
