@@ -12,8 +12,8 @@ pages are a historical log, not instructions.
 | Design | [FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md), [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md), [FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md) |
 | Current run results | `/Volumes/SSD/RISE/fire_production_calibration/` (campaign outputs, listed below) |
 | Golden oracle checkpoint | `rendered/fire_methane_capstone/tier10.run.checkpoint` in the main checkout, SHA-256 `1b944176…cb4947` |
-| Older run outputs (r1xx–r217, oracle references) | `/Volumes/Big Store/Archive/RISE/history_2026-10-16/` |
-| Checkpoint history and budget packets of r237–r246 | `/Volumes/Big Store/Archive/RISE/fire_production_calibration/` |
+| Oracle reference runs (tier-8 matched reference, tier-10, equal-time compositions, r108 spatial) | `/Volumes/Big Store/Archive/RISE/oracle_references/` |
+| Restart snapshots of r237 (tier 10) and r241 (tier 8) | `/Volumes/Big Store/Archive/RISE/fire_production_calibration/`; delete once r250 and a new tier-10 run supersede them |
 | Removed branches and uncommitted work | local tags `archive/2026-10-16/*` (never pushed) |
 
 ## What works
@@ -151,12 +151,11 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | Entries | Content |
 |---|---|
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
-| `r238_retained_fuel_budget.v2` | fuel-budget observer replay on r237 |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
 | `r250_tier8_parcel_edge` | active from-zero tier-8 run of the one-cell parcel-edge gate; fuel/export/heat-height acceptance pending |
 | `r249_tier8_fuel_balance` | read-only r241 retained fuel inventory, sampled boundary localization, and native chemistry-state checks |
 | `r243_nonphysical_diagnostic.v3` | temperature-mapped structure clips, labelled non-physical |
-| `r244_tier6_*`, `r245_*`, `r246_tier6_top_double.v1`, `r246_recovered_top_*`, `r247_transport.v3`, `r247_source_spatial.v2` | tier-6 domain, budget and top-boundary studies |
+| `r244_tier6_*`, `r245_*`, `r246_tier6_top_double.v1`, `r246_recovered_top_*`, `r247_transport.v3`, `r247_source_spatial.v2` | tier-6 domain, budget and top-boundary studies: summaries, spectra and previews only; raw frames and snapshots deleted 2026-10-17 |
 
 Each run directory has a matching `.log` where one was written.
