@@ -722,14 +722,14 @@ namespace RISE
 		//! realizes through one full re-derive, never the incremental path.  Every result carries the SAME
 		//! post-call headVersion: the head revision is bumped ONCE for the whole batch.  The per-element
 		//! controller-level refusals the single verbs make (empty field, a surface binding on a container
-		//! object) are made here per element too, against the pre-batch head.
+		//! object) are made here per element; the container gate is judged against the batch's EVOLVING document.
 		//!
 		//! No optimistic-concurrency base: a caller pinning a base head version commits that element through
 		//! the single verb (AgentSession does), so the conflict rules never change shape.
 		//!
-		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentEditBatch, a compact byte-exact diff of
-		//! the changed top-level items) for the whole batch, so one Cmd-Z undoes the whole batch, matching
-		//! ApplyAgentRemoveChunks.
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentEditBatch: the landed elements'
+		//! OPERATION-LEVEL inverses, see RISE::CstBatchUndoOp) for the whole batch, so one Cmd-Z undoes the
+		//! whole batch, matching ApplyAgentRemoveChunks.
 		//!
 		//! A batch whose failure isolation exceeds Job's dry-run budget commits NOTHING and returns every
 		//! admitted element with status "sequential" / needsSequential -- the caller then commits them one at
@@ -737,11 +737,12 @@ namespace RISE
 		//! PER-ELEMENT undo steps (each single verb pushes its own record); they cannot be bracketed by
 		//! CompositeBegin/End, because an open composite refuses agent commits by design.
 		//!
-		//! A diagnosed (code 3) batch re-derive is reported per element: an element the diagnostic NAMES is
-		//! "diagnosed"; every other landed element is "applied" (rawCode 3) with the diagnostic quoted -- it did
-		//! land.  An Undo/Redo of this batch's record that cannot be applied (document structure changed, or the
-		//! pre-batch document no longer derives) DROPS the record with SceneEditor::ConsumeHistoryNotice set,
-		//! rather than wedging every later Cmd-Z.
+		//! A diagnosed (code 3) batch re-derive is reported per element: an element a diagnostic is ATTRIBUTED
+		//! to (it opens with that element's own `<keyword> `<name>``) is "diagnosed" and every other landed
+		//! element "applied" (rawCode 3) with the diagnostics quoted; when nothing is attributable, every
+		//! landed element is "diagnosed".  An Undo/Redo of this batch's record that cannot apply is REFUSED and
+		//! the record stays in place (the rule every refused record follows), with a user-facing notice set --
+		//! read it with ConsumeHistoryNotice.
 		std::vector<AgentCommitResult> ApplyAgentEditBatch( const std::vector<CstBatchEdit>& edits );
 
 		//! R2 (2026-08-10, replace_geometry_scaffold): install `candidateDocText` -- a WHOLE candidate

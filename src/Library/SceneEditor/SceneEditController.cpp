@@ -3420,6 +3420,7 @@ bool SceneEditController::UndoInner_()
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
 	const unsigned int beforeUndoDepth = mEditor.History().UndoDepth();
+	mEditor.ClearHistoryNotice();   // a notice only ever describes the immediately preceding Undo/Redo
 	const bool ok = mEditor.Undo();
 	// P1-#2 follow-up: mEditor.Undo() returns false on a PARTIAL composite revert,
 	// but the scene WAS mutated (the undo stack advanced) so we must still refresh.
@@ -3481,6 +3482,7 @@ bool SceneEditController::RedoInner_()
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
 	const unsigned int beforeRedoDepth = mEditor.History().RedoDepth();
+	mEditor.ClearHistoryNotice();
 	const bool ok = mEditor.Redo();
 	// P1-#2 follow-up: see Undo -- a partial composite redo still mutated the scene.
 	const bool didWork = ok || ( mEditor.History().RedoDepth() != beforeRedoDepth );
@@ -8554,11 +8556,10 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 			}
 		}
 
-		// ONE history record for the WHOLE batch (one Cmd-Z undoes it -- the remove_chunks rule), carrying a
-		// COMPACT top-level-item diff rather than two whole documents (review P2-D; see the op doc for why
-		// per-element records are not an exact inverse of a batch).
-		// The record is the landed elements' OPERATION-LEVEL inverses in landing order (review round 3; see
-		// CstBatchUndoOp) -- never a document snapshot, so an Undo/Redo touches only what the batch touched.
+		// ONE history record for the WHOLE batch (one Cmd-Z undoes it -- the remove_chunks rule): the landed
+		// elements' OPERATION-LEVEL inverses in landing order (see CstBatchUndoOp and the AgentEditBatch op doc
+		// for why per-element records are not an exact inverse of a batch) -- never a document snapshot, so an
+		// Undo/Redo touches only what the batch touched.
 		std::vector< std::pair<int, CstBatchUndoOp> > ordered;
 		for( std::size_t k = 0; k < admitted.size() && k < outcomes.size(); ++k )
 			if( outcomes[k].code == 2 || outcomes[k].code == 3 )

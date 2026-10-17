@@ -254,8 +254,8 @@ namespace RISE
 		{
 			bool        applied = false;
 			bool        retriable = false;   //!< always emitted on the wire; meaningful for status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME patch later; false = permanent
-			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
-			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
+			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed (in a propose_patches batch, rawCode 3 can ride with applied=true: see the BATCHES note above)
+			std::string status;              //!< "applied" (clean -- or, in a diagnosed BATCH, landed while ANOTHER element was diagnosed) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
 			RISE::Cst::CstHeadVersion headVersion;   //!< the head-version AFTER the call (post-commit on success; current head on reject/diagnosed/conflict)
 			std::string message;
 			//! Secure-MCP slice 6: set true ONLY for an External-authority
@@ -3084,7 +3084,9 @@ namespace RISE
 			//! Job::ApplyCstEditBatch) instead of one per element; an element
 			//! that would not derive is still refused on its own.  Every
 			//! element reports the same post-call headVersion (the revision
-			//! is bumped once), and in LIVE mode the batch is ONE undo step.
+			//! is bumped once), and in LIVE mode the batch is ONE undo step --
+			//! except when its failure isolation exceeds Job's budget: the
+			//! elements are then committed one at a time (one undo step EACH).
 			//!
 			//! A REJECTED element does NOT stop the batch: the remaining
 			//! elements are still attempted in order.  If a later element

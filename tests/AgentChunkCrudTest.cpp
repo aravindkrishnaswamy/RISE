@@ -13827,13 +13827,13 @@ static bool BrSameMeaning_( const BrMeaning_& a, const BrMeaning_& b )
 	return std::fabs( a.sphRadius - b.sphRadius ) < 1e-12 && std::fabs( a.emitScale - b.emitScale ) < 1e-12;
 }
 
-//! BR10 (round-2 P1): batch -> GUI edit on an entity the batch patched -> Undo -> Undo restores the pre-batch
-//! document BY MEANING (the GUI revert rewrote the item's bytes), and older history stays reachable.  Three GUI
-//! edit shapes: an inspector position edit, a real gizmo drag, and a camera transform after a camera.location
-//! patch.
-static void TestBatchUndoNeverWedges()
+//! BR10 (round-2 P1, rounds 3-4): batch -> GUI edit on an entity the batch patched -> Undo -> Undo restores the
+//! pre-batch document BY MEANING (the GUI revert re-spelled the item's bytes), and older history stays reachable.
+//! Three GUI edit shapes: an inspector position edit, a real gizmo drag, and a camera pan after a camera.location
+//! patch.  Plus BR10b: an Undo whose result would not derive is REFUSED visibly with the stack coherent.
+static void TestBatchUndoAfterGuiEditRestoresMeaning()
 {
-	std::printf( "BR10: batch undo after a GUI edit on a patched entity never wedges ...\n" );
+	std::printf( "BR10: batch undo after a GUI edit on a patched entity restores the pre-batch meaning ...\n" );
 	const char* const kWhat[3] = { "inspector position", "gizmo drag", "camera transform" };
 	for( int which = 0; which < 3; ++which )
 	{
@@ -14233,6 +14233,155 @@ static void TestBatchHeadlessFallbackRetry()
 	}
 	pJob->release();
 	std::remove( tmp.c_str() );
+}
+
+//! BR17 (round-4 P1-1): an inserted chunk with a BYTE-IDENTICAL twin (two identical unnamed timelines) undoes
+//! and redoes -- the twins are interchangeable, so the record picks the one nearest its recorded index.
+static void TestBatchUndoIdenticalTwin()
+{
+	std::printf( "BR17: batch undo/redo with a byte-identical twin chunk ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br17.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string T = "timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
+		                      "\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}";
+		Check( sess->InsertChunk( T ).applied, "BR17 the first timeline inserts (single verb)" );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<std::string> chunks;
+		chunks.push_back( T );
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br17_p\n\tcolor 0.1 0.2 0.3\n}" );
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		Check( res.size() == 2 && res[0].applied && res[1].applied, "BR17 the batch (an identical twin + a painter) lands" );
+		const std::string d1 = sess->ReadDocument();
+		Check( controller.Undo(), "BR17 MONEY: Undo is NOT refused for an identical twin" );
+		Check( sess->ReadDocument() == d0, "BR17 Undo restores the pre-batch document byte-exactly" );
+		Check( controller.Redo() && sess->ReadDocument() == d1, "BR17 Redo re-applies it byte-exactly" );
+		Check( controller.Undo() && controller.Undo(), "BR17 both batch and the earlier single insert undo" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR18 (round-4 P1-2): a transform patch on an object with SEVERAL same-named override_object layers resolves
+//! its owner exactly as the write did (the LAST layer), so Undo and Redo succeed as a single patch's would.
+static void TestBatchUndoOverrideLayers()
+{
+	std::printf( "BR18: batch undo/redo across several override_object layers ...\n" );
+	const std::string scene = std::string( kScene ) +
+		"\noverride_object\n{\n\tname obj_sph\n\tposition 0.1 0 0\n}\n"
+		"\noverride_object\n{\n\tname obj_sph\n\tposition 0.2 0 0\n}\n";
+	const std::string tmp = TempPath( "agentcrud_br18.RISEscene" );
+	Job* pJob = LoadScene( scene.c_str(), tmp );
+	Check( pJob != nullptr, "BR18 fixture (two override layers) loads" );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<Agent::AgentSetPatch> ps;
+		Agent::AgentSetPatch p;
+		p.target = "obj_sph"; p.kind = "standard_object"; p.param = "position"; p.value = "0.5 0.5 0"; ps.push_back( p );
+		p = Agent::AgentSetPatch();
+		p.target = "sph"; p.param = "radius"; p.value = "0.6"; ps.push_back( p );
+		const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+		Check( res.size() == 2 && res[0].applied && res[1].applied, "BR18 the batch applies" );
+		const std::string d1 = sess->ReadDocument();
+		Check( controller.Undo(), "BR18 MONEY: Undo is NOT refused with two same-named override layers" );
+		Check( sess->ReadDocument() == d0, "BR18 Undo restores the pre-batch document byte-exactly" );
+		Check( controller.Redo() && sess->ReadDocument() == d1, "BR18 Redo re-applies it byte-exactly" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR19 (round-4 P2): a batch that RENAMES an entity (and then edits it under its new name) undoes and redoes.
+static void TestBatchUndoRename()
+{
+	std::printf( "BR19: batch undo/redo of a rename ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br19.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname br19_p\n\tcolor 0.1 0.2 0.3\n}" ).applied,
+		       "BR19 an unreferenced painter inserts" );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<Agent::AgentSetPatch> ps;
+		Agent::AgentSetPatch p;
+		p.target = "br19_p"; p.param = "name";  p.value = "br19_q";       ps.push_back( p );
+		p.target = "br19_q"; p.param = "color"; p.value = "0.9 0.8 0.7";  ps.push_back( p );
+		p.target = "sph";    p.param = "radius"; p.value = "0.6";         ps.push_back( p );
+		const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+		Check( res.size() == 3 && res[0].applied && res[1].applied && res[2].applied,
+		       "BR19 rename + edit-under-the-new-name + unrelated patch apply" );
+		const std::string d1 = sess->ReadDocument();
+		Check( d1.find( "br19_q" ) != std::string::npos && d1.find( "br19_p" ) == std::string::npos, "BR19 renamed" );
+		Check( controller.Undo() && sess->ReadDocument() == d0, "BR19 MONEY: Undo of a renaming batch restores the pre-batch document" );
+		Check( controller.Redo() && sess->ReadDocument() == d1, "BR19 Redo re-applies the rename and the edit" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR20 (round-4 P2): occurrence-drift parity -- an occurrence-addressed patch whose line drifted (changed
+//! outside the history) is REFUSED on Undo by the batch record exactly as by the single patch's record.
+static void TestBatchUndoOccurrenceDriftParity()
+{
+	std::printf( "BR20: occurrence-addressed undo refuses on drift, batch and single alike ...\n" );
+	const std::string scene = std::string( kScene ) +
+		"\nstandard_shader\n{\n\tname br20_sh\n\tshaderop DefaultPathTracing\n\tshaderop DefaultDirectLighting\n}\n";
+	for( int batched = 0; batched < 2; ++batched )
+	{
+		const std::string tmp = TempPath( "agentcrud_br20.RISEscene" );
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "BR20 fixture loads" );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = batched ? "BR20 [batch] " : "BR20 [single] ";
+			Agent::AgentSetPatch p;
+			p.target = "br20_sh"; p.param = "shaderop"; p.value = "DefaultEmission";
+			p.hasOccurrence = true; p.occurrence = 1;
+			if( batched ) {
+				std::vector<Agent::AgentSetPatch> ps;
+				ps.push_back( p );
+				Agent::AgentSetPatch q;
+				q.target = "sph"; q.param = "radius"; q.value = "0.6"; ps.push_back( q );
+				const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+				Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the occurrence-addressed batch applies" );
+			} else {
+				Check( sess->ProposePatch( p ).applied, w + "the occurrence-addressed patch applies" );
+			}
+			// DRIFT: the addressed line changes OUTSIDE the history (the ungated panel primitive).
+			Check( pJob->ApplyCstParamEdit( "br20_sh", nullptr, "shaderop", 1, "DefaultDirectLighting" ) >= 1,
+			       w + "the addressed line drifts outside the history" );
+			const std::string before = sess->ReadDocument();
+			Check( !controller.Undo(), w + "Undo REFUSES (the line it would overwrite is no longer the one it wrote)" );
+			Check( sess->ReadDocument() == before, w + "nothing changed" );
+			if( batched )
+				Check( controller.ConsumeHistoryNotice().find( "drifted" ) != std::string::npos,
+				       w + "the refusal is visible and names the drift" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }
 
 //! S2d: the do-nothing cases -- wrong phase, wrong element, no capability.
@@ -21419,13 +21568,17 @@ int main()
 	TestBatchedVerdictIndependentOfSplits();
 	TestBatchedDegenerateHeadAndBudget();
 	TestBatchedUndoCompactAndInterleaved();
-	TestBatchUndoNeverWedges();               // review round 2
+	TestBatchUndoAfterGuiEditRestoresMeaning();               // review round 2
 	TestBatchDiagnosedReporting();
 	TestBatchFallbackRetryRestrictions();
 	TestBatchPreviewRebuildsOnHeadMove();
 	TestBatchUndoKeepsNonHistoryEdits();        // review round 3
 	TestBatchInsertThenPatchUndoRedo();
 	TestBatchHeadlessFallbackRetry();
+	TestBatchUndoIdenticalTwin();               // review round 4
+	TestBatchUndoOverrideLayers();
+	TestBatchUndoRename();
+	TestBatchUndoOccurrenceDriftParity();
 	TestMaterialScaffoldFamilies();
 	TestMaterialScaffoldDeterminism();
 	TestMaterialScaffoldMissingParams();

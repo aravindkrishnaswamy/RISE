@@ -13132,6 +13132,7 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 		if( outUndo ) {
 			if( plan[i].transform ) {
 				for( const char* const* r = kTransformRoles; *r; ++r ) slotRoles.push_back( *r );
+				outUndo->wholeTransform = true;
 			} else {
 				for( const char* const* st = plan[i].strip; *st; ++st ) slotRoles.push_back( *st );
 				slotRoles.push_back( edits[i].first );
@@ -14398,6 +14399,7 @@ int Job::ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e,
 		outcome.undo.chunkText = RISE::Cst::SerializeNode( chunk );
 		outcome.undo.keyword   = chunk->role;
 		outcome.undo.namePath  = RISE::Cst::ChunkNamePath( chunk );
+		outcome.undo.chunkIndex = where + 1;   // [lead][chunk][sep] spliced at `where`
 		for( int k = where - 1; k >= 0; --k ) {
 			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, k ) );
 			if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
@@ -14430,6 +14432,16 @@ int Job::ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e,
 	RISE::Cst::NodeId anchor = 0;
 	std::string roleDiag;
 	outcome.undo = CstBatchUndoOp();
+	outcome.undo.entityName     = e.entityName;
+	outcome.undo.entityKind     = e.entityKind;
+	outcome.undo.editRole       = e.role;
+	outcome.undo.postEntityName = e.entityName;
+	if( e.role == "name" ) {   // a rename moves the identity: Undo resolves by the NEW name
+		const size_t b = e.value.find_first_not_of( " \t\r\n" );
+		const size_t z = e.value.find_last_not_of( " \t\r\n" );
+		outcome.undo.postEntityName = ( b == std::string::npos ) ? std::string() : e.value.substr( b, z - b + 1 );
+	}
+	outcome.undo.occAddressed   = e.occAddressed;
 	if( PlanCstParamEdits_( doc, e.entityName.c_str(), e.entityKind.empty() ? nullptr : e.entityKind.c_str(),
 	                        one, e.occ, written, anchor, roleDiag, logRefusals, &outcome.undo ) != 1 ) {
 		outcome.diag = "entity/param not found or the edit was refused";
@@ -15040,6 +15052,27 @@ int Job::ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRa
 // that one is `static` and not exposed via Cst.h, so this is a local, deliberately identical reimplementation
 // via the PUBLIC RISE::Cst::SerializeNode surface (same O(one item's bytes) cost).  An out-of-range/absent
 // item is NOT newline-terminated.
+// Batched agent edits (2026-10-16, review round 4): ApplyCstReplaceDocumentText for an already-built Document --
+// installed AS IS (no serialize + re-parse), so its top-level item structure is preserved.  An agent batch
+// Undo/Redo builds its target by editing the CURRENT Document; a re-parse would merge adjacent trivia items and
+// shift the top-level indices OLDER history records (AgentInsertChunk's exact-index inverse) rely on.
+int Job::ApplyCstReplaceDocument( const RISE::Cst::Document& doc, bool restoreActiveRasterizer,
+                                  char* outDiag, unsigned int diagMax, const char* diagContext )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || RISE::Cst::DocItemCount( doc ) <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstReplaceDocument:: no retained CST Document or empty document; rejected" );
+		return 0;
+	}
+	RISE::Cst::Document d1 = doc;
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ),
+	                                           ( diagContext && diagContext[0] ) ? diagContext : "replace document",
+	                                           &firstDiag, restoreActiveRasterizer );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
 static bool JobItemEndsInNewline_( const RISE::Cst::Document& doc, int index )
 {
 	if( index < 0 || index >= RISE::Cst::DocItemCount( doc ) ) return false;

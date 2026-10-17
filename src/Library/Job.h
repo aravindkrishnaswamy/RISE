@@ -408,6 +408,8 @@ namespace RISE
 		                                               int maxIsolationDryRuns = -1 );
 		int							ApplyCstBatchElement( RISE::Cst::Document& doc, const CstBatchEdit& edit, CstBatchOutcome& outcome );
 		bool						CopyCstDocument( RISE::Cst::Document& out ) const;
+		int							ApplyCstReplaceDocument( const RISE::Cst::Document& doc, bool restoreActiveRasterizer,
+		                                                     char* outDiag, unsigned int diagMax, const char* diagContext );
 		bool						CstTargetIsContainerObject( const RISE::Cst::Document& doc, const char* entityName, const char* entityKind ) const;
 		//! Test hook (2026-10-16): how many validate-before-destroy DRY-RUN derives (into a throwaway staging Job)
 		//! the CST edit paths have run on this Job.  Monotonic; not part of IJobPriv.

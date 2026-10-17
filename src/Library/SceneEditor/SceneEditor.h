@@ -531,8 +531,9 @@ namespace RISE
 		//! Review round 3: a user-facing notice set when an Undo/Redo of an agent batch edit was REFUSED (the record
 		//! stays in the history, as every refused record does).  Returns it and clears it ("" when none).
 		std::string ConsumeHistoryNotice();
-		static std::string ForTest_ApplyDocDiff( const std::string& current, const std::string& encodedDiff,
-		                                         bool forward, bool* outOk );
+		//! Clear any pending notice (the controller does this as each Undo/Redo starts, so a notice only ever
+		//! describes the immediately preceding call).
+		void ClearHistoryNotice();
 
 		//! True when anything MAY need saving since the last load /
 		//! save.  Conservative: it can be true when a Save would NoOp
@@ -719,7 +720,7 @@ namespace RISE
 		class IScalarPainterManager*  mScalarPainterManager;  // borrowed; nullable (Phase 4)
 		IJob*                         mJob;                   // borrowed; nullable
 		std::string                   mHistoryNotice;         // review round 2: see ConsumeHistoryNotice
-		void NoteHistoryRefusal_( const SceneEdit& edit, bool forward, const std::string& why );
+		void NoteHistoryRefusal_( const SceneEdit& edit, bool forward, const std::string& why, bool fixable );
 		EditHistory  mHistory;
 		DirtyScope   mLastScope;
 		int          mCompositeDepth;

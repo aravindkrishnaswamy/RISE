@@ -2667,20 +2667,28 @@ bool SceneEditor::RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forw
 	return r >= 1;
 }
 
-// Batched agent edits (2026-10-16, review round 3): the AgentEditBatch history record is OPERATION-LEVEL -- the
+// Batched agent edits (2026-10-16, review rounds 3-4): the AgentEditBatch history record is OPERATION-LEVEL -- the
 // landed elements' inverses (RISE::CstBatchUndoOp), in landing order.  Undo applies them in REVERSE to the
 // CURRENT document (remove each inserted chunk together with exactly the separators its insert added; restore
-// each touched param slot's prior value or absence), Redo re-applies them forward (re-insert each recorded chunk
-// before the first chunk following its recorded anchor; re-set each slot's post value), and the result is
-// realized by ONE dry-run-gated derive (IJob::ApplyCstReplaceDocumentText).
+// each slot the write changed), Redo re-applies them forward, and the result is realized by ONE dry-run-gated
+// derive (IJob::ApplyCstReplaceDocumentText).
 //
-// WHY NOT A DOCUMENT SNAPSHOT OR DIFF (the previous two designs).  Film / environment inspector edits change the
-// document WITHOUT pushing history, so restoring whole documents -- or whole items -- silently reverted them; and
-// a byte diff had to guess when a later edit had rewritten bytes the batch touched.  Operations touch only what
-// the batch touched, exactly like the per-element records a sequence of single agent commits pushes, but realize
-// with one derive instead of one per element.  WHY NOT those per-element records themselves: each re-derives its
-// own intermediate document, and a batch never validated its prefixes (a material listed before the painter it
-// reads lands), so replaying them one at a time can stop half-way on a document that does not derive.
+// THE GOVERNING RULE (review round 4): every target is resolved EXACTLY the way the forward write resolved it,
+// and nothing refuses where the per-element records a run of single agent commits pushes would have succeeded:
+//   * an insert is found as base's AgentInsertChunk undo found it -- by the exact chunk bytes (base compared
+//     the bytes at the recorded index) -- with byte-identical twins (two identical unnamed timelines) resolved
+//     deterministically to the one nearest the recorded index: they are interchangeable;
+//   * a param edit's owner is resolved by the same Cst::DocFindByNameAnyRole + Cst::DocTransformOwnerId calls
+//     the write made (so several same-named override_object layers resolve to the LAST one, as the write did),
+//     with the entity's post-write name on Undo when the edit renamed it;
+//   * an occurrence-addressed edit gets base's occurrence-drift guard;
+//   * a slot the write did not change is never written.
+//
+// WHY NOT A DOCUMENT SNAPSHOT OR DIFF (rounds 1-2).  Film / environment inspector edits change the document
+// WITHOUT pushing history, so restoring whole documents -- or whole items -- silently reverted them.  WHY NOT
+// the per-element records themselves: each re-derives its own intermediate document, and a batch never
+// validated its prefixes (a material listed before the painter it reads lands), so replaying them one derive at
+// a time can stop half-way.
 namespace
 {
 	void PutField_( std::string& out, const std::string& v )
@@ -2711,7 +2719,7 @@ namespace
 
 	std::string EncodeBatchOps_( const std::vector<RISE::CstBatchUndoOp>& ops )
 	{
-		std::string out = "RISEBATCHOPS1\n";
+		std::string out = "RISEBATCHOPS2\n";
 		PutInt_( out, static_cast<long long>( ops.size() ) );
 		for( std::size_t i = 0; i < ops.size(); ++i ) {
 			const RISE::CstBatchUndoOp& o = ops[i];
@@ -2719,9 +2727,16 @@ namespace
 			PutField_( out, o.chunkText );
 			PutField_( out, o.keyword );
 			PutField_( out, o.namePath );
+			PutInt_( out, o.chunkIndex );
 			PutInt_( out, o.hasAnchor ? 1 : 0 );
 			PutField_( out, o.anchorKeyword );
 			PutField_( out, o.anchorNamePath );
+			PutField_( out, o.entityName );
+			PutField_( out, o.entityKind );
+			PutField_( out, o.editRole );
+			PutField_( out, o.postEntityName );
+			PutInt_( out, o.occAddressed ? 1 : 0 );
+			PutInt_( out, o.wholeTransform ? 1 : 0 );
 			PutField_( out, o.ownerKeyword );
 			PutField_( out, o.ownerNamePath );
 			PutInt_( out, static_cast<long long>( o.slots.size() ) );
@@ -2741,20 +2756,28 @@ namespace
 	bool DecodeBatchOps_( const std::string& in, std::vector<RISE::CstBatchUndoOp>& ops )
 	{
 		ops.clear();
-		const std::string magic = "RISEBATCHOPS1\n";
+		const std::string magic = "RISEBATCHOPS2\n";
 		if( in.compare( 0, magic.size(), magic ) != 0 ) return false;
 		std::size_t pos = magic.size();
 		long long n = 0;
 		if( !GetInt_( in, pos, n ) || n < 0 ) return false;
 		for( long long i = 0; i < n; ++i ) {
 			RISE::CstBatchUndoOp o;
-			long long b = 0, ns = 0;
+			long long b = 0, ns = 0, ci = 0;
 			if( !GetInt_( in, pos, b ) ) return false;
 			o.isInsert = ( b != 0 );
 			if( !GetField_( in, pos, o.chunkText ) || !GetField_( in, pos, o.keyword ) || !GetField_( in, pos, o.namePath ) ) return false;
+			if( !GetInt_( in, pos, ci ) ) return false;
+			o.chunkIndex = static_cast<int>( ci );
 			if( !GetInt_( in, pos, b ) ) return false;
 			o.hasAnchor = ( b != 0 );
 			if( !GetField_( in, pos, o.anchorKeyword ) || !GetField_( in, pos, o.anchorNamePath ) ) return false;
+			if( !GetField_( in, pos, o.entityName ) || !GetField_( in, pos, o.entityKind ) ||
+			    !GetField_( in, pos, o.editRole ) || !GetField_( in, pos, o.postEntityName ) ) return false;
+			if( !GetInt_( in, pos, b ) ) return false;
+			o.occAddressed = ( b != 0 );
+			if( !GetInt_( in, pos, b ) ) return false;
+			o.wholeTransform = ( b != 0 );
 			if( !GetField_( in, pos, o.ownerKeyword ) || !GetField_( in, pos, o.ownerNamePath ) ) return false;
 			if( !GetInt_( in, pos, ns ) || ns < 0 ) return false;
 			for( long long k = 0; k < ns; ++k ) {
@@ -2773,18 +2796,9 @@ namespace
 		return true;
 	}
 
-	// Top-level indices of the chunks with identity (keyword, namePath).
-	std::vector<int> FindChunksByIdentity_( const RISE::Cst::Document& doc, const std::string& keyword, const std::string& namePath )
-	{
-		std::vector<int> out;
-		const int n = RISE::Cst::DocItemCount( doc );
-		for( int i = 0; i < n; ++i ) {
-			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
-			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword && RISE::Cst::ChunkNamePath( it ) == namePath )
-				out.push_back( i );
-		}
-		return out;
-	}
+	// Why an operation could not apply.  FIXABLE = the result would not derive (something now depends on the
+	// batch's change; fixing that dependency lets the step through); otherwise the step cannot apply at all.
+	struct OpRefusal_ { bool fixable = false; std::string why; };
 
 	bool IsTrivia_( const RISE::Cst::Document& doc, int i, std::string* text )
 	{
@@ -2805,37 +2819,44 @@ namespace
 		return item ? RISE::Cst::DocInsertItem( d, i, item ) : d;
 	}
 
-	// UNDO of an insert: remove the chunk and exactly the "\n" its insert put on either side (whether or not a
-	// re-parse has since merged those separators into neighbouring trivia).
-	bool UndoInsert_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, std::string& why )
+	// UNDO of an insert: find the chunk the way base's AgentInsertChunk undo did -- by its EXACT bytes (base
+	// compared the bytes at the recorded index, and refused a chunk edited since) -- choosing, among
+	// byte-identical twins, the one nearest the recorded index (interchangeable by construction); then remove it
+	// with exactly the "\n" its insert put on either side (whether or not a re-parse merged those separators).
+	bool UndoInsert_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, OpRefusal_& ref )
 	{
-		std::vector<int> idx = FindChunksByIdentity_( doc, o.keyword, o.namePath );
-		if( idx.size() > 1 ) {   // e.g. several unnamed timelines: the one with the recorded bytes
-			std::vector<int> exact;
-			for( std::size_t k = 0; k < idx.size(); ++k ) {
-				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, idx[k] ) );
-				if( it && RISE::Cst::SerializeNode( it ) == o.chunkText ) exact.push_back( idx[k] );
-			}
-			idx.swap( exact );
+		int best = -1;
+		long bestDist = 0;
+		bool sameIdentityChanged = false;
+		const int n = RISE::Cst::DocItemCount( doc );
+		for( int i = 0; i < n; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+			if( !it || it->kind != RISE::Cst::NodeKind::Chunk || it->role != o.keyword ) continue;
+			if( RISE::Cst::ChunkNamePath( it ) != o.namePath ) continue;
+			if( RISE::Cst::SerializeNode( it ) != o.chunkText ) { sameIdentityChanged = true; continue; }
+			const long dist = ( o.chunkIndex >= 0 ) ? std::labs( static_cast<long>( i ) - o.chunkIndex ) : 0;
+			if( best < 0 || dist < bestDist ) { best = i; bestDist = dist; }
 		}
-		if( idx.size() != 1 ) {
-			why = "the inserted `" + o.keyword + "` " + ( o.namePath.empty() ? std::string( "(unnamed)" ) : ( "`" + RISE::CstNameFromPath( o.namePath ) + "`" ) ) +
-			      ( idx.empty() ? " no longer exists" : " is ambiguous" );
+		if( best < 0 ) {
+			const std::string what = "the inserted `" + o.keyword + "` " +
+				( o.namePath.empty() ? std::string( "(unnamed)" ) : ( "`" + RISE::CstNameFromPath( o.namePath ) + "`" ) );
+			ref.why = sameIdentityChanged
+				? what + " was changed outside the undo history since it was inserted"
+				: what + " no longer exists";
 			return false;
 		}
-		const int at = idx[0];
-		doc = RISE::Cst::DocRemoveItem( doc, at );
+		doc = RISE::Cst::DocRemoveItem( doc, best );
 		std::string t;
-		if( IsTrivia_( doc, at, &t ) && !t.empty() && t[0] == '\n' )                      // trailing separator
-			doc = ReplaceTrivia_( doc, at, t.substr( 1 ) );
-		if( IsTrivia_( doc, at - 1, &t ) && !t.empty() && t[t.size() - 1] == '\n' )      // leading separator
-			doc = ReplaceTrivia_( doc, at - 1, t.substr( 0, t.size() - 1 ) );
+		if( IsTrivia_( doc, best, &t ) && !t.empty() && t[0] == '\n' )                     // trailing separator
+			doc = ReplaceTrivia_( doc, best, t.substr( 1 ) );
+		if( IsTrivia_( doc, best - 1, &t ) && !t.empty() && t[t.size() - 1] == '\n' )     // leading separator
+			doc = ReplaceTrivia_( doc, best - 1, t.substr( 0, t.size() - 1 ) );
 		return true;
 	}
 
 	// REDO of an insert: [ "\n" ][chunk][ "\n" ] before the first chunk that follows the recorded anchor chunk
 	// (the end when none follows; the first chunk of the document when the insert had no anchor).
-	bool RedoInsert_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, std::string& why )
+	bool RedoInsert_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, OpRefusal_& ref )
 	{
 		const RISE::Cst::Document c = RISE::Cst::ParseToCst( o.chunkText );
 		RISE::Cst::NodeRef chunk;
@@ -2843,12 +2864,16 @@ namespace
 			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( c, RISE::Cst::DocNodeIdAt( c, i ) );
 			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunk = it; break; }
 		}
-		if( !chunk ) { why = "the recorded chunk text no longer parses"; return false; }
+		if( !chunk ) { ref.why = "the recorded chunk text no longer parses"; return false; }
 		const int n = RISE::Cst::DocItemCount( doc );
 		int from = 0;
 		if( o.hasAnchor ) {
-			const std::vector<int> a = FindChunksByIdentity_( doc, o.anchorKeyword, o.anchorNamePath );
-			from = a.empty() ? n : a[0] + 1;   // anchor gone: append at the end
+			from = n;   // anchor gone: append at the end
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+				if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == o.anchorKeyword &&
+				    RISE::Cst::ChunkNamePath( it ) == o.anchorNamePath ) { from = i + 1; break; }
+			}
 		}
 		int at = n;
 		for( int i = from; i < n; ++i ) {
@@ -2865,27 +2890,59 @@ namespace
 		return true;
 	}
 
-	// A param edit's slots, backward (undo: prior values) or forward (redo: post values).
-	bool ApplySlots_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, bool forward, std::string& why )
+	// A param edit's changed slots, backward (undo: prior values) or forward (redo: post values).  The owner is
+	// resolved with the forward write's own calls (DocFindByNameAnyRole + DocTransformOwnerId; the camera
+	// unique fallback under the same gate), by the post-write name on Undo.
+	bool ApplySlots_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, bool forward,
+	                  const std::string& activeCamera, OpRefusal_& ref )
 	{
-		const std::vector<int> idx = FindChunksByIdentity_( doc, o.ownerKeyword, o.ownerNamePath );
-		if( idx.size() != 1 ) {
-			why = "the edited `" + o.ownerKeyword + "` " +
-			      ( o.ownerNamePath.empty() ? std::string( "(unnamed)" ) : ( "`" + RISE::CstNameFromPath( o.ownerNamePath ) + "`" ) ) +
-			      ( idx.empty() ? " no longer exists" : " is ambiguous" );
+		const std::string& name = forward ? o.entityName : o.postEntityName;
+		const bool uniqueFallback = ( o.entityKind == "camera" )
+			? RISE::Cst::DocCameraUniqueFallbackPermitted( doc, name, activeCamera )
+			: ( name.empty() && !o.entityKind.empty() );
+		const RISE::Cst::NodeId target = RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, o.entityKind, uniqueFallback );
+		if( target == 0 ) {
+			ref.why = "the edited " + ( o.entityKind.empty() ? std::string( "entity" ) : ( "`" + o.entityKind + "`" ) ) + " " +
+			          ( name.empty() ? std::string( "(unnamed)" ) : ( "`" + name + "`" ) ) + " no longer resolves";
 			return false;
 		}
-		const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, idx[0] );
+		const RISE::Cst::NodeId id = RISE::Cst::DocTransformOwnerId( doc, target, o.editRole );
+
+		// Base's occurrence-drift guard for an occurrence-addressed edit (SceneEditor::
+		// OccurrenceEditStillAddressable_): the addressed line must still exist and still hold the value this
+		// direction is entitled to overwrite.
+		if( o.occAddressed ) {
+			const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
+			for( std::size_t s = 0; chunk && s < o.slots.size(); ++s ) {
+				const RISE::CstBatchUndoOp::Slot& sl = o.slots[s];
+				if( sl.role != o.editRole ) continue;
+				const bool expectAbsent = forward ? sl.priorAbsent : sl.postAbsent;
+				if( expectAbsent ) continue;
+				const std::string& expect = forward ? sl.priorValue : sl.postValue;
+				const int count = RISE::Cst::ParamOccurrenceCount( chunk, sl.role );
+				if( sl.occ < 0 || sl.occ >= count ||
+				    NormalizeParamValueWs_( RISE::Cst::ParamValueAtOccurrence( chunk, sl.role, sl.occ ) ) != NormalizeParamValueWs_( expect ) ) {
+					ref.why = "`" + sl.role + "[" + std::to_string( sl.occ ) + "]` of `" + name + "` drifted since the edit " +
+					          "(the repeatable parameter's lines moved or changed)";
+					return false;
+				}
+			}
+		}
+
 		const std::size_t n = o.slots.size();
 		for( std::size_t s = 0; s < n; ++s ) {
 			const RISE::CstBatchUndoOp::Slot& sl = o.slots[ forward ? s : n - 1 - s ];
-			const bool absent      = forward ? sl.postAbsent : sl.priorAbsent;
-			const std::string& val = forward ? sl.postValue  : sl.priorValue;
+			const bool fromAbsent = forward ? sl.priorAbsent : sl.postAbsent;
+			const bool toAbsent   = forward ? sl.postAbsent  : sl.priorAbsent;
+			const std::string& from = forward ? sl.priorValue : sl.postValue;
+			const std::string& val  = forward ? sl.postValue  : sl.priorValue;
+			// Only a slot the write CHANGED -- except an object's WHOLE transform, which is re-asserted in full
+			// (see CstBatchUndoOp::wholeTransform).
+			if( !o.wholeTransform && fromAbsent == toAbsent && ( toAbsent || from == val ) ) continue;
 			const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
-			if( !chunk ) { why = "the edited chunk vanished mid-replay"; return false; }
-			if( absent ) {
-				if( forward ) doc = RISE::Cst::DocRemoveParam( doc, id, sl.role );   // the forward write stripped every occurrence
-				else if( RISE::Cst::ParamOccurrenceCount( chunk, sl.role ) > sl.occ )
+			if( !chunk ) { ref.why = "the edited chunk vanished mid-replay"; return false; }
+			if( toAbsent ) {
+				if( RISE::Cst::ParamOccurrenceCount( chunk, sl.role ) > sl.occ )   // occurrence in range
 					doc = RISE::Cst::DocRemoveParamOcc( doc, id, sl.role, sl.occ );
 			} else {
 				doc = RISE::Cst::DocSetOrAddParamValue( doc, id, sl.role, sl.occ, val );
@@ -2894,21 +2951,21 @@ namespace
 		return true;
 	}
 
-	// Build the target document text from the CURRENT one.  False with `why` when an operation cannot apply.
+	// Build the target document text from the CURRENT one.  False with `ref` when an operation cannot apply.
 	bool ApplyBatchOps_( const RISE::Cst::Document& current, const std::string& encoded, bool forward,
-	                     std::string& outText, std::string& why )
+	                     const std::string& activeCamera, RISE::Cst::Document& outDoc, OpRefusal_& ref )
 	{
 		std::vector<RISE::CstBatchUndoOp> ops;
-		if( !DecodeBatchOps_( encoded, ops ) ) { why = "the history record is unreadable"; return false; }
+		if( !DecodeBatchOps_( encoded, ops ) ) { ref.why = "the history record is unreadable"; return false; }
 		RISE::Cst::Document doc = current;
 		const std::size_t n = ops.size();
 		for( std::size_t i = 0; i < n; ++i ) {
 			const RISE::CstBatchUndoOp& o = ops[ forward ? i : n - 1 - i ];
-			const bool ok = o.isInsert ? ( forward ? RedoInsert_( doc, o, why ) : UndoInsert_( doc, o, why ) )
-			                           : ApplySlots_( doc, o, forward, why );
+			const bool ok = o.isInsert ? ( forward ? RedoInsert_( doc, o, ref ) : UndoInsert_( doc, o, ref ) )
+			                           : ApplySlots_( doc, o, forward, activeCamera, ref );
 			if( !ok ) return false;
 		}
-		outText = RISE::Cst::SerializeCst( doc );
+		outDoc = doc;
 		return true;
 	}
 }
@@ -2933,13 +2990,17 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 	// 2026-10-16 (review round 3): an AgentEditBatch carries OPERATIONS, not documents -- build the target from
 	// the CURRENT document by applying them (see ApplyBatchOps_), then realize it with the one derive below.
 	std::string batchText;
+	RISE::Cst::Document batchDoc;
 	if( batch ) {
 		const RISE::Cst::Document* cur = mJob->GetCstDocument();
-		std::string why;
-		if( !cur || !ApplyBatchOps_( *cur, std::string( edit.propertyValue.c_str() ), forward, batchText, why ) ) {
-			NoteHistoryRefusal_( edit, forward, why.empty() ? std::string( "no retained document" ) : why );
+		OpRefusal_ ref;
+		if( !cur || !ApplyBatchOps_( *cur, std::string( edit.propertyValue.c_str() ), forward,
+		                             mJob->GetActiveCameraName(), batchDoc, ref ) ) {
+			NoteHistoryRefusal_( edit, forward, ref.why.empty() ? std::string( "no retained document" ) : ref.why,
+			                     /*fixable*/ false );
 			return false;   // the caller restores the record (the single-record refusal rule) -- the user is told
 		}
+		batchText = RISE::Cst::SerializeCst( batchDoc );   // only for the IJob text fallback below
 	}
 	const String text = batch ? String( batchText.c_str() )
 	                          : ( forward ? edit.prevPropertyValue : edit.propertyValue );
@@ -2949,7 +3010,13 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 	// and op keeps the unconditional restore.
 	const bool restoreRasterizer = !( batch && forward && edit.agentChunkWasRasterizer );
 	char diagBuf[512]; diagBuf[0] = '\0';
-	const int r = mJob->ApplyCstReplaceDocumentText( text.c_str(), restoreRasterizer,
+	// An agent batch installs its edited Document AS IS (no re-parse): older history records' exact-index
+	// inverses depend on the top-level item structure a re-parse would merge.
+	IJobPriv* const jp = batch ? dynamic_cast<IJobPriv*>( mJob ) : nullptr;
+	const int r = jp
+		? jp->ApplyCstReplaceDocument( batchDoc, restoreRasterizer, diagBuf, sizeof( diagBuf ),
+		                               forward ? "agent_edit_batch (redo)" : "agent_edit_batch (undo)" )
+		: mJob->ApplyCstReplaceDocumentText( text.c_str(), restoreRasterizer,
 	                                                 diagBuf, sizeof( diagBuf ),
 	                                                 batch ? ( forward ? "agent_edit_batch (redo)"
 	                                                                   : "agent_edit_batch (undo)" )
@@ -2962,7 +3029,7 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
 	if( r == 0 && batch )
 		NoteHistoryRefusal_( edit, forward, std::string( "the result would not derive" ) +
-		                     ( diagBuf[0] ? std::string( ": " ) + diagBuf : std::string() ) );
+		                     ( diagBuf[0] ? std::string( ": " ) + diagBuf : std::string() ), /*fixable*/ true );
 	return r >= 1;
 }
 
@@ -3761,12 +3828,22 @@ bool SceneEditor::Undo()
 
 // Review round 3: a refused Undo/Redo of an agent batch keeps the record where it was (the same coherent rule
 // every single record's refusal follows) and TELLS the user why -- ConsumeHistoryNotice, surfaced by the GUI.
-void SceneEditor::NoteHistoryRefusal_( const SceneEdit& edit, bool forward, const std::string& why )
+void SceneEditor::NoteHistoryRefusal_( const SceneEdit& edit, bool forward, const std::string& why, bool fixable )
 {
-	mHistoryNotice = std::string( forward ? "Redo" : "Undo" ) + " of the agent batch edit (" +
-		std::string( edit.objectName.c_str() ) + ") was refused and nothing changed: " + why +
-		".  Edit or remove whatever now depends on it, then try again; the step stays in the history.";
+	const std::string verb = forward ? "Redo" : "Undo";
+	mHistoryNotice = verb + " of the agent batch edit (" + std::string( edit.objectName.c_str() ) +
+		") was refused and nothing changed: " + why + ".  " +
+		( fixable
+			? std::string( "Something in the scene now depends on what this step would change -- fix or remove that "
+			               "dependency, then " ) + verb + " again."
+			: std::string( "This step can no longer be " ) + ( forward ? "redone" : "undone" ) +
+			  " automatically -- make the change by hand if you still want it." );
 	GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: %s", mHistoryNotice.c_str() );
+}
+
+void SceneEditor::ClearHistoryNotice()
+{
+	mHistoryNotice.clear();
 }
 
 std::string SceneEditor::ConsumeHistoryNotice()
@@ -4220,6 +4297,8 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// R2 (2026-08-10, Undo direction): ONE record, whole composite -- restore the byte-exact pre-call
 		// document text.  See the AgentReplaceGeometry op doc + RouteAgentDocumentSwap_.
 		// doc-88 S20: AgentDuplicateNode rides the SAME arm -- identical payload shape, identical inverse.
+		// 2026-10-16: AgentEditBatch rides it too, but its payload is an OPERATION list, applied to the CURRENT
+		// document (RouteAgentDocumentSwap_ -> ApplyBatchOps_), not a document text.
 		if( !mJob ) return false;
 		bool diagnosed = false;
 		if( !RouteAgentDocumentSwap_( edit, /*forward*/ false, &diagnosed ) ) return false;
@@ -4716,6 +4795,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 		// Job::ApplyCstReplaceDocumentText before the history push -- see PushAgentReplaceGeometryEdit); this
 		// arm is exercised by Redo only.
 		// doc-88 S20: AgentDuplicateNode rides the SAME arm -- see the Undo twin above.
+		// 2026-10-16: AgentEditBatch too -- its operations re-applied FORWARD to the current document.
 		if( !mJob ) return false;
 		bool diagnosed = false;
 		if( !RouteAgentDocumentSwap_( edit, /*forward*/ true, &diagnosed ) ) return false;

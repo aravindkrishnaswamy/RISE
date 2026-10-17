@@ -11072,6 +11072,7 @@ namespace RISE
 				pe.edit.role       = patch.param;
 				pe.edit.value      = patch.value;
 				pe.edit.occ        = patch.hasOccurrence ? patch.occurrence : 0;
+				pe.edit.occAddressed = patch.hasOccurrence;   // the undo record's occurrence-drift guard keys on it
 				pe.patch           = patch;
 				// Live: the controller's container gate (a surface binding on
 				// a geometry-less object) is judged in the batch against the
@@ -12812,7 +12813,8 @@ namespace RISE
 							if( crs[k].applied || !crs[k].wouldNotDerive ) continue;
 							if( LaterLandedPatchWritesSameSlot_( pend, landedFlags, k ) ) continue;
 							const SceneEditController::AgentCommitResult again = liveSingle( pend[k] );
-							if( again.rawCode != 0 ) { crs[k] = again; landedFlags[k] = 1; }
+							// Landed = in the document (a diagnosed retry counts too; review round 4).
+							if( again.applied || again.status == String( "diagnosed" ) ) { crs[k] = again; landedFlags[k] = 1; }
 						}
 						const RISE::Cst::CstHeadVersion h = ReadHeadVersion();
 						for( std::size_t k = 0; k < crs.size(); ++k ) crs[k].headVersion = h;
