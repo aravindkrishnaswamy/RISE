@@ -159,6 +159,14 @@ namespace RISE
 		//! model sees.  `reason` is a short machine tag; the byte fields mean:
 		//!  - "tool_image_elision" / "user_image_elision": entryIndex = the
 		//!    rewritten entry; before/after = its rawJson size around the rewrite.
+		//!  - "tool_result_supersession" (a later read of the same view;
+		//!    doc 71 sec 6b, doc 91 L3a), "element_finished_retirement" (a
+		//!    successful finish_element retired the element's build_element /
+		//!    insert_chunks results; doc 91 L2) and "compose_skill_retirement"
+		//!    (the finish_element that reported the build plan's compose phase
+		//!    retired the earlier live read_skill results; doc 91 L3b): same
+		//!    byte meaning as the image elisions --
+		//!    one record per rewritten entry.
 		//!  - "context_compaction": entryIndex -1; before/after = the token
 		//!    ESTIMATE around the whole-span drop (not bytes).
 		//!  - "scenario_intervention": entryIndex -1; before/after = the

@@ -635,6 +635,79 @@ namespace RISE
 				return result;
 			}
 
+			//! Doc 91 slice L1 (2026-10-17): a CLEAN chunk success -- it
+			//! landed (applied, status "applied"), has nothing to say (no
+			//! `issues`), and its rawCode and message are EXACTLY the shared
+			//! canonical pair (kCstChunkInsertedRawCode /
+			//! kCstChunkInsertedMessage, IJobPriv.h) that every insert fold
+			//! writes.  Only then is everything else ChunkResultJson emits
+			//! per-chunk BOILERPLATE.  Review round 1 P1: a success with
+			//! EMPTY `issues` can still carry real content in its message --
+			//! the auto-parent notice ("This chunk was NOT parented to the
+			//! element's root node: ..."), the CSG-operand detach warning, the
+			//! S1 / G2 folds, or a batch's rawCode-3 "; note: ... ANOTHER
+			//! element" -- so a message that differs from the canonical one
+			//! in ANY way keeps the full entry.  Measured on two live
+			//! sessions (doc 91 sec 1): ~85% of each 18-28 KB build_element
+			//! report was this, re-sent on every later turn.  A "diagnosed",
+			//! "staged", "conflict" or "rejected" chunk is NEVER clean, so the
+			//! shapes the GUI drivers' retry gate and head-version guard read
+			//! (ChatPanel.cpp / ChatViewModel.swift: a WHOLLY refused batch)
+			//! keep every field.
+			bool IsCleanChunkSuccess( const AgentChunkResult& cr )
+			{
+				return cr.applied && cr.status == "applied" && cr.issues.empty() &&
+				       cr.rawCode == kCstChunkInsertedRawCode &&
+				       cr.message == kCstChunkInsertedMessage;
+			}
+
+			//! Doc 91 slice L1: `chunkResults` for four clean-room verbs
+			//! (build_element, light_scene, populate_scene, environment_scene;
+			//! frame_scene keeps every entry, see its handler).  Each of them
+			//! already NAMES every chunk that landed (`landed` / `created`, with
+			//! the kind in `landedKinds` / `created[].kind`), so a clean,
+			//! NAMED success is reported there once and omitted here; what
+			//! remains is the per-chunk detail that carries information -- a
+			//! rejected / diagnosed / issue-bearing chunk, and an UNNAMED
+			//! chunk (environment_scene's global_medium), whose kind is
+			//! recorded nowhere else.  Empty when everything landed cleanly.
+			JsonValue NotableChunkResultsJson( const std::vector<AgentChunkResult>& results,
+			                                   const AgentSession& s )
+			{
+				JsonValue arr = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < results.size(); ++i ) {
+					const AgentChunkResult& cr = results[i];
+					if( IsCleanChunkSuccess( cr ) && !cr.name.empty() ) continue;
+					// S1 fix-round's `element` attribution rides along -- see
+					// ChunkResultJson's doc.
+					arr.push_back( ChunkResultJson( cr, s.ChunkElement( cr.name ) ) );
+				}
+				return arr;
+			}
+
+			//! Doc 91 slice L1: one `results` element of the insert_chunks
+			//! batch.  The array stays INDEX-ALIGNED with `chunks` (the
+			//! documented contract, read by ToolOutcomeLine and the GUI
+			//! retry gate), so a clean success is SLIMMED rather than
+			//! omitted: it keeps its identity (name, kind, element), its
+			//! verdict (applied, status) and its headVersion -- the head a
+			//! model passes as the NEXT call's baseHeadVersion -- and drops
+			//! only rawCode / retriable / message, which are implied by
+			//! status "applied".  Any other outcome is the full
+			//! ChunkResultJson.
+			JsonValue BatchChunkResultJson( const AgentChunkResult& cr, const std::string& element )
+			{
+				if( !IsCleanChunkSuccess( cr ) ) return ChunkResultJson( cr, element );
+				JsonValue result = JsonValue::MakeObject();
+				result.set( "applied",     JsonValue::MakeBool( true ) );
+				result.set( "status",      JsonValue::MakeString( cr.status ) );
+				result.set( "headVersion", HeadVersionJson( cr.headVersion ) );
+				result.set( "name",        JsonValue::MakeString( cr.name ) );
+				result.set( "kind",        JsonValue::MakeString( cr.kind ) );
+				if( !element.empty() ) result.set( "element", JsonValue::MakeString( element ) );
+				return result;
+			}
+
 			//! Model-B F2 slice S2b: serialize an AgentRenderResult into the
 			//! SAME {ok,width,height,meanR,meanG,meanB,integrator,
 			//! previewWidth,previewHeight,cameraOverridden,message,
@@ -1198,6 +1271,16 @@ namespace RISE
 				}
 				return 1;
 			}
+		}
+
+		bool AgentRpcIsCleanChunkSuccess( const AgentChunkResult& cr )
+		{
+			return IsCleanChunkSuccess( cr );
+		}
+
+		std::string AgentRpcBatchChunkResultJsonText( const AgentChunkResult& cr, const std::string& element )
+		{
+			return JsonSerialize( BatchChunkResultJson( cr, element ) );
 		}
 
 		AgentRpcDispatcher::AgentRpcDispatcher( std::unique_ptr<AgentSession> session,
@@ -2230,9 +2313,12 @@ namespace RISE
 				//   the BATCH AS A WHOLE (checked against the FIRST element
 				//   only -- see AgentSession::InsertChunks's doc).  `applied` is
 				//   the count of `results` entries with applied==true; `total`
-				//   is `chunks.size()`.  Each `results` element is the EXACT
+				//   is `chunks.size()`.  Each `results` element is the
 				//   same shape ChunkResultJson gives insert_chunk (status, name,
-				//   kind, issues warnings/causes per chunk).  REQUIRES a head:
+				//   kind, issues warnings/causes per chunk) -- EXCEPT that a
+				//   clean success is slimmed to {applied,status,headVersion,
+				//   name,kind,element?} (doc 91 L1; BatchChunkResultJson's
+				//   doc).  REQUIRES a head:
 				//   no session -> error.
 				//--------------------------------------------------------------
 				if( m == "insert_chunks" ) {
@@ -2288,8 +2374,9 @@ namespace RISE
 						// S1 fix-round (2026-08-11): per ELEMENT of the batch --
 						// a batch spanning a finish_element cannot happen (one
 						// call, one window), but asking per chunk costs nothing
-						// and cannot go stale.
-						resultsArr.push_back( ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
+						// and cannot go stale.  Doc 91 L1: a clean success is
+						// slimmed (see BatchChunkResultJson's doc).
+						resultsArr.push_back( BatchChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 					}
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "applied", JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
@@ -2736,6 +2823,9 @@ namespace RISE
 				//       chunkResults:[...], retryRan, retrySucceeded,
 				//       sdfPartCount, bbox?:{min:[3],max:[3],height},
 				//       capabilityRefusal?, message}
+				//   Doc 91 L1: `chunkResults` carries only the chunks with
+				//   something to say (NotableChunkResultsJson); a clean success
+				//   is named in `landed` and nowhere else.
 				//   S2 (2026-08-11).  MUTATING -- it inserts the chunks the
 				//   builder returned through the ordinary InsertChunks path, so
 				//   it is NOT on IsReadSafeVerb.  It is also deliberately NOT on
@@ -2795,6 +2885,19 @@ namespace RISE
 						for( std::size_t i = 0; i < br.landed.size(); ++i )
 							landedArr.push_back( JsonValue::MakeString( br.landed[i] ) );
 						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 1: the kinds, index-parallel to
+						// `landed` -- a clean chunk has no chunkResults entry any
+						// more, and the builder (not the model) chose the kind.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( br.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
+						// Doc 91 review round 4: the attempt (1 or 2) that landed
+						// each `landed` entry, index-parallel.
+						JsonValue landedAttemptsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.landedAttempts.size(); ++i )
+							landedAttemptsArr.push_back( JsonValue::MakeNumber( static_cast<double>( br.landedAttempts[i] ) ) );
+						result.set( "landedAttempts", landedAttemptsArr );
 						JsonValue rejArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < br.rejected.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();
@@ -2803,17 +2906,14 @@ namespace RISE
 							if( !br.rejected[i].kind.empty() )
 								o.set( "kind", JsonValue::MakeString( br.rejected[i].kind ) );
 							o.set( "reason", JsonValue::MakeString( br.rejected[i].reason ) );
+							// Doc 91 review round 4: which attempt (1 or 2).
+							o.set( "attempt", JsonValue::MakeNumber( static_cast<double>( br.rejected[i].attempt ) ) );
 							rejArr.push_back( o );
 						}
 						result.set( "rejected", rejArr );
-						JsonValue crArr = JsonValue::MakeArray();
-						for( std::size_t i = 0; i < br.chunkResults.size(); ++i ) {
-							// S1 fix-round's `element` attribution rides along here
-							// too -- see ChunkResultJson's doc.
-							crArr.push_back( ChunkResultJson( br.chunkResults[i],
-								s->ChunkElement( br.chunkResults[i].name ) ) );
-						}
-						result.set( "chunkResults", crArr );
+						// Doc 91 L1: only the chunks with something to say --
+						// every clean success is already named in `landed`.
+						result.set( "chunkResults", NotableChunkResultsJson( br.chunkResults, *s ) );
 						result.set( "retryRan",       JsonValue::MakeBool( br.retryRan ) );
 						result.set( "retrySucceeded", JsonValue::MakeBool( br.retrySucceeded ) );
 						result.set( "sdfPartCount",
@@ -3007,6 +3107,13 @@ namespace RISE
 						for( std::size_t i = 0; i < lr.landed.size(); ++i )
 							landedArr.push_back( JsonValue::MakeString( lr.landed[i] ) );
 						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 3: kinds, index-parallel to
+						// `landed` -- this pass chose them, and a clean chunk
+						// has no chunkResults entry.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( lr.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
 						JsonValue rejArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < lr.rejected.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();
@@ -3018,12 +3125,8 @@ namespace RISE
 							rejArr.push_back( o );
 						}
 						result.set( "rejected", rejArr );
-						JsonValue crArr = JsonValue::MakeArray();
-						for( std::size_t i = 0; i < lr.chunkResults.size(); ++i ) {
-							crArr.push_back( ChunkResultJson( lr.chunkResults[i],
-								s->ChunkElement( lr.chunkResults[i].name ) ) );
-						}
-						result.set( "chunkResults", crArr );
+						// Doc 91 L1: clean successes are named in `landed`.
+						result.set( "chunkResults", NotableChunkResultsJson( lr.chunkResults, *s ) );
 						result.set( "retryRan",       JsonValue::MakeBool( lr.retryRan ) );
 						result.set( "retrySucceeded", JsonValue::MakeBool( lr.retrySucceeded ) );
 						result.set( "soloableLights",
@@ -3137,6 +3240,9 @@ namespace RISE
 						for( std::size_t i = 0; i < pr.created.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();
 							o.set( "name", JsonValue::MakeString( pr.created[i].name ) );
+							// Doc 91 L1 review round 3: the landed chunk's kind.
+							if( !pr.created[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( pr.created[i].kind ) );
 							// OMITTED rather than sent empty: a repeat always
 							// names both, but a chunk result whose identity
 							// echo came back without them must not report a
@@ -3163,12 +3269,8 @@ namespace RISE
 							rejArr.push_back( o );
 						}
 						result.set( "rejected", rejArr );
-						JsonValue crArr = JsonValue::MakeArray();
-						for( std::size_t i = 0; i < pr.chunkResults.size(); ++i ) {
-							crArr.push_back( ChunkResultJson( pr.chunkResults[i],
-								s->ChunkElement( pr.chunkResults[i].name ) ) );
-						}
-						result.set( "chunkResults", crArr );
+						// Doc 91 L1: clean successes are named in `created`.
+						result.set( "chunkResults", NotableChunkResultsJson( pr.chunkResults, *s ) );
 						result.set( "retryRan",       JsonValue::MakeBool( pr.retryRan ) );
 						result.set( "retrySucceeded", JsonValue::MakeBool( pr.retrySucceeded ) );
 						result.set( "objectsBefore",
@@ -3233,6 +3335,13 @@ namespace RISE
 						for( std::size_t i = 0; i < er.landed.size(); ++i )
 							landedArr.push_back( JsonValue::MakeString( er.landed[i] ) );
 						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 3: kinds, index-parallel to
+						// `landed` -- this pass chose them, and a clean chunk
+						// has no chunkResults entry.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( er.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
 						JsonValue rejArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < er.rejected.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();
@@ -3244,12 +3353,9 @@ namespace RISE
 							rejArr.push_back( o );
 						}
 						result.set( "rejected", rejArr );
-						JsonValue crArr = JsonValue::MakeArray();
-						for( std::size_t i = 0; i < er.chunkResults.size(); ++i ) {
-							crArr.push_back( ChunkResultJson( er.chunkResults[i],
-								s->ChunkElement( er.chunkResults[i].name ) ) );
-						}
-						result.set( "chunkResults", crArr );
+						// Doc 91 L1: clean NAMED successes are named in `landed`;
+						// an unnamed one (global_medium) keeps its full entry.
+						result.set( "chunkResults", NotableChunkResultsJson( er.chunkResults, *s ) );
 						// The TWO parameter edits the dome binding is made of,
 						// in the same per-patch shape every other patching verb
 						// emits -- an empty array when no binding was made, in
@@ -3383,11 +3489,16 @@ namespace RISE
 						for( std::size_t i = 0; i < fr.patchResults.size(); ++i )
 							prArr.push_back( PatchResultJson( fr.patchResults[i] ) );
 						result.set( "patchResults", prArr );
+						// Doc 91 L1 review round 3: frame_scene keeps EVERY entry.
+						// It has at most two (the new camera's insert and the old
+						// camera's removal), and when the removal fails the new
+						// camera is not necessarily the one `cameraNameAfter`
+						// names -- so compacting it would make "named elsewhere"
+						// false exactly when it matters.
 						JsonValue crArr = JsonValue::MakeArray();
-						for( std::size_t i = 0; i < fr.chunkResults.size(); ++i ) {
+						for( std::size_t i = 0; i < fr.chunkResults.size(); ++i )
 							crArr.push_back( ChunkResultJson( fr.chunkResults[i],
 								s->ChunkElement( fr.chunkResults[i].name ) ) );
-						}
 						result.set( "chunkResults", crArr );
 						result.set( "retryRan",       JsonValue::MakeBool( fr.retryRan ) );
 						result.set( "retrySucceeded", JsonValue::MakeBool( fr.retrySucceeded ) );

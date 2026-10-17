@@ -11371,7 +11371,7 @@ namespace RISE
 						r.applied = true;
 						r.status  = "applied";
 						r.message = isInsert
-							? "chunk inserted via a full re-derive (Scene + managers were replaced)"
+							? std::string( kCstChunkInsertedMessage )
 							: "chunk removed via a full re-derive (Scene + managers were replaced)";
 						break;
 					case 3:
@@ -24419,6 +24419,7 @@ namespace RISE
 					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						out.landed.push_back( results[i].name );
+						out.landedKinds.push_back( results[i].kind );
 						out.sdfPartCount += CountSdfPartLines_( submit[i] );
 						landedAny = true;
 					}
@@ -24438,7 +24439,16 @@ namespace RISE
 				return landedAny;
 			};
 
+			// Doc 91 review round 4: stamp every rejection and landing with
+			// the attempt that produced it -- a FACT recorded here, so no
+			// reader has to infer order from name membership (one answer can
+			// both land X and have a second X refused as a duplicate).
+			auto stampAttempt = [&]( std::size_t rejectedFrom, int attempt ) {
+				for( std::size_t k = rejectedFrom; k < out.rejected.size(); ++k ) out.rejected[k].attempt = attempt;
+				while( out.landedAttempts.size() < out.landed.size() ) out.landedAttempts.push_back( attempt );
+			};
 			runAttempt( basePrompt );
+			stampAttempt( 0, 1 );
 
 			// THE ONE REPAIR RETRY.  It fires when the first attempt rejected
 			// ANYTHING -- an unbalanced chunk, a prefix violation, an insert
@@ -24457,8 +24467,8 @@ namespace RISE
 				providerFailure.clear();
 				rejectionLines.clear();
 				runAttempt( ComposeBuilderPrompt_( element, height, useNotes, rejectionText ) );
+				stampAttempt( rejectedBefore, 2 );
 				out.retrySucceeded = ( landedNames.size() > landedBefore );
-				(void)rejectedBefore;
 			}
 
 			// A PURE PROVIDER FAILURE (nothing landed AND nothing was rejected,
@@ -24489,15 +24499,14 @@ namespace RISE
 			// characterization of the element, no advice about what to do next,
 			// no score.
 			//------------------------------------------------------------------
+			// Doc 91 L1 (2026-10-17): the landed NAMES ride once, in
+			// `landed`; the message states the count rather than repeating
+			// the list (on a 20-chunk element the repeat was most of the
+			// message, re-sent on every later turn of the session).
 			std::string m = "build_element ran one builder completion for \"" + element + "\" on " +
 				mTextCompleter.providerName + "/" + mTextCompleter.modelId + ". Chunks inserted: ";
 			if( out.landed.empty() ) m += "none";
-			else {
-				for( std::size_t i = 0; i < out.landed.size(); ++i ) {
-					if( i ) m += ", ";
-					m += out.landed[i];
-				}
-			}
+			else m += std::to_string( out.landed.size() ) + " (named in `landed`)";
 			m += ".";
 			if( !out.rejected.empty() ) {
 				m += " Not inserted: ";
@@ -33199,6 +33208,7 @@ namespace RISE
 						landedNames.push_back( results[i].name );
 						landedKinds.push_back( results[i].kind );
 						out.landed.push_back( results[i].name );
+						out.landedKinds.push_back( results[i].kind );
 						landedAny = true;
 					}
 					else {
@@ -34595,6 +34605,7 @@ namespace RISE
 						landedNames.push_back( results[i].name );
 						AgentPopulateSceneCreation c;
 						c.name = results[i].name;
+						c.kind = results[i].kind;
 						if( i < submitInfo.size() ) {
 							c.geometry = submitInfo[i].geometry;
 							c.source   = submitInfo[i].source;
@@ -35399,6 +35410,7 @@ namespace RISE
 						landedNames.push_back( results[i].name );
 						landedKinds.push_back( results[i].kind );
 						out.landed.push_back( results[i].name );
+						out.landedKinds.push_back( results[i].kind );
 						landedAny = true;
 					}
 					else {

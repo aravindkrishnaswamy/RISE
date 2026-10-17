@@ -157,6 +157,16 @@ namespace RISE
 	//! must fall back to committing the elements one at a time through the single primitives.
 	const int kCstEditBatchNeedsSequential = -3;
 
+	//! The ONE wording (and raw code) of a chunk insert that landed cleanly through a full re-derive -- written by
+	//! the headless fold (AgentSession.cpp FoldChunkCode) and every controller fold (SceneEditController.cpp), and
+	//! read by the agent wire's clean-success classifier (AgentRpc.cpp IsCleanChunkSuccess, docs/agentic-redesign/
+	//! 91 slice L1).  A result whose message differs from this in ANY way -- an appended notice (auto-parent,
+	//! CSG-operand detach, the S1 / G2 folds) or a batch's "; note: ... ANOTHER element" -- is NOT clean and keeps
+	//! its full per-chunk detail on the wire.  Writer and classifier share this constant so they cannot drift.
+	inline constexpr char kCstChunkInsertedMessage[] =
+		"chunk inserted via a full re-derive (Scene + managers were replaced)";
+	const int kCstChunkInsertedRawCode = 2;
+
 	//! The object-transform params (they mask one another; see Job::PlanCstParamEdits_'s strip lists).
 	inline bool CstIsObjectTransformRole( const std::string& r )
 	{

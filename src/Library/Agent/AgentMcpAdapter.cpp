@@ -764,9 +764,12 @@ namespace RISE
 						"`total` is chunks.size(), `applied` is how many of `results` have "
 						"applied=true (a status=\"diagnosed\" element is ALSO in the document -- the "
 						"batch is realized by ONE re-derive, whose diagnostics mark the element they "
-						"name, or every landed element when they name none; do not resubmit it), and each `results[i]` is the EXACT same shape insert_chunk "
+						"name, or every landed element when they name none; do not resubmit it), and each `results[i]` is the shape insert_chunk "
 						"returns for `chunks[i]` -- {applied,rawCode,status,retriable,headVersion,"
-						"message,name,kind,issues?} -- including insert_chunk's `issues` reasons "
+						"message,name,kind,issues?}, except that a CLEAN success (status applied, no "
+						"issues, nothing to report beyond the standard insert) carries only "
+						"{applied,status,headVersion,name,kind,element?}; any element with something to report "
+						"keeps every field -- including insert_chunk's `issues` reasons "
 						"(\"unresolved_reference\", \"unknown_param\", \"numeric_in_reference_slot\", "
 						"\"unknown_chunk_type\") and its forward-reference-warning-on-success "
 						"behaviour. Check every element's own status; do not assume the whole batch "
@@ -1115,7 +1118,11 @@ namespace RISE
 						"plain statement, nothing else changes, and authoring by hand is not blocked. "
 						"Returns {ok,element,provider,model,chunksExtracted,landed,"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
-						"sdfPartCount,bbox:{min,max,height},message}." );
+						"sdfPartCount,bbox:{min,max,height},message}; landed names every chunk that "
+						"went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the "
+						"repair retry -- that landed it; each rejected entry carries its attempt too), and "
+						"chunkResults details only the "
+						"chunks that did not insert cleanly or carry a notice." );
 					tools.push_back( MakeTool( "build_element", desc, ObjectProp( "", props, required ) ) );
 				}
 				{
@@ -1266,7 +1273,7 @@ namespace RISE
 						"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,"
 						"areaLights,zeroAreaLights,skyLights,otherLights,"
 						"sources:[string],"
-						"message}." );
+						"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds." );
 					tools.push_back( MakeTool( "light_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1332,7 +1339,7 @@ namespace RISE
 						"ok:false saying so without calling the provider. Returns {ok,provider,model,"
 						"chunksExtracted,created:[{name,geometry,material}],"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
-						"objectsBefore,objectsAfter,message}." );
+						"objectsBefore,objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind." );
 					tools.push_back( MakeTool( "populate_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1407,7 +1414,7 @@ namespace RISE
 						"completions,painters,media,boundPainter,bindingApplied,bindingReason,"
 						"rasterizer,radianceMapBefore,radianceMapAfter,globalMediumBefore,"
 						"globalMediumAfter,toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},"
-						"toneAfter:{...},message}." );
+						"toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds." );
 					tools.push_back( MakeTool( "environment_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
