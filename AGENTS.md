@@ -21,6 +21,8 @@ Navigation aid for LLM-powered contributors. Use [README.txt](README.txt) for hi
 - Iterative PT integrator: [src/Library/Shaders/PathTracingIntegrator.h](src/Library/Shaders/PathTracingIntegrator.h)
 - Main CLI entry point: [src/RISE/commandconsole.cpp](src/RISE/commandconsole.cpp)
 
+Fire/smoke simulation work: read [docs/FIRE_SMOKE_STATUS.md](docs/FIRE_SMOKE_STATUS.md) first. It is the current state, the open problems and the operating rules; the per-revision `FIRE_SMOKE_*_R2xx.md` pages are history.
+
 Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scenes/Tests`, `tests`, and `build/make/rise`. `src/DRISE`, `src/PRISE`, `src/3DSMax`, and `src/RISE/risempi.cpp` are legacy sidecars.
 
 ## Core Mental Model
