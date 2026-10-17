@@ -1883,9 +1883,10 @@ namespace
 
 	const RISECBOR64::Bytes& ProductionBurnerPolicyBytes()
 	{
-		static const std::string preimage="rise.fire.production.burner.v3:"
+		static const std::string preimage="rise.fire.production.burner.v4:"
 			"wall-bed;prescribed-shared-fct-inlet;chemistry-at-Q0;no-volumetric-fuel;"
-			"accepted-represented-flux-ledger;canonical-source-temperature;segment-anchored-physical-enthalpy";
+			"accepted-represented-flux-ledger;canonical-source-temperature;segment-anchored-physical-enthalpy;"
+			"parcel-cft;seeded-one-cell-warm-edge-v1";
 		static const RISECBOR64::Bytes bytes(preimage.begin(),preimage.end());
 		return bytes;
 	}
@@ -2675,10 +2676,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		if(!pilotEstablished&&
 			(candidate.constituent[MethaneCO2]+candidate.constituent[MethaneH2O])/
 				gasDensity<productWitness)return true;
-		double adiabaticTemperatureK=0.0;
-		if(!TrialAdiabaticTemperatureK(candidate,fuel,fuel,adiabaticTemperatureK,error))
-			return false;
-		eligible=adiabaticTemperatureK>=transport.CriticalFlameTemperatureK();
+		if(!StoichiometricParcelPassesCFT(candidate,fuel,fuel,
+			transport.CriticalFlameTemperatureK(),eligible,error))return false;
 		return true;
 	}
 
@@ -5232,7 +5231,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			values.structuredError="r246_engineering_probe_scope_conflict";return values;}
 		if(persistence.r245ObservationFixture&&!persistence.burnerLauncherFixture){
 			values.structuredError="r245_observer_fixture_scope_conflict";return values;}
-		if(persistence.r245AcceptedBudget&&(!persistence.r244LateralDouble||persistence.resume||
+		if(persistence.r245AcceptedBudget&&((!persistence.r244LateralDouble&&resolutionTier!=8.0)||persistence.resume||
 			!persistence.portedProductionTransport||!persistence.productionMetal||
 			persistence.productionOnsetDiagnosticDirectory.empty()||persistence.temporalSnapshotDirectory.empty()||
 			persistence.temporalSnapshotCadenceS!=0.0625||targetTimeS<=0||
@@ -7219,11 +7218,13 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 								}
 								if(persistence.r245ObservationFixture&&!persistence.burnerLauncherFixture){
 			values.structuredError="r245_observer_fixture_scope_conflict";return values;}
+		// Ordinary tier 8 uses the same exact ledger without lateral-study frame
+		// capsules or even-grid central columns.
 		if(persistence.r245AcceptedBudget&&
 									(!FireProductionOwnerConvergenceProbe::MatchesAcceptedEvent(projectedHeunRequest,
 										simulationTimeS,trialStep,error)||
 									!PrepareR245Budget(projectedHeunRequest,projectedHeunDiagnostics,acceptedSteps+1u,
-										sourcePattern,simulationTimeS+trialStep>=nextTemporalSnapshotS,temporalSnapshotIndex,pendingBudget,error))){
+										sourcePattern,persistence.r244LateralDouble&&simulationTimeS+trialStep>=nextTemporalSnapshotS,temporalSnapshotIndex,pendingBudget,error))){
 									mandatoryEvidenceFailure=true;advancedOK=false;lastAdvanceError=error;break;}
 								acceptedBeginningStates=std::move(packetBeginning);
 								// Recompute the pilot ledger at the source producer's actual
@@ -7895,6 +7896,19 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			const double expectedPuffing=1.5/std::sqrt(CapstonePoolDiameterM);
 			values.puffingRelativeError=expectedPuffing>0.0?
 				std::fabs(values.puffingFrequencyHz-expectedPuffing)/expectedPuffing:0.0;
+			// The existing plane integral covers every accepted source packet in the
+			// statistics window. Export it directly, without sampling VDB frames.
+			if(persistence.r245AcceptedBudget&&centerlineStatisticsDurationS>0.0){
+				std::ofstream profile(persistence.productionOnsetDiagnosticDirectory/"heat_release_height.csv");
+				profile<<std::setprecision(17)<<"z,lower_m,upper_m,center_m,statistics_duration_s,integrated_heat_J,mean_heat_W\n";
+				for(std::size_t z=0;z<shape.nz;++z)
+					profile<<z<<','<<z*shape.cellWidthM<<','<<(z+1)*shape.cellWidthM<<','
+						<<(z+0.5)*shape.cellWidthM<<','<<centerlineStatisticsDurationS<<','
+						<<planeHeatReleaseIntegral[z]<<','<<planeHeatReleaseIntegral[z]/centerlineStatisticsDurationS<<'\n';
+				if(!ClosePublishedStream(profile)){
+					values.succeeded=false;values.structuredError="heat_release_height_write_failed";return values;
+				}
+			}
 			double peakMeanPlaneHeatReleaseW=0.0;
 			for(const double integral:planeHeatReleaseIntegral)peakMeanPlaneHeatReleaseW=
 				std::max(peakMeanPlaneHeatReleaseW,centerlineStatisticsDurationS>0.0?
@@ -11529,7 +11543,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		(void)resolutionTier;(void)frameCadenceS;(void)outputDirectory;(void)r244LateralDouble;(void)r245AcceptedBudget;(void)r246TopDouble;return 90;
 #else
 		if(!ProductionTemporalCapstoneTierSupported(resolutionTier)||frameCadenceS!=0.0625||
-			(r245AcceptedBudget&&!r244LateralDouble)||
+			(r245AcceptedBudget&&!r244LateralDouble&&resolutionTier!=8.0)||
 			(r246TopDouble&&(!r244LateralDouble||!r245AcceptedBudget))||
 			(r244LateralDouble&&resolutionTier!=6.0)||
 			!std::isfinite(frameCadenceS)||
@@ -23403,7 +23417,7 @@ int main(int argc,char** argv)
 		double tier=0.0,cadence=0.0;
 		if(!ParsePositiveDoubleArgument(argv[2],tier)||
 			!ParsePositiveDoubleArgument(argv[3],cadence))return 91;
-		return RunProductionTemporalCapstoneChild(tier,cadence,argv[4]);
+		return RunProductionTemporalCapstoneChild(tier,cadence,argv[4],false,tier==8.0);
 	}
 #if defined(RISE_ENABLE_OPENVDB)
 	if(argc==2&&std::strcmp(argv[1],"--fire-r224-window-publication-gate")==0)

@@ -1445,6 +1445,43 @@ namespace RISE
 				(std::isfinite(result) || Fail(error,"fire solver trial adiabatic temperature is non-finite"));
 		}
 
+		// FDS EXTINCTION 2: retain all fuel but only the stoichiometric fraction
+		// of the local oxidizer/products. This is an extinction predicate, not a
+		// replacement for the whole-cell TrialAdiabaticTemperatureK query.
+		inline bool StoichiometricParcelPassesCFT(
+			const MethaneCellState& state,const FireSimulationMethaneRecord& fuel,
+			const FireSimulationMethaneRecord& thermochemistry,const double criticalTemperatureK,
+			bool& passes,std::string* error=0)
+		{
+			passes=false;
+			if(!fuel.IsValid()||!thermochemistry.IsValid()||!ValidateCellState(state,error)||
+				!std::isfinite(criticalTemperatureK)||criticalTemperatureK<thermochemistry.TemperatureMinK()||
+				criticalTemperatureK>thermochemistry.TemperatureMaxK())
+				return Fail(error,"fire solver parcel CFT input is invalid");
+			const double fuelDensity=state.constituent[MethaneCH4];
+			const double oxygenDensity=state.constituent[MethaneO2];
+			if(fuelDensity<=0.0||oxygenDensity<=0.0)return true;
+			const double stoichiometric=fuel.StoichiometricOxygenKGPerKGFuel();
+			const bool lean=fuelDensity<=oxygenDensity/stoichiometric;
+			// Normalize by fuel without subtracting the excluded whole-cell energy.
+			const double scale=lean?stoichiometric/oxygenDensity:1.0/fuelDensity;
+			const double extent=lean?1.0:(oxygenDensity/fuelDensity)/stoichiometric;
+			std::array<double,MethaneSpeciesCount> beginningEnthalpy,criticalEnthalpy;
+			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(state.temperatureK,
+				beginningEnthalpy.data(),beginningEnthalpy.size(),error)||
+				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(criticalTemperatureK,
+				criticalEnthalpy.data(),criticalEnthalpy.size(),error))return false;
+			double available=extent*fuel.LowerHeatingValueJPerKG(),required=0.0;
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+				const double parcel=species==MethaneCH4?1.0:state.constituent[species]*scale;
+				available+=parcel*beginningEnthalpy[species];
+				required+=(parcel+extent*fuel.PrimaryReactionDelta()[species])*criticalEnthalpy[species];
+			}
+			if(!std::isfinite(available)||!std::isfinite(required))
+				return Fail(error,"fire solver parcel CFT enthalpy is nonfinite");
+			passes=available>=required;return true;
+		}
+
 		struct IgnitionGrid
 		{
 			std::size_t nx, ny, nz;
@@ -1483,11 +1520,32 @@ namespace RISE
 				if( state.constituent[MethaneCH4] <= 0.0 ||
 					state.constituent[MethaneO2] <= 0.0 ||
 					state.temperatureK <= fuel.PilotTemperatureK() ) continue;
-				double adiabatic = 0.0;
-				if( !TrialAdiabaticTemperatureK(state,fuel,thermochemistry,adiabatic,error) ) return false;
-				vertex[index] = adiabatic >= transport.CriticalFlameTemperatureK();
+				bool passes=false;
+				if(!StoichiometricParcelPassesCFT(state,fuel,thermochemistry,
+					transport.CriticalFlameTemperatureK(),passes,error))return false;
+				vertex[index]=passes;
 				seed[index] = vertex[index] && (grid.pilotMask[index] ||
 					state.temperatureK > fuel.AutoignitionTemperatureK());
+			}
+			// Freeze the warm parcel-passing map. A waived cold vertex must not
+			// extend the waiver to another cold cell through a dilute fuel tail.
+			const std::vector<bool> warm=vertex;
+			for(std::size_t index=0;index<count;++index){
+				const MethaneCellState& state=grid.cells[index];
+				if(state.temperatureK>fuel.PilotTemperatureK()||
+					state.constituent[MethaneCH4]<=0.0||state.constituent[MethaneO2]<=0.0)continue;
+				const std::size_t x=index%grid.nx,y=(index/grid.nx)%grid.ny,z=index/plane;
+				const std::size_t neighbors[6]={x?index-1:count,x+1<grid.nx?index+1:count,
+					y?index-grid.nx:count,y+1<grid.ny?index+grid.nx:count,
+					z?index-plane:count,z+1<grid.nz?index+plane:count};
+				bool touchesWarm=false;
+				for(const std::size_t neighbor:neighbors)
+					if(neighbor<count&&warm[neighbor]){touchesWarm=true;break;}
+				if(touchesWarm){bool passes=false;
+					if(!StoichiometricParcelPassesCFT(state,fuel,thermochemistry,
+						transport.CriticalFlameTemperatureK(),passes,error))return false;
+					vertex[index]=passes;
+				}
 			}
 			eligible.assign(count,false);
 			std::queue<std::size_t> pending;

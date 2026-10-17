@@ -269,11 +269,11 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 				for(std::size_t index=0u;index<sizeof(appleFamilies)/sizeof(appleFamilies[0]);
 					++index)if([device supportsFamily:appleFamilies[index]])
 						return "apple"+std::to_string(10-static_cast<int>(index));
-				if([device supportsFamily:MTLGPUFamilyMac2])return "mac2";
-				if([device supportsFamily:MTLGPUFamilyCommon3])return "common3";
-				if([device supportsFamily:MTLGPUFamilyCommon2])return "common2";
-				if([device supportsFamily:MTLGPUFamilyCommon1])return "common1";
 			}
+			// Apple hardware families are preferred; current Metal families replace
+			// the Mac/Common aliases deprecated by the macOS 27 SDK.
+			if(@available(macOS 26.0,*))if([device supportsFamily:MTLGPUFamilyMetal4])return "metal4";
+			if(@available(macOS 13.0,*))if([device supportsFamily:MTLGPUFamilyMetal3])return "metal3";
 			return "metal-family-unreported";
 		}
 

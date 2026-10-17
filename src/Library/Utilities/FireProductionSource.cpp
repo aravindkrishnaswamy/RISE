@@ -265,11 +265,10 @@ namespace RISE
 						if(!request.pilotEstablished&&
 							(candidate.constituent[MethaneCO2]+candidate.constituent[MethaneH2O])/
 								gasDensity<productWitness)continue;
-						double adiabaticTemperatureK=0.0;
-						if(!TrialAdiabaticTemperatureK(candidate,fuel,fuel,adiabaticTemperatureK,error))
-							return false;
-						if(adiabaticTemperatureK>=transport.CriticalFlameTemperatureK())
-							eligible[cell]=true;
+						bool passes=false;
+						if(!StoichiometricParcelPassesCFT(candidate,fuel,fuel,
+							transport.CriticalFlameTemperatureK(),passes,error))return false;
+						if(passes)eligible[cell]=true;
 					}
 				}
 				std::vector<MethaneReactionStep> reactions(cells);

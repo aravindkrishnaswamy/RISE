@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-16, after a cleanup that ended the r248 campaign. This page
+Last updated 2026-10-17, during the r249 one-cell parcel-edge correction. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -77,8 +77,12 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    gives mean eligible CH4 (a/b/c/d) 0.0360/0.0771/0.5774/0.5774 g.
    Parcel CFT alone recovers 7.51% of stranded inventory; allowing cold
    vertices connected to warm seeded components recovers 98.98%.
-   [Variant (c) design revision](FIRE_SMOKE_EXTINCTION_PARCEL_R249.md) is ready
-   for implementation. No solver change or new simulation is claimed.
+   The [one-cell follow-up](FIRE_SMOKE_TIER8_EDGE_R249.md) selects (e): mean
+   eligible mass 0.136754 g, retaining 57.72% of (c) below 1 m while putting
+   99.91% of (e) below 1 m. [Revision (e)](FIRE_SMOKE_EXTINCTION_PARCEL_R249.md)
+   is implemented. The tier-8 from-zero acceptance run is next: ≥95% fuel
+   consumption with closing balance, near-zero top CH4 export, and plausible
+   heat-release height against Heskestad. Stop for review before tier 10.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
    incandescence, only blue chemiluminescence. The zero is methane's

@@ -1,0 +1,71 @@
+{
+  "scope": "offline_retained_state_one_cell_flame_edge",
+  "baseline_commit": "a2ce95979",
+  "states": 156,
+  "start_s": 10.543308698033798,
+  "end_s": 25.091040127255837,
+  "definition": "Keep warm map immutable; waive 600 K only beside warm parcel-passing vertices; apply unchanged warm seeds and face graph plus floor exception.",
+  "mean_eligible_kg": {
+    "b_kg": 7.711468934248137e-05,
+    "c_kg": 0.0005773974424810474,
+    "e_kg": 0.0001367536333426011
+  },
+  "mean_eligible_below_1m_kg": {
+    "b_kg": 7.708134889415455e-05,
+    "c_kg": 0.000236711377057759,
+    "e_kg": 0.00013663074533275192
+  },
+  "e_fraction_of_c_below_1m": 0.5772039647228836,
+  "e_fraction_below_1m": 0.9991013912621881,
+  "e_fraction_of_c_total": 0.2368448892932011,
+  "chosen_variant": "e",
+  "decision": "Most means a majority of (c) eligible mass below 1 m; report total retention separately.",
+  "height_bands": [
+    {
+      "lower_m": 0,
+      "upper_m": 0.25,
+      "b_kg": 5.8556836331232735e-05,
+      "c_kg": 0.00012251101874152171,
+      "e_kg": 0.00010247374459419951
+    },
+    {
+      "lower_m": 0.25,
+      "upper_m": 0.5,
+      "b_kg": 1.2295945742891922e-05,
+      "c_kg": 3.8425505242467207e-05,
+      "e_kg": 2.105859768537738e-05
+    },
+    {
+      "lower_m": 0.5,
+      "upper_m": 1,
+      "b_kg": 6.228566820029904e-06,
+      "c_kg": 7.57748530737701e-05,
+      "e_kg": 1.3098403053175022e-05
+    },
+    {
+      "lower_m": 1,
+      "upper_m": 2,
+      "b_kg": 3.3340448326808575e-08,
+      "c_kg": 0.00014390434869567843,
+      "e_kg": 1.2288800984920849e-07
+    },
+    {
+      "lower_m": 2,
+      "upper_m": 3.2428702786564827,
+      "b_kg": 0.0,
+      "c_kg": 0.00019678171672760992,
+      "e_kg": 0.0
+    }
+  ],
+  "artifacts": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/edge_mass_samples.csv": "aa2b396fe9abee67ad86bbd2ab661a0d75ee2ca55a4e26a17b5f8b80fd53f64a",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/edge_height_samples.csv": "44987cdd0c1355df70f0c5c1955c5eb17f37c7af0d744a15340c02e071065ca5",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/edge_build.sh": "bf76de84e0049d6d499514867aceae38e1217ee33ef8ce122518630c736e0b5a",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/edge_build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/native_edge_probe": "0d48be3bba95241357d90ca363cd5b9b78927942e7300dc38268badda96e05f1",
+    "/Volumes/SSD/Working/RISE/tools/fire/r249_eligibility_probe.cpp": "27eddb35653c92749227a7e1fb77ae8e79138b36adcc70b8d614a1ae7606b23f",
+    "/Volumes/SSD/Working/RISE/tools/fire/r249_reduce_edge.py": "97a48517e9c4c0a845b397817d3d7031e4d9119646989e3ac1ca2c3d680d33c0",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r249/edge_mass_samples.csv": "aa2b396fe9abee67ad86bbd2ab661a0d75ee2ca55a4e26a17b5f8b80fd53f64a",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r249/edge_height_profile.csv": "354ca9f3c8f70bdea421443cf5f1275aca88a8778b4706d237534e03211fc2c8"
+  }
+}

@@ -42,8 +42,8 @@ int main(int argc,char** argv)
  if(argc!=3)return 1;
  std::ifstream inputs(argv[1]);std::ofstream profile(argv[2]);
  if(!inputs||!profile)return 2;
- profile<<std::setprecision(17)<<"step,time_s,z,height_m,total_kg,a_kg,b_kg,c_kg,d_kg\n";
- std::cout<<std::setprecision(17)<<"step,time_s,total_kg,a_kg,b_kg,c_kg,d_kg,a_graph_kg,b_graph_kg,seed_cells,parcel_pass_kg,c_new_kg,c_top_donor_kg_s,d_top_donor_kg_s\n";
+ profile<<std::setprecision(17)<<"step,time_s,z,height_m,total_kg,a_kg,b_kg,c_kg,d_kg,e_kg\n";
+ std::cout<<std::setprecision(17)<<"step,time_s,total_kg,a_kg,b_kg,c_kg,d_kg,e_kg,a_graph_kg,b_graph_kg,seed_cells,parcel_pass_kg,c_new_kg,c_top_donor_kg_s,d_top_donor_kg_s\n";
  const auto& f=FireSimulationMethaneRecord::PhysicalV1();const auto& tr=FireSimulationTransportRecord::OpenV1();
  std::array<double,MethaneSpeciesCount> hc;std::string e;
  if(!f.SensibleEnthalpiesBySpeciesOrderJPerKG(tr.CriticalFlameTemperatureK(),hc.data(),hc.size(),&e))return 3;
@@ -89,29 +89,36 @@ int main(int argc,char** argv)
   }
   const auto bGraph=Reach(g,warm,seeds);
   const auto connected=Reach(g,parcel,bGraph); // existing warm seeded components; no new cold seeds
-  std::array<std::vector<bool>,4> gates={{aGraph,bGraph,connected,parcel}};
+  std::vector<bool> edge=warm;
+  for(size_t i=0;i<n;++i)if(parcel[i]&&!warm[i]){
+   const size_t x=i%g.nx,y=(i/g.nx)%g.ny,z=i/plane;
+   const size_t neighbors[6]={x?i-1:n,x+1<g.nx?i+1:n,y?i-g.nx:n,y+1<g.ny?i+g.nx:n,z?i-plane:n,z+1<g.nz?i+plane:n};
+   for(size_t j:neighbors)if(j<n&&warm[j]){edge[i]=true;break;}
+  }
+  const auto edgeGraph=Reach(g,edge,seeds);
+  std::array<std::vector<bool>,5> gates={{aGraph,bGraph,connected,parcel,edgeGraph}};
   // Preserve the production floor-holder exception, evaluating only its CFT trial differently.
   for(size_t i=0;i<plane;++i){
    bool holder=false;
    if(!ProductionEstablishedFlameHolderEligible(i,g.nx,g.ny,mask,pattern,true,g.cells[i],f,tr,holder,&e))return 9;
    gates[0][i]=gates[0][i]||holder;
    if(ProductionSourceBoundaryContactCell(i,g.nx,g.ny,mask,pattern)&&parcel[i]){
-    gates[1][i]=true;gates[2][i]=true;
+    gates[1][i]=true;gates[2][i]=true;gates[4][i]=true;
    }
   }
   const double dx=static_cast<float>(c.cellWidthM),dv=dx*dx*dx,area=dx*dx;
-  std::array<double,4> totals={{0,0,0,0}};double all=0,aGraphMass=0,bGraphMass=0,passMass=0,newMass=0,cTop=0,dTop=0;
+  std::array<double,5> totals={{0,0,0,0,0}};double all=0,aGraphMass=0,bGraphMass=0,passMass=0,newMass=0,cTop=0,dTop=0;
   for(size_t z=0;z<g.nz;++z){
-   std::array<double,4> layer={{0,0,0,0}};double layerAll=0;
+   std::array<double,5> layer={{0,0,0,0,0}};double layerAll=0;
    for(size_t j=0;j<plane;++j){const size_t i=z*plane+j;const double F=g.cells[i].constituent[MethaneCH4],m=F*dv;
     layerAll+=m;if(aGraph[i])aGraphMass+=m;if(bGraph[i])bGraphMass+=m;if(parcel[i])passMass+=m;
     if(gates[2][i]&&!gates[0][i])newMass+=m;
-    for(size_t v=0;v<4;++v)if(gates[v][i])layer[v]+=m;
+    for(size_t v=0;v<5;++v)if(gates[v][i])layer[v]+=m;
     if(z==g.nz-1){const double rate=F*std::max(0.,c.velocity.component[2][g.nz*plane+j])*area;
      if(gates[2][i])cTop+=rate;if(gates[3][i])dTop+=rate;}
    }
    profile<<c.acceptedSteps<<','<<c.simulationTimeS<<','<<z<<','<<(z+.5)*dx<<','<<layerAll;
-   all+=layerAll;for(size_t v=0;v<4;++v){profile<<','<<layer[v];totals[v]+=layer[v];}profile<<'\n';
+   all+=layerAll;for(size_t v=0;v<5;++v){profile<<','<<layer[v];totals[v]+=layer[v];}profile<<'\n';
   }
   std::cout<<c.acceptedSteps<<','<<c.simulationTimeS<<','<<all;
   for(double x:totals)std::cout<<','<<x;

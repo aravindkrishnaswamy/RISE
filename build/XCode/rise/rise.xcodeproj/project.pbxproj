@@ -3025,8 +3025,18 @@
 		FF11FFFF000000000000F1A6 /* Film.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Film.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F24900010000000000000001 /* Generated make dependency exclusion */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Bridge/MovieRasterizerOutput.d,
+			);
+			target = F24B71C52F52A211008304C4 /* RISE-GUI */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		F24B71C72F52A211008304C4 /* RISE-GUI */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = "RISE-GUI"; sourceTree = "<group>"; };
+		F24B71C72F52A211008304C4 /* RISE-GUI */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (F24900010000000000000001 /* Generated make dependency exclusion */,); explicitFileTypes = {}; explicitFolders = (); path = "RISE-GUI"; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */

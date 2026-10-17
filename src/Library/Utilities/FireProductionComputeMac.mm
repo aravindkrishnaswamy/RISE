@@ -87,11 +87,11 @@ namespace RISE
 				for( std::size_t i=0;i<sizeof(appleFamilies)/sizeof(appleFamilies[0]);++i )
 					if( [device supportsFamily:appleFamilies[i]] )
 						return "apple"+std::to_string(10-static_cast<int>(i));
-				if( [device supportsFamily:MTLGPUFamilyMac2] ) return "mac2";
-				if( [device supportsFamily:MTLGPUFamilyCommon3] ) return "common3";
-				if( [device supportsFamily:MTLGPUFamilyCommon2] ) return "common2";
-				if( [device supportsFamily:MTLGPUFamilyCommon1] ) return "common1";
 			}
+			// Apple hardware families are preferred; current Metal families replace
+			// the Mac/Common aliases deprecated by the macOS 27 SDK.
+			if(@available(macOS 26.0,*))if([device supportsFamily:MTLGPUFamilyMetal4])return "metal4";
+			if(@available(macOS 13.0,*))if([device supportsFamily:MTLGPUFamilyMetal3])return "metal3";
 			return "metal-family-unreported";
 		}
 
