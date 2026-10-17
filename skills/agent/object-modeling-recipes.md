@@ -1869,8 +1869,10 @@ plumbing:
   already, and a mesh ignores `detail` in its own tessellation -- so
   `displaced_geometry` REFINES it before displacing: every edge longer than
   (the base's bounding-box diagonal / `detail`) is split (shared midpoints,
-  crack-free, adaptive: only the long edges), up to 6 levels / 1.5M
-  triangles.  A 4-point-profile lathe at `detail 48` therefore really does
+  crack-free for a shared-vertex base, adaptive: only the long edges), up to
+  6 levels / 1.5M triangles.  A mesh imported with `face_normals TRUE` is
+  flattened per corner: it displaces along each triangle's face normal,
+  cracks at every edge and is not refined.  A 4-point-profile lathe at `detail 48` therefore really does
   carry vertical sample spacing of about 1/48 of its bounding-box diagonal
   and shows bark/wrinkle relief, where it used to be displaced only at its 4
   profile rows.  Pick `detail` from the relief's wavelength (roughly 3-4

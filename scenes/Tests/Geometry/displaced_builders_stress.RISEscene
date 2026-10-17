@@ -32,7 +32,7 @@ RISE ASCII SCENE 7
 #                   had nothing to average across; TriangleMeshGeometryIndexed::TessellateToMesh now keeps    #
 #                   the builder's shared vertices, which fixed it.)  A builder is already a mesh and its      #
 #                   own tessellation ignores `detail`, so displaced_geometry REFINES it first: every edge     #
-#                   longer than (bbox diagonal / detail) is split (crack-free, adaptive; linear positions,   #
+#                   longer than (bbox diagonal / detail) is split (crack-free for these shared-vertex bases, adaptive; linear positions,   #
 #                   so the silhouette stays the base's polygon), so `detail` below                            #
 #                   governs the relief resolution of the lathe, the loft and the skin (the 6-row vase         #
 #                   bakes to ~30k triangles at detail 48).  See the `displaced_geometry` chunk descriptor     #

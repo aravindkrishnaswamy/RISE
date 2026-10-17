@@ -132,8 +132,12 @@ namespace RISE
 			// patch was split into triangles -- a sliver (two huge angles at one
 			// end, a vanishing one at the other) cannot dominate a vertex's
 			// normal the way an unweighted per-face average lets it (the
-			// streaking that adaptive mesh refinement exposed).  Unweighted ==
-			// angle-weighted on a regular tessellation up to symmetry.
+			// streaking that adaptive mesh refinement exposed).  The two agree
+			// where every incident face has the same corner angle at the vertex
+			// (a regular triangle fan); they do NOT agree in general -- on a
+			// quad grid split into triangles the corner angles differ (45/90 deg)
+			// and the angle-weighted normal is the one a finer or differently
+			// split mesh of the same surface would give.
 			for( int k = 0; k < 3; k++ )
 			{
 				const Vertex& pk = vVertices[tri.iVertices[k]];

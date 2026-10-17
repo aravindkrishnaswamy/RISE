@@ -110,6 +110,17 @@ namespace {
 		return ( bPeriodicAxis && std::fabs( a - b ) > 0.5 ) ? PeriodicMid( a, b ) : 0.5 * ( a + b );
 	}
 
+	// Midpoint of one chart axis between two vertices.  A POLAR end (the axis'
+	// value there is a placeholder -- a lathe pole's u, a skin pinch's v) must
+	// not leak into a neighbour: an edge with exactly one polar end takes the
+	// OTHER end's value; two polar ends (or none) interpolate as ChartMid does.
+	inline Scalar AxisMid( const Scalar a, const Scalar b, const bool polarA, const bool polarB, const bool bPeriodicAxis )
+	{
+		if( polarA && !polarB ) return b;
+		if( polarB && !polarA ) return a;
+		return ChartMid( a, b, bPeriodicAxis );
+	}
+
 	RefineResult RefineMeshToEdgeLength(
 		IndexTriangleListType& tris,
 		VerticesListType&      vertices,
@@ -194,13 +205,17 @@ namespace {
 				Vector3 nm = na + nb;
 				const Scalar nl = Vector3Ops::Magnitude( nm );
 				normals.push_back( nl > 1e-12 ? nm * ( 1.0 / nl ) : na );
-				// A new vertex is on a periodic chart region only if BOTH ends are
-				// (a sweep's end caps, a lathe's flat caps never wrap).
-				const unsigned char fm = static_cast<unsigned char>( uvFlags[a] & uvFlags[b] );
+				// A new vertex is on a periodic / polar chart region only if BOTH ends
+				// are (a sweep's end caps, a lathe's flat caps never wrap; a spoke
+				// midpoint is no longer AT the pole, so it is not polar).
+				const unsigned char fa = uvFlags[a], fb = uvFlags[b];
+				const unsigned char fm = static_cast<unsigned char>( fa & fb );
 				uvFlags.push_back( fm );
 				coords.push_back( TexCoord(
-					ChartMid( ca.x, cb.x, ( fm & TriangleMeshGeometryIndexed::kUPeriodic ) != 0 ),
-					ChartMid( ca.y, cb.y, ( fm & TriangleMeshGeometryIndexed::kVPeriodic ) != 0 ) ) );
+					AxisMid( ca.x, cb.x, ( fa & TriangleMeshGeometryIndexed::kUPolar ) != 0, ( fb & TriangleMeshGeometryIndexed::kUPolar ) != 0,
+						( fm & TriangleMeshGeometryIndexed::kUPeriodic ) != 0 ),
+					AxisMid( ca.y, cb.y, ( fa & TriangleMeshGeometryIndexed::kVPolar ) != 0, ( fb & TriangleMeshGeometryIndexed::kVPolar ) != 0,
+						( fm & TriangleMeshGeometryIndexed::kVPeriodic ) != 0 ) ) );
 			}
 
 			// Pass 3: emit the refined triangles.
@@ -285,9 +300,15 @@ namespace {
 }
 
 namespace {
-	// Rotate `v` by the minimal rotation taking unit `from` to unit `to`.
-	Vector3 RotateFromTo( const Vector3& from, const Vector3& to, const Vector3& v )
+	// Rotate `v` by the minimal rotation taking direction `fromIn` to direction
+	// `toIn` (both normalized here; a zero-length one leaves `v` unrotated).
+	Vector3 RotateFromTo( const Vector3& fromIn, const Vector3& toIn, const Vector3& v )
 	{
+		const Scalar lf = Vector3Ops::Magnitude( fromIn ), lt = Vector3Ops::Magnitude( toIn );
+		if( !( lf > 1e-12 ) || !( lt > 1e-12 ) ) {
+			return v;
+		}
+		const Vector3 from = fromIn * ( 1.0 / lf ), to = toIn * ( 1.0 / lt );
 		const Vector3 axis = Vector3Ops::Cross( from, to );
 		const Scalar sinT = Vector3Ops::Magnitude( axis );
 		const Scalar cosT = Vector3Ops::Dot( from, to );
@@ -395,6 +416,14 @@ bool DisplacedGeometry::TessellateAndRefine(
 	}
 	const bool bMeshBase = ( pIdx != 0 ) || ( pDsp != 0 );
 	if( !bMeshBase || !WillDisplaceVertices() || vertices.empty() ) {
+		return true;
+	}
+	// A base that shades with FACE normals (face_normals TRUE) is flattened per
+	// corner by its tessellation -- every edge of it is already a crack, each
+	// triangle displacing along its own face normal -- so there is no shared
+	// topology to refine (refining would only multiply the cracks) and no smooth
+	// shading field to carry.  It displaces exactly as before.
+	if( ( pIdx && pIdx->UsesFaceNormals() ) || ( pDsp && pDsp->UsesFaceNormals() ) ) {
 		return true;
 	}
 
@@ -796,7 +825,7 @@ bool DisplacedGeometry::TessellateToMesh(
 
 	// Delegate via the internal TriangleMeshGeometryIndexed's own TessellateToMesh, which
 	// re-emits its stored arrays with the shared topology intact.
-	return m_pMesh->TessellateToMesh( tris, vertices, normals, coords, 0 );
+	return TessellateToMeshEx( tris, vertices, normals, coords, 0, 0 );
 }
 
 void DisplacedGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

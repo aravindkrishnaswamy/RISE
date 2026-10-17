@@ -308,10 +308,22 @@ namespace RISE
 			// The `detail` parameter is ignored — an indexed mesh already IS a mesh.
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			//! Chart-periodicity bits for SetUVPeriodicRegion / TessellateToMeshEx.
-			enum { kUPeriodic = 1, kVPeriodic = 2 };
+			//! Chart bits for SetUVPeriodicRegion / TessellateToMeshEx.
+			//!  kU/kVPeriodic : the chart WRAPS on that axis (see below).
+			//!  kU/kVPolar    : that axis' chart value is a PLACEHOLDER at this vertex --
+			//!                  the coordinate is genuinely undefined there (a lathe pole's
+			//!                  u: every angle maps to the one point, stored as 0.5; a skin
+			//!                  pinch's v).  Refinement then never averages the placeholder
+			//!                  into a neighbour: an edge with exactly one polar end takes
+			//!                  the OTHER end's value on that axis.
+			enum { kUPeriodic = 1, kVPeriodic = 2, kUPolar = 4, kVPolar = 8 };
 
-			//! Declare that the UV chart WRAPS on an axis over a range of vertices:
+			//! True when this mesh shades with computed face normals (bUseFaceNormals): its
+			//! tessellation is flattened per corner, so it has no shared topology to refine.
+			bool UsesFaceNormals() const { return bUseFaceNormals; }
+
+			//! Declare chart bits (kUPeriodic ... kVPolar) over a range of vertices.  For the
+			//! periodic bits: the UV chart WRAPS on an axis over those vertices:
 			//! the builders that stitch a ring back to its first column with NO
 			//! duplicated seam column (a full-turn lathe's u; a sweep's closed-
 			//! profile u, and its v when the path is closed) leave the wrap edge

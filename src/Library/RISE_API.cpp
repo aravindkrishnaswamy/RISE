@@ -2635,6 +2635,9 @@ namespace RISE
 				// u is genuinely undefined on the axis (every angle maps to
 				// this one point); 0.5 puts the pole at the texture's middle.
 				pGeom->AddTexCoord( TexCoord( Scalar(0.5), row.v ) );
+				// u is a PLACEHOLDER here (stored 0.5): mark the pole so mesh refinement
+				// never averages it into a spoke midpoint's u.
+				pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kUPolar, (unsigned int)vc, 1 );
 				vc++;
 			} else {
 				for( int k = 0; k < nCols; k++ ) {
@@ -3860,6 +3863,10 @@ namespace RISE
 				// pole's u.
 				pGeom->AddTexCoord( TexCoord( stations[i].u,
 					pinched[i] ? Scalar(0.5) : vFrac[j] ) );
+				// a pinch's v is a PLACEHOLDER (0.5): polar on v for mesh refinement
+				if( pinched[i] ) {
+					pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kVPolar, (unsigned int)siteVertex[s], 1 );
+				}
 			}
 		}
 
@@ -3924,7 +3931,18 @@ namespace RISE
 		VerticesListType      tVerts;
 		NormalsListType       tNorms;
 		TexCoordsListType     tCoords;
-		if( !desc.pGeometry->TessellateToMesh( tTris, tVerts, tNorms, tCoords, detail ) ||
+		// Ex where the template carries chart bits (a builder's periodic / polar UV
+		// axes, a displaced base's), so the instanced copies keep them.
+		std::vector<unsigned char> tFlags;
+		bool bTessellated;
+		if( const TriangleMeshGeometryIndexed* pTplIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( desc.pGeometry ) ) {
+			bTessellated = pTplIdx->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags );
+		} else if( const DisplacedGeometry* pTplDsp = dynamic_cast<const DisplacedGeometry*>( desc.pGeometry ) ) {
+			bTessellated = pTplDsp->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags );
+		} else {
+			bTessellated = desc.pGeometry->TessellateToMesh( tTris, tVerts, tNorms, tCoords, detail );
+		}
+		if( !bTessellated ||
 			tVerts.empty() || tTris.empty() ) {
 			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: template geometry does not support TessellateToMesh (or tessellated empty)" );
 			return false;
@@ -4012,6 +4030,19 @@ namespace RISE
 		}
 
 		pGeom->DoneIndexedTriangles();
+		// Each instance's copy keeps the template's chart bits (vertex order is the template's).
+		if( tFlags.size() == tVerts.size() ) {
+			bool bAny = false;
+			for( size_t i = 0; i < tFlags.size(); ++i ) if( tFlags[i] ) { bAny = true; break; }
+			if( bAny ) {
+				std::vector<unsigned char> allFlags;
+				allFlags.reserve( tFlags.size() * placed );
+				for( unsigned int inst = 0; inst < placed; ++inst ) {
+					allFlags.insert( allFlags.end(), tFlags.begin(), tFlags.end() );
+				}
+				pGeom->SetUVPeriodicFlags( allFlags );
+			}
+		}
 		*ppi = pGeom;
 		return true;
 	}

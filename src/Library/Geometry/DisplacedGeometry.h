@@ -48,9 +48,15 @@ namespace RISE
 		// UVs are LINEAR (the silhouette of a coarse base stays polygonal), except on
 		// a chart axis the base DECLARES periodic (TriangleMeshGeometryIndexed::
 		// SetUVPeriodicRegion -- a full-turn lathe's u, a sweep's closed-profile u /
-		// closed-path v) where the ring-stitch edge is taken the short way round.
-		// Analytic and SDF bases already honour `detail` and are untouched, as is any
-		// bake with disp_scale == 0.
+		// closed-path v) where the ring-stitch edge is taken the short way round, and
+		// at a POLAR vertex (a lathe pole's u, a skin pinch's v -- the coordinate is a
+		// placeholder there) where an edge to a normal vertex takes the normal
+		// vertex's value instead of averaging the placeholder in.  Analytic and SDF
+		// bases already honour `detail` and are untouched, as is any bake with
+		// disp_scale == 0.  A base that shades with FACE normals (face_normals TRUE)
+		// is flattened per corner by its tessellation -- every edge of it is already
+		// a crack -- so it is not refined and displaces along each face normal as it
+		// always did.
 		//
 		// SHADING.  For every smooth-normal mesh base that is displaced (refined or
 		// not) the base's own shading-normal field is carried through the
@@ -63,7 +69,10 @@ namespace RISE
 		// (RefreshMeshVertices) -- unless the refinement came out different (it is
 		// edge-length driven, so a moving base can change topology at an unchanged
 		// vertex count), detected by a topology signature, in which case the mesh is
-		// rebuilt from scratch.
+		// rebuilt from scratch.  Cost: every painter notification re-tessellates and
+		// re-refines the base (O(triangles), allocation-heavy): measured 2.5 ms for a
+		// 13.8k-triangle bake (a 4-row lathe at detail 32), against ~0.3 ms for the
+		// 384-triangle unrefined bake (the stress scene vase before refinement) -- a keyframed displacement pays it per frame.
 		//
 		// TWO HEIGHT ROUTES, MUTUALLY EXCLUSIVE (2026-09-06).  The offset scalar comes
 		// from EXACTLY ONE of:
@@ -245,6 +254,9 @@ namespace RISE
 			// InfinitePlaneGeometry, makes IsValid() FALSE — refused at parse via
 			// the cheap CanTessellate() capability check, not deferred to bake.)
 			bool IsValid() const { return m_pBase != 0 && m_pBase->CanTessellate(); }
+
+			//! True when the baked mesh shades with computed face normals (the ctor's bUseFaceNormals).
+			bool UsesFaceNormals() const { return m_bUseFaceNormals; }
 
 			//! Direct access to base geometry (e.g. for base curvature queries, DL-13).
 			const IGeometry* GetBaseGeometry() const { return m_pBase; }

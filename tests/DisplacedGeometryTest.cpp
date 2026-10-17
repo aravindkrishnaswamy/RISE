@@ -1,4 +1,5 @@
 #include <iostream>
+#include <chrono>
 #include <cassert>
 #include <cmath>
 #include <thread>
@@ -1082,7 +1083,10 @@ static void TestRefinedTopologyStableAcrossRefresh()
 	assert( pDisp->TessellateToMesh( t0, v0, n0, c0, 0 ) );
 
 	DisplacedGeometry::ResetBuildMeshCount();
+	const std::chrono::steady_clock::time_point tr0 = std::chrono::steady_clock::now();
 	pFn->SetValue( 3.0 );		// 0.05 -> 0.15 amplitude, through the observer path
+	const double refitMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - tr0 ).count();
+	std::cout << "  [info] refit of the refined mesh (re-tessellate + re-refine + displace + normals + BVH refit): " << refitMs << " ms\n";
 	assert( DisplacedGeometry::GetBuildMeshCount() == 0 && "refresh must REFIT, not rebuild" );
 
 	IndexTriangleListType t1; VerticesListType v1; NormalsListType n1; TexCoordsListType c1;
@@ -1277,7 +1281,7 @@ static void TestRefinementChartInterpolation()
 		assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
 		assert( t.size() > bt.size() );
 
-		size_t wallBadV = 0, wallBadU = 0, wall = 0, capBadV = 0, cap = 0;
+		size_t wallBadV = 0, wallBadU = 0, wall = 0, capBadV = 0, capBadU = 0, cap = 0;
 		for( size_t i = 0; i < v.size(); ++i ) {
 			const Scalar r = std::sqrt( v[i].x * v[i].x + v[i].z * v[i].z );
 			if( r > 1.0 - 1e-4 && v[i].y > 1e-3 && v[i].y < 3.0 - 1e-3 ) {		// wall
@@ -1285,17 +1289,23 @@ static void TestRefinementChartInterpolation()
 				if( std::fabs( c[i].y - ( 1.0 + v[i].y ) / 5.0 ) > 1e-4 ) ++wallBadV;
 				const Scalar uTrue = std::atan2( v[i].x, v[i].z ) / TWO_PI;
 				if( CircDist( c[i].x, uTrue ) > 1e-4 ) ++wallBadU;
-			} else if( std::fabs( v[i].y ) < 1e-4 && r > 1e-6 ) {					// bottom cap
+			} else if( ( std::fabs( v[i].y ) < 1e-4 || std::fabs( v[i].y - 3.0 ) < 1e-4 ) && r > 1e-6 ) {	// bottom / top cap POLE FANS
 				++cap;
-				if( std::fabs( c[i].y - r / 5.0 ) > 3e-3 ) ++capBadV;	// rim chord midpoints sit a sagitta inside the unit circle (<= 0.0017 in v)
+				const Scalar vTrue = ( v[i].y < 1.0 ) ? r / 5.0 : 1.0 - r / 5.0;
+				if( std::fabs( c[i].y - vTrue ) > 3e-3 ) ++capBadV;	// rim chord midpoints sit a sagitta inside the unit circle (<= 0.0017 in v)
+				// u at a pole fan vertex is the vertex's own polar angle: a spoke midpoint must NOT
+				// average in the pole's placeholder u (0.5), and the fan triangle across the wrap must
+				// not take the far-side u.
+				if( CircDist( c[i].x, std::atan2( v[i].x, v[i].z ) / TWO_PI ) > 0.02 ) ++capBadU;	// linear u over a fan triangle differs from the true polar angle by up to ~0.01 turn (3.6 deg, 24 columns) where radius varies along the edge; the placeholder bug is 0.05-0.5 turn
 			}
 		}
 		std::cout << "  [info] capped-cylinder lathe: " << wall << " wall vertices (v wrong: " << wallBadV << ", u wrong (circular): " << wallBadU
-			<< "), " << cap << " cap vertices (v wrong: " << capBadV << ")\n";
+			<< "), " << cap << " pole-fan vertices (v wrong: " << capBadV << ", u wrong (circular): " << capBadU << ")\n";
 		assert( wall > 100 );
 		SOFT( wallBadV == 0 );		// wall v spans 0.6 > 0.5: not a wrap
 		SOFT( wallBadU == 0 );		// the declared-periodic u seam edge IS taken the short way round
 		SOFT( capBadV == 0 );
+		SOFT( capBadU == 0 );		// pole-fan spokes carry their ring vertex's u, not the pole placeholder's
 
 		// circular u-continuity of every triangle (a wrong wrap midpoint is ~0.5 away)
 		Scalar worstU = 0.0;
@@ -1303,7 +1313,7 @@ static void TestRefinementChartInterpolation()
 			for( int k = 0; k < 3; ++k ) {
 				const Point2& a = c[t[i].iCoords[k]]; const Point2& b = c[t[i].iCoords[( k + 1 ) % 3]];
 				const unsigned int ia = t[i].iVertices[k], ib = t[i].iVertices[( k + 1 ) % 3];
-				if( std::sqrt( v[ia].x * v[ia].x + v[ia].z * v[ia].z ) < 0.95 || std::sqrt( v[ib].x * v[ib].x + v[ib].z * v[ib].z ) < 0.95 ) continue;	// pole fans: u is a polar chart there, linear by design
+				if( std::sqrt( v[ia].x * v[ia].x + v[ia].z * v[ia].z ) < 1e-6 || std::sqrt( v[ib].x * v[ib].x + v[ib].z * v[ib].z ) < 1e-6 ) continue;	// only the pole vertex itself (u is a placeholder there); every fan vertex IS checked
 				worstU = std::max( worstU, CircDist( a.x, b.x ) );
 			}
 		}
@@ -1387,6 +1397,46 @@ static void TestRefinementChartInterpolation()
 
 		pDisp->release(); pFn->release(); pSweep->release();
 	}
+
+	// ---- (4) path_instances_geometry of a lathe tube keeps the template's periodic u ----
+	{
+		static const double prof[] = { 1.0, 0.0,  1.0, 2.0 };
+		LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 2; ld.nRadial = 16;
+		ITriangleMeshGeometryIndexed* pTplI = 0;
+		assert( RISE_API_CreateLatheGeometry( &pTplI, ld ) );
+		static const double path[] = { 0.0, 0.0, 0.0,   0.0, 0.0, 10.0 };
+		PathInstancesDescriptor pd;
+		pd.pGeometry = dynamic_cast<IGeometry*>( pTplI ); pd.pathPoints = path; pd.numPathPoints = 2;
+		pd.nLen = 8; pd.pitch = 20.0; pd.phase = 1.0; pd.scale = 1.0; pd.detail = 16;
+		ITriangleMeshGeometryIndexed* pInstI = 0;
+		assert( RISE_API_CreatePathInstancesGeometry( &pInstI, pd ) );
+		TriangleMeshGeometryIndexed* pInst = dynamic_cast<TriangleMeshGeometryIndexed*>( pInstI );
+		assert( pInst );
+		IndexTriangleListType bt; VerticesListType bv; NormalsListType bn; TexCoordsListType bc;
+		assert( pInst->TessellateToMesh( bt, bv, bn, bc, 0 ) );
+
+		UVSpyFunction2D* pFn = new UVSpyFunction2D();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pInst, 64, pFn, 0.01, false, false, /*seamFold=*/false );
+		pDisp->Realize();
+		IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+		assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+		assert( t.size() > bt.size() );
+		size_t bad = 0; Scalar worst = 0.0;
+		for( size_t i = 0; i < v.size(); ++i ) {
+			Scalar best = 1e30; size_t bi = 0;
+			for( size_t j = 0; j < bv.size(); ++j ) {
+				const Scalar dx = v[i].x - bv[j].x, dy = v[i].y - bv[j].y, dz = v[i].z - bv[j].z;
+				const Scalar dd = dx * dx + dy * dy + dz * dz;
+				if( dd < best ) { best = dd; bi = j; }
+			}
+			const Scalar e = CircDist( c[i].x, bc[bi].x );
+			if( e > 0.15 ) { ++bad; worst = std::max( worst, e ); }
+		}
+		std::cout << "  [info] path_instances(lathe tube) refined: " << v.size() << " vertices, " << bad << " with u more than 0.15 turn from the nearest base vertex (worst " << worst << ")\n";
+		SOFT( bad == 0 );
+		pDisp->release(); pFn->release(); pInst->release(); pTplI->release();
+	}
+
 	assert( softFails == 0 );
 #undef SOFT
 }
@@ -1493,6 +1543,36 @@ static void TestTransportedShadingNormals()
 		assert( worstDeg < 1.0 );		// measured 0.27 deg; 1.97 deg when transport applies only to refined bases
 		pBelow->release(); pAbove->release(); pFn->release(); pLathe->release();
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Round-2 P2-2: a base that shades with FACE normals (face_normals TRUE) is
+// flattened per corner by its tessellation -- every edge is already a crack, each
+// triangle displacing along its own face normal -- so there is no shared topology
+// to refine: it must displace exactly as before (same triangle count at any
+// `detail`), not have its cracks multiplied.
+//-----------------------------------------------------------------------------
+static void TestFaceNormalBaseIsNotRefined()
+{
+	std::cout << "Test 10i: a face-normal mesh base is not refined (refining would only multiply its cracks)...\n";
+	TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, /*bUseFaceNormals=*/true );
+	m->BeginIndexedTriangles();
+	m->AddVertex( Point3( 1, -0.5, -0.5 ) ); m->AddVertex( Point3( 1, 0.5, -0.5 ) );
+	m->AddVertex( Point3( 1, 0.5, 0.5 ) );   m->AddVertex( Point3( 1, -0.5, 0.5 ) );
+	for( int i = 0; i < 4; ++i ) m->AddNormal( Vector3( 1, 0, 0 ) );
+	m->AddTexCoord( Point2( 0, 0 ) ); m->AddTexCoord( Point2( 1, 0 ) ); m->AddTexCoord( Point2( 1, 1 ) ); m->AddTexCoord( Point2( 0, 1 ) );
+	m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( 0, 1, 2 ) );
+	m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( 0, 2, 3 ) );
+	m->DoneIndexedTriangles();
+	assert( m->UsesFaceNormals() );
+	UVSpyFunction2D* pFn = new UVSpyFunction2D();
+	DisplacedGeometry* pDisp = new DisplacedGeometry( m, 64, pFn, 0.1, false, false, false );
+	pDisp->Realize();
+	IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+	assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+	std::cout << "  [info] face-normal quad at detail 64: " << t.size() << " triangles, " << v.size() << " vertices (unrefined: 2 / 6)\n";
+	assert( t.size() == 2 );
+	pDisp->release(); pFn->release(); m->release();
 }
 
 //-----------------------------------------------------------------------------
@@ -2307,6 +2387,7 @@ int main()
 	TestRefinedMeshKeepsBaseShadingField();
 	TestRefinementChartInterpolation();
 	TestTransportedShadingNormals();
+	TestFaceNormalBaseIsNotRefined();
 	TestConcurrentRealize();
 	TestScalarHeightIsObjectSpaceAndExact();
 	TestScalarHeightThroughTheChunk();
