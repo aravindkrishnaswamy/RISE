@@ -874,11 +874,12 @@ namespace RISE
 		//! build_element / insert_chunks result for `element` is rewritten
 		//! to once a successful finish_element for that element has flowed
 		//! through the chat loop.  It states ONLY facts that cannot go stale
-		//! (review round 5): the result was retired when the element was
-		//! finished, the element's chunks are in the document (read_document
-		//! shows them), and `facts` / `carried` -- recorded from the elided
-		//! result and labelled as of that result (the bounding box "when
-		//! built", the head version "after that call", per-chunk outcomes).
+		//! (review rounds 5-6): the result was retired when the element was
+		//! finished, read_document shows the element's CURRENT chunks (a
+		//! pointer, not a claim that any exist), and `facts` / `carried` --
+		//! recorded from the elided result and labelled as of that result
+		//! (the bounding box "when built", the head version "after that
+		//! call", the per-chunk outcomes "that call reported").
 		//! It never states an edit or reopen rule: the phase, the session
 		//! mode and the plan all change after the finish, and the session's
 		//! own refusal message names reopen_element when an edit is actually
@@ -898,8 +899,10 @@ namespace RISE
 
 		//! CONTEXT LIFETIMES (doc 91 slice L3b): the stub a live named
 		//! read_skill result is rewritten to once a successful
-		//! finish_element has reported the build plan's compose phase
-		//! (every element finished).
+		//! finish_element has reported the build plan's compose phase.
+		//! Past tense ("retired when every element ... was finished"): a
+		//! later reopen_element or new plan would make a present-tense
+		//! claim false, and the stub is never rewritten.
 		std::string ChatComposeSkillRetirementNote( const std::string& skillName );
 
 		//! The build-protocol phase name finish_element reports (its

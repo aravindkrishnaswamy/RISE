@@ -59,10 +59,16 @@ provider-cache miss — the doc 71 / T1c policy, unchanged.
   for element E flows through the chat loop, earlier live
   `build_element` and `insert_chunks` results that belong to E are
   replaced with a stub naming E and the recovery path (`read_document`
-  shows its chunks).  The stub states ONLY IMMUTABLE facts (review round
-  5): that the result was retired when E was finished, that E's chunks
-  are in the document, the realised bounding box "when built", the head
-  version "after that call" and the carried per-chunk outcomes.  It
+  shows its chunks).  The stub states ONLY IMMUTABLE facts (review rounds
+  5-6): that the result was retired when E was finished, a POINTER to the
+  current state ("read_document shows the element's current chunks" -- not
+  a claim that any exist: nothing may have landed, or a later edit or undo
+  removed them), the realised bounding box "when built", the head version
+  "after that call" (exact integers) and the per-chunk outcomes "that call
+  reported".  A retired error envelope keeps Anthropic's `is_error:true`
+  around its stub: the call did fail, and the flag is wire-valid.  The
+  compose-retired skill stub is past tense too ("retired when every
+  element of the build plan was finished").  It
   states NO edit or reopen rule: the phase, the session mode and the plan
   all change after the finish (the plan reaches compose, a final answer
   switches to refining, the give-up trips, a new plan is filed) and the

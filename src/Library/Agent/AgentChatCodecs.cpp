@@ -2488,24 +2488,29 @@ namespace RISE
 		                                               const std::string& facts,
 		                                               const std::string& carried )
 		{
-			// IMMUTABLE FACTS ONLY (review round 5): no phase, mode or edit
-			// rule -- those change after the finish and the stub is never
-			// rewritten.  The live rule is stated where it applies: the
-			// session's own refusal names reopen_element.
+			// IMMUTABLE FACTS ONLY (review rounds 5-6): nothing about the
+			// CURRENT session or document -- no phase, mode or edit rule, and
+			// no claim that the element HAS chunks (nothing may have landed;
+			// a later edit or undo may remove them).  The stub is never
+			// rewritten, so every sentence is either past tense about this
+			// result or a pointer to where the current state is read.  The
+			// live rule is stated where it applies: the session's own refusal
+			// names reopen_element.
 			const std::string q = "\"" + element + "\"";
 			std::string note = "[" + verbName + " result for element " + q + " elided -- retired when " + q +
-				" was finished; its chunks are in the document (read_document shows them).";
+				" was finished; read_document shows the element's current chunks.";
 			if( !facts.empty() ) note += " " + facts;
 			if( !carried.empty() )
-				note += " Kept from the elided result (per-chunk outcomes the document does not record): " +
-				        carried + ".";
+				note += " Per-chunk outcomes that call reported: " + carried + ".";
 			return note + "]";
 		}
 
 		std::string ChatComposeSkillRetirementNote( const std::string& skillName )
 		{
-			return "[read_skill \"" + skillName + "\" elided -- every element of the build plan is "
-			       "finished (compose phase); call read_skill {\"name\":\"" + skillName +
+			// Past tense (review round 6): reopen_element or a new plan makes
+			// "every element is finished" false later, and the stub stays.
+			return "[read_skill \"" + skillName + "\" elided -- retired when every element of the build "
+			       "plan was finished (compose phase); call read_skill {\"name\":\"" + skillName +
 			       "\"} again if you need it]";
 		}
 

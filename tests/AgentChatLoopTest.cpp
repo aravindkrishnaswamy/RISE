@@ -4261,8 +4261,8 @@ static void TestContextLifetimeRetirement()
 	const Prov provs[] = {
 		{ ChatProvider::Anthropic, "anthropic" }, { ChatProvider::Gemini, "gemini" },
 		{ ChatProvider::OpenAI, "openai/responses" }, { ChatProvider::Local, "openai/chat-completions" } };
-	const char* const kComposeStub = "every element of the build plan is finished";
-	const char* const kFinishedStub = "was finished; its chunks are in the document";
+	const char* const kComposeStub = "retired when every element of the build plan was finished";
+	const char* const kFinishedStub = "was finished; read_document shows the element's current chunks";
 
 	std::string anthropicFinalBody;
 	for( const Prov& pv : provs ) {
@@ -4540,7 +4540,7 @@ static void TestContextLifetimeRetirementRound2()
 		Check( CountOccurrences( body, "NOTICE_MARKER" ) == 1 &&
 		       body.find( "wizard_robe (lambertian_material) landed with a notice:" ) != std::string::npos,
 		       "T14d(a): the stub carries a landed chunk's notice, labelled as LANDED" );
-		Check( body.find( "Kept from the elided result (per-chunk outcomes the document does not record)" )
+		Check( body.find( "Per-chunk outcomes that call reported:" )
 		           != std::string::npos &&
 		       body.find( "retired when \\\"wizard\\\" was finished" ) != std::string::npos,
 		       "T14d(a): the stub says what it kept and that it was retired when the element was finished" );
@@ -4763,6 +4763,10 @@ static void TestContextLifetimeRetirementRound2()
 		Check( body.find( "wizard_a (sphere_geometry) refused: prefix violation" ) != std::string::npos &&
 		       body.find( "wizard_b (sphere_geometry) refused: prefix violation" ) != std::string::npos,
 		       "T14d(e2) MONEY: distinct chunks with the SAME reason are each named (dedupe by name, kind, text)" );
+		Check( body.find( "chunks are in the document" ) == std::string::npos &&
+		       body.find( "read_document shows the element's current chunks" ) != std::string::npos,
+		       "T14d(e2) MONEY (review round 6): an ALL-REJECTED build's stub claims no chunks exist -- it "
+		       "points to read_document for the current state" );
 	}
 	// (e3) the carry is bounded, with an explicit count of what was left out.
 	{
@@ -4864,8 +4868,8 @@ static void TestContextLifetimeRetirementRound2()
 		// session's own refusal names reopen_element when an edit is
 		// actually refused).
 		const std::string expected =
-			"[build_element result for element \"wizard\" elided -- retired when \"wizard\" was finished; its "
-			"chunks are in the document (read_document shows them). Realised world bounding box when built: "
+			"[build_element result for element \"wizard\" elided -- retired when \"wizard\" was finished; "
+			"read_document shows the element's current chunks. Realised world bounding box when built: "
 			"min (-1, 0, -0.5) max (1, 4, 0.5), height 4.]";
 		const char* const finishes[] = {
 			"{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}",
@@ -4920,6 +4924,39 @@ static void TestContextLifetimeRetirementRound2()
 		Check( body.find( "wizard_s (k) staged as a proposal: STAGED_MARKER" ) != std::string::npos &&
 		       body.find( "wizard_s (k) refused" ) == std::string::npos && CountOccurrences( body, "STAGED_MARKER" ) == 1,
 		       "T14d(e9): a staged chunk is carried as staged (once), not as refused" );
+		Check( body.find( "chunks are in the document" ) == std::string::npos,
+		       "T14d(e9): a build whose only chunk was STAGED does not claim the element has chunks" );
+	}
+	// (e10) review round 6 P1-2: the compose-retired skill stub is PAST
+	//       tense -- after a later reopen_element it is still true.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "plan, compose, reopen" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "s1" ),
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_PAST_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "compose" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "reopen_element" ), Vec1( "r1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( reopen( 3, "wizard" ) ) ) ) {
+			Check( false, "T14d(e10): drive" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "SK_PAST_MARKER" ) == 0 &&
+		       body.find( "retired when every element of the build plan was finished" ) != std::string::npos &&
+		       body.find( "every element of the build plan is finished" ) == std::string::npos,
+		       "T14d(e10) MONEY: the skill stub states a PAST fact, still true after reopen_element" );
+	}
+	// (e11) review round 6 P2: the carried head version is EXACT digits.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"applied\":1,\"total\":1,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":9876543210,\"revision\":123456},"
+			"\"name\":\"wizard_hv\",\"kind\":\"k\",\"element\":\"wizard\"}]}" );
+		std::string body;
+		if( !stubAfterFinish( "insert_chunks", "{\"chunks\":[]}", env, body ) ) { Check( false, "T14d(e11): drive" ); return; }
+		Check( body.find( "headVersion after that call: {\\\"uuid\\\":9876543210,\\\"revision\\\":123456}." )
+		           != std::string::npos,
+		       "T14d(e11) MONEY: a large uuid and a 6-digit revision are carried as exact integers" );
 	}
 }
 

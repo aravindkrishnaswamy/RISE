@@ -2497,8 +2497,16 @@ namespace RISE
 					if( !items.isArray() || items.size() == 0 ) return std::string();
 					const JsonValue& hv = items.at( items.size() - 1 ).get( "headVersion" );
 					if( !hv.get( "uuid" ).isNumber() || !hv.get( "revision" ).isNumber() ) return std::string();
-					return "headVersion after that call: {\"uuid\":" + num( hv.get( "uuid" ).asNumber() ) +
-						",\"revision\":" + num( hv.get( "revision" ).asNumber() ) + "}.";
+					// EXACT integers (review round 6): %.4g turned revision 123456
+					// into 1.235e+05.  Same digits as AgentRpc.cpp's HeadVersionJson
+					// emits (JSON numbers carrying the uint64 values).
+					auto integer = []( double v ) {
+						char b[32];
+						std::snprintf( b, sizeof( b ), "%.0f", v );
+						return std::string( b );
+					};
+					return "headVersion after that call: {\"uuid\":" + integer( hv.get( "uuid" ).asNumber() ) +
+						",\"revision\":" + integer( hv.get( "revision" ).asNumber() ) + "}.";
 				}
 				return std::string();
 			}
