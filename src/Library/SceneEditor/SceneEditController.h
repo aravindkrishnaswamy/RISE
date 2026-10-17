@@ -597,6 +597,14 @@ namespace RISE
 			//! parse/resolution so the Agent surface reports what was inserted/removed.
 			String                     chunkKeyword;
 			String                     chunkName;
+			//! Batched agent edits (2026-10-16, ApplyAgentEditBatch only): the batch exceeded its isolation
+			//! budget and committed NOTHING -- the caller must commit this element on its own (status
+			//! "sequential").
+			bool                       needsSequential = false;
+			//! Review round 3 (chunk-CRUD / param verbs and ApplyAgentEditBatch): the refusal is a
+			//! WOULD-NOT-DERIVE (Job's code 0) -- as opposed to a policy gate, a malformed chunk or a duplicate.
+			//! The batch fallback's retry keys on this, never on the message text.
+			bool                       wouldNotDerive = false;
 		};
 
 		//! Facet 5 slice 1b: route an agent param-value commit through the
@@ -699,6 +707,43 @@ namespace RISE
 			const std::vector<String>& targets,
 			const std::vector<String>& kinds,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Batched agent edits (2026-10-16): route a BATCH of agent chunk inserts and/or param edits through
+		//! the SAME critical section the single verbs use (render-admission gate -> mTxnOpen refusal ->
+		//! cancel-and-park under mMutex -> the Job primitive -> rebind -> dirty marks -> ONE history push ->
+		//! epoch bump -> re-render kick -> post-commit head read), holding mMutex across the WHOLE batch so a
+		//! co-editing GUI user can never interleave with it.  The batch is realized by Job::ApplyCstEditBatch:
+		//! ONE dry-run + ONE full re-derive on the common path instead of one pair per element, with every
+		//! element still validated and -- if it would not derive in context -- refused INDIVIDUALLY.
+		//!
+		//! Returns one AgentCommitResult per input element, folded exactly as the single verb for that
+		//! element folds it (ApplyAgentInsertChunk / ApplyAgentParamEdit: same statuses, same messages, the
+		//! insert's keyword/name echo), except that a landed element always reports rawCode 2/3 -- a batch
+		//! realizes through one full re-derive, never the incremental path.  Every result carries the SAME
+		//! post-call headVersion: the head revision is bumped ONCE for the whole batch.  The per-element
+		//! controller-level refusals the single verbs make (empty field, a surface binding on a container
+		//! object) are made here per element; the container gate is judged against the batch's EVOLVING document.
+		//!
+		//! No optimistic-concurrency base: a caller pinning a base head version commits that element through
+		//! the single verb (AgentSession does), so the conflict rules never change shape.
+		//!
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentEditBatch: the landed elements'
+		//! OPERATION-LEVEL inverses, see RISE::CstBatchUndoOp) for the whole batch, so one Cmd-Z undoes the
+		//! whole batch, matching ApplyAgentRemoveChunks.
+		//!
+		//! A batch whose failure isolation exceeds Job's dry-run budget commits NOTHING and returns every
+		//! admitted element with status "sequential" / needsSequential -- the caller then commits them one at
+		//! a time through the single verbs, so this lock is not held for O(N) dry-runs.  Those fallback commits are
+		//! PER-ELEMENT undo steps (each single verb pushes its own record); they cannot be bracketed by
+		//! CompositeBegin/End, because an open composite refuses agent commits by design.
+		//!
+		//! A diagnosed (code 3) batch re-derive is reported per element: an element a diagnostic is ATTRIBUTED
+		//! to (it opens with that element's own `<keyword> `<name>``) is "diagnosed" and every other landed
+		//! element "applied" (rawCode 3) with the diagnostics quoted; when nothing is attributable, every
+		//! landed element is "diagnosed".  An Undo/Redo of this batch's record that cannot apply is REFUSED and
+		//! the record stays in place (the rule every refused record follows), with a user-facing notice set --
+		//! read it with ConsumeHistoryNotice.
+		std::vector<AgentCommitResult> ApplyAgentEditBatch( const std::vector<CstBatchEdit>& edits );
 
 		//! R2 (2026-08-10, replace_geometry_scaffold): install `candidateDocText` -- a WHOLE candidate
 		//! document the caller computed off a head snapshot -- through the SAME critical section as
@@ -1843,8 +1888,14 @@ namespace RISE
 		void BeginPropertyScrub();
 		void EndPropertyScrub();
 
-		void Undo();
-		void Redo();
+		//! Return whether the step was applied (false = nothing to undo/redo, refused, or blocked).  A refused
+		//! AgentEditBatch step sets a user-facing notice -- read it with ConsumeHistoryNotice.
+		bool Undo();
+		bool Redo();
+
+		//! Review round 3: the notice the last refused Undo/Redo set (e.g. an agent batch edit whose inverse would
+		//! leave a document that does not derive), cleared on read; "" when none.
+		std::string ConsumeHistoryNotice();
 
 		//! Human-readable labels for the next Undo()/Redo() step
 		//! ("Translate", "Agent Edit", …) for the platform shells'
@@ -3999,6 +4050,18 @@ namespace RISE
 		//! the result-stamping sites that need only the version.
 		RISE::Cst::CstHeadVersion ReadAgentHeadVersion() const;
 
+		//! Batched agent edits (2026-10-16): ReadAgentSceneSnapshot's lock + lifecycle refusal, returning a
+		//! persistent-structure COPY of the head Document (cheap; no serialization) -- the base of
+		//! AgentSession's incremental preview of a deferred batch.
+		void CopyAgentHeadDocument( bool& outHasDocument,
+		                            RISE::Cst::Document& outDocument,
+		                            RISE::Cst::CstHeadVersion& outVersion ) const;
+
+		//! Batched agent edits (2026-10-16): Job::ApplyCstBatchElement on the CALLER's document, under mMutex
+		//! (the element reads live Job state, e.g. the active camera).  Mutates only `doc`.
+		int ApplyAgentBatchElementToDocument( RISE::Cst::Document& doc, const CstBatchEdit& edit,
+		                                      CstBatchOutcome& outcome ) const;
+
 		//! "Reveal in scene file" (the design comp's ⌗ affordance): resolve
 		//! ENTITY (cat, name) to WHERE it sits in SerializedSceneText() --
 		//! its top-level chunk's byte offset and 1-based line number.
@@ -5705,6 +5768,10 @@ namespace RISE
 			const std::vector<String>& kinds,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
+		//! Batched agent edits (2026-10-16): the whole critical section for ApplyAgentEditBatch.  Caller holds
+		//! mRenderAdmissionMutex and has already cleared the agent-render gate; this takes mMutex itself.
+		std::vector<AgentCommitResult> ApplyAgentEditBatchCrud_( const std::vector<CstBatchEdit>& edits );
+
 		//! R2 (2026-08-10, replace_geometry_scaffold): the whole critical section for
 		//! ApplyAgentReplaceGeometry (see that method's doc).  Kept SEPARATE from ApplyAgentRemoveChunksCrud_
 		//! for the same reason that one is separate from ApplyAgentChunkCrud_: it takes a whole-document text
@@ -6989,8 +7056,8 @@ namespace RISE
 		EditorStateSnapshot CaptureEditorStateLocked_() const;
 		void RestoreEditorStateLocked_( const EditorStateSnapshot& s, bool restoreDirty );
 		bool SetSelectionInner_( Category cat, const String& entityName );
-		void UndoInner_();
-		void RedoInner_();
+		bool UndoInner_();
+		bool RedoInner_();
 		//! doc 88 S4b: `occ` is WHICH occurrence of `param` to write (0 = first),
 		//! and `occAddressed` says the caller reached this param through an
 		//! occurrence-addressed row (`stop[2]`) rather than by naming a param the

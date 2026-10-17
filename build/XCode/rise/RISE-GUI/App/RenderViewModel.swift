@@ -2291,12 +2291,25 @@ final class RenderViewModel: ObservableObject {
     func undo() {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.undo()
+        publishHistoryNotice(vb)
     }
 
     /// Same gate as `pauseRefinement` — see `canUseSceneTransport`.
     func redo() {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.redo()
+        publishHistoryNotice(vb)
+    }
+
+    /// A refused undo/redo (e.g. an agent batch edit whose inverse would
+    /// not derive) leaves a notice the user must see -- the step stays in
+    /// the history, so a silent refusal would read as a dead Cmd-Z.
+    /// `ContentView` presents it as an alert.
+    @Published var historyNotice: String? = nil
+
+    private func publishHistoryNotice(_ vb: RISEViewportBridge) {
+        let notice = vb.consumeHistoryNotice()
+        if !notice.isEmpty { historyNotice = notice }
     }
 
     // MARK: - UI redesign: TopBar Save

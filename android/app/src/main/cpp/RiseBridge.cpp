@@ -1153,11 +1153,23 @@ void RiseBridge::viewportBeginPropertyScrub() {
 void RiseBridge::viewportEndPropertyScrub() {
     if (m_viewportController) RISE::RISE_API_SceneEditController_EndPropertyScrub(m_viewportController);
 }
+// A refused undo/redo leaves a user-facing notice (e.g. an agent batch edit whose inverse would not derive).
+// Consume it on every call so it can never go stale and describe a later step; the Android shell has no
+// notice surface for undo yet, so it is logged.
+static void LogHistoryNotice(RISE::SceneEditController* c, const char* what) {
+    char buf[1024] = {0};
+    if (RISE::RISE_API_SceneEditController_ConsumeHistoryNotice(c, buf, sizeof(buf)))
+        LOGE("%s refused: %s", what, buf);
+}
 void RiseBridge::viewportUndo() {
-    if (m_viewportController) RISE::RISE_API_SceneEditController_Undo(m_viewportController);
+    if (!m_viewportController) return;
+    RISE::RISE_API_SceneEditController_Undo(m_viewportController);
+    LogHistoryNotice(m_viewportController, "undo");
 }
 void RiseBridge::viewportRedo() {
-    if (m_viewportController) RISE::RISE_API_SceneEditController_Redo(m_viewportController);
+    if (!m_viewportController) return;
+    RISE::RISE_API_SceneEditController_Redo(m_viewportController);
+    LogHistoryNotice(m_viewportController, "redo");
 }
 double RiseBridge::viewportLastSceneTime() const {
     if (!m_viewportController) return 0.0;

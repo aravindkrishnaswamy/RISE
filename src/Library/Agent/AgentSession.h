@@ -46,6 +46,7 @@
 
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: RISE::Cst::CstHeadVersion (the (uuid,revision) optimistic-concurrency identity)
 #include "../Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: RISE::Implementation::ViewportRenderMode (AgentRenderTarget::ViewMode's payload -- needs the complete enum for AgentRenderParams::viewMode's default member initializer)
+#include "../Interfaces/IJobPriv.h"   // Batched agent edits (2026-10-16): RISE::CstBatchEdit, held by value in PendingBatchEdit_
 #include "../Geometry/SDFGeometry.h"   // Creature scaffold slice: RISE::Implementation::SDFGeometry::Part, for ForTest_ScanDerivedSdfParts's signature
 
 namespace RISE
@@ -192,6 +193,16 @@ namespace RISE
 		//!            mutated and the managers replaced -- so `message` states
 		//!            that nuance plainly (a caller must not assume nothing
 		//!            changed either).
+		//!            BATCHES (propose_patches / insert_chunks, 2026-10-16):
+		//!            a batch is realized by ONE re-derive, so its diagnostics
+		//!            are shared.  An element a diagnostic is attributed to
+		//!            (it OPENS with that element's own `<keyword> `<name>``)
+		//!            is "diagnosed"; every OTHER landed element is then
+		//!            applied=TRUE, status="applied", rawCode=3, with the
+		//!            diagnostics quoted in `message` -- it did land.  When
+		//!            no diagnostic can be attributed, EVERY landed element is
+		//!            "diagnosed".  A caller that needs "is it in the document"
+		//!            must test applied OR status=="diagnosed".
 		//!   * 0   -> applied=false, status="rejected": edit refused; the head
 		//!            is byte-identical (nothing changed).  The pre-flight
 		//!            guards (no Document / empty target/param/value, and --
@@ -211,7 +222,8 @@ namespace RISE
 		//! `rawCode` preserves the underlying contract value (0/1/2/3) for a
 		//! caller that wants the raw code (0 for a conflict, since nothing was
 		//! applied); `status` is the recommended gate:
-		//!   applied  <=> a CLEAN apply (rawCode 1 or 2);
+		//!   applied  <=> a CLEAN apply (rawCode 1 or 2) -- except batch siblings
+		//!            (see BATCHES above: applied=true with rawCode 3);
 		//!   status   in {"applied","rejected","diagnosed","conflict"}.
 		//! `headVersion` is the Job's head-version AFTER the call: the POST-COMMIT
 		//! head on a clean apply (its revision bumped), and the CURRENT (unchanged)
@@ -243,8 +255,8 @@ namespace RISE
 		{
 			bool        applied = false;
 			bool        retriable = false;   //!< always emitted on the wire; meaningful for status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME patch later; false = permanent
-			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
-			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
+			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed (in a propose_patches batch, rawCode 3 can ride with applied=true: see the BATCHES note above)
+			std::string status;              //!< "applied" (clean -- or, in a diagnosed BATCH, landed while ANOTHER element was diagnosed) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
 			RISE::Cst::CstHeadVersion headVersion;   //!< the head-version AFTER the call (post-commit on success; current head on reject/diagnosed/conflict)
 			std::string message;
 			//! Secure-MCP slice 6: set true ONLY for an External-authority
@@ -2673,7 +2685,21 @@ namespace RISE
 			//! makes that thread the sole caller.  (The render's own worker
 			//! POOL touches the derived Scene during that synchronous call,
 			//! but the call has not returned, so no read can interleave.)
+			//!
+			//! Batched agent edits (2026-10-16): while an InsertChunks /
+			//! ProposePatches batch holds DEFERRED elements (see
+			//! FlushEditBatch_), this returns the document AS THOSE ELEMENTS
+			//! WILL LEAVE IT (the Job's own preview, with the REAL head
+			//! version) -- so every pre-commit gate judges element i against
+			//! elements 0..i-1, exactly as it did when each element committed
+			//! before the next was considered.  ReadDocumentSnapshotReal_ is
+			//! the unpreviewed read.
 			AgentDocumentSnapshot ReadDocumentSnapshot() const;
+
+			//! Test seam (2026-10-16): called with the element index after each element an InsertChunks /
+			//! ProposePatches batch DEFERS (null = none).  Lets a test move the head mid-batch.
+			void ForTest_SetAfterDeferHook( std::function<void( std::size_t )> hook ) { mForTestAfterDeferHook = hook; }
+			AgentDocumentSnapshot ReadDocumentSnapshotReal_() const;
 
 			//! The head-version alone, read with the SAME discipline as
 			//! ReadDocumentSnapshot (controller-mediated under mMutex when
@@ -2968,8 +2994,11 @@ namespace RISE
 			//! parameter edits across one or several named entities in ONE call
 			//! instead of one round-trip per patch.
 			//!
-			//! Semantics are SEQUENTIAL and BEST-EFFORT, delegating to ProposePatch
-			//! for each element in `patches`.  `baseOrNull` is checked against the
+			//! Semantics are SEQUENTIAL and BEST-EFFORT, delegating to ProposePatch's
+			//! body for each element in `patches` -- with the commits deferred and
+			//! the batch realized by ONE full re-derive, as InsertChunks does (see
+			//! its doc; a lone element and the element carrying `baseOrNull`
+			//! commit exactly as a single call).  `baseOrNull` is checked against the
 			//! FIRST element only; subsequent elements pass nullptr to apply
 			//! against the evolving head.  A REJECTED element does NOT stop the
 			//! batch -- later elements are still attempted so their own results
@@ -3038,16 +3067,27 @@ namespace RISE
 			//! ONE call.
 			//!
 			//! Semantics are SEQUENTIAL and BEST-EFFORT, and this method
-			//! does NOT duplicate InsertChunk's logic -- it simply calls
-			//! InsertChunk once per element of `chunkTexts`, IN ORDER, and
+			//! does NOT duplicate InsertChunk's logic -- it runs InsertChunk's
+			//! own body once per element of `chunkTexts`, IN ORDER, and
 			//! collects one AgentChunkResult per input (same size and order
-			//! as `chunkTexts`).  Because each call lands (or is rejected)
-			//! before the next one runs, a chunk EARLIER in the batch that
-			//! is referenced by a LATER chunk resolves cleanly -- e.g. a
+			//! as `chunkTexts`).  A chunk EARLIER in the batch that is
+			//! referenced by a LATER chunk resolves cleanly -- e.g. a
 			//! painter at index 0 followed by a material at index 1 that
 			//! references it -- exactly as if the two had been separate
 			//! insert_chunk calls in the same order, without the caller
 			//! having to round-trip in between.
+			//!
+			//! Batched agent edits (2026-10-16): every element still runs
+			//! every gate in order (each judged against the document its
+			//! predecessors leave -- see ReadDocumentSnapshot), but the
+			//! COMMITS are deferred and the whole batch is realized with ONE
+			//! full re-derive (SceneEditController::ApplyAgentEditBatch /
+			//! Job::ApplyCstEditBatch) instead of one per element; an element
+			//! that would not derive is still refused on its own.  Every
+			//! element reports the same post-call headVersion (the revision
+			//! is bumped once), and in LIVE mode the batch is ONE undo step --
+			//! except when its failure isolation exceeds Job's budget: the
+			//! elements are then committed one at a time (one undo step EACH).
 			//!
 			//! A REJECTED element does NOT stop the batch: the remaining
 			//! elements are still attempted in order.  If a later element
@@ -10593,7 +10633,97 @@ namespace RISE
 			//! cannot miss a route or double-count one.  Byte-identical
 			//! behaviour to before this split; see ProposePatch's own doc
 			//! comment for everything this does.
-			AgentPatchResult ProposePatchImpl_( const AgentSetPatch& patch );
+			//! Batched agent edits (2026-10-16): `deferIndex` != kNoDeferIndex
+			//! lets a batch caller (ProposePatches) DEFER the commit: once every
+			//! gate has passed, the edit is queued on mEditBatch instead of
+			//! committed, and the result -- written into the batch's output
+			//! slot `deferIndex` -- is completed by FlushEditBatch_.  The
+			//! returned value is then a placeholder the caller must not read.
+			AgentPatchResult ProposePatchImpl_( const AgentSetPatch& patch,
+			                                    std::size_t deferIndex = kNoDeferIndex );
+
+			//! Batched agent edits (2026-10-16): InsertChunk's real body, with
+			//! the same `deferIndex` contract as ProposePatchImpl_ (InsertChunks
+			//! is the batch caller).  InsertChunk itself never defers.
+			AgentChunkResult InsertChunkImpl_( const std::string& chunkText,
+			                                   const RISE::Cst::CstHeadVersion* baseOrNull,
+			                                   std::size_t deferIndex );
+
+			//! Batched agent edits (2026-10-16): "do not defer" sentinel.
+			static const std::size_t kNoDeferIndex = static_cast<std::size_t>( -1 );
+
+			//! Batched agent edits (2026-10-16): one DEFERRED element of an
+			//! InsertChunks / ProposePatches batch -- everything the single
+			//! verb's commit tail needs, captured at the moment the element
+			//! passed its gates.  The notices are the single verb's
+			//! destructor-time folds (BuildPlanGiveUpFold_ x2, the auto-parent
+			//! notice), moved here so they are folded AFTER the commit result
+			//! exists, in the single verb's own order.
+			struct PendingBatchEdit_
+			{
+				bool                 isInsert = false;
+				std::size_t          outIndex = 0;
+				CstBatchEdit         edit;              //!< what the Job sees
+				std::string          applyText;         //!< insert: the (possibly auto-parented) chunk text
+				AgentSetPatch        patch;             //!< patch: the element as submitted
+				bool                 haveOrphanPreDoc = false;
+				RISE::Cst::Document  orphanPreDoc;      //!< patch: the preview immediately BEFORE it
+				RISE::Cst::Document  orphanPostDoc;     //!< patch: the preview immediately AFTER it (shares NodeIds)
+				std::string          autoParentNotice;  //!< insert only
+				std::string          s1Notice;
+				std::string          g2Notice;
+				std::string          attrName;          //!< patch: AttributePatchOnApply_'s name/kind
+				std::string          attrKind;
+			};
+
+			//! Batched agent edits (2026-10-16): the batch an InsertChunks /
+			//! ProposePatches call has open.  Exactly one output vector is set.
+			struct EditBatchCollector_
+			{
+				std::vector<AgentChunkResult>*  chunkOut = nullptr;
+				std::vector<AgentPatchResult>*  patchOut = nullptr;
+				std::vector<PendingBatchEdit_>  pending;
+				bool                            flushedAny = false;
+				//! The INCREMENTAL preview (review P2-E): a persistent copy of
+				//! the head as of `previewBase`, with every deferred element
+				//! applied as it was deferred; `previewText` caches its
+				//! serialization for `previewTextFor` pending elements.
+				bool                            havePreview = false;
+				RISE::Cst::Document             previewDoc;
+				RISE::Cst::CstHeadVersion       previewBase;
+				std::size_t                     previewTextFor = static_cast<std::size_t>( -1 );
+				std::string                     previewText;
+			};
+
+			//! Batched agent edits (2026-10-16): COMMIT every deferred element
+			//! of the open batch -- ONE SceneEditController::ApplyAgentEditBatch
+			//! (live) / Job::ApplyCstEditBatch (headless) call, i.e. ONE full
+			//! re-derive, instead of one per element (a lone element goes
+			//! through the single verb, byte-identical to before) -- then
+			//! complete each element's result with the single verb's own commit
+			//! tail (result mapping, issue/rejection analysis, orphan check,
+			//! attribution, notice folds, camera-framing note).  Called at the
+			//! end of the batch AND before any IMMEDIATE commit made while
+			//! elements are still deferred (a nested InsertChunk / ProposePatch
+			//! from inside a gate -- e.g. the element-root mint), so document
+			//! order always equals call order.  No-op when nothing is deferred.
+			void FlushEditBatch_();
+			static bool LaterLandedPatchWritesSameSlot_( const std::vector<PendingBatchEdit_>& pend,
+			                                             const std::vector<char>& landed, std::size_t k );
+
+			//! Batched agent edits (2026-10-16): the incremental preview
+			//! (review P2-E).  EnsureBatchPreview_ makes sure the open batch's
+			//! preview exists and is based on the CURRENT head (rebuilding it
+			//! -- head copy + every pending element -- only if a co-editor
+			//! moved the head); ApplyToBatchPreview_ applies one element to it;
+			//! DeferBatchEdit_ queues an element, capturing a patch's orphan
+			//! pre/post documents from the preview around its application.
+			bool EnsureBatchPreview_() const;
+			void ApplyToBatchPreview_( const CstBatchEdit& edit ) const;
+			void DeferBatchEdit_( PendingBatchEdit_& pe );
+
+			EditBatchCollector_* mEditBatch = nullptr;
+			std::function<void( std::size_t )> mForTestAfterDeferHook;
 
 			//! GPT slice item 1: the coverage-delta note's camera-patch
 			//! detector, called after EVERY ProposePatch call (applied or

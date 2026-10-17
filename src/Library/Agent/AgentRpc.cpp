@@ -1950,7 +1950,12 @@ namespace RISE
 				//   `applied` is CLEAN success only; `status` is the four-state
 				//   gate {"applied","rejected","diagnosed","conflict"} (a rawCode-3
 				//   re-derive is applied=false/status="diagnosed": mutated but
-				//   the re-derive diagnosed -- NOT a clean apply; a stale
+				//   the re-derive diagnosed -- NOT a clean apply; in a
+				//   propose_patches / insert_chunks BATCH the one shared
+				//   re-derive's diagnostics mark only the element they are
+				//   attributed to "diagnosed" and the other landed elements
+				//   applied=true/rawCode=3 with the diagnostics quoted -- or
+				//   every landed element "diagnosed" when unattributable; a stale
 				//   baseHeadVersion is applied=false/status="conflict", head
 				//   untouched).  REQUIRES a head (it edits the retained Document):
 				//   no session -> error.  Facet 5 slice 1a: the OPTIONAL

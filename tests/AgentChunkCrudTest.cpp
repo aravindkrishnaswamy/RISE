@@ -142,6 +142,8 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IAnimator.h"
 #include "../src/Library/Interfaces/IPainter.h"
@@ -5502,6 +5504,598 @@ static void TestProposePatchesConflictIsBatchFatal()
 	Check( sess->ReadDocument() != headBefore, "PP4 RED-PROVE: that batch really did mutate the head" );
 
 	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// BR1..BR5 (2026-10-16, batched realization): insert_chunks / propose_patches
+// realize a WHOLE batch with ONE full re-derive (they used to re-derive the
+// whole scene once PER element -- ~350 full re-derives in one 34-minute
+// agent session).  The number of LIVE full re-derives is read off
+// IJobPriv::GetContainerRebuildCount, which counts ClearAll + rebuild cycles
+// (every live full re-derive does exactly one; a dry-run derives into a
+// throwaway Job and does not touch it).
+//----------------------------------------------------------------------
+static std::vector<std::string> BatchInsertFixtureChunks()
+{
+	std::vector<std::string> chunks;
+	chunks.push_back( "uniformcolor_painter\n{\n\tname br_pnt_a\n\tcolor 0.9 0.2 0.1\n}" );
+	chunks.push_back( "lambertian_material\n{\n\tname br_mat_a\n\treflectance br_pnt_a\n}" );   // depends on [0]
+	chunks.push_back( "uniformcolor_painter\n{\n\tname br_pnt_b\n\tcolor 0.1 0.3 0.9\n}" );
+	chunks.push_back( "lambertian_material\n{\n\tname br_mat_b\n\treflectance br_pnt_b\n}" );   // depends on [2]
+	chunks.push_back( "sphere_geometry\n{\n\tname br_sph\n\tradius 0.25\n}" );
+	chunks.push_back( "box_geometry\n{\n\tname br_box\n\twidth 0.3\n\theight 0.3\n\tdepth 0.3\n}" );
+	chunks.push_back( "standard_object\n{\n\tname br_obj_a\n\tgeometry br_sph\n\tmaterial br_mat_a\n\tposition 1 0 0\n}" );
+	chunks.push_back( "standard_object\n{\n\tname br_obj_b\n\tgeometry br_box\n\tmaterial br_mat_b\n\tposition -1 0 0\n}" );
+	return chunks;
+}
+
+//! BR1 + BR4: N valid inserts -> exactly ONE live re-derive and the SAME
+//! document N single inserts produce; one head bump; (live) one Cmd-Z
+//! restores the byte-exact pre-batch document and Redo re-installs it.
+static void TestBatchedInsertSingleRederive()
+{
+	std::printf( "BR1: insert_chunks realizes a batch with ONE re-derive (headless + live) ...\n" );
+	const std::vector<std::string> chunks = BatchInsertFixtureChunks();
+
+	// Reference: the same chunks as N SINGLE inserts.
+	std::string singlesDoc;
+	{
+		const std::string tmp = TempPath( "agentcrud_br1_singles.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR1 singles fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const unsigned long long r0 = pJob->GetContainerRebuildCount();
+		for( std::size_t i = 0; i < chunks.size(); ++i )
+			Check( sess->InsertChunk( chunks[i] ).applied, "BR1 single insert applies" );
+		Check( pJob->GetContainerRebuildCount() - r0 == chunks.size(),
+		       "BR1 control: N single inserts cost N live re-derives" );
+		singlesDoc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// HEADLESS batch.
+	{
+		const std::string tmp = TempPath( "agentcrud_br1_headless.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR1 headless fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+		const unsigned long long r0 = pJob->GetContainerRebuildCount();
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		const unsigned long long rebuilds = pJob->GetContainerRebuildCount() - r0;
+		std::printf( "  headless batch of %u inserts: %llu live re-derive(s)\n",
+		             static_cast<unsigned int>( chunks.size() ), rebuilds );
+		Check( rebuilds == 1, "BR1(a) headless: a batch of N valid inserts costs exactly ONE live re-derive" );
+		Check( res.size() == chunks.size(), "BR1 one result per element" );
+		bool allApplied = true, sameHead = true;
+		for( std::size_t i = 0; i < res.size(); ++i ) {
+			allApplied = allApplied && res[i].applied && res[i].status == "applied";
+			sameHead   = sameHead && res[i].headVersion == res[0].headVersion;
+		}
+		Check( allApplied, "BR1 every element applied" );
+		Check( res.size() == chunks.size() && res[1].issues.empty() && res[3].issues.empty(),
+		       "BR1(c) in-batch dependency: each material's painter (an EARLIER element) resolves -- no issue" );
+		Check( res.size() == chunks.size() && res[0].kind == "uniformcolor_painter" && res[0].name == "br_pnt_a" &&
+		       res[7].kind == "standard_object" && res[7].name == "br_obj_b",
+		       "BR1 per-element kind/name echo survives batching" );
+		Check( sameHead, "BR1 every element reports the SAME post-batch head" );
+		Check( !res.empty() && res.back().headVersion.revision == v0.revision + 1,
+		       "BR1 the batch bumps the head revision exactly ONCE" );
+		Check( sess->ReadDocument() == singlesDoc,
+		       "BR1(a) the batch produces the BYTE-IDENTICAL document N single inserts produce" );
+		Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "br_obj_b" ) != nullptr &&
+		       pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "br_mat_a" ) != nullptr,
+		       "BR1 the live managers carry the batch's entities" );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// LIVE batch (controller attached) + one-undo-per-batch.
+	{
+		const std::string tmp = TempPath( "agentcrud_br1_live.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR1 live fixture loads" );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string preDoc = sess->ReadDocument();
+			const unsigned long long r0 = pJob->GetContainerRebuildCount();
+			const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+			const unsigned long long rebuilds = pJob->GetContainerRebuildCount() - r0;
+			std::printf( "  live batch of %u inserts: %llu live re-derive(s)\n",
+			             static_cast<unsigned int>( chunks.size() ), rebuilds );
+			Check( rebuilds == 1, "BR1(a) live: a batch of N valid inserts costs exactly ONE live re-derive" );
+			bool allApplied = true;
+			for( std::size_t i = 0; i < res.size(); ++i ) allApplied = allApplied && res[i].applied && res[i].rawCode == 2;
+			Check( res.size() == chunks.size() && allApplied, "BR1 live: every element applied (rawCode 2)" );
+			const std::string postDoc = sess->ReadDocument();
+			Check( postDoc == singlesDoc, "BR1 live: same document as N single inserts" );
+			Check( controller.HasUnsavedChanges(), "BR1 live: the batch marked the editor DIRTY" );
+
+			controller.Undo();
+			Check( sess->ReadDocument() == preDoc,
+			       "BR4(d) ONE Undo restores the byte-exact PRE-batch document (one history record per batch)" );
+			Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "br_obj_a" ) == nullptr,
+			       "BR4(d) ...and the live managers dropped the batch's entities" );
+			controller.Redo();
+			Check( sess->ReadDocument() == postDoc, "BR4(d) Redo re-installs the byte-exact POST-batch document" );
+			Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "br_obj_a" ) != nullptr,
+			       "BR4(d) ...and the live managers carry the entities again" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR2: a would-not-derive element in the MIDDLE of a batch is refused on
+//! its own (with the single verb's reason + issues) and the rest land --
+//! with the same document the N single calls produce; an in-batch duplicate
+//! is refused like a second single call; a later element depending on the
+//! refused one is refused too.  Headless AND live.
+static void TestBatchedInsertIsolatesBadElement()
+{
+	std::printf( "BR2: insert_chunks isolates a bad element in the middle of a batch ...\n" );
+	std::vector<std::string> chunks;
+	chunks.push_back( "uniformcolor_painter\n{\n\tname br2_p0\n\tcolor 0.4 0.4 0.4\n}" );
+	chunks.push_back( "lambertian_material\n{\n\tname br2_m0\n\treflectance br2_p0\n}" );
+	chunks.push_back( "lambertian_material\n{\n\tname br2_bad\n\treflectance nope_painter_br2\n}" );   // would not derive
+	chunks.push_back( "uniformcolor_painter\n{\n\tname br2_p0\n\tcolor 0.1 0.1 0.1\n}" );             // duplicate of [0]
+	chunks.push_back( "sphere_geometry\n{\n\tname br2_sph\n\tradius 0.2\n}" );
+	chunks.push_back( "standard_object\n{\n\tname br2_obj\n\tgeometry br2_sph\n\tmaterial br2_m0\n\tposition 0 1 0\n}" );
+	chunks.push_back( "standard_object\n{\n\tname br2_obj_bad\n\tgeometry br2_sph\n\tmaterial br2_bad\n}" );  // depends on the refused [2]
+
+	std::string singlesDoc;
+	std::vector<bool> singlesApplied;
+	{
+		const std::string tmp = TempPath( "agentcrud_br2_singles.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR2 singles fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		for( std::size_t i = 0; i < chunks.size(); ++i ) singlesApplied.push_back( sess->InsertChunk( chunks[i] ).applied );
+		singlesDoc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	for( int live = 0; live < 2; ++live )
+	{
+		const std::string tmp = TempPath( live ? "agentcrud_br2_live.RISEscene" : "agentcrud_br2_headless.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR2 fixture loads" );
+		if( !pJob ) return;
+		{
+			std::unique_ptr<SceneEditController> controller;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			if( live ) {
+				controller.reset( new SceneEditController( *pJob, /*interactiveRasterizer*/0 ) );
+				sess->AttachController( controller.get() );
+			}
+			const char* mode = live ? "live" : "headless";
+			const unsigned long long r0 = pJob->GetContainerRebuildCount();
+			const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+			const unsigned long long rebuilds = pJob->GetContainerRebuildCount() - r0;
+			std::printf( "  %s batch with bad elements: %llu live re-derive(s)\n", mode, rebuilds );
+			Check( res.size() == chunks.size(), std::string( "BR2 " ) + mode + ": one result per element" );
+			if( res.size() == chunks.size() ) {
+				Check( res[0].applied && res[1].applied && res[4].applied && res[5].applied,
+				       std::string( "BR2(b) " ) + mode + ": the valid elements around the bad ones LAND" );
+				Check( !res[2].applied && res[2].status == "rejected" &&
+				       res[2].message.find( "would not derive in context" ) != std::string::npos,
+				       std::string( "BR2(b) " ) + mode + ": the bad element is refused with the single verb's reason" );
+				Check( res[2].issues.size() == 1 && res[2].issues[0].reason == "unresolved_reference" &&
+				       res[2].issues[0].value == "nope_painter_br2",
+				       std::string( "BR2(b) " ) + mode + ": the refusal carries the actionable unresolved_reference issue" );
+				Check( !res[3].applied && res[3].message.find( "already exists" ) != std::string::npos,
+				       std::string( "BR2 " ) + mode + ": an in-batch DUPLICATE of an earlier element is refused" );
+				Check( !res[6].applied && res[6].status == "rejected",
+				       std::string( "BR2 " ) + mode + ": an element depending on the REFUSED one is refused too" );
+				Check( res[2].kind == "lambertian_material" && res[2].name == "br2_bad",
+				       std::string( "BR2 " ) + mode + ": the refused element still echoes its identity" );
+				bool matchesSingles = true;
+				for( std::size_t i = 0; i < res.size(); ++i ) matchesSingles = matchesSingles && ( res[i].applied == singlesApplied[i] );
+				Check( matchesSingles, std::string( "BR2 " ) + mode + ": per-element verdicts equal N single calls'" );
+			}
+			Check( rebuilds == 1, std::string( "BR2 " ) + mode + ": still exactly ONE live re-derive (isolation runs on dry-runs)" );
+			Check( sess->ReadDocument() == singlesDoc,
+			       std::string( "BR2 " ) + mode + ": the landed document equals the N-single-call document" );
+			Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "br2_bad" ) == nullptr &&
+			       pJob->GetObjects() && pJob->GetObjects()->GetItem( "br2_obj" ) != nullptr,
+			       std::string( "BR2 " ) + mode + ": the refused element never reached the managers; the survivors did" );
+			if( controller ) sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR3: a batch in which EVERY element is refused leaves the head and the
+//! live scene untouched (no re-derive, no revision bump, no history record).
+static void TestBatchedInsertAllRefused()
+{
+	std::printf( "BR3: insert_chunks with every element refused mutates nothing ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "BR3 fixture loads" );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string pre = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+		const unsigned long long r0 = pJob->GetContainerRebuildCount();
+		std::vector<std::string> chunks;
+		chunks.push_back( "lambertian_material\n{\n\tname br3_a\n\treflectance nope_br3_a\n}" );
+		chunks.push_back( "lambertian_material\n{\n\tname br3_b\n\treflectance nope_br3_b\n}" );
+		chunks.push_back( "uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 1 1 1\n}" );   // duplicate of the fixture's
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		bool noneApplied = res.size() == chunks.size();
+		for( std::size_t i = 0; i < res.size(); ++i ) noneApplied = noneApplied && !res[i].applied && res[i].status == "rejected";
+		Check( noneApplied, "BR3 every element rejected" );
+		Check( sess->ReadDocument() == pre, "BR3 the head is byte-identical" );
+		Check( sess->HeadVersion() == v0, "BR3 the head revision did not move" );
+		Check( pJob->GetContainerRebuildCount() == r0, "BR3 no live re-derive" );
+		Check( !controller.HasUnsavedChanges(), "BR3 nothing was marked dirty" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR6 (review P2-A): the live container gate (a surface binding on a geometry-less object) is judged
+//! against the batch's EVOLVING document, both ways round.
+static void TestBatchedContainerGateEvolvingDocument()
+{
+	std::printf( "BR6: propose_patches container gate follows the batch's evolving document ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br6.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "BR6 fixture loads" );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		Check( sess->InsertChunk( "standard_object\n{\n\tname br6_cont\n}" ).applied,
+		       "BR6 a container object (no geometry) inserts" );
+
+		// (1) obj_sph becomes a container EARLIER in the batch -> the later material binding is refused.
+		{
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			p.target = "obj_sph"; p.kind = "standard_object"; p.param = "geometry"; p.value = "none";        ps.push_back( p );
+			p.target = "obj_sph"; p.kind = "standard_object"; p.param = "material"; p.value = "mat_emit";    ps.push_back( p );
+			p.target = "sph";     p.kind = "";                p.param = "radius";   p.value = "0.7";         ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+			Check( res.size() == 3 && res[0].applied, "BR6(1) `geometry none` applies" );
+			Check( res.size() == 3 && !res[1].applied && res[1].message.find( "container node" ) != std::string::npos,
+			       "BR6(1) the material patch on the NOW-container is refused with the container message" );
+			Check( res.size() == 3 && res[2].applied, "BR6(1) an unrelated patch in the same batch still applies" );
+		}
+		// (2) a container gains a geometry EARLIER in the batch -> the later material binding is admitted.
+		{
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			p.target = "br6_cont"; p.kind = "standard_object"; p.param = "geometry"; p.value = "sph";        ps.push_back( p );
+			p.target = "br6_cont"; p.kind = "standard_object"; p.param = "material"; p.value = "mat_diffuse"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+			Check( res.size() == 2 && res[0].applied && res[1].applied,
+			       "BR6(2) a binding on an object the SAME batch gave a geometry is admitted" );
+			Check( sess->ReadDocument().find( "material mat_diffuse" ) != std::string::npos,
+			       "BR6(2) the binding is in the document" );
+		}
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR7 (review P2-B): an element's verdict does not depend on unrelated bad elements -- a material listed
+//! BEFORE the painter it reads lands whether or not a bad element forces isolation, wherever the split falls.
+static void TestBatchedVerdictIndependentOfSplits()
+{
+	std::printf( "BR7: batch verdicts are independent of unrelated bad elements ...\n" );
+	const std::string M   = "lambertian_material\n{\n\tname br7_m\n\treflectance br7_p\n}";
+	const std::string P   = "uniformcolor_painter\n{\n\tname br7_p\n\tcolor 0.2 0.7 0.2\n}";
+	const std::string BAD = "lambertian_material\n{\n\tname br7_bad\n\treflectance nope_br7\n}";
+	const std::string Y   = "sphere_geometry\n{\n\tname br7_y\n\tradius 0.1\n}";
+	std::vector< std::vector<std::string> > batches;
+	batches.push_back( std::vector<std::string>{ M, P } );
+	batches.push_back( std::vector<std::string>{ M, P, BAD } );
+	batches.push_back( std::vector<std::string>{ M, P, BAD, Y } );
+	batches.push_back( std::vector<std::string>{ BAD, M, Y, P } );
+	for( int live = 0; live < 2; ++live )
+	for( std::size_t b = 0; b < batches.size(); ++b )
+	{
+		const std::string tmp = TempPath( "agentcrud_br7.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR7 fixture loads" );
+		if( !pJob ) return;
+		{
+			std::unique_ptr<SceneEditController> controller;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			if( live ) {
+				controller.reset( new SceneEditController( *pJob, /*interactiveRasterizer*/0 ) );
+				sess->AttachController( controller.get() );
+			}
+			const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( batches[b] );
+			bool mLanded = false, badRefused = true;
+			for( std::size_t i = 0; i < res.size(); ++i ) {
+				if( res[i].name == "br7_m" ) mLanded = res[i].applied;
+				if( res[i].name == "br7_bad" ) badRefused = !res[i].applied;
+			}
+			char what[160];
+			std::snprintf( what, sizeof( what ), "BR7 %s batch %u: the material-before-its-painter LANDS",
+			               live ? "live" : "headless", static_cast<unsigned int>( b ) );
+			Check( mLanded, what );
+			std::snprintf( what, sizeof( what ), "BR7 %s batch %u: the bad element is refused",
+			               live ? "live" : "headless", static_cast<unsigned int>( b ) );
+			Check( badRefused, what );
+			Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "br7_m" ) != nullptr,
+			       "BR7 the material is in the live managers" );
+			if( controller ) sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR8 (review P2-C): (a) a head that does not derive refuses every element with ITS diagnostic and no
+//! isolation; (b) a batch whose isolation would exceed the dry-run budget commits element by element and still
+//! reaches the N-single-call verdicts and document.
+static void TestBatchedDegenerateHeadAndBudget()
+{
+	std::printf( "BR8: degenerate head + isolation budget fallback ...\n" );
+	// (a) DEGENERATE HEAD.  The UNGATED GUI edit route can commit a forward reference (the live managers
+	// resolve it; the document no longer derives in document order) -- exactly the head the agent gate exists
+	// to refuse, so a batch on it must refuse everything without bisecting.
+	{
+		const std::string tmp = TempPath( "agentcrud_br8a.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR8(a) fixture loads" );
+		if( !pJob ) return;
+		const int fw = pJob->ApplyCstParamEdit( "mat_diffuse", "material", "reflectance", 0, "pnt_emit" );
+		Check( fw >= 1, "BR8(a) the ungated route committed a forward reference" );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const std::string pre = sess->ReadDocument();
+		std::vector<std::string> chunks;
+		for( int i = 0; i < 6; ++i ) {
+			char b[160];
+			std::snprintf( b, sizeof( b ), "uniformcolor_painter\n{\n\tname br8a_p%d\n\tcolor 0.1 0.2 0.3\n}", i );
+			chunks.push_back( b );
+		}
+		const unsigned long long d0 = pJob->GetCstDryRunCount();
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		const unsigned long long dryRuns = pJob->GetCstDryRunCount() - d0;
+		std::printf( "  degenerate head: %llu dry-run(s) for %u elements\n", dryRuns, static_cast<unsigned int>( chunks.size() ) );
+		bool allRefused = res.size() == chunks.size();
+		for( std::size_t i = 0; i < res.size(); ++i ) allRefused = allRefused && !res[i].applied && res[i].status == "rejected";
+		Check( allRefused, "BR8(a) every element is refused (as N single calls would be)" );
+		Check( !res.empty() && res[0].message.find( "would not derive" ) != std::string::npos,
+		       "BR8(a) the refusal carries the would-not-derive reason" );
+		Check( dryRuns <= 2, "BR8(a) NO isolation: one batch dry-run + one head dry-run" );
+		Check( sess->ReadDocument() == pre, "BR8(a) the head is untouched" );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) BUDGET.  Many independent bad elements interleaved with good ones: bisection would need far more
+	// dry-runs than the budget allows, so the batch commits nothing and the elements land one at a time.
+	std::vector<std::string> chunks;
+	for( int i = 0; i < 12; ++i ) {
+		char b[200];
+		std::snprintf( b, sizeof( b ), "uniformcolor_painter\n{\n\tname br8b_ok%d\n\tcolor 0.5 0.5 0.5\n}", i );
+		chunks.push_back( b );
+		std::snprintf( b, sizeof( b ), "lambertian_material\n{\n\tname br8b_bad%d\n\treflectance nope_br8_%d\n}", i, i );
+		chunks.push_back( b );
+	}
+	std::string singlesDoc;
+	std::vector<bool> singlesApplied;
+	{
+		const std::string tmp = TempPath( "agentcrud_br8b_singles.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		for( std::size_t i = 0; i < chunks.size(); ++i ) singlesApplied.push_back( sess->InsertChunk( chunks[i] ).applied );
+		singlesDoc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+	for( int live = 0; live < 2; ++live )
+	{
+		const std::string tmp = TempPath( "agentcrud_br8b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR8(b) fixture loads" );
+		if( !pJob ) return;
+		{
+			std::unique_ptr<SceneEditController> controller;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			if( live ) {
+				controller.reset( new SceneEditController( *pJob, /*interactiveRasterizer*/0 ) );
+				sess->AttachController( controller.get() );
+			}
+			const unsigned long long r0 = pJob->GetContainerRebuildCount();
+			const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+			const unsigned long long rebuilds = pJob->GetContainerRebuildCount() - r0;
+			std::printf( "  %s budget fallback: %llu live re-derive(s) for %u elements\n",
+			             live ? "live" : "headless", rebuilds, static_cast<unsigned int>( chunks.size() ) );
+			bool same = res.size() == chunks.size();
+			for( std::size_t i = 0; same && i < res.size(); ++i ) same = ( res[i].applied == singlesApplied[i] );
+			Check( same, std::string( "BR8(b) " ) + ( live ? "live" : "headless" ) + ": per-element verdicts equal N single calls'" );
+			Check( sess->ReadDocument() == singlesDoc,
+			       std::string( "BR8(b) " ) + ( live ? "live" : "headless" ) + ": the document equals the N-single-call document" );
+			Check( rebuilds > 1, std::string( "BR8(b) " ) + ( live ? "live" : "headless" ) +
+			       ": the over-budget batch fell back to per-element commits" );
+			if( controller ) sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR9 (review P2-D, rounds 3-5): the batch's ONE history record is a compact operation-level record (the landed
+//! elements' inverses -- not two whole documents) and undo /
+//! redo stay byte-exact -- including a reverse-dependency batch (which per-element inverses could not undo)
+//! and with a GUI edit interleaved before and after the batch.
+static void TestBatchedUndoCompactRecordAndInterleaved()
+{
+	std::printf( "BR9: batch undo record is a compact operation-level record; interleaved GUI edits ...\n" );
+
+	const std::string tmp = TempPath( "agentcrud_br9.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "BR9 fixture loads" );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string doc0 = sess->ReadDocument();
+
+		// A GUI edit BEFORE the batch.
+		controller.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_emit" ) );
+		Check( controller.SetProperty( String( "scale" ), String( "21" ) ), "BR9 GUI edit before the batch applies" );
+		const std::string doc1 = sess->ReadDocument();
+		Check( doc1 != doc0, "BR9 the GUI edit changed the document" );
+
+		// A REVERSE-DEPENDENCY batch: each material is listed before the painter it reads.
+		std::vector<std::string> chunks;
+		chunks.push_back( "lambertian_material\n{\n\tname br9_m\n\treflectance br9_p\n}" );
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br9_p\n\tcolor 0.3 0.3 0.9\n}" );
+		chunks.push_back( "sphere_geometry\n{\n\tname br9_g\n\tradius 0.2\n}" );
+		chunks.push_back( "standard_object\n{\n\tname br9_o\n\tgeometry br9_g\n\tmaterial br9_m\n}" );
+		const unsigned long long bytes0 = controller.Editor().History().CurrentByteUsage();
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		bool all = res.size() == chunks.size();
+		for( std::size_t i = 0; i < res.size(); ++i ) all = all && res[i].applied;
+		Check( all, "BR9 the reverse-dependency batch lands" );
+		const std::string doc2 = sess->ReadDocument();
+		const unsigned long long recordBytes = controller.Editor().History().CurrentByteUsage() - bytes0;
+		std::printf( "  batch undo record: %llu bytes (document: %u bytes)\n", recordBytes,
+		             static_cast<unsigned int>( doc2.size() ) );
+		Check( recordBytes > 0 && recordBytes < doc2.size(),
+		       "BR9(d) the batch's undo record is compact -- smaller than ONE copy of the document" );
+
+		// A GUI edit AFTER the batch.
+		Check( controller.SetProperty( String( "scale" ), String( "33" ) ), "BR9 GUI edit after the batch applies" );
+		const std::string doc3 = sess->ReadDocument();
+
+		controller.Undo();
+		Check( sess->ReadDocument() == doc2, "BR9 Undo #1 reverts only the later GUI edit" );
+		controller.Undo();
+		Check( sess->ReadDocument() == doc1, "BR9(d) Undo #2 reverts the WHOLE batch byte-exactly" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "br9_m" ) == nullptr,
+		       "BR9 ...and the live managers dropped the batch's material" );
+		controller.Undo();
+		Check( sess->ReadDocument() == doc0, "BR9 Undo #3 reverts the earlier GUI edit" );
+		controller.Redo();
+		Check( sess->ReadDocument() == doc1, "BR9 Redo #1 re-applies the earlier GUI edit" );
+		controller.Redo();
+		Check( sess->ReadDocument() == doc2, "BR9(d) Redo #2 re-applies the WHOLE batch byte-exactly" );
+		Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "br9_o" ) != nullptr,
+		       "BR9 ...and the live managers carry the batch's object again" );
+		controller.Redo();
+		Check( sess->ReadDocument() == doc3, "BR9 Redo #3 re-applies the later GUI edit" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR5: propose_patches realizes N param edits with ONE re-derive, the same
+//! document N single patches produce, a bad patch in the middle refused on
+//! its own, and (live) ONE Undo restoring the byte-exact pre-batch document.
+static void TestBatchedPatchesSingleRederive()
+{
+	std::printf( "BR5: propose_patches realizes a batch with ONE re-derive (headless + live) ...\n" );
+	std::vector<Agent::AgentSetPatch> patches;
+	{
+		Agent::AgentSetPatch p;
+		p.target = "sph";         p.param = "radius";      p.value = "0.55";        patches.push_back( p );
+		p.target = "pnt_albedo";  p.param = "color";       p.value = "0.2 0.6 0.3"; patches.push_back( p );
+		p.target = "no_such_ent"; p.param = "radius";      p.value = "1";           patches.push_back( p );   // refused
+		p.target = "mat_emit";    p.param = "scale";       p.value = "11.0";        patches.push_back( p );
+		p.target = "obj_sph";     p.param = "position";    p.value = "0.1 0.2 0.3"; patches.push_back( p );
+	}
+
+	std::string singlesDoc;
+	{
+		const std::string tmp = TempPath( "agentcrud_br5_singles.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR5 singles fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		for( std::size_t i = 0; i < patches.size(); ++i ) ( void )sess->ProposePatch( patches[i] );
+		singlesDoc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	for( int live = 0; live < 2; ++live )
+	{
+		const std::string tmp = TempPath( live ? "agentcrud_br5_live.RISEscene" : "agentcrud_br5_headless.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR5 fixture loads" );
+		if( !pJob ) return;
+		{
+			std::unique_ptr<SceneEditController> controller;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			if( live ) {
+				controller.reset( new SceneEditController( *pJob, /*interactiveRasterizer*/0 ) );
+				sess->AttachController( controller.get() );
+			}
+			const char* mode = live ? "live" : "headless";
+			const std::string preDoc = sess->ReadDocument();
+			const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+			const unsigned long long r0 = pJob->GetContainerRebuildCount();
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( patches );
+			const unsigned long long rebuilds = pJob->GetContainerRebuildCount() - r0;
+			std::printf( "  %s batch of %u patches: %llu live re-derive(s)\n", mode,
+			             static_cast<unsigned int>( patches.size() ), rebuilds );
+			Check( rebuilds == 1, std::string( "BR5(e) " ) + mode + ": a batch of N patches costs exactly ONE live re-derive" );
+			Check( res.size() == patches.size(), std::string( "BR5 " ) + mode + ": one result per element" );
+			if( res.size() == patches.size() ) {
+				Check( res[0].applied && res[1].applied && res[3].applied && res[4].applied,
+				       std::string( "BR5 " ) + mode + ": the valid patches apply" );
+				Check( !res[2].applied && res[2].status == "rejected",
+				       std::string( "BR5 " ) + mode + ": the bad patch in the middle is refused on its own" );
+				Check( res.back().headVersion.revision == v0.revision + 1,
+				       std::string( "BR5 " ) + mode + ": the batch bumps the head revision exactly ONCE" );
+			}
+			const std::string postDoc = sess->ReadDocument();
+			Check( postDoc == singlesDoc,
+			       std::string( "BR5(e) " ) + mode + ": same document as N single propose_patch calls" );
+			if( controller ) {
+				controller->Undo();
+				Check( sess->ReadDocument() == preDoc,
+				       "BR5(e) live: ONE Undo restores the byte-exact PRE-batch document" );
+				controller->Redo();
+				Check( sess->ReadDocument() == postDoc, "BR5(e) live: Redo re-installs the POST-batch document" );
+				sess->AttachController( nullptr );
+			}
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -13178,6 +13772,742 @@ static void TestCleanRoomRepairRetry()
 	}
 }
 
+//----------------------------------------------------------------------
+// Review round 2 regressions (2026-10-16).
+//----------------------------------------------------------------------
+struct BrMeaning_
+{
+	bool   ok = false;
+	double m[16];
+	double cam[3];
+	double sphRadius = 0.0;
+	double emitScale = 0.0;
+};
+
+static double BrParamNumber_( const std::string& docText, const char* name, const char* kind, const char* param )
+{
+	const RISE::Cst::Document doc = RISE::Cst::ParseToCst( docText );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, kind, name[0] == '\0' );
+	if( id == 0 ) return -1.0;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
+	if( !chunk ) return -1.0;
+	return std::atof( RISE::Cst::ParamValueAsParsed( chunk, param ).c_str() );
+}
+
+//! The MEANING of a document for the round-2 undo tests: derive it and read back obj_sph's world matrix and the
+//! camera location, plus the two scalar params the scenarios touch.
+static BrMeaning_ BrMeaningOf_( const std::string& docText )
+{
+	BrMeaning_ out;
+	const std::string tmp = TempPath( "agentcrud_brmeaning.RISEscene" );
+	Job* pJob = LoadScene( docText.c_str(), tmp );
+	if( !pJob ) return out;
+	const IObject* obj = pJob->GetObjects() ? pJob->GetObjects()->GetItem( "obj_sph" ) : nullptr;
+	const ICamera* cam = pJob->GetScene() ? pJob->GetScene()->GetCamera() : nullptr;
+	if( obj && cam ) {
+		const Matrix4 mx = obj->GetFinalTransformMatrix();
+		const double vals[16] = { mx._00, mx._01, mx._02, mx._03, mx._10, mx._11, mx._12, mx._13,
+		                          mx._20, mx._21, mx._22, mx._23, mx._30, mx._31, mx._32, mx._33 };
+		for( int i = 0; i < 16; ++i ) out.m[i] = vals[i];
+		const Point3 p = cam->GetLocation();
+		out.cam[0] = p.x; out.cam[1] = p.y; out.cam[2] = p.z;
+		out.sphRadius = BrParamNumber_( docText, "sph", "", "radius" );
+		out.emitScale = BrParamNumber_( docText, "mat_emit", "", "scale" );
+		out.ok = true;
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+	return out;
+}
+
+static bool BrSameMeaning_( const BrMeaning_& a, const BrMeaning_& b )
+{
+	if( !a.ok || !b.ok ) return false;
+	for( int i = 0; i < 16; ++i ) if( std::fabs( a.m[i] - b.m[i] ) > 1e-9 ) return false;
+	for( int i = 0; i < 3; ++i ) if( std::fabs( a.cam[i] - b.cam[i] ) > 1e-9 ) return false;
+	return std::fabs( a.sphRadius - b.sphRadius ) < 1e-12 && std::fabs( a.emitScale - b.emitScale ) < 1e-12;
+}
+
+//! BR10 (round-2 P1, rounds 3-4): batch -> GUI edit on an entity the batch patched -> Undo -> Undo restores the
+//! pre-batch document BY MEANING (the GUI revert re-spelled the item's bytes), and older history stays reachable.
+//! Three GUI edit shapes: an inspector position edit, a real gizmo drag, and a camera pan after a camera.location
+//! patch.  Plus BR10b: an Undo whose result would not derive is REFUSED visibly with the stack coherent.
+static void TestBatchUndoAfterGuiEditRestoresMeaning()
+{
+	std::printf( "BR10: batch undo after a GUI edit on a patched entity restores the pre-batch meaning ...\n" );
+	const char* const kWhat[3] = { "inspector position", "gizmo drag", "camera transform" };
+	for( int which = 0; which < 3; ++which )
+	{
+		const std::string tmp = TempPath( "agentcrud_br10.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR10 fixture loads" );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = std::string( "BR10 [" ) + kWhat[which] + "] ";
+			const BrMeaning_ m0 = BrMeaningOf_( sess->ReadDocument() );
+
+			// An OLDER GUI edit, which must stay reachable afterwards.
+			controller.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_emit" ) );
+			Check( controller.SetProperty( String( "scale" ), String( "21" ) ), w + "older GUI edit applies" );
+			const BrMeaning_ mA = BrMeaningOf_( sess->ReadDocument() );
+
+			// The batch: the entity the GUI will touch next, plus an unrelated patch.
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			if( which == 2 ) { p.target = ""; p.kind = "camera"; p.param = "location"; p.value = "0 0.5 3.6"; }
+			else             { p.target = "obj_sph"; p.kind = "standard_object"; p.param = "position"; p.value = "0.2 0.1 0"; }
+			ps.push_back( p );
+			p = Agent::AgentSetPatch();
+			p.target = "sph"; p.param = "radius"; p.value = "0.65"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+			Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the batch applies" );
+			const std::string docBatch = sess->ReadDocument();
+
+			// The GUI edit on the patched entity.
+			if( which == 0 ) {
+				controller.ForTest_SetSelection( SceneEditController::Category::Object, String( "obj_sph" ) );
+				Check( controller.SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ), w + "inspector edit applies" );
+			} else if( which == 1 ) {
+				controller.SetSelection( SceneEditController::Category::Object, String( "obj_sph" ) );
+				controller.SetTool( SceneEditController::Tool::TranslateObject );
+				controller.RefreshGizmoHandles();
+				int h = -1;
+				for( unsigned int i = 0; i < controller.GizmoHandleCount() && h < 0; ++i )
+					if( controller.GizmoHandleKind( i ) == static_cast<int>( SceneEditController::GizmoHandle::Kind::AxisPlane ) )
+						h = static_cast<int>( i );
+				Check( h >= 0, w + "a plane handle exists" );
+				if( h >= 0 ) {
+					const Point2 down( controller.GizmoHandleScreenX( h ), controller.GizmoHandleScreenY( h ) );
+					controller.OnPointerDown( down );
+					controller.OnPointerMove( Point2( down.x + 4.0, down.y - 3.0 ) );
+					controller.OnPointerUp( Point2( down.x + 4.0, down.y - 3.0 ) );
+				}
+				controller.SetTool( SceneEditController::Tool::Select );
+			} else {
+				// A real camera PAN gesture: SetCameraTransform per frame, the net pose committed at pointer-up.
+				controller.SetTool( SceneEditController::Tool::PanCamera );
+				controller.OnPointerDown( Point2( 12.0, 12.0 ) );
+				controller.OnPointerMove( Point2( 16.0, 15.0 ) );
+				controller.OnPointerUp( Point2( 16.0, 15.0 ) );
+				controller.SetTool( SceneEditController::Tool::Select );
+			}
+			Check( sess->ReadDocument() != docBatch, w + "the GUI edit changed the document" );
+
+			controller.Undo();   // the GUI edit
+			controller.Undo();   // the batch
+			Check( controller.Editor().ConsumeHistoryNotice().empty(), w + "no record had to be dropped" );
+			Check( BrSameMeaning_( BrMeaningOf_( sess->ReadDocument() ), mA ),
+			       w + "Undo x2 restores the PRE-batch document by meaning" );
+			controller.Undo();   // the older GUI edit
+			Check( BrSameMeaning_( BrMeaningOf_( sess->ReadDocument() ), m0 ),
+			       w + "older history is still reachable (Undo #3 reverts the earlier GUI edit)" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// An UNAPPLIABLE record is dropped, visibly, never wedged.  The reachable case (review round 2, P3-4): a batch
+	// that REPAIRED a document which did not derive -- its undo would re-install a document the re-derive refuses.
+	{
+		const std::string tmp = TempPath( "agentcrud_br10b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			controller.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_emit" ) );
+			Check( controller.SetProperty( String( "scale" ), String( "21" ) ), "BR10b older GUI edit applies" );
+			// The UNGATED panel primitive commits a forward reference INCREMENTALLY (code 1: managers untouched, so
+			// the controller's cached pointers stay valid): the head no longer derives in document order.
+			Check( pJob->ApplyCstParamEdit( "mat_diffuse", "material", "reflectance", 0, "pnt_emit" ) == 1,
+			       "BR10b a forward reference committed incrementally" );
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			p.target = "mat_diffuse"; p.kind = "material"; p.param = "reflectance"; p.value = "pnt_albedo"; ps.push_back( p );
+			p.target = "sph"; p.kind = ""; p.param = "radius"; p.value = "0.7"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+			Check( res.size() == 2 && res[0].applied && res[1].applied, "BR10b the repairing batch lands" );
+			const std::string before = sess->ReadDocument();
+			const unsigned int depth = controller.Editor().History().UndoDepth();
+			Check( !controller.Undo(), "BR10b the Undo whose inverse would not derive REPORTS failure" );
+			const std::string notice = controller.ConsumeHistoryNotice();
+			Check( !notice.empty() && notice.find( "was refused" ) != std::string::npos &&
+			       notice.find( "would not derive" ) != std::string::npos,
+			       "BR10b MONEY: the refusal is VISIBLE (a user-facing notice naming the cause)" );
+			Check( sess->ReadDocument() == before, "BR10b nothing changed" );
+			Check( controller.Editor().History().UndoDepth() == depth,
+			       "BR10b the stack stays coherent: the refused step is still the next Undo (the single-record rule)" );
+			Check( controller.ConsumeHistoryNotice().empty(), "BR10b the notice is cleared on read" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR11 (round-2 P2): a DIAGNOSED batch re-derive reports the landed elements as landed -- only the element the
+//! diagnostic names is "diagnosed" -- and build_element counts every landed chunk as landed (no repair retry
+//! resubmitting chunks that are already in the document).
+static void TestBatchDiagnosedReporting()
+{
+	std::printf( "BR11: a diagnosed batch re-derive is attributed, followers report landed ...\n" );
+	for( int live = 0; live < 2; ++live )
+	for( int attributed = 0; attributed < 2; ++attributed )
+	{
+		const std::string tmp = TempPath( "agentcrud_br11.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		{
+			std::unique_ptr<SceneEditController> controller;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			if( live ) {
+				controller.reset( new SceneEditController( *pJob, /*interactiveRasterizer*/0 ) );
+				sess->AttachController( controller.get() );
+			}
+			const std::string w = std::string( "BR11 " ) + ( live ? "live" : "headless" ) +
+			                      ( attributed ? " attributed: " : " unattributed: " );
+			// Attributable only when the diagnostic OPENS with the element's own `<keyword> `<name>``; a name merely
+			// QUOTED inside a diagnostic is usually a referenced entity, not the culprit.
+			pJob->ForTest_InjectNextLiveDeriveDiagnostic( attributed
+				? "uniformcolor_painter `br11_b` fake failure"
+				: "voronoi2d_painter: gen 0 painter 'br11_b' not found" );
+			std::vector<std::string> chunks;
+			chunks.push_back( "uniformcolor_painter\n{\n\tname br11_a\n\tcolor 0.1 0.2 0.3\n}" );
+			chunks.push_back( "uniformcolor_painter\n{\n\tname br11_b\n\tcolor 0.3 0.2 0.1\n}" );
+			const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+			Check( res.size() == 2, w + "two results" );
+			if( res.size() == 2 ) {
+				if( attributed ) {
+					Check( res[0].applied && res[0].rawCode == 3 &&
+					       res[0].message.find( "fake failure" ) != std::string::npos,
+					       w + "a landed, non-offending element reports APPLIED with the diagnostic quoted (not a log pointer)" );
+					Check( !res[1].applied && res[1].status == "diagnosed" &&
+					       res[1].message.find( "br11_b" ) != std::string::npos,
+					       w + "only the element the diagnostic is attributed to is reported diagnosed" );
+				} else {
+					Check( !res[0].applied && res[0].status == "diagnosed" && !res[1].applied && res[1].status == "diagnosed",
+					       w + "an unattributable diagnostic (a QUOTED referenced name) marks EVERY landed element diagnosed" );
+					Check( res[0].message.find( "not found" ) != std::string::npos,
+					       w + "the diagnostic text is carried in the message" );
+				}
+			}
+			if( controller ) sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// build_element: the diagnosed chunk counts as LANDED, so no repair retry resubmits anything.
+	{
+		const std::string tmp = TempPath( "agentcrud_br11b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer, kGoodBuilderAnswer }, &calls ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "BR11b the plan files" );
+		pJob->ForTest_InjectNextLiveDeriveDiagnostic( "fake diagnostic for `wizard_robe_mat`" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( calls == 1, "BR11b MONEY: no repair retry -- the diagnosed chunk is in the document" );
+		Check( r.landed.size() == 4 && r.rejected.empty(), "BR11b every chunk counts as landed" );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR12 (round-2 P2): the per-element FALLBACK's retry is only for would-not-derive refusals and never lands a
+//! patch whose slot a LATER landed patch wrote: [X.material m1 (container -> refused), X.geometry g,
+//! X.material m2] must end with m2.
+static void TestBatchFallbackRetryRestrictions()
+{
+	std::printf( "BR12: fallback retry never overwrites a later patch nor lifts a policy refusal ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br12.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		Check( sess->InsertChunk( "standard_object\n{\n\tname br12_x\n}" ).applied, "BR12 container inserts" );
+		pJob->ForTest_SetCstBatchIsolationBudget( 0 );   // any failing batch falls back to per-element commits
+		std::vector<Agent::AgentSetPatch> ps;
+		Agent::AgentSetPatch p;
+		p.target = "mat_diffuse"; p.kind = "material"; p.param = "reflectance"; p.value = "pnt_emit";   // forward ref: will not derive
+		ps.push_back( p );
+		p.target = "br12_x"; p.kind = "standard_object"; p.param = "material"; p.value = "mat_diffuse"; ps.push_back( p );
+		p.target = "br12_x"; p.kind = "standard_object"; p.param = "geometry"; p.value = "sph";         ps.push_back( p );
+		p.target = "br12_x"; p.kind = "standard_object"; p.param = "material"; p.value = "mat_emit";    ps.push_back( p );
+		const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+		Check( res.size() == 4 && !res[0].applied && !res[1].applied && res[2].applied && res[3].applied,
+		       "BR12 verdicts: forward ref refused, container binding refused, geometry + later material land" );
+		Check( res.size() == 4 && res[1].message.find( "container node" ) != std::string::npos,
+		       "BR12 the container refusal keeps its reason (not retried away)" );
+		Check( std::string( RISE::Cst::ParamValueAsParsed(
+		           RISE::Cst::DocResolveNodeId( RISE::Cst::ParseToCst( sess->ReadDocument() ),
+		               RISE::Cst::DocFindByNameAnyRole( RISE::Cst::ParseToCst( sess->ReadDocument() ), "br12_x", nullptr, "standard_object", false ) ),
+		           "material" ) ).find( "mat_emit" ) != std::string::npos,
+		       "BR12 MONEY: the object ends with the LATER material (m2), not the earlier one" );
+		pJob->ForTest_SetCstBatchIsolationBudget( -1 );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR13 (round-2 P3): the incremental preview is REBUILT when a GUI edit moves the head mid-batch -- the next
+//! element's gates see both the GUI edit and the earlier deferred elements, and the batch lands on top of it.
+static void TestBatchPreviewRebuildsOnHeadMove()
+{
+	std::printf( "BR13: the batch preview follows a head moved by a co-editor mid-batch ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br13.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		bool sawBoth = false;
+		Agent::AgentSession* raw = sess.get();
+		sess->ForTest_SetAfterDeferHook( [&]( std::size_t idx ) {
+			if( idx == 0 ) {
+				controller.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_emit" ) );
+				controller.SetProperty( String( "scale" ), String( "27" ) );   // the co-editor moves the head
+			} else if( idx == 1 ) {
+				const Agent::AgentSession::AgentDocumentSnapshot snap = raw->ReadDocumentSnapshot();
+				sawBoth = snap.document.find( "br13_p" ) != std::string::npos &&
+				          std::fabs( BrParamNumber_( snap.document, "mat_emit", "", "scale" ) - 27.0 ) < 1e-9;
+			}
+		} );
+		std::vector<std::string> chunks;
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br13_p\n\tcolor 0.1 0.2 0.3\n}" );
+		chunks.push_back( "lambertian_material\n{\n\tname br13_m\n\treflectance br13_p\n}" );
+		chunks.push_back( "sphere_geometry\n{\n\tname br13_g\n\tradius 0.1\n}" );
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		sess->ForTest_SetAfterDeferHook( nullptr );
+		Check( sawBoth, "BR13 the rebuilt preview carries BOTH the co-editor's edit and the earlier deferred element" );
+		bool all = res.size() == 3;
+		for( std::size_t i = 0; i < res.size(); ++i ) all = all && res[i].applied;
+		Check( all, "BR13 the batch lands on the moved head" );
+		const std::string doc = sess->ReadDocument();
+		Check( std::fabs( BrParamNumber_( doc, "mat_emit", "", "scale" ) - 27.0 ) < 1e-9 && doc.find( "br13_m" ) != std::string::npos,
+		       "BR13 the final document keeps the co-editor's edit AND the batch" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR14 (round-3 P1): edits made OUTSIDE the history -- a film inspector edit, an environment edit -- survive an
+//! Undo AND a Redo of an agent batch, even on the very chunk the batch patched (the record is operation-level:
+//! it touches only the slots the batch wrote).
+static void TestBatchUndoKeepsNonHistoryEdits()
+{
+	std::printf( "BR14: batch undo/redo keeps later film / environment edits ...\n" );
+	for( int which = 0; which < 2; ++which )
+	{
+		const std::string tmp = TempPath( "agentcrud_br14.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = which == 0 ? "BR14 [film] " : "BR14 [environment] ";
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			if( which == 0 ) { p.target = ""; p.kind = "film"; p.param = "width"; p.value = "32"; }
+			else             { p.target = ""; p.kind = "pathtracing_pel_rasterizer"; p.param = "samples"; p.value = "4"; }
+			ps.push_back( p );
+			p = Agent::AgentSetPatch();
+			p.target = "sph"; p.param = "radius"; p.value = "0.65"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+			Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the batch applies" );
+
+			// The non-history edit, on the SAME chunk the batch patched.
+			if( which == 0 ) {
+				controller.ForTest_SetSelection( SceneEditController::Category::Film, String( "" ) );
+				Check( controller.SetProperty( String( "height" ), String( "40" ) ), w + "film height edit applies" );
+			} else {
+				Check( controller.SetEnvironmentScale( 2.5 ), w + "environment scale edit applies" );
+			}
+			const char* keptKind  = which == 0 ? "film" : "pathtracing_pel_rasterizer";
+			const char* keptParam = which == 0 ? "height" : "radiance_scale";
+			const double keptVal  = which == 0 ? 40.0 : 2.5;
+			const char* batchParam = which == 0 ? "width" : "samples";
+			const double preVal    = which == 0 ? 24.0 : 8.0;
+			const double postVal   = which == 0 ? 32.0 : 4.0;
+			Check( std::fabs( BrParamNumber_( sess->ReadDocument(), "", keptKind, keptParam ) - keptVal ) < 1e-9,
+			       w + "the non-history edit is in the document" );
+
+			Check( controller.Undo(), w + "Undo of the batch applies" );
+			const std::string du = sess->ReadDocument();
+			Check( std::fabs( BrParamNumber_( du, "", keptKind, batchParam ) - preVal ) < 1e-9 &&
+			       std::fabs( BrParamNumber_( du, "sph", "", "radius" ) - 0.8 ) < 1e-9,
+			       w + "Undo reverts the batch's own slots" );
+			Check( std::fabs( BrParamNumber_( du, "", keptKind, keptParam ) - keptVal ) < 1e-9,
+			       w + "MONEY: Undo KEEPS the later non-history edit" );
+			Check( controller.Redo(), w + "Redo of the batch applies" );
+			const std::string dr = sess->ReadDocument();
+			Check( std::fabs( BrParamNumber_( dr, "", keptKind, batchParam ) - postVal ) < 1e-9 &&
+			       std::fabs( BrParamNumber_( dr, "", keptKind, keptParam ) - keptVal ) < 1e-9,
+			       w + "MONEY: Redo re-applies the batch and STILL keeps the non-history edit" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR15 (round 3): a batch that inserts a chunk AND patches that same chunk undoes and redoes byte-exactly.
+static void TestBatchInsertThenPatchUndoRedo()
+{
+	std::printf( "BR15: insert + patch-on-the-inserted-chunk batches undo/redo exactly ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br15.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<std::string> chunks;
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br15_p\n\tcolor 0.1 0.2 0.3\n}" );
+		chunks.push_back( "sphere_geometry\n{\n\tname br15_g\n\tradius 0.1\n}" );
+		chunks.push_back( "standard_object\n{\n\tname br15_o\n\tgeometry br15_g\n\tmaterial mat_diffuse\n}" );
+		// insert_chunks and propose_patches are separate batches (separate verbs): an insert batch, then a patch
+		// batch over the chunks it created -- undone and redone across both.
+		Check( sess->InsertChunks( chunks ).size() == 3, "BR15 inserts land" );
+		const std::string d1 = sess->ReadDocument();
+		std::vector<Agent::AgentSetPatch> ps;
+		Agent::AgentSetPatch p;
+		p.target = "br15_g"; p.param = "radius"; p.value = "0.33"; ps.push_back( p );
+		p.target = "br15_o"; p.kind = "standard_object"; p.param = "position"; p.value = "1 2 3"; ps.push_back( p );
+		p.target = "br15_p"; p.kind = ""; p.param = "color"; p.value = "0.9 0.9 0.9"; ps.push_back( p );
+		const std::vector<Agent::AgentPatchResult> pr = sess->ProposePatches( ps );
+		Check( pr.size() == 3 && pr[0].applied && pr[1].applied && pr[2].applied, "BR15 patches on the inserted chunks land" );
+		const std::string d2 = sess->ReadDocument();
+		Check( controller.Undo() && sess->ReadDocument() == d1, "BR15 Undo of the patch batch is byte-exact" );
+		Check( controller.Undo() && sess->ReadDocument() == d0, "BR15 Undo of the insert batch is byte-exact" );
+		Check( controller.Redo() && sess->ReadDocument() == d1, "BR15 Redo of the insert batch is byte-exact" );
+		Check( controller.Redo() && sess->ReadDocument() == d2, "BR15 Redo of the patch batch is byte-exact" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR16 (round-3 P3): HEADLESS fallback retry -- over the isolation budget, the per-element commits refuse a
+//! material listed before its painter, and the one in-order retry lands it.
+static void TestBatchHeadlessFallbackRetry()
+{
+	std::printf( "BR16: headless fallback retry lands a material listed before its painter ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br16.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		pJob->ForTest_SetCstBatchIsolationBudget( 0 );
+		std::vector<std::string> chunks;
+		chunks.push_back( "lambertian_material\n{\n\tname br16_m\n\treflectance br16_p\n}" );
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br16_p\n\tcolor 0.4 0.4 0.4\n}" );
+		chunks.push_back( "lambertian_material\n{\n\tname br16_bad\n\treflectance nope_br16\n}" );
+		const unsigned long long r0 = pJob->GetContainerRebuildCount();
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		Check( pJob->GetContainerRebuildCount() - r0 > 1, "BR16 the batch fell back to per-element commits" );
+		Check( res.size() == 3 && res[0].applied && res[1].applied && !res[2].applied,
+		       "BR16 MONEY: the retry landed the material listed before its painter; the bad one stays refused" );
+		pJob->ForTest_SetCstBatchIsolationBudget( -1 );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR17 (round-4 P1-1): an inserted chunk with a BYTE-IDENTICAL twin (two identical unnamed timelines) undoes
+//! and redoes -- the twins are interchangeable, so the record picks the one nearest its recorded index.
+static void TestBatchUndoIdenticalTwin()
+{
+	std::printf( "BR17: batch undo/redo with a byte-identical twin chunk ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br17.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string T = "timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
+		                      "\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}";
+		Check( sess->InsertChunk( T ).applied, "BR17 the first timeline inserts (single verb)" );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<std::string> chunks;
+		chunks.push_back( T );
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br17_p\n\tcolor 0.1 0.2 0.3\n}" );
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		Check( res.size() == 2 && res[0].applied && res[1].applied, "BR17 the batch (an identical twin + a painter) lands" );
+		const std::string d1 = sess->ReadDocument();
+		Check( controller.Undo(), "BR17 MONEY: Undo is NOT refused for an identical twin" );
+		Check( sess->ReadDocument() == d0, "BR17 Undo restores the pre-batch document byte-exactly" );
+		Check( controller.Redo() && sess->ReadDocument() == d1, "BR17 Redo re-applies it byte-exactly" );
+		Check( controller.Undo() && controller.Undo(), "BR17 both batch and the earlier single insert undo" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR18 (round-4 P1-2): a transform patch on an object with SEVERAL same-named override_object layers resolves
+//! its owner exactly as the write did (the LAST layer), so Undo and Redo succeed as a single patch's would.
+static void TestBatchUndoOverrideLayers()
+{
+	std::printf( "BR18: batch undo/redo across several override_object layers ...\n" );
+	const std::string scene = std::string( kScene ) +
+		"\noverride_object\n{\n\tname obj_sph\n\tposition 0.1 0 0\n}\n"
+		"\noverride_object\n{\n\tname obj_sph\n\tposition 0.2 0 0\n}\n";
+	const std::string tmp = TempPath( "agentcrud_br18.RISEscene" );
+	Job* pJob = LoadScene( scene.c_str(), tmp );
+	Check( pJob != nullptr, "BR18 fixture (two override layers) loads" );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<Agent::AgentSetPatch> ps;
+		Agent::AgentSetPatch p;
+		p.target = "obj_sph"; p.kind = "standard_object"; p.param = "position"; p.value = "0.5 0.5 0"; ps.push_back( p );
+		p = Agent::AgentSetPatch();
+		p.target = "sph"; p.param = "radius"; p.value = "0.6"; ps.push_back( p );
+		const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+		Check( res.size() == 2 && res[0].applied && res[1].applied, "BR18 the batch applies" );
+		const std::string d1 = sess->ReadDocument();
+		Check( controller.Undo(), "BR18 MONEY: Undo is NOT refused with two same-named override layers" );
+		Check( sess->ReadDocument() == d0, "BR18 Undo restores the pre-batch document byte-exactly" );
+		Check( controller.Redo() && sess->ReadDocument() == d1, "BR18 Redo re-applies it byte-exactly" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR19 (round-4 P2): a batch that RENAMES an entity (and then edits it under its new name) undoes and redoes.
+static void TestBatchUndoRename()
+{
+	std::printf( "BR19: batch undo/redo of a rename ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br19.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname br19_p\n\tcolor 0.1 0.2 0.3\n}" ).applied,
+		       "BR19 an unreferenced painter inserts" );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<Agent::AgentSetPatch> ps;
+		Agent::AgentSetPatch p;
+		p.target = "br19_p"; p.param = "name";  p.value = "br19_q";       ps.push_back( p );
+		p.target = "br19_q"; p.param = "color"; p.value = "0.9 0.8 0.7";  ps.push_back( p );
+		p.target = "sph";    p.param = "radius"; p.value = "0.6";         ps.push_back( p );
+		const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+		Check( res.size() == 3 && res[0].applied && res[1].applied && res[2].applied,
+		       "BR19 rename + edit-under-the-new-name + unrelated patch apply" );
+		const std::string d1 = sess->ReadDocument();
+		Check( d1.find( "br19_q" ) != std::string::npos && d1.find( "br19_p" ) == std::string::npos, "BR19 renamed" );
+		Check( controller.Undo() && sess->ReadDocument() == d0, "BR19 MONEY: Undo of a renaming batch restores the pre-batch document" );
+		Check( controller.Redo() && sess->ReadDocument() == d1, "BR19 Redo re-applies the rename and the edit" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR20 (round-4 P2): occurrence-drift parity -- an occurrence-addressed patch whose line drifted (changed
+//! outside the history) is REFUSED on Undo by the batch record exactly as by the single patch's record.
+static void TestBatchUndoOccurrenceDriftParity()
+{
+	std::printf( "BR20: occurrence-addressed undo refuses on drift, batch and single alike ...\n" );
+	const std::string scene = std::string( kScene ) +
+		"\nstandard_shader\n{\n\tname br20_sh\n\tshaderop DefaultPathTracing\n\tshaderop DefaultDirectLighting\n}\n";
+	for( int batched = 0; batched < 2; ++batched )
+	{
+		const std::string tmp = TempPath( "agentcrud_br20.RISEscene" );
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "BR20 fixture loads" );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = batched ? "BR20 [batch] " : "BR20 [single] ";
+			Agent::AgentSetPatch p;
+			p.target = "br20_sh"; p.param = "shaderop"; p.value = "DefaultEmission";
+			p.hasOccurrence = true; p.occurrence = 1;
+			if( batched ) {
+				std::vector<Agent::AgentSetPatch> ps;
+				ps.push_back( p );
+				Agent::AgentSetPatch q;
+				q.target = "sph"; q.param = "radius"; q.value = "0.6"; ps.push_back( q );
+				const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+				Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the occurrence-addressed batch applies" );
+			} else {
+				Check( sess->ProposePatch( p ).applied, w + "the occurrence-addressed patch applies" );
+			}
+			// DRIFT: the addressed line changes OUTSIDE the history (the ungated panel primitive).
+			Check( pJob->ApplyCstParamEdit( "br20_sh", nullptr, "shaderop", 1, "DefaultDirectLighting" ) >= 1,
+			       w + "the addressed line drifts outside the history" );
+			const std::string before = sess->ReadDocument();
+			Check( !controller.Undo(), w + "Undo REFUSES (the line it would overwrite is no longer the one it wrote)" );
+			Check( sess->ReadDocument() == before, w + "nothing changed" );
+			if( batched )
+				Check( controller.ConsumeHistoryNotice().find( "drifted" ) != std::string::npos,
+				       w + "the refusal is visible and names the drift" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR21 (round-5 P1-1): a transform patch batch never RE-SPELLS a transform slot it did not change.  An object
+//! inserted with `scale 1  1 1` (two spaces) and then patched (position) in a batch undoes back to the original
+//! bytes -- an older insert record (A: a batch insert; B: a single insert_chunk) below it still undoes.
+static void TestBatchUndoKeepsUnchangedTransformSpelling()
+{
+	std::printf( "BR21: batch transform undo keeps unchanged slots' spelling ...\n" );
+	const std::string X = "standard_object\n{\n\tname br21_x\n\tgeometry sph\n\tmaterial mat_diffuse\n\tscale 1  1 1\n}";
+	for( int probe = 0; probe < 2; ++probe )
+	{
+		const std::string tmp = TempPath( "agentcrud_br21.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR21 fixture loads" );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = probe == 0 ? "BR21 [A batch insert] " : "BR21 [B single insert] ";
+			const std::string d0 = sess->ReadDocument();
+			if( probe == 0 ) {
+				std::vector<std::string> chunks;
+				chunks.push_back( X );
+				chunks.push_back( "uniformcolor_painter\n{\n\tname br21_p\n\tcolor 0.1 0.2 0.3\n}" );
+				const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+				Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the insert batch lands" );
+			} else {
+				Check( sess->InsertChunk( X ).applied, w + "the object inserts (single verb)" );
+			}
+			const std::string d1 = sess->ReadDocument();
+			Check( d1.find( "scale 1  1 1" ) != std::string::npos, w + "the authored spelling is in the document" );
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			p.target = "br21_x"; p.kind = "standard_object"; p.param = "position"; p.value = "0.3 0 0"; ps.push_back( p );
+			p = Agent::AgentSetPatch();
+			p.target = "sph"; p.param = "radius"; p.value = "0.6"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> pres = sess->ProposePatches( ps );
+			Check( pres.size() == 2 && pres[0].applied && pres[1].applied, w + "the patch batch applies" );
+			Check( controller.Undo() && sess->ReadDocument() == d1,
+			       w + "Undo of the patch batch restores the post-insert bytes (unchanged `scale` not re-spelled)" );
+			Check( controller.Undo(), w + "MONEY: the older insert record still undoes" );
+			Check( sess->ReadDocument() == d0, w + "...back to the original document bytes" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR22 (round-5 P1-2): Redo of a batch insert lands where the forward insert did, even when the anchor chunk has
+//! an identity twin -- two UNNAMED pathtracing rasterizers share one identity, and a vcm rasterizer appended after
+//! the SECOND must not be re-inserted after the FIRST (which would change the active rasterizer).
+static void TestBatchRedoInsertAnchorTwin()
+{
+	std::printf( "BR22: batch redo of an insert anchored after an identity twin ...\n" );
+	const std::string scene = std::string( kScene ) +
+		"\npathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	const std::string tmp = TempPath( "agentcrud_br22.RISEscene" );
+	Job* pJob = LoadScene( scene.c_str(), tmp );
+	Check( pJob != nullptr, "BR22 fixture (two unnamed PT rasterizers) loads" );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<std::string> chunks;
+		chunks.push_back( "vcm_pel_rasterizer\n{\n\tsamples 4\n}" );
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br22_p\n\tcolor 0.1 0.2 0.3\n}" );
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		Check( res.size() == 2 && res[0].applied && res[1].applied, "BR22 the batch (a rasterizer + a painter) lands" );
+		const std::string d1 = sess->ReadDocument();
+		Check( pJob->GetActiveRasterizerName() == "vcm_pel_rasterizer", "BR22 the inserted rasterizer is active" );
+		Check( controller.Undo() && sess->ReadDocument() == d0, "BR22 Undo restores the pre-batch bytes" );
+		Check( controller.Redo(), "BR22 Redo applies" );
+		Check( sess->ReadDocument() == d1, "BR22 MONEY: Redo is byte-identical to the forward commit" );
+		Check( pJob->GetActiveRasterizerName() == "vcm_pel_rasterizer",
+		       "BR22 MONEY: ...and the active rasterizer matches the forward commit" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR23 (round-5 P2): the retry pass's "a later landed write owns this slot" test is DIRECTIONAL over the
+//! object-transform params (Job::PlanCstParamEdits_'s masking rules), not "every transform role is one slot".
+static void TestBatchRetrySameSlotDirectional()
+{
+	std::printf( "BR23: retry same-slot rule is directional over transform params ...\n" );
+	struct Case { const char* earlier; const char* later; bool conflicts; };
+	const Case cases[] = {
+		{ "position",    "scale",       false },   // independent
+		{ "scale",       "position",    false },
+		{ "position",    "quaternion",  false },   // the quaternion branch READS position
+		{ "quaternion",  "scale",       false },
+		{ "position",    "matrix",      true  },   // a re-written component strips the later matrix
+		{ "orientation", "matrix",      true  },
+		{ "quaternion",  "matrix",      true  },
+		{ "scale",       "matrix",      true  },
+		{ "matrix",      "position",    true  },   // a re-written matrix strips every later component
+		{ "matrix",      "scale",       true  },
+		{ "orientation", "quaternion",  true  },   // a re-written orientation strips the later quaternion
+		{ "quaternion",  "orientation", true  },   // a re-written quaternion masks the later orientation
+		{ "position",    "position",    true  },   // the same slot
+	};
+	for( const Case& c : cases ) {
+		std::vector<RISE::CstBatchEdit> edits( 2 );
+		edits[0].entityName = "obj"; edits[0].entityKind = "standard_object"; edits[0].role = c.earlier; edits[0].value = "x";
+		edits[1].entityName = "obj"; edits[1].entityKind = "standard_object"; edits[1].role = c.later;   edits[1].value = "y";
+		std::vector<char> landed( 2, 0 );
+		landed[1] = 1;
+		const std::string what = std::string( "BR23 earlier `" ) + c.earlier + "` vs later landed `" + c.later + "`";
+		Check( RISE::CstBatchLaterLandedWriteSameSlot( edits, landed, 0 ) == c.conflicts,
+		       what + ( c.conflicts ? " -> skip the retry" : " -> the retry may land" ) );
+		landed[1] = 0;
+		Check( !RISE::CstBatchLaterLandedWriteSameSlot( edits, landed, 0 ), what + " (not landed) -> no skip" );
+		edits[1].entityName = "other";
+		landed[1] = 1;
+		Check( !RISE::CstBatchLaterLandedWriteSameSlot( edits, landed, 0 ), what + " (other entity) -> no skip" );
+	}
+}
+
 //! S2d: the do-nothing cases -- wrong phase, wrong element, no capability.
 static void TestCleanRoomBuildElementRefusals()
 {
@@ -20354,6 +21684,28 @@ int main()
 	TestProposePatchesBestEffort();
 	TestProposePatchesValidation();
 	TestProposePatchesConflictIsBatchFatal();
+	TestBatchedInsertSingleRederive();       // 2026-10-16: batched realization
+	TestBatchedInsertIsolatesBadElement();
+	TestBatchedInsertAllRefused();
+	TestBatchedPatchesSingleRederive();
+	TestBatchedContainerGateEvolvingDocument();
+	TestBatchedVerdictIndependentOfSplits();
+	TestBatchedDegenerateHeadAndBudget();
+	TestBatchedUndoCompactRecordAndInterleaved();
+	TestBatchUndoAfterGuiEditRestoresMeaning();               // review round 2
+	TestBatchDiagnosedReporting();
+	TestBatchFallbackRetryRestrictions();
+	TestBatchPreviewRebuildsOnHeadMove();
+	TestBatchUndoKeepsNonHistoryEdits();        // review round 3
+	TestBatchInsertThenPatchUndoRedo();
+	TestBatchHeadlessFallbackRetry();
+	TestBatchUndoIdenticalTwin();               // review round 4
+	TestBatchUndoOverrideLayers();
+	TestBatchUndoRename();
+	TestBatchUndoOccurrenceDriftParity();
+	TestBatchUndoKeepsUnchangedTransformSpelling();
+	TestBatchRedoInsertAnchorTwin();
+	TestBatchRetrySameSlotDirectional();
 	TestMaterialScaffoldFamilies();
 	TestMaterialScaffoldDeterminism();
 	TestMaterialScaffoldMissingParams();

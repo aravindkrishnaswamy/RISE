@@ -3389,16 +3389,16 @@ void SceneEditController::DropStaleSelection_()
 	}
 }
 
-void SceneEditController::UndoInner_()
+bool SceneEditController::UndoInner_()
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// Latent-guard (re-review): refuse user Undo while a transaction is open --
 	// undoing PAST the baseline would break RollbackTransaction's revert
 	// guarantee (and ClearRedo would then drop a pre-baseline edit).  The
 	// rollback path uses mEditor.Undo() directly, bypassing this guard.
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction is open; use Rollback/EndTransaction." );
-		return;
+		return false;
 	}
 	// Cancel-and-park around Undo: many ops mutate state the render
 	// thread reads per-pixel (camera pointers via AddCamera/RemoveCamera,
@@ -3411,7 +3411,7 @@ void SceneEditController::UndoInner_()
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction opened before the undo acquired the mutation lock." );
-		return;
+		return false;
 	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
@@ -3420,6 +3420,7 @@ void SceneEditController::UndoInner_()
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
 	const unsigned int beforeUndoDepth = mEditor.History().UndoDepth();
+	mEditor.ClearHistoryNotice();   // a notice only ever describes the immediately preceding Undo/Redo
 	const bool ok = mEditor.Undo();
 	// P1-#2 follow-up: mEditor.Undo() returns false on a PARTIAL composite revert,
 	// but the scene WAS mutated (the undo stack advanced) so we must still refresh.
@@ -3459,19 +3460,20 @@ void SceneEditController::UndoInner_()
 		lk.unlock();
 		mCV.notify_one();
 	}
+	return ok;
 }
 
-void SceneEditController::RedoInner_()
+bool SceneEditController::RedoInner_()
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
-		return;
+		return false;
 	}
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction opened before the redo acquired the mutation lock." );
-		return;
+		return false;
 	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
@@ -3480,6 +3482,7 @@ void SceneEditController::RedoInner_()
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
 	const unsigned int beforeRedoDepth = mEditor.History().RedoDepth();
+	mEditor.ClearHistoryNotice();
 	const bool ok = mEditor.Redo();
 	// P1-#2 follow-up: see Undo -- a partial composite redo still mutated the scene.
 	const bool didWork = ok || ( mEditor.History().RedoDepth() != beforeRedoDepth );
@@ -3505,6 +3508,7 @@ void SceneEditController::RedoInner_()
 		lk.unlock();
 		mCV.notify_one();
 	}
+	return ok;
 }
 
 Scalar SceneEditController::LastSceneTime() const
@@ -7459,32 +7463,13 @@ std::string ContainerBindingInChunkText_( const String& chunkText )
 
 bool SceneEditController::AgentTargetIsContainerObject_( const String& entityName, const String& entityKind )
 {
+	// The rule lives in ONE place, Job::CstTargetIsContainerObject, which the batch path also evaluates against
+	// its evolving document -- so the single and batch routes cannot drift on what a container is.
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
-	const std::string ekind( entityKind.size() > 1 ? entityKind.c_str() : "" );
-	const char* bareName = entityName.size() > 1 ? entityName.c_str() : "";
-	const bool uniqueFallback = ( ekind == "camera" )
-		? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, bareName, mJob.GetActiveCameraName() )
-		: ( entityName.size() <= 1 && !ekind.empty() );
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
-		*doc, bareName, nullptr, ekind, uniqueFallback );
-	if( id == 0 ) return false;
-	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
-	if( !chunk ) return false;
-	if( chunk->role != "standard_object" ) return false;
-	// "No geometry" means NOT RESOLVABLE, not merely absent.  `geometry none`
-	// is a first-class spelling of the same thing -- the standard_object parser
-	// treats it as a container (`geometry.empty() || geometry == "none"`), the
-	// derive's IsContainerGeometryRef_ agrees, and Cst skips `none` as a
-	// reference edge so such a document derives clean.  Testing only for
-	// PRESENCE would let `geometry none` past this gate while every other layer
-	// still calls it a container -- the agent would be told `applied` and the
-	// derive would drop the binding with a warning, which is exactly the state
-	// this gate exists to prevent.
-	bool present = false;
-	const std::string geom = TrimAsciiSpace_( RISE::Cst::ParamValueAsParsed( chunk, "geometry", &present ) );
-	if( !present ) return true;
-	return geom.empty() || geom == "none";
+	return mJob.CstTargetIsContainerObject( *doc,
+	                                        entityName.size() > 1 ? entityName.c_str() : "",
+	                                        entityKind.size() > 1 ? entityKind.c_str() : nullptr );
 }
 
 
@@ -7767,6 +7752,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 		default:
 			r.applied = false;
 			r.status  = String( "rejected" );
+			r.wouldNotDerive = true;   // Job's checked code 0: not found OR would not derive (structured, for retries)
 			r.message = String( "edit rejected (entity/param not found or the edit would not derive) -- head unchanged" );
 			break;
 	}
@@ -8273,6 +8259,325 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 	}
 	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
 	return r;
+}
+
+// Batched agent edits (2026-10-16): see the header doc.  The admission gate is the single verbs' own,
+// verbatim (latched-vs-transient split C4, current-head report C3) -- applied to EVERY element of the batch.
+std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAgentEditBatch(
+	const std::vector<CstBatchEdit>& edits )
+{
+	std::vector<AgentCommitResult> out;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			AgentCommitResult r;
+			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+			}
+			else
+			{
+				r.retriable = true;
+				r.message = String( "render queued or in progress -- retry after it completes" );
+				r.headVersion = mJob.GetCstHeadVersion();
+			}
+			out.assign( edits.size(), r );
+			return out;
+		}
+		out = ApplyAgentEditBatchCrud_( edits );
+	}
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return out;
+}
+
+std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAgentEditBatchCrud_(
+	const std::vector<CstBatchEdit>& edits )
+{
+	std::vector<AgentCommitResult> out( edits.size() );
+	if( edits.empty() ) return out;
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent edit batch refused while an editor transaction/gesture is open." );
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		out.assign( edits.size(), r );
+		return out;
+	}
+	CancelAndParkRender_( lk );
+
+	if( !mJob.HasRetainedCstDocument() )
+	{
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
+		out.assign( edits.size(), r );
+		return out;
+	}
+
+	// The per-element CONTROLLER-level refusals the single verbs make before reaching Job (see
+	// ApplyAgentChunkCrud_ / ApplyAgentParamEditInner_ for each rule's rationale).  Only the text-local ones
+	// are judged here; the container gate on a surface-binding param depends on the DOCUMENT, so it is handed
+	// to Job and judged against the batch's evolving document (review P2-A: `X.geometry none` earlier in the
+	// same batch makes X a container; `C.geometry g` earlier makes a container C a leaf).
+	std::vector<CstBatchEdit> admitted;
+	std::vector<std::size_t>  admittedIndex;
+	admitted.reserve( edits.size() );
+	admittedIndex.reserve( edits.size() );
+	for( std::size_t i = 0; i < edits.size(); ++i )
+	{
+		const CstBatchEdit& e = edits[i];
+		AgentCommitResult& r = out[i];
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		if( e.isInsert )
+		{
+			if( e.chunkText.empty() ) {
+				r.message = String( "chunkText must be non-empty" );
+				continue;
+			}
+			const std::string offending = ContainerBindingInChunkText_( String( e.chunkText.c_str() ) );
+			if( !offending.empty() ) {
+				char buf[320];
+				std::snprintf( buf, sizeof( buf ),
+					"the chunk names no `geometry`, so it is a container node -- a pure transform with no surface -- "
+					"and a container takes no `%s`.  Either give it a `geometry`, or drop the binding and put it on a "
+					"child object that has one.",
+					offending.c_str() );
+				r.message = String( buf );
+				continue;
+			}
+			admitted.push_back( e );
+		}
+		else
+		{
+			if( ( e.entityName.empty() && e.entityKind.empty() ) || e.role.empty() || e.value.empty() ) {
+				r.message = String( "param and value must be non-empty, and target may be empty only with a kind (singleton addressing)" );
+				continue;
+			}
+			CstBatchEdit gated = e;
+			gated.refuseSurfaceBindingOnContainer =
+				IsObjectSurfaceBindingParamName( String( e.role.c_str() ) ) && e.value != "none";
+			admitted.push_back( gated );
+		}
+		admittedIndex.push_back( i );
+	}
+
+	std::vector<CstBatchOutcome> outcomes;
+	const int code = admitted.empty() ? 0 : mJob.ApplyCstEditBatch( admitted, outcomes );
+
+	if( code == kCstEditBatchNeedsSequential )
+	{
+		// Nothing was committed.  The caller (AgentSession::FlushEditBatch_) commits the elements one at a time
+		// through the single verbs instead, so this lock is released between elements (review P2-C).
+		for( std::size_t k = 0; k < admitted.size(); ++k ) {
+			AgentCommitResult& r = out[ admittedIndex[k] ];
+			r.status = String( "sequential" );
+			r.needsSequential = true;
+			r.message = String( "batch isolation budget exceeded -- commit this element on its own" );
+		}
+		const RISE::Cst::CstHeadVersion head = mJob.GetCstHeadVersion();
+		for( std::size_t i = 0; i < out.size(); ++i ) out[i].headVersion = head;
+		return out;
+	}
+
+	// A landed batch is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's cached pointers
+	// BEFORE releasing the lock, ONCE for the whole batch.
+	if( code == 2 || code == 3 )
+		RebindEditorToJob();
+
+	bool anyRasterizerLanded = false;
+	// Review round 3: a diagnosed (code 3) batch re-derive is attributed to an element ONLY when a diagnostic OPENS
+	// with that element's own `<keyword> `<name>`` (CstBatchDiagnosticIsFor); when nothing is attributed, EVERY
+	// landed element is reported diagnosed (callers count diagnosed as landed, so over-flagging is harmless).
+	auto ownIdentity = [&]( std::size_t k, std::string& kw, std::string& nm ) {
+		const CstBatchOutcome& o = outcomes[k];
+		if( admitted[k].isInsert ) { kw = o.keyword; nm = o.name; }
+		else { kw = o.undo.ownerKeyword; nm = CstNameFromPath( o.undo.ownerNamePath ); }
+	};
+	bool anyAttributed = false;
+	for( std::size_t k = 0; k < admitted.size() && k < outcomes.size(); ++k ) {
+		if( outcomes[k].code != 3 ) continue;
+		std::string kw, nm;
+		ownIdentity( k, kw, nm );
+		if( CstBatchDiagnosticIsFor( outcomes[k].diag, kw, nm ) ) anyAttributed = true;
+	}
+	std::string label;
+	for( std::size_t k = 0; k < admitted.size(); ++k )
+	{
+		const CstBatchEdit&    e  = admitted[k];
+		const CstBatchOutcome& oc = outcomes[k];
+		AgentCommitResult&     r  = out[ admittedIndex[k] ];
+		r.rawCode = ( oc.code < 0 ) ? 0 : oc.code;
+		if( e.isInsert )
+		{
+			r.chunkKeyword = String( oc.keyword.c_str() );
+			r.chunkName    = String( oc.name.c_str() );
+		}
+		const char* diag = oc.diag.c_str();
+		// The per-element folds are the SINGLE verbs' own wording, so a model reading a batch result
+		// learns exactly what it would have learned from the single call.
+		switch( oc.code )
+		{
+			case 2:
+				r.applied = true;
+				r.status  = String( "applied" );
+				r.message = e.isInsert
+					? String( "chunk inserted via a full re-derive (Scene + managers were replaced)" )
+					: String( "applied via a full re-derive (Scene + managers were replaced)" );
+				break;
+			case 3:
+			{
+				// ONE re-derive realized the whole batch (its dry-run of the identical document was clean).
+				std::string kw, nm;
+				ownIdentity( k, kw, nm );
+				const bool offender = !anyAttributed || CstBatchDiagnosticIsFor( oc.diag, kw, nm );
+				if( offender ) {
+					r.applied = false;
+					r.status  = String( "diagnosed" );
+					std::string m = anyAttributed
+						? "edit NOT a clean success: the Document was mutated and the live managers were replaced, BUT "
+						  "the batch's full re-derive reported a diagnostic for THIS element -- do NOT treat it as applied: "
+						: "edit NOT a clean success: the chunk/edit IS in the Document and the live managers were replaced, "
+						  "BUT the batch's full re-derive reported diagnostics it could not attribute to one element -- "
+						  "do NOT treat it as applied: ";
+					m += oc.diag;
+					r.message = String( m.c_str() );
+				} else {
+					r.applied = true;
+					r.status  = String( "applied" );
+					std::string m = e.isInsert ? "chunk inserted via a full re-derive (Scene + managers were replaced)"
+					                           : "applied via a full re-derive (Scene + managers were replaced)";
+					m += "; note: the batch's re-derive reported a diagnostic for ANOTHER element: ";
+					m += oc.diag;
+					r.message = String( m.c_str() );
+				}
+				break;
+			}
+			case -1:
+			{
+				r.applied = false;
+				r.status  = String( "rejected" );
+				std::string m = "insert rejected: chunkText must parse to exactly ONE complete chunk (`keyword { ... }`, braces on their own lines; no scene header/directives)";
+				if( diag[0] ) { m += ": "; m += diag; }
+				r.message = String( m.c_str() );
+				break;
+			}
+			case -2:
+			{
+				r.applied = false;
+				r.status  = String( "rejected" );
+				const std::string dstr = diag;
+				std::string m;
+				if( dstr.compare( 0, 13, "reserved name" ) == 0 ) {
+					m = "insert rejected: " + dstr + " -- head unchanged";
+				} else {
+					m = "insert rejected: a chunk with the same kind and name already exists";
+					if( diag[0] ) { m += " ("; m += diag; m += ")"; }
+					m += " -- head unchanged";
+				}
+				r.message = String( m.c_str() );
+				break;
+			}
+			case 0:
+			default:
+			{
+				r.applied = false;
+				r.status  = String( "rejected" );
+				if( oc.refusedContainer ) {
+					char buf[320];
+					std::snprintf( buf, sizeof( buf ),
+						"`%s` is a container node (it names no `geometry`), so it takes no `%s` -- a container is a pure "
+						"transform with no surface.  Put the binding on a child object that has geometry, or give this "
+						"object a `geometry`.",
+						e.entityName.empty() ? "(unnamed)" : e.entityName.c_str(), e.role.c_str() );
+					r.message = String( buf );
+				} else if( e.isInsert ) {
+					r.wouldNotDerive = oc.wouldNotDerive || oc.code == 0;
+					std::string m = "insert rejected: the chunk would not derive in context -- head unchanged";
+					if( diag[0] ) { m += ": "; m += diag; }
+					r.message = String( m.c_str() );
+				} else {
+					r.wouldNotDerive = true;
+					r.message = String( "edit rejected (entity/param not found or the edit would not derive) -- head unchanged" );
+				}
+				break;
+			}
+		}
+		if( ( oc.code == 2 || oc.code == 3 ) )
+		{
+			if( e.isInsert && oc.isRasterizer ) anyRasterizerLanded = true;
+			if( !label.empty() ) label += ", ";
+			label += e.isInsert ? ( oc.name.empty() ? oc.keyword : oc.name )
+			                    : ( e.entityName + "." + e.role );
+		}
+	}
+
+	const RISE::Cst::CstHeadVersion head = mJob.GetCstHeadVersion();
+	for( std::size_t i = 0; i < out.size(); ++i ) out[i].headVersion = head;
+
+	if( code == 2 || code == 3 )
+	{
+		// Dirty marks + the per-element side effects the single verbs run on a mutating code, for every
+		// LANDED element (same calls, same arguments).
+		for( std::size_t k = 0; k < admitted.size(); ++k )
+		{
+			const CstBatchOutcome& oc = outcomes[k];
+			if( oc.code != 2 && oc.code != 3 ) continue;
+			const CstBatchEdit& e = admitted[k];
+			if( e.isInsert )
+			{
+				mEditor.MarkCstHeadDirty( oc.name.c_str(), oc.keyword.empty() ? nullptr : oc.keyword.c_str() );
+			}
+			else
+			{
+				const char* kind = e.entityKind.empty() ? nullptr : e.entityKind.c_str();
+				mEditor.MarkCstHeadDirty( e.entityName.c_str(), kind );
+				mEditor.BumpSceneLightGenerationForAgentParamEdit( e.entityName.c_str(), kind );
+				if( e.entityKind.empty() )
+					InvalidateAllSceneCameraNamedPanesLocked_();
+				else if( IsCameraChunkKind( String( e.entityKind.c_str() ) ) )
+					InvalidatePanesBoundToSceneCameraLocked_( String( e.entityName.c_str() ) );
+			}
+		}
+
+		// ONE history record for the WHOLE batch (one Cmd-Z undoes it -- the remove_chunks rule): the landed
+		// elements' OPERATION-LEVEL inverses in landing order (see CstBatchUndoOp and the AgentEditBatch op doc
+		// for why per-element records are not an exact inverse of a batch) -- never a document snapshot, so an
+		// Undo/Redo touches only what the batch touched.
+		std::vector< std::pair<int, CstBatchUndoOp> > ordered;
+		for( std::size_t k = 0; k < admitted.size() && k < outcomes.size(); ++k )
+			if( outcomes[k].code == 2 || outcomes[k].code == 3 )
+				ordered.push_back( std::make_pair( outcomes[k].landOrder, outcomes[k].undo ) );
+		std::stable_sort( ordered.begin(), ordered.end(),
+			[]( const std::pair<int, CstBatchUndoOp>& x, const std::pair<int, CstBatchUndoOp>& y ) { return x.first < y.first; } );
+		std::vector<CstBatchUndoOp> ops;
+		for( std::size_t k = 0; k < ordered.size(); ++k ) ops.push_back( ordered[k].second );
+		mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, anyRasterizerLanded );
+
+		// The entity set and/or graph edges changed -- bump the epoch live GUI outliners cache against.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+	}
+	return out;
 }
 
 // R2 (2026-08-10, replace_geometry_scaffold): the whole-document composite commit -- see the header doc.
@@ -10385,6 +10690,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 			// Round-2 P1-A: name BOTH would-not-derive causes honestly -- the
 			// old "likely still REFERENCED" wording sent agents chasing a
 			// phantom consumer when the real cause was an order-invalid head.
+			if( isInsert ) r.wouldNotDerive = true;   // Job's code 0 for an insert IS would-not-derive
 			std::string m = isInsert
 				? std::string( "insert rejected: the chunk would not derive in context -- head unchanged" )
 				: std::string( "remove rejected: removing '" ) + a.c_str() + "' would not derive (it is likely still REFERENCED by another chunk, or the remaining document no longer derives in order -- read_document and validate to inspect) -- head unchanged";
@@ -10725,6 +11031,30 @@ void SceneEditController::ReadAgentSceneSnapshot( bool& outHasDocument,
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	outDocument    = doc ? RISE::Cst::SerializeCst( *doc ) : std::string();
 	outVersion     = mJob.GetCstHeadVersion();
+}
+
+// Batched agent edits (2026-10-16): see the header doc -- ReadAgentSceneSnapshot's lifecycle refusal and lock,
+// handing back a persistent-structure COPY of the head (no serialization).
+void SceneEditController::CopyAgentHeadDocument( bool& outHasDocument,
+                                                 RISE::Cst::Document& outDocument,
+                                                 RISE::Cst::CstHeadVersion& outVersion ) const
+{
+	outHasDocument = false;
+	outVersion = RISE::Cst::CstHeadVersion{};
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return;
+	std::lock_guard<std::mutex> lk( mMutex );
+	outHasDocument = mJob.CopyCstDocument( outDocument );
+	outVersion     = mJob.GetCstHeadVersion();
+}
+
+int SceneEditController::ApplyAgentBatchElementToDocument( RISE::Cst::Document& doc, const CstBatchEdit& edit,
+                                                           CstBatchOutcome& outcome ) const
+{
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return 0;
+	std::lock_guard<std::mutex> lk( mMutex );   // the element reads live Job state (e.g. the active camera)
+	return mJob.ApplyCstBatchElement( doc, edit, outcome );
 }
 
 RISE::Cst::CstHeadVersion SceneEditController::ReadAgentHeadVersion() const
@@ -17669,26 +17999,36 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	return ok;
 }
 
-void SceneEditController::Undo()
+bool SceneEditController::Undo()
 {
+	bool ok = false;
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
-			return;
-		UndoInner_();
+			return false;
+		ok = UndoInner_();
 	}
 	mEditor.DrainDirtyNotification();
+	return ok;
 }
 
-void SceneEditController::Redo()
+bool SceneEditController::Redo()
 {
+	bool ok = false;
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
-			return;
-		RedoInner_();
+			return false;
+		ok = RedoInner_();
 	}
 	mEditor.DrainDirtyNotification();
+	return ok;
+}
+
+std::string SceneEditController::ConsumeHistoryNotice()
+{
+	std::lock_guard<std::mutex> lk( mMutex );   // the notice is written by Undo/Redo under this lock
+	return mEditor.ConsumeHistoryNotice();
 }
 
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(

@@ -3183,4 +3183,7 @@ void ChatPanel::onProposalUndoClicked()
     // underneath an in-flight render.
     if (!m_bridge || !m_sceneEditable) return;
     m_bridge->undo();
+    // A refused step explains itself (same notice MainWindow's Undo shows).
+    const QString notice = m_bridge->consumeHistoryNotice();
+    if (!notice.isEmpty()) QMessageBox::warning(this, "Undo Refused", notice);
 }

@@ -30,6 +30,8 @@
 #include "IShaderOpManager.h"
 #include "IRasterizer.h"
 
+#include <string>
+#include <vector>
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: CstHeadVersion (a trivial POD returned by value below; Cst.h is std-lib-only weight)
 
 namespace RISE
@@ -40,6 +42,186 @@ namespace RISE
 	// pull in unordered_map / Matrix4 / etc.
 	class TransformSnapshot;
 	struct FileIdentity;   // defined in SceneEditor/FileIdentity.h; CST-save external-mod guard reads it via GetCstLoadFileIdentity()
+
+	//! Batched agent edits (2026-10-16): ONE element of IJobPriv::ApplyCstEditBatch.  Either a chunk
+	//! INSERT (`isInsert`, `chunkText` -- the same text Job::ApplyCstInsertChunk takes) or a single
+	//! param EDIT (the same (entityName, entityKind, role, occ, value) tuple Job::ApplyCstParamEditChecked
+	//! takes; an empty `entityKind` means "no kind narrowing", exactly as a null kind does there).
+	struct CstBatchEdit
+	{
+		bool        isInsert = false;
+		std::string chunkText;
+		std::string entityName;
+		std::string entityKind;
+		std::string role;
+		std::string value;
+		int         occ = 0;
+		//! Param edit only: refuse it (outcome.refusedContainer) when the target resolves to a container
+		//! `standard_object` IN THE BATCH'S EVOLVING DOCUMENT -- the agent route's surface-binding-on-a-
+		//! container gate, set by the caller for a surface-binding param with a non-`none` value.
+		bool        refuseSurfaceBindingOnContainer = false;
+		//! Param edit only: the caller ADDRESSED a specific occurrence (propose_patch's `occurrence`) -- the
+		//! batch's undo record then applies base's occurrence-drift guard to it (see CstBatchUndoOp).
+		bool        occAddressed = false;
+	};
+
+	//! Batched agent edits (2026-10-16, review round 3): the OPERATION-LEVEL inverse of ONE landed batch element,
+	//! captured against the document exactly as that element found it.  An AgentEditBatch history record is the
+	//! ordered list of these: Undo applies them in REVERSE landing order to the CURRENT document (remove the
+	//! inserted chunk; restore each touched param slot's prior value or absence), Redo re-applies them forward
+	//! (re-insert the recorded chunk text after its recorded anchor; re-set each slot's post value), and either
+	//! direction is realized by ONE dry-run-gated derive.  Nothing the batch did not touch is ever rewritten, so
+	//! edits made outside the history (film / environment inspector edits) survive an Undo/Redo of the batch.
+	struct CstBatchUndoOp
+	{
+		struct Slot
+		{
+			std::string role;
+			int         occ = 0;
+			bool        priorAbsent = true;
+			std::string priorValue;
+			bool        postAbsent = true;
+			std::string postValue;
+		};
+		bool        isInsert = false;
+		// INSERT: the exact chunk bytes, its identity, its top-level index right after its splice (the undo
+		// tie-break among byte-identical twins), and the identity of the nearest chunk BEFORE it at splice time
+		// ("" = no chunk before it) -- the redo anchor.
+		std::string chunkText;
+		std::string keyword;
+		std::string namePath;          //!< Cst::ChunkNamePath ("keyword/name"), "" for an unnamed chunk
+		int         chunkIndex = -1;
+		std::string anchorKeyword;
+		std::string anchorNamePath;
+		bool        hasAnchor = false;
+		//! Review round 5 (P1-2): the anchor's ORDINAL among the chunks sharing its identity (keyword + name
+		//! path) -- unnamed chunks all share "" -- so Redo resolves the k-th, not the first; and whether the
+		//! insert was spliced at the document END (Redo then appends at the end, whatever follows the anchor).
+		int         anchorOrdinal = 0;
+		bool        appendedAtEnd = false;
+		// PARAM EDIT: how the FORWARD write addressed its target -- (entityName, entityKind, editRole) resolved
+		// through Cst::DocFindByNameAnyRole + Cst::DocTransformOwnerId -- so Undo and Redo resolve it the SAME
+		// way (review round 4); `postEntityName` is the entity's name AFTER the write (differs only when the
+		// edit renamed it: Undo resolves by it, Redo by `entityName`).  `ownerKeyword` / `ownerNamePath` are the
+		// resolved owner chunk's identity (diagnostic attribution only).  `slots` = every slot the write changed.
+		std::string entityName;
+		std::string entityKind;
+		std::string editRole;
+		std::string postEntityName;
+		bool        occAddressed = false;
+		//! The slots are the object's WHOLE transform (position / orientation / quaternion / scale / matrix):
+		//! every one of them is re-applied, including one that was absent before AND after -- an editor gesture
+		//! made after the batch and undone re-spells the pose (a `matrix` where the batch wrote a `position`),
+		//! and that re-spelling must go too.  Otherwise only the slots the write CHANGED are applied.
+		bool        wholeTransform = false;
+		std::string ownerKeyword;
+		std::string ownerNamePath;
+		std::vector<Slot> slots;
+	};
+
+	//! Per-element outcome of IJobPriv::ApplyCstEditBatch.  `code` follows the SINGLE-element
+	//! primitive's own contract: an insert reports Job::ApplyCstInsertChunk's 2/3/0/-1/-2, a param edit
+	//! Job::ApplyCstParamEditChecked's 2/3/0 (never 1 -- a batch always realizes through ONE full
+	//! re-derive).  `keyword`/`name` echo an insert's parsed identity; `diag` carries the refusal reason
+	//! (the first dry-run diagnostic for a would-not-derive) or, for a landed element of a diagnosed batch
+	//! (code 3), EVERY diagnostic of the batch's live re-derive, one per line.  For a LANDED element `undo` is
+	//! its operation-level inverse and `landOrder` its position in the order elements were written into the
+	//! committed document (batch order, except for elements an isolation retry landed later).
+	struct CstBatchOutcome
+	{
+		int             code = 0;
+		std::string     keyword;
+		std::string     name;
+		std::string     diag;
+		int             insertedAt = -1;
+		bool            isRasterizer = false;       //!< insert: the chunk is a `*_rasterizer` (Job's category+suffix rule)
+		bool            refusedContainer = false;   //!< param: refused by the container gate (see CstBatchEdit)
+		bool            wouldNotDerive = false;     //!< refused because it would not derive in context
+		int             landOrder = -1;
+		CstBatchUndoOp  undo;
+	};
+
+	//! IJobPriv::ApplyCstEditBatch's "isolation budget exhausted" return: NOTHING was committed, and the caller
+	//! must fall back to committing the elements one at a time through the single primitives.
+	const int kCstEditBatchNeedsSequential = -3;
+
+	//! The object-transform params (they mask one another; see Job::PlanCstParamEdits_'s strip lists).
+	inline bool CstIsObjectTransformRole( const std::string& r )
+	{
+		return r == "position" || r == "orientation" || r == "quaternion" || r == "scale" || r == "matrix";
+	}
+
+	//! Would re-writing the EARLIER object-transform param `earlier` after the LATER landed one `later` (both on
+	//! the same entity) change the later write's effect?  Job::PlanCstParamEdits_'s masking rules (review round 5,
+	//! directional rather than "every transform role is one slot"): a write strips exactly what outranks it
+	//! (matrix > quaternion > orientation; position and scale are independent of everything but matrix), and a
+	//! re-written param that outranks the later one masks it.  So the earlier write conflicts when
+	//!   * it is the same role (the occurrence is compared by the caller);
+	//!   * the later write is a `matrix` (re-writing any component strips it), or the earlier is (re-writing it
+	//!     strips every later component);
+	//!   * the pair is quaternion / orientation -- a re-written orientation strips a later quaternion, a
+	//!     re-written quaternion masks a later orientation.
+	//! position / scale / quaternion against one another (other than themselves) do not conflict.
+	inline bool CstTransformRetryConflicts( const std::string& earlier, const std::string& later )
+	{
+		if( earlier == later ) return true;
+		if( earlier == "matrix" || later == "matrix" ) return true;
+		return ( earlier == "quaternion" && later == "orientation" ) ||
+		       ( earlier == "orientation" && later == "quaternion" );
+	}
+
+	//! Batched agent edits (2026-10-16, review rounds 2-5): does an element AFTER `i` that LANDED write the same
+	//! param slot (entity, role, occ) as param element `i` -- or, for the object-transform params, one a retry of
+	//! `i` would strip or mask (CstTransformRetryConflicts)?  A retry of `i` would then overwrite the later
+	//! value with an earlier one, so retry passes skip it.  An EMPTY kind on either side means "no kind
+	//! narrowing" and therefore matches any kind.
+	inline bool CstBatchLaterLandedWriteSameSlot( const std::vector<CstBatchEdit>& edits,
+	                                              const std::vector<char>& landed, std::size_t i )
+	{
+		const CstBatchEdit& e = edits[i];
+		if( e.isInsert ) return false;
+		for( std::size_t j = i + 1; j < edits.size() && j < landed.size(); ++j ) {
+			const CstBatchEdit& o = edits[j];
+			if( !landed[j] || o.isInsert ) continue;
+			const bool kindMatches = e.entityKind.empty() || o.entityKind.empty() || o.entityKind == e.entityKind;
+			const bool sameRole = ( o.role == e.role && o.occ == e.occ ) ||
+			                      ( CstIsObjectTransformRole( o.role ) && CstIsObjectTransformRole( e.role ) &&
+			                        o.role != e.role && CstTransformRetryConflicts( e.role, o.role ) );
+			if( o.entityName == e.entityName && kindMatches && sameRole )
+				return true;
+		}
+		return false;
+	}
+
+	//! Batched agent edits (2026-10-16, review round 3): a batch is realized by ONE live re-derive, so when that
+	//! re-derive reports diagnostics (code 3) every landed element shares them.  A diagnostic is attributed to an
+	//! element ONLY when it OPENS with that element's own chunk identity -- `<keyword> `<name>`` (or the
+	//! quote-delimited forms) -- never on a name merely QUOTED inside it, which is usually a REFERENCED entity
+	//! ("voronoi2d_painter: gen 0 painter 'foo' not found" names foo, not the voronoi).  `diags` holds one
+	//! diagnostic per line.  When nothing is attributed the caller marks EVERY landed element diagnosed.
+	inline bool CstBatchDiagnosticIsFor( const std::string& diags, const std::string& keyword, const std::string& name )
+	{
+		if( keyword.empty() || name.empty() || diags.empty() ) return false;
+		const std::string forms[3] = { keyword + " `" + name + "`", keyword + " '" + name + "'",
+		                               keyword + " \"" + name + "\"" };
+		std::size_t at = 0;
+		while( at <= diags.size() ) {
+			const std::size_t nl = diags.find( '\n', at );
+			const std::string line = diags.substr( at, nl == std::string::npos ? std::string::npos : nl - at );
+			for( int f = 0; f < 3; ++f )
+				if( line.compare( 0, forms[f].size(), forms[f] ) == 0 ) return true;
+			if( nl == std::string::npos ) break;
+			at = nl + 1;
+		}
+		return false;
+	}
+
+	//! The bare name of a Cst::ChunkNamePath ("keyword/name" -> "name").
+	inline std::string CstNameFromPath( const std::string& namePath )
+	{
+		const std::size_t slash = namePath.find( '/' );
+		return slash == std::string::npos ? namePath : namePath.substr( slash + 1 );
+	}
 
 	//! IJobPriv - Priviledged interface with getters
 	class IJobPriv : public virtual IJob
@@ -122,6 +304,58 @@ namespace RISE
 		// Job is the sole implementer.
 		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
 		virtual unsigned long long			GetContainerRebuildCount() const = 0;
+
+		// Batched agent edits (2026-10-16): apply `edits` IN ORDER to the retained CST Document and
+		// realize every element that derives with ONE dry-run-guarded full re-derive -- instead of one
+		// re-derive per element, which is what a loop over ApplyCstInsertChunk / ApplyCstParamEditChecked
+		// costs (each of those dry-runs AND fully re-derives the whole scene).
+		//
+		// Every element is validated with the single primitives' own rules, in order, against the document
+		// the earlier ACCEPTED elements left (a later element may reference an earlier one; a duplicate of an
+		// earlier one is refused).  An element lands iff it is valid and the accepted document still derives
+		// with it in, judged on the END state (an element listed before what it references lands) -- the same
+		// verdict whatever else the batch holds: when the whole batch does not derive, the elements are
+		// isolated by in-order halving over throwaway dry-runs and every would-not-derive element then gets
+		// ONE in-order retry against the final accepted document.  A refused insert gets the single verb's
+		// positioned-then-append retry.  If the CURRENT document itself does not derive, every element is
+		// refused with that diagnostic.
+		//
+		// Isolation spends at most `maxIsolationDryRuns` dry-runs (< 0 = a default sized for two offenders, 4*ceil(log2 N) + 10, capped at 32);
+		// beyond it NOTHING is committed and kCstEditBatchNeedsSequential is returned.
+		//
+		// Returns 0 when NOTHING landed (retained Document AND live scene byte-identical, head version
+		// unbumped), else 2 (replaced, clean) / 3 (replaced, diagnosed) -- the caller MUST re-point cached
+		// scene/manager pointers on 2/3 -- with the head revision bumped ONCE for the whole batch.
+		// `outcomes` is resized to edits.size().  Job is the sole implementer.
+		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
+		virtual int							ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits,
+		                                                       std::vector<CstBatchOutcome>& outcomes,
+		                                                       int maxIsolationDryRuns = -1 ) = 0;
+
+		// Batched agent edits (2026-10-16): apply ONE element to the caller's `doc` exactly as
+		// ApplyCstEditBatch's validation does (no derive, no mutation of this Job, no refusal logging).
+		// Returns 1 when written, else the refusal code (outcome filled).  Lets a caller that DEFERS
+		// elements keep an incremental preview of the document the batch will produce.
+		virtual int							ApplyCstBatchElement( RISE::Cst::Document& doc, const CstBatchEdit& edit,
+		                                                          CstBatchOutcome& outcome ) = 0;
+
+		// Batched agent edits (2026-10-16): copy the retained CST Document (a cheap persistent-structure
+		// copy).  False when none is retained.
+		virtual bool						CopyCstDocument( RISE::Cst::Document& out ) const = 0;
+
+		// Batched agent edits (2026-10-16, review round 4): IJob::ApplyCstReplaceDocumentText for an already-built
+		// Document, installed AS IS -- no serialize + re-parse, so its top-level item structure (which OLDER
+		// history records' exact-index inverses rely on) is preserved.  Same 0 / 2 / 3 contract.
+		virtual int							ApplyCstReplaceDocument( const RISE::Cst::Document& doc,
+		                                                             bool restoreActiveRasterizer,
+		                                                             char* outDiag, unsigned int diagMax,
+		                                                             const char* diagContext ) = 0;
+
+		// Batched agent edits (2026-10-16): the agent route's CONTAINER rule -- does (entityName, entityKind)
+		// resolve, in `doc`, to a `standard_object` naming no resolvable `geometry` (`geometry none` counts)?
+		virtual bool						CstTargetIsContainerObject( const RISE::Cst::Document& doc,
+		                                                                const char* entityName,
+		                                                                const char* entityKind ) const = 0;
 	};
 
 

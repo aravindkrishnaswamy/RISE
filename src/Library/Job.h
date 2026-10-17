@@ -403,6 +403,22 @@ namespace RISE
 		// 87 step 4a round-4 P1-A: the container-rebuild counter -- see IJobPriv::GetContainerRebuildCount
 		// and the m_containerRebuildCount member doc.  Inline, no-`override` convention like the others.
 		unsigned long long			GetContainerRebuildCount() const	{ return m_containerRebuildCount; }
+		// Batched agent edits (2026-10-16): see the IJobPriv virtuals' docs.  No `override`, Job's convention.
+		int							ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<CstBatchOutcome>& outcomes,
+		                                               int maxIsolationDryRuns = -1 );
+		int							ApplyCstBatchElement( RISE::Cst::Document& doc, const CstBatchEdit& edit, CstBatchOutcome& outcome );
+		bool						CopyCstDocument( RISE::Cst::Document& out ) const;
+		int							ApplyCstReplaceDocument( const RISE::Cst::Document& doc, bool restoreActiveRasterizer,
+		                                                     char* outDiag, unsigned int diagMax, const char* diagContext );
+		bool						CstTargetIsContainerObject( const RISE::Cst::Document& doc, const char* entityName, const char* entityKind ) const;
+		//! Test hook (2026-10-16): how many validate-before-destroy DRY-RUN derives (into a throwaway staging Job)
+		//! the CST edit paths have run on this Job.  Monotonic; not part of IJobPriv.
+		unsigned long long			GetCstDryRunCount() const			{ return mCstDryRunCount; }
+		//! Test seam (2026-10-16): make the NEXT full live re-derive report `diag` as a diagnostic (code 3),
+		//! so the "dry-run clean, live re-derive diagnosed" path can be exercised.  Not part of IJobPriv.
+		void						ForTest_InjectNextLiveDeriveDiagnostic( const std::string& diag ) { mForTestInjectLiveDeriveDiag = diag; }
+		//! Test seam (2026-10-16): override ApplyCstEditBatch's DEFAULT isolation dry-run budget (-1 = no override).
+		void						ForTest_SetCstBatchIsolationBudget( int budget ) { mForTestBatchBudget = budget; }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -3543,6 +3559,43 @@ namespace RISE
 		//! `restoreActiveRasterizer` (F5 S2 round 2, P1-B): ApplyCstInsertChunk passes false when the inserted
 		//! chunk IS a rasterizer so the derive's last-wins activation (the insert) stands -- live matches reload.
 		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer = true );
+		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer, bool skipDryRun );
+		//! Batched agent edits (2026-10-16): a full DeriveToJob of `doc` into a throwaway staging Job (the
+		//! active variant forced).  True iff it derived with NO diagnostic; else `outFirstDiag` (if non-null)
+		//! receives the first one.  Mutates nothing on this Job.
+		bool DryRunCstDocument_( const RISE::Cst::Document& doc, std::string* outFirstDiag );
+		//! Batched agent edits (2026-10-16): the parse/refusal half of ApplyCstInsertChunk, against an
+		//! ARBITRARY base document (the retained head for the single verb, the batch's evolving document for
+		//! ApplyCstEditBatch) -- one copy of every refusal rule so the two can never drift.  Returns 1 when
+		//! the chunk may be spliced (outChunk/outIsRasterizer/outAt/outEndAt filled: `outAt` = the declaration-
+		//! tier position, `outEndAt` = append-at-end), else the single verb's -1 / -2 / 0 with `outDiag` set.
+		//! `keyword`/`name` are echoed as soon as the chunk parses.
+		//! `logRefusals` = false silences the refusal warnings (a batch re-validates an element many times
+		//! while isolating; it logs each final verdict once instead).
+		int PrepareCstInsert_( const RISE::Cst::Document& base, const char* chunkText,
+		                       std::string& keyword, std::string& name, std::string& outDiag,
+		                       RISE::Cst::NodeRef& outChunk, bool& outIsRasterizer, int& outAt, int& outEndAt,
+		                       bool logRefusals );
+		//! Batched agent edits (2026-10-16): splice [leadSep][chunk][trailSep] into `doc` at `at`.
+		static RISE::Cst::Document SpliceCstInsert_( const RISE::Cst::Document& doc, const RISE::Cst::NodeRef& chunk, int at );
+		//! Batched agent edits (2026-10-16): the resolve/validate/write half of ApplyCstParamEditsImpl_
+		//! against an ARBITRARY base document.  1 = every pair planned and written into `outDoc` (anchor =
+		//! the owner chunk, roleDiag = "role[+role...]"), 0 = refused (logged; `outDoc` untouched).
+		int PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entityName, const char* entityKind,
+		                        const std::vector< std::pair< std::string, std::string > >& edits, int occ,
+		                        RISE::Cst::Document& outDoc, RISE::Cst::NodeId& outAnchor, std::string& outRoleDiag,
+		                        bool logRefusals, CstBatchUndoOp* outUndo = nullptr );
+		//! Batched agent edits (2026-10-16): apply ONE batch element to `doc` (positioned insert, or the
+		//! param write, after the optional container gate).  Returns 1 = written (outcome.insertedAt /
+		//! isRasterizer set for an insert), else the element's refusal code with outcome.diag set.
+		//! `appendAtEnd` places an insert at the document end instead of its declaration tier.
+		int ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e, CstBatchOutcome& outcome,
+		                           bool appendAtEnd, bool logRefusals );
+		//! Batched agent edits (2026-10-16): the failure-isolation state + recursion behind ApplyCstEditBatch --
+		//! see the .cpp.
+		struct CstBatchIsolation_;
+		bool IsolateCstBatch_( CstBatchIsolation_& st, const std::vector<int>& idxs, bool knownFailing );
+		bool TryLandCstBatchElement_( CstBatchIsolation_& st, int i, bool allowAppend );
 		//! Facet 5 slice 1a: bump the retained CST head's revision (leaving uuid), called at EVERY site that
 		//! successfully mutates the retained pCstDocument content.  The invariant: revision changes IFF the
 		//! retained Document content changed -- so a NO-CHANGE code path (a rejected edit) must NOT call this.
@@ -3593,6 +3646,12 @@ namespace RISE
 		//! possible rebuild must compose this counter with the serial.  See
 		//! SceneEditController::AuthoredTree::rebuildCount, its sole consumer.
 		unsigned long long m_containerRebuildCount = 0;
+		// 2026-10-16: see GetCstDryRunCount.
+		unsigned long long mCstDryRunCount = 0;
+		// 2026-10-16: the first diagnostic of the last full live re-derive ("" when clean), and the test seam.
+		std::string mLastCstLiveDeriveDiag;
+		std::string mForTestInjectLiveDeriveDiag;
+		int mForTestBatchBudget = -1;
 
 		//! `gltf_import` name_prefix values already consumed THIS derive (reset in
 		//! InitializeContainers, so a fresh Job -- or a ClearAll'd one -- starts empty).

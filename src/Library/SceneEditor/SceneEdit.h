@@ -410,6 +410,35 @@ namespace RISE
 			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
 			AgentDuplicateNode,
 
+			//! Batched agent edits (2026-10-16): ONE record for a whole agent edit BATCH -- several chunk
+			//! inserts and/or param edits realized together by SceneEditController::ApplyAgentEditBatch
+			//! (Job::ApplyCstEditBatch, one full re-derive), pushed AFTER the mutation landed, like every
+			//! other agent op.  One record so a single Cmd-Z undoes the whole batch, the way
+			//! AgentRemoveChunks undoes a whole batch remove.
+			//!
+			//! The record is OPERATION-LEVEL (review round 3): the landed elements' inverses
+			//! (RISE::CstBatchUndoOp) in landing order -- remove an inserted chunk, restore a touched param slot.
+			//! Undo applies them in reverse to the CURRENT document and Redo forward, each direction realized by
+			//! ONE dry-run-gated derive; nothing the batch did not touch is rewritten, so edits made outside the
+			//! history (film / environment inspector edits) survive.  A refused Undo/Redo keeps the record in
+			//! place, like every refused record, and sets SceneEditor::ConsumeHistoryNotice.
+			//!
+			//! WHY NOT N AgentInsertChunk / SetAgentCstParam records bracketed by CompositeBegin/End: each of
+			//! those inverses re-derives the document it lands on and refuses one that does not derive, but a
+			//! batch validates only its END state -- an element listed before what it references lands (see
+			//! Job::ApplyCstEditBatch) -- so replaying them one derive at a time can stop half-way.
+			//!
+			//! FIELD USE:
+			//!   * `propertyValue`     = the encoded operation list (SceneEditor.cpp's EncodeBatchOps_).
+			//!   * `prevPropertyValue` = UNUSED.
+			//!   * `objectName`        = a DISPLAY-ONLY label (logs); `cstEntityKind` left EMPTY so
+			//!                           MarkCstHeadDirty routes to the boolean CST-head channel.
+			//!   * `agentChunkWasRasterizer` = true iff the batch LANDED a `*_rasterizer` insert: Redo then
+			//!                           lets the document's last-wins activation stand (the inserted one),
+			//!                           exactly as the forward commit did (the P1-B rule); Undo restores.
+			//!   * `agentChunkIndex`   = UNUSED.
+			AgentEditBatch,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI

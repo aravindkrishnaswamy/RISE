@@ -1025,6 +1025,30 @@ namespace RISE
 
 		AgentSession::AgentDocumentSnapshot AgentSession::ReadDocumentSnapshot() const
 		{
+			// Batched agent edits (2026-10-16): with elements DEFERRED in an
+			// open InsertChunks / ProposePatches batch, every pre-commit gate
+			// must see the document as those elements will leave it -- the
+			// view it had when each element committed before the next was
+			// considered.  The preview is INCREMENTAL (EnsureBatchPreview_ /
+			// DeferBatchEdit_) and its text is cached per pending count: the
+			// gates of ONE element read the snapshot several times.
+			if( mEditBatch && !mEditBatch->pending.empty() && EnsureBatchPreview_() ) {
+				EditBatchCollector_& b = *mEditBatch;
+				if( b.previewTextFor != b.pending.size() ) {
+					b.previewText    = RISE::Cst::SerializeCst( b.previewDoc );
+					b.previewTextFor = b.pending.size();
+				}
+				AgentDocumentSnapshot snap;
+				snap.hasDocument = true;
+				snap.document    = b.previewText;
+				snap.headVersion = b.previewBase;
+				return snap;
+			}
+			return ReadDocumentSnapshotReal_();
+		}
+
+		AgentSession::AgentDocumentSnapshot AgentSession::ReadDocumentSnapshotReal_() const
+		{
 			AgentDocumentSnapshot snap;
 			if( mController ) {
 				mController->ReadAgentSceneSnapshot( snap.hasDocument, snap.document,
@@ -10469,7 +10493,7 @@ namespace RISE
 			return r;
 		}
 
-		AgentPatchResult AgentSession::ProposePatchImpl_( const AgentSetPatch& patch )
+		AgentPatchResult AgentSession::ProposePatchImpl_( const AgentSetPatch& patch, std::size_t deferIndex )
 		{
 			// Doc 90 slice R2 (2026-08-23): the revision ring's MUTATING-VERB
 			// capture point -- record the head this edit is about to move
@@ -11023,6 +11047,51 @@ namespace RISE
 				r.message = buf;
 				return r;
 			}
+
+			// Batched agent edits (2026-10-16): every gate above has passed --
+			// a ProposePatches batch DEFERS the commit here (see
+			// ProposePatchImpl_'s doc and FlushEditBatch_), so the whole batch
+			// lands with ONE re-derive.  Only an element the immediate path
+			// below would get past its own pre-flight is deferred (a base
+			// version, an empty field, or no document keeps the immediate path,
+			// with its own exact refusal), and the destructor-time folds and
+			// the splice attribution travel WITH the element so they are
+			// applied after its real result exists.
+			if( deferIndex != kNoDeferIndex && mEditBatch && mEditBatch->patchOut &&
+			    !patch.hasBaseVersion &&
+			    !( patch.target.empty() && patch.kind.empty() ) &&
+			    !patch.param.empty() && !patch.value.empty() &&
+			    ( mController || ( mJob && mJob->HasRetainedCstDocument() ) ) )
+			{
+				PendingBatchEdit_ pe;
+				pe.isInsert        = false;
+				pe.outIndex        = deferIndex;
+				pe.edit.isInsert   = false;
+				pe.edit.entityName = patch.target;
+				pe.edit.entityKind = patch.kind;
+				pe.edit.role       = patch.param;
+				pe.edit.value      = patch.value;
+				pe.edit.occ        = patch.hasOccurrence ? patch.occurrence : 0;
+				pe.edit.occAddressed = patch.hasOccurrence;   // the undo record's occurrence-drift guard keys on it
+				pe.patch           = patch;
+				// Live: the controller's container gate (a surface binding on
+				// a geometry-less object) is judged in the batch against the
+				// evolving document -- mirror it in the preview so later gates
+				// see the same verdict.  Headless never had that gate.
+				pe.edit.refuseSurfaceBindingOnContainer =
+					mController && IsObjectSurfaceBindingParamName( String( patch.param.c_str() ) ) &&
+					patch.value != "none";
+				pe.s1Notice.swap( s1Fold.notice );
+				pe.g2Notice.swap( g2Fold.notice );
+				pe.attrName.swap( s1Attr.name );
+				pe.attrKind.swap( s1Attr.kind );
+				DeferBatchEdit_( pe );   // the orphan pre/post documents come from the incremental preview
+				r.status = "deferred";   // placeholder -- FlushEditBatch_ writes the real result into the batch
+				return r;
+			}
+			// An IMMEDIATE commit while elements are deferred: land them first,
+			// so document order is call order.
+			FlushEditBatch_();
 
 			// Facet 5 slice 1b: LIVE mode.  When a controller is attached, the
 			// session shares a Job with a running interactive editor, so the
@@ -12493,6 +12562,23 @@ namespace RISE
 			// notice exactly once, not once per rebind that caused it.
 			std::vector<std::string> batchOrphans;
 
+			// Batched agent edits (2026-10-16): each element still runs EVERY
+			// gate of ProposePatch, in order, but its COMMIT is deferred onto
+			// this batch and the whole batch lands with ONE re-derive in
+			// FlushEditBatch_ -- see InsertChunks for the full rationale.  The
+			// element carrying the caller's base version commits immediately,
+			// which keeps the stale-base-is-batch-fatal rule below unchanged.
+			FlushEditBatch_();   // an ENCLOSING batch's deferred elements land first (call order)
+			EditBatchCollector_ batch;
+			batch.patchOut = &out;
+			// Scoped, so an exception can never leave mEditBatch pointing at this stack frame.
+			struct BatchScope_
+			{
+				EditBatchCollector_*& slot;
+				EditBatchCollector_*  prev;
+				~BatchScope_() { slot = prev; }
+			} batchScope{ mEditBatch, mEditBatch };
+			mEditBatch = &batch;
 			for( std::size_t i = 0; i < patches.size(); ++i )
 			{
 				AgentSetPatch item = patches[i];
@@ -12505,26 +12591,12 @@ namespace RISE
 				{
 					item.hasBaseVersion = false;
 				}
-				out.push_back( ProposePatch( item ) );
-
-				if( !out.back().reportedOrphans.empty() )
-				{
-					AgentPatchResult& last = out.back();
-					// Strip THIS element's own per-call sentence -- it is
-					// exactly what ComposeOrphanSentence_ would produce from
-					// `last.reportedOrphans` alone (the SAME formatter
-					// ProposePatch itself just called with the SAME verb
-					// clause), so a plain suffix match is safe and cannot
-					// mistake unrelated message text for it.
-					const std::string suffix =
-						ComposeOrphanSentence_( last.reportedOrphans, kProposePatchOrphanVerbClause );
-					if( last.message.size() >= suffix.size() &&
-					    last.message.compare( last.message.size() - suffix.size(), suffix.size(), suffix ) == 0 )
-						last.message.erase( last.message.size() - suffix.size() );
-					for( const std::string& o : last.reportedOrphans )
-						if( std::find( batchOrphans.begin(), batchOrphans.end(), o ) == batchOrphans.end() )
-							batchOrphans.push_back( o );
-				}
+				out.push_back( ProposePatchImpl_( item, item.hasBaseVersion ? kNoDeferIndex : i ) );
+				// ProposePatch's wrapper step, for an element that was NOT
+				// deferred (a deferred one gets it in FlushEditBatch_, once its
+				// real `applied` exists).
+				if( out.back().status != "deferred" )
+					NoteCameraFramingPatchIfQualifying_( item, out.back().applied );
 
 				// STALE-BASE CONFLICT IS BATCH-FATAL (see the header doc).
 				// Only the FIRST element carries the caller's precondition, so
@@ -12535,6 +12607,8 @@ namespace RISE
 				// co-editor changed.  Stop, and fill the unattempted tail with
 				// an explicit conflict so results[i] still lines up with
 				// patches[i] and the caller can see nothing else was tried.
+				// (Element 0 is never deferred when it carries a base, so its
+				// verdict is already final here.)
 				if( i == 0 && baseOrNull && out.back().status == "conflict" )
 				{
 					const AgentPatchResult& head = out.back();
@@ -12553,6 +12627,32 @@ namespace RISE
 					break;
 				}
 			}
+			FlushEditBatch_();
+
+			for( std::size_t i = 0; i < out.size(); ++i )
+			{
+				// One head for the whole call -- see InsertChunks.
+				if( batch.flushedAny && out[i].status != "staged" ) out[i].headVersion = ReadHeadVersion();
+
+				if( !out[i].reportedOrphans.empty() )
+				{
+					AgentPatchResult& last = out[i];
+					// Strip THIS element's own per-call sentence -- it is
+					// exactly what ComposeOrphanSentence_ would produce from
+					// `last.reportedOrphans` alone (the SAME formatter
+					// ProposePatch itself just called with the SAME verb
+					// clause), so a plain suffix match is safe and cannot
+					// mistake unrelated message text for it.
+					const std::string suffix =
+						ComposeOrphanSentence_( last.reportedOrphans, kProposePatchOrphanVerbClause );
+					if( last.message.size() >= suffix.size() &&
+					    last.message.compare( last.message.size() - suffix.size(), suffix.size(), suffix ) == 0 )
+						last.message.erase( last.message.size() - suffix.size() );
+					for( const std::string& o : last.reportedOrphans )
+						if( std::find( batchOrphans.begin(), batchOrphans.end(), o ) == batchOrphans.end() )
+							batchOrphans.push_back( o );
+				}
+			}
 
 			// Doc 90 R3: the ONE combined sentence for the whole call, on the
 			// LAST result -- see the loop's own comment above for why every
@@ -12566,8 +12666,360 @@ namespace RISE
 			return out;
 		}
 
+		// Batched agent edits (2026-10-16): the incremental preview of the open batch (review P2-E) -- the head
+		// copied ONCE (a persistent-structure copy, no serialization), every deferred element applied to it as it
+		// is deferred.  Rebuilt from scratch only when the REAL head moved underneath the batch (a co-editing
+		// GUI commit between two deferred elements).  False when there is no document to preview.
+		bool AgentSession::EnsureBatchPreview_() const
+		{
+			if( !mEditBatch ) return false;
+			EditBatchCollector_& b = *mEditBatch;
+			const RISE::Cst::CstHeadVersion realHead = ReadHeadVersion();
+			if( b.havePreview && b.previewBase == realHead ) return true;
+			bool has = false;
+			RISE::Cst::CstHeadVersion v;
+			if( mController ) {
+				mController->CopyAgentHeadDocument( has, b.previewDoc, v );
+			} else if( mJob ) {
+				has = mJob->CopyCstDocument( b.previewDoc );
+				v   = HeadVersion();
+			}
+			b.havePreview    = has;
+			b.previewBase    = v;
+			b.previewTextFor = static_cast<std::size_t>( -1 );
+			if( !has ) return false;
+			for( std::size_t i = 0; i < b.pending.size(); ++i ) ApplyToBatchPreview_( b.pending[i].edit );
+			return true;
+		}
+
+		void AgentSession::ApplyToBatchPreview_( const CstBatchEdit& edit ) const
+		{
+			if( !mEditBatch || !mEditBatch->havePreview ) return;
+			EditBatchCollector_& b = *mEditBatch;
+			CstBatchOutcome scratch;
+			if( mController ) ( void )mController->ApplyAgentBatchElementToDocument( b.previewDoc, edit, scratch );
+			else if( mJob )   ( void )mJob->ApplyCstBatchElement( b.previewDoc, edit, scratch );
+			b.previewTextFor = static_cast<std::size_t>( -1 );
+		}
+
+		void AgentSession::DeferBatchEdit_( PendingBatchEdit_& pe )
+		{
+			EditBatchCollector_& b = *mEditBatch;
+			const bool have = EnsureBatchPreview_();
+			// Doc 90 R3's orphan check compares the document immediately BEFORE a patch with the one immediately
+			// AFTER it.  Both are snapshots of the persistent preview, so they share NodeIds exactly as the
+			// headless single path's pre/post documents do.
+			if( !pe.isInsert && have ) { pe.orphanPreDoc = b.previewDoc; pe.haveOrphanPreDoc = true; }
+			ApplyToBatchPreview_( pe.edit );
+			if( !pe.isInsert && have ) pe.orphanPostDoc = b.previewDoc;
+			b.pending.push_back( pe );
+			if( mForTestAfterDeferHook ) mForTestAfterDeferHook( pe.outIndex );
+		}
+
+		// Batched agent edits (2026-10-16): see the header doc.  Every per-element step below is the SINGLE
+		// verb's own commit tail (InsertChunk's / ProposePatchImpl_'s LIVE and HEADLESS branches, and the
+		// destructor-time folds they declare), applied to the element's real result once the batch landed.
+		// Review round 2: does an element AFTER `k` that landed write the same param slot as patch `k`?
+		bool AgentSession::LaterLandedPatchWritesSameSlot_( const std::vector<PendingBatchEdit_>& pend,
+		                                                     const std::vector<char>& landed, std::size_t k )
+		{
+			if( pend[k].isInsert ) return false;
+			std::vector<CstBatchEdit> edits;
+			edits.reserve( pend.size() );
+			for( std::size_t i = 0; i < pend.size(); ++i ) edits.push_back( pend[i].edit );
+			return CstBatchLaterLandedWriteSameSlot( edits, landed, k );
+		}
+
+		void AgentSession::FlushEditBatch_()
+		{
+			if( !mEditBatch || mEditBatch->pending.empty() ) return;
+			EditBatchCollector_& batch = *mEditBatch;
+			// Take the elements OUT first: from here on ReadDocumentSnapshot reads the REAL head again, which
+			// is what every post-commit analysis below must see.
+			std::vector<PendingBatchEdit_> pend;
+			pend.swap( batch.pending );
+			batch.havePreview    = false;
+			batch.previewTextFor = static_cast<std::size_t>( -1 );
+			batch.flushedAny     = true;
+			const std::size_t n = pend.size();
+
+			// The destructor-time folds, in the single verbs' destruction order.
+			auto foldNotice = []( std::string& field, const std::string& notice ) {
+				if( notice.empty() ) return;
+				if( !field.empty() ) field += "  ";
+				field += notice;
+			};
+			auto finishInsert = [&]( AgentChunkResult& r, PendingBatchEdit_& p ) {
+				r.message += p.autoParentNotice;                                   // AutoParentNoticeFold_
+				if( ResultMutatedDocument_( r ) )                                  // AttributeOnApply_
+					AttributeChunkToActiveElement_( r.name, r.kind );
+				foldNotice( r.message, p.s1Notice );                               // s1Fold
+				foldNotice( r.message, p.g2Notice );                               // g2Fold
+				if( batch.chunkOut && p.outIndex < batch.chunkOut->size() )
+					( *batch.chunkOut )[ p.outIndex ] = r;
+			};
+			auto finishPatch = [&]( AgentPatchResult& r, PendingBatchEdit_& p ) {
+				if( ResultMutatedDocument_( r ) && !p.attrName.empty() )           // AttributePatchOnApply_
+					AttributeChunkToActiveElement_( p.attrName, p.attrKind );
+				foldNotice( r.message, p.s1Notice );                               // s1Fold
+				foldNotice( r.message, p.g2Notice );                               // g2Fold
+				NoteCameraFramingPatchIfQualifying_( p.patch, r.applied );         // ProposePatch's wrapper step
+				if( batch.patchOut && p.outIndex < batch.patchOut->size() )
+					( *batch.patchOut )[ p.outIndex ] = r;
+			};
+
+			if( mController )
+			{
+				// LIVE.  A lone element goes through the single verb -- byte-identical to an undeferred call.
+				auto liveSingle = [&]( const PendingBatchEdit_& p ) {
+					return p.isInsert
+						? mController->ApplyAgentInsertChunk( String( p.applyText.c_str() ), nullptr )
+						: mController->ApplyAgentParamEdit(
+							String( p.patch.target.c_str() ), String( p.patch.kind.c_str() ),
+							String( p.patch.param.c_str() ), String( p.patch.value.c_str() ),
+							nullptr,
+							p.patch.hasOccurrence ? p.patch.occurrence : 0,
+							p.patch.hasOccurrence );
+				};
+				std::vector<SceneEditController::AgentCommitResult> crs;
+				if( n == 1 ) {
+					crs.push_back( liveSingle( pend[0] ) );
+				} else {
+					std::vector<CstBatchEdit> edits;
+					edits.reserve( n );
+					for( std::size_t k = 0; k < n; ++k ) edits.push_back( pend[k].edit );
+					crs = mController->ApplyAgentEditBatch( edits );
+					bool sequential = false;
+					for( std::size_t k = 0; k < crs.size(); ++k ) sequential = sequential || crs[k].needsSequential;
+					if( sequential ) {
+						// Review P2-C: the batch's isolation exceeded its dry-run budget and committed NOTHING.
+						// Commit each element on its own -- the controller lock is released between elements so a
+						// co-editing GUI is never held for the whole run -- then give every would-not-derive
+						// refusal ONE in-order retry against the final document, the same end-state rule the
+						// batch applies.
+						//
+						// The retry is ONLY for would-not-derive refusals (review round 2) -- never a policy
+						// refusal such as the container gate, which a later element cannot legitimately lift
+						// for an EARLIER one -- and never for a patch whose (entity, role) a LATER element that
+						// landed also wrote: landing it now would overwrite the later value with the earlier.
+						// These fallback commits are per-element undo steps (each single verb pushes its own
+						// record; a CompositeBegin/End bracket cannot be used -- an open composite refuses agent
+						// commits by design).
+						for( std::size_t k = 0; k < n; ++k ) crs[k] = liveSingle( pend[k] );
+						std::vector<char> landedFlags( n, 0 );
+						for( std::size_t k = 0; k < n; ++k ) landedFlags[k] = ( crs[k].rawCode >= 1 ) ? 1 : 0;
+						for( std::size_t k = 0; k < n; ++k ) {
+							// Structured flag (review round 3), never the message text.
+							if( crs[k].applied || !crs[k].wouldNotDerive ) continue;
+							if( LaterLandedPatchWritesSameSlot_( pend, landedFlags, k ) ) continue;
+							const SceneEditController::AgentCommitResult again = liveSingle( pend[k] );
+							// Landed = in the document (a diagnosed retry counts too; review round 4).
+							if( again.applied || again.status == String( "diagnosed" ) ) { crs[k] = again; landedFlags[k] = 1; }
+						}
+						const RISE::Cst::CstHeadVersion h = ReadHeadVersion();
+						for( std::size_t k = 0; k < crs.size(); ++k ) crs[k].headVersion = h;
+					}
+				}
+
+				// Every element of a batch reports the same post-call head; read and parse it ONCE.
+				bool                      headDocTried = false;
+				bool                      haveHeadDoc  = false;
+				RISE::Cst::CstHeadVersion headDocVersion;
+				RISE::Cst::Document       headDoc;
+				auto readHeadAt = [&]( const RISE::Cst::CstHeadVersion& v ) -> bool {
+					if( !headDocTried || headDocVersion != v ) {
+						headDocTried   = true;
+						headDocVersion = v;
+						haveHeadDoc    = ReadHeadDocumentAt_( v, headDoc );
+					}
+					return haveHeadDoc;
+				};
+
+				for( std::size_t k = 0; k < n && k < crs.size(); ++k )
+				{
+					PendingBatchEdit_& p = pend[k];
+					const SceneEditController::AgentCommitResult& cr = crs[k];
+					if( p.isInsert )
+					{
+						AgentChunkResult r;
+						r.applied     = cr.applied;
+						r.retriable   = cr.retriable;
+						r.rawCode     = cr.rawCode;
+						r.status      = cr.status.c_str();
+						r.headVersion = cr.headVersion;
+						r.message     = cr.message.c_str();
+						r.name        = cr.chunkName.c_str();
+						r.kind        = cr.chunkKeyword.c_str();
+						if( r.applied && r.headVersion.uuid != 0 && readHeadAt( r.headVersion ) )
+							AttachChunkIssueWarnings( r, headDoc, p.applyText );
+						else if( IsAnalysableRejection_( r ) && readHeadAt( r.headVersion ) )
+							AttachRejectionIssues( r, headDoc, p.applyText );
+						finishInsert( r, p );
+					}
+					else
+					{
+						AgentPatchResult r;
+						r.applied     = cr.applied;
+						r.retriable   = cr.retriable;
+						r.rawCode     = cr.rawCode;
+						r.status      = cr.status.c_str();
+						r.headVersion = cr.headVersion;
+						r.message     = cr.message.c_str();
+						if( IsAnalysableRejection_( r ) && readHeadAt( r.headVersion ) )
+							AttachParamEditRejectionIssues( r, headDoc,
+							                                p.patch.target, p.patch.kind, p.patch.param, p.patch.value );
+						else if( r.applied && p.haveOrphanPreDoc )
+							ApplyOrphanPressureCheck_( r, p.orphanPreDoc, p.orphanPostDoc,
+							                           p.patch.target, p.patch.kind, p.patch.param );
+						finishPatch( r, p );
+					}
+				}
+				return;
+			}
+
+			// HEADLESS (direct-Job).  A lone element goes through the single Job primitive -- byte-identical to
+			// an undeferred call (including a param edit's incremental fast path, code 1).
+			auto headlessSingle = [&]( const PendingBatchEdit_& p ) {
+				CstBatchOutcome o;
+				if( p.isInsert ) {
+					char kwBuf[128];   kwBuf[0] = '\0';
+					char nameBuf[256]; nameBuf[0] = '\0';
+					char diagBuf[512]; diagBuf[0] = '\0';
+					o.code    = mJob->ApplyCstInsertChunk( p.applyText.c_str(),
+					                                       kwBuf, sizeof( kwBuf ),
+					                                       nameBuf, sizeof( nameBuf ),
+					                                       diagBuf, sizeof( diagBuf ) );
+					o.keyword = kwBuf;
+					o.name    = nameBuf;
+					o.diag    = diagBuf;
+				} else {
+					o.code = mJob->ApplyCstParamEditChecked(
+						p.patch.target.c_str(),
+						p.patch.kind.empty() ? nullptr : p.patch.kind.c_str(),
+						p.patch.param.c_str(),
+						p.patch.hasOccurrence ? p.patch.occurrence : 0,
+						p.patch.value.c_str() );
+				}
+				return o;
+			};
+			std::vector<CstBatchOutcome> oc( n );
+			bool batchedRealization = false;
+			if( n == 1 ) {
+				oc[0] = headlessSingle( pend[0] );
+			} else {
+				std::vector<CstBatchEdit> edits;
+				edits.reserve( n );
+				for( std::size_t k = 0; k < n; ++k ) edits.push_back( pend[k].edit );
+				if( mJob->ApplyCstEditBatch( edits, oc ) == kCstEditBatchNeedsSequential ) {
+					// Review P2-C: see the live branch -- per-element commits, then one in-order retry.
+					// Same retry restrictions as the live branch (headless has no policy gate at this layer: a
+					// code-0 refusal there is would-not-derive / unresolvable, so only the slot rule applies).
+					for( std::size_t k = 0; k < n; ++k ) oc[k] = headlessSingle( pend[k] );
+					std::vector<char> landedFlags( n, 0 );
+					for( std::size_t k = 0; k < n; ++k ) landedFlags[k] = ( oc[k].code >= 1 ) ? 1 : 0;
+					for( std::size_t k = 0; k < n; ++k ) {
+						if( oc[k].code != 0 ) continue;   // headless single primitives: code 0 IS would-not-derive / unresolvable
+						if( LaterLandedPatchWritesSameSlot_( pend, landedFlags, k ) ) continue;
+						const CstBatchOutcome again = headlessSingle( pend[k] );
+						if( again.code > 0 ) { oc[k] = again; landedFlags[k] = 1; }
+					}
+				} else {
+					batchedRealization = true;
+				}
+			}
+			const RISE::Cst::CstHeadVersion head = mJob->GetCstHeadVersion();
+			const RISE::Cst::Document* headDocPtr = mJob->GetCstDocument();
+
+			// Review round 3: a diagnosed (code 3) BATCH re-derive is attributed to an element only when a diagnostic
+			// OPENS with that element's own `<keyword> `<name>`` (CstBatchDiagnosticIsFor); then every OTHER landed
+			// element reports applied with the diagnostics quoted.  Nothing attributed -> every landed element stays
+			// diagnosed (builders count diagnosed as landed, so over-flagging is harmless) -- the controller's rule.
+			auto ownIs = [&]( std::size_t k ) {
+				const std::string kw = pend[k].isInsert ? oc[k].keyword : oc[k].undo.ownerKeyword;
+				const std::string nm = pend[k].isInsert ? oc[k].name : CstNameFromPath( oc[k].undo.ownerNamePath );
+				return CstBatchDiagnosticIsFor( oc[k].diag, kw, nm );
+			};
+			bool anyAttributed = false;
+			if( batchedRealization )
+				for( std::size_t k = 0; k < n; ++k )
+					if( oc[k].code == 3 && ownIs( k ) ) anyAttributed = true;
+			for( std::size_t k = 0; k < n; ++k )
+			{
+				PendingBatchEdit_& p = pend[k];
+				int code = oc[k].code;
+				// A landed element of a diagnosed batch that ANOTHER element's diagnostic was attributed to: landed.
+				std::string landedNote;
+				if( batchedRealization && code == 3 && anyAttributed && !ownIs( k ) ) {
+					landedNote = "; note: the batch's re-derive reported a diagnostic for ANOTHER element: " + oc[k].diag;
+					code = 2;
+				}
+				const bool attributed3 = batchedRealization && code == 3;
+				if( p.isInsert )
+				{
+					AgentChunkResult r;
+					r.kind = oc[k].keyword;
+					r.name = oc[k].name;
+					FoldChunkCode( r, code, /*isInsert*/ true, std::string(), oc[k].diag.c_str(), /*kindWasPassed*/ false );
+					if( !landedNote.empty() ) { r.rawCode = 3; r.message += landedNote; }
+					if( attributed3 ) r.message += ": " + oc[k].diag;
+					r.headVersion = head;
+					if( r.applied && headDocPtr )
+						AttachChunkIssueWarnings( r, *headDocPtr, p.applyText );
+					if( code == 0 && headDocPtr )
+						AttachRejectionIssues( r, *headDocPtr, p.applyText );
+					finishInsert( r, p );
+				}
+				else
+				{
+					AgentPatchResult r;
+					r.rawCode = code;
+					switch( code ) {
+						case 1:
+							r.applied = true;
+							r.status  = "applied";
+							r.message = "applied incrementally (managers untouched)";
+							break;
+						case 2:
+							r.applied = true;
+							r.status  = "applied";
+							r.message = "applied via a full re-derive (Scene + managers were replaced)";
+							break;
+						case 3:
+							r.applied = false;
+							r.status  = "diagnosed";
+							r.message = "edit NOT a clean success: the Document was mutated and the live managers were "
+							            "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+							if( attributed3 ) r.message += ": " + oc[k].diag;
+							break;
+						case 0:
+						default:
+							r.applied = false;
+							r.status  = "rejected";
+							r.message = "edit rejected (entity/param not found or the edit would not derive) -- head unchanged";
+							break;
+					}
+					if( !landedNote.empty() ) { r.rawCode = 3; r.message += landedNote; }
+					r.headVersion = head;
+					if( code == 0 && headDocPtr )
+						AttachParamEditRejectionIssues( r, *headDocPtr,
+						                                p.patch.target, p.patch.kind, p.patch.param, p.patch.value );
+					else if( r.applied && p.haveOrphanPreDoc )
+						ApplyOrphanPressureCheck_( r, p.orphanPreDoc, p.orphanPostDoc,
+						                           p.patch.target, p.patch.kind, p.patch.param );
+					finishPatch( r, p );
+				}
+			}
+		}
+
 		AgentChunkResult AgentSession::InsertChunk( const std::string& chunkText,
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			return InsertChunkImpl_( chunkText, baseOrNull, kNoDeferIndex );
+		}
+
+		AgentChunkResult AgentSession::InsertChunkImpl_( const std::string& chunkText,
+		                                                 const RISE::Cst::CstHeadVersion* baseOrNull,
+		                                                 std::size_t deferIndex )
 		{
 			// Doc 90 slice R2 (2026-08-23): the revision ring's mutating-verb
 			// capture point -- see ProposePatch's copy of this line for the rule.
@@ -13100,6 +13552,33 @@ namespace RISE
 				return r;
 			}
 
+			// Batched agent edits (2026-10-16): every gate above has passed --
+			// an InsertChunks batch DEFERS the commit here (see InsertChunkImpl_'s
+			// doc and FlushEditBatch_).  Same deferral rules as ProposePatchImpl_'s:
+			// a base version, an empty text or no document keeps the immediate
+			// path, and the destructor-time notices travel with the element.
+			if( deferIndex != kNoDeferIndex && mEditBatch && mEditBatch->chunkOut &&
+			    !baseOrNull && !chunkText.empty() && !applyText.empty() &&
+			    ( mController || ( mJob && mJob->HasRetainedCstDocument() ) ) )
+			{
+				PendingBatchEdit_ pe;
+				pe.isInsert       = true;
+				pe.outIndex       = deferIndex;
+				pe.edit.isInsert  = true;
+				pe.edit.chunkText = applyText;
+				pe.applyText      = applyText;
+				pe.autoParentNotice.swap( autoParentNotice );
+				pe.s1Notice.swap( s1Fold.notice );
+				pe.g2Notice.swap( g2Fold.notice );
+				DeferBatchEdit_( pe );
+				r.status = "deferred";   // placeholder -- FlushEditBatch_ writes the real result into the batch
+				return r;
+			}
+			// An IMMEDIATE commit while elements are deferred (e.g. the element-
+			// root mint EnsureElementRootChunk_ makes from inside another
+			// element's gates): land them first, so document order is call order.
+			FlushEditBatch_();
+
 			// LIVE mode: delegate wholesale to the controller's render-safe
 			// path (park + conflict gate + Job primitive + rebind + dirty +
 			// kick), exactly as ProposePatch does.  Map its AgentCommitResult
@@ -13528,10 +14007,42 @@ namespace RISE
 			// element does not abort the loop; later elements are still
 			// attempted so their own results are informative even when
 			// they depended on the rejected one.
+			//
+			// Batched agent edits (2026-10-16): each element still runs EVERY
+			// gate of InsertChunk, in order, but its COMMIT is deferred onto
+			// this batch and the whole batch lands with ONE re-derive in
+			// FlushEditBatch_ (one dry-run + one full derive, instead of one
+			// pair per element -- seconds per element on a real scene).  The
+			// gates read the document through ReadDocumentSnapshot, which
+			// previews the deferred elements, so each one is still judged
+			// against its predecessors.  An element pinned to the caller's base
+			// version commits immediately (the conflict rule is per element).
+			FlushEditBatch_();   // an ENCLOSING batch's deferred elements land first (call order)
+			EditBatchCollector_ batch;
+			batch.chunkOut = &out;
+			// Scoped, so an exception can never leave mEditBatch pointing at this stack frame.
+			struct BatchScope_
+			{
+				EditBatchCollector_*& slot;
+				EditBatchCollector_*  prev;
+				~BatchScope_() { slot = prev; }
+			} batchScope{ mEditBatch, mEditBatch };
+			mEditBatch = &batch;
 			for( std::size_t i = 0; i < chunkTexts.size(); ++i )
 			{
 				const RISE::Cst::CstHeadVersion* base = ( i == 0 ) ? baseOrNull : nullptr;
-				AgentChunkResult e = InsertChunk( chunkTexts[i], base );
+				out.push_back( InsertChunkImpl_( chunkTexts[i], base, base ? kNoDeferIndex : i ) );
+			}
+			FlushEditBatch_();
+
+			for( std::size_t i = 0; i < out.size(); ++i )
+			{
+				AgentChunkResult& e = out[i];
+				// One head for the whole call: a batch bumps the revision ONCE,
+				// and an element refused by a gate before the flush stamped the
+				// pre-flush head -- echoing that back as baseHeadVersion would
+				// earn a guaranteed conflict.
+				if( batch.flushedAny && e.status != "staged" ) e.headVersion = ReadHeadVersion();
 				// G2: fold this call's give-up notice (if any) into every
 				// element -- InsertChunk's OWN gate check sees the gate
 				// already disarmed by the up-front scan above, so it never
@@ -13549,7 +14060,6 @@ namespace RISE
 					if( !e.message.empty() ) e.message += "  ";
 					e.message += s1GiveUpNotice;
 				}
-				out.push_back( e );
 			}
 
 			return out;
@@ -23877,7 +24387,9 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
+					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
+					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						out.landed.push_back( results[i].name );
 						out.sdfPartCount += CountSdfPartLines_( submit[i] );
@@ -24228,8 +24740,9 @@ namespace RISE
 
 			out.patchResults = ProposePatches( patches );
 			for( std::size_t i = 0; i < out.patchResults.size(); ++i ) {
-				if( out.patchResults[i].applied ) ++out.patchesApplied;
-				else                              ++out.patchesRejected;
+				// Review round 3: a DIAGNOSED patch is in the document too -- count it as applied.
+				if( ResultMutatedDocument_( out.patchResults[i] ) ) ++out.patchesApplied;
+				else                                                 ++out.patchesRejected;
 			}
 			out.ok = ( out.patchesRejected == 0 );
 			out.bboxValid = ElementWorldBounds_( element, out.bboxMin, out.bboxMax );
@@ -32653,7 +33166,9 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
+					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
+					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						landedKinds.push_back( results[i].kind );
 						out.landed.push_back( results[i].name );
@@ -33748,7 +34263,9 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
+					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
+					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						AgentPopulateSceneCreation c;
 						c.name = results[i].name;
@@ -34539,7 +35056,9 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
+					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
+					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						landedKinds.push_back( results[i].kind );
 						out.landed.push_back( results[i].name );
@@ -34712,7 +35231,7 @@ namespace RISE
 					std::string firstFailure;
 					for( std::size_t i = 0; i < results.size(); ++i ) {
 						out.patchResults.push_back( results[i] );
-						if( results[i].applied ) continue;
+						if( ResultMutatedDocument_( results[i] ) ) continue;   // round 3: diagnosed = landed
 						allApplied = false;
 						if( firstFailure.empty() )
 							firstFailure = results[i].message.empty()
@@ -35466,7 +35985,7 @@ namespace RISE
 					bool any = false;
 					for( std::size_t i = 0; i < results.size(); ++i ) {
 						out.patchResults.push_back( results[i] );
-						if( results[i].applied ) {
+						if( ResultMutatedDocument_( results[i] ) ) {   // round 3: diagnosed = landed
 							out.paramsApplied.push_back( names[i] );
 							any = true;
 						}
@@ -42732,7 +43251,9 @@ namespace RISE
 			const RISE::Cst::CstHeadVersion v = ReadHeadVersion();
 			if( v.revision == 0 ) return;
 			if( HasRecordedRevision( v.revision ) ) return;
-			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			// Batched agent edits (2026-10-16): the REAL head, never a deferred
+			// batch's preview -- the ring records what revision v.revision IS.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshotReal_();
 			if( !snap.hasDocument ) return;
 			// DISPATCHER-THREAD call site, so the ledger is read LIVE -- this
 			// runs at the top of a mutating verb, on the one thread that

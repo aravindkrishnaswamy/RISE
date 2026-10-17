@@ -126,6 +126,14 @@ struct ContentView: View {
                 viewModel.activeRegion = nil
             }
         }
+        // A refused undo/redo explains itself (RenderViewModel.historyNotice).
+        .alert("Undo/Redo refused",
+               isPresented: Binding(get: { viewModel.historyNotice != nil },
+                                    set: { if !$0 { viewModel.historyNotice = nil } })) {
+            Button("OK", role: .cancel) { viewModel.historyNotice = nil }
+        } message: {
+            Text(viewModel.historyNotice ?? "")
+        }
         // Theme mode re-render hook — see `themeModeRaw` doc above.
         .id(themeModeRaw)
     }

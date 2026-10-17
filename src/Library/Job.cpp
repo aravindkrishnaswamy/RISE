@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <chrono>
 #include "PhotonMapping/GlobalPelPhotonMap.h"
 #include "PhotonMapping/GlobalSpectralPhotonMap.h"
 #include "PhotonMapping/CausticSpectralPhotonMap.h"
@@ -12917,6 +12918,23 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
                                   int occ, bool requireFullDerivability )
 {
 	if( !pCstDocument || !entityName || edits.empty() ) return 0;
+	RISE::Cst::Document d1;
+	RISE::Cst::NodeId anchorId = 0;
+	std::string roleDiag;
+	if( PlanCstParamEdits_( *pCstDocument, entityName, entityKind, edits, occ, d1, anchorId, roleDiag, /*logRefusals*/ true ) != 1 ) return 0;
+	return DeriveEditedCstDocument_( std::move( d1 ), anchorId, entityName, roleDiag.c_str(), requireFullDerivability );
+}
+
+// Batched agent edits (2026-10-16): the resolve / owner-walk / duplicate-occurrence / cross-strip validation
+// and the write, factored VERBATIM out of ApplyCstParamEditsImpl_ and parameterized on the BASE document so
+// ApplyCstEditBatch validates each param element against the batch's evolving document with the IDENTICAL
+// rules.  Returns 1 = written into `outDoc`, 0 = refused (logged, `outDoc` untouched).
+int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entityName, const char* entityKind,
+                             const std::vector< std::pair< std::string, std::string > >& edits, int occ,
+                             RISE::Cst::Document& outDoc, RISE::Cst::NodeId& outAnchor, std::string& outRoleDiag,
+                             bool logRefusals, CstBatchUndoOp* outUndo )
+{
+	if( !entityName || edits.empty() ) return 0;
 	for( size_t i = 0; i < edits.size(); ++i )
 		if( edits[i].first.empty() || edits[i].second.empty() ) return 0;   // empty role/value rejected (defense)
 	// Cameras are the one editor-addressable kind that can be UNNAMED (the sole `pinhole_camera { ... }`), so
@@ -12931,17 +12949,17 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 	// absent kind still refuses via DocFindByNameAnyRole's kindCount==1 gate).
 	const std::string ekind = entityKind ? entityKind : "";
 	const bool uniqueFallback = ( ekind == "camera" )
-		? RISE::Cst::DocCameraUniqueFallbackPermitted( *pCstDocument, entityName, GetActiveCameraName() )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( base, entityName, GetActiveCameraName() )
 		: ( entityName[0] == '\0' && !ekind.empty() );
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, ekind, uniqueFallback );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( base, entityName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) {
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` (kind `%s`) not found or ambiguous in the CST Document; edit rejected", entityName, ekind.c_str() );
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` (kind `%s`) not found or ambiguous in the CST Document; edit rejected", entityName, ekind.c_str() );
 		return 0;
 	}
-	const RISE::Cst::NodeRef editTarget = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+	const RISE::Cst::NodeRef editTarget = RISE::Cst::DocResolveNodeId( base, id );
 
 	// PLAN, then write.  One entry per pair: which chunk the write lands on and what it strips first.
-	struct PlannedWrite { RISE::Cst::NodeId ownerId; const char* const* strip; };
+	struct PlannedWrite { RISE::Cst::NodeId ownerId; const char* const* strip; bool transform; };
 	std::vector< PlannedWrite > plan;
 	plan.reserve( edits.size() );
 	RISE::Cst::NodeId anchorId = 0;
@@ -12985,8 +13003,8 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 		// agent's prior-value capture and its Undo resolve the same edit, and a writer that walks while they
 		// do not just moves the silent failure into the history.  One function, three callers, no drift.
 		bool objectTransformEdit = false;
-		const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *pCstDocument, id, editRole, &objectTransformEdit );
-		const RISE::Cst::NodeRef ownerChunk = ( ownerId == id ) ? editTarget : RISE::Cst::DocResolveNodeId( *pCstDocument, ownerId );
+		const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( base, id, editRole, &objectTransformEdit );
+		const RISE::Cst::NodeRef ownerChunk = ( ownerId == id ) ? editTarget : RISE::Cst::DocResolveNodeId( base, ownerId );
 
 		// The duplicate-occurrence refusal below reads the chunk the write will LAND on, not the one the
 		// caller addressed -- a doubled `position` line on the override is exactly the dead-line hazard it
@@ -13000,7 +13018,7 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 			if( editParam && !editParam->repeatable ) {
 				const int occurrences = RISE::Cst::ParamOccurrenceCount( ownerChunk, editParam->name );
 				if( occurrences > 1 ) {
-					GlobalLog()->PrintEx( eLog_Warning,
+					if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning,
 						"Job::ApplyCstParamEdit:: `%s` (kind `%s`) spells the non-repeatable parameter `%s` %d times; "
 						"the scene derives from the LAST one, but this edit addresses occurrence %d -- it would rewrite a "
 						"dead line and leave the live value unchanged. Edit rejected; delete the duplicate `%s` lines first.",
@@ -13018,7 +13036,7 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 		if( i == 0 ) {
 			anchorId = ownerId;
 		} else if( ownerId != anchorId ) {
-			GlobalLog()->PrintEx( eLog_Warning,
+			if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning,
 				"Job::ApplyCstParamEdits:: `%s` (kind `%s`): parameter `%s` resolves to a DIFFERENT owner chunk than the "
 				"first parameter of the batch; an atomic multi-param edit must land on one chunk. Edit rejected.",
 				entityName, ekind.c_str(), editRole.c_str() );
@@ -13072,7 +13090,7 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 			else                                 strip = kStripMatrix;   // position / scale / quaternion
 		}
 
-		const PlannedWrite pw = { ownerId, strip };
+		const PlannedWrite pw = { ownerId, strip, objectTransformEdit };
 		plan.push_back( pw );
 	}
 
@@ -13090,7 +13108,7 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 		for( const char* const* s = plan[i].strip; *s; ++s ) {
 			for( size_t j = 0; j < edits.size(); ++j ) {
 				if( j == i || edits[j].first != *s ) continue;
-				GlobalLog()->PrintEx( eLog_Warning,
+				if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning,
 					"Job::ApplyCstParamEdits:: `%s` (kind `%s`): parameter `%s`'s write masks `%s`, which this SAME "
 					"batch also writes -- one pair's write would silently erase another pair's. Edit rejected.",
 					entityName, ekind.c_str(), edits[i].first.c_str(), edits[j].first.c_str() );
@@ -13099,16 +13117,57 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 		}
 	}
 
-	// EVERY pair validated -- now write them all into ONE copy and derive ONCE.
-	RISE::Cst::Document d1 = *pCstDocument;
+	// EVERY pair validated -- now write them all into ONE copy (the caller derives ONCE).
+	RISE::Cst::Document d1 = base;
 	std::string roleDiag;
 	for( size_t i = 0; i < plan.size(); ++i ) {
+		// Batched agent edits (review round 3): capture the operation-level inverse -- the owner chunk's identity
+		// and every slot this write changes, with its value BEFORE and AFTER.  An object TRANSFORM edit records the
+		// object's WHOLE transform (position / orientation / quaternion / scale / matrix): an editor gesture made
+		// after the batch and then undone re-commits the pose in another spelling (a `matrix` where the batch wrote
+		// a `position`), so restoring only the written role would leave the object where the batch put it.
+		// Otherwise: the role itself plus each masking param the write strips.
+		static const char* const kTransformRoles[] = { "position", "orientation", "quaternion", "scale", "matrix", nullptr };
+		std::vector<std::string> slotRoles;
+		if( outUndo ) {
+			if( plan[i].transform ) {
+				for( const char* const* r = kTransformRoles; *r; ++r ) slotRoles.push_back( *r );
+				outUndo->wholeTransform = true;
+			} else {
+				for( const char* const* st = plan[i].strip; *st; ++st ) slotRoles.push_back( *st );
+				slotRoles.push_back( edits[i].first );
+			}
+			const RISE::Cst::NodeRef owner = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
+			if( owner ) {
+				outUndo->ownerKeyword  = owner->role;
+				outUndo->ownerNamePath = RISE::Cst::ChunkNamePath( owner );
+				for( std::size_t k = 0; k < slotRoles.size(); ++k ) {
+					CstBatchUndoOp::Slot slot;
+					slot.role        = slotRoles[k];
+					slot.occ         = ( slotRoles[k] == edits[i].first ) ? occ : 0;
+					slot.priorAbsent = RISE::Cst::ParamOccurrenceCount( owner, slot.role ) <= slot.occ;
+					if( !slot.priorAbsent ) slot.priorValue = RISE::Cst::ParamValueAtOccurrence( owner, slot.role, slot.occ );
+					outUndo->slots.push_back( slot );
+				}
+			}
+		}
 		for( const char* const* s = plan[i].strip; *s; ++s ) d1 = RISE::Cst::DocRemoveParam( d1, plan[i].ownerId, *s );
 		d1 = RISE::Cst::DocSetOrAddParamValue( d1, plan[i].ownerId, edits[i].first, occ, edits[i].second );
+		if( outUndo ) {   // each recorded slot's value AFTER the write (the redo payload)
+			const RISE::Cst::NodeRef after = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
+			for( std::size_t k = 0; after && k < outUndo->slots.size(); ++k ) {
+				CstBatchUndoOp::Slot& slot = outUndo->slots[k];
+				slot.postAbsent = RISE::Cst::ParamOccurrenceCount( after, slot.role ) <= slot.occ;
+				slot.postValue  = slot.postAbsent ? std::string() : RISE::Cst::ParamValueAtOccurrence( after, slot.role, slot.occ );
+			}
+		}
 		if( i ) roleDiag += "+";
 		roleDiag += edits[i].first;
 	}
-	return DeriveEditedCstDocument_( std::move( d1 ), anchorId, entityName, roleDiag.c_str(), requireFullDerivability );
+	outDoc      = std::move( d1 );
+	outAnchor   = anchorId;
+	outRoleDiag = roleDiag;
+	return 1;
 }
 
 // Shared-undo U1: the inverse of an agent-originated param INSERT (see the IJob virtual doc).  Resolution
@@ -13188,6 +13247,7 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 		const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
 		Job staging;
 		std::vector<std::string> gdiags;
+		++mCstDryRunCount;
 		RISE::Cst::DeriveToJob( d1, staging, &gdiags, nullptr, activeVariant );
 		if( !gdiags.empty() ) {
 			for( size_t i = 0; i < gdiags.size() && i < 8u; ++i )
@@ -13224,13 +13284,23 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 // activate.  Restoring the pre-insert rasterizer there would silently diverge live from reload.
 int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer )
 {
+	return RederiveCstDocumentFull_( std::move( editedDoc ), diagContext, outFirstDryRunDiag, restoreActiveRasterizer, /*skipDryRun*/ false );
+}
+
+// Batched agent edits (2026-10-16): `skipDryRun` is ONLY for a caller that has ITSELF just dry-run this
+// exact document clean (ApplyCstEditBatch's failure isolation validates the accepted document as it builds
+// it) -- skipping the validate-before-destroy pass anywhere else would let an invalid edit ClearAll the scene.
+int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer, bool skipDryRun )
+{
 	RISE::Cst::Document d1 = std::move( editedDoc );
 	char vbuf[256]; vbuf[0] = '\0';
 	const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
 	const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
+	if( !skipDryRun )
 	{
 		Job staging;
 		std::vector<std::string> vdiags;
+		++mCstDryRunCount;
 		RISE::Cst::DeriveToJob( d1, staging, &vdiags, nullptr, activeVariant );
 		if( !vdiags.empty() ) {
 			if( outFirstDryRunDiag ) *outFirstDryRunDiag = vdiags[0];
@@ -13254,6 +13324,12 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 	ClearAll();
 	std::vector<std::string> fdiags;
 	RISE::Cst::DeriveToJob( d1, *this, &fdiags, nullptr, activeVariant );
+	if( !mForTestInjectLiveDeriveDiag.empty() ) {   // test seam only -- see ForTest_InjectNextLiveDeriveDiagnostic
+		fdiags.push_back( mForTestInjectLiveDeriveDiag );
+		mForTestInjectLiveDeriveDiag.clear();
+	}
+	mLastCstLiveDeriveDiag.clear();   // EVERY diagnostic, one per line (batch attribution reads them all)
+	for( size_t i = 0; i < fdiags.size(); ++i ) { if( i ) mLastCstLiveDeriveDiag += "\n"; mLastCstLiveDeriveDiag += fdiags[i]; }
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // re-retain (intact even if the re-derive erred)
 	mCstHeadVersion = keepHeadVersion;   // restore the load-time uuid (ClearAll had zeroed it)
 	BumpCstHeadRevision();               // the retained Document content changed (edit committed) -> bump revision
@@ -13871,30 +13947,20 @@ namespace {
 	}
 }
 
-// Model-B F5 slice S2 (agent chunk CRUD -- insert): INSERT one complete chunk into the retained Document and
-// REALIZE it in the live scene via the shared D2 tail (RederiveCstDocumentFull_: dry-run first, so a failed
-// derive leaves the retained Document AND the live scene byte-identical -- the edited Document is a local
-// COPY that is simply dropped).  Contract on the IJob virtual; -1 = malformed chunk text, -2 = duplicate
-// (kind,name) / exact (kind,name,variant), 0 = would-not-derive (outDiag = first dry-run diagnostic),
-// 2/3 = replaced (caller rebinds).
-// The Document splice reuses ApplyCstInsertCameraChunk's symmetric anti-glue idiom UNCONDITIONALLY:
-// [leadSep "\n"][chunk][trailSep "\n"], POSITIONED by declaration tier (round-2 P1-A: declaration-class
-// chunks land before their potential consumers; everything else appends at DocItemCount -- see the
-// insert-position block below) -- the trivia-preserving DocEraseChunkTidy used by ApplyCstRemoveChunk
-// collapses at most the chunk's OWN trailing separator on a later remove, so an insert->remove cycle costs
-// one residual blank line and never corrupts a neighbour's trivia.
-int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
-                              char* outName, unsigned int nameMax,
-                              char* outDiag, unsigned int diagMax,
-                              int* outInsertedAt )
+// Batched agent edits (2026-10-16): the parse/refusal/positioning half of ApplyCstInsertChunk, factored out
+// VERBATIM (log + diag wording unchanged) and parameterized on the BASE document so ApplyCstEditBatch validates
+// every element against the batch's evolving document with the IDENTICAL rules.  See the Job.h doc.
+int Job::PrepareCstInsert_( const RISE::Cst::Document& base, const char* chunkText,
+                            std::string& keyword, std::string& name, std::string& outDiag,
+                            RISE::Cst::NodeRef& outChunk, bool& outIsRasterizer, int& outAt, int& outEndAt,
+                            bool logRefusals )
 {
-	S2CopyOut( outKeyword, keywordMax, std::string() );
-	S2CopyOut( outName,    nameMax,    std::string() );
-	S2CopyOut( outDiag,    diagMax,    std::string() );
-	// outInsertedAt is left UNTOUCHED here (caller's pre-init, e.g. -1, stands) until a landed splice
-	// (codes 2/3 below) sets it to the EXACT `at` this call used -- never a guessed/re-resolved value.
-	if( !pCstDocument || !chunkText || !chunkText[0] ) {
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: no retained CST Document or empty chunk text; insert rejected" );
+	keyword.clear(); name.clear(); outDiag.clear();
+	outChunk = RISE::Cst::NodeRef();
+	outIsRasterizer = false;
+	outAt = outEndAt = 0;
+	if( !chunkText || !chunkText[0] ) {
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: no retained CST Document or empty chunk text; insert rejected" );
 		return 0;
 	}
 
@@ -13928,13 +13994,11 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 	// "keyword/name" addressing key (Cst::ChunkNamePath -- the same construction the byName index and
 	// DocFindByName use), NOT a local re-derivation, so the collision key below and the echoed name can
 	// never disagree with the index.  (When the text held MULTIPLE chunks, the FIRST one is echoed.)
-	std::string keyword, namePath, name;
+	std::string namePath;
 	if( chunkItem ) {
 		keyword  = chunkItem->role;
 		namePath = RISE::Cst::ChunkNamePath( chunkItem );
 		name     = namePath.empty() ? std::string() : namePath.substr( keyword.size() + 1 );
-		S2CopyOut( outKeyword, keywordMax, keyword );
-		S2CopyOut( outName,    nameMax,    name );
 	}
 
 	if( chunkCount != 1 || strayContent || !chunkItem ) {
@@ -13942,8 +14006,8 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		if( chunkCount == 0 )      std::snprintf( why, sizeof( why ), "no chunk found in the text" );
 		else if( chunkCount > 1 )  std::snprintf( why, sizeof( why ), "%d chunks found (one per call)", chunkCount );
 		else                       std::snprintf( why, sizeof( why ), "stray text outside the chunk (headers/directives/comments are not allowed)" );
-		S2CopyOut( outDiag, diagMax, why );
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: chunk text refused: %s", why );
+		outDiag = why;
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: chunk text refused: %s", why );
 		return -1;
 	}
 
@@ -13963,8 +14027,8 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 			break;
 		}
 		if( !closed ) {
-			S2CopyOut( outDiag, diagMax, "the chunk is not closed (missing `}`)" );
-			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: chunk text refused: unclosed chunk (missing `}`)" );
+			outDiag = "the chunk is not closed (missing `}`)";
+			if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: chunk text refused: unclosed chunk (missing `}`)" );
 			return -1;
 		}
 	}
@@ -13988,8 +14052,8 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 	// how the AgentSession / SceneEditController folds distinguish this -2 from a chunk collision --
 	// keep the prefix in lockstep with them.
 	if( name == "none" ) {
-		S2CopyOut( outDiag, diagMax, "reserved name: `none` is the built-in unbind sentinel -- pick a different name" );
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: `none` is a reserved name (the unbind sentinel); insert rejected" );
+		outDiag = "reserved name: `none` is the built-in unbind sentinel -- pick a different name";
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: `none` is a reserved name (the unbind sentinel); insert rejected" );
 		return -2;
 	}
 
@@ -14004,10 +14068,10 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		if( !name.empty() ) {
 			// NAMED: the (kind,name) addressing key must be fresh.
 			int occ = 0;
-			RISE::Cst::DocFindByName( *pCstDocument, namePath, nullptr, &occ );
+			RISE::Cst::DocFindByName( base, namePath, nullptr, &occ );
 			if( occ > 0 ) {
-				S2CopyOut( outDiag, diagMax, namePath );
-				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: a `%s` named `%s` already exists; insert rejected", keyword.c_str(), name.c_str() );
+				outDiag = namePath;
+				if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: a `%s` named `%s` already exists; insert rejected", keyword.c_str(), name.c_str() );
 				return -2;
 			}
 		}
@@ -14032,13 +14096,13 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 			// ambiguity guard in ApplyCstRemoveChunk).
 			const ChunkDescriptor* unnamedDesc = DescriptorForKeyword( String( keyword.c_str() ) );
 			if( !( unnamedDesc && unnamedDesc->unnamedRepeatable ) ) {
-				const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+				const int nHead = RISE::Cst::DocItemCount( base );
 				for( int i = 0; i < nHead; ++i ) {
-					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( base, RISE::Cst::DocNodeIdAt( base, i ) );
 					if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
 					    RISE::Cst::ChunkNamePath( it ).empty() ) {
-						S2CopyOut( outDiag, diagMax, "an unnamed `" + keyword + "` chunk already exists (unnamed chunks are singletons per keyword)" );
-						GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
+						outDiag = "an unnamed `" + keyword + "` chunk already exists (unnamed chunks are singletons per keyword)";
+						if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
 						return -2;
 					}
 				}
@@ -14049,21 +14113,19 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		// VARIANT overlay: refuse only the EXACT (kind,name,variant) duplicate -- a different-variant
 		// overlay of the same base stays allowed.  O(N) top-level scan, same cost class as the unnamed
 		// singleton check above.
-		const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+		const int nHead = RISE::Cst::DocItemCount( base );
 		for( int i = 0; i < nHead; ++i ) {
-			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( base, RISE::Cst::DocNodeIdAt( base, i ) );
 			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
 			    RISE::Cst::ChunkNamePath( it ) == namePath &&
 			    S2ChunkParamValue( it, "variant" ) == variantTag ) {
-				S2CopyOut( outDiag, diagMax, namePath + " with variant `" + variantTag + "`" );
-				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: a `%s` named `%s` with variant `%s` already exists; insert rejected", keyword.c_str(), name.c_str(), variantTag.c_str() );
+				outDiag = namePath + " with variant `" + variantTag + "`";
+				if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: a `%s` named `%s` with variant `%s` already exists; insert rejected", keyword.c_str(), name.c_str(), variantTag.c_str() );
 				return -2;
 			}
 		}
 	}
 
-	// Splice [leadSep][chunk][trailSep] onto a COPY of the head (the symmetric anti-glue triple -- see
-	// ApplyCstInsertCameraChunk for the full rationale), then realize via the shared dry-run-guarded D2 tail.
 	RISE::Cst::Document sepDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
 	RISE::Cst::NodeRef  sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
 	RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
@@ -14072,8 +14134,8 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		// Practically unreachable (ParseToCst("\n") always yields one trivia item), but if it ever
 		// fires the diag must say what happened -- an empty diag would fold into the misleading
 		// "would not derive in context" message.
-		S2CopyOut( outDiag, diagMax, "internal: could not build the inter-chunk separator" );
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: could not build the inter-chunk separators; insert rejected" );
+		outDiag = "internal: could not build the inter-chunk separator";
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: could not build the inter-chunk separators; insert rejected" );
 		return 0;
 	}
 	// INSERT POSITION (round-2 P1-A ergonomics; the full-derivability dry-run below stays the
@@ -14111,11 +14173,11 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		}
 	};
 	const int insertTier = categoryTier( insDesc );
-	const int endAt = RISE::Cst::DocItemCount( *pCstDocument );
+	const int endAt = RISE::Cst::DocItemCount( base );
 	int at = endAt;
 	if( insertTier == 0 || insertTier == 1 ) {
 		for( int i = 0; i < endAt; ++i ) {
-			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( base, RISE::Cst::DocNodeIdAt( base, i ) );
 			if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
 			const int t = categoryTier( DescriptorForKeyword( String( it->role.c_str() ) ) );
 			if( t > insertTier ) { at = i; break; }
@@ -14131,14 +14193,74 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		insDesc && insDesc->category == ChunkCategory::Rasterizer &&
 		keyword.size() > 11 && keyword.compare( keyword.size() - 11, 11, "_rasterizer" ) == 0;
 
+	outChunk        = chunkItem;
+	outIsRasterizer = isRasterizerInsert;
+	outAt           = at;
+	outEndAt        = endAt;
+	return 1;
+}
+
+// Batched agent edits (2026-10-16): the [leadSep "\n"][chunk][trailSep "\n"] splice ApplyCstInsertChunk has
+// always made (see the anti-glue rationale at ApplyCstInsertCameraChunk), shared with ApplyCstEditBatch.
+RISE::Cst::Document Job::SpliceCstInsert_( const RISE::Cst::Document& doc, const RISE::Cst::NodeRef& chunk, int at )
+{
+	RISE::Cst::Document sepDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef  sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+	RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+	RISE::Cst::Document d1 = doc;
+	d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunk );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
+	return d1;
+}
+
+// Model-B F5 slice S2 (agent chunk CRUD -- insert): INSERT one complete chunk into the retained Document and
+// REALIZE it in the live scene via the shared D2 tail (RederiveCstDocumentFull_: dry-run first, so a failed
+// derive leaves the retained Document AND the live scene byte-identical -- the edited Document is a local
+// COPY that is simply dropped).  Contract on the IJob virtual; -1 = malformed chunk text, -2 = duplicate
+// (kind,name) / exact (kind,name,variant), 0 = would-not-derive (outDiag = first dry-run diagnostic),
+// 2/3 = replaced (caller rebinds).
+// The Document splice reuses ApplyCstInsertCameraChunk's symmetric anti-glue idiom UNCONDITIONALLY:
+// [leadSep "\n"][chunk][trailSep "\n"], POSITIONED by declaration tier (round-2 P1-A: declaration-class
+// chunks land before their potential consumers; everything else appends at DocItemCount -- see the
+// insert-position block below) -- the trivia-preserving DocEraseChunkTidy used by ApplyCstRemoveChunk
+// collapses at most the chunk's OWN trailing separator on a later remove, so an insert->remove cycle costs
+// one residual blank line and never corrupts a neighbour's trivia.
+int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+                              char* outName, unsigned int nameMax,
+                              char* outDiag, unsigned int diagMax,
+                              int* outInsertedAt )
+{
+	S2CopyOut( outKeyword, keywordMax, std::string() );
+	S2CopyOut( outName,    nameMax,    std::string() );
+	S2CopyOut( outDiag,    diagMax,    std::string() );
+	// outInsertedAt is left UNTOUCHED here (caller's pre-init, e.g. -1, stands) until a landed splice
+	// (codes 2/3 below) sets it to the EXACT `at` this call used -- never a guessed/re-resolved value.
+	if( !pCstDocument || !chunkText || !chunkText[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: no retained CST Document or empty chunk text; insert rejected" );
+		return 0;
+	}
+
+	std::string keyword, name, prepDiag;
+	RISE::Cst::NodeRef chunkItem;
+	bool isRasterizerInsert = false;
+	int at = 0, endAt = 0;
+	const int prep = PrepareCstInsert_( *pCstDocument, chunkText, keyword, name, prepDiag,
+	                                    chunkItem, isRasterizerInsert, at, endAt, /*logRefusals*/ true );
+	// Echo the parsed identity on EVERY path (the IJob contract: "filled as soon as the chunk parses").
+	S2CopyOut( outKeyword, keywordMax, keyword );
+	S2CopyOut( outName,    nameMax,    name );
+	if( prep != 1 ) {
+		S2CopyOut( outDiag, diagMax, prepDiag );
+		return prep;
+	}
+
 	char ctx[300];
 	std::snprintf( ctx, sizeof( ctx ), "insert_chunk `%s` `%s`", keyword.c_str(), name.empty() ? "(unnamed)" : name.c_str() );
 
 	{
-		RISE::Cst::Document d1 = *pCstDocument;
-		d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
-		d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
-		d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
+		RISE::Cst::Document d1 = SpliceCstInsert_( *pCstDocument, chunkItem, at );
 		std::string firstDiag;
 		const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag, /*restoreActiveRasterizer*/ !isRasterizerInsert );
 		if( code != 0 || at == endAt ) {
@@ -14153,10 +14275,7 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 
 	// Positioned dry-run failed -- retry once appended at the END (the diag reported on a double
 	// failure is the end-position one, matching the pre-round-2 semantics).
-	RISE::Cst::Document d2 = *pCstDocument;
-	d2 = RISE::Cst::DocInsertItem( d2, endAt,     leadItem );
-	d2 = RISE::Cst::DocInsertItem( d2, endAt + 1, chunkItem );
-	d2 = RISE::Cst::DocInsertItem( d2, endAt + 2, sepItem );
+	RISE::Cst::Document d2 = SpliceCstInsert_( *pCstDocument, chunkItem, endAt );
 	std::string firstDiag;
 	const int code = RederiveCstDocumentFull_( std::move( d2 ), ctx, &firstDiag, /*restoreActiveRasterizer*/ !isRasterizerInsert );
 	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
@@ -14172,6 +14291,452 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 	if( ( code == 2 || code == 3 ) && outInsertedAt ) *outInsertedAt = endAt;
 	return code;
 }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Batched agent edits (2026-10-16): ApplyCstEditBatch + helpers.
+//
+// WHY.  Every chunk-landing agent verb (insert_chunks, propose_patches, and the sub-model verbs build_element /
+// light_scene / environment_scene / populate_scene, which all land through those two) used to loop over the
+// SINGLE primitives, and each single primitive pays a FULL dry-run derive into a throwaway Job PLUS a full
+// ClearAll + re-derive of the live Job -- per element.  On a mid-size scene that is seconds per element and it
+// grows with the scene, so a 20-80 chunk build_element took a minute or two of nothing but re-derives.  This
+// realizes a whole batch with ONE dry-run + ONE live derive on the common all-good path, exactly the cost
+// ApplyCstRemoveChunks already pays for a batch remove.
+//
+// PER-ELEMENT VALIDATION is the single primitives' own (PrepareCstInsert_ / PlanCstParamEdits_ -- the SAME
+// functions the single verbs call), run in batch order against the document the earlier ACCEPTED elements
+// left, so a later element may reference an earlier one and a duplicate of an earlier element is refused as a
+// second single call would refuse it.
+//
+// THE DERIVABILITY RULE (one rule, every path).  An element lands iff it is valid and the batch's accepted
+// document still derives with it in -- judged on the END STATE, not on every prefix: a material listed BEFORE
+// the painter it reads lands, because the positioned insert puts the painter ahead of it in the document.
+// That is what the all-good path does by construction (one dry-run of the whole batch), and the isolation
+// path below is made to give the SAME verdict whatever else is in the batch: bisection judges each half in
+// order, so a material whose painter sits in the OTHER half is refused there -- and then gets ONE in-order
+// retry against the final accepted document (review P2-B), which admits it.  Without that pass the verdict
+// for [M, P] / [M, P, bad] / [M, P, bad, Y] flipped with the split points.  Strict prefix semantics was the
+// alternative and was rejected: the all-good path would have to dry-run every prefix to honour it, which is
+// exactly the per-element cost this exists to remove.  The landed document derives cleanly in document order
+// either way, so nothing unrealizable is ever committed; a batch is as permissive as one hand-authored file.
+//
+// BOUNDED WORK UNDER THE LOCK (review P2-C).  The caller (SceneEditController) holds its mutex across this,
+// so a pathological batch must not hold the GUI for O(N) dry-runs: when the whole batch fails, (1) the
+// PRISTINE head is dry-run first -- if IT does not derive, every element is refused with that diagnostic,
+// which is what N single calls would have answered; (2) isolation + retry spend at most `maxIsolationDryRuns`
+// dry-runs, and past that this returns kCstEditBatchNeedsSequential with NOTHING committed, telling the caller
+// to fall back to per-element single commits, which release the lock between elements.
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool Job::DryRunCstDocument_( const RISE::Cst::Document& doc, std::string* outFirstDiag )
+{
+	char vbuf[256]; vbuf[0] = '\0';
+	const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
+	const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
+	Job staging;
+	std::vector<std::string> vdiags;
+	++mCstDryRunCount;
+	RISE::Cst::DeriveToJob( doc, staging, &vdiags, nullptr, activeVariant );
+	if( vdiags.empty() ) return true;
+	if( outFirstDiag ) *outFirstDiag = vdiags[0];
+	return false;
+}
+
+bool Job::CopyCstDocument( RISE::Cst::Document& out ) const
+{
+	if( !pCstDocument ) return false;
+	out = *pCstDocument;
+	return true;
+}
+
+// The CONTAINER rule the agent param route enforces (SceneEditController::AgentTargetIsContainerObject_ calls
+// this on the head; a batch calls it on its evolving document -- review P2-A): does (entityName, entityKind)
+// resolve to a `standard_object` that names no resolvable `geometry`?  `geometry none` counts as none: the
+// standard_object parser, the derive's IsContainerGeometryRef_ and Cst's reference graph all treat it as a
+// container, so this gate must too.
+bool Job::CstTargetIsContainerObject( const RISE::Cst::Document& doc, const char* entityName, const char* entityKind ) const
+{
+	const std::string ekind( entityKind ? entityKind : "" );
+	const char* bareName = entityName ? entityName : "";
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( doc, bareName, GetActiveCameraName() )
+		: ( bareName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, bareName, nullptr, ekind, uniqueFallback );
+	if( id == 0 ) return false;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
+	if( !chunk || chunk->role != "standard_object" ) return false;
+	bool present = false;
+	std::string geom = RISE::Cst::ParamValueAsParsed( chunk, "geometry", &present );
+	if( !present ) return true;
+	const size_t b = geom.find_first_not_of( " \t\r\n" );
+	const size_t e = geom.find_last_not_of( " \t\r\n" );
+	geom = ( b == std::string::npos ) ? std::string() : geom.substr( b, e - b + 1 );
+	return geom.empty() || geom == "none";
+}
+
+int Job::ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e, CstBatchOutcome& outcome,
+                                bool appendAtEnd, bool logRefusals )
+{
+	outcome.diag.clear();
+	outcome.insertedAt       = -1;
+	outcome.isRasterizer     = false;
+	outcome.refusedContainer = false;
+	outcome.wouldNotDerive   = false;
+	outcome.landOrder        = -1;
+	if( e.isInsert )
+	{
+		RISE::Cst::NodeRef chunk;
+		int at = 0, endAt = 0;
+		bool isRast = false;
+		const int prep = PrepareCstInsert_( doc, e.chunkText.c_str(), outcome.keyword, outcome.name, outcome.diag,
+		                                    chunk, isRast, at, endAt, logRefusals );
+		if( prep != 1 ) return prep;
+		const int where = appendAtEnd ? endAt : at;
+		// Review round 3: the operation-level inverse -- the chunk's exact bytes and identity, and the identity of
+		// the nearest chunk BEFORE the splice point (the redo anchor).
+		outcome.undo = CstBatchUndoOp();
+		outcome.undo.isInsert  = true;
+		outcome.undo.chunkText = RISE::Cst::SerializeNode( chunk );
+		outcome.undo.keyword   = chunk->role;
+		outcome.undo.namePath  = RISE::Cst::ChunkNamePath( chunk );
+		outcome.undo.chunkIndex = where + 1;   // [lead][chunk][sep] spliced at `where`
+		// Review round 5 (P1-2): the splice at the document END is recorded as such (Redo appends at the end),
+		// and the anchor by its ORDINAL among same-identity chunks (unnamed twins share one identity).
+		outcome.undo.appendedAtEnd = ( where >= RISE::Cst::DocItemCount( doc ) );
+		int anchorAt = -1;
+		for( int k = where - 1; k >= 0; --k ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, k ) );
+			if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+			outcome.undo.hasAnchor      = true;
+			outcome.undo.anchorKeyword  = it->role;
+			outcome.undo.anchorNamePath = RISE::Cst::ChunkNamePath( it );
+			anchorAt = k;
+			break;
+		}
+		for( int k = 0; k < anchorAt; ++k ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, k ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == outcome.undo.anchorKeyword &&
+			    RISE::Cst::ChunkNamePath( it ) == outcome.undo.anchorNamePath )
+				++outcome.undo.anchorOrdinal;
+		}
+		doc = SpliceCstInsert_( doc, chunk, where );
+		outcome.insertedAt   = where;
+		outcome.isRasterizer = isRast;
+		return 1;
+	}
+	// A param edit.  The single agent route's own pre-flight (ApplyCstParamEditImpl_ refuses an empty role
+	// or value) is applied here too, so a batch element can never write what a single call would refuse.
+	if( e.role.empty() || e.value.empty() ) {
+		outcome.diag = "param and value must both be non-empty";
+		return 0;
+	}
+	// The container gate, against THIS document -- i.e. after the batch's earlier elements (review P2-A).
+	if( e.refuseSurfaceBindingOnContainer &&
+	    CstTargetIsContainerObject( doc, e.entityName.c_str(), e.entityKind.empty() ? nullptr : e.entityKind.c_str() ) ) {
+		outcome.refusedContainer = true;
+		outcome.diag = "the target is a container node (it names no `geometry`)";
+		return 0;
+	}
+	std::vector< std::pair< std::string, std::string > > one;
+	one.push_back( std::make_pair( e.role, e.value ) );
+	RISE::Cst::Document written;
+	RISE::Cst::NodeId anchor = 0;
+	std::string roleDiag;
+	outcome.undo = CstBatchUndoOp();
+	outcome.undo.entityName     = e.entityName;
+	outcome.undo.entityKind     = e.entityKind;
+	outcome.undo.editRole       = e.role;
+	outcome.undo.postEntityName = e.entityName;
+	if( e.role == "name" ) {   // a rename moves the identity: Undo resolves by the NEW name
+		const size_t b = e.value.find_first_not_of( " \t\r\n" );
+		const size_t z = e.value.find_last_not_of( " \t\r\n" );
+		outcome.undo.postEntityName = ( b == std::string::npos ) ? std::string() : e.value.substr( b, z - b + 1 );
+	}
+	outcome.undo.occAddressed   = e.occAddressed;
+	if( PlanCstParamEdits_( doc, e.entityName.c_str(), e.entityKind.empty() ? nullptr : e.entityKind.c_str(),
+	                        one, e.occ, written, anchor, roleDiag, logRefusals, &outcome.undo ) != 1 ) {
+		outcome.diag = "entity/param not found or the edit was refused";
+		return 0;
+	}
+	doc = std::move( written );
+	return 1;
+}
+
+int Job::ApplyCstBatchElement( RISE::Cst::Document& doc, const CstBatchEdit& edit, CstBatchOutcome& outcome )
+{
+	const int rc = ApplyCstBatchElement_( doc, edit, outcome, /*appendAtEnd*/ false, /*logRefusals*/ false );
+	outcome.code = ( rc == 1 ) ? 2 : rc;
+	return rc;
+}
+
+struct Job::CstBatchIsolation_
+{
+	const std::vector<CstBatchEdit>*  edits = nullptr;
+	std::vector<CstBatchOutcome>*     outcomes = nullptr;
+	RISE::Cst::Document               accepted;        //!< every accepted element written in; dry-run clean
+	std::vector<char>                 landed;          //!< element is in `accepted`
+	std::vector<char>                 deriveRefused;   //!< refused because it would not derive (retry-eligible)
+	int                               dryRunsLeft = 0;
+	bool                              exhausted = false;
+	int                               nextLandOrder = 0;   //!< order in which elements entered `accepted`
+	std::chrono::steady_clock::time_point deadline;        //!< wall-clock bound on the whole isolation (round 3)
+	//! Spend one dry-run from the budget, or report exhaustion (budget OR wall-clock deadline).
+	bool Spend()
+	{
+		if( dryRunsLeft <= 0 || std::chrono::steady_clock::now() > deadline ) { exhausted = true; return false; }
+		--dryRunsLeft;
+		return true;
+	}
+};
+
+// ONE element against the accepted document: validate + positioned write, dry-run; with `allowAppend`, an insert
+// that does not derive positioned gets the single insert verb's append-at-end retry (a NEW chunk has no
+// consumers, so the end derives whenever its own references resolve).  Bisection leaves the append retry to the
+// final in-order retry pass, so an offender costs one dry-run there, not two.  Returns false only when the
+// dry-run budget ran out.
+bool Job::TryLandCstBatchElement_( CstBatchIsolation_& st, int i, bool allowAppend )
+{
+	const CstBatchEdit& e  = ( *st.edits )[i];
+	CstBatchOutcome&    oc = ( *st.outcomes )[i];
+	RISE::Cst::Document trial = st.accepted;
+	const int rc = ApplyCstBatchElement_( trial, e, oc, /*appendAtEnd*/ false, /*logRefusals*/ false );
+	if( rc != 1 ) {                       // refused at VALIDATION in this context -- final
+		oc.code = rc;
+		st.deriveRefused[i] = 0;
+		return true;
+	}
+	if( !st.Spend() ) return false;
+	std::string diag;
+	if( DryRunCstDocument_( trial, &diag ) ) {
+		st.accepted = std::move( trial );
+		oc.code = 2;
+		oc.landOrder = st.nextLandOrder++;
+		st.landed[i] = 1;
+		st.deriveRefused[i] = 0;
+		return true;
+	}
+	if( e.isInsert && allowAppend ) {
+		RISE::Cst::Document appended = st.accepted;
+		CstBatchOutcome alt = oc;
+		if( ApplyCstBatchElement_( appended, e, alt, /*appendAtEnd*/ true, /*logRefusals*/ false ) == 1 &&
+		    alt.insertedAt != oc.insertedAt ) {
+			if( !st.Spend() ) return false;
+			std::string endDiag;
+			if( DryRunCstDocument_( appended, &endDiag ) ) {
+				st.accepted = std::move( appended );
+				oc = alt;
+				oc.code = 2;
+				oc.landOrder = st.nextLandOrder++;
+				st.landed[i] = 1;
+				st.deriveRefused[i] = 0;
+				return true;
+			}
+			diag = endDiag;   // a double failure reports the END-position diagnostic (the single-verb rule)
+		}
+	}
+	oc.code = 0;
+	oc.insertedAt = -1;
+	oc.diag = diag;
+	oc.wouldNotDerive = true;
+	st.deriveRefused[i] = 1;
+	return true;
+}
+
+// The failure-isolation recursion.  Write a run of elements (batch order) onto a copy of the accepted document
+// and dry-run it once: clean -> the whole run is accepted.  Not clean -> split in halves and recurse, FIRST half
+// first, so the second half is judged against whatever of the first survived.  Single elements go through
+// TryLandCstBatchElement_.  `knownFailing` skips a dry-run the caller has just watched fail.  Elements refused
+// at VALIDATION never enter the document; their refusal is final when the run they sit in is accepted (every
+// element before them in it was accepted too).  Returns false only when the dry-run budget ran out.
+bool Job::IsolateCstBatch_( CstBatchIsolation_& st, const std::vector<int>& idxs, bool knownFailing )
+{
+	if( idxs.empty() ) return true;
+	if( idxs.size() == 1 ) return TryLandCstBatchElement_( st, idxs[0], /*allowAppend*/ false );
+
+	if( !knownFailing )
+	{
+		RISE::Cst::Document trial = st.accepted;
+		std::vector<char> wrote( idxs.size(), 0 );
+		bool anyWrote = false;
+		for( std::size_t k = 0; k < idxs.size(); ++k ) {
+			const int i = idxs[k];
+			CstBatchOutcome& oc = ( *st.outcomes )[i];
+			const int rc = ApplyCstBatchElement_( trial, ( *st.edits )[i], oc, /*appendAtEnd*/ false, /*logRefusals*/ false );
+			oc.code = ( rc == 1 ) ? 2 : rc;
+			wrote[k] = ( rc == 1 ) ? 1 : 0;
+			if( rc == 1 ) anyWrote = true;
+			else st.deriveRefused[i] = 0;
+		}
+		if( !anyWrote ) return true;      // every element refused at validation -- final
+		if( !st.Spend() ) return false;
+		if( DryRunCstDocument_( trial, nullptr ) ) {
+			st.accepted = std::move( trial );
+			for( std::size_t k = 0; k < idxs.size(); ++k )
+				if( wrote[k] ) {
+					st.landed[idxs[k]] = 1;
+					st.deriveRefused[idxs[k]] = 0;
+					( *st.outcomes )[idxs[k]].landOrder = st.nextLandOrder++;
+				}
+			return true;
+		}
+	}
+
+	const std::size_t half = idxs.size() / 2;
+	const std::vector<int> first( idxs.begin(), idxs.begin() + static_cast<std::ptrdiff_t>( half ) );
+	const std::vector<int> second( idxs.begin() + static_cast<std::ptrdiff_t>( half ), idxs.end() );
+	if( !IsolateCstBatch_( st, first, /*knownFailing*/ false ) ) return false;
+	return IsolateCstBatch_( st, second, /*knownFailing*/ false );
+}
+
+int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<CstBatchOutcome>& outcomes,
+                            int maxIsolationDryRuns )
+{
+	outcomes.assign( edits.size(), CstBatchOutcome() );
+	if( !pCstDocument || edits.empty() ) {
+		for( std::size_t i = 0; i < outcomes.size(); ++i ) {
+			outcomes[i].code = 0;
+			outcomes[i].diag = "no retained CST Document";
+		}
+		return 0;
+	}
+	const std::size_t n = edits.size();
+	std::vector<char> landed( n, 0 );
+
+	// THE COMMON PATH: write every element, in order, into one copy of the head and realize it through the
+	// SAME dry-run-guarded full re-derive every chunk-CRUD verb ends in -- one dry-run + one live derive.
+	// This is the one pass that LOGS validation refusals (each element is judged once here).
+	RISE::Cst::Document whole = *pCstDocument;
+	bool anyWrote = false;
+	bool anyRasterizer = false;
+	for( std::size_t i = 0; i < n; ++i ) {
+		const int rc = ApplyCstBatchElement_( whole, edits[i], outcomes[i], /*appendAtEnd*/ false, /*logRefusals*/ true );
+		outcomes[i].code = ( rc == 1 ) ? 2 : rc;
+		if( rc == 1 ) {
+			anyWrote = true;
+			landed[i] = 1;
+			outcomes[i].landOrder = static_cast<int>( i );
+			if( outcomes[i].isRasterizer ) anyRasterizer = true;
+		}
+	}
+	if( !anyWrote ) return 0;   // every element refused at validation: head + live scene untouched
+
+	char ctx[96];
+	std::snprintf( ctx, sizeof( ctx ), "edit batch (%u elements)", static_cast<unsigned int>( n ) );
+	std::string firstDiag;
+	const std::chrono::steady_clock::time_point wholeT0 = std::chrono::steady_clock::now();
+	int code = RederiveCstDocumentFull_( std::move( whole ), ctx, &firstDiag,
+	                                     /*restoreActiveRasterizer*/ !anyRasterizer, /*skipDryRun*/ false );
+	// When it fails this was ONLY the (cold, whole-batch) dry-run -- the realistic unit cost of an isolation step.
+	const double wholeDryRunSeconds =
+		std::chrono::duration<double>( std::chrono::steady_clock::now() - wholeT0 ).count();
+	if( code == 0 )
+	{
+		// (1) DEGENERATE HEAD: if the document as it stands does not derive, no element can -- which is exactly
+		// what N single calls would have answered, each with this diagnostic.  Refuse all, no isolation.
+		std::string headDiag;
+		const std::chrono::steady_clock::time_point headT0 = std::chrono::steady_clock::now();
+		const bool headDerives = DryRunCstDocument_( *pCstDocument, &headDiag );
+		const double headDryRunSeconds =
+			std::chrono::duration<double>( std::chrono::steady_clock::now() - headT0 ).count();
+		// Review round 3: calibrate on the SLOWER of the two measured dry-runs (the head dry-run is warm and does
+		// not include the batch's own chunks).
+		const double dryRunSeconds = ( wholeDryRunSeconds > headDryRunSeconds ) ? wholeDryRunSeconds : headDryRunSeconds;
+		if( !headDerives ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Job::ApplyCstEditBatch:: the CURRENT document itself does not derive (%s) -- every element of the "
+				"batch is refused (a single insert/edit would be refused for the same reason)", headDiag.c_str() );
+			for( std::size_t i = 0; i < n; ++i ) {
+				if( outcomes[i].code != 2 ) continue;
+				outcomes[i].code = 0;
+				outcomes[i].insertedAt = -1;
+				outcomes[i].diag = headDiag;
+			}
+			return 0;
+		}
+
+		// (2) ISOLATE, then the in-order retry pass, inside a dry-run budget.
+		GlobalLog()->PrintEx( eLog_Event,
+			"Job::ApplyCstEditBatch:: the batch as a whole would not derive (%s) -- isolating the offending element(s); "
+			"the `would not derive` diagnostics above are superseded by the per-element verdicts below",
+			firstDiag.c_str() );
+		const double kIsolationSeconds = 3.0;
+		int budget = maxIsolationDryRuns;
+		if( budget < 0 ) {
+			int lg = 0;
+			while( ( static_cast<std::size_t>( 1 ) << lg ) < n ) ++lg;
+			// One offender costs ~2*log2(N) bisection dry-runs plus up to 3 in its own leaf and retry; budget
+			// for two.  The controller's lock is held for all of it, so the budget is ALSO bounded by TIME,
+			// using the slower measured dry-run as the unit cost (review rounds 2-3): at most ~3 s of isolation
+			// dry-runs and never more than 12, never fewer than 2.  Past it the caller commits element by
+			// element, releasing the lock between elements.
+			budget = 2 * ( 2 * lg + 3 ) + 4;
+			int byTime = ( dryRunSeconds > 0.0 ) ? static_cast<int>( kIsolationSeconds / dryRunSeconds ) : budget;
+			if( byTime < 2 ) byTime = 2;
+			if( budget > byTime ) budget = byTime;
+			if( budget > 12 && dryRunSeconds > 0.05 ) budget = 12;
+			if( mForTestBatchBudget >= 0 ) budget = mForTestBatchBudget;
+		}
+		CstBatchIsolation_ st;
+		st.edits         = &edits;
+		st.outcomes      = &outcomes;
+		st.accepted      = *pCstDocument;
+		st.landed.assign( n, 0 );
+		st.deriveRefused.assign( n, 0 );
+		st.dryRunsLeft   = budget;
+		// A wall-clock DEADLINE on top of the count: the caller holds its mutex across all of this.
+		st.deadline      = std::chrono::steady_clock::now() +
+		                   std::chrono::milliseconds( static_cast<long long>( kIsolationSeconds * 1000.0 ) );
+		std::vector<int> all( n );
+		for( std::size_t i = 0; i < n; ++i ) all[i] = static_cast<int>( i );
+		bool ok = IsolateCstBatch_( st, all, /*knownFailing*/ true );
+		// P2-B: ONE in-order retry of every derive-refused element against the final accepted document, so the
+		// verdict follows the end-state rule above whatever the bisection's split points were.  A param edit is
+		// NOT retried when a LATER element of the batch that landed wrote the same (entity, role): landing it now
+		// would overwrite the later value with the earlier one (review round 2).
+		for( std::size_t i = 0; ok && i < n; ++i ) {
+			if( !st.deriveRefused[i] ) continue;
+			if( CstBatchLaterLandedWriteSameSlot( edits, st.landed, i ) ) continue;
+			ok = TryLandCstBatchElement_( st, static_cast<int>( i ), /*allowAppend*/ true );
+		}
+		if( !ok || st.exhausted ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"Job::ApplyCstEditBatch:: isolation exceeded its %d dry-run budget -- NOTHING committed; the caller "
+				"falls back to per-element commits", budget );
+			for( std::size_t i = 0; i < n; ++i ) { outcomes[i].code = 0; outcomes[i].insertedAt = -1; }
+			return kCstEditBatchNeedsSequential;
+		}
+
+		landed = st.landed;
+		bool anyLanded = false;
+		anyRasterizer = false;
+		for( std::size_t i = 0; i < n; ++i ) {
+			if( !landed[i] ) continue;
+			anyLanded = true;
+			if( outcomes[i].isRasterizer ) anyRasterizer = true;
+		}
+		// The final verdicts, logged ONCE (isolation re-validated silently).
+		for( std::size_t i = 0; i < n; ++i )
+			if( !landed[i] && st.deriveRefused[i] )
+				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstEditBatch:: element %u would not derive in context; refused: %s",
+				                      static_cast<unsigned int>( i ), outcomes[i].diag.c_str() );
+		if( !anyLanded ) return 0;
+		// `accepted` is EXACTLY the document the last successful isolation dry-run validated (a refused run never
+		// modifies it), so the validate-before-destroy pass is already done.
+		code = RederiveCstDocumentFull_( std::move( st.accepted ), ctx, nullptr,
+		                                 /*restoreActiveRasterizer*/ !anyRasterizer, /*skipDryRun*/ true );
+	}
+
+	for( std::size_t i = 0; i < n; ++i ) {
+		if( landed[i] ) {
+			outcomes[i].code = code;                                    // 2 or 3 -- the batch shares one realization
+			if( code == 3 ) outcomes[i].diag = mLastCstLiveDeriveDiag; // the diagnostic, for attribution + reporting
+		}
+		else if( outcomes[i].code == 2 ) outcomes[i].code = 0;       // defensive: written-but-not-landed
+	}
+	return code;
+}
+
+
 
 // R1a (2026-08-09, batched remove_chunks): the SHARED target -> top-level-index resolver behind BOTH
 // Job::ApplyCstRemoveChunk and Job::ApplyCstRemoveChunks.  Extracted VERBATIM from ApplyCstRemoveChunk's own
@@ -14480,6 +15045,27 @@ int Job::ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRa
 	const int code = RederiveCstDocumentFull_( std::move( d1 ),
 	                                           ( diagContext && diagContext[0] ) ? diagContext
 	                                                                             : "restore document (agent remove_chunks undo)",
+	                                           &firstDiag, restoreActiveRasterizer );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// Batched agent edits (2026-10-16, review round 4): ApplyCstReplaceDocumentText for an already-built Document --
+// installed AS IS (no serialize + re-parse), so its top-level item structure is preserved.  An agent batch
+// Undo/Redo builds its target by editing the CURRENT Document; a re-parse would merge adjacent trivia items and
+// shift the top-level indices OLDER history records (AgentInsertChunk's exact-index inverse) rely on.
+int Job::ApplyCstReplaceDocument( const RISE::Cst::Document& doc, bool restoreActiveRasterizer,
+                                  char* outDiag, unsigned int diagMax, const char* diagContext )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || RISE::Cst::DocItemCount( doc ) <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstReplaceDocument:: no retained CST Document or empty document; rejected" );
+		return 0;
+	}
+	RISE::Cst::Document d1 = doc;
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ),
+	                                           ( diagContext && diagContext[0] ) ? diagContext : "replace document",
 	                                           &firstDiag, restoreActiveRasterizer );
 	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
 	return code;

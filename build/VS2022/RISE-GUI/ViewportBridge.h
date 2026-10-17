@@ -620,6 +620,8 @@ public:
     void endPropertyScrub();
 
     void undo();
+    // 2026-10-16: the notice a REFUSED undo/redo left ("" when none); cleared on read.
+    QString consumeHistoryNotice();
     void redo();
 
     /// Human-readable label of the next Undo/Redo step ("Translate",

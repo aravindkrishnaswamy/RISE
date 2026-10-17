@@ -6750,6 +6750,15 @@ static void TestToolOutcomeDisplay()
 		Check( e.toolSummaries[0].outcomeLine == "0/12 applied",
 		       "T38d2: a propose_patches batch where NOTHING applied is visibly distinct from one where all did" );
 	}
+	// (d3) batch review round 5: a "diagnosed" element LANDED -- the summary counts it, distinctly.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "insert_chunks",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":1,\"total\":3,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\"},{\"applied\":false,\"status\":\"diagnosed\"},"
+			"{\"applied\":false,\"status\":\"rejected\"}]}}" );
+		Check( e.toolSummaries[0].outcomeLine == "2/3 landed (1 diagnosed)",
+		       "T38d3: a diagnosed batch element counts as landed in the summary" );
+	}
 
 	// (e) insert_chunk applied cleanly -> "applied: <kind> `<name>`".
 	{

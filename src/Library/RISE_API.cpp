@@ -11463,6 +11463,17 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_ConsumeHistoryNotice(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( buf && bufLen ) buf[0] = '\0';
+		if( !p ) return false;
+		const std::string notice = p->ConsumeHistoryNotice();
+		if( notice.empty() ) return false;
+		CopyToBuf( notice.c_str(), buf, bufLen );
+		return true;
+	}
+
 	unsigned int RISE_API_SceneEditController_PropertyCount( SceneEditController* p )
 	{
 		if( !p ) return 0;
