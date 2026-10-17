@@ -334,10 +334,14 @@ namespace RISE
 					"baseHeadVersion -- it is checked against the FIRST element only, since "
 					"the whole batch is one logical operation. Returns "
 					"{applied,total,results:[...]}: total is chunks.length, applied is how "
-					"many results have applied=true, and each results[i] is the EXACT same "
-					"shape insert_chunk returns for chunks[i] (applied, rawCode, status, "
+					"many results have applied=true, and each results[i] is the shape "
+					"insert_chunk returns for chunks[i] (applied, rawCode, status, "
 					"retriable, headVersion, message, name, kind, and optional issues with "
-					"the same reasons insert_chunk documents). Check every element's own "
+					"the same reasons insert_chunk documents) -- except that a clean "
+					"success (status applied, no issues, nothing to report beyond the "
+					"standard insert) carries only applied, status, headVersion, name, kind "
+					"and (inside an element window) element; any element with something to report keeps every field. Check "
+					"every element's own "
 					"status -- do not assume the whole batch succeeded just because the "
 					"call returned. Each array element must be EXACTLY ONE `keyword "
 					"{ ... }` block, same grammar as insert_chunk's chunkText. "
@@ -1434,7 +1438,10 @@ namespace RISE
 					"provider that cannot run a separate completion this returns ok:false with a plain "
 					"statement, nothing else changes, and authoring by hand is not blocked. Returns "
 					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
-					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}.",
+					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}; "
+					"landed names every chunk that went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the repair retry -- that landed it; each rejected entry carries its attempt too), and "
+					"chunkResults details only the chunks that did not insert cleanly or carry a "
+					"notice.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"element\":{\"type\":\"string\",\"description\":"
 						"\"Required. The name of the ACTIVE element, exactly as you filed it in file_build_plan. A name that is not the active element does nothing and says which element is active.\"},"
@@ -1552,7 +1559,7 @@ namespace RISE
 					"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,areaLights,"
 					"zeroAreaLights,skyLights,otherLights,"
 					"sources:[string],"
-					"message}.",
+					"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the lighting pass alongside the inventory and the camera -- anything about the mood or the look this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -1598,7 +1605,7 @@ namespace RISE
 					"this returns ok:false saying so without calling the provider. Returns "
 					"{ok,provider,model,chunksExtracted,created:[{name,geometry,material}],"
 					"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,objectsBefore,"
-					"objectsAfter,message}.",
+					"objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the population pass alongside the inventory and the camera -- anything about what this scene is that its own state does not already say. Nothing checks what it says.\"}"
@@ -1652,7 +1659,7 @@ namespace RISE
 					"retrySucceeded,"
 					"completions,painters,media,boundPainter,bindingApplied,bindingReason,rasterizer,"
 					"radianceMapBefore,radianceMapAfter,globalMediumBefore,globalMediumAfter,"
-					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}.",
+					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the environment pass alongside the inventory and the camera -- anything about the place or the weather this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -2402,6 +2409,35 @@ namespace RISE
 			// read_document still gets correct supersession.
 			static const char* const kSupersedableVerbs[] = { "read_document", "list_proposals" };
 
+			// THE ONE ARGUMENT-NORMALIZING KEY (doc 91 slice L3a): a NAMED
+			// read_skill is the whole view of ONE named skill file, so a later
+			// read of the SAME name fully contains the earlier copy (property
+			// (1) holds per name) and the key is "read_skill" + the skill's
+			// name -- the argument-normalizing key function property (3) calls
+			// for.  Two DIFFERENT skills never share a key, and the INDEX form
+			// (no name; result {skills:[...]}) is never keyed.  The name comes
+			// from the RESULT (AgentSession::ReadSkill's canonical `name`) when
+			// present, else from the call's `name` argument.  Property (2) is
+			// NOT what admits it: a skill file is static, so the earlier copy
+			// is redundant rather than stale -- the cost rule doc 91 measured
+			// (three skill reads, 165 KB live to the end of a session).
+			if( call.name == "read_skill" ) {
+				JsonValue env;
+				std::string perr;
+				if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return std::string();
+				if( env.find( "error" ) ) return std::string();
+				const JsonValue& result = env.get( "result" );
+				if( !result.isObject() || !result.get( "markdown" ).isString() ) return std::string();
+				std::string skill = result.get( "name" ).asString();
+				if( skill.empty() ) {
+					JsonValue args;
+					if( JsonParse( call.argsJson, args, perr ) && args.isObject() )
+						skill = args.get( "name" ).asString();
+				}
+				if( skill.empty() ) return std::string();
+				return std::string( kChatReadSkillKeyPrefix ) + skill;
+			}
+
 			bool listed = false;
 			for( std::size_t i = 0; i < sizeof( kSupersedableVerbs ) / sizeof( kSupersedableVerbs[0] ); ++i )
 				if( call.name == kSupersedableVerbs[i] ) { listed = true; break; }
@@ -2439,6 +2475,50 @@ namespace RISE
 		{
 			return "[" + verbName + " result elided -- superseded by a later " + verbName +
 			       " call in this conversation; call " + verbName + " again for the current state]";
+		}
+
+		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey )
+		{
+			const std::string prefix( kChatReadSkillKeyPrefix );
+			if( supersessionKey.compare( 0, prefix.size(), prefix ) == 0 ) {
+				const std::string skill = supersessionKey.substr( prefix.size() );
+				return "[read_skill \"" + skill + "\" result elided -- superseded by a later read_skill "
+				       "of the same skill in this conversation; call read_skill {\"name\":\"" + skill +
+				       "\"} again if you need it]";
+			}
+			return ChatSupersededResultNote( supersessionKey );
+		}
+
+		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
+		                                               const std::string& element,
+		                                               const std::string& facts,
+		                                               const std::string& carried )
+		{
+			// IMMUTABLE FACTS ONLY (review rounds 5-6): nothing about the
+			// CURRENT session or document -- no phase, mode or edit rule, and
+			// no claim that the element HAS chunks (nothing may have landed;
+			// a later edit or undo may remove them).  The stub is never
+			// rewritten, so every sentence is either past tense about this
+			// result or a pointer to where the current state is read.  The
+			// live rule is stated where it applies: the session's own refusal
+			// names reopen_element.
+			const std::string q = "\"" + element + "\"";
+			std::string note = "[" + verbName + " result for element " + q + " elided -- retired when " + q +
+				" was finished; read_document shows the current document; finish_element / reopen_element "
+				"results list the element's chunks.";
+			if( !facts.empty() ) note += " " + facts;
+			if( !carried.empty() )
+				note += " Per-chunk outcomes that call reported: " + carried + ".";
+			return note + "]";
+		}
+
+		std::string ChatComposeSkillRetirementNote( const std::string& skillName )
+		{
+			// Past tense (review round 6): reopen_element or a new plan makes
+			// "every element is finished" false later, and the stub stays.
+			return "[read_skill \"" + skillName + "\" elided -- retired when every element of the build "
+			       "plan was finished (compose phase); call read_skill {\"name\":\"" + skillName +
+			       "\"} again if you need it]";
 		}
 
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )
@@ -2863,7 +2943,8 @@ namespace RISE
 		std::string AnthropicChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& /*noteKey: Anthropic carries a plain text block*/ ) const
 		{
 			// Parse + regenerate is LEGAL here: this entry was produced by
 			// PackToolResults above (loop-generated), not by a provider.
@@ -3585,7 +3666,8 @@ namespace RISE
 		std::string GeminiChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
 		{
 			// Parse + regenerate is LEGAL here: this entry was produced by
 			// PackToolResults above (loop-generated), not by a provider.
@@ -3623,7 +3705,7 @@ namespace RISE
 				// cross-rule collision structurally impossible rather than
 				// merely gated.
 				JsonValue newResp = JsonValue::MakeObject();
-				newResp.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+				newResp.set( noteKey, JsonValue::MakeString( placeholderText ) );
 				JsonValue newFr = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
 				for( std::size_t j = 0; j < mem.size(); ++j ) {
@@ -4384,7 +4466,8 @@ namespace RISE
 		std::string OpenAIChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
 		{
 			// PackToolResults emits a loop-owned ARRAY of messages: one per
 			// result IN ORDER, so index i is result i.  (The only element
@@ -4401,7 +4484,7 @@ namespace RISE
 			// uniformly does not hit a lone bare string here.
 			// See the Gemini twin above for why the key is NOT "note".
 			JsonValue note = JsonValue::MakeObject();
-			note.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+			note.set( noteKey, JsonValue::MakeString( placeholderText ) );
 			const std::string notePayload = JsonSerialize( note );
 
 			bool changed = false;

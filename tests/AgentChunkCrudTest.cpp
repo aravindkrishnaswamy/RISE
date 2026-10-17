@@ -5225,8 +5225,18 @@ static void TestInsertChunksWireShape()
 					const Agent::JsonValue* st = e.find( "status" );
 					Check( st && st->isString() && st->asString() == "applied",
 					       "IC4(a) every wire result element has status \"applied\"" );
+					// Doc 91 L1: a CLEAN success is slimmed -- identity, verdict
+					// and the head (the next call's baseHeadVersion) stay;
+					// rawCode / retriable / the fixed message, implied by
+					// status "applied", are gone.
+					Check( e.get( "applied" ).asBool( false ) && e.get( "headVersion" ).isObject() &&
+					       !e.get( "name" ).asString().empty() && !e.get( "kind" ).asString().empty(),
+					       "IC4(a) L1: a clean element keeps applied, headVersion, name and kind" );
+					Check( !e.has( "rawCode" ) && !e.has( "retriable" ) && !e.has( "message" ),
+					       "IC4(a) L1: a clean element drops rawCode / retriable / message boilerplate" );
 				}
 			}
+			std::printf( "  IC4(a) L1 all-apply report bytes: %zu\n", resp.size() );
 			Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "obj_wire" ) != nullptr,
 			       "IC4(a) the wire batch reached the live managers" );
 
@@ -5280,6 +5290,14 @@ static void TestInsertChunksWireShape()
 				const Agent::JsonValue* issues1 = e1.find( "issues" );
 				Check( issues1 && issues1->isArray() && issues1->size() == 1,
 				       "IC4(c) wire element 1 carries exactly one issue" );
+				// Doc 91 L1: a REJECTED element keeps its full shape -- the GUI
+				// drivers' retry gate reads `retriable` and the head guard
+				// reads `headVersion` on exactly these elements.
+				Check( e1.has( "rawCode" ) && e1.has( "retriable" ) && e1.has( "headVersion" ) &&
+				       !e1.get( "message" ).asString().empty(),
+				       "IC4(c) L1: the rejected element keeps rawCode / retriable / headVersion / message" );
+				Check( !e0.has( "message" ) && e0.get( "headVersion" ).isObject(),
+				       "IC4(c) L1: a clean neighbour in the same batch is slimmed" );
 			}
 
 			pJob->release();
@@ -15883,6 +15901,231 @@ static void TestCleanRoomWireShape()
 	}
 }
 
+//! S2h-L1 (docs/agentic-redesign/91-context-lifetimes-and-visible-detail.md,
+//! slice L1): the build_element report carries a clean success ONCE, as a
+//! name in `landed` -- no per-chunk ChunkResultJson boilerplate, and the
+//! `message` no longer repeats the landed list -- while a rejected chunk
+//! keeps its full per-chunk detail.  The MONEY assertion is a MARGINAL cost:
+//! twelve more clean chunks must add little more than their names.
+static std::string BuildElementWireResponse( const std::vector<std::string>& answers )
+{
+	const std::string tmp = TempPath( "agentcrud_s2h_l1.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return std::string();
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( answers ) );
+	if( !sess->FileBuildPlan( WizardOnlyPlan() ).ok ) { pJob->release(); return std::string(); }
+	std::string resp;
+	{
+		Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+		resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"build_element\",\"params\":"
+			"{\"element\":\"wizard\",\"height\":4.0}}" );
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+	return resp;
+}
+
+static void TestBuildElementReportCompaction()
+{
+	std::printf( "S2h-L1: build_element reports clean chunks once, failed chunks in full...\n" );
+
+	std::string many = kGoodBuilderAnswer;
+	for( int i = 0; i < 12; ++i ) {
+		char nm[32];
+		std::snprintf( nm, sizeof( nm ), "wizard_p%02d", i );
+		many += std::string( "uniformcolor_painter\n{\n\tname " ) + nm + "\n\tcolor 0.3 0.2 0.5\n}\n";
+	}
+	const std::string resp4  = BuildElementWireResponse( std::vector<std::string>( 1, kGoodBuilderAnswer ) );
+	const std::string resp16 = BuildElementWireResponse( std::vector<std::string>( 1, many ) );
+	std::printf( "  S2h-L1 build_element report bytes: 4 chunks %zu, 16 chunks %zu\n",
+	             resp4.size(), resp16.size() );
+
+	Agent::JsonValue r4, r16;
+	Check( JsonResultObj( resp4, r4 ) && r4.get( "ok" ).asBool( false ), "S2h-L1 the 4-chunk build lands" );
+	Check( JsonResultObj( resp16, r16 ) && r16.get( "ok" ).asBool( false ) &&
+	       r16.get( "landed" ).size() == 16, "S2h-L1 the 16-chunk build lands all 16" );
+	Check( r16.get( "landedKinds" ).isArray() && r16.get( "landedKinds" ).size() == 16 &&
+	       r16.get( "landedKinds" ).at( 0 ).asString() == "uniformcolor_painter" &&
+	       r16.get( "landedKinds" ).at( 2 ).asString() == "sdf_geometry",
+	       "S2h-L1 `landedKinds` gives each landed chunk's kind, index-parallel to `landed`" );
+	Check( r16.get( "chunkResults" ).isArray() && r16.get( "chunkResults" ).size() == 0,
+	       "S2h-L1 an all-clean build carries NO per-chunk chunkResults entries (each is named in `landed`)" );
+	Check( resp16.find( "chunk inserted via a full re-derive" ) == std::string::npos,
+	       "S2h-L1 the per-chunk success boilerplate is gone from the report" );
+	const std::string msg16 = r16.get( "message" ).asString();
+	bool msgRepeats = false;
+	for( std::size_t i = 0; i < r16.get( "landed" ).size(); ++i )
+		if( msg16.find( r16.get( "landed" ).at( i ).asString() ) != std::string::npos ) msgRepeats = true;
+	Check( !msgRepeats, "S2h-L1 `message` no longer repeats the landed names" );
+	Check( msg16.find( "Chunks inserted: 16" ) != std::string::npos &&
+	       msg16.find( "Realised world bounding box" ) != std::string::npos,
+	       "S2h-L1 `message` keeps the count and the bounding-box facts" );
+	// The marginal cost of a clean chunk is its name in `landed` plus its
+	// kind in `landedKinds` (~36 bytes here), not a ~300-byte
+	// ChunkResultJson plus two more name copies.
+	const double marginal = ( static_cast<double>( resp16.size() ) - static_cast<double>( resp4.size() ) ) / 12.0;
+	std::printf( "  S2h-L1 marginal report bytes per extra clean chunk: %.1f\n", marginal );
+	Check( resp4.size() > 0 && marginal < 60.0,
+	       "S2h-L1 MONEY ASSERTION: each extra clean chunk adds under 60 bytes to the report "
+	       "(its name in `landed` and its kind in `landedKinds`; it was ~281 before doc 91 L1)" );
+
+	// A REJECTED chunk keeps its full detail.  The first answer's expression
+	// painter does not compile (an insertion-time rejection); the one repair
+	// retry then lands the good set.
+	const std::string firstBad =
+		"expression_painter\n{\n\tname wizard_bronze_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n";
+	std::vector<std::string> answers;
+	answers.push_back( firstBad );
+	answers.push_back( kGoodBuilderAnswer );
+	const std::string respBad = BuildElementWireResponse( answers );
+	Agent::JsonValue rb;
+	Check( JsonResultObj( respBad, rb ) && rb.get( "ok" ).asBool( false ), "S2h-L1 the retried build lands" );
+	const Agent::JsonValue& crs = rb.get( "chunkResults" );
+	Check( crs.isArray() && crs.size() == 1, "S2h-L1 exactly the ONE rejected chunk has a chunkResults entry" );
+	if( crs.isArray() && crs.size() == 1 ) {
+		const Agent::JsonValue& e = crs.at( 0 );
+		Check( e.get( "name" ).asString() == "wizard_bronze_pnt" && e.get( "status" ).asString() == "rejected" &&
+		       e.has( "rawCode" ) && e.has( "retriable" ) && e.has( "headVersion" ) && !e.get( "message" ).asString().empty(),
+		       "S2h-L1 the rejected chunk keeps its FULL ChunkResultJson (rawCode, retriable, headVersion, message)" );
+	}
+	Check( rb.get( "message" ).asString().find( "Not inserted:" ) != std::string::npos,
+	       "S2h-L1 `message` keeps the rejection content" );
+}
+
+//! S2h-L1c (doc 91 review round 4 P1-2): build_element RECORDS which
+//! attempt produced each rejection and each landing, so a reader never has
+//! to infer order from names.  Two one-answer fixtures that inference got
+//! wrong: the same name three times (one lands, two are refused as
+//! duplicates) and [X bad, X good].
+static void TestBuildElementRecordsAttempts()
+{
+	std::printf( "S2h-L1c: build_element records the attempt of every rejection and landing...\n" );
+	auto attemptOf = []( const Agent::JsonValue& arr, const std::string& name, std::vector<int>& out ) {
+		for( std::size_t i = 0; arr.isArray() && i < arr.size(); ++i )
+			if( arr.at( i ).get( "name" ).asString() == name )
+				out.push_back( static_cast<int>( arr.at( i ).get( "attempt" ).asNumber( -1 ) ) );
+	};
+	auto landedAttemptOf = []( const Agent::JsonValue& r, const std::string& name ) -> int {
+		const Agent::JsonValue& landed = r.get( "landed" );
+		const Agent::JsonValue& la = r.get( "landedAttempts" );
+		for( std::size_t i = 0; landed.isArray() && i < landed.size(); ++i )
+			if( landed.at( i ).asString() == name )
+				return ( la.isArray() && i < la.size() ) ? static_cast<int>( la.at( i ).asNumber( -1 ) ) : -2;
+		return -3;
+	};
+
+	// (a) the same name three times in ONE answer.
+	{
+		const std::string dup = "uniformcolor_painter\n{\n\tname wizard_robe_pnt\n\tcolor 0.9 0.1 0.1\n}\n";
+		std::vector<std::string> answers;
+		answers.push_back( std::string( kGoodBuilderAnswer ) + dup + dup );
+		answers.push_back( kGoodBuilderAnswer );
+		const std::string resp = BuildElementWireResponse( answers );
+		Agent::JsonValue r;
+		Check( JsonResultObj( resp, r ) && r.get( "ok" ).asBool( false ), "S2h-L1c(a) the build lands" );
+		std::vector<int> rejAttempts;
+		attemptOf( r.get( "rejected" ), "wizard_robe_pnt", rejAttempts );
+		Check( rejAttempts.size() == 2 && rejAttempts[0] == 1 && rejAttempts[1] == 1,
+		       "S2h-L1c(a) MONEY: both duplicate refusals are recorded against attempt 1" );
+		Check( landedAttemptOf( r, "wizard_robe_pnt" ) == 1,
+		       "S2h-L1c(a) MONEY: ... and the landing of that name is recorded against attempt 1 too" );
+		Check( r.get( "landedAttempts" ).isArray() &&
+		       r.get( "landedAttempts" ).size() == r.get( "landed" ).size(),
+		       "S2h-L1c(a) landedAttempts is index-parallel to landed" );
+	}
+	// (b) [X bad, X good] in ONE answer.
+	{
+		const std::string badGood =
+			"expression_painter\n{\n\tname wizard_x_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n"
+			"uniformcolor_painter\n{\n\tname wizard_x_pnt\n\tcolor 0.6 0.4 0.2\n}\n";
+		std::vector<std::string> answers;
+		answers.push_back( std::string( kGoodBuilderAnswer ) + badGood );
+		answers.push_back( kGoodBuilderAnswer );
+		const std::string resp = BuildElementWireResponse( answers );
+		Agent::JsonValue r;
+		Check( JsonResultObj( resp, r ) && r.get( "ok" ).asBool( false ), "S2h-L1c(b) the build lands" );
+		std::vector<int> rejAttempts;
+		attemptOf( r.get( "rejected" ), "wizard_x_pnt", rejAttempts );
+		Check( rejAttempts.size() == 1 && rejAttempts[0] == 1 && landedAttemptOf( r, "wizard_x_pnt" ) == 1,
+		       "S2h-L1c(b) MONEY: the refusal and the landing of X are BOTH recorded against attempt 1" );
+	}
+	// (c) a genuine retry landing: attempt 1 refuses X, attempt 2 lands it.
+	{
+		std::vector<std::string> answers;
+		answers.push_back( "expression_painter\n{\n\tname wizard_bronze_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n" );
+		answers.push_back( std::string( kGoodBuilderAnswer ) +
+		                   "uniformcolor_painter\n{\n\tname wizard_bronze_pnt\n\tcolor 0.6 0.4 0.2\n}\n" );
+		const std::string resp = BuildElementWireResponse( answers );
+		Agent::JsonValue r;
+		Check( JsonResultObj( resp, r ) && r.get( "ok" ).asBool( false ), "S2h-L1c(c) the build lands" );
+		std::vector<int> rejAttempts;
+		attemptOf( r.get( "rejected" ), "wizard_bronze_pnt", rejAttempts );
+		Check( rejAttempts.size() == 1 && rejAttempts[0] == 1 && landedAttemptOf( r, "wizard_bronze_pnt" ) == 2,
+		       "S2h-L1c(c): refused on attempt 1, landed on attempt 2 -- recorded as exactly that" );
+	}
+}
+
+//! S2h-L1b (review round 1 P1): a success whose `issues` are EMPTY can
+//! still carry a real notice in its message -- the auto-parent disclosure
+//! ("This chunk was NOT parented to the element's root node: ...") or a
+//! batch's rawCode-3 "; note: ... ANOTHER element" -- and such a chunk is
+//! NOT clean: it keeps its full entry.  Only the canonical pair
+//! (kCstChunkInsertedRawCode, kCstChunkInsertedMessage) is boilerplate.
+static void TestCleanChunkSuccessClassifier()
+{
+	std::printf( "S2h-L1b: only the canonical insert success is slimmed; notices keep the full entry...\n" );
+
+	Agent::AgentChunkResult clean;
+	clean.applied = true;
+	clean.status  = "applied";
+	clean.rawCode = kCstChunkInsertedRawCode;
+	clean.message = kCstChunkInsertedMessage;
+	clean.name    = "wizard_robe_pnt";
+	clean.kind    = "uniformcolor_painter";
+	Check( Agent::AgentRpcIsCleanChunkSuccess( clean ), "S2h-L1b the canonical success IS clean" );
+	{
+		Agent::JsonValue j;
+		std::string perr;
+		Check( Agent::JsonParse( Agent::AgentRpcBatchChunkResultJsonText( clean, "wizard" ), j, perr ) &&
+		       !j.has( "message" ) && !j.has( "rawCode" ) && j.get( "element" ).asString() == "wizard",
+		       "S2h-L1b ... and is slimmed on the insert_chunks wire" );
+	}
+
+	Agent::AgentChunkResult parented = clean;
+	parented.message += " This chunk was NOT parented to the element's root node: the root could not be minted.";
+	Check( !Agent::AgentRpcIsCleanChunkSuccess( parented ),
+	       "S2h-L1b MONEY: a success carrying the AUTO-PARENT notice is NOT clean" );
+	{
+		Agent::JsonValue j;
+		std::string perr;
+		Check( Agent::JsonParse( Agent::AgentRpcBatchChunkResultJsonText( parented, "wizard" ), j, perr ) &&
+		       j.get( "message" ).asString().find( "NOT parented" ) != std::string::npos &&
+		       j.get( "rawCode" ).asNumber( -1 ) == 2.0 && j.has( "retriable" ),
+		       "S2h-L1b ... and keeps its message (the notice), rawCode and retriable on the wire" );
+	}
+
+	Agent::AgentChunkResult crossNote = clean;
+	crossNote.rawCode = 3;
+	crossNote.message += "; note: the batch's re-derive reported a diagnostic for ANOTHER element: boom";
+	Check( !Agent::AgentRpcIsCleanChunkSuccess( crossNote ),
+	       "S2h-L1b MONEY: a rawCode-3 success with the cross-element batch note is NOT clean" );
+	{
+		Agent::JsonValue j;
+		std::string perr;
+		Check( Agent::JsonParse( Agent::AgentRpcBatchChunkResultJsonText( crossNote, "wizard" ), j, perr ) &&
+		       j.get( "message" ).asString().find( "ANOTHER element" ) != std::string::npos &&
+		       j.get( "rawCode" ).asNumber( -1 ) == 3.0,
+		       "S2h-L1b ... and keeps its note and rawCode 3 on the wire" );
+	}
+
+	Agent::AgentChunkResult codeOnly = clean;   // canonical text, non-canonical code
+	codeOnly.rawCode = 3;
+	Check( !Agent::AgentRpcIsCleanChunkSuccess( codeOnly ),
+	       "S2h-L1b a non-canonical rawCode alone also keeps the full entry" );
+}
+
 //! S2i (S2 fix-round, 2026-08-11, P1): replace_geometry_scaffold used to
 //! bypass the first-geometry clean-room gate entirely.  Unlike
 //! insert_geometry_scaffold, it never routes through InsertChunk /
@@ -17814,6 +18057,9 @@ static void TestLightSceneWireShape()
 		Check( result.get( "ok" ).asBool( false ), "A81f ok:true" );
 		Check( result.get( "landed" ).isArray() && result.get( "landed" ).size() == 6,
 		       "A81f the landed list rides the wire" );
+		Check( result.get( "landedKinds" ).isArray() && result.get( "landedKinds" ).size() == 6 &&
+		       !result.get( "landedKinds" ).at( 0 ).asString().empty(),
+		       "A81f doc 91 L1: landedKinds gives each landed chunk's kind (no clean chunkResults entries)" );
 		Check( result.get( "soloableLights" ).asNumber( -1 ) == 4.0,
 		       "A81f and so does the soloable-light count" );
 		Check( result.get( "contributions" ).isArray() &&
@@ -20334,6 +20580,8 @@ static void TestPopulateSceneWireShape()
 		Check( result.get( "ok" ).asBool( false ), "A82f ok:true" );
 		Check( result.get( "created" ).isArray() && result.get( "created" ).size() == 3,
 		       "A82f the created list rides the wire" );
+		Check( result.get( "created" ).at( 0 ).get( "kind" ).asString() == "standard_object",
+		       "A82f doc 91 L1: each created entry carries its chunk kind" );
 		Check( result.get( "created" ).at( 0 ).get( "geometry" ).asString() == "sph" &&
 		       result.get( "created" ).at( 0 ).get( "material" ).asString() == "mat_diffuse",
 		       "A82f MONEY ASSERTION: with what each one REPEATS as a STRUCTURED fact, not only "
@@ -21350,6 +21598,8 @@ static void TestEnvironmentSceneWireShape()
 		Check( result.get( "ok" ).asBool( false ), "A83N/f ok:true" );
 		Check( result.get( "landed" ).isArray() && result.get( "landed" ).size() == 6,
 		       "A83N/f the landed list rides the wire" );
+		Check( result.get( "landedKinds" ).isArray() && result.get( "landedKinds" ).size() == 6,
+		       "A83N/f doc 91 L1: landedKinds is index-parallel to landed" );
 		Check( result.get( "boundPainter" ).asString() == "a83_dome" &&
 		       result.get( "bindingApplied" ).asBool( false ),
 		       "A83N/f MONEY ASSERTION: with the BINDING as a STRUCTURED fact, not only prose -- a "
@@ -22727,6 +22977,9 @@ int main()
 	TestInsertRejectionSurfacesExpressionCompileDiag();
 	TestBuildElementDisclosesKindChangedReland();
 	TestCleanRoomWireShape();
+	TestBuildElementReportCompaction();
+	TestCleanChunkSuccessClassifier();
+	TestBuildElementRecordsAttempts();
 	TestCleanRoomReplaceGeometryScaffoldGate();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();

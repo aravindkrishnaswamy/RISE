@@ -3618,9 +3618,15 @@ static void TestSupersededReadElision()
 			Check( false, "un-superseded: drive rounds" ); return;
 		}
 		const std::string body = loop.BuildRequest( kApiKey ).body;
+		// DELIBERATELY CHANGED PIN (docs/agentic-redesign/91-context-
+		// lifetimes-and-visible-detail.md, slice L3a): read_skill is now
+		// superseded BY NAME -- a later read of the SAME skill elides the
+		// earlier copy (TestContextLifetimeRetirement proves that half).
+		// What still holds, and is pinned here, is the cross-name half: two
+		// DIFFERENT skills never supersede each other.
 		Check( CountOccurrences( body, "SKILL_MARKER_ONE" ) == 1 &&
 		       CountOccurrences( body, "SKILL_MARKER_TWO" ) == 1,
-		       "read_skill results are NOT superseded by a later read_skill (both ride)" );
+		       "read_skill results of DIFFERENT skills are NOT superseded by each other (both ride)" );
 		Check( CountOccurrences( body, "RENDER_MARKER_ONE" ) == 1 &&
 		       CountOccurrences( body, "RENDER_MARKER_TWO" ) == 1,
 		       "render results are NOT superseded (the model is told to COMPARE them)" );
@@ -4066,6 +4072,896 @@ static void TestSupersededReadElision()
 		       "the elision is deterministic: identical scripts -> identical request bytes" );
 		Check( a.EstimateContextTokens() == b.EstimateContextTokens(),
 		       "the elision is deterministic: identical scripts -> identical estimates" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T14c: CONTEXT LIFETIMES (docs/agentic-redesign/91-context-lifetimes-and-
+//       visible-detail.md, slices L2 + L3).  A tool result whose subject is
+//       SETTLED is retired to a one-line stub:
+//         L2  -- a successful finish_element for E retires E's earlier
+//                build_element / insert_chunks results (a FAILED finish
+//                retires nothing);
+//         L3a -- a read_skill of the SAME name supersedes the earlier copy;
+//         L3b -- the finish_element that reports the COMPOSE phase (every
+//                element finished) retires every live named read_skill, once
+//                per build plan (a new file_build_plan re-arms it); a
+//                pieces-phase place_element is NOT the signal; a read made
+//                after compose stays live (until a same-name re-read), and
+//                the index form is never retired.
+//         A retirement is never applied to the entry being flushed: a
+//         same-turn build+finish delivers the build result once, and it
+//         retires on the next flush.
+//       Proved on all four wire shapes with the pairing invariants, plus
+//       (Anthropic) the history_edit reasons, convergence, determinism and
+//       the EstimateContextTokens drop.
+//----------------------------------------------------------------------
+namespace
+{
+	// One tool round whose calls carry ARGUMENTS (DriveToolRound sends {}).
+	bool DriveToolRoundArgs( AgentChatLoop& loop, ChatProvider provider,
+	                         const std::vector<std::string>& verbs,
+	                         const std::vector<std::string>& ids,
+	                         const std::vector<std::string>& args,
+	                         const std::vector<std::string>& envelopes )
+	{
+		const bool chatCompletions = ( provider == ChatProvider::Local ||
+		                               provider == ChatProvider::XAI );
+		std::string blocks;
+		for( std::size_t i = 0; i < verbs.size(); ++i ) {
+			if( i ) blocks += ",";
+			const std::string argStr = JsonSerialize( JsonValue::MakeString( args[i] ) );
+			if( provider == ChatProvider::Anthropic )
+				blocks += "{\"type\":\"tool_use\",\"id\":\"" + ids[i] + "\",\"name\":\"" +
+				          verbs[i] + "\",\"input\":" + args[i] + "}";
+			else if( provider == ChatProvider::Gemini )
+				blocks += "{\"functionCall\":{\"id\":\"" + ids[i] + "\",\"name\":\"" +
+				          verbs[i] + "\",\"args\":" + args[i] + "}}";
+			else if( chatCompletions )
+				blocks += "{\"id\":\"" + ids[i] + "\",\"type\":\"function\",\"function\":{\"name\":\"" +
+				          verbs[i] + "\",\"arguments\":" + argStr + "}}";
+			else
+				blocks += "{\"type\":\"function_call\",\"call_id\":\"" + ids[i] +
+				          "\",\"name\":\"" + verbs[i] + "\",\"arguments\":" + argStr + "}";
+		}
+		std::string fx;
+		if( provider == ChatProvider::Anthropic )
+			fx = AnthropicFixture( "[" + blocks + "]", "tool_use" );
+		else if( provider == ChatProvider::Gemini )
+			fx = GeminiFixture( "{\"parts\":[" + blocks + "],\"role\":\"model\"}", "STOP" );
+		else if( chatCompletions )
+			fx = OpenAIFixture( "null", "[" + blocks + "]", "tool_calls" );
+		else
+			fx = "{\"status\":\"completed\",\"output\":[" + blocks + "]}";
+
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		if( st.toolCalls.size() != verbs.size() ) return false;
+		for( std::size_t i = 0; i < st.toolCalls.size(); ++i )
+			loop.AddToolResult( st.toolCalls[i], envelopes[i] );
+		return true;
+	}
+
+	struct LifetimeCall
+	{
+		std::string verb, args, env;
+	};
+
+	// Every recorded call is answered by the immediately following results
+	// message with a matching id, on whichever wire `provider` speaks.
+	bool LifetimeWireValid( ChatProvider provider, const std::string& body )
+	{
+		const JsonValue root = ParseBody( body );
+		if( provider == ChatProvider::Anthropic ) return AnthropicToolCallsAllAnswered( root.get( "messages" ) );
+		if( provider == ChatProvider::Gemini )    return GeminiFunctionCallsAllAnswered( root.get( "contents" ) );
+		std::vector<std::string> calls, answers;
+		if( provider == ChatProvider::OpenAI ) {
+			const JsonValue& input = root.get( "input" );
+			for( std::size_t i = 0; i < input.size(); ++i ) {
+				const std::string t = input.at( i ).get( "type" ).asString();
+				if( t == "function_call" ) calls.push_back( input.at( i ).get( "call_id" ).asString() );
+				if( t == "function_call_output" ) {
+					answers.push_back( input.at( i ).get( "call_id" ).asString() );
+					if( !input.at( i ).get( "output" ).isString() ) return false;
+				}
+			}
+		}
+		else {
+			const JsonValue& msgs = root.get( "messages" );
+			for( std::size_t i = 0; i < msgs.size(); ++i ) {
+				const JsonValue& m = msgs.at( i );
+				const JsonValue& tc = m.get( "tool_calls" );
+				for( std::size_t k = 0; tc.isArray() && k < tc.size(); ++k )
+					calls.push_back( tc.at( k ).get( "id" ).asString() );
+				if( m.get( "role" ).asString() == "tool" ) {
+					answers.push_back( m.get( "tool_call_id" ).asString() );
+					// Every result payload stays a serialized JSON object.
+					if( !ParseBody( m.get( "content" ).asString() ).isObject() ) return false;
+				}
+			}
+		}
+		std::sort( calls.begin(), calls.end() );
+		std::sort( answers.begin(), answers.end() );
+		return !calls.empty() && calls == answers;
+	}
+
+	std::string LifetimeEnv( int id, const std::string& resultObj )
+	{
+		return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( id ) + ",\"result\":" + resultObj + "}";
+	}
+}
+
+static void TestContextLifetimeRetirement()
+{
+	std::printf( "T14c: context lifetimes -- element-finished, same-skill and compose-phase retirement...\n" );
+
+	// The loop restates the compose phase name (it does not link the
+	// session); pin it to the session's own spelling.
+	Check( std::string( kChatComposePhaseName ) ==
+	       AgentSession::BuildPhaseName( AgentSession::AgentBuildPhase::Compose ),
+	       "kChatComposePhaseName is AgentSession::BuildPhaseName(Compose)" );
+
+	const std::string pad( 6000, 'p' );   // a realistic report weighs KB, not bytes
+	auto skill = [&]( int id, const std::string& name, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"name\":\"" + name + "\",\"markdown\":\"" + marker + " " + pad + "\"}" );
+	};
+	const std::string skillIndex = LifetimeEnv( 2,
+		"{\"skills\":[{\"name\":\"lighting-recipes\",\"title\":\"t\",\"hook\":\"SK_IDX_MARKER\"}]}" );
+	auto build = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"" + marker +
+			"\"],\"chunkResults\":[],\"message\":\"" + marker + " " + pad + "\"}" );
+	};
+	// One applied chunk of `element` plus one REJECTED chunk whose name-based
+	// attribution is ANOTHER element (a refused duplicate) -- the batch
+	// still belongs to `element`.
+	auto insert = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"applied\":1,\"total\":2,\"results\":[{\"applied\":true,\"status\":"
+			"\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},\"name\":\"" + marker +
+			"\",\"kind\":\"uniformcolor_painter\",\"element\":\"" + element + "\"},"
+			"{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"headVersion\":{\"uuid\":7,\"revision\":3},\"message\":\"duplicate name\","
+			"\"name\":\"dragon_body\",\"kind\":\"uniformcolor_painter\",\"element\":\"dragon\"}]}" );
+	};
+	auto finish = [&]( int id, const std::string& element, bool ok, const char* phase ) {
+		return LifetimeEnv( id, std::string( "{\"ok\":" ) + ( ok ? "true" : "false" ) +
+			",\"phase\":\"" + phase + "\",\"element\":\"" + element + "\",\"chunks\":[],\"message\":\"m\"}" );
+	};
+	auto place = [&]( int id, bool ok ) {
+		return LifetimeEnv( id, std::string( "{\"ok\":" ) + ( ok ? "true" : "false" ) +
+			",\"element\":\"wizard\",\"objects\":[],\"message\":\"m\"}" );
+	};
+	const std::string plan = LifetimeEnv( 40, "{\"filed\":true,\"elementCount\":1,\"elements\":[]}" );
+	const std::string renderEnv = LifetimeEnv( 41, "{\"ok\":true,\"width\":16,\"height\":12}" );
+	const std::string doc = DocEnvelope( 30, "DOC_LIFE_MARKER", 3 );
+
+	// The script, round by round.  Round indices are referenced below.
+	std::vector<std::vector<LifetimeCall>> rounds;
+	rounds.push_back( { { "read_skill", "{\"name\":\"lighting-recipes\"}", skill( 1, "lighting-recipes", "SK_L1_MARKER" ) } } );     // R0
+	rounds.push_back( { { "read_skill", "{}", skillIndex },                                                                        // R1 (co-packed)
+	                    { "read_skill", "{\"name\":\"materials\"}", skill( 3, "materials", "SK_M1_MARKER" ) } } );
+	rounds.push_back( { { "read_skill", "{\"name\":\"lighting-recipes\"}", skill( 4, "lighting-recipes", "SK_L2_MARKER" ) } } );     // R2: L3a
+	rounds.push_back( { { "build_element", "{\"element\":\"wizard\",\"height\":4}", build( 5, "wizard", "BE_W1_MARKER" ) },          // R3 (co-packed)
+	                    { "read_document", "{}", doc } } );
+	rounds.push_back( { { "insert_chunks", "{\"chunks\":[\"x\",\"y\"]}", insert( 6, "wizard", "IC_W1_MARKER" ) } } );                // R4
+	rounds.push_back( { { "place_element", "{\"element\":\"wizard\",\"position\":\"0 0 0\"}", place( 7, true ) } } );                // R5: pieces-phase place
+	rounds.push_back( { { "finish_element", "{}", finish( 8, "wizard", false, "pieces" ) } } );                                      // R6: FAILED
+	rounds.push_back( { { "build_element", "{\"element\":\"dragon\",\"height\":3}", build( 9, "dragon", "BE_D1_MARKER" ) } } );      // R7
+	rounds.push_back( { { "finish_element", "{}", finish( 10, "wizard", true, "pieces" ) } } );                                      // R8: L2, not compose
+	rounds.push_back( { { "build_element", "{\"element\":\"dragon\",\"height\":3}", build( 11, "dragon", "BE_D2_MARKER" ) },         // R9: same-turn build+finish,
+	                    { "finish_element", "{}", finish( 12, "dragon", true, "compose" ) } } );                                     //     reaching compose
+	rounds.push_back( { { "read_skill", "{\"name\":\"materials\"}", skill( 13, "materials", "SK_M2_MARKER" ) } } );                   // R10
+	rounds.push_back( { { "place_element", "{\"element\":\"dragon\",\"position\":\"1 0 0\"}", place( 14, true ) } } );               // R11
+	rounds.push_back( { { "read_skill", "{\"name\":\"materials\"}", skill( 15, "materials", "SK_M3_MARKER" ) } } );                   // R12: L3a again
+	rounds.push_back( { { "file_build_plan", "{}", plan } } );                                                                       // R13: re-arm
+	rounds.push_back( { { "read_skill", "{\"name\":\"lighting-recipes\"}", skill( 16, "lighting-recipes", "SK_L3_MARKER" ) } } );    // R14
+	rounds.push_back( { { "build_element", "{\"element\":\"tower\",\"height\":2}", build( 17, "tower", "BE_T1_MARKER" ) },           // R15: plan 2 composes
+	                    { "finish_element", "{}", finish( 18, "tower", true, "compose" ) } } );
+	rounds.push_back( { { "render", "{}", renderEnv } } );                                                                           // R16
+
+	struct Prov { ChatProvider p; const char* label; };
+	const Prov provs[] = {
+		{ ChatProvider::Anthropic, "anthropic" }, { ChatProvider::Gemini, "gemini" },
+		{ ChatProvider::OpenAI, "openai/responses" }, { ChatProvider::Local, "openai/chat-completions" } };
+	const char* const kComposeStub = "retired when every element of the build plan was finished";
+	const char* const kFinishedStub = "was finished; read_document shows the current document";
+
+	std::string anthropicFinalBody;
+	for( const Prov& pv : provs ) {
+		const std::string L = pv.label;
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( pv.p );
+		if( pv.p == ChatProvider::Anthropic ) {
+			ChatTrajectoryConfig cfg;
+			cfg.traceId = "trace-lifetimes-14c";
+			loop.SetTrajectorySink( [&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+		}
+		loop.AddUserMessage( "build the wizard and the dragon" );
+
+		std::size_t estBeforeFinish = 0, estAfterFinish = 0, estBeforeCompose = 0, estAfterCompose = 0;
+		std::string entryR3AfterFinish;
+		std::size_t entryR3Index = 0;
+		bool driven = true;
+		for( std::size_t r = 0; r < rounds.size() && driven; ++r ) {
+			std::vector<std::string> verbs, ids, args, envs;
+			for( std::size_t k = 0; k < rounds[r].size(); ++k ) {
+				verbs.push_back( rounds[r][k].verb );
+				ids.push_back( "c" + std::to_string( r ) + "_" + std::to_string( k ) );
+				args.push_back( rounds[r][k].args );
+				envs.push_back( rounds[r][k].env );
+			}
+			if( r == 8 ) estBeforeFinish = loop.EstimateContextTokens();
+			if( r == 9 ) estBeforeCompose = loop.EstimateContextTokens();
+			driven = DriveToolRoundArgs( loop, pv.p, verbs, ids, args, envs );
+			// The flush runs in BuildRequest -- this is when a request goes out.
+			const std::string body = loop.BuildRequest( kApiKey ).body;
+			Check( LifetimeWireValid( pv.p, body ),
+			       L + ": every recorded call is still answered after round " + std::to_string( r ) );
+
+			if( r == 2 ) {
+				Check( CountOccurrences( body, "SK_L1_MARKER" ) == 0 && CountOccurrences( body, "SK_L2_MARKER" ) == 1,
+				       L + ": L3a -- a re-read of the SAME skill supersedes the earlier copy" );
+				Check( body.find( "superseded by a later read_skill of the same skill" ) != std::string::npos,
+				       L + ": L3a -- the superseded skill carries its honest placeholder" );
+				Check( CountOccurrences( body, "SK_M1_MARKER" ) == 1,
+				       L + ": L3a -- a DIFFERENT skill is untouched" );
+			}
+			if( r == 5 ) {
+				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 1 && CountOccurrences( body, "SK_M1_MARKER" ) == 1 &&
+				       body.find( kComposeStub ) == std::string::npos,
+				       L + ": L3b -- a place_element in the PIECES phase (later elements unbuilt) retires no skill" );
+			}
+			if( r == 6 ) {
+				Check( CountOccurrences( body, "BE_W1_MARKER" ) == 2 && CountOccurrences( body, "IC_W1_MARKER" ) == 1,
+				       L + ": L2 -- a FAILED finish_element retires nothing" );
+				Check( body.find( kFinishedStub ) == std::string::npos,
+				       L + ": L2 -- no element-finished stub after a failed finish" );
+			}
+			if( r == 8 ) {
+				estAfterFinish = loop.EstimateContextTokens();
+				Check( CountOccurrences( body, "BE_W1_MARKER" ) == 0,
+				       L + ": L2 MONEY -- the finished element's build_element result is retired" );
+				Check( CountOccurrences( body, "IC_W1_MARKER" ) == 0,
+				       L + ": L2 -- its insert_chunks result is retired too, attributed by its APPLIED chunk "
+				       "(the rejected chunk's other-element attribution is ignored)" );
+				Check( body.find( "build_element result for element" ) != std::string::npos &&
+				       body.find( "insert_chunks result for element" ) != std::string::npos &&
+				       body.find( kFinishedStub ) != std::string::npos,
+				       L + ": L2 -- each retired result carries a stub naming its verb and the recovery path" );
+				Check( CountOccurrences( body, "BE_D1_MARKER" ) == 2,
+				       L + ": L2 -- ANOTHER element's build_element result stays live" );
+				Check( CountOccurrences( body, "DOC_LIFE_MARKER" ) == 1,
+				       L + ": L2 -- a CO-PACKED neighbour (read_document) of a retired result is untouched" );
+				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 1 && body.find( kComposeStub ) == std::string::npos,
+				       L + ": L3b -- a finish that leaves the plan in the PIECES phase retires no skill" );
+				for( std::size_t i = 0; i < loop.TranscriptSize(); ++i )
+					if( loop.TranscriptAt( i ).rawJson.find( "DOC_LIFE_MARKER" ) != std::string::npos )
+						entryR3Index = i;
+				entryR3AfterFinish = loop.TranscriptAt( entryR3Index ).rawJson;
+			}
+			if( r == 9 ) {
+				estAfterCompose = loop.EstimateContextTokens();
+				Check( CountOccurrences( body, "BE_D2_MARKER" ) == 2,
+				       L + ": SAME-FLUSH -- a build_element finished in the SAME turn is still delivered once" );
+				Check( CountOccurrences( body, "BE_D1_MARKER" ) == 0,
+				       L + ": L2 -- the element's build_element from an EARLIER turn retires at the finish" );
+				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 0 && CountOccurrences( body, "SK_M1_MARKER" ) == 0,
+				       L + ": L3b MONEY -- the finish that reaches the compose phase retires every live named skill" );
+				Check( body.find( kComposeStub ) != std::string::npos,
+				       L + ": L3b -- the retired skill carries the compose-phase re-read stub" );
+				Check( CountOccurrences( body, "SK_IDX_MARKER" ) == 1,
+				       L + ": L3b -- the INDEX form of read_skill is never retired" );
+			}
+			if( r == 10 ) {
+				Check( CountOccurrences( body, "BE_D2_MARKER" ) == 0,
+				       L + ": SAME-FLUSH -- ... and it retires on the NEXT flush" );
+				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 1,
+				       L + ": L3b -- a skill read AFTER compose is live" );
+			}
+			if( r == 11 ) {
+				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 1,
+				       L + ": L3b -- a skill read after compose stays live through a later place_element" );
+			}
+			if( r == 12 ) {
+				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 0 && CountOccurrences( body, "SK_M3_MARKER" ) == 1,
+				       L + ": L3a -- a post-compose re-read of the same skill still supersedes" );
+			}
+			if( r == 15 ) {
+				Check( CountOccurrences( body, "SK_M3_MARKER" ) == 0 && CountOccurrences( body, "SK_L3_MARKER" ) == 0,
+				       L + ": L3b RE-ARM -- after a new file_build_plan, that plan's compose retires its skills" );
+				Check( CountOccurrences( body, "BE_T1_MARKER" ) == 2,
+				       L + ": SAME-FLUSH -- the new plan's same-turn build_element is delivered once" );
+			}
+			if( r == 16 ) {
+				Check( CountOccurrences( body, "BE_T1_MARKER" ) == 0,
+				       L + ": SAME-FLUSH -- and retires on the next flush" );
+				// CONVERGENCE: the R3 entry (retired build_element + live
+				// read_document) was rewritten once, at the finish, and no
+				// later flush moved its bytes again.
+				Check( loop.TranscriptAt( entryR3Index ).rawJson == entryR3AfterFinish,
+				       L + ": convergence -- a retired entry is rewritten exactly once" );
+				if( pv.p == ChatProvider::Anthropic ) anthropicFinalBody = body;
+			}
+		}
+		Check( driven, L + ": every scripted round parsed" );
+		Check( estAfterFinish < estBeforeFinish,
+		       L + ": the context estimate DROPS across the finish_element flush" );
+		Check( estAfterCompose < estBeforeCompose,
+		       L + ": the context estimate DROPS across the compose flush" );
+
+		if( pv.p == ChatProvider::Anthropic ) {
+			int finished = 0, compose = 0, supersede = 0;
+			bool nonShrinkingRetirement = false;
+			for( std::size_t i = 0; i < lines.size(); ++i ) {
+				const JsonValue j = ParseBody( lines[i] );
+				if( j.get( "run_type" ).asString() != "history_edit" ) continue;
+				const std::string reason = j.get( "reason" ).asString();
+				if( reason == "element_finished_retirement" || reason == "compose_skill_retirement" ) {
+					if( j.get( "after_bytes" ).asNumber() >= j.get( "before_bytes" ).asNumber() )
+						nonShrinkingRetirement = true;   // a non-shrinking "retirement" is a defect
+				}
+				if( reason == "element_finished_retirement" ) ++finished;
+				if( reason == "compose_skill_retirement" ) ++compose;
+				if( reason == "tool_result_supersession" ) ++supersede;
+			}
+			// R8 flush: the R3 and R4 entries; R9: R7; R10: R9; R16: R15.
+			Check( finished == 5, "anthropic: one element_finished_retirement history_edit per rewritten entry (5)" );
+			Check( !nonShrinkingRetirement, "anthropic: every lifetime retirement shrinks its entry" );
+			// R9 flush: the R1 and R2 skill entries; R15: R12 and R14.
+			Check( compose == 4, "anthropic: one compose_skill_retirement history_edit per rewritten entry (4)" );
+			Check( supersede == 2, "anthropic: the two same-name skill re-reads are tool_result_supersession edits" );
+		}
+	}
+
+	// DETERMINISM: an identical script reproduces identical request bytes.
+	{
+		AgentChatLoop again;
+		again.SetProvider( ChatProvider::Anthropic );
+		again.AddUserMessage( "build the wizard and the dragon" );
+		for( std::size_t r = 0; r < rounds.size(); ++r ) {
+			std::vector<std::string> verbs, ids, args, envs;
+			for( std::size_t k = 0; k < rounds[r].size(); ++k ) {
+				verbs.push_back( rounds[r][k].verb );
+				ids.push_back( "c" + std::to_string( r ) + "_" + std::to_string( k ) );
+				args.push_back( rounds[r][k].args );
+				envs.push_back( rounds[r][k].env );
+			}
+			if( !DriveToolRoundArgs( again, ChatProvider::Anthropic, verbs, ids, args, envs ) ) {
+				Check( false, "determinism: drive round" ); return;
+			}
+			(void)again.BuildRequest( kApiKey );
+		}
+		Check( again.BuildRequest( kApiKey ).body == anthropicFinalBody,
+		       "the lifetime retirements are deterministic: identical scripts -> identical request bytes" );
+	}
+
+	// RESET clears the compose signal: a fresh conversation retires its own
+	// planning skills again at its own compose.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		for( int pass = 0; pass < 2; ++pass ) {
+			if( pass ) loop.Reset();
+			loop.AddUserMessage( "plan, then finish" );
+			if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "rs" ),
+			                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_RESET_MARKER" ) ) ) ||
+			    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "fe" ),
+			                         Vec1( "{}" ), Vec1( finish( 2, "wizard", true, "compose" ) ) ) ) {
+				Check( false, "reset: drive rounds" ); return;
+			}
+			Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_RESET_MARKER" ) == 0,
+			       pass ? "after Reset, the new conversation's compose retires its skills again"
+			            : "the first conversation's compose retires its skill" );
+		}
+	}
+
+	// A FAILED finish_element is not the compose signal, whatever phase it names.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "finish too early" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "rs" ),
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_FAILFIN_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "fe" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", false, "compose" ) ) ) ) {
+			Check( false, "failed finish: drive rounds" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_FAILFIN_MARKER" ) == 1,
+		       "an ok:false finish_element retires no skill (it is not the compose signal)" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T14d: context lifetimes, review round 2.
+//   (a) a retired build_element stub CARRIES what is not in the document
+//       (rejected chunks + reasons, notices on landed chunks);
+//   (b) a decided-but-unapplied element retirement is CANCELLED by a
+//       successful reopen_element of that element, and a re-finish then
+//       retires the old and the new results;
+//   (c) a read_skill in the SAME turn as the compose-phase finish is
+//       post-compose in either order;
+//   (d) gaps: a mixed-element insert_chunks is never retired; an
+//       error-envelope build_element is attributed by its call argument; a
+//       finish_element carrying a real PNG, co-packed with a build that
+//       retires next flush, keeps both rules consistent.
+//----------------------------------------------------------------------
+static void TestContextLifetimeRetirementRound2()
+{
+	std::printf( "T14d: context lifetimes -- carried rejections, reopen cancel, same-turn compose order...\n" );
+
+	const std::string pad( 4000, 'q' );
+	auto build = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"" + element +
+			"_robe\"],\"landedKinds\":[\"lambertian_material\"],"
+			"\"rejected\":[{\"name\":\"" + element + "_bad\",\"kind\":\"expression_painter\","
+			"\"reason\":\"REJECT_REASON_MARKER the def did not compile\"}],"
+			"\"chunkResults\":[{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"message\":\"REJECT_REASON_MARKER the def did not compile\",\"name\":\"" + element +
+			"_bad\",\"kind\":\"expression_painter\"},"
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,"
+			"\"message\":\"chunk inserted. NOTICE_MARKER not parented\",\"name\":\"" + element +
+			"_robe\",\"kind\":\"lambertian_material\"}],"
+			"\"message\":\"" + marker + " " + pad + "\"}" );
+	};
+	auto plainBuild = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"x\"],"
+			"\"rejected\":[],\"chunkResults\":[],\"message\":\"" + marker + " " + pad + "\"}" );
+	};
+	auto finish = [&]( int id, const std::string& element, const char* phase ) {
+		return LifetimeEnv( id, std::string( "{\"ok\":true,\"phase\":\"" ) + phase + "\",\"element\":\"" +
+			element + "\",\"chunks\":[],\"message\":\"m\"}" );
+	};
+	auto reopen = [&]( int id, const std::string& element ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"phase\":\"pieces\","
+			"\"previousPhase\":\"pieces\",\"chunks\":[],\"unfinished\":[],\"message\":\"m\"}" );
+	};
+	auto skill = [&]( int id, const std::string& name, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"name\":\"" + name + "\",\"markdown\":\"" + marker + " " + pad + "\"}" );
+	};
+	const std::string renderEnv = LifetimeEnv( 90, "{\"ok\":true,\"width\":16,\"height\":12}" );
+	const char* const kBuildArgs = "{\"element\":\"wizard\",\"height\":4}";
+
+	// --- (a) the stub carries the rejection and the notice ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build the wizard" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+		                         Vec1( kBuildArgs ), Vec1( build( 1, "wizard", "BE_CARRY_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) {
+			Check( false, "T14d(a): drive rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "BE_CARRY_MARKER" ) == 0,
+		       "T14d(a): the finished element's build_element result is retired" );
+		Check( CountOccurrences( body, "REJECT_REASON_MARKER" ) == 1 &&
+		       body.find( "wizard_bad (expression_painter) refused: REJECT_REASON_MARKER" ) != std::string::npos,
+		       "T14d(a) MONEY: the stub CARRIES the refused chunk and its reason (once, deduplicated)" );
+		Check( CountOccurrences( body, "NOTICE_MARKER" ) == 1 &&
+		       body.find( "wizard_robe (lambertian_material) landed with a notice:" ) != std::string::npos,
+		       "T14d(a): the stub carries a landed chunk's notice, labelled as LANDED" );
+		Check( body.find( "Per-chunk outcomes that call reported:" )
+		           != std::string::npos &&
+		       body.find( "retired when \\\"wizard\\\" was finished" ) != std::string::npos,
+		       "T14d(a): the stub says what it kept and that it was retired when the element was finished" );
+		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
+		       "T14d(a): every call is still answered" );
+	}
+
+	// --- (b) reopen cancels an unapplied retirement; a re-finish retires both ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build the wizard, then rethink it" );
+		std::vector<std::string> v2a; v2a.push_back( kBuildArgs ); v2a.push_back( "{}" );
+		std::vector<std::string> v2e; v2e.push_back( build( 1, "wizard", "BE_X_MARKER" ) );
+		v2e.push_back( finish( 2, "wizard", "pieces" ) );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec2( "build_element", "finish_element" ),
+		                         Vec2( "b1", "f1" ), v2a, v2e ) ) {
+			Check( false, "T14d(b): same-turn round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "BE_X_MARKER" ) == 1,
+		       "T14d(b): the same-turn build result is delivered" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "reopen_element" ), Vec1( "r1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( reopen( 3, "wizard" ) ) ) ) {
+			Check( false, "T14d(b): reopen round" ); return;
+		}
+		const std::string afterReopen = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( afterReopen, "BE_X_MARKER" ) == 1 &&
+		       afterReopen.find( "result for element" ) == std::string::npos,
+		       "T14d(b) MONEY: reopen_element CANCELS the pending retirement -- nothing of the element retires" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, "T14d(b): idle round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "BE_X_MARKER" ) == 1,
+		       "T14d(b): ... and a later flush does not resurrect it" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b2" ),
+		                         Vec1( kBuildArgs ), Vec1( plainBuild( 4, "wizard", "BE_Y_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f2" ),
+		                         Vec1( "{}" ), Vec1( finish( 5, "wizard", "compose" ) ) ) ) {
+			Check( false, "T14d(b): re-finish rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "BE_X_MARKER" ) == 0 && CountOccurrences( body, "BE_Y_MARKER" ) == 0,
+		       "T14d(b): a re-finish after reopen retires BOTH the old and the new build results" );
+		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
+		       "T14d(b): every call is still answered" );
+	}
+
+	// --- (c) same-turn read_skill vs compose finish, both orders ---
+	for( int order = 0; order < 2; ++order ) {
+		const std::string L = order ? "T14d(c) [finish, read_skill]" : "T14d(c) [read_skill, finish]";
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "finish and read" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "s0" ),
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_PRE_MARKER" ) ) ) ) {
+			Check( false, L + ": pre round" ); return;
+		}
+		std::vector<std::string> verbs, ids, args, envs;
+		const std::string sk = skill( 2, "lighting", "SK_SAME_MARKER" );
+		const std::string fin = finish( 3, "wizard", "compose" );
+		if( order == 0 ) {
+			verbs = Vec2( "read_skill", "finish_element" ); ids = Vec2( "s1", "f1" );
+			args = Vec2( "{\"name\":\"lighting\"}", "{}" ); envs = Vec2( sk, fin );
+		} else {
+			verbs = Vec2( "finish_element", "read_skill" ); ids = Vec2( "f1", "s1" );
+			args = Vec2( "{}", "{\"name\":\"lighting\"}" ); envs = Vec2( fin, sk );
+		}
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, verbs, ids, args, envs ) ) {
+			Check( false, L + ": compose round" ); return;
+		}
+		const std::string b1 = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( b1, "SK_PRE_MARKER" ) == 0,
+		       L + ": the skill read in an EARLIER turn retires at the compose finish" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, L + ": idle round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_SAME_MARKER" ) == 1,
+		       L + " MONEY: the skill read in the SAME turn is post-compose -- still live a flush later" );
+	}
+
+	// --- (d1) a MIXED-element insert_chunks is never retired ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "insert across elements" );
+		const std::string mixed = LifetimeEnv( 1, "{\"applied\":2,\"total\":2,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},"
+			"\"name\":\"IC_MIX_MARKER\",\"kind\":\"k\",\"element\":\"wizard\"},"
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":4},"
+			"\"name\":\"dragon_x\",\"kind\":\"k\",\"element\":\"dragon\"}]}" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "insert_chunks" ), Vec1( "i1" ),
+		                         Vec1( "{\"chunks\":[]}" ), Vec1( mixed ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f2" ),
+		                         Vec1( "{}" ), Vec1( finish( 3, "dragon", "compose" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, "T14d(d1): drive rounds" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "IC_MIX_MARKER" ) == 1,
+		       "T14d(d1): an insert_chunks batch spanning two elements is never retired" );
+	}
+
+	// --- (d2) an error-envelope build_element is attributed by its call argument ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build badly" );
+		const std::string err = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32602,"
+			"\"message\":\"ERR_BE_MARKER height missing\"}}";
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( err ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) {
+			Check( false, "T14d(d2): drive rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "ERR_BE_MARKER" ) == 0 &&
+		       body.find( "build_element result for element" ) != std::string::npos,
+		       "T14d(d2): an ERROR build_element for E (element from the call argument) retires with E" );
+	}
+
+	// --- (d3) finish_element with a REAL png co-packed with a build that
+	//          retires next flush; then a newer image elides the png ---
+	{
+		const std::vector<unsigned char> px( 32, 0x5A );
+		const std::string b64 = Base64Encode( px );
+		const std::vector<unsigned char> px2( 32, 0x2B );
+		const std::string b642 = Base64Encode( px2 );
+		const std::string finPng = LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\","
+			"\"chunks\":[],\"rendered\":true,\"png_base64\":\"" + b64 + "\",\"byteLength\":32,"
+			"\"imageWidth\":4,\"imageHeight\":2,\"message\":\"m\"}" );
+		const std::string img2 = LifetimeEnv( 3, "{\"png_base64\":\"" + b642 + "\",\"byteLength\":32}" );
+		const ChatProvider provs[] = { ChatProvider::Anthropic, ChatProvider::Gemini,
+		                               ChatProvider::OpenAI, ChatProvider::Local };
+		const char* const labels[] = { "T14d(d3) anthropic", "T14d(d3) gemini",
+		                               "T14d(d3) openai/responses", "T14d(d3) openai/chat-completions" };
+		for( std::size_t pi = 0; pi < 4; ++pi ) {
+			const ChatProvider pv = provs[pi];
+			const std::string L = labels[pi];
+			AgentChatLoop loop;
+			loop.SetProvider( pv );
+			loop.AddUserMessage( "build and look" );
+			std::vector<std::string> a; a.push_back( kBuildArgs ); a.push_back( "{}" );
+			std::vector<std::string> e; e.push_back( plainBuild( 1, "wizard", "BE_PNG_MARKER" ) ); e.push_back( finPng );
+			if( !DriveToolRoundArgs( loop, pv, Vec2( "build_element", "finish_element" ), Vec2( "b1", "f1" ), a, e ) ) {
+				Check( false, L + ": build+finish round" ); return;
+			}
+			const std::string b1 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b1, "BE_PNG_MARKER" ) == 1 && CountOccurrences( b1, b64 ) == 1,
+			       L + ": the build result and the finish PNG are both delivered" );
+			if( !DriveToolRoundArgs( loop, pv, Vec1( "render" ), Vec1( "x1" ), Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+				Check( false, L + ": idle round" ); return;
+			}
+			const std::string b2 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b2, "BE_PNG_MARKER" ) == 0 && CountOccurrences( b2, b64 ) == 1,
+			       L + ": next flush retires the build but leaves the co-packed PNG live" );
+			Check( LifetimeWireValid( pv, b2 ), L + ": wire-valid after the lifetime rewrite" );
+			if( pv != ChatProvider::Anthropic )
+				Check( b2.find( "retired_note" ) != std::string::npos &&
+				       b2.find( "superseded_note" ) == std::string::npos,
+				       L + ": a lifetime stub rides under retired_note, not supersession's superseded_note" );
+			if( !DriveToolRoundArgs( loop, pv, Vec1( "read_image" ), Vec1( "x2" ), Vec1( "{}" ), Vec1( img2 ) ) ) {
+				Check( false, L + ": newer image round" ); return;
+			}
+			const std::string b3 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b3, b64 ) == 0 && CountOccurrences( b3, b642 ) == 1 &&
+			       b3.find( "build_element result for element" ) != std::string::npos,
+			       L + ": a newer image elides the finish PNG and the build stub survives the image rewrite" );
+			Check( LifetimeWireValid( pv, b3 ), L + ": wire-valid after both rules touched the entry" );
+		}
+	}
+
+	// --- (e) the carry tells the truth (review round 3) ---
+	auto stubAfterFinish = [&]( const std::string& verb, const std::string& args, const std::string& env,
+	                            std::string& body ) -> bool {
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( verb ), Vec1( "b1" ),
+		                         Vec1( args ), Vec1( env ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) return false;
+		body = loop.BuildRequest( kApiKey ).body;
+		return true;
+	};
+	// (e1) attempt 1 rejects X, the retry lands X under a different kind:
+	//      X IS in the document -- the stub must say so, not "refused".
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_x\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[2],"
+			"\"rejected\":[{\"name\":\"wizard_x\",\"kind\":\"expression_painter\","
+			"\"reason\":\"RETRY_REASON_MARKER def did not compile\",\"attempt\":1}],"
+			"\"chunkResults\":[{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"message\":\"RETRY_REASON_MARKER def did not compile\",\"name\":\"wizard_x\","
+			"\"kind\":\"expression_painter\"}],\"message\":\"E1_BUILD_MARKER " + pad + "\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e1): drive" ); return; }
+		Check( CountOccurrences( body, "E1_BUILD_MARKER" ) == 0, "T14d(e1): the build result is retired" );
+		Check( body.find( "wizard_x rejected on attempt 1 (as expression_painter), landed on attempt 2 as "
+		                  "uniformcolor_painter" ) != std::string::npos,
+		       "T14d(e1) MONEY: a chunk rejected on attempt 1 and landed by the retry is reported LANDED, "
+		       "with the kind change" );
+		Check( body.find( "wizard_x (expression_painter) refused" ) == std::string::npos &&
+		       body.find( "Not in the document" ) == std::string::npos,
+		       "T14d(e1) MONEY: the stub never claims the landed chunk is absent" );
+	}
+	// (e2) two DISTINCT chunks sharing one generic reason are each named.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"landedKinds\":[],\"rejected\":["
+			"{\"name\":\"wizard_a\",\"kind\":\"sphere_geometry\",\"reason\":\"prefix violation\"},"
+			"{\"name\":\"wizard_b\",\"kind\":\"sphere_geometry\",\"reason\":\"prefix violation\"}],"
+			"\"chunkResults\":[],\"message\":\"E2_BUILD_MARKER " + pad + "\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e2): drive" ); return; }
+		Check( body.find( "wizard_a (sphere_geometry) refused: prefix violation" ) != std::string::npos &&
+		       body.find( "wizard_b (sphere_geometry) refused: prefix violation" ) != std::string::npos,
+		       "T14d(e2) MONEY: distinct chunks with the SAME reason are each named (dedupe by name, kind, text)" );
+		Check( body.find( "chunks are in the document" ) == std::string::npos &&
+		       body.find( "read_document shows the current document; finish_element / reopen_element results "
+		                  "list the element's chunks" ) != std::string::npos,
+		       "T14d(e2) MONEY (review round 6): an ALL-REJECTED build's stub claims no chunks exist -- it "
+		       "points to read_document for the current state" );
+	}
+	// (e3) the carry is bounded, with an explicit count of what was left out.
+	{
+		std::string rej;
+		for( int i = 0; i < 14; ++i ) {
+			if( i ) rej += ",";
+			rej += "{\"name\":\"wizard_r" + std::to_string( i ) + "\",\"kind\":\"k\",\"reason\":\"r\"}";
+		}
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"rejected\":[" + rej + "],\"chunkResults\":[],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e3): drive" ); return; }
+		Check( body.find( "wizard_r11 (k) refused" ) != std::string::npos &&
+		       body.find( "wizard_r12 (k) refused" ) == std::string::npos &&
+		       body.find( "and 2 more" ) != std::string::npos,
+		       "T14d(e3): at most 12 items are carried, then \"and N more\"" );
+	}
+	// (e4) an insert_chunks refused duplicate is reported as REFUSED (the
+	//      name may well exist -- another chunk owns it), never as absent.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"applied\":1,\"total\":2,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},"
+			"\"name\":\"wizard_ok\",\"kind\":\"k\",\"element\":\"wizard\"},"
+			"{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"headVersion\":{\"uuid\":7,\"revision\":3},\"message\":\"DUP_MARKER a chunk with this name exists\","
+			"\"name\":\"wizard_ok\",\"kind\":\"k\",\"element\":\"wizard\"}]}" );
+		std::string body;
+		if( !stubAfterFinish( "insert_chunks", "{\"chunks\":[]}", env, body ) ) { Check( false, "T14d(e4): drive" ); return; }
+		Check( body.find( "insert_chunks result for element" ) != std::string::npos &&
+		       body.find( "wizard_ok (k) refused: DUP_MARKER" ) != std::string::npos &&
+		       body.find( "Not in the document" ) == std::string::npos,
+		       "T14d(e4): a refused duplicate is carried as \"refused\", not as absent from the document" );
+		Check( body.find( "headVersion after that call: {\\\"uuid\\\":7,\\\"revision\\\":3}." ) != std::string::npos,
+		       "T14d(e4): the insert_chunks stub keeps the head version (the next baseHeadVersion)" );
+	}
+	// (e5) [X bad, X good] in ONE answer: both attempt 1 -- a refusal, never
+	//      "landed on a later attempt".
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_x\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[1],"
+			"\"rejected\":[{\"name\":\"wizard_x\",\"kind\":\"expression_painter\","
+			"\"reason\":\"BADGOOD_MARKER def did not compile\",\"attempt\":1}],"
+			"\"chunkResults\":[],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e5): drive" ); return; }
+		Check( body.find( "wizard_x (expression_painter) refused: BADGOOD_MARKER" ) != std::string::npos &&
+		       body.find( "landed on attempt" ) == std::string::npos,
+		       "T14d(e5) MONEY: X refused and X landed in the SAME answer is reported as a refusal" );
+	}
+	// (e6) one answer naming X three times: one lands, two are refused as
+	//      duplicates -- one item with its count, never a retry relabel.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_dup\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[1],"
+			"\"rejected\":["
+			"{\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\",\"reason\":\"DUPNAME_MARKER exists\",\"attempt\":1},"
+			"{\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\",\"reason\":\"DUPNAME_MARKER exists\",\"attempt\":1}],"
+			"\"chunkResults\":["
+			"{\"applied\":false,\"status\":\"rejected\",\"message\":\"DUPNAME_MARKER exists\",\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\"},"
+			"{\"applied\":false,\"status\":\"rejected\",\"message\":\"DUPNAME_MARKER exists\",\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\"}],"
+			"\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e6): drive" ); return; }
+		Check( body.find( "wizard_dup (uniformcolor_painter) refused (x2): DUPNAME_MARKER exists" ) != std::string::npos &&
+		       CountOccurrences( body, "DUPNAME_MARKER" ) == 1 && body.find( "landed on attempt" ) == std::string::npos,
+		       "T14d(e6) MONEY: duplicate refusals in one answer are counted (x2, chunkResults not double-counted), "
+		       "never relabelled as landed later" );
+	}
+	// (e7) the stub's edit rule is phrased from what the finish REPORTED.
+	//      Exact text, all three variants, plus the carried bounding box.
+	{
+		auto stubText = [&]( const std::string& finishEnv, std::string& text ) -> bool {
+			AgentChatLoop loop;
+			loop.SetProvider( ChatProvider::Anthropic );
+			loop.AddUserMessage( "build" );
+			const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[\"w\"],"
+				"\"rejected\":[],\"chunkResults\":[],"
+				"\"bbox\":{\"min\":[-1,0,-0.5],\"max\":[1,4,0.5],\"height\":4},\"message\":\"m\"}" );
+			if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+			                         Vec1( kBuildArgs ), Vec1( env ) ) ||
+			    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+			                         Vec1( "{}" ), Vec1( finishEnv ) ) ) return false;
+			const JsonValue msgs = ParseBody( loop.BuildRequest( kApiKey ).body ).get( "messages" );
+			for( std::size_t m = 0; m < msgs.size(); ++m ) {
+				const JsonValue& c = msgs.at( m ).get( "content" );
+				for( std::size_t k = 0; c.isArray() && k < c.size(); ++k ) {
+					if( c.at( k ).get( "type" ).asString() != "tool_result" ||
+					    c.at( k ).get( "tool_use_id" ).asString() != "b1" ) continue;
+					text = c.at( k ).get( "content" ).at( 0 ).get( "text" ).asString();
+					return true;
+				}
+			}
+			return false;
+		};
+		// REVIEW ROUND 5: the stub states only IMMUTABLE facts.  The phase,
+		// the session mode and the plan all change after the finish and the
+		// stub is never rewritten, so whatever the finish reported, the stub
+		// is the SAME text -- and it never states an edit or reopen rule (the
+		// session's own refusal names reopen_element when an edit is
+		// actually refused).
+		const std::string expected =
+			"[build_element result for element \"wizard\" elided -- retired when \"wizard\" was finished; "
+			"read_document shows the current document; finish_element / reopen_element results list the "
+			"element's chunks. Realised world bounding box when built: "
+			"min (-1, 0, -0.5) max (1, 4, 0.5), height 4.]";
+		const char* const finishes[] = {
+			"{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}",
+			"{\"ok\":true,\"phase\":\"compose\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}",
+			"{\"ok\":true,\"phase\":\"pieces\",\"mode\":\"refining\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}" };
+		const char* const labels[] = { "pieces", "compose", "refining" };
+		for( int v = 0; v < 3; ++v ) {
+			std::string t;
+			const bool got = stubText( LifetimeEnv( 2, finishes[v] ), t );
+			Check( got && t == expected,
+			       std::string( "T14d(e7) MONEY: " ) + labels[v] + "-phase finish -> the immutable stub, exact text" );
+			// No reopen PRESCRIPTION ("reopen_element \"wizard\" ...") -- the
+			// pointer to reopen_element's RESULTS (which list the chunks) is
+			// not a rule and stays true.
+			Check( got && t.find( "reopen_element \"wizard\"" ) == std::string::npos &&
+			       t.find( "refused" ) == std::string::npos && t.find( "editable" ) == std::string::npos,
+			       std::string( "T14d(e7): " ) + labels[v] + " -- no edit/reopen rule is stated (it would go stale)" );
+		}
+	}
+
+	// (e8) review round 5 P2-2: a carried notice keeps its CONTENT -- the
+	//      canonical insert prefix is stripped before the 160-byte cap, and a
+	//      landed chunk's `issues` (a forward-reference warning) are carried.
+	{
+		Check( std::string( kChatChunkInsertedMessage ) == std::string( RISE::kCstChunkInsertedMessage ),
+		       "T14d(e8): the loop's restated canonical insert message equals the writers' constant" );
+		const std::string longNotice = " This chunk was NOT parented to the element's root node: the root "
+			"could not be minted because LONGNOTICE_MARKER " + std::string( 120, 'n' ) + " TAIL_MARKER";
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[\"wizard_a\",\"wizard_b\"],"
+			"\"landedKinds\":[\"k\",\"k\"],\"landedAttempts\":[1,1],\"rejected\":[],\"chunkResults\":["
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,\"message\":\"" +
+			std::string( kChatChunkInsertedMessage ) + longNotice + "\",\"name\":\"wizard_a\",\"kind\":\"k\"},"
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,\"message\":\"" +
+			std::string( kChatChunkInsertedMessage ) + "\",\"name\":\"wizard_b\",\"kind\":\"k\","
+			"\"issues\":[{\"param\":\"reflectance\",\"value\":\"pnt_later\",\"reason\":\"unresolved_reference\","
+			"\"suggestions\":[]}]}],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e8): drive" ); return; }
+		Check( body.find( "wizard_a (k) landed with a notice: This chunk was NOT parented" ) != std::string::npos &&
+		       body.find( "LONGNOTICE_MARKER" ) != std::string::npos,
+		       "T14d(e8) MONEY: the notice's own text fills the budget (the canonical prefix is stripped)" );
+		Check( body.find( "chunk inserted via a full re-derive" ) == std::string::npos,
+		       "T14d(e8): the canonical boilerplate is not carried" );
+		Check( body.find( "wizard_b (k) landed with a notice: unresolved_reference `reflectance`" ) != std::string::npos,
+		       "T14d(e8): a landed chunk whose only extra is an `issues` warning carries that warning" );
+	}
+	// (e9) review round 5 P3: a STAGED chunk is labelled staged, not refused.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"rejected\":[{\"name\":\"wizard_s\",\"kind\":\"k\",\"reason\":\"STAGED_MARKER queued\",\"attempt\":1}],"
+			"\"chunkResults\":[{\"applied\":false,\"status\":\"staged\",\"message\":\"STAGED_MARKER queued\","
+			"\"name\":\"wizard_s\",\"kind\":\"k\"}],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e9): drive" ); return; }
+		Check( body.find( "wizard_s (k) staged as a proposal: STAGED_MARKER" ) != std::string::npos &&
+		       body.find( "wizard_s (k) refused" ) == std::string::npos && CountOccurrences( body, "STAGED_MARKER" ) == 1,
+		       "T14d(e9): a staged chunk is carried as staged (once), not as refused" );
+		Check( body.find( "chunks are in the document" ) == std::string::npos,
+		       "T14d(e9): a build whose only chunk was STAGED does not claim the element has chunks" );
+	}
+	// (e10) review round 6 P1-2: the compose-retired skill stub is PAST
+	//       tense -- after a later reopen_element it is still true.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "plan, compose, reopen" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "s1" ),
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_PAST_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "compose" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "reopen_element" ), Vec1( "r1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( reopen( 3, "wizard" ) ) ) ) {
+			Check( false, "T14d(e10): drive" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "SK_PAST_MARKER" ) == 0 &&
+		       body.find( "retired when every element of the build plan was finished" ) != std::string::npos &&
+		       body.find( "every element of the build plan is finished" ) == std::string::npos,
+		       "T14d(e10) MONEY: the skill stub states a PAST fact, still true after reopen_element" );
+	}
+	// (e11) review round 6 P2: the carried head version is EXACT digits.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"applied\":1,\"total\":1,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":9876543210,\"revision\":123456},"
+			"\"name\":\"wizard_hv\",\"kind\":\"k\",\"element\":\"wizard\"}]}" );
+		std::string body;
+		if( !stubAfterFinish( "insert_chunks", "{\"chunks\":[]}", env, body ) ) { Check( false, "T14d(e11): drive" ); return; }
+		Check( body.find( "headVersion after that call: {\\\"uuid\\\":9876543210,\\\"revision\\\":123456}." )
+		           != std::string::npos,
+		       "T14d(e11) MONEY: a large uuid and a 6-digit revision are carried as exact integers" );
 	}
 }
 
@@ -10649,6 +11545,8 @@ int main()
 	TestHostileDispositionGates();
 	TestImageElision();
 	TestSupersededReadElision();
+	TestContextLifetimeRetirement();
+	TestContextLifetimeRetirementRound2();
 	TestFastMathGuards();
 	TestDuplicateIdRefusal();
 	TestGeminiUserRunMerge();
