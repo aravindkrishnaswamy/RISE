@@ -10,7 +10,7 @@ pages are a historical log, not instructions.
 |---|---|
 | Code | branch `fire-smoke-design` in `/Volumes/SSD/Working/RISE` |
 | Design | [FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md), [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md), [FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md) |
-| Current run results | `/Volumes/SSD/RISE/fire_production_calibration/` (45 entries, listed below) |
+| Current run results | `/Volumes/SSD/RISE/fire_production_calibration/` (campaign outputs, listed below) |
 | Golden oracle checkpoint | `rendered/fire_methane_capstone/tier10.run.checkpoint` in the main checkout, SHA-256 `1b944176…cb4947` |
 | Older run outputs (r1xx–r217, oracle references) | `/Volumes/Big Store/Archive/RISE/history_2026-10-16/` |
 | Checkpoint history and budget packets of r237–r246 | `/Volumes/Big Store/Archive/RISE/fire_production_calibration/` |
@@ -66,6 +66,13 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    or sides, or the mixing-limited reaction closure may under-burn at this
    resolution. Measure where the missing fuel goes, fix the cause, then
    rerun tier 10 to check McCaffrey.
+   **r249 measurement:** [tier-8 fuel balance](FIRE_SMOKE_TIER8_FUEL_BALANCE_R249.md)
+   attributes the dominant loss to cold, dilute methane escaping the top.
+   Over 99.47% of statistics time: inlet 9.596 g, burned 6.175 g, inventory
+   change −0.0309 g, balance remainder 3.452 g; sampled top donor export
+   3.451 g. This is sampled localization, not an exact historical accepted
+   boundary integral. An established-flame mixing/combustion closure correction
+   is proposed; its causal effectiveness remains untested.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
    incandescence, only blue chemiluminescence. The zero is methane's
@@ -136,6 +143,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r238_retained_fuel_budget.v2` | fuel-budget observer replay on r237 |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
+| `r249_tier8_fuel_balance` | read-only r241 retained fuel inventory, sampled boundary localization, and native chemistry-state checks |
 | `r243_nonphysical_diagnostic.v3` | temperature-mapped structure clips, labelled non-physical |
 | `r244_tier6_*`, `r245_*`, `r246_tier6_top_double.v1`, `r246_recovered_top_*`, `r247_transport.v3`, `r247_source_spatial.v2` | tier-6 domain, budget and top-boundary studies |
 

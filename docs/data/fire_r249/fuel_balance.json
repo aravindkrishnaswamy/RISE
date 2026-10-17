@@ -1,0 +1,159 @@
+{
+  "scope": "retained_r241_tier8_measurement_no_simulation_no_kernel_change",
+  "case_id": "764cc88cc43415bc1d893f67a273f90eb251bc4df536551f7cf0287c44938cc9",
+  "producer_build_id": "61813e937ba1d16d5b06e887e464f46a0e0e8c8ba2c68ce8888c1cb442b64702",
+  "input_checkpoint_count": 258,
+  "statistics_checkpoint_count": 156,
+  "authored_dx_m": 0.030593116067411014,
+  "solver_dx_m": 0.030593115836381912,
+  "volume_conversion_factor": 0.9999999773449917,
+  "area_conversion_factor": 0.9999999848966611,
+  "inlet_kg_s": 0.000659638971975531,
+  "statistics_start_s": 10.466040127156969,
+  "interval_start_s": 10.543308698033798,
+  "interval_end_s": 25.091040127255837,
+  "interval_duration_s": 14.54773142922204,
+  "fraction_of_statistics_duration": 0.9947166789144406,
+  "injected_kg": 0.009596250604548148,
+  "burned_kg": 0.006175158519007952,
+  "beginning_inventory_kg": 0.0006271474193947725,
+  "ending_inventory_kg": 0.0005962791954267287,
+  "inventory_change_kg": -3.086822396804374e-05,
+  "inferred_net_export_plus_unmeasured_numerical_residual_kg": 0.00345196030950824,
+  "sampled_outward_advective_donor_integrals_kg": {
+    "xmin": 7.140499135810553e-09,
+    "xmax": 1.4678944755951421e-09,
+    "ymin": 1.4935210614865352e-09,
+    "ymax": 5.636957428131625e-08,
+    "bottom": 0.0,
+    "top": 0.0034514101396080797
+  },
+  "donor_balance_gap_kg": 4.836984112059454e-07,
+  "top_donor_vs_balance_relative_gap": 0.00015937897624277507,
+  "coarse_sampling_top_integral_kg": 0.0034319017919767682,
+  "coarse_sampling_top_relative_shift": -0.005652283224017729,
+  "full_statistics_injected_kg": 0.009647219965207359,
+  "full_statistics_recorded_burned_kg": 0.006214100601841303,
+  "full_statistics_burned_solver_kg": 0.006214100461060802,
+  "native_checks": {
+    "start": {
+      "checkpoint": "/Volumes/Big Store/Archive/RISE/fire_production_calibration/r241_tier8_full_window.v1/checkpoint_history/step_0000006464.checkpoint",
+      "time_s": "10.543308698033798",
+      "inlet_kg_s": "0.00065963897197553103",
+      "step": "6464",
+      "inventory_kg": "0.00062714743360281055",
+      "integrated_burn_kg": "3.8941942935079415e-05",
+      "pilot_temperature_K": "600",
+      "autoignition_temperature_K": "810.39999999999998",
+      "critical_flame_temperature_K": "1700",
+      "eligible_inventory_kg": "4.3248260547697068e-05",
+      "above_pilot_temperature_inventory_kg": "7.9547409104607534e-05",
+      "adiabatically_viable_inventory_kg": "6.0839422135691038e-05",
+      "top_donor_CH4_kg_s": "0.00016754159650719252",
+      "top_eligible_CH4_kg_s": "0",
+      "top_above_pilot_temperature_CH4_kg_s": "0",
+      "top_adiabatically_viable_CH4_kg_s": "0",
+      "top_CH4_flux_weighted_temperature_K": "321.87803366158073",
+      "top_CH4_flux_weighted_O2_mass_fraction": "0.23052624638158903",
+      "top_CH4_flux_weighted_CH4_mass_fraction": "0.00031672159818458504"
+    },
+    "middle": {
+      "checkpoint": "/Volumes/Big Store/Archive/RISE/fire_production_calibration/r241_tier8_full_window.v1/checkpoint_history/step_0000010918.checkpoint",
+      "time_s": "17.869026648739236",
+      "inlet_kg_s": "0.00065963897197553103",
+      "step": "10918",
+      "inventory_kg": "0.00059115683414984969",
+      "integrated_burn_kg": "0.0031419277566342107",
+      "pilot_temperature_K": "600",
+      "autoignition_temperature_K": "810.39999999999998",
+      "critical_flame_temperature_K": "1700",
+      "eligible_inventory_kg": "3.9659296702933104e-05",
+      "above_pilot_temperature_inventory_kg": "7.2540438491971784e-05",
+      "adiabatically_viable_inventory_kg": "7.0311659881965813e-05",
+      "top_donor_CH4_kg_s": "0.00022847101897848973",
+      "top_eligible_CH4_kg_s": "0",
+      "top_above_pilot_temperature_CH4_kg_s": "0",
+      "top_adiabatically_viable_CH4_kg_s": "0",
+      "top_CH4_flux_weighted_temperature_K": "331.09081376322234",
+      "top_CH4_flux_weighted_O2_mass_fraction": "0.22947529371473033",
+      "top_CH4_flux_weighted_CH4_mass_fraction": "0.00043045231822329619"
+    },
+    "final": {
+      "checkpoint": "/Volumes/SSD/RISE/fire_production_calibration/r241_tier8_full_window.v1/production_final.checkpoint",
+      "time_s": "25.091040127255837",
+      "inlet_kg_s": "0.00065963897197553103",
+      "step": "15309",
+      "inventory_kg": "0.00059627920893546085",
+      "integrated_burn_kg": "0.0062141006018413027",
+      "pilot_temperature_K": "600",
+      "autoignition_temperature_K": "810.39999999999998",
+      "critical_flame_temperature_K": "1700",
+      "eligible_inventory_kg": "3.6207613614696591e-05",
+      "above_pilot_temperature_inventory_kg": "7.0874902380684972e-05",
+      "adiabatically_viable_inventory_kg": "6.3732427455248707e-05",
+      "top_donor_CH4_kg_s": "0.00023234075661298661",
+      "top_eligible_CH4_kg_s": "0",
+      "top_above_pilot_temperature_CH4_kg_s": "0",
+      "top_adiabatically_viable_CH4_kg_s": "0",
+      "top_CH4_flux_weighted_temperature_K": "329.24620183266484",
+      "top_CH4_flux_weighted_O2_mass_fraction": "0.22971380899630442",
+      "top_CH4_flux_weighted_CH4_mass_fraction": "0.00040556599061424166"
+    }
+  },
+  "limitations": [
+    "Exact inventories and retained cumulative chemical consumption at the two chosen endpoints; inlet from the existing represented burner formula.",
+    "The balance remainder combines net boundary export with unmeasured accumulated numerical residual; it is not a directly recorded accepted R1 boundary integral.",
+    "Trapezoids use retained endpoint methane and final MAC velocities, not historical R1 stage operands. Inflow nonadvective diffusion is omitted; boundary antidiffusion is zero in the current operator. Quadrature agreement is not a certified conservation tolerance.",
+    "Cold/dilute top escape is measured. Whether earlier grid-mean extinction, ignition connectivity, mixing rate, or transport dilution causes underburn is not causally isolated.",
+    "No exact inventory at the original statistics boundary is retained. Chosen interval covers 99.47% of its duration."
+  ],
+  "artifacts": {
+    "r249_inspect.py": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/r249_inspect.py",
+      "sha256": "87324498663ce2233267b50f1dbcba3efdf447dd77a744291eb5216823ad90de"
+    },
+    "r249_reduce.py": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/r249_reduce.py",
+      "sha256": "2bfcf6b99af86abb36e2d7dc95abbe6441c356500bcf68ab31461354f9461baf"
+    },
+    "r249_report.py": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/r249_report.py",
+      "sha256": "5719b05f466782b178d1aba14903e1c3a849c53f5031df6c8b532bf3e96c5955"
+    },
+    "native_probe.cpp": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/native_probe.cpp",
+      "sha256": "2e419d3c15cf38fa9567b5a5bb42d34f823018cc4a82ff4f7a8bc5ab157884e5"
+    },
+    "native_probe": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/native_probe",
+      "sha256": "6cb20a126b82a11d1e55e168741030c7e408fc83d7cc5750056e36875868304b"
+    },
+    "build.log": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/build.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "build.sh": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/build.sh",
+      "sha256": "640a43d7e2dd8b215add02c8f0529b2db42a89c93bba2a1dc2908f1353ce1289"
+    },
+    "final_native.txt": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/final_native.txt",
+      "sha256": "3d0e114498674bbd61b7ec04153c41cfb0475531d912f84354a7ed938aea4c3a"
+    },
+    "middle_native.txt": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/middle_native.txt",
+      "sha256": "7638377805a0bc4aacc62e0ce466c85b4c14f1b174762991876507e25090fecd"
+    },
+    "start_native.txt": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/start_native.txt",
+      "sha256": "cc789f82f50fc1691520df40d0b817666c09167b82fc3d766726582e85496bcb"
+    }
+  },
+  "samples_sha256": "6f696c512c565c3751ded1f15165fc4ea47e4061b32636afb0dab82b2d3a9dfe",
+  "source_sha256": {
+    "/Volumes/SSD/Working/RISE/tests/FireSequenceTest.cpp": "b151b58f53294354935b5960dffc2c80ad492ba9ac35f4e8c061f041e2b20063",
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionSourceKernel.h": "17ba9d611f4f391e57884e47b4a88d4c728aefa947d66e01314ed43ce2aa9274",
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionAdvectionMac.mm": "560166cbd4dbe562d9d624c3267b61021199b529882cd57156541d24ddbbe15b",
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireCase.cpp": "70f13b366225d6b2e759a7272463273636affa22acaa1532967839fc6abfb09d"
+  }
+}
