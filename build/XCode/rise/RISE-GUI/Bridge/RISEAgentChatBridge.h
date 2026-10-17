@@ -88,6 +88,7 @@ typedef NS_ENUM(NSInteger, RISEAgentChatErrorKind) {
     RISEAgentChatErrorKindMaxTokens    = 5,
     RISEAgentChatErrorKindIterationCap = 6,
     RISEAgentChatErrorKindMisuse       = 7,
+    RISEAgentChatErrorKindMalformedToolCall = 8,
 };
 
 /// Mirrors RISE::Agent::ChatTranscriptEntry::Role.

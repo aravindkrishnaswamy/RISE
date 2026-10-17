@@ -2099,6 +2099,13 @@ namespace RISE
 				return out;
 			}
 
+			//! Bound model-authored text quoted into an error message.
+			std::string CapSnippet( const std::string& t )
+			{
+				const std::size_t kCap = 600;
+				return t.size() <= kCap ? t : t.substr( 0, kCap ) + "...";
+			}
+
 			ChatStepResult MakeProviderError( ChatErrorKind kind, const std::string& message )
 			{
 				ChatStepResult r;
@@ -4019,7 +4026,7 @@ namespace RISE
 				if( finishKind == ChatErrorKind::MalformedToolCall ) {
 					const JsonValue fm = cand.get( "finishMessage" );
 					if( fm.isString() && !fm.asString().empty() )
-						stopMsg += ": " + fm.asString();
+						stopMsg += ": " + CapSnippet( fm.asString() );
 				}
 				out.step = MakeProviderError( finishKind, stopMsg );
 				return AttachReasoning();
@@ -4619,7 +4626,7 @@ namespace RISE
 							out.step = MakeProviderError( ChatErrorKind::MalformedToolCall,
 								"openai function_call \"" + c.name +
 								"\" carries malformed arguments JSON: " +
-								item.get( "arguments" ).asString() );
+								CapSnippet( item.get( "arguments" ).asString() ) );
 							return out;
 						}
 						c.argsJson = JsonSerialize( args );
@@ -4824,9 +4831,14 @@ namespace RISE
 						// parse as a JSON object must not be recorded and then
 						// executed with fabricated empty args -- refuse the
 						// WHOLE response instead of silently degrading to "{}".
-						out.step = MakeProviderError( ChatErrorKind::MalformedToolCall,
+						// A reply cut off by the token cap is truncation, not a
+						// model formatting error: a corrective retry would just
+						// truncate again.
+						out.step = MakeProviderError(
+							choice.get( "finish_reason" ).asString() == "length"
+								? ChatErrorKind::MaxTokens : ChatErrorKind::MalformedToolCall,
 							"openai tool_call \"" + c.name + "\" carries malformed arguments JSON -- "
-							"refusing the turn (executing it would fabricate empty args): " + argText );
+							"refusing the turn (executing it would fabricate empty args): " + CapSnippet( argText ) );
 						return out;
 					}
 					c.argsJson = JsonSerialize( args );

@@ -10488,6 +10488,54 @@ static void TestMalformedFunctionCallRecovery()
 		ChatStepResult st = loop.HandleResponse( 200, fx );
 		Check( st.errorKind == ChatErrorKind::MalformedToolCall && st.retryDegenerateTurn,
 		       "T46c: OpenAI malformed arguments -> MalformedToolCall, retry offered" );
+
+		// Truncated by the token cap: MaxTokens, no corrective retry.
+		AgentChatLoop loop2;
+		loop2.AddUserMessage( "hi" );
+		(void)loop2.BuildRequest( kApiKey );
+		const std::string fxLen = OpenAIFixture( "null",
+			"[{\"id\":\"call_cut\",\"type\":\"function\",\"function\":"
+			"{\"name\":\"validate\",\"arguments\":\"{\\\"a\\\":\"}}]", "length" );
+		ChatStepResult stl = loop2.HandleResponse( 200, fxLen );
+		Check( stl.errorKind == ChatErrorKind::MaxTokens && !stl.retryDegenerateTurn,
+		       "T46c: unparseable arguments with finish_reason length -> MaxTokens, no retry" );
+	}
+
+	// (d) the cap counts CONSECUTIVE failures: a valid tool round resets it.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn, "T46d: malformed #1 retried" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult ok = loop.HandleResponse( 200, good );
+		Check( ok.kind == ChatStepResult::Kind::ToolCalls, "T46d: valid call after recovery" );
+		loop.AddToolResult( ok.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		// Malformed DIRECTLY after a functionResponse turn.
+		const ChatHttpRequest r1 = loop.BuildRequest( kApiKey );
+		Check( r1.body.find( "functionResponse" ) != std::string::npos, "T46d: functionResponse on the wire" );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn, "T46d: malformed #2 (post-tool) retried" );
+		const ChatHttpRequest r2 = loop.BuildRequest( kApiKey );
+		Check( r2.body.find( "functionResponse" ) != std::string::npos &&
+		       r2.body.find( "was malformed and was NOT executed" ) != std::string::npos,
+		       "T46d: corrective follows the functionResponse turn" );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn,
+		       "T46d: malformed #3 total but only #2 consecutive -> still retried (budget reset by the valid round)" );
+	}
+
+	// (e) Responses wire.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+		const std::string fx =
+			"{\"id\":\"resp_x\",\"object\":\"response\",\"status\":\"completed\",\"output\":["
+			"{\"type\":\"function_call\",\"call_id\":\"fc_1\",\"name\":\"validate\","
+			"\"arguments\":\"{ not json\"}]}";
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall && st.retryDegenerateTurn,
+		       "T46e: Responses malformed arguments -> MalformedToolCall, retry offered" );
 	}
 }
 

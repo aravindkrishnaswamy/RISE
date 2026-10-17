@@ -1072,10 +1072,12 @@ namespace RISE
 				const std::string corrective = mPendingCorrective;
 				mPendingCorrective.clear();
 				const int savedRounds = mToolRounds;
+				const int savedBlindStreak = mBlindEditStreak;
 				mAppendingCorrective = true;
 				AddUserMessage( corrective );
 				mAppendingCorrective = false;
 				mToolRounds = savedRounds;
+				mBlindEditStreak = savedBlindStreak;
 			}
 
 			// TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: once a model has
@@ -1264,6 +1266,7 @@ namespace RISE
 					return capped;
 				}
 				++mToolRounds;
+				mMalformedRetries = 0;   // the cap counts CONSECUTIVE malformed calls
 
 				ChatTranscriptEntry entry;
 				entry.role = ChatTranscriptEntry::Role::Assistant;
@@ -1279,6 +1282,7 @@ namespace RISE
 				mPendingResults.clear();
 			}
 			else if( pr.step.kind == ChatStepResult::Kind::FinalText ) {
+				mMalformedRetries = 0;
 				ChatTranscriptEntry entry;
 				entry.role = ChatTranscriptEntry::Role::Assistant;
 				entry.displayText = pr.assistantDisplayText;
