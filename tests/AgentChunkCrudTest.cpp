@@ -14555,6 +14555,163 @@ static void TestUndoKeepsRestoredLineBytes()
 	}
 }
 
+//! BR25 (undo fidelity, review round 1): the verbatim swap's NEIGHBOURS -- chains of edits on one chunk, the
+//! value-replay fallback when the chunk changed outside the history, a rename (no post text), and the GUI
+//! journal's mismatch branch (one rollback reverting two transform commits).
+static void TestUndoFidelityChainsAndFallbacks()
+{
+	std::printf( "BR25: undo fidelity -- chains, fallback, rename, journal mismatch ...\n" );
+	const char* const kObj =
+		"standard_object\n{\n\tname br25_o\n\tgeometry sph\n\tposition 0.1  0 0\n\tmaterial mat_diffuse\n\tscale 1  1 1\n}";
+	struct Fixture {
+		std::string tmp; Job* pJob = nullptr;
+		SceneEditController* ctrl = nullptr; std::unique_ptr<Agent::AgentSession> sess;
+	};
+	auto open = []( Fixture& f ) -> bool {
+		f.tmp = TempPath( "agentcrud_br25.RISEscene" );
+		f.pJob = LoadScene( kScene, f.tmp );
+		if( !f.pJob ) return false;
+		f.ctrl = new SceneEditController( *f.pJob, /*interactiveRasterizer*/0 );
+		f.sess = Agent::AgentSession::WrapJob( f.pJob );
+		f.sess->AttachController( f.ctrl );
+		return true;
+	};
+	auto close = []( Fixture& f ) {
+		f.sess->AttachController( nullptr );
+		f.sess.reset();
+		delete f.ctrl;
+		f.pJob->release();
+		std::remove( f.tmp.c_str() );
+	};
+	auto patch = []( Fixture& f, const char* param, const char* value, bool batch ) -> bool {
+		Agent::AgentSetPatch p;
+		p.target = "br25_o"; p.kind = "standard_object"; p.param = param; p.value = value;
+		if( !batch ) return f.sess->ProposePatch( p ).applied;
+		std::vector<Agent::AgentSetPatch> ps;
+		ps.push_back( p );
+		Agent::AgentSetPatch q;
+		q.target = "sph"; q.param = "radius"; q.value = value[0] == '0' ? "0.61" : "0.62"; ps.push_back( q );
+		const std::vector<Agent::AgentPatchResult> res = f.sess->ProposePatches( ps );
+		return res.size() == 2 && res[0].applied && res[1].applied;
+	};
+
+	// (a) Two patches on one chunk, then two Undos -- each swap starts where the previous one left off.
+	for( int batch = 0; batch < 2; ++batch ) {
+		Fixture f;
+		Check( open( f ), "BR25 fixture loads" );
+		if( !f.pJob ) return;
+		const std::string w = batch ? "BR25a [batch] " : "BR25a [single] ";
+		const std::string d0 = f.sess->ReadDocument();
+		Check( f.sess->InsertChunk( kObj ).applied, w + "the object inserts" );
+		const std::string d1 = f.sess->ReadDocument();
+		Check( patch( f, "position", "0.3 0 0", batch != 0 ), w + "patch 1 applies" );
+		const std::string d2 = f.sess->ReadDocument();
+		Check( patch( f, "scale", "2 2 2", batch != 0 ), w + "patch 2 applies" );
+		Check( f.ctrl->Undo() && f.sess->ReadDocument() == d2, w + "Undo of patch 2 is byte-exact" );
+		Check( f.ctrl->Undo() && f.sess->ReadDocument() == d1, w + "Undo of patch 1 is byte-exact" );
+		Check( f.ctrl->Undo() && f.sess->ReadDocument() == d0, w + "the insert still undoes to the original bytes" );
+		close( f );
+	}
+
+	// (b) The chunk changed OUTSIDE the history between the patch and its Undo: the swap must decline and the
+	// value replay must still revert the patched param (the non-history change stays).
+	for( int batch = 0; batch < 2; ++batch ) {
+		Fixture f;
+		Check( open( f ), "BR25 fixture loads" );
+		if( !f.pJob ) return;
+		const std::string w = batch ? "BR25b [batch] " : "BR25b [single] ";
+		Check( f.sess->InsertChunk( kObj ).applied, w + "the object inserts" );
+		Check( patch( f, "position", "0.3 0 0", batch != 0 ), w + "the patch applies" );
+		// The ungated panel primitive pushes no history record.
+		Check( f.pJob->ApplyCstParamEdit( "br25_o", "standard_object", "casts_shadows", 0, "false" ) >= 1,
+		       w + "a non-history edit lands on the same chunk" );
+		Check( f.ctrl->Undo(), w + "Undo of the patch still succeeds (value replay)" );
+		const std::string d = f.sess->ReadDocument();
+		Check( d.find( "position 0.1  0 0" ) != std::string::npos || d.find( "position 0.1 0 0" ) != std::string::npos,
+		       w + "the patched position is reverted" );
+		Check( d.find( "position 0.3" ) == std::string::npos, w + "...and the patched value is gone" );
+		Check( d.find( "casts_shadows false" ) != std::string::npos, w + "the non-history edit is kept" );
+		close( f );
+	}
+
+	// (c) A rename patch: no post text resolves by the old name, so the value replay renames it back.
+	{
+		Fixture f;
+		Check( open( f ), "BR25 fixture loads" );
+		if( !f.pJob ) return;
+		const std::string w = "BR25c [rename] ";
+		const std::string d0 = f.sess->ReadDocument();
+		Check( f.sess->InsertChunk( kObj ).applied, w + "the object inserts" );
+		const std::string d1 = f.sess->ReadDocument();
+		Check( patch( f, "name", "br25_renamed", false ), w + "the rename applies" );
+		Check( f.ctrl->Undo() && f.sess->ReadDocument() == d1, w + "Undo of the rename restores the post-insert bytes" );
+		Check( f.ctrl->Undo() && f.sess->ReadDocument() == d0, w + "the insert still undoes" );
+		close( f );
+	}
+
+	// (d) Two inspector edits, then two Undos: the GUI journal chains.
+	{
+		Fixture f;
+		Check( open( f ), "BR25 fixture loads" );
+		if( !f.pJob ) return;
+		const std::string w = "BR25d [two inspector edits] ";
+		const std::string d0 = f.sess->ReadDocument();
+		Check( f.sess->InsertChunk( kObj ).applied, w + "the object inserts" );
+		const std::string d1 = f.sess->ReadDocument();
+		f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "br25_o" ) );
+		Check( f.ctrl->SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ), w + "edit 1 applies" );
+		const std::string d2 = f.sess->ReadDocument();
+		Check( f.ctrl->SetProperty( String( "position" ), String( "0.7 0.4 0.4" ) ), w + "edit 2 applies" );
+		Check( f.ctrl->Undo() && f.sess->ReadDocument() == d2, w + "Undo of edit 2 is byte-exact" );
+		Check( f.ctrl->Undo() && f.sess->ReadDocument() == d1, w + "Undo of edit 1 is byte-exact" );
+		Check( f.ctrl->Undo() && f.sess->ReadDocument() == d0, w + "the insert still undoes" );
+		close( f );
+	}
+
+	// (e) A ROLLBACK reverting two transform commits in ONE flush: the journal's latest entry restores the
+	// intermediate text, the verification sees that pose is not the restored one, and the pose is re-asserted
+	// as a `matrix` -- the object must end where it started, never at the intermediate pose.
+	{
+		Fixture f;
+		Check( open( f ), "BR25 fixture loads" );
+		if( !f.pJob ) return;
+		const std::string w = "BR25e [rollback of two edits] ";
+		Check( f.sess->InsertChunk( kObj ).applied, w + "the object inserts" );
+		f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "br25_o" ) );
+		Check( f.ctrl->BeginTransaction(), w + "transaction opens" );
+		Check( f.ctrl->SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ), w + "edit 1 applies" );
+		Check( f.ctrl->SetProperty( String( "position" ), String( "0.7 0.4 0.4" ) ), w + "edit 2 applies" );
+		Check( f.ctrl->RollbackTransaction(), w + "rollback succeeds" );
+		const std::string d = f.sess->ReadDocument();
+		Check( d.find( "0.40000000000000002" ) == std::string::npos && d.find( "0.69999999999999996" ) == std::string::npos,
+		       w + "MONEY: no intermediate pose survives in the document" );
+		const bool exact = d.find( "position 0.1  0 0" ) != std::string::npos;
+		const bool asMatrix = d.find( "0.10000000000000001 0 0 1" ) != std::string::npos;
+		Check( exact || asMatrix, w + "the object is back at its starting pose" );
+		close( f );
+	}
+
+	// (f) Review round 1 (F1): a rollback over an edit AND a commit that re-writes the SAME pose.  The second
+	// commit's journal entry has pre == post, so swapping it would "verify" trivially and leave the Document at
+	// the edited pose while the live object is back at the start.  It must be skipped (its recorded pre-pose is
+	// the edited one), and the first entry then restores the inserted bytes exactly.
+	{
+		Fixture f;
+		Check( open( f ), "BR25 fixture loads" );
+		if( !f.pJob ) return;
+		const std::string w = "BR25f [rollback over a same-pose commit] ";
+		Check( f.sess->InsertChunk( kObj ).applied, w + "the object inserts" );
+		const std::string d1 = f.sess->ReadDocument();
+		f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "br25_o" ) );
+		Check( f.ctrl->BeginTransaction(), w + "transaction opens" );
+		Check( f.ctrl->SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ), w + "the edit applies" );
+		f.ctrl->SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) );   // same pose again (may be a no-op)
+		Check( f.ctrl->RollbackTransaction(), w + "rollback succeeds" );
+		Check( f.sess->ReadDocument() == d1, w + "MONEY: the Document is back at the inserted bytes" );
+		close( f );
+	}
+}
+
 //! BR22 (round-5 P1-2): Redo of a batch insert lands where the forward insert did, even when the anchor chunk has
 //! an identity twin -- two UNNAMED pathtracing rasterizers share one identity, and a vcm rasterizer appended after
 //! the SECOND must not be re-inserted after the FIRST (which would change the active rasterizer).
@@ -22052,6 +22209,7 @@ int main()
 	TestBatchUndoKeepsUnchangedTransformSpelling();
 	TestBatchRedoInsertAnchorTwin();
 	TestUndoKeepsRestoredLineBytes();          // undo fidelity: restored lines keep their bytes
+	TestUndoFidelityChainsAndFallbacks();
 	TestBatchRetrySameSlotDirectional();
 	TestMaterialScaffoldFamilies();
 	TestMaterialScaffoldDeterminism();

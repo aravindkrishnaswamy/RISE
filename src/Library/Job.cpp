@@ -13203,7 +13203,8 @@ bool Job::CstParamEditOwnerChunkText( const char* entityName, const char* entity
 }
 
 int Job::ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind, const char* role,
-                                        const std::string& expectText, const std::string& newText )
+                                        const std::string& expectText, const std::string& newText,
+                                        bool requireFullDerivability )
 {
 	if( !pCstDocument || !role || expectText.empty() || newText.empty() ) return -1;
 	const RISE::Cst::NodeId ownerId = ResolveCstParamEditOwner_( *pCstDocument, entityName, entityKind, std::string( role ) );
@@ -13212,7 +13213,7 @@ int Job::ApplyCstParamEditOwnerRestore( const char* entityName, const char* enti
 	RISE::Cst::Document d1 = RISE::Cst::DocReplaceChunkIfText( *pCstDocument, ownerId, expectText, newText, &replaced );
 	if( !replaced ) return -1;
 	if( expectText == newText ) return 1;   // nothing to change (never produced by a real edit; defensive)
-	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, /*requireFullDerivability*/ true );
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, requireFullDerivability );
 }
 
 // Shared-undo U1: the inverse of an agent-originated param INSERT (see the IJob virtual doc).  Resolution

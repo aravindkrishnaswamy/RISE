@@ -373,13 +373,16 @@ namespace RISE
 
 		// Undo fidelity (2026-10-17): the verbatim inverse of a param edit -- resolve the owner chunk exactly as
 		// CstParamEditOwnerChunkText does and, ONLY when it serializes to exactly `expectText`, replace it with
-		// `newText` byte for byte (Cst::DocReplaceChunkIfText), then re-derive through the same full-derivability-
-		// gated tail ApplyCstParamEditChecked uses.  Returns -1 when the target does not resolve or does not hold
+		// `newText` byte for byte (Cst::DocReplaceChunkIfText), then re-derive through the same tail
+		// ApplyCstParamEditChecked uses -- full-derivability-gated unless `requireFullDerivability` is false (the
+		// GUI transform journal, whose two texts differ only in the transform params the ungated
+		// ApplyCstObjectMatrixEdit itself writes).  Returns -1 when the target does not resolve or does not hold
 		// `expectText` (NOTHING changed -- the caller falls back to replaying values), else that tail's 0/1/2/3.
 		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
 		virtual int							ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind,
 		                                                                   const char* role, const std::string& expectText,
-		                                                                   const std::string& newText ) = 0;
+		                                                                   const std::string& newText,
+		                                                                   bool requireFullDerivability = true ) = 0;
 	};
 
 

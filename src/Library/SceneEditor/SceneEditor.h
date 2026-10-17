@@ -775,9 +775,16 @@ namespace RISE
 		// another `matrix`, so the chunk returns to the bytes it had -- which an older record (an agent insert's
 		// exact-bytes inverse) depends on.  Every swap is VERIFIED (the re-derived local matrix must equal the
 		// restored live one), so an entry that does not belong to the step being undone is never trusted; capped.
-		struct CstTransformSpelling_ { std::string pre; std::string post; };
+		// Each entry also records `prePose`: the object's local matrix (FormatMatrix16) when its first forward op of
+		// the flush window ran -- the pose `pre` derives to.  A swap is attempted only for an entry whose `prePose`
+		// equals the pose the Undo restored, so a commit that wrote an unchanged pose (pre == post) can never
+		// vouch for itself, and a mismatched entry costs no derive.
+		struct CstTransformSpelling_ { std::string pre; std::string post; std::string prePose; };
 		std::unordered_map< std::string, std::vector<CstTransformSpelling_> > mCstTransformSpellings;
-		static const std::size_t kCstTransformSpellingCap = 32;
+		static constexpr std::size_t kCstTransformSpellingCap = 32;          // entries per object
+		static constexpr std::size_t kCstTransformSpellingObjectCap = 256;   // objects (the whole map resets past it)
+		// The local matrix of each object at its FIRST forward transform op since the last flush (see prePose).
+		std::unordered_map< std::string, std::string > mPendingCstObjPrePose;
 
 		// P5 Slice 3 expansion (camera drag): the active camera's name if a camera-drag op changed its pose since
 		// the last CommitPendingCstCameraPose (empty = none).  Flushed to the camera chunk's pose params by the

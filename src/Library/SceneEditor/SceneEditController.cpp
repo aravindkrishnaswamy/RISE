@@ -7849,11 +7849,13 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 		// skip-with-log guards against ever pushing a garbage/empty capture.
 		if( haveCapture )
 		{
-			// ...and the owner's text AFTER the write (empty when it no longer resolves by this name -- a rename;
-			// the record then keeps the value-replay inverse alone).
+			// ...and the owner's text AFTER the write, resolved by the entity's post-write name (a `name` patch
+			// renamed it -- the batch record's postEntityName rule).  Empty when it does not resolve: the record
+			// then keeps the value-replay inverse alone.
+			const String postName = ( param == String( "name" ) ) ? value : entityName;
 			std::string ownerPostText;
 			if( ownerPreText.empty()
-			 || !mJob.CstParamEditOwnerChunkText( entityName.c_str(), entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
+			 || !mJob.CstParamEditOwnerChunkText( postName.c_str(), entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
 			                                      param.c_str(), ownerPostText ) )
 				ownerPostText.clear();
 			mEditor.PushAgentCstParamEdit( entityName, entityKind, param, value, prevValue, prevWasAbsent,
