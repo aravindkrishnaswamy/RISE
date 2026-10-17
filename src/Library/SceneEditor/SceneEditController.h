@@ -700,6 +700,30 @@ namespace RISE
 			const std::vector<String>& kinds,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
+		//! Batched agent edits (2026-10-16): route a BATCH of agent chunk inserts and/or param edits through
+		//! the SAME critical section the single verbs use (render-admission gate -> mTxnOpen refusal ->
+		//! cancel-and-park under mMutex -> the Job primitive -> rebind -> dirty marks -> ONE history push ->
+		//! epoch bump -> re-render kick -> post-commit head read), holding mMutex across the WHOLE batch so a
+		//! co-editing GUI user can never interleave with it.  The batch is realized by Job::ApplyCstEditBatch:
+		//! ONE dry-run + ONE full re-derive on the common path instead of one pair per element, with every
+		//! element still validated and -- if it would not derive in context -- refused INDIVIDUALLY.
+		//!
+		//! Returns one AgentCommitResult per input element, folded exactly as the single verb for that
+		//! element folds it (ApplyAgentInsertChunk / ApplyAgentParamEdit: same statuses, same messages, the
+		//! insert's keyword/name echo), except that a landed element always reports rawCode 2/3 -- a batch
+		//! realizes through one full re-derive, never the incremental path.  Every result carries the SAME
+		//! post-call headVersion: the head revision is bumped ONCE for the whole batch.  The per-element
+		//! controller-level refusals the single verbs make (empty field, a surface binding on a container
+		//! object) are made here per element too, against the pre-batch head.
+		//!
+		//! No optimistic-concurrency base: a caller pinning a base head version commits that element through
+		//! the single verb (AgentSession does), so the conflict rules never change shape.
+		//!
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentEditBatch, a byte-exact pre/post document
+		//! pair -- the AgentReplaceGeometry shape) for the whole batch, so one Cmd-Z undoes the whole batch,
+		//! matching ApplyAgentRemoveChunks.
+		std::vector<AgentCommitResult> ApplyAgentEditBatch( const std::vector<CstBatchEdit>& edits );
+
 		//! R2 (2026-08-10, replace_geometry_scaffold): install `candidateDocText` -- a WHOLE candidate
 		//! document the caller computed off a head snapshot -- through the SAME critical section as
 		//! ApplyAgentRemoveChunks (mTxnOpen refusal -> cancel-and-park under mMutex -> conflict gate -> the
@@ -3999,6 +4023,15 @@ namespace RISE
 		//! the result-stamping sites that need only the version.
 		RISE::Cst::CstHeadVersion ReadAgentHeadVersion() const;
 
+		//! Batched agent edits (2026-10-16): ReadAgentSceneSnapshot's document AS A BATCH OF DEFERRED EDITS
+		//! WOULD LEAVE IT -- Job::PreviewCstEditBatchText under the same lock and the same lifecycle refusal.
+		//! `outVersion` is the REAL (unmutated) head.  Lets AgentSession's pre-commit gates judge element i of
+		//! a deferred batch against the document elements 0..i-1 will produce.
+		void PreviewAgentEditBatch( const std::vector<CstBatchEdit>& edits,
+		                            bool& outHasDocument,
+		                            std::string& outDocument,
+		                            RISE::Cst::CstHeadVersion& outVersion ) const;
+
 		//! "Reveal in scene file" (the design comp's ⌗ affordance): resolve
 		//! ENTITY (cat, name) to WHERE it sits in SerializedSceneText() --
 		//! its top-level chunk's byte offset and 1-based line number.
@@ -5704,6 +5737,10 @@ namespace RISE
 			const std::vector<String>& targets,
 			const std::vector<String>& kinds,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Batched agent edits (2026-10-16): the whole critical section for ApplyAgentEditBatch.  Caller holds
+		//! mRenderAdmissionMutex and has already cleared the agent-render gate; this takes mMutex itself.
+		std::vector<AgentCommitResult> ApplyAgentEditBatchCrud_( const std::vector<CstBatchEdit>& edits );
 
 		//! R2 (2026-08-10, replace_geometry_scaffold): the whole critical section for
 		//! ApplyAgentReplaceGeometry (see that method's doc).  Kept SEPARATE from ApplyAgentRemoveChunksCrud_

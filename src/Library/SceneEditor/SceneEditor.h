@@ -519,6 +519,15 @@ namespace RISE
 			const String& copyName, const String& copyKeyword,
 			const String& priorDocText, const String& postDocText );
 
+		//! Batched agent edits (2026-10-16): push the ONE EditHistory record (SceneEdit::AgentEditBatch) for
+		//! a whole agent edit batch already applied via SceneEditController::ApplyAgentEditBatch.  Same
+		//! "forward already happened" shape and the same byte-exact prior/post document pair as
+		//! PushAgentReplaceGeometryEdit.  `label` is display-only; `landedRasterizerInsert` = the batch
+		//! landed a `*_rasterizer` insert (see the op doc).  Does NOT mark dirty -- the caller does.
+		void PushAgentEditBatchEdit(
+			const String& label, const String& priorDocText, const String& postDocText,
+			bool landedRasterizerInsert );
+
 		//! True when anything MAY need saving since the last load /
 		//! save.  Conservative: it can be true when a Save would NoOp
 		//! (e.g. edit→undo re-marks dirty; Save then NoOps on

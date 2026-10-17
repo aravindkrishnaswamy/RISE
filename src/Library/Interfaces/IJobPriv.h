@@ -30,6 +30,8 @@
 #include "IShaderOpManager.h"
 #include "IRasterizer.h"
 
+#include <string>
+#include <vector>
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: CstHeadVersion (a trivial POD returned by value below; Cst.h is std-lib-only weight)
 
 namespace RISE
@@ -40,6 +42,38 @@ namespace RISE
 	// pull in unordered_map / Matrix4 / etc.
 	class TransformSnapshot;
 	struct FileIdentity;   // defined in SceneEditor/FileIdentity.h; CST-save external-mod guard reads it via GetCstLoadFileIdentity()
+
+	//! Batched agent edits (2026-10-16): ONE element of IJobPriv::ApplyCstEditBatch.  Either a chunk
+	//! INSERT (`isInsert`, `chunkText` -- the same text Job::ApplyCstInsertChunk takes) or a single
+	//! param EDIT (the same (entityName, entityKind, role, occ, value) tuple Job::ApplyCstParamEditChecked
+	//! takes; an empty `entityKind` means "no kind narrowing", exactly as a null kind does there).
+	struct CstBatchEdit
+	{
+		bool        isInsert = false;
+		std::string chunkText;
+		std::string entityName;
+		std::string entityKind;
+		std::string role;
+		std::string value;
+		int         occ = 0;
+	};
+
+	//! Per-element outcome of IJobPriv::ApplyCstEditBatch.  `code` follows the SINGLE-element
+	//! primitive's own contract: an insert reports Job::ApplyCstInsertChunk's 2/3/0/-1/-2, a param edit
+	//! Job::ApplyCstParamEditChecked's 2/3/0 (never 1 -- a batch always realizes through ONE full
+	//! re-derive).  `keyword`/`name` echo an insert's parsed identity, `diag` carries the refusal reason
+	//! (the first dry-run diagnostic for a would-not-derive), and `insertedAt` is a LANDED insert's exact
+	//! splice index (the leading separator of its [leadSep][chunk][trailSep] triple) in the document as it
+	//! stood when that element was spliced -- the landed elements are spliced in batch order, so undoing
+	//! them in REVERSE order with Job::ApplyCstRemoveItemsAt is exact.  -1 for everything else.
+	struct CstBatchOutcome
+	{
+		int         code = 0;
+		std::string keyword;
+		std::string name;
+		std::string diag;
+		int         insertedAt = -1;
+	};
 
 	//! IJobPriv - Priviledged interface with getters
 	class IJobPriv : public virtual IJob
@@ -122,6 +156,35 @@ namespace RISE
 		// Job is the sole implementer.
 		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
 		virtual unsigned long long			GetContainerRebuildCount() const = 0;
+
+		// Batched agent edits (2026-10-16): apply `edits` IN ORDER to the retained CST Document and
+		// realize every element that derives with ONE dry-run-guarded full re-derive -- instead of one
+		// re-derive per element, which is what a loop over ApplyCstInsertChunk / ApplyCstParamEditChecked
+		// costs (each of those dry-runs AND fully re-derives the whole scene).
+		//
+		// PER-ELEMENT semantics are the single primitives' own: every element is validated (parse,
+		// duplicate, owner-walk, ...) against the document as the EARLIER landed elements of this batch
+		// left it, so a later element may reference an earlier one, and a duplicate of an earlier element
+		// is refused exactly as a second single call would refuse it.  An element that would not derive
+		// in context is REFUSED INDIVIDUALLY (outcome code 0, `diag` = first dry-run diagnostic) without
+		// discarding the rest: when the whole batch does not derive, the elements are re-tried in order in
+		// halves against throwaway dry-runs until each offender is isolated (so the common all-good path
+		// costs one dry-run + one live derive, and k offenders cost O(k log N) extra dry-runs).  A refused
+		// insert gets the single primitive's positioned-then-append-at-end retry.
+		//
+		// Returns 0 when NOTHING landed (retained Document AND live scene byte-identical, head version
+		// unbumped), else 2 (replaced, clean) / 3 (replaced, diagnosed) -- the caller MUST re-point cached
+		// scene/manager pointers on 2/3 -- with the head revision bumped ONCE for the whole batch.
+		// `outcomes` is resized to edits.size().  Job is the sole implementer.
+		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
+		virtual int							ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits,
+		                                                       std::vector<CstBatchOutcome>& outcomes ) = 0;
+
+		// The serialized document ApplyCstEditBatch WOULD try to realize for `edits` (every element that
+		// passes validation spliced/written in order; no derive, no mutation).  Empty when no CST Document
+		// is retained.  Lets a caller that DEFERS elements into a batch show its pre-commit gates the
+		// document as the earlier deferred elements will leave it.  Job is the sole implementer.
+		virtual std::string					PreviewCstEditBatchText( const std::vector<CstBatchEdit>& edits ) = 0;
 	};
 
 

@@ -53,6 +53,7 @@ unsigned long long EditHistory::HeavyPayloadBytes_( const SceneEdit& e )
 	{
 	case SceneEdit::AgentDuplicateNode:
 	case SceneEdit::AgentReplaceGeometry:
+	case SceneEdit::AgentEditBatch:
 		return static_cast<unsigned long long>( e.propertyValue.size() )
 		     + static_cast<unsigned long long>( e.prevPropertyValue.size() );
 	case SceneEdit::AgentRemoveChunks:
@@ -174,6 +175,7 @@ namespace
 		case SceneEdit::AgentRemoveChunks:      return "Agent Remove Chunks";   // R1a: one label for the whole batch
 		case SceneEdit::AgentReplaceGeometry:   return "Agent Replace Geometry";   // R2: one label for the whole composite
 		case SceneEdit::AgentDuplicateNode:     return "Duplicate Node";           // doc-88 S20: one label for the whole positioned fork
+		case SceneEdit::AgentEditBatch:         return "Agent Batch Edit";         // 2026-10-16: one label for a whole insert/patch batch
 		case SceneEdit::CompositeBegin:         return "Edit";
 		case SceneEdit::CompositeEnd:           return "Edit";
 		}

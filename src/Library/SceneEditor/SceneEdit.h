@@ -410,6 +410,26 @@ namespace RISE
 			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
 			AgentDuplicateNode,
 
+			//! Batched agent edits (2026-10-16): ONE record for a whole agent edit BATCH -- several chunk
+			//! inserts and/or param edits realized together by SceneEditController::ApplyAgentEditBatch
+			//! (Job::ApplyCstEditBatch, one full re-derive), pushed AFTER the mutation landed, like every
+			//! other agent op.  One record so a single Cmd-Z undoes the whole batch, the way
+			//! AgentRemoveChunks undoes a whole batch remove.  A whole-document pair rather than N
+			//! AgentInsertChunk / SetAgentCstParam records because that is the only inverse that is exact
+			//! for EVERY batch shape: positioned inserts shift each other's indices and a param edit can
+			//! land on a chunk an earlier element of the same batch inserted.
+			//!
+			//! FIELD USE -- identical to AgentReplaceGeometry's:
+			//!   * `propertyValue`     = the BYTE-EXACT pre-batch document (Undo's payload).
+			//!   * `prevPropertyValue` = the BYTE-EXACT post-batch document (Redo's payload).
+			//!   * `objectName`        = a DISPLAY-ONLY label (logs); `cstEntityKind` left EMPTY so
+			//!                           MarkCstHeadDirty routes to the boolean CST-head channel.
+			//!   * `agentChunkWasRasterizer` = true iff the batch LANDED a `*_rasterizer` insert: Redo then
+			//!                           lets the document's last-wins activation stand (the inserted one),
+			//!                           exactly as the forward commit did (the P1-B rule); Undo restores.
+			//!   * `agentChunkIndex`   = UNUSED.
+			AgentEditBatch,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI

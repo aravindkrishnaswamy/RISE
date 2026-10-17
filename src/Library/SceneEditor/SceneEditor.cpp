@@ -1626,6 +1626,7 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 	case SceneEdit::AgentRemoveChunks:
 	case SceneEdit::AgentReplaceGeometry:
 	case SceneEdit::AgentDuplicateNode:
+	case SceneEdit::AgentEditBatch:   // 2026-10-16: empty cstEntityKind -> the boolean CST-head channel
 		// doc-88 S20: AgentDuplicateNode rides the SAME arm as AgentReplaceGeometry, and for the same reason
 		// -- it too carries a real `cstEntityKind` (the copy's chunk keyword) and a real entity name (the
 		// copy's name), so MarkCstHeadDirty routes it to that entity's own channel.
@@ -2143,6 +2144,7 @@ static inline bool IsCstRoutedOp( SceneEdit::Op op )
 	    || op == SceneEdit::AgentRemoveChunks   // R1a: the batch remove re-derives by name too
 	    || op == SceneEdit::AgentReplaceGeometry   // R2: the composite geometry replace re-derives wholesale
 	    || op == SceneEdit::AgentDuplicateNode     // doc-88 S20: the positioned duplicate re-derives wholesale too
+	    || op == SceneEdit::AgentEditBatch         // 2026-10-16: the batch insert/patch re-derives wholesale too
 	    || SceneEdit::IsObjectOp( op )
 	    || SceneEdit::IsCameraOp( op );   // camera DRAG ops re-derive at the pose-commit boundary too
 }
@@ -2680,14 +2682,21 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 	if( !mJob ) return false;
 	const String& text = forward ? edit.prevPropertyValue : edit.propertyValue;
 	if( text.size() <= 1 ) return false;   // RString::size() counts the trailing NUL; <=1 is empty
-	const bool dup = ( edit.op == SceneEdit::AgentDuplicateNode );
+	const bool dup   = ( edit.op == SceneEdit::AgentDuplicateNode );
+	const bool batch = ( edit.op == SceneEdit::AgentEditBatch );
+	// 2026-10-16: an AgentEditBatch that LANDED a rasterizer insert re-installs (Redo) with the document's
+	// last-wins activation left standing, as its forward commit did (the P1-B rule); every other direction
+	// and op keeps the unconditional restore.
+	const bool restoreRasterizer = !( batch && forward && edit.agentChunkWasRasterizer );
 	char diagBuf[512]; diagBuf[0] = '\0';
-	const int r = mJob->ApplyCstReplaceDocumentText( text.c_str(), /*restoreActiveRasterizer*/ true,
+	const int r = mJob->ApplyCstReplaceDocumentText( text.c_str(), restoreRasterizer,
 	                                                 diagBuf, sizeof( diagBuf ),
-	                                                 dup ? ( forward ? "duplicate_graph_node (redo)"
-	                                                                 : "duplicate_graph_node (undo)" )
-	                                                     : ( forward ? "replace_geometry_scaffold (redo)"
-	                                                                 : "replace_geometry_scaffold (undo)" ) );
+	                                                 batch ? ( forward ? "agent_edit_batch (redo)"
+	                                                                   : "agent_edit_batch (undo)" )
+	                                                 : dup ? ( forward ? "duplicate_graph_node (redo)"
+	                                                                   : "duplicate_graph_node (undo)" )
+	                                                       : ( forward ? "replace_geometry_scaffold (redo)"
+	                                                                   : "replace_geometry_scaffold (undo)" ) );
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;
 	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
@@ -3293,6 +3302,21 @@ void SceneEditor::PushAgentDuplicateNodeEdit(
 	edit.agentChunkWasRasterizer = false;             // invariant for this verb -- see the op doc
 	// agentChunkIndex stays at its default (a whole-document swap has no single index).
 	// capturedTargetSerial stays 0 (default): CST-routed, same as every other agent op.
+	mHistory.Push( edit );
+}
+
+// Batched agent edits (2026-10-16): see the header doc.  Same shape as PushAgentReplaceGeometryEdit.
+void SceneEditor::PushAgentEditBatchEdit(
+	const String& label, const String& priorDocText, const String& postDocText,
+	bool landedRasterizerInsert )
+{
+	SceneEdit edit;
+	edit.op                      = SceneEdit::AgentEditBatch;
+	edit.objectName              = label;              // DISPLAY-ONLY -- see the op doc
+	// cstEntityKind deliberately left EMPTY: the boolean CST-head dirty channel.
+	edit.propertyValue           = priorDocText;       // Undo payload (byte-exact pre-batch document)
+	edit.prevPropertyValue       = postDocText;        // Redo payload (byte-exact post-batch document)
+	edit.agentChunkWasRasterizer = landedRasterizerInsert;
 	mHistory.Push( edit );
 }
 
@@ -3909,7 +3933,8 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		return true;
 	}
 
-	if( edit.op == SceneEdit::AgentReplaceGeometry || edit.op == SceneEdit::AgentDuplicateNode )
+	if( edit.op == SceneEdit::AgentReplaceGeometry || edit.op == SceneEdit::AgentDuplicateNode
+	 || edit.op == SceneEdit::AgentEditBatch )
 	{
 		// R2 (2026-08-10, Undo direction): ONE record, whole composite -- restore the byte-exact pre-call
 		// document text.  See the AgentReplaceGeometry op doc + RouteAgentDocumentSwap_.
@@ -3919,7 +3944,8 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		if( !RouteAgentDocumentSwap_( edit, /*forward*/ false, &diagnosed ) ) return false;
 		if( diagnosed )
 			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent %s on `%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
-			                       ( edit.op == SceneEdit::AgentDuplicateNode ) ? "graph-node duplicate" : "geometry replacement",
+			                       ( edit.op == SceneEdit::AgentDuplicateNode ) ? "graph-node duplicate"
+			                       : ( edit.op == SceneEdit::AgentEditBatch ) ? "edit batch" : "geometry replacement",
 			                       edit.objectName.c_str() );
 		mLastScope = Dirty_Camera;
 		return true;
@@ -4401,7 +4427,8 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 		return true;
 	}
 
-	if( edit.op == SceneEdit::AgentReplaceGeometry || edit.op == SceneEdit::AgentDuplicateNode )
+	if( edit.op == SceneEdit::AgentReplaceGeometry || edit.op == SceneEdit::AgentDuplicateNode
+	 || edit.op == SceneEdit::AgentEditBatch )
 	{
 		// R2 (2026-08-10, Redo direction): re-install the byte-exact POST-composite document text.  The FIRST
 		// apply of a fresh composite never reaches here (the mutation already landed via
@@ -4413,7 +4440,8 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 		if( !RouteAgentDocumentSwap_( edit, /*forward*/ true, &diagnosed ) ) return false;
 		if( diagnosed )
 			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent %s on `%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
-			                       ( edit.op == SceneEdit::AgentDuplicateNode ) ? "graph-node duplicate" : "geometry replacement",
+			                       ( edit.op == SceneEdit::AgentDuplicateNode ) ? "graph-node duplicate"
+			                       : ( edit.op == SceneEdit::AgentEditBatch ) ? "edit batch" : "geometry replacement",
 			                       edit.objectName.c_str() );
 		mLastScope = Dirty_Camera;
 		return true;

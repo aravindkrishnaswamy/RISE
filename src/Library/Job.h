@@ -403,6 +403,9 @@ namespace RISE
 		// 87 step 4a round-4 P1-A: the container-rebuild counter -- see IJobPriv::GetContainerRebuildCount
 		// and the m_containerRebuildCount member doc.  Inline, no-`override` convention like the others.
 		unsigned long long			GetContainerRebuildCount() const	{ return m_containerRebuildCount; }
+		// Batched agent edits (2026-10-16): see the IJobPriv virtuals' docs.  No `override`, Job's convention.
+		int							ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<CstBatchOutcome>& outcomes );
+		std::string					PreviewCstEditBatchText( const std::vector<CstBatchEdit>& edits );
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -3543,6 +3546,40 @@ namespace RISE
 		//! `restoreActiveRasterizer` (F5 S2 round 2, P1-B): ApplyCstInsertChunk passes false when the inserted
 		//! chunk IS a rasterizer so the derive's last-wins activation (the insert) stands -- live matches reload.
 		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer = true );
+		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer, bool skipDryRun );
+		//! Batched agent edits (2026-10-16): a full DeriveToJob of `doc` into a throwaway staging Job (the
+		//! active variant forced).  True iff it derived with NO diagnostic; else `outFirstDiag` (if non-null)
+		//! receives the first one.  Mutates nothing on this Job.
+		bool DryRunCstDocument_( const RISE::Cst::Document& doc, std::string* outFirstDiag );
+		//! Batched agent edits (2026-10-16): the parse/refusal half of ApplyCstInsertChunk, against an
+		//! ARBITRARY base document (the retained head for the single verb, the batch's evolving document for
+		//! ApplyCstEditBatch) -- one copy of every refusal rule so the two can never drift.  Returns 1 when
+		//! the chunk may be spliced (outChunk/outIsRasterizer/outAt/outEndAt filled: `outAt` = the declaration-
+		//! tier position, `outEndAt` = append-at-end), else the single verb's -1 / -2 / 0 with `outDiag` set.
+		//! `keyword`/`name` are echoed as soon as the chunk parses.
+		int PrepareCstInsert_( const RISE::Cst::Document& base, const char* chunkText,
+		                       std::string& keyword, std::string& name, std::string& outDiag,
+		                       RISE::Cst::NodeRef& outChunk, bool& outIsRasterizer, int& outAt, int& outEndAt );
+		//! Batched agent edits (2026-10-16): splice [leadSep][chunk][trailSep] into `doc` at `at`.
+		static RISE::Cst::Document SpliceCstInsert_( const RISE::Cst::Document& doc, const RISE::Cst::NodeRef& chunk, int at );
+		//! Batched agent edits (2026-10-16): the resolve/validate/write half of ApplyCstParamEditsImpl_
+		//! against an ARBITRARY base document.  1 = every pair planned and written into `outDoc` (anchor =
+		//! the owner chunk, roleDiag = "role[+role...]"), 0 = refused (logged; `outDoc` untouched).
+		int PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entityName, const char* entityKind,
+		                        const std::vector< std::pair< std::string, std::string > >& edits, int occ,
+		                        RISE::Cst::Document& outDoc, RISE::Cst::NodeId& outAnchor, std::string& outRoleDiag );
+		//! Batched agent edits (2026-10-16): apply ONE batch element to `doc` (positioned insert, or the
+		//! param write).  Returns 1 = written (outcome.insertedAt set for an insert, `outIsRasterizer` set),
+		//! else the element's refusal code with outcome.diag set.  `outAppendAt` receives an insert's
+		//! append-at-end index (== insertedAt when it was already an append-class chunk).
+		int ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e, CstBatchOutcome& outcome,
+		                           bool appendAtEnd, bool& outIsRasterizer );
+		//! Batched agent edits (2026-10-16): the failure-isolation recursion behind ApplyCstEditBatch -- see
+		//! the .cpp.
+		void IsolateCstBatch_( RISE::Cst::Document& accepted, const std::vector<CstBatchEdit>& edits,
+		                       const std::vector<int>& idxs, bool knownFailing,
+		                       std::vector<CstBatchOutcome>& outcomes, std::vector<char>& landed,
+		                       std::vector<char>& landedRasterizer );
 		//! Facet 5 slice 1a: bump the retained CST head's revision (leaving uuid), called at EVERY site that
 		//! successfully mutates the retained pCstDocument content.  The invariant: revision changes IFF the
 		//! retained Document content changed -- so a NO-CHANGE code path (a rejected edit) must NOT call this.
