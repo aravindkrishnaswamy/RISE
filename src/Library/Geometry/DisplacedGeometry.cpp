@@ -168,6 +168,10 @@ namespace {
 				const Point3  pa = vertices[a], pb = vertices[b];
 				const Vector3 na = normals[a],  nb = normals[b];
 				const TexCoord ca = coords[a],  cb = coords[b];
+				// Position and UV are LINEAR, so the refined, undisplaced mesh is
+				// exactly the base's own piecewise-linear surface (a curved-position
+				// -- PN / Phong-tessellation -- midpoint was tried: it rounds the
+				// base's authored corners and, gated, ripples along long edges).
 				vertices.push_back( Point3( 0.5 * ( pa.x + pb.x ), 0.5 * ( pa.y + pb.y ), 0.5 * ( pa.z + pb.z ) ) );
 				Vector3 nm = na + nb;
 				const Scalar nl = Vector3Ops::Magnitude( nm );
@@ -256,6 +260,24 @@ namespace {
 	}
 }
 
+namespace {
+	// Add the refined base's (shading - geometric) normal delta back onto the
+	// recomputed geometric normals (see TessellateAndRefine).
+	void ApplyShadingDelta( const NormalsListType& delta, NormalsListType& normals )
+	{
+		if( delta.size() != normals.size() ) {
+			return;
+		}
+		for( size_t i = 0; i < normals.size(); ++i ) {
+			const Vector3 n = normals[i] + delta[i];
+			const Scalar l = Vector3Ops::Magnitude( n );
+			if( l > 1e-12 ) {
+				normals[i] = n * ( 1.0 / l );
+			}
+		}
+	}
+}
+
 bool DisplacedGeometry::WillDisplaceVertices() const
 {
 	return ( m_pDisplacement || m_pHeight ) && m_dispScale != 0.0;
@@ -266,8 +288,10 @@ bool DisplacedGeometry::TessellateAndRefine(
 	VerticesListType&      vertices,
 	NormalsListType&       normals,
 	TexCoordsListType&     coords,
-	const bool             bLog ) const
+	const bool             bLog,
+	NormalsListType&       refinedShadingDelta ) const
 {
+	refinedShadingDelta.clear();
 	if( !m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail ) ) {
 		return false;
 	}
@@ -292,6 +316,15 @@ bool DisplacedGeometry::TessellateAndRefine(
 	const Scalar target = diag / Scalar( m_detail );
 
 	const RefineResult r = RefineMeshToEdgeLength( tris, vertices, normals, coords, target );
+	if( r.levels > 0 && !m_bUseFaceNormals ) {
+		// (base shading normal - geometric normal) of the refined, UNdisplaced mesh.
+		NormalsListType geometric = normals;
+		RecomputeVertexNormalsFromTopology( tris, vertices, geometric );
+		refinedShadingDelta.resize( normals.size() );
+		for( size_t i = 0; i < normals.size(); ++i ) {
+			refinedShadingDelta[i] = normals[i] - geometric[i];
+		}
+	}
 	if( r.levels > 0 && bLog ) {
 		GlobalLog()->PrintEx( eLog_Event,
 			"DisplacedGeometry: refined the mesh base to detail %u (target edge %g): %u level(s), %u -> %u triangles",
@@ -541,7 +574,9 @@ void DisplacedGeometry::BuildMesh() const
 	NormalsListType       normals;
 	TexCoordsListType     coords;
 
-	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/true ) ) {
+	NormalsListType       shadingDelta;
+
+	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/true, shadingDelta ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry: base geometry does not support tessellation (e.g. InfinitePlaneGeometry)" );
 		return;
 	}
@@ -554,6 +589,7 @@ void DisplacedGeometry::BuildMesh() const
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
+		ApplyShadingDelta( shadingDelta, normals );
 	}
 
 	m_pMesh = new TriangleMeshGeometryIndexed( m_bDoubleSided, m_bUseFaceNormals );
@@ -582,7 +618,9 @@ void DisplacedGeometry::RefreshMeshVertices()
 	NormalsListType       normals;
 	TexCoordsListType     coords;
 
-	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/false ) ) {
+	NormalsListType       shadingDelta;
+
+	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/false, shadingDelta ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry::RefreshMeshVertices: base tessellation failed" );
 		return;
 	}
@@ -591,6 +629,7 @@ void DisplacedGeometry::RefreshMeshVertices()
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
+		ApplyShadingDelta( shadingDelta, normals );
 	}
 
 	// Topology assumption: the (possibly refined) triangle list is the one the

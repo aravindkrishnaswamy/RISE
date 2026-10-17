@@ -37,7 +37,9 @@ namespace RISE
 	// Destructively recomputes per-vertex normals from face topology.
 	// Unlike CalculateVertexNormals (which appends into an empty vNormals vector),
 	// this function resizes vNormals to match vVertices, clears any existing values,
-	// then fills it with freshly averaged face normals.  Use this after vertex positions
+	// then fills it with freshly ANGLE-WEIGHTED face normals (each incident face normal
+	// is weighted by the triangle's interior angle at that vertex, so the result does not
+	// depend on how a surface was triangulated -- slivers cannot dominate a vertex).  Use this after vertex positions
 	// have changed (e.g. post-displacement) to keep shading consistent with the new shape.
 	extern void RecomputeVertexNormalsFromTopology(
 		const IndexTriangleListType& vFaces,

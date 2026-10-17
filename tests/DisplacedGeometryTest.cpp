@@ -1010,6 +1010,48 @@ static void TestDetailRefinesMeshBases()
 	}
 }
 
+//-----------------------------------------------------------------------------
+// A refined mesh base keeps the BASE'S smooth shading-normal field.
+//
+// The post-displacement normal recompute is purely geometric, and every
+// vertex the refinement adds lies on its parent facet's plane.  Without the
+// shading-delta correction the refined mesh shades FLAT inside each facet (the
+// base's own smooth normals, which an unrefined bake interpolates across the
+// facet, are thrown away) -- the base's polygonization comes back as vertical
+// streaks on a displaced lathe.  Near-zero displacement isolates exactly that:
+// the smooth lathe's refined mesh must NOT contain flat-shaded triangles.
+//-----------------------------------------------------------------------------
+static void TestRefinedMeshKeepsBaseShadingField()
+{
+	std::cout << "Test 10f: a refined mesh base keeps the base's smooth shading normals (no flat-per-facet shading)...\n";
+
+	TriangleMeshGeometryIndexed* pLathe = MakeCoarseLathe( 24 );
+	ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, 48, pConst, 1e-7, false, false );
+	pDisp->Realize();
+	IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+	assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+
+	size_t flat = 0, counted = 0;
+	for( size_t i = 0; i < t.size(); ++i ) {
+		const Vector3& a = n[t[i].iNormals[0]];
+		const Vector3& b = n[t[i].iNormals[1]];
+		const Vector3& d = n[t[i].iNormals[2]];
+		// skip triangles that touch a pole (their corner normals legitimately differ hugely)
+		const Scalar spread = std::max( Vector3Ops::Magnitude( a - b ), std::max( Vector3Ops::Magnitude( b - d ), Vector3Ops::Magnitude( a - d ) ) );
+		++counted;
+		if( spread < 1e-6 ) ++flat;
+	}
+	std::cout << "  [info] " << flat << " of " << counted << " triangles are flat-shaded (corner normals identical)\n";
+	// Smooth base: essentially none.  Without the delta ~ the whole interior of
+	// every long facet (measured: > 40%).
+	assert( flat * 20 < counted );
+
+	pDisp->release();
+	pConst->release();
+	pLathe->release();
+}
+
 // An IFunction2D that is also Observable (like every in-tree painter), so a
 // value change drives DisplacedGeometry's animation REFIT path.
 class ObservableConstFunction2D : public virtual IFunction2D, public virtual Reference, public Observable
@@ -1058,6 +1100,80 @@ static void TestRefinedTopologyStableAcrossRefresh()
 	pDisp->release();
 	pFn->release();
 	pLathe->release();
+}
+
+//-----------------------------------------------------------------------------
+// RecomputeVertexNormalsFromTopology is ANGLE-WEIGHTED, so vertex normals do
+// not depend on the triangulation.  The unweighted per-face average let thin
+// slivers (the adaptive mesh refinement's 1/2/3-edge splits make plenty)
+// dominate a vertex's normal -- visible as streaking on a displaced vase.
+//
+// Two meshes of the SAME piecewise-linear surface: A is a coarse 5x5-cell grid
+// over z = 0.4 sin(1.3x) cos(1.1y) (face normals differ by several degrees
+// between facets); B re-triangulates every A triangle into two SLIVERS by
+// inserting a point 3% from one corner along an edge (the children are
+// coplanar with their parent, so their face normals are the parent's).  The
+// interior angles at each ORIGINAL vertex still sum to the parent's, so the
+// angle-weighted normals of A and B agree to rounding; the unweighted average
+// counts a vertex once per incident child instead of once per parent and is
+// several degrees off.  A degenerate triangle (a repeated index) in B must not
+// produce a NaN.
+//-----------------------------------------------------------------------------
+static void TestAngleWeightedNormalsIgnoreTriangulation()
+{
+	std::cout << "Test 10e: vertex normals are angle-weighted -- independent of how a surface is triangulated...\n";
+
+	const int N = 5;
+	VerticesListType vA;
+	for( int j = 0; j <= N; ++j ) {
+		for( int i = 0; i <= N; ++i ) {
+			const Scalar x = Scalar( i ) / N * 3.0, y = Scalar( j ) / N * 3.0;
+			vA.push_back( Point3( x, y, 0.4 * std::sin( 1.3 * x ) * std::cos( 1.1 * y ) ) );
+		}
+	}
+	IndexTriangleListType tA;
+	auto idx = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+	for( int j = 0; j < N; ++j ) {
+		for( int i = 0; i < N; ++i ) {
+			// alternate the diagonal so the fans are irregular
+			if( ( i + j ) & 1 ) {
+				tA.push_back( MakeIndexedTriangleSameIdx( idx(i,j), idx(i+1,j), idx(i+1,j+1) ) );
+				tA.push_back( MakeIndexedTriangleSameIdx( idx(i,j), idx(i+1,j+1), idx(i,j+1) ) );
+			} else {
+				tA.push_back( MakeIndexedTriangleSameIdx( idx(i,j), idx(i+1,j), idx(i,j+1) ) );
+				tA.push_back( MakeIndexedTriangleSameIdx( idx(i+1,j), idx(i+1,j+1), idx(i,j+1) ) );
+			}
+		}
+	}
+
+	// B: slivers.
+	VerticesListType vB = vA;
+	IndexTriangleListType tB;
+	for( size_t t = 0; t < tA.size(); ++t ) {
+		const unsigned int a = tA[t].iVertices[0], b = tA[t].iVertices[1], c = tA[t].iVertices[2];
+		const Scalar s = 0.97;
+		const unsigned int m = (unsigned int)vB.size();
+		vB.push_back( Point3( vA[a].x + s * ( vA[b].x - vA[a].x ), vA[a].y + s * ( vA[b].y - vA[a].y ), vA[a].z + s * ( vA[b].z - vA[a].z ) ) );
+		tB.push_back( MakeIndexedTriangleSameIdx( a, m, c ) );
+		tB.push_back( MakeIndexedTriangleSameIdx( m, b, c ) );
+	}
+	// a degenerate triangle on an original vertex: repeated index -> zero-length edge
+	tB.push_back( MakeIndexedTriangleSameIdx( 0, 0, 1 ) );
+
+	NormalsListType nA( vA.size(), Vector3( 0, 0, 1 ) ), nB( vB.size(), Vector3( 0, 0, 1 ) );
+	RecomputeVertexNormalsFromTopology( tA, vA, nA );
+	RecomputeVertexNormalsFromTopology( tB, vB, nB );
+
+	Scalar worstDeg = 0.0;
+	for( size_t i = 0; i < vA.size(); ++i ) {
+		assert( std::isfinite( nB[i].x ) && std::isfinite( nB[i].y ) && std::isfinite( nB[i].z ) );
+		Scalar d = Vector3Ops::Dot( nA[i], nB[i] );
+		d = std::max( Scalar(-1.0), std::min( Scalar(1.0), d ) );
+		worstDeg = std::max( worstDeg, std::acos( d ) * 180.0 / PI );
+	}
+	std::cout << "  [info] worst angle between the two triangulations' vertex normals: " << worstDeg << " deg\n";
+	// angle-weighted: rounding only (red on the unweighted average: several degrees)
+	assert( worstDeg < 1e-4 );
 }
 
 //-----------------------------------------------------------------------------
@@ -1868,6 +1984,8 @@ int main()
 	TestDisplacedBuildersShadeSmooth();
 	TestDetailRefinesMeshBases();
 	TestRefinedTopologyStableAcrossRefresh();
+	TestAngleWeightedNormalsIgnoreTriangulation();
+	TestRefinedMeshKeepsBaseShadingField();
 	TestConcurrentRealize();
 	TestScalarHeightIsObjectSpaceAndExact();
 	TestScalarHeightThroughTheChunk();

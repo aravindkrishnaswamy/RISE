@@ -151,12 +151,24 @@ namespace RISE
 			// so the two cannot drift; bLog suppresses the "refinement capped"
 			// warning on the refit path.  Returns FALSE iff the base cannot
 			// tessellate.
+			//
+			// refinedShadingDelta: when (and only when) the mesh WAS refined, the
+			// per-vertex vector (base shading normal - geometric normal) of the
+			// refined, UNdisplaced mesh; empty otherwise.  The post-displacement
+			// normal recompute is purely geometric, and every vertex a refinement
+			// adds lies on its parent facet's plane, so without this the refined
+			// mesh would shade FLAT per facet -- re-introducing the base's
+			// polygonization (the base's own smooth normals, which an unrefined
+			// bake interpolated across each long facet, would be thrown away).
+			// Adding the delta back keeps the base's shading-normal field and lets
+			// the displacement perturb it, exactly like bump-mapping a smooth base.
 			bool TessellateAndRefine(
 				IndexTriangleListType& tris,
 				VerticesListType&      vertices,
 				NormalsListType&       normals,
 				TexCoordsListType&     coords,
-				const bool             bLog ) const;
+				const bool             bLog,
+				NormalsListType&       refinedShadingDelta ) const;
 
 			// Topology signature (FNV-1a over the triangle index list and vertex
 			// count) of the mesh the current m_pMesh was built from.

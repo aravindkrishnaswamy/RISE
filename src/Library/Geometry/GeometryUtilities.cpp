@@ -125,20 +125,41 @@ namespace RISE
 			}
 			const Vector3 vCross = vCrossRaw * (1.0 / crossMag);
 
-			vNormals[tri.iVertices[0]] = vNormals[tri.iVertices[0]] + vCross;
-			incident[tri.iVertices[0]]++;
-
-			vNormals[tri.iVertices[1]] = vNormals[tri.iVertices[1]] + vCross;
-			incident[tri.iVertices[1]]++;
-
-			vNormals[tri.iVertices[2]] = vNormals[tri.iVertices[2]] + vCross;
-			incident[tri.iVertices[2]]++;
+			// ANGLE-WEIGHTED accumulation: each corner contributes the face
+			// normal scaled by the triangle's INTERIOR ANGLE at that corner.  The
+			// angles at a vertex of a closed fan sum to the cone angle whatever
+			// the triangulation, so the result is independent of how a surface
+			// patch was split into triangles -- a sliver (two huge angles at one
+			// end, a vanishing one at the other) cannot dominate a vertex's
+			// normal the way an unweighted per-face average lets it (the
+			// streaking that adaptive mesh refinement exposed).  Unweighted ==
+			// angle-weighted on a regular tessellation up to symmetry.
+			for( int k = 0; k < 3; k++ )
+			{
+				const Vertex& pk = vVertices[tri.iVertices[k]];
+				const Vector3 ea = Vector3Ops::mkVector3( vVertices[tri.iVertices[(k+1)%3]], pk );
+				const Vector3 eb = Vector3Ops::mkVector3( vVertices[tri.iVertices[(k+2)%3]], pk );
+				const Scalar la = Vector3Ops::Magnitude( ea );
+				const Scalar lb = Vector3Ops::Magnitude( eb );
+				if( !( la > 0.0 ) || !( lb > 0.0 ) ) {
+					continue;	// zero-length edge: no defined angle at this corner
+				}
+				Scalar c = Vector3Ops::Dot( ea, eb ) / ( la * lb );
+				c = c > 1.0 ? 1.0 : ( c < -1.0 ? -1.0 : c );	// rounding can push |cos| past 1
+				const Scalar angle = acos( c );
+				if( !( angle > 0.0 ) ) {
+					continue;
+				}
+				vNormals[tri.iVertices[k]] = vNormals[tri.iVertices[k]] + vCross * angle;
+				incident[tri.iVertices[k]]++;
+			}
 		}
 
 		for( int i = 0; i < nNumVerts; i++ )
 		{
 			if( incident[i] > 0 ) {
-				vNormals[i] = Vector3Ops::Normalize( vNormals[i] * (1.0 / Scalar( incident[i] )) );
+				const Scalar sumMag = Vector3Ops::Magnitude( vNormals[i] );
+				vNormals[i] = ( sumMag > 0.0 ) ? vNormals[i] * ( 1.0 / sumMag ) : fallback[i];
 			} else {
 				// Vertex was only incident to degenerate triangles.  Fall back to the
 				// pre-recompute normal the base geometry produced.
