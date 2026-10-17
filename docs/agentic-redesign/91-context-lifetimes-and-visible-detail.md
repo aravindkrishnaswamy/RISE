@@ -90,8 +90,10 @@ apothecary and 0 on the dragons run (which read no skills).
   element?}` (`BatchChunkResultJson`); `headVersion` stays because it is
   the next call's `baseHeadVersion`.  No top-level `headVersion` was added
   (it would newly trigger the recorder's head-bump document snapshots).
-  Measured in `AgentChunkCrudTest` S2h-L1: a 16-chunk report 5,452 → 1,068
-  bytes, marginal cost per extra clean chunk 361 → 13 bytes.  Not changed:
+  Measured in `AgentChunkCrudTest` S2h-L1 (fake builder, short names): a
+  16-chunk report 5,347 → 1,068 bytes (4 chunks: 1,974 → 910), marginal
+  cost per extra clean chunk 281 → 13 bytes; a 4-chunk `insert_chunks`
+  report 998 → 554 bytes (IC4a).  Not changed:
   `place_element` / `environment_scene` / `frame_scene` `patchResults`
   (no per-entry identity — the per-patch record IS the edit record, pinned
   as such), and the scaffold / `remove_chunks` batch verbs (1–5 entries).
