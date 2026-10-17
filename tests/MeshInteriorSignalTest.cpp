@@ -133,7 +133,7 @@
 //        closure through the SAME wrapper `docs/DL20_DL116_PATCH_
 //        CURVATURE_AND_POLE_WELDING.md`'s own sibling audit already
 //        traced for DL-143 (`DisplacedGeometry::BuildMesh` -> `m_pBase->
-//        TessellateToMesh` -> position-verbatim flattening).
+//        TessellateToMesh` -> position-verbatim re-emission).
 //    (l) A SCALED variant (vertices pre-scaled by 1000x, moving the bbox
 //        diagonal and hence `eps` in lockstep) confirms the weld is
 //        RELATIVE, not an absolute-epsilon artifact of the specific unit

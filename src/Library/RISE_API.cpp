@@ -2015,6 +2015,8 @@ namespace RISE
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
 		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 
 		// rings.  frac doubles as the linear-taper parameter and the V texture
 		// coordinate; a closed loop has no start/end to taper toward (end_scale_x/y
@@ -2101,11 +2103,26 @@ namespace RISE
 			}
 		}
 
+		// The RING vertices (everything emitted so far; the planar end caps
+		// below are separate, non-wrapping vertices) wrap in u -- the closed
+		// profile's last vertex stitches back to its first with no duplicated
+		// column -- and, for a closed path, in v (ring n-1 stitches to ring 0,
+		// frac = i/n).  Declared for DisplacedGeometry's mesh refinement.
+		pGeom->SetUVPeriodicRegion(
+			(unsigned char)( TriangleMeshGeometryIndexed::kUPeriodic | ( desc.pathClosed ? TriangleMeshGeometryIndexed::kVPeriodic : 0 ) ),
+			0, (unsigned int)vc );
+
 		// side quads between consecutive rings (cyclic over the profile);
 		// winding gives outward-facing triangles for a CCW profile.  A closed
 		// path additionally wraps ring (n-1) to ring 0 (no open-path "ends"),
 		// so it walks all n rings instead of stopping at n-1.
+		// The AUTHORED GRID STRUCTURE (TriangleMeshGeometryIndexed::MeshGrid): the path-direction
+		// edges of ring interval i are family i; the profile-direction edges of profile edge k
+		// are family sideRingCount + k (shared by every station).  End caps are in no cell.
 		const size_t sideRingCount = desc.pathClosed ? n : ( n - 1 );
+		std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+		grid->numFamilies = (unsigned int)( sideRingCount + nProf );
+		unsigned int triCount = 0;
 		for( size_t i = 0; i < sideRingCount; i++ ) {
 			const size_t i1 = desc.pathClosed ? ( ( i + 1 ) % n ) : ( i + 1 );
 			const int r0 = int(i) * int(nProf);
@@ -2116,6 +2133,17 @@ namespace RISE
 				const int b = r1 + int(k);
 				const int c = r1 + int(kn);
 				const int d = r0 + int(kn);
+				{
+					TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+					q.tri[0] = triCount; q.tri[1] = triCount + 1;
+					const unsigned int pathFam = (unsigned int)i, profFam = (unsigned int)( sideRingCount + k );
+					// authored triangles (q0,q1,q2),(q0,q2,q3): outward -> (a,b,c)+(a,c,d), q = a,b,c,d;
+					// otherwise (a,c,b)+(a,d,c), q = a,d,c,b
+					if( outward > 0 ) { q.q[0] = a; q.q[1] = b; q.q[2] = c; q.q[3] = d; q.famS = pathFam; q.famT = profFam; }
+					else              { q.q[0] = a; q.q[1] = d; q.q[2] = c; q.q[3] = b; q.famS = profFam; q.famT = pathFam; }
+					grid->quads.push_back( q );
+					triCount += 2;
+				}
 				if( outward > 0 ) {
 					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
 					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
@@ -2230,6 +2258,7 @@ namespace RISE
 			}
 		}
 
+		pGeom->SetGrid( grid );
 		pGeom->DoneIndexedTriangles();
 		*ppi = pGeom;
 		return true;
@@ -2594,6 +2623,8 @@ namespace RISE
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "lathe geometry" );
 		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 
 		std::vector<int>  rowBase( rows.size(), 0 );
 		std::vector<unsigned char> rowIsPole( rows.size(), 0 );
@@ -2626,6 +2657,9 @@ namespace RISE
 				// u is genuinely undefined on the axis (every angle maps to
 				// this one point); 0.5 puts the pole at the texture's middle.
 				pGeom->AddTexCoord( TexCoord( Scalar(0.5), row.v ) );
+				// u is a PLACEHOLDER here (stored 0.5): mark the pole so mesh refinement
+				// never averages it into a spoke midpoint's u.
+				pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kUPolar, (unsigned int)vc, 1 );
 				vc++;
 			} else {
 				for( int k = 0; k < nCols; k++ ) {
@@ -2647,14 +2681,31 @@ namespace RISE
 			}
 		}
 
+		// A full turn stitches the last column back to column 0 with NO
+		// duplicated seam column, so u WRAPS (the wrap edge spans ~(1 -> 0) in
+		// chart space).  Declare it so DisplacedGeometry's mesh refinement takes
+		// midpoints of that edge the short way round; a partial turn has a real
+		// seam column and flat caps, and nothing wraps.
+		if( fullTurn ) {
+			pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kUPeriodic, 0, (unsigned int)vc );
+		}
+
 		// One place for the orientation flip derived above.
 		const bool flip = ( outward < 0 );
+		// The AUTHORED GRID STRUCTURE, recorded as the triangles are emitted (see
+		// TriangleMeshGeometryIndexed::MeshGrid): line family 0 is the radial ring (every
+		// ring edge of the lathe), family 1+band is that band's profile direction.  Pole
+		// fans are recorded as fans; the partial-sweep caps are in no cell (their rim edges are subdivided to match the wall by TessellateRefined).
+		std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+		grid->numFamilies = 1u + (unsigned int)bands.size();
+		unsigned int triCount = 0;
 		auto emitTri = [&]( const int a, const int b, const int c ) {
 			if( flip ) {
 				pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
 			} else {
 				pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
 			}
+			++triCount;
 		};
 
 		for( size_t bi = 0; bi < bands.size(); bi++ ) {
@@ -2671,11 +2722,29 @@ namespace RISE
 				// b = (j1,k).  Collapsing either row to a pole degenerates
 				// exactly one of the two triangles, so a pole emits a FAN of
 				// nRadial triangles instead of nRadial zero-area quads.
+				const unsigned int bandFam = 1u + (unsigned int)bi;
 				if( pole0 ) {
+					TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+					f.tri = triCount;
+					if( flip ) { f.t[0] = a; f.t[1] = b; f.t[2] = c; } else { f.t[0] = a; f.t[1] = c; f.t[2] = b; }
+					f.pole = 0; f.famSpoke = bandFam; f.famRing = 0;
+					grid->fans.push_back( f );
 					emitTri( a, c, b );
 				} else if( pole1 ) {
+					TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+					f.tri = triCount;
+					if( flip ) { f.t[0] = a; f.t[1] = c; f.t[2] = d; f.pole = 1; } else { f.t[0] = a; f.t[1] = d; f.t[2] = c; f.pole = 2; }
+					f.famSpoke = bandFam; f.famRing = 0;
+					grid->fans.push_back( f );
 					emitTri( a, d, c );
 				} else {
+					TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+					q.tri[0] = triCount; q.tri[1] = triCount + 1;
+					// authored triangles (q0,q1,q2),(q0,q2,q3): unflipped (a,d,c)+(a,c,b) -> q = a,d,c,b;
+					// flipped (a,c,d)+(a,b,c) -> q = a,b,c,d
+					if( flip ) { q.q[0] = a; q.q[1] = b; q.q[2] = c; q.q[3] = d; q.famS = bandFam; q.famT = 0; }
+					else       { q.q[0] = a; q.q[1] = d; q.q[2] = c; q.q[3] = b; q.famS = 0; q.famT = bandFam; }
+					grid->quads.push_back( q );
 					emitTri( a, d, c );
 					emitTri( a, c, b );
 				}
@@ -2888,6 +2957,7 @@ namespace RISE
 			}
 		}
 
+		pGeom->SetGrid( grid );
 		pGeom->DoneIndexedTriangles();
 		*ppi = pGeom;
 		return true;
@@ -3827,6 +3897,8 @@ namespace RISE
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "skin geometry" );
 		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 
 		for( size_t i = 0; i < nStations; i++ ) {
 			for( size_t j = 0; j < nAcrossSz; j++ ) {
@@ -3842,6 +3914,10 @@ namespace RISE
 				// pole's u.
 				pGeom->AddTexCoord( TexCoord( stations[i].u,
 					pinched[i] ? Scalar(0.5) : vFrac[j] ) );
+				// a pinch's v is a PLACEHOLDER (0.5): polar on v for mesh refinement
+				if( pinched[i] ) {
+					pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kVPolar, (unsigned int)siteVertex[s], 1 );
+				}
 			}
 		}
 
@@ -3849,6 +3925,49 @@ namespace RISE
 			pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx(
 				siteVertex[x], siteVertex[y], siteVertex[z] ) );
 		} );
+
+		// The AUTHORED GRID STRUCTURE (TriangleMeshGeometryIndexed::MeshGrid), recorded by
+		// re-walking the quads with the SAME survival predicate walkTriangles used (so the
+		// running triangle count is the emission index): a quad whose two triangles both
+		// survive is a grid quad (family i = the station interval's edges, family
+		// (nStations-1)+j = the across-row j edges); a quad that lost one triangle to a
+		// collapsed pinch (a == d, or b == c) is a pole fan; anything else (a triangle the
+		// zero-area test ate) is left unrefined.
+		{
+			std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+			grid->numFamilies = (unsigned int)( ( nStations - 1 ) + ( nAcrossSz - 1 ) );
+			unsigned int triCount = 0;
+			for( size_t i = 0; i + 1 < nStations; i++ ) {
+				for( size_t j = 0; j + 1 < nAcrossSz; j++ ) {
+					const size_t a = site( i,     j,     true  );
+					const size_t b = site( i + 1, j,     false );
+					const size_t c = site( i + 1, j + 1, false );
+					const size_t d = site( i,     j + 1, true  );
+					const bool t1 = ( a != b && a != d && b != d && triArea2( a, b, d ) > areaEps );
+					const bool t2 = ( b != c && b != d && c != d && triArea2( b, c, d ) > areaEps );
+					const unsigned int stationFam = (unsigned int)i, acrossFam = (unsigned int)( ( nStations - 1 ) + j );
+					if( t1 && t2 && a != c ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+						// authored (a,b,d) + (b,c,d): q = b,c,d,a
+						q.q[0] = siteVertex[b]; q.q[1] = siteVertex[c]; q.q[2] = siteVertex[d]; q.q[3] = siteVertex[a];
+						q.famS = acrossFam; q.famT = stationFam; q.tri[0] = triCount; q.tri[1] = triCount + 1;
+						grid->quads.push_back( q );
+					} else if( t2 && !t1 && a == d ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+						f.t[0] = siteVertex[b]; f.t[1] = siteVertex[c]; f.t[2] = siteVertex[d]; f.pole = 2;
+						f.famSpoke = stationFam; f.famRing = acrossFam; f.tri = triCount;
+						grid->fans.push_back( f );
+					} else if( t1 && !t2 && b == c ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+						f.t[0] = siteVertex[a]; f.t[1] = siteVertex[b]; f.t[2] = siteVertex[d]; f.pole = 1;
+						f.famSpoke = stationFam; f.famRing = acrossFam; f.tri = triCount;
+						grid->fans.push_back( f );
+					}
+					triCount += ( t1 ? 1u : 0u ) + ( t2 ? 1u : 0u );
+				}
+			}
+			pGeom->SetGrid( grid );
+		}
 
 		pGeom->DoneIndexedTriangles();
 		*ppi = pGeom;
@@ -3906,7 +4025,19 @@ namespace RISE
 		VerticesListType      tVerts;
 		NormalsListType       tNorms;
 		TexCoordsListType     tCoords;
-		if( !desc.pGeometry->TessellateToMesh( tTris, tVerts, tNorms, tCoords, detail ) ||
+		// Ex where the template carries chart bits (a builder's periodic / polar UV
+		// axes, a displaced base's), so the instanced copies keep them.
+		std::vector<unsigned char> tFlags;
+		std::vector<unsigned int>  tDomains;	// the template's own weld domains (a path_instances / displaced-of-path_instances template)
+		bool bTessellated;
+		if( const TriangleMeshGeometryIndexed* pTplIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( desc.pGeometry ) ) {
+			bTessellated = pTplIdx->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags, &tDomains );
+		} else if( const DisplacedGeometry* pTplDsp = dynamic_cast<const DisplacedGeometry*>( desc.pGeometry ) ) {
+			bTessellated = pTplDsp->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags, &tDomains );
+		} else {
+			bTessellated = desc.pGeometry->TessellateToMesh( tTris, tVerts, tNorms, tCoords, detail );
+		}
+		if( !bTessellated ||
 			tVerts.empty() || tTris.empty() ) {
 			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: template geometry does not support TessellateToMesh (or tessellated empty)" );
 			return false;
@@ -3927,6 +4058,22 @@ namespace RISE
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "path instances geometry" );
 		pGeom->BeginIndexedTriangles();
+		// Weld policy: INSIDE each instance, the TEMPLATE's own rule (a creased lathe template stays closed in
+		// every instance); NEVER across instances (each instance is a weld domain).  A face-normal template is flat
+		// per corner by design and welds nothing.
+		int instancePolicy = TriangleMeshGeometryIndexed::kWeldCreaseCone;
+		{
+			const TriangleMeshGeometryIndexed* pTplMesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( desc.pGeometry );
+			if( !pTplMesh ) {
+				if( const DisplacedGeometry* pTplDsp2 = dynamic_cast<const DisplacedGeometry*>( desc.pGeometry ) ) {
+					pTplMesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( pTplDsp2->GetBakedMesh() );
+				}
+			}
+			if( pTplMesh ) {
+				instancePolicy = pTplMesh->UsesFaceNormals() ? int( TriangleMeshGeometryIndexed::kWeldNone ) : pTplMesh->GetDisplacementWeldPolicy();
+			}
+		}
+		pGeom->SetDisplacementWeldPolicy( instancePolicy );
 
 		int vc = 0;
 		unsigned int placed = 0;
@@ -3994,6 +4141,38 @@ namespace RISE
 		}
 
 		pGeom->DoneIndexedTriangles();
+		{	// one weld domain per instance (vertex order is the template's, repeated per instance).  A template
+			// that carries domains itself (instances of instances) COMPOSES them -- outer instance x inner
+			// domain -- so the inner touching instances stay separate bodies inside every outer instance.
+			unsigned int innerCount = 1;
+			const bool nested = tDomains.size() == tVerts.size();
+			if( nested ) {
+				for( size_t v = 0; v < tDomains.size(); ++v ) innerCount = std::max( innerCount, tDomains[v] + 1u );
+			}
+			std::vector<unsigned int> domains;
+			domains.reserve( tVerts.size() * placed );
+			for( unsigned int inst = 0; inst < placed; ++inst ) {
+				if( nested ) {
+					for( size_t v = 0; v < tDomains.size(); ++v ) domains.push_back( inst * innerCount + tDomains[v] );
+				} else {
+					domains.insert( domains.end(), tVerts.size(), inst );
+				}
+			}
+			pGeom->SetDisplacementWeldDomains( domains );
+		}
+		// Each instance's copy keeps the template's chart bits (vertex order is the template's).
+		if( tFlags.size() == tVerts.size() ) {
+			bool bAny = false;
+			for( size_t i = 0; i < tFlags.size(); ++i ) if( tFlags[i] ) { bAny = true; break; }
+			if( bAny ) {
+				std::vector<unsigned char> allFlags;
+				allFlags.reserve( tFlags.size() * placed );
+				for( unsigned int inst = 0; inst < placed; ++inst ) {
+					allFlags.insert( allFlags.end(), tFlags.begin(), tFlags.end() );
+				}
+				pGeom->SetUVPeriodicFlags( allFlags );
+			}
+		}
 		*ppi = pGeom;
 		return true;
 	}

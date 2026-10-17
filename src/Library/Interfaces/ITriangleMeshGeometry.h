@@ -111,7 +111,8 @@ namespace RISE
 		//! Tier 1 §3 animation refit support.  Replace vertex / normal
 		//! arrays in place (count must match the existing arrays —
 		//! topology preserved) and refit the BVH bottom-up.  Returns
-		//! the BVH refit duration in ms; 0 on size mismatch.
+		//! the BVH refit duration in ms (never less than 1 on success); 0 on
+		//! size mismatch / no BVH.
 		//!
 		//! Caller must ensure this is invoked between frames, never
 		//! concurrent with intersection.  See

@@ -63,6 +63,7 @@
 #include "../Geometry/BezierPatchGeometry.h"   // Doc 91 review: NumPatches() budgets the surface-point tessellation
 #include "../Geometry/BilinearPatchGeometry.h"
 #include "../Geometry/TriangleMeshGeometryIndexed.h"   // direct vertex-array read for the surface-point gather
+#include "../Geometry/DisplacedGeometry.h"   // GetBakedMesh(): the gather reads a displaced geometry's bake in place
 #include "../Interfaces/IGeometryManager.h" // Arc 80 (2026-08-12, live-manager fallback extended 2026-08-13): TargetIsFormBearing_'s defensive fallback asks the live scene whether a name is a geometry when the Document does not carry it; the primary answer walks the retained CST head (a READ of the document already parsed once at load, not a re-parse)
 #include "../Interfaces/IMaterialManager.h" // Arc 82 (2026-08-12): PopulateScene asks the live scene whether the material a repeat names already exists
 #include "../Interfaces/ILightManager.h"    // Condition M (2026-08-30): the derived scene's hack lights, name-keyed, for ILight::position()
@@ -21397,14 +21398,17 @@ namespace RISE
 
 		//! Collect world-space points on `obj`'s real surface, bounded in memory
 		//! and time BEFORE any large allocation:
-		//!   * an indexed triangle mesh is read straight from its vertex array
-		//!     (no TessellateToMesh flattening) and stride-sampled;
+		//!   * an indexed triangle mesh -- and a DISPLACED geometry's baked mesh
+		//!     (DisplacedGeometry::GetBakedMesh), however fine `detail` made it -- is
+		//!     read straight from its vertex array (no TessellateToMesh copy of
+		//!     the vertex / normal / uv / triangle arrays) and stride-sampled;
 		//!   * a Bezier / bilinear patch SET is tessellated at a detail chosen
 		//!     from its patch count so detail^2 x patches <= kFitTessellationBudget;
 		//!   * an SDF/skeleton body keeps its 48-cell grid, a primitive 32
 		//!     segments (both small by construction);
 		//!   * anything else asks TessellateToMesh at detail 32 (a displaced
-		//!     mesh is as large as its own bake).
+		//!     geometry that has not been realized yet has no bake to read and
+		//!     tessellates to nothing -- the caller then falls back to the box).
 		//! Vertices of a tessellation / mesh lie ON the surface.  Points are
 		//! transformed by the object's final transform.  Returns false --
 		//! leaving `out` empty -- where there are no surface points to offer, so
@@ -21423,8 +21427,27 @@ namespace RISE
 			if( !g || !g->CanTessellate() ) return false;
 			const Matrix4 world = obj.GetFinalTransformMatrix();
 
-			if( const Implementation::TriangleMeshGeometryIndexed* mesh =
-					dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>( g ) ) {
+			// A DISPLACED geometry is read through its BAKED mesh (the same indexed-mesh
+			// path): tessellating it would re-copy every array of a bake that `detail` can
+			// make up to the 1.5M-triangle refinement cap -- the very copy this gather
+			// exists to avoid.  Unrealized (no bake yet) falls through to the tessellation.
+			// Concurrency (UNCHANGED, pre-existing): DisplacedGeometry::RefreshMeshVertices refits
+			// the bake in place on an animated displacement's painter notification, and neither
+			// this read nor the TessellateToMesh copy it replaces is synchronized against that --
+			// both read the same m_pMesh the render's own IntersectRay reads.  The gather runs on
+			// the control thread after PrepareForRendering, between renders.  No concurrent refit
+			// path was found; NOT verified for GUI editor-thread keyframe edits (a painter
+			// notification refits on the editor thread) racing agent tool calls -- a displaced
+			// geometry animated from another thread while an isolate / zoom gathers would race
+			// either way.
+			const Implementation::TriangleMeshGeometryIndexed* mesh =
+				dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>( g );
+			if( !mesh ) {
+				if( const Implementation::DisplacedGeometry* disp = dynamic_cast<const Implementation::DisplacedGeometry*>( g ) ) {
+					mesh = dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>( disp->GetBakedMesh() );
+				}
+			}
+			if( mesh ) {
 				const VerticesListType& vs = mesh->getVertices();
 				if( vs.size() < 4 ) return false;
 				// Only vertices some face references lie on the surface (an

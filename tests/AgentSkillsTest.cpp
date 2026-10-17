@@ -660,10 +660,12 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// builder meshes (lathe/sweep/skin) AND `sdf_geometry` (including a
 	// `skeleton_geometry`-expanded body and a `superellipsoid` part) --
 	// verified render-clean for the SDF case, visibly faceted for the mesh-
-	// builder cases (a real, now-documented limitation, not a render
-	// failure).  object-modeling-recipes gains Recipe 6, the clean SDF-plus-
+	// builder cases (a real limitation at the time, since FIXED:
+	// TriangleMeshGeometryIndexed::TessellateToMesh now keeps shared
+	// vertices, so the builders shade smooth under displacement).
+	// object-modeling-recipes gains Recipe 6, the clean SDF-plus-
 	// dimples case (a `superellipsoid` cushion displaced by `perlin2d_painter`),
-	// with the faceting/pinch-tear/SDF-UV caveats written as prose rather
+	// with the (then faceting,) pinch-tear/SDF-UV caveats written as prose rather
 	// than a second snippet -- one more render-validated example is the
 	// deliberate addition; a second fence for the caveats is not.  Per-skill
 	// split is now 4/8/3 for materials-and-media-basics/object-modeling-

@@ -33,7 +33,7 @@ not listed here.
 | `skeleton_geometry` | **CREATURE BODIES authored as a JOINT GRAPH** (a hip branching into two legs and a tail, a hand's finger tree) -- `joint <name> <parent\|none> <x> <y> <z> <radius> [aspect]` lines, one per joint; expands at parse time into ONE `sdf_geometry` (a `roundcone` bone per parent->child pair, `smin`-blended) | sphere-traced, same cost model as `sdf_geometry`; `Map()` is O(joint count) per step with no acceleration over bones -- a skeleton is a render-time budget (a hand-authored SDF has a handful of parts, a skeleton invites 30-70) | a bone's own end caps ARE its two joints -- do not also add a `sphere_geometry`/extra `part` at a joint already covered by an incident bone, that just double-blends a redundant primitive; `blend` multiplies the SMALLER of the two joint radii, not either one alone; a bone's cross-section is a CIRCLE unless the joint line's optional 7th token `aspect` (width-to-depth ratio, 1 = round, ~0.6 a thigh) flattens it side-to-side -- and a body MASS that is really a cushion (a torso, an abdomen) is one `superellipsoid` part in a plain `sdf_geometry`, and a limb that FOLLOWS A CURVE is `sweep_geometry`; the manual `part` grammar stays the fallback for anything the joint graph can't express |
 | `sweep_geometry` | tubes, rails, mouldings, cable runs, any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail), and -- via the per-station controls -- BODIES WITH A NON-CIRCULAR, CHANGING SECTION (a torso, a fin, a snout, a strap, a hull, a round-to-square leg) | mesh cost (tessellated once) | the cross-section is NOT fixed: `point_scale <sx> <sy>` scales the two profile axes independently per station, and a second profile (`profile2_*`) plus `point_morph <t>` changes the section's OUTLINE along the path -- but it still interpolates at most TWO sections, so it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
 | `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing; the template can be ANY first-class geometry INCLUDING a `displaced_geometry` (it is realized + tessellated through the same universal contract before stamping) |
-| `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson); `base_geometry` composes over ANY geometry INCLUDING `sdf_geometry`, `lathe_geometry`, `sweep_geometry` and `skin_geometry` (Recipe 6 below), but a `lathe_geometry`/`sweep_geometry`/`skin_geometry` base goes visibly FACETED under any non-zero displacement (their bake re-emits unshared per-triangle-corner topology, so post-displacement shading has nothing to average across) -- `sdf_geometry` bases stay smooth.  TWO HEIGHT SLOTS, spell exactly one: `displacement` samples an `expression_function2d`/`IFunction2D` as `f(u,v)`, while `height` (2026-09-06) takes a `scalar_painter` evaluated as a 3D FIELD at each vertex -- bind ONE `scalar_painter` to `height` AND to a `relief_modifier { height ... }` on the same object for coarse shape plus fine normal relief from one field, and author it against `Po` (the bake predates the object transform, so `P` and `Po` coincide there and a `P`-authored field would not follow the object's placement) |
+| `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson); `base_geometry` composes over ANY geometry INCLUDING `sdf_geometry`, `lathe_geometry`, `sweep_geometry` and `skin_geometry` (Recipe 6 below), and a `lathe_geometry`/`sweep_geometry`/`skin_geometry` (or indexed-mesh import) base SHADES smooth under displacement like an `sdf_geometry` one (its silhouette stays the base's authored polygon) and `detail` sets how finely a MESH base is displaced (target spacing bbox-diagonal/`detail`; refinement adds sample density on the authored surface and never changes it: a lathe/sweep/skin subdivides its own authored grid into regular quads, other indexed meshes are subdivided uniformly by their median edge; analytic/SDF bases already tessellate at `detail`; the legacy non-indexed `rawmesh_geometry` is neither refined nor smooth).  TWO HEIGHT SLOTS, spell exactly one: `displacement` samples an `expression_function2d`/`IFunction2D` as `f(u,v)`, while `height` (2026-09-06) takes a `scalar_painter` evaluated as a 3D FIELD at each vertex -- bind ONE `scalar_painter` to `height` AND to a `relief_modifier { height ... }` on the same object for coarse shape plus fine normal relief from one field, and author it against `Po` (the bake predates the object transform, so `P` and `Po` coincide there and a `P`-authored field would not follow the object's placement) |
 | `circulardisk_geometry`, `cartesian_disk_geometry` | flat disks (dials, coins, disk-shaped bases) | cheap | `cartesian_disk_geometry` has uniform Cartesian UV density; the polar disk does not -- pick by what you're displacing/texturing onto it |
 | `bezierpatch_geometry`, `bilinearpatch_geometry` | authored curved/patch surfaces | analytic (bezier) / cheap (bilinear) | `bezierpatch_geometry`'s old tessellation params (`detail`, `cache_size`, ...) are retired -- wrap it in `displaced_geometry` if you need that control |
 | Mesh imports (`3dsmesh_geometry`, `rawmesh_geometry`/`rawmesh2_geometry`, `risemesh_geometry`, `plymesh_geometry`, `gltfmesh_geometry`) | authored/imported assets that are not primitive-shaped | mesh cost | `file` path resolved via the media-path search (see the reference-image skill for the exact resolution order); declare before the `standard_object` that references it |
@@ -1848,44 +1848,85 @@ directional_light
 }
 ```
 
-Three things worth knowing before reaching for this on a different base,
+Two things worth knowing before reaching for this on a different base,
 verified by direct measurement rather than assumed from the `Reference`
 plumbing:
 
-- **`sdf_geometry` (including a `skeleton_geometry`-expanded body) stays
-  SMOOTH under displacement** -- its own `TessellateToMesh` emits real
-  shared-vertex topology (a dual-contoured surface mesh), so the
-  post-displacement normal recompute genuinely averages across neighbouring
-  faces.  This is the recipe above, and it is the safe default when the
-  relief needs to read as smooth (scales, dimples, skin pores).
-- **`lathe_geometry`/`sweep_geometry`/`skin_geometry` bases lose smooth
-  shading the moment ANY non-zero displacement is applied.**  Their bake is
-  already a plain triangle mesh, and the generic mesh-to-mesh tessellation
-  path used to feed the displacer re-emits every triangle corner as its OWN
-  vertex (no shared indices), so the post-displacement normal recompute has
-  nothing to average across -- every triangle reads its own flat face
-  normal.  The base looks fine un-displaced (its own construction-time
-  normals are smooth); it goes visibly faceted -- NOT a subtle effect, hard
-  per-triangle facets -- the instant `disp_scale` is non-zero.  If you need
-  bark/wrinkle relief on a turned or swept body, raise that base's own
-  tessellation (`n_radial`, `n_len`) until the facets are smaller than the
-  desired texture wavelength, or accept the faceted look as part of the
-  texture (works for something already angular; not for skin).  **Or skip
-  displacement entirely for fine relief** -- `relief_modifier` (any
+- **`sdf_geometry` (including a `skeleton_geometry`-expanded body) and the
+  `lathe_geometry`/`sweep_geometry`/`skin_geometry` builders (and indexed-mesh
+  imports: `3dsmesh_geometry`, `rawmesh2_geometry`, `plymesh_geometry`,
+  `gltfmesh_geometry`, `risemesh_geometry`, `indexedmesh_geometry`) all SHADE
+  smooth under displacement** -- each carries real shared-vertex topology (an
+  SDF's dual-contoured surface mesh, a builder's own ring/station grid), the
+  bake preserves it, and the base's own smooth shading normals are carried
+  through the displacement.  This is the recipe above (scales, dimples, skin
+  pores).  Limits worth knowing: crease / cap / duplicated-profile-point
+  vertices are SEPARATE vertices in the base (that is what keeps their crease
+  and each band's shading normal), but under displacement coincident vertices
+  are WELDED to one shared position -- the mean of the group's displacement
+  vectors -- while each keeps its own shading normal, by the BASE MESH's own
+  rule: a lathe / sweep / skin welds EVERY coincident group (they are its own
+  creases, cap rims, duplicated profile points, pinch poles and skin crease
+  stations, so none slits open); an imported or hand-built mesh welds only
+  members whose base normals are within a 120-degree crease cone (a UV seam, a
+  cube edge), so two coincident OPPOSITE-facing sheets (a two-sided leaf,
+  cloth) stay independent surfaces that each keep their full relief and may
+  separate; `path_instances_geometry` welds WITHIN each instance by its template's own
+  rule (a creased lathe or a box template stays closed inside every instance) and
+  never across instances (touching instances are separate bodies).  It applies at every layer (a displaced base is welded
+  again by its own base's rule) and does not depend on the displaced chunk's
+  own `face_normals`, which only chooses how the result shades; a base that is
+  itself face-normal, an analytic primitive used DIRECTLY as the base and an SDF are
+  never welded (a box's per-face corner duplicates still crack under displacement
+  -- unless the box is a `path_instances_geometry` template, whose instances
+  weld by the crease cone).  Costs: a
+  pinch's two poles are averaged against each other, so the relief at that
+  ring is ~zero; a sweep's or partial lathe's END CAP is refined on its rim
+  only, its rim points matching the wall's vertex for vertex, so it carries
+  relief at the rim and one centroid point, not across its interior; a mesh
+  with `face_normals TRUE` and the legacy non-indexed `rawmesh_geometry` are
+  flat per triangle and crack at every edge (neither is refined).
+  **`detail` sets how finely a MESH base is displaced** (a mesh ignores
+  `detail` in its own tessellation), with target spacing
+  (bounding-box diagonal / `detail`).  **Refinement never changes the authored
+  surface**: it only adds sample density for the displacement to act on, every
+  new vertex lying on the authored polygon (a chord between authored vertices,
+  a point inside an authored triangle) with its normal and UV interpolated from
+  the authored ones, creases only where you made them, the loft's authored
+  pairing kept.  So the **silhouette is the AUTHORED polygon** -- a 6-point
+  lathe stays a hexagonal-profile vase however high `detail` goes, a
+  `n_radial 6` column stays hexagonal, and as `disp_scale -> 0` the
+  displaced object renders as the undisplaced base (up to ~0.1% of a quad's
+  diagonal where a refined vertex lands inside a non-planar authored quad); if you want
+  the base rounder, author it denser (more profile points / `n_radial` /
+  stations).  A `lathe_geometry`, `sweep_geometry` (a loft included) or
+  `skin_geometry` records its authored grid and has each line family
+  subdivided by its own length (profile rows, radial columns, path stations,
+  rows across), so quads stay regular quads (ribs and flutes render clean) at
+  about the triangle count of a hand-authored grid at that spacing: the 6-row
+  stress-scene vase at `detail 48` is ~9.6k triangles; a base already that
+  dense is left alone; end caps are refined on their rim only.  Any other indexed mesh
+  (an import) is subdivided UNIFORMLY in whole 1->4 levels, the level count
+  taken from its MEDIAN edge length (one long outlier edge cannot drive it).
+  A displaced base is not refined again
+  (its inner layer governs); nothing is refined at `disp_scale 0`; analytic
+  and SDF bases already tessellate at `detail`.  Pick `detail` from the
+  relief's wavelength (roughly 3-4 vertices per feature), not "as high as
+  possible": triangles grow with the square of it (capped at 1.5M).  **For
+  very fine relief skip displacement entirely** -- `relief_modifier` (any
   `scalar_painter` height field, `domain surface`, no texcoords) perturbs
-  only the SHADING NORMAL, never the mesh's own vertices, so it cannot
-  introduce this faceting on a `lathe_geometry`/`sweep_geometry`/
-  `skin_geometry` base at all; see `procedural-textures.md`'s "Adding
-  relief" section and `docs/RELIEF_MODIFIER_DESIGN.md`.
+  only the SHADING NORMAL, never the mesh's own vertices, so it needs no
+  tessellation at all; see `procedural-textures.md`'s "Adding relief"
+  section and `docs/RELIEF_MODIFIER_DESIGN.md`.
 - **An INTERIOR-pinch `lathe_geometry` profile (an hourglass waisted to
-  `r 0` partway along, not just at the two ends) TEARS at the pinch under
-  displacement** -- the pinch bakes as two coincident vertices with opposite
-  normals (`ProceduralDescriptors.h`'s `LatheDescriptor` documents this
-  as deliberate, not a bug: welding them back into one vertex would put one
-  band's shading normal in the wrong half-space instead).  Displacing one
-  pushes the pair apart by `2 * disp_scale`, opening a visible crack.
-  Displace an UNPINCHED profile, or keep `disp_scale` small relative to the
-  waist.
+  `r 0` partway along, not just at the two ends) used to TEAR at the pinch
+  under displacement** -- the pinch bakes as two coincident vertices with
+  opposite normals (`ProceduralDescriptors.h`'s `LatheDescriptor`), and
+  displacing each along its own normal pushed the pair apart by
+  `2 * disp_scale`.  The coincident-vertex weld above closes it now (both
+  poles share one displaced position; each band keeps its own shading
+  normal).  A pinch is still a single point, so the field's relief is
+  averaged away right at the waist.
 
 A `skeleton_geometry`-expanded creature has no per-limb UV: every part
 shares ONE cylindrical wrap around the whole body's own bounding box (`u` =

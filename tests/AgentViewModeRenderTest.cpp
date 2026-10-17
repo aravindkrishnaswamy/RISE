@@ -81,6 +81,7 @@
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
+#include "../src/Library/Geometry/DisplacedGeometry.h"   // R5: the gather reads a displaced lathe's bake in place (copy counter)
 #include "../src/Library/SceneEditor/CameraIntrospection.h"   // doc 91 review: bit-exact camera capture for the restore test
 #include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
@@ -6692,6 +6693,74 @@ static void RunBoundedSurfaceGatherTest()
 }
 
 
+//----------------------------------------------------------------------
+// (R5) The surface-point gather reads a DISPLACED mesh base's BAKE in place.  It used
+// to go through TessellateToMesh, which re-copies every array of the bake -- up to the
+// 1.5M-triangle refinement cap `detail` allows -- before thinning to kFitMaxPoints.
+// DisplacedGeometry::GetTessellateCopyCount() counts exactly that copy: it must stay 0
+// across an isolate and a zoom of a fine displaced lathe, which must still frame the
+// object by its surface.
+//----------------------------------------------------------------------
+static const char* const kSceneDisplacedLatheGather =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 14\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"box_geometry\n{\n\tname backdrop_geo\n\twidth 24\n\theight 18\n\tdepth 0.4\n}\n\n"
+	"standard_object\n{\n\tname backdrop\n\tgeometry backdrop_geo\n\tmaterial mat\n\tposition 0 0 -3\n}\n\n"
+	"lathe_geometry\n{\n\tname vase\n\tprofile_point 0 0\n\tprofile_point 1.0 0.2\n\tprofile_point 1.2 0.9\n\tprofile_point 0.6 1.8\n\tprofile_point 0 2.0\n"
+	"\taxis y\n\tsweep_degrees 360\n\tn_radial 24\n\tsmooth TRUE\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pblack\n\tcolor 0 0 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pwhite\n\tcolor 1 1 1\n}\n\n"
+	"perlin2d_painter\n{\n\tname relief\n\tcolora pblack\n\tcolorb pwhite\n\tpersistence 0.5\n\toctaves 3\n\tscale 8.0 8.0\n\tshift 0 0\n}\n\n"
+	"displaced_geometry\n{\n\tname dvase\n\tbase_geometry vase\n\tdetail 300\n\tdisplacement relief\n\tdisp_scale 0.05\n}\n\n"
+	"standard_object\n{\n\tname dvase_obj\n\tgeometry dvase\n\tmaterial mat\n\tposition 3 -1.5 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 12.0\n\tcolor 1 1 1\n\tposition 0 4 8\n}\n";
+
+static void RunDisplacedLatheGatherTest()
+{
+	using RISE::Implementation::DisplacedGeometry;
+	std::printf( "=== AgentViewModeRenderTest: (R5) the surface-point gather reads a displaced lathe's bake in place ===\n" );
+	const std::string scenePath = WriteTemp( "rise_displaced_lathe_gather.RISEscene", kSceneDisplacedLatheGather );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R5 displaced-lathe scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "R5 session wraps" ); return; }
+
+	// Warm: realize / bake the displaced lathe once, so the counters below see the gather alone.
+	{
+		AgentRenderParams w; w.renderTarget = AgentRenderTarget::ObjectMap; w.width = 32; w.height = 32;
+		std::srand( g_renderSeed++ );
+		session->Render( w );
+	}
+	DisplacedGeometry::ResetTessellateCopyCount();
+	AgentRenderParams p; p.isolate = "dvase_obj"; p.renderTarget = AgentRenderTarget::ObjectMap; p.width = 64; p.height = 64;
+	std::srand( g_renderSeed++ );
+	const AgentRenderResult r = session->Render( p );
+	const unsigned int copiesAfterIsolate = DisplacedGeometry::GetTessellateCopyCount();
+	AgentRenderParams z; z.zoom = "dvase_obj"; z.renderTarget = AgentRenderTarget::ObjectMap; z.width = 64; z.height = 64;
+	std::srand( g_renderSeed++ );
+	const AgentRenderResult zr = session->Render( z );
+	const unsigned int copiesAfterZoom = DisplacedGeometry::GetTessellateCopyCount();
+	const double share = LegendShareOfFrame( r, "dvase_obj" );
+	std::printf( "  displaced lathe: isolate %u points (basis %s, %.1f ms), share of frame %.3f; zoom %u points (basis %s); full-mesh tessellate copies: isolate %u, zoom %u\n",
+	             r.isolateSurfacePointCount, r.isolateFitBasis.c_str(), r.isolateFitMillis, share,
+	             zr.zoomSurfacePointCount, zr.zoomFitBasis.c_str(), copiesAfterIsolate, copiesAfterZoom );
+	Check( r.ok && r.isolateFitBasis == "surface", std::string( "R5 isolate fits the displaced lathe by its surface: " ) + r.message );
+	Check( r.isolateSurfacePointCount > 100 && r.isolateSurfacePointCount <= 24000 + 26,
+	       "R5 the retained point set is bounded (<= the fit cap plus the 26 extremes)" );
+	Check( copiesAfterIsolate == 0,
+	       "MONEY ASSERTION (R5): isolating a displaced lathe does not tessellate-copy its bake (the gather stride-reads GetBakedMesh)" );
+	Check( copiesAfterZoom == 0, "R5 zoom reads the bake in place too" );
+	Check( share >= 0.2, "R5 and the isolated displaced lathe fills the frame (framed correctly from its surface points)" );
+	Check( zr.ok && zr.zoomFitBasis == "surface" && zr.zoomSurfacePointCount <= 24000 + 26 && zr.zoomSurfacePointCount > 100,
+	       std::string( "R5 zoom is bounded and surface-fitted the same way: " ) + zr.message );
+	pJob->release();
+}
+
 //======================================================================
 // DOC 91 review round 2 (2026-10-17)
 //======================================================================
@@ -6963,6 +7032,7 @@ int main()
 	RunZoomRefusesUnseenObjectTest();
 	RunZoomOverheadUpFallbackTest();
 	RunBoundedSurfaceGatherTest();
+	RunDisplacedLatheGatherTest();
 	// Doc 91 review round 2
 	RunThinSdfPartFramedTest();
 	RunZoomKeepsRollAndOrientationTest();

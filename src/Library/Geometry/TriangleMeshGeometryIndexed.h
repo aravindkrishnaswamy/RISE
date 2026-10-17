@@ -22,6 +22,7 @@
 #include "../Acceleration/BVH.h"
 #include "../Acceleration/AccelerationConfig.h"
 #include <atomic>
+#include <memory>
 #include <vector>
 
 namespace RISE
@@ -46,6 +47,8 @@ namespace RISE
 			public MeshSignalBake::ISelfOccluder,
 			public MeshSignalBake::IInputSource
 		{
+		public:
+			class MeshGrid;			// defined below (a builder's authored grid structure)
 		protected:
 			virtual ~TriangleMeshGeometryIndexed();
 
@@ -117,6 +120,15 @@ namespace RISE
 			//! for the full account and the current mechanism's documented
 			//! residual.)
 			bool					m_bWatertight;
+			// NOTE: neither the chart bits (m_uvPeriodic), the grid structure, the displacement weld
+			// policy nor the weld domains are carried by .risemesh Serialize/Deserialize -- all of
+			// them describe what a procedural BUILDER knew when it built the mesh.  A deserialized
+			// (imported) mesh therefore never wraps its chart, is refined uniformly (median-edge
+			// 1->4 levels), never grid-wise, and reloads with the default kWeldCreaseCone policy.
+			std::shared_ptr<const MeshGrid>	m_grid;		//!< set by a builder (lathe / sweep / skin); see MeshGrid
+			int							m_weldPolicy;	//!< DisplacementWeldPolicy: how DisplacedGeometry welds this mesh's coincident vertices
+			std::vector<unsigned int>	m_weldDomains;	//!< optional per-position weld DOMAIN id (path_instances: the instance); empty = one domain
+			std::vector<unsigned char>	m_uvPeriodic;	//!< per-position-index kUPeriodic/kVPeriodic bits (see SetUVPeriodicRegion); empty = none
 
 			//! Computes and caches `m_bWatertight`.  Called from
 			//! `DoneIndexedTriangles` or modern `Deserialize` once `ptr_polygons` is final; a
@@ -297,10 +309,124 @@ namespace RISE
 			void Serialize( IWriteBuffer& buffer ) const override;
 			void Deserialize( IReadBuffer& buffer ) override;
 
-			// Pass-through tessellation: emits the stored indexed triangles unchanged.
+			// Pass-through tessellation: re-emits the stored triangles with same-index
+			// (iVertices == iNormals == iCoords) semantics, ONE output vertex per distinct
+			// original (position, normal, uv) index triple (first-seen order), so the source
+			// mesh's shared topology survives -- smooth per-vertex normals stay smooth under
+			// DisplacedGeometry's post-displacement normal recompute, while intentionally
+			// duplicated hard-edge/cap/pole vertices (distinct normal indices) stay split.
+			// A face-normal mesh (no stored normals) is flattened per corner instead.
 			// The `detail` parameter is ignored — an indexed mesh already IS a mesh.
-			// Index references are offset by the caller's existing vertex count.
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
+
+			//! Chart bits for SetUVPeriodicRegion / TessellateToMeshEx.
+			//!  kU/kVPeriodic : the chart WRAPS on that axis (see below).
+			//!  kU/kVPolar    : that axis' chart value is a PLACEHOLDER at this vertex --
+			//!                  the coordinate is genuinely undefined there (a lathe pole's
+			//!                  u: every angle maps to the one point, stored as 0.5; a skin
+			//!                  pinch's v).  Refinement then never averages the placeholder
+			//!                  into a neighbour: an edge with exactly one polar end takes
+			//!                  the OTHER end's value on that axis.
+			enum { kUPeriodic = 1, kVPeriodic = 2, kUPolar = 4, kVPolar = 8 };
+
+			//! The AUTHORED GRID STRUCTURE a procedural builder (lathe / sweep / skin) records
+			//! while it emits its triangles: which authored triangles form quads of a regular
+			//! grid (and between which line FAMILIES -- every edge of a family is subdivided the
+			//! same number of times, so neighbouring quads agree on shared edges), and which form
+			//! pole / pinch fans.  Triangles in neither (end caps, degenerate leftovers such as a
+			//! skin triangle the builder's zero-area test half-ate) are NOT cells: they are
+			//! subdivided only along the edges they share with a refined cell (see
+			//! TessellateRefined), so the result has no T-junction.  Used by TessellateRefined() to
+			//! put MORE SAMPLES on the authored surface without changing it -- see the principle there.
+			class MeshGrid
+			{
+			public:
+				//! A quad: the two authored triangles are (q0,q1,q2) and (q0,q2,q3) (diagonal
+				//! q0-q2).  Edges q0q1 and q3q2 are in family famS, q0q3 and q1q2 in famT.
+				struct Quad { unsigned int q[4]; unsigned int famS, famT, tri[2]; };
+				//! A fan around a pole / pinch: the authored triangle (t0,t1,t2), t[pole] being the
+				//! collapsed vertex.  The two spokes are in family famSpoke, the opposite (ring)
+				//! edge in famRing.
+				struct Fan { unsigned int t[3]; unsigned int pole, famSpoke, famRing, tri; };
+				std::vector<Quad> quads;
+				std::vector<Fan>  fans;
+				unsigned int      numFamilies;
+				MeshGrid() : numFamilies( 0 ) {}
+			};
+			void SetGrid( const std::shared_ptr<const MeshGrid>& g ) { m_grid = g; }
+			const MeshGrid* GetGrid() const { return m_grid.get(); }
+
+			//! REFINEMENT NEVER CHANGES THE AUTHORED SURFACE.  Subdivides the recorded grid so
+			//! every edge family is <= targetEdge long (quad diagonals are up to sqrt(2) longer)
+			//! while the total stays <= maxTriangles.  Every new vertex lies on the authored
+			//! piecewise-linear surface (the authored triangles, never a re-evaluated or rounded
+			//! one), its normal and UV are interpolated from the authored vertices' (barycentric
+			//! within the authored triangle; UVs respect the periodic / polar chart bits), creases
+			//! exist only where the author made them (inserted rows are single, smooth rows),
+			//! and correspondence (loft pairing, caps) is the authored one.  An authored triangle
+			//! no cell replaced that touches a subdivided edge (an end cap; a half-eaten skin
+			//! triangle) subdivides that edge by the same count -- the edge is found by POSITION
+			//! (GeometricUtilities::WeldVertexPositions), because a cap's rim vertices are
+			//! duplicates of the wall's -- and closes its boundary with a fan to its centroid (a
+			//! collinear triangle: a fan from a corner), so no refined vertex lies inside a
+			//! single-use edge and a cap's rim matches the wall's rim vertex for vertex.  Output uses the
+			//! same-index contract; authored vertices keep their indices, new ones follow.
+			//! Returns 1 with the refined arrays, or 0 (arrays untouched) when there is no grid or
+			//! the authored mesh is already at least that dense.
+			int TessellateRefined( const Scalar targetEdge, const size_t maxTriangles,
+				IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals,
+				TexCoordsListType& coords, std::vector<unsigned char>* pUVFlags ) const;
+
+			//! True when this mesh shades with computed face normals (bUseFaceNormals): its
+			//! tessellation is flattened per corner, so it has no shared topology to refine.
+			bool UsesFaceNormals() const { return bUseFaceNormals; }
+
+			//! Declare chart bits (kUPeriodic ... kVPolar) over a range of vertices.  For the
+			//! periodic bits: the UV chart WRAPS on an axis over those vertices:
+			//! the builders that stitch a ring back to its first column with NO
+			//! duplicated seam column (a full-turn lathe's u; a sweep's closed-
+			//! profile u, and its v when the path is closed) leave the wrap edge
+			//! spanning ~(1 -> 0) in chart space, so a midpoint taken linearly
+			//! lands on the far side of the texture.  Only edges whose BOTH
+			//! endpoints carry the axis bit are treated as periodic (a sweep's
+			//! planar end caps share the mesh but not the wrap).  Call AFTER the
+			//! vertices exist.  Default: no axis periodic (every imported /
+			//! prebuilt mesh) -- the chart is then always interpolated linearly.
+			void SetUVPeriodicRegion( const unsigned char mask, const unsigned int firstVertex, const unsigned int count );
+
+			//! TessellateToMesh plus, optionally, the per-OUTPUT-vertex periodicity bits
+			//! (the bits of the vertex's source position), index-parallel to `vertices`.
+			//! pWeldDomains (optional): the weld-domain id of each output vertex's source position
+			//! (see SetDisplacementWeldDomains); left untouched when the mesh has no domains.
+			bool TessellateToMeshEx( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail, std::vector<unsigned char>* pUVPeriodic, std::vector<unsigned int>* pWeldDomains = 0 ) const;
+
+			//! Install per-position periodicity bits wholesale (DisplacedGeometry's baked mesh).
+			void SetUVPeriodicFlags( const std::vector<unsigned char>& flags ) { m_uvPeriodic = flags; }
+
+			//! How DisplacedGeometry welds the vertices of this mesh that are COINCIDENT in the
+			//! undisplaced mesh (a crease, a cap rim, a pinch's two poles, a UV seam are separate
+			//! vertices at one position).  Welded vertices move to one shared displaced position
+			//! (the mean of their displacement vectors), so the crease stays closed.
+			//!  kWeldCreaseCone : (default; an import, a deserialized .risemesh, a hand-built mesh)
+			//!                    weld a coincident group's members whose base normals lie within a
+			//!                    crease cone of each other (angle < 120 deg: a seam, a cube edge, a
+			//!                    cap against a wall) -- coincident OPPOSITE-facing sheets (a two-sided
+			//!                    leaf, cloth) are NOT one surface and stay independent.
+			//!  kWeldAll        : a procedural builder (lathe / sweep / skin): every coincident group
+			//!                    is, by construction, the builder's own crease / cap rim / duplicated
+			//!                    profile point / pinch pole / skin crease station, so all of it is welded
+			//!                    whatever its normals (a pinch's two poles face opposite ways).
+			//!  kWeldNone       : weld nothing (a face-normal template's instances).
+			//! WELD DOMAINS: when the mesh carries per-position domain ids
+			//! (SetDisplacementWeldDomains), coincident vertices are welded only WITHIN a domain,
+			//! by this policy.  path_instances_geometry makes each instance a domain (policy: the
+			//! template's own), so a creased template stays closed inside every instance while
+			//! TOUCHING instances stay independent bodies.
+			enum DisplacementWeldPolicy { kWeldCreaseCone = 0, kWeldAll = 1, kWeldNone = 2 };
+			void SetDisplacementWeldPolicy( const int p ) { m_weldPolicy = p; }
+			int  GetDisplacementWeldPolicy() const { return m_weldPolicy; }
+			void SetDisplacementWeldDomains( const std::vector<unsigned int>& d ) { m_weldDomains = d; }
+			const std::vector<unsigned int>& GetDisplacementWeldDomains() const { return m_weldDomains; }
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
