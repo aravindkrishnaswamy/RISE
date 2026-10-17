@@ -53,16 +53,22 @@ namespace {
 	// keeps its midpoints split too: nothing is welded by position.
 	//
 	// Attributes at a midpoint: position LINEAR, normal = normalize(na + nb)
-	// (falls back to na for opposed normals), UV LINEAR except across a
-	// periodic wrap (|du| > 0.5 or |dv| > 0.5 means the edge crosses the chart's
-	// u=1 -> u=0 stitch, the lathe/sweep wrap with no duplicated seam column;
-	// the midpoint is taken on the short way round so it does not land on the
-	// opposite side of the texture).  TRADEOFF: for a surface of revolution the
+	// (falls back to na for opposed normals), UV LINEAR -- except on an axis the
+	// base DECLARES periodic (TriangleMeshGeometryIndexed::SetUVPeriodicRegion:
+	// a full-turn lathe's u, a sweep's closed-profile u and closed-path v, whose
+	// last column stitches back to the first with no duplicated seam column) for
+	// an edge whose two ends are both in that region and whose chart delta is
+	// more than half a period: that is the ring-stitch edge spanning ~(1 -> 0),
+	// and its midpoint is taken the short way round (modulo 1) so it does not
+	// land on the far side of the texture.  A chart that is NOT declared periodic
+	// (an imported mesh, planar caps, a [0,4] tiled chart) is always linear.
+	// TRADEOFF: for a surface of revolution the
 	// chord midpoint lies a sagitta (~ edge^2 / 8R) inside the true surface and
 	// the displacement runs along the averaged normal, which is the true normal
 	// of the arc midpoint for a circular section -- accurate enough that the
-	// error is far below any relief this is used for, and exactly what makes
-	// the result independent of which builder produced the mesh.
+	// error is far below any relief this is used for.  The silhouette of a coarse
+	// base therefore stays polygonal: refinement adds resolution to the relief,
+	// it does not round the base.
 	//
 	// Requires iVertices == iNormals == iCoords on every triangle (the
 	// TessellateToMesh contract); otherwise the mesh is left unrefined.
@@ -83,15 +89,25 @@ namespace {
 		return ( a < b ) ? ( ( std::uint64_t( a ) << 32 ) | b ) : ( ( std::uint64_t( b ) << 32 ) | a );
 	}
 
-	inline Scalar WrapMid( Scalar a, Scalar b )
+	// Midpoint of a chart coordinate on an axis the mesh DECLARES periodic with
+	// period 1, taken the short way round from `a` to `b` and expressed in the
+	// unit cell that holds the lower endpoint (so it works for any offset chart,
+	// not just [0,1)).  Called only for an edge flagged periodic on this axis
+	// whose chart delta exceeds half a period -- i.e. the ring-stitch edge that
+	// spans ~(1 -> 0); every other edge on every mesh is interpolated linearly.
+	inline Scalar PeriodicMid( const Scalar a, const Scalar b )
 	{
-		if( std::fabs( a - b ) > 0.5 ) {
-			if( a < b ) a += 1.0; else b += 1.0;
-			Scalar m = 0.5 * ( a + b );
-			if( m >= 1.0 ) m -= 1.0;
-			return m;
-		}
-		return 0.5 * ( a + b );
+		Scalar d = b - a;
+		d -= std::floor( d + 0.5 );
+		Scalar m = a + 0.5 * d;
+		const Scalar cell = std::floor( a < b ? a : b );
+		m -= std::floor( m - cell );
+		return m;
+	}
+
+	inline Scalar ChartMid( const Scalar a, const Scalar b, const bool bPeriodicAxis )
+	{
+		return ( bPeriodicAxis && std::fabs( a - b ) > 0.5 ) ? PeriodicMid( a, b ) : 0.5 * ( a + b );
 	}
 
 	RefineResult RefineMeshToEdgeLength(
@@ -99,9 +115,11 @@ namespace {
 		VerticesListType&      vertices,
 		NormalsListType&       normals,
 		TexCoordsListType&     coords,
+		std::vector<unsigned char>& uvFlags,
 		const Scalar           targetLen )
 	{
 		RefineResult res;
+		uvFlags.resize( vertices.size(), 0 );
 		res.trianglesBefore = res.trianglesAfter = tris.size();
 		if( tris.empty() || !( targetLen > 0 ) ||
 			vertices.size() != normals.size() || vertices.size() != coords.size() ) {
@@ -176,7 +194,13 @@ namespace {
 				Vector3 nm = na + nb;
 				const Scalar nl = Vector3Ops::Magnitude( nm );
 				normals.push_back( nl > 1e-12 ? nm * ( 1.0 / nl ) : na );
-				coords.push_back( TexCoord( WrapMid( ca.x, cb.x ), WrapMid( ca.y, cb.y ) ) );
+				// A new vertex is on a periodic chart region only if BOTH ends are
+				// (a sweep's end caps, a lathe's flat caps never wrap).
+				const unsigned char fm = static_cast<unsigned char>( uvFlags[a] & uvFlags[b] );
+				uvFlags.push_back( fm );
+				coords.push_back( TexCoord(
+					ChartMid( ca.x, cb.x, ( fm & TriangleMeshGeometryIndexed::kUPeriodic ) != 0 ),
+					ChartMid( ca.y, cb.y, ( fm & TriangleMeshGeometryIndexed::kVPeriodic ) != 0 ) ) );
 			}
 
 			// Pass 3: emit the refined triangles.
@@ -261,18 +285,73 @@ namespace {
 }
 
 namespace {
-	// Add the refined base's (shading - geometric) normal delta back onto the
-	// recomputed geometric normals (see TessellateAndRefine).
-	void ApplyShadingDelta( const NormalsListType& delta, NormalsListType& normals )
+	// Rotate `v` by the minimal rotation taking unit `from` to unit `to`.
+	Vector3 RotateFromTo( const Vector3& from, const Vector3& to, const Vector3& v )
 	{
-		if( delta.size() != normals.size() ) {
+		const Vector3 axis = Vector3Ops::Cross( from, to );
+		const Scalar sinT = Vector3Ops::Magnitude( axis );
+		const Scalar cosT = Vector3Ops::Dot( from, to );
+		if( sinT < 1e-12 ) {
+			if( cosT > 0.0 ) {
+				return v;
+			}
+			// antiparallel: a half turn about any axis perpendicular to `from`
+			Vector3 u = ( std::fabs( from.x ) < 0.9 ) ? Vector3( 1, 0, 0 ) : Vector3( 0, 1, 0 );
+			u = Vector3Ops::Normalize( Vector3Ops::Cross( from, u ) );
+			return u * ( 2.0 * Vector3Ops::Dot( v, u ) ) - v;
+		}
+		const Vector3 k = axis * ( 1.0 / sinT );
+		return v * cosT + Vector3Ops::Cross( k, v ) * sinT + k * ( Vector3Ops::Dot( k, v ) * ( 1.0 - cosT ) );
+	}
+
+	// Carry the base's smooth SHADING-normal field through the displacement.
+	//   shading0 / geom0 : the base's shading normals and its angle-weighted
+	//                      geometric normals on the UNdisplaced (refined) mesh;
+	//   normals          : on entry the displaced mesh's geometric normals g1,
+	//                      on exit the final shading normals.
+	// Each vertex's base shading normal is ROTATED by the minimal rotation that
+	// takes its undisplaced geometric normal to its displaced one, so the
+	// perturbation the relief makes is applied in the displaced frame (adding a
+	// world-space difference instead pushes normals behind steep faces).  A
+	// vertex whose result would sit behind an incident face the geometric normal
+	// is in front of falls back to the geometric normal there, so the count of
+	// back-facing shading normals never exceeds the geometric-only count.
+	void ApplyTransportedShading(
+		const NormalsListType&       shading0,
+		const NormalsListType&       geom0,
+		const IndexTriangleListType& tris,
+		const VerticesListType&      vertices,
+		NormalsListType&             normals )
+	{
+		if( shading0.size() != normals.size() || geom0.size() != normals.size() ) {
 			return;
 		}
+		const NormalsListType g1 = normals;
 		for( size_t i = 0; i < normals.size(); ++i ) {
-			const Vector3 n = normals[i] + delta[i];
-			const Scalar l = Vector3Ops::Magnitude( n );
-			if( l > 1e-12 ) {
-				normals[i] = n * ( 1.0 / l );
+			const Vector3 s = RotateFromTo( geom0[i], g1[i], shading0[i] );
+			const Scalar l = Vector3Ops::Magnitude( s );
+			normals[i] = ( l > 1e-12 ) ? s * ( 1.0 / l ) : g1[i];
+		}
+		std::vector<unsigned char> fallback( normals.size(), 0 );
+		for( size_t t = 0; t < tris.size(); ++t ) {
+			const Vector3 c = Vector3Ops::Cross(
+				Vector3Ops::mkVector3( vertices[tris[t].iVertices[1]], vertices[tris[t].iVertices[0]] ),
+				Vector3Ops::mkVector3( vertices[tris[t].iVertices[2]], vertices[tris[t].iVertices[0]] ) );
+			const Scalar m = Vector3Ops::Magnitude( c );
+			if( m < NEARZERO ) {
+				continue;
+			}
+			const Vector3 nf = c * ( 1.0 / m );
+			for( int k = 0; k < 3; ++k ) {
+				const unsigned int vi = tris[t].iVertices[k];
+				if( Vector3Ops::Dot( normals[vi], nf ) <= 0.0 && Vector3Ops::Dot( g1[vi], nf ) > 0.0 ) {
+					fallback[vi] = 1;
+				}
+			}
+		}
+		for( size_t i = 0; i < normals.size(); ++i ) {
+			if( fallback[i] ) {
+				normals[i] = g1[i];
 			}
 		}
 	}
@@ -289,54 +368,85 @@ bool DisplacedGeometry::TessellateAndRefine(
 	NormalsListType&       normals,
 	TexCoordsListType&     coords,
 	const bool             bLog,
-	NormalsListType&       refinedShadingDelta ) const
+	NormalsListType&       shading0,
+	NormalsListType&       geom0,
+	std::vector<unsigned char>& uvFlags ) const
 {
-	refinedShadingDelta.clear();
-	if( !m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail ) ) {
+	shading0.clear();
+	geom0.clear();
+	uvFlags.clear();
+
+	// A MESH base (an indexed mesh -- lathe / sweep / skin / imported -- or a
+	// displaced base's re-emitted baked mesh) tessellates to itself: its own
+	// TessellateToMesh IGNORES `detail`.  Spheres, boxes, SDFs, ... tessellate AT
+	// `detail` already and are left completely alone.
+	const TriangleMeshGeometryIndexed* pIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pBase );
+	const DisplacedGeometry*           pDsp = dynamic_cast<const DisplacedGeometry*>( m_pBase );
+	bool bOk;
+	if( pIdx ) {
+		bOk = pIdx->TessellateToMeshEx( tris, vertices, normals, coords, m_detail, &uvFlags );
+	} else if( pDsp ) {
+		bOk = pDsp->TessellateToMeshEx( tris, vertices, normals, coords, m_detail, &uvFlags );
+	} else {
+		bOk = m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail );
+	}
+	if( !bOk ) {
 		return false;
 	}
-
-	// Only a base whose own TessellateToMesh IGNORES `detail` needs refining:
-	// an indexed mesh (lathe / sweep / skin / imported) or a displaced base's
-	// re-emitted baked mesh.  Spheres, boxes, SDFs, ... tessellate AT `detail`
-	// already and are left alone.  And only when vertices will actually move.
-	const bool bMeshBase =
-		dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pBase ) != 0 ||
-		dynamic_cast<const DisplacedGeometry*>( m_pBase ) != 0;
-	if( !bMeshBase || m_detail == 0 || !WillDisplaceVertices() || vertices.empty() ) {
+	const bool bMeshBase = ( pIdx != 0 ) || ( pDsp != 0 );
+	if( !bMeshBase || !WillDisplaceVertices() || vertices.empty() ) {
 		return true;
 	}
 
-	Point3 lo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), hi( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
-	for( size_t i = 0; i < vertices.size(); ++i ) {
-		lo.x = r_min( lo.x, vertices[i].x ); lo.y = r_min( lo.y, vertices[i].y ); lo.z = r_min( lo.z, vertices[i].z );
-		hi.x = r_max( hi.x, vertices[i].x ); hi.y = r_max( hi.y, vertices[i].y ); hi.z = r_max( hi.z, vertices[i].z );
-	}
-	const Scalar diag = Vector3Ops::Magnitude( Vector3Ops::mkVector3( hi, lo ) );
-	const Scalar target = diag / Scalar( m_detail );
+	// REFINE to `detail`: split every edge longer than (base bbox diagonal / detail).
+	if( m_detail != 0 ) {
+		Point3 lo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), hi( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
+		for( size_t i = 0; i < vertices.size(); ++i ) {
+			lo.x = r_min( lo.x, vertices[i].x ); lo.y = r_min( lo.y, vertices[i].y ); lo.z = r_min( lo.z, vertices[i].z );
+			hi.x = r_max( hi.x, vertices[i].x ); hi.y = r_max( hi.y, vertices[i].y ); hi.z = r_max( hi.z, vertices[i].z );
+		}
+		const Scalar diag = Vector3Ops::Magnitude( Vector3Ops::mkVector3( hi, lo ) );
+		const Scalar target = diag / Scalar( m_detail );
 
-	const RefineResult r = RefineMeshToEdgeLength( tris, vertices, normals, coords, target );
-	if( r.levels > 0 && !m_bUseFaceNormals ) {
-		// (base shading normal - geometric normal) of the refined, UNdisplaced mesh.
-		NormalsListType geometric = normals;
-		RecomputeVertexNormalsFromTopology( tris, vertices, geometric );
-		refinedShadingDelta.resize( normals.size() );
-		for( size_t i = 0; i < normals.size(); ++i ) {
-			refinedShadingDelta[i] = normals[i] - geometric[i];
+		const RefineResult r = RefineMeshToEdgeLength( tris, vertices, normals, coords, uvFlags, target );
+		if( r.levels > 0 && bLog ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"DisplacedGeometry: refined the mesh base to detail %u (target edge %g): %u level(s), %u -> %u triangles",
+				m_detail, (double)target, r.levels, (unsigned)r.trianglesBefore, (unsigned)r.trianglesAfter );
+		}
+		if( r.capped && bLog ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"DisplacedGeometry: mesh refinement for detail %u stopped at the %u-level / %u-triangle cap (%u triangles); "
+				"some edges are still longer than the target %g -- raise the base's own tessellation or lower `detail`",
+				m_detail, kMaxRefineLevels, (unsigned)kMaxRefineTriangles, (unsigned)tris.size(), (double)target );
 		}
 	}
-	if( r.levels > 0 && bLog ) {
-		GlobalLog()->PrintEx( eLog_Event,
-			"DisplacedGeometry: refined the mesh base to detail %u (target edge %g): %u level(s), %u -> %u triangles",
-			m_detail, (double)target, r.levels, (unsigned)r.trianglesBefore, (unsigned)r.trianglesAfter );
-	}
-	if( r.capped && bLog ) {
-		GlobalLog()->PrintEx( eLog_Warning,
-			"DisplacedGeometry: mesh refinement for detail %u stopped at the %u-level / %u-triangle cap (%u triangles); "
-			"some edges are still longer than the target %g -- raise the base's own tessellation or lower `detail`",
-			m_detail, kMaxRefineLevels, (unsigned)kMaxRefineTriangles, (unsigned)tris.size(), (double)target );
+
+	// The base's smooth shading-normal field and its geometric normals on the
+	// undisplaced (possibly refined) mesh -- ApplyTransportedShading carries the
+	// former through the displacement, REFINED OR NOT, so the look is continuous
+	// across the refinement threshold.
+	if( !m_bUseFaceNormals ) {
+		shading0 = normals;
+		geom0 = normals;
+		RecomputeVertexNormalsFromTopology( tris, vertices, geom0 );
 	}
 	return true;
+}
+
+bool DisplacedGeometry::TessellateToMeshEx(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail,
+	std::vector<unsigned char>* pUVPeriodic ) const
+{
+	const TriangleMeshGeometryIndexed* pIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pMesh );
+	if( !pIdx ) {
+		return false;
+	}
+	return pIdx->TessellateToMeshEx( tris, vertices, normals, coords, detail, pUVPeriodic );
 }
 
 unsigned int DisplacedGeometry::GetBuildMeshCount()
@@ -574,9 +684,10 @@ void DisplacedGeometry::BuildMesh() const
 	NormalsListType       normals;
 	TexCoordsListType     coords;
 
-	NormalsListType       shadingDelta;
+	NormalsListType       shading0, geom0;
+	std::vector<unsigned char> uvFlags;
 
-	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/true, shadingDelta ) ) {
+	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/true, shading0, geom0, uvFlags ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry: base geometry does not support tessellation (e.g. InfinitePlaneGeometry)" );
 		return;
 	}
@@ -589,10 +700,11 @@ void DisplacedGeometry::BuildMesh() const
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
-		ApplyShadingDelta( shadingDelta, normals );
+		ApplyTransportedShading( shading0, geom0, tris, vertices, normals );
 	}
 
-	m_pMesh = new TriangleMeshGeometryIndexed( m_bDoubleSided, m_bUseFaceNormals );
+	TriangleMeshGeometryIndexed* pNewMesh = new TriangleMeshGeometryIndexed( m_bDoubleSided, m_bUseFaceNormals );
+	m_pMesh = pNewMesh;
 	GlobalLog()->PrintNew( m_pMesh, __FILE__, __LINE__, "displaced geometry internal mesh" );
 
 	m_pMesh->BeginIndexedTriangles();
@@ -601,6 +713,8 @@ void DisplacedGeometry::BuildMesh() const
 	m_pMesh->AddTexCoords( coords );
 	m_pMesh->AddIndexedTriangles( tris );
 	m_pMesh->DoneIndexedTriangles();
+	// Chart periodicity travels with the mesh (a displaced-of-displaced base reads it).
+	pNewMesh->SetUVPeriodicFlags( uvFlags );
 }
 
 void DisplacedGeometry::RefreshMeshVertices()
@@ -618,9 +732,10 @@ void DisplacedGeometry::RefreshMeshVertices()
 	NormalsListType       normals;
 	TexCoordsListType     coords;
 
-	NormalsListType       shadingDelta;
+	NormalsListType       shading0, geom0;
+	std::vector<unsigned char> uvFlags;
 
-	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/false, shadingDelta ) ) {
+	if( !TessellateAndRefine( tris, vertices, normals, coords, /*bLog=*/false, shading0, geom0, uvFlags ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry::RefreshMeshVertices: base tessellation failed" );
 		return;
 	}
@@ -629,7 +744,7 @@ void DisplacedGeometry::RefreshMeshVertices()
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
-		ApplyShadingDelta( shadingDelta, normals );
+		ApplyTransportedShading( shading0, geom0, tris, vertices, normals );
 	}
 
 	// Topology assumption: the (possibly refined) triangle list is the one the

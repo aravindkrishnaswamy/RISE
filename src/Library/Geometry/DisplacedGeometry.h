@@ -36,15 +36,34 @@ namespace RISE
 		// TriangleMeshGeometryIndexed and used for all intersection / sampling queries.
 		//
 		// MESH BASES ARE REFINED TO `detail`.  A base that is already a mesh
-		// (a TriangleMeshGeometryIndexed -- lathe / sweep / skin / imported -- or another
-		// DisplacedGeometry) ignores `detail` in its own TessellateToMesh, which would
-		// leave it displaced only at its own vertices.  Before displacing,
-		// TessellateAndRefine() splits every edge longer than (base bbox diagonal /
-		// detail): adaptive edge-midpoint subdivision with midpoints shared per
-		// unordered combined-index pair (crack-free; crease / cap / pinch vertices are
-		// distinct combined indices so they stay split; no position welding), capped at
-		// 6 levels / 1.5M triangles.  Analytic and SDF bases already honour `detail`
-		// and are untouched, as is any bake with disp_scale == 0.
+		// (a TriangleMeshGeometryIndexed -- lathe / sweep / skin / the indexed-mesh
+		// imports -- or another DisplacedGeometry; NOT the legacy non-indexed
+		// TriangleMeshGeometry, whose tessellation is per-corner) ignores `detail` in
+		// its own TessellateToMesh, which would leave it displaced only at its own
+		// vertices.  Before displacing, TessellateAndRefine() splits every edge longer
+		// than (base bbox diagonal / detail): adaptive edge-midpoint subdivision with
+		// midpoints shared per unordered combined-index pair (crack-free; crease / cap
+		// / pinch vertices are distinct combined indices so they stay split; no
+		// position welding), capped at 6 levels / 1.5M triangles.  New positions and
+		// UVs are LINEAR (the silhouette of a coarse base stays polygonal), except on
+		// a chart axis the base DECLARES periodic (TriangleMeshGeometryIndexed::
+		// SetUVPeriodicRegion -- a full-turn lathe's u, a sweep's closed-profile u /
+		// closed-path v) where the ring-stitch edge is taken the short way round.
+		// Analytic and SDF bases already honour `detail` and are untouched, as is any
+		// bake with disp_scale == 0.
+		//
+		// SHADING.  For every smooth-normal mesh base that is displaced (refined or
+		// not) the base's own shading-normal field is carried through the
+		// displacement: each vertex's base shading normal is rotated by the rotation
+		// the displacement made to its geometric normal (ApplyTransportedShading), so
+		// the look is continuous across the refinement threshold and the relief
+		// perturbs the base's smooth field instead of replacing it.
+		//
+		// REFIT.  An animated displacement refits the baked mesh in place
+		// (RefreshMeshVertices) -- unless the refinement came out different (it is
+		// edge-length driven, so a moving base can change topology at an unchanged
+		// vertex count), detected by a topology signature, in which case the mesh is
+		// rebuilt from scratch.
 		//
 		// TWO HEIGHT ROUTES, MUTUALLY EXCLUSIVE (2026-09-06).  The offset scalar comes
 		// from EXACTLY ONE of:
@@ -152,23 +171,27 @@ namespace RISE
 			// warning on the refit path.  Returns FALSE iff the base cannot
 			// tessellate.
 			//
-			// refinedShadingDelta: when (and only when) the mesh WAS refined, the
-			// per-vertex vector (base shading normal - geometric normal) of the
-			// refined, UNdisplaced mesh; empty otherwise.  The post-displacement
-			// normal recompute is purely geometric, and every vertex a refinement
-			// adds lies on its parent facet's plane, so without this the refined
-			// mesh would shade FLAT per facet -- re-introducing the base's
-			// polygonization (the base's own smooth normals, which an unrefined
-			// bake interpolated across each long facet, would be thrown away).
-			// Adding the delta back keeps the base's shading-normal field and lets
-			// the displacement perturb it, exactly like bump-mapping a smooth base.
+			// shading0 / geom0: for a MESH base that will be displaced (refined or
+			// not), the base's per-vertex shading normals and its angle-weighted
+			// geometric normals on the UNdisplaced mesh; empty otherwise.  The
+			// post-displacement normal recompute is purely geometric, and every
+			// vertex a refinement adds lies on its parent facet's plane, so without
+			// carrying the base's shading field through the displacement a refined
+			// mesh would shade FLAT per facet (re-introducing the base's
+			// polygonization).  ApplyTransportedShading rotates each base shading
+			// normal by the rotation g0 -> g1 the displacement made to the geometric
+			// normal, so the relief perturbs the base's own smooth field.
+			// uvFlags: per-vertex chart-periodicity bits (TriangleMeshGeometryIndexed::
+			// kUPeriodic / kVPeriodic) parallel to `vertices` (empty for a non-mesh base).
 			bool TessellateAndRefine(
 				IndexTriangleListType& tris,
 				VerticesListType&      vertices,
 				NormalsListType&       normals,
 				TexCoordsListType&     coords,
 				const bool             bLog,
-				NormalsListType&       refinedShadingDelta ) const;
+				NormalsListType&       shading0,
+				NormalsListType&       geom0,
+				std::vector<unsigned char>& uvFlags ) const;
 
 			// Topology signature (FNV-1a over the triangle index list and vertex
 			// count) of the mesh the current m_pMesh was built from.
@@ -261,6 +284,11 @@ namespace RISE
 
 			// IGeometry
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
+
+			//! TessellateToMesh plus the per-output-vertex chart-periodicity bits of the
+			//! baked mesh (see TriangleMeshGeometryIndexed::SetUVPeriodicRegion) -- how a
+			//! displaced-of-displaced base keeps its wrap through the bake.
+			bool TessellateToMeshEx( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail, std::vector<unsigned char>* pUVPeriodic ) const;
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 

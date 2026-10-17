@@ -2101,6 +2101,15 @@ namespace RISE
 			}
 		}
 
+		// The RING vertices (everything emitted so far; the planar end caps
+		// below are separate, non-wrapping vertices) wrap in u -- the closed
+		// profile's last vertex stitches back to its first with no duplicated
+		// column -- and, for a closed path, in v (ring n-1 stitches to ring 0,
+		// frac = i/n).  Declared for DisplacedGeometry's mesh refinement.
+		pGeom->SetUVPeriodicRegion(
+			(unsigned char)( TriangleMeshGeometryIndexed::kUPeriodic | ( desc.pathClosed ? TriangleMeshGeometryIndexed::kVPeriodic : 0 ) ),
+			0, (unsigned int)vc );
+
 		// side quads between consecutive rings (cyclic over the profile);
 		// winding gives outward-facing triangles for a CCW profile.  A closed
 		// path additionally wraps ring (n-1) to ring 0 (no open-path "ends"),
@@ -2645,6 +2654,15 @@ namespace RISE
 					vc++;
 				}
 			}
+		}
+
+		// A full turn stitches the last column back to column 0 with NO
+		// duplicated seam column, so u WRAPS (the wrap edge spans ~(1 -> 0) in
+		// chart space).  Declare it so DisplacedGeometry's mesh refinement takes
+		// midpoints of that edge the short way round; a partial turn has a real
+		// seam column and flat caps, and nothing wraps.
+		if( fullTurn ) {
+			pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kUPeriodic, 0, (unsigned int)vc );
 		}
 
 		// One place for the orientation flip derived above.

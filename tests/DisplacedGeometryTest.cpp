@@ -1177,6 +1177,325 @@ static void TestAngleWeightedNormalsIgnoreTriangulation()
 }
 
 //-----------------------------------------------------------------------------
+// Review round 1, P1-1: UV charts are interpolated LINEARLY at refinement
+// midpoints, except on an axis the base DECLARES periodic.
+//
+// The first cut took the short way round for ANY chart delta > 0.5 on every mesh
+// base, which corrupts ordinary charts: a [0,1]^2 quad (every edge spans 1), a
+// tiled [0,4]^2 chart, a capped cylinder's wall (arc-length v spans 0.6), a
+// sweep's planar end cap.  Wrapping is now taken only where the builder
+// declared it (a full-turn lathe's u, a sweep's closed-profile u) and only for
+// ring-stitch edges (both ends in the periodic region).
+//-----------------------------------------------------------------------------
+class UVSpyFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar /*x*/, const Scalar /*y*/ ) const { return 1.0; }
+};
+
+static TriangleMeshGeometryIndexed* MakeUVQuad( const Scalar umax )
+{
+	TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false );
+	m->BeginIndexedTriangles();
+	m->AddVertex( Point3( 1, -0.5, -0.5 ) ); m->AddVertex( Point3( 1, 0.5, -0.5 ) );
+	m->AddVertex( Point3( 1, 0.5, 0.5 ) );   m->AddVertex( Point3( 1, -0.5, 0.5 ) );
+	for( int i = 0; i < 4; ++i ) m->AddNormal( Vector3( 1, 0, 0 ) );
+	m->AddTexCoord( Point2( 0, 0 ) ); m->AddTexCoord( Point2( umax, 0 ) );
+	m->AddTexCoord( Point2( umax, umax ) ); m->AddTexCoord( Point2( 0, umax ) );
+	m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( 0, 1, 2 ) );
+	m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( 0, 2, 3 ) );
+	m->DoneIndexedTriangles();
+	return m;
+}
+
+static Scalar CircDist( const Scalar a, const Scalar b )
+{
+	Scalar d = std::fabs( a - b );
+	d -= std::floor( d );
+	return std::min( d, 1.0 - d );
+}
+
+static size_t CountZeroUVAreaTriangles( const IndexTriangleListType& t, const VerticesListType& v, const TexCoordsListType& c )
+{
+	size_t n = 0;
+	for( size_t i = 0; i < t.size(); ++i ) {
+		const Point2& a = c[t[i].iCoords[0]]; const Point2& b = c[t[i].iCoords[1]]; const Point2& d = c[t[i].iCoords[2]];
+		const Scalar uvArea = 0.5 * std::fabs( ( b.x - a.x ) * ( d.y - a.y ) - ( d.x - a.x ) * ( b.y - a.y ) );
+		const Vector3 cr = Vector3Ops::Cross( Vector3Ops::mkVector3( v[t[i].iVertices[1]], v[t[i].iVertices[0]] ), Vector3Ops::mkVector3( v[t[i].iVertices[2]], v[t[i].iVertices[0]] ) );
+		if( uvArea < 1e-12 && Vector3Ops::Magnitude( cr ) > 1e-12 ) ++n;
+	}
+	return n;
+}
+
+static void TestRefinementChartInterpolation()
+{
+	// Each check below is SOFT (reported, tallied, asserted once at the end) so a red run
+	// shows every sub-case's damage, not just the first.
+	int softFails = 0;
+#define SOFT( cond ) do { if( !( cond ) ) { ++softFails; std::cout << "  [FAIL] " #cond "\n"; } } while( 0 )
+	std::cout << "Test 10g: refinement midpoints interpolate the UV chart linearly, wrapping only on a declared-periodic axis...\n";
+
+	// ---- (1) plain quads: [0,1]^2 and a tiled [0,4]^2 chart -------------------
+	{
+		const Scalar umaxes[2] = { 1.0, 4.0 };
+		for( int q = 0; q < 2; ++q ) {
+			const Scalar umax = umaxes[q];
+			TriangleMeshGeometryIndexed* pQuad = MakeUVQuad( umax );
+			UVSpyFunction2D* pFn = new UVSpyFunction2D();
+			DisplacedGeometry* pDisp = new DisplacedGeometry( pQuad, 8, pFn, 0.1, false, false, /*seamFold=*/false );
+			pDisp->Realize();
+			IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+			assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+			size_t bad = 0;
+			for( size_t i = 0; i < v.size(); ++i ) {
+				const Scalar uTrue = ( v[i].y + 0.5 ) * umax, vTrue = ( v[i].z + 0.5 ) * umax;
+				if( std::fabs( c[i].x - uTrue ) > 1e-9 || std::fabs( c[i].y - vTrue ) > 1e-9 ) ++bad;
+			}
+			std::cout << "  [info] quad [0," << umax << "]^2: " << v.size() << " vertices after refinement, " << bad << " with a wrong UV\n";
+			assert( v.size() > 4 );
+			SOFT( bad == 0 );
+			pDisp->release(); pFn->release(); pQuad->release();
+		}
+	}
+
+	// ---- (2) capped cylinder (lathe, full turn): wall v spans 0.6; u wraps ----
+	{
+		const int nRadial = 24;
+		static const double prof[] = { 0.0, 0.0,  1.0, 0.0,  1.0, 3.0,  0.0, 3.0 };	// arc 1 + 3 + 1: wall v = 0.2 -> 0.8
+		LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 4; ld.nRadial = nRadial; ld.smooth = false;
+		ITriangleMeshGeometryIndexed* pI = 0;
+		assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+		TriangleMeshGeometryIndexed* pLathe = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		assert( pLathe );
+		IndexTriangleListType bt; VerticesListType bv; NormalsListType bn; TexCoordsListType bc;
+		assert( pLathe->TessellateToMesh( bt, bv, bn, bc, 0 ) );
+
+		UVSpyFunction2D* pFn = new UVSpyFunction2D();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, 48, pFn, 1e-6, false, false, /*seamFold=*/false );
+		pDisp->Realize();
+		IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+		assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+		assert( t.size() > bt.size() );
+
+		size_t wallBadV = 0, wallBadU = 0, wall = 0, capBadV = 0, cap = 0;
+		for( size_t i = 0; i < v.size(); ++i ) {
+			const Scalar r = std::sqrt( v[i].x * v[i].x + v[i].z * v[i].z );
+			if( r > 1.0 - 1e-4 && v[i].y > 1e-3 && v[i].y < 3.0 - 1e-3 ) {		// wall
+				++wall;
+				if( std::fabs( c[i].y - ( 1.0 + v[i].y ) / 5.0 ) > 1e-4 ) ++wallBadV;
+				const Scalar uTrue = std::atan2( v[i].x, v[i].z ) / TWO_PI;
+				if( CircDist( c[i].x, uTrue ) > 1e-4 ) ++wallBadU;
+			} else if( std::fabs( v[i].y ) < 1e-4 && r > 1e-6 ) {					// bottom cap
+				++cap;
+				if( std::fabs( c[i].y - r / 5.0 ) > 3e-3 ) ++capBadV;	// rim chord midpoints sit a sagitta inside the unit circle (<= 0.0017 in v)
+			}
+		}
+		std::cout << "  [info] capped-cylinder lathe: " << wall << " wall vertices (v wrong: " << wallBadV << ", u wrong (circular): " << wallBadU
+			<< "), " << cap << " cap vertices (v wrong: " << capBadV << ")\n";
+		assert( wall > 100 );
+		SOFT( wallBadV == 0 );		// wall v spans 0.6 > 0.5: not a wrap
+		SOFT( wallBadU == 0 );		// the declared-periodic u seam edge IS taken the short way round
+		SOFT( capBadV == 0 );
+
+		// circular u-continuity of every triangle (a wrong wrap midpoint is ~0.5 away)
+		Scalar worstU = 0.0;
+		for( size_t i = 0; i < t.size(); ++i ) {
+			for( int k = 0; k < 3; ++k ) {
+				const Point2& a = c[t[i].iCoords[k]]; const Point2& b = c[t[i].iCoords[( k + 1 ) % 3]];
+				const unsigned int ia = t[i].iVertices[k], ib = t[i].iVertices[( k + 1 ) % 3];
+				if( std::sqrt( v[ia].x * v[ia].x + v[ia].z * v[ia].z ) < 0.95 || std::sqrt( v[ib].x * v[ib].x + v[ib].z * v[ib].z ) < 0.95 ) continue;	// pole fans: u is a polar chart there, linear by design
+				worstU = std::max( worstU, CircDist( a.x, b.x ) );
+			}
+		}
+		std::cout << "  [info] worst circular u step across any refined edge = " << worstU << " (base column pitch " << 1.0 / nRadial << ")\n";
+		SOFT( worstU <= 1.0 / nRadial + 1e-9 );
+
+		pDisp->release(); pFn->release(); pLathe->release();
+	}
+
+	// ---- (3) sweep: planar end cap is affine in position; ring u wraps; no new zero-UV-area triangles ----
+	{
+		const int nProfile = 28;
+		double prof[ 2 * 28 ];
+		for( int i = 0; i < nProfile; ++i ) {
+			const double a = 2.0 * 3.14159265358979323846 * double( i ) / nProfile;
+			prof[ 2*i ] = 0.5 * std::cos( a ); prof[ 2*i + 1 ] = 0.3 * std::sin( a );	// elliptic, so the cap chart is anisotropic
+		}
+		const double path[] = { 0.0, 0.0, 0.0,   0.0, 1.4, 0.0,   0.0, 2.8, 0.0,   0.0, 4.2, 0.0 };
+		SweepDescriptor sd; sd.profilePoints = prof; sd.numProfilePoints = nProfile; sd.pathPoints = path; sd.numPathPoints = 4;
+		sd.nLen = 64; sd.capStart = true; sd.capEnd = true; sd.frameHintX = 1.0;
+		ITriangleMeshGeometryIndexed* pI = 0;
+		assert( RISE_API_CreateSweepGeometry( &pI, sd ) );
+		TriangleMeshGeometryIndexed* pSweep = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		assert( pSweep );
+		IndexTriangleListType bt; VerticesListType bv; NormalsListType bn; TexCoordsListType bc;
+		assert( pSweep->TessellateToMesh( bt, bv, bn, bc, 0 ) );
+		const size_t baseZero = CountZeroUVAreaTriangles( bt, bv, bc );
+
+		UVSpyFunction2D* pFn = new UVSpyFunction2D();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pSweep, 48, pFn, 1e-6, false, false, /*seamFold=*/false );
+		pDisp->Realize();
+		IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+		assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+		assert( t.size() > bt.size() );
+
+		// start cap: flat normal along -path tangent (-Y here) -- the UV must be an affine
+		// function of position, fitted from three non-collinear vertices of that cap
+		std::vector<size_t> capIdx;
+		for( size_t i = 0; i < v.size(); ++i ) if( n[i].y < -0.999 && std::fabs( v[i].y ) < 1e-3 ) capIdx.push_back( i );
+		assert( capIdx.size() > 12 );
+		size_t i0 = capIdx[0], i1 = capIdx[0], i2 = capIdx[0];
+		Scalar bestArea = 0.0;
+		for( size_t a = 0; a < capIdx.size() && a < 40; ++a ) for( size_t b = a + 1; b < capIdx.size() && b < 40; ++b ) for( size_t d = b + 1; d < capIdx.size() && d < 40; ++d ) {
+			const Vector3 cr = Vector3Ops::Cross( Vector3Ops::mkVector3( v[capIdx[b]], v[capIdx[a]] ), Vector3Ops::mkVector3( v[capIdx[d]], v[capIdx[a]] ) );
+			const Scalar ar = Vector3Ops::Magnitude( cr );
+			if( ar > bestArea ) { bestArea = ar; i0 = capIdx[a]; i1 = capIdx[b]; i2 = capIdx[d]; }
+		}
+		assert( bestArea > 1e-6 );
+		// solve uv = M (x,z) + o on the fitted triple (cap lies in the y = 0 plane)
+		const Scalar dx1 = v[i1].x - v[i0].x, dz1 = v[i1].z - v[i0].z, dx2 = v[i2].x - v[i0].x, dz2 = v[i2].z - v[i0].z;
+		const Scalar det = dx1 * dz2 - dx2 * dz1;
+		Scalar worstCap = 0.0;
+		for( size_t k = 0; k < capIdx.size(); ++k ) {
+			const size_t i = capIdx[k];
+			const Scalar px = v[i].x - v[i0].x, pz = v[i].z - v[i0].z;
+			const Scalar s = ( px * dz2 - pz * dx2 ) / det, tt = ( dx1 * pz - dz1 * px ) / det;	// barycentric
+			const Scalar uPred = c[i0].x + s * ( c[i1].x - c[i0].x ) + tt * ( c[i2].x - c[i0].x );
+			const Scalar vPred = c[i0].y + s * ( c[i1].y - c[i0].y ) + tt * ( c[i2].y - c[i0].y );
+			worstCap = std::max( worstCap, std::max( std::fabs( c[i].x - uPred ), std::fabs( c[i].y - vPred ) ) );
+		}
+		std::cout << "  [info] sweep start cap: " << capIdx.size() << " vertices, worst deviation from an affine chart = " << worstCap << "\n";
+		SOFT( worstCap < 1e-4 );
+
+		// ring u wrap: every wall edge steps by at most one profile column (circularly)
+		Scalar worstU = 0.0;
+		for( size_t i = 0; i < t.size(); ++i ) {
+			const unsigned int i0v = t[i].iVertices[0];
+			if( std::fabs( n[i0v].y ) > 0.99 ) continue;		// cap or pole-ish
+			for( int k = 0; k < 3; ++k ) {
+				if( std::fabs( n[t[i].iVertices[k]].y ) > 0.99 || std::fabs( n[t[i].iVertices[( k + 1 ) % 3]].y ) > 0.99 ) continue;
+				worstU = std::max( worstU, CircDist( c[t[i].iCoords[k]].x, c[t[i].iCoords[( k + 1 ) % 3]].x ) );
+			}
+		}
+		// profile column steps are the elliptic arc fractions (<= ~ 2/nProfile at the ellipse ends)
+		std::cout << "  [info] sweep wall: worst circular u step across a refined edge = " << worstU << "\n";
+		SOFT( worstU < 0.06 );
+
+		const size_t zero = CountZeroUVAreaTriangles( t, v, c );
+		std::cout << "  [info] zero-UV-area triangles: base " << baseZero << ", refined " << zero << "\n";
+		SOFT( zero == baseZero );
+
+		pDisp->release(); pFn->release(); pSweep->release();
+	}
+	assert( softFails == 0 );
+#undef SOFT
+}
+
+//-----------------------------------------------------------------------------
+// Review round 1, P2-1 / P2-2: the base's shading-normal field is TRANSPORTED
+// (rotated with the geometric normal), never added as a world-space delta, and
+// it is applied to every smooth mesh base -- refined or not.
+//
+// (a) P2-1: a world-space delta pushes shading normals behind steep faces.  For
+//     a table of (n_radial, displacement, frequency) configurations the count of
+//     faces with a vertex shading normal BEHIND the face must not exceed the
+//     count the purely geometric normals have on the same mesh.
+// (b) P2-2: a base just ABOVE the refinement threshold and one just BELOW it
+//     shade the same vertices within a small normal tolerance (the look must not
+//     jump when refinement switches on).
+//-----------------------------------------------------------------------------
+class SinFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar freq;
+	SinFunction2D( const Scalar f ) : freq( f ) {}
+	Scalar Evaluate( const Scalar x, const Scalar y ) const { return 0.5 + 0.5 * std::sin( TWO_PI * freq * x ) * std::cos( TWO_PI * freq * y ); }
+};
+
+static size_t CountBackfacingVertexNormals( const IndexTriangleListType& t, const VerticesListType& v, const NormalsListType& n )
+{
+	size_t cnt = 0;
+	for( size_t i = 0; i < t.size(); ++i ) {
+		const Vector3 cr = Vector3Ops::Cross( Vector3Ops::mkVector3( v[t[i].iVertices[1]], v[t[i].iVertices[0]] ), Vector3Ops::mkVector3( v[t[i].iVertices[2]], v[t[i].iVertices[0]] ) );
+		const Scalar m = Vector3Ops::Magnitude( cr );
+		if( m < 1e-12 ) continue;
+		const Vector3 nf = cr * ( 1.0 / m );
+		bool bad = false;
+		for( int k = 0; k < 3; ++k ) if( Vector3Ops::Dot( n[t[i].iNormals[k]], nf ) <= 0.0 ) bad = true;
+		if( bad ) ++cnt;
+	}
+	return cnt;
+}
+
+static void TestTransportedShadingNormals()
+{
+	std::cout << "Test 10h: base shading normals are transported with the displaced frame and applied to refined or unrefined smooth bases alike...\n";
+
+	// ---- (a) back-facing vertex shading normals vs the geometric-only count ----
+	const int radials[3] = { 6, 12, 24 };
+	const Scalar disps[3] = { 0.05, 0.1, 0.2 };
+	const Scalar freqs[2] = { 2.0, 8.0 };
+	size_t worstExcess = 0, totalShading = 0, totalGeom = 0;
+	for( int ri = 0; ri < 3; ++ri ) for( int di = 0; di < 3; ++di ) for( int fi = 0; fi < 2; ++fi ) {
+		TriangleMeshGeometryIndexed* pLathe = MakeCoarseLathe( radials[ri] );
+		SinFunction2D* pFn = new SinFunction2D( freqs[fi] );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, 24, pFn, disps[di], false, false );
+		pDisp->Realize();
+		IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+		assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+		NormalsListType g( v.size(), Vector3( 0, 0, 1 ) );
+		RecomputeVertexNormalsFromTopology( t, v, g );
+		const size_t cs = CountBackfacingVertexNormals( t, v, n ), cg = CountBackfacingVertexNormals( t, v, g );
+		totalShading += cs; totalGeom += cg;
+		if( cs > cg ) worstExcess = std::max( worstExcess, cs - cg );
+		if( cs > cg ) std::cout << "  [FAIL cfg] n_radial " << radials[ri] << " disp " << disps[di] << " freq " << freqs[fi] << ": shading " << cs << " > geometric " << cg << "\n";
+		pDisp->release(); pFn->release(); pLathe->release();
+	}
+	std::cout << "  [info] 18 configurations: faces with a back-facing vertex shading normal = " << totalShading << " (geometric-only normals: " << totalGeom << ")\n";
+	assert( worstExcess == 0 );
+
+	// ---- (b) continuity across the refinement threshold ----
+	{
+		TriangleMeshGeometryIndexed* pLathe = MakeCoarseLathe( 24 );
+		IndexTriangleListType bt; VerticesListType bv; NormalsListType bn; TexCoordsListType bc;
+		assert( pLathe->TessellateToMesh( bt, bv, bn, bc, 0 ) );
+		const Scalar diag = BBoxDiagonal( bv ), maxEdge = MaxEdgeLength( bt, bv );
+		const unsigned int below = (unsigned int)std::floor( diag / maxEdge );	// target >= longest edge: NOT refined
+		const unsigned int above = below + 1;										// target just under it: refined
+		SinFunction2D* pFn = new SinFunction2D( 2.0 );
+
+		IndexTriangleListType ta, tb; VerticesListType va, vb; NormalsListType na, nb; TexCoordsListType ca, cb;
+		DisplacedGeometry* pBelow = new DisplacedGeometry( pLathe, below, pFn, 0.02, false, false );
+		pBelow->Realize();
+		assert( pBelow->TessellateToMesh( ta, va, na, ca, 0 ) );
+		DisplacedGeometry* pAbove = new DisplacedGeometry( pLathe, above, pFn, 0.02, false, false );
+		pAbove->Realize();
+		assert( pAbove->TessellateToMesh( tb, vb, nb, cb, 0 ) );
+		std::cout << "  [info] detail " << below << " -> " << ta.size() << " tris (unrefined), detail " << above << " -> " << tb.size() << " tris (refined)\n";
+		assert( ta.size() == bt.size() );
+		assert( tb.size() > ta.size() );
+
+		// compare shading normals at the vertices both bakes share (the base's own vertices)
+		Scalar worstDeg = 0.0; size_t matched = 0;
+		for( size_t i = 0; i < va.size(); ++i ) {
+			for( size_t j = 0; j < vb.size(); ++j ) {
+				const Scalar dx = va[i].x - vb[j].x, dy = va[i].y - vb[j].y, dz = va[i].z - vb[j].z;
+				if( dx*dx + dy*dy + dz*dz < 1e-18 ) {
+					Scalar d = Vector3Ops::Dot( na[i], nb[j] );
+					d = std::max( Scalar(-1.0), std::min( Scalar(1.0), d ) );
+					worstDeg = std::max( worstDeg, std::acos( d ) * 180.0 / PI );
+					++matched; break;
+				}
+			}
+		}
+		std::cout << "  [info] " << matched << " of " << va.size() << " base vertices matched; worst shading-normal difference across the threshold = " << worstDeg << " deg\n";
+		assert( matched == va.size() );
+		assert( worstDeg < 1.0 );		// measured 0.27 deg; 1.97 deg when transport applies only to refined bases
+		pBelow->release(); pAbove->release(); pFn->release(); pLathe->release();
+	}
+}
+
+//-----------------------------------------------------------------------------
 // Concurrency guard (review Finding 1): many threads calling Realize() at once
 // must BuildMesh() the instance EXACTLY once.  Models a GUI viewport render's
 // AttachScene racing a UI-thread PrepareForRendering/picking on the same, not-
@@ -1986,6 +2305,8 @@ int main()
 	TestRefinedTopologyStableAcrossRefresh();
 	TestAngleWeightedNormalsIgnoreTriangulation();
 	TestRefinedMeshKeepsBaseShadingField();
+	TestRefinementChartInterpolation();
+	TestTransportedShadingNormals();
 	TestConcurrentRealize();
 	TestScalarHeightIsObjectSpaceAndExact();
 	TestScalarHeightThroughTheChunk();

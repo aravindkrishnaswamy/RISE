@@ -101,7 +101,29 @@ bool TriangleMeshGeometryIndexed::TessellateToMesh(
 	VerticesListType&      vertices,
 	NormalsListType&       normals,
 	TexCoordsListType&     coords,
-	const unsigned int     /*detail*/ ) const
+	const unsigned int     detail ) const
+{
+	return TessellateToMeshEx( tris, vertices, normals, coords, detail, 0 );
+}
+
+void TriangleMeshGeometryIndexed::SetUVPeriodicRegion( const unsigned char mask, const unsigned int firstVertex, const unsigned int count )
+{
+	if( m_uvPeriodic.size() < pPoints.size() ) {
+		m_uvPeriodic.resize( pPoints.size(), 0 );
+	}
+	const size_t end = std::min( static_cast<size_t>( firstVertex ) + count, m_uvPeriodic.size() );
+	for( size_t i = firstVertex; i < end; ++i ) {
+		m_uvPeriodic[i] |= mask;
+	}
+}
+
+bool TriangleMeshGeometryIndexed::TessellateToMeshEx(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     /*detail*/,
+	std::vector<unsigned char>* pUVPeriodic ) const
 {
 	// Emit the stored triangles with same-index (iVertices == iNormals ==
 	// iCoords) semantics.  The source mesh stores pPoints, pNormals, pCoords as
@@ -185,6 +207,9 @@ bool TriangleMeshGeometryIndexed::TessellateToMesh(
 					vertices.push_back( *src.pVertices[k] );
 					normals.push_back( *src.pNormals[k] );
 					coords.push_back( *src.pCoords[k] );
+					if( pUVPeriodic ) {
+						pUVPeriodic->push_back( key.v < m_uvPeriodic.size() ? m_uvPeriodic[key.v] : 0 );
+					}
 					cornerIdx.insert( std::make_pair( key, idx ) );
 				}
 				t.iVertices[k] = idx;
@@ -215,6 +240,10 @@ bool TriangleMeshGeometryIndexed::TessellateToMesh(
 				vertices.push_back( *src.pVertices[k] );
 				normals.push_back( src.pNormals[k] ? *src.pNormals[k] : faceNormal );
 				coords.push_back( *src.pCoords[k] );
+				if( pUVPeriodic ) {
+					const size_t pi = pPointBase ? static_cast<size_t>( src.pVertices[k] - pPointBase ) : 0;
+					pUVPeriodic->push_back( pi < m_uvPeriodic.size() ? m_uvPeriodic[pi] : 0 );
+				}
 				t.iVertices[k] = localIdx;
 				t.iNormals[k]  = localIdx;
 				t.iCoords[k]   = localIdx;

@@ -117,6 +117,7 @@ namespace RISE
 			//! for the full account and the current mechanism's documented
 			//! residual.)
 			bool					m_bWatertight;
+			std::vector<unsigned char>	m_uvPeriodic;	//!< per-position-index kUPeriodic/kVPeriodic bits (see SetUVPeriodicRegion); empty = none
 
 			//! Computes and caches `m_bWatertight`.  Called from
 			//! `DoneIndexedTriangles` or modern `Deserialize` once `ptr_polygons` is final; a
@@ -306,6 +307,28 @@ namespace RISE
 			// A face-normal mesh (no stored normals) is flattened per corner instead.
 			// The `detail` parameter is ignored — an indexed mesh already IS a mesh.
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
+
+			//! Chart-periodicity bits for SetUVPeriodicRegion / TessellateToMeshEx.
+			enum { kUPeriodic = 1, kVPeriodic = 2 };
+
+			//! Declare that the UV chart WRAPS on an axis over a range of vertices:
+			//! the builders that stitch a ring back to its first column with NO
+			//! duplicated seam column (a full-turn lathe's u; a sweep's closed-
+			//! profile u, and its v when the path is closed) leave the wrap edge
+			//! spanning ~(1 -> 0) in chart space, so a midpoint taken linearly
+			//! lands on the far side of the texture.  Only edges whose BOTH
+			//! endpoints carry the axis bit are treated as periodic (a sweep's
+			//! planar end caps share the mesh but not the wrap).  Call AFTER the
+			//! vertices exist.  Default: no axis periodic (every imported /
+			//! prebuilt mesh) -- the chart is then always interpolated linearly.
+			void SetUVPeriodicRegion( const unsigned char mask, const unsigned int firstVertex, const unsigned int count );
+
+			//! TessellateToMesh plus, optionally, the per-OUTPUT-vertex periodicity bits
+			//! (the bits of the vertex's source position), index-parallel to `vertices`.
+			bool TessellateToMeshEx( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail, std::vector<unsigned char>* pUVPeriodic ) const;
+
+			//! Install per-position periodicity bits wholesale (DisplacedGeometry's baked mesh).
+			void SetUVPeriodicFlags( const std::vector<unsigned char>& flags ) { m_uvPeriodic = flags; }
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
