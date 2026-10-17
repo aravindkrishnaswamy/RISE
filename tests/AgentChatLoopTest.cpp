@@ -10546,6 +10546,32 @@ static void TestMalformedFunctionCallRecovery()
 		       "T60f: the real request is still on the wire" );
 	}
 
+	// (g) the corrective is NOT a human turn in the trajectory: user-record
+	//     count is unchanged; a history_edit marks it instead.
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-malformed-60g";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, bad, 4, 1, -1 );
+		(void)loop.HandleResponse( 200, bad );
+		(void)loop.BuildRequest( kApiKey );   // appends the corrective
+		int users = 0, edits = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const std::string rt = ParseBody( lines[i] ).get( "run_type" ).asString();
+			if( rt == "user" ) ++users;
+			if( rt == "history_edit" &&
+			    lines[i].find( "malformed_tool_call_corrective" ) != std::string::npos ) ++edits;
+		}
+		Check( users == 1, "T60g: exactly one user record (the real request) despite the corrective" );
+		Check( edits == 1, "T60g: the corrective is recorded as one history_edit" );
+	}
+
 	// (e) Responses wire.
 	{
 		AgentChatLoop loop;

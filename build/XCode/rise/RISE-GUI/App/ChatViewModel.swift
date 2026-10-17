@@ -2237,6 +2237,9 @@ final class ChatViewModel: ObservableObject {
                         + "no longer see them."))
             }
 
+            // NOTE: the loop now injects ONE DriverNote (the malformed-tool-call
+            // corrective); this driver surfaces it with its own "Retrying
+            // malformed tool call..." notice at the retry site, not by polling.
             // E4 (2026-08): this driver used to poll `driverNoteCount` /
             // `lastDriverNoteText` here to surface the blind-edit NUDGE —
             // advisory text the loop injected into the conversation.  That

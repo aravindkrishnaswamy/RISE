@@ -993,7 +993,10 @@ namespace RISE
 			mTranscript.push_back( entry );
 
 			// Eval-harness E1: record the user turn (text + attachment count).
-			if( mRecorder ) {
+			// A loop-injected corrective is NOT a human turn: it is recorded
+			// as a history_edit by BuildRequest instead (eval readers count
+			// run_type "user" records as human turns).
+			if( mRecorder && !mAppendingCorrective ) {
 				TrajectoryUserRecord u;
 				u.text = text;
 				u.attachments = static_cast<int>( attachments.size() );
@@ -1085,6 +1088,9 @@ namespace RISE
 					mTranscript.back().role = ChatTranscriptEntry::Role::DriverNote;
 					++mDriverNoteCount;
 					mLastDriverNoteText = corrective;
+					RecordHistoryEdit( "malformed_tool_call_corrective", 0,
+					                   static_cast<long long>( mTranscript.back().rawJson.size() ),
+					                   static_cast<int>( mTranscript.size() ) - 1 );
 				}
 				mToolRounds = savedRounds;
 				mBlindEditStreak = savedBlindStreak;

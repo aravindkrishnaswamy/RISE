@@ -320,8 +320,11 @@ namespace RISE
 				//! A note the LOOP ITSELF injects into the conversation as
 				//! ordinary user content -- the human never typed it.
 				//!
-				//! NO CURRENT PRODUCER (E4, 2026-08).  The one message this
-				//! enumerator existed for -- the blind-edit NUDGE
+				//! ONE PRODUCER: the MALFORMED-TOOL-CALL corrective (BuildRequest
+				//! appends it after a ChatErrorKind::MalformedToolCall; it is
+				//! recorded in the trajectory as a history_edit, never as a
+				//! "user" record).  HISTORY: the message this enumerator
+				//! originally existed for (E4, 2026-08) -- the blind-edit NUDGE
 				//! (AppendPendingBuildNudge) -- was REMOVED: a live GUI run
 				//! showed the nudge's advisory text, injected adjacent to the
 				//! generation point, gets ECHOED BACK by the model as its own

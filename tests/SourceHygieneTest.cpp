@@ -4120,8 +4120,9 @@ int main()
 		Check( winCode.find( "earlier transcript row(s)" ) != std::string::npos,
 		       "Windows compaction notice reports the same unit" );
 
-		// Role::DriverNote (E4, 2026-08): NO CURRENT PRODUCER.  The one
-		// message it existed for -- the blind-edit NUDGE -- was replaced by
+		// Role::DriverNote: its only producer today is the malformed-tool-call
+		// corrective (AgentChatLoop::BuildRequest).  History (E4, 2026-08): the
+		// message it originally existed for -- the blind-edit NUDGE -- was replaced by
 		// the SEQUENCING GATE (a tool-call REFUSAL, delivered as an
 		// ordinary ToolResults entry every driver already renders through
 		// its normal tool-result path; see AgentChatLoop.h's SEQUENCING
@@ -4129,8 +4130,8 @@ int main()
 		// its Role switch is exhaustive with no `default` (a compile-time
 		// -Wswitch guard against a silently-unhandled future enumerator --
 		// see ChatPanel.cpp's comment on that switch), so it MUST still
-		// carry a `case Role::DriverNote:` arm even with zero producers
-		// today; check that it still does, so a future removal of the
+		// carry a `case Role::DriverNote:` arm (it has one producer, the
+		// malformed-tool-call corrective); check that it still does, so a future removal of the
 		// case (leaving the enumerator behind, or vice versa) is caught
 		// here rather than at the next Windows build.  macOS renders its
 		// OWN display list rather than the wire transcript and had a
