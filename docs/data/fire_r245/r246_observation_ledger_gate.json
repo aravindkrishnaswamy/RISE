@@ -1,0 +1,64 @@
+{
+  "schema": "rise.fire.r246.observation-ledger-gate.v1",
+  "status": "accepted_observation_clock_ledger_prerequisite_only",
+  "reviewed_implementation": "e4d2ca356",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v7",
+  "controls": {
+    "hand_authored_green": 1,
+    "targeted_reds": 9,
+    "seal_reds": 13,
+    "empirical": false,
+    "identity_reds": 6
+  },
+  "accepted_steps": 15315,
+  "accepted_time_s": 25.156864278920693,
+  "sha256": {
+    "tools/fire/r246_observation_ledger_binding.py": "8996e94d88ddede087b5d73a75fbbdb29f721803cee46a8f0af14bd566cc70c7",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v7/ledger_binding.json": "3a27bc90f840e12b98303104654d87acba4a59ce7448b65140d6c46bea0fc19c",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v7/completion.json": "a776ed3afa6fcff3dce8ea56a0445672dccc22937a9a46f0f0fce5586694a5aa",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v7/script.frozen.py": "8996e94d88ddede087b5d73a75fbbdb29f721803cee46a8f0af14bd566cc70c7",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v7/merkle_verifier.frozen.py": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+  },
+  "scope": "All15315 modern-sealed ledger clock and input/native roots compared with retained checkpoint dt and pinned original observation bytes. New capture seals are recovery-issued, never original producer certificates.",
+  "limitations": [
+    "Only clock and payload-root observation fields cross-checked against sealed ledgers.",
+    "Other velocity/host fields remain originally unsealed observations, not authenticated measurements.",
+    "Capsule payload verification, budget arithmetic, derived summaries and full recovery remain pending."
+  ],
+  "self_audit": [
+    "Source raw observations are explicitly pinned; parsing and published copies use the same captured bytes.",
+    "Each original ledger has mandatory nonaliased modern certificate with pending refusal and SHA/Merkle validation.",
+    "Matched host clocks do not authenticate memory measurements or unavailable retry counters.",
+    "Capsule payload roots and per-side budget arithmetic remain pending; this is not full recovery."
+  ],
+  "prior_v2": "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v2",
+  "round1": {
+    "contract": "P2 loose numeric certificate types",
+    "lifecycle": "P2 loose certificate types and nondiscriminating post-capture coverage",
+    "fix": "Use strict modern Merkle verifier; float-type REDs and staged publication/alias invalidations. Removing post-check or strict verifier makes controls fail."
+  },
+  "prior_v3": "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v3",
+  "round2": {
+    "contract": "P2 issuer script hashed after binding",
+    "lifecycle": "P2 issuer late capture and missing verifier dependency identity",
+    "fix": "Capture implementation/dependency before source validation, refuse prepublication changes and publish frozen copies with completion identity. Two staged replacement controls."
+  },
+  "prior_v5": "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v5",
+  "round3": {
+    "contract": "zero P1/P2",
+    "lifecycle": "P2 loaded code preceded source snapshot; stale cache or pre-snapshot replacement could mismatch",
+    "fix": "Compare loaded script function code and contract constants to captured compiled source; execute captured Merkle dependency bytes directly; actual staged loadedA/sourceB RED."
+  },
+  "prior_v6": "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v6",
+  "round4": {
+    "contract": "P2 loaded/default identities omitted",
+    "lifecycle": "P2 loaded/default identities omitted",
+    "fix": "Recursive function identity includes positional/keyword defaults and callable defaults. Three actual staged default-only REDs."
+  },
+  "fresh_round5": {
+    "arithmetic_contract": "zero P1/P2",
+    "lifecycle_provenance": "zero P1/P2"
+  }
+}

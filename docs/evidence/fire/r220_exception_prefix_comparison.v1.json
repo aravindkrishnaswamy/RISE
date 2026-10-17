@@ -1,0 +1,76 @@
+{
+  "schema": "rise.fire.host-memory-prefix-comparison.v1",
+  "passed": true,
+  "migration_authority": false,
+  "files": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/frozen_prefix.v2/diagnostic_prefix_protocol.v1",
+      "bytes": 644,
+      "sha256": "78f14847f9ead5774ea3f8f6dc739a2e90adfa5df8861c21076d654ca92dc145"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/frozen_prefix.v2/budgets/maximum_velocity_trajectory.csv",
+      "bytes": 2155,
+      "sha256": "ab6c0116818b64919095a825604f2bf7a6ad5bbd2e2a993c66c07bac938dbf48"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_fixed_prefix.v1/diagnostic_prefix_protocol.v1",
+      "bytes": 644,
+      "sha256": "6746941f84a32c110ad48faf52ded84d9ae40496ae960a46ced7260c73b7b48d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_fixed_prefix.v1/budgets/maximum_velocity_trajectory.csv",
+      "bytes": 2163,
+      "sha256": "65d246fe2e7f1fddf8cb5cfa5e635001ad5215c9535e2f7bc68214451353fe9e"
+    }
+  ],
+  "producers": [
+    {
+      "producer_build_id": "f2ee8ec4cdf43ed7c527dce95718439888561cb70861f99c22f3f5fd4a311609",
+      "producer_executable_sha256": "91978041bb53124e45324838a082d6fb64bb0f2a6da28c68ddc7e8c186faaefa"
+    },
+    {
+      "producer_build_id": "553e9adcf4876f5e2b0695ef84a7477efb2d4afb8b553733b48ee2d67b6c0396",
+      "producer_executable_sha256": "5212071242aa6c1aff0625c12f0045441696137ad105114bddb949c2a5b60c0d"
+    }
+  ],
+  "compared_fields": [
+    "accepted_step",
+    "axis",
+    "dt_s",
+    "face",
+    "input_payload_root_sha256",
+    "intermediate_digest_version",
+    "intermediate_seal_format",
+    "manifold_max",
+    "manifold_p50",
+    "manifold_p95",
+    "maximum_velocity_m_per_s",
+    "owner_actual_working_set_bytes",
+    "owner_certified_working_set_bytes",
+    "owner_commits",
+    "owner_identity",
+    "owner_projections",
+    "owner_r0_iterations",
+    "owner_r1_iterations",
+    "owner_r2_iterations",
+    "payload_digest_format",
+    "payload_digest_version",
+    "publication_payload_bytes",
+    "publication_payload_root_sha256",
+    "qualified_kernel_set_sha256",
+    "tail_cells",
+    "tail_drained_m3",
+    "time_s",
+    "x",
+    "y",
+    "z"
+  ],
+  "excluded_fields": [
+    "device_ms",
+    "owner_nonprojection_device_ms",
+    "owner_projection_device_ms",
+    "wall_ms"
+  ],
+  "accepted_steps": 3
+}

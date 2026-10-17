@@ -1,0 +1,17 @@
+{
+  "reviewed_commit": "32224a286",
+  "reviewers": [
+    {
+      "name": "r244_domain_review_r2",
+      "P1": 0,
+      "P2": 1
+    },
+    {
+      "name": "r244_evidence_review_r2",
+      "P1": 0,
+      "P2": 1
+    }
+  ],
+  "finding": "Duplicate: same-frame valid previews with altered camera, display transform or sampling accepted by spectrum consumer. Complete matched profile enforcement and RED coverage required.",
+  "status": "correction_in_validation"
+}

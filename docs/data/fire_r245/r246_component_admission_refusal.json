@@ -1,0 +1,54 @@
+{
+  "scope": "engineering refusal diagnosis, not memory or physical qualification",
+  "geometry": [
+    104,
+    104,
+    160
+  ],
+  "cells": 1730560,
+  "packed_faces": 5235776,
+  "gate_exit_code": 91,
+  "initial_full_fields_allocated": false,
+  "first_refused_component": "PhysicalFlux standalone fixture certificate",
+  "returned_physical_flux_subtotal_bytes": 2854879232,
+  "standalone_fixture_ceiling_bytes": 2147483648,
+  "projection_bytes": 347085888,
+  "nonpressure_bytes": 627020352,
+  "limits": [
+    "returned target_bytes is only PhysicalFlux subtotal after early refusal; not full target/owner requirement",
+    "no claim full run fits device or host ceiling",
+    "no taller simulation launched"
+  ],
+  "independent_diagnosis": {
+    "agent": "r246_component_admission_diagnosis",
+    "method": "source walk and independent count/16KiB rounding transcription",
+    "confirmed_subtotal_bytes": 2854879232
+  },
+  "logs": {
+    "r246_launcher_foundation_build.v1.log": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_launcher_foundation_build.v1.log",
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    "r246_launcher_foundation_build.v2.log": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_launcher_foundation_build.v2.log",
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    "r246_launcher_foundation_build.v3.log": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_launcher_foundation_build.v3.log",
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    "r246_launcher_foundation_gate.v1.log": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_launcher_foundation_gate.v1.log",
+      "sha256": "ada26b3c04a6a59a58a91783aa1ecaff5efae5f02c821228a1c271f3968645fe"
+    },
+    "r246_launcher_foundation_gate.v2.log": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_launcher_foundation_gate.v2.log",
+      "sha256": "87943cda0ba2e7a06073c181d7d9494fc25ac97fad084846eafd10b49134d5f5"
+    },
+    "r246_launcher_foundation_gate.v3.log": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_launcher_foundation_gate.v3.log",
+      "sha256": "b55abd9d68deb3c833f83de637553eb5fee0f5c1766d5a8828427ba0863b2e8e"
+    }
+  },
+  "next_design": "Separate overflow-checked complete-owner accounting from standalone fixture admission; preserve all standalone2GiB caps/REDs, device and actual-allocation gates and unchanged host32GiB admission."
+}

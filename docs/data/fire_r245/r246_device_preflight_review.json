@@ -1,0 +1,20 @@
+{
+  "reviewed_commit": "753da0f6",
+  "source_commit": "81497ebd",
+  "scope": "device preflight and zero-step launcher only",
+  "reviewers": [
+    {
+      "name": "r246_device_final_contract",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "name": "r246_device_final_lifecycle",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "accepted": true,
+  "launch_permitted": false,
+  "actual_taller_owner_allocation_exercised": false
+}

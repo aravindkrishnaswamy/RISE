@@ -1,0 +1,33 @@
+{
+  "schema": "rise.fire.r225.boundary-diagnostic.v1",
+  "source_commit": "fd45501b",
+  "executable_sha256": "9aa3c70bb51393d791691b7405cd19e21f394f08c4299735f10234cb19ea20d4",
+  "build_id": "ee2bad3705d60fdde0021f149d7d6da68b7f95400ff18cedb7b7616134b5ccb5",
+  "checkpoint_sha256": "98a8c138cdc644bfcbab12c223b2dcf9780b30c9c0218d7c53ff57ee1bb314de",
+  "diagnostic_exit_code": 0,
+  "accepted_replay_steps": 19,
+  "first_step": 2455,
+  "last_step": 2473,
+  "exact_equal_columns": ["time_s", "dt_s", "qualified_kernel_set_sha256", "input_payload_root_sha256", "publication_payload_root_sha256"],
+  "all_recorded_steps_equal": true,
+  "cell": [30,37,64],
+  "cell_index": 307287,
+  "stage": 1,
+  "iteration": 2,
+  "clause": 7,
+  "separation_J_m3": 2.3628061313063498e-11,
+  "enclosure_J_m3": 5.7700302869001519e-11,
+  "sensible_energy_J_m3": 18596.408203125,
+  "lower_bin_K": 316.53204345703125,
+  "upper_bin_K": 316.532073974609375,
+  "midpoint_K": 316.5320587158203125,
+  "fp64_temperature_K": 316.5320587158203125,
+  "fp64_midpoint_residual_J_m3": -4.3655745685100555e-11,
+  "fp64_state_accepted": true,
+  "artifacts": [
+    {"path":"rendered/fire_production_calibration/r225_boundary/replay.v1.log","sha256":"c96ecce84001b35535eae9ebb3ad893e0be37b6d6724045a17c5b1ecc87b5912"},
+    {"path":"rendered/fire_production_calibration/r225_boundary/replay.v1/budgets/maximum_velocity_trajectory.csv","sha256":"48a511d231ec0d55fb38081cb551758f46f822dd6d10399d886453f217b98404"},
+    {"path":"rendered/fire_production_calibration/r225_boundary/diagnostic_build.v2.log","sha256":"7c304e110f0b5be9758d73cd726696cfa61a609d43a5c8b7eb977a8c16fa3f51"}
+  ],
+  "status": "diagnosis confirmed; route-a design recorded; structural consumer-envelope implementation and qualification pending; no production migration or restart"
+}

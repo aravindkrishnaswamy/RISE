@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CPU differential guard for the thread-local EOS primitive reuse prototype.
 
-This extracts actual Metal arithmetic and the immutable pre-change arithmetic.
+This extracts actual Metal arithmetic and the reviewed pre-r231 arithmetic.
 It is not a Metal qualification, a full owner gate, or a performance claim.
 All mixture inputs below are synthetic and never published as solver output.
 """
@@ -14,7 +14,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "src/Library/Utilities/FireProductionAdvectionMac.mm"
-REFERENCE = "9f1b80fb64a196b81b1f067833f77f4d7325e4b7"
+# The original r213 reference used the retired rounded 0.2 coefficient.
+# Pin the reviewed corrected formulation before the r231 division hoist;
+# historical r213 artifacts are not rewritten or re-certified by this test.
+REFERENCE = "a9da7ca2"
 
 
 def extract(text):

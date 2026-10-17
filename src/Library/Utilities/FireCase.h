@@ -33,6 +33,10 @@ namespace RISE
 			bool plumeLaw=false;
 			bool hasRadiativeFractionOverride=false;
 			double radiativeFractionOverride=0.0;
+			// Empty retains canonical r54 bytes. The named r244 tier-6 study
+			// doubles lateral extents with an exactly translated source/pilot.
+			// r246 additionally doubles height under an explicit matched schedule.
+			std::string domainStudy;
 		};
 
 		struct DerivedV1
@@ -46,7 +50,9 @@ namespace RISE
 			double maximumAcceptedTemperatureK=0.0;
 			std::uint64_t nx=0,ny=0,nz=0;
 			double extentXM=0.0,extentYM=0.0,extentZM=0.0;
+			// Physical geometry residence time; an experimental clock is separate.
 			double flowThroughTimeS=0.0,preRollOrDiscardS=0.0;
+			double matchedScheduleFlowThroughTimeS=0.0;
 			std::string windowKind;
 			std::string perturbationDigest;
 			std::string pilotModelVersion;
@@ -79,6 +85,7 @@ namespace RISE
 			const DerivedV1&,bool maskCell,double beginningTimeS,double endTimeS,
 			double& setpointTemperatureK,
 			std::string& error );
+		double ScheduleFlowThroughTimeS(const DerivedV1&);
 		double PilotCommandMaximumStepS(const DerivedV1&);
 		bool BuildMethaneV1(
 			const AuthoredV1&,const FireSimulationMethaneRecord&,

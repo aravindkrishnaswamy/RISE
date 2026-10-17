@@ -1560,6 +1560,149 @@ int main( int argc, char** argv )
 		wallStageRHS.phaseSourceMomentumRateKGPerM2S2[0][wallPhaseFace]==0.0f&&
 		wallStageRHS.combinedMomentumRateKGPerM2S2[0][wallPhaseFace]==0.0f,
 		"stage phase-source restriction preserves a prescribed wall-normal momentum DOF");
+	{
+		// Uniform through-flow has zero stress, including at the prescribed bed.
+		// A homogeneous wall ghost or a zeroed inlet gather destroys that identity.
+		auto inlet=stageRHSRequest;
+		inlet.force.boundary.fill(FireProductionProjectionPressureOpen);
+		inlet.force.boundary[4]=FireProductionProjectionWall;
+		inlet.force.gravityMPerS2.fill(0.0f);
+		inlet.bottomFuelMask.assign(inlet.force.shape.nx*inlet.force.shape.ny,1u);
+		std::fill(inlet.force.cellGasDensityKGPerM3.begin(),inlet.force.cellGasDensityKGPerM3.end(),1.0f);
+		for(unsigned int axis=0u;axis<3u;++axis){
+			std::fill(inlet.force.faceDensityKGPerM3[axis].begin(),inlet.force.faceDensityKGPerM3[axis].end(),1.0f);
+			std::fill(inlet.force.beginningMomentumKGPerM2S[axis].begin(),
+				inlet.force.beginningMomentumKGPerM2S[axis].end(),axis==2u?0.5f:0.0f);
+		}
+		FireProductionNonpressureMomentumRHSResult result;
+		const bool built=EvaluateFireProductionNonpressureMomentumRHSCPU(inlet,result,&error);
+		bool exact=built;
+		if(built){
+			for(const auto& axis:result.stressMomentumRateKGPerM2S2)
+				for(const float value:axis)exact=exact&&value==0.0f;
+			for(const float value:result.eddyKinematicViscosityM2PerS)exact=exact&&value==0.0f;
+			for(std::size_t z=0u;z<=inlet.force.shape.nz;++z)
+				for(std::size_t y=0u;y<inlet.force.shape.ny;++y)
+					for(std::size_t x=0u;x<inlet.force.shape.nx;++x){
+						const float expected=z==0u||z==inlet.force.shape.nz?0.5f:1.0f;
+						exact=exact&&result.phaseSourceMomentumRateKGPerM2S2[2][
+							TransportFaceIndex(inlet.force.shape,2u,x,y,z)]==expected;
+					}
+		}
+		Check(exact,"r239 prescribed bed keeps uniform-flow stress zero and half-cell phase source");
+#ifdef __APPLE__
+		auto sameFields=[](const FireProductionNonpressureMomentumRHSResult& a,
+			const FireProductionNonpressureMomentumRHSResult& b){
+			return a.eddyKinematicViscosityM2PerS==b.eddyKinematicViscosityM2PerS&&
+				a.effectiveDynamicViscosityPaS==b.effectiveDynamicViscosityPaS&&
+				a.buoyancyMomentumRateKGPerM2S2==b.buoyancyMomentumRateKGPerM2S2&&
+				a.stressMomentumRateKGPerM2S2==b.stressMomentumRateKGPerM2S2&&
+				a.phaseSourceMomentumRateKGPerM2S2==b.phaseSourceMomentumRateKGPerM2S2&&
+				a.combinedMomentumRateKGPerM2S2==b.combinedMomentumRateKGPerM2S2;
+		};
+		FireProductionNonpressureMomentumRHSResult native;
+		FireProductionNonpressureMomentumRHSMetalDiagnostics nativeDiagnostics;
+		Check(EvaluateFireProductionNonpressureMomentumRHSMetal(inlet,native,nativeDiagnostics,&error)&&
+			sameFields(result,native)&&nativeDiagnostics.interstageFullGridTransferCount==0u&&
+			nativeDiagnostics.actualMetalAllocationBytes<=nativeDiagnostics.certifiedWorkingSetBytes,
+			"r239 native inlet force matches every analytic field with no interstage transfer");
+		std::uint64_t noMaskBytes=0u,maskBytes=0u;
+		const std::uint64_t maskSize=inlet.bottomFuelMask.size();
+		Check(FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(inlet.force.shape,noMaskBytes)&&
+			FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(inlet.force.shape,maskBytes,true)&&
+			maskBytes-noMaskBytes==maskSize+2u*((maskSize+16383u)/16384u)*16384u,
+			"r239 force certificate adds only mask bytes and two rounded buffers");
+#endif
+		auto oldWall=inlet;oldWall.bottomFuelMask.clear();
+		FireProductionNonpressureMomentumRHSResult old;
+		Check(EvaluateFireProductionNonpressureMomentumRHSCPU(oldWall,old,&error)&&
+			old.phaseSourceMomentumRateKGPerM2S2[2][0]!=0.5f&&
+			std::any_of(old.stressMomentumRateKGPerM2S2[2].begin(),
+				old.stressMomentumRateKGPerM2S2[2].end(),[](float value){return value!=0.0f;}),
+			"r239 homogeneous-wall mutant creates false stress and loses the inlet phase source");
+		auto zeroMask=oldWall;zeroMask.bottomFuelMask.assign(inlet.bottomFuelMask.size(),0u);
+		FireProductionNonpressureMomentumRHSResult zeroResult;
+		Check(EvaluateFireProductionNonpressureMomentumRHSCPU(zeroMask,zeroResult,&error)&&
+			zeroResult.eddyKinematicViscosityM2PerS==old.eddyKinematicViscosityM2PerS&&
+			zeroResult.effectiveDynamicViscosityPaS==old.effectiveDynamicViscosityPaS&&
+			zeroResult.buoyancyMomentumRateKGPerM2S2==old.buoyancyMomentumRateKGPerM2S2&&
+			zeroResult.stressMomentumRateKGPerM2S2==old.stressMomentumRateKGPerM2S2&&
+			zeroResult.phaseSourceMomentumRateKGPerM2S2==old.phaseSourceMomentumRateKGPerM2S2&&
+			zeroResult.combinedMomentumRateKGPerM2S2==old.combinedMomentumRateKGPerM2S2,
+			"r239 all-zero force mask preserves the no-inlet field values");
+		auto buoyantInlet=inlet;
+		buoyantInlet.force.ambientDensityKGPerM3=1.0f;
+		buoyantInlet.force.gravityMPerS2[2]=-10.0f;
+		std::fill(buoyantInlet.cellGasPhaseSourceRateKGPerM3S.begin(),
+			buoyantInlet.cellGasPhaseSourceRateKGPerM3S.end(),0.0f);
+		std::fill(buoyantInlet.force.faceDensityKGPerM3[2].begin(),
+			buoyantInlet.force.faceDensityKGPerM3[2].end(),0.75f);
+		FireProductionNonpressureMomentumRHSResult buoyant;
+		Check(EvaluateFireProductionNonpressureMomentumRHSCPU(buoyantInlet,buoyant,&error)&&
+			buoyant.buoyancyMomentumRateKGPerM2S2[2][0]==2.5f&&
+			buoyant.combinedMomentumRateKGPerM2S2[2][0]==2.5f,
+			"r239 inlet buoyancy uses projected face density instead of the homogeneous-wall zero");
+#ifdef __APPLE__
+		Check(EvaluateFireProductionNonpressureMomentumRHSMetal(buoyantInlet,native,nativeDiagnostics,&error)&&
+			sameFields(buoyant,native),"r239 native inlet buoyancy matches the analytic CPU fields");
+		FireProductionNonpressureMomentumRHSResult nativeZero,nativeAbsent;
+		Check(EvaluateFireProductionNonpressureMomentumRHSMetal(zeroMask,nativeZero,nativeDiagnostics,&error)&&
+			EvaluateFireProductionNonpressureMomentumRHSMetal(oldWall,nativeAbsent,nativeDiagnostics,&error)&&
+			sameFields(nativeZero,nativeAbsent),"r239 native all-zero mask preserves no-inlet values");
+		auto sparse=inlet;
+		sparse.force.shape.nx=7u;sparse.force.shape.ny=5u;sparse.force.shape.nz=4u;
+		sparse.force.vremanCoefficient=0.0f;
+		sparse.force.cellGasDensityKGPerM3.assign(sparse.force.shape.CellCount(),1.0f);
+		sparse.force.molecularKinematicViscosityM2PerS.assign(sparse.force.shape.CellCount(),0.125f);
+		sparse.cellGasPhaseSourceRateKGPerM3S.assign(sparse.force.shape.CellCount(),2.0f);
+		sparse.bottomFuelMask.assign(35u,0u);
+		for(const std::size_t face:{0u,11u,26u,34u})sparse.bottomFuelMask[face]=1u;
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const std::size_t count=FireProductionProjectionFaceCount(sparse.force.shape,axis);
+			sparse.force.faceDensityKGPerM3[axis].resize(count);
+			sparse.force.beginningMomentumKGPerM2S[axis].resize(count);
+			for(std::size_t face=0u;face<count;++face){
+				const float density=face%2u?0.5f:1.0f;
+				sparse.force.faceDensityKGPerM3[axis][face]=density;
+				sparse.force.beginningMomentumKGPerM2S[axis][face]=axis==2u?
+					density*static_cast<float>(face%5u)*0.125f:0.0f;
+			}
+		}
+		FireProductionNonpressureMomentumRHSResult sparseCPU,sparseMetal;
+		Check(EvaluateFireProductionNonpressureMomentumRHSCPU(sparse,sparseCPU,&error)&&
+			EvaluateFireProductionNonpressureMomentumRHSMetal(sparse,sparseMetal,nativeDiagnostics,&error)&&
+			sameFields(sparseCPU,sparseMetal),
+			"r239 sparse asymmetric inlet force matches CPU per field without a tolerance");
+		for(unsigned int malformed=0u;malformed<4u;++malformed){
+			auto bad=inlet;
+			if(malformed==0u)bad.bottomFuelMask[0]=2u;
+			if(malformed==1u)bad.bottomFuelMask.pop_back();
+			if(malformed==2u)bad.bottomFuelMask.push_back(1u);
+			if(malformed==3u)bad.force.boundary[4]=FireProductionProjectionPressureOpen;
+			native.combinedMomentumRateKGPerM2S2[0].assign(1u,9.0f);
+			Check(!EvaluateFireProductionNonpressureMomentumRHSMetal(bad,native,nativeDiagnostics,&error)&&
+				native.combinedMomentumRateKGPerM2S2[0].empty()&&nativeDiagnostics.commandCommitCount==0u,
+				"r239 native malformed mask refuses before commands and partial publication");
+		}
+#endif
+		inlet.bottomFuelMask[0]=2u;
+		Check(!EvaluateFireProductionNonpressureMomentumRHSCPU(inlet,result,&error)&&
+			result.combinedMomentumRateKGPerM2S2[2].empty(),
+			"r239 nonbinary force inlet classification refuses atomically");
+		inlet.bottomFuelMask[0]=1u;
+		inlet.bottomFuelMask.pop_back();
+		Check(!EvaluateFireProductionNonpressureMomentumRHSCPU(inlet,result,&error)&&
+			result.combinedMomentumRateKGPerM2S2[2].empty(),
+			"r239 short force inlet classification refuses atomically");
+		inlet.bottomFuelMask.push_back(1u);inlet.bottomFuelMask.push_back(1u);
+		Check(!EvaluateFireProductionNonpressureMomentumRHSCPU(inlet,result,&error)&&
+			result.combinedMomentumRateKGPerM2S2[2].empty(),
+			"r239 oversized force inlet classification refuses atomically");
+		inlet.bottomFuelMask.pop_back();inlet.force.boundary[4]=FireProductionProjectionPressureOpen;
+		Check(!EvaluateFireProductionNonpressureMomentumRHSCPU(inlet,result,&error)&&
+			result.combinedMomentumRateKGPerM2S2[2].empty(),
+			"r239 force inlet on a non-wall bed refuses atomically");
+	}
 	FireProductionNonpressureMomentumRHSRequest malformedStageRHS=stageRHSRequest;
 	malformedStageRHS.cellGasPhaseSourceRateKGPerM3S.pop_back();
 	FireProductionNonpressureMomentumRHSResult rejectedStageRHS=stageRHS;
@@ -5727,7 +5870,7 @@ int main( int argc, char** argv )
 		CountSubstring(xcodeProject,
 			"FireProductionForceMac.mm in Sources */ = {isa = PBXBuildFile;")==2u&&
 		CountSubstring(xcodeProject,
-			"FireProductionForceMac.mm */; settings = {COMPILER_FLAGS = \"-fno-fast-math "
+			"FireProductionForceMac.mm */; settings = {COMPILER_FLAGS = \"-fobjc-arc -fno-fast-math "
 			"-ffp-contract=off\"; };")==2u,
 		"production force primitives bind their arithmetic topology and all five strict build "
 		"surfaces");
@@ -5740,7 +5883,8 @@ int main( int argc, char** argv )
 		CountSubstring(residentForceBody,"privateBuffer(")==18u&&
 		CountSubstring(residentForceBody,"sharedBuffer(")==11u&&
 		CountSubstring(residentForceBody,"sharedBytes(")==6u&&
-		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==17u&&
+		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==17u+1u&&
+		CountSubstring(stageRHSMetalBody,"CopyResidentForceBuffer(upload,burnerUpload,")==1u&&
 		CountSubstring(forceMetalSource,"ResidentForceTransferScope transferScope(")==5u&&
 		residentForceBody.find(" copyFromBuffer:")==std::string::npos&&
 		CountSubstring(residentForceBody,"[preflight commit]")==0u&&

@@ -1117,6 +1117,45 @@ void TestWriterFailureReleasesAllReferences()
 	store->release();
 }
 
+#ifndef NO_PNG_SUPPORT
+void TestPNGTransferMetadataByDepth()
+{
+	for(const unsigned char depth : {8,16}) {
+		for(const COLOR_SPACE space : {eColorSpace_Rec709RGB_Linear,
+			eColorSpace_ROMMRGB_Linear,eColorSpace_sRGB,eColorSpace_ProPhotoRGB}) {
+			MemoryBuffer* buffer=new MemoryBuffer();
+			IRasterImageWriter* writer=nullptr;
+			RISE_API_CreatePNGWriter(&writer,*buffer,depth,space);
+			Check(writer!=nullptr,"PNG metadata fixture writer exists");
+			if(writer) {
+				writer->BeginWrite(1,1);
+				writer->WriteColor(RISEColor(RISEPel(0.25,0.5,0.75),1.0),0,0);
+				writer->EndWrite();writer->release();
+			}
+			const auto* bytes=reinterpret_cast<const unsigned char*>(buffer->Pointer());
+			const std::size_t size=buffer->Size();
+			auto word=[&](std::size_t i){return (std::uint32_t(bytes[i])<<24)|
+				(std::uint32_t(bytes[i+1])<<16)|(std::uint32_t(bytes[i+2])<<8)|bytes[i+3];};
+			std::uint32_t gamma=0;unsigned int found=0,srgbFound=0;
+			for(std::size_t pos=8;pos+12<=size;) {
+				const std::uint32_t length=word(pos);
+				if(length>size-pos-12)break;
+				if(length==4&&std::memcmp(bytes+pos+4,"gAMA",4)==0){gamma=word(pos+8);++found;}
+				if(length==1&&std::memcmp(bytes+pos+4,"sRGB",4)==0)++srgbFound;
+				pos+=length+12;
+			}
+			const std::uint32_t expected=space==eColorSpace_sRGB?45455u:
+				space==eColorSpace_ProPhotoRGB?55556u:100000u;
+			Check(found==1&&gamma==expected,"PNG transfer metadata matches encoded color space at depth "+
+				std::to_string(depth)+" space "+std::to_string(space));
+			Check(srgbFound==(space==eColorSpace_sRGB?1u:0u),
+				"PNG exact sRGB transfer tag is present only for sRGB");
+			buffer->release();
+		}
+	}
+}
+#endif
+
 int main()
 {
 	std::cout << "FrameEncoderTest L2 — IFrameEncoder byte-identical regression\n";
@@ -1131,6 +1170,7 @@ int main()
 	TestEdgeDimensions();
 	TestHDRExposureOnlyIgnored();
 #ifndef NO_PNG_SUPPORT
+	TestPNGTransferMetadataByDepth();
 	TestHDR10PNGEncoder_L5c();
 #endif
 	TestWriterFailureReleasesAllReferences();

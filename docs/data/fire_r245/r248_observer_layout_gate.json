@@ -1,0 +1,38 @@
+{
+  "schema": "rise.fire.r248.observer-layout-gate.v1",
+  "status": "candidate_pure_address_and_identity_slot_prerequisite",
+  "exit_code": 0,
+  "controls": {
+    "status": "pure_support_layout_prerequisite_only",
+    "red": 12,
+    "common_unique_faces": 1284,
+    "metadata_slots": 39,
+    "native_fields_read": 0,
+    "new_simulation_launched": false
+  },
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_observer_layout.py",
+      "sha256": "75b93ef64b8bfd1c932972176f634f51f2e1bf94007811c8fd41e4290dd28a72"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_observer_layout_validation.v1/observer_layout.frozen.py",
+      "sha256": "75b93ef64b8bfd1c932972176f634f51f2e1bf94007811c8fd41e4290dd28a72"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_observer_layout_validation.v1/stdout.log",
+      "sha256": "c2348148ee654c35911c6e8f83758e3ec7f9bda0fc59fc4845e23a670c1b814c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_observer_layout_validation.v1/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_observer_layout_validation.v1/controls.json",
+      "sha256": "fed66ec3eba536e14a739440b17f3326d9b150ea52359f66d13c972efc146fc5"
+    }
+  ],
+  "native_fields_read": 0,
+  "new_simulation_launched": false,
+  "full_observer_implementation_accepted": false
+}

@@ -1,0 +1,48 @@
+{
+  "schema": "rise.fire.r246.prepared-recovery-gate.v1",
+  "recovery_accepted": false,
+  "results": [
+    {
+      "stage": "missing_operand_seal",
+      "exit_code": 1,
+      "log_sha256": "dc284ddd02d9c186695b555eb345c6c7f6ca848fc318346f62d60bbde9cf04f0"
+    },
+    {
+      "stage": "changed_resealed_capsule",
+      "exit_code": 1,
+      "log_sha256": "331df7283daa414a3637620fa5075e5206f4783f6e51f6c0d046f8ddfb8b2530"
+    },
+    {
+      "stage": "occupied_output",
+      "exit_code": 1,
+      "log_sha256": "e98f66d93e8bbcd3fdc74a9c0d936d9211d0a1f1cbc1a3dac8e4dd35fbbeeae1"
+    }
+  ],
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1",
+  "receipt_sha256": "9e76d5221025d615f0475fd67f1cbd818791c66dd6e815aea7a2156c55ca55f2",
+  "seals_verified": 4,
+  "native_layers": 160,
+  "common_layers": 80,
+  "hand_calculated_green": 1,
+  "targeted_arithmetic_reds": 6,
+  "status": "accepted_recovery_preparation_only",
+  "implementation": "ec3b25181",
+  "sha256": {
+    "tools/fire/r246_prepare_recovery.py": "03e43244cf39fa4afa5be466262360b55a512c7481fbebf3583a2fa9e0c933cf",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1/recovery_receipt.json": "9e76d5221025d615f0475fd67f1cbd818791c66dd6e815aea7a2156c55ca55f2",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1/retained_summary.json": "770fb2d6b65df76ff55ae67d6dbe6ce1bb9b375912fd5620b55f266e69d7c931",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1/completion.json": "409462b0a9a1c3c89534751e80a35a03c8fce464e45525b900baf04d20f316dd",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery_controls.v1/report.json": "619d35d2f598df236b63e9604e26575cbd1cf5a36fb2fafff5dbdf5f7035c11d"
+  },
+  "self_audit": [
+    "Exact accepted operand/ledger/capsule receipts and original checkpoint/manifest/frameCSV/window/exit98 completion hashes are pinned.",
+    "Derived profiles divide actual retained integrals by actual sampled duration and keep160native/80common supports distinct.",
+    "Plane fsum totals do not assert equality with the producer full-domain reduction tree.",
+    "New preparation receipt and artifact seals name separate implementation issuer, not original producer success.",
+    "Unknown retry/externalfuel/monitored-vector and physical claims stay unavailable."
+  ],
+  "fresh_round1": {
+    "arithmetic_contract": "zero P1/P2",
+    "lifecycle_provenance": "zero P1/P2"
+  }
+}

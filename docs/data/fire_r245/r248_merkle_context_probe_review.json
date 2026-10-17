@@ -1,0 +1,64 @@
+{
+  "schema": "rise.fire.r248.merkle-context-probe-review.v1",
+  "candidate": "a566471accfcc47c7d5971ca97f54afd0868f153",
+  "round": 2,
+  "accepted": true,
+  "gate_pin": {
+    "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r248_merkle_context_probe_gate.json",
+    "sha256": "c76ae8c4d73b909e23cf9d8a62a6ea4d80671c59c36329c03b2dcf3d994562e8"
+  },
+  "fresh_reviews": [
+    {
+      "task": "/root/r248_merkle_resource_r2",
+      "axes": "source/resource/cost/provenance",
+      "P1": 0,
+      "P2": 0,
+      "checks": {
+        "gate_pins": 5,
+        "validation_pins": 22,
+        "build_log_pins": 8,
+        "preserved_failure_pins": 1,
+        "completion_pins": 1,
+        "native_rows": 20,
+        "pipeline_reference_slots_per_factory": 3,
+        "publication_red": 4,
+        "optimized_python_red": 1,
+        "fingerprint_mismatch_red": 2
+      }
+    },
+    {
+      "task": "/root/r248_merkle_lifecycle_r2",
+      "axes": "exception/lifecycle/refusal/test-integrity/provenance",
+      "P1": 0,
+      "P2": 0,
+      "checks": {
+        "gate_pins": 5,
+        "validation_pins": 22,
+        "build_log_pins": 8,
+        "archive_objects": 1,
+        "native_rows": 20,
+        "isolated_row_mutant_refusals_optimization_0_1_2": 942,
+        "canonical_guard_validations": 6,
+        "pin_corruption_refusal_optimization_levels": [
+          0,
+          1,
+          2
+        ],
+        "publication_red": 4,
+        "optimized_python_red": 1
+      }
+    }
+  ],
+  "earlier_round": "r248_merkle_context_probe_review_r1.json",
+  "repair": "Final Opto warning count recomputed from complete pinned log: two documented notices; native runtime controls unchanged.",
+  "complete_live_inventory_qualified": false,
+  "compiler_register_spill_bounds_qualified": false,
+  "complete_resource_admission": false,
+  "native_owner_digest_operation_accepted": false,
+  "native_observer_accepted": false,
+  "full_ordinal_accepted": false,
+  "native_parity_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "original_source_exit": 98
+}

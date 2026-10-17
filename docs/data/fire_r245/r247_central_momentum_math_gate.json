@@ -1,0 +1,47 @@
+{
+  "schema": "rise.fire.r247.central-momentum-math-gate.v1",
+  "status": "candidate_synthetic_central_momentum_only",
+  "exit_code": 0,
+  "controls": {
+    "empirical": false,
+    "full_derivation_accepted": false,
+    "green": 6,
+    "native_payloads_read": 0,
+    "red": 17,
+    "status": "synthetic_central_momentum_arithmetic_only"
+  },
+  "design_acceptance": "5f88dc2b2",
+  "field_consumer_implemented": false,
+  "full_derivation_accepted": false,
+  "memory_admission_accepted": false,
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_central_momentum.py",
+      "sha256": "dcb3b42b3317b9b3c61d87e8107c32135759298f068b071d12273076e79f87a3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_central_momentum_validation.v2/central_momentum.frozen.py",
+      "sha256": "dcb3b42b3317b9b3c61d87e8107c32135759298f068b071d12273076e79f87a3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_central_momentum_validation.v2/stdout.log",
+      "sha256": "e3b4da45aaa0282d459e6e036fc3c78862d68c77cd9f22f07050bfd8c6517131"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_central_momentum_validation.v2/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_central_momentum_validation.v2/controls.json",
+      "sha256": "31c263f1a70b37422bdefaf52ad17755ad6641c8301d57b8a31c89b1a9943bbb"
+    }
+  ],
+  "self_audit": [
+    "Axis-local staggered face offsets and shared face duplication",
+    "Include zface80 but exclude lateral zlayer80 in common80",
+    "Actual Heun binary32 operation tree and exactbits including signedzero",
+    "Owned stages/combinedprojection versus unavailablepressure/restoration split",
+    "Face means versus unavailable volume/boundary integrals; no fullhistory claims"
+  ],
+  "repair": "Classify actual rounded binary32 stage addition via raising FP operation; near-max finite GREEN/genuine-overflow RED, no epsilon. Frozenv1 preserved."
+}

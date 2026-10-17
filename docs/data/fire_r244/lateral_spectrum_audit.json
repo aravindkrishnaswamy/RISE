@@ -1,0 +1,60 @@
+{
+  "status": "single_variant_audited_comparison_separate",
+  "variant": "lateral",
+  "artifact_fidelity": "simulation_evidence",
+  "note": "Interpolation above the native 8 Hz lit-area Nyquist adds no independent information. FFT disagreement is reported, not used to change a physical gate. Source/display provenance was verified by the native preview producer; this audit checks the exported hashes, complete time span and decoded pixel counts.",
+  "source_artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_double.v1/production_final.checkpoint",
+      "sha256": "f419de029f152bb6eecef6b2f045ea7ce7e3375d22f60507a89eeb03cfddedf4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_double.v1/frame_times.csv",
+      "sha256": "dc3511edaeb76fd00729541b508823a0036588d6e709349d87ad9fb17b29dc5f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_spectrum.v1/display_inputs.csv",
+      "sha256": "aed9ec8988705593741aeea99f02068c7bc17d9fac36ec49fb78210ad549ea9a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_spectrum.v1/centerline_signal.csv",
+      "sha256": "daeb9d32bc98da464ca0aaad5894d4fbb844a56eff1b80eba9a98b4df65b6280"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_spectrum.v1/lit_area_signal.csv",
+      "sha256": "ee6c375c8fc918b7d745e8bb7012e3743987fe08be5461d0ab0c7b6dcc6d4443"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_spectrum.v1/full_spectrum.csv",
+      "sha256": "173c59ddb4dd46e1bc61b44c11c7c6ef9979a8aeac1de63edad47bcdfcf86e7a"
+    }
+  ],
+  "signals": {
+    "centerline_heat_release": {
+      "input_samples": 8916,
+      "first_time_s": 10.531864278949797,
+      "last_time_s": 25.156864278920693,
+      "dominant_hz": 1.569577991456115,
+      "expected_nearest_hz": 2.729700854706287,
+      "expected_to_peak_power_ratio": 0.35071773809789936,
+      "slow_nearest_hz": 0.13648504273531434,
+      "slow_to_peak_power_ratio": 0.12643143418772188,
+      "independent_fft_peak_hz": 1.569577991456115,
+      "independent_max_absolute_power_error_over_peak": 3.421100017519604e-14
+    },
+    "display_lit_area": {
+      "input_samples": 235,
+      "first_time_s": 10.531864278949797,
+      "last_time_s": 25.156864278920693,
+      "dominant_hz": 0.06824252136765717,
+      "expected_nearest_hz": 2.729700854706287,
+      "expected_to_peak_power_ratio": 0.06605689764010236,
+      "slow_nearest_hz": 0.13648504273531434,
+      "slow_to_peak_power_ratio": 0.907604820300905,
+      "independent_fft_peak_hz": 0.06824252136765717,
+      "independent_max_absolute_power_error_over_peak": 3.9293225872861713e-14
+    }
+  },
+  "verifier_sha256": "57c6972e95948b296bad8729ee38f967a3715aca941e061d41d68e77e630c1f5",
+  "figure_sha256": "281930e0595d9f35f621e862115eb2254ce973bc83807998cfcc13b8768c7248"
+}

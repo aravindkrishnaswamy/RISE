@@ -1,0 +1,83 @@
+{
+  "schema": "rise.fire.r248.target-term-gate.v1",
+  "status": "candidate_pure_target_term_arithmetic_and_wire_prerequisite",
+  "exit_code": 0,
+  "controls": {
+    "status": "pure_target_term_numeric_prerequisite_only",
+    "red": 28,
+    "interval_green": 21,
+    "joint_green": 128,
+    "packet_bytes": 1584,
+    "native_fields_read": 0,
+    "EOS_interval_composition_certified": false,
+    "stage_lineage_authenticated": false,
+    "new_simulation_launched": false
+  },
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_target_terms.py",
+      "sha256": "35cf1d215582bb34ba4defb2ecf28953d874589075b7faaad07b188258123e4c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_target_terms_validation.v3/target_terms.frozen.py",
+      "sha256": "35cf1d215582bb34ba4defb2ecf28953d874589075b7faaad07b188258123e4c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_target_terms_validation.v3/stdout.log",
+      "sha256": "404a251602e6577fb8bb599bb316bb0e357ec3d2066d557f2bf8ed2bfad7feef"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_target_terms_validation.v3/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_target_terms_validation.v3/controls.json",
+      "sha256": "49c4137b05077b400132cfddd1c1f8ebbcb37244ee09482655369889f5276fd2"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_target_terms_validation.v3/packet_layout.json",
+      "sha256": "029b99114a8786fa09198e2f1aa1b6a2caddb7d5db7bcfb34b12c5244af7a247"
+    }
+  ],
+  "dependencies": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_projection_packet.py",
+      "sha256": "5b4ab5b114645c923a1d38375ae9a671050307a849848b5ec2d5827c0c41a817"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_projection_accounting.py",
+      "sha256": "7e3d979e6c51a63c95ddf4caf3a9a0c76ea444b18d47fb62b8e52f7902b50bf2"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_observer_layout.py",
+      "sha256": "75b93ef64b8bfd1c932972176f634f51f2e1bf94007811c8fd41e4290dd28a72"
+    }
+  ],
+  "semantic_source": {
+    "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionAdvectionMac.mm",
+    "sha256": "6a5c4543d3e5b61c76f1458346d91e94291ab10322c3f542e2870ec83f309a3d",
+    "executed": false,
+    "functions": [
+      "owner_compose_target",
+      "finalize_resident_target",
+      "ResidentProjectedHeunMetalOwner::CorrectTargetAuthority",
+      "ResidentProjectedHeunMetalOwner::BuildStage"
+    ]
+  },
+  "native_fields_read": 0,
+  "stage_lineage_authenticated": false,
+  "EOS_interval_composition_certified": false,
+  "observer_allocation_accepted": false,
+  "new_simulation_launched": false,
+  "limitations": [
+    "No native stages/authenticated operands/lifetimes/modern issue proof",
+    "Pre-finalization composed snapshot requires future bounded resident observation before overwrite",
+    "No certification of EOSDD interval composition/base/tangent/source assembly",
+    "Numeric means are not volume integrals or pressure/EOS momentum impulses",
+    "1584encoded wire bytes not measured host/Metal memory footprint",
+    "Other observer families/full ordinal/root chain/parity pending"
+  ],
+  "prior_round_candidate": "27b8d0499",
+  "prior_round_review": "docs/data/fire_r245/r248_target_terms_review_round2.json",
+  "repair": "Exact Fraction bins account sum+division then eliminate N to require a single P,N witness satisfying both signed=P+N and absolute=P-N; constrain positive/negative true-sum signs, noepsilon"
+}

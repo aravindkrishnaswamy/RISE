@@ -1,0 +1,19 @@
+{
+  "candidate": "94b4dc317",
+  "round": 1,
+  "status": "repair_required",
+  "reviews": [
+    {
+      "reviewer": "r248_native_hook_solver_r1",
+      "p1": 0,
+      "p2": 0,
+      "verified": "Fivepins and actual owner/stage/projection command hooks; capacity-error attempt not counted, retry performed actual review"
+    },
+    {
+      "reviewer": "r248_native_hook_provenance_r1",
+      "p1": 0,
+      "p2": 1,
+      "finding": "Caller state/statistics mutate before later gates; description must distinguish actual clock/ordinal boundary from earlier mutations"
+    }
+  ]
+}

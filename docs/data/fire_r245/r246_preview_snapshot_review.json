@@ -1,0 +1,35 @@
+{
+  "schema": "rise.fire.r246.preview-snapshot-review.v1",
+  "reviewed_head": "d1f6ba5b2",
+  "accepted": true,
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "completed_utc": "2026-10-04T07:34:05.251918+00:00",
+  "round": 3,
+  "reviewers": [
+    {
+      "agent": "r246_preview_snapshot_contract_r3",
+      "axis": "arithmetic_contract",
+      "p1": 0,
+      "p2": 0,
+      "verdict": "Independently checked all 15 controls/logs, exact frozen executable/implementation/evidence, all four payload/seal pairs, portable helper bodies and warning-free build. Canonical runtime manifest and captured four-buffer publication satisfy prepared prerequisite."
+    },
+    {
+      "agent": "r246_preview_snapshot_lifecycle_r3",
+      "axis": "lifecycle_provenance",
+      "p1": 0,
+      "p2": 0,
+      "verdict": "Independently checked runtime A/B/A discrimination and old B versus bound A pair publication, final four consumed buffers/hashes, issuer separation and original exit98. Receipt admission and actual command/GIF publication remain pending."
+    }
+  ],
+  "limitations": [
+    "No native VDB preflight/load or rendering performed; retained checkpoint decoding still occurs for strict admission.",
+    "Recovered rendering CLI and full command/publication composition remain pending.",
+    "Runtime fixture exercises the same canonical metadata loader and synthetic emitted identity; it does not fabricate rendered provenance.",
+    "Snapshot receipt issuer/recovery publication binding remains for the forthcoming wrapper.",
+    "Full recovery, signed budgets and physical/canonical acceptance false."
+  ],
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_snapshot_runtime.v8",
+  "executable_sha256": "c26f0efdb1bc7c89b8d46bffdc2b83c364e53d2e5cc1b57bf998dd0cd3a082d9",
+  "gate": "docs/data/fire_r245/r246_preview_snapshot_gate.json"
+}

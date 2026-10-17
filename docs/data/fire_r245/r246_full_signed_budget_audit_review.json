@@ -1,0 +1,34 @@
+{
+  "schema": "rise.fire.r246.full-signed-budget-milestone-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "5d1cfe24c",
+  "round": 1,
+  "completion_receipt_sha256": "5996f1430d7928ae7825264c63427a548a996157840343e9a4c022f37c49538a",
+  "report_sha256": "8105dc52c044e6e39e8937fc36baa2be60f8e2e2a3d9f75a9384fc19646b3e72",
+  "seal_sha256": "134c0fc3ee51c5f617415116546724c838a485735afa5ef7183b40b207f91d1c",
+  "accepted_scope": "Full15315/235 signed budget arithmetic and data provenance only",
+  "original_exit_code": 98,
+  "physical_acceptance": false,
+  "canonical_taller_qualification": false,
+  "reviewers": [
+    {
+      "agent": "r246_full_budget_milestone_arithmetic",
+      "axis": "signed arithmetic/contract/provenance",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "agent": "r246_full_budget_milestone_provenance",
+      "axis": "lifecycle/provenance",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "independent_checks": [
+    "Strict report modern seal and source/pinned/frozen identities",
+    "235 selected steps/native/flux/columns against accepted receipt and final ledger",
+    "Sequential15315-step terminal full window",
+    "Signed per-side/source/statistics/Heun/column arithmetic unchanged; no physical qualification"
+  ],
+  "accepted_utc": "2026-10-04T12:44:34.230779+00:00"
+}

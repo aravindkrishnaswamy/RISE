@@ -1,0 +1,31 @@
+{
+  "schema": "rise.fire.r246.authored-gif-bytes-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "536bdf8d7",
+  "round": 1,
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "gate_sha256": "7f238820e946dedea81b8932de164da4fb96c4732b525900ffcaea59a397e348",
+  "reviewers": [
+    {
+      "agent": "r246_authored_gif_contract_r1",
+      "axis": "contract/test integrity",
+      "p1": 0,
+      "p2": 0,
+      "findings": "ImageIO properties unchanged, byte retention and exclusive publication discriminating; hashes and synthetic limitation honest.",
+      "future_coverage": "Integrated composition should verify multiframe count/quantized delays and honor false return when optional output retains previous value."
+    },
+    {
+      "agent": "r246_authored_gif_lifecycle_r1",
+      "axis": "lifecycle/provenance",
+      "p1": 0,
+      "p2": 0,
+      "findings": "CFData/destination ownership sound, finalization bytes copied before release; original evidence/hash/exit98 preserved."
+    }
+  ],
+  "limitations": [
+    "Synthetic single-frame byte prerequisite, not full recovery or physical evidence.",
+    "Temporal returned-byte consumption/publisher/sidecar/output receipt/recovered CLI remain pending."
+  ],
+  "accepted_utc": "2026-10-04T09:11:23.982128+00:00"
+}

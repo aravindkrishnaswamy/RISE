@@ -1,0 +1,56 @@
+{
+  "schema": "rise.fire.r246.consumer-publication-snapshot-gate.v1",
+  "status": "review_round4_requires_discriminating_between_read_seam",
+  "recovery_accepted": false,
+  "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v4/FireSequenceTest",
+  "binary_sha256": "6a5511707cc44bcceb29ec294124716f977e5193c27fea4ec9af7fc3df90756c",
+  "binary_identity_note": "486dde87d dirty source publication-state repair, separate from original producer.",
+  "results": [
+    {
+      "stage": "staged_source_replacement",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "773aa81b9d6e67e6ecf9d523de032d8920f4f5ef6f88b91955008933bed51ba9"
+    },
+    {
+      "stage": "same_source_snapshot",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "cba1b5bea656ef0587ef7ac0f338dc7e930139bd3743a72f5a7be0a9b4fd20a7"
+    },
+    {
+      "stage": "checkpoint_pair_snapshot_reds",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "57c6901982092cb5555cf9e6aadb9a629fab3c7bcd1ce2bdc74463414d2cc5c2"
+    },
+    {
+      "stage": "regular_pending_marker",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "4957072630c181f61b4f00a21790028c3553d3443620fa2d16ca03e7a3ce9999"
+    },
+    {
+      "stage": "dangling_pending_marker",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "4957072630c181f61b4f00a21790028c3553d3443620fa2d16ca03e7a3ce9999"
+    }
+  ],
+  "sha256": {
+    "tests/FireSequenceTest.cpp": "fd22109f231426f3b4f997a87e0a54084e94f886c12e6459c45e275ffda84816",
+    "tools/fire/r246_consumer_input_controls.py": "e2501b072e386458362ffc06789a7ed6a8bf42f86809719091c03e1c75a4449b",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v4/RendererBuildIdentity.generated.h": "74e8552b00a10b9f48fdb34c55c06da85c46efbaab2c9ee643ca2b98920ad12f",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v4.build.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v4.controls/report.json": "7786c3902de40980065b49a917ffd91f683e83865bf25c23b92f18610e50a150",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v4.controls/completion.json": "a4bd3633611768c521a941699d0fe62b6620b30cffd78cb6de72396a5cf662c1"
+  },
+  "prior_native_frame_evidence": "docs/data/fire_r245/r246_consumer_input_gate.json",
+  "review_round3": {
+    "commit": "486dde87d",
+    "contract": "zeroP1; P2 dropped pending source publication marker",
+    "lifecycle": "zeroP1; same P2 pending marker"
+  },
+  "limitations": "No repeated235-frame preflight; prior v1 native results retained as separate evidence.",
+  "repair_receipt": "docs/data/fire_r245/r246_consumer_read_sequence_gate.json"
+}

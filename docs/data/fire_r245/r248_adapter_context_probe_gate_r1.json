@@ -1,0 +1,164 @@
+{
+  "schema": "rise.fire.r248.adapter-context-probe-gate.v1",
+  "status": "scoped_controls_pending_review",
+  "pins": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionForceMac.mm",
+      "sha256": "d6da83c9e3514c8dff56840b7bf6950aad9ad55721fdab171be89fd261e3fbd0"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionProjectionMac.mm",
+      "sha256": "828857ac5408423dfc64b7c2318a593247a47db178a1ff8fc3ea63b094b40d67"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_adapter_context_probe.cpp",
+      "sha256": "b5fdcc3b4e7d5277a4653d4b94db9eee21b2b136ec13bef8a1a3f26d18ff8793"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_adapter_context_probe_verify.py",
+      "sha256": "0557285c119e0561719a30d7cc7d1fa17e92d366be5eebd848c126a9eab85e8f"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/FIRE_SMOKE_ADAPTER_CONTEXT_RESOURCE_PROBE_R248.md",
+      "sha256": "ba49f6ffee8440ea69aa5daad1b9122a5707c5ac44d394780e5ef8f830bddd7a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/controls/validation.json",
+      "sha256": "ef7c0ce533636a48824ca8ed54d7d52bf51e62e64728251229c24bba7fe7df2c"
+    }
+  ],
+  "builds": [
+    {
+      "name": "make_clean",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/make_clean.log",
+        "sha256": "09155cd7b2f99672f8f213b798682fc13fdd3602f019b4c35e86d49af827ebe1"
+      }
+    },
+    {
+      "name": "make_all",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/make_all.log",
+        "sha256": "e0612ce2979f69ff5be3dafba6e56470383d512c1d52f951f0be0c585ad6da29"
+      }
+    },
+    {
+      "name": "final_make",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/final_make.log",
+        "sha256": "543c5618b5a70a50f9c3bdd1a5c31927f191c462684a00a778a2aa9baf2765c4"
+      }
+    },
+    {
+      "name": "controls",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/controls.log",
+        "sha256": "97d5866c469468ab949bddc4b37eb77e562fb990977063370feb361d3c9af2d8"
+      }
+    },
+    {
+      "name": "test_build",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/test_build.log",
+        "sha256": "2816c30bf666f29da66e106d51b5724b88b5c10aaa8a7488cd24eed6f8cf9844"
+      }
+    },
+    {
+      "name": "deployment_clean",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/deployment_clean.log",
+        "sha256": "16c98d2c9f63b321396723dbbe78102ce166051ec571673abac9b997580b0cb1"
+      }
+    },
+    {
+      "name": "deployment_build",
+      "exit_code": 0,
+      "warnings": 2,
+      "allowed_documented_notices": 2,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/deployment_build.log",
+        "sha256": "0e3f8ca03eee25eaceeb67ae61da83505d9d6a96269f0ee65939211479ba0585"
+      }
+    },
+    {
+      "name": "opto_clean",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/opto_clean.log",
+        "sha256": "cf4842750c43d3a13560b2a3c8807cdaebb0f512a250cc592ee7efb48fe2e7d2"
+      }
+    },
+    {
+      "name": "opto_build",
+      "exit_code": 0,
+      "warnings": 2,
+      "allowed_documented_notices": 2,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_adapter_context_probe.v1/opto_build.log",
+        "sha256": "5a19b9bb78b513bb6afd992f7e081f271e9feef469aa6e4f2fa211180c581aeb"
+      }
+    }
+  ],
+  "green_per_factory_per_mode": 3,
+  "red_per_factory_per_mode": 3,
+  "optimized_python_red": 1,
+  "pipeline_reference_slots": {
+    "force": 14,
+    "projection": 21
+  },
+  "max_observed_fixture_peak_RSS_bytes": 69206016,
+  "fixture_ceiling_bytes": 2147483648,
+  "fixture_reserve_bytes": 33554432,
+  "validation_artifact_pins": 26,
+  "build_identity": {
+    "head": "34c01b770c949540491dadc631fada991edd2a82",
+    "dirty": true,
+    "embedded_git_identity": false,
+    "python_version": "3.9.6 (default, May 22 2026, 11:13:45) \n[Clang 21.0.0 (clang-2100.1.1.101)]",
+    "python_optimize": 0,
+    "clang": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.5.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n"
+  },
+  "self_audit": [
+    "Attempts vs successful initialization/static retry and warm reuse; no semantic field or serialization change claimed beyond inspection",
+    "No numerical commands/field allocation; slot arrays cover all actual constructor fields, not unique allocation IDs",
+    "Publication failure isolated per factory; all verifier acceptance guards explicit and optimization refused before work",
+    "RSS/device snapshots do not establish simultaneous ownership or transient device/compiler/spill bounds",
+    "Owner and standalone lazy Merkle contexts are distinct unmodified statics, neither instantiated here"
+  ],
+  "complete_resource_admission": false,
+  "complete_live_inventory_qualified": false,
+  "register_spill_bounds_qualified": false,
+  "native_observer_accepted": false,
+  "native_parity_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false
+}

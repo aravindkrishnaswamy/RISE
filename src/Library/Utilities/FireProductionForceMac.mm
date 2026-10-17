@@ -17,6 +17,9 @@
 #include "RISECBOR64.h"
 
 #include <algorithm>
+#include <atomic>
+#include <array>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -80,7 +83,7 @@ namespace RISE
 		}
 		struct ForceParameters
 		{
-			std::uint32_t nx,ny,nz,padding0;
+			std::uint32_t nx,ny,nz,burnerFaces;
 			float cellWidthM,timeStepS,ambientDensityKGPerM3,vremanCoefficient;
 			float gravity[3],padding1;
 			std::uint32_t boundary[6],faceOffset[3],totalFaces;
@@ -135,9 +138,11 @@ namespace RISE
 		{
 			return R"METAL(
 #include <metal_stdlib>
+#pragma clang fp contract(off)
+// Arithmetic contract: precise elementary functions, uncontracted operations.
 using namespace metal;
 struct Params {
- uint nx,ny,nz,pad0;float dx,dt,ambient,cv;float3 gravity;
+ uint nx,ny,nz,burnerFaces;float dx,dt,ambient,cv;float3 gravity;
  uint boundary[6];uint faceOffset[3];uint totalFaces;
 };
 inline uint cell_index(constant Params& p,uint x,uint y,uint z){return (z*p.ny+y)*p.nx+x;}
@@ -161,11 +166,13 @@ inline uint face_axis(constant Params& p,uint packed){
 }
 kernel void setup_face_velocity(device const float* density [[buffer(0)]],
  device const float* momentum [[buffer(1)]],device float* velocity [[buffer(2)]],
- constant Params& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ constant Params& p [[buffer(3)]],device const uchar* burner [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){
  if(gid>=p.totalFaces)return;uint axis=face_axis(p,gid),local=gid-p.faceOffset[axis];
  uint x,y,z;face_coordinate(p,axis,local,x,y,z);uint c=axis==0u?x:(axis==1u?y:z);
  bool wall=(c==0u&&p.boundary[2u*axis]==2u)||(c==extent(p,axis)&&p.boundary[2u*axis+1u]==2u);
- velocity[gid]=wall?0.0f:momentum[gid]/density[gid];
+ bool inlet=p.burnerFaces!=0u&&axis==2u&&c==0u&&burner[y*p.nx+x]!=0u;
+ velocity[gid]=wall&&!inlet?0.0f:momentum[gid]/density[gid];
 }
 kernel void build_cell_velocity(device const float* faceVelocity [[buffer(0)]],
  device float* cellVelocity [[buffer(1)]],constant Params& p [[buffer(2)]],
@@ -192,12 +199,15 @@ kernel void build_stress(device const float* cellVelocity [[buffer(0)]],
  device const float* cellDensity [[buffer(1)]],device const float* molecularNu [[buffer(2)]],
  device float* eddy [[buffer(3)]],device float* muOut [[buffer(4)]],
  device float* stress [[buffer(5)]],constant Params& p [[buffer(6)]],
+ device const float* faceVelocity [[buffer(7)]],device const uchar* burner [[buffer(8)]],
  uint gid [[thread_position_in_grid]]){
  uint cells=p.nx*p.ny*p.nz;if(gid>=cells)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
  float gradient[3][3];float divergence=0.0f;
  for(uint d=0u;d<3u;++d){for(uint c=0u;c<3u;++c){
   float previous=neighbor_velocity(cellVelocity,p,c,x,y,z,d,-1);
   float next=neighbor_velocity(cellVelocity,p,c,x,y,z,d,1);
+  if(p.burnerFaces!=0u&&d==2u&&c==2u&&z==0u&&burner[y*p.nx+x]!=0u)
+   previous=2.0f*faceVelocity[face_index(p,2u,x,y,0u)]-cellVelocity[2u*cells+gid];
   gradient[d][c]=(next-previous)/(2.0f*p.dx);
  } divergence+=gradient[d][d];}
  float alphaSquared=0.0f,beta[3][3]={{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f}};
@@ -226,13 +236,15 @@ inline uint shifted_cell(constant Params& p,uint x,uint y,uint z,uint axis,int d
 kernel void build_face_force(device const float* faceDensity [[buffer(0)]],
  device const float* stress [[buffer(1)]],device float* viscous [[buffer(2)]],
  device float* gravity [[buffer(3)]],constant Params& p [[buffer(4)]],
+ device const uchar* burner [[buffer(5)]],
  uint gid [[thread_position_in_grid]]){
  if(gid>=p.totalFaces)return;uint component=face_axis(p,gid),local=gid-p.faceOffset[component];
  uint x,y,z;face_coordinate(p,component,local,x,y,z);uint xyz[3]={x,y,z};
  uint normal=xyz[component],n=extent(p,component);bool periodic=p.boundary[2u*component]==0u;
  if(periodic&&normal==n)return;bool wall=(normal==0u&&p.boundary[2u*component]==2u)||
   (normal==n&&p.boundary[2u*component+1u]==2u);
- float gravityValue=wall?0.0f:p.dt*(faceDensity[gid]-p.ambient)*p.gravity[component];gravity[gid]=gravityValue;
+ bool inlet=p.burnerFaces!=0u&&component==2u&&normal==0u&&burner[y*p.nx+x]!=0u;
+ float gravityValue=wall&&!inlet?0.0f:p.dt*(faceDensity[gid]-p.ambient)*p.gravity[component];gravity[gid]=gravityValue;
  float value=0.0f;
  if((normal!=0u||periodic)&&normal!=n){uint leftXYZ[3]={x,y,z};leftXYZ[component]=normal==0u?n-1u:normal-1u;
   uint left=cell_index(p,leftXYZ[0],leftXYZ[1],leftXYZ[2]),right=cell_index(p,x,y,z),cells=p.nx*p.ny*p.nz;
@@ -257,12 +269,14 @@ kernel void build_phase_source_rate(device const float* cellPhaseSource [[buffer
  device const float* faceVelocity [[buffer(1)]],device const float* viscous [[buffer(2)]],
  device const float* gravity [[buffer(3)]],device float* phase [[buffer(4)]],
  device float* combined [[buffer(5)]],constant Params& p [[buffer(6)]],
+ device const uchar* burner [[buffer(7)]],
  uint gid [[thread_position_in_grid]]){
  if(gid>=p.totalFaces)return;uint axis=face_axis(p,gid),local=gid-p.faceOffset[axis];
  uint x,y,z;face_coordinate(p,axis,local,x,y,z);uint xyz[3]={x,y,z};
  uint normal=xyz[axis],n=extent(p,axis);bool periodic=p.boundary[2u*axis]==0u;
  if(periodic&&normal==n)return;bool wall=(normal==0u&&p.boundary[2u*axis]==2u)||
   (normal==n&&p.boundary[2u*axis+1u]==2u);float restricted=0.0f;
+ if(p.burnerFaces!=0u&&axis==2u&&normal==0u&&burner[y*p.nx+x]!=0u)wall=false;
  if(!wall){if(normal>0u){uint left[3]={x,y,z};left[axis]=normal-1u;
    restricted+=0.5f*cellPhaseSource[cell_index(p,left[0],left[1],left[2])];}
   else if(periodic){uint left[3]={x,y,z};left[axis]=n-1u;
@@ -340,6 +354,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 )METAL";
 		}
 
+		std::atomic<std::uint64_t> ForceContextConstructionAttempts{0u};
+
 		struct ForceContext
 		{
 			id<MTLDevice> device;
@@ -349,12 +365,18 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				updateViscous,addGravity,snapshot;
 			std::string error;
 
-			ForceContext() : device(MTLCreateSystemDefaultDevice())
+			ForceContext() : device(nil)
 			{
+				ForceContextConstructionAttempts.fetch_add(1u,std::memory_order_relaxed);
+				device=MTLCreateSystemDefaultDevice();
 				if( !device ) {error="production frozen-force has no Metal device";return;}
 				queue=[device newCommandQueue];if( !queue ) {error="production frozen-force queue failed";return;}
 				MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
+				if(![options respondsToSelector:@selector(setMathMode:)]||
+					![options respondsToSelector:@selector(setMathFloatingPointFunctions:)]){
+					error="production frozen-force precise arithmetic unavailable";return;}
 				if( [options respondsToSelector:@selector(setMathMode:)] ) options.mathMode=MTLMathModeSafe;
+				options.mathFloatingPointFunctions=MTLMathFloatingPointFunctionsPrecise;
 				NSError* libraryError=nil;id<MTLLibrary> library=[device newLibraryWithSource:
 					[NSString stringWithUTF8String:ForceSource()] options:options error:&libraryError];
 				if( !library ) {error=MetalError("production frozen-force library failed",libraryError);return;}
@@ -381,6 +403,55 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		};
 
 		ForceContext& Context() {static ForceContext context;return context;}
+
+		// Qualification clone from the exact production source, with stores only.
+		// It never replaces the production pipeline or writes its buffers.
+		id<MTLComputePipelineState> StressTracePipeline(ForceContext& context,unsigned int mode,std::string* error)
+		{
+			std::string source=ForceSource();
+			const std::string begin="kernel void build_stress(";
+			const auto start=source.find(begin);
+			const auto end=source.find("\n}\ninline uint shifted_cell",start);
+			const std::string signature="uint gid [[thread_position_in_grid]]){";
+			const auto parameter=source.find(signature,start);
+			if(start==std::string::npos||end==std::string::npos||parameter>=end){
+				Fail(error,"force stress trace source anchors changed");return nil;}
+			const std::string stores=R"METAL(
+ for(uint d=0u;d<3u;++d)for(uint c=0u;c<3u;++c)
+  trace[(3u*d+c)*cells+gid]=gradient[d][c];
+ trace[9u*cells+gid]=alphaSquared;
+ for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)
+  trace[(10u+3u*i+j)*cells+gid]=beta[i][j];
+ trace[19u*cells+gid]=raw;
+ trace[20u*cells+gid]=alphaSquared==0.0f?0.0f:max(0.0f,raw)/alphaSquared;
+ trace[21u*cells+gid]=alphaSquared==0.0f?0.0f:sqrt(max(0.0f,raw)/alphaSquared);
+ trace[22u*cells+gid]=nuEddy;
+)METAL";
+			source.insert(end,stores);
+			source.insert(parameter,"device float* trace [[buffer(9)]],\n ");
+			source.replace(start,begin.size(),"kernel void build_stress_trace(");
+			// 0 = production; 1 = precise but contracted; 2 = historical
+			// fast-functions/contracted mutant. Neither mutant is a live pipeline.
+			if(mode!=0u){const std::string pin="#pragma clang fp contract(off)";
+				const auto at=source.find(pin);
+				if(at==std::string::npos){Fail(error,"force arithmetic pin missing");return nil;}
+				source.replace(at,pin.size(),"#pragma clang fp contract(on)");}
+			MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
+			if([options respondsToSelector:@selector(setMathMode:)])options.mathMode=MTLMathModeSafe;
+			if(mode!=2u){
+				if(![options respondsToSelector:@selector(setMathFloatingPointFunctions:)]){
+					Fail(error,"force precise-function diagnostic unavailable");return nil;}
+				options.mathFloatingPointFunctions=MTLMathFloatingPointFunctionsPrecise;}
+			NSError* detail=nil;
+			id<MTLLibrary> library=[context.device newLibraryWithSource:
+				[NSString stringWithUTF8String:source.c_str()] options:options error:&detail];
+			if(!library){Fail(error,MetalError("force stress trace compilation failed",detail).c_str());return nil;}
+			id<MTLFunction> function=[library newFunctionWithName:@"build_stress_trace"];
+			if(!function){Fail(error,"force stress trace function missing");return nil;}
+			id<MTLComputePipelineState> pipeline=[context.device newComputePipelineStateWithFunction:function error:&detail];
+			if(!pipeline)Fail(error,MetalError("force stress trace pipeline failed",detail).c_str());
+			return pipeline;
+		}
 
 		void Dispatch( id<MTLComputeCommandEncoder> encoder,
 			id<MTLComputePipelineState> pipeline, std::size_t count )
@@ -558,14 +629,14 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					for( std::size_t i=0u;i<boundCount;++i ) [encoder setBuffer:bound[i] offset:0 atIndex:i];
 					Dispatch(encoder,pipeline,count);[encoder endEncoding];return true;
 				};
-				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters};
+				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters,faceRho};
 				const id<MTLBuffer> cellBuffers[]={faceVelocity,cellVelocity,parameters};
-				const id<MTLBuffer> stressBuffers[]={cellVelocity,rho,nu,eddy,mu,stress,parameters};
-				const id<MTLBuffer> forceBuffers[]={faceRho,stress,viscous,gravity,parameters};
-				if( !encode(context.setupFace,setupBuffers,4u,faces)||
+				const id<MTLBuffer> stressBuffers[]={cellVelocity,rho,nu,eddy,mu,stress,parameters,faceVelocity,faceRho};
+				const id<MTLBuffer> forceBuffers[]={faceRho,stress,viscous,gravity,parameters,faceRho};
+				if( !encode(context.setupFace,setupBuffers,5u,faces)||
 					!encode(context.cellVelocity,cellBuffers,3u,cells)||
-					!encode(context.stress,stressBuffers,7u,cells)||
-					!encode(context.faceForce,forceBuffers,5u,faces) )
+					!encode(context.stress,stressBuffers,9u,cells)||
+					!encode(context.faceForce,forceBuffers,6u,faces) )
 					return Fail(error,"production frozen-force Metal encoder allocation failed");
 				[command commit];[command waitUntilCompleted];
 				if( InjectedFailure("command")||[command status]!=MTLCommandBufferStatusCompleted ) {
@@ -640,7 +711,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					"production resident nonpressure momentum boundary is invalid");
 			const std::size_t cells=shape.CellCount(),cellBytes=cells*sizeof(float);
 			std::uint64_t certifiedBytes=0u;
-			if( !FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,certifiedBytes)||
+			if( !FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,certifiedBytes,
+				input.bottomFuelMask!=nil)||
 				certifiedBytes>(UINT64_C(1)<<31u) ) return Fail(error,
 					"production resident nonpressure momentum working set exceeds two GiB");
 			std::array<std::size_t,3> faceCounts={};std::size_t faces=0u;
@@ -654,6 +726,11 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 			const std::size_t inputBytes[]={cellBytes,cellBytes,cellBytes,faceBytes,faceBytes};
 			ForceContext& context=Context();if( !context.Valid() ) return Fail(error,context.error.c_str());
 			id<MTLCommandQueue> callerQueue=[input.commandBuffer commandQueue];
+			if(input.bottomFuelMask&&(input.boundary[4]!=FireProductionProjectionWall||
+				[input.bottomFuelMask storageMode]!=MTLStorageModePrivate||
+				[input.bottomFuelMask device]!=context.device||
+				[input.bottomFuelMask length]!=shape.nx*shape.ny))return Fail(error,
+					"production resident nonpressure momentum burner buffer is invalid");
 			if(!callerQueue||[callerQueue device]!=context.device)return Fail(error,
 				"production resident nonpressure momentum command device is invalid");
 			for( std::size_t index=0u;index<5u;++index ) if( !inputs[index]||
@@ -697,6 +774,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						static_cast<std::uint32_t>(faceCounts[0]+faceCounts[1])},
 					static_cast<std::uint32_t>(faces)};
 				for( unsigned int side=0u;side<6u;++side ) p.boundary[side]=input.boundary[side];
+				p.burnerFaces=input.bottomFuelMask?static_cast<std::uint32_t>(shape.nx*shape.ny):0u;
 				id<MTLBuffer> parameters=[context.device newBufferWithBytes:&p length:sizeof(p)
 					options:MTLResourceStorageModeShared];
 				if( !parameters ) return Fail(error,
@@ -714,27 +792,28 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					for( std::size_t index=0u;index<count;++index )
 						[encoder setBuffer:bound[index] offset:0 atIndex:index];
 					Dispatch(encoder,pipeline,threads);[encoder endEncoding];return true;};
+				id<MTLBuffer> burner=input.bottomFuelMask?input.bottomFuelMask:input.packedFaceDensityKGPerM3;
 				const id<MTLBuffer> setupBuffers[]={input.packedFaceDensityKGPerM3,
-					input.packedMomentumKGPerM2S,computed.faceVelocityMPerS,parameters};
+					input.packedMomentumKGPerM2S,computed.faceVelocityMPerS,parameters,burner};
 				const id<MTLBuffer> cellBuffers[]={computed.faceVelocityMPerS,
 					computed.cellVelocityMPerS,parameters};
 				const id<MTLBuffer> stressBuffers[]={computed.cellVelocityMPerS,
 					input.cellGasDensityKGPerM3,input.molecularKinematicViscosityM2PerS,
 					computed.eddyKinematicViscosityM2PerS,computed.effectiveDynamicViscosityPaS,
-					computed.stressTensorPa,parameters};
+					computed.stressTensorPa,parameters,computed.faceVelocityMPerS,burner};
 				const id<MTLBuffer> forceBuffers[]={input.packedFaceDensityKGPerM3,
 					computed.stressTensorPa,computed.stressMomentumRateKGPerM2S2,
-					computed.buoyancyMomentumRateKGPerM2S2,parameters};
+					computed.buoyancyMomentumRateKGPerM2S2,parameters,burner};
 				const id<MTLBuffer> phaseBuffers[]={input.cellGasPhaseSourceRateKGPerM3S,
 					computed.faceVelocityMPerS,computed.stressMomentumRateKGPerM2S2,
 					computed.buoyancyMomentumRateKGPerM2S2,
 					computed.phaseSourceMomentumRateKGPerM2S2,
-					computed.combinedMomentumRateKGPerM2S2,parameters};
-				if( !encode(context.setupFace,setupBuffers,4u,faces)||
+					computed.combinedMomentumRateKGPerM2S2,parameters,burner};
+				if( !encode(context.setupFace,setupBuffers,5u,faces)||
 					!encode(context.cellVelocity,cellBuffers,3u,cells)||
-					!encode(context.stress,stressBuffers,7u,cells)||
-					!encode(context.faceForce,forceBuffers,5u,faces)||
-					!encode(context.phaseSource,phaseBuffers,7u,faces) ) return Fail(error,
+					!encode(context.stress,stressBuffers,9u,cells)||
+					!encode(context.faceForce,forceBuffers,6u,faces)||
+					!encode(context.phaseSource,phaseBuffers,8u,faces) ) return Fail(error,
 						"production resident nonpressure momentum encoder failed");
 				computed.privateAllocationBytes=actual;result=computed;
 				diagnostics.commandCommitCount=0u;
@@ -751,31 +830,48 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		}
 	}
 
-	bool EvaluateFireProductionNonpressureMomentumRHSMetal(
+	static bool EvaluateNonpressureMomentumMetalComparator(
 		const FireProductionNonpressureMomentumRHSRequest& request,
 		FireProductionNonpressureMomentumRHSResult& result,
 		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
-		std::string* error )
+		std::string* error,FireProductionForceVelocityTrace* velocityTrace )
 	{
 		result=FireProductionNonpressureMomentumRHSResult();
 		diagnostics=FireProductionNonpressureMomentumRHSMetalDiagnostics();
+		if(velocityTrace)*velocityTrace=FireProductionForceVelocityTrace();
 		try {
 			if( !ValidateFireProductionFrozenForceRequest(request.force,error) ) return false;
 			const FireProductionProjectionShape& shape=request.force.shape;
 			const std::size_t cells=shape.CellCount();
+			if(!request.bottomFuelMask.empty()){
+				if(request.bottomFuelMask.size()!=shape.nx*shape.ny||
+					request.force.boundary[4]!=FireProductionProjectionWall)return Fail(error,
+						"production nonpressure momentum Metal burner shape or bed is invalid");
+				for(const unsigned char value:request.bottomFuelMask)if(value>1u)return Fail(error,
+					"production nonpressure momentum Metal burner mask is nonbinary");
+			}
 			if( request.cellGasPhaseSourceRateKGPerM3S.size()!=cells )
 				return Fail(error,"production nonpressure momentum Metal phase-source shape is invalid");
 			for( const float value : request.cellGasPhaseSourceRateKGPerM3S )
 				if( !std::isfinite(value) ) return Fail(error,
 					"production nonpressure momentum Metal phase-source rate is nonfinite");
 			std::uint64_t certifiedBytes=0u;
-			if( !FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,certifiedBytes)||
+			if( !FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,certifiedBytes,
+				!request.bottomFuelMask.empty())||
 				certifiedBytes>(UINT64_C(1)<<31u) ) return Fail(error,
 					"production nonpressure momentum Metal working set exceeds two GiB");
 			std::array<std::size_t,3> faceCounts={};std::size_t faces=0u;
 			for( unsigned int axis=0u;axis<3u;++axis ) {
 				faceCounts[axis]=FireProductionProjectionFaceCount(shape,axis);faces+=faceCounts[axis];
 			}
+			const std::uint64_t traceHostBytes=(faces+72u*cells)*sizeof(float);
+			const std::uint64_t traceQuantum=UINT64_C(16384);
+			const std::uint64_t tracePrivateBudget=
+				((102u*cells*sizeof(float)+traceQuantum-1u)/traceQuantum)*traceQuantum;
+			const std::uint64_t traceStagingBudget=
+				((traceHostBytes+traceQuantum-1u)/traceQuantum)*traceQuantum;
+			if(velocityTrace&&traceHostBytes+traceStagingBudget+tracePrivateBudget>(UINT64_C(1)<<31u)-certifiedBytes)
+				return Fail(error,"force velocity trace host and device working set exceeds two GiB");
 			std::vector<float> packedDensity(faces),packedMomentum(faces);
 			std::size_t offset=0u;
 			for( unsigned int axis=0u;axis<3u;++axis ) {
@@ -805,6 +901,12 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				id<MTLBuffer> rho=privateBuffer(cellBytes),nu=privateBuffer(cellBytes);
 				id<MTLBuffer> source=privateBuffer(cellBytes),faceRho=privateBuffer(faceBytes);
 				id<MTLBuffer> momentum=privateBuffer(faceBytes);
+				const std::size_t burnerBytes=request.bottomFuelMask.size();
+				id<MTLBuffer> burner=burnerBytes?privateBuffer(burnerBytes):nil;
+				id<MTLBuffer> burnerUpload=burnerBytes?
+					sharedBytes(request.bottomFuelMask.data(),burnerBytes):nil;
+				if(burnerBytes&&(!burner||!burnerUpload))return Fail(error,
+					"production nonpressure momentum Metal burner allocation failed");
 				id<MTLBuffer> stageEddy=sharedBuffer(cellBytes),stageMu=sharedBuffer(cellBytes);
 				id<MTLBuffer> stageViscous=sharedBuffer(faceBytes),stageGravity=sharedBuffer(faceBytes);
 				id<MTLBuffer> stagePhase=sharedBuffer(faceBytes),stageCombined=sharedBuffer(faceBytes);
@@ -818,6 +920,12 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					const std::uint64_t allocation=[buffer allocatedSize];
 					if( actual>std::numeric_limits<std::uint64_t>::max()-allocation ) return Fail(error,
 						"production nonpressure momentum Metal allocation overflowed");
+					actual+=allocation;
+				}
+				if(burnerBytes)for(id<MTLBuffer> buffer:{burner,burnerUpload}){
+					const std::uint64_t allocation=[buffer allocatedSize];
+					if(actual>std::numeric_limits<std::uint64_t>::max()-allocation)return Fail(error,
+						"production nonpressure momentum Metal burner allocation overflowed");
 					actual+=allocation;
 				}
 				if( actual>certifiedBytes ) return Fail(error,
@@ -836,6 +944,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					ResidentForceTransferScope transferScope(ResidentForceUploadTransfer);
 					for( std::size_t index=0u;index<5u;++index ) CopyResidentForceBuffer(upload,
 						uploadSource[index],0u,uploadTarget[index],0u,uploadSize[index]);
+					if(burnerBytes)CopyResidentForceBuffer(upload,burnerUpload,0u,burner,0u,burnerBytes);
 				}
 				[upload endEncoding];
 				FireProductionMetalNonpressureMomentumRHSResidentInput residentInput;
@@ -849,6 +958,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				residentInput.cellGasPhaseSourceRateKGPerM3S=source;
 				residentInput.packedFaceDensityKGPerM3=faceRho;
 				residentInput.packedMomentumKGPerM2S=momentum;
+				residentInput.bottomFuelMask=burner;
 				FireProductionMetalNonpressureMomentumRHSResidentResult residentResult;
 				FireProductionNonpressureMomentumRHSMetalDiagnostics residentDiagnostics;
 				if( !EvaluateFireProductionNonpressureMomentumRHSMetalResident(residentInput,
@@ -863,6 +973,39 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				actual+=residentDiagnostics.actualMetalAllocationBytes;
 				if( actual>certifiedBytes ) return Fail(error,
 					"production nonpressure momentum Metal allocation exceeds certificate");
+				// Only this qualification entry point runs the isolated diagnostic
+				// clone and terminal copies. Resident execution is untouched.
+				FireProductionForceVelocityTrace capturedVelocity;
+				id<MTLBuffer> velocityStaging=nil;
+				// The command has unretained references: keep diagnostic GPU objects
+				// alive through waitUntilCompleted, not merely their last encode use.
+				__attribute__((objc_precise_lifetime)) id<MTLBuffer> stressTrace=nil;
+				__attribute__((objc_precise_lifetime)) id<MTLComputePipelineState> tracePipeline=nil;
+				__attribute__((objc_precise_lifetime)) id<MTLComputePipelineState> preciseTracePipeline=nil;
+				__attribute__((objc_precise_lifetime)) id<MTLComputePipelineState> legacyTracePipeline=nil;
+				if(velocityTrace){const std::size_t bytes=faceBytes+72u*cellBytes;
+					velocityStaging=sharedBuffer(bytes);
+					stressTrace=privateBuffer(102u*cellBytes);
+					if(!velocityStaging||!stressTrace)return Fail(error,"force velocity trace allocation failed");
+					capturedVelocity.additionalMetalAllocationBytes=[velocityStaging allocatedSize]+[stressTrace allocatedSize];
+					if(capturedVelocity.additionalMetalAllocationBytes>
+						(UINT64_C(1)<<31u)-certifiedBytes-traceHostBytes)
+						return Fail(error,"force velocity trace allocated peak exceeds two GiB");
+					tracePipeline=StressTracePipeline(context,0u,error);
+					if(!tracePipeline)return false;
+					preciseTracePipeline=StressTracePipeline(context,1u,error);
+					if(!preciseTracePipeline)return false;
+					legacyTracePipeline=StressTracePipeline(context,2u,error);
+					if(!legacyTracePipeline)return false;
+					const id<MTLBuffer> bound[]={residentResult.cellVelocityMPerS,rho,nu,
+						stressTrace,stressTrace,stressTrace,residentResult.parameterBuffer,
+						residentResult.faceVelocityMPerS,burner?burner:faceRho,stressTrace};
+					for(unsigned int mode=0u;mode<3u;++mode){const NSUInteger base=mode*34u*cellBytes;
+						const NSUInteger offsets[]={0u,0u,0u,base,base+cellBytes,base+2u*cellBytes,0u,0u,0u,base+11u*cellBytes};
+						id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+						if(!encoder)return Fail(error,"force stress trace encoder failed");
+						for(NSUInteger index=0u;index<10u;++index)[encoder setBuffer:bound[index] offset:offsets[index] atIndex:index];
+						Dispatch(encoder,mode==0u?tracePipeline:(mode==1u?preciseTracePipeline:legacyTracePipeline),cells);[encoder endEncoding];}}
 				id<MTLBlitCommandEncoder> staging=[command blitCommandEncoder];
 				if( !staging ) return Fail(error,
 					"production nonpressure momentum Metal staging encoder failed");
@@ -879,6 +1022,17 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					ResidentForceTransferScope transferScope(ResidentForceTerminalTransfer);
 					for( std::size_t index=0u;index<6u;++index ) CopyResidentForceBuffer(staging,
 						stageSource[index],0u,stageTarget[index],0u,stageSize[index]);
+					if(velocityTrace){
+						CopyResidentForceBuffer(staging,residentResult.faceVelocityMPerS,0u,
+							velocityStaging,0u,faceBytes);
+						CopyResidentForceBuffer(staging,residentResult.cellVelocityMPerS,0u,
+							velocityStaging,faceBytes,3u*cellBytes);
+						CopyResidentForceBuffer(staging,stressTrace,11u*cellBytes,
+							velocityStaging,faceBytes+3u*cellBytes,23u*cellBytes);
+						CopyResidentForceBuffer(staging,stressTrace,45u*cellBytes,
+							velocityStaging,faceBytes+26u*cellBytes,23u*cellBytes);
+						CopyResidentForceBuffer(staging,stressTrace,79u*cellBytes,
+							velocityStaging,faceBytes+49u*cellBytes,23u*cellBytes);}
 				}
 				[staging endEncoding];[command commit];[command waitUntilCompleted];
 				if( [command status]!=MTLCommandBufferStatusCompleted ) {
@@ -895,6 +1049,18 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const float* combinedValues=static_cast<const float*>([stageCombined contents]);
 				computed.eddyKinematicViscosityM2PerS.assign(eddyValues,eddyValues+cells);
 				computed.effectiveDynamicViscosityPaS.assign(muValues,muValues+cells);
+				if(velocityTrace){const float* values=static_cast<const float*>([velocityStaging contents]);
+					capturedVelocity.packedFaceVelocityMPerS.assign(values,values+faces);
+					capturedVelocity.componentMajorCellVelocityMPerS.assign(values+faces,values+faces+3u*cells);
+					capturedVelocity.stressArithmetic.assign(values+faces+3u*cells,values+faces+26u*cells);
+					capturedVelocity.preciseStressArithmetic.assign(values+faces+26u*cells,values+faces+49u*cells);
+					capturedVelocity.legacyStressArithmetic.assign(values+faces+49u*cells,values+faces+72u*cells);
+					if(!AllFinite(capturedVelocity.packedFaceVelocityMPerS)||
+						!AllFinite(capturedVelocity.componentMajorCellVelocityMPerS)||!AllFinite(capturedVelocity.stressArithmetic)||
+						!AllFinite(capturedVelocity.preciseStressArithmetic)||!AllFinite(capturedVelocity.legacyStressArithmetic))
+						return Fail(error,"force velocity trace is nonfinite");
+					if(std::memcmp(capturedVelocity.stressArithmetic.data()+22u*cells,eddyValues,cellBytes)!=0)
+						return Fail(error,"force stress instrumentation changed eddy output");}
 				offset=0u;
 				for( unsigned int axis=0u;axis<3u;++axis ) {
 					computed.stressMomentumRateKGPerM2S2[axis].assign(viscousValues+offset,
@@ -924,6 +1090,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				if( !std::isfinite(diagnostics.deviceElapsedMS)||diagnostics.deviceElapsedMS<0.0 )
 					return Fail(error,"production nonpressure momentum Metal timing is nonfinite");
 				result=std::move(computed);
+				if(velocityTrace)*velocityTrace=std::move(capturedVelocity);
 			}
 			if( error ) error->clear();return true;
 		} catch( const std::bad_alloc& ) {
@@ -932,6 +1099,19 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 			return Fail(error,"production nonpressure momentum Metal allocation failed");
 		}
 	}
+
+	bool EvaluateFireProductionNonpressureMomentumRHSMetal(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,std::string* error)
+	{return EvaluateNonpressureMomentumMetalComparator(request,result,diagnostics,error,nullptr);}
+
+	bool EvaluateFireProductionNonpressureMomentumRHSMetalWithVelocityTrace(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		FireProductionForceVelocityTrace& trace,std::string* error)
+	{return EvaluateNonpressureMomentumMetalComparator(request,result,diagnostics,error,&trace);}
 
 	bool AdvanceFireProductionFrozenForceMetalImpl(
 		const FireProductionFrozenForceRequest& request,
@@ -1170,14 +1350,14 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						privateProjectionTarget,0u,cellBytes);
 				}
 				[upload endEncoding];
-				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters};
+				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters,faceRho};
 				const id<MTLBuffer> cellBuffers[]={faceVelocity,cellVelocity,parameters};
-				const id<MTLBuffer> stressBuffers[]={cellVelocity,rho,nu,eddy,mu,stress,parameters};
-				const id<MTLBuffer> forceBuffers[]={faceRho,stress,viscous,gravity,parameters};
-				if( !begin(preflight,context.setupFace,setupBuffers,4u,faces)||
+				const id<MTLBuffer> stressBuffers[]={cellVelocity,rho,nu,eddy,mu,stress,parameters,faceVelocity,faceRho};
+				const id<MTLBuffer> forceBuffers[]={faceRho,stress,viscous,gravity,parameters,faceRho};
+				if( !begin(preflight,context.setupFace,setupBuffers,5u,faces)||
 					!begin(preflight,context.cellVelocity,cellBuffers,3u,cells)||
-					!begin(preflight,context.stress,stressBuffers,7u,cells)||
-					!begin(preflight,context.faceForce,forceBuffers,5u,faces) )
+					!begin(preflight,context.stress,stressBuffers,9u,cells)||
+					!begin(preflight,context.faceForce,forceBuffers,6u,faces) )
 					return Fail(error,"production resident force preflight encoder failed");
 				const std::uint32_t beginningSlot=0u;
 				const id<MTLBuffer> beginningBuffers[]={viscous,beginningViscous,parameters};
@@ -1239,12 +1419,12 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					nil:[context.queue commandBuffer];if( !advance )
 					return Fail(error,"production resident force advance command allocation failed");
 				for( std::uint32_t substep=0u;substep<selectedSchedule.substepCount;++substep ) {
-					if( !begin(advance,context.setupFace,setupBuffers,4u,faces)||
+					if( !begin(advance,context.setupFace,setupBuffers,5u,faces)||
 						!begin(advance,context.cellVelocity,cellBuffers,3u,cells) )
 						return Fail(error,"production resident force substep velocity encoder failed");
 					const id<MTLBuffer> fixedStressBuffers[]={cellVelocity,mu,stress,parameters};
 					if( !begin(advance,context.fixedStress,fixedStressBuffers,4u,cells)||
-						!begin(advance,context.faceForce,forceBuffers,5u,faces) )
+						!begin(advance,context.faceForce,forceBuffers,6u,faces) )
 						return Fail(error,"production resident force substep operator encoder failed");
 					const id<MTLBuffer> updateBuffers[]={momentum,viscous,parameters};
 					if( !begin(advance,context.updateViscous,updateBuffers,3u,faces,
@@ -1568,4 +1748,59 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		const char* source=ForceSource();
 		return RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(source),std::strlen(source));
 	}
+	// Actual existing adapter factory observation only; no field buffers/commands.
+	bool FireProductionForceContextResourceQualification(const unsigned int mode)
+	{
+		FireProductionPreconstructionResourceSample before,after;
+		const std::uint64_t initial=ForceContextConstructionAttempts.load(std::memory_order_relaxed);
+		std::uint64_t registry=0u,staticMaximum=0u,deviceLimit=0u,threadMinimum=UINT64_MAX;
+		unsigned int slots=0u,refusal=0u;
+		bool entered=false,telemetry=false,slotsKnown=false,worked=false;
+		@autoreleasepool {
+			try {
+				worked=[&](){
+					if(mode>3u){refusal=2u;return false;}
+					const FireProductionFrozenSourcePacketSeal empty;
+					CaptureFireProductionPreconstructionResources(empty,before);
+					auto known=[](const FireProductionPreconstructionResourceSample& sample){
+						return sample.hostTelemetryKnown&&sample.peakTelemetryKnown&&sample.deviceTelemetryKnown;};
+					if(!known(before)){refusal=3u;return false;}
+					const std::uint64_t ceiling=mode==1u?2u:(UINT64_C(2)<<30u);
+					const std::uint64_t reserve=mode==1u?1u:(UINT64_C(32)<<20u);
+					if(std::max(before.currentRSSBytes,before.physicalFootprintBytes)>=ceiling-reserve){
+						refusal=1u;after=before;telemetry=true;return false;}
+					if(mode>=2u){
+						entered=true;auto& context=Context();
+						if(!context.Valid()){refusal=5u;return false;}
+						registry=[context.device registryID];deviceLimit=[context.device maxThreadgroupMemoryLength];
+						const std::array<id<MTLComputePipelineState>,14> pipelines={{context.setupFace,context.cellVelocity,context.stress,context.faceForce,context.phaseSource,context.fixedStress,context.prepareMu,context.prepareInverseDensity,context.reduceMax,context.storeMaximum,context.buildLambda,context.updateViscous,context.addGravity,context.snapshot}};
+						for(id<MTLComputePipelineState> pipeline:pipelines){
+							if(!pipeline){refusal=5u;return false;}++slots;
+							const auto threads=static_cast<std::uint64_t>([pipeline maxTotalThreadsPerThreadgroup]);
+							threadMinimum=std::min(threadMinimum,threads);
+							staticMaximum=std::max(staticMaximum,static_cast<std::uint64_t>([pipeline staticThreadgroupMemoryLength]));
+							if(threads==0u){refusal=6u;return false;}
+						}
+						slotsKnown=registry!=0u&&deviceLimit>0u&&staticMaximum<=deviceLimit;
+						if(!slotsKnown){refusal=6u;return false;}
+					}
+					CaptureFireProductionPreconstructionResources(empty,after);telemetry=known(after);
+					return telemetry&&(mode==0u||slotsKnown)&&after.processPeakRSSBytes<ceiling&&
+						std::max(after.currentRSSBytes,after.physicalFootprintBytes)<ceiling-reserve;
+				}();
+			}catch(const std::bad_alloc&){refusal=4u;worked=false;}
+		}
+		const auto final=ForceContextConstructionAttempts.load(std::memory_order_relaxed);
+		if(threadMinimum==UINT64_MAX)threadMinimum=0u;
+		const bool published=std::printf("{\"kind\":\"force\",\"mode\":%u,\"passed\":%s,\"refusal\":%u,\"before_attempts\":%llu,\"after_attempts\":%llu,\"pipeline_slots\":%u,\"slots_known\":%s,\"telemetry_known\":%s,\"factory_entered\":%s,\"registry\":%llu,\"static_threadgroup_max\":%llu,\"device_threadgroup_limit\":%llu,\"pipeline_thread_limit_min\":%llu,\"before_rss\":%llu,\"after_rss\":%llu,\"before_footprint\":%llu,\"after_footprint\":%llu,\"before_device\":%llu,\"after_device\":%llu,\"peak\":%llu}\n",
+			mode,worked?"true":"false",refusal,static_cast<unsigned long long>(initial),static_cast<unsigned long long>(final),
+			slots,slotsKnown?"true":"false",telemetry?"true":"false",entered?"true":"false",static_cast<unsigned long long>(registry),
+			static_cast<unsigned long long>(staticMaximum),static_cast<unsigned long long>(deviceLimit),static_cast<unsigned long long>(threadMinimum),
+			static_cast<unsigned long long>(before.currentRSSBytes),static_cast<unsigned long long>(after.currentRSSBytes),
+			static_cast<unsigned long long>(before.physicalFootprintBytes),static_cast<unsigned long long>(after.physicalFootprintBytes),
+			static_cast<unsigned long long>(before.deviceAllocatedBytes),static_cast<unsigned long long>(after.deviceAllocatedBytes),
+			static_cast<unsigned long long>(after.processPeakRSSBytes))>=0&&std::fflush(stdout)==0;
+		return worked&&published;
+	}
+
 }

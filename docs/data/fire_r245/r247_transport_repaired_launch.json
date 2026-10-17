@@ -1,0 +1,62 @@
+{
+  "schema": "rise.fire.r247.transport-launch.v1",
+  "status": "launched_not_result_accepted",
+  "composition_acceptance": "52bf8b499",
+  "reviewed_head": "f0d20c88e",
+  "launched_utc": "2026-10-04T19:37:35.784882+00:00",
+  "wrapper_initial_pid": 63690,
+  "command": [
+    "/Users/aravind/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_runtime.v2/r247_transport_reader.py",
+    "--run",
+    "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v2"
+  ],
+  "launch_directory": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v2",
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v2",
+  "runtime": [
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_transport_reader.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_runtime.v2/r247_transport_reader.py",
+      "sha256": "64c5f30bc645475c61e0c27fafe19fc43786505818384f5027b7717d5b992f7c"
+    },
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_source_reader.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_runtime.v2/r247_source_reader.py",
+      "sha256": "4fb8e13f371a7828a034f94892cb84c0de00c852ce6851a6b522d69b59a62215"
+    },
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_source_admission.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_runtime.v2/r247_source_admission.py",
+      "sha256": "cb25a9a96afb2939846ad4e2b55204c45062c3e5c897eb142df7a8e7fe250545"
+    },
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_region_transfers.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_runtime.v2/r247_region_transfers.py",
+      "sha256": "4e814f7cb55739cd39d645e2136072c0e2e2bc6b56599e2f19536de3072ed754"
+    },
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_central_momentum.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_runtime.v2/r247_central_momentum.py",
+      "sha256": "dcb3b42b3317b9b3c61d87e8107c32135759298f068b071d12273076e79f87a3"
+    },
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire_payload_merkle.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_runtime.v2/fire_payload_merkle.py",
+      "sha256": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+    }
+  ],
+  "python_executable_sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+  "exclusivity_checked": true,
+  "only_heavy_job": true,
+  "selected_frames_per_variant": 235,
+  "reader_ceiling_bytes": 2147483648,
+  "stage_a_ceiling_unchanged": true,
+  "original_taller_exit_code": 98,
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "inputs_unchanged": true,
+  "dependency_capture": "Exact pinned repository helper bytes captured/compiled once; frozen archive copies have same hashes and remain distinct from original producer",
+  "original_failed_derivation_preserved": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v1",
+  "original_failed_exit_code": 1,
+  "repair": "Exact local column observation index zero; global frame/event remains pinned independently"
+}

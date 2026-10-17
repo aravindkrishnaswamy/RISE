@@ -1,0 +1,33 @@
+{
+  "schema": "rise.fire.r247.transport-mapping-review.v1",
+  "status": "accepted_for_one_separate_mapped_derivation",
+  "candidate": "423a6efd7",
+  "round": 1,
+  "p1": 0,
+  "p2": 0,
+  "gate_sha256": "deaf0a3a19d04487f77d8b38df61eddc73c6453ff6944e64e4b4f426d1b066fa",
+  "reviews": [
+    {
+      "agent": "r247_mapping_contract_r1",
+      "axis": "arithmetic/contract/test-integrity",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "Five gate hashes/35RED/heap-mapped exact parity/independent malformed-column traceback cleanup; no nativepayloads"
+    },
+    {
+      "agent": "r247_mapping_lifecycle_r1",
+      "axis": "lifecycle/provenance/memory",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "Five gate+seven failure hashes/35RED/actualmapped preflight discriminator/independent derived-view failure cleanup/no source mapping/unchangedcaps"
+    }
+  ],
+  "launch_authorized": true,
+  "authorized_scope": "One separate235wide+235taller mapped selected derivation after exclusivity",
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "original_taller_exit_code": 98,
+  "original_stage_b_v1_exit_code": 1,
+  "original_stage_b_v2_exit_code": 1,
+  "actual_native_mapping_memory_acceptance": false
+}

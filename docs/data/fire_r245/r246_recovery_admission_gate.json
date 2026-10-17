@@ -1,0 +1,87 @@
+{
+  "schema": "rise.fire.r246.recovery-admission-gate.v1",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "executable_sha256": "50b84c400965dfab4d0659304ffbba8844bfb2a81f8e8241c028717d406c1c28",
+  "results": [
+    {
+      "name": "pair_controls",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "c8493edeb5e62c81165aed84e1876ee2dcfadda96f0f33d9914a7d6c6f5483fe"
+    },
+    {
+      "name": "actual",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "49fa6ba2b40c73f7f0fd53c9ed282a2304aaa4525868208a23657c7dc1d6ad39"
+    },
+    {
+      "name": "missing_seal",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "4eb0915f793b250267db4c5b27af8339a6852b2679f39d29185131dc172fa701"
+    },
+    {
+      "name": "aliased_seal",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "4eb0915f793b250267db4c5b27af8339a6852b2679f39d29185131dc172fa701"
+    },
+    {
+      "name": "pending_regular",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "4eb0915f793b250267db4c5b27af8339a6852b2679f39d29185131dc172fa701"
+    },
+    {
+      "name": "pending_dangling",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "4eb0915f793b250267db4c5b27af8339a6852b2679f39d29185131dc172fa701"
+    },
+    {
+      "name": "changed_payload",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "1f925f300f5263b92c3eb3249dfd7c631f9f7e9b551e36442cc8d938a2436405"
+    },
+    {
+      "name": "changed_seal",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "1f925f300f5263b92c3eb3249dfd7c631f9f7e9b551e36442cc8d938a2436405"
+    },
+    {
+      "name": "missing_receipt",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "b7ba9980623e61dd97e289457536880b4c077ca04a6f34fdf3e86717abe490dd"
+    },
+    {
+      "name": "foreign_source",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "71c32cdd56324f565ee6cce50027c599ba2768b37e053d1f5dd87de8bf3f8e86"
+    }
+  ],
+  "completed_utc": "2026-10-04T06:06:25.246616+00:00",
+  "status": "accepted_native_admission_prerequisite",
+  "implementation_file": "tests/FireSequenceTest.cpp",
+  "implementation_sha256": "b5ea8a619fe241b904cc94c2c135e478a67927366958b4327abfa056fca255a3",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_admission.v1.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_admission_runtime.v1",
+  "build_source_revision": "58d38c93431842de8edd80d16ee6b31bdec8ca4f",
+  "build_dirty_state": "dirty",
+  "reader_build": "45db619788ea2982d29cdf0332bbf256c9ff1185da4e38ff0ad5bba0b67a6b33",
+  "controls_script_sha256": "11d0f3848e77f84a89ef32b55325ff133c56d922aeffe6269bed399a4316f8cb",
+  "external_report": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_admission_validation.v1/controls.json",
+  "external_report_sha256": "cba031de512e8eaa27597f928c2e1864aec6ac0b4be7bdde1ed00c2eb934ea24",
+  "limitations": [
+    "Exact independently reviewed prepared bundle only; no generic recovery receipts.",
+    "No preview, spectrum, signed budget arithmetic, or physical acceptance.",
+    "No repeated full VDB/capsule/ledger gate.",
+    "Original producer exit98/files and frozen consumers unchanged."
+  ]
+}

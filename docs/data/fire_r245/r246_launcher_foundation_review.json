@@ -1,0 +1,25 @@
+{
+  "reviewed_commit": "17566466",
+  "scope": "resource accounting and zero-step launcher foundation only",
+  "reviewers": [
+    {
+      "name": "r246_launcher_final_contract",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "name": "r246_launcher_final_lifecycle",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "accepted": true,
+  "launch_permitted": false,
+  "remaining": [
+    "device admission before initial fields and actual taller allocation",
+    "full launcher matched schedule consumers",
+    "manifest preview spectrum identity gates",
+    "separate common-height and near-base observations",
+    "optical confound and observation controls"
+  ]
+}

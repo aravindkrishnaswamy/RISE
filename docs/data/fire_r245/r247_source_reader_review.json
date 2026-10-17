@@ -1,0 +1,36 @@
+{
+  "schema": "rise.fire.r247.source-reader-review.v1",
+  "status": "accepted_zero_p1_p2_reader_composition_only",
+  "reviewed_head": "e8fe90721",
+  "round": 2,
+  "gate_sha256": "4eea55e7dab29947489bb2402770961d9c9baf84a3076286135cddfbdf723af4",
+  "prior_round": {
+    "reviewed_head": "ef6828171",
+    "p1": 0,
+    "p2": 2,
+    "findings": [
+      "Initial accepted seal capture did not bind actual later consumed metadata/frame/ledger certificate",
+      "Five-source finite-check boolean scratch inventory listed2*C rather than actual5*C"
+    ]
+  },
+  "reviewers": [
+    {
+      "agent": "r247_source_reader_math_r2",
+      "axis": "wire offsets/signed units/reduction arithmetic/buffer inventory/test integrity",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "agent": "r247_source_reader_provenance_r2",
+      "axis": "actual consumed seal/source buffer/code identities/lifecycle/publication/RSS",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "synthetic_reds": 15,
+  "native_source_packets_read": 0,
+  "full_derivation_accepted": false,
+  "reader_full_launch_accepted": true,
+  "original_taller_exit_code": 98,
+  "accepted_utc": "2026-10-04T17:52:54.645014+00:00"
+}

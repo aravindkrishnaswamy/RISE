@@ -1,0 +1,50 @@
+{
+  "schema": "rise.fire.r247.region-transfer-math-review.v1",
+  "candidate": "1bc8c6760",
+  "status": "accepted_synthetic_scalar_arithmetic_only",
+  "round": 2,
+  "p1": 0,
+  "p2": 0,
+  "gate_sha256": "1f11435947e07ba8d3fa1372906410083530f8ef685555e63d76d1041555517f",
+  "reviews": [
+    {
+      "agent": "r247_transfer_math_r2",
+      "axis": "arithmetic/contract",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "All5 artifact hashes;9GREEN17RED; independent asymmetric3x4x5/3-layer coordinate oracle all6surfaces/10fields; maxabsolute1.11e-16"
+    },
+    {
+      "agent": "r247_transfer_provenance_r2",
+      "axis": "test-integrity/provenance/cost honesty",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "All5 artifact hashes;9GREEN17RED; independent2x3x4 coordinate oracle all10inventories/60signedsurfaces; exactagreement; noinputmutations"
+    }
+  ],
+  "prior_round": {
+    "candidate": "f89fc384f",
+    "p1": 0,
+    "p2": 1,
+    "repair": "Arbitrary binary64 geometry admitted silentunderflow/uncaughtoverflow. Require exact finitepositive promoted binary32 dx/dt before measures. Preserved externalv1; noepsilon."
+  },
+  "accepted_scope": [
+    "Pure caller-owned promoted-binary32 scalar one-interval arithmetic",
+    "Six outward surfaces/original-layer lateral truncation/bottom masks",
+    "Per-cell/per-face species1..7 sum before sign splitting",
+    "Q0/R1/frozen source and measured residual kg/J"
+  ],
+  "unaccepted_scope": [
+    "Exact native/flux/beginning payload admission",
+    "Actual momentum consumer arithmetic",
+    "SeparateStageB allocation inventory/measuredRSS",
+    "Full235wide+taller transport derivation",
+    "Full15315 cumulativecommon80 budget",
+    "Physicalcause/pressure-restoration split/remedy/newsimulation"
+  ],
+  "field_payloads_read": 0,
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "original_taller_exit_code": 98,
+  "source_producer_files_unchanged": true
+}

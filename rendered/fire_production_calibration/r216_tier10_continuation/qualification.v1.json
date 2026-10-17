@@ -1,0 +1,33 @@
+{
+  "schema": "rise.fire.r216.executed-qualification.v1",
+  "recorded_utc": "2026-09-08 23:18:09 UTC",
+  "native_source_commit": "58e338c9",
+  "reviewed_tool_commit": "07d9637f8d8b2fa45fe8b2efeef1efd5b3d85184",
+  "frozen_executable": "bin/tests/FireSequenceTest_r216_58e338c9",
+  "executable_sha256": "f6ef651868bbe9e7635c7a948cb38c0d9aa50de32ec3b5d6783eef6cc0b9af6d",
+  "producer_build_id": "81cf8340374423e2c5ae209062c35ed2e7d8a915535051324060c48a1d7cb5a9",
+  "kernel_set_sha256": "d580d078ea083ee18032abfb027271ada9d4d1dabab50b35cb6eb7a503258a0e",
+  "runs": {
+    "build": {"exit_code": 0, "log": "build.v1.log", "sha256": "bc3807d522658cfa2e3b5328e156aa92dc14925dd3777b2d7ee28e93a2bc7aca", "warnings": 0},
+    "r190_metal_owner": {"exit_code": 0, "argument": "--fire-production-resident-target-metal", "log": "owner_gate.v1.log", "sha256": "d7ac311a30c3796566bf6cf1d9afd113027846166d5b742e980432f021c7e00f"},
+    "full_sequence": {"exit_code": 0, "log": "sequence.v1.log", "sha256": "ae0f08776bd5ef339f28971878ad85ce913e7fe99cfc8495e534d22a49e46dfb"},
+    "native_scope": {"exit_code": 0, "log": "scope_red.v1.log", "sha256": "bb4df1f5a12b808b9cef957c2924eeff92fc9e98cf1e925bc6d4b19109c883b9"},
+    "compiled_scope_mutants": {"exit_code": 0, "green_count": 1, "refused_mutants": 5, "log": "compiled_scope_mutants.v1.log", "sha256": "222181b3ec943670d17ea08d226395aa4180339ccbdb2c87cf9747612a9fa596"},
+    "join_tests": {"exit_code": 0, "tests": 28, "log": "join_reds.v1.log", "sha256": "9059624f5664671c17d0b081bce430a19ae0981915d04e1a9ea0c0685b2402ba"},
+    "actual_certificate_tests": {"exit_code": 0, "tests": 6, "skipped": 0, "native_green": 1, "native_refusals": 103, "log": "native_certificate_reds.v1.log", "sha256": "c3b427790f3e4ad10aca30e244a9a4f8c7ac617251d400133898e6db0e74e120"}
+  },
+  "migration": {
+    "accepted_steps": [793, 800],
+    "exact_equal_time_dt_input_publication_roots_and_kernel": true,
+    "certificate_sha256": "e393ae3456b218c1e1f909040e42e7c2f8db3456fb1d12092d10c4c24760b082",
+    "bridge_sha256": "8bd1cca8fb1fdefb6fc78ec1ffa072e5f9660016bcf138e68c129a45b378be04",
+    "new_trajectory_sha256": "7a65684e9f3d5f504835af0ccad788aefe8adb3811083f04fb9607fb1b7fc71a"
+  },
+  "timing_scope": "eight-step tier-ten qualification probe; not a production benchmark or window projection",
+  "device_ms": {"mean": 8501.684035931248, "p95_nearest_rank": 9746.405536774546},
+  "wall_ms": {"mean": 12226.570020625, "p95_nearest_rank": 13972.730167},
+  "onset_verdict": "pending_continuation",
+  "native_terminal_positive_integration": "pending_actual_continuation_checkpoint",
+  "golden_checkpoint_sha256": "1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947",
+  "preserved_main_xcode_sha256": "0e3b5394dae6c301d5543c8cebdc2eca4439282c2c87345297e813bfd18ea1fe"
+}

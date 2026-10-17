@@ -1,0 +1,49 @@
+{
+  "schema": "rise.fire.r246.full-budget-admission-gate.v1",
+  "status": "accepted_zero_p1_p2_round2",
+  "original_exit_code": 98,
+  "full_signed_audit_executed": false,
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_budget_admission_validation.v3",
+  "actual_steps": 15315,
+  "actual_frames": 235,
+  "controls": {
+    "actual_admission_green": 1,
+    "ledger_green": 1,
+    "modern_unit_green": 1,
+    "targeted_reds": 25,
+    "old_loose_float_greens": 4,
+    "full_arithmetic_audit": false,
+    "fixture_mode_refused": true
+  },
+  "legacy_regression": {
+    "greens": 3,
+    "reds": 13
+  },
+  "implementation_sha256": {
+    "admission": "262b69656c1ef3e6d4628adb5b523b157b82b2e809eae7dcf73488492d0c34c2",
+    "collector": "9a0564701f0467f67870b6f5e7f91e40f1d44c7a9b1b6a9ffd3df2596ac72cdf",
+    "helper": "8996e94d88ddede087b5d73a75fbbdb29f721803cee46a8f0af14bd566cc70c7",
+    "verifier": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf",
+    "audit": "1fa6d89575566e5dcf1b744c7c71a4dd4f32040a2499c89197cd0c2dfee74311"
+  },
+  "evidence_sha256": {
+    "admission.frozen.py": "262b69656c1ef3e6d4628adb5b523b157b82b2e809eae7dcf73488492d0c34c2",
+    "admission.json": "fb102d1c89d77f22ebf7076d1b76b5dc15837b4b36a76ee5de2e8ad73174c420",
+    "audit.frozen.py": "1fa6d89575566e5dcf1b744c7c71a4dd4f32040a2499c89197cd0c2dfee74311",
+    "collector.frozen.py": "9a0564701f0467f67870b6f5e7f91e40f1d44c7a9b1b6a9ffd3df2596ac72cdf",
+    "completion.json": "d43461507f52633b1fa3c47be4590d77ac96825370c6570ffbdd67e8747dcd10",
+    "helper.frozen.py": "8996e94d88ddede087b5d73a75fbbdb29f721803cee46a8f0af14bd566cc70c7",
+    "legacy_regression.json": "a1222f321ebe611ed0b07a279bd008cafb8c7b5b4708d15006c9da872095b534",
+    "legacy_regression.log": "2b05acaa22d966126d50ff25008877ec99ff4d24c0f17ac29aa388d8404ed8fd",
+    "verifier.frozen.py": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+  },
+  "limitations": [
+    "Actual admission and first sealed ledger binding only; no full signed arithmetic/native/capsule scan.",
+    "Focused prior owner arithmetic regression is nonempirical and does not admit the r246 production window via fixture mode.",
+    "Original hardlinked checkpoint source is captured once pinned with mandatory nonaliased seal; new evidence/output files retain strict nonalias rules."
+  ],
+  "completed_utc": "2026-10-04T12:22:47.622412+00:00",
+  "round1_findings": [
+    "Both reviewers: P2 loose modern-v2 dictionary equality accepted float integer fields; captured strict FORMAT+verify now required."
+  ]
+}

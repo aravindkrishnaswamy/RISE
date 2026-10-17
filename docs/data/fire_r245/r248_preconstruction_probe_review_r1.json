@@ -1,0 +1,22 @@
+{
+  "candidate": "18a6aec07",
+  "round": 1,
+  "accepted": false,
+  "P1": 0,
+  "P2": 1,
+  "reviews": [
+    {
+      "agent": "r248_preconstruction_resource_r1",
+      "P1": 0,
+      "P2": 0,
+      "evidence": "10 gate / 16 validation / 5 build pins checked; exact 108*C and scoped limits verified"
+    },
+    {
+      "agent": "r248_preconstruction_lifecycle_r1",
+      "P1": 0,
+      "P2": 1,
+      "finding": "New refusal-path diagnostic assignments may throw bad_alloc outside owner recovery boundary"
+    }
+  ],
+  "preserved_validation": "/Volumes/SSD/RISE/fire_production_calibration/r248_preconstruction_probe.v3/controls/validation.json"
+}

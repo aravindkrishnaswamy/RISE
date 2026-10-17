@@ -174,6 +174,11 @@ namespace RISEFireProductionFP64
 	{
 		FireProductionFrozenForceRequest force;
 		std::vector<double> cellGasPhaseSourceRateKGPerM3S;
+		//! Optional x-fast bottom inlet classification. Momentum/density already
+		//! carry the projected boundary velocity; this mask preserves it through
+		//! the cell gather, inhomogeneous wall ghost and phase-source restriction.
+		//! Empty keeps the historical homogeneous-wall stencil.
+		std::vector<unsigned char> bottomFuelMask;
 	};
 
 	struct FireProductionNonpressureMomentumRHSResult
@@ -294,6 +299,13 @@ namespace RISEFireProductionFP64
 		//! Qualification captures it so the projection enclosure walks the actual
 		//! resident DAG instead of substituting an output-derived norm estimate.
 		std::array<std::vector<double>,3> provisionalMomentumKGPerM2S;
+		//! Qualification v2: producer output for the next stage, not the frozen
+		//! projection input above. Present after R0/R1 Picard producers, including
+		//! terminal re-projection; absent at bootstrap and throughout R2.
+		std::array<std::vector<double>,3> nextCandidateMomentumKGPerM2S;
+		//! R0 advection re-evaluated under this R1 candidate's shared alpha.
+		//! Present only after R1 producers; never the R0-alpha advection cache.
+		std::array<std::vector<double>,3> heunR0AdvectionRateKGPerM2S2;
 		//! R2's sealed physical-open head; empty on R0/R1 where the projection
 		//! derives its current open head from the same provisional state.
 		std::array<std::vector<double>,6> sealedPressureOpenDynamicPressurePa;
@@ -376,7 +388,8 @@ namespace RISEFireProductionFP64
 
 	//! Complete simultaneous host live-set certificate for the staged owner.
 	bool FireProductionProjectedHeunCPUOwnerWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,
+		bool prescribedBottomFlux=false );
 
 	//! r60 permits rounding-scale negative constituent rows.  Gas density is
 	//! therefore the signed sum of the six represented gas rows; per-row clamps
@@ -444,6 +457,11 @@ namespace RISEFireProductionFP64
 	bool FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
+	//! Adds the caller mask plus its separately rounded upload/private buffers.
+	bool FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes,
+		bool hasBurner );
 
 	//! One-command Private-buffer stage evaluator.  Inputs upload before the
 	//! first kernel and the six published rate/diagnostic fields stage only after
@@ -455,11 +473,59 @@ namespace RISEFireProductionFP64
 		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
 		std::string* error=0 );
 
+	//! Qualification-only terminal velocity copies plus a diagnostic stress
+	//! clone. Not used by the resident production owner. Additional device
+	//! allocation is separate from the ordinary comparator working-set
+	//! diagnostic; certificate, private outputs, staging and host trace copies
+	//! together remain under its two-GiB resource cap.
+	struct FireProductionForceVelocityTrace
+	{
+		std::vector<double> packedFaceVelocityMPerS;
+		std::vector<double> componentMajorCellVelocityMPerS;
+		//! Diagnostic clone of build_stress: 23 component-major planes:
+		//! gradient[9], alphaSquared, beta[9], raw minors, quotient, root, eddy.
+		//! Admitted only when its eddy plane bit-matches the original kernel.
+		std::vector<double> stressArithmetic;
+		//! Same inputs/source with precise functions but contraction enabled;
+		//! diagnostic alternative only, never replaces resident output.
+		std::vector<double> preciseStressArithmetic;
+		//! Historical fast-functions/contraction-enabled mutation control.
+		std::vector<double> legacyStressArithmetic;
+		std::uint64_t additionalMetalAllocationBytes=0u;
+	};
+	bool EvaluateFireProductionNonpressureMomentumRHSMetalWithVelocityTrace(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		FireProductionForceVelocityTrace& trace,
+		std::string* error=0 );
+
 	//! Live Metal counterpart of the complete r190 projected-Heun owner.  The
 	//! target-lineage request supplies the canonical device bootstrap operands;
 	//! beginning momentum is the sole additional full-grid step input.  The
 	//! qualification switches are RED-only and cannot select an alternate live
 	//! algorithm.
+	//! Fixed-size observation before constructing the owner. Layout/capacity and
+	//! actual process/device telemetry only: no source authentication, complete
+	//! owner admission, copied-source allocation bound or observer qualification.
+	struct FireProductionPreconstructionResourceSample
+	{
+		std::array<std::uint64_t,11> sourceSize{},sourceCapacity{};
+		std::uint64_t cells=0u,sourceElementBytes=0u,sourceVectorCapacityBytes=0u;
+		std::uint64_t currentRSSBytes=0u,physicalFootprintBytes=0u,compressedBytes=0u;
+		std::uint64_t processPeakRSSBytes=0u,deviceAllocatedBytes=0u;
+		std::uint64_t deviceWorkingSetLimitBytes=0u,deviceMaxBufferLengthBytes=0u;
+		bool sourceLayoutKnown=false,hostTelemetryKnown=false,peakTelemetryKnown=false;
+		bool deviceTelemetryKnown=false;
+	};
+#if defined(__APPLE__)
+	//! Does not call owner/context factories or create field buffers. Device
+	//! discovery may initialize driver resources; telemetry samples follow it.
+	bool CaptureFireProductionPreconstructionResources(
+		const FireProductionFrozenSourcePacketSeal& source,
+		FireProductionPreconstructionResourceSample& sample );
+#endif
+
 	struct FireProductionProjectedHeunMetalOwnerRequest
 	{
 		FireProductionResidentTargetLineageComparatorRequest lineage;
@@ -500,10 +566,16 @@ namespace RISEFireProductionFP64
 		//! Replaces the class buffer after its device identity was issued.  The
 		//! physical-flux authority must refuse it before any publication.
 		bool qualificationUnverifiedEndpointClassBuffer;
+		//! Read-only terminal capture of accepted R1 scalar flux operands.
+		//! Does not alter the native publication or enable qualification controls.
+		bool captureAcceptedBudgetFlux=false;
 		bool qualificationCaptureIterationTrace;
 		//! Qualification selects the production sealing placement while retaining
 		//! the full owner RED/trace surface. The live entry chooses it internally.
 		bool qualificationProductionStageTokens=false;
+		//! Observation/refusal control before constructor; production refuses it.
+		bool qualificationPreconstructionResourceProbe=false;
+		std::uint64_t qualificationPreconstructionSourceElementLimitBytes=0u;
 		//! Zero uses the certified cap.  A nonzero smaller cap proves that the
 		//! complete-owner working set is refused before Metal work begins.
 		std::uint64_t qualificationWorkingSetLimitBytes;
@@ -534,6 +606,7 @@ namespace RISEFireProductionFP64
 
 	struct FireProductionProjectedHeunMetalOwnerResult
 	{
+		FireProductionPreconstructionResourceSample preconstructionResources;
 		//! Explicit namespaces: stage tokens are not standalone payload digests.
 		std::string intermediateSealFormat="legacy-resident-fnv64";
 		std::uint32_t intermediateDigestVersion=1u;
@@ -552,6 +625,16 @@ namespace RISEFireProductionFP64
 		std::array<std::vector<double>,3> heunStressMomentumRateKGPerM2S2;
 		std::array<std::vector<double>,3> heunPhaseSourceMomentumRateKGPerM2S2;
 		std::vector<double> acceptedFaceAlpha;
+		//! v1 bytes: input root[32], native publication root[32], R1 candidate
+		//! uint64, then 9*allFaces binary32 low flux and 9*allFaces delta.
+		//! Then eight packed face rates: R0-under-R1-alpha/R1 advection
+		//! divergence, R0/R1 buoyancy, stress, phase source (in that order).
+		//! The separate Merkle root seals these bytes; native alpha is root-bound.
+		std::vector<unsigned char> acceptedBudgetPayload;
+		std::vector<unsigned char> acceptedBudgetNativePublication;
+		std::string acceptedBudgetPayloadRootSHA256;
+		//! Extra terminal observation packet, separate from native publication staging.
+		std::uint32_t acceptedBudgetStagingCount=0u;
 		std::vector<double> heunEddyKinematicViscosityM2PerS;
 		FireProductionProjectionResult projection;
 		std::vector<double> temperatureK;
@@ -616,11 +699,16 @@ namespace RISEFireProductionFP64
 	};
 
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false,bool captureAcceptedBudgetFlux=false );
 
 	//! Qualification observer only: production peak plus one bounded trace staging packet.
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false,bool captureAcceptedBudgetFlux=false );
+
+	//! Allocation-free query of the same default Metal device used by the owner.
+	//! Unsupported/discovery/zero-limit failures return false with bytes reset.
+	bool FireProductionProjectedHeunMetalDeviceWorkingSetLimitBytes(
+		std::uint64_t& bytes,std::string* error=0 );
 
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest& request,
@@ -715,12 +803,15 @@ namespace RISEFireProductionFP64
 		id<MTLBuffer> cellGasPhaseSourceRateKGPerM3S;
 		id<MTLBuffer> packedFaceDensityKGPerM3;
 		id<MTLBuffer> packedMomentumKGPerM2S;
+		//! Optional immutable, private x-fast bottom classification, admitted by
+		//! the caller's existing case-input lineage. No interstage upload occurs.
+		id<MTLBuffer> bottomFuelMask;
 
 		FireProductionMetalNonpressureMomentumRHSResidentInput() :
 			ambientDensityKGPerM3(1.0),vremanCoefficient(0.07),commandBuffer(nil),
 			cellGasDensityKGPerM3(nil),molecularKinematicViscosityM2PerS(nil),
 			cellGasPhaseSourceRateKGPerM3S(nil),packedFaceDensityKGPerM3(nil),
-			packedMomentumKGPerM2S(nil)
+			packedMomentumKGPerM2S(nil),bottomFuelMask(nil)
 		{
 			gravityMPerS2.fill(0.0);boundary.fill(FireProductionProjectionPeriodic);
 		}

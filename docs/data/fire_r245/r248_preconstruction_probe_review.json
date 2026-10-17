@@ -1,0 +1,37 @@
+{
+  "schema": "rise.fire.r248.preconstruction-probe-review.v1",
+  "reviewed_commit": "5db74cf72",
+  "round": 2,
+  "status": "accepted_incremental_native_observation_refusal_only",
+  "reviews": [
+    {
+      "agent": "/root/r248_preconstruction_lifecycle_r2",
+      "axis": "exception/lifetime/refusal/test-integrity/provenance",
+      "P1": 0,
+      "P2": 0,
+      "pins_verified": 31,
+      "evidence": "Actual native branch before constructor, guarded reset/error failure, stale authority invalidation and four real allocation injections; strict/native ASan/UBSan 6 GREEN/17 RED"
+    },
+    {
+      "agent": "/root/r248_preconstruction_resource_r2",
+      "axis": "resource/layout/capacity/cost/source-runtime",
+      "P1": 0,
+      "P2": 0,
+      "pins_verified": 31,
+      "evidence": "Independent 108*C storage and overflow/layout/actual-capacity checks; sequential telemetry; measured fixture peak237158400<268435456; complete inventory remains unqualified"
+    }
+  ],
+  "prior_round": {
+    "candidate": "18a6aec07",
+    "P1": 0,
+    "P2": 1,
+    "record": "r248_preconstruction_probe_review_r1.json",
+    "repair": "Reset and diagnostic allocation failures caught before constructor; reused accepted authority invalidated first; production refusal hardened"
+  },
+  "complete_caller_admission": false,
+  "complete_live_inventory": false,
+  "authenticated_observer": false,
+  "native_state_golden_parity": false,
+  "new_simulation": false,
+  "physical_acceptance": false
+}

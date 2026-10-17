@@ -1,0 +1,27 @@
+{
+  "status": "full_from_zero_launched",
+  "started_utc": "2026-10-01T13:31:48.585897+00:00",
+  "pid": {
+    "wrapper_pid": 29227,
+    "child_pid": 29230,
+    "started_utc": "2026-10-01T13:31:48.585897+00:00"
+  },
+  "case_record_id": "805372d567af6fafd03ba0ec96c8fbd30d64fdc21c64117dc2ea5580be9b52a2",
+  "binary_sha256": "56189ad7e4853e3195de6ea24086e76273f1209209ef2fd2a30632ccf8535430",
+  "scope": "Matched-clock top-only sensitivity; puffing unresolved and not canonical taller qualification",
+  "actual_live_next_step_reserve_bytes": 23930269536,
+  "actual_host_ceiling_bytes": 34359738368,
+  "paths": {
+    "simulation": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1",
+    "launch": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_launch.v1",
+    "log": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1.log"
+  },
+  "sha256": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_runtime.v1/manifest.json": "33fe63670072eb38d937cfe207a50bf7f47dd4ff13e29355015ffca7662f0039",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_launch.v1/launch.json": "417fc7bf6c62d3d8180bb67eaf86e3748390cb11f079948ada35758262ab1e1d",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/window_launch.v1": "bd9df5efcf3d8b2f9e43951b06574fa536b4c793b42453bf0612acdd9cdb751f",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/window_launch.v1.payload-v2.json": "0c4c12cfcca64a6bf10dc751139072865a1719a47802aef45372f388ae3e3b5d",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/host_memory_admission.v1": "99ecedfcf728053722b3e0b6e92768356c592c32963e593de4eef19b789d06e9",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/host_memory_admission.v1.payload-v2.json": "b60435ca6f8fa8ba34391226d20804cf50a2bd7d674a1af840926df0d2d07947"
+  }
+}

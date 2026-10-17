@@ -1,0 +1,28 @@
+{
+  "source_head": "8cb1a0cd",
+  "scope": "synthetic native full-owner allocation gate design only",
+  "status": "accepted_design_not_implementation_or_launch",
+  "rounds": 2,
+  "first_round": {
+    "numerical_contract_P1": 0,
+    "numerical_contract_P2": 0,
+    "lifecycle_P1": 0,
+    "lifecycle_P2": 1,
+    "finding": "one-packet device observer certificate does not cover accumulated CPU trace vectors and terminal deep copy"
+  },
+  "fix": "larger-grid fixture prohibits qualification trace before fields with explicit opt-in RED; budget observation only; retain existing small native trace controls",
+  "final_reviewers": [
+    {
+      "name": "r246_allocation_design_final",
+      "P1": 0,
+      "P2": 0
+    },
+    {
+      "name": "r246_allocation_design_final_provenance",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "actual_taller_owner_allocation_exercised": false,
+  "launch_permitted": false
+}

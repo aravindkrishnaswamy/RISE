@@ -39,16 +39,34 @@ namespace RISE
 		return false;
 	}
 
+	bool EvaluateFireProductionNonpressureMomentumRHSMetalWithVelocityTrace(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		FireProductionForceVelocityTrace& trace,std::string* error)
+	{
+		trace=FireProductionForceVelocityTrace();
+		return EvaluateFireProductionNonpressureMomentumRHSMetal(request,result,diagnostics,error);
+	}
+
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
-		const FireProductionProjectionShape&,std::uint64_t& bytes )
+		const FireProductionProjectionShape&,std::uint64_t& bytes,bool,bool )
 	{
 		bytes=0u;return false;
 	}
 
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
-		const FireProductionProjectionShape&,std::uint64_t& bytes )
+		const FireProductionProjectionShape&,std::uint64_t& bytes,bool,bool )
 	{
 		bytes=0u;return false;
+	}
+
+	bool FireProductionProjectedHeunMetalDeviceWorkingSetLimitBytes(
+		std::uint64_t& bytes,std::string* error )
+	{
+		bytes=0u;
+		if(error)*error="projected-Heun device admission unavailable: Metal is not linked";
+		return false;
 	}
 
 	bool AttemptFireProductionProjectedHeunMetalOwner(

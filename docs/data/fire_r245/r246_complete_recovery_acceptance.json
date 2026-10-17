@@ -1,0 +1,20 @@
+{
+  "schema": "rise.fire.r246.complete-recovery-acceptance-receipt.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "6b04c06a2",
+  "recovery_accepted": true,
+  "acceptance_scope": "Complete retained full-window data recovery and reviewed consumer composition only",
+  "original_exit_code": 98,
+  "external_receipt": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_acceptance.v1/recovery_acceptance.json",
+  "receipt_sha256": "ca1749bdd06da4d4062aa85e291cd7f9404df89b9827febe339e9d93ff66cc5c",
+  "seal_sha256": "507ccb5660189eabd59129746f129602eb428c8010ce733257b86e952fbb4a1d",
+  "review_sha256": "440f082dfba5b9094bad89f3f19ef5878eb6492d7ee68727329d5a2b3d616c4a",
+  "candidate_sha256": "2e2e9fe96a5deec29b6a88b234aaaa14e670f5b7d8a191f7130f05cd246a424c",
+  "modern_seal_independently_verified": true,
+  "remaining": [
+    "Full signed budget arithmetic audit",
+    "Actual full preview and spectrum launches",
+    "Native/common physical comparison",
+    "Puffing localization"
+  ]
+}

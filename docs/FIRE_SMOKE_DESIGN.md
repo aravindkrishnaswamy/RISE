@@ -2207,6 +2207,18 @@ fire_case
 }
 ```
 
+**r244 experimental record extension:** the tier-6 lateral-domain study may
+add the identity-bearing authored record key `domain_study` with the sole
+recognized value `r244-lateral-double-v1`. This is a dedicated campaign
+selection, not a general case-file tuning control. It doubles the rounded
+lateral cell counts and translates the canonical source and pilot by whole
+cells, preserving their exact values, vertical extent and cell width. The
+steady 0.30 m, 33 kW, seed-1234, plume-law tier-6 case and inherited chi_r are
+required. Omission preserves existing case-v1 bytes. The production r54
+multipliers remain unchanged pending comparative evidence; implementation
+and verification status are recorded in
+[FIRE_SMOKE_PUFFING_CAMPAIGN_R244.md](FIRE_SMOKE_PUFFING_CAMPAIGN_R244.md).
+
 **The user chooses; the tool derives.** Semantics per field:
 
 - **`fuel`** names a versioned fuel record (§8): Δh_c, s_st, W, y_form/y_s,

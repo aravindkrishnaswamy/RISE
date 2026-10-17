@@ -1,0 +1,43 @@
+{
+  "schema": "rise.fire.r247.source-moment-gate.v1",
+  "status": "candidate_synthetic_arithmetic_only",
+  "exit_code": 0,
+  "controls": {
+    "common80_exclusion_green": true,
+    "empirical": false,
+    "hand_signed_centroid_green": true,
+    "native_capsules_read": 0,
+    "red": 7,
+    "status": "synthetic_arithmetic_prerequisite_only",
+    "subnormal_translation_green": true,
+    "translated_spread_green": true,
+    "volume_independent_fraction_green": true,
+    "zero_positive_unavailable_green": true
+  },
+  "design_acceptance": "5f88dc2b2",
+  "field_consumer_implemented": false,
+  "full_derivation_accepted": false,
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_source_moments.py",
+      "sha256": "37b3d1488ac6e114c228a47cdcb5e2be31b658dd36169b3d6639439b61d8a28c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_moment_validation.v2/source_moments.frozen.py",
+      "sha256": "37b3d1488ac6e114c228a47cdcb5e2be31b658dd36169b3d6639439b61d8a28c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_moment_validation.v2/stdout.log",
+      "sha256": "1050278d9bb8d94d0714b67ac89853252c37466da6754d3ff81a6efbb301add5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_moment_validation.v2/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_moment_validation.v2/controls.json",
+      "sha256": "65d777b933d78d17091d79146a28c80b657715b18aefc9bdfc4b1468da5c80bb"
+    }
+  ],
+  "repair": "Exact power-of-two rescaling before coordinate products and weight-derived dimensionless common fraction; explicit rounded power underflow flags. Original v1 preserved."
+}

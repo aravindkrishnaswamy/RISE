@@ -1,0 +1,6 @@
+R216_COMPILED_SCOPE green status=0
+R216_COMPILED_SCOPE tier status=1
+R216_COMPILED_SCOPE resume status=1
+R216_COMPILED_SCOPE checkpoint status=1
+R216_COMPILED_SCOPE mode status=1
+R216_COMPILED_SCOPE kernel status=1

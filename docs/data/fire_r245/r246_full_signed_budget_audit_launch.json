@@ -1,0 +1,26 @@
+{
+  "schema": "rise.fire.r246.full-signed-budget-audit-launch-receipt.v1",
+  "status": "running_full_signed_audit_not_yet_accepted",
+  "original_exit_code": 98,
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_full_signed_budget_audit.v1",
+  "launch_sha256": "c74c010836f2f5d79c0849e5ffa1561f4109e950491e2def04f66f35031c3aa3",
+  "pid": {
+    "wrapper_pid": 44632,
+    "audit_pid": 44633
+  },
+  "reviewed_head": "7fe05accc",
+  "acceptance_commit": "5c7b462a2",
+  "runtime_sha256": {
+    "tools/fire/r245_budget_audit.py": "1fa6d89575566e5dcf1b744c7c71a4dd4f32040a2499c89197cd0c2dfee74311",
+    "tools/fire/r246_budget_admission.py": "262b69656c1ef3e6d4628adb5b523b157b82b2e809eae7dcf73488492d0c34c2",
+    "tools/fire/r246_recovery_evidence.py": "9a0564701f0467f67870b6f5e7f91e40f1d44c7a9b1b6a9ffd3df2596ac72cdf",
+    "tools/fire/r246_observation_ledger_binding.py": "8996e94d88ddede087b5d73a75fbbdb29f721803cee46a8f0af14bd566cc70c7",
+    "tools/fire_payload_merkle.py": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+  },
+  "full_mode": true,
+  "fixture": false,
+  "limitations": [
+    "Admission accepted; original15315/235 full arithmetic result pending.",
+    "No render/simulation/build or second heavy job permitted while audit is active."
+  ]
+}

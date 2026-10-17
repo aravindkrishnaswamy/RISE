@@ -43,6 +43,35 @@ namespace
 		for(const char c:value) if(!((c>='0'&&c<='9')||(c>='a'&&c<='f'))) return false;
 		return true;
 	}
+	bool LateralStudyBaseline(const RISE::FireCase::AuthoredV1& authored,
+		const RISE::FireCase::DerivedV1& derived,RISE::FireCase::DerivedV1& baseline,
+		std::string& error)
+	{
+		if((authored.domainStudy!="r244-lateral-double-v1"&&
+			authored.domainStudy!="r246-lateral-double-top-double-v1")||authored.sourceKind!="pool"||
+			authored.poolDiameterM!=0.30||authored.intensityKind!="hrr"||
+			authored.heatReleaseRateKW!=33.0||authored.quality!="dstar"||
+			authored.numericDStarTier!=6.0||!authored.plumeLaw||
+			!FinitePositive(derived.cellWidthM))
+			return Fail(error,"r244 domain study requires the tier-6 capstone geometry");
+		baseline=derived;
+		baseline.nx=CeilCells(authored.poolDiameterM+6.0*authored.poolDiameterM,derived.cellWidthM);
+		baseline.ny=baseline.nx;
+		if(!baseline.nx||baseline.nx%2u||derived.nx!=2u*baseline.nx||derived.ny!=2u*baseline.ny)
+			return Fail(error,"r244 domain study requires an integer translated doubled lattice");
+		baseline.nz=CeilCells(5.0*derived.effectiveFlameHeightM,derived.cellWidthM);
+		const bool topStudy=authored.domainStudy=="r246-lateral-double-top-double-v1";
+		if(derived.nz!=(topStudy?2u:1u)*baseline.nz)
+			return Fail(error,"domain study height does not match its selector");
+		baseline.extentZM=baseline.nz*baseline.cellWidthM;
+		baseline.flowThroughTimeS=baseline.extentZM/std::sqrt(9.80665*baseline.characteristicDiameterM);
+		if(topStudy&&derived.matchedScheduleFlowThroughTimeS!=baseline.flowThroughTimeS)
+			return Fail(error,"top study schedule must exactly match the original geometry");
+		baseline.matchedScheduleFlowThroughTimeS=0.0;
+		baseline.extentXM=baseline.nx*baseline.cellWidthM;
+		baseline.extentYM=baseline.ny*baseline.cellWidthM;
+		return true;
+	}
 }
 
 std::uint64_t RISE::FireCase::SplitMix64(std::uint64_t value)
@@ -58,6 +87,18 @@ bool RISE::FireCase::BuildSourcePattern(const AuthoredV1& authored,
 {
 	if(!derived.nx || !derived.ny || !derived.nz || !FinitePositive(derived.cellWidthM))
 		return Fail(error,"fire case source pattern has an invalid grid");
+	if(!authored.domainStudy.empty()) {
+		DerivedV1 baseline;
+		if(!LateralStudyBaseline(authored,derived,baseline,error)) return false;
+		AuthoredV1 canonical=authored; canonical.domainStudy.clear();
+		std::vector<double> original;
+		if(!BuildSourcePattern(canonical,baseline,original,error)) return false;
+		result.assign(static_cast<std::size_t>(derived.nx*derived.ny),0.0);
+		for(std::uint64_t j=0;j<baseline.ny;++j) for(std::uint64_t i=0;i<baseline.nx;++i)
+			result[static_cast<std::size_t>(i+baseline.nx/2u+derived.nx*(j+baseline.ny/2u))]=
+				original[static_cast<std::size_t>(i+baseline.nx*j)];
+		return true;
+	}
 	result.assign(static_cast<std::size_t>(derived.nx*derived.ny),0.0);
 	std::vector<std::size_t> mask;
 	const double cx=0.5*derived.extentXM, cy=0.5*derived.extentYM;
@@ -107,6 +148,18 @@ bool RISE::FireCase::BuildPilotMask(const AuthoredV1& authored,
 {
 	if(!derived.nx || !derived.ny || !derived.nz || !FinitePositive(derived.cellWidthM))
 		return Fail(error,"fire case pilot mask has an invalid grid");
+	if(!authored.domainStudy.empty()) {
+		DerivedV1 baseline;
+		if(!LateralStudyBaseline(authored,derived,baseline,error)) return false;
+		AuthoredV1 canonical=authored; canonical.domainStudy.clear();
+		std::vector<std::uint8_t> original;
+		if(!BuildPilotMask(canonical,baseline,original,error)) return false;
+		result.assign(static_cast<std::size_t>(derived.nx*derived.ny*derived.nz),0u);
+		for(std::uint64_t j=0;j<baseline.ny;++j) for(std::uint64_t i=0;i<baseline.nx;++i)
+			result[static_cast<std::size_t>(i+baseline.nx/2u+derived.nx*(j+baseline.ny/2u))]=
+				original[static_cast<std::size_t>(i+baseline.nx*j)];
+		return true;
+	}
 	const double diameter=authored.sourceKind=="patch" ? 2.0*std::sqrt(
 		authored.patchXM*authored.patchZM/3.141592653589793238462643383279502884) :
 		authored.poolDiameterM;
@@ -128,6 +181,12 @@ bool RISE::FireCase::BuildPilotMask(const AuthoredV1& authored,
 	return active>0 || Fail(error,"fire case pilot annulus contains no cell centres");
 }
 
+double RISE::FireCase::ScheduleFlowThroughTimeS(const DerivedV1& derived)
+{
+	return derived.matchedScheduleFlowThroughTimeS==0.0 ?
+		derived.flowThroughTimeS : derived.matchedScheduleFlowThroughTimeS;
+}
+
 bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
 	const bool maskCell,const double beginningTimeS,const double endTimeS,
 	double& result,std::string& error)
@@ -139,16 +198,16 @@ bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
 		!FinitePositive(derived.pilotDurationMultiplier) ||
 		!FinitePositive(derived.pilotAmbientTemperatureK) ||
 		!FinitePositive(derived.pilotRampExponentPerFlowThrough) ||
-		!FinitePositive(derived.flowThroughTimeS) ||
+		!FinitePositive(ScheduleFlowThroughTimeS(derived)) ||
 		!std::isfinite(beginningTimeS) || beginningTimeS<0.0 ||
 		!std::isfinite(endTimeS) || endTimeS<beginningTimeS)
 		return Fail(error,"fire case pilot evaluation has invalid inputs");
-	const double pilotEndS=derived.pilotDurationMultiplier*derived.flowThroughTimeS;
+	const double pilotEndS=derived.pilotDurationMultiplier*ScheduleFlowThroughTimeS(derived);
 	if(!std::isfinite(pilotEndS)) return Fail(error,"fire case pilot duration is invalid");
 	if(maskCell && beginningTimeS<pilotEndS && endTimeS>beginningTimeS) {
 		const double commandTimeS=std::min(endTimeS,pilotEndS);
 		const double exponent=std::min(1.0,derived.pilotRampExponentPerFlowThrough*
-			commandTimeS/derived.flowThroughTimeS);
+			commandTimeS/ScheduleFlowThroughTimeS(derived));
 		result=derived.pilotAmbientTemperatureK*std::pow(
 			derived.pilotSetpointTemperatureK/derived.pilotAmbientTemperatureK,exponent);
 	}
@@ -163,8 +222,8 @@ double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
 		!FinitePositive(derived.pilotExpansionVolumeRatioCap)||
 		derived.pilotExpansionVolumeRatioCap<=1.0||
 		!FinitePositive(derived.pilotRampExponentPerFlowThrough)||
-		!FinitePositive(derived.flowThroughTimeS))return 0.0;
-	return derived.flowThroughTimeS*std::log(derived.pilotExpansionVolumeRatioCap)/
+		!FinitePositive(ScheduleFlowThroughTimeS(derived)))return 0.0;
+	return ScheduleFlowThroughTimeS(derived)*std::log(derived.pilotExpansionVolumeRatioCap)/
 		(derived.pilotRampExponentPerFlowThrough*std::log(
 			derived.pilotSetpointTemperatureK/derived.pilotAmbientTemperatureK));
 }
@@ -284,12 +343,28 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	const double requiredZ=(a.plumeLaw?5.0:2.0)*d.effectiveFlameHeightM;
 	d.nx=CeilCells(requiredX,d.cellWidthM); d.ny=CeilCells(requiredY,d.cellWidthM);
 	d.nz=CeilCells(requiredZ,d.cellWidthM);
+	if(!a.domainStudy.empty()) {
+		if((a.domainStudy!="r244-lateral-double-v1"&&
+			a.domainStudy!="r246-lateral-double-top-double-v1")||a.sourceKind!="pool"||
+			a.poolDiameterM!=0.30||a.intensityKind!="hrr"||a.heatReleaseRateKW!=33.0||
+			a.quality!="dstar"||a.numericDStarTier!=6.0||!a.plumeLaw||
+			envelope.size()!=1u||envelope.front().value!=1.0||a.seed!=1234u||
+			a.hasRadiativeFractionOverride||d.nx%2u||d.ny%2u)
+			return Fail(error,"r244 domain study is confined to the unchanged steady tier-6 capstone");
+		if(a.domainStudy=="r246-lateral-double-top-double-v1") {
+			d.matchedScheduleFlowThroughTimeS=(d.nz*d.cellWidthM)/
+				std::sqrt(9.80665*d.characteristicDiameterM);
+			d.nz*=2u;
+		}
+		d.nx*=2u; d.ny*=2u;
+		d.pilotMaskRule="r244_integer_translation_of_canonical_first_layer_annulus";
+	}
 	d.extentXM=d.nx*d.cellWidthM; d.extentYM=d.ny*d.cellWidthM; d.extentZM=d.nz*d.cellWidthM;
 	d.flowThroughTimeS=d.extentZM/std::sqrt(9.80665*d.characteristicDiameterM);
 	const bool constant=std::all_of(envelope.begin(),envelope.end(),
 		[peak](const EnvelopeKnot& k){return k.value==peak;});
-	if(constant) { d.windowKind="discard"; d.preRollOrDiscardS=5.0*d.flowThroughTimeS; }
-	else if(envelope.front().value>0.0) { d.windowKind="pre_roll"; d.preRollOrDiscardS=5.0*d.flowThroughTimeS; }
+	if(constant) { d.windowKind="discard"; d.preRollOrDiscardS=5.0*ScheduleFlowThroughTimeS(d); }
+	else if(envelope.front().value>0.0) { d.windowKind="pre_roll"; d.preRollOrDiscardS=5.0*ScheduleFlowThroughTimeS(d); }
 	else { d.windowKind="none"; d.preRollOrDiscardS=0.0; }
 	std::vector<double> pattern;
 	if(!BuildSourcePattern(a,d,pattern,error)) return false;
@@ -325,13 +400,15 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	const Value quality=Value::MapValue({
 		{"dstar_tier",a.quality=="dstar"?Value::Float(a.numericDStarTier):Value()},
 		{"kind",Value::String(a.quality)}});
-	const Value authored=Value::MapValue({
+	Value::Members authoredMembers={
 		{"chi_r",a.hasRadiativeFractionOverride?Value::Float(a.radiativeFractionOverride):Value()},
 		{"duration_s",Value::Float(a.durationS)}, {"envelope",Value::ArrayValue(knots)},
 		{"fuel_record_id",Value::String(a.fuelRecordId)}, {"intensity",intensity},
 		{"output_frames_per_s",Value::Float(a.outputFramesPerS)}, {"plume_law",Value::Bool(a.plumeLaw)},
-		{"quality",quality}, {"seed",Value::Unsigned(a.seed)}, {"source",source} });
-	const Value derived=Value::MapValue({
+		{"quality",quality}, {"seed",Value::Unsigned(a.seed)}, {"source",source} };
+	if(!a.domainStudy.empty()) authoredMembers.push_back({"domain_study",Value::String(a.domainStudy)});
+	const Value authored=Value::MapValue(authoredMembers);
+	Value::Members derivedMembers={
 		{"ambient_cp_J_per_kg_K",Value::Float(d.ambientCpJPerKGK)},
 		{"ambient_density_kg_per_m3",Value::Float(d.ambientDensityKGPerM3)},
 		{"cell_width_m",Value::Float(d.cellWidthM)}, {"chi_r_effective",Value::Float(d.effectiveRadiativeFraction)},
@@ -362,7 +439,15 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 			{"limiter_acceptance",Value::String(d.limiterAcceptanceModelVersion)},
 			{"reaction_energy_headroom",Value::String(
 				d.reactionEnergyHeadroomModelVersion)}})},
-		{"window_kind",Value::String(d.windowKind)} });
+		{"window_kind",Value::String(d.windowKind)} };
+	if(a.domainStudy=="r246-lateral-double-top-double-v1")
+		derivedMembers.push_back({"experimental_matched_schedule",Value::MapValue({
+			{"policy",Value::String("r246_original_80_layer_schedule_v1")},
+			{"reference_domain_cells",Value::ArrayValue({Value::Unsigned(d.nx),
+				Value::Unsigned(d.ny),Value::Unsigned(d.nz/2u)})},
+			{"reference_flow_through_time_s",Value::Float(d.matchedScheduleFlowThroughTimeS)}
+		})});
+	const Value derived=Value::MapValue(derivedMembers);
 	const Value payload=Value::MapValue({{"authored",authored},{"derived",derived},
 		{"record_kind",Value::String("fire-case-v1")},{"referenced_record_ids",Value::ArrayValue(refs)},
 		{"schema_version",Value::Unsigned(1)}});
@@ -400,11 +485,19 @@ bool RISE::FireCase::ValidateMethaneEnvelopeV1(const RISECBOR64::Bytes& bytes,
 	const Value* payload=envelope.Find("payload");
 	const Value* authored=payload?payload->Find("authored"):nullptr;
 	const Value* refs=payload?payload->Find("referenced_record_ids"):nullptr;
-	if(!authored || !ExactKeys(*authored,{"chi_r","duration_s","envelope","fuel_record_id",
-		"intensity","output_frames_per_s","plume_law","quality","seed","source"}) ||
+	std::vector<std::string> authoredKeys={"chi_r","duration_s","envelope","fuel_record_id",
+		"intensity","output_frames_per_s","plume_law","quality","seed","source"};
+	if(authored&&authored->Find("domain_study")) authoredKeys.push_back("domain_study");
+	if(!authored || !ExactKeys(*authored,authoredKeys) ||
 		!refs || refs->GetType()!=Value::Array) return Fail(error,
 		"fire case methane authored schema is not exact v1");
 	AuthoredV1 parsed;
+	if(const Value* study=authored->Find("domain_study")) {
+		if(study->GetType()!=Value::Text||(study->GetText()!="r244-lateral-double-v1"&&
+			study->GetText()!="r246-lateral-double-top-double-v1"))
+			return Fail(error,"fire case domain study is unknown");
+		parsed.domainStudy=study->GetText();
+	}
 	const Value* fuelId=authored->Find("fuel_record_id");
 	const Value* quality=authored->Find("quality");
 	const Value* seed=authored->Find("seed");

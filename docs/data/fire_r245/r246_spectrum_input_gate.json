@@ -1,0 +1,37 @@
+{
+  "exit_code": 0,
+  "completed_utc": "2026-10-04T06:31:49.460332+00:00",
+  "executable_sha256": "06e51b17865386b231d2e5c24a50e5229c8568da88634be80e79629d189cf5f6",
+  "log_sha256": "ff24bfd5d42c5b2966ac2257ad2c18954667f15af34ecc49e85d1b8c1b685179",
+  "schema": "rise.fire.r246.recovery-spectrum-input-gate.v1",
+  "status": "accepted_retained_spectrum_input_prerequisite",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "implementation_sha256": "a685876bc5aa17af60f6edc4aec72f740d05148c3ef13283de6a6e8804847c16",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_spectrum_input_runtime.v1",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_spectrum_input.v1.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "external_completion": "/Volumes/SSD/RISE/fire_production_calibration/r246_spectrum_input_validation.v1/completion.json",
+  "external_completion_sha256": "ac7a884b75f8695b9cd628cfd501fe7063b5a4770085325c7ce325f1f0b41f46",
+  "embedded_revision": "0a74074ae7495783db512eea0c09fa2f6629e82f",
+  "embedded_dirty_state": "dirty",
+  "accepted_input": {
+    "steps": 15315,
+    "frames": 235,
+    "probes": 8916
+  },
+  "red_controls": [
+    "Changed interior frame event versus captured history",
+    "Changed first retained probe endpoint",
+    "Changed terminal retained probe endpoint",
+    "Foreign captured terminal",
+    "Nonfinite retained centerline signal"
+  ],
+  "limitations": [
+    "No rendering or full spectrum publication was performed.",
+    "Recovered spectrum input plumbing is prepared but no recovery launch command is exposed.",
+    "Preview manifest loader/scene input snapshots and full consumer composition remain pending.",
+    "Original producer exit98 and frozen original consumers unchanged.",
+    "No signed budget arithmetic or physical/canonical acceptance."
+  ]
+}

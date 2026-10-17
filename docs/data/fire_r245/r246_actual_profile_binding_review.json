@@ -1,0 +1,37 @@
+{
+  "schema": "rise.fire.r246.actual-profile-binding-review.v1",
+  "reviewed_head": "c420b4f43",
+  "round": 2,
+  "status": "accepted_zero_p1_p2",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "reviewers": [
+    {
+      "agent": "r246_actual_profile_contract_r2",
+      "axis": "contract/test integrity/sibling completeness",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Exact primary/display configuration/media checked before numbered publication. Metadata and filesystem controls discriminate; scoped claims honest."
+    },
+    {
+      "agent": "r246_actual_profile_lifecycle_r2",
+      "axis": "lifecycle/provenance",
+      "p1": 0,
+      "p2": 0,
+      "confidence": 0.93,
+      "findings": "Fresh owner-only output and exclusive scene creation close occupied hardlink truncation. Captured scene/inventory hashes and runtime identities exact; original hashes/exit98 preserved."
+    }
+  ],
+  "round1_finding": {
+    "severity": "P2",
+    "status": "fixed_and_freshly_reviewed",
+    "problem": "Occupied hardlinked scene output could truncate original target; adjacent pair writer accepts occupied paths.",
+    "fix": "Require fresh private preview output before processing, exclusive scene member creation, occupied root/member and alias GREEN/RED coverage."
+  },
+  "gate_sha256": "0056eaed659f524c269a4b0fdf0da9741257a85c2044b2bf2f88c902183c7134",
+  "limitations": [
+    "No full recovered render or native fields in focused fixture.",
+    "GIF publication, recovered CLI composition, full recovery and signed audit remain pending."
+  ],
+  "accepted_utc": "2026-10-04T08:51:57.311744+00:00"
+}

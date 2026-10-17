@@ -1,0 +1,22 @@
+{
+  "reviewed_commit": "7dfc1d16",
+  "scope": "experiment design only; not implementation or launch authorization",
+  "reviewers": [
+    {
+      "agent": "r246_design_round3_physics",
+      "P1": 0,
+      "P2": 0
+    },
+    {
+      "agent": "r246_design_round3_contract",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "verdict": "ready_for_implementation_engineering_gates_required",
+  "limitations": [
+    "matched cold-start timing is not canonical taller-domain qualification",
+    "preview-only changes do not establish original-region dynamics",
+    "native whole-height aggregates require separately labeled common-height comparisons"
+  ]
+}

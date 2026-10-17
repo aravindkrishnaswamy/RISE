@@ -1,0 +1,43 @@
+{
+  "schema": "rise.fire.r248.spatial-support-review.v1",
+  "candidate_commit": "a629411b5",
+  "round": 1,
+  "status": "accepted_pure_exact_spatial_arithmetic_and_proposed_row_reservation_only",
+  "reviews": [
+    {
+      "reviewer": "/root/r248_spatial_arithmetic_r1",
+      "axis": "independent arithmetic/coordinate contract",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all11 pins verified",
+        "19020 exact Fraction oracle checks across42 fixtures including asymmetric6x8x83/40 exponent fixtures/equal-heightminimum",
+        "native/common and per-height sign/support counts, central totals, centroids, direct centred variance and fractions",
+        "max/subnormal weights/minf32dx/exact gas+soot/empty common vs nonempty native/all-negative",
+        "70368 reservation arithmetic"
+      ]
+    },
+    {
+      "reviewer": "/root/r248_spatial_integrity_r1",
+      "axis": "lifecycle/test-integrity/representation scope",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all11 pins/captured executed helpers",
+        "13 targeted RED controls",
+        "72 independent native/common summaries and profiles asymmetric/minimum/equal-height fixtures",
+        "gas+soot cancellation/maxsubnormal/zero densities/negative subnormal density RED",
+        "honest proposed-only layout/no codec/native authentication/replay/allocation/fullhistory claims"
+      ]
+    }
+  ],
+  "native_fields_read": 0,
+  "codec_implemented": false,
+  "native_stage_authenticated": false,
+  "native_reduction_replayed": false,
+  "native_allocation_accepted": false,
+  "full_history_authenticated": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "next": "strict captured spatial byte codec/representation admission; then resident observer lifetime/authentication/ordinal chain/allocation/native parity prerequisites"
+}

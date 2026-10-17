@@ -1,0 +1,76 @@
+{
+  "schema": "rise.fire.r248.synthetic-view-lifetime-gate.v1",
+  "status": "pending_independent_review",
+  "pins": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_view_lifetime_validation.v2/r248_view_lifetime.py",
+      "sha256": "08825741d695c5ca1e2e92b2c22eb2a93618a6013174b39f9f5bf217235d7da1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_view_lifetime_validation.v2/r248_view_lifetime_verify.py",
+      "sha256": "75caa380c2c3d6f96c329cedc01e934768cbf5fefe0d0474f77f4b54874bf6bd"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_view_lifetime_validation.v2/validation.json",
+      "sha256": "15d0891c64861c4ee3e424d6e27bd53bd834af601e12ebda439847b7fd65025c"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/FIRE_SMOKE_RESIDENT_OBSERVER_CONTRACT_R248.md",
+      "sha256": "559c2f606fcf64a0f43ef6a9cd854db5c952a394b05b21aff92bfe03f291b118"
+    }
+  ],
+  "validation": {
+    "synthetic_green_checks": 905,
+    "reds": [
+      "overwrite_queued",
+      "release_queued",
+      "copied_result",
+      "copied_view",
+      "cross_owner_stage",
+      "wrong_operation",
+      "complete_twice",
+      "stale_view_schedule",
+      "stale_view_overwrite",
+      "copied_before",
+      "unissued_target_parent",
+      "bind_twice",
+      "skipped_finalization_generation",
+      "stale_after_target",
+      "bind_copied_target",
+      "duplicate_issuance",
+      "parent_release_before_child",
+      "evicted_result",
+      "evicted_view",
+      "evicted_stage",
+      "bool_limit",
+      "zero_limit",
+      "R2_no_parent",
+      "unknown_stage",
+      "bool_width",
+      "chemical_narrowing",
+      "misaligned",
+      "outside",
+      "uint64_extent",
+      "empty_extent",
+      "view_registry_bound",
+      "read_registry_bound",
+      "stage_registry_bound"
+    ],
+    "operation_channels": {
+      "chemical_binary64": [
+        "chemical_pair",
+        64
+      ],
+      "target_pre_finalize": [
+        "assembled_target",
+        32
+      ]
+    },
+    "native_authentication": false,
+    "gpu_command_ordering_qualified": false,
+    "full_accepted_history_chain": false,
+    "measured_memory": false,
+    "new_simulation": false
+  },
+  "scope": "Synthetic Python identity model of two channels; not native authority/security, GPU ordering or owner hook integration."
+}

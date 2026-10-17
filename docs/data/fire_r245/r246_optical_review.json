@@ -1,0 +1,30 @@
+{
+  "source_head": "d18ae702",
+  "rounds": 2,
+  "status": "accepted_synthetic_optical_control",
+  "reviewers": [
+    {
+      "name": "r246_optical_final_arithmetic",
+      "axes": "arithmetic / optical / design fidelity",
+      "P1": 0,
+      "P2": 0
+    },
+    {
+      "name": "r246_optical_final_integrity",
+      "axes": "provenance / test integrity",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "first_round_P2_fixed": [
+    "optimized Python assertions",
+    "independent persisted lower-field digest"
+  ],
+  "repeat_linear_rgb_l1": 0.0,
+  "upper_emission_linear_rgb_l1": 17.40667987224735,
+  "upper_extinction_linear_rgb_l1": 17.664666727666646,
+  "scope": "synthetic upper-only optical confound; frame zero only, zero accepted simulation steps",
+  "actual_taller_owner_allocation_exercised": false,
+  "physical_qualification_established": false,
+  "launch_permitted": false
+}

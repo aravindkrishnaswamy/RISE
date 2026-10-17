@@ -1,0 +1,17 @@
+{
+  "implementation_commit_reviewed": "cc2045a7",
+  "scope": "complete-owner accounting design amendment only",
+  "reviewers": [
+    {
+      "name": "r246_resource_design_contract",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "name": "r246_resource_design_accounting",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "launch_permitted": false
+}

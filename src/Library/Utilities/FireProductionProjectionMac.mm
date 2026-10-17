@@ -14,9 +14,13 @@
 #import <Metal/Metal.h>
 
 #include "FireProductionProjection.h"
+#include "FireProductionForce.h"
 #include "RISECBOR64.h"
 
 #include <algorithm>
+#include <atomic>
+#include <array>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -132,8 +136,10 @@ namespace RISE
 			std::uint32_t restoration;
 			std::uint32_t boundary[6];
 			std::uint32_t sideOffset[6];
+			std::uint32_t burnerFaces;
+			float injectedDensity;
 		};
-		static_assert(sizeof(MetalLevelParameters)==88u,
+		static_assert(sizeof(MetalLevelParameters)==96u,
 			"P2 working-set certificate binds the serialized Metal level payload");
 
 		struct MetalAxisParameters
@@ -171,6 +177,7 @@ namespace RISE
 using namespace metal;
 struct LevelParams {
  uint nx,ny,nz,nullspace;float sx,sy,sz,ambient,dt;uint restoration;uint boundary[6];uint sideOffset[6];
+ uint burnerFaces;float injectedDensity;
 };
 struct AxisParams {uint axis,storeDensity,side,padding;};
 struct ReductionParams {uint count,width,offset,diagnosticIndex;};
@@ -205,12 +212,17 @@ inline float stored_face_density(device const float* rho,constant LevelParams& p
  if(axis==2u)hz=coordinate?p.nz-1u:0u;float interior=rho[cell_index(p,hx,hy,hz)];
  return p.boundary[side]==1u?0.5f*interior+0.5f*p.ambient:interior;
 }
+inline bool burner_face(device const float* burner,constant LevelParams& p,
+ uint axis,uint x,uint y,uint z){return p.burnerFaces!=0u&&axis==2u&&z==0u&&
+ burner[y*p.nx+x]!=0.0f;}
 kernel void build_faces(device const float* rho [[buffer(0)]],device float* beta [[buffer(1)]],
  device float* stored [[buffer(2)]],constant LevelParams& p [[buffer(3)]],
- constant AxisParams& a [[buffer(4)]],uint gid [[thread_position_in_grid]]){
+ constant AxisParams& a [[buffer(4)]],device const float* burner [[buffer(5)]],
+ uint gid [[thread_position_in_grid]]){
  if(gid>=face_count(p,a.axis))return;uint x,y,z;face_coordinate(p,a.axis,gid,x,y,z);
  uint coordinate=a.axis==0u?x:(a.axis==1u?y:z),extent=a.axis==0u?p.nx:(a.axis==1u?p.ny:p.nz);
  uint side=2u*a.axis+(coordinate?1u:0u);float d=stored_face_density(rho,p,a.axis,x,y,z);
+ if(burner_face(burner,p,a.axis,x,y,z))d=0.5f*p.injectedDensity+0.5f*rho[cell_index(p,x,y,0u)];
  bool wall=(coordinate==0u||coordinate==extent)&&p.boundary[side]==2u;
  beta[gid]=wall?0.0f:1.0f/d;if(a.storeDensity!=0u)stored[gid]=d;
 }
@@ -241,10 +253,13 @@ kernel void restrict_average(device const float* fine [[buffer(0)]],device float
 kernel void setup_velocity(device const float* momentumIn [[buffer(0)]],device const float* stored [[buffer(1)]],
  device float* momentumOut [[buffer(2)]],device float* velocity [[buffer(3)]],
  constant LevelParams& p [[buffer(4)]],constant AxisParams& a [[buffer(5)]],
+ device const float* burner [[buffer(6)]],
  uint gid [[thread_position_in_grid]]){
  if(gid>=face_count(p,a.axis))return;uint x,y,z;face_coordinate(p,a.axis,gid,x,y,z);
  uint coordinate=a.axis==0u?x:(a.axis==1u?y:z),extent=a.axis==0u?p.nx:(a.axis==1u?p.ny:p.nz);
  uint side=2u*a.axis+(coordinate?1u:0u);bool wall=(coordinate==0u||coordinate==extent)&&p.boundary[side]==2u;
+ if(burner_face(burner,p,a.axis,x,y,z)){momentumOut[gid]=burner[p.burnerFaces+y*p.nx+x];
+ velocity[gid]=momentumOut[gid]/stored[gid];return;}
  momentumOut[gid]=wall?0.0f:momentumIn[gid];velocity[gid]=wall?0.0f:momentumIn[gid]/stored[gid];
 }
 inline float centered_velocity(device const float* velocity,constant LevelParams& p,
@@ -359,7 +374,8 @@ kernel void clear_values(device float* values [[buffer(0)]],constant ReductionPa
  uint gid [[thread_position_in_grid]]){if(gid<r.count)values[gid]=0.0f;}
 kernel void copy_reduction(device const float* values [[buffer(0)]],device float* scratch [[buffer(1)]],
  constant ReductionParams& r [[buffer(2)]],uint gid [[thread_position_in_grid]]){
- if(gid<r.width)scratch[gid]=gid<r.count?values[gid]:0.0f;
+ if(gid<r.width){float value=gid<r.count?values[gid]:0.0f;
+  scratch[gid]=r.offset==0u?fabs(value):value;}
 }
 kernel void sum_pass(device float* scratch [[buffer(0)]],constant ReductionParams& r [[buffer(1)]],
  uint gid [[thread_position_in_grid]]){uint index=2u*r.offset-1u+gid*2u*r.offset;if(index<r.width)scratch[index]+=scratch[index-r.offset];}
@@ -377,10 +393,13 @@ kernel void correct_faces(device const float* provisional [[buffer(0)]],device c
  device const float* pressure [[buffer(2)]],device const float* pb [[buffer(3)]],
  device float* momentum [[buffer(4)]],device float* velocity [[buffer(5)]],
  constant LevelParams& p [[buffer(6)]],constant AxisParams& a [[buffer(7)]],
+ device const float* burner [[buffer(8)]],
  uint gid [[thread_position_in_grid]]){
  if(gid>=face_count(p,a.axis))return;uint x,y,z;face_coordinate(p,a.axis,gid,x,y,z);
  uint coordinate=a.axis==0u?x:(a.axis==1u?y:z),extent=a.axis==0u?p.nx:(a.axis==1u?p.ny:p.nz);
  uint side=2u*a.axis+(coordinate?1u:0u);float gradient=0.0f;
+ if(burner_face(burner,p,a.axis,x,y,z)){momentum[gid]=burner[p.burnerFaces+y*p.nx+x];
+ velocity[gid]=momentum[gid]/stored[gid];return;}
  if(coordinate>0u&&coordinate<extent){uint lx=x,ly=y,lz=z;if(a.axis==0u)--lx;if(a.axis==1u)--ly;if(a.axis==2u)--lz;
   gradient=(pressure[cell_index(p,x,y,z)]-pressure[cell_index(p,lx,ly,lz)])/(a.axis==0u?p.sx:(a.axis==1u?p.sy:p.sz));
  }else if(p.boundary[side]==2u){momentum[gid]=0.0f;velocity[gid]=0.0f;return;
@@ -390,7 +409,7 @@ kernel void correct_faces(device const float* provisional [[buffer(0)]],device c
    if(a.axis==1u){cy=p.ny-1u;oy=0u;}if(a.axis==2u){cz=p.nz-1u;oz=0u;}
    gradient=(pressure[cell_index(p,ox,oy,oz)]-pressure[cell_index(p,cx,cy,cz)])/spacing;
   }else{uint sideIndex=side<2u?cz*p.ny+cy:(side<4u?cz*p.nx+cx:cy*p.nx+cx);
-   float boundaryPressure=pb[p.sideOffset[side]+sideIndex];gradient=coordinate?
+   float boundaryPressure=p.restoration!=0u?0.0f:pb[p.sideOffset[side]+sideIndex];gradient=coordinate?
     2.0f*(boundaryPressure-pressure[cell_index(p,cx,cy,cz)])/spacing:
     2.0f*(pressure[cell_index(p,cx,cy,cz)]-boundaryPressure)/spacing;}
  }
@@ -406,9 +425,12 @@ kernel void copy_periodic_seam(device float* stored [[buffer(0)]],device float* 
  stored[hi]=stored[lo];momentum[hi]=momentum[lo];velocity[hi]=velocity[lo];
 }
 inline float prescribed_provisional_velocity(device const float* momentum,device const float* stored,
+ device const float* burner,
  constant LevelParams& p,uint axis,uint x,uint y,uint z){
  uint coordinate=axis==0u?x:(axis==1u?y:z),extent=axis==0u?p.nx:(axis==1u?p.ny:p.nz);
  uint side=2u*axis+(coordinate==extent?1u:0u);
+ if(burner_face(burner,p,axis,x,y,z))return burner[p.burnerFaces+y*p.nx+x]/
+ stored[face_index(p,axis,x,y,z)];
  return (coordinate==0u||coordinate==extent)&&p.boundary[side]==2u?0.0f:
   momentum[face_index(p,axis,x,y,z)]/stored[face_index(p,axis,x,y,z)];
 }
@@ -417,18 +439,19 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
  constant LevelParams& p [[buffer(5)]],device const float* px [[buffer(6)]],
  device const float* py [[buffer(7)]],device const float* pz [[buffer(8)]],
  device const float* dx [[buffer(9)]],device const float* dy [[buffer(10)]],
- device const float* dz [[buffer(11)]],uint gid [[thread_position_in_grid]]){
+ device const float* dz [[buffer(11)]],device const float* burner [[buffer(12)]],
+ uint gid [[thread_position_in_grid]]){
  uint count=p.nx*p.ny*p.nz;if(gid>=count)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
  float divergence=(vx[face_index(p,0u,x+1u,y,z)]-vx[face_index(p,0u,x,y,z)]+
   vy[face_index(p,1u,x,y+1u,z)]-vy[face_index(p,1u,x,y,z)]+
   vz[face_index(p,2u,x,y,z+1u)]-vz[face_index(p,2u,x,y,z)])/p.sx;
  if(p.restoration==0u){output[gid]=abs(divergence-target[gid]);return;}
- float beginning=(prescribed_provisional_velocity(px,dx,p,0u,x+1u,y,z)-
-  prescribed_provisional_velocity(px,dx,p,0u,x,y,z)+
-  prescribed_provisional_velocity(py,dy,p,1u,x,y+1u,z)-
-  prescribed_provisional_velocity(py,dy,p,1u,x,y,z)+
-  prescribed_provisional_velocity(pz,dz,p,2u,x,y,z+1u)-
-  prescribed_provisional_velocity(pz,dz,p,2u,x,y,z))/p.sx;
+ float beginning=(prescribed_provisional_velocity(px,dx,burner,p,0u,x+1u,y,z)-
+  prescribed_provisional_velocity(px,dx,burner,p,0u,x,y,z)+
+  prescribed_provisional_velocity(py,dy,burner,p,1u,x,y+1u,z)-
+  prescribed_provisional_velocity(py,dy,burner,p,1u,x,y,z)+
+  prescribed_provisional_velocity(pz,dz,burner,p,2u,x,y,z+1u)-
+  prescribed_provisional_velocity(pz,dz,burner,p,2u,x,y,z))/p.sx;
  output[gid]=abs((divergence-beginning)-target[gid]);
 }
 kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
@@ -489,6 +512,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 )METAL";
 		}
 
+		std::atomic<std::uint64_t> ProjectionContextConstructionAttempts{0u};
+
 		struct MetalProjectionContext
 		{
 			id<MTLDevice> device;
@@ -505,6 +530,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 				copyReduction(nil),sumPass(nil),maxPass(nil),subtractMean(nil),storeRoot(nil),
 				correctFaces(nil),copySeam(nil),postResidual(nil),validationMetrics(nil),identifyResident(nil)
 			{
+				ProjectionContextConstructionAttempts.fetch_add(1u,std::memory_order_relaxed);
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
 					if( !device ) {error="production fire projection has no Metal device";return;}
@@ -639,6 +665,10 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 			p.sx=level.spacing[0];p.sy=level.spacing[1];p.sz=level.spacing[2];
 			p.ambientDensity=request.ambientDensityKGPerM3;p.timeStepS=request.timeStepS;
 			p.restoration=restoration?1u:0u;
+			p.burnerFaces=!request.bottomFuelMask.empty()&&level.nx==request.shape.nx&&
+				level.ny==request.shape.ny&&level.nz==request.shape.nz?
+				static_cast<std::uint32_t>(request.bottomFuelMask.size()):0u;
+			p.injectedDensity=request.injectedGasDensityKGPerM3;
 			std::uint32_t offset=0u;
 			for( unsigned int side=0;side<6u;++side ) {
 				p.boundary[side]=static_cast<std::uint32_t>(request.boundary[side]);p.sideOffset[side]=offset;
@@ -660,10 +690,12 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 
 		bool EncodeReduction( MetalProjectionContext& context,id<MTLCommandBuffer> command,
 			id<MTLBuffer> values,std::size_t count,id<MTLBuffer> scratch,id<MTLBuffer> diagnostics,
-			std::uint32_t diagnosticIndex,bool maximum,std::string* error )
+			std::uint32_t diagnosticIndex,bool maximum,std::string* error,bool magnitude=false )
 		{
+			// Copy-only offset zero requests absolute values; reduction passes set
+			// their own positive stride. Existing sum/max consumers keep raw values.
 			const std::size_t width=NextPowerOfTwo(count);MetalReductionParameters parameters={
-				static_cast<std::uint32_t>(count),static_cast<std::uint32_t>(width),1u,diagnosticIndex};
+				static_cast<std::uint32_t>(count),static_cast<std::uint32_t>(width),magnitude?0u:1u,diagnosticIndex};
 			id<MTLComputeCommandEncoder> encoder=nil;
 			if( !Begin(command,encoder,error,"reduction-copy") ) return false;
 			[encoder setBuffer:values offset:0 atIndex:0];[encoder setBuffer:scratch offset:0 atIndex:1];
@@ -776,12 +808,15 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 			const std::uint64_t beginningAllocationBytes=projectionBufferAllocationBytes;
 			std::uint64_t observedActualMetalBytes=0u,certifiedWorkingSetBytes=0u;
 			if( !ValidateFireProductionProjectionRequest(request,error) ) return false;
+			// The owning caller binds these immutable operands through its input
+			// root. Resident adapters borrow them; they never reconstruct the inlet.
 			const bool hasOpenBoundary=std::any_of(request.boundary.begin(),
 				request.boundary.end(),[](const FireProductionProjectionBoundary boundary){
 					return boundary==FireProductionProjectionPressureOpen;});
 			unsigned int cycleCount=0u;
 			if( !ProjectionCycleCount(request,execution,hasOpenBoundary,cycleCount,error) ) return false;
-			if( !FireProductionProjectionWorkingSetBytes(request.shape,certifiedWorkingSetBytes) )
+			if( !FireProductionProjectionWorkingSetBytes(request.shape,certifiedWorkingSetBytes,
+				!request.bottomFuelMask.empty()) )
 				return false;
 			if( residentInput ) for( unsigned int axis=0u;axis<3u;++axis ) {
 				const std::uint64_t bytes=FireProductionProjectionFaceCount(request.shape,axis)*sizeof(float);
@@ -798,6 +833,19 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 			if( residentInput ) {
 				const std::size_t cellBytes=request.shape.CellCount()*sizeof(float);
 				id<MTLBuffer> packed=residentInput->provisionalMomentumKGPerM2S[0];
+				id<MTLBuffer> burner=residentInput->bottomFuelMaskAndMassFlux;
+				if((!request.bottomFuelMask.empty())!=(burner!=nil)||
+					(burner&&([burner storageMode]!=MTLStorageModePrivate||
+					[burner length]!=2u*request.bottomFuelMask.size()*sizeof(float)||
+					[burner device]!=[packed device]||
+					burner==residentInput->gasDensityKGPerM3||
+					burner==residentInput->divergenceTargetPerS||
+					std::find(residentInput->provisionalMomentumKGPerM2S.begin(),
+						residentInput->provisionalMomentumKGPerM2S.end(),burner)!=
+						residentInput->provisionalMomentumKGPerM2S.end()))){
+					if(error)*error="production resident burner operand storage is invalid";
+					return false;
+				}
 				if( !residentInput->gasDensityKGPerM3||!residentInput->divergenceTargetPerS||!packed||
 					[residentInput->gasDensityKGPerM3 storageMode]!=MTLStorageModePrivate||
 					[residentInput->divergenceTargetPerS storageMode]!=MTLStorageModePrivate||
@@ -850,6 +898,11 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					if(error)*error="production fire projection target identity is not private device authority";
 					return false;
 				}
+				if((residentInput->qualifiedOwnerStageTokens||residentInput->targetConsumerIdentity)&&
+					!residentInput->targetPublicationIdentity){
+					if(error)*error="production fire projection owner mode lacks sealed target authority";
+					return false;
+				}
 				if(residentInput->targetPublicationIdentity&&(
 					!residentInput->targetConsumerIdentity||
 					[residentInput->targetConsumerIdentity storageMode]!=MTLStorageModePrivate||
@@ -883,6 +936,15 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 			}
 			MetalProjectionContext& context=Context();
 			if( !context.Valid() ) {if( error ) *error=context.error;return false;}
+			if(residentInput){
+				const id<MTLBuffer> operands[]={residentInput->gasDensityKGPerM3,
+					residentInput->divergenceTargetPerS,residentInput->provisionalMomentumKGPerM2S[0],
+					residentInput->provisionalMomentumKGPerM2S[1],residentInput->provisionalMomentumKGPerM2S[2],
+					residentInput->bottomFuelMaskAndMassFlux};
+				for(id<MTLBuffer> operand:operands)if(operand&&[operand device]!=context.device){
+					if(error)*error="production resident projection operand device differs";return false;
+				}
+			}
 			@autoreleasepool {
 				const bool resident=residentInput!=0;
 				const bool stateOnly=execution==ProjectionResidentStateOnly||
@@ -941,6 +1003,17 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					NewBuffer(context.device,cells*sizeof(float));
 				id<MTLBuffer> targetUpload=resident?nil:NewBufferWithBytes(context.device,
 					request.divergenceTargetPerS.data(),cells*sizeof(float));
+				std::vector<float> burnerValues;
+				if(!resident&&!request.bottomFuelMask.empty()){
+					burnerValues.assign(request.bottomFuelMask.begin(),request.bottomFuelMask.end());
+					burnerValues.insert(burnerValues.end(),request.bottomFuelMassFluxKGPerM2S.begin(),
+						request.bottomFuelMassFluxKGPerM2S.end());
+				}
+				const std::size_t burnerBytes=2u*request.bottomFuelMask.size()*sizeof(float);
+				id<MTLBuffer> burner=resident?residentInput->bottomFuelMaskAndMassFlux:
+					(burnerBytes?NewBuffer(context.device,burnerBytes):nil);
+				id<MTLBuffer> burnerUpload=!resident&&burnerBytes?NewBufferWithBytes(context.device,
+					burnerValues.data(),burnerBytes):nil;
 				const std::size_t boundaryCount=2u*(shape.ny*shape.nz+shape.nx*shape.nz+shape.nx*shape.ny);
 				const bool authenticatedResident=resident&&stateOnly&&
 					residentInput->targetPublicationIdentity;
@@ -956,6 +1029,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					residentInput->targetPublicationIdentity?
 					NewBuffer(context.device,sizeof(std::uint64_t)):nil;
 				bool allocated=fine.density&&target&&boundaryPressure&&inflow&&scratch&&diagnostics&&
+					(!burnerBytes||(burner&&(resident||burnerUpload)))&&
 					(resident||(densityUpload&&targetUpload))&&
 					(!residentInput||!residentInput->targetPublicationIdentity||!stateOnly||projectionIdentity);
 				for( const MetalLevel& level:hierarchy ) allocated=allocated&&level.density&&level.rhs&&
@@ -966,6 +1040,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 				if( InjectedFailure("buffer") ) allocated=false;
 				if( !allocated ) {if( error ) *error="production fire projection buffer allocation failed";return false;}
 				bool storageModes=[target storageMode]==MTLStorageModePrivate&&
+					(!burnerBytes||([burner storageMode]==MTLStorageModePrivate&&
+						(resident||[burnerUpload storageMode]==MTLStorageModeShared)))&&
 					[boundaryPressure storageMode]==(authenticatedResident?MTLStorageModePrivate:
 						MTLStorageModeShared)&&
 					[inflow storageMode]==(authenticatedResident?MTLStorageModePrivate:
@@ -1010,7 +1086,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 						return false;
 				}
 				const id<MTLBuffer> fixedResident[]={target,boundaryPressure,inflow,scratch,diagnostics,
-					projectionIdentity};
+					projectionIdentity,burner};
 				for( id<MTLBuffer> buffer:fixedResident ) if(buffer&&
 					!addAllocation(buffer,residentBytes))return false;
 				for( unsigned int axis=0u;axis<3u;++axis ) {
@@ -1027,14 +1103,16 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 				if( !resident ) {
 					if( !addAllocation(densityUpload,uploadBytes)||!addAllocation(targetUpload,uploadBytes) )
 						return false;
+					if(burnerUpload&&!addAllocation(burnerUpload,uploadBytes))return false;
 					for( id<MTLBuffer> buffer:provisionalUpload )
 						if( !addAllocation(buffer,uploadBytes) ) return false;
 				}
 				std::uint64_t faceValues=0u;for( unsigned int axis=0u;axis<3u;++axis )
 					faceValues+=FireProductionProjectionFaceCount(shape,axis);
-				const std::uint64_t hostBytes=terminal?
+				const std::uint64_t hostBytes=burnerValues.size()*sizeof(float)+request.bottomFuelMask.size()*
+					(sizeof(unsigned char)+sizeof(float))+(terminal?
 					(3u*static_cast<std::uint64_t>(cells)+4u*faceValues)*sizeof(float)+
-						6u*static_cast<std::uint64_t>(boundaryCount):0u;
+						6u*static_cast<std::uint64_t>(boundaryCount):0u);
 				if( hostBytes>std::numeric_limits<std::uint64_t>::max()-residentBytes||
 					hostBytes+residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes )
 					return false;
@@ -1102,6 +1180,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 						ProjectionTransferScope transferScope(ProjectionUploadTransfer);
 						CopyProjectionBuffer(upload,densityUpload,0u,fine.density,0u,cells*sizeof(float));
 						CopyProjectionBuffer(upload,targetUpload,0u,target,0u,cells*sizeof(float));
+						if(burnerBytes)CopyProjectionBuffer(upload,burnerUpload,0u,burner,0u,burnerBytes);
 						for( unsigned int axis=0;axis<3u;++axis ) CopyProjectionBuffer(upload,
 							provisionalUpload[axis],0u,provisional[axis],0u,
 							FireProductionProjectionFaceCount(shape,axis)*sizeof(float));
@@ -1111,6 +1190,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					if( [uploadCommand status]!=MTLCommandBufferStatusCompleted ) {
 						if( error ) *error=MetalError("production fire projection upload command failed",[uploadCommand error]);return false;}
 					densityUpload=nil;targetUpload=nil;
+					burnerUpload=nil;
 					for( unsigned int axis=0;axis<3u;++axis ) provisionalUpload[axis]=nil;
 				}
 				id<MTLCommandBuffer> command=[context.queue commandBuffer];
@@ -1132,6 +1212,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 						[encoder setBuffer:level.density offset:0 atIndex:0];[encoder setBuffer:level.beta[axis] offset:0 atIndex:1];
 						[encoder setBuffer:stored[axis] offset:0 atIndex:2];[encoder setBuffer:level.parameters offset:0 atIndex:3];
 						[encoder setBytes:&axisParameters length:sizeof(axisParameters) atIndex:4];
+						[encoder setBuffer:burner?burner:target offset:0 atIndex:5];
 						Dispatch(encoder,context.buildFaces,FireProductionProjectionFaceCount(local,axis));[encoder endEncoding];
 					}
 					if( !Begin(command,encoder,error,"diagonal") ) return false;
@@ -1146,6 +1227,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					[encoder setBuffer:provisional[axis] offset:provisionalOffset[axis] atIndex:0];[encoder setBuffer:stored[axis] offset:0 atIndex:1];
 					[encoder setBuffer:momentum[axis] offset:0 atIndex:2];[encoder setBuffer:velocity[axis] offset:0 atIndex:3];
 					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:4];[encoder setBytes:&axisParameters length:sizeof(axisParameters) atIndex:5];
+					[encoder setBuffer:burner?burner:target offset:0 atIndex:6];
 					Dispatch(encoder,context.setupVelocity,FireProductionProjectionFaceCount(shape,axis));[encoder endEncoding];
 				}
 				for( unsigned int side=0;side<6u;++side ) if(
@@ -1197,6 +1279,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					[encoder setBuffer:fineLevel.pressure offset:0 atIndex:2];[encoder setBuffer:boundaryPressure offset:0 atIndex:3];
 					[encoder setBuffer:momentum[axis] offset:0 atIndex:4];[encoder setBuffer:velocity[axis] offset:0 atIndex:5];
 					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:6];[encoder setBytes:&axisParameters length:sizeof(axisParameters) atIndex:7];
+					[encoder setBuffer:burner?burner:target offset:0 atIndex:8];
 					Dispatch(encoder,context.correctFaces,FireProductionProjectionFaceCount(shape,axis));[encoder endEncoding];
 					if( request.boundary[2u*axis]==FireProductionProjectionPeriodic ) {
 						if( !Begin(command,encoder,error,"periodic publication") ) return false;
@@ -1233,6 +1316,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					offset:provisionalOffset[axis] atIndex:6u+axis];
 				for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:stored[axis]
 					offset:0 atIndex:9u+axis];
+				[encoder setBuffer:burner?burner:target offset:0 atIndex:12];
 				Dispatch(encoder,context.postResidual,cells);[encoder endEncoding];
 				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,1u,true,error) ) return false;
 				if( !Begin(command,encoder,error,"validation metrics") ) return false;
@@ -1250,6 +1334,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,
 					2u,true,error)||!EncodeReduction(context,command,fineLevel.temporary,cells,scratch,
 					diagnostics,3u,true,error) ) return false;
+				if(restoration&&!EncodeReduction(context,command,target,cells,scratch,diagnostics,
+					4u,true,error,true))return false;
 				if(projectionIdentity){
 					if(!Begin(command,encoder,error,"resident publication identity"))return false;
 					[encoder setBuffer:target offset:0 atIndex:0];
@@ -1436,8 +1522,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 				}
 				std::uint64_t borrowedBytes=0u;
 				if( resident ) {
-					const id<MTLBuffer> borrowedBase[]={fine.density,target,provisional[0]};
-					for( id<MTLBuffer> buffer:borrowedBase ) {
+					const id<MTLBuffer> borrowedBase[]={fine.density,target,provisional[0],burner};
+					for( id<MTLBuffer> buffer:borrowedBase ) if(buffer) {
 						const std::uint64_t bytes=[buffer allocatedSize];
 						if( borrowedBytes>std::numeric_limits<std::uint64_t>::max()-bytes ) {
 							result=FireProductionProjectionResult();return false;
@@ -1458,7 +1544,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 				const std::uint64_t trackedBytes=projectionBufferAllocationBytes-
 					beginningAllocationBytes;
 				const std::uint64_t expectedCount=10u*hierarchy.size()+
-					(resident?(terminal?25u:12u+(authenticatedResident?1u:0u)):32u);
+					(resident?(terminal?25u:12u+(authenticatedResident?1u:0u)):32u)+(!resident&&burnerBytes?2u:0u);
 				if( residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
 					residentBytes+uploadBytes>std::numeric_limits<std::uint64_t>::max()-stagingBytes||
 					trackedBytes>std::numeric_limits<std::uint64_t>::max()-borrowedBytes||
@@ -1478,9 +1564,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 				result.residentCertifiedWorkingSetBytes=certifiedWorkingSetBytes;
 				result.residentActualMetalAllocationBytes=observedActualMetalBytes;
 				const float length=shape.cellWidthM*static_cast<float>(std::max(shape.nx,std::max(shape.ny,shape.nz)));
-				float maximumRestorationTarget=0.0f;
-				if( restoration ) for( const float value:request.divergenceTargetPerS )
-					maximumRestorationTarget=std::max(maximumRestorationTarget,std::fabs(value));
+				const float maximumRestorationTarget=restoration?d[4]:0.0f;
 				result.validationBandPerS=restoration?0.005f*maximumRestorationTarget:
 					0.005f*maximumVelocity/length;
 				const bool validBand=restoration?
@@ -1702,4 +1786,59 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 		const char* source=ProjectionSource();
 		return RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(source),std::strlen(source));
 	}
+	// Actual existing adapter factory observation only; no field buffers/commands.
+	bool FireProductionProjectionContextResourceQualification(const unsigned int mode)
+	{
+		FireProductionPreconstructionResourceSample before,after;
+		const std::uint64_t initial=ProjectionContextConstructionAttempts.load(std::memory_order_relaxed);
+		std::uint64_t registry=0u,staticMaximum=0u,deviceLimit=0u,threadMinimum=UINT64_MAX;
+		unsigned int slots=0u,refusal=0u;
+		bool entered=false,telemetry=false,slotsKnown=false,worked=false;
+		@autoreleasepool {
+			try {
+				worked=[&](){
+					if(mode>3u){refusal=2u;return false;}
+					const FireProductionFrozenSourcePacketSeal empty;
+					CaptureFireProductionPreconstructionResources(empty,before);
+					auto known=[](const FireProductionPreconstructionResourceSample& sample){
+						return sample.hostTelemetryKnown&&sample.peakTelemetryKnown&&sample.deviceTelemetryKnown;};
+					if(!known(before)){refusal=3u;return false;}
+					const std::uint64_t ceiling=mode==1u?2u:(UINT64_C(2)<<30u);
+					const std::uint64_t reserve=mode==1u?1u:(UINT64_C(32)<<20u);
+					if(std::max(before.currentRSSBytes,before.physicalFootprintBytes)>=ceiling-reserve){
+						refusal=1u;after=before;telemetry=true;return false;}
+					if(mode>=2u){
+						entered=true;auto& context=Context();
+						if(!context.Valid()){refusal=5u;return false;}
+						registry=[context.device registryID];deviceLimit=[context.device maxThreadgroupMemoryLength];
+						const std::array<id<MTLComputePipelineState>,21> pipelines={{context.buildFaces,context.buildDiagonal,context.restrictAverage,context.setupVelocity,context.classifyOpen,context.classifyEndpoint,context.buildRHS,context.jacobi,context.computeResidual,context.prolongate,context.clearValues,context.copyReduction,context.sumPass,context.maxPass,context.subtractMean,context.storeRoot,context.correctFaces,context.copySeam,context.postResidual,context.validationMetrics,context.identifyResident}};
+						for(id<MTLComputePipelineState> pipeline:pipelines){
+							if(!pipeline){refusal=5u;return false;}++slots;
+							const auto threads=static_cast<std::uint64_t>([pipeline maxTotalThreadsPerThreadgroup]);
+							threadMinimum=std::min(threadMinimum,threads);
+							staticMaximum=std::max(staticMaximum,static_cast<std::uint64_t>([pipeline staticThreadgroupMemoryLength]));
+							if(threads==0u){refusal=6u;return false;}
+						}
+						slotsKnown=registry!=0u&&deviceLimit>0u&&staticMaximum<=deviceLimit;
+						if(!slotsKnown){refusal=6u;return false;}
+					}
+					CaptureFireProductionPreconstructionResources(empty,after);telemetry=known(after);
+					return telemetry&&(mode==0u||slotsKnown)&&after.processPeakRSSBytes<ceiling&&
+						std::max(after.currentRSSBytes,after.physicalFootprintBytes)<ceiling-reserve;
+				}();
+			}catch(const std::bad_alloc&){refusal=4u;worked=false;}
+		}
+		const auto final=ProjectionContextConstructionAttempts.load(std::memory_order_relaxed);
+		if(threadMinimum==UINT64_MAX)threadMinimum=0u;
+		const bool published=std::printf("{\"kind\":\"projection\",\"mode\":%u,\"passed\":%s,\"refusal\":%u,\"before_attempts\":%llu,\"after_attempts\":%llu,\"pipeline_slots\":%u,\"slots_known\":%s,\"telemetry_known\":%s,\"factory_entered\":%s,\"registry\":%llu,\"static_threadgroup_max\":%llu,\"device_threadgroup_limit\":%llu,\"pipeline_thread_limit_min\":%llu,\"before_rss\":%llu,\"after_rss\":%llu,\"before_footprint\":%llu,\"after_footprint\":%llu,\"before_device\":%llu,\"after_device\":%llu,\"peak\":%llu}\n",
+			mode,worked?"true":"false",refusal,static_cast<unsigned long long>(initial),static_cast<unsigned long long>(final),
+			slots,slotsKnown?"true":"false",telemetry?"true":"false",entered?"true":"false",static_cast<unsigned long long>(registry),
+			static_cast<unsigned long long>(staticMaximum),static_cast<unsigned long long>(deviceLimit),static_cast<unsigned long long>(threadMinimum),
+			static_cast<unsigned long long>(before.currentRSSBytes),static_cast<unsigned long long>(after.currentRSSBytes),
+			static_cast<unsigned long long>(before.physicalFootprintBytes),static_cast<unsigned long long>(after.physicalFootprintBytes),
+			static_cast<unsigned long long>(before.deviceAllocatedBytes),static_cast<unsigned long long>(after.deviceAllocatedBytes),
+			static_cast<unsigned long long>(after.processPeakRSSBytes))>=0&&std::fflush(stdout)==0;
+		return worked&&published;
+	}
+
 }

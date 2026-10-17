@@ -1,0 +1,28 @@
+{
+  "schema": "rise.fire.r221.native-launch-verified.v1",
+  "scope": "native startup overlap; not onset verdict",
+  "output": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1",
+  "receipt": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/native_overlap_verified.v2",
+  "receipt_sha256": "22e1d271e4513f292d2f78fcb32f3a6696f1e15bbb515c8e9d6bcc8ddc97f519",
+  "actual_overlap_csv": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/native_overlap/budgets/maximum_velocity_trajectory.csv",
+  "actual_overlap_csv_sha256": "a945c4a9d6c0a7b5caa9fb228d1ccc67737593d0cef8eb7cc7ed26562b9fae2a",
+  "anchor_step": 826,
+  "verified_steps": [
+    827,
+    828,
+    829,
+    830,
+    831,
+    832,
+    833,
+    834,
+    835
+  ],
+  "all_exact_times_and_roots_matched": true,
+  "rss_first_bytes": 2072281088,
+  "rss_last_bytes": 1968832512,
+  "footprint_last_bytes": 2149992896,
+  "compressed_bytes_each_step": 0,
+  "production_status": "ordinary continuation resumed from immutable826 copy; horizon pending",
+  "onset_verdict": "pending"
+}

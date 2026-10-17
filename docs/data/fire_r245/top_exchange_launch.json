@@ -1,0 +1,12 @@
+{
+  "pid": 89607,
+  "command": [
+    "/Users/aravind/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r245_top_exchange_localization.py",
+    "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1",
+    "/Volumes/SSD/RISE/fire_production_calibration/r245_full_verification.v2/full_budget_audit.json",
+    "/Volumes/SSD/RISE/fire_production_calibration/r245_top_exchange.v1"
+  ],
+  "source_sha256": "c62c623ca4527f22f6ef195d54212c9a7c7389298ea3c8360f47c888cd1fded2",
+  "gate": "Hand-calculated staggered plane/limited total-species sign/reference/endpoint controls and missing-layout REDs passed; full mapping and fresh milestone reviews pending."
+}

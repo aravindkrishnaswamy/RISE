@@ -2,6 +2,7 @@
 #include "../src/Library/Utilities/FireSimulationRecords.h"
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 
 using namespace RISE;
@@ -17,11 +18,168 @@ namespace
 		for(auto& member:members) if(member.first==key) member.second=value;
 		return RISECBOR64::Value::MapValue(members);
 	}
+	void CheckLateralDomainStudy(const FireSimulationMethaneRecord& fuel)
+	{
+		using RISECBOR64::Value;
+		FireCase::AuthoredV1 a;
+		a.fuelRecordId=fuel.RecordId();a.poolDiameterM=0.30;a.heatReleaseRateKW=33.0;
+		a.envelope={{0.0,1.0}};a.durationS=25.156864278900095;a.outputFramesPerS=16.0;
+		a.quality="dstar";a.numericDStarTier=6.0;a.seed=1234u;a.plumeLaw=true;
+		FireCase::RecordV1 base,wide,decoded;std::string error;
+		if(!FireCase::BuildMethaneV1(a,fuel,{fuel.RecordId()},base,error)){
+			Check(false,"r244 baseline derives");return;
+		}
+		const auto baselineAuthored=a;
+		a.domainStudy="r244-lateral-double-v1";
+		if(!FireCase::BuildMethaneV1(a,fuel,{fuel.RecordId()},wide,error)){
+			Check(false,"r244 doubled domain derives");return;
+		}
+		Check(base.derived.nx==52u&&base.derived.ny==52u&&base.derived.nz==80u&&
+			wide.derived.nx==104u&&wide.derived.ny==104u&&wide.derived.nz==80u&&
+			wide.derived.cellWidthM==base.derived.cellWidthM&&
+			wide.derived.extentXM==2.0*base.derived.extentXM&&
+			wide.derived.extentYM==2.0*base.derived.extentYM&&
+			wide.derived.extentZM==base.derived.extentZM,
+			"r244 doubles only lateral extents at the unchanged tier-6 cell width");
+		Check(wide.caseRecordId!=base.caseRecordId&&
+			FireCase::ValidateMethaneEnvelopeV1(wide.envelopeBytes,fuel,decoded,error)&&
+			decoded.envelopeBytes==wide.envelopeBytes&&decoded.authored.domainStudy==a.domainStudy,
+			"r244 experiment has an identity-bearing, reproducible case record");
+		Value basePayload,widePayload;
+		const bool decodedPayloads=RISECBOR64::DecodeCanonical(base.payloadBytes,basePayload,&error)&&
+			RISECBOR64::DecodeCanonical(wide.payloadBytes,widePayload,&error);
+		Check(decodedPayloads,"r244 comparison decodes both payloads");
+		if(decodedPayloads){
+			const auto* b=basePayload.Find("derived");const auto* w=widePayload.Find("derived");
+			const auto* baseAuthored=basePayload.Find("authored");
+			Check(baseAuthored&&!baseAuthored->Find("domain_study"),
+				"r244 leaves the canonical authored schema unchanged");
+			if(b&&w&&b->Find("pilot")&&w->Find("pilot")){
+				auto normalized=Replace(*w,"domain_cells",*b->Find("domain_cells"));
+				normalized=Replace(normalized,"domain_extent_m",*b->Find("domain_extent_m"));
+				normalized=Replace(normalized,"pilot",Replace(*w->Find("pilot"),"mask_rule",
+					*b->Find("pilot")->Find("mask_rule")));
+				RISECBOR64::Bytes expected,actual;
+				Check(RISECBOR64::Encode(*b,expected,&error)&&RISECBOR64::Encode(normalized,actual,&error)&&
+					expected==actual,"r244 preserves every other derived physical, source, pilot, and timing field");
+			}else Check(false,"r244 derived comparison requires complete records");
+		}
+		std::vector<double> baseSource,wideSource;
+		std::vector<std::uint8_t> basePilot,widePilot;
+		if(!FireCase::BuildSourcePattern(baselineAuthored,base.derived,baseSource,error)||
+			!FireCase::BuildSourcePattern(a,wide.derived,wideSource,error)||
+			!FireCase::BuildPilotMask(baselineAuthored,base.derived,basePilot,error)||
+			!FireCase::BuildPilotMask(a,wide.derived,widePilot,error)){
+			Check(false,"r244 source and pilot arrays build");return;
+		}
+		bool sourceExact=wideSource.size()==104u*104u;
+		bool pilotExact=widePilot.size()==104u*104u*80u;
+		std::size_t activeSource=0u,activePilot=0u;
+		if(sourceExact&&pilotExact){
+			for(std::size_t k=0;k<80u;++k)for(std::size_t j=0;j<104u;++j)
+				for(std::size_t i=0;i<104u;++i){
+					const bool inside=i>=26u&&i<78u&&j>=26u&&j<78u;
+					const std::size_t index=i+104u*(j+104u*k);
+					const auto expectedPilot=inside?basePilot[i-26u+52u*(j-26u+52u*k)]:0u;
+					pilotExact=pilotExact&&widePilot[index]==expectedPilot;
+					activePilot+=widePilot[index]!=0u;
+					if(k==0u){
+						const double expected=inside?baseSource[i-26u+52u*(j-26u)]:0.0;
+						sourceExact=sourceExact&&std::memcmp(&wideSource[index],&expected,sizeof(double))==0;
+						activeSource+=wideSource[index]!=0.0;
+					}
+				}
+		}
+		Check(sourceExact&&pilotExact&&activeSource>1u&&activePilot>1u,
+			"r244 embeds the exact source bytes and complete pilot mask with zero-filled margins");
+		Check(base.derived.perturbationDigest==wide.derived.perturbationDigest,
+			"r244 preserves the active source pattern digest");
+		// Exact r246 record/clock foundation only; no launcher qualification.
+		auto topAuthored=a;topAuthored.domainStudy="r246-lateral-double-top-double-v1";
+		FireCase::RecordV1 top,topDecoded;
+		if(!FireCase::BuildMethaneV1(topAuthored,fuel,{fuel.RecordId()},top,error)){
+			Check(false,"r246 top-only experiment derives");return;
+		}
+		Check(top.derived.nx==104u&&top.derived.ny==104u&&top.derived.nz==160u&&
+			top.derived.cellWidthM==wide.derived.cellWidthM&&
+			top.derived.extentXM==wide.derived.extentXM&&top.derived.extentYM==wide.derived.extentYM&&
+			top.derived.extentZM==2.0*wide.derived.extentZM&&
+			top.derived.flowThroughTimeS==2.0*wide.derived.flowThroughTimeS&&
+			FireCase::ScheduleFlowThroughTimeS(top.derived)==wide.derived.flowThroughTimeS&&
+			top.derived.matchedScheduleFlowThroughTimeS==0x1.0d9da03060ef6p+1&&
+			top.derived.preRollOrDiscardS==wide.derived.preRollOrDiscardS,
+			"r246 separates doubled physical residence from exact original schedule bits");
+		Check(top.caseRecordId!=wide.caseRecordId&&
+			FireCase::ValidateMethaneEnvelopeV1(top.envelopeBytes,fuel,topDecoded,error)&&
+			topDecoded.envelopeBytes==top.envelopeBytes&&
+			topDecoded.derived.matchedScheduleFlowThroughTimeS==wide.derived.flowThroughTimeS,
+			"r246 roundtrip binds geometry and experimental schedule");
+		std::vector<double> topSource;std::vector<std::uint8_t> topPilot;
+		const bool topArrays=FireCase::BuildSourcePattern(topAuthored,top.derived,topSource,error)&&
+			FireCase::BuildPilotMask(topAuthored,top.derived,topPilot,error);
+		bool arraysExact=topArrays&&topSource.size()==wideSource.size()&&
+			std::memcmp(topSource.data(),wideSource.data(),wideSource.size()*sizeof(double))==0&&
+			topPilot.size()==2u*widePilot.size();
+		if(arraysExact)for(std::size_t n=0;n<topPilot.size();++n)
+			arraysExact=arraysExact&&topPilot[n]==(n<widePilot.size()?widePilot[n]:0u);
+		Check(arraysExact,"r246 preserves every common source/pilot value and zero upper pilot layers");
+		Check(FireCase::PilotCommandMaximumStepS(top.derived)==
+			FireCase::PilotCommandMaximumStepS(wide.derived),"r246 pilot maximum step uses original clock");
+		for(const double time:{0.0,0.1,1.0,2.1063728557800188,4.0}){
+			double original=0.0,taller=0.0;
+			Check(FireCase::EvaluatePilotSetpointTemperatureK(wide.derived,true,time,time+0.01,original,error)&&
+				FireCase::EvaluatePilotSetpointTemperatureK(top.derived,true,time,time+0.01,taller,error)&&
+				original==taller,"r246 pilot ramp and deadline exactly match original schedule");
+		}
+		for(unsigned int mutation=0;mutation<3u;++mutation){
+			auto bad=top.derived;
+			if(mutation==0u)bad.nz=80u;
+			if(mutation==1u)bad.matchedScheduleFlowThroughTimeS=std::nextafter(
+				bad.matchedScheduleFlowThroughTimeS,3.0);
+			if(mutation==2u)bad.matchedScheduleFlowThroughTimeS=-1.0;
+			std::vector<double> refused;
+			Check(!FireCase::BuildSourcePattern(topAuthored,bad,refused,error),
+				"r246 refuses mismatched height and altered schedule reference");
+		}
+		Value topPayload;
+		if(RISECBOR64::DecodeCanonical(top.payloadBytes,topPayload,&error)){
+			const auto* derived=topPayload.Find("derived");
+			const auto* schedule=derived?derived->Find("experimental_matched_schedule"):nullptr;
+			Check(schedule!=nullptr,"r246 schedule exception is identity-bearing");
+			if(schedule){
+				const Value mutant=Replace(topPayload,"derived",Replace(*derived,"experimental_matched_schedule",
+					Replace(*schedule,"reference_flow_through_time_s",Value::Float(2.106372855780019))));
+				RISECBOR64::Bytes payload,resealed;
+				Check(RISECBOR64::Encode(mutant,payload,&error)&&RISECBOR64::Encode(Value::MapValue({
+					{"case_record_id",Value::String(RISECBOR64::SHA256Hex(payload))},{"payload",mutant}}),resealed,&error)&&
+					!FireCase::ValidateMethaneEnvelopeV1(resealed,fuel,topDecoded,error),
+					"r246 refuses a resealed one-ULP schedule substitution");
+			}
+		}else Check(false,"r246 payload decodes");
+
+		for(unsigned int mutation=0;mutation<5u;++mutation){
+			auto bad=a;
+			if(mutation==0u)bad.domainStudy="unknown-study";
+			if(mutation==1u)bad.numericDStarTier=8.0;
+			if(mutation==2u)bad.seed=1235u;
+			if(mutation==3u){bad.hasRadiativeFractionOverride=true;bad.radiativeFractionOverride=0.14;}
+			if(mutation==4u)bad.envelope={{0.0,0.0},{1.0,1.0}};
+			FireCase::RecordV1 refused;
+			Check(!FireCase::BuildMethaneV1(bad,fuel,{fuel.RecordId()},refused,error),
+				"r244 refuses a changed study name, tier, seed, chi_r, or pilot ignition envelope");
+		}
+	}
+
 }
 
-int main()
+int main(int argc,char** argv)
 {
 	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+	CheckLateralDomainStudy(fuel);
+	if(argc==2&&std::strcmp(argv[1],"--r244-domain-only")==0){
+		std::printf("FireCaseTest r244 domain: %d failures\n",failures);
+		return failures?1:0;
+	}
 	FireCase::AuthoredV1 authored;
 	authored.fuelRecordId=fuel.RecordId(); authored.poolDiameterM=0.03;
 	authored.heatReleaseRateKW=0.10; authored.envelope={{0.0,0.0},{0.5,1.0},{1.0,1.0}};

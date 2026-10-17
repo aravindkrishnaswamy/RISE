@@ -1,0 +1,80 @@
+RISE ASCII SCENE 7
+
+# r241 immutable tier-8 sequence, high-quality temporal render.
+# Z-up matches the simulation; no authored lights alter its emission.
+# Preview provenance remains until predictive qualification is available.
+scene_options
+{
+scene_unit 1
+fidelity_mode preview
+}
+standard_shader
+{
+name global
+shaderop DefaultPathTracing
+}
+pathtracing_spectral_rasterizer
+{
+samples 16
+nmbegin 380
+nmend 780
+num_wavelengths 32
+spectral_samples 1
+hwss true
+pixel_filter box
+oidn_denoise true
+}
+file_rasterizeroutput
+{
+pattern /Volumes/SSD/RISE/fire_production_calibration/r242_tier8_hq.v1/fire_primary
+multiple TRUE
+type EXR
+bpp 32
+color_space Rec709RGB_Linear
+exposure 0
+display_transform none
+exr_compression piz
+}
+file_rasterizeroutput
+{
+pattern /Volumes/SSD/RISE/fire_production_calibration/r242_tier8_hq.v1/fire_display
+multiple TRUE
+type PNG
+bpp 16
+color_space sRGB
+exposure 7
+display_transform aces
+}
+film
+{
+width 512
+height 768
+}
+pinhole_camera
+{
+name camera
+location 1.05546 -2.99813 1.62144
+lookat 1.05546 1.05546 1.62144
+up 0 0 1
+fov 45
+exposure 0
+scanning_rate 0
+pixel_rate 0
+}
+fire_medium
+{
+name sequence_fire
+fidelity_mode preview
+sequence_manifest /Volumes/SSD/RISE/fire_production_calibration/r241_tier8_full_window.v1/sequence_manifest.rise-fire.cbor
+channel_carbon carbon
+channel_temperature temperature
+channel_reaction reaction
+channel_chem_ch chem_CH
+channel_chem_c2 chem_C2
+channel_chem_co2 chem_CO2
+channel_velocity velocity
+}
+global_medium
+{
+medium sequence_fire
+}

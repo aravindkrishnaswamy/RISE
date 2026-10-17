@@ -1,0 +1,65 @@
+{
+  "schema": "rise.fire.r246.consumer-read-sequence-gate.v1",
+  "status": "accepted_input_admission_prerequisite_zeroP1P2",
+  "recovery_accepted": false,
+  "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v5/FireSequenceTest",
+  "binary_sha256": "d573ffb039848cfbdd0da2899f268b409eb882c433f81788d52e03bc5723df2a",
+  "binary_identity_note": "fbc0b1939 dirty deterministic between-read regression seam; distinct from original producer.",
+  "results": [
+    {
+      "stage": "staged_source_replacement",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "abbad405cacc5ae2e5c3bb8f059bb68603fed9afb97c630f7f0ebf62c630ef3e"
+    },
+    {
+      "stage": "same_source_snapshot",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "1cf917ec857865a21f111d96978d7e0fc0077616332eae2f277b3419a5eaa6c8"
+    },
+    {
+      "stage": "checkpoint_pair_snapshot_reds",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "57c6901982092cb5555cf9e6aadb9a629fab3c7bcd1ce2bdc74463414d2cc5c2"
+    },
+    {
+      "stage": "regular_pending_marker",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "4957072630c181f61b4f00a21790028c3553d3443620fa2d16ca03e7a3ce9999"
+    },
+    {
+      "stage": "dangling_pending_marker",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "4957072630c181f61b4f00a21790028c3553d3443620fa2d16ca03e7a3ce9999"
+    }
+  ],
+  "sha256": {
+    "tests/FireSequenceTest.cpp": "f8c4c14cc0f859efe8b0156666023af079d9d55f9131aa230ee2328d0d3deaac",
+    "tools/fire/r246_consumer_input_controls.py": "da31eaa1c136799c3df05b478d8445ebeeb47f16fdf83e494dbd87cf28d494e9",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v5/RendererBuildIdentity.generated.h": "bc5ba44d2508d49b86db45709d83960317b339aaa8fa708ffddd500af86da081",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v5.build-final.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v5.no_vdb-fallback.cpp": "745bbd2d8a5555d6eb206ccccba655cb2b8ebf18404cedcb4555c183af989609",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v5.no_vdb-fallback.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v5.controls/report.json": "fa774b9238befbadf44ebb6206c9f52c3b420d43dead60e258109a2417ec8792",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v5.controls/completion.json": "ba310b033fc5cad866ed6b7b11e034db77bcb86ad59266160fe1cd0bc9e6360f"
+  },
+  "prior_native_frame_evidence": "docs/data/fire_r245/r246_consumer_input_gate.json",
+  "review_round4": {
+    "commit": "fbc0b1939",
+    "contract": "zero P1/P2",
+    "lifecycle": "zero P1; P2 static source replacement control did not distinguish original helper"
+  },
+  "self_audit": [
+    "Private fixture first read actually equals candidate A; between-read callback replaces only fixture with valid B.",
+    "Old unbound second-read model accepts B; fixed helper still binds candidate A and refuses.",
+    "Removing candidate pointer binding flips staged RED from exit98 to exit0.",
+    "Snapshot checkpoint pair, mandatory seal, pending marker refusal and original artifact identities retained.",
+    "No repeated235 native preflight, full recovery publication or rendering."
+  ],
+  "limitations": "No repeated235-frame preflight; prior v1 native results retained as separate evidence.",
+  "review_receipt": "docs/data/fire_r245/r246_consumer_input_review.json"
+}

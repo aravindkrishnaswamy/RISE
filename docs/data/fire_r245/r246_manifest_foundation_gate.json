@@ -1,0 +1,23 @@
+{
+  "scope": "metadata_only_manifest_grid_camera_helper_foundation",
+  "status": "passing_native_gate_pending_fresh_review",
+  "launch_permitted": false,
+  "controls": [
+    "native 104x104x160 case identity",
+    "matched duration/reference/frame cadence/window",
+    "235-frame metadata",
+    "foreign domain label RED",
+    "missing-frame RED",
+    "original eighty-layer fixed camera recipe",
+    "frozen r244 identities/scene receipts unchanged"
+  ],
+  "logs": {
+    "r246_manifest_build.v1.log": "9a02e42d217e5073c36130726ecc3ae085dfce03db75ed5d6908e333d63bb392",
+    "r246_manifest_build.v2.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_manifest_gate.v1.log": "dd6c54d0615dbf789c5daf67f211dae8ee62a41f4e9dc4665cb1daad981b0d6f",
+    "r246_manifest_legacy_gate.v1.log": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+  },
+  "failed_build_preserved": "v1 had an incorrect time-map accessor; v2 corrected it and passed",
+  "owned_warnings": 0,
+  "actual_frames_rendered": false
+}

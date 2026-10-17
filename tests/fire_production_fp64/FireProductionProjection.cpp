@@ -100,7 +100,7 @@ namespace RISEFireProductionFP64
 		}
 
 		bool ProjectionWorkingSetBytes( const FireProductionProjectionShape& shape,
-			std::uint64_t& bytes )
+			std::uint64_t& bytes,bool hasBurner=false )
 		{
 			std::uint64_t total=0u;
 			std::size_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
@@ -134,7 +134,7 @@ namespace RISEFireProductionFP64
 				if( !AddMetalBufferBytes(xFaces,sizeof(double),total)||
 					!AddMetalBufferBytes(yFaces,sizeof(double),total)||
 					!AddMetalBufferBytes(zFaces,sizeof(double),total)||
-					!AddMetalBufferBytes(88u,1u,total) ) return false;
+					!AddMetalBufferBytes(96u,1u,total) ) return false;
 				if( nx<=4u&&ny<=4u&&nz<=4u ) break;
 				nx=nx>4u?(nx+1u)/2u:nx;ny=ny>4u?(ny+1u)/2u:ny;
 				nz=nz>4u?(nz+1u)/2u:nz;
@@ -142,6 +142,13 @@ namespace RISEFireProductionFP64
 			const std::uint64_t boundaryFaces=2u*(static_cast<std::uint64_t>(shape.ny)*shape.nz+
 				static_cast<std::uint64_t>(shape.nx)*shape.nz+
 				static_cast<std::uint64_t>(shape.nx)*shape.ny);
+			// Optional r239 prescribed-bed operands: packed mask/flux host array,
+			// upload staging and device-private copy can coexist at admission.
+			const std::uint64_t burnerValues=2u*static_cast<std::uint64_t>(shape.nx)*shape.ny;
+			if(hasBurner&&(!AddBytes(burnerValues,sizeof(double),total)||
+				!AddBytes(burnerValues/2u,sizeof(unsigned char)+sizeof(double),total)||
+				!AddMetalBufferBytes(burnerValues,sizeof(double),total)||
+				!AddMetalBufferBytes(burnerValues,sizeof(double),total)))return false;
 			if( !AddMetalBufferBytes(boundaryFaces,sizeof(double),total)||
 				!AddMetalBufferBytes(boundaryFaces,sizeof(unsigned char),total)||
 				// Caller-owned stage classification and integrated-head vectors may
@@ -191,6 +198,13 @@ namespace RISEFireProductionFP64
 		double ArithmeticMean( double first, double second )
 		{
 			return 0.5*first+0.5*second;
+		}
+
+		bool BurnerFace(const FireProductionProjectionRequest& request,unsigned int side,
+			std::size_t x,std::size_t y)
+		{
+			return side==4u&&!request.bottomFuelMask.empty()&&
+				request.bottomFuelMask[y*request.shape.nx+x]!=0u;
 		}
 
 		double StoredFaceDensity( const Level& level,
@@ -476,12 +490,18 @@ namespace RISEFireProductionFP64
 	bool FireProductionProjectionWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
 	{
+		return FireProductionProjectionWorkingSetBytes(shape,bytes,false);
+	}
+
+	bool FireProductionProjectionWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool hasBurner )
+	{
 		bytes=0u;
 		if( shape.nx<4u||shape.ny<4u||shape.nz<4u||shape.nx>1024u||
 			shape.ny>1024u||shape.nz>1024u||
 			shape.nx>std::numeric_limits<std::size_t>::max()/shape.ny||
 			shape.nx*shape.ny>std::numeric_limits<std::size_t>::max()/shape.nz ) return false;
-		return ProjectionWorkingSetBytes(shape,bytes);
+		return ProjectionWorkingSetBytes(shape,bytes,hasBurner);
 	}
 
 	bool FireProductionProjectionResidualWithinBand( double maximumResidualPerS,
@@ -562,10 +582,31 @@ namespace RISEFireProductionFP64
 			shape.nx*shape.ny>std::numeric_limits<std::size_t>::max()/shape.nz )
 			return Fail(error,"production projection dimensions overflow");
 		std::uint64_t workingSetBytes=0u;
-		if( !ProjectionWorkingSetBytes(shape,workingSetBytes)||
+		if( !ProjectionWorkingSetBytes(shape,workingSetBytes,!request.bottomFuelMask.empty())||
 			workingSetBytes>(UINT64_C(1)<<31u) )
 			return Fail(error,"production projection working set exceeds 2 GiB");
 		const std::size_t cells=shape.CellCount();
+		if(request.bottomFuelMask.empty()){
+			if(!request.bottomFuelMassFluxKGPerM2S.empty()||request.injectedGasDensityKGPerM3!=0.0)
+				return Fail(error,"production projection has orphan burner operands");
+		}else{
+			if(request.bottomFuelMask.size()!=shape.nx*shape.ny||
+				request.bottomFuelMassFluxKGPerM2S.size()!=request.bottomFuelMask.size()||
+				request.boundary[4]!=FireProductionProjectionWall||
+				!std::isfinite(request.injectedGasDensityKGPerM3)||
+				!(request.injectedGasDensityKGPerM3>0.0))
+				return Fail(error,"production projection burner shape or density is invalid");
+			for(std::size_t face=0u;face<request.bottomFuelMask.size();++face){
+				const double flux=request.bottomFuelMassFluxKGPerM2S[face];
+				if(request.bottomFuelMask[face]>1u||!std::isfinite(flux)||flux<0.0||
+					(request.bottomFuelMask[face]==0u&&flux!=0.0))
+					return Fail(error,"production projection burner mask or flux is invalid");
+			}
+			bool openRemainder=false;
+			for(unsigned int side=0u;side<6u;++side)if(side!=4u)
+				openRemainder=openRemainder||request.boundary[side]==FireProductionProjectionPressureOpen;
+			if(!openRemainder)return Fail(error,"production burner projection requires an open remainder");
+		}
 		for( const FireProductionProjectionBoundary value : request.boundary )
 			if( value!=FireProductionProjectionPeriodic&&value!=FireProductionProjectionWall&&
 				value!=FireProductionProjectionPressureOpen )
@@ -685,7 +726,9 @@ namespace RISEFireProductionFP64
 			for( std::size_t z=0;z<ez;++z ) for( std::size_t y=0;y<ey;++y )
 				for( std::size_t x=0;x<ex;++x ) {
 					const std::size_t face=FaceIndex(nx,ny,axis,x,y,z);
-					const double density=StoredFaceDensity(fine,request.boundary,
+					const bool burner=axis==2u&&z==0u&&BurnerFace(request,4u,x,y);
+					const double density=burner?ArithmeticMean(request.injectedGasDensityKGPerM3,
+						fine.density[CellIndex(nx,ny,x,y,0u)]):StoredFaceDensity(fine,request.boundary,
 						request.ambientDensityKGPerM3,axis,x,y,z);
 					result.faceDensityKGPerM3[axis][face]=density;
 					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
@@ -693,7 +736,8 @@ namespace RISEFireProductionFP64
 					const unsigned int side=2u*axis+(coordinate?1u:0u);
 					const bool wall=(coordinate==0u||coordinate==extent)&&
 						request.boundary[side]==FireProductionProjectionWall;
-					result.velocityMPerS[axis][face]=wall?0.0:
+					result.velocityMPerS[axis][face]=burner?
+						request.bottomFuelMassFluxKGPerM2S[y*nx+x]/density:wall?0.0:
 						request.provisionalMomentumKGPerM2S[axis][face]/density;
 				}
 			for( const double value : result.velocityMPerS[axis] )
@@ -729,6 +773,10 @@ namespace RISEFireProductionFP64
 					const std::size_t cy=axis==1u?(positive?ny-1u:0u):y;
 					const std::size_t cz=axis==2u?(positive?nz-1u:0u):z;
 					const std::size_t index=SideFaceIndex(shape,side,cx,cy,cz);
+					if(BurnerFace(request,side,cx,cy)){
+						result.pressureOpenInflow[side][index]=0u;
+						boundaryPressure[side][index]=0.0;continue;
+					}
 					const bool inflow=sealedOpenClassification?
 						result.pressureOpenInflow[side][index]!=0u:outward<0.0;
 					if( !sealedOpenClassification )
@@ -834,6 +882,11 @@ namespace RISEFireProductionFP64
 							result.pressurePa[CellIndex(nx,ny,lx,ly,lz)])/shape.cellWidthM;
 					} else {
 						const unsigned int side=2u*axis+(coordinate?1u:0u);
+						if(BurnerFace(request,side,x,y)){
+							result.momentumKGPerM2S[axis][face]=request.bottomFuelMassFluxKGPerM2S[y*nx+x];
+							result.velocityMPerS[axis][face]=result.momentumKGPerM2S[axis][face]/
+								result.faceDensityKGPerM3[axis][face];continue;
+						}
 						if( request.boundary[side]==FireProductionProjectionWall ) {
 							result.momentumKGPerM2S[axis][face]=0.0;
 							result.velocityMPerS[axis][face]=0.0;continue;
@@ -850,7 +903,10 @@ namespace RISEFireProductionFP64
 							gradient=(result.pressurePa[CellIndex(nx,ny,ox,oy,oz)]-
 								result.pressurePa[CellIndex(nx,ny,cx,cy,cz)])/shape.cellWidthM;
 						} else {
-							const double pb=boundaryPressure[side][SideFaceIndex(shape,side,cx,cy,cz)];
+							// Restoration solves a correction with homogeneous head, not
+							// the caller's sealed physical-pressure boundary value.
+							const double pb=execution==CPUProjectionRestoration?0.0:
+								boundaryPressure[side][SideFaceIndex(shape,side,cx,cy,cz)];
 							gradient=coordinate?2.0*(pb-result.pressurePa[
 								CellIndex(nx,ny,cx,cy,cz)])/shape.cellWidthM:
 								2.0*(result.pressurePa[CellIndex(nx,ny,cx,cy,cz)]-pb)/
@@ -899,6 +955,9 @@ namespace RISEFireProductionFP64
 						const std::size_t cy=axis==1u?(positive?ny-1u:0u):y;
 						const std::size_t cz=axis==2u?(positive?nz-1u:0u):z;
 						const std::size_t index=SideFaceIndex(shape,side,cx,cy,cz);
+						if(BurnerFace(request,side,cx,cy)){
+							result.pressureOpenInflow[side][index]=0u;continue;
+						}
 						const double outward=(positive?1.0:-1.0)*result.velocityMPerS[axis][
 							FaceIndex(nx,ny,axis,x,y,z)];
 						if(outward < -request.endpointVelocityToleranceMPerS)
@@ -921,7 +980,9 @@ namespace RISEFireProductionFP64
 						const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
 						const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
 						const unsigned int side=2u*axis+(coordinate==extent?1u:0u);
-						beginningVelocity[axis][face]=(coordinate==0u||coordinate==extent)&&
+						beginningVelocity[axis][face]=axis==2u&&z==0u&&BurnerFace(request,4u,x,y)?
+							request.bottomFuelMassFluxKGPerM2S[y*nx+x]/result.faceDensityKGPerM3[axis][face]:
+							(coordinate==0u||coordinate==extent)&&
 							request.boundary[side]==FireProductionProjectionWall?0.0:
 							request.provisionalMomentumKGPerM2S[axis][face]/
 							result.faceDensityKGPerM3[axis][face];
@@ -955,6 +1016,7 @@ namespace RISEFireProductionFP64
 					const std::size_t cy=axis==1u?(positive?ny-1u:0u):y;
 					const std::size_t cz=axis==2u?(positive?nz-1u:0u):z;
 					const bool inflow=result.pressureOpenInflow[side][SideFaceIndex(shape,side,cx,cy,cz)]!=0u;
+					if(BurnerFace(request,side,cx,cy))continue;
 					const double discrepancy=inflow?std::max(0.0,outward):std::max(0.0,-outward);
 					result.maximumOpenComplementarityDiscrepancyMPerS=std::max(
 						result.maximumOpenComplementarityDiscrepancyMPerS,discrepancy);

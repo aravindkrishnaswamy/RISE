@@ -1,0 +1,67 @@
+{
+  "schema": "rise.fire.r246.consumer-input-review.v1",
+  "status": "accepted_input_admission_prerequisite_only",
+  "reviewed_commit": "6cad82913",
+  "recovery_accepted": false,
+  "rounds": [
+    {
+      "round": 1,
+      "commit": "f1f7f6ea7",
+      "findings": [
+        "P1 manifest split-read",
+        "P2 optional OpenVDB helper definition"
+      ]
+    },
+    {
+      "round": 2,
+      "commit": "ca670e6e0",
+      "findings": [
+        "P1 checkpoint/seal/report split-read",
+        "P2 nondiscriminating source RED"
+      ]
+    },
+    {
+      "round": 3,
+      "commit": "486dde87d",
+      "findings": [
+        "zeroP1; P2 dropped source pending publication marker"
+      ]
+    },
+    {
+      "round": 4,
+      "commit": "fbc0b1939",
+      "findings": [
+        "contract zeroP1/P2; lifecycle P2 static replacement control nondiscriminating"
+      ]
+    },
+    {
+      "round": 5,
+      "commit": "6cad82913",
+      "reviewers": [
+        {
+          "agent": "r246_input_contract_r5",
+          "axis": "arithmetic/contract",
+          "P1": 0,
+          "P2": 0
+        },
+        {
+          "agent": "r246_input_lifecycle_r5",
+          "axis": "lifecycle/provenance",
+          "P1": 0,
+          "P2": 0
+        }
+      ]
+    }
+  ],
+  "gate": "docs/data/fire_r245/r246_consumer_read_sequence_gate.json",
+  "gate_sha256": "114282596e1bcfb6c271970f4176a8acc2fea036ef39bff7369fd36197be9815",
+  "prior_full235_native_gate": "docs/data/fire_r245/r246_consumer_input_gate.json",
+  "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v5/FireSequenceTest",
+  "binary_sha256": "d573ffb039848cfbdd0da2899f268b409eb882c433f81788d52e03bc5723df2a",
+  "limitations": [
+    "Acceptance covers input admission and retained native preflight evidence only.",
+    "Original failed output and exit98 remain unchanged; no original consumer or producer relabeled.",
+    "Separate recovery publication, full sealed budgets, corrected consumer integration, preview and spectrum pending.",
+    "Broader no-OpenVDB translation unit experiment unqualified; introduced fallback has narrow -Werror gate."
+  ]
+}

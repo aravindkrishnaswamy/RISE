@@ -1,0 +1,114 @@
+{
+  "schema": "rise.fire.r222.refusal-diagnostic.v1",
+  "scope": "isolated diagnostic; no migration or production publication authority",
+  "diagnostic_source_commit": "3a66c461",
+  "checkpoint_sha256": "e43cd54d2641190d7075738b2b74171da1ed718a1a892dd8c23530d1f702854c",
+  "diagnostic_exit_code": 0,
+  "exact_historical_overlap": [
+    {
+      "accepted_step": "1953",
+      "time_s": "3.0337295308709145",
+      "dt_s": "0.0016462659696117043",
+      "input_payload_root_sha256": "047b44d76181077f2dd4852e8fe5fc252b7e7ae3de6e38cbc8a74b3e3b643cd9",
+      "publication_payload_root_sha256": "71bb4843cac2ab7031697c4d295279122c75653ee80f1aeff3561d5cd5e06cc0",
+      "qualified_kernel_set_sha256": "e938373ec6cd9e0217c04242ad96cd4d46055236e422bd7ad0ea34e164d0a8b2"
+    },
+    {
+      "accepted_step": "1954",
+      "time_s": "3.0353757968405262",
+      "dt_s": "0.0016462659696117043",
+      "input_payload_root_sha256": "9a8a5e4fdd6269e2d0ce7e44f5e412562cd1d7a183a4e9df8ba1a3bfc68ce940",
+      "publication_payload_root_sha256": "fb8805347907c9f1d8007e9eecddac5f6e96775f014444cf5d83a6210d084690",
+      "qualified_kernel_set_sha256": "e938373ec6cd9e0217c04242ad96cd4d46055236e422bd7ad0ea34e164d0a8b2"
+    },
+    {
+      "accepted_step": "1955",
+      "time_s": "3.0370220628101379",
+      "dt_s": "0.0016462659696117043",
+      "input_payload_root_sha256": "85508f05a96d828168ef92adef00049106cd1a2a3892da02203857f5a7f1c346",
+      "publication_payload_root_sha256": "f33e5d459878b6a4c409030d5515032b617387be2153fd8be96080009aa38f26",
+      "qualified_kernel_set_sha256": "e938373ec6cd9e0217c04242ad96cd4d46055236e422bd7ad0ea34e164d0a8b2"
+    }
+  ],
+  "phase_bitmaps": [
+    0,
+    0,
+    128,
+    10368,
+    33564800
+  ],
+  "cell": [
+    40,
+    40,
+    58
+  ],
+  "temperature_K": "371.0643310546875",
+  "separation_J_m3": "3.6350866761125644e-11",
+  "enclosure_J_m3": "4.9374303257021523e-11",
+  "fp64_residual_J_m3": "-2.9103830456733704e-11",
+  "lower_bin_residual_J_m3": "-0.014733138504614676",
+  "lower_bin_enclosure_J_m3": "4.9374313665362379e-11",
+  "upper_bin_residual_J_m3": "0.014733138455847266",
+  "upper_bin_enclosure_J_m3": "4.9374324073703235e-11",
+  "energy_qualification_per_field": {
+    "0": {
+      "units": "J/kg",
+      "worst_local_ratio": 0.030713995923697234
+    },
+    "1": {
+      "units": "J/kg",
+      "worst_local_ratio": 0.02539776856264746
+    },
+    "2": {
+      "units": "J/kg",
+      "worst_local_ratio": 0.029039578335242396
+    },
+    "3": {
+      "units": "J/kg",
+      "worst_local_ratio": 0.08231998428222267
+    },
+    "4": {
+      "units": "J/kg",
+      "worst_local_ratio": 0.04939890654090223
+    },
+    "5": {
+      "units": "J/kg",
+      "worst_local_ratio": 0.05105776907531293
+    },
+    "6": {
+      "units": "J/kg",
+      "worst_local_ratio": 0.051260198977755175
+    },
+    "7": {
+      "units": "J/m3",
+      "worst_local_ratio": 0.041774657738251335
+    }
+  },
+  "files": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/diagnostic.v1.log",
+      "sha256": "5168aaa34d1e0641170d13f86bd3ab78301374abb49d7ade14edceb92a8e4ed4",
+      "bytes": 7328
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/diagnostic.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "552c400af0641d0676c60e8f609532597295b39d311e30d4c0262f3358df9942",
+      "bytes": 2174
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "6a44c8d1493e141895214343d4aa14a83a419649be7a72e9bb307220db1aea15",
+      "bytes": 595760
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/energy.v1.log",
+      "sha256": "9920e72f2943eff5251cc163082a34ff0a7c36e10739aeed2130c2e0a31c4a95",
+      "bytes": 23949
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/executables/FireSequenceTest_diagnostic",
+      "sha256": "6230e992944da5e2ab1870d58048c95869cb69ac8b982d21696cee896f2ea971",
+      "bytes": 23326928
+    }
+  ]
+}

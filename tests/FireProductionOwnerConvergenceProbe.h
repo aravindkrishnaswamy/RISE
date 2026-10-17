@@ -184,6 +184,9 @@ bool Serialize(const std::array<const std::vector<Trace>*,3>& stages,
 			const bool bootstrap=trace.iteration==UINT32_MAX;
 			const bool terminal=!bootstrap&&(trace.iteration&UINT32_C(0x80000000))!=0u;
 			const std::uint32_t iteration=trace.iteration&UINT32_C(0x7fffffff);
+			if(terminal&&index>0u&&
+				(traces[index-1u].iteration&UINT32_C(0x80000000))!=0u){
+				error="convergence probe consecutive terminal records";return false;}
 			if((index==0u)!=bootstrap||(!bootstrap&&!terminal&&iteration!=nextIteration)||
 				(terminal&&(nextIteration==0u||iteration!=nextIteration-1u))){
 				error="convergence probe stale/out-of-order iteration";return false;}
@@ -255,6 +258,113 @@ bool Serialize(const std::array<const std::vector<Trace>*,3>& stages,
 	if(!IsSHA256(binding)){text.clear();binding.clear();error="convergence probe digest failure";return false;}
 	if(csv)*csv=csvRows.str();
 	return true;
+}
+
+// v1 remains byte-for-byte available above and below for historical evidence.
+// v2 adds producer dynamics without changing the meaning of any v1 operand.
+// All face arrays are shape/finite checked, while published rows cover exactly
+// the same staggered column as v1. No convergence enclosure is inferred here.
+template<class Trace>
+bool ProducerTerminalMatchesNextInput(const std::array<const std::vector<Trace>*,3>& stages,
+	std::string& error)
+{
+	for(unsigned int stage=0u;stage<2u;++stage){
+		if(!stages[stage]||!stages[stage+1u]||stages[stage]->empty()||stages[stage+1u]->empty()){
+			error="v2 producer successor trace missing";return false;}
+		const auto& producer=stages[stage]->back();
+		if(producer.iteration==UINT32_MAX||(producer.iteration&UINT32_C(0x80000000))==0u){
+			error="v2 producer is not terminal";return false;}
+		for(const auto& successor:*stages[stage+1u])for(unsigned int axis=0u;axis<3u;++axis){
+			const auto& produced=producer.nextCandidateMomentumKGPerM2S[axis];
+			const auto& consumed=successor.provisionalMomentumKGPerM2S[axis];
+			if(produced.empty()||produced.size()!=consumed.size()||
+				std::memcmp(produced.data(),consumed.data(),produced.size()*sizeof(produced[0]))!=0){
+				error="v2 producer terminal differs from successor projection input";return false;}}
+	}
+	return true;
+}
+
+template<class Trace,class Digest>
+bool SerializeV2(const std::array<const std::vector<Trace>*,3>& stages,
+	const Geometry& geometry,const Context& context,const Digest& digest,
+	std::string& text,std::string& binding,std::string& error,std::string* csv=nullptr)
+{
+	text.clear();binding.clear();if(csv)csv->clear();
+	std::string legacy,legacyBinding,legacyCSV;
+	if(!Serialize(stages,geometry,context,digest,legacy,legacyBinding,error,&legacyCSV))return false;
+	if(!ProducerTerminalMatchesNextInput(stages,error))return false;
+	const std::array<std::size_t,3> faces={{(geometry.nx+1u)*geometry.ny*geometry.nz,
+		geometry.nx*(geometry.ny+1u)*geometry.nz,geometry.nx*geometry.ny*(geometry.nz+1u)}};
+	std::istringstream oldRows(legacyCSV);std::string row;
+	if(!std::getline(oldRows,row)){error="v2 missing legacy header";return false;}
+	std::ostringstream rows,extension;rows<<std::setprecision(17);extension<<std::setprecision(17);
+	rows<<row<<",next_candidate_momentum_kg_m-2_s-1,heun_r0_advection_r1_alpha_kg_m-2_s-2,"
+		"delta_previous_next_candidate_momentum_kg_m-2_s-1,"
+		"delta_previous_heun_r0_advection_r1_alpha_kg_m-2_s-2\n";
+	extension<<"OWNER_DYNAMICS_SCOPE version=2 next_candidate=R0_R1_producer_output "
+		"heun_r0_advection=R0_flux_with_immediate_R1_shared_alpha "
+		"bootstrap=absent R2_producer=absent "
+		"delta_reference=immediately_preceding_trace_when_surface_present "
+		"convergence_enclosure=unavailable fixed_k_qualification=unavailable\n";
+	for(unsigned int stage=0u;stage<3u;++stage){const auto& traces=*stages[stage];
+		for(std::size_t index=0u;index<traces.size();++index){const auto& trace=traces[index];
+			const bool nextPresent=stage<2u&&trace.iteration!=UINT32_MAX;
+			const bool ratePresent=stage==1u&&trace.iteration!=UINT32_MAX;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const auto& next=trace.nextCandidateMomentumKGPerM2S[axis];
+				const auto& rate=trace.heunR0AdvectionRateKGPerM2S2[axis];
+				if(next.size()!=(nextPresent?faces[axis]:0u)||rate.size()!=(ratePresent?faces[axis]:0u)){
+					error="v2 producer dynamics scope/shape mismatch";return false;}
+				for(const auto value:next)if(!std::isfinite(value)){
+					error="v2 nonfinite next candidate momentum";return false;}
+				for(const auto value:rate)if(!std::isfinite(value)){
+					error="v2 nonfinite R1-alpha R0 advection";return false;}}
+			const auto emit=[&](const unsigned int axis,const std::size_t face){
+				if(!std::getline(oldRows,row)){error="v2 legacy row missing";return false;}
+				rows<<row;extension<<"OWNER_DYNAMICS_FACE stage=R"<<stage<<" trace_index="<<index
+					<<" raw_iteration_tag="<<trace.iteration<<" axis="<<axis<<" face="<<face;
+				const auto append=[&](const char* name,const bool available,const double value){
+					extension<<' '<<name<<'=';rows<<',';
+					if(available){extension<<value;rows<<value;}
+					else{extension<<"unavailable";rows<<"unavailable";}};
+				const double next=nextPresent?trace.nextCandidateMomentumKGPerM2S[axis][face]:0.0;
+				const double rate=ratePresent?trace.heunR0AdvectionRateKGPerM2S2[axis][face]:0.0;
+				append("next_candidate_momentum_kg_m-2_s-1",nextPresent,next);
+				append("heun_r0_advection_r1_alpha_kg_m-2_s-2",ratePresent,rate);
+				const bool nextPrevious=nextPresent&&index>0u&&
+					!traces[index-1u].nextCandidateMomentumKGPerM2S[axis].empty();
+				const bool ratePrevious=ratePresent&&index>0u&&
+					!traces[index-1u].heunR0AdvectionRateKGPerM2S2[axis].empty();
+				append("delta_previous_next_candidate_momentum_kg_m-2_s-1",nextPrevious,
+					nextPrevious?next-static_cast<double>(traces[index-1u].nextCandidateMomentumKGPerM2S[axis][face]):0.0);
+				append("delta_previous_heun_r0_advection_r1_alpha_kg_m-2_s-2",ratePrevious,
+					ratePrevious?rate-static_cast<double>(traces[index-1u].heunR0AdvectionRateKGPerM2S2[axis][face]):0.0);
+				rows<<'\n';extension<<'\n';return true;};
+			for(std::size_t z=0u;z<geometry.nz;++z)for(unsigned int side=0u;side<2u;++side)
+				if(!emit(0u,geometry.columnX+side+(geometry.nx+1u)*(geometry.columnY+geometry.ny*z))||
+					!emit(1u,geometry.columnX+geometry.nx*(geometry.columnY+side+(geometry.ny+1u)*z)))return false;
+			for(std::size_t z=0u;z<=geometry.nz;++z)
+				if(!emit(2u,geometry.columnX+geometry.nx*(geometry.columnY+geometry.ny*z)))return false;
+		}}
+	if(std::getline(oldRows,row)){error="v2 extra legacy row";return false;}
+	legacy.replace(legacy.find("version=1"),9u,"version=2");
+	const std::string absent="next_candidate_momentum_capture=unavailable";
+	legacy.replace(legacy.find(absent),absent.size(),"next_candidate_momentum_capture=producer_v2");
+	const std::string result=legacy+extension.str(),resultBinding=digest(result);
+	if(!IsSHA256(resultBinding)){error="v2 convergence digest failure";return false;}
+	text=result;binding=resultBinding;if(csv)*csv=rows.str();return true;
+}
+
+template<class Trace,class Digest>
+bool WriteV2(std::ostream& output,const std::array<const std::vector<Trace>*,3>& stages,
+	const Geometry& geometry,const Context& context,const Digest& digest,
+	const std::string& expectedBinding,std::string& error)
+{
+	std::string text,binding;
+	if(!SerializeV2(stages,geometry,context,digest,text,binding,error))return false;
+	if(!IsSHA256(expectedBinding)||binding!=expectedBinding){
+		error="v2 convergence stale/mismatched diagnostic binding";return false;}
+	output<<text<<"OWNER_CONVERGENCE_BINDING sha256="<<binding<<"\n";return static_cast<bool>(output);
 }
 
 template<class Trace,class Digest>

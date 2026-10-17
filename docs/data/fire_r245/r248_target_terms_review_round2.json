@@ -1,0 +1,23 @@
+{
+  "schema": "rise.fire.r248.target-term-review-round2.v1",
+  "candidate": "27b8d0499",
+  "status": "joint_witness_p2_repair_required",
+  "p1": 0,
+  "p2": 1,
+  "reviews": [
+    {
+      "agent": "r248_target_contract_r2",
+      "p1": 0,
+      "p2": 1,
+      "finding": "Count865280 signed1.4999999999999996/absolute4.500000000000001/positive3/negative-1.5 passes separate overlap tests but no simultaneous witness; exact gap3/8589934592",
+      "evidence": "3000valid randomized moments no false refusal; fullencode/decode reproducer"
+    },
+    {
+      "agent": "r248_target_integrity_r2",
+      "p1": 0,
+      "p2": 1,
+      "finding": "Count288 signed229850.36503290065/absolute229850.9436906224/positive229850.65436176152/negative-0.2893288608629651 passes but negative interval disjoint from (signed-absolute)/2",
+      "evidence": "10hashes/frozen26RED21GREEN/preservedv1/156extraRED/fullwire reproduction"
+    }
+  ]
+}

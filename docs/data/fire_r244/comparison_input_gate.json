@@ -1,0 +1,23 @@
+{
+  "scope": "Copied native CSVs and relocated audit paths; no simulation or render",
+  "artifact_directory": "/Volumes/SSD/RISE/fire_production_calibration/r244_compare_gate.1btvoza8",
+  "results": [
+    {
+      "case": "green",
+      "passed": true,
+      "refusal": null
+    },
+    {
+      "case": "baseline",
+      "passed": true,
+      "refusal": "centerline changed since audit"
+    },
+    {
+      "case": "lateral",
+      "passed": true,
+      "refusal": "centerline changed since audit"
+    }
+  ],
+  "gate_sha256": "051001a24e045ac3661d037792fdc26c9f1d2e558cd1008829d9ff1d73b9a296",
+  "comparison_script_sha256": "55b3fbd2ed6dd22bcb18209c009c0e2eb4eb74a4ca5fc3f92a2b88035b8c7ccf"
+}

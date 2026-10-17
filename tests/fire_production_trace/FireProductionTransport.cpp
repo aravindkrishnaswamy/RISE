@@ -334,6 +334,53 @@ namespace RISEFireProductionTrace
 			return true;
 		}
 
+		template<class Request> bool ValidPrescribedInlet(const Request& request,
+			const FireProductionProjectionShape& shape,
+			const std::array<FireProductionProjectionBoundary,6>& boundary,std::string* error)
+		{
+			if(request.bottomFuelMassFluxKGPerM2S.empty()){
+				if(!request.bottomFuelMask.empty()||std::any_of(request.injectedConservative.begin(),
+					request.injectedConservative.end(),[](FireProductionRoundoffTrace::TraceFloat value){return value!=0.0f;}))
+					return Fail(error,"scalar inlet operands lack prescribed flux");
+				return true;
+			}
+			const std::size_t count=shape.nx*shape.ny;
+			if(boundary[4]!=FireProductionProjectionWall||request.bottomFuelMask.size()!=count||
+				request.bottomFuelMassFluxKGPerM2S.size()!=count)return Fail(error,"scalar inlet extent is invalid");
+			FireProductionRoundoffTrace::TraceFloat gas=0.0f;
+			for(std::size_t component=0u;component<9u;++component){const FireProductionRoundoffTrace::TraceFloat q=request.injectedConservative[component];
+				if(!std::isfinite(q)||(component<8u&&q<0.0f))return Fail(error,"scalar inlet tuple is invalid");
+				if(component>=1u&&component<=6u)gas+=q;}
+			if(request.injectedConservative[7]!=0.0f||!(gas>0.0f)||!std::isfinite(gas))
+				return Fail(error,"scalar inlet must contain positive gas density only");
+			for(std::size_t face=0u;face<count;++face){const FireProductionRoundoffTrace::TraceFloat j=request.bottomFuelMassFluxKGPerM2S[face];
+				if(request.bottomFuelMask[face]>1u||!std::isfinite(j)||j<0.0f||
+					(request.bottomFuelMask[face]==0u&&j!=0.0f))return Fail(error,"scalar inlet flux is invalid");}
+			return true;
+		}
+
+		template<class Request> bool ValidPrescribedInlet(const Request& request,std::string* error)
+		{
+			return ValidPrescribedInlet(request,request.shape,request.boundary,error);
+		}
+
+		template<class Request> void HashPrescribedInlet(std::uint64_t& hash,const Request& request)
+		{
+			if(request.bottomFuelMassFluxKGPerM2S.empty())return;
+			static const char tag[]="prescribed gas inlet v1";
+			for(const unsigned char byte:tag)HashEOSByte(hash,byte);
+			HashFluxBytes(hash,request.bottomFuelMask);HashFluxValues(hash,request.bottomFuelMassFluxKGPerM2S);
+			for(const FireProductionRoundoffTrace::TraceFloat q:request.injectedConservative)HashEOSFloat(hash,q);
+		}
+
+		template<class Request> FireProductionRoundoffTrace::TraceFloat PrescribedInletFlux(const Request& request,
+			const std::size_t face,const std::size_t component)
+		{
+			FireProductionRoundoffTrace::TraceFloat total=0.0f;for(std::size_t species=1u;species<=7u;++species)
+				total+=request.injectedConservative[species];
+			return (request.bottomFuelMassFluxKGPerM2S[face]*request.injectedConservative[component])/total;
+		}
+
 		std::uint64_t HeunStageInputIdentity(
 			const std::uint64_t attemptIdentity,const FireProductionScalarHeunFluxRole role,
 			const FireProductionScalarFCTRequest& advective,
@@ -365,6 +412,7 @@ namespace RISEFireProductionTrace
 			HashFluxValues(hash,physical.diffusivityM2PerS);
 			HashFluxValues(hash,physical.conductivityWPerMK);
 			HashEOSFloat(hash,physical.ambientTemperatureK);
+			HashPrescribedInlet(hash,physical);
 			return hash;
 		}
 
@@ -387,6 +435,7 @@ namespace RISEFireProductionTrace
 			for(const FireProductionRoundoffTrace::TraceFloat value:request.enthalpyBoundsJPerKG)HashEOSFloat(hash,value);
 			HashEOSFloat(hash,request.feasibilityFactor);
 			HashEOSFloat(hash,request.assemblyReserveFactor);
+			HashPrescribedInlet(hash,request);
 			return hash;
 		}
 
@@ -449,6 +498,7 @@ namespace RISEFireProductionTrace
 				HashEOSUInt64(hash,static_cast<std::uint8_t>(value));
 			for(const std::size_t value:pair.packedFaceOffset)HashEOSUInt64(hash,value);
 			HashFluxValues(hash,pair.lowFlux);HashFluxValues(hash,pair.fluxDelta);
+			HashPrescribedInlet(hash,stage);
 			HashFluxValues(hash,stage.physicalMassFluxKGPerM2S);
 			HashFluxValues(hash,stage.physicalEnergyFluxWPerM2);
 			for(unsigned int axis=0u;axis<3u;++axis){
@@ -1101,7 +1151,7 @@ namespace RISEFireProductionTrace
 		// State/T/projected velocity are already resident owner surfaces.
 		return AddMetalValueBuffer(3u*cells,sizeof(float),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
-			AddMetalValueBuffer(7u*32u+64u,sizeof(float),bytes)&&
+			AddMetalValueBuffer(7u*32u+64u+21u,sizeof(float),bytes)&&
 			AddMetalValueBuffer(6u*(1u+5u*128u),sizeof(float),bytes)&&
 			AddMetalValueBuffer(boundaryFaces,sizeof(unsigned char),bytes)&&
 			AddMetalValueBuffer(256u,sizeof(unsigned char),bytes)&&
@@ -1171,10 +1221,11 @@ namespace RISEFireProductionTrace
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
 			// Device-private compensated copy of the sealed binary64 EOS record.
 			AddMetalValueBuffer(870u,sizeof(float),bytes)&&
-			// Device-produced Tmin/Tmax enthalpies: seven species, four words each.
-			AddMetalValueBuffer(14u*4u,sizeof(float),bytes)&&
-			AddMetalValueBuffer(cells,sizeof(float),bytes)&&
-			AddMetalValueBuffer(cells,sizeof(float),bytes)&&
+			// Device-produced endpoints plus 1023 exact bisection-prefix nodes.
+			AddMetalValueBuffer((14u+1023u*8u)*4u,sizeof(float),bytes)&&
+			// Selected/alternate temperature and pressure; one diagnostic deviation.
+			AddMetalValueBuffer(2u*cells,sizeof(float),bytes)&&
+			AddMetalValueBuffer(2u*cells,sizeof(float),bytes)&&
 			AddMetalValueBuffer(cells,sizeof(float),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
 			// Device-side first-failure witness: minimum cell plus per-cell EOS subterm map.
@@ -1986,7 +2037,7 @@ namespace RISEFireProductionTrace
 
 	bool QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& workingSetBytes,
-		std::string* error )
+		std::string* error,const bool prescribedBottomFlux )
 	{
 		workingSetBytes=0u;
 		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
@@ -2004,6 +2055,7 @@ namespace RISEFireProductionTrace
 			workingSetBytes=0u;return Fail(error,
 				"physical scalar-flux prerequisite query exceeds uint64 capacity");
 		}
+		if(prescribedBottomFlux)workingSetBytes+=shape.nx*shape.ny*(sizeof(float)+sizeof(unsigned char))+9u*sizeof(float);
 		if(error)error->clear();return true;
 	}
 
@@ -2025,7 +2077,7 @@ namespace RISEFireProductionTrace
 				return Fail(error,"physical scalar-flux prerequisite shape or record is invalid");
 			std::uint64_t workingSetBytes=0u;
 			if(!QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
-				shape,workingSetBytes,error))return false;
+				shape,workingSetBytes,error,!request.bottomFuelMassFluxKGPerM2S.empty()))return false;
 			if(workingSetBytes>(std::uint64_t(2u)<<30u))return Fail(error,
 				"physical scalar-flux prerequisite working set exceeds two GiB");
 			const std::size_t cells=shape.CellCount();
@@ -2035,6 +2087,7 @@ namespace RISEFireProductionTrace
 				static_cast<double>(request.ambientTemperatureK)<record.TemperatureMinK()||
 				static_cast<double>(request.ambientTemperatureK)>record.TemperatureMaxK())
 				return Fail(error,"physical scalar-flux prerequisite cell input is invalid");
+			if(!ValidPrescribedInlet(request,error))return false;
 			auto sideCount=[&](unsigned int side){return side<2u?shape.ny*shape.nz:
 				(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);};
 			for(unsigned int axis=0u;axis<3u;++axis){
@@ -2115,6 +2168,19 @@ namespace RISEFireProductionTrace
 						std::size_t normal=AxisCoordinate(axis,x,y,z);
 						const std::size_t face=FaceIndex(shape,axis,x,y,z),
 							packed=computed.packedFaceOffset[axis]+face;
+						if(axis==2u&&z==0u&&!request.bottomFuelMask.empty()&&request.bottomFuelMask[face]){
+							FireProductionRoundoffTrace::TraceFloat gas=0.0f;for(std::size_t component=0u;component<9u;++component){
+								const FireProductionRoundoffTrace::TraceFloat carrier=request.frozenVelocityMPerS[2][face]*
+									request.conservativeValues[component*cells+CellIndex(shape,x,y,0u)];
+								const FireProductionRoundoffTrace::TraceFloat value=PrescribedInletFlux(request,face,component)-carrier;
+								if(!std::isfinite(value))return Fail(error,"scalar inlet physical flux is nonfinite");
+								if(component<8u)computed.physicalMassFluxKGPerM2S[component*allFaces+packed]=value;
+								else computed.physicalEnergyFluxWPerM2[packed]=value;
+								if(component>=1u&&component<=6u)gas+=value;
+							}
+							if(!std::isfinite(gas))return Fail(error,"scalar inlet physical gas flux is nonfinite");
+							computed.physicalGasFluxKGPerM2S[2][face]=gas;continue;
+						}
 						bool boundaryFace=normal==0u||normal==extent;
 						if(request.boundary[2u*axis]==FireProductionProjectionPeriodic){
 							boundaryFace=false;if(normal==extent)normal=0u;
@@ -2256,7 +2322,7 @@ namespace RISEFireProductionTrace
 
 	bool QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& payloadBytes,
-		std::string* error )
+		std::string* error,const bool prescribedBottomFlux )
 	{
 		payloadBytes=0u;
 		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
@@ -2270,6 +2336,7 @@ namespace RISEFireProductionTrace
 			payloadBytes=0u;return Fail(error,
 				"scalar Heun flux-stage query exceeds uint64 capacity");
 		}
+		if(prescribedBottomFlux)payloadBytes+=shape.nx*shape.ny*(sizeof(float)+sizeof(unsigned char))+9u*sizeof(float);
 		if(error)error->clear();return true;
 	}
 
@@ -2304,7 +2371,7 @@ namespace RISEFireProductionTrace
 				FireProductionProjectionFaceCount(shape,2u);
 			std::uint64_t workingSetBytes=0u;
 			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
-				shape,workingSetBytes,error))return false;
+				shape,workingSetBytes,error,!stage.bottomFuelMassFluxKGPerM2S.empty()))return false;
 			if(workingSetBytes>(std::uint64_t(2u)<<30u))return Fail(error,
 				"scalar Heun flux-stage working set exceeds two GiB");
 			if(pair.packedFaceOffset!=expectedOffset||pair.lowFlux.size()!=9u*allFaces||
@@ -2375,7 +2442,17 @@ namespace RISEFireProductionTrace
 			}
 			const RISE::FireCertifiedNullspace& projection=
 				RISE::FireSimulationMethaneRecord::PhysicalV1().NonadvectiveFluxProjection();
-			for(std::size_t face=0u;face<allFaces;++face)
+			// Validate retained operands in place: validation must not allocate
+			// an unaccounted fourth inlet payload while averaging three stages.
+			if(!ValidPrescribedInlet(stage,shape,pair.boundary,error))return false;
+			for(std::size_t face=0u;face<allFaces;++face){
+				if(face>=expectedOffset[2]&&face-expectedOffset[2]<stage.bottomFuelMask.size()&&
+					stage.bottomFuelMask[face-expectedOffset[2]]){
+					for(std::size_t component=0u;component<9u;++component){const std::size_t index=component*allFaces+face;
+						if(!SameFloatBits(pair.lowFlux[index],PrescribedInletFlux(stage,face-expectedOffset[2],component))||
+							!SameFloatBits(pair.fluxDelta[index],0.0f))return Fail(error,"scalar Heun imposed boundary flux differs");}
+					continue;
+				}
 				for(std::size_t row=0u;row<projection.constraintRows;++row){
 					double residual=0.0;for(std::size_t component=0u;component<8u;++component)
 						residual+=projection.constraintMatrix[row*8u+component]*
@@ -2385,6 +2462,7 @@ namespace RISEFireProductionTrace
 						stage.physicalConstraintForwardErrorBoundKGPerM2S)return Fail(error,
 							"scalar Heun physical affine certificate differs");
 				}
+			}
 			for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
 				FireProductionProjectionFaceCount(shape,axis);for(std::size_t face=0u;
 					face<faces;++face){const std::size_t packed=expectedOffset[axis]+face;
@@ -2418,7 +2496,7 @@ namespace RISEFireProductionTrace
 			const FireProductionProjectionShape& shape=advectiveRequest.shape;
 			std::uint64_t workingSetBytes=0u;
 			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
-				shape,workingSetBytes,error)||!AddBytes(
+				shape,workingSetBytes,error,!physicalRequest.bottomFuelMassFluxKGPerM2S.empty())||!AddBytes(
 				FireProductionProjectionFaceCount(shape,0u)+
 				FireProductionProjectionFaceCount(shape,1u)+
 				FireProductionProjectionFaceCount(shape,2u),28u*sizeof(float),workingSetBytes))
@@ -2433,14 +2511,17 @@ namespace RISEFireProductionTrace
 				physicalRequest.boundary!=advectiveRequest.boundary||
 				!SameFloatVectorBits(physicalRequest.conservativeValues,
 					advectiveRequest.beginning)||
-				physicalRequest.pressureOpenInflow!=advectiveRequest.pressureOpenInflow)
+				physicalRequest.pressureOpenInflow!=advectiveRequest.pressureOpenInflow||
+				physicalRequest.bottomFuelMask!=advectiveRequest.bottomFuelMask||
+				!SameFloatVectorBits(physicalRequest.bottomFuelMassFluxKGPerM2S,advectiveRequest.bottomFuelMassFluxKGPerM2S))
 				return Fail(error,"scalar Heun raw stage identity is invalid");
 			for(unsigned int axis=0u;axis<3u;++axis)if(!SameFloatVectorBits(
 				physicalRequest.frozenVelocityMPerS[axis],
 				advectiveRequest.frozenVelocityMPerS[axis]))return Fail(error,
 					"scalar Heun raw stage velocity differs");
 			for(std::size_t component=0u;component<9u;++component)if(!SameFloatBits(
-				physicalRequest.ambient[component],advectiveRequest.ambient[component]))
+				physicalRequest.ambient[component],advectiveRequest.ambient[component])||!SameFloatBits(
+				physicalRequest.injectedConservative[component],advectiveRequest.injectedConservative[component]))
 				return Fail(error,"scalar Heun raw stage ambient differs");
 			FireProductionScalarFCTFluxPair advectiveFluxPair;
 			if(!BuildFireProductionScalarFCTFluxPairCPU(
@@ -2503,6 +2584,9 @@ namespace RISEFireProductionTrace
 
 			FireProductionScalarHeunFluxStage computed;
 			computed.compositeFluxPair=advectiveFluxPair;
+			computed.bottomFuelMask=physicalRequest.bottomFuelMask;
+			computed.bottomFuelMassFluxKGPerM2S=physicalRequest.bottomFuelMassFluxKGPerM2S;
+			computed.injectedConservative=physicalRequest.injectedConservative;
 			computed.physicalMassFluxKGPerM2S=physicalFlux.physicalMassFluxKGPerM2S;
 			computed.physicalEnergyFluxWPerM2=physicalFlux.physicalEnergyFluxWPerM2;
 			computed.physicalGasFluxKGPerM2S=physicalFlux.physicalGasFluxKGPerM2S;
@@ -2526,6 +2610,11 @@ namespace RISEFireProductionTrace
 			for(std::size_t face=0u;face<allFaces;++face)computed.compositeFluxPair.lowFlux[
 				8u*allFaces+face]=advectiveFluxPair.lowFlux[8u*allFaces+face]+
 				computed.physicalEnergyFluxWPerM2[face];
+			for(std::size_t face=0u;face<physicalRequest.bottomFuelMask.size();++face)
+				if(physicalRequest.bottomFuelMask[face])for(std::size_t component=0u;component<9u;++component){
+					const std::size_t index=component*allFaces+expectedOffset[2]+face;
+					computed.compositeFluxPair.lowFlux[index]=PrescribedInletFlux(physicalRequest,face,component);
+					computed.compositeFluxPair.fluxDelta[index]=0.0f;}
 			for(unsigned int axis=0u;axis<3u;++axis){
 				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
 				computed.advectiveGasLowFluxKGPerM2S[axis].assign(faces,0.0f);
@@ -2605,7 +2694,8 @@ namespace RISEFireProductionTrace
 		try {
 			const FireProductionProjectionShape& shape=advectiveRequest.shape;
 			std::uint64_t stageBytes=0u,targetBytes=0u;
-			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(shape,stageBytes,error)||
+			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(shape,stageBytes,error,
+				!physicalRequest.bottomFuelMassFluxKGPerM2S.empty())||
 				!QueryFireProductionBaseDivergenceTargetCPUPayloadBytes(
 					shape,targetBytes,error)||targetBytes>
 				std::numeric_limits<std::uint64_t>::max()/2u||stageBytes>
@@ -3019,9 +3109,9 @@ namespace RISEFireProductionTrace
 			const FireProductionScalarFCTFluxPair& b=second.compositeFluxPair;
 			std::uint64_t firstPayload=0u,secondPayload=0u;
 			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
-				a.shape,firstPayload,error)||
+				a.shape,firstPayload,error,!first.bottomFuelMassFluxKGPerM2S.empty())||
 				!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
-					b.shape,secondPayload,error))return false;
+					b.shape,secondPayload,error,!second.bottomFuelMassFluxKGPerM2S.empty()))return false;
 			std::uint64_t liveBytes=firstPayload;
 			if(liveBytes>std::numeric_limits<std::uint64_t>::max()-firstPayload||
 				(liveBytes+=firstPayload)>std::numeric_limits<std::uint64_t>::max()-
@@ -3037,16 +3127,24 @@ namespace RISEFireProductionTrace
 				first.methaneRecordId!=second.methaneRecordId||
 				first.attemptIdentity!=second.attemptIdentity||
 				first.sharedFCTContractIdentity!=second.sharedFCTContractIdentity||
+				first.bottomFuelMask!=second.bottomFuelMask||
+				!SameFloatVectorBits(first.bottomFuelMassFluxKGPerM2S,second.bottomFuelMassFluxKGPerM2S)||
 				first.role!=FireProductionScalarHeunFluxRole::R0||
 				second.role!=FireProductionScalarHeunFluxRole::R1)return Fail(error,
 					"scalar Heun flux-stage average identity is invalid");
 			if(!ValidScalarHeunFluxStage(first,error)||!ValidScalarHeunFluxStage(second,error))
 				return false;
+			for(std::size_t component=0u;component<9u;++component)if(!SameFloatBits(
+				first.injectedConservative[component],second.injectedConservative[component]))
+				return Fail(error,"scalar Heun averaged inlet tuple differs");
 			const std::size_t allFaces=FireProductionProjectionFaceCount(a.shape,0u)+
 				FireProductionProjectionFaceCount(a.shape,1u)+
 				FireProductionProjectionFaceCount(a.shape,2u);
 			FireProductionScalarHeunFluxStage computed;
 			computed.compositeFluxPair.shape=a.shape;
+			computed.bottomFuelMask=first.bottomFuelMask;
+			computed.bottomFuelMassFluxKGPerM2S=first.bottomFuelMassFluxKGPerM2S;
+			computed.injectedConservative=first.injectedConservative;
 			computed.compositeFluxPair.timeStepS=a.timeStepS;
 			computed.compositeFluxPair.boundary=a.boundary;
 			computed.compositeFluxPair.packedFaceOffset=a.packedFaceOffset;
@@ -3340,7 +3438,7 @@ namespace RISEFireProductionTrace
 					const FireProductionRoundoffTrace::TraceFloat physical=request.physicalGasFluxKGPerM2S[axis].empty()?0.0f:
 						request.physicalGasFluxKGPerM2S[axis][face];
 					if( !std::isfinite(low)||!std::isfinite(second)||!std::isfinite(physical)||
-						!std::isfinite(alpha)||alpha<0.0f||alpha>1.0f||
+						!std::isfinite(alpha)||FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::AdmissibilityGuard,[&](){return alpha<0.0f;})||FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::AdmissibilityGuard,[&](){return alpha>1.0f;})||
 						!std::isfinite(velocity) ) return Fail(error,
 						"compatible FCT momentum face value is invalid");
 				}
@@ -3578,6 +3676,7 @@ namespace RISEFireProductionTrace
 		FireProductionCompatibleFCTMomentumResult& result,std::string* error )
 	{
 		result=FireProductionCompatibleFCTMomentumResult();
+		try {
 		if(!ValidScalarHeunFluxStage(stage,error))return false;
 		if((stage.role!=FireProductionScalarHeunFluxRole::R0&&
 			stage.role!=FireProductionScalarHeunFluxRole::R1)||
@@ -3601,6 +3700,11 @@ namespace RISEFireProductionTrace
 		request.frozenVelocityMPerS=frozenVelocityMPerS;
 		return EvaluateFireProductionCompatibleFCTMomentumCPUImpl(
 			request,true,result,error);
+		} catch(const std::bad_alloc&) {
+			result=FireProductionCompatibleFCTMomentumResult();
+			FailWithoutThrow(error,"compatible Heun momentum allocation failed");
+			return false;
+		}
 	}
 
 	static bool EvaluateFireProductionScalarFCTStagesCPU(
@@ -3629,6 +3733,7 @@ namespace RISEFireProductionTrace
 			if(request.beginning.size()!=components*cells||
 				request.sourceDelta.size()!=components*cells)
 				return Fail(error,"scalar FCT cell tuple shape is invalid");
+			if(!ValidPrescribedInlet(request,error))return false;
 			auto sideFaceCount=[&](const unsigned int side){return side<2u?shape.ny*shape.nz:
 				(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);};
 			for(unsigned int axis=0u;axis<3u;++axis){
@@ -3794,6 +3899,9 @@ namespace RISEFireProductionTrace
 							const std::size_t output=component*allFaces+packed;
 							const std::size_t coordinate=AxisCoordinate(axis,x,y,z);
 							const FireProductionRoundoffTrace::TraceFloat velocity=request.frozenVelocityMPerS[axis][face];
+							if(axis==2u&&z==0u&&!request.bottomFuelMask.empty()&&request.bottomFuelMask[face]){
+								computed.lowFlux[output]=velocity*request.beginning[component*cells+CellIndex(shape,x,y,0u)];
+								continue;}
 							if((coordinate==0u||coordinate==extent)&&request.boundary[
 								2u*axis+(coordinate==extent?1u:0u)]==
 								FireProductionProjectionWall)continue;
@@ -4060,9 +4168,32 @@ namespace RISEFireProductionTrace
 								highX,highY,highZ);return 0.5f*(gas[CellIndex(shape,highX,highY,highZ)]+
 								ambientGas);
 						};
-						const FireProductionRoundoffTrace::TraceFloat base=restricted(baseGas),acceptedValue=restricted(acceptedGas),
-							advanced=base-request.timeStepS*
+						const FireProductionRoundoffTrace::TraceFloat base=restricted(baseGas),acceptedValue=restricted(acceptedGas);
+						FireProductionRoundoffTrace::TraceFloat advanced=base-request.timeStepS*
 							identityRate.advectionRateKGPerM2S2[component][face];
+						// Match the scalar restriction's prescribed transverse mass
+						// contribution, absent from zero-tangential momentum closure.
+						FireProductionRoundoffTrace::TraceFloat boundaryMass=0.0f;
+						for(unsigned int derivative=0u;derivative<3u;++derivative){
+							if(derivative==component)continue;
+							const std::size_t position=AxisCoordinate(derivative,x,y,z),
+								derivativeExtent=AxisCoordinateExtent(shape,derivative);
+							for(unsigned int upper=0u;upper<2u;++upper){
+								if(request.boundary[2u*derivative+upper]!=FireProductionProjectionWall||
+									(upper?position+1u!=derivativeExtent:position!=0u))continue;
+								std::size_t lx=x,ly=y,lz=z,hx=x,hy=y,hz=z;
+								SetAxisCoordinate(component,normal?normal-1u:0u,lx,ly,lz);
+								SetAxisCoordinate(component,normal<extent?normal:extent-1u,hx,hy,hz);
+								SetAxisCoordinate(derivative,upper?derivativeExtent:0u,lx,ly,lz);
+								SetAxisCoordinate(derivative,upper?derivativeExtent:0u,hx,hy,hz);
+								const FireProductionRoundoffTrace::TraceFloat restrictedFlux=0.5f*(computed.acceptedGasFluxKGPerM2S[derivative][
+									FaceIndex(shape,derivative,lx,ly,lz)]+computed.acceptedGasFluxKGPerM2S[derivative][
+									FaceIndex(shape,derivative,hx,hy,hz)]);
+								boundaryMass+=upper?-restrictedFlux:restrictedFlux;
+							}
+						}
+						if(boundaryFace)boundaryMass*=0.5f;
+						if(boundaryMass!=0.0f)advanced+=(request.timeStepS/shape.cellWidthM)*boundaryMass;
 						computed.commutingIdentityScaleKGPerM3=std::max(
 							computed.commutingIdentityScaleKGPerM3,std::max(std::fabs(base),
 							std::fabs(acceptedValue)));

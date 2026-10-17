@@ -1,0 +1,44 @@
+{
+  "schema": "rise.fire.r246.consumer-snapshot-gate.v1",
+  "status": "review_round2_requires_checkpoint_pair_binding_and_discriminating_control",
+  "recovery_accepted": false,
+  "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v2/FireSequenceTest",
+  "binary_sha256": "e311bd7ff5a64e27a35b68c50612bf67bf2073aa06b76d936a02b2392c5fd7f7",
+  "binary_identity_note": "f1f7f6ea7 dirty snapshot-binding repair; new consumer identity, original producer preserved.",
+  "prior_native_frame_evidence": "docs/data/fire_r245/r246_consumer_input_gate.json",
+  "results": [
+    {
+      "stage": "staged_source_replacement",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "3ce12d03c1b85e310bef2575593c7489a653531ddd86c0843bd2ff0e99e39776"
+    },
+    {
+      "stage": "same_source_snapshot",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "f012498fd9c2f9d120e8bd579a50298a89dfb68ead16cad1ce85bcffe98a4d16"
+    }
+  ],
+  "sha256": {
+    "tests/FireSequenceTest.cpp": "5048d719ddb9f47a7892d1852a91c5c031f87d088b47cfd2ef0c6c46b0790bf2",
+    "tools/fire/r246_consumer_input_controls.py": "129544ba84c96d693809275ff666f8068b8b487f1fc01d3aa5becd8af2ed9957",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v2/RendererBuildIdentity.generated.h": "39b73017e77b17fa3cdc395597e1bf9fb41c763c9fe3618b28a856098fb6300e",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v2.build-repair.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v2.no_vdb-fallback.cpp": "cb5b75ae5250040a96b8d387c2f9607e3f885736a9fcc10b311d5562a44a09d5",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v2.no_vdb-fallback.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v2.controls/report.json": "949f6de6d2c40ff5e04d6a79c90e8ca1a45fc9ffe3aa633b23751c4ae791c2e6",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v2.controls/completion.json": "f3671d035df40078c50db605091cf6835eafb09615a292b0a353c0a28b9b42b7"
+  },
+  "review_round1": {
+    "commit": "f1f7f6ea7",
+    "contract": "P1 split-read manifest binding",
+    "lifecycle": "P2 optional OpenVDB helper linkage"
+  },
+  "limitations": [
+    "No repeated235-frame preflight: native decoding unchanged, v1 full native evidence retained separately.",
+    "Full no-OpenVDB translation unit experiment exposed unrelated pre-existing compile errors/references; only introduced admission fallback qualified by exact extracted -Werror compile/run.",
+    "No budget Merkle audit, recovery publication, preview or spectrum acceptance."
+  ],
+  "repair_receipt": "docs/data/fire_r245/r246_consumer_pair_snapshot_gate.json"
+}
