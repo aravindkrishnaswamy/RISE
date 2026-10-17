@@ -17631,6 +17631,73 @@ static void TestPopulateSceneSourceClone()
 	pJob->release();
 }
 
+//! A82i: clone fan-out bounds -- a source with a real subtree expands by it,
+//! a clone-of-clone chain within one answer compounds, the per-call total
+//! stops later chunks, and malformed counts are rejected with exact reasons.
+static void TestPopulateSceneCloneFanOutBounds()
+{
+	std::printf( "A82i: populate_scene bounds clone fan-out...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82i.RISEscene" );
+	std::string scene = kScene;
+	for( int k = 0; k < 130; ++k )
+		scene += "\nstandard_object\n{\n\tname kid" + std::to_string( k ) +
+		         "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
+	// obj_sph now has a subtree of 131 objects.
+
+	{
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "A82i fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string answer =
+			"standard_object\n{\n\tname fan_a\n\tsource obj_sph\n\tposition 5 0 0\n}\n"
+			"standard_object\n{\n\tname fan_b\n\tsource fan_a\n\tcount_u 2\n}\n"
+			"standard_object\n{\n\tname fan_vonly\n\tsource obj_sph\n\tcount_v 2\n}\n"
+			"standard_object\n{\n\tname fan_dec\n\tsource obj_sph\n\tcount_u 2.5\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		bool a = false;
+		for( std::size_t i = 0; i < r.created.size(); ++i )
+			if( r.created[i].name == "fan_a" ) {
+				a = true;
+				Check( r.created[i].expandedCount == 131,
+				       "A82i a clone of a source with a 130-child subtree expands to 131 objects" );
+			}
+		Check( a, "A82i fan_a landed" );
+		bool chain = false, vonly = false, dec = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
+			const std::string& why = r.rejected[i].reason;
+			if( why.find( "would create 262 objects" ) != std::string::npos ) chain = true;
+			if( why.find( "`count_v` without `count_u`" ) != std::string::npos ) vonly = true;
+			if( why.find( "positive integer literal" ) != std::string::npos ) dec = true;
+		}
+		Check( chain, "A82i MONEY ASSERTION: a clone-of-clone in the SAME answer compounds the pending "
+		              "source's expansion (131 x 2 = 262 > 256) and is rejected" );
+		Check( vonly, "A82i count_v without count_u is rejected" );
+		Check( dec, "A82i a decimal count is rejected with the accepted form stated" );
+		pJob->release();
+	}
+
+	{
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::string answer;
+		for( int k = 0; k < 9; ++k )
+			answer += "standard_object\n{\n\tname tot_" + std::to_string( k ) +
+			          "\n\tsource obj_sph\n\tposition " + std::to_string( k ) + " 0 0\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( r.created.size() == 7,
+		       "A82i per-call total: 7 clones of 131 (917) land, the 8th would pass 1024 and is refused" );
+		bool cap = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].reason.find( "per-call cap of 1024" ) != std::string::npos ) cap = true;
+		Check( cap, "A82i the per-call rejection names the cap" );
+		pJob->release();
+	}
+}
+
 //! A82c: the capability refusal, the per-session spend cap, and the
 //! nothing-to-repeat case -- the three bounds, each of which must cost the
 //! provider nothing.
@@ -20580,6 +20647,7 @@ int main()
 	TestPopulateSceneHappyPath();
 	TestPopulateSceneContractAndRetry();
 	TestPopulateSceneSourceClone();
+	TestPopulateSceneCloneFanOutBounds();
 	TestPopulateSceneCapabilityCapAndNoStock();
 	TestComposePhaseFirstRenderRefusal();
 	TestComposeArmsShareOneCap();

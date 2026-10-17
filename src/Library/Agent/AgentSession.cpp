@@ -33481,10 +33481,13 @@ namespace RISE
 			     "expr(...) positions to repeat it. A clone keeps its source's geometry and material, "
 			     "so leave the `material` line out (a `material` you do write must be an existing "
 			     "material of this scene). `source` must NOT be a chunk that itself has count_u/count_v. "
-			     "Counts must be literal whole numbers; the objects one chunk makes (count_u * count_v * "
-			     "the objects in the source's subtree) may not exceed " +
+			     "Counts must be positive integer literals (digits only: no expr(), no let names, no "
+			     "decimals), and `count_v` needs `count_u`; the objects one chunk makes (count_u * count_v "
+			     "* the objects in the source's subtree) may not exceed " +
 			     std::to_string( kPopulateSceneMaxCloneObjects ) +
-			     ". `geometry` and `source` together are an error.\n";
+			     ", and the whole answer may not add more than " +
+			     std::to_string( kPopulateSceneMaxObjectsPerCall ) +
+			     " objects in total. `geometry` and `source` together are an error.\n";
 
 			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- a sequence of complete chunks, each in "
 			     "the form\n"
@@ -33610,6 +33613,7 @@ namespace RISE
 			//------------------------------------------------------------------
 			std::vector<std::string> landedNames;
 			std::vector<std::string> countedNames;   //!< chunks carrying count_u/count_v (repetitions, not valid sources)
+			long long callObjectTotal = 0;           //!< objects accepted for insertion across the whole call (both attempts)
 			std::vector<std::string> rejectionLines;
 			std::string providerFailure;
 			std::vector<std::string> unquotedNames;
@@ -33783,29 +33787,76 @@ namespace RISE
 						long long mult = 1;
 						bool countOk = true;
 						const std::string* cs[2] = { &cuText, &cvText };
+						const long long capLL = static_cast<long long>( kPopulateSceneMaxCloneObjects );
 						for( int q = 0; q < 2 && countOk; ++q ) {
 							if( cs[q]->empty() ) continue;
-							char* endp = 0;
-							const long v = std::strtol( cs[q]->c_str(), &endp, 10 );
-							while( endp && *endp == ' ' ) ++endp;
-							if( !endp || *endp != 0 || v < 1 ) countOk = false;
-							else mult *= v;
+							// ACCEPTED: a positive integer literal, digits only
+							// (no expr(), let names, decimals, signs).
+							std::string t = *cs[q];
+							while( !t.empty() && ( t.back() == ' ' || t.back() == '\t' || t.back() == '\r' || t.back() == '\n' ) ) t.pop_back();
+							std::size_t b0 = 0;
+							while( b0 < t.size() && ( t[b0] == ' ' || t[b0] == '\t' ) ) ++b0;
+							t = t.substr( b0 );
+							bool digits = !t.empty();
+							for( std::size_t k = 0; k < t.size() && digits; ++k )
+								digits = ( t[k] >= '0' && t[k] <= '9' );
+							if( !digits ) { countOk = false; break; }
+							long long v = ( t.size() > 9 ) ? ( capLL + 1 ) : std::atoll( t.c_str() );
+							if( v < 1 ) { countOk = false; break; }
+							if( v > capLL + 1 ) v = capLL + 1;
+							mult *= v;
+							if( mult > capLL + 1 ) mult = capLL + 1;
+						}
+						// `count_v` is the optional SECOND axis; the parser
+						// refuses it alone.
+						if( countOk && cuText.empty() && !cvText.empty() ) {
+							AgentPopulateSceneRejection r;
+							r.name   = oname;
+							r.kind   = kind;
+							r.reason = "the standard_object" +
+								( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+								" was not inserted: it has `count_v` without `count_u` -- `count_u` is the first "
+								"axis of a repetition and `count_v` only the optional second, so write `count_u` too";
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
 						}
 						long long subtree = 1;
-						if( objs ) {
-							struct SubScan : public IEnumCallback<const char*>
+						bool pendingSource = false;
+						// A source declared EARLIER IN THIS ANSWER is not in the
+						// live manager yet: use the objects ITS chunk expands
+						// to (which already compounds along a chain of clones).
+						for( std::size_t l = submitInfo.size(); l-- > 0 && !pendingSource; ) {
+							if( submitInfo[l].name == sname ) {
+								subtree = submitInfo[l].expandedCount;
+								pendingSource = true;
+							}
+						}
+						if( !pendingSource && objs ) {
+							// Descendants are found through PARENT links (a
+							// clone's children are also named `<clone>.<child>`,
+							// but an authored tree's are not).
+							struct NameCollect : public IEnumCallback<const char*>
 							{
-								std::string prefix; long long n = 0;
+								std::vector<std::string> names;
 								bool operator()( const char* const& nm ) override
 								{
-									if( nm && strncmp( nm, prefix.c_str(), prefix.size() ) == 0 ) ++n;
+									if( nm ) names.push_back( nm );
 									return true;
 								}
 							} scan;
-							scan.prefix = sname + ".";
 							objs->EnumerateItemNames( scan );
-							subtree += scan.n;
+							for( std::size_t k = 0; k < scan.names.size(); ++k ) {
+								const char* cur = scan.names[k].c_str();
+								for( int hop = 0; hop < 64 && cur; ++hop ) {
+									const char* par = objs->GetObjectParent( cur );
+									if( !par || !par[0] ) break;
+									if( sname == par ) { ++subtree; break; }
+									cur = par;
+								}
+							}
 						}
+						if( subtree > capLL + 1 ) subtree = capLL + 1;
 						const long long total = mult * subtree;
 						if( !countOk || total > static_cast<long long>( kPopulateSceneMaxCloneObjects ) ) {
 							AgentPopulateSceneRejection r;
@@ -33815,8 +33866,9 @@ namespace RISE
 								( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
 								" was not inserted: " +
 								( !countOk
-									? std::string( "its `count_u` / `count_v` must be literal whole numbers >= 1 so the "
-									               "number of clones can be bounded" )
+									? std::string( "its `count_u` / `count_v` must each be a positive integer literal "
+									               "(digits only: no expr(...), no let names, no decimals) so the number "
+									               "of clones can be bounded" )
 									: ( "it would create " + std::to_string( total ) + " objects (count_u * count_v * "
 									    + std::to_string( subtree ) + " object(s) in the source's subtree), over the "
 									    "populate_scene cap of " + std::to_string( kPopulateSceneMaxCloneObjects ) +
@@ -33827,6 +33879,22 @@ namespace RISE
 							continue;
 						}
 						expandedCount = static_cast<int>( total );
+					}
+
+					// PER-CALL TOTAL, clones and ordinary placements alike.
+					if( callObjectTotal + expandedCount > kPopulateSceneMaxObjectsPerCall ) {
+						AgentPopulateSceneRejection r;
+						r.name   = oname;
+						r.kind   = kind;
+						r.reason = "the standard_object" +
+							( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+							" was not inserted: this populate_scene call has already accepted " +
+							std::to_string( callObjectTotal ) + " objects and this chunk would add " +
+							std::to_string( expandedCount ) + ", over the per-call cap of " +
+							std::to_string( kPopulateSceneMaxObjectsPerCall ) + " objects";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
 					}
 					if( !cloneForm && ( gname.empty() || !geos || !geos->GetItem( gname.c_str() ) ) ) {
 						AgentPopulateSceneRejection r;
@@ -33881,7 +33949,8 @@ namespace RISE
 					info.source   = sname;
 					info.expandedCount = expandedCount;
 					info.material = mname;
-					if( !cuText.empty() || !cvText.empty() ) countedNames.push_back( oname );
+					if( ( !cuText.empty() || !cvText.empty() ) && !oname.empty() ) countedNames.push_back( oname );
+					callObjectTotal += expandedCount;
 					submit.push_back( chunks[i] );
 					submitInfo.push_back( info );
 				}

@@ -5612,6 +5612,11 @@ namespace RISE
 			static constexpr int kPopulateSceneMaxPerSession = 4;
 			//! Per-chunk cap on objects a `source` clone may create (count_u * count_v * source subtree).
 			static constexpr int kPopulateSceneMaxCloneObjects = 256;
+			//! Per-CALL cap on objects accepted (clones expanded, plus ordinary
+			//! placements). Population targets tens to low hundreds of objects
+			//! (the best hand-built reference scene has 47); 1024 leaves ample
+			//! headroom while keeping one call far from a runaway scene.
+			static constexpr int kPopulateSceneMaxObjectsPerCall = 1024;
 
 			//! The longest `notes` string a `populate_scene` call may carry
 			//! -- the ONE model-supplied span in the host-composed prompt,
