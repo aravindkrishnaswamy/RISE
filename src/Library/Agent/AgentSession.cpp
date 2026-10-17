@@ -13011,6 +13011,29 @@ namespace RISE
 			}
 		}
 
+		bool AgentSession::InsertAutoParentActive_() const
+		{
+			return BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces &&
+			       !mCreatingElementRoot && mAuthority != AgentAuthority::External &&
+			       mActiveElement < mBuildPlan.size();
+		}
+
+		bool AgentSession::InsertWouldAutoParent_( const std::string& role, const std::string& name,
+		                                           const std::string& existingParent,
+		                                           std::string* outRootName ) const
+		{
+			if( !InsertAutoParentActive_() ) return false;
+			const std::string element = mBuildPlan[ mActiveElement ].element;
+			// AN AUTHORED `parent` WINS, always (even `parent none`).
+			if( RoleIsParentableObject_( role ) && !name.empty() &&
+			    existingParent.empty() && name != ElementRootName( element ) )
+			{
+				if( outRootName ) *outRootName = ElementRootName( element );
+				return true;
+			}
+			return false;
+		}
+
 		AgentChunkResult AgentSession::InsertChunk( const std::string& chunkText,
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
@@ -13424,9 +13447,7 @@ namespace RISE
 			//------------------------------------------------------------------
 			std::string applyText = chunkText;
 			std::string autoParentNotice;
-			if( BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces &&
-			    !mCreatingElementRoot && mAuthority != AgentAuthority::External &&
-			    mActiveElement < mBuildPlan.size() )
+			if( InsertAutoParentActive_() )
 			{
 				RISE::Cst::Document cdoc = RISE::Cst::ParseToCst( chunkText );
 				RISE::Cst::NodeId chunkNodeId = 0;
@@ -13449,8 +13470,7 @@ namespace RISE
 				// how an element builds real internal hierarchy (a hand or a
 				// finger parented to a wrist) and still rides the root.
 				const std::string element = mBuildPlan[ mActiveElement ].element;
-				if( chunkNodeId != 0 && RoleIsParentableObject_( role ) && !cname.empty() &&
-				    existingParent.empty() && cname != ElementRootName( element ) )
+				if( chunkNodeId != 0 && InsertWouldAutoParent_( role, cname, existingParent, nullptr ) )
 				{
 					std::string rootName, whyNot;
 					if( EnsureElementRootChunk_( element, rootName, whyNot ) ) {
@@ -13685,6 +13705,7 @@ namespace RISE
 		                                                          const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			std::vector<AgentChunkResult> out;
+			++mInsertChunksCalls;
 
 			// Empty input is a no-op -- return an empty vector, don't call
 			// InsertChunk at all (see the header doc).
@@ -33989,7 +34010,21 @@ namespace RISE
 			p += "\nWHAT THIS CALL WILL ACCEPT: standard_object chunks, and nothing else. A chunk of "
 			     "any other kind is rejected, and so is a standard_object naming a geometry or a "
 			     "material that is not in the list above -- this call creates no geometry, no "
-			     "material and no painter.\n";
+			     "material and no painter.\n"
+			     "THE CLONE FORM IS ALSO ACCEPTED: instead of `geometry`, a standard_object may say "
+			     "`source <existing object name>` (an object this scene ALREADY has -- not one declared "
+			     "in this same answer, and not one this answer also adds children to), optionally with "
+			     "`count_u` / `count_v` and "
+			     "expr(...) positions to repeat it. A clone keeps its source's geometry and material, "
+			     "so leave the `material` line out (a `material` you do write must be an existing "
+			     "material of this scene). `source` must NOT be a chunk that itself has count_u/count_v. "
+			     "Counts must be positive integer literals (digits only: no expr(), no let names, no "
+			     "decimals), and `count_v` needs `count_u`; the objects one chunk makes (count_u * count_v "
+			     "* the objects in the source's subtree) may not exceed " +
+			     std::to_string( kPopulateSceneMaxCloneObjects ) +
+			     ", and the whole answer may not add more than " +
+			     std::to_string( kPopulateSceneMaxObjectsPerCall ) +
+			     " objects in total. `geometry` and `source` together are an error.\n";
 
 			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- a sequence of complete chunks, each in "
 			     "the form\n"
@@ -34114,6 +34149,9 @@ namespace RISE
 			// the geometry and the material it names already exist.
 			//------------------------------------------------------------------
 			std::vector<std::string> landedNames;
+			long long callObjectTotal = 0;           //!< exact objects accepted for insertion across the whole call (both attempts)
+			const long long kCloneCap = kPopulateSceneMaxCloneObjects;
+			const long long kCallCap  = kPopulateSceneMaxObjectsPerCall;
 			std::vector<std::string> rejectionLines;
 			std::string providerFailure;
 			std::vector<std::string> unquotedNames;
@@ -34154,11 +34192,70 @@ namespace RISE
 				IGeometryManager* geos = mJob->GetGeometries();
 				IMaterialManager* mats = mJob->GetMaterials();
 
+				// Live parent -> children map, built lazily ONCE per attempt.
+				std::map<std::string, std::vector<std::string> > liveKidsMap;
+				bool liveKidsBuilt = false;
+				const auto liveKids = [&]() -> const std::map<std::string, std::vector<std::string> >&
+				{
+					if( !liveKidsBuilt ) {
+						liveKidsBuilt = true;
+						if( IObjectManager* lo = mJob->GetObjects() ) {
+							struct NameCollect : public IEnumCallback<const char*>
+							{
+								std::vector<std::string> names;
+								bool operator()( const char* const& nm ) override
+								{
+									if( nm ) names.push_back( nm );
+									return true;
+								}
+							} scan;
+							lo->EnumerateItemNames( scan );
+							for( std::size_t k = 0; k < scan.names.size(); ++k ) {
+								const char* par = lo->GetObjectParent( scan.names[k].c_str() );
+								if( par && par[0] ) liveKidsMap[par].push_back( scan.names[k] );
+							}
+						}
+					}
+					return liveKidsMap;
+				};
+				// Every `parent` this answer writes, on any chunk (a clone is
+				// refused if one of them lands inside its source's subtree).
+				std::vector<std::string> answerParents;
+				for( std::size_t i = 0; i < chunks.size(); ++i ) {
+					RISE::Cst::Document pd = RISE::Cst::ParseToCst( chunks[i] );
+					const int pn = RISE::Cst::DocItemCount( pd );
+					for( int c = 0; c < pn; ++c ) {
+						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( pd, RISE::Cst::DocNodeIdAt( pd, c ) );
+						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+						// EVERY occurrence, not just the first (the derive keeps the last);
+						// and the parent InsertChunk will ADD when none is written (auto-parent
+						// to the active element's root) -- asked of the same helper InsertChunk uses.
+						bool wroteParent = false;
+						for( const RISE::Cst::NodeRef& kid : it->kids ) {
+							if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+							std::string thisName, val;
+							for( const RISE::Cst::NodeRef& tk : kid->kids ) {
+								if( !tk || tk->kind != RISE::Cst::NodeKind::Token ) continue;
+								if( tk->role == "pname" ) thisName = tk->text;
+								else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+							}
+							if( thisName == "parent" ) wroteParent = true;
+							if( thisName == "parent" && !val.empty() && val != "none" ) answerParents.push_back( val );
+						}
+						if( !wroteParent ) {
+							std::string rootName;
+							if( InsertWouldAutoParent_( it->role, ChunkParamString_( it, "name" ), std::string(), &rootName ) )
+								answerParents.push_back( rootName );
+						}
+						break;
+					}
+				}
+
 				std::vector<std::string> submit;
 				std::vector<AgentPopulateSceneCreation> submitInfo;
 				for( std::size_t i = 0; i < chunks.size(); ++i ) {
 					RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunks[i] );
-					std::string kind, oname, gname, mname;
+					std::string kind, oname, gname, mname, sname, cuText, cvText, dupParam;
 					RISE::Cst::NodeId nodeId = 0;
 					{
 						const int n = RISE::Cst::DocItemCount( doc );
@@ -34170,6 +34267,27 @@ namespace RISE
 							oname  = ChunkParamString_( it, "name" );
 							gname  = ChunkParamString_( it, "geometry" );
 							mname  = ChunkParamString_( it, "material" );
+							sname  = ChunkParamString_( it, "source" );
+							if( sname == "none" ) sname.clear();
+							// ChunkParamString_ is FIRST-wins; the derive (Cst::ParamValue) is
+							// LAST-wins.  A repeated singleton would make this pre-check
+							// price one value and the scene build another, so it is refused.
+							{
+								static const char* const kSingletons[] =
+									{ "name", "geometry", "material", "source", "count_u", "count_v", "parent" };
+								for( std::size_t sg = 0; sg < sizeof( kSingletons ) / sizeof( kSingletons[0] ) && dupParam.empty(); ++sg ) {
+									int seen = 0;
+									for( const RISE::Cst::NodeRef& kid : it->kids ) {
+										if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+										for( const RISE::Cst::NodeRef& tk : kid->kids )
+											if( tk && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" &&
+											    tk->text == kSingletons[sg] ) ++seen;
+									}
+									if( seen > 1 ) dupParam = kSingletons[sg];
+								}
+							}
+							cuText = ChunkParamString_( it, "count_u" );
+							cvText = ChunkParamString_( it, "count_v" );
 							nodeId = nid;
 							break;
 						}
@@ -34194,6 +34312,20 @@ namespace RISE
 						continue;
 					}
 
+					if( !dupParam.empty() ) {
+						AgentPopulateSceneRejection r;
+						r.name   = oname;
+						r.kind   = kind;
+						r.reason = "the standard_object" +
+							( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+							" was not inserted: it repeats `" + dupParam + "` -- write each parameter once "
+							"(the scene build keeps the LAST occurrence while populate_scene's size check "
+							"reads the first, so a repeat could hide how many objects it makes)";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+
 					// A QUOTED name is tolerated, not rejected -- arc 79 sec
 					// 8.1's live-run defect and its fix, applied from the start.
 					// This scene language has no quoted-string syntax at all.
@@ -34204,19 +34336,174 @@ namespace RISE
 						unquotedNames.push_back( stripped );
 						oname = stripped;
 					}
+					if( sname.size() >= 2 && sname.front() == '"' && sname.back() == '"' ) {
+						sname = sname.substr( 1, sname.size() - 2 );
+						doc = RISE::Cst::DocSetParamValue( doc, nodeId, "source", 0, sname );
+						chunks[i] = RISE::Cst::SerializeCst( doc );
+					}
 
 					// THE REFERENCE RULE.  A repeat must name a geometry and a
-					// material that ALREADY EXIST -- asked of the live managers,
-					// which is what the derive would resolve against anyway, so
-					// a name that passes here cannot dangle later.
-					if( gname.empty() || !geos || !geos->GetItem( gname.c_str() ) ) {
+					// material that ALREADY EXIST -- asked of the live managers
+					// here as a pre-check; InsertChunks still derives the chunk
+					// and is the final arbiter (a source landed earlier in this
+					// answer, for instance, only exists if its own insert held).
+					//
+					// THE CLONE FORM.  `source <object>` (with optional
+					// count_u / count_v / expr positions) clones an EXISTING
+					// object -- geometry, material and children come from it --
+					// so it creates no geometry, and it is a legal way to place
+					// existing geometry.  The source must be an object this scene
+					// already has (a clone is itself a valid source) or one an
+					// earlier chunk of this same answer lands.  `geometry` and
+					// `source` together are the parser's own mutual-exclusion
+					// error and are left to InsertChunks to report.
+					const bool cloneForm = !sname.empty();
+					long long estimate = 1;   // object count of this chunk: exact for ordinary objects, an upper bound otherwise (a geometry-less container source over-counts)
+					if( cloneForm ) {
+						// A clone's source must already exist in the LIVE scene.
+						// A source declared in this same answer would make the
+						// fan-out unknowable here, so it is refused.
+						IObjectManager* objs = mJob->GetObjects();
+						if( !objs || !objs->GetItem( sname.c_str() ) ) {
+							AgentPopulateSceneRejection r;
+							r.name   = oname;
+							r.kind   = kind;
+							r.reason = "the standard_object" +
+								( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+								" was not inserted: its `source` names the object \"" + sname +
+								"\", which this scene does not have -- clone sources must already exist; "
+								"place the original first in an earlier call, or use geometry/material instead";
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+
+						// A COUNTED chunk is a repetition (one entry per (i,j)),
+						// not a single node, so the parser refuses it as a source.
+						bool sourceCounted = false;
+						if( const RISE::Cst::Document* live = mJob->GetCstDocument() ) {
+							const RISE::Cst::NodeId lid =
+								RISE::Cst::DocFindByNameAnyRole( *live, sname, nullptr, "standard_object", false );
+							const RISE::Cst::NodeRef lc = lid ? RISE::Cst::DocResolveNodeId( *live, lid ) : RISE::Cst::NodeRef();
+							if( lc ) {
+								bool pu = false, pv = false;
+								RISE::Cst::ParamValueAsParsed( lc, "count_u", &pu );
+								RISE::Cst::ParamValueAsParsed( lc, "count_v", &pv );
+								sourceCounted = pu || pv;
+							}
+						}
+						if( sourceCounted ) {
+							AgentPopulateSceneRejection r;
+							r.name   = oname;
+							r.kind   = kind;
+							r.reason = "the standard_object" +
+								( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+								" was not inserted: its `source` \"" + sname + "\" carries `count_u` / `count_v`, "
+								"so it is a REPETITION (one entry per (i,j), not a single node) and cannot be cloned. "
+								"Clone the node the counts repeat, or put the counts on THIS chunk instead";
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+
+						// The source's LIVE subtree: the source plus every live
+						// descendant (parent links), which is exactly what the
+						// parser's source-subtree walk copies for a source that
+						// exists now -- provided nothing in THIS answer adds
+						// children to it, which is checked next.
+						std::vector<std::string> subtreeNames( 1, sname );
+						for( std::size_t k = 0; k < subtreeNames.size() && subtreeNames.size() <= 100000; ++k ) {
+							const std::map<std::string, std::vector<std::string> >::const_iterator kit =
+								liveKids().find( subtreeNames[k] );
+							if( kit != liveKids().end() )
+								for( std::size_t q = 0; q < kit->second.size(); ++q )
+									subtreeNames.push_back( kit->second[q] );
+						}
+						bool grows = false;
+						std::string growsBy;
+						for( std::size_t q = 0; q < answerParents.size() && !grows; ++q )
+							for( std::size_t k = 0; k < subtreeNames.size() && !grows; ++k )
+								if( answerParents[q] == subtreeNames[k] ) { grows = true; growsBy = answerParents[q]; }
+						if( grows ) {
+							AgentPopulateSceneRejection r;
+							r.name   = oname;
+							r.kind   = kind;
+							r.reason = "the standard_object" +
+								( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+								" was not inserted: this answer also parents a chunk to \"" + growsBy +
+								"\", which is inside the subtree of its `source` \"" + sname +
+								"\", so the clone's size cannot be known -- clone first in a separate call, "
+								"or do not add children to the source in the same answer";
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+
+						// COUNTS: positive integer literals, digits only.
+						long long mult = 1;
+						bool countOk = true;
+						const std::string* cs[2] = { &cuText, &cvText };
+						const long long capLL = static_cast<long long>( kCloneCap );
+						for( int q = 0; q < 2 && countOk; ++q ) {
+							if( cs[q]->empty() ) continue;
+							std::string t = *cs[q];
+							while( !t.empty() && ( t.back() == ' ' || t.back() == '\t' || t.back() == '\r' || t.back() == '\n' ) ) t.pop_back();
+							std::size_t b0 = 0;
+							while( b0 < t.size() && ( t[b0] == ' ' || t[b0] == '\t' ) ) ++b0;
+							t = t.substr( b0 );
+							bool digits = !t.empty();
+							for( std::size_t k = 0; k < t.size() && digits; ++k )
+								digits = ( t[k] >= '0' && t[k] <= '9' );
+							if( !digits ) { countOk = false; break; }
+							long long v = ( t.size() > 9 ) ? ( capLL + 1 ) : std::atoll( t.c_str() );
+							if( v < 1 ) { countOk = false; break; }
+							if( v > capLL + 1 ) v = capLL + 1;
+							mult *= v;
+							if( mult > capLL + 1 ) mult = capLL + 1;
+						}
+						if( countOk && cuText.empty() && !cvText.empty() ) {
+							AgentPopulateSceneRejection r;
+							r.name   = oname;
+							r.kind   = kind;
+							r.reason = "the standard_object" +
+								( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+								" was not inserted: it has `count_v` without `count_u` -- `count_u` is the first "
+								"axis of a repetition and `count_v` only the optional second, so write `count_u` too";
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+						const long long subtree = static_cast<long long>( subtreeNames.size() );
+						estimate = mult * subtree;
+						if( !countOk || estimate > kCloneCap ) {
+							AgentPopulateSceneRejection r;
+							r.name   = oname;
+							r.kind   = kind;
+							r.reason = "the standard_object" +
+								( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+								" was not inserted: " +
+								( !countOk
+									? std::string( "its `count_u` / `count_v` must each be a positive integer literal "
+									               "(digits only: no expr(...), no let names, no decimals) so the number "
+									               "of clones can be bounded" )
+									: ( "count_u * count_v * the source's " + std::to_string( subtree ) +
+									    " object(s) = " + ( mult > capLL ? std::string( "more than " ) : std::string() ) +
+									    std::to_string( estimate ) + " exceeds the populate_scene cap of " +
+									    std::to_string( kCloneCap ) + " objects per chunk" ) ) +
+								" -- split it into several smaller chunks";
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+					}
+					if( !cloneForm && ( gname.empty() || !geos || !geos->GetItem( gname.c_str() ) ) ) {
 						AgentPopulateSceneRejection r;
 						r.name   = oname;
 						r.kind   = kind;
 						r.reason = "the standard_object" +
 							( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
 							" was not inserted: it names " +
-							( gname.empty() ? std::string( "no geometry at all" )
+							( gname.empty() ? std::string( "no geometry at all (and no `source` object to clone)" )
 							                : ( "the geometry \"" + gname + "\", which this scene does "
 							                    "not have" ) ) +
 							" -- populate_scene places geometries that already exist and creates none";
@@ -34224,7 +34511,10 @@ namespace RISE
 						rejectionLines.push_back( r.reason );
 						continue;
 					}
-					if( mname.empty() || !mats || !mats->GetItem( mname.c_str() ) ) {
+					// A clone inherits its source's material, so the line is
+					// optional there; if one IS written it must still exist.
+					if( ( !cloneForm && mname.empty() ) ||
+					    ( !mname.empty() && ( !mats || !mats->GetItem( mname.c_str() ) ) ) ) {
 						AgentPopulateSceneRejection r;
 						r.name   = oname;
 						r.kind   = kind;
@@ -34234,7 +34524,10 @@ namespace RISE
 							( mname.empty() ? std::string( "no material at all" )
 							                : ( "the material \"" + mname + "\", which this scene does "
 							                    "not have" ) ) +
-							" -- populate_scene places materials that already exist and creates none";
+							" -- populate_scene places materials that already exist and creates none" +
+							( cloneForm ? std::string( " (a `source` clone keeps its source's material, so you can "
+							                           "simply omit the `material` line)" )
+							            : std::string() );
 						out.rejected.push_back( r );
 						rejectionLines.push_back( r.reason );
 						continue;
@@ -34250,33 +34543,65 @@ namespace RISE
 						if( already ) continue;
 					}
 
+					// PER-CALL TOTAL, exact: every accepted chunk's object count
+					// (a plain placement is 1), across both attempts.
+					if( callObjectTotal + estimate > kCallCap ) {
+						AgentPopulateSceneRejection r;
+						r.name   = oname;
+						r.kind   = kind;
+						r.reason = "the standard_object" +
+							( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+							" was not inserted: this populate_scene call has already accepted " +
+							std::to_string( callObjectTotal ) + " objects and this chunk would add " +
+							std::to_string( estimate ) + ", over the per-call cap of " +
+							std::to_string( kCallCap ) + " objects";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					callObjectTotal += estimate;
+
 					AgentPopulateSceneCreation info;
 					info.name     = oname;
-					info.geometry = gname;
+					info.geometry = cloneForm ? std::string() : gname;
+					info.source   = sname;
 					info.material = mname;
+					info.expandedCount = static_cast<int>( estimate );
 					submit.push_back( chunks[i] );
 					submitInfo.push_back( info );
 				}
 				if( submit.empty() ) return false;
 
+				// ONE InsertChunks call for the whole pre-checked batch (one
+				// re-derive).  Both caps were enforced exactly in the pre-check,
+				// so `expandedCount` is an upper bound on each chunk's object count (exact for ordinary objects).
 				const std::vector<AgentChunkResult> results = InsertChunks( submit );
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
 					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
 					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					// The landed test is ResultMutatedDocument_ (applied OR diagnosed), never `applied` alone:
+					// a diagnosed chunk IS in the document, so it keeps its share of the per-call object total
+					// and is NOT listed as rejected.  Only a true reject refunds.  InsertChunks returns exactly
+					// one result per submitted chunk, in order, so results[i] pairs with submitInfo[i].
 					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						AgentPopulateSceneCreation c;
 						c.name = results[i].name;
 						if( i < submitInfo.size() ) {
 							c.geometry = submitInfo[i].geometry;
+							c.source   = submitInfo[i].source;
+							c.expandedCount = submitInfo[i].expandedCount;
 							c.material = submitInfo[i].material;
 						}
 						out.created.push_back( c );
 						landedAny = true;
 					}
 					else {
+						// A chunk InsertChunks refused adds nothing to the scene:
+						// give its share of the per-call total back.
+						if( i < submitInfo.size() ) callObjectTotal -= submitInfo[i].expandedCount;
 						AgentPopulateSceneRejection r;
 						r.name   = results[i].name;
 						r.kind   = results[i].kind;
@@ -34347,7 +34672,13 @@ namespace RISE
 				for( std::size_t i = 0; i < out.created.size(); ++i ) {
 					if( i ) m += ", ";
 					m += out.created[i].name;
-					if( !out.created[i].geometry.empty() ) {
+					if( !out.created[i].source.empty() ) {
+						m += " (clone of " + out.created[i].source;
+						if( out.created[i].expandedCount > 1 )
+							m += ", " + std::to_string( out.created[i].expandedCount ) + " objects";
+						m += ")";
+					}
+					else if( !out.created[i].geometry.empty() ) {
 						m += " (geometry " + out.created[i].geometry;
 						if( !out.created[i].material.empty() )
 							m += ", material " + out.created[i].material;

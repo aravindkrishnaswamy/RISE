@@ -3058,6 +3058,10 @@ namespace RISE
 			AgentChunkResult InsertChunk( const std::string& chunkText,
 			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! How many InsertChunks calls this session has made (diagnostic; tests use it
+			//! to prove a batch lands in one call).
+			unsigned int InsertChunksCallCount() const { return mInsertChunksCalls; }
+
 			//! BATCH form of InsertChunk (insert_chunks): apply MULTIPLE
 			//! complete chunks in ONE call instead of one round-trip per
 			//! chunk.  Motivation: a scene assembled one insert_chunk at a
@@ -5650,6 +5654,14 @@ namespace RISE
 			//! population pass per scene, and a real-provider spend bound
 			//! that a repair retry deliberately does not distinguish.
 			static constexpr int kPopulateSceneMaxPerSession = 4;
+			//! Per-chunk cap on objects a `source` clone may create (count_u * count_v * source subtree).
+			static constexpr int kPopulateSceneMaxCloneObjects = 256;
+			//! Per-CALL cap on objects accepted (clones expanded, plus ordinary
+			//! placements). Population targets tens to low hundreds of objects
+			//! (the best hand-built reference scene has 47); 1024 leaves ample
+			//! headroom while keeping one call far from a runaway scene.
+			static constexpr int kPopulateSceneMaxObjectsPerCall = 1024;
+
 
 			//! The longest `notes` string a `populate_scene` call may carry
 			//! -- the ONE model-supplied span in the host-composed prompt,
@@ -5682,6 +5694,11 @@ namespace RISE
 				std::string name;
 				std::string geometry;
 				std::string material;
+				//! Non-empty for a `source` clone: the cloned object (and then
+				//! `geometry` is empty). `expandedCount` is how many objects
+				//! the chunk makes (count_u * count_v * source subtree).
+				std::string source;
+				int         expandedCount = 1;
 			};
 
 			//! The structured result of PopulateScene.  `ok` means the pass
@@ -9692,6 +9709,15 @@ namespace RISE
 			                              std::string& outRoot,
 			                              std::string& outWhyNot );
 
+			//! The ONE definition of when InsertChunk auto-parents a chunk to the
+			//! active element's root (87 step 5).  InsertChunk applies exactly this;
+			//! populate_scene's pre-check asks it too, so the size check sees the
+			//! parent the chunk will really land with.
+			bool InsertAutoParentActive_() const;
+			bool InsertWouldAutoParent_( const std::string& role, const std::string& name,
+			                             const std::string& existingParent,
+			                             std::string* outRootName ) const;
+
 			//! Re-entrancy guard for EnsureElementRootChunk_'s own InsertChunk
 			//! call: the root is itself a `standard_object`, so without this
 			//! the auto-parent hook would try to give it a parent.
@@ -10290,6 +10316,9 @@ namespace RISE
 			//! exactly: a pass whose chunks were all rejected still had its
 			//! turn, and a failed pass must not strand the session.
 			bool mPopulateSceneRan = false;
+
+			//! Number of InsertChunks calls made on this session (diagnostic).
+			unsigned int mInsertChunksCalls = 0;
 
 			//! Arc 82: ONE geometry the scene already has, and the objects
 			//! currently drawn with it -- the RAW MATERIAL a repeat is made

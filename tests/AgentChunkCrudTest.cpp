@@ -18678,7 +18678,14 @@ static void TestPopulateSceneHappyPath()
 	std::vector<std::string> prompts;
 	sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer }, &calls, &prompts ) );
 
+	const unsigned int insertCallsBefore = sess->InsertChunksCallCount();
+	const unsigned long long rebuildsBefore = pJob->GetContainerRebuildCount();
 	const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+	Check( sess->InsertChunksCallCount() - insertCallsBefore == 1,
+	       "A82a MONEY ASSERTION: an under-cap populate lands its whole batch with exactly ONE InsertChunks call" );
+	// Batched agent edits: that one InsertChunks call is now one live re-derive too.
+	Check( pJob->GetContainerRebuildCount() - rebuildsBefore == 1,
+	       "A82a MONEY ASSERTION: a normal populate_scene costs exactly ONE live re-derive" );
 	Check( r.ok, "A82a populate_scene succeeds" );
 	Check( calls == 1, "A82a MONEY ASSERTION: exactly ONE completion -- no retry on a clean answer" );
 	Check( !r.retryRan, "A82a and the result says the retry did not run" );
@@ -18883,6 +18890,224 @@ static void TestPopulateSceneContractAndRetry()
 		Check( !r.rejected.empty(), "A82b/dupe and it is reported" );
 		Check( r.objectCountBefore == 2 && r.objectCountAfter == 2,
 		       "A82b/dupe with the object count unmoved, measured both times" );
+		pJob->release();
+	}
+}
+
+//! Does any rejection reason contain `needle`?
+static bool A82AnyRejection( const Agent::AgentSession::AgentPopulateSceneResult& r, const char* needle )
+{
+	for( std::size_t i = 0; i < r.rejected.size(); ++i )
+		if( r.rejected[i].reason.find( needle ) != std::string::npos ) return true;
+	return false;
+}
+
+//! Sum of the creation records' expandedCount.
+static int A82CreatedObjects( const Agent::AgentSession::AgentPopulateSceneResult& r )
+{
+	int n = 0;
+	for( std::size_t i = 0; i < r.created.size(); ++i ) n += r.created[i].expandedCount;
+	return n;
+}
+
+//! A82h: the `source` CLONE form -- accepted for a LIVE source, with an exact
+//! object count; every other source shape is refused with its reason.
+static void TestPopulateSceneSourceClone()
+{
+	std::printf( "A82h: populate_scene accepts the source clone form...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82h.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A82h fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+
+	const std::string answer =
+		"standard_object\n{\n\tname pop_clone_row\n\tsource obj_sph\n\tcount_u 3\n"
+		"\tposition expr(-0.67 + i*0.075) 1.050 -0.355\n}\n"
+		"standard_object\n{\n\tname pop_clone_plain\n\tsource obj_sph\n\tposition 3 0 0\n}\n"
+		"standard_object\n{\n\tname pop_clone_samesrc\n\tsource pop_clone_plain\n\tposition 0 2 0\n}\n"
+		"standard_object\n{\n\tname pop_clone_ghost_src\n\tsource no_such_object\n\tposition 0 0 1\n}\n"
+		"standard_object\n{\n\tname pop_clone_ghost_mat\n\tsource obj_sph\n"
+		"\tmaterial ghost_mat\n\tposition 0 0 2\n}\n"
+		"standard_object\n{\n\tname pop_clone_geomsrc\n\tsource sph\n\tposition 0 0 3\n}\n"
+		"standard_object\n{\n\tname pop_clone_vonly\n\tsource obj_sph\n\tcount_v 2\n}\n"
+		"standard_object\n{\n\tname pop_clone_dec\n\tsource obj_sph\n\tcount_u 2.5\n}\n"
+		"standard_object\n{\n\tname pop_clone_big\n\tsource obj_sph\n\tcount_u 20\n\tcount_v 20\n}\n";
+	// The repair retry gets a different (still unusable) answer: resubmitting the first
+	// answer would legitimately turn `pop_clone_samesrc` valid, since by then
+	// pop_clone_plain is LIVE.
+	sess->SetTextCompleter( MakeFakeCompleter( { answer,
+		"standard_object\n{\n\tname pop_clone_retry\n\tsource no_such_object\n}\n" } ) );
+	const unsigned int callsBefore = sess->InsertChunksCallCount();
+	const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+
+	Check( r.created.size() == 2, "A82h exactly the counted clone and the plain clone land" );
+	Check( r.objectCountAfter - r.objectCountBefore == 4 && A82CreatedObjects( r ) == 4,
+	       "A82h MONEY ASSERTION: created[].expandedCount is exact -- 3 + 1 = 4 = the real object delta" );
+	Check( A82AnyRejection( r, "\"pop_clone_samesrc\"" ) &&
+	       A82AnyRejection( r, "clone sources must already exist" ),
+	       "A82h a clone of a source declared in the SAME answer is refused" );
+	Check( A82AnyRejection( r, "\"no_such_object\", which this scene does not have" ),
+	       "A82h a nonexistent source is refused naming it" );
+	Check( A82AnyRejection( r, "the material \"ghost_mat\", which this scene does not have" ),
+	       "A82h a clone naming a nonexistent material is still refused" );
+	Check( A82AnyRejection( r, "\"sph\", which this scene does not have" ),
+	       "A82h a source naming a GEOMETRY (not an object) is refused" );
+	Check( A82AnyRejection( r, "`count_v` without `count_u`" ), "A82h count_v alone is refused" );
+	Check( A82AnyRejection( r, "positive integer literal" ), "A82h a decimal count is refused with the accepted form stated" );
+	Check( A82AnyRejection( r, "exceeds the populate_scene cap of 256" ), "A82h a 20x20 clone is refused over the cap" );
+	Check( !A82AnyRejection( r, "names no geometry" ), "A82h no clone is refused as 'names no geometry'" );
+	// the retry resubmits the answer, so the first attempt + one retry = 2 InsertChunks calls at most
+	Check( sess->InsertChunksCallCount() - callsBefore <= 2, "A82h batches land in one InsertChunks call per attempt" );
+
+	// A LIVE counted chunk is not a valid source.
+	sess->SetTextCompleter( MakeFakeCompleter( {
+		"standard_object\n{\n\tname pop_clone_ofrow\n\tsource pop_clone_row\n\tposition 0 0 5\n}\n",
+		"standard_object\n{\n\tname pop_clone_ofrow\n\tsource pop_clone_row\n\tposition 0 0 5\n}\n" } ) );
+	const Agent::AgentSession::AgentPopulateSceneResult r2 = sess->PopulateScene();
+	Check( A82AnyRejection( r2, "carries `count_u` / `count_v`" ) || A82AnyRejection( r2, "clone sources must already exist" ),
+	       "A82h a counted source is refused" );
+	Check( r2.created.empty(), "A82h and nothing lands for it" );
+	pJob->release();
+}
+
+//! A82i: exact clone fan-out of a source with a real subtree, the per-call
+//! total cut-off, and a source that gains children in the same answer.
+static void TestPopulateSceneCloneFanOutBounds()
+{
+	std::printf( "A82i: populate_scene bounds clone fan-out exactly...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82i.RISEscene" );
+	std::string scene = kScene;
+	for( int k = 0; k < 130; ++k )
+		scene += "\nstandard_object\n{\n\tname kid" + std::to_string( k ) +
+		         "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
+	// obj_sph now has a subtree of 131 objects.
+
+	{
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "A82i fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string answer =
+			"standard_object\n{\n\tname fan_one\n\tsource obj_sph\n\tposition 5 0 0\n}\n"
+			"standard_object\n{\n\tname fan_x3\n\tsource obj_sph\n\tcount_u 3\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( r.created.size() == 1 && r.created[0].name == "fan_one" && r.created[0].expandedCount == 131,
+		       "A82i a clone of a 131-object source lands and reports 131" );
+		Check( r.objectCountAfter - r.objectCountBefore == 131, "A82i and that equals the real object delta" );
+		Check( A82AnyRejection( r, "= 393 exceeds the populate_scene cap of 256" ),
+		       "A82i MONEY ASSERTION: x3 of the same source is 393 > 256 and is refused before insertion" );
+		pJob->release();
+	}
+	{
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::string answer;
+		for( int k = 0; k < 9; ++k )
+			answer += "standard_object\n{\n\tname tot_" + std::to_string( k ) +
+			          "\n\tsource obj_sph\n\tposition " + std::to_string( k ) + " 0 0\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( r.created.size() == 7 && r.objectCountAfter - r.objectCountBefore == 917 &&
+		       A82CreatedObjects( r ) == 917,
+		       "A82i per-call total: 7 clones of 131 (917) land exactly, the 8th would pass 1024 and is refused" );
+		Check( A82AnyRejection( r, "per-call cap of 1024" ), "A82i the per-call rejection names the cap" );
+		pJob->release();
+	}
+}
+
+//! A82j: a source that gains children in the same answer is refused; plain
+//! placements count 1 each toward the per-call total; refused chunks refund.
+static void TestPopulateSceneParentSubtreeAndRefund()
+{
+	std::printf( "A82j: populate_scene refuses growing sources and refunds refused chunks...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82j.RISEscene" );
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::string answer;
+		for( int k = 0; k < 5; ++k )
+			answer += "standard_object\n{\n\tname pkid_" + std::to_string( k ) +
+			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
+		answer += "standard_object\n{\n\tname pbig\n\tsource obj_sph\n\tcount_u 2\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( A82AnyRejection( r, "also parents a chunk to \"obj_sph\"" ),
+		       "A82j MONEY ASSERTION: a clone whose source gains children in the same answer is refused" );
+		Check( r.created.size() == 5 && r.objectCountAfter - r.objectCountBefore == 5,
+		       "A82j while the five children themselves land" );
+		pJob->release();
+	}
+	// A repeated singleton parameter is refused: the pre-check reads the FIRST
+	// occurrence but the scene build keeps the LAST, so a repeat could hide the size.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j/dup fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string answer =
+			"standard_object\n{\n\tname dup_counts\n\tsource obj_sph\n\tcount_u 2\n\tcount_u 3000\n}\n"
+			"standard_object\n{\n\tname dup_kid\n\tgeometry sph\n\tmaterial mat_diffuse\n"
+			"\tparent none\n\tparent obj_sph\n}\n"
+			"standard_object\n{\n\tname dup_grow\n\tsource obj_sph\n\tposition 1 1 1\n}\n"
+			"standard_object\n{\n\tname quoted_src\n\tsource \"obj_emit\"\n\tposition 2 2 2\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( A82AnyRejection( r, "repeats `count_u`" ),
+		       "A82j MONEY ASSERTION: `count_u 2` then `count_u 3000` is refused, not priced as 2" );
+		Check( A82AnyRejection( r, "repeats `parent`" ),
+		       "A82j `parent none` then `parent obj_sph` is refused" );
+		Check( A82AnyRejection( r, "also parents a chunk to \"obj_sph\"" ),
+		       "A82j and the hidden second `parent` still blocks a clone of the source it points into" );
+		Check( r.created.size() == 1 && r.created[0].name == "quoted_src" &&
+		       r.objectCountAfter - r.objectCountBefore == 1 && A82CreatedObjects( r ) == 1,
+		       "A82j a quoted `source` is unquoted and lands; nothing else lands; reported count equals the real delta" );
+		pJob->release();
+	}
+	// PIECES PHASE: InsertChunk auto-parents every parentable chunk lacking a `parent` to
+	// the active element's root, so the pre-check must price the clone against the subtree
+	// AS IT WILL BE after those placements land.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j/pieces fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A82j/pieces the plan files" );
+		Check( sess->InsertChunk( "standard_object\n{\n\tname wiz_first\n\tgeometry sph\n\tmaterial mat_diffuse\n}" ).applied,
+		       "A82j/pieces the first object lands and mints the element root" );
+		const std::string root = Agent::AgentSession::ElementRootName( "wizard" );
+		std::string answer;
+		for( int k = 0; k < 6; ++k )
+			answer += "standard_object\n{\n\tname wiz_p" + std::to_string( k ) +
+			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n";
+		answer += "standard_object\n{\n\tname wiz_biggy\n\tparent none\n\tsource " + root +
+		          "\n\tcount_u 100\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( A82AnyRejection( r, ( "also parents a chunk to \"" + root + "\"" ).c_str() ),
+		       "A82j/pieces MONEY ASSERTION: placements that InsertChunk will auto-parent to the element root "
+		       "count as children of that root, so a clone of the root is refused" );
+		Check( r.objectCountAfter - r.objectCountBefore <= 6 && A82CreatedObjects( r ) == r.objectCountAfter - r.objectCountBefore,
+		       "A82j/pieces only the plain placements land, and the reported count equals the real delta" );
+		pJob->release();
+	}
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j/refund fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::string bad, good;
+		for( int k = 0; k < 5; ++k ) {
+			bad  += "standard_object\n{\n\tname obj_emit\n\tsource obj_sph\n\tcount_u 200\n}\n";
+			good += "standard_object\n{\n\tname refund_" + std::to_string( k ) +
+			        "\n\tsource obj_sph\n\tcount_u 200\n}\n";
+		}
+		sess->SetTextCompleter( MakeFakeCompleter( { bad, good } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( r.created.size() == 5,
+		       "A82j chunks the first attempt got refused for give their share back, so the retry's 5 x 200 land" );
+		Check( r.objectCountAfter - r.objectCountBefore == 1000 && A82CreatedObjects( r ) == 1000,
+		       "A82j and the reported counts equal the real delta" );
 		pJob->release();
 	}
 }
@@ -21857,6 +22082,9 @@ int main()
 	// Arc 82 (2026-08-12): the clean-room population pass and its render gate.
 	TestPopulateSceneHappyPath();
 	TestPopulateSceneContractAndRetry();
+	TestPopulateSceneSourceClone();
+	TestPopulateSceneCloneFanOutBounds();
+	TestPopulateSceneParentSubtreeAndRefund();
 	TestPopulateSceneCapabilityCapAndNoStock();
 	TestComposePhaseFirstRenderRefusal();
 	TestComposeArmsShareOneCap();

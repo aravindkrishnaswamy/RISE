@@ -3145,6 +3145,10 @@ namespace RISE
 								o.set( "geometry", JsonValue::MakeString( pr.created[i].geometry ) );
 							if( !pr.created[i].material.empty() )
 								o.set( "material", JsonValue::MakeString( pr.created[i].material ) );
+							if( !pr.created[i].source.empty() ) {
+								o.set( "source", JsonValue::MakeString( pr.created[i].source ) );
+								o.set( "objects", JsonValue::MakeNumber( static_cast<double>( pr.created[i].expandedCount ) ) );
+							}
 							createdArr.push_back( o );
 						}
 						result.set( "created", createdArr );
