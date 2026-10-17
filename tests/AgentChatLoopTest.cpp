@@ -4262,7 +4262,7 @@ static void TestContextLifetimeRetirement()
 		{ ChatProvider::Anthropic, "anthropic" }, { ChatProvider::Gemini, "gemini" },
 		{ ChatProvider::OpenAI, "openai/responses" }, { ChatProvider::Local, "openai/chat-completions" } };
 	const char* const kComposeStub = "every element of the build plan is finished";
-	const char* const kFinishedStub = "is finished; read_document shows its chunks";
+	const char* const kFinishedStub = "is finished; its chunks are in the document";
 
 	std::string anthropicFinalBody;
 	for( const Prov& pv : provs ) {
@@ -4467,6 +4467,244 @@ static void TestContextLifetimeRetirement()
 		}
 		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_FAILFIN_MARKER" ) == 1,
 		       "an ok:false finish_element retires no skill (it is not the compose signal)" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T14d: context lifetimes, review round 2.
+//   (a) a retired build_element stub CARRIES what is not in the document
+//       (rejected chunks + reasons, notices on landed chunks);
+//   (b) a decided-but-unapplied element retirement is CANCELLED by a
+//       successful reopen_element of that element, and a re-finish then
+//       retires the old and the new results;
+//   (c) a read_skill in the SAME turn as the compose-phase finish is
+//       post-compose in either order;
+//   (d) gaps: a mixed-element insert_chunks is never retired; an
+//       error-envelope build_element is attributed by its call argument; a
+//       finish_element carrying a real PNG, co-packed with a build that
+//       retires next flush, keeps both rules consistent.
+//----------------------------------------------------------------------
+static void TestContextLifetimeRetirementRound2()
+{
+	std::printf( "T14d: context lifetimes -- carried rejections, reopen cancel, same-turn compose order...\n" );
+
+	const std::string pad( 4000, 'q' );
+	auto build = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"" + element +
+			"_robe\"],\"landedKinds\":[\"lambertian_material\"],"
+			"\"rejected\":[{\"name\":\"" + element + "_bad\",\"kind\":\"expression_painter\","
+			"\"reason\":\"REJECT_REASON_MARKER the def did not compile\"}],"
+			"\"chunkResults\":[{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"message\":\"REJECT_REASON_MARKER the def did not compile\",\"name\":\"" + element +
+			"_bad\",\"kind\":\"expression_painter\"},"
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,"
+			"\"message\":\"chunk inserted. NOTICE_MARKER not parented\",\"name\":\"" + element +
+			"_robe\",\"kind\":\"lambertian_material\"}],"
+			"\"message\":\"" + marker + " " + pad + "\"}" );
+	};
+	auto plainBuild = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"x\"],"
+			"\"rejected\":[],\"chunkResults\":[],\"message\":\"" + marker + " " + pad + "\"}" );
+	};
+	auto finish = [&]( int id, const std::string& element, const char* phase ) {
+		return LifetimeEnv( id, std::string( "{\"ok\":true,\"phase\":\"" ) + phase + "\",\"element\":\"" +
+			element + "\",\"chunks\":[],\"message\":\"m\"}" );
+	};
+	auto reopen = [&]( int id, const std::string& element ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"phase\":\"pieces\","
+			"\"previousPhase\":\"pieces\",\"chunks\":[],\"unfinished\":[],\"message\":\"m\"}" );
+	};
+	auto skill = [&]( int id, const std::string& name, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"name\":\"" + name + "\",\"markdown\":\"" + marker + " " + pad + "\"}" );
+	};
+	const std::string renderEnv = LifetimeEnv( 90, "{\"ok\":true,\"width\":16,\"height\":12}" );
+	const char* const kBuildArgs = "{\"element\":\"wizard\",\"height\":4}";
+
+	// --- (a) the stub carries the rejection and the notice ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build the wizard" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+		                         Vec1( kBuildArgs ), Vec1( build( 1, "wizard", "BE_CARRY_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) {
+			Check( false, "T14d(a): drive rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "BE_CARRY_MARKER" ) == 0,
+		       "T14d(a): the finished element's build_element result is retired" );
+		Check( CountOccurrences( body, "REJECT_REASON_MARKER" ) == 1 &&
+		       body.find( "wizard_bad (expression_painter): REJECT_REASON_MARKER" ) != std::string::npos,
+		       "T14d(a) MONEY: the stub CARRIES the rejected chunk and its reason (once, deduplicated)" );
+		Check( CountOccurrences( body, "NOTICE_MARKER" ) == 1,
+		       "T14d(a): the stub carries a landed chunk's notice" );
+		Check( body.find( "Not in the document, kept from the elided result" ) != std::string::npos &&
+		       body.find( "stay editable in place" ) != std::string::npos,
+		       "T14d(a): the stub says what it kept and that the chunks stay editable in place" );
+		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
+		       "T14d(a): every call is still answered" );
+	}
+
+	// --- (b) reopen cancels an unapplied retirement; a re-finish retires both ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build the wizard, then rethink it" );
+		std::vector<std::string> v2a; v2a.push_back( kBuildArgs ); v2a.push_back( "{}" );
+		std::vector<std::string> v2e; v2e.push_back( build( 1, "wizard", "BE_X_MARKER" ) );
+		v2e.push_back( finish( 2, "wizard", "pieces" ) );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec2( "build_element", "finish_element" ),
+		                         Vec2( "b1", "f1" ), v2a, v2e ) ) {
+			Check( false, "T14d(b): same-turn round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "BE_X_MARKER" ) == 1,
+		       "T14d(b): the same-turn build result is delivered" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "reopen_element" ), Vec1( "r1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( reopen( 3, "wizard" ) ) ) ) {
+			Check( false, "T14d(b): reopen round" ); return;
+		}
+		const std::string afterReopen = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( afterReopen, "BE_X_MARKER" ) == 1 &&
+		       afterReopen.find( "result for element" ) == std::string::npos,
+		       "T14d(b) MONEY: reopen_element CANCELS the pending retirement -- nothing of the element retires" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, "T14d(b): idle round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "BE_X_MARKER" ) == 1,
+		       "T14d(b): ... and a later flush does not resurrect it" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b2" ),
+		                         Vec1( kBuildArgs ), Vec1( plainBuild( 4, "wizard", "BE_Y_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f2" ),
+		                         Vec1( "{}" ), Vec1( finish( 5, "wizard", "compose" ) ) ) ) {
+			Check( false, "T14d(b): re-finish rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "BE_X_MARKER" ) == 0 && CountOccurrences( body, "BE_Y_MARKER" ) == 0,
+		       "T14d(b): a re-finish after reopen retires BOTH the old and the new build results" );
+		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
+		       "T14d(b): every call is still answered" );
+	}
+
+	// --- (c) same-turn read_skill vs compose finish, both orders ---
+	for( int order = 0; order < 2; ++order ) {
+		const std::string L = order ? "T14d(c) [finish, read_skill]" : "T14d(c) [read_skill, finish]";
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "finish and read" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "s0" ),
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_PRE_MARKER" ) ) ) ) {
+			Check( false, L + ": pre round" ); return;
+		}
+		std::vector<std::string> verbs, ids, args, envs;
+		const std::string sk = skill( 2, "lighting", "SK_SAME_MARKER" );
+		const std::string fin = finish( 3, "wizard", "compose" );
+		if( order == 0 ) {
+			verbs = Vec2( "read_skill", "finish_element" ); ids = Vec2( "s1", "f1" );
+			args = Vec2( "{\"name\":\"lighting\"}", "{}" ); envs = Vec2( sk, fin );
+		} else {
+			verbs = Vec2( "finish_element", "read_skill" ); ids = Vec2( "f1", "s1" );
+			args = Vec2( "{}", "{\"name\":\"lighting\"}" ); envs = Vec2( fin, sk );
+		}
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, verbs, ids, args, envs ) ) {
+			Check( false, L + ": compose round" ); return;
+		}
+		const std::string b1 = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( b1, "SK_PRE_MARKER" ) == 0,
+		       L + ": the skill read in an EARLIER turn retires at the compose finish" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, L + ": idle round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_SAME_MARKER" ) == 1,
+		       L + " MONEY: the skill read in the SAME turn is post-compose -- still live a flush later" );
+	}
+
+	// --- (d1) a MIXED-element insert_chunks is never retired ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "insert across elements" );
+		const std::string mixed = LifetimeEnv( 1, "{\"applied\":2,\"total\":2,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},"
+			"\"name\":\"IC_MIX_MARKER\",\"kind\":\"k\",\"element\":\"wizard\"},"
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":4},"
+			"\"name\":\"dragon_x\",\"kind\":\"k\",\"element\":\"dragon\"}]}" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "insert_chunks" ), Vec1( "i1" ),
+		                         Vec1( "{\"chunks\":[]}" ), Vec1( mixed ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f2" ),
+		                         Vec1( "{}" ), Vec1( finish( 3, "dragon", "compose" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, "T14d(d1): drive rounds" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "IC_MIX_MARKER" ) == 1,
+		       "T14d(d1): an insert_chunks batch spanning two elements is never retired" );
+	}
+
+	// --- (d2) an error-envelope build_element is attributed by its call argument ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build badly" );
+		const std::string err = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32602,"
+			"\"message\":\"ERR_BE_MARKER height missing\"}}";
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( err ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) {
+			Check( false, "T14d(d2): drive rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "ERR_BE_MARKER" ) == 0 &&
+		       body.find( "build_element result for element" ) != std::string::npos,
+		       "T14d(d2): an ERROR build_element for E (element from the call argument) retires with E" );
+	}
+
+	// --- (d3) finish_element with a REAL png co-packed with a build that
+	//          retires next flush; then a newer image elides the png ---
+	{
+		const std::vector<unsigned char> px( 32, 0x5A );
+		const std::string b64 = Base64Encode( px );
+		const std::vector<unsigned char> px2( 32, 0x2B );
+		const std::string b642 = Base64Encode( px2 );
+		const std::string finPng = LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\","
+			"\"chunks\":[],\"rendered\":true,\"png_base64\":\"" + b64 + "\",\"byteLength\":32,"
+			"\"imageWidth\":4,\"imageHeight\":2,\"message\":\"m\"}" );
+		const std::string img2 = LifetimeEnv( 3, "{\"png_base64\":\"" + b642 + "\",\"byteLength\":32}" );
+		const ChatProvider provs[] = { ChatProvider::Anthropic, ChatProvider::Gemini };
+		for( const ChatProvider pv : provs ) {
+			const std::string L = pv == ChatProvider::Anthropic ? "T14d(d3) anthropic" : "T14d(d3) gemini";
+			AgentChatLoop loop;
+			loop.SetProvider( pv );
+			loop.AddUserMessage( "build and look" );
+			std::vector<std::string> a; a.push_back( kBuildArgs ); a.push_back( "{}" );
+			std::vector<std::string> e; e.push_back( plainBuild( 1, "wizard", "BE_PNG_MARKER" ) ); e.push_back( finPng );
+			if( !DriveToolRoundArgs( loop, pv, Vec2( "build_element", "finish_element" ), Vec2( "b1", "f1" ), a, e ) ) {
+				Check( false, L + ": build+finish round" ); return;
+			}
+			const std::string b1 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b1, "BE_PNG_MARKER" ) == 1 && CountOccurrences( b1, b64 ) == 1,
+			       L + ": the build result and the finish PNG are both delivered" );
+			if( !DriveToolRoundArgs( loop, pv, Vec1( "render" ), Vec1( "x1" ), Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+				Check( false, L + ": idle round" ); return;
+			}
+			const std::string b2 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b2, "BE_PNG_MARKER" ) == 0 && CountOccurrences( b2, b64 ) == 1,
+			       L + ": next flush retires the build but leaves the co-packed PNG live" );
+			Check( LifetimeWireValid( pv, b2 ), L + ": wire-valid after the lifetime rewrite" );
+			if( !DriveToolRoundArgs( loop, pv, Vec1( "read_image" ), Vec1( "x2" ), Vec1( "{}" ), Vec1( img2 ) ) ) {
+				Check( false, L + ": newer image round" ); return;
+			}
+			const std::string b3 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b3, b64 ) == 0 && CountOccurrences( b3, b642 ) == 1 &&
+			       b3.find( "build_element result for element" ) != std::string::npos,
+			       L + ": a newer image elides the finish PNG and the build stub survives the image rewrite" );
+			Check( LifetimeWireValid( pv, b3 ), L + ": wire-valid after both rules touched the entry" );
+		}
 	}
 }
 
@@ -11051,6 +11289,7 @@ int main()
 	TestImageElision();
 	TestSupersededReadElision();
 	TestContextLifetimeRetirement();
+	TestContextLifetimeRetirementRound2();
 	TestFastMathGuards();
 	TestDuplicateIdRefusal();
 	TestGeminiUserRunMerge();

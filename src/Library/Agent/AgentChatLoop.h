@@ -171,12 +171,15 @@
 //        retired to a one-line stub saying how to get it back -- by what
 //        it describes, never by age.  L2: a successful finish_element for
 //        element E retires E's earlier build_element / insert_chunks
-//        results ("element_finished_retirement").  L3: a named read_skill
+//        results ("element_finished_retirement"); the stub carries their
+//        rejections and notices (not in the document), and a successful
+//        reopen_element E cancels a retirement not yet applied.  L3: a named read_skill
 //        is superseded by a later read of the SAME skill (an argument-
 //        normalized supersession key), and the successful finish_element
 //        that reports the COMPOSE phase (every element of the filed plan
-//        finished) retires every live named read_skill once per plan
-//        ("compose_skill_retirement"); a skill read after that stays live
+//        finished) retires every live named read_skill from EARLIER turns
+//        once per plan ("compose_skill_retirement"); a skill read in that
+//        turn or after it stays live
 //        until the next file_build_plan re-arms the rule.  A retirement is
 //        never applied to the entry being flushed, so every result reaches
 //        the model at least once.  Same boundary, same wire
@@ -331,10 +334,19 @@ namespace RISE
 			//! retires the slot.
 			std::string lifetimeElement;
 
+			//! Doc 91 slice L2 (review round 2): the compact record of what
+			//! a build_element / insert_chunks result describes that is NOT
+			//! in the document -- each rejected chunk with its reason, and each
+			//! landed chunk that carried a notice, with that notice -- or "".
+			//! The element-finished stub carries it, so retiring the result
+			//! never deletes the only copy of a rejection.
+			std::string lifetimeCarry;
+
 			//! Doc 91 slice L3b: the skill name of a successful NAMED
 			//! read_skill result, or "" (every other result, the index form
-			//! included).  The first successful place_element retires every
-			//! live slot carrying one.
+			//! included).  The finish_element that reports the build plan's
+			//! compose phase retires every live slot carrying one that was
+			//! flushed BEFORE it (once per plan).
 			std::string lifetimeSkill;
 
 			//! Doc 91 L2/L3b: set when a lifetime event (an element
@@ -1255,12 +1267,16 @@ namespace RISE
 			//! newly flushed ToolResults entry `newEntry` is in the
 			//! transcript.  (1) DECIDE: walks the new entry's results in wire
 			//! order; a successful finish_element (element E) marks every
-			//! earlier live slot whose lifetimeElement is E, and -- once per
-			//! build plan -- a successful finish_element whose result reports
-			//! the COMPOSE phase (every element finished) marks every earlier
-			//! live slot carrying a lifetimeSkill; a successful file_build_plan
-			//! re-arms that.  "Earlier" includes the new entry's own earlier
-			//! results.  (2) APPLY: rewrites every marked, still-live slot in
+			//! earlier live slot whose lifetimeElement is E ("earlier"
+			//! includes the new entry's own earlier results), a successful
+			//! reopen_element E CANCELS any such mark not yet applied (E is no
+			//! longer settled), and -- once per build plan -- a successful
+			//! finish_element whose result reports the COMPOSE phase (every
+			//! element finished) marks every live slot carrying a
+			//! lifetimeSkill in an entry BEFORE the new one (a skill read in
+			//! the same turn counts as post-compose, whatever its position in
+			//! the turn); a successful file_build_plan re-arms that.
+			//! (2) APPLY: rewrites every marked, still-live slot in
 			//! an entry BEFORE `newEntry` -- never the entry being flushed, so
 			//! every result reaches the model at least once -- retrying each
 			//! flush until the codec rewrite lands.  Keyed only on data in the

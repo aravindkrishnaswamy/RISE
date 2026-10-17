@@ -861,9 +861,15 @@ namespace RISE
 		//! build_element / insert_chunks result for `element` is rewritten
 		//! to once a successful finish_element for that element has flowed
 		//! through the chat loop.  Says what was removed, why, and how to get
-		//! it back (read_document; reopen_element to edit).
+		//! it back (read_document; the chunks stay editable in place, and
+		//! reopen_element is needed only to create new geometry for it).
+		//! `carried` is the compact record of what the elided result
+		//! described that is NOT in the document -- rejected chunks and their
+		//! reasons, notices on chunks that did land -- appended verbatim so
+		//! retiring the result never deletes the only copy (review round 2).
 		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
-		                                               const std::string& element );
+		                                               const std::string& element,
+		                                               const std::string& carried = std::string() );
 
 		//! CONTEXT LIFETIMES (doc 91 slice L3b): the stub a live named
 		//! read_skill result is rewritten to once a successful

@@ -59,10 +59,14 @@ provider-cache miss — the doc 71 / T1c policy, unchanged.
   for element E flows through the chat loop, earlier live
   `build_element` and `insert_chunks` results that belong to E are
   replaced with a stub naming E and the recovery path (`read_document`
-  shows its chunks; `reopen_element` to edit).  Rides the same flush that
-  already elides the previous image, so it adds no extra cache miss
-  beyond that flush's earliest rewrite.  Keyed on data the loop already
-  sees (`element` in the call args / result), not on session state.
+  shows its chunks, which stay editable in place; `reopen_element` only
+  to create new geometry for E).  Results from EARLIER turns are
+  rewritten in the same flush that elides the previous image (the finish
+  result carries the isolate PNG), so they add no cache miss beyond that
+  flush's earliest rewrite.  A build result from the SAME turn as the
+  finish is retired one flush later, which is a separate (small, recent)
+  miss.  Keyed on data the loop already sees (`element` in the call args
+  / result), not on session state.
 - **L3 — skills retire at Compose.**  `read_skill` results are retired
   once the session reaches the Compose phase (as shipped: the successful
   `finish_element` reporting `phase:"compose"` -- not `place_element`,
@@ -113,14 +117,22 @@ apothecary and 0 on the dragons run (which read no skills).
 - L2/L3 (`AgentChatLoop.cpp` `RetireToolResultsByLifetime`, sharing
   `RewriteToolResultSlots` with supersession): slots record `verb`,
   `lifetimeElement` (insert_chunks: from its APPLIED/diagnosed chunks
-  only) and `lifetimeSkill` at pack time.  A lifetime event DECIDES (marks
+  only; a batch spanning two elements is never retired), `lifetimeCarry`
+  (review round 2: each rejected chunk with its reason and each notice on
+  a landed chunk, which the element-finished stub carries -- they are not
+  in the document, so retiring must not delete the only copy) and
+  `lifetimeSkill` at pack time.  A successful `reopen_element` E cancels
+  an element-finished retirement for E that was decided but not yet
+  applied.  A lifetime event DECIDES (marks
   `pendingRetireNote` on earlier slots) and the rewrite is APPLIED only to
   entries before the one being flushed, retried each flush until it lands
   -- so a same-turn build+finish still delivers the build result once.
   **The L3b trigger is NOT `place_element`** (that is legal and prescribed
   in the pieces phase, with later elements unbuilt): it is the successful
   `finish_element` whose result reports `phase:"compose"` (every element
-  finished), once per build plan; a successful `file_build_plan` re-arms
+  finished), once per build plan, and it retires skills read in EARLIER
+  turns only -- a skill read in the same turn as that finish counts as
+  post-compose in either order; a successful `file_build_plan` re-arms
   it, as does `Reset()`.  history_edit reasons
   `element_finished_retirement`, `compose_skill_retirement`; the same-name
   `read_skill` supersession is `tool_result_supersession`.  An `ok:false`

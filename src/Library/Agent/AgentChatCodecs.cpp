@@ -1553,7 +1553,7 @@ namespace RISE
 					"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,areaLights,"
 					"zeroAreaLights,skyLights,otherLights,"
 					"sources:[string],"
-					"message}.",
+					"message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in landed.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the lighting pass alongside the inventory and the camera -- anything about the mood or the look this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -1599,7 +1599,7 @@ namespace RISE
 					"this returns ok:false saying so without calling the provider. Returns "
 					"{ok,provider,model,chunksExtracted,created:[{name,geometry,material}],"
 					"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,objectsBefore,"
-					"objectsAfter,message}.",
+					"objectsAfter,message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in created.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the population pass alongside the inventory and the camera -- anything about what this scene is that its own state does not already say. Nothing checks what it says.\"}"
@@ -1653,7 +1653,7 @@ namespace RISE
 					"retrySucceeded,"
 					"completions,painters,media,boundPainter,bindingApplied,bindingReason,rasterizer,"
 					"radianceMapBefore,radianceMapAfter,globalMediumBefore,globalMediumAfter,"
-					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}.",
+					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in landed (an unnamed chunk such as global_medium keeps its chunkResults entry).",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the environment pass alongside the inventory and the camera -- anything about the place or the weather this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -1702,7 +1702,9 @@ namespace RISE
 					"cameraKindBefore,cameraNameBefore,cameraKindAfter,cameraNameAfter,paramsApplied,"
 					"rejected:[{name,kind,reason}],patchResults,chunkResults,retryRan,retrySucceeded,"
 					"completions,objectsBefore,coveredBefore,objectsAfter,coveredAfter,"
-					"broughtIntoFrame,pushedOutOfFrame,message}.",
+					"broughtIntoFrame,pushedOutOfFrame,message}. chunkResults holds only a camera "
+					"chunk that was rejected, diagnosed or carries a notice; a clean replacement camera is "
+					"named in cameraNameAfter.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the framing pass alongside the inventory and the current camera -- anything about the shot you want that this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -2484,11 +2486,21 @@ namespace RISE
 		}
 
 		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
-		                                               const std::string& element )
+		                                               const std::string& element,
+		                                               const std::string& carried )
 		{
-			return "[" + verbName + " result for element \"" + element + "\" elided -- \"" + element +
-			       "\" is finished; read_document shows its chunks, reopen_element \"" + element +
-			       "\" to edit it]";
+			// The edit rule, stated as the session enforces it: an element's
+			// chunks stay ordinary editable chunks after it is finished
+			// (propose_patch / remove_chunk work on them anywhere); only
+			// CREATING new geometry for it needs reopen_element (the compose
+			// phase refuses geometry creation, and reopen_element is its
+			// documented way out).
+			std::string note = "[" + verbName + " result for element \"" + element + "\" elided -- \"" +
+				element + "\" is finished; its chunks are in the document (read_document shows them) "
+				"and stay editable in place; reopen_element \"" + element + "\" only to create new "
+				"geometry for it";
+			if( !carried.empty() ) note += ". Not in the document, kept from the elided result: " + carried;
+			return note + "]";
 		}
 
 		std::string ChatComposeSkillRetirementNote( const std::string& skillName )

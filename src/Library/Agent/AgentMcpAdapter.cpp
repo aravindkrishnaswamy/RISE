@@ -1271,7 +1271,7 @@ namespace RISE
 						"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,"
 						"areaLights,zeroAreaLights,skyLights,otherLights,"
 						"sources:[string],"
-						"message}." );
+						"message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in landed." );
 					tools.push_back( MakeTool( "light_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1337,7 +1337,7 @@ namespace RISE
 						"ok:false saying so without calling the provider. Returns {ok,provider,model,"
 						"chunksExtracted,created:[{name,geometry,material}],"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
-						"objectsBefore,objectsAfter,message}." );
+						"objectsBefore,objectsAfter,message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in created." );
 					tools.push_back( MakeTool( "populate_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1412,7 +1412,7 @@ namespace RISE
 						"completions,painters,media,boundPainter,bindingApplied,bindingReason,"
 						"rasterizer,radianceMapBefore,radianceMapAfter,globalMediumBefore,"
 						"globalMediumAfter,toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},"
-						"toneAfter:{...},message}." );
+						"toneAfter:{...},message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in landed (an unnamed chunk such as global_medium keeps its chunkResults entry)." );
 					tools.push_back( MakeTool( "environment_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1478,7 +1478,8 @@ namespace RISE
 						"cameraKindAfter,cameraNameAfter,paramsApplied,rejected:[{name,kind,reason}],"
 						"patchResults,chunkResults,retryRan,retrySucceeded,completions,objectsBefore,"
 						"coveredBefore,objectsAfter,coveredAfter,broughtIntoFrame,pushedOutOfFrame,"
-						"message}." );
+						"message}. chunkResults holds only a camera chunk that was rejected, diagnosed or "
+						"carries a notice; a clean replacement camera is named in cameraNameAfter." );
 					tools.push_back( MakeTool( "frame_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 

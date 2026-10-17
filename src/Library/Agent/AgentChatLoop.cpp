@@ -2257,6 +2257,66 @@ namespace RISE
 				return std::string();
 			}
 
+			//! Doc 91 L2 review round 2: the compact record of what a
+			//! build_element / insert_chunks result says that is NOT in the
+			//! document, so the element-finished stub can carry it.  Each
+			//! item is "<name> (<kind>): <text>", each text capped at 200
+			//! bytes (UTF-8-safe); an item whose text repeats one already
+			//! carried is not repeated (build_element reports a rejected
+			//! chunk in both `rejected` and `chunkResults`).
+			//!   build_element: every `rejected` entry (its reason) and every
+			//!     `chunkResults` entry (its message -- since L1 that array
+			//!     holds only chunks with something to say).
+			//!   insert_chunks: every `results` entry that still carries a
+			//!     `message` (L1 slims a clean success to no message at all).
+			std::string LifetimeCarryOf( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name != "build_element" && call.name != "insert_chunks" ) return std::string();
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r ) return std::string();
+				std::vector<std::string> texts;
+				std::string out;
+				auto add = [&]( const JsonValue& item, const char* textKey ) {
+					const std::string text = item.get( textKey ).asString();
+					if( text.empty() ) return;
+					for( std::size_t k = 0; k < texts.size(); ++k ) if( texts[k] == text ) return;
+					texts.push_back( text );
+					std::string label = item.get( "name" ).asString();
+					const std::string kind = item.get( "kind" ).asString();
+					if( label.empty() ) label = kind.empty() ? std::string( "a chunk" ) : ( "an unnamed " + kind );
+					else if( !kind.empty() ) label += " (" + kind + ")";
+					if( !out.empty() ) out += "; ";
+					out += label + ": " + TruncateForOutcome( text, 200 );
+				};
+				if( call.name == "build_element" ) {
+					const JsonValue& rej = r->get( "rejected" );
+					for( std::size_t i = 0; rej.isArray() && i < rej.size(); ++i ) add( rej.at( i ), "reason" );
+					const JsonValue& crs = r->get( "chunkResults" );
+					for( std::size_t i = 0; crs.isArray() && i < crs.size(); ++i ) add( crs.at( i ), "message" );
+				}
+				else {
+					const JsonValue& items = r->get( "results" );
+					for( std::size_t i = 0; items.isArray() && i < items.size(); ++i ) add( items.at( i ), "message" );
+				}
+				return out;
+			}
+
+			//! True for a successful reopen_element (result ok:true naming its
+			//! element), with the element in `element` -- E is no longer
+			//! settled, so a decided-but-unapplied L2 retirement for it is
+			//! cancelled.
+			bool IsReopenedElementResult( const ChatToolCall& call, const std::string& raw,
+			                              std::string& element )
+			{
+				if( call.name != "reopen_element" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r || !r->get( "ok" ).asBool( false ) ) return false;
+				element = r->get( "element" ).asString();
+				return !element.empty();
+			}
+
 			//! True for a successful finish_element (result ok:true naming
 			//! its element), with the element in `element` and whether the
 			//! result reports that the build plan is now in its COMPOSE phase
@@ -2449,6 +2509,8 @@ namespace RISE
 					ChatToolResultSupersessionKey( ordered[i].first, ordered[i].second );
 				slot.verb = ordered[i].first.name;
 				slot.lifetimeElement = LifetimeElementOf( ordered[i].first, ordered[i].second );
+				if( !slot.lifetimeElement.empty() )
+					slot.lifetimeCarry = LifetimeCarryOf( ordered[i].first, ordered[i].second );
 				const std::string skillPrefix( kChatReadSkillKeyPrefix );
 				if( slot.supersessionKey.compare( 0, skillPrefix.size(), skillPrefix ) == 0 )
 					slot.lifetimeSkill = slot.supersessionKey.substr( skillPrefix.size() );
@@ -2675,6 +2737,26 @@ namespace RISE
 				}
 
 				std::string element;
+
+				// Review round 2: a reopened element is no longer settled --
+				// cancel any element-finished retirement for it that was
+				// decided but not yet applied (a same-turn build+finish whose
+				// build result was still waiting for the next flush).
+				if( IsReopenedElementResult( call, raw, element ) ) {
+					for( std::size_t e = 0; e <= newEntry; ++e ) {
+						ChatTranscriptEntry& entry = mTranscript[e];
+						if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+						for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+							ChatToolResultSlot& slot = entry.toolResultSlots[s];
+							if( !slot.live || slot.lifetimeElement != element ||
+							    slot.pendingRetireReason != "element_finished_retirement" ) continue;
+							slot.pendingRetireNote.clear();
+							slot.pendingRetireReason.clear();
+						}
+					}
+					continue;
+				}
+
 				bool composeReached = false;
 				if( !IsFinishedElementResult( call, raw, element, composeReached ) ) continue;
 
@@ -2683,16 +2765,20 @@ namespace RISE
 				mark( i, "element_finished_retirement",
 				      [&]( const ChatToolResultSlot& slot ) { return slot.lifetimeElement == element; },
 				      [&]( const ChatToolResultSlot& slot ) {
-				          return ChatElementFinishedRetirementNote( slot.verb, element ); } );
+				          return ChatElementFinishedRetirementNote( slot.verb, element, slot.lifetimeCarry ); } );
 
 				// L3b: the finish that takes the plan into its COMPOSE phase
-				// settles the planning -- every skill read so far retires,
-				// once per plan.  Placing an element is NOT this signal:
-				// place_element is legal (and prescribed) in the pieces phase,
-				// while later elements are still unbuilt.
+				// settles the planning -- every skill read in an EARLIER turn
+				// retires, once per plan.  Placing an element is NOT this
+				// signal: place_element is legal (and prescribed) in the
+				// pieces phase, while later elements are still unbuilt.  A
+				// skill read in the SAME turn as the compose finish is
+				// treated as post-compose (limit 0 in the new entry), so
+				// [read_skill X, finish] and [finish, read_skill X] behave
+				// identically: X stays live (review round 2).
 				if( composeReached && !mComposeSkillRetirementDone ) {
 					mComposeSkillRetirementDone = true;
-					mark( i, "compose_skill_retirement",
+					mark( 0, "compose_skill_retirement",
 					      []( const ChatToolResultSlot& slot ) { return !slot.lifetimeSkill.empty(); },
 					      []( const ChatToolResultSlot& slot ) {
 					          return ChatComposeSkillRetirementNote( slot.lifetimeSkill ); } );

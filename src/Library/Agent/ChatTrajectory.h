@@ -163,8 +163,9 @@ namespace RISE
 		//!    doc 71 sec 6b, doc 91 L3a), "element_finished_retirement" (a
 		//!    successful finish_element retired the element's build_element /
 		//!    insert_chunks results; doc 91 L2) and "compose_skill_retirement"
-		//!    (the first successful place_element retired the live read_skill
-		//!    results; doc 91 L3b): same byte meaning as the image elisions --
+		//!    (the finish_element that reported the build plan's compose phase
+		//!    retired the earlier live read_skill results; doc 91 L3b): same
+		//!    byte meaning as the image elisions --
 		//!    one record per rewritten entry.
 		//!  - "context_compaction": entryIndex -1; before/after = the token
 		//!    ESTIMATE around the whole-span drop (not bytes).
