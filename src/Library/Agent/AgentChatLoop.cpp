@@ -1076,6 +1076,16 @@ namespace RISE
 				mAppendingCorrective = true;
 				AddUserMessage( corrective );
 				mAppendingCorrective = false;
+				// Same wire shape as a user entry (MakeUserEntry), but a
+				// loop-injected note, NOT a span boundary: CompactTranscript
+				// must never treat it as a turn the user took, or repeated
+				// correctives could let it erase the real request's span.
+				if( !mTranscript.empty() &&
+				    mTranscript.back().role == ChatTranscriptEntry::Role::User ) {
+					mTranscript.back().role = ChatTranscriptEntry::Role::DriverNote;
+					++mDriverNoteCount;
+					mLastDriverNoteText = corrective;
+				}
 				mToolRounds = savedRounds;
 				mBlindEditStreak = savedBlindStreak;
 			}
@@ -1236,7 +1246,13 @@ namespace RISE
 					return pr.step;
 				}
 				++mMalformedRetries;
+				// Provider text is model-authored: flatten control characters
+				// and newlines so it cannot restructure the corrective.
 				std::string detail = pr.step.errorMessage;
+				for( std::size_t i = 0; i < detail.size(); ++i ) {
+					const unsigned char ch = static_cast<unsigned char>( detail[i] );
+					if( ch < 0x20 || ch == 0x7f ) detail[i] = ' ';
+				}
 				if( detail.size() > 300 ) detail = detail.substr( 0, 300 ) + "...";
 				mPendingCorrective =
 					"[automatic notice] Your previous tool call was malformed and was NOT executed: " +

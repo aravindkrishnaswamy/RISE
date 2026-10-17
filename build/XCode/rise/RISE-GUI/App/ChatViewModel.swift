@@ -2549,6 +2549,8 @@ final class ChatViewModel: ObservableObject {
                     // corrective user message for the next buildRequest and
                     // bounds the retries (2 per user turn), so this case is
                     // deliberately NOT gated by degenerateTurnRetried.
+                    transcript.append(Entry(
+                        kind: .notice, text: "Retrying malformed tool call..."))
                     httpAttempt += 1
                     continue
                 }

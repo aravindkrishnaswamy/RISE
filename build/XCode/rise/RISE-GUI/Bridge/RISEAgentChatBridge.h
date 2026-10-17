@@ -180,7 +180,12 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 /// request change is needed, since nothing was recorded for a
 /// ProviderError (BuildRequest at the top of the next iteration rebuilds
 /// from the unchanged transcript) — before falling back to the ordinary
-/// ProviderError handling.  Always false for every other kind/case.
+/// ProviderError handling.  ALSO true on errorKind MalformedToolCall while
+/// the C++ loop's per-turn corrective budget (2) lasts: the loop has
+/// queued a corrective user message that the next buildRequest appends,
+/// so the driver just re-issues (NOT gated by the retry-once rule; the
+/// loop bounds it) and, once the budget is spent, the flag is false and
+/// the error surfaces.  Always false for every other kind/case.
 @property (nonatomic, readonly) BOOL retryDegenerateTurn;
 @end
 
