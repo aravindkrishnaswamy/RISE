@@ -545,24 +545,27 @@ static void TestDisplacedOverLatheAppliesDisplacement()
 
 	IndexTriangleListType dTris; VerticesListType dVerts; NormalsListType dNorms; TexCoordsListType dCoords;
 	assert( pDisp->TessellateToMesh( dTris, dVerts, dNorms, dCoords, 0 ) );
-	// `detail` (32) now REFINES a mesh base whose edges exceed bbox-diagonal /
-	// detail, so the baked mesh is finer than the 4-ring-row base.  The
-	// original vertices keep indices [0, baseVerts.size()); midpoints are
-	// appended after them.  Exact count expectation WITHOUT replicating the
-	// algorithm: the vase is a closed genus-0 surface (a pole at each end), so
-	// Euler gives V - E + F = 2 with E = 3F/2, i.e. V = F/2 + 2 -- true of the
-	// base (98 = 192/2 + 2) and true of a crack-free refinement, but NOT of one
-	// that duplicates a midpoint per incident triangle or leaves T-junctions.
+	// `detail` (32) now makes the LATHE re-bake itself at a higher native density
+	// (rows along the profile, more radial columns -- see IMeshRebaker), so the baked
+	// mesh is finer than the 5-row base.  Exact count expectation WITHOUT replicating
+	// the builder: the vase is a closed genus-0 surface (a pole at each end), so Euler
+	// gives V - E + F = 2 with E = 3F/2, i.e. V = F/2 + 2 -- true of the base
+	// (98 = 192/2 + 2) and of any crack-free re-bake, but NOT of one with duplicated
+	// or missing seam vertices.
 	assert( baseVerts.size() == baseTris.size() / 2 + 2 );
 	assert( dTris.size() > baseTris.size() );
 	assert( dVerts.size() > baseVerts.size() );
 	assert( dVerts.size() == dTris.size() / 2 + 2 );
 
-	// Every ORIGINAL base vertex must reappear (displaced indices are NOT
-	// preserved: TessellateToMesh re-emits in first-seen order over the refined
-	// triangles) displaced by exactly k along its own unit normal.
-	Scalar worstErr = 0.0;
+	// The re-bake keeps every profile row (original profile points are re-emitted
+	// exactly) and the angle-0 radial column, so each ORIGINAL base vertex on that
+	// column and both poles must reappear displaced by exactly k along its own unit
+	// normal (displaced indices are NOT preserved: TessellateToMesh re-emits in
+	// first-seen order).
+	Scalar worstErr = 0.0; size_t checked = 0;
 	for( size_t i = 0; i < baseVerts.size(); ++i ) {
+		if( !( std::fabs( baseVerts[i].x ) < 1e-9 && baseVerts[i].z >= 0.0 ) ) continue;
+		++checked;
 		const Vector3 n = Vector3Ops::Normalize( baseNorms[i] );
 		const Point3 expected( baseVerts[i].x + n.x * k, baseVerts[i].y + n.y * k, baseVerts[i].z + n.z * k );
 		Scalar best = 1e30;
@@ -573,7 +576,8 @@ static void TestDisplacedOverLatheAppliesDisplacement()
 		worstErr = std::max( worstErr, best );
 	}
 	std::cout << "  [info] lathe: " << baseVerts.size() << " base vertices -> " << dVerts.size()
-		<< " baked (" << baseTris.size() << " -> " << dTris.size() << " tris); worst |displaced - (base + k n)| = " << worstErr << " (amplitude k=" << k << ")\n";
+		<< " baked (" << baseTris.size() << " -> " << dTris.size() << " tris); " << checked << " angle-0 / pole vertices: worst |displaced - (base + k n)| = " << worstErr << " (amplitude k=" << k << ")\n";
+	assert( checked >= 5 );
 	assert( worstErr < 1e-9 );
 
 	pDisp->release();
@@ -883,8 +887,10 @@ static TriangleMeshGeometryIndexed* MakeCoarseLathe( const int nRadial )
 // `detail` REFINES a mesh base.  A lathe/sweep/skin/imported mesh ignores
 // `detail` in its own TessellateToMesh, so it used to be displaced only at its
 // OWN vertices: a 4-point-profile lathe has 4 vertex rows however fine the
-// relief, and `detail 48` did nothing.  DisplacedGeometry::BuildMesh now splits
-// every edge longer than (base bbox diagonal / detail) before displacing.
+// relief, and `detail 48` did nothing.  DisplacedGeometry::BuildMesh now brings a
+// mesh base to spacing (base bbox diagonal / detail) before displacing: a lathe /
+// sweep / skin re-bakes itself at that density (row and column spacing <= target;
+// the quad diagonal is sqrt(2) longer), other indexed meshes subdivide uniformly.
 //
 // RED on the unrefined bake (vertical spacing = the profile rows, ~1.5 vs a
 // 0.072 target); GREEN now.  Also pins: crack-free (Euler characteristic of
@@ -923,7 +929,8 @@ static void TestDetailRefinesMeshBases()
 		std::cout << "  [info] displaced: " << dTris.size() << " tris, longest edge " << maxEdge << ", largest vertical gap between vertices " << maxGap << "\n";
 
 		// MONEY ASSERTIONS (red before the refinement: maxEdge ~ 1.5, maxGap ~ 1.5).
-		assert( maxEdge <= 1.3 * target );
+		// a re-baked grid bounds its ROW and COLUMN spacing by the target; the quad diagonal is sqrt(2) longer
+		assert( maxEdge <= 1.5 * target );
 		assert( maxGap  <= 1.3 * target );
 		// crack-free: refinement preserves the Euler characteristic of the base.
 		assert( EulerCharacteristic( dTris ) == EulerCharacteristic( bTris ) );
@@ -1572,6 +1579,336 @@ static void TestFaceNormalBaseIsNotRefined()
 	assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
 	std::cout << "  [info] face-normal quad at detail 64: " << t.size() << " triangles, " << v.size() << " vertices (unrefined: 2 / 6)\n";
 	assert( t.size() == 2 );
+	pDisp->release(); pFn->release(); m->release();
+}
+
+//-----------------------------------------------------------------------------
+// Round-3 P1: `detail` on a mesh base builds REGULAR meshes.
+//
+// The first cut split edges adaptively (per-edge 1/2/3-way splits): 48.6% of the
+// triangles of a refined dome lathe had a minimum angle under 20 degrees and
+// 56% of its edges ran across the (u,v) diagonal (a regular grid has 1/3), so
+// directional relief (ribs / flutes) rendered zig-zag and torn at 2.4x the
+// triangles of a regular grid.  Now
+//   (a) a lathe / sweep / skin RE-BAKES ITSELF at the needed native density
+//       (IMeshRebaker: regular quads, exact surface positions), and
+//   (b) any other indexed mesh is subdivided UNIFORMLY (whole 1->4 levels, level
+//       count from the base's MEDIAN edge length, so one outlier edge cannot
+//       drive it).
+// The oracle for (a) is an independently built regular-grid control: the same
+// profile resampled by THIS test at the same spacing, with a radial count to match,
+// baked by the plain lathe factory.
+//-----------------------------------------------------------------------------
+struct MeshQuality
+{
+	size_t tris; double fracMinAngleUnder20; double fracUVDiagonal;
+};
+
+static MeshQuality MeasureLatheQuality( const IndexTriangleListType& t, const VerticesListType& v, const TexCoordsListType& c )
+{
+	MeshQuality q; q.tris = t.size();
+	size_t under20 = 0, counted = 0, edges = 0, diag = 0;
+	for( size_t i = 0; i < t.size(); ++i ) {
+		Scalar mn = 1e9;
+		for( int k = 0; k < 3; ++k ) {
+			const Point3& a = v[t[i].iVertices[k]]; const Point3& b = v[t[i].iVertices[( k + 1 ) % 3]]; const Point3& d = v[t[i].iVertices[( k + 2 ) % 3]];
+			const Vector3 e1 = Vector3Ops::mkVector3( b, a ), e2 = Vector3Ops::mkVector3( d, a );
+			const Scalar l1 = Vector3Ops::Magnitude( e1 ), l2 = Vector3Ops::Magnitude( e2 );
+			if( !( l1 > 0 ) || !( l2 > 0 ) ) continue;
+			Scalar cs = Vector3Ops::Dot( e1, e2 ) / ( l1 * l2 );
+			cs = std::max( Scalar(-1), std::min( Scalar(1), cs ) );
+			mn = std::min( mn, std::acos( cs ) * 180.0 / PI );
+			// UV-diagonal: an edge whose chart step changes BOTH u and v (a regular grid has 1/3 of its edges so)
+			const Point2& ca = c[t[i].iCoords[k]]; const Point2& cb = c[t[i].iCoords[( k + 1 ) % 3]];
+			if( std::sqrt( a.x*a.x + a.z*a.z ) < 1e-6 || std::sqrt( b.x*b.x + b.z*b.z ) < 1e-6 ) continue;	// pole spokes
+			Scalar du = cb.x - ca.x; du -= std::floor( du + 0.5 );
+			++edges;
+			if( std::fabs( du ) > 1e-9 && std::fabs( cb.y - ca.y ) > 1e-9 ) ++diag;
+		}
+		if( mn < 1e8 ) { ++counted; if( mn < 20.0 ) ++under20; }
+	}
+	q.fracMinAngleUnder20 = counted ? double( under20 ) / double( counted ) : 0.0;
+	q.fracUVDiagonal = edges ? double( diag ) / double( edges ) : 0.0;
+	return q;
+}
+
+static void TestRefinementIsRegular()
+{
+	std::cout << "Test 10j: a re-baked lathe is a REGULAR grid (triangle count and quality vs an independently built control)...\n";
+
+	// the reviewer's dome: 4-point profile, 32 radial, detail 64
+	static const double prof[] = { 0.0, 0.0,  1.2, 0.3,  1.2, 1.0,  0.0, 2.2 };
+	const unsigned int detail = 64;
+	LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 4; ld.nRadial = 32; ld.smooth = true;
+	ITriangleMeshGeometryIndexed* pI = 0;
+	assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+	TriangleMeshGeometryIndexed* pLathe = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+	assert( pLathe );
+	IndexTriangleListType bt; VerticesListType bv; NormalsListType bn; TexCoordsListType bc;
+	assert( pLathe->TessellateToMesh( bt, bv, bn, bc, 0 ) );
+	const Scalar target = BBoxDiagonal( bv ) / Scalar( detail );
+
+	ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, detail, pConst, 1e-4, false, false, false );
+	pDisp->Realize();
+	IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+	assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+	const MeshQuality ours = MeasureLatheQuality( t, v, c );
+
+	// CONTROL: the same profile resampled at the target spacing by this test, radial count to match
+	std::vector<double> fine; fine.push_back( prof[0] ); fine.push_back( prof[1] );
+	for( int s = 0; s < 3; ++s ) {
+		const double ax = prof[2*s], ay = prof[2*s+1], bx = prof[2*s+2], by = prof[2*s+3];
+		const int nn = std::max( 1, (int)std::ceil( std::hypot( bx - ax, by - ay ) / target ) );
+		for( int i = 1; i <= nn; ++i ) { const double f = double( i ) / nn; fine.push_back( ax + ( bx - ax ) * f ); fine.push_back( ay + ( by - ay ) * f ); }
+	}
+	LatheDescriptor cd; cd.profilePoints = fine.data(); cd.numProfilePoints = (unsigned int)( fine.size() / 2 );
+	cd.nRadial = (int)std::ceil( 2.0 * 3.14159265358979323846 * 1.2 / target ); cd.smooth = true;
+	ITriangleMeshGeometryIndexed* pCI = 0;
+	assert( RISE_API_CreateLatheGeometry( &pCI, cd ) );
+	TriangleMeshGeometryIndexed* pCtl = dynamic_cast<TriangleMeshGeometryIndexed*>( pCI );
+	IndexTriangleListType ct; VerticesListType cv; NormalsListType cn; TexCoordsListType cc;
+	assert( pCtl->TessellateToMesh( ct, cv, cn, cc, 0 ) );
+	const MeshQuality ctl = MeasureLatheQuality( ct, cv, cc );
+
+	std::cout << "  [info] ours:    " << ours.tris << " tris, " << 100 * ours.fracMinAngleUnder20 << "% under 20 deg, " << 100 * ours.fracUVDiagonal << "% UV-diagonal edges\n";
+	std::cout << "  [info] control: " << ctl.tris << " tris, " << 100 * ctl.fracMinAngleUnder20 << "% under 20 deg, " << 100 * ctl.fracUVDiagonal << "% UV-diagonal edges (a regular grid has 33%)\n";
+	std::cout << "  [info] (the adaptive-split first cut: 37888 tris, 48.6% under 20 deg, 56.4% UV-diagonal)\n";
+	assert( ours.tris <= 1.3 * double( ctl.tris ) );							// within ~1.3x of the regular-grid triangle count
+	assert( ours.fracMinAngleUnder20 <= ctl.fracMinAngleUnder20 + 0.03 );		// no sliver excess over the regular grid
+	assert( ours.fracUVDiagonal <= 0.40 );										// regular: 1/3 (adaptive splitting: 56%)
+
+	pDisp->release(); pConst->release(); pCtl->release(); pLathe->release();
+
+	// ---- (b) the UNIFORM path for a non-builder mesh -------------------------------
+	{
+		// right-isosceles quad: uniform 1->4 children are SIMILAR to their parent (all 45-45-90)
+		TriangleMeshGeometryIndexed* pQuad = MakeUVQuad( 1.0 );
+		UVSpyFunction2D* pFn = new UVSpyFunction2D();
+		DisplacedGeometry* pQD = new DisplacedGeometry( pQuad, 8, pFn, 0.1, false, false, false );
+		pQD->Realize();
+		IndexTriangleListType qt; VerticesListType qv; NormalsListType qn; TexCoordsListType qc;
+		assert( pQD->TessellateToMesh( qt, qv, qn, qc, 0 ) );
+		Scalar worstMin = 90.0;
+		for( size_t i = 0; i < qt.size(); ++i ) {
+			// angles in the flat (undisplaced) plane: positions' y,z only (displacement is along x)
+			const Point3 p[3] = { qv[qt[i].iVertices[0]], qv[qt[i].iVertices[1]], qv[qt[i].iVertices[2]] };
+			for( int k = 0; k < 3; ++k ) {
+				const Scalar e1y = p[(k+1)%3].y - p[k].y, e1z = p[(k+1)%3].z - p[k].z, e2y = p[(k+2)%3].y - p[k].y, e2z = p[(k+2)%3].z - p[k].z;
+				const Scalar cs = ( e1y*e2y + e1z*e2z ) / ( std::sqrt( e1y*e1y + e1z*e1z ) * std::sqrt( e2y*e2y + e2z*e2z ) );
+				worstMin = std::min( worstMin, std::acos( std::max( Scalar(-1), std::min( Scalar(1), cs ) ) ) * 180.0 / PI );
+			}
+		}
+		std::cout << "  [info] uniform (b) path on a 2-triangle quad at detail 8: " << qt.size() << " triangles, smallest angle " << worstMin << " deg (parent 45)\n";
+		assert( qt.size() >= 8 );
+		assert( worstMin > 44.999 );
+		pQD->release(); pFn->release(); pQuad->release();
+	}
+	{
+		// MEDIAN policy: an 8x8 grid (0.25 cells) plus ONE triangle spanning the whole grid.  The longest edge is 2.0
+		// but the median is 0.25 <= target (diag / 10), so nothing is refined; a max-driven level count would refine heavily.
+		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false );
+		m->BeginIndexedTriangles();
+		for( int j = 0; j <= 8; ++j ) for( int i = 0; i <= 8; ++i ) { m->AddVertex( Point3( 0.25 * i, 0.25 * j, 0 ) ); m->AddNormal( Vector3( 0, 0, 1 ) ); m->AddTexCoord( Point2( i / 8.0, j / 8.0 ) ); }
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * 9 + i ); };
+		for( int j = 0; j < 8; ++j ) for( int i = 0; i < 8; ++i ) {
+			m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( id(i,j), id(i+1,j), id(i+1,j+1) ) );
+			m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( id(i,j), id(i+1,j+1), id(i,j+1) ) );
+		}
+		m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( id(0,0), id(8,0), id(0,8) ) );	// the outlier: edges of length 2
+		m->DoneIndexedTriangles();
+		UVSpyFunction2D* pFn = new UVSpyFunction2D();
+		DisplacedGeometry* pMD = new DisplacedGeometry( m, 10, pFn, 0.05, false, false, false );
+		pMD->Realize();
+		IndexTriangleListType mt; VerticesListType mv; NormalsListType mn; TexCoordsListType mc;
+		assert( pMD->TessellateToMesh( mt, mv, mn, mc, 0 ) );
+		std::cout << "  [info] median policy: grid + one 2.0-long outlier triangle, detail 10: " << mt.size() << " triangles (base 129)\n";
+		assert( mt.size() == 129 );
+		pMD->release(); pFn->release(); m->release();
+	}
+}
+
+//-----------------------------------------------------------------------------
+// A LOFT (circle -> rect morph sweep) re-bakes with both profiles refined at ONE
+// common parameter set; refining them independently left the factory's union
+// resample with near-coincident parameters -- razor-thin ring rows (min triangle
+// area 4e-7 against 2e-4 in the base, black dashes in the render).
+//-----------------------------------------------------------------------------
+static void TestLoftRebakeHasNoSlivers()
+{
+	std::cout << "Test 10m: a re-baked circle->rect loft has no razor-thin ring rows...\n";
+	const int nCirc = 28;
+	double circ[ 2 * 28 ];
+	for( int i = 0; i < nCirc; ++i ) { const double a = 2.0 * 3.14159265358979323846 * i / nCirc; circ[2*i] = 0.52 * std::cos( a ); circ[2*i+1] = 0.52 * std::sin( a ); }
+	static const double rect[] = { -0.65, -0.65,  0.65, -0.65,  0.65, 0.65,  -0.65, 0.65 };
+	static const double path[] = { 0, 4.2, 0,  0, 2.8, 0,  0, 1.4, 0,  0, 0.0, 0 };
+	SweepDescriptor sd; sd.profilePoints = circ; sd.numProfilePoints = nCirc; sd.profile2Points = rect; sd.numProfile2Points = 4;
+	sd.pathPoints = path; sd.numPathPoints = 4; sd.nLen = 64; sd.capStart = false; sd.capEnd = false; sd.frameHintX = 1.0;
+	ITriangleMeshGeometryIndexed* pI = 0;
+	assert( RISE_API_CreateSweepGeometry( &pI, sd ) );
+	TriangleMeshGeometryIndexed* pSweep = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+	assert( pSweep );
+	ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry( pSweep, 48, pConst, 1e-4, false, false, false );
+	pDisp->Realize();
+	IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+	assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+	std::vector<double> areas;
+	for( size_t i = 0; i < t.size(); ++i ) {
+		const Vector3 cr = Vector3Ops::Cross( Vector3Ops::mkVector3( v[t[i].iVertices[1]], v[t[i].iVertices[0]] ), Vector3Ops::mkVector3( v[t[i].iVertices[2]], v[t[i].iVertices[0]] ) );
+		areas.push_back( 0.5 * Vector3Ops::Magnitude( cr ) );
+	}
+	std::sort( areas.begin(), areas.end() );
+	const double minA = areas.front(), medA = areas[areas.size() / 2];
+	std::cout << "  [info] re-baked loft: " << t.size() << " triangles, smallest area " << minA << ", median " << medA << " (ratio " << minA / medA << ")\n";
+	assert( t.size() > 1000 );
+	assert( minA > 0.02 * medA );
+	pDisp->release(); pConst->release(); pSweep->release();
+}
+
+//-----------------------------------------------------------------------------
+// A POLAR vertex (a lathe pole: its u is a placeholder) is displaced by the AVERAGE
+// of its neighbours' displacements, not by the field at the placeholder -- the
+// spokes around it displace by the field at their own coordinates, and a pole at
+// f(placeholder) made a star of folds at the lid.  f(u,v) = u^2: the field at the
+// placeholder u = 0.5 is 0.25, the ring's mean is ~1/3, so the two differ visibly.
+//-----------------------------------------------------------------------------
+class USquaredFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar x, const Scalar /*y*/ ) const { return x * x; }
+};
+
+static void TestPolarVertexDisplacesByNeighbourAverage()
+{
+	std::cout << "Test 10n: a pole is displaced by the average of its neighbours' displacements (no lid star)...\n";
+	static const double prof[] = { 0.0, 0.0,  1.2, 0.3,  1.2, 1.0,  0.0, 2.2 };
+	LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 4; ld.nRadial = 32; ld.smooth = true;
+	ITriangleMeshGeometryIndexed* pI = 0;
+	assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+	TriangleMeshGeometryIndexed* pLathe = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+	USquaredFunction2D* pFn = new USquaredFunction2D();
+	const Scalar k = 0.3;
+	DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, 64, pFn, k, false, false, false );
+	pDisp->Realize();
+	IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+	assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+	size_t pole = v.size();
+	for( size_t i = 0; i < v.size(); ++i ) {
+		if( std::fabs( v[i].x ) < 1e-9 && std::fabs( v[i].z ) < 1e-9 && v[i].y > 1.0 && ( pole == v.size() || v[i].y > v[pole].y ) ) pole = i;
+	}
+	assert( pole < v.size() );
+	std::vector<size_t> nb;
+	for( size_t i = 0; i < t.size(); ++i ) for( int j = 0; j < 3; ++j ) if( t[i].iVertices[j] == pole ) { nb.push_back( t[i].iVertices[( j + 1 ) % 3] ); nb.push_back( t[i].iVertices[( j + 2 ) % 3] ); }
+	std::sort( nb.begin(), nb.end() ); nb.erase( std::unique( nb.begin(), nb.end() ), nb.end() );
+	assert( nb.size() >= 32 );
+	Scalar mean = 0.0;
+	for( size_t j = 0; j < nb.size(); ++j ) mean += k * c[nb[j]].x * c[nb[j]].x;
+	mean /= Scalar( nb.size() );
+	const Scalar poleDisp = v[pole].y - 2.2;
+	std::cout << "  [info] top pole displaced by " << poleDisp << "; mean of its " << nb.size() << " neighbours' displacements " << mean
+		<< " (the field at the placeholder u = 0.5 would give " << k * 0.25 << ")\n";
+	assert( std::fabs( poleDisp - mean ) < 1e-6 );
+	pDisp->release(); pFn->release(); pLathe->release();
+}
+
+//-----------------------------------------------------------------------------
+// Round-3 P2(1): a DISPLACED base is not refined again (its inner layer already
+// honoured its own detail), so displaced-of-displaced over an analytic base cannot
+// pick up the placeholder pole UVs of a sphere / ellipsoid / disk tessellation.
+// (First cut: 418 of 11327 vertices of such a stack got a far-side u.)
+//-----------------------------------------------------------------------------
+static void TestDisplacedBaseIsNotRefinedAgain()
+{
+	std::cout << "Test 10k: displaced-of-displaced over a sphere keeps the inner layer's mesh and UVs (inner detail governs)...\n";
+	SphereGeometry* pSphere = new SphereGeometry( 1.0 );
+	ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pInner = new DisplacedGeometry( pSphere, 16, pConst, 0.05, false, false );
+	pInner->Realize();
+	DisplacedGeometry* pOuter = new DisplacedGeometry( pInner, 64, pConst, 0.05, false, false );
+	pOuter->Realize();
+	IndexTriangleListType it, ot; VerticesListType iv, ov; NormalsListType in_, on; TexCoordsListType ic, oc;
+	assert( pInner->TessellateToMesh( it, iv, in_, ic, 0 ) );
+	assert( pOuter->TessellateToMesh( ot, ov, on, oc, 0 ) );
+	size_t bad = 0;
+	for( size_t i = 0; i < ov.size(); ++i ) {
+		Scalar best = 1e30; size_t bj = 0;
+		for( size_t j = 0; j < iv.size(); ++j ) {
+			const Scalar dx = ov[i].x - iv[j].x, dy = ov[i].y - iv[j].y, dz = ov[i].z - iv[j].z;
+			const Scalar dd = dx*dx + dy*dy + dz*dz;
+			if( dd < best ) { best = dd; bj = j; }
+		}
+		if( CircDist( oc[i].x, ic[bj].x ) > 0.15 ) ++bad;
+	}
+	std::cout << "  [info] inner " << it.size() << " tris / " << iv.size() << " verts, outer (detail 64) " << ot.size() << " tris / " << ov.size() << " verts; "
+		<< bad << " outer vertices with u more than 0.15 turn from the nearest inner vertex\n";
+	assert( ot.size() == it.size() && ov.size() == iv.size() );
+	assert( bad == 0 );
+	pOuter->release(); pInner->release(); pConst->release(); pSphere->release();
+}
+
+//-----------------------------------------------------------------------------
+// Round-3 P2(3): the shading-normal TRANSPORT itself, not the fallback.
+// A flat grid whose base shading normals are tilted 30 degrees off the geometric
+// normal, displaced by a smooth field: transport rotates the shading normal with the
+// geometric normal, so at EVERY vertex the angle between the displaced shading and
+// geometric normals is still exactly 30 degrees, and the shading normal equals the
+// independently computed rotation R(g0 -> g1) s0.  A world-space delta (the first
+// cut) or any wrong rotation fails both.
+//-----------------------------------------------------------------------------
+static void TestShadingTransportIsRotation()
+{
+	std::cout << "Test 10l: the base shading normal is ROTATED with the displaced geometric normal (angle to g preserved, equals R(g0->g1) s0)...\n";
+	const int N = 8;
+	const Scalar tilt = 30.0 * PI / 180.0;
+	const Vector3 s0( std::sin( tilt ), 0.0, std::cos( tilt ) ), g0( 0, 0, 1 );
+	TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false );
+	m->BeginIndexedTriangles();
+	for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
+		m->AddVertex( Point3( 2.0 * i / N - 1.0, 2.0 * j / N - 1.0, 0.0 ) );
+		m->AddNormal( s0 );
+		m->AddTexCoord( Point2( Scalar( i ) / N, Scalar( j ) / N ) );
+	}
+	auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+	for( int j = 0; j < N; ++j ) for( int i = 0; i < N; ++i ) {
+		if( ( i + j ) & 1 ) {
+			m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( id(i,j), id(i+1,j), id(i+1,j+1) ) );
+			m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( id(i,j), id(i+1,j+1), id(i,j+1) ) );
+		} else {
+			m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( id(i,j), id(i+1,j), id(i,j+1) ) );
+			m->AddIndexedTriangle( MakeIndexedTriangleSameIdx( id(i+1,j), id(i+1,j+1), id(i,j+1) ) );
+		}
+	}
+	m->DoneIndexedTriangles();
+	SinFunction2D* pFn = new SinFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry( m, 1, pFn, 0.25, false, false, false );	// detail 1: no refinement
+	pDisp->Realize();
+	IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+	assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+	assert( t.size() == (size_t)( 2 * N * N ) );
+	NormalsListType g1( v.size(), Vector3( 0, 0, 1 ) );
+	RecomputeVertexNormalsFromTopology( t, v, g1 );
+
+	auto rotate = []( const Vector3& a, const Vector3& b, const Vector3& x ) {		// independent Rodrigues
+		const Vector3 ax = Vector3Ops::Cross( a, b );
+		const Scalar s = Vector3Ops::Magnitude( ax ), cth = Vector3Ops::Dot( a, b );
+		if( s < 1e-12 ) return x;
+		const Vector3 k = ax * ( 1.0 / s );
+		return x * cth + Vector3Ops::Cross( k, x ) * s + k * ( Vector3Ops::Dot( k, x ) * ( 1.0 - cth ) );
+	};
+	Scalar worstAngle = 0.0, worstVec = 0.0, maxTilt = 0.0;
+	for( size_t i = 0; i < v.size(); ++i ) {
+		const Scalar ang = std::acos( std::max( Scalar(-1), std::min( Scalar(1), Vector3Ops::Dot( n[i], g1[i] ) ) ) );
+		worstAngle = std::max( worstAngle, std::fabs( ang - tilt ) * 180.0 / PI );
+		const Vector3 want = rotate( g0, g1[i], s0 );
+		worstVec = std::max( worstVec, Vector3Ops::Magnitude( n[i] - want ) );
+		maxTilt = std::max( maxTilt, std::acos( std::max( Scalar(-1), std::min( Scalar(1), g1[i].z ) ) ) * 180.0 / PI );
+	}
+	std::cout << "  [info] displaced geometric normals tilt up to " << maxTilt << " deg off +Z; worst |angle(s1,g1) - 30 deg| = " << worstAngle
+		<< " deg, worst |s1 - R(g0->g1) s0| = " << worstVec << "\n";
+	assert( maxTilt > 10.0 );			// the relief really moves the geometric normal
+	assert( worstAngle < 1e-6 );
+	assert( worstVec < 1e-9 );
 	pDisp->release(); pFn->release(); m->release();
 }
 
@@ -2388,6 +2725,11 @@ int main()
 	TestRefinementChartInterpolation();
 	TestTransportedShadingNormals();
 	TestFaceNormalBaseIsNotRefined();
+	TestRefinementIsRegular();
+	TestLoftRebakeHasNoSlivers();
+	TestPolarVertexDisplacesByNeighbourAverage();
+	TestDisplacedBaseIsNotRefinedAgain();
+	TestShadingTransportIsRotation();
 	TestConcurrentRealize();
 	TestScalarHeightIsObjectSpaceAndExact();
 	TestScalarHeightThroughTheChunk();

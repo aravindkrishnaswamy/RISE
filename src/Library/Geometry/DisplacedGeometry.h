@@ -35,28 +35,33 @@ namespace RISE
 		// `displacement(u,v) * disp_scale`.  The resulting mesh is built into an internal
 		// TriangleMeshGeometryIndexed and used for all intersection / sampling queries.
 		//
-		// MESH BASES ARE REFINED TO `detail`.  A base that is already a mesh
-		// (a TriangleMeshGeometryIndexed -- lathe / sweep / skin / the indexed-mesh
-		// imports -- or another DisplacedGeometry; NOT the legacy non-indexed
-		// TriangleMeshGeometry, whose tessellation is per-corner) ignores `detail` in
-		// its own TessellateToMesh, which would leave it displaced only at its own
-		// vertices.  Before displacing, TessellateAndRefine() splits every edge longer
-		// than (base bbox diagonal / detail): adaptive edge-midpoint subdivision with
-		// midpoints shared per unordered combined-index pair (crack-free; crease / cap
-		// / pinch vertices are distinct combined indices so they stay split; no
-		// position welding), capped at 6 levels / 1.5M triangles.  New positions and
-		// UVs are LINEAR (the silhouette of a coarse base stays polygonal), except on
-		// a chart axis the base DECLARES periodic (TriangleMeshGeometryIndexed::
-		// SetUVPeriodicRegion -- a full-turn lathe's u, a sweep's closed-profile u /
-		// closed-path v) where the ring-stitch edge is taken the short way round, and
-		// at a POLAR vertex (a lathe pole's u, a skin pinch's v -- the coordinate is a
-		// placeholder there) where an edge to a normal vertex takes the normal
-		// vertex's value instead of averaging the placeholder in.  Analytic and SDF
-		// bases already honour `detail` and are untouched, as is any bake with
-		// disp_scale == 0.  A base that shades with FACE normals (face_normals TRUE)
-		// is flattened per corner by its tessellation -- every edge of it is already
-		// a crack -- so it is not refined and displaces along each face normal as it
-		// always did.
+		// MESH BASES ARE DISPLACED AT `detail`.  A base that is already a mesh (a
+		// TriangleMeshGeometryIndexed -- lathe / sweep / skin / the indexed-mesh imports;
+		// NOT the legacy non-indexed TriangleMeshGeometry, whose tessellation is
+		// per-corner) ignores `detail` in its own TessellateToMesh, which would leave it
+		// displaced only at its own vertices.  TessellateAndRefine() therefore brings it
+		// to spacing (base bbox diagonal / detail) with a REGULAR construction:
+		//   (a) a lathe / sweep / skin RE-BAKES ITSELF from its own descriptor at that
+		//       density (TriangleMeshGeometryIndexed::IMeshRebaker, set by the builder):
+		//       regular quads on the builder's own (u, v) grid, EXACT surface positions,
+		//       and the factory's own crease / cap / pole / pinch / chart rules;
+		//   (b) any other indexed mesh is subdivided UNIFORMLY (whole 1->4 levels, level
+		//       count from the base's MEDIAN edge length, midpoints shared per unordered
+		//       combined-index pair, linear positions and UVs -- its silhouette stays its
+		//       polygon -- except across a chart axis the base DECLARES periodic (a
+		//       ring-stitch edge is taken the short way round) and at a POLAR vertex (a
+		//       placeholder u / v: an edge to a normal vertex takes the normal vertex's
+		//       value).
+		// Capped at 1.5M triangles (6 levels for (b)).  A pole / pinch is DISPLACED by
+		// the average of its neighbours' displacements, not by the field at its
+		// placeholder UV.  Analytic and SDF bases already honour `detail` and are
+		// untouched; so is a DISPLACED base (already baked at its own detail -- the inner
+		// layer governs); and any bake with disp_scale == 0.  A base that shades with
+		// FACE normals (face_normals TRUE) is flattened per corner by its tessellation --
+		// every edge of it is already a crack -- so it is not refined and displaces along
+		// each face normal as it always did.  Crease / cap / duplicated-point vertices are
+		// separate vertices, so under displacement they displace independently and can
+		// open a gap along that edge.
 		//
 		// SHADING.  For every smooth-normal mesh base that is displaced (refined or
 		// not) the base's own shading-normal field is carried through the
@@ -66,13 +71,14 @@ namespace RISE
 		// perturbs the base's smooth field instead of replacing it.
 		//
 		// REFIT.  An animated displacement refits the baked mesh in place
-		// (RefreshMeshVertices) -- unless the refinement came out different (it is
-		// edge-length driven, so a moving base can change topology at an unchanged
+		// (RefreshMeshVertices) -- unless the re-bake / refinement came out different
+		// (it is size driven, so a moving base can change topology at an unchanged
 		// vertex count), detected by a topology signature, in which case the mesh is
-		// rebuilt from scratch.  Cost: every painter notification re-tessellates and
-		// re-refines the base (O(triangles), allocation-heavy): measured 2.5 ms for a
-		// 13.8k-triangle bake (a 4-row lathe at detail 32), against ~0.3 ms for the
-		// 384-triangle unrefined bake (the stress scene vase before refinement) -- a keyframed displacement pays it per frame.
+		// rebuilt from scratch.  Cost: every painter notification re-tessellates the base
+		// and RE-RUNS the builder's re-bake (O(triangles), allocation-heavy): measured
+		// 6.3 ms for a 3.9k-triangle lathe bake (the re-bake dominates), against ~0.3 ms
+		// for the unrefined 384-triangle stress-scene vase -- a keyframed displacement
+		// pays it per frame.
 		//
 		// TWO HEIGHT ROUTES, MUTUALLY EXCLUSIVE (2026-09-06).  The offset scalar comes
 		// from EXACTLY ONE of:

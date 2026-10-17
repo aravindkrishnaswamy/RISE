@@ -31,12 +31,13 @@ RISE ASCII SCENE 7
 #                   triangle corner as its own unshared vertex and the post-displacement normal recompute     #
 #                   had nothing to average across; TriangleMeshGeometryIndexed::TessellateToMesh now keeps    #
 #                   the builder's shared vertices, which fixed it.)  A builder is already a mesh and its      #
-#                   own tessellation ignores `detail`, so displaced_geometry REFINES it first: every edge     #
-#                   longer than (bbox diagonal / detail) is split (crack-free for these shared-vertex bases, adaptive; linear positions,   #
-#                   so the silhouette stays the base's polygon), so `detail` below                            #
-#                   governs the relief resolution of the lathe, the loft and the skin (the 6-row vase         #
-#                   bakes to ~30k triangles at detail 48).  See the `displaced_geometry` chunk descriptor     #
-#                   and object-modeling-recipes Recipe 6.                                                     #
+#                   own tessellation ignores `detail`, so displaced_geometry has the lathe, the loft and the  #
+#                   skin RE-BAKE THEMSELVES at spacing (bbox diagonal / detail): regular quads and exact      #
+#                   surface positions (the 6-row vase becomes ~8.4k triangles at detail 48; the sail is       #
+#                   already dense enough and is left alone).  Crease / cap vertices stay separate vertices,   #
+#                   so under displacement they can open a gap along that edge (the loft's end caps are        #
+#                   triangulated from the profile polygon only).  See the `displaced_geometry` chunk          #
+#                   descriptor and object-modeling-recipes Recipe 6.                                          #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #                                                                                                           #
 #############################################################################################################

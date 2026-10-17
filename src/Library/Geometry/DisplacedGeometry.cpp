@@ -18,6 +18,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Observable.h"
 #include "../Utilities/GeometricUtilities.h"
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -36,39 +37,37 @@ namespace {
 
 	// ---- Mesh refinement for `detail` on mesh bases --------------------------
 	//
-	// A base that is already a MESH (lathe / sweep / skin / imported) ignores
-	// `detail` in its TessellateToMesh and would be displaced only at its own
-	// vertices -- a 4-point-profile lathe has 4 rows however fine the relief.
-	// RefineMeshToEdgeLength() subdivides it until every edge is <= `targetLen`
-	// (or a hard cap is hit).
+	// A base that is already a MESH ignores `detail` in its TessellateToMesh and
+	// would be displaced only at its own vertices -- a 4-point-profile lathe has
+	// 4 rows however fine the relief.  TWO constructions, both REGULAR (a first
+	// cut used adaptive per-edge splitting; its 1/2/3-edge splits made 48% of the
+	// triangles slivers under 20 degrees and tore directional relief):
 	//
-	// ADAPTIVE EDGE SPLITTING, not blind 1->4: each level splits ONLY the edges
-	// that are still too long.  The split decision is per UNORDERED edge (keyed
-	// by the combined-index pair), so the two triangles sharing an edge always
-	// agree -- the result is crack-free by construction, and a long cap edge or
-	// one coarse ring does not drag the whole mesh to 4^levels triangles.  A
-	// triangle with 3 / 2 / 1 split edges becomes 4 / 3 / 2 triangles (winding
-	// preserved).  Midpoints are keyed by the combined index pair, so a crease /
+	//  (a) BUILDER BASES (lathe / sweep / skin): the builder RE-BAKES ITSELF from its
+	//      own descriptor at the needed density (TriangleMeshGeometryIndexed::
+	//      IMeshRebaker) -- rows and columns on its own (u, v) grid, regular quads,
+	//      and EXACT surface positions (a smooth silhouette, not linear chords).
+	//      Crease / cap / pole / pinch / chart semantics are the builder's own.
+	//  (b) OTHER indexed meshes (imports, path instances): UNIFORM whole-level 1->4
+	//      midpoint subdivision (RefineUniform below) -- every edge splits, so edges
+	//      stay parallel to the base's and every child is similar to its parent.  The
+	//      level count comes from the base's MEDIAN edge length, so one long cap or
+	//      outlier edge cannot drive the whole mesh.
+	//
+	// (b) in detail: midpoints are keyed by the combined index pair, so a crease /
 	// cap / pinch vertex -- a DISTINCT combined index from its geometric twin --
-	// keeps its midpoints split too: nothing is welded by position.
+	// keeps its midpoints split too: nothing is welded by position (a face-normal
+	// base is never refined at all).
 	//
-	// Attributes at a midpoint: position LINEAR, normal = normalize(na + nb)
+	// Attributes at a (b) midpoint: position LINEAR, normal = normalize(na + nb)
 	// (falls back to na for opposed normals), UV LINEAR -- except on an axis the
 	// base DECLARES periodic (TriangleMeshGeometryIndexed::SetUVPeriodicRegion:
-	// a full-turn lathe's u, a sweep's closed-profile u and closed-path v, whose
-	// last column stitches back to the first with no duplicated seam column) for
-	// an edge whose two ends are both in that region and whose chart delta is
-	// more than half a period: that is the ring-stitch edge spanning ~(1 -> 0),
-	// and its midpoint is taken the short way round (modulo 1) so it does not
-	// land on the far side of the texture.  A chart that is NOT declared periodic
-	// (an imported mesh, planar caps, a [0,4] tiled chart) is always linear.
-	// TRADEOFF: for a surface of revolution the
-	// chord midpoint lies a sagitta (~ edge^2 / 8R) inside the true surface and
-	// the displacement runs along the averaged normal, which is the true normal
-	// of the arc midpoint for a circular section -- accurate enough that the
-	// error is far below any relief this is used for.  The silhouette of a coarse
-	// base therefore stays polygonal: refinement adds resolution to the relief,
-	// it does not round the base.
+	// the ring-stitch edge spanning ~(1 -> 0) is taken the short way round,
+	// modulo 1) and at a POLAR vertex (a pole's u / a pinch's v is a placeholder:
+	// an edge to a normal vertex takes the normal vertex's value).  A chart that is
+	// NOT declared periodic (an imported mesh, planar caps, a [0,4] tiled chart) is
+	// always linear.  Linear positions: the silhouette of a coarse (b) base stays
+	// polygonal -- (b) adds relief resolution, it does not round the base.
 	//
 	// Requires iVertices == iNormals == iCoords on every triangle (the
 	// TessellateToMesh contract); otherwise the mesh is left unrefined.
@@ -121,7 +120,96 @@ namespace {
 		return ChartMid( a, b, bPeriodicAxis );
 	}
 
-	RefineResult RefineMeshToEdgeLength(
+	// Median unique-edge length of a triangle list (0 if there are no edges).
+	Scalar MedianEdgeLength( const IndexTriangleListType& tris, const VerticesListType& vertices )
+	{
+		std::vector<std::pair<std::uint64_t, Scalar> > lens;
+		lens.reserve( tris.size() * 3 );
+		for( size_t t = 0; t < tris.size(); ++t ) {
+			for( int k = 0; k < 3; ++k ) {
+				const unsigned int a = tris[t].iVertices[k], b = tris[t].iVertices[( k + 1 ) % 3];
+				if( a == b ) continue;
+				const Vector3 e = Vector3Ops::mkVector3( vertices[a], vertices[b] );
+				lens.push_back( std::make_pair( EdgeKey( a, b ), Vector3Ops::Magnitude( e ) ) );
+			}
+		}
+		if( lens.empty() ) {
+			return 0;
+		}
+		std::sort( lens.begin(), lens.end() );
+		lens.erase( std::unique( lens.begin(), lens.end(),
+			[]( const std::pair<std::uint64_t, Scalar>& x, const std::pair<std::uint64_t, Scalar>& y ) { return x.first == y.first; } ), lens.end() );
+		std::vector<Scalar> only( lens.size() );
+		for( size_t i = 0; i < lens.size(); ++i ) only[i] = lens[i].second;
+		std::nth_element( only.begin(), only.begin() + only.size() / 2, only.end() );
+		return only[ only.size() / 2 ];
+	}
+
+	// ONE uniform 1->4 midpoint subdivision pass: every edge splits (midpoints shared
+	// per unordered combined-index pair), every triangle becomes four with the
+	// winding preserved.  Appends the new vertices after the existing ones.
+	void SubdivideUniformOnce(
+		IndexTriangleListType& tris,
+		VerticesListType&      vertices,
+		NormalsListType&       normals,
+		TexCoordsListType&     coords,
+		std::vector<unsigned char>& uvFlags )
+	{
+		std::unordered_map<std::uint64_t, unsigned int> edgeMid;
+		edgeMid.reserve( tris.size() * 2 );
+		auto midOf = [&]( const unsigned int a, const unsigned int b ) -> unsigned int {
+			const std::uint64_t key = EdgeKey( a, b );
+			const auto it = edgeMid.find( key );
+			if( it != edgeMid.end() ) {
+				return it->second;
+			}
+			const unsigned int mid = static_cast<unsigned int>( vertices.size() );
+			edgeMid[key] = mid;
+			const Point3  pa = vertices[a], pb = vertices[b];
+			const Vector3 na = normals[a],  nb = normals[b];
+			const TexCoord ca = coords[a],  cb = coords[b];
+			// Position and UV are LINEAR: the refined, undisplaced mesh is exactly the
+			// base's own piecewise-linear surface.
+			vertices.push_back( Point3( 0.5 * ( pa.x + pb.x ), 0.5 * ( pa.y + pb.y ), 0.5 * ( pa.z + pb.z ) ) );
+			Vector3 nm = na + nb;
+			const Scalar nl = Vector3Ops::Magnitude( nm );
+			normals.push_back( nl > 1e-12 ? nm * ( 1.0 / nl ) : na );
+			// A new vertex is on a periodic / polar chart region only if BOTH ends
+			// are (planar caps never wrap; a spoke midpoint is no longer AT the pole).
+			const unsigned char fa = uvFlags[a], fb = uvFlags[b];
+			const unsigned char fm = static_cast<unsigned char>( fa & fb );
+			uvFlags.push_back( fm );
+			coords.push_back( TexCoord(
+				AxisMid( ca.x, cb.x, ( fa & TriangleMeshGeometryIndexed::kUPolar ) != 0, ( fb & TriangleMeshGeometryIndexed::kUPolar ) != 0,
+					( fm & TriangleMeshGeometryIndexed::kUPeriodic ) != 0 ),
+				AxisMid( ca.y, cb.y, ( fa & TriangleMeshGeometryIndexed::kVPolar ) != 0, ( fb & TriangleMeshGeometryIndexed::kVPolar ) != 0,
+					( fm & TriangleMeshGeometryIndexed::kVPeriodic ) != 0 ) ) );
+			return mid;
+		};
+		IndexTriangleListType out;
+		out.reserve( tris.size() * 4 );
+		auto emit = [&]( const unsigned int a, const unsigned int b, const unsigned int c ) {
+			IndexedTriangle nt;
+			nt.iVertices[0] = nt.iNormals[0] = nt.iCoords[0] = a;
+			nt.iVertices[1] = nt.iNormals[1] = nt.iCoords[1] = b;
+			nt.iVertices[2] = nt.iNormals[2] = nt.iCoords[2] = c;
+			out.push_back( nt );
+		};
+		for( size_t t = 0; t < tris.size(); ++t ) {
+			const unsigned int p0 = tris[t].iVertices[0], p1 = tris[t].iVertices[1], p2 = tris[t].iVertices[2];
+			const unsigned int m01 = midOf( p0, p1 ), m12 = midOf( p1, p2 ), m20 = midOf( p2, p0 );
+			emit( p0, m01, m20 );
+			emit( m01, p1, m12 );
+			emit( m20, m12, p2 );
+			emit( m01, m12, m20 );
+		}
+		tris.swap( out );
+	}
+
+	// UNIFORM refinement toward `targetLen`: L whole 1->4 levels, L = ceil(log2(median
+	// edge / targetLen)) clamped to [0, kMaxRefineLevels] and reduced until the
+	// triangle count fits kMaxRefineTriangles.
+	RefineResult RefineUniform(
 		IndexTriangleListType& tris,
 		VerticesListType&      vertices,
 		NormalsListType&       normals,
@@ -144,145 +232,24 @@ namespace {
 				}
 			}
 		}
-
-		const Scalar target2 = targetLen * targetLen;
-		const unsigned int kNotSplit = 0xFFFFFFFFu;
-
-		for( unsigned int level = 0; level < kMaxRefineLevels; ++level ) {
-			// Pass 1: which unordered edges are still too long?  (insertion-ordered
-			// so midpoint indices are deterministic)
-			std::unordered_map<std::uint64_t, unsigned int> edgeMid;
-			edgeMid.reserve( tris.size() * 2 );
-			std::vector<std::uint64_t> splitOrder;
-			for( size_t t = 0; t < tris.size(); ++t ) {
-				for( int k = 0; k < 3; ++k ) {
-					const unsigned int a = tris[t].iVertices[k], b = tris[t].iVertices[( k + 1 ) % 3];
-					if( a == b ) continue;
-					const std::uint64_t key = EdgeKey( a, b );
-					if( edgeMid.find( key ) != edgeMid.end() ) continue;
-					const Vector3 e = Vector3Ops::mkVector3( vertices[a], vertices[b] );
-					if( Vector3Ops::Dot( e, e ) > target2 ) {
-						edgeMid[key] = 0;	// split; real index assigned below
-						splitOrder.push_back( key );
-					} else {
-						edgeMid[key] = kNotSplit;
-					}
-				}
-			}
-			if( splitOrder.empty() ) {
-				return res;		// every edge is short enough
-			}
-
-			// Triangle budget for this level.
-			size_t newCount = 0;
-			for( size_t t = 0; t < tris.size(); ++t ) {
-				int n = 0;
-				for( int k = 0; k < 3; ++k ) {
-					const unsigned int a = tris[t].iVertices[k], b = tris[t].iVertices[( k + 1 ) % 3];
-					if( a != b && edgeMid[ EdgeKey( a, b ) ] != kNotSplit ) ++n;
-				}
-				newCount += size_t( n + 1 );		// 0 -> 1, 1 -> 2, 2 -> 3, 3 -> 4
-			}
-			if( newCount > kMaxRefineTriangles ) {
-				res.capped = true;
-				return res;
-			}
-
-			// Pass 2: create the midpoint vertices.
-			for( size_t i = 0; i < splitOrder.size(); ++i ) {
-				const std::uint64_t key = splitOrder[i];
-				const unsigned int a = static_cast<unsigned int>( key >> 32 ), b = static_cast<unsigned int>( key & 0xFFFFFFFFull );
-				const unsigned int mid = static_cast<unsigned int>( vertices.size() );
-				edgeMid[key] = mid;
-				const Point3  pa = vertices[a], pb = vertices[b];
-				const Vector3 na = normals[a],  nb = normals[b];
-				const TexCoord ca = coords[a],  cb = coords[b];
-				// Position and UV are LINEAR, so the refined, undisplaced mesh is
-				// exactly the base's own piecewise-linear surface (a curved-position
-				// -- PN / Phong-tessellation -- midpoint was tried: it rounds the
-				// base's authored corners and, gated, ripples along long edges).
-				vertices.push_back( Point3( 0.5 * ( pa.x + pb.x ), 0.5 * ( pa.y + pb.y ), 0.5 * ( pa.z + pb.z ) ) );
-				Vector3 nm = na + nb;
-				const Scalar nl = Vector3Ops::Magnitude( nm );
-				normals.push_back( nl > 1e-12 ? nm * ( 1.0 / nl ) : na );
-				// A new vertex is on a periodic / polar chart region only if BOTH ends
-				// are (a sweep's end caps, a lathe's flat caps never wrap; a spoke
-				// midpoint is no longer AT the pole, so it is not polar).
-				const unsigned char fa = uvFlags[a], fb = uvFlags[b];
-				const unsigned char fm = static_cast<unsigned char>( fa & fb );
-				uvFlags.push_back( fm );
-				coords.push_back( TexCoord(
-					AxisMid( ca.x, cb.x, ( fa & TriangleMeshGeometryIndexed::kUPolar ) != 0, ( fb & TriangleMeshGeometryIndexed::kUPolar ) != 0,
-						( fm & TriangleMeshGeometryIndexed::kUPeriodic ) != 0 ),
-					AxisMid( ca.y, cb.y, ( fa & TriangleMeshGeometryIndexed::kVPolar ) != 0, ( fb & TriangleMeshGeometryIndexed::kVPolar ) != 0,
-						( fm & TriangleMeshGeometryIndexed::kVPeriodic ) != 0 ) ) );
-			}
-
-			// Pass 3: emit the refined triangles.
-			IndexTriangleListType out;
-			out.reserve( newCount );
-			auto emit = [&]( const unsigned int a, const unsigned int b, const unsigned int c ) {
-				IndexedTriangle nt;
-				nt.iVertices[0] = nt.iNormals[0] = nt.iCoords[0] = a;
-				nt.iVertices[1] = nt.iNormals[1] = nt.iCoords[1] = b;
-				nt.iVertices[2] = nt.iNormals[2] = nt.iCoords[2] = c;
-				out.push_back( nt );
-			};
-			for( size_t t = 0; t < tris.size(); ++t ) {
-				const unsigned int p[3] = { tris[t].iVertices[0], tris[t].iVertices[1], tris[t].iVertices[2] };
-				unsigned int m[3];		// m[k] = midpoint of edge (p[k], p[k+1]) or kNotSplit
-				int n = 0;
-				for( int k = 0; k < 3; ++k ) {
-					const unsigned int a = p[k], b = p[( k + 1 ) % 3];
-					m[k] = ( a != b ) ? edgeMid[ EdgeKey( a, b ) ] : kNotSplit;
-					if( m[k] != kNotSplit ) ++n;
-				}
-				if( n == 0 ) {
-					emit( p[0], p[1], p[2] );
-				} else if( n == 3 ) {
-					emit( p[0], m[0], m[2] );
-					emit( m[0], p[1], m[1] );
-					emit( m[2], m[1], p[2] );
-					emit( m[0], m[1], m[2] );
-				} else if( n == 1 ) {
-					int k = 0;
-					while( m[k] == kNotSplit ) ++k;
-					const unsigned int A = p[k], B = p[( k + 1 ) % 3], C = p[( k + 2 ) % 3];
-					emit( A, m[k], C );
-					emit( m[k], B, C );
-				} else {
-					// Two split edges: rotate so the UNSPLIT edge is (A,B); the
-					// split ones are (B,C) and (C,A).  Corner C becomes one
-					// triangle; the remaining quad A,B,mBC,mCA is cut along its
-					// shorter diagonal.
-					int u = 0;
-					while( m[u] != kNotSplit ) ++u;
-					const unsigned int A = p[u], B = p[( u + 1 ) % 3], C = p[( u + 2 ) % 3];
-					const unsigned int mBC = m[( u + 1 ) % 3], mCA = m[( u + 2 ) % 3];
-					emit( mBC, C, mCA );
-					const Vector3 dA = Vector3Ops::mkVector3( vertices[A], vertices[mBC] );
-					const Vector3 dB = Vector3Ops::mkVector3( vertices[B], vertices[mCA] );
-					if( Vector3Ops::Dot( dA, dA ) <= Vector3Ops::Dot( dB, dB ) ) {
-						emit( A, B, mBC );
-						emit( A, mBC, mCA );
-					} else {
-						emit( A, B, mCA );
-						emit( B, mBC, mCA );
-					}
-				}
-			}
-			tris.swap( out );
-			res.levels = level + 1;
-			res.trianglesAfter = tris.size();
+		const Scalar median = MedianEdgeLength( tris, vertices );
+		if( !( median > targetLen ) ) {
+			return res;
 		}
-
-		// Out of levels: did any edge stay too long?
-		for( size_t t = 0; t < tris.size() && !res.capped; ++t ) {
-			for( int k = 0; k < 3; ++k ) {
-				const Vector3 e = Vector3Ops::mkVector3( vertices[ tris[t].iVertices[k] ], vertices[ tris[t].iVertices[( k + 1 ) % 3] ] );
-				if( Vector3Ops::Dot( e, e ) > target2 ) { res.capped = true; break; }
-			}
+		unsigned int levels = 0;
+		while( levels < kMaxRefineLevels && median / Scalar( 1u << levels ) > targetLen ) {
+			++levels;
 		}
+		const unsigned int wanted = levels;
+		while( levels > 0 && tris.size() * ( size_t( 1 ) << ( 2 * levels ) ) > kMaxRefineTriangles ) {
+			--levels;
+		}
+		res.capped = ( levels < wanted ) || ( median / Scalar( 1u << levels ) > targetLen );
+		for( unsigned int l = 0; l < levels; ++l ) {
+			SubdivideUniformOnce( tris, vertices, normals, coords, uvFlags );
+		}
+		res.levels = levels;
+		res.trianglesAfter = tris.size();
 		return res;
 	}
 
@@ -378,6 +345,47 @@ namespace {
 	}
 }
 
+namespace {
+	// A POLAR vertex (a lathe pole, a skin pinch -- its u or v is only a placeholder)
+	// has no meaningful chart coordinate, so the field it displaces by is arbitrary
+	// (f at the placeholder), while the spokes around it displace by f at their own
+	// coordinates -- a star of folds at the lid.  Displace it by the AVERAGE of its
+	// neighbours' displacements along its own normal instead.  `base` / `n0` are the
+	// pre-displacement positions and normals; `displaced` is rewritten at polar
+	// vertices only.
+	void AveragePolarDisplacement(
+		const VerticesListType&      base,
+		const NormalsListType&       n0,
+		const IndexTriangleListType& tris,
+		const std::vector<unsigned char>& flags,
+		VerticesListType&            displaced )
+	{
+		const unsigned char polarMask = TriangleMeshGeometryIndexed::kUPolar | TriangleMeshGeometryIndexed::kVPolar;
+		if( flags.size() != displaced.size() || base.size() != displaced.size() || n0.size() != displaced.size() ) {
+			return;
+		}
+		std::vector<Scalar> sum( displaced.size(), 0.0 );
+		std::vector<unsigned int> cnt( displaced.size(), 0 );
+		auto dispOf = [&]( const unsigned int i ) {
+			return Vector3Ops::Dot( Vector3Ops::mkVector3( displaced[i], base[i] ), n0[i] );
+		};
+		for( size_t t = 0; t < tris.size(); ++t ) {
+			for( int k = 0; k < 3; ++k ) {
+				const unsigned int a = tris[t].iVertices[k], b = tris[t].iVertices[( k + 1 ) % 3];
+				const bool pa = ( flags[a] & polarMask ) != 0, pb = ( flags[b] & polarMask ) != 0;
+				if( pa && !pb ) { sum[a] += dispOf( b ); ++cnt[a]; }
+				else if( pb && !pa ) { sum[b] += dispOf( a ); ++cnt[b]; }
+			}
+		}
+		for( size_t i = 0; i < displaced.size(); ++i ) {
+			if( cnt[i] > 0 && ( flags[i] & polarMask ) ) {
+				const Scalar d = sum[i] / Scalar( cnt[i] );
+				displaced[i] = Point3( base[i].x + n0[i].x * d, base[i].y + n0[i].y * d, base[i].z + n0[i].z * d );
+			}
+		}
+	}
+}
+
 bool DisplacedGeometry::WillDisplaceVertices() const
 {
 	return ( m_pDisplacement || m_pHeight ) && m_dispScale != 0.0;
@@ -427,8 +435,11 @@ bool DisplacedGeometry::TessellateAndRefine(
 		return true;
 	}
 
-	// REFINE to `detail`: split every edge longer than (base bbox diagonal / detail).
-	if( m_detail != 0 ) {
+	// REFINE to `detail` (see the construction notes at the top of this file).  A
+	// DISPLACED base is never refined: it is already baked at ITS OWN detail (the
+	// inner layer governs) and, over an analytic base, its sphere / ellipsoid /
+	// disk tessellation carries placeholder pole UVs this layer cannot know about.
+	if( m_detail != 0 && pIdx ) {
 		Point3 lo( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), hi( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 		for( size_t i = 0; i < vertices.size(); ++i ) {
 			lo.x = r_min( lo.x, vertices[i].x ); lo.y = r_min( lo.y, vertices[i].y ); lo.z = r_min( lo.z, vertices[i].z );
@@ -437,17 +448,41 @@ bool DisplacedGeometry::TessellateAndRefine(
 		const Scalar diag = Vector3Ops::Magnitude( Vector3Ops::mkVector3( hi, lo ) );
 		const Scalar target = diag / Scalar( m_detail );
 
-		const RefineResult r = RefineMeshToEdgeLength( tris, vertices, normals, coords, uvFlags, target );
-		if( r.levels > 0 && bLog ) {
-			GlobalLog()->PrintEx( eLog_Event,
-				"DisplacedGeometry: refined the mesh base to detail %u (target edge %g): %u level(s), %u -> %u triangles",
-				m_detail, (double)target, r.levels, (unsigned)r.trianglesBefore, (unsigned)r.trianglesAfter );
+		int rebake = -1;		// -1: no rebaker / failed (use the uniform path), 0: already dense enough, 1: re-baked
+		if( const TriangleMeshGeometryIndexed::IMeshRebaker* pRebaker = pIdx->GetRebaker() ) {
+			TriangleMeshGeometryIndexed* pNew = 0;
+			const int rc = pRebaker->Rebake( target, kMaxRefineTriangles, &pNew );
+			if( rc > 0 && pNew ) {
+				const size_t trisBefore = tris.size();
+				IndexTriangleListType nt; VerticesListType nv; NormalsListType nn; TexCoordsListType nc;
+				std::vector<unsigned char> nf;
+				if( pNew->TessellateToMeshEx( nt, nv, nn, nc, m_detail, &nf ) && !nt.empty() ) {
+					tris.swap( nt ); vertices.swap( nv ); normals.swap( nn ); coords.swap( nc ); uvFlags.swap( nf );
+					rebake = 1;
+					if( bLog ) {
+						GlobalLog()->PrintEx( eLog_Event,
+							"DisplacedGeometry: re-baked the builder base at its native resolution for detail %u (target edge %g): %u -> %u triangles",
+							m_detail, (double)target, (unsigned)trisBefore, (unsigned)tris.size() );
+					}
+				}
+				pNew->release();
+			} else if( rc == 0 ) {
+				rebake = 0;
+			}
 		}
-		if( r.capped && bLog ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"DisplacedGeometry: mesh refinement for detail %u stopped at the %u-level / %u-triangle cap (%u triangles); "
-				"some edges are still longer than the target %g -- raise the base's own tessellation or lower `detail`",
-				m_detail, kMaxRefineLevels, (unsigned)kMaxRefineTriangles, (unsigned)tris.size(), (double)target );
+		if( rebake < 0 ) {
+			const RefineResult r = RefineUniform( tris, vertices, normals, coords, uvFlags, target );
+			if( r.levels > 0 && bLog ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"DisplacedGeometry: refined the mesh base to detail %u (target edge %g): %u uniform 1->4 level(s), %u -> %u triangles",
+					m_detail, (double)target, r.levels, (unsigned)r.trianglesBefore, (unsigned)r.trianglesAfter );
+			}
+			if( r.capped && bLog ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"DisplacedGeometry: mesh refinement for detail %u stopped at the %u-level / %u-triangle cap (%u triangles); "
+					"the median edge is still longer than the target %g -- raise the base's own tessellation or lower `detail`",
+					m_detail, kMaxRefineLevels, (unsigned)kMaxRefineTriangles, (unsigned)tris.size(), (double)target );
+			}
 		}
 	}
 
@@ -725,7 +760,11 @@ void DisplacedGeometry::BuildMesh() const
 	// a stable topology from a changed one (see m_topologySignature).
 	m_topologySignature = TopologySignature( tris, vertices.size() );
 
+	const VerticesListType preDisplaceVertices = vertices;	// polar-vertex averaging below needs the undisplaced positions
 	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
+	if( bVerticesDisplaced ) {
+		AveragePolarDisplacement( preDisplaceVertices, normals, tris, uvFlags, vertices );
+	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
@@ -769,7 +808,11 @@ void DisplacedGeometry::RefreshMeshVertices()
 		return;
 	}
 
+	const VerticesListType preDisplaceVertices = vertices;	// polar-vertex averaging below needs the undisplaced positions
 	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
+	if( bVerticesDisplaced ) {
+		AveragePolarDisplacement( preDisplaceVertices, normals, tris, uvFlags, vertices );
+	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );

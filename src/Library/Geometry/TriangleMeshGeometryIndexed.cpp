@@ -455,6 +455,7 @@ void TriangleMeshGeometryIndexed::InvalidateTopologyProofCaches()
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
     m_uvPeriodic.clear();	// chart bits describe the vertices about to be (re)fed
+    m_rebaker.reset();		// a builder's re-bake recipe describes the mesh it just built, not a re-fed one
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
     m_bZeroVolumeSheet=false;

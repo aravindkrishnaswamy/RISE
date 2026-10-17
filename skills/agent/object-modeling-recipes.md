@@ -33,7 +33,7 @@ not listed here.
 | `skeleton_geometry` | **CREATURE BODIES authored as a JOINT GRAPH** (a hip branching into two legs and a tail, a hand's finger tree) -- `joint <name> <parent\|none> <x> <y> <z> <radius> [aspect]` lines, one per joint; expands at parse time into ONE `sdf_geometry` (a `roundcone` bone per parent->child pair, `smin`-blended) | sphere-traced, same cost model as `sdf_geometry`; `Map()` is O(joint count) per step with no acceleration over bones -- a skeleton is a render-time budget (a hand-authored SDF has a handful of parts, a skeleton invites 30-70) | a bone's own end caps ARE its two joints -- do not also add a `sphere_geometry`/extra `part` at a joint already covered by an incident bone, that just double-blends a redundant primitive; `blend` multiplies the SMALLER of the two joint radii, not either one alone; a bone's cross-section is a CIRCLE unless the joint line's optional 7th token `aspect` (width-to-depth ratio, 1 = round, ~0.6 a thigh) flattens it side-to-side -- and a body MASS that is really a cushion (a torso, an abdomen) is one `superellipsoid` part in a plain `sdf_geometry`, and a limb that FOLLOWS A CURVE is `sweep_geometry`; the manual `part` grammar stays the fallback for anything the joint graph can't express |
 | `sweep_geometry` | tubes, rails, mouldings, cable runs, any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail), and -- via the per-station controls -- BODIES WITH A NON-CIRCULAR, CHANGING SECTION (a torso, a fin, a snout, a strap, a hull, a round-to-square leg) | mesh cost (tessellated once) | the cross-section is NOT fixed: `point_scale <sx> <sy>` scales the two profile axes independently per station, and a second profile (`profile2_*`) plus `point_morph <t>` changes the section's OUTLINE along the path -- but it still interpolates at most TWO sections, so it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
 | `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing; the template can be ANY first-class geometry INCLUDING a `displaced_geometry` (it is realized + tessellated through the same universal contract before stamping) |
-| `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson); `base_geometry` composes over ANY geometry INCLUDING `sdf_geometry`, `lathe_geometry`, `sweep_geometry` and `skin_geometry` (Recipe 6 below), and a `lathe_geometry`/`sweep_geometry`/`skin_geometry` (or indexed-mesh import) base SHADES smooth under displacement like an `sdf_geometry` one (its silhouette stays the base's polygon) and `detail` REFINES a mesh base -- edges longer than bbox-diagonal/`detail` are split before displacing, so a coarse lathe/sweep/skin still shows fine relief; analytic/SDF bases already tessellate at `detail`, and the legacy non-indexed `rawmesh_geometry` is neither refined nor smooth).  TWO HEIGHT SLOTS, spell exactly one: `displacement` samples an `expression_function2d`/`IFunction2D` as `f(u,v)`, while `height` (2026-09-06) takes a `scalar_painter` evaluated as a 3D FIELD at each vertex -- bind ONE `scalar_painter` to `height` AND to a `relief_modifier { height ... }` on the same object for coarse shape plus fine normal relief from one field, and author it against `Po` (the bake predates the object transform, so `P` and `Po` coincide there and a `P`-authored field would not follow the object's placement) |
+| `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson); `base_geometry` composes over ANY geometry INCLUDING `sdf_geometry`, `lathe_geometry`, `sweep_geometry` and `skin_geometry` (Recipe 6 below), and a `lathe_geometry`/`sweep_geometry`/`skin_geometry` (or indexed-mesh import) base SHADES smooth under displacement like an `sdf_geometry` one (its silhouette stays the base's polygon) and `detail` sets how finely a MESH base is displaced (target spacing bbox-diagonal/`detail`: a lathe/sweep/skin re-bakes itself at that density with regular quads and exact positions, other indexed meshes are subdivided uniformly by their median edge; analytic/SDF bases already tessellate at `detail`; the legacy non-indexed `rawmesh_geometry` is neither refined nor smooth).  TWO HEIGHT SLOTS, spell exactly one: `displacement` samples an `expression_function2d`/`IFunction2D` as `f(u,v)`, while `height` (2026-09-06) takes a `scalar_painter` evaluated as a 3D FIELD at each vertex -- bind ONE `scalar_painter` to `height` AND to a `relief_modifier { height ... }` on the same object for coarse shape plus fine normal relief from one field, and author it against `Po` (the bake predates the object transform, so `P` and `Po` coincide there and a `P`-authored field would not follow the object's placement) |
 | `circulardisk_geometry`, `cartesian_disk_geometry` | flat disks (dials, coins, disk-shaped bases) | cheap | `cartesian_disk_geometry` has uniform Cartesian UV density; the polar disk does not -- pick by what you're displacing/texturing onto it |
 | `bezierpatch_geometry`, `bilinearpatch_geometry` | authored curved/patch surfaces | analytic (bezier) / cheap (bilinear) | `bezierpatch_geometry`'s old tessellation params (`detail`, `cache_size`, ...) are retired -- wrap it in `displaced_geometry` if you need that control |
 | Mesh imports (`3dsmesh_geometry`, `rawmesh_geometry`/`rawmesh2_geometry`, `risemesh_geometry`, `plymesh_geometry`, `gltfmesh_geometry`) | authored/imported assets that are not primitive-shaped | mesh cost | `file` path resolved via the media-path search (see the reference-image skill for the exact resolution order); declare before the `standard_object` that references it |
@@ -1859,27 +1859,33 @@ plumbing:
   smooth under displacement** -- each carries real shared-vertex topology (an
   SDF's dual-contoured surface mesh, a builder's own ring/station grid), the
   bake preserves it, and the base's own smooth shading normals are carried
-  through the displacement.  Hard edges the builder deliberately splits (end
-  caps, a duplicated profile point, the interior pinch below) stay split and
-  keep their crease.  This is the recipe above (scales, dimples, skin pores).
-  Two limits: the SILHOUETTE of a coarse base stays the base's polygon
-  (refinement adds relief resolution, it does not round the base), and the
-  legacy non-indexed `rawmesh_geometry` has no shared topology to keep, so it
-  is neither refined nor smooth under displacement.  A builder is a mesh
-  already, and a mesh ignores `detail` in its own tessellation -- so
-  `displaced_geometry` REFINES it before displacing: every edge longer than
-  (the base's bounding-box diagonal / `detail`) is split (shared midpoints,
-  crack-free for a shared-vertex base, adaptive: only the long edges), up to
-  6 levels / 1.5M triangles.  A mesh imported with `face_normals TRUE` is
-  flattened per corner: it displaces along each triangle's face normal,
-  cracks at every edge and is not refined.  A 4-point-profile lathe at `detail 48` therefore really does
-  carry vertical sample spacing of about 1/48 of its bounding-box diagonal
-  and shows bark/wrinkle relief, where it used to be displaced only at its 4
-  profile rows.  Pick `detail` from the relief's wavelength (roughly 3-4
-  vertices per feature), not "as high as possible": triangles grow steeply
-  (a 6-row vase at 48 is ~30k).  Nothing is refined at `disp_scale 0`, and
-  an analytic/SDF base already tessellates at `detail`.  **For very fine
-  relief skip displacement entirely** -- `relief_modifier` (any
+  through the displacement.  This is the recipe above (scales, dimples, skin
+  pores).  Limits worth knowing: crease / cap / duplicated-profile-point
+  vertices are SEPARATE vertices (that is what keeps their crease), so under
+  displacement they displace independently and can OPEN A GAP along that edge
+  (the interior pinch below is the extreme case); a sweep's or partial
+  lathe's END CAPS are triangulated from the profile polygon only, so a cap
+  displaces only along its rim; a mesh with `face_normals TRUE` and the
+  legacy non-indexed `rawmesh_geometry` are flat per triangle and crack at
+  every edge (neither is refined).
+  **`detail` sets how finely a MESH base is displaced** (a mesh ignores
+  `detail` in its own tessellation), with target spacing
+  (bounding-box diagonal / `detail`).  A `lathe_geometry`, `sweep_geometry`
+  (a loft included) or `skin_geometry` RE-BAKES ITSELF at that density from its
+  own parameters -- more profile rows and radial columns, more path stations
+  and a resampled section, more stations and rows across -- so you get
+  regular quads and EXACT surface positions (a smooth silhouette, ribs and
+  flutes that render clean) at about the triangle count of a hand-authored
+  grid at that spacing: the 6-row stress-scene vase at `detail 48` is ~8.4k
+  triangles; a base already that dense is left alone.  Any other indexed mesh
+  (an import) is subdivided UNIFORMLY in whole 1->4 levels, the level count
+  taken from its MEDIAN edge length (one long outlier edge cannot drive it);
+  its silhouette stays its polygon.  A displaced base is not refined again
+  (its inner layer governs); nothing is refined at `disp_scale 0`; analytic
+  and SDF bases already tessellate at `detail`.  Pick `detail` from the
+  relief's wavelength (roughly 3-4 vertices per feature), not "as high as
+  possible": triangles grow with the square of it (capped at 1.5M).  **For
+  very fine relief skip displacement entirely** -- `relief_modifier` (any
   `scalar_painter` height field, `domain surface`, no texcoords) perturbs
   only the SHADING NORMAL, never the mesh's own vertices, so it needs no
   tessellation at all; see `procedural-textures.md`'s "Adding relief"

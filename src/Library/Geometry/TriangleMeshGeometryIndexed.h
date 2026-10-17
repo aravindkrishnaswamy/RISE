@@ -22,6 +22,7 @@
 #include "../Acceleration/BVH.h"
 #include "../Acceleration/AccelerationConfig.h"
 #include <atomic>
+#include <memory>
 #include <vector>
 
 namespace RISE
@@ -46,6 +47,8 @@ namespace RISE
 			public MeshSignalBake::ISelfOccluder,
 			public MeshSignalBake::IInputSource
 		{
+		public:
+			class IMeshRebaker;		// defined below (builders' re-bake recipe)
 		protected:
 			virtual ~TriangleMeshGeometryIndexed();
 
@@ -117,6 +120,11 @@ namespace RISE
 			//! for the full account and the current mechanism's documented
 			//! residual.)
 			bool					m_bWatertight;
+			// NOTE: neither the chart bits (m_uvPeriodic) nor the rebaker are carried by .risemesh
+			// Serialize/Deserialize -- both describe what a procedural BUILDER knew when it
+			// built the mesh.  A deserialized (imported) mesh therefore never wraps its chart
+			// and is refined uniformly, never re-baked.
+			std::shared_ptr<const IMeshRebaker>	m_rebaker;		//!< set by a builder (lathe / sweep / skin); see IMeshRebaker
 			std::vector<unsigned char>	m_uvPeriodic;	//!< per-position-index kUPeriodic/kVPeriodic bits (see SetUVPeriodicRegion); empty = none
 
 			//! Computes and caches `m_bWatertight`.  Called from
@@ -317,6 +325,24 @@ namespace RISE
 			//!                  into a neighbour: an edge with exactly one polar end takes
 			//!                  the OTHER end's value on that axis.
 			enum { kUPeriodic = 1, kVPeriodic = 2, kUPolar = 4, kVPolar = 8 };
+
+			//! A BUILDER's way to rebuild itself at a higher native density: lathe / sweep / skin
+			//! keep a copy of their descriptor and re-run their own factory with more rows and
+			//! columns, so DisplacedGeometry can honour `detail` with REGULAR quads and EXACT
+			//! surface positions instead of subdividing the baked triangles.
+			class IMeshRebaker
+			{
+			public:
+				virtual ~IMeshRebaker() {}
+				//! Re-bake so every row/column spacing is <= targetEdge (the grid's diagonal is up
+				//! to sqrt(2) longer) and the triangle count stays <= maxTriangles.
+				//! Returns > 0 and a NEW mesh in *ppOut (the caller releases it) if a denser bake
+				//! was produced; 0 if the existing bake already meets the target (*ppOut untouched);
+				//! < 0 if the rebuild failed (the caller falls back to uniform subdivision).
+				virtual int Rebake( const Scalar targetEdge, const size_t maxTriangles, TriangleMeshGeometryIndexed** ppOut ) const = 0;
+			};
+			void SetRebaker( const std::shared_ptr<const IMeshRebaker>& r ) { m_rebaker = r; }
+			const IMeshRebaker* GetRebaker() const { return m_rebaker.get(); }
 
 			//! True when this mesh shades with computed face normals (bUseFaceNormals): its
 			//! tessellation is flattened per corner, so it has no shared topology to refine.
