@@ -4535,11 +4535,13 @@ static void TestContextLifetimeRetirementRound2()
 		Check( CountOccurrences( body, "BE_CARRY_MARKER" ) == 0,
 		       "T14d(a): the finished element's build_element result is retired" );
 		Check( CountOccurrences( body, "REJECT_REASON_MARKER" ) == 1 &&
-		       body.find( "wizard_bad (expression_painter): REJECT_REASON_MARKER" ) != std::string::npos,
-		       "T14d(a) MONEY: the stub CARRIES the rejected chunk and its reason (once, deduplicated)" );
-		Check( CountOccurrences( body, "NOTICE_MARKER" ) == 1,
-		       "T14d(a): the stub carries a landed chunk's notice" );
-		Check( body.find( "Not in the document, kept from the elided result" ) != std::string::npos &&
+		       body.find( "wizard_bad (expression_painter) refused: REJECT_REASON_MARKER" ) != std::string::npos,
+		       "T14d(a) MONEY: the stub CARRIES the refused chunk and its reason (once, deduplicated)" );
+		Check( CountOccurrences( body, "NOTICE_MARKER" ) == 1 &&
+		       body.find( "wizard_robe (lambertian_material) landed with a notice:" ) != std::string::npos,
+		       "T14d(a): the stub carries a landed chunk's notice, labelled as LANDED" );
+		Check( body.find( "Kept from the elided result (per-chunk outcomes the document does not record)" )
+		           != std::string::npos &&
 		       body.find( "stay editable in place" ) != std::string::npos,
 		       "T14d(a): the stub says what it kept and that the chunks stay editable in place" );
 		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
@@ -4675,9 +4677,13 @@ static void TestContextLifetimeRetirementRound2()
 			"\"chunks\":[],\"rendered\":true,\"png_base64\":\"" + b64 + "\",\"byteLength\":32,"
 			"\"imageWidth\":4,\"imageHeight\":2,\"message\":\"m\"}" );
 		const std::string img2 = LifetimeEnv( 3, "{\"png_base64\":\"" + b642 + "\",\"byteLength\":32}" );
-		const ChatProvider provs[] = { ChatProvider::Anthropic, ChatProvider::Gemini };
-		for( const ChatProvider pv : provs ) {
-			const std::string L = pv == ChatProvider::Anthropic ? "T14d(d3) anthropic" : "T14d(d3) gemini";
+		const ChatProvider provs[] = { ChatProvider::Anthropic, ChatProvider::Gemini,
+		                               ChatProvider::OpenAI, ChatProvider::Local };
+		const char* const labels[] = { "T14d(d3) anthropic", "T14d(d3) gemini",
+		                               "T14d(d3) openai/responses", "T14d(d3) openai/chat-completions" };
+		for( std::size_t pi = 0; pi < 4; ++pi ) {
+			const ChatProvider pv = provs[pi];
+			const std::string L = labels[pi];
 			AgentChatLoop loop;
 			loop.SetProvider( pv );
 			loop.AddUserMessage( "build and look" );
@@ -4705,6 +4711,86 @@ static void TestContextLifetimeRetirementRound2()
 			       L + ": a newer image elides the finish PNG and the build stub survives the image rewrite" );
 			Check( LifetimeWireValid( pv, b3 ), L + ": wire-valid after both rules touched the entry" );
 		}
+	}
+
+	// --- (e) the carry tells the truth (review round 3) ---
+	auto stubAfterFinish = [&]( const std::string& verb, const std::string& args, const std::string& env,
+	                            std::string& body ) -> bool {
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( verb ), Vec1( "b1" ),
+		                         Vec1( args ), Vec1( env ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) return false;
+		body = loop.BuildRequest( kApiKey ).body;
+		return true;
+	};
+	// (e1) attempt 1 rejects X, the retry lands X under a different kind:
+	//      X IS in the document -- the stub must say so, not "refused".
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_x\"],\"landedKinds\":[\"uniformcolor_painter\"],"
+			"\"rejected\":[{\"name\":\"wizard_x\",\"kind\":\"expression_painter\","
+			"\"reason\":\"RETRY_REASON_MARKER def did not compile\"}],"
+			"\"chunkResults\":[{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"message\":\"RETRY_REASON_MARKER def did not compile\",\"name\":\"wizard_x\","
+			"\"kind\":\"expression_painter\"}],\"message\":\"E1_BUILD_MARKER " + pad + "\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e1): drive" ); return; }
+		Check( CountOccurrences( body, "E1_BUILD_MARKER" ) == 0, "T14d(e1): the build result is retired" );
+		Check( body.find( "wizard_x rejected first (as expression_painter), landed on the retry as "
+		                  "uniformcolor_painter" ) != std::string::npos,
+		       "T14d(e1) MONEY: a chunk rejected on attempt 1 and landed by the retry is reported LANDED, "
+		       "with the kind change" );
+		Check( body.find( "wizard_x (expression_painter) refused" ) == std::string::npos &&
+		       body.find( "Not in the document" ) == std::string::npos,
+		       "T14d(e1) MONEY: the stub never claims the landed chunk is absent" );
+	}
+	// (e2) two DISTINCT chunks sharing one generic reason are each named.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"landedKinds\":[],\"rejected\":["
+			"{\"name\":\"wizard_a\",\"kind\":\"sphere_geometry\",\"reason\":\"prefix violation\"},"
+			"{\"name\":\"wizard_b\",\"kind\":\"sphere_geometry\",\"reason\":\"prefix violation\"}],"
+			"\"chunkResults\":[],\"message\":\"E2_BUILD_MARKER " + pad + "\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e2): drive" ); return; }
+		Check( body.find( "wizard_a (sphere_geometry) refused: prefix violation" ) != std::string::npos &&
+		       body.find( "wizard_b (sphere_geometry) refused: prefix violation" ) != std::string::npos,
+		       "T14d(e2) MONEY: distinct chunks with the SAME reason are each named (dedupe by name, kind, text)" );
+	}
+	// (e3) the carry is bounded, with an explicit count of what was left out.
+	{
+		std::string rej;
+		for( int i = 0; i < 14; ++i ) {
+			if( i ) rej += ",";
+			rej += "{\"name\":\"wizard_r" + std::to_string( i ) + "\",\"kind\":\"k\",\"reason\":\"r\"}";
+		}
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"rejected\":[" + rej + "],\"chunkResults\":[],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e3): drive" ); return; }
+		Check( body.find( "wizard_r11 (k) refused" ) != std::string::npos &&
+		       body.find( "wizard_r12 (k) refused" ) == std::string::npos &&
+		       body.find( "and 2 more" ) != std::string::npos,
+		       "T14d(e3): at most 12 items are carried, then \"and N more\"" );
+	}
+	// (e4) an insert_chunks refused duplicate is reported as REFUSED (the
+	//      name may well exist -- another chunk owns it), never as absent.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"applied\":1,\"total\":2,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},"
+			"\"name\":\"wizard_ok\",\"kind\":\"k\",\"element\":\"wizard\"},"
+			"{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"headVersion\":{\"uuid\":7,\"revision\":3},\"message\":\"DUP_MARKER a chunk with this name exists\","
+			"\"name\":\"wizard_ok\",\"kind\":\"k\",\"element\":\"wizard\"}]}" );
+		std::string body;
+		if( !stubAfterFinish( "insert_chunks", "{\"chunks\":[]}", env, body ) ) { Check( false, "T14d(e4): drive" ); return; }
+		Check( body.find( "insert_chunks result for element" ) != std::string::npos &&
+		       body.find( "wizard_ok (k) refused: DUP_MARKER" ) != std::string::npos &&
+		       body.find( "Not in the document" ) == std::string::npos,
+		       "T14d(e4): a refused duplicate is carried as \"refused\", not as absent from the document" );
 	}
 }
 

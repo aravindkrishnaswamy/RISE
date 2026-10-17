@@ -17537,6 +17537,9 @@ static void TestLightSceneWireShape()
 		Check( result.get( "ok" ).asBool( false ), "A81f ok:true" );
 		Check( result.get( "landed" ).isArray() && result.get( "landed" ).size() == 6,
 		       "A81f the landed list rides the wire" );
+		Check( result.get( "landedKinds" ).isArray() && result.get( "landedKinds" ).size() == 6 &&
+		       !result.get( "landedKinds" ).at( 0 ).asString().empty(),
+		       "A81f doc 91 L1: landedKinds gives each landed chunk's kind (no clean chunkResults entries)" );
 		Check( result.get( "soloableLights" ).asNumber( -1 ) == 4.0,
 		       "A81f and so does the soloable-light count" );
 		Check( result.get( "contributions" ).isArray() &&
@@ -20057,6 +20060,8 @@ static void TestPopulateSceneWireShape()
 		Check( result.get( "ok" ).asBool( false ), "A82f ok:true" );
 		Check( result.get( "created" ).isArray() && result.get( "created" ).size() == 3,
 		       "A82f the created list rides the wire" );
+		Check( result.get( "created" ).at( 0 ).get( "kind" ).asString() == "standard_object",
+		       "A82f doc 91 L1: each created entry carries its chunk kind" );
 		Check( result.get( "created" ).at( 0 ).get( "geometry" ).asString() == "sph" &&
 		       result.get( "created" ).at( 0 ).get( "material" ).asString() == "mat_diffuse",
 		       "A82f MONEY ASSERTION: with what each one REPEATS as a STRUCTURED fact, not only "
@@ -21073,6 +21078,8 @@ static void TestEnvironmentSceneWireShape()
 		Check( result.get( "ok" ).asBool( false ), "A83N/f ok:true" );
 		Check( result.get( "landed" ).isArray() && result.get( "landed" ).size() == 6,
 		       "A83N/f the landed list rides the wire" );
+		Check( result.get( "landedKinds" ).isArray() && result.get( "landedKinds" ).size() == 6,
+		       "A83N/f doc 91 L1: landedKinds is index-parallel to landed" );
 		Check( result.get( "boundPainter" ).asString() == "a83_dome" &&
 		       result.get( "bindingApplied" ).asBool( false ),
 		       "A83N/f MONEY ASSERTION: with the BINDING as a STRUCTURED fact, not only prose -- a "

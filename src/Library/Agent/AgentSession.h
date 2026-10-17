@@ -5477,6 +5477,10 @@ namespace RISE
 				std::string modelId;
 				unsigned int chunksExtracted = 0;
 				std::vector<std::string> landed;
+				//! Doc 91 L1 review round 3: the chunk KIND of each `landed`
+				//! entry, index-parallel -- this pass (not the model) chose the
+				//! kinds, and a clean chunk no longer gets a chunkResults entry.
+				std::vector<std::string> landedKinds;
 				std::vector<AgentLightSceneRejection> rejected;
 				std::vector<AgentChunkResult> chunkResults;
 				//! TRUE when the build spent its one repair retry, and when
@@ -5696,6 +5700,10 @@ namespace RISE
 			//! unknown one is rejected rather than inserted.
 			struct AgentPopulateSceneCreation
 			{
+				//! Doc 91 L1 review round 3: the chunk keyword that landed
+				//! (this pass chose it; the clean chunk has no chunkResults
+				//! entry any more).
+				std::string kind;
 				std::string name;
 				std::string geometry;
 				std::string material;
@@ -5871,6 +5879,10 @@ namespace RISE
 				std::string  modelId;
 				unsigned int chunksExtracted = 0;
 				std::vector<std::string> landed;
+				//! Doc 91 L1 review round 3: the chunk KIND of each `landed`
+				//! entry, index-parallel -- this pass (not the model) chose the
+				//! kinds, and a clean chunk no longer gets a chunkResults entry.
+				std::vector<std::string> landedKinds;
 				std::vector<AgentEnvironmentSceneRejection> rejected;
 				std::vector<AgentChunkResult> chunkResults;
 				//! The two parameter edits the DOME BINDING is made of, when

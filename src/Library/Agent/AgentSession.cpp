@@ -33199,6 +33199,7 @@ namespace RISE
 						landedNames.push_back( results[i].name );
 						landedKinds.push_back( results[i].kind );
 						out.landed.push_back( results[i].name );
+						out.landedKinds.push_back( results[i].kind );
 						landedAny = true;
 					}
 					else {
@@ -34595,6 +34596,7 @@ namespace RISE
 						landedNames.push_back( results[i].name );
 						AgentPopulateSceneCreation c;
 						c.name = results[i].name;
+						c.kind = results[i].kind;
 						if( i < submitInfo.size() ) {
 							c.geometry = submitInfo[i].geometry;
 							c.source   = submitInfo[i].source;
@@ -35399,6 +35401,7 @@ namespace RISE
 						landedNames.push_back( results[i].name );
 						landedKinds.push_back( results[i].kind );
 						out.landed.push_back( results[i].name );
+						out.landedKinds.push_back( results[i].kind );
 						landedAny = true;
 					}
 					else {

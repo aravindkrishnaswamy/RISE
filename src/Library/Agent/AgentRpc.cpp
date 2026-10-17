@@ -661,10 +661,11 @@ namespace RISE
 				       cr.message == kCstChunkInsertedMessage;
 			}
 
-			//! Doc 91 slice L1: `chunkResults` for the five clean-room verbs
-			//! (build_element, light_scene, populate_scene, environment_scene,
-			//! frame_scene).  Each of them already NAMES every chunk that
-			//! landed (`landed` / `created` / `cameraNameAfter`), so a clean,
+			//! Doc 91 slice L1: `chunkResults` for four clean-room verbs
+			//! (build_element, light_scene, populate_scene, environment_scene;
+			//! frame_scene keeps every entry, see its handler).  Each of them
+			//! already NAMES every chunk that landed (`landed` / `created`, with
+			//! the kind in `landedKinds` / `created[].kind`), so a clean,
 			//! NAMED success is reported there once and omitted here; what
 			//! remains is the per-chunk detail that carries information -- a
 			//! rejected / diagnosed / issue-bearing chunk, and an UNNAMED
@@ -3098,6 +3099,13 @@ namespace RISE
 						for( std::size_t i = 0; i < lr.landed.size(); ++i )
 							landedArr.push_back( JsonValue::MakeString( lr.landed[i] ) );
 						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 3: kinds, index-parallel to
+						// `landed` -- this pass chose them, and a clean chunk
+						// has no chunkResults entry.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( lr.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
 						JsonValue rejArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < lr.rejected.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();
@@ -3224,6 +3232,9 @@ namespace RISE
 						for( std::size_t i = 0; i < pr.created.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();
 							o.set( "name", JsonValue::MakeString( pr.created[i].name ) );
+							// Doc 91 L1 review round 3: the landed chunk's kind.
+							if( !pr.created[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( pr.created[i].kind ) );
 							// OMITTED rather than sent empty: a repeat always
 							// names both, but a chunk result whose identity
 							// echo came back without them must not report a
@@ -3316,6 +3327,13 @@ namespace RISE
 						for( std::size_t i = 0; i < er.landed.size(); ++i )
 							landedArr.push_back( JsonValue::MakeString( er.landed[i] ) );
 						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 3: kinds, index-parallel to
+						// `landed` -- this pass chose them, and a clean chunk
+						// has no chunkResults entry.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( er.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
 						JsonValue rejArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < er.rejected.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();
@@ -3463,9 +3481,17 @@ namespace RISE
 						for( std::size_t i = 0; i < fr.patchResults.size(); ++i )
 							prArr.push_back( PatchResultJson( fr.patchResults[i] ) );
 						result.set( "patchResults", prArr );
-						// Doc 91 L1: a clean replacement camera is named in
-						// `cameraNameAfter`.
-						result.set( "chunkResults", NotableChunkResultsJson( fr.chunkResults, *s ) );
+						// Doc 91 L1 review round 3: frame_scene keeps EVERY entry.
+						// It has at most two (the new camera's insert and the old
+						// camera's removal), and when the removal fails the new
+						// camera is not necessarily the one `cameraNameAfter`
+						// names -- so compacting it would make "named elsewhere"
+						// false exactly when it matters.
+						JsonValue crArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.chunkResults.size(); ++i )
+							crArr.push_back( ChunkResultJson( fr.chunkResults[i],
+								s->ChunkElement( fr.chunkResults[i].name ) ) );
+						result.set( "chunkResults", crArr );
 						result.set( "retryRan",       JsonValue::MakeBool( fr.retryRan ) );
 						result.set( "retrySucceeded", JsonValue::MakeBool( fr.retrySucceeded ) );
 						result.set( "completions",

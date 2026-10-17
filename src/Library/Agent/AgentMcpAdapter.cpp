@@ -768,7 +768,7 @@ namespace RISE
 						"returns for `chunks[i]` -- {applied,rawCode,status,retriable,headVersion,"
 						"message,name,kind,issues?}, except that a CLEAN success (status applied, no "
 						"issues, nothing to report beyond the standard insert) carries only "
-						"{applied,status,headVersion,name,kind}; any element with something to report "
+						"{applied,status,headVersion,name,kind,element?}; any element with something to report "
 						"keeps every field -- including insert_chunk's `issues` reasons "
 						"(\"unresolved_reference\", \"unknown_param\", \"numeric_in_reference_slot\", "
 						"\"unknown_chunk_type\") and its forward-reference-warning-on-success "
@@ -1120,7 +1120,7 @@ namespace RISE
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
 						"sdfPartCount,bbox:{min,max,height},message}; landed names every chunk that "
 						"went in (landedKinds gives each one's kind), and chunkResults details only the "
-						"chunks that were rejected, diagnosed or carry a notice or issues." );
+						"chunks that did not insert cleanly or carry a notice." );
 					tools.push_back( MakeTool( "build_element", desc, ObjectProp( "", props, required ) ) );
 				}
 				{
@@ -1271,7 +1271,7 @@ namespace RISE
 						"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,"
 						"areaLights,zeroAreaLights,skyLights,otherLights,"
 						"sources:[string],"
-						"message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in landed." );
+						"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds." );
 					tools.push_back( MakeTool( "light_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1337,7 +1337,7 @@ namespace RISE
 						"ok:false saying so without calling the provider. Returns {ok,provider,model,"
 						"chunksExtracted,created:[{name,geometry,material}],"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
-						"objectsBefore,objectsAfter,message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in created." );
+						"objectsBefore,objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind." );
 					tools.push_back( MakeTool( "populate_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1412,7 +1412,7 @@ namespace RISE
 						"completions,painters,media,boundPainter,bindingApplied,bindingReason,"
 						"rasterizer,radianceMapBefore,radianceMapAfter,globalMediumBefore,"
 						"globalMediumAfter,toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},"
-						"toneAfter:{...},message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in landed (an unnamed chunk such as global_medium keeps its chunkResults entry)." );
+						"toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds." );
 					tools.push_back( MakeTool( "environment_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1478,8 +1478,7 @@ namespace RISE
 						"cameraKindAfter,cameraNameAfter,paramsApplied,rejected:[{name,kind,reason}],"
 						"patchResults,chunkResults,retryRan,retrySucceeded,completions,objectsBefore,"
 						"coveredBefore,objectsAfter,coveredAfter,broughtIntoFrame,pushedOutOfFrame,"
-						"message}. chunkResults holds only a camera chunk that was rejected, diagnosed or "
-						"carries a notice; a clean replacement camera is named in cameraNameAfter." );
+						"message}." );
 					tools.push_back( MakeTool( "frame_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 

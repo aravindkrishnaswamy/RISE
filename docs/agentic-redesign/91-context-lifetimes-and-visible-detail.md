@@ -89,14 +89,16 @@ apothecary and 0 on the dragons run (which read no skills).
   the controller folds and the classifier).  Any appended notice -- the
   auto-parent disclosure, the CSG-operand detach warning, the S1/G2 folds,
   a batch's rawCode-3 "ANOTHER element" note -- makes it not clean.
-  `chunkResults` of `build_element` and of its four clean-room siblings
-  (`light_scene`, `populate_scene`, `environment_scene`, `frame_scene`,
-  which carry the identical pattern) goes through `NotableChunkResultsJson`
-  -- every non-clean or unnamed chunk keeps its `ChunkResultJson`; a clean,
-  named one is reported in `landed` / `created` / `cameraNameAfter` only.
-  `build_element` adds `landedKinds` (index-parallel to `landed`; the
-  builder, not the model, chose the kinds) and its `message` states the
-  count ("Chunks inserted: 16 (named in `landed`)") instead of the names.
+  `chunkResults` of `build_element`, `light_scene`, `populate_scene` and
+  `environment_scene` (which carry the identical pattern) goes through
+  `NotableChunkResultsJson` -- every non-clean or unnamed chunk keeps its
+  `ChunkResultJson`; a clean, named one is reported in `landed` /
+  `created` only, with its kind in `landedKinds` (index-parallel; the pass,
+  not the model, chose the kinds) or `created[].kind`.  `frame_scene`
+  keeps EVERY entry (at most two -- the new camera's insert and the old
+  one's removal -- and a failed removal would make "named in
+  cameraNameAfter" untrue).  `build_element`'s `message` states the count
+  ("Chunks inserted: 16 (named in `landed`)") instead of the names.
   `insert_chunks` keeps its index-aligned `results` (ToolOutcomeLine and
   both GUI retry gates read it) and slims only a clean element to
   `{applied,status,headVersion,name,kind,element?}`
@@ -118,9 +120,15 @@ apothecary and 0 on the dragons run (which read no skills).
   `RewriteToolResultSlots` with supersession): slots record `verb`,
   `lifetimeElement` (insert_chunks: from its APPLIED/diagnosed chunks
   only; a batch spanning two elements is never retired), `lifetimeCarry`
-  (review round 2: each rejected chunk with its reason and each notice on
-  a landed chunk, which the element-finished stub carries -- they are not
-  in the document, so retiring must not delete the only copy) and
+  (reviews 2-3: the per-chunk outcomes the document does not record, each
+  named and labelled truthfully -- "refused: <reason>", "rejected first
+  (as K), landed on the retry[ as K2]" for a `rejected` entry whose name is
+  in `landed` (that IS the kind-changed re-land disclosure), "landed with a
+  notice" / "landed, diagnosed"; deduplicated by (name, kind, text), at
+  most 12 items then "and N more"; build_element's top-level message prose
+  -- give-up fold, unquoted-name disclosure, total-rejection excerpt -- is
+  not carried), which the element-finished stub carries so retiring never
+  deletes the only copy, and
   `lifetimeSkill` at pack time.  A successful `reopen_element` E cancels
   an element-finished retirement for E that was decided but not yet
   applied.  A lifetime event DECIDES (marks

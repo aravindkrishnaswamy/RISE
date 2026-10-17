@@ -339,8 +339,8 @@ namespace RISE
 					"retriable, headVersion, message, name, kind, and optional issues with "
 					"the same reasons insert_chunk documents) -- except that a clean "
 					"success (status applied, no issues, nothing to report beyond the "
-					"standard insert) carries only applied, status, headVersion, name and "
-					"kind; any element with something to report keeps every field. Check "
+					"standard insert) carries only applied, status, headVersion, name, kind "
+					"and (inside an element window) element; any element with something to report keeps every field. Check "
 					"every element's own "
 					"status -- do not assume the whole batch succeeded just because the "
 					"call returned. Each array element must be EXACTLY ONE `keyword "
@@ -1434,8 +1434,8 @@ namespace RISE
 					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
 					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}; "
 					"landed names every chunk that went in (landedKinds gives each one's kind), and "
-					"chunkResults details only the chunks that were rejected, diagnosed or carry a "
-					"notice or issues.",
+					"chunkResults details only the chunks that did not insert cleanly or carry a "
+					"notice.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"element\":{\"type\":\"string\",\"description\":"
 						"\"Required. The name of the ACTIVE element, exactly as you filed it in file_build_plan. A name that is not the active element does nothing and says which element is active.\"},"
@@ -1553,7 +1553,7 @@ namespace RISE
 					"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,areaLights,"
 					"zeroAreaLights,skyLights,otherLights,"
 					"sources:[string],"
-					"message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in landed.",
+					"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the lighting pass alongside the inventory and the camera -- anything about the mood or the look this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -1599,7 +1599,7 @@ namespace RISE
 					"this returns ok:false saying so without calling the provider. Returns "
 					"{ok,provider,model,chunksExtracted,created:[{name,geometry,material}],"
 					"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,objectsBefore,"
-					"objectsAfter,message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in created.",
+					"objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the population pass alongside the inventory and the camera -- anything about what this scene is that its own state does not already say. Nothing checks what it says.\"}"
@@ -1653,7 +1653,7 @@ namespace RISE
 					"retrySucceeded,"
 					"completions,painters,media,boundPainter,bindingApplied,bindingReason,rasterizer,"
 					"radianceMapBefore,radianceMapAfter,globalMediumBefore,globalMediumAfter,"
-					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}. chunkResults holds only the chunks that were rejected, diagnosed or carry a notice (empty on an all-clean pass); every chunk that went in is named in landed (an unnamed chunk such as global_medium keeps its chunkResults entry).",
+					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the environment pass alongside the inventory and the camera -- anything about the place or the weather this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -1702,9 +1702,7 @@ namespace RISE
 					"cameraKindBefore,cameraNameBefore,cameraKindAfter,cameraNameAfter,paramsApplied,"
 					"rejected:[{name,kind,reason}],patchResults,chunkResults,retryRan,retrySucceeded,"
 					"completions,objectsBefore,coveredBefore,objectsAfter,coveredAfter,"
-					"broughtIntoFrame,pushedOutOfFrame,message}. chunkResults holds only a camera "
-					"chunk that was rejected, diagnosed or carries a notice; a clean replacement camera is "
-					"named in cameraNameAfter.",
+					"broughtIntoFrame,pushedOutOfFrame,message}.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"notes\":{\"type\":\"string\",\"description\":"
 						"\"Optional free text passed to the framing pass alongside the inventory and the current camera -- anything about the shot you want that this scene's own state does not already say. Nothing checks what it says.\"}"
@@ -2499,7 +2497,9 @@ namespace RISE
 				element + "\" is finished; its chunks are in the document (read_document shows them) "
 				"and stay editable in place; reopen_element \"" + element + "\" only to create new "
 				"geometry for it";
-			if( !carried.empty() ) note += ". Not in the document, kept from the elided result: " + carried;
+			if( !carried.empty() )
+				note += ". Kept from the elided result (per-chunk outcomes the document does not record): " +
+				        carried;
 			return note + "]";
 		}
 
