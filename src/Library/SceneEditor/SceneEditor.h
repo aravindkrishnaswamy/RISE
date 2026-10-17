@@ -32,7 +32,9 @@
 #include "../Interfaces/IScenePriv.h"
 #include "../Cst/Cst.h"   // Document-first ADR phase 1: CstHeadVersion (derived dirty)
 #include <functional>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include <set>
 #include <atomic>
 #include <memory>
@@ -447,7 +449,8 @@ namespace RISE
 		void PushAgentCstParamEdit(
 			const String& entityName, const String& entityKind, const String& param,
 			const String& newValue, const String& prevValue, bool prevValueWasAbsent,
-			int occ = 0, bool occAddressed = false );
+			int occ = 0, bool occAddressed = false,
+			const std::string& ownerPreText = std::string(), const std::string& ownerPostText = std::string() );
 
 		//! Shared-undo U2: push an EditHistory record for an agent chunk-CRUD commit (insert OR remove) that
 		//! has ALREADY been applied to the retained Document (via Job::ApplyCstInsertChunk /
@@ -763,6 +766,18 @@ namespace RISE
 		// CommitPendingCstObjectTransforms.  Populated by transform ops on a CST scene; flushed to the `matrix`
 		// param by the controller at a parked boundary.  UI-thread-only.
 		std::unordered_set<std::string> mPendingCstObjMatrix;
+		// ...the subset of them noted by a FORWARD op (Apply / Redo) -- the rest were noted only by an Undo.
+		std::unordered_set<std::string> mPendingCstObjForward;
+
+		// Undo fidelity (2026-10-17): per object, the owner chunk's exact text before and after each FORWARD
+		// `matrix` commit, most recent last.  A transform commit re-spells the pose as `matrix`; when an Undo then
+		// restores the pose, RestoreCstObjectSpelling_ swaps the latest entry's `pre` text back instead of writing
+		// another `matrix`, so the chunk returns to the bytes it had -- which an older record (an agent insert's
+		// exact-bytes inverse) depends on.  Every swap is VERIFIED (the re-derived local matrix must equal the
+		// restored live one), so an entry that does not belong to the step being undone is never trusted; capped.
+		struct CstTransformSpelling_ { std::string pre; std::string post; };
+		std::unordered_map< std::string, std::vector<CstTransformSpelling_> > mCstTransformSpellings;
+		static const std::size_t kCstTransformSpellingCap = 32;
 
 		// P5 Slice 3 expansion (camera drag): the active camera's name if a camera-drag op changed its pose since
 		// the last CommitPendingCstCameraPose (empty = none).  Flushed to the camera chunk's pose params by the
@@ -1064,6 +1079,9 @@ namespace RISE
 		//! doc 88 S4b: `occ` selects which occurrence to write (0 = first) -- the argument position mirrors
 		//! RouteCstParamRemove_'s so the two inverse halves of one edit read the same way at their call sites.
 		bool RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, int occ, bool* outDiagnosed = nullptr );
+		//! Undo fidelity (2026-10-17): SetAgentCstParam's verbatim owner-chunk swap (see the definition's doc).
+		//! -1 = does not apply (caller replays values), 0 = would not derive (nothing changed), 1 = landed.
+		int RouteCstParamOwnerRestore_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
 
 		//! doc 88 S4b (occurrence-addressed undo/redo DRIFT GUARD).  Answers: is `edit`'s occurrence STILL the
 		//! line this direction is entitled to overwrite?  Two independent checks against the CURRENT retained
@@ -1119,7 +1137,13 @@ namespace RISE
 
 		//! P5 Slice 3 expansion (object transform): note an object whose transform changed for a deferred
 		//! `matrix`-param commit; route ONE object's net transform (rebinds on a D2).
-		void NoteCstObjectTransform_( const String& name );
+		//! `revert` = noted by an UNDO (ApplyRevertMutation); a name noted by any forward op in the same flush
+		//! commits as forward.
+		void NoteCstObjectTransform_( const String& name, bool revert = false );
+		//! Undo fidelity (2026-10-17): commit object `name`'s UNDONE transform by swapping its chunk back to the
+		//! exact text the last forward commit replaced (mCstTransformSpellings), verified against the restored live
+		//! `matrix16`.  False = did not apply (the caller writes `matrix16` as before); true = landed, `routed` set.
+		bool RestoreCstObjectSpelling_( const std::string& name, const std::string& matrix16, bool& routed );
 		void NoteCstCameraDrag_( const String& camName );
 		bool ApplyCstObjectMatrix_( const std::string& name, const std::string& matrix16 );
 		bool ApplyCstObjectComponents_( const std::string& name, const std::string& position, const std::string& orientation );

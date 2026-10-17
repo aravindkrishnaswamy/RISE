@@ -4958,6 +4958,22 @@ Document DocRemoveParamOcc( const Document& doc, NodeId chunkId, const std::stri
 	return DocReplaceItem( doc, index, edited, visits );
 }
 
+Document DocReplaceChunkIfText( const Document& doc, NodeId chunkId, const std::string& expectText, const std::string& newText, bool* replaced )
+{
+	if( replaced ) *replaced = false;
+	NodeRef chunk;
+	const int index = DocIndexOfNodeId( doc, chunkId, &chunk );
+	if( index < 0 || !chunk || chunk->kind != NodeKind::Chunk ) return doc;
+	if( SerializeNode( chunk ) != expectText ) return doc;
+	// The replacement must be exactly one chunk (no surrounding trivia, nothing else) that round-trips.
+	const Document parsed = ParseToCst( newText );
+	if( DocItemCount( parsed ) != 1 ) return doc;
+	const NodeRef item = DocResolveNodeId( parsed, DocNodeIdAt( parsed, 0 ) );
+	if( !item || item->kind != NodeKind::Chunk || item->role != chunk->role || SerializeNode( item ) != newText ) return doc;
+	if( replaced ) *replaced = true;
+	return DocReplaceItem( doc, index, item );                                // chunk NodeId PRESERVED (D44)
+}
+
 Document DocSetOrAddParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, bool* inserted, int* visits )
 {
 	if( visits ) *visits = 0;

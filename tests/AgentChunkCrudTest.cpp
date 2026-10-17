@@ -14434,6 +14434,127 @@ static void TestBatchUndoKeepsUnchangedTransformSpelling()
 	}
 }
 
+//! BR24 (undo fidelity): an earlier insert stays exactly undoable after a later patch (or an inspector / gizmo
+//! transform edit) on the inserted chunk is undone.  Each case goes insert -> edit -> Undo -> Undo and must land
+//! back on the ORIGINAL document bytes.  Before the fix the edit's Undo re-spelled the restored line (`0.1  0.2\t0.3`
+//! -> `0.1 0.2 0.3`; a tab-aligned `def` single-spaced), re-added a stripped `matrix` at the END of the chunk, or
+//! re-wrote an inspector-edited pose as `matrix` -- and the insert's exact-bytes Undo then refused.
+static void TestUndoKeepsRestoredLineBytes()
+{
+	std::printf( "BR24: undo of a patch / transform edit restores the prior lines' exact bytes ...\n" );
+	struct PatchCase { const char* what; const char* chunk; const char* target; const char* kind; const char* param;
+	                   const char* value; bool occ; };
+	const PatchCase cases[] = {
+		{ "spaced value",
+		  "uniformcolor_painter\n{\n\tname br24_p\n\tcolor 0.1  0.2\t0.3\n}",
+		  "br24_p", "", "color", "0.9 0.9 0.9", false },
+		{ "tab-aligned def",
+		  "expression_painter\n{\n\tname br24_e\n\tdef\t\twear\t\tu*0.5\n\texpr\t\twear\n}",
+		  "br24_e", "", "def", "wear u*0.25", true },
+		{ "matrix -> position",
+		  "standard_object\n{\n\tname br24_o\n\tgeometry sph\n\tmatrix 1 0 0 0  0 1 0 0  0 0 1 0  0 0 0 1\n\tmaterial mat_diffuse\n}",
+		  "br24_o", "standard_object", "position", "0.3 0 0", false },
+	};
+	for( const PatchCase& c : cases ) {
+		for( int verb = 0; verb < 2; ++verb ) {   // 0 = single propose_patch (per-element record), 1 = batch
+			const std::string tmp = TempPath( "agentcrud_br24.RISEscene" );
+			Job* pJob = LoadScene( kScene, tmp );
+			Check( pJob != nullptr, "BR24 fixture loads" );
+			if( !pJob ) return;
+			{
+				SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+				std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+				sess->AttachController( &controller );
+				const std::string w = std::string( "BR24 [" ) + c.what + ( verb ? ", batch] " : ", single] " );
+				const std::string d0 = sess->ReadDocument();
+				Check( sess->InsertChunk( c.chunk ).applied, w + "the chunk inserts" );
+				const std::string d1 = sess->ReadDocument();
+				Agent::AgentSetPatch p;
+				p.target = c.target; p.kind = c.kind; p.param = c.param; p.value = c.value;
+				if( c.occ ) { p.hasOccurrence = true; p.occurrence = 0; }
+				if( verb == 0 ) {
+					Check( sess->ProposePatch( p ).applied, w + "the patch applies" );
+				} else {
+					std::vector<Agent::AgentSetPatch> ps;
+					ps.push_back( p );
+					Agent::AgentSetPatch q;
+					q.target = "sph"; q.param = "radius"; q.value = "0.6"; ps.push_back( q );
+					const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+					Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the patch batch applies" );
+				}
+				Check( sess->ReadDocument() != d1, w + "the patch changed the document" );
+				Check( controller.Undo(), w + "Undo of the patch succeeds" );
+				Check( sess->ReadDocument() == d1, w + "MONEY: Undo of the patch restores the post-insert bytes exactly" );
+				Check( controller.Undo(), w + "MONEY: the older insert record still undoes" );
+				Check( sess->ReadDocument() == d0, w + "...back to the original document bytes" );
+				Check( controller.ConsumeHistoryNotice().empty(), w + "no history notice" );
+				Check( controller.Redo() && sess->ReadDocument() == d1, w + "Redo of the insert is byte-exact" );
+				Check( controller.Redo(), w + "Redo of the patch succeeds" );
+				Check( controller.Undo() && sess->ReadDocument() == d1, w + "a second Undo of the patch is byte-exact" );
+				sess->AttachController( nullptr );
+				sess.reset();
+			}
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// An inspector (or gizmo) transform edit on the inserted object, then its Undo: the pose must come back in its
+	// ORIGINAL spelling, not re-written as `matrix`, so the insert's own Undo still applies.
+	const char* const kObj =
+		"standard_object\n{\n\tname br24_t\n\tgeometry sph\n\tposition 0.1  0 0\n\tmaterial mat_diffuse\n\tscale 1  1 1\n}";
+	for( int which = 0; which < 2; ++which ) {
+		const std::string tmp = TempPath( "agentcrud_br24t.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR24 transform fixture loads" );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = which == 0 ? "BR24 [inspector edit] " : "BR24 [gizmo drag] ";
+			const std::string d0 = sess->ReadDocument();
+			Check( sess->InsertChunk( kObj ).applied, w + "the object inserts" );
+			const std::string d1 = sess->ReadDocument();
+			if( which == 0 ) {
+				controller.ForTest_SetSelection( SceneEditController::Category::Object, String( "br24_t" ) );
+				Check( controller.SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ), w + "inspector edit applies" );
+			} else {
+				controller.SetSelection( SceneEditController::Category::Object, String( "br24_t" ) );
+				controller.SetTool( SceneEditController::Tool::TranslateObject );
+				controller.RefreshGizmoHandles();
+				int h = -1;
+				for( unsigned int i = 0; i < controller.GizmoHandleCount() && h < 0; ++i )
+					if( controller.GizmoHandleKind( i ) == static_cast<int>( SceneEditController::GizmoHandle::Kind::AxisPlane ) )
+						h = static_cast<int>( i );
+				Check( h >= 0, w + "a plane handle exists" );
+				if( h >= 0 ) {
+					const Point2 down( controller.GizmoHandleScreenX( h ), controller.GizmoHandleScreenY( h ) );
+					controller.OnPointerDown( down );
+					controller.OnPointerMove( Point2( down.x + 4.0, down.y - 3.0 ) );
+					controller.OnPointerUp( Point2( down.x + 4.0, down.y - 3.0 ) );
+				}
+				controller.SetTool( SceneEditController::Tool::Select );
+			}
+			const std::string d2 = sess->ReadDocument();
+			Check( d2 != d1, w + "the edit changed the document" );
+			Check( controller.Undo(), w + "Undo of the edit succeeds" );
+			Check( sess->ReadDocument() == d1, w + "MONEY: Undo of the edit restores the inserted object's exact bytes" );
+			Check( controller.Undo(), w + "MONEY: the older insert record still undoes" );
+			Check( sess->ReadDocument() == d0, w + "...back to the original document bytes" );
+			Check( controller.ConsumeHistoryNotice().empty(), w + "no history notice" );
+			Check( controller.Redo() && sess->ReadDocument() == d1, w + "Redo of the insert is byte-exact" );
+			Check( controller.Redo(), w + "Redo of the edit succeeds" );
+			Check( sess->ReadDocument() == d2, w + "Redo of the edit reproduces the edited document" );
+			Check( controller.Undo() && sess->ReadDocument() == d1, w + "a second Undo of the edit is byte-exact" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
 //! BR22 (round-5 P1-2): Redo of a batch insert lands where the forward insert did, even when the anchor chunk has
 //! an identity twin -- two UNNAMED pathtracing rasterizers share one identity, and a vcm rasterizer appended after
 //! the SECOND must not be re-inserted after the FIRST (which would change the active rasterizer).
@@ -21930,6 +22051,7 @@ int main()
 	TestBatchUndoOccurrenceDriftParity();
 	TestBatchUndoKeepsUnchangedTransformSpelling();
 	TestBatchRedoInsertAnchorTwin();
+	TestUndoKeepsRestoredLineBytes();          // undo fidelity: restored lines keep their bytes
 	TestBatchRetrySameSlotDirectional();
 	TestMaterialScaffoldFamilies();
 	TestMaterialScaffoldDeterminism();

@@ -2417,6 +2417,34 @@ bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char*
 	return r >= 1;
 }
 
+// Undo fidelity (2026-10-17): SetAgentCstParam's VERBATIM inverse.  When the edit's owner chunk (resolved by the
+// write's own rules) holds EXACTLY the text this direction starts from -- the post-edit text on Undo, the pre-edit
+// text on Redo -- swap in the other side byte for byte (Job::ApplyCstParamEditOwnerRestore).  That is the only
+// inverse that gives every line back its own spacing and its own place: replaying `prevPropertyValue` re-spells
+// the restored line (WithParamValue single-spaces values) and cannot re-add a param the write stripped (a
+// `position` patch strips `matrix`) where it was -- and either difference makes an OLDER insert record's
+// exact-bytes inverse refuse.  Returns -1 when the swap does not apply (no captured texts, a non-IJobPriv Job,
+// the owner gone, or its text changed since) -- the caller then replays values as before; 0 when the swapped
+// document would not derive (nothing changed); 1 when it landed (with the same rebind / dirty bookkeeping, and
+// `outDiagnosed`, as RouteCstParamEditChecked_).
+int SceneEditor::RouteCstParamOwnerRestore_( const SceneEdit& edit, bool forward, bool* outDiagnosed )
+{
+	if( outDiagnosed ) *outDiagnosed = false;
+	if( edit.agentOwnerPreText.empty() || edit.agentOwnerPostText.empty() ) return -1;
+	IJobPriv* const jp = dynamic_cast<IJobPriv*>( mJob );
+	if( !jp ) return -1;
+	const int r = jp->ApplyCstParamEditOwnerRestore(
+		edit.objectName.c_str(), edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr,
+		edit.propertyName.c_str(),
+		forward ? edit.agentOwnerPreText : edit.agentOwnerPostText,
+		forward ? edit.agentOwnerPostText : edit.agentOwnerPreText );
+	if( r < 0 ) return -1;
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
+	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	return r >= 1 ? 1 : 0;
+}
+
 namespace {
 // doc 88 S4b round 1 (P1 fix): whitespace-NORMALISE a param value the same way a Document WRITE does, not
 // just trim its ends.  Cst::WithParamValue (the sole writer behind ApplyCstParamEditChecked) re-tokenises
@@ -2723,7 +2751,7 @@ namespace
 
 	std::string EncodeBatchOps_( const std::vector<RISE::CstBatchUndoOp>& ops )
 	{
-		std::string out = "RISEBATCHOPS3\n";
+		std::string out = "RISEBATCHOPS4\n";
 		PutInt_( out, static_cast<long long>( ops.size() ) );
 		for( std::size_t i = 0; i < ops.size(); ++i ) {
 			const RISE::CstBatchUndoOp& o = ops[i];
@@ -2745,6 +2773,8 @@ namespace
 			PutInt_( out, o.wholeTransform ? 1 : 0 );
 			PutField_( out, o.ownerKeyword );
 			PutField_( out, o.ownerNamePath );
+			PutField_( out, o.ownerPreText );
+			PutField_( out, o.ownerPostText );
 			PutInt_( out, static_cast<long long>( o.slots.size() ) );
 			for( std::size_t k = 0; k < o.slots.size(); ++k ) {
 				const RISE::CstBatchUndoOp::Slot& sl = o.slots[k];
@@ -2762,7 +2792,7 @@ namespace
 	bool DecodeBatchOps_( const std::string& in, std::vector<RISE::CstBatchUndoOp>& ops )
 	{
 		ops.clear();
-		const std::string magic = "RISEBATCHOPS3\n";
+		const std::string magic = "RISEBATCHOPS4\n";
 		if( in.compare( 0, magic.size(), magic ) != 0 ) return false;
 		std::size_t pos = magic.size();
 		long long n = 0;
@@ -2789,6 +2819,7 @@ namespace
 			if( !GetInt_( in, pos, b ) ) return false;
 			o.wholeTransform = ( b != 0 );
 			if( !GetField_( in, pos, o.ownerKeyword ) || !GetField_( in, pos, o.ownerNamePath ) ) return false;
+			if( !GetField_( in, pos, o.ownerPreText ) || !GetField_( in, pos, o.ownerPostText ) ) return false;
 			if( !GetInt_( in, pos, ns ) || ns < 0 ) return false;
 			for( long long k = 0; k < ns; ++k ) {
 				RISE::CstBatchUndoOp::Slot sl;
@@ -2851,7 +2882,8 @@ namespace
 			const std::string what = "the inserted `" + o.keyword + "` " +
 				( o.namePath.empty() ? std::string( "(unnamed)" ) : ( "`" + RISE::CstNameFromPath( o.namePath ) + "`" ) );
 			ref.why = sameIdentityChanged
-				? what + " was changed outside the undo history since it was inserted"
+				? what + " no longer has the exact text it was inserted with (it was edited since, and undoing those "
+				         "edits did not restore that text)"
 				: what + " no longer exists";
 			return false;
 		}
@@ -2925,6 +2957,21 @@ namespace
 			return false;
 		}
 		const RISE::Cst::NodeId id = RISE::Cst::DocTransformOwnerId( doc, target, o.editRole );
+
+		// Undo fidelity (2026-10-17): when the owner still holds EXACTLY the text this direction starts from,
+		// swap in the other side verbatim -- every line back with its own spacing and in its own place.  Replaying
+		// the slots below cannot do that: a write re-spells the line it touches (`0.1  0.2\t0.3` -> `0.1 0.2 0.3`)
+		// and re-adds a stripped param at the END of the chunk, and either one makes an older insert record's
+		// exact-bytes inverse refuse.  Exact match means nothing else touched the chunk, so the swap loses nothing.
+		{
+			const std::string& expect = forward ? o.ownerPreText : o.ownerPostText;
+			const std::string& next   = forward ? o.ownerPostText : o.ownerPreText;
+			if( !expect.empty() && !next.empty() ) {
+				bool replaced = false;
+				const RISE::Cst::Document swapped = RISE::Cst::DocReplaceChunkIfText( doc, id, expect, next, &replaced );
+				if( replaced ) { doc = swapped; return true; }
+			}
+		}
 
 		// Base's occurrence-drift guard for an occurrence-addressed edit (SceneEditor::
 		// OccurrenceEditStillAddressable_): the addressed line must still exist and still hold the value this
@@ -3075,9 +3122,10 @@ bool SceneEditor::RouteObjectShadowFlagsToCst_( const String& objectName, int fl
 // P5 Slice 3 expansion (object transform): a transform op direct-mutates the live object now (cheap, so a gizmo
 // drag stays responsive) and NOTES the object for a deferred `matrix`-param commit at the composite/edit
 // boundary.  Only on a CST-loaded scene (else there is no Document to keep in sync).
-void SceneEditor::NoteCstObjectTransform_( const String& name )
+void SceneEditor::NoteCstObjectTransform_( const String& name, bool revert )
 {
 	mPendingCstObjMatrix.insert( std::string( name.c_str() ) );
+	if( !revert ) mPendingCstObjForward.insert( std::string( name.c_str() ) );
 }
 
 // Route ONE object's net transform as the standard_object `matrix` param (Job strips the dead component params
@@ -3097,6 +3145,36 @@ bool SceneEditor::ApplyCstObjectComponents_( const std::string& name, const std:
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
 	return r == 1 || r == 2;
+}
+
+// Undo fidelity (2026-10-17): see the header doc.  The latest journal entry for `name` describes the most recent
+// forward commit: its `post` text must still be the chunk's exact text (nothing touched it since), and swapping
+// its `pre` text back must re-derive EXACTLY the pose the Undo restored on the live object (`matrix16`, formatted
+// as the commit would have written it).  The second check is what makes a stale entry harmless -- one Undo can
+// revert several forward commits (a transaction), or a commit the journal never saw -- because a wrong swap is
+// detected on the spot and overwritten by the `matrix` write the caller would have made anyway.  The entry is
+// consumed either way; a mismatch clears the object's journal (its entries no longer chain).
+bool SceneEditor::RestoreCstObjectSpelling_( const std::string& name, const std::string& matrix16, bool& routed )
+{
+	routed = false;
+	IJobPriv* const jp = dynamic_cast<IJobPriv*>( mJob );
+	std::unordered_map< std::string, std::vector<CstTransformSpelling_> >::iterator it = mCstTransformSpellings.find( name );
+	if( !jp || it == mCstTransformSpellings.end() || it->second.empty() ) return false;
+	const CstTransformSpelling_ e = it->second.back();
+	it->second.pop_back();
+	const int r = jp->ApplyCstParamEditOwnerRestore( name.c_str(), "standard_object", "matrix", e.post, e.pre );
+	if( r < 0 ) { it->second.clear(); return false; }   // the chunk changed since: write the matrix instead
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
+	if( r == 0 ) { it->second.clear(); return false; }  // would not derive (nothing changed)
+	IObjectPriv* const obj = FindObject( String( name.c_str() ) );
+	if( !obj || FormatMatrix16( MirrorFreeLocal_( *obj ) ) != matrix16 ) {
+		// The restored text does not reproduce the undone pose: re-assert the pose (the pre-fix behaviour).
+		mCstTransformSpellings.erase( name );
+		return false;
+	}
+	routed = ( r == 1 || r == 2 );
+	return true;
 }
 
 // P5 Slice 3 expansion (object transform): commit every pending object's LOCAL transform -- what its chunk
@@ -3119,7 +3197,7 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 	// object: kind 1 (standard_object) commits the full `matrix`; kind 2 (csg_object) commits decomposed position +
 	// orientation (the editor's apply-gate + its post-mutate decomposability check already refused any csg
 	// scale/shear/gimbal-lock, so DecomposeRigid is guaranteed to succeed here).
-	struct Route { std::string name; int kind; std::string a; std::string b; bool ready; };
+	struct Route { std::string name; int kind; std::string a; std::string b; bool ready; bool revert; };
 	std::vector<Route> work;
 	work.reserve( mPendingCstObjMatrix.size() );
 	for( std::unordered_set<std::string>::const_iterator it = mPendingCstObjMatrix.begin(); it != mPendingCstObjMatrix.end(); ++it ) {
@@ -3157,6 +3235,7 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 		M = MirrorFreeLocal_( *obj );
 		const int kind = mJob->CstObjectTransformKind( it->c_str() );
 		Route r; r.name = *it; r.kind = kind; r.ready = false;
+		r.revert = ( mPendingCstObjForward.count( *it ) == 0 );   // noted only by an Undo
 		if( kind == 1 ) {
 			r.a = FormatMatrix16( M );
 			r.ready = true;
@@ -3171,11 +3250,34 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 		work.push_back( r );
 	}
 	mPendingCstObjMatrix.clear();
+	mPendingCstObjForward.clear();
+	IJobPriv* const jp = dynamic_cast<IJobPriv*>( mJob );
 	bool ok = true;
 	for( size_t i = 0; i < work.size(); ++i ) {
 		bool routed = false;
 		if( work[i].ready ) {
-			if( work[i].kind == 1 )      routed = ApplyCstObjectMatrix_( work[i].name, work[i].a );
+			if( work[i].kind == 1 ) {
+				// Undo fidelity (2026-10-17): an UNDONE transform puts the chunk's previous text back verbatim when
+				// it verifiably reproduces the restored pose (RestoreCstObjectSpelling_); a FORWARD commit records
+				// the text it replaces for that.  Only the `matrix` route: it changes the owner chunk alone, where
+				// the csg components route below strips every transform layer.
+				if( !( work[i].revert && RestoreCstObjectSpelling_( work[i].name, work[i].a, routed ) ) ) {
+					std::string pre;
+					const bool havePre = !work[i].revert && jp &&
+						jp->CstParamEditOwnerChunkText( work[i].name.c_str(), "standard_object", "matrix", pre );
+					routed = ApplyCstObjectMatrix_( work[i].name, work[i].a );
+					std::vector<CstTransformSpelling_>& journal = mCstTransformSpellings[ work[i].name ];
+					std::string post;
+					if( routed && havePre &&
+					    jp->CstParamEditOwnerChunkText( work[i].name.c_str(), "standard_object", "matrix", post ) ) {
+						CstTransformSpelling_ e; e.pre = pre; e.post = post;
+						journal.push_back( e );
+						if( journal.size() > kCstTransformSpellingCap ) journal.erase( journal.begin() );
+					} else {
+						journal.clear();   // a commit the journal cannot describe: its older entries no longer chain
+					}
+				}
+			}
 			else if( work[i].kind == 2 ) routed = ApplyCstObjectComponents_( work[i].name, work[i].a, work[i].b );
 		}
 		if( !routed ) {
@@ -3562,7 +3664,7 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 void SceneEditor::PushAgentCstParamEdit(
 	const String& entityName, const String& entityKind, const String& param,
 	const String& newValue, const String& prevValue, bool prevValueWasAbsent,
-	int occ, bool occAddressed )
+	int occ, bool occAddressed, const std::string& ownerPreText, const std::string& ownerPostText )
 {
 	SceneEdit edit;
 	edit.op                 = SceneEdit::SetAgentCstParam;
@@ -3577,6 +3679,11 @@ void SceneEditor::PushAgentCstParamEdit(
 	// to the pre-S4b meaning for every caller that does not pass them.
 	edit.cstParamOcc          = occ;
 	edit.cstParamOccAddressed = occAddressed;
+	// Undo fidelity: both texts or neither -- a half-captured pair has nothing to swap.
+	if( !ownerPreText.empty() && !ownerPostText.empty() ) {
+		edit.agentOwnerPreText  = ownerPreText;
+		edit.agentOwnerPostText = ownerPostText;
+	}
 	// capturedTargetSerial stays 0 (default): SetAgentCstParam is a CST-routed op (IsCstRoutedOp), so
 	// ApplyForwardMutation/ApplyRevertMutation's identity-serial guard is skipped for it regardless -- it
 	// applies/reverts/redoes BY NAME, like every other CST-routed property op.
@@ -4090,7 +4197,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 			// P5 Slice 3 expansion (object transform): the inverse transform changed the live object too -> note it
 			// for the same deferred `matrix`-param commit, so undo stays Document-consistent.
 			if( mJob && mJob->HasRetainedCstDocument() && IsObjectTransformOp( edit.op ) )
-				NoteCstObjectTransform_( edit.objectName );
+				NoteCstObjectTransform_( edit.objectName, /*revert*/ true );
 			break;
 		}
 		mLastScope = Dirty_ObjectTransform;
@@ -4281,13 +4388,19 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// Refuse honestly instead: returning false makes Undo() restore this entry to the undo stack, so
 		// the history keeps the edit and the user can retry once the drift is resolved.  A NON-occurrence-
 		// addressed edit (every pre-S4b caller) short-circuits to true inside the guard.
-		if( !OccurrenceEditStillAddressable_( edit, edit.propertyValue.c_str(), "Undo" ) ) return false;
-		// `occ` -- pre-S4b this was hardcoded 0 (the agent path's fixed convention); the field carries the
-		// same 0 for every one of those edits, and the real occurrence for a `<role>[<index>]` row edit.
-		if( edit.prevValueWasAbsent ) {
-			if( !RouteCstParamRemove_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.cstParamOcc, &diagnosed ) ) return false;
-		} else {
-			if( !RouteCstParamEditChecked_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.prevPropertyValue.c_str(), edit.cstParamOcc, &diagnosed ) ) return false;
+		// Undo fidelity (2026-10-17): first try the verbatim chunk swap -- see RouteCstParamOwnerRestore_.  It needs
+		// no drift guard: it applies only when the owner holds exactly the post-edit text, so nothing has moved.
+		const int swapped = RouteCstParamOwnerRestore_( edit, /*forward*/ false, &diagnosed );
+		if( swapped == 0 ) return false;
+		if( swapped < 0 ) {
+			if( !OccurrenceEditStillAddressable_( edit, edit.propertyValue.c_str(), "Undo" ) ) return false;
+			// `occ` -- pre-S4b this was hardcoded 0 (the agent path's fixed convention); the field carries the
+			// same 0 for every one of those edits, and the real occurrence for a `<role>[<index>]` row edit.
+			if( edit.prevValueWasAbsent ) {
+				if( !RouteCstParamRemove_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.cstParamOcc, &diagnosed ) ) return false;
+			} else {
+				if( !RouteCstParamEditChecked_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.prevPropertyValue.c_str(), edit.cstParamOcc, &diagnosed ) ) return false;
+			}
 		}
 		if( diagnosed )
 			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent edit on `%s`.`%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
@@ -4777,11 +4890,15 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 			// occurrence row only exists for a line the document already spells, so `prevValueWasAbsent`
 			// and `cstParamOccAddressed` are never both true; the guard is still correct if they ever were
 			// -- an absent param reads as the empty string, which is what prevPropertyValue holds.)
-			if( !OccurrenceEditStillAddressable_( edit, edit.prevPropertyValue.c_str(), "Redo" ) ) return false;
-			if( !RouteCstParamEditChecked_( edit.objectName.c_str(),
-			                                 edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr,
-			                                 edit.propertyName.c_str(), edit.propertyValue.c_str(),
-			                                 edit.cstParamOcc, &diagnosed ) ) return false;
+			const int swapped = RouteCstParamOwnerRestore_( edit, /*forward*/ true, &diagnosed );   // undo fidelity
+			if( swapped == 0 ) return false;
+			if( swapped < 0 ) {
+				if( !OccurrenceEditStillAddressable_( edit, edit.prevPropertyValue.c_str(), "Redo" ) ) return false;
+				if( !RouteCstParamEditChecked_( edit.objectName.c_str(),
+				                                 edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr,
+				                                 edit.propertyName.c_str(), edit.propertyValue.c_str(),
+				                                 edit.cstParamOcc, &diagnosed ) ) return false;
+			}
 			if( diagnosed )
 				GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent edit on `%s`.`%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
 				                       edit.objectName.c_str(), edit.propertyName.c_str() );

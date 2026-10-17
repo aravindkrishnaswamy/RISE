@@ -411,6 +411,10 @@ namespace RISE
 		int							ApplyCstReplaceDocument( const RISE::Cst::Document& doc, bool restoreActiveRasterizer,
 		                                                     char* outDiag, unsigned int diagMax, const char* diagContext );
 		bool						CstTargetIsContainerObject( const RISE::Cst::Document& doc, const char* entityName, const char* entityKind ) const;
+		// Undo fidelity (2026-10-17): see the IJobPriv virtuals' docs.  No `override`, Job's convention.
+		bool						CstParamEditOwnerChunkText( const char* entityName, const char* entityKind, const char* role, std::string& out ) const;
+		int							ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind, const char* role,
+		                                                           const std::string& expectText, const std::string& newText );
 		//! Test hook (2026-10-16): how many validate-before-destroy DRY-RUN derives (into a throwaway staging Job)
 		//! the CST edit paths have run on this Job.  Monotonic; not part of IJobPriv.
 		unsigned long long			GetCstDryRunCount() const			{ return mCstDryRunCount; }
@@ -3581,6 +3585,11 @@ namespace RISE
 		//! Batched agent edits (2026-10-16): the resolve/validate/write half of ApplyCstParamEditsImpl_
 		//! against an ARBITRARY base document.  1 = every pair planned and written into `outDoc` (anchor =
 		//! the owner chunk, roleDiag = "role[+role...]"), 0 = refused (logged; `outDoc` untouched).
+		//! Undo fidelity (2026-10-17): the chunk a param edit addressed as (entityName, entityKind, role) LANDS on in
+		//! `doc` -- PlanCstParamEdits_'s own resolution (DocFindByNameAnyRole + DocTransformOwnerId), factored so the
+		//! owner-text capture and the verbatim restore cannot resolve differently from the write.  0 = no match.
+		RISE::Cst::NodeId ResolveCstParamEditOwner_( const RISE::Cst::Document& doc, const char* entityName,
+		                                             const char* entityKind, const std::string& role ) const;
 		int PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entityName, const char* entityKind,
 		                        const std::vector< std::pair< std::string, std::string > >& edits, int occ,
 		                        RISE::Cst::Document& outDoc, RISE::Cst::NodeId& outAnchor, std::string& outRoleDiag,

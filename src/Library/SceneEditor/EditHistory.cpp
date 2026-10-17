@@ -43,10 +43,12 @@ EditHistory::~EditHistory()
 // each carry a full pre- AND post-mutation Document text
 // (Job::ApplyCstReplaceDocumentText swaps in both directions); AgentRemoveChunks
 // carries only the pre-batch text (its `prevPropertyValue` redo descriptor is
-// a short per-target `kind\tname` list, not document-sized).  Every other op
-// returns 0 -- transform deltas, typed property strings, and single-chunk
-// CRUD bytes (AgentInsertChunk / AgentRemoveChunk) are not document-scale and
-// already fit comfortably within the entry cap alone.
+// a short per-target `kind\tname` list, not document-sized).  SetAgentCstParam
+// (2026-10-17) counts the two owner-chunk texts it carries for its verbatim
+// inverse: ONE chunk each, but a chunk can be large (an inline mesh).  Every
+// other op returns 0 -- transform deltas, typed property strings, and
+// single-chunk CRUD bytes (AgentInsertChunk / AgentRemoveChunk) are not
+// document-scale and already fit comfortably within the entry cap alone.
 unsigned long long EditHistory::HeavyPayloadBytes_( const SceneEdit& e )
 {
 	switch( e.op )
@@ -58,6 +60,9 @@ unsigned long long EditHistory::HeavyPayloadBytes_( const SceneEdit& e )
 	case SceneEdit::AgentRemoveChunks:
 	case SceneEdit::AgentEditBatch:     // 2026-10-16: the operation list (both directions in one field)
 		return static_cast<unsigned long long>( e.propertyValue.size() );
+	case SceneEdit::SetAgentCstParam:   // 2026-10-17: the owner chunk's exact text, before and after
+		return static_cast<unsigned long long>( e.agentOwnerPreText.size() )
+		     + static_cast<unsigned long long>( e.agentOwnerPostText.size() );
 	default:
 		return 0;
 	}

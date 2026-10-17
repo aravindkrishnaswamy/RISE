@@ -1143,6 +1143,16 @@ namespace RISE
 		//! if the chunk or the `occ`-th occurrence is absent.
 		Document DocRemoveParamOcc( const Document& doc, NodeId chunkId, const std::string& role, int occ, int* visits = nullptr );
 
+		//! Undo fidelity (2026-10-17): replace top-level chunk `chunkId` with the chunk `newText` spells -- BYTE FOR
+		//! BYTE, every line keeping its own spacing and position -- but ONLY when the chunk currently serializes to
+		//! exactly `expectText`.  A param write re-spells the line it touches (single-spaced values) and re-adds a
+		//! stripped param at the END of the chunk, so an undo that replays values cannot give an earlier record its
+		//! exact bytes back; an undo that swaps the whole chunk can, whenever nothing else touched the chunk since.
+		//! `newText` must parse to exactly one chunk that serializes back to itself.  The chunk NodeId is preserved
+		//! (DocReplaceItem).  `*replaced` (if non-null) reports whether the swap happened; when it did not, `doc` is
+		//! returned unchanged.
+		Document DocReplaceChunkIfText( const Document& doc, NodeId chunkId, const std::string& expectText, const std::string& newText, bool* replaced = nullptr );
+
 		//! RENAME a chunk (item 7, the D14 driver): set the chunk's `name` to
 		//! `newName` AND rewrite every referrer's value to `newName`, found from the
 		//! traced reference graph (TraceReferences -- NOT a re-resolution). The

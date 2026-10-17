@@ -13139,6 +13139,9 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 			}
 			const RISE::Cst::NodeRef owner = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
 			if( owner ) {
+				// Undo fidelity: the owner's exact text BEFORE the first pair writes (every pair lands on this one
+				// chunk -- the one-owner refusal above), so Undo can put every line back exactly as it was.
+				if( i == 0 ) outUndo->ownerPreText = RISE::Cst::SerializeNode( owner );
 				outUndo->ownerKeyword  = owner->role;
 				outUndo->ownerNamePath = RISE::Cst::ChunkNamePath( owner );
 				for( std::size_t k = 0; k < slotRoles.size(); ++k ) {
@@ -13155,6 +13158,7 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 		d1 = RISE::Cst::DocSetOrAddParamValue( d1, plan[i].ownerId, edits[i].first, occ, edits[i].second );
 		if( outUndo ) {   // each recorded slot's value AFTER the write (the redo payload)
 			const RISE::Cst::NodeRef after = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
+			if( after ) outUndo->ownerPostText = RISE::Cst::SerializeNode( after );   // after the LAST pair: the whole write
 			for( std::size_t k = 0; after && k < outUndo->slots.size(); ++k ) {
 				CstBatchUndoOp::Slot& slot = outUndo->slots[k];
 				slot.postAbsent = RISE::Cst::ParamOccurrenceCount( after, slot.role ) <= slot.occ;
@@ -13168,6 +13172,47 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 	outAnchor   = anchorId;
 	outRoleDiag = roleDiag;
 	return 1;
+}
+
+// Undo fidelity (2026-10-17): see the header doc.  EXACTLY PlanCstParamEdits_'s resolution (same uniqueFallback
+// rule, same owner walk); PlanCstParamEdits_ keeps its own inline copy only because it also needs the addressed
+// chunk itself for the container / duplicate-occurrence checks.
+RISE::Cst::NodeId Job::ResolveCstParamEditOwner_( const RISE::Cst::Document& doc, const char* entityName,
+                                                  const char* entityKind, const std::string& role ) const
+{
+	if( !entityName || role.empty() ) return 0;
+	const std::string ekind = entityKind ? entityKind : "";
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( doc, entityName, GetActiveCameraName() )
+		: ( entityName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, entityName, nullptr, ekind, uniqueFallback );
+	if( id == 0 ) return 0;
+	return RISE::Cst::DocTransformOwnerId( doc, id, role );
+}
+
+bool Job::CstParamEditOwnerChunkText( const char* entityName, const char* entityKind, const char* role, std::string& out ) const
+{
+	out.clear();
+	if( !pCstDocument || !role ) return false;
+	const RISE::Cst::NodeId ownerId = ResolveCstParamEditOwner_( *pCstDocument, entityName, entityKind, std::string( role ) );
+	if( ownerId == 0 ) return false;
+	const RISE::Cst::NodeRef owner = RISE::Cst::DocResolveNodeId( *pCstDocument, ownerId );
+	if( !owner || owner->kind != RISE::Cst::NodeKind::Chunk ) return false;
+	out = RISE::Cst::SerializeNode( owner );
+	return true;
+}
+
+int Job::ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind, const char* role,
+                                        const std::string& expectText, const std::string& newText )
+{
+	if( !pCstDocument || !role || expectText.empty() || newText.empty() ) return -1;
+	const RISE::Cst::NodeId ownerId = ResolveCstParamEditOwner_( *pCstDocument, entityName, entityKind, std::string( role ) );
+	if( ownerId == 0 ) return -1;
+	bool replaced = false;
+	RISE::Cst::Document d1 = RISE::Cst::DocReplaceChunkIfText( *pCstDocument, ownerId, expectText, newText, &replaced );
+	if( !replaced ) return -1;
+	if( expectText == newText ) return 1;   // nothing to change (never produced by a real edit; defensive)
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, /*requireFullDerivability*/ true );
 }
 
 // Shared-undo U1: the inverse of an agent-originated param INSERT (see the IJob virtual doc).  Resolution

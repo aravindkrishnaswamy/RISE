@@ -117,6 +117,13 @@ namespace RISE
 		std::string ownerKeyword;
 		std::string ownerNamePath;
 		std::vector<Slot> slots;
+		//! Undo fidelity (2026-10-17): the owner chunk's EXACT text before and after this element's write.  Undo
+		//! swaps `ownerPostText` back to `ownerPreText` verbatim (and Redo the reverse) whenever the owner still
+		//! holds the expected text -- replaying `slots` would re-spell the lines it restores and re-add a stripped
+		//! param at the end of the chunk, which breaks an older insert record's exact-bytes inverse.  The slots
+		//! stay the fallback for an owner something else has changed since.
+		std::string ownerPreText;
+		std::string ownerPostText;
 	};
 
 	//! Per-element outcome of IJobPriv::ApplyCstEditBatch.  `code` follows the SINGLE-element
@@ -356,6 +363,23 @@ namespace RISE
 		virtual bool						CstTargetIsContainerObject( const RISE::Cst::Document& doc,
 		                                                                const char* entityName,
 		                                                                const char* entityKind ) const = 0;
+
+		// Undo fidelity (2026-10-17): the EXACT text of the chunk a param edit addressed as (entityName, entityKind,
+		// role) lands on in the retained Document -- resolved by the SAME calls the write makes (DocFindByNameAnyRole
+		// with the camera / kind-addressed-singleton fallback rules, then the DocTransformOwnerId owner walk).
+		// False when there is no retained Document or the target does not resolve.
+		virtual bool						CstParamEditOwnerChunkText( const char* entityName, const char* entityKind,
+		                                                                const char* role, std::string& out ) const = 0;
+
+		// Undo fidelity (2026-10-17): the verbatim inverse of a param edit -- resolve the owner chunk exactly as
+		// CstParamEditOwnerChunkText does and, ONLY when it serializes to exactly `expectText`, replace it with
+		// `newText` byte for byte (Cst::DocReplaceChunkIfText), then re-derive through the same full-derivability-
+		// gated tail ApplyCstParamEditChecked uses.  Returns -1 when the target does not resolve or does not hold
+		// `expectText` (NOTHING changed -- the caller falls back to replaying values), else that tail's 0/1/2/3.
+		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
+		virtual int							ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind,
+		                                                                   const char* role, const std::string& expectText,
+		                                                                   const std::string& newText ) = 0;
 	};
 
 

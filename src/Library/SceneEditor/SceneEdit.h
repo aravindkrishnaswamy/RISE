@@ -19,6 +19,7 @@
 
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/RString.h"
+#include <string>
 #include "../Interfaces/ITransformable.h"
 
 namespace RISE
@@ -567,6 +568,16 @@ namespace RISE
 		//! A non-occurrence-addressed edit (every pre-S4b caller) leaves this
 		//! false and keeps the historical unguarded behaviour.
 		bool           cstParamOccAddressed;
+
+		//! Undo fidelity (2026-10-17, SetAgentCstParam only): the EXACT text of the chunk the edit landed on
+		//! (Job::CstParamEditOwnerChunkText -- the write's own owner resolution) before and after the write.
+		//! Undo swaps `agentOwnerPostText` back to `agentOwnerPreText` byte for byte, and Redo the reverse,
+		//! whenever the owner still holds the expected text (Job::ApplyCstParamEditOwnerRestore).  Replaying
+		//! `prevPropertyValue` instead re-spells the restored line and cannot bring back a param the write
+		//! stripped (a `position` patch strips `matrix`) where it was -- and either one makes an OLDER insert
+		//! record's exact-bytes inverse refuse.  Empty = not captured: the value replay below is the route.
+		std::string    agentOwnerPreText;
+		std::string    agentOwnerPostText;
 
 		//! Shared-undo U2 (AgentRemoveChunk only): the top-level document index the removed chunk (and, if
 		//! tidied away with it, its own trailing separator) occupied at capture time -- the EXACT position

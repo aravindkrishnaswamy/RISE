@@ -7691,6 +7691,12 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	String prevValue;
 	bool   prevWasAbsent = false;
 	const bool haveCapture = CaptureAgentPriorParamValue_( entityName, entityKind, param, prevValue, prevWasAbsent, occ );
+	// Undo fidelity (2026-10-17): the EXACT text of the chunk the write will land on, so Undo can swap it back
+	// byte for byte (see SceneEdit::agentOwnerPreText).  Same lock hold, same owner resolution as the write.
+	std::string ownerPreText;
+	if( !mJob.CstParamEditOwnerChunkText( entityName.c_str(), entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
+	                                      param.c_str(), ownerPreText ) )
+		ownerPreText.clear();
 
 	// The SAME edit the GUI property panel makes, but routed directly (we
 	// already hold the park the GUI path takes via mEditor.Apply) and through
@@ -7843,8 +7849,15 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 		// skip-with-log guards against ever pushing a garbage/empty capture.
 		if( haveCapture )
 		{
+			// ...and the owner's text AFTER the write (empty when it no longer resolves by this name -- a rename;
+			// the record then keeps the value-replay inverse alone).
+			std::string ownerPostText;
+			if( ownerPreText.empty()
+			 || !mJob.CstParamEditOwnerChunkText( entityName.c_str(), entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
+			                                      param.c_str(), ownerPostText ) )
+				ownerPostText.clear();
 			mEditor.PushAgentCstParamEdit( entityName, entityKind, param, value, prevValue, prevWasAbsent,
-			                               occ, occAddressed );
+			                               occ, occAddressed, ownerPreText, ownerPostText );
 		}
 		else
 		{
