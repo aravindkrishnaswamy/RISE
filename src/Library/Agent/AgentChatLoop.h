@@ -172,10 +172,12 @@
 //        it describes, never by age.  L2: a successful finish_element for
 //        element E retires E's earlier build_element / insert_chunks
 //        results ("element_finished_retirement"); the stub states only
-//        immutable facts -- retired when E was finished, its chunks are in
-//        the document, the bounding box when built, the per-chunk outcomes
-//        the document does not record -- never an edit rule (those change
-//        after the finish); a successful reopen_element E cancels a
+//        immutable facts -- retired when E was finished, where the
+//        current state is read (read_document for the document,
+//        finish_element / reopen_element results for E's chunks), the
+//        bounding box when built, the head version after that call, the
+//        per-chunk outcomes that call reported -- never an edit rule or a
+//        claim about current state; a successful reopen_element E cancels a
 //        retirement not yet applied.  L3: a named read_skill
 //        is superseded by a later read of the SAME skill (an argument-
 //        normalized supersession key), and the successful finish_element
@@ -332,8 +334,10 @@ namespace RISE
 			//! Doc 91 slice L2: the build-plan element this result DESCRIBES,
 			//! or "" -- set for build_element (the result's `element`, else
 			//! the call's `element` argument) and insert_chunks (the
-			//! per-chunk `element` attribution, when every attributed chunk
-			//! agrees).  A later successful finish_element for that element
+			//! per-chunk `element` attribution of its APPLIED or DIAGNOSED
+			//! chunks only -- a refused chunk's attribution is looked up by
+			//! name and may be another element's -- when all of those agree;
+			//! see LifetimeElementOf).  A later successful finish_element for that element
 			//! retires the slot.
 			std::string lifetimeElement;
 

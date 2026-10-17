@@ -875,8 +875,10 @@ namespace RISE
 		//! to once a successful finish_element for that element has flowed
 		//! through the chat loop.  It states ONLY facts that cannot go stale
 		//! (review rounds 5-6): the result was retired when the element was
-		//! finished, read_document shows the element's CURRENT chunks (a
-		//! pointer, not a claim that any exist), and `facts` / `carried` --
+		//! finished, read_document shows the CURRENT document and
+		//! finish_element / reopen_element results list the element's
+		//! chunks (pointers, not a claim that any exist; read_document has
+		//! no element attribution), and `facts` / `carried` --
 		//! recorded from the elided result and labelled as of that result
 		//! (the bounding box "when built", the head version "after that
 		//! call", the per-chunk outcomes "that call reported").

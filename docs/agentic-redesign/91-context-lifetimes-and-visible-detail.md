@@ -61,9 +61,11 @@ provider-cache miss — the doc 71 / T1c policy, unchanged.
   replaced with a stub naming E and the recovery path (`read_document`
   shows its chunks).  The stub states ONLY IMMUTABLE facts (review rounds
   5-6): that the result was retired when E was finished, a POINTER to the
-  current state ("read_document shows the element's current chunks" -- not
-  a claim that any exist: nothing may have landed, or a later edit or undo
-  removed them), the realised bounding box "when built", the head version
+  current state ("read_document shows the current document;
+  finish_element / reopen_element results list the element's chunks" --
+  not a claim that any exist: nothing may have landed, or a later edit or
+  undo removed them; read_document itself has no element attribution, and
+  both of those verbs' results carry the attributed `chunks` list), the realised bounding box "when built", the head version
   "after that call" (exact integers) and the per-chunk outcomes "that call
   reported".  A retired error envelope keeps Anthropic's `is_error:true`
   around its stub: the call did fail, and the flag is wire-valid.  The
@@ -76,12 +78,14 @@ provider-cache miss — the doc 71 / T1c policy, unchanged.
   every more precise rule text.  The live rule is stated where it applies:
   `CheckElementWindowForEdit_`'s refusal and the compose-phase creation
   refusal both name `reopen_element` when an edit is actually refused.
-  Results from EARLIER turns are
-  rewritten in the same flush that elides the previous image (the finish
-  result carries the isolate PNG), so they add no cache miss beyond that
-  flush's earliest rewrite.  A build result from the SAME turn as the
-  finish is retired one flush later, which is a separate (small, recent)
-  miss.  Keyed on data the loop already sees (`element` in the call args
+  Cost: the finish result carries the isolate PNG, so its flush already
+  rewrites the previous image's entry and pays one provider-cache miss
+  from there on.  Retiring build results OLDER than that image moves the
+  miss earlier in the prompt (more of the prefix is re-sent uncached); a
+  finish whose builds are newer than the previous image adds nothing.
+  Either way it is one miss per finish flush.  A build result from the
+  SAME turn as the finish is retired one flush later, which is a separate
+  (small, recent) miss.  Keyed on data the loop already sees (`element` in the call args
   / result), not on session state.
 - **L3 — skills retire at Compose.**  `read_skill` results are retired
   once the session reaches the Compose phase (as shipped: the successful
@@ -149,7 +153,11 @@ apothecary and 0 on the dragons run (which read no skills).
   (build_element's realised world bounding box; insert_chunks' last
   `headVersion`), which the element-finished stub carries so retiring never
   deletes the only copy, and
-  `lifetimeSkill` at pack time.  A carried notice has the canonical insert
+  `lifetimeSkill` at pack time.  Known blur, accepted: the loop keys a
+  result by ELEMENT NAME, not by plan, so after a new `file_build_plan`
+  that reuses an element name, still-live results from the old plan's
+  element of that name retire with the new one's finish (the stub claims
+  nothing about which plan they belonged to).  A carried notice has the canonical insert
   prefix stripped so its 160 bytes go to the notice itself, carries a
   landed chunk's `issues` warnings, and a staged chunk is labelled
   "staged as a proposal".  Lifetime stubs ride under the JSON key

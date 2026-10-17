@@ -2498,7 +2498,8 @@ namespace RISE
 			// names reopen_element.
 			const std::string q = "\"" + element + "\"";
 			std::string note = "[" + verbName + " result for element " + q + " elided -- retired when " + q +
-				" was finished; read_document shows the element's current chunks.";
+				" was finished; read_document shows the current document; finish_element / reopen_element "
+				"results list the element's chunks.";
 			if( !facts.empty() ) note += " " + facts;
 			if( !carried.empty() )
 				note += " Per-chunk outcomes that call reported: " + carried + ".";

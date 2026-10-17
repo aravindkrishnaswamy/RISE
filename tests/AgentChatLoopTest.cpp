@@ -4262,7 +4262,7 @@ static void TestContextLifetimeRetirement()
 		{ ChatProvider::Anthropic, "anthropic" }, { ChatProvider::Gemini, "gemini" },
 		{ ChatProvider::OpenAI, "openai/responses" }, { ChatProvider::Local, "openai/chat-completions" } };
 	const char* const kComposeStub = "retired when every element of the build plan was finished";
-	const char* const kFinishedStub = "was finished; read_document shows the element's current chunks";
+	const char* const kFinishedStub = "was finished; read_document shows the current document";
 
 	std::string anthropicFinalBody;
 	for( const Prov& pv : provs ) {
@@ -4764,7 +4764,8 @@ static void TestContextLifetimeRetirementRound2()
 		       body.find( "wizard_b (sphere_geometry) refused: prefix violation" ) != std::string::npos,
 		       "T14d(e2) MONEY: distinct chunks with the SAME reason are each named (dedupe by name, kind, text)" );
 		Check( body.find( "chunks are in the document" ) == std::string::npos &&
-		       body.find( "read_document shows the element's current chunks" ) != std::string::npos,
+		       body.find( "read_document shows the current document; finish_element / reopen_element results "
+		                  "list the element's chunks" ) != std::string::npos,
 		       "T14d(e2) MONEY (review round 6): an ALL-REJECTED build's stub claims no chunks exist -- it "
 		       "points to read_document for the current state" );
 	}
@@ -4869,7 +4870,8 @@ static void TestContextLifetimeRetirementRound2()
 		// actually refused).
 		const std::string expected =
 			"[build_element result for element \"wizard\" elided -- retired when \"wizard\" was finished; "
-			"read_document shows the element's current chunks. Realised world bounding box when built: "
+			"read_document shows the current document; finish_element / reopen_element results list the "
+			"element's chunks. Realised world bounding box when built: "
 			"min (-1, 0, -0.5) max (1, 4, 0.5), height 4.]";
 		const char* const finishes[] = {
 			"{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}",
@@ -4881,7 +4883,10 @@ static void TestContextLifetimeRetirementRound2()
 			const bool got = stubText( LifetimeEnv( 2, finishes[v] ), t );
 			Check( got && t == expected,
 			       std::string( "T14d(e7) MONEY: " ) + labels[v] + "-phase finish -> the immutable stub, exact text" );
-			Check( got && t.find( "reopen_element" ) == std::string::npos &&
+			// No reopen PRESCRIPTION ("reopen_element \"wizard\" ...") -- the
+			// pointer to reopen_element's RESULTS (which list the chunks) is
+			// not a rule and stays true.
+			Check( got && t.find( "reopen_element \"wizard\"" ) == std::string::npos &&
 			       t.find( "refused" ) == std::string::npos && t.find( "editable" ) == std::string::npos,
 			       std::string( "T14d(e7): " ) + labels[v] + " -- no edit/reopen rule is stated (it would go stale)" );
 		}
