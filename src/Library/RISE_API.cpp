@@ -2691,7 +2691,7 @@ namespace RISE
 		// The AUTHORED GRID STRUCTURE, recorded as the triangles are emitted (see
 		// TriangleMeshGeometryIndexed::MeshGrid): line family 0 is the radial ring (every
 		// ring edge of the lathe), family 1+band is that band's profile direction.  Pole
-		// fans are recorded as fans; the partial-sweep caps are in no cell (not refined).
+		// fans are recorded as fans; the partial-sweep caps are in no cell (their rim edges are subdivided to match the wall by TessellateRefined).
 		std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
 		grid->numFamilies = 1u + (unsigned int)bands.size();
 		unsigned int triCount = 0;

@@ -34,6 +34,8 @@ namespace {
 	// Diagnostic counter: total BuildMesh() invocations process-wide.  See
 	// the GetBuildMeshCount()/ResetBuildMeshCount() doc in the header.
 	std::atomic<unsigned int> s_buildMeshCount( 0 );
+	// Diagnostic counter: TessellateToMeshEx calls (see GetTessellateCopyCount in the header).
+	std::atomic<unsigned int> s_tessellateCopyCount( 0 );
 
 	// ---- Mesh refinement for `detail` on mesh bases --------------------------
 	//
@@ -53,8 +55,12 @@ namespace {
 	//  (a) BUILDER BASES (lathe / sweep / skin): the factory records its authored grid
 	//      (TriangleMeshGeometryIndexed::MeshGrid) and TessellateRefined() subdivides
 	//      each line family by its own length -- quads stay regular quads, pole /
-	//      pinch fans stay fans, caps are left alone -- interpolating position,
-	//      normal and UV barycentrically inside the authored triangles.
+	//      pinch fans stay fans -- interpolating position, normal and UV
+	//      barycentrically inside the authored triangles.  A triangle no cell replaced
+	//      (an end cap; a skin triangle the zero-area test half-ate) subdivides the
+	//      edges it shares with refined cells identically (matched by POSITION, since a
+	//      cap's rim vertices are duplicates of the wall's) and is closed by a centroid
+	//      fan, so the result has no T-junction and a cap's rim matches the wall's.
 	//  (b) OTHER indexed meshes (imports, path instances): UNIFORM whole-level 1->4
 	//      midpoint subdivision (RefineUniform below) -- every edge splits, so edges
 	//      stay parallel to the base's and every child is similar to its parent.  The
@@ -393,6 +399,39 @@ namespace {
 	}
 }
 
+bool DisplacedGeometry::ShouldWeldCoincident() const
+{
+	const TriangleMeshGeometryIndexed* pIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pBase );
+	return pIdx && !pIdx->UsesFaceNormals() && !m_bUseFaceNormals;
+}
+
+void DisplacedGeometry::WeldCoincidentDisplacement( const VerticesListType& undisplaced, VerticesListType& displaced ) const
+{
+	if( undisplaced.size() != displaced.size() || undisplaced.size() < 2 ) {
+		return;
+	}
+	std::vector<unsigned int> wid;
+	if( !GeometricUtilities::WeldVertexPositions( undisplaced, wid ) ) {
+		return;
+	}
+	unsigned int maxId = 0;
+	for( size_t i = 0; i < wid.size(); ++i ) maxId = std::max( maxId, wid[i] );
+	std::vector<unsigned int> count( size_t( maxId ) + 1, 0 ), first( size_t( maxId ) + 1, 0 );
+	std::vector<Vector3>      sum( size_t( maxId ) + 1, Vector3( 0, 0, 0 ) );
+	for( size_t i = 0; i < wid.size(); ++i ) {
+		const unsigned int g = wid[i];
+		if( count[g]++ == 0 ) first[g] = static_cast<unsigned int>( i );
+		sum[g] = sum[g] + Vector3Ops::mkVector3( displaced[i], undisplaced[i] );
+	}
+	for( size_t i = 0; i < wid.size(); ++i ) {
+		const unsigned int g = wid[i];
+		if( count[g] < 2 ) continue;
+		const Vector3 mean = sum[g] * ( 1.0 / Scalar( count[g] ) );
+		const Point3& o = undisplaced[first[g]];
+		displaced[i] = Point3( o.x + mean.x, o.y + mean.y, o.z + mean.z );
+	}
+}
+
 bool DisplacedGeometry::WillDisplaceVertices() const
 {
 	return ( m_pDisplacement || m_pHeight ) && m_dispScale != 0.0;
@@ -504,6 +543,7 @@ bool DisplacedGeometry::TessellateToMeshEx(
 	const unsigned int     detail,
 	std::vector<unsigned char>* pUVPeriodic ) const
 {
+	s_tessellateCopyCount.fetch_add( 1, std::memory_order_relaxed );
 	const TriangleMeshGeometryIndexed* pIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pMesh );
 	if( !pIdx ) {
 		return false;
@@ -519,6 +559,16 @@ unsigned int DisplacedGeometry::GetBuildMeshCount()
 void DisplacedGeometry::ResetBuildMeshCount()
 {
 	s_buildMeshCount.store( 0, std::memory_order_relaxed );
+}
+
+unsigned int DisplacedGeometry::GetTessellateCopyCount()
+{
+	return s_tessellateCopyCount.load( std::memory_order_relaxed );
+}
+
+void DisplacedGeometry::ResetTessellateCopyCount()
+{
+	s_tessellateCopyCount.store( 0, std::memory_order_relaxed );
 }
 
 DisplacedGeometry::DisplacedGeometry(
@@ -762,6 +812,9 @@ void DisplacedGeometry::BuildMesh() const
 	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
 	if( bVerticesDisplaced ) {
 		AveragePolarDisplacement( preDisplaceVertices, normals, tris, uvFlags, vertices );
+		if( ShouldWeldCoincident() ) {
+			WeldCoincidentDisplacement( preDisplaceVertices, vertices );
+		}
 	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
@@ -810,6 +863,9 @@ void DisplacedGeometry::RefreshMeshVertices()
 	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
 	if( bVerticesDisplaced ) {
 		AveragePolarDisplacement( preDisplaceVertices, normals, tris, uvFlags, vertices );
+		if( ShouldWeldCoincident() ) {
+			WeldCoincidentDisplacement( preDisplaceVertices, vertices );
+		}
 	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {

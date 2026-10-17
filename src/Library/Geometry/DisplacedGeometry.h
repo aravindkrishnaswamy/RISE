@@ -49,41 +49,61 @@ namespace RISE
 		// vertex normals and a UV interpolated from the authored UVs (respecting the
 		// chart's periodic / polar bits); creases exist only where the author made them
 		// (crease / cap / duplicated-point vertices stay separate vertices) and the
-		// authored correspondence (loft pairing, caps) is kept.  At disp_scale -> 0 the
-		// displaced geometry therefore renders identically to the undisplaced base --
-		// the SILHOUETTE IS THE AUTHORED POLYGON; a coarse lathe stays a polygon.  What
-		// the author wants rounder, the author makes denser.
+		// authored correspondence (loft pairing, caps) is kept.  The SILHOUETTE IS THE
+		// AUTHORED POLYGON -- a coarse lathe stays a polygon; what the author wants
+		// rounder, the author makes denser.  At disp_scale -> 0 the displaced geometry
+		// therefore renders as the undisplaced base up to one stated tolerance: a refined
+		// vertex inside a NON-PLANAR authored quad is taken on the triangle (of the fold
+		// q0-q2) that covers it, so refined sub-triangles can cross that fold and sit up
+		// to ~0.1% of the quad's diagonal off the authored pair of triangles.
 		//   (a) a lathe / sweep / skin RECORDS ITS AUTHORED GRID (TriangleMeshGeometryIndexed::
 		//       MeshGrid: quads between line FAMILIES, fans around poles / pinches) and
 		//       TessellateRefined() subdivides each family by its own length, so shared edges
 		//       agree, quads stay regular quads (near-square cells, clean ribs, about the
 		//       triangle count of a hand-authored grid at that spacing) and position / normal
-		//       / UV are interpolated barycentrically inside the AUTHORED triangles.  End caps
-		//       (a triangulation of the profile polygon) are NOT refined: a cap displaces only
-		//       along its rim.
+		//       / UV are interpolated barycentrically inside the AUTHORED triangles.  Any
+		//       authored triangle no cell replaced -- an END CAP, or a skin triangle the
+		//       builder's zero-area test half-ate -- that touches an edge a cell subdivided
+		//       subdivides that edge the same way (found by position, so a cap's duplicate
+		//       rim vertices match the wall's) and is closed by a fan to its centroid (a
+		//       collinear one by a fan from a corner): the refined mesh has no T-junction,
+		//       and a cap's rim matches the wall's rim vertex for vertex.  A cap's interior
+		//       carries no authored vertices, so it is flat except for its centroid.
 		//   (b) any other indexed mesh is subdivided UNIFORMLY (whole 1->4 levels, level
 		//       count from the base's MEDIAN edge length, midpoints shared per unordered
 		//       combined-index pair, linear positions, lerped normals and UVs) -- except
 		//       across a chart axis the base DECLARES periodic (a ring-stitch edge is taken
 		//       the short way round) and at a POLAR vertex (a placeholder u / v: an edge to a
 		//       normal vertex takes the normal vertex's value).
-		// Capped at 1.5M triangles (6 levels for (b)).  A pole / pinch is DISPLACED by
+		// Capped at 1.5M triangles (6 levels for (b)); the cap bounds the grid cells, the
+		// triangles added around caps are a small extra.  A pole / pinch is DISPLACED by
 		// the average of its neighbours' displacements, not by the field at its
 		// placeholder UV.  Analytic and SDF bases already honour `detail` and are
 		// untouched; so is a DISPLACED base (already baked at its own detail -- the inner
 		// layer governs); and any bake with disp_scale == 0.  A base that shades with
 		// FACE normals (face_normals TRUE) is flattened per corner by its tessellation --
 		// every edge of it is already a crack -- so it is not refined and displaces along
-		// each face normal as it always did.  Crease / cap / duplicated-point vertices are
-		// separate vertices, so under displacement they displace independently and can
-		// open a gap along that edge.
+		// each face normal as it always did.
+		//
+		// WATERTIGHT AT AUTHORED CREASES.  Crease / cap / pinch / UV-seam vertices are
+		// separate vertices in the base (that is what keeps a crease) -- coincident in
+		// position, different in normal and UV.  Displacing each along its own normal by
+		// its own height tore them apart (cap rims off the walls, a pinch's two poles by
+		// 2*disp_scale, crease rows).  WeldCoincidentDisplacement instead moves every group
+		// of vertices coincident in the UNdisplaced mesh to ONE shared position, the mean of
+		// its members' displacement vectors, each member keeping its own shading normal.
+		// Smooth-normal TriangleMeshGeometryIndexed bases only (a face-normal base, an
+		// analytic / SDF base and a displaced base are not touched).
 		//
 		// SHADING.  For every smooth-normal mesh base that is displaced (refined or
 		// not) the base's own shading-normal field is carried through the
 		// displacement: each vertex's base shading normal is rotated by the rotation
 		// the displacement made to its geometric normal (ApplyTransportedShading), so
 		// the look is continuous across the refinement threshold and the relief
-		// perturbs the base's smooth field instead of replacing it.
+		// perturbs the base's smooth field instead of replacing it.  (Geometric normals on
+		// every bake -- an analytic base included -- are ANGLE-weighted per vertex, see
+		// RecomputeVertexNormalsFromTopology: ~0.2 deg mean difference from the old
+		// unweighted average on a sphere, up to tens of degrees only at a collapsed fan.)
 		//
 		// REFIT.  An animated displacement refits the baked mesh in place
 		// (RefreshMeshVertices) -- unless the refinement came out different (it is size
@@ -222,6 +242,19 @@ namespace RISE
 				NormalsListType&       geom0,
 				std::vector<unsigned char>& uvFlags ) const;
 
+			// WATERTIGHT DISPLACEMENT at authored creases.  A mesh base keeps a crease /
+			// cap / pinch / seam as SEPARATE vertices -- coincident in the base, different
+			// normal and UV -- and each would displace along its own normal by its own
+			// height, tearing the crease open.  Every group of vertices coincident in the
+			// UNdisplaced mesh (positions welded by GeometricUtilities::WeldVertexPositions)
+			// instead moves by the MEAN of its members' displacement vectors, to one shared
+			// position; each member keeps its own shading normal (the crease still shades as
+			// a crease).  Applied to a smooth-normal TriangleMeshGeometryIndexed base only:
+			// analytic / SDF bases already tessellate crack-free, a displaced base is already
+			// welded, and a face-normal base is flattened per corner by design.
+			bool ShouldWeldCoincident() const;
+			void WeldCoincidentDisplacement( const VerticesListType& undisplaced, VerticesListType& displaced ) const;
+
 			// Topology signature (FNV-1a over the triangle index list and vertex
 			// count) of the mesh the current m_pMesh was built from.
 			// RefreshMeshVertices re-tessellates (and re-refines) the base and
@@ -313,6 +346,19 @@ namespace RISE
             bool HasNegativeOpenSignedVolume() const;
 			static unsigned int GetBuildMeshCount();
 			static void         ResetBuildMeshCount();
+
+			//! Diagnostic: process-wide count of TessellateToMeshEx calls (the full-mesh COPY a
+			//! consumer pays by tessellating a displaced geometry).  Lets a test prove a
+			//! consumer reads the baked mesh in place instead (GetBakedMesh).
+			static unsigned int GetTessellateCopyCount();
+			static void         ResetTessellateCopyCount();
+
+			//! The baked (refined, displaced) mesh, or NULL before Realize() / after a failed
+			//! bake.  A read-only view for a consumer that needs the surface's vertices
+			//! without TessellateToMesh's full copy of every array -- the agent's isolate
+			//! surface-point gather stride-reads it, so its memory stays bounded however
+			//! fine `detail` made the bake (up to the 1.5M-triangle refinement cap).
+			const ITriangleMeshGeometryIndexed* GetBakedMesh() const { return m_pMesh; }
 
 			// IGeometry
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;

@@ -5,6 +5,10 @@
 #include <thread>
 #include <atomic>
 #include <vector>
+#include <map>
+#include <set>
+#include <tuple>
+#include <unordered_map>
 #include "../src/Library/Geometry/DisplacedGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
@@ -506,7 +510,7 @@ static void TestFaceNormalMeshDisplacesAlongFaceNormal()
 // of value 1.0 displaces every non-degenerate vertex by disp_scale along its
 // OWN per-vertex normal (the smooth lathe bake's normal, copied verbatim by
 // TessellateToMesh's pass-through BEFORE any post-displacement normal
-// recompute -- see TestDisplacedOverPinchedLatheTears below and the audit
+// recompute -- see TestDisplacedOverPinchedLatheStaysClosed below and the audit
 // report for what that recompute does to SHADING, which this test does not
 // exercise), so the max (and min) position deviation across the whole mesh
 // should land close to disp_scale.
@@ -586,29 +590,21 @@ static void TestDisplacedOverLatheAppliesDisplacement()
 }
 
 //-----------------------------------------------------------------------------
-// Doc 89 slice D audit: displaced_geometry over an INTERIOR-PINCH lathe TEARS
-// at the waist.  This is documented -- and deliberately NOT "fixed" -- at
-// ProceduralDescriptors.h's LatheDescriptor comment: the pinch's two poles
-// are coincident POSITIONS with EXACTLY OPPOSITE normals (one vertex per
-// adjacent band; see TestLatheInteriorPolePinch in ProceduralMeshTest.cpp),
-// so displacing each pole along its OWN normal pushes the pair apart by
-// 2*disp_scale and opens a visible crack.  Welding the two poles to close
-// the crack would instead put one of the two bands' SHADING normal in the
-// wrong half-space -- the defect the split exists to prevent -- so the
-// documented guidance is "displace an unpinched profile, or keep disp_scale
-// small ... rather than fixing it".
-//
-// This is the STRONGEST FAIL cell the doc 89 slice D audit found (matrix
-// criterion 3, "renders sanely / no holes").  Pinned here quantitatively so
-// the limitation stays load-bearing: a future change that welds the pinch
-// (intentionally or as a side effect of some other normal-recompute fix)
-// will fail this assertion and must consciously revisit both this test and
-// the LatheDescriptor comment, instead of the crack being silently
-// reintroduced or silently "fixed" without anyone noticing the tradeoff.
+// Doc 89 slice D audit: displaced_geometry over an INTERIOR-PINCH lathe used to TEAR
+// at the waist.  The pinch's two poles are coincident POSITIONS with EXACTLY OPPOSITE
+// normals (one vertex per adjacent band; see TestLatheInteriorPolePinch in
+// ProceduralMeshTest.cpp), so displacing each along its OWN normal pushed the pair
+// apart by 2*disp_scale and opened a visible crack -- documented as a limitation
+// because welding the two poles in the BASE would put one band's SHADING normal in the
+// wrong half-space.  Round 5 closes the crack in the DISPLACEMENT instead:
+// DisplacedGeometry moves every group of base-coincident vertices to ONE shared position
+// (the mean of the members' displacement vectors) while each member keeps its own
+// shading normal, so the waist is watertight and both bands still shade correctly.
+// This was the pinned-at-~2k gap of the earlier revisions; it is now asserted CLOSED.
 //-----------------------------------------------------------------------------
-static void TestDisplacedOverPinchedLatheTears()
+static void TestDisplacedOverPinchedLatheStaysClosed()
 {
-	std::cout << "Test 10: displaced_geometry over an interior-pinch lathe TEARS at the waist (documented limitation)...\n";
+	std::cout << "Test 10: displaced_geometry over an interior-pinch lathe stays CLOSED at the waist (the old ~2k tear)...\n";
 
 	const double R = 1.0;
 	const double prof[] = { R, 0.0,   0.0, 1.0,   R, 2.0 };	// hourglass, pinched at h=1 (TestLatheInteriorPolePinch's profile)
@@ -644,7 +640,7 @@ static void TestDisplacedOverPinchedLatheTears()
 		}
 	}
 	std::cout << "  [info] " << nearAxisY.size() << " near-axis vertices near the waist after displacement\n";
-	assert( nearAxisY.size() >= 2 && "pinch: both ex-coincident pole vertices must survive the bake" );
+	assert( nearAxisY.size() >= 2 && "pinch: both ex-coincident pole vertices must survive the bake (their normals differ, so they stay two vertices)" );
 
 	Scalar loY = 1e30, hiY = -1e30;
 	for( size_t i = 0; i < nearAxisY.size(); ++i ) {
@@ -652,10 +648,10 @@ static void TestDisplacedOverPinchedLatheTears()
 		hiY = std::max( hiY, nearAxisY[i] );
 	}
 	const Scalar gap = hiY - loY;
-	std::cout << "  [info] pinch gap after displacement: " << gap << " (expect ~2*k = " << 2.0*k << ")\n";
+	std::cout << "  [info] pinch gap after displacement: " << gap << " (was ~2*k = " << 2.0*k << " before the coincident-vertex weld)\n";
 
-	// MONEY ASSERTION -- the documented crack, pinned quantitatively.
-	assert( gap > Scalar(1.5) * k && gap < Scalar(2.5) * k );
+	// MONEY ASSERTION -- the two ex-coincident poles end at ONE position.
+	assert( gap < 1e-9 );
 
 	pDisp->release();
 	pConst->release();
@@ -2119,6 +2115,210 @@ static void TestCreasesOnlyWhereAuthoredAndPolygonsStayPolygons()
 }
 
 //-----------------------------------------------------------------------------
+// Round-5: refinement is crack-free (no T-junctions) and displacement is WATERTIGHT at
+// authored creases, over EVERY builder variant.
+//
+//  P1 (T-junctions): a skin with a duplicated rail point and a nonzero billow gives the
+//  coincident crease stations different normals, so the interior rows separate and the
+//  zero-area test eats ONE triangle of a rail-row quad; the grid recorder left that
+//  survivor unrefined while its index-sharing neighbours were subdivided -- real
+//  T-junctions.  An end cap's rim (duplicate vertices) had the same problem.  The
+//  detector below is the invariant: after refinement, NO vertex lies in the interior of
+//  an edge that exactly one triangle uses.
+//  P2 (watertight): vertices coincident in the base (cap rim vs wall rim, a duplicated
+//  profile point, a lathe pinch's two poles, a skin crease station) must end at the SAME
+//  displaced position.
+//-----------------------------------------------------------------------------
+struct CreaseFixture { const char* name; TriangleMeshGeometryIndexed* mesh; bool expectCoincident; };
+
+static void BuildCreaseFixtures( std::vector<CreaseFixture>& out )
+{
+	auto add = [&]( const char* n, ITriangleMeshGeometryIndexed* p, const bool coincident ) {
+		assert( p );
+		TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( p );
+		assert( m );
+		CreaseFixture f = { n, m, coincident };
+		out.push_back( f );
+	};
+	const double vase[]   = { 0,0, 1.05,0.15, 1.26,0.9, 0.54,2.16, 0.66,2.7, 0,2.82 };
+	const double open_[]  = { 1.0,0, 1.2,1.0, 0.8,2.0 };
+	const double hour[]   = { 0.8,0, 0,1.0, 0.8,2.0 };
+	const double crease[] = { 0.5,0, 1.0,1.0, 1.0,1.0, 0.6,2.0 };
+	struct LV { const char* n; const double* p; int np; bool sm; double sw; bool coincident; };
+	const LV lv[] = {
+		{ "lathe vase smooth 360", vase, 6, true, 360, false }, { "lathe vase faceted 360", vase, 6, false, 360, true },
+		{ "lathe vase smooth 200 (capped)", vase, 6, true, 200, true }, { "lathe open tube 120 (capped)", open_, 3, true, 120, true },
+		{ "lathe hourglass (interior pinch) 360", hour, 3, true, 360, true }, { "lathe hourglass 90 (capped)", hour, 3, true, 90, true },
+		{ "lathe dup-point crease 360", crease, 4, true, 360, true }, { "lathe dup-point crease 180 (capped)", crease, 4, true, 180, true } };
+	for( size_t i = 0; i < sizeof( lv ) / sizeof( lv[0] ); ++i ) {
+		LatheDescriptor d; d.profilePoints = lv[i].p; d.numProfilePoints = lv[i].np; d.nRadial = 12; d.smooth = lv[i].sm; d.sweepDegrees = lv[i].sw; d.axis = 1;
+		ITriangleMeshGeometryIndexed* p = 0; assert( RISE_API_CreateLatheGeometry( &p, d ) );
+		add( lv[i].n, p, lv[i].coincident );
+	}
+	const double sq[]   = { -0.5,-0.5, 0.5,-0.5, 0.5,0.5, -0.5,0.5 };
+	const double tri[]  = { -0.6,-0.4, 0.9,-0.4, -0.6,0.7 };
+	double circ[24]; for( int i = 0; i < 12; ++i ) { const double a = 2 * PI * i / 12; circ[2*i] = 0.5 * std::cos( a ); circ[2*i+1] = 0.5 * std::sin( a ); }
+	const double path[] = { 0,0,0,  0,1,0,  0.3,2,0.2 };
+	const double loop[] = { 0,0,0,  2,0,0,  2,0,2,  0,0,2 };
+	const double sc[] = { 1,0.4,1.3 }, scy[] = { 1,1.5,0.6 }, mo[] = { 0,0.5,1 };
+	SweepDescriptor d; d.profilePoints = sq; d.numProfilePoints = 4; d.pathPoints = path; d.numPathPoints = 3; d.nLen = 6;
+	d.endScaleX = 1; d.endScaleY = 1; d.capStart = true; d.capEnd = true; d.frameHintX = 1;
+	{ ITriangleMeshGeometryIndexed* p = 0; assert( RISE_API_CreateSweepGeometry( &p, d ) ); add( "sweep square capped", p, true ); }
+	{ SweepDescriptor e = d; e.capStart = e.capEnd = false; ITriangleMeshGeometryIndexed* p = 0; assert( RISE_API_CreateSweepGeometry( &p, e ) ); add( "sweep square uncapped", p, false ); }
+	{ SweepDescriptor f = d; f.profilePoints = circ; f.numProfilePoints = 12; f.profile2Points = tri; f.numProfile2Points = 3; f.pointMorphs = mo; f.numPointMorphs = 3;
+	  ITriangleMeshGeometryIndexed* p = 0; assert( RISE_API_CreateSweepGeometry( &p, f ) ); add( "sweep loft circle->triangle capped", p, true ); }
+	{ SweepDescriptor g = d; g.pointScales = sc; g.numPointScales = 3; g.pointScalesY = scy; g.numPointScalesY = 3;
+	  ITriangleMeshGeometryIndexed* p = 0; assert( RISE_API_CreateSweepGeometry( &p, g ) ); add( "sweep point_scale sx sy capped", p, true ); }
+	{ SweepDescriptor h = d; h.pathPoints = loop; h.numPathPoints = 4; h.pathClosed = true; h.capStart = h.capEnd = false; h.nLen = 12;
+	  ITriangleMeshGeometryIndexed* p = 0; assert( RISE_API_CreateSweepGeometry( &p, h ) ); add( "sweep closed path", p, false ); }
+	{ SweepDescriptor k = d; k.endScaleX = 0.2; k.endScaleY = 0.5;
+	  ITriangleMeshGeometryIndexed* p = 0; assert( RISE_API_CreateSweepGeometry( &p, k ) ); add( "sweep taper capped", p, true ); }
+
+	const double A[]  = { -1.6,0,0, -0.5,0.45,0, 0.6,1.1,0, 1.6,2.0,0 },  Bv[] = { -1.6,0.4,-1.9, 0,1.5,-1.9, 1.6,2.6,-1.9 };
+	const double Ap[] = { -1.6,0,0, 0,0.5,0, 1.6,2.0,-1 },                Bp[] = { -1.6,0,-2, 0,1.0,-2, 1.6,2.0,-1 };
+	const double Ai[] = { -1.6,0,0, 0,0.5,-1, 1.6,2.0,0 },                Bi[] = { -1.6,0,-2, 0,0.5,-1, 1.6,2.0,-2 };
+	const double Ac[] = { -1.6,0,0, 0,0.5,0, 0,0.5,0, 1.6,2.0,0 },        Bc[] = { -1.6,0,-2, 0,0.6,-2, 0,0.6,-2, 1.6,2.0,-2 };
+	const double Ac1[] = { -1.6,0,0, 0,0.5,0, 0,0.5,0, 1.6,2.0,0 },       Bc1[] = { -1.6,0,-2, 1.6,2.0,-2 };
+	struct SV { const char* n; const double* a; int na; const double* b; int nb; int across; double billow; bool coincident; };
+	const SV sv[] = {
+		{ "skin sail billow", A, 4, Bv, 3, 16, 0.28, false }, { "skin sail flat n_across 2", A, 4, Bv, 3, 2, 0.0, false },
+		{ "skin end pinch", Ap, 3, Bp, 3, 6, 0.2, false }, { "skin interior pinch", Ai, 3, Bi, 3, 6, 0.2, true },
+		{ "skin dup-point crease both rails", Ac, 4, Bc, 4, 6, 0.1, true },
+		{ "skin dup-point ONE rail + billow 0.1 (reviewer P1)", Ac1, 4, Bc1, 2, 6, 0.1, true },
+		{ "skin dup-point ONE rail, billow 0", Ac1, 4, Bc1, 2, 6, 0.0, true }, { "skin dup-point crease both rails, billow 0", Ac, 4, Bc, 4, 6, 0.0, true },
+		{ "skin dup-point ONE rail + billow 0.28", Ac1, 4, Bc1, 2, 6, 0.28, true } };
+	for( size_t i = 0; i < sizeof( sv ) / sizeof( sv[0] ); ++i ) {
+		SkinDescriptor s; s.railAPoints = sv[i].a; s.numRailAPoints = sv[i].na; s.railBPoints = sv[i].b; s.numRailBPoints = sv[i].nb;
+		s.nLen = 8; s.nAcross = sv[i].across; s.billow = sv[i].billow;
+		ITriangleMeshGeometryIndexed* p = 0; assert( RISE_API_CreateSkinGeometry( &p, s ) );
+		add( sv[i].n, p, sv[i].coincident );
+	}
+}
+
+// Number of vertices lying strictly inside an edge exactly ONE triangle uses (a T-junction),
+// and the longest such edge.  Coincident duplicates at an edge's ENDPOINTS do not count.
+static size_t g_dbgAuthoredVerts = 0;
+static size_t CountTJunctions( const IndexTriangleListType& t, const VerticesListType& v, Scalar* pLongestEdge )
+{
+	std::map<std::pair<unsigned int, unsigned int>, int> uses;
+	for( size_t i = 0; i < t.size(); ++i ) {
+		for( int k = 0; k < 3; ++k ) {
+			const unsigned int a = t[i].iVertices[k], b = t[i].iVertices[( k + 1 ) % 3];
+			if( a != b ) ++uses[ std::make_pair( std::min( a, b ), std::max( a, b ) ) ];
+		}
+	}
+	const Scalar diag = BBoxDiagonal( v );
+	const Scalar cell = diag / 32.0, eps = 1e-9 * diag;
+	auto key = [&]( const long x, const long y, const long z ) { return ( std::uint64_t( x + 1024 ) << 42 ) ^ ( std::uint64_t( y + 1024 ) << 21 ) ^ std::uint64_t( z + 1024 ); };
+	std::vector<char> used( v.size(), 0 );
+	for( size_t i = 0; i < t.size(); ++i ) for( int k = 0; k < 3; ++k ) used[ t[i].iVertices[k] ] = 1;
+	std::unordered_map<std::uint64_t, std::vector<unsigned int> > hash;
+	for( unsigned int i = 0; i < v.size(); ++i ) if( used[i] ) hash[ key( long( std::floor( v[i].x / cell ) ), long( std::floor( v[i].y / cell ) ), long( std::floor( v[i].z / cell ) ) ) ].push_back( i );
+	size_t found = 0; Scalar longest = 0;
+	std::set<unsigned int> hits;
+	for( std::map<std::pair<unsigned int, unsigned int>, int>::const_iterator e = uses.begin(); e != uses.end(); ++e ) {
+		if( e->second != 1 ) continue;
+		const Point3& a = v[e->first.first]; const Point3& b = v[e->first.second];
+		const Vector3 ab = Vector3Ops::mkVector3( b, a );
+		const Scalar L2 = Vector3Ops::Dot( ab, ab );
+		if( L2 <= 0 ) continue;
+		const int steps = int( std::sqrt( L2 ) / ( 0.5 * cell ) ) + 2;
+		hits.clear();
+		for( int s = 0; s <= steps; ++s ) {
+			const Scalar f = Scalar( s ) / Scalar( steps );
+			const long cx = long( std::floor( ( a.x + ab.x * f ) / cell ) ), cy = long( std::floor( ( a.y + ab.y * f ) / cell ) ), cz = long( std::floor( ( a.z + ab.z * f ) / cell ) );
+			for( long dx = -1; dx <= 1; ++dx ) for( long dy = -1; dy <= 1; ++dy ) for( long dz = -1; dz <= 1; ++dz ) {
+				const std::unordered_map<std::uint64_t, std::vector<unsigned int> >::const_iterator it = hash.find( key( cx + dx, cy + dy, cz + dz ) );
+				if( it == hash.end() ) continue;
+				for( size_t m = 0; m < it->second.size(); ++m ) hits.insert( it->second[m] );
+			}
+		}
+		for( std::set<unsigned int>::const_iterator h = hits.begin(); h != hits.end(); ++h ) {
+			if( *h == e->first.first || *h == e->first.second ) continue;
+			const Vector3 ap = Vector3Ops::mkVector3( v[*h], a );
+			const Scalar s = Vector3Ops::Dot( ap, ab ) / L2;
+			if( s < 1e-6 || s > 1 - 1e-6 ) continue;
+			const Vector3 d( ap.x - ab.x * s, ap.y - ab.y * s, ap.z - ab.z * s );
+			if( Vector3Ops::Magnitude( d ) > eps ) continue;
+			++found; longest = std::max( longest, std::sqrt( L2 ) );
+			if( std::getenv( "RISE_TJ_DEBUG" ) ) {
+				std::cout << "    T-junction: vertex " << *h << " (" << v[*h].x << ", " << v[*h].y << ", " << v[*h].z << ") inside edge " << e->first.first << "-" << e->first.second
+					<< " (" << a.x << ", " << a.y << ", " << a.z << ")-(" << b.x << ", " << b.y << ", " << b.z << ") at s=" << s << " [authoredVerts=" << g_dbgAuthoredVerts << "]\n";
+			}
+		}
+	}
+	if( pLongestEdge ) *pLongestEdge = longest;
+	return found;
+}
+
+static void TestRefinementHasNoTJunctions()
+{
+	std::cout << "Test 10q: refinement leaves NO T-junction (a vertex strictly inside a single-use edge) on any builder variant...\n";
+	std::vector<CreaseFixture> fx; BuildCreaseFixtures( fx );
+	int softFails = 0;
+	for( size_t i = 0; i < fx.size(); ++i ) {
+		IndexTriangleListType bt; VerticesListType bv; NormalsListType bn; TexCoordsListType bc;
+		assert( fx[i].mesh->TessellateToMesh( bt, bv, bn, bc, 0 ) );
+		Scalar e0 = 0, e1 = 0;
+		const size_t authored = CountTJunctions( bt, bv, &e0 );
+		ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( fx[i].mesh, 40, pConst, 1e-12, false, false, false );
+		pDisp->Realize();
+		IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+		assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+		g_dbgAuthoredVerts = bv.size();
+		const size_t refined = CountTJunctions( t, v, &e1 );
+		std::cout << "  [info] " << fx[i].name << ": " << bt.size() << " -> " << t.size() << " tris; T-junction vertices authored " << authored << ", refined " << refined << "\n";
+		if( refined != 0 ) { ++softFails; std::cout << "  [FAIL] " << fx[i].name << ": " << refined << " T-junction vertices after refinement (longest edge " << e1 << ")\n"; }
+		if( t.size() <= bt.size() ) { ++softFails; std::cout << "  [FAIL] " << fx[i].name << ": not refined\n"; }
+		pDisp->release(); pConst->release();
+	}
+	for( size_t i = 0; i < fx.size(); ++i ) fx[i].mesh->release();
+	assert( softFails == 0 );
+}
+
+static void TestDisplacementIsWatertightAtCreases()
+{
+	std::cout << "Test 10r: displacement is WATERTIGHT at authored creases (cap rims, duplicated profile points, pinch poles, crease stations)...\n";
+	std::vector<CreaseFixture> fx; BuildCreaseFixtures( fx );
+	int softFails = 0;
+	for( size_t i = 0; i < fx.size(); ++i ) {
+		IndexTriangleListType t0; VerticesListType v0; NormalsListType n0; TexCoordsListType c0;
+		IndexTriangleListType t1; VerticesListType v1; NormalsListType n1; TexCoordsListType c1;
+		ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+		DisplacedGeometry* pFlat = new DisplacedGeometry( fx[i].mesh, 40, pConst, 1e-12, false, false, false );
+		pFlat->Realize(); assert( pFlat->TessellateToMesh( t0, v0, n0, c0, 0 ) );
+		const Scalar diag = BBoxDiagonal( v0 );
+		SinFunction2D* pSin = new SinFunction2D( 3.0 );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( fx[i].mesh, 40, pSin, 0.05 * diag, false, false, false );
+		pDisp->Realize(); assert( pDisp->TessellateToMesh( t1, v1, n1, c1, 0 ) );
+		assert( v0.size() == v1.size() && t0.size() == t1.size() );
+		// groups of vertices coincident in the UNdisplaced mesh
+		std::map<std::tuple<long long, long long, long long>, std::vector<unsigned int> > groups;
+		const Scalar q = 1e-6 * diag;
+		for( unsigned int k = 0; k < v0.size(); ++k ) groups[ std::make_tuple( (long long)std::floor( v0[k].x / q + 0.5 ), (long long)std::floor( v0[k].y / q + 0.5 ), (long long)std::floor( v0[k].z / q + 0.5 ) ) ].push_back( k );
+		size_t multi = 0; Scalar worstSpread = 0;
+		for( std::map<std::tuple<long long, long long, long long>, std::vector<unsigned int> >::const_iterator g = groups.begin(); g != groups.end(); ++g ) {
+			if( g->second.size() < 2 ) continue;
+			++multi;
+			for( size_t a = 1; a < g->second.size(); ++a ) {
+				const Point3& p0 = v1[g->second[0]]; const Point3& pa = v1[g->second[a]];
+				worstSpread = std::max( worstSpread, std::sqrt( ( p0.x - pa.x )*( p0.x - pa.x ) + ( p0.y - pa.y )*( p0.y - pa.y ) + ( p0.z - pa.z )*( p0.z - pa.z ) ) );
+			}
+		}
+		Scalar maxMove = 0;
+		for( size_t k = 0; k < v0.size(); ++k ) maxMove = std::max( maxMove, std::sqrt( ( v0[k].x - v1[k].x )*( v0[k].x - v1[k].x ) + ( v0[k].y - v1[k].y )*( v0[k].y - v1[k].y ) + ( v0[k].z - v1[k].z )*( v0[k].z - v1[k].z ) ) );
+		std::cout << "  [info] " << fx[i].name << ": " << multi << " coincident groups, worst crack after displacement " << worstSpread / diag << " x diagonal (max move " << maxMove / diag << ")\n";
+		if( !( maxMove > 1e-3 * diag ) ) { ++softFails; std::cout << "  [FAIL] " << fx[i].name << ": the displacement did not move anything (vacuous)\n"; }
+		if( fx[i].expectCoincident && multi == 0 ) { ++softFails; std::cout << "  [FAIL] " << fx[i].name << ": expected coincident crease/cap vertices, found none (fixture drift)\n"; }
+		if( worstSpread > 1e-9 * diag ) { ++softFails; std::cout << "  [FAIL] " << fx[i].name << ": crack " << worstSpread / diag << " x diagonal\n"; }
+		pDisp->release(); pFlat->release(); pSin->release(); pConst->release();
+	}
+	for( size_t i = 0; i < fx.size(); ++i ) fx[i].mesh->release();
+	assert( softFails == 0 );
+}
+
+//-----------------------------------------------------------------------------
 // Concurrency guard (review Finding 1): many threads calling Realize() at once
 // must BuildMesh() the instance EXACTLY once.  Models a GUI viewport render's
 // AttachScene racing a UI-thread PrepareForRendering/picking on the same, not-
@@ -2912,6 +3112,11 @@ static void TestSignedDistanceLowerForwardsToBakedMesh()
 
 int main()
 {
+	// Debug/red-proof aid: DG_ONLY=q|r runs just the T-junction / watertight-displacement fixtures.
+	if( const char* only = std::getenv( "DG_ONLY" ) ) {
+		if( only[0] == 'q' ) { TestRefinementHasNoTJunctions(); return 0; }
+		if( only[0] == 'r' ) { TestDisplacementIsWatertightAtCreases(); return 0; }
+	}
 	TestPureTessellationBBox();
 	TestConstantDisplacement();
 	TestZeroScaleInvariant();
@@ -2922,7 +3127,7 @@ int main()
 	TestNestedComposition();
 	TestFaceNormalMeshDisplacesAlongFaceNormal();
 	TestDisplacedOverLatheAppliesDisplacement();
-	TestDisplacedOverPinchedLatheTears();
+	TestDisplacedOverPinchedLatheStaysClosed();
 	TestDisplacedBuildersShadeSmooth();
 	TestDetailRefinesMeshBases();
 	TestRefinedTopologyStableAcrossRefresh();
@@ -2936,6 +3141,8 @@ int main()
 	TestPolarVertexDisplacesByNeighbourAverage();
 	TestRefinementKeepsAuthoredSurface();
 	TestCreasesOnlyWhereAuthoredAndPolygonsStayPolygons();
+	TestRefinementHasNoTJunctions();
+	TestDisplacementIsWatertightAtCreases();
 	TestDisplacedBaseIsNotRefinedAgain();
 	TestShadingTransportIsRotation();
 	TestConcurrentRealize();

@@ -205,6 +205,42 @@ int TriangleMeshGeometryIndexed::TessellateRefined(
 	for( size_t i = 0; i < g.quads.size(); ++i ) { replaced[g.quads[i].tri[0]] = 1; replaced[g.quads[i].tri[1]] = 1; }
 	for( size_t i = 0; i < g.fans.size(); ++i ) replaced[g.fans[i].tri] = 1;
 
+	// A PHYSICAL id per authored vertex (positions welded), so a cell's subdivision count on an
+	// authored EDGE is also found by an UNRECORDED triangle that merely touches that edge --
+	// a skin triangle the zero-area test half-ate, an end cap whose rim vertices are DUPLICATES
+	// of the wall's rim (a cap shares no index with the wall, only positions).  Such a triangle
+	// MUST subdivide that edge identically or the refined mesh has T-junctions.
+	std::vector<unsigned int> weldId;
+	if( !GeometricUtilities::WeldVertexPositions( pPoints, weldId ) || weldId.size() != nV ) {
+		return 0;
+	}
+	std::unordered_map<std::uint64_t, unsigned int> edgeSubdiv;
+	auto edgeKey = [&]( const unsigned int X, const unsigned int Y ) -> std::uint64_t {
+		const std::uint64_t a = weldId[X], b = weldId[Y];
+		return a < b ? ( ( a << 32 ) | b ) : ( ( b << 32 ) | a );
+	};
+	auto noteEdge = [&]( const unsigned int X, const unsigned int Y, const unsigned int n ) {
+		if( weldId[X] == weldId[Y] ) return;
+		unsigned int& slot = edgeSubdiv[ edgeKey( X, Y ) ];
+		if( n > slot ) slot = n;		// two cells never disagree on a shared edge (one family); max keeps the finer if one ever did
+	};
+	auto edgeCountOf = [&]( const unsigned int X, const unsigned int Y ) -> unsigned int {
+		if( weldId[X] == weldId[Y] ) return 1;
+		const auto it = edgeSubdiv.find( edgeKey( X, Y ) );
+		return it == edgeSubdiv.end() ? 1u : it->second;
+	};
+	for( size_t i = 0; i < g.quads.size(); ++i ) {
+		const MeshGrid::Quad& q = g.quads[i];
+		const unsigned int Ms = cnt[q.famS], Mt = cnt[q.famT];
+		noteEdge( q.q[0], q.q[1], Ms ); noteEdge( q.q[3], q.q[2], Ms );
+		noteEdge( q.q[0], q.q[3], Mt ); noteEdge( q.q[1], q.q[2], Mt );
+	}
+	for( size_t i = 0; i < g.fans.size(); ++i ) {
+		const MeshGrid::Fan& f = g.fans[i];
+		const unsigned int P = f.t[f.pole], R1 = f.t[( f.pole + 1 ) % 3], R2 = f.t[( f.pole + 2 ) % 3];
+		noteEdge( P, R1, cnt[f.famSpoke] ); noteEdge( P, R2, cnt[f.famSpoke] ); noteEdge( R1, R2, cnt[f.famRing] );
+	}
+
 	VerticesListType  outV = pPoints;
 	NormalsListType   outN = pNormals;
 	TexCoordsListType outC = pCoords;
@@ -347,15 +383,54 @@ int TriangleMeshGeometryIndexed::TessellateRefined(
 		}
 	}
 
-	// authored triangles no cell replaced (end caps, degenerate leftovers) pass through
+	// Authored triangles no cell replaced: end caps, and degenerate leftovers (a skin triangle
+	// the zero-area test ate half of).  One that touches an edge a cell subdivided MUST subdivide
+	// that edge the same way (each edge by the count its cells used, edges nothing refined stay
+	// whole): the boundary loop is closed with a fan to the triangle's centroid.  A triangle on
+	// no refined edge (an interior cap diagonal's neighbours, an isolated leftover) passes through
+	// unchanged.  New vertices lie ON the authored triangle -- a cap's planar interior, its flat
+	// normal, its planar UVs.
 	const Point3* pBase = &pPoints[0];
 	for( size_t i = 0; i < ptr_polygons.size(); ++i ) {
 		if( replaced[i] ) continue;
 		const PointerTriangle& src = ptr_polygons[i];
-		outT.push_back( MakeIndexedTriangleSameIdx(
+		const unsigned int ids[3] = {
 			static_cast<unsigned int>( src.pVertices[0] - pBase ),
 			static_cast<unsigned int>( src.pVertices[1] - pBase ),
-			static_cast<unsigned int>( src.pVertices[2] - pBase ) ) );
+			static_cast<unsigned int>( src.pVertices[2] - pBase ) };
+		const unsigned int ne[3] = { edgeCountOf( ids[0], ids[1] ), edgeCountOf( ids[1], ids[2] ), edgeCountOf( ids[2], ids[0] ) };
+		if( ne[0] == 1 && ne[1] == 1 && ne[2] == 1 ) {
+			outT.push_back( MakeIndexedTriangleSameIdx( ids[0], ids[1], ids[2] ) );
+			continue;
+		}
+		std::vector<unsigned int> loop;
+		for( int e = 0; e < 3; ++e ) {
+			for( unsigned int k = 0; k < ne[e]; ++k ) {
+				loop.push_back( edgePoint( ids[e], ids[( e + 1 ) % 3], ne[e], k ) );
+			}
+		}
+		// A DEGENERATE (collinear) triangle -- an ear-clipped cap covers a collinear rim point with a
+		// zero-area triangle -- must not grow a centroid: that point lies ON the line, strictly inside
+		// the rim edges, i.e. it IS a T-junction.  Its perimeter points are collinear, so the loop is
+		// closed by a fan from its first point (zero-area triangles that displacement, which moves the
+		// welded rim points independently, turns into the thin bridge the gap needs).
+		const Vector3 e01 = Vector3Ops::mkVector3( pPoints[ids[1]], pPoints[ids[0]] );
+		const Vector3 e02 = Vector3Ops::mkVector3( pPoints[ids[2]], pPoints[ids[0]] );
+		const Vector3 e12 = Vector3Ops::mkVector3( pPoints[ids[2]], pPoints[ids[1]] );
+		const Scalar maxEdgeSq = std::max( Vector3Ops::Dot( e01, e01 ), std::max( Vector3Ops::Dot( e02, e02 ), Vector3Ops::Dot( e12, e12 ) ) );
+		if( Vector3Ops::Magnitude( Vector3Ops::Cross( e01, e02 ) ) <= 1e-9 * maxEdgeSq ) {
+			for( size_t k = 1; k + 1 < loop.size(); ++k ) {
+				if( loop[k] != loop[0] && loop[k + 1] != loop[0] ) {
+					outT.push_back( MakeIndexedTriangleSameIdx( loop[0], loop[k], loop[k + 1] ) );
+				}
+			}
+			continue;
+		}
+		const double third[3] = { 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0 };
+		const unsigned int centre = addVertex( ids, third, 3 );
+		for( size_t k = 0; k < loop.size(); ++k ) {
+			outT.push_back( MakeIndexedTriangleSameIdx( loop[k], loop[( k + 1 ) % loop.size()], centre ) );
+		}
 	}
 
 	tris.swap( outT );

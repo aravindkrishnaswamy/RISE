@@ -330,9 +330,11 @@ namespace RISE
 			//! while it emits its triangles: which authored triangles form quads of a regular
 			//! grid (and between which line FAMILIES -- every edge of a family is subdivided the
 			//! same number of times, so neighbouring quads agree on shared edges), and which form
-			//! pole / pinch fans.  Triangles in neither (end caps, degenerate leftovers) are not
-			//! refined.  Used by TessellateRefined() to put MORE SAMPLES on the authored surface
-			//! without changing it -- see the principle there.
+			//! pole / pinch fans.  Triangles in neither (end caps, degenerate leftovers such as a
+			//! skin triangle the builder's zero-area test half-ate) are NOT cells: they are
+			//! subdivided only along the edges they share with a refined cell (see
+			//! TessellateRefined), so the result has no T-junction.  Used by TessellateRefined() to
+			//! put MORE SAMPLES on the authored surface without changing it -- see the principle there.
 			class MeshGrid
 			{
 			public:
@@ -358,7 +360,13 @@ namespace RISE
 			//! one), its normal and UV are interpolated from the authored vertices' (barycentric
 			//! within the authored triangle; UVs respect the periodic / polar chart bits), creases
 			//! exist only where the author made them (inserted rows are single, smooth rows),
-			//! and correspondence (loft pairing, caps) is the authored one.  Output uses the
+			//! and correspondence (loft pairing, caps) is the authored one.  An authored triangle
+			//! no cell replaced that touches a subdivided edge (an end cap; a half-eaten skin
+			//! triangle) subdivides that edge by the same count -- the edge is found by POSITION
+			//! (GeometricUtilities::WeldVertexPositions), because a cap's rim vertices are
+			//! duplicates of the wall's -- and closes its boundary with a fan to its centroid (a
+			//! collinear triangle: a fan from a corner), so no refined vertex lies inside a
+			//! single-use edge and a cap's rim matches the wall's rim vertex for vertex.  Output uses the
 			//! same-index contract; authored vertices keep their indices, new ones follow.
 			//! Returns 1 with the refined arrays, or 0 (arrays untouched) when there is no grid or
 			//! the authored mesh is already at least that dense.

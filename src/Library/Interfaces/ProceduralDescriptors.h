@@ -131,16 +131,18 @@ namespace RISE
 	//! opposite axial normals.  The baked mesh is DOUBLE-SIDED, so an
 	//! emissive material on a lathe radiates from both faces.
 	//!
-	//! CONSEQUENCE of that split, worth knowing before reaching for a fix:
-	//! displaced_geometry over a PINCHED lathe TEARS at the waist.  The two
-	//! pinch poles are coincident but carry exactly opposite normals, so
-	//! displacement pushes them apart by 2 * disp_scale and opens a crack.
-	//! This is inherent to split normals -- sweep_geometry's duplicate-a-
-	//! profile-point hard-edge idiom has it too -- and sharing one vertex
-	//! instead would trade the crack for a shading normal in the wrong
-	//! half-space on one of the two bands, which is the very defect the
-	//! split exists to prevent.  Displace an UNPINCHED profile, or keep
-	//! disp_scale small relative to the waist, rather than "fixing" it.
+	//! CONSEQUENCE of that split: the two pinch poles are coincident but carry
+	//! exactly opposite normals, so displacing each along its OWN normal used
+	//! to push them apart by 2 * disp_scale and tear the waist open (and
+	//! sweep_geometry's duplicate-a-profile-point hard-edge idiom, cap rims and
+	//! skin crease stations did the same).  Sharing one vertex in the BASE would
+	//! instead put a shading normal in the wrong half-space on one of the two
+	//! bands -- the defect the split exists to prevent -- so the base keeps the
+	//! split and DisplacedGeometry closes the crack in the DISPLACEMENT: every
+	//! group of base-coincident vertices moves to one shared position (the mean
+	//! of its members' displacement vectors) while each keeps its own shading
+	//! normal.  A pinch's two poles therefore stay together under displacement
+	//! (Test 10 of DisplacedGeometryTest asserts the gap closed).
 	struct LatheDescriptor
 	{
 		const double* profilePoints;	//!< r0 h0 r1 h1 ... (pairs; OPEN polyline, >= 2, every r >= 0, not ALL r == 0)

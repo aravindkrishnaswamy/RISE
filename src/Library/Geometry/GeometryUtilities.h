@@ -41,6 +41,17 @@ namespace RISE
 	// is weighted by the triangle's interior angle at that vertex, so the result does not
 	// depend on how a surface was triangulated -- slivers cannot dominate a vertex).  Use this after vertex positions
 	// have changed (e.g. post-displacement) to keep shading consistent with the new shape.
+	//
+	// SCOPE OF THE ANGLE-WEIGHTING (it replaced an unweighted face average): the callers are
+	// BezierPatchGeometry / BilinearPatchGeometry::TessellateToMesh, DisplacedGeometry (every
+	// bake, so a displaced ANALYTIC base -- sphere, ellipsoid, torus, ... -- too) and the
+	// refinement's geometric-normal pass.  Only per-vertex SHADING normals move, never
+	// positions, hits or areas.  Measured against the unweighted average: a sphere / ellipsoid
+	// tessellation at detail 32 differs by 0.18 / 0.20 deg on average (max 1.1 / 1.9 deg at the
+	// pole fans), a smooth bicubic Bezier patch by 0.11 deg (max 0.6 deg); where a patch edge
+	// COLLAPSES to a point (the teapot-lid fan) the vertices at the fan differ by up to ~35 deg,
+	// because the unweighted average let the many thin triangles of a fan outvote the wide ones
+	// -- the angle-weighted normal is the one a finer or differently split mesh would give.
 	extern void RecomputeVertexNormalsFromTopology(
 		const IndexTriangleListType& vFaces,
 		const VerticesListType&      vVertices,

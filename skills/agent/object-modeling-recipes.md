@@ -1861,13 +1861,17 @@ plumbing:
   bake preserves it, and the base's own smooth shading normals are carried
   through the displacement.  This is the recipe above (scales, dimples, skin
   pores).  Limits worth knowing: crease / cap / duplicated-profile-point
-  vertices are SEPARATE vertices (that is what keeps their crease), so under
-  displacement they displace independently and can OPEN A GAP along that edge
-  (the interior pinch below is the extreme case); a sweep's or partial
-  lathe's END CAPS are triangulated from the profile polygon only, so a cap
-  displaces only along its rim; a mesh with `face_normals TRUE` and the
-  legacy non-indexed `rawmesh_geometry` are flat per triangle and crack at
-  every edge (neither is refined).
+  vertices are SEPARATE vertices in the base (that is what keeps their crease
+  and each band's shading normal), but under displacement every group of them
+  that is coincident in the base moves to ONE shared position -- the mean of its
+  members' displacement vectors -- while each keeps its own shading normal, so
+  cap rims, duplicated profile points, a lathe pinch's two poles and skin
+  crease stations stay WATERTIGHT (no slit between a cap and the wall); a
+  sweep's or partial lathe's END CAP is refined on its rim only, its rim points
+  matching the wall's vertex for vertex, so it carries relief at the rim and
+  one centroid point, not across its interior; a mesh with `face_normals TRUE`
+  and the legacy non-indexed `rawmesh_geometry` are flat per triangle and crack
+  at every edge (neither is refined).
   **`detail` sets how finely a MESH base is displaced** (a mesh ignores
   `detail` in its own tessellation), with target spacing
   (bounding-box diagonal / `detail`).  **Refinement never changes the authored
@@ -1877,8 +1881,9 @@ plumbing:
   the authored ones, creases only where you made them, the loft's authored
   pairing kept.  So the **silhouette is the AUTHORED polygon** -- a 6-point
   lathe stays a hexagonal-profile vase however high `detail` goes, a
-  `n_radial 6` column stays hexagonal, and at `disp_scale -> 0` the
-  displaced object renders identically to the undisplaced base; if you want
+  `n_radial 6` column stays hexagonal, and as `disp_scale -> 0` the
+  displaced object renders as the undisplaced base (up to ~0.1% of a quad's
+  diagonal where a refined vertex lands inside a non-planar authored quad); if you want
   the base rounder, author it denser (more profile points / `n_radial` /
   stations).  A `lathe_geometry`, `sweep_geometry` (a loft included) or
   `skin_geometry` records its authored grid and has each line family
@@ -1886,7 +1891,7 @@ plumbing:
   rows across), so quads stay regular quads (ribs and flutes render clean) at
   about the triangle count of a hand-authored grid at that spacing: the 6-row
   stress-scene vase at `detail 48` is ~9.6k triangles; a base already that
-  dense is left alone; end caps are not refined.  Any other indexed mesh
+  dense is left alone; end caps are refined on their rim only.  Any other indexed mesh
   (an import) is subdivided UNIFORMLY in whole 1->4 levels, the level count
   taken from its MEDIAN edge length (one long outlier edge cannot drive it).
   A displaced base is not refined again
@@ -1900,14 +1905,14 @@ plumbing:
   tessellation at all; see `procedural-textures.md`'s "Adding relief"
   section and `docs/RELIEF_MODIFIER_DESIGN.md`.
 - **An INTERIOR-pinch `lathe_geometry` profile (an hourglass waisted to
-  `r 0` partway along, not just at the two ends) TEARS at the pinch under
-  displacement** -- the pinch bakes as two coincident vertices with opposite
-  normals (`ProceduralDescriptors.h`'s `LatheDescriptor` documents this
-  as deliberate, not a bug: welding them back into one vertex would put one
-  band's shading normal in the wrong half-space instead).  Displacing one
-  pushes the pair apart by `2 * disp_scale`, opening a visible crack.
-  Displace an UNPINCHED profile, or keep `disp_scale` small relative to the
-  waist.
+  `r 0` partway along, not just at the two ends) used to TEAR at the pinch
+  under displacement** -- the pinch bakes as two coincident vertices with
+  opposite normals (`ProceduralDescriptors.h`'s `LatheDescriptor`), and
+  displacing each along its own normal pushed the pair apart by
+  `2 * disp_scale`.  The coincident-vertex weld above closes it now (both
+  poles share one displaced position; each band keeps its own shading
+  normal).  A pinch is still a single point, so the field's relief is
+  averaged away right at the waist.
 
 A `skeleton_geometry`-expanded creature has no per-limb UV: every part
 shares ONE cylindrical wrap around the whole body's own bounding box (`u` =
