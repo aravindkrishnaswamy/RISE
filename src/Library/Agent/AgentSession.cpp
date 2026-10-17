@@ -33654,11 +33654,50 @@ namespace RISE
 				IGeometryManager* geos = mJob->GetGeometries();
 				IMaterialManager* mats = mJob->GetMaterials();
 
+				// PARENT -> CHILDREN, built ONCE per attempt from the live
+				// scene; chunks accepted below add their own `parent` links as
+				// they are seen, because the parser copies a source's whole
+				// subtree, including children declared in this same answer.
+				// `w` is how many objects the child entry stands for.
+				struct KidEdge { std::string name; long long w; };
+				std::map<std::string, std::vector<KidEdge> > kids;
+				if( IObjectManager* lo = mJob->GetObjects() ) {
+					struct NameCollect : public IEnumCallback<const char*>
+					{
+						std::vector<std::string> names;
+						bool operator()( const char* const& nm ) override
+						{
+							if( nm ) names.push_back( nm );
+							return true;
+						}
+					} scan;
+					lo->EnumerateItemNames( scan );
+					for( std::size_t k = 0; k < scan.names.size(); ++k ) {
+						const char* par = lo->GetObjectParent( scan.names[k].c_str() );
+						if( par && par[0] ) kids[par].push_back( KidEdge{ scan.names[k], 1 } );
+					}
+				}
+				// Objects in the subtree rooted at `root`, ITSELF excluded:
+				// each child contributes its weight plus its own descendants.
+				const std::function<long long( const std::string&, int )> descendants =
+					[&]( const std::string& root, int depth ) -> long long
+				{
+					if( depth > 64 ) return 0;
+					const std::map<std::string, std::vector<KidEdge> >::const_iterator it = kids.find( root );
+					if( it == kids.end() ) return 0;
+					long long n = 0;
+					for( std::size_t k = 0; k < it->second.size(); ++k ) {
+						n += it->second[k].w + descendants( it->second[k].name, depth + 1 );
+						if( n > 1000000 ) return n;
+					}
+					return n;
+				};
+
 				std::vector<std::string> submit;
 				std::vector<AgentPopulateSceneCreation> submitInfo;
 				for( std::size_t i = 0; i < chunks.size(); ++i ) {
 					RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunks[i] );
-					std::string kind, oname, gname, mname, sname, cuText, cvText;
+					std::string kind, oname, gname, mname, sname, cuText, cvText, parentText;
 					RISE::Cst::NodeId nodeId = 0;
 					{
 						const int n = RISE::Cst::DocItemCount( doc );
@@ -33674,6 +33713,8 @@ namespace RISE
 							if( sname == "none" ) sname.clear();
 							cuText = ChunkParamString_( it, "count_u" );
 							cvText = ChunkParamString_( it, "count_v" );
+							parentText = ChunkParamString_( it, "parent" );
+							if( parentText == "none" ) parentText.clear();
 							nodeId = nid;
 							break;
 						}
@@ -33822,40 +33863,18 @@ namespace RISE
 							continue;
 						}
 						long long subtree = 1;
-						bool pendingSource = false;
 						// A source declared EARLIER IN THIS ANSWER is not in the
-						// live manager yet: use the objects ITS chunk expands
-						// to (which already compounds along a chain of clones).
-						for( std::size_t l = submitInfo.size(); l-- > 0 && !pendingSource; ) {
+						// live manager yet: it stands for the objects ITS chunk
+						// expanded to (which already compounds along a chain of
+						// clones).  Its children, live or declared in this answer
+						// via `parent`, come from the shared parent map.
+						for( std::size_t l = submitInfo.size(); l-- > 0; ) {
 							if( submitInfo[l].name == sname ) {
 								subtree = submitInfo[l].expandedCount;
-								pendingSource = true;
+								break;
 							}
 						}
-						if( !pendingSource && objs ) {
-							// Descendants are found through PARENT links (a
-							// clone's children are also named `<clone>.<child>`,
-							// but an authored tree's are not).
-							struct NameCollect : public IEnumCallback<const char*>
-							{
-								std::vector<std::string> names;
-								bool operator()( const char* const& nm ) override
-								{
-									if( nm ) names.push_back( nm );
-									return true;
-								}
-							} scan;
-							objs->EnumerateItemNames( scan );
-							for( std::size_t k = 0; k < scan.names.size(); ++k ) {
-								const char* cur = scan.names[k].c_str();
-								for( int hop = 0; hop < 64 && cur; ++hop ) {
-									const char* par = objs->GetObjectParent( cur );
-									if( !par || !par[0] ) break;
-									if( sname == par ) { ++subtree; break; }
-									cur = par;
-								}
-							}
-						}
+						subtree += descendants( sname, 0 );
 						if( subtree > capLL + 1 ) subtree = capLL + 1;
 						const long long total = mult * subtree;
 						if( !countOk || total > static_cast<long long>( kPopulateSceneMaxCloneObjects ) ) {
@@ -33951,6 +33970,8 @@ namespace RISE
 					info.material = mname;
 					if( ( !cuText.empty() || !cvText.empty() ) && !oname.empty() ) countedNames.push_back( oname );
 					callObjectTotal += expandedCount;
+					if( !parentText.empty() && !oname.empty() )
+						kids[parentText].push_back( KidEdge{ oname, expandedCount } );
 					submit.push_back( chunks[i] );
 					submitInfo.push_back( info );
 				}
@@ -33960,6 +33981,11 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
+					// A chunk InsertChunks refused adds nothing to the scene,
+					// so it gives its share of the per-call total back (else a
+					// mostly-rejected first attempt would starve the retry).
+					if( !results[i].applied && i < submitInfo.size() )
+						callObjectTotal -= submitInfo[i].expandedCount;
 					if( results[i].applied ) {
 						landedNames.push_back( results[i].name );
 						AgentPopulateSceneCreation c;

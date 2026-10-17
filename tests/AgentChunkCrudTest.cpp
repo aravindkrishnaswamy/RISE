@@ -17698,6 +17698,48 @@ static void TestPopulateSceneCloneFanOutBounds()
 	}
 }
 
+//! A82j: children declared in the SAME answer via `parent` count toward a
+//! clone's fan-out, and chunks InsertChunks refuses refund the per-call total.
+static void TestPopulateSceneParentSubtreeAndRefund()
+{
+	std::printf( "A82j: populate_scene counts same-answer children and refunds refused chunks...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82j.RISEscene" );
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::string answer;
+		for( int k = 0; k < 100; ++k )
+			answer += "standard_object\n{\n\tname pkid_" + std::to_string( k ) +
+			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
+		answer += "standard_object\n{\n\tname pbig\n\tsource obj_sph\n\tcount_u 3\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		bool big = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].reason.find( "would create 303 objects" ) != std::string::npos ) big = true;
+		Check( big, "A82j MONEY ASSERTION: 100 children declared via `parent obj_sph` in this answer make "
+		            "the source 101 objects, so count_u 3 (303) is rejected" );
+		pJob->release();
+	}
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j/refund fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::string bad, good;
+		for( int k = 0; k < 5; ++k ) {
+			bad  += "standard_object\n{\n\tname obj_emit\n\tsource obj_sph\n\tcount_u 200\n}\n";
+			good += "standard_object\n{\n\tname refund_" + std::to_string( k ) +
+			        "\n\tsource obj_sph\n\tcount_u 200\n}\n";
+		}
+		sess->SetTextCompleter( MakeFakeCompleter( { bad, good } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( r.created.size() == 5,
+		       "A82j chunks the first attempt got refused for give their share back, so the retry's 5 x 200 land" );
+		pJob->release();
+	}
+}
+
 //! A82c: the capability refusal, the per-session spend cap, and the
 //! nothing-to-repeat case -- the three bounds, each of which must cost the
 //! provider nothing.
@@ -20648,6 +20690,7 @@ int main()
 	TestPopulateSceneContractAndRetry();
 	TestPopulateSceneSourceClone();
 	TestPopulateSceneCloneFanOutBounds();
+	TestPopulateSceneParentSubtreeAndRefund();
 	TestPopulateSceneCapabilityCapAndNoStock();
 	TestComposePhaseFirstRenderRefusal();
 	TestComposeArmsShareOneCap();
