@@ -171,9 +171,12 @@
 //        retired to a one-line stub saying how to get it back -- by what
 //        it describes, never by age.  L2: a successful finish_element for
 //        element E retires E's earlier build_element / insert_chunks
-//        results ("element_finished_retirement"); the stub carries their
-//        rejections and notices (not in the document), and a successful
-//        reopen_element E cancels a retirement not yet applied.  L3: a named read_skill
+//        results ("element_finished_retirement"); the stub states only
+//        immutable facts -- retired when E was finished, its chunks are in
+//        the document, the bounding box when built, the per-chunk outcomes
+//        the document does not record -- never an edit rule (those change
+//        after the finish); a successful reopen_element E cancels a
+//        retirement not yet applied.  L3: a named read_skill
 //        is superseded by a later read of the SAME skill (an argument-
 //        normalized supersession key), and the successful finish_element
 //        that reports the COMPOSE phase (every element of the filed plan

@@ -4539,13 +4539,6 @@ namespace RISE
 				std::string element;        //!< the element that was closed ("" when !ok)
 				std::string phase;          //!< the phase AFTER this call
 				std::string nextElement;    //!< the newly active element, "" when Compose
-				//! Doc 91 review round 4: whether the build-phase edit rules
-				//! are enforced after this call (building mode, protocol on,
-				//! the 3-refusal give-up not reached) -- in the pieces phase an
-				//! edit to another element's form is refused, in compose the
-				//! creation of geometry is.  Recorded here so a reader never
-				//! has to infer it.
-				bool        phaseRulesEnforced = false;
 				//! Every chunk attributed to the closed element, creation order.
 				std::vector<std::string> chunks;
 				//! The declared pieces whose name appears (case-insensitive

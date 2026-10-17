@@ -870,37 +870,31 @@ namespace RISE
 		//! the key -- deterministic and replay-safe.
 		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey );
 
-		//! CONTEXT LIFETIMES (doc 91 slice L2): what the finish_element that
-		//! retired a result reported about the build-phase edit rules, read
-		//! off ITS result (`phase`, `phaseRulesEnforced`) -- never inferred.
-		enum class ChatElementStubPhase
-		{
-			Unenforced,   //!< the phase rules were not enforced (refining mode,
-			              //!< protocol off, give-up reached, or not reported)
-			Pieces,       //!< enforced, and the plan was still in the pieces phase
-			Compose       //!< enforced, and the finish reached the compose phase
-		};
-
 		//! CONTEXT LIFETIMES (doc 91 slice L2): the stub an earlier
 		//! build_element / insert_chunks result for `element` is rewritten
 		//! to once a successful finish_element for that element has flowed
-		//! through the chat loop.  Says what was removed, why, how to get it
-		//! back, and -- phrased from `phase`, i.e. from the rules the session
-		//! reported at that finish -- what editing the element requires:
-		//! in the PIECES phase CheckElementWindowForEdit_ refuses edits to
-		//! another element's chunks except the phase-exempt categories
-		//! (materials, painters, lights, cameras, film, rasterizers,
-		//! rasterizer outputs), so the stub says reopen_element first; in
-		//! COMPOSE every element's chunks are editable and only geometry
-		//! CREATION is refused (CheckComposePhaseForCreate_).  `facts` (the
-		//! realised bounding box; insert_chunks' head version) and `carried`
-		//! (per-chunk outcomes the document does not record) are appended
-		//! verbatim so retiring the result never deletes the only copy.
+		//! through the chat loop.  It states ONLY facts that cannot go stale
+		//! (review round 5): the result was retired when the element was
+		//! finished, the element's chunks are in the document (read_document
+		//! shows them), and `facts` / `carried` -- recorded from the elided
+		//! result and labelled as of that result (the bounding box "when
+		//! built", the head version "after that call", per-chunk outcomes).
+		//! It never states an edit or reopen rule: the phase, the session
+		//! mode and the plan all change after the finish, and the session's
+		//! own refusal message names reopen_element when an edit is actually
+		//! refused.
 		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
 		                                               const std::string& element,
-		                                               ChatElementStubPhase phase,
 		                                               const std::string& facts,
 		                                               const std::string& carried );
+
+		//! The canonical success message of a clean chunk insert, restated
+		//! for the sans-IO chat loop (which does not link IJobPriv.h, where
+		//! the writers' constant kCstChunkInsertedMessage lives); the carried
+		//! per-chunk notices strip it so their byte budget goes to the
+		//! notice itself.  AgentChatLoopTest T14d pins the two equal.
+		inline constexpr char kChatChunkInsertedMessage[] =
+			"chunk inserted via a full re-derive (Scene + managers were replaced)";
 
 		//! CONTEXT LIFETIMES (doc 91 slice L3b): the stub a live named
 		//! read_skill result is rewritten to once a successful

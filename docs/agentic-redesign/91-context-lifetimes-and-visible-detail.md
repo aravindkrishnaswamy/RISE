@@ -59,16 +59,18 @@ provider-cache miss — the doc 71 / T1c policy, unchanged.
   for element E flows through the chat loop, earlier live
   `build_element` and `insert_chunks` results that belong to E are
   replaced with a stub naming E and the recovery path (`read_document`
-  shows its chunks).  What editing E then requires is phrased from what
-  that finish REPORTED (`phase`, and since review round 4
-  `phaseRulesEnforced`): still in the PIECES phase, edits to E's chunks
-  are refused while another element is active except its materials,
-  painters, lights, cameras, film, rasterizers and rasterizer outputs
-  (`CheckElementWindowForEdit_` / `KindIsPhaseExemptCategory_`), so the
-  stub says `reopen_element` E first; in COMPOSE every element's chunks are
-  editable in place and only geometry creation needs `reopen_element`;
-  with the rules not enforced (refining mode, give-up) the stub claims no
-  refusal.  Results from EARLIER turns are
+  shows its chunks).  The stub states ONLY IMMUTABLE facts (review round
+  5): that the result was retired when E was finished, that E's chunks
+  are in the document, the realised bounding box "when built", the head
+  version "after that call" and the carried per-chunk outcomes.  It
+  states NO edit or reopen rule: the phase, the session mode and the plan
+  all change after the finish (the plan reaches compose, a final answer
+  switches to refining, the give-up trips, a new plan is filed) and the
+  stub is never rewritten -- rounds 1-4 each found a new stale state for
+  every more precise rule text.  The live rule is stated where it applies:
+  `CheckElementWindowForEdit_`'s refusal and the compose-phase creation
+  refusal both name `reopen_element` when an edit is actually refused.
+  Results from EARLIER turns are
   rewritten in the same flush that elides the previous image (the finish
   result carries the isolate PNG), so they add no cache miss beyond that
   flush's earliest rewrite.  A build result from the SAME turn as the
@@ -141,7 +143,10 @@ apothecary and 0 on the dragons run (which read no skills).
   (build_element's realised world bounding box; insert_chunks' last
   `headVersion`), which the element-finished stub carries so retiring never
   deletes the only copy, and
-  `lifetimeSkill` at pack time.  Lifetime stubs ride under the JSON key
+  `lifetimeSkill` at pack time.  A carried notice has the canonical insert
+  prefix stripped so its 160 bytes go to the notice itself, carries a
+  landed chunk's `issues` warnings, and a staged chunk is labelled
+  "staged as a proposal".  Lifetime stubs ride under the JSON key
   `retired_note` on the Gemini / OpenAI wires (supersession keeps
   `superseded_note`).  A successful `reopen_element` E cancels
   an element-finished retirement for E that was decided but not yet

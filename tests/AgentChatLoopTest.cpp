@@ -4262,7 +4262,7 @@ static void TestContextLifetimeRetirement()
 		{ ChatProvider::Anthropic, "anthropic" }, { ChatProvider::Gemini, "gemini" },
 		{ ChatProvider::OpenAI, "openai/responses" }, { ChatProvider::Local, "openai/chat-completions" } };
 	const char* const kComposeStub = "every element of the build plan is finished";
-	const char* const kFinishedStub = "is finished; its chunks are in the document";
+	const char* const kFinishedStub = "was finished; its chunks are in the document";
 
 	std::string anthropicFinalBody;
 	for( const Prov& pv : provs ) {
@@ -4542,8 +4542,8 @@ static void TestContextLifetimeRetirementRound2()
 		       "T14d(a): the stub carries a landed chunk's notice, labelled as LANDED" );
 		Check( body.find( "Kept from the elided result (per-chunk outcomes the document does not record)" )
 		           != std::string::npos &&
-		       body.find( "stay editable in place" ) != std::string::npos,
-		       "T14d(a): the stub says what it kept and that the chunks stay editable in place" );
+		       body.find( "retired when \\\"wizard\\\" was finished" ) != std::string::npos,
+		       "T14d(a): the stub says what it kept and that it was retired when the element was finished" );
 		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
 		       "T14d(a): every call is still answered" );
 	}
@@ -4857,27 +4857,69 @@ static void TestContextLifetimeRetirementRound2()
 			}
 			return false;
 		};
-		const std::string lead =
-			"[build_element result for element \"wizard\" elided -- \"wizard\" is finished; its chunks are "
-			"in the document (read_document shows them).";
-		const std::string box = " Realised world bounding box: min (-1, 0, -0.5) max (1, 4, 0.5), height 4.]";
-		std::string t;
-		Check( stubText( LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\","
-		                                 "\"phaseRulesEnforced\":true,\"chunks\":[],\"message\":\"m\"}" ), t ) &&
-		       t == lead + " When it was finished the plan was still in the pieces phase: while another element is "
-		                   "active, edits to \"wizard\"'s chunks are refused except its materials, painters, lights, "
-		                   "cameras, film, rasterizers and rasterizer outputs -- reopen_element \"wizard\" before "
-		                   "editing its geometry, objects or any other chunk of it." + box,
-		       "T14d(e7) MONEY: PIECES-phase finish -> the stub names the refusal and reopen_element (exact text)" );
-		Check( stubText( LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"compose\",\"element\":\"wizard\","
-		                                 "\"phaseRulesEnforced\":true,\"chunks\":[],\"message\":\"m\"}" ), t ) &&
-		       t == lead + " Its finish reached the compose phase: every element's chunks stay editable in place; "
-		                   "creating new geometry for \"wizard\" needs reopen_element \"wizard\"." + box,
-		       "T14d(e7): COMPOSE-phase finish -> in-place editing, reopen only to create geometry (exact text)" );
-		Check( stubText( LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\","
-		                                 "\"phaseRulesEnforced\":false,\"chunks\":[],\"message\":\"m\"}" ), t ) &&
-		       t == lead + " They stay editable in place." + box,
-		       "T14d(e7): rules NOT enforced (refining / give-up) -> the stub claims no refusal (exact text)" );
+		// REVIEW ROUND 5: the stub states only IMMUTABLE facts.  The phase,
+		// the session mode and the plan all change after the finish and the
+		// stub is never rewritten, so whatever the finish reported, the stub
+		// is the SAME text -- and it never states an edit or reopen rule (the
+		// session's own refusal names reopen_element when an edit is
+		// actually refused).
+		const std::string expected =
+			"[build_element result for element \"wizard\" elided -- retired when \"wizard\" was finished; its "
+			"chunks are in the document (read_document shows them). Realised world bounding box when built: "
+			"min (-1, 0, -0.5) max (1, 4, 0.5), height 4.]";
+		const char* const finishes[] = {
+			"{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}",
+			"{\"ok\":true,\"phase\":\"compose\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}",
+			"{\"ok\":true,\"phase\":\"pieces\",\"mode\":\"refining\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}" };
+		const char* const labels[] = { "pieces", "compose", "refining" };
+		for( int v = 0; v < 3; ++v ) {
+			std::string t;
+			const bool got = stubText( LifetimeEnv( 2, finishes[v] ), t );
+			Check( got && t == expected,
+			       std::string( "T14d(e7) MONEY: " ) + labels[v] + "-phase finish -> the immutable stub, exact text" );
+			Check( got && t.find( "reopen_element" ) == std::string::npos &&
+			       t.find( "refused" ) == std::string::npos && t.find( "editable" ) == std::string::npos,
+			       std::string( "T14d(e7): " ) + labels[v] + " -- no edit/reopen rule is stated (it would go stale)" );
+		}
+	}
+
+	// (e8) review round 5 P2-2: a carried notice keeps its CONTENT -- the
+	//      canonical insert prefix is stripped before the 160-byte cap, and a
+	//      landed chunk's `issues` (a forward-reference warning) are carried.
+	{
+		Check( std::string( kChatChunkInsertedMessage ) == std::string( RISE::kCstChunkInsertedMessage ),
+		       "T14d(e8): the loop's restated canonical insert message equals the writers' constant" );
+		const std::string longNotice = " This chunk was NOT parented to the element's root node: the root "
+			"could not be minted because LONGNOTICE_MARKER " + std::string( 120, 'n' ) + " TAIL_MARKER";
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[\"wizard_a\",\"wizard_b\"],"
+			"\"landedKinds\":[\"k\",\"k\"],\"landedAttempts\":[1,1],\"rejected\":[],\"chunkResults\":["
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,\"message\":\"" +
+			std::string( kChatChunkInsertedMessage ) + longNotice + "\",\"name\":\"wizard_a\",\"kind\":\"k\"},"
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,\"message\":\"" +
+			std::string( kChatChunkInsertedMessage ) + "\",\"name\":\"wizard_b\",\"kind\":\"k\","
+			"\"issues\":[{\"param\":\"reflectance\",\"value\":\"pnt_later\",\"reason\":\"unresolved_reference\","
+			"\"suggestions\":[]}]}],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e8): drive" ); return; }
+		Check( body.find( "wizard_a (k) landed with a notice: This chunk was NOT parented" ) != std::string::npos &&
+		       body.find( "LONGNOTICE_MARKER" ) != std::string::npos,
+		       "T14d(e8) MONEY: the notice's own text fills the budget (the canonical prefix is stripped)" );
+		Check( body.find( "chunk inserted via a full re-derive" ) == std::string::npos,
+		       "T14d(e8): the canonical boilerplate is not carried" );
+		Check( body.find( "wizard_b (k) landed with a notice: unresolved_reference `reflectance`" ) != std::string::npos,
+		       "T14d(e8): a landed chunk whose only extra is an `issues` warning carries that warning" );
+	}
+	// (e9) review round 5 P3: a STAGED chunk is labelled staged, not refused.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"rejected\":[{\"name\":\"wizard_s\",\"kind\":\"k\",\"reason\":\"STAGED_MARKER queued\",\"attempt\":1}],"
+			"\"chunkResults\":[{\"applied\":false,\"status\":\"staged\",\"message\":\"STAGED_MARKER queued\","
+			"\"name\":\"wizard_s\",\"kind\":\"k\"}],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e9): drive" ); return; }
+		Check( body.find( "wizard_s (k) staged as a proposal: STAGED_MARKER" ) != std::string::npos &&
+		       body.find( "wizard_s (k) refused" ) == std::string::npos && CountOccurrences( body, "STAGED_MARKER" ) == 1,
+		       "T14d(e9): a staged chunk is carried as staged (once), not as refused" );
 	}
 }
 

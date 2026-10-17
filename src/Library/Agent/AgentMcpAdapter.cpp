@@ -1019,7 +1019,7 @@ namespace RISE
 						"refused. Nothing is required of an element before you finish it, and nothing is "
 						"scored. It changes nothing in the document -- no chunk, no head version, no undo "
 						"step. ok:false means the call did nothing (no build plan filed, or every element is "
-						"already finished) and message says which. Returns {ok,element,phase,phaseRulesEnforced,nextElement,"
+						"already finished) and message says which. Returns {ok,element,phase,nextElement,"
 						"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
 						"message} -- the isolate render also rides back as an MCP image content block.";
 					tools.push_back( MakeTool( "finish_element", desc, ObjectProp( "", props, required ) ) );

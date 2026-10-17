@@ -22290,11 +22290,6 @@ namespace RISE
 				mBuildPhase = AgentBuildPhase::Compose;
 			}
 			out.phase = BuildPhaseName( mBuildPhase );
-			// Doc 91 review round 4: the SAME three conditions both phase
-			// checks (CheckElementWindowForEdit_, CheckComposePhaseForCreate_)
-			// test before refusing anything.
-			out.phaseRulesEnforced = ConstructionCompulsionActive_() && BuildProtocolActive_() &&
-			                         !mBuildPhaseGaveUp;
 
 			// THE PAYLOAD FACT: an isolate render of the element just closed --
 			// a look the model did not ask for, arriving in the result of a

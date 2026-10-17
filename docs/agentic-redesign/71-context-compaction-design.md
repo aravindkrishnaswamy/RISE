@@ -289,10 +289,12 @@ settled, whatever its age.  Slice L1 trims `build_element` / `insert_chunks`
 reports at the source (no history rewrite); L2 retires an element's
 `build_element` / `insert_chunks` results on a successful `finish_element`
 for it; L3 supersedes a named `read_skill` by a same-name re-read (an
-argument-normalized key in `ChatToolResultSupersessionKey`) and retires
-every live named `read_skill` once the build plan reaches its compose phase
-(the successful `finish_element` reporting `phase:"compose"`), never
-rewriting the entry being flushed.  The
+argument-normalized key in `ChatToolResultSupersessionKey`) and, once per
+build plan, retires the live named `read_skill` results read in turns
+BEFORE the successful `finish_element` that reports `phase:"compose"` -- a
+skill read in that same turn, or later, stays live -- never rewriting the
+entry being flushed.  The L2 stub states only immutable facts (no edit or
+reopen rule; see doc 91 §2).  The
 L2/L3 rewrites share `AgentChatLoop::RewriteToolResultSlots` with §6b, so
 they keep its boundary (ToolResults entries only, C1), its wire guarantee
 (C2), its determinism (§6) and its converge-once rule -- each costs one

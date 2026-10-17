@@ -1375,7 +1375,7 @@ namespace RISE
 					"geometry is refused. Nothing is required of an element before you finish it, and "
 					"nothing is scored. It changes nothing in the document -- no chunk, no head version, no "
 					"undo step. ok:false means the call did nothing (no build plan filed, or every element "
-					"is already finished) and message says which. Returns {ok,element,phase,phaseRulesEnforced,nextElement,"
+					"is already finished) and message says which. Returns {ok,element,phase,nextElement,"
 					"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
 					"message}.",
 					"{\"type\":\"object\",\"properties\":{}}"
@@ -2485,31 +2485,16 @@ namespace RISE
 
 		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
 		                                               const std::string& element,
-		                                               ChatElementStubPhase phase,
 		                                               const std::string& facts,
 		                                               const std::string& carried )
 		{
+			// IMMUTABLE FACTS ONLY (review round 5): no phase, mode or edit
+			// rule -- those change after the finish and the stub is never
+			// rewritten.  The live rule is stated where it applies: the
+			// session's own refusal names reopen_element.
 			const std::string q = "\"" + element + "\"";
-			std::string note = "[" + verbName + " result for element " + q + " elided -- " + q +
-				" is finished; its chunks are in the document (read_document shows them).";
-			// The edit rule, phrased from what the triggering finish_element
-			// REPORTED (see ChatElementStubPhase), as of that finish.
-			switch( phase ) {
-				case ChatElementStubPhase::Pieces:
-					note += " When it was finished the plan was still in the pieces phase: while another "
-					        "element is active, edits to " + q + "'s chunks are refused except its materials, "
-					        "painters, lights, cameras, film, rasterizers and rasterizer outputs -- "
-					        "reopen_element " + q + " before editing its geometry, objects or any other "
-					        "chunk of it.";
-					break;
-				case ChatElementStubPhase::Compose:
-					note += " Its finish reached the compose phase: every element's chunks stay editable "
-					        "in place; creating new geometry for " + q + " needs reopen_element " + q + ".";
-					break;
-				case ChatElementStubPhase::Unenforced:
-					note += " They stay editable in place.";
-					break;
-			}
+			std::string note = "[" + verbName + " result for element " + q + " elided -- retired when " + q +
+				" was finished; its chunks are in the document (read_document shows them).";
 			if( !facts.empty() ) note += " " + facts;
 			if( !carried.empty() )
 				note += " Kept from the elided result (per-chunk outcomes the document does not record): " +

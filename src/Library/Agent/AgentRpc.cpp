@@ -2726,11 +2726,6 @@ namespace RISE
 					result.set( "phase", JsonValue::MakeString( fr.phase ) );
 					result.set( "mode",  JsonValue::MakeString(
 						AgentSession::SessionModeName( s->SessionMode() ) ) );
-					// Doc 91 review round 4: whether the build-phase edit rules
-					// (another element's form refused in pieces; geometry
-					// creation refused in compose) are enforced from here on --
-					// a FACT the element-finished stub phrases itself from.
-					if( fr.ok ) result.set( "phaseRulesEnforced", JsonValue::MakeBool( fr.phaseRulesEnforced ) );
 					if( !fr.element.empty() )     result.set( "element",     JsonValue::MakeString( fr.element ) );
 					if( !fr.nextElement.empty() ) result.set( "nextElement", JsonValue::MakeString( fr.nextElement ) );
 					if( fr.ok ) {
