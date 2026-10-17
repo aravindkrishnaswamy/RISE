@@ -8453,7 +8453,7 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 				r.applied = true;
 				r.status  = String( "applied" );
 				r.message = e.isInsert
-					? String( "chunk inserted via a full re-derive (Scene + managers were replaced)" )
+					? String( kCstChunkInsertedMessage )
 					: String( "applied via a full re-derive (Scene + managers were replaced)" );
 				break;
 			case 3:
@@ -8476,7 +8476,7 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 				} else {
 					r.applied = true;
 					r.status  = String( "applied" );
-					std::string m = e.isInsert ? "chunk inserted via a full re-derive (Scene + managers were replaced)"
+					std::string m = e.isInsert ? std::string( kCstChunkInsertedMessage )
 					                           : "applied via a full re-derive (Scene + managers were replaced)";
 					m += "; note: the batch's re-derive reported a diagnostic for ANOTHER element: ";
 					m += oc.diag;
@@ -10634,7 +10634,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 			r.applied = true;
 			r.status  = String( "applied" );
 			r.message = isInsert
-				? String( "chunk inserted via a full re-derive (Scene + managers were replaced)" )
+				? String( kCstChunkInsertedMessage )
 				: String( "chunk removed via a full re-derive (Scene + managers were replaced)" );
 			break;
 		case 3:

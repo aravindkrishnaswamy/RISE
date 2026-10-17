@@ -15499,6 +15499,10 @@ static void TestBuildElementReportCompaction()
 	Check( JsonResultObj( resp4, r4 ) && r4.get( "ok" ).asBool( false ), "S2h-L1 the 4-chunk build lands" );
 	Check( JsonResultObj( resp16, r16 ) && r16.get( "ok" ).asBool( false ) &&
 	       r16.get( "landed" ).size() == 16, "S2h-L1 the 16-chunk build lands all 16" );
+	Check( r16.get( "landedKinds" ).isArray() && r16.get( "landedKinds" ).size() == 16 &&
+	       r16.get( "landedKinds" ).at( 0 ).asString() == "uniformcolor_painter" &&
+	       r16.get( "landedKinds" ).at( 2 ).asString() == "sdf_geometry",
+	       "S2h-L1 `landedKinds` gives each landed chunk's kind, index-parallel to `landed`" );
 	Check( r16.get( "chunkResults" ).isArray() && r16.get( "chunkResults" ).size() == 0,
 	       "S2h-L1 an all-clean build carries NO per-chunk chunkResults entries (each is named in `landed`)" );
 	Check( resp16.find( "chunk inserted via a full re-derive" ) == std::string::npos,
@@ -15511,12 +15515,14 @@ static void TestBuildElementReportCompaction()
 	Check( msg16.find( "Chunks inserted: 16" ) != std::string::npos &&
 	       msg16.find( "Realised world bounding box" ) != std::string::npos,
 	       "S2h-L1 `message` keeps the count and the bounding-box facts" );
-	// The marginal cost of a clean chunk is its name in `landed` (~16 bytes
-	// here), not a ~300-byte ChunkResultJson plus two more name copies.
+	// The marginal cost of a clean chunk is its name in `landed` plus its
+	// kind in `landedKinds` (~36 bytes here), not a ~300-byte
+	// ChunkResultJson plus two more name copies.
 	const double marginal = ( static_cast<double>( resp16.size() ) - static_cast<double>( resp4.size() ) ) / 12.0;
 	std::printf( "  S2h-L1 marginal report bytes per extra clean chunk: %.1f\n", marginal );
-	Check( resp4.size() > 0 && marginal < 40.0,
-	       "S2h-L1 MONEY ASSERTION: each extra clean chunk adds under 40 bytes to the report" );
+	Check( resp4.size() > 0 && marginal < 60.0,
+	       "S2h-L1 MONEY ASSERTION: each extra clean chunk adds under 60 bytes to the report "
+	       "(its name in `landed` and its kind in `landedKinds`; it was ~281 before doc 91 L1)" );
 
 	// A REJECTED chunk keeps its full detail.  The first answer's expression
 	// painter does not compile (an insertion-time rejection); the one repair
@@ -15539,6 +15545,65 @@ static void TestBuildElementReportCompaction()
 	}
 	Check( rb.get( "message" ).asString().find( "Not inserted:" ) != std::string::npos,
 	       "S2h-L1 `message` keeps the rejection content" );
+}
+
+//! S2h-L1b (review round 1 P1): a success whose `issues` are EMPTY can
+//! still carry a real notice in its message -- the auto-parent disclosure
+//! ("This chunk was NOT parented to the element's root node: ...") or a
+//! batch's rawCode-3 "; note: ... ANOTHER element" -- and such a chunk is
+//! NOT clean: it keeps its full entry.  Only the canonical pair
+//! (kCstChunkInsertedRawCode, kCstChunkInsertedMessage) is boilerplate.
+static void TestCleanChunkSuccessClassifier()
+{
+	std::printf( "S2h-L1b: only the canonical insert success is slimmed; notices keep the full entry...\n" );
+
+	Agent::AgentChunkResult clean;
+	clean.applied = true;
+	clean.status  = "applied";
+	clean.rawCode = kCstChunkInsertedRawCode;
+	clean.message = kCstChunkInsertedMessage;
+	clean.name    = "wizard_robe_pnt";
+	clean.kind    = "uniformcolor_painter";
+	Check( Agent::AgentRpcIsCleanChunkSuccess( clean ), "S2h-L1b the canonical success IS clean" );
+	{
+		Agent::JsonValue j;
+		std::string perr;
+		Check( Agent::JsonParse( Agent::AgentRpcBatchChunkResultJsonText( clean, "wizard" ), j, perr ) &&
+		       !j.has( "message" ) && !j.has( "rawCode" ) && j.get( "element" ).asString() == "wizard",
+		       "S2h-L1b ... and is slimmed on the insert_chunks wire" );
+	}
+
+	Agent::AgentChunkResult parented = clean;
+	parented.message += " This chunk was NOT parented to the element's root node: the root could not be minted.";
+	Check( !Agent::AgentRpcIsCleanChunkSuccess( parented ),
+	       "S2h-L1b MONEY: a success carrying the AUTO-PARENT notice is NOT clean" );
+	{
+		Agent::JsonValue j;
+		std::string perr;
+		Check( Agent::JsonParse( Agent::AgentRpcBatchChunkResultJsonText( parented, "wizard" ), j, perr ) &&
+		       j.get( "message" ).asString().find( "NOT parented" ) != std::string::npos &&
+		       j.get( "rawCode" ).asNumber( -1 ) == 2.0 && j.has( "retriable" ),
+		       "S2h-L1b ... and keeps its message (the notice), rawCode and retriable on the wire" );
+	}
+
+	Agent::AgentChunkResult crossNote = clean;
+	crossNote.rawCode = 3;
+	crossNote.message += "; note: the batch's re-derive reported a diagnostic for ANOTHER element: boom";
+	Check( !Agent::AgentRpcIsCleanChunkSuccess( crossNote ),
+	       "S2h-L1b MONEY: a rawCode-3 success with the cross-element batch note is NOT clean" );
+	{
+		Agent::JsonValue j;
+		std::string perr;
+		Check( Agent::JsonParse( Agent::AgentRpcBatchChunkResultJsonText( crossNote, "wizard" ), j, perr ) &&
+		       j.get( "message" ).asString().find( "ANOTHER element" ) != std::string::npos &&
+		       j.get( "rawCode" ).asNumber( -1 ) == 3.0,
+		       "S2h-L1b ... and keeps its note and rawCode 3 on the wire" );
+	}
+
+	Agent::AgentChunkResult codeOnly = clean;   // canonical text, non-canonical code
+	codeOnly.rawCode = 3;
+	Check( !Agent::AgentRpcIsCleanChunkSuccess( codeOnly ),
+	       "S2h-L1b a non-canonical rawCode alone also keeps the full entry" );
 }
 
 //! S2i (S2 fix-round, 2026-08-11, P1): replace_geometry_scaffold used to
@@ -22384,6 +22449,7 @@ int main()
 	TestBuildElementDisclosesKindChangedReland();
 	TestCleanRoomWireShape();
 	TestBuildElementReportCompaction();
+	TestCleanChunkSuccessClassifier();
 	TestCleanRoomReplaceGeometryScaffoldGate();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();

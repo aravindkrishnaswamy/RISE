@@ -11371,7 +11371,7 @@ namespace RISE
 						r.applied = true;
 						r.status  = "applied";
 						r.message = isInsert
-							? "chunk inserted via a full re-derive (Scene + managers were replaced)"
+							? std::string( kCstChunkInsertedMessage )
 							: "chunk removed via a full re-derive (Scene + managers were replaced)";
 						break;
 					case 3:
@@ -24419,6 +24419,7 @@ namespace RISE
 					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						out.landed.push_back( results[i].name );
+						out.landedKinds.push_back( results[i].kind );
 						out.sdfPartCount += CountSdfPartLines_( submit[i] );
 						landedAny = true;
 					}

@@ -636,11 +636,18 @@ namespace RISE
 			}
 
 			//! Doc 91 slice L1 (2026-10-17): a CLEAN chunk success -- it
-			//! landed (applied, status "applied") and has nothing to say (no
-			//! `issues`).  Everything else ChunkResultJson emits for such a
-			//! chunk is per-chunk BOILERPLATE: rawCode 2, retriable false,
-			//! and the fixed "chunk inserted via a full re-derive ..."
-			//! message, identical on every chunk.  Measured on two live
+			//! landed (applied, status "applied"), has nothing to say (no
+			//! `issues`), and its rawCode and message are EXACTLY the shared
+			//! canonical pair (kCstChunkInsertedRawCode /
+			//! kCstChunkInsertedMessage, IJobPriv.h) that every insert fold
+			//! writes.  Only then is everything else ChunkResultJson emits
+			//! per-chunk BOILERPLATE.  Review round 1 P1: a success with
+			//! EMPTY `issues` can still carry real content in its message --
+			//! the auto-parent notice ("This chunk was NOT parented to the
+			//! element's root node: ..."), the CSG-operand detach warning, the
+			//! S1 / G2 folds, or a batch's rawCode-3 "; note: ... ANOTHER
+			//! element" -- so a message that differs from the canonical one
+			//! in ANY way keeps the full entry.  Measured on two live
 			//! sessions (doc 91 sec 1): ~85% of each 18-28 KB build_element
 			//! report was this, re-sent on every later turn.  A "diagnosed",
 			//! "staged", "conflict" or "rejected" chunk is NEVER clean, so the
@@ -649,7 +656,9 @@ namespace RISE
 			//! keep every field.
 			bool IsCleanChunkSuccess( const AgentChunkResult& cr )
 			{
-				return cr.applied && cr.status == "applied" && cr.issues.empty();
+				return cr.applied && cr.status == "applied" && cr.issues.empty() &&
+				       cr.rawCode == kCstChunkInsertedRawCode &&
+				       cr.message == kCstChunkInsertedMessage;
 			}
 
 			//! Doc 91 slice L1: `chunkResults` for the five clean-room verbs
@@ -1261,6 +1270,16 @@ namespace RISE
 				}
 				return 1;
 			}
+		}
+
+		bool AgentRpcIsCleanChunkSuccess( const AgentChunkResult& cr )
+		{
+			return IsCleanChunkSuccess( cr );
+		}
+
+		std::string AgentRpcBatchChunkResultJsonText( const AgentChunkResult& cr, const std::string& element )
+		{
+			return JsonSerialize( BatchChunkResultJson( cr, element ) );
 		}
 
 		AgentRpcDispatcher::AgentRpcDispatcher( std::unique_ptr<AgentSession> session,
@@ -2865,6 +2884,13 @@ namespace RISE
 						for( std::size_t i = 0; i < br.landed.size(); ++i )
 							landedArr.push_back( JsonValue::MakeString( br.landed[i] ) );
 						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 1: the kinds, index-parallel to
+						// `landed` -- a clean chunk has no chunkResults entry any
+						// more, and the builder (not the model) chose the kind.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( br.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
 						JsonValue rejArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < br.rejected.size(); ++i ) {
 							JsonValue o = JsonValue::MakeObject();

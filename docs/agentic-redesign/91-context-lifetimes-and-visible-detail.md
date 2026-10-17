@@ -64,8 +64,9 @@ provider-cache miss — the doc 71 / T1c policy, unchanged.
   beyond that flush's earliest rewrite.  Keyed on data the loop already
   sees (`element` in the call args / result), not on session state.
 - **L3 — skills retire at Compose.**  `read_skill` results are retired
-  once the session reaches the Compose phase (the first successful
-  `place_element` is the loop-observable signal), with a stub inviting a
+  once the session reaches the Compose phase (as shipped: the successful
+  `finish_element` reporting `phase:"compose"` -- not `place_element`,
+  which also runs in the pieces phase), with a stub inviting a
   re-read if needed.  A later re-read of the same skill supersedes the
   earlier copy (the read_document precedent, keyed by skill name).
   The skill index stays in the system prompt, so the model still knows
@@ -75,38 +76,56 @@ Simulated on the two runs (live tool-result text re-sent per turn):
 L1+L2+L3 = -41% (apothecary), -31% (dragons).  L3 alone is -18% on the
 apothecary and 0 on the dragons run (which read no skills).
 
-**As shipped (2026-10-17).**
+**As shipped (2026-10-17, revised after review round 1).**
 
-- L1 (`AgentRpc.cpp`): `chunkResults` of `build_element` and of its four
-  clean-room siblings (`light_scene`, `populate_scene`,
-  `environment_scene`, `frame_scene`, which carry the identical pattern)
-  goes through `NotableChunkResultsJson` — only rejected, diagnosed,
-  staged, issue-bearing or unnamed chunks keep a `ChunkResultJson`; every
-  clean success is named in `landed` / `created` / `cameraNameAfter` only.
-  `build_element`'s `message` states the count ("Chunks inserted: 16
-  (named in `landed`)") instead of the names.  `insert_chunks` keeps its
-  index-aligned `results` (ToolOutcomeLine and both GUI retry gates read
-  it) and SLIMS a clean success to `{applied,status,headVersion,name,kind,
-  element?}` (`BatchChunkResultJson`); `headVersion` stays because it is
-  the next call's `baseHeadVersion`.  No top-level `headVersion` was added
-  (it would newly trigger the recorder's head-bump document snapshots).
-  Measured in `AgentChunkCrudTest` S2h-L1 (fake builder, short names): a
-  16-chunk report 5,347 → 1,068 bytes (4 chunks: 1,974 → 910), marginal
-  cost per extra clean chunk 281 → 13 bytes; a 4-chunk `insert_chunks`
-  report 998 → 554 bytes (IC4a).  Not changed:
-  `place_element` / `environment_scene` / `frame_scene` `patchResults`
-  (no per-entry identity — the per-patch record IS the edit record, pinned
-  as such), and the scaffold / `remove_chunks` batch verbs (1–5 entries).
+- L1 (`AgentRpc.cpp`): a chunk result is CLEAN only when it is applied,
+  has no `issues`, and its rawCode and message are exactly the canonical
+  pair every insert fold writes (`kCstChunkInsertedRawCode` /
+  `kCstChunkInsertedMessage`, `IJobPriv.h`, shared by the headless fold,
+  the controller folds and the classifier).  Any appended notice -- the
+  auto-parent disclosure, the CSG-operand detach warning, the S1/G2 folds,
+  a batch's rawCode-3 "ANOTHER element" note -- makes it not clean.
+  `chunkResults` of `build_element` and of its four clean-room siblings
+  (`light_scene`, `populate_scene`, `environment_scene`, `frame_scene`,
+  which carry the identical pattern) goes through `NotableChunkResultsJson`
+  -- every non-clean or unnamed chunk keeps its `ChunkResultJson`; a clean,
+  named one is reported in `landed` / `created` / `cameraNameAfter` only.
+  `build_element` adds `landedKinds` (index-parallel to `landed`; the
+  builder, not the model, chose the kinds) and its `message` states the
+  count ("Chunks inserted: 16 (named in `landed`)") instead of the names.
+  `insert_chunks` keeps its index-aligned `results` (ToolOutcomeLine and
+  both GUI retry gates read it) and slims only a clean element to
+  `{applied,status,headVersion,name,kind,element?}`
+  (`BatchChunkResultJson`); `headVersion` stays because it is the next
+  call's `baseHeadVersion`.  No top-level `headVersion` was added (it would
+  newly trigger the recorder's head-bump document snapshots).  Measured in
+  `AgentChunkCrudTest` S2h-L1 (fake builder, short names): a 16-chunk
+  report 5,347 -> 1,438 bytes (4 chunks: 1,974 -> 1,004), marginal cost per
+  extra clean chunk 281 -> 36 bytes (name + kind); a 4-chunk
+  `insert_chunks` report 998 -> 554 bytes (IC4a).  Not changed:
+  `place_element` / `environment_scene` / `frame_scene` `patchResults` (no
+  per-entry identity -- the per-patch record IS the edit record, pinned as
+  such), and the scaffold / `remove_chunks` batch verbs, whose
+  descriptions accordingly still promise the full insert_chunk shape.
   Consumer audit: no eval checkpoint, MCP client code or GUI shell reads a
   clean entry's `rawCode` / `retriable` / `message`; the GUI gates read
   them only on wholly-refused batches, whose entries are never slimmed.
 - L2/L3 (`AgentChatLoop.cpp` `RetireToolResultsByLifetime`, sharing
   `RewriteToolResultSlots` with supersession): slots record `verb`,
-  `lifetimeElement` and `lifetimeSkill` at pack time.  history_edit
-  reasons `element_finished_retirement`, `compose_skill_retirement`; the
-  same-name `read_skill` supersession is `tool_result_supersession`.  An
-  `ok:false` finish or place retires nothing; `Reset()` re-arms the
-  Compose signal.  Tests: `AgentChatLoopTest` T14c (all four wires).
+  `lifetimeElement` (insert_chunks: from its APPLIED/diagnosed chunks
+  only) and `lifetimeSkill` at pack time.  A lifetime event DECIDES (marks
+  `pendingRetireNote` on earlier slots) and the rewrite is APPLIED only to
+  entries before the one being flushed, retried each flush until it lands
+  -- so a same-turn build+finish still delivers the build result once.
+  **The L3b trigger is NOT `place_element`** (that is legal and prescribed
+  in the pieces phase, with later elements unbuilt): it is the successful
+  `finish_element` whose result reports `phase:"compose"` (every element
+  finished), once per build plan; a successful `file_build_plan` re-arms
+  it, as does `Reset()`.  history_edit reasons
+  `element_finished_retirement`, `compose_skill_retirement`; the same-name
+  `read_skill` supersession is `tool_result_supersession`.  An `ok:false`
+  finish retires nothing.  Tests: `AgentChatLoopTest` T14c (all four
+  wires).
 
 What is deliberately NOT here: LLM summarization (doc 71 S4), aging by
 turn count (an age says nothing about whether the content is still

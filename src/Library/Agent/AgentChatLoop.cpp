@@ -2238,7 +2238,16 @@ namespace RISE
 					if( !items.isArray() ) return std::string();
 					std::string element;
 					for( std::size_t i = 0; i < items.size(); ++i ) {
-						const std::string e = items.at( i ).get( "element" ).asString();
+						// Review round 1 P3: attribute ONLY from chunks that are
+						// in the document (applied, or diagnosed -- landed with
+						// diagnostics).  A REJECTED chunk's `element` is looked
+						// up by its name, which may be ANOTHER element's chunk
+						// (a refused duplicate), so it says nothing about this
+						// batch.
+						const JsonValue& it = items.at( i );
+						if( !it.get( "applied" ).asBool( false ) &&
+						    it.get( "status" ).asString() != "diagnosed" ) continue;
+						const std::string e = it.get( "element" ).asString();
 						if( e.empty() ) continue;
 						if( element.empty() ) element = e;
 						else if( element != e ) return std::string();
@@ -2249,27 +2258,35 @@ namespace RISE
 			}
 
 			//! True for a successful finish_element (result ok:true naming
-			//! its element), with the element in `element`.  A failed finish
-			//! (ok:false, error envelope) is not a lifetime event.
+			//! its element), with the element in `element` and whether the
+			//! result reports that the build plan is now in its COMPOSE phase
+			//! (every element finished) in `composeReached`.  A failed finish
+			//! (ok:false, error envelope) is not a lifetime event.  The phase
+			//! name is kChatComposePhaseName, which T14c pins equal to
+			//! AgentSession::BuildPhaseName(Compose) -- the loop is sans-IO
+			//! and does not link the session.
 			bool IsFinishedElementResult( const ChatToolCall& call, const std::string& raw,
-			                              std::string& element )
+			                              std::string& element, bool& composeReached )
 			{
+				composeReached = false;
 				if( call.name != "finish_element" ) return false;
 				JsonValue env;
 				const JsonValue* r = LifetimeSuccessResult( raw, env );
 				if( !r || !r->get( "ok" ).asBool( false ) ) return false;
 				element = r->get( "element" ).asString();
+				composeReached = ( r->get( "phase" ).asString() == kChatComposePhaseName );
 				return !element.empty();
 			}
 
-			//! True for a successful place_element (result ok:true) -- the
-			//! loop-observable Compose signal of doc 91 slice L3b.
-			bool IsPlacedElementResult( const ChatToolCall& call, const std::string& raw )
+			//! True for a successful file_build_plan (result filed:true) --
+			//! a new plan has its own planning phase, so it re-arms the
+			//! compose-phase skill retirement (doc 91 L3b).
+			bool IsFiledBuildPlanResult( const ChatToolCall& call, const std::string& raw )
 			{
-				if( call.name != "place_element" ) return false;
+				if( call.name != "file_build_plan" ) return false;
 				JsonValue env;
 				const JsonValue* r = LifetimeSuccessResult( raw, env );
-				return r && r->get( "ok" ).asBool( false );
+				return r && r->get( "filed" ).asBool( false );
 			}
 		}
 
@@ -2628,57 +2645,85 @@ namespace RISE
 			const std::vector<std::pair<ChatToolCall, std::string>>& ordered )
 		{
 			if( newEntry >= mTranscript.size() ) return;
-			// Walk the NEW entry's results in wire order.  A lifetime event
-			// retires only slots that come BEFORE it in wire order: every
-			// earlier entry, plus this entry's own earlier indices (a call the
-			// model made before the event in the same turn).
+
+			// Marks every live, not-yet-marked slot that comes BEFORE result
+			// `limitInNew` of the new entry in wire order and satisfies
+			// `wanted`, with the note `noteFor` builds and `reason`.
+			auto mark = [&]( std::size_t limitInNew, const char* reason, auto wanted, auto noteFor ) {
+				for( std::size_t e = 0; e <= newEntry; ++e ) {
+					ChatTranscriptEntry& entry = mTranscript[e];
+					if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+					const std::size_t limit = ( e == newEntry ) ? limitInNew : entry.toolResultSlots.size();
+					for( std::size_t s = 0; s < limit && s < entry.toolResultSlots.size(); ++s ) {
+						ChatToolResultSlot& slot = entry.toolResultSlots[s];
+						if( !slot.live || !slot.pendingRetireNote.empty() || !wanted( slot ) ) continue;
+						slot.pendingRetireNote = noteFor( slot );
+						slot.pendingRetireReason = reason;
+					}
+				}
+			};
+
+			// (1) DECIDE -- walk the new entry's results in wire order.
 			for( std::size_t i = 0; i < ordered.size(); ++i ) {
 				const ChatToolCall& call = ordered[i].first;
 				const std::string& raw = ordered[i].second;
 
-				// L2: a successful finish_element for E settles E -- its
-				// build_element / insert_chunks results are history now.
-				std::string element;
-				if( IsFinishedElementResult( call, raw, element ) ) {
-					std::vector<ToolResultSlotRewrite> targets;
-					for( std::size_t e = 0; e <= newEntry; ++e ) {
-						const ChatTranscriptEntry& entry = mTranscript[e];
-						if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
-						const std::size_t limit = ( e == newEntry ) ? i : entry.toolResultSlots.size();
-						for( std::size_t s = 0; s < limit && s < entry.toolResultSlots.size(); ++s ) {
-							const ChatToolResultSlot& slot = entry.toolResultSlots[s];
-							if( !slot.live || slot.lifetimeElement != element ) continue;
-							ToolResultSlotRewrite t;
-							t.entry = e;
-							t.slot = s;
-							t.note = ChatElementFinishedRetirementNote( slot.verb, element );
-							targets.push_back( t );
-						}
-					}
-					RewriteToolResultSlots( targets, "element_finished_retirement" );
+				// A new build plan has its own planning phase: re-arm L3b.
+				if( IsFiledBuildPlanResult( call, raw ) ) {
+					mComposeSkillRetirementDone = false;
+					continue;
 				}
 
-				// L3b: the FIRST successful place_element is the Compose
-				// signal -- every skill read during planning retires once.
-				if( !mComposeSkillRetirementDone && IsPlacedElementResult( call, raw ) ) {
+				std::string element;
+				bool composeReached = false;
+				if( !IsFinishedElementResult( call, raw, element, composeReached ) ) continue;
+
+				// L2: a successful finish_element for E settles E -- its
+				// build_element / insert_chunks results are history now.
+				mark( i, "element_finished_retirement",
+				      [&]( const ChatToolResultSlot& slot ) { return slot.lifetimeElement == element; },
+				      [&]( const ChatToolResultSlot& slot ) {
+				          return ChatElementFinishedRetirementNote( slot.verb, element ); } );
+
+				// L3b: the finish that takes the plan into its COMPOSE phase
+				// settles the planning -- every skill read so far retires,
+				// once per plan.  Placing an element is NOT this signal:
+				// place_element is legal (and prescribed) in the pieces phase,
+				// while later elements are still unbuilt.
+				if( composeReached && !mComposeSkillRetirementDone ) {
 					mComposeSkillRetirementDone = true;
-					std::vector<ToolResultSlotRewrite> targets;
-					for( std::size_t e = 0; e <= newEntry; ++e ) {
-						const ChatTranscriptEntry& entry = mTranscript[e];
-						if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
-						const std::size_t limit = ( e == newEntry ) ? i : entry.toolResultSlots.size();
-						for( std::size_t s = 0; s < limit && s < entry.toolResultSlots.size(); ++s ) {
-							const ChatToolResultSlot& slot = entry.toolResultSlots[s];
-							if( !slot.live || slot.lifetimeSkill.empty() ) continue;
-							ToolResultSlotRewrite t;
-							t.entry = e;
-							t.slot = s;
-							t.note = ChatComposeSkillRetirementNote( slot.lifetimeSkill );
-							targets.push_back( t );
-						}
-					}
-					RewriteToolResultSlots( targets, "compose_skill_retirement" );
+					mark( i, "compose_skill_retirement",
+					      []( const ChatToolResultSlot& slot ) { return !slot.lifetimeSkill.empty(); },
+					      []( const ChatToolResultSlot& slot ) {
+					          return ChatComposeSkillRetirementNote( slot.lifetimeSkill ); } );
 				}
+			}
+
+			// (2) APPLY -- every marked, still-live slot in an entry EARLIER
+			// than the one being flushed.  The new entry's own results are
+			// never rewritten here, so a turn that builds and finishes (or
+			// reads a skill and composes) still delivers those results once;
+			// they retire on the next flush.  A rewrite that did not land
+			// leaves its slot live and marked, so it is retried next flush.
+			// Grouped per reason so each history_edit names its rule.
+			static const char* const kReasons[] = { "element_finished_retirement", "compose_skill_retirement" };
+			for( std::size_t r = 0; r < sizeof( kReasons ) / sizeof( kReasons[0] ); ++r ) {
+				std::vector<ToolResultSlotRewrite> targets;
+				for( std::size_t e = 0; e < newEntry; ++e ) {
+					const ChatTranscriptEntry& entry = mTranscript[e];
+					if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+					for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+						const ChatToolResultSlot& slot = entry.toolResultSlots[s];
+						if( !slot.live || slot.pendingRetireNote.empty() ||
+						    slot.pendingRetireReason != kReasons[r] ) continue;
+						ToolResultSlotRewrite t;
+						t.entry = e;
+						t.slot = s;
+						t.note = slot.pendingRetireNote;
+						targets.push_back( t );
+					}
+				}
+				RewriteToolResultSlots( targets, kReasons[r] );
 			}
 		}
 

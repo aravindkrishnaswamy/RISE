@@ -866,9 +866,18 @@ namespace RISE
 		                                               const std::string& element );
 
 		//! CONTEXT LIFETIMES (doc 91 slice L3b): the stub a live named
-		//! read_skill result is rewritten to when the session reaches the
-		//! Compose phase (the first successful place_element).
+		//! read_skill result is rewritten to once a successful
+		//! finish_element has reported the build plan's compose phase
+		//! (every element finished).
 		std::string ChatComposeSkillRetirementNote( const std::string& skillName );
+
+		//! The build-protocol phase name finish_element reports (its
+		//! `phase` field) once every element of the filed plan is finished
+		//! -- AgentSession::BuildPhaseName(AgentBuildPhase::Compose).  The
+		//! chat loop is sans-IO and does not link the session, so the
+		//! spelling is restated here and AgentChatLoopTest T14c pins the
+		//! two equal.
+		inline constexpr char kChatComposePhaseName[] = "compose";
 
 		//! Number of LIVE (not-yet-elided) image blocks/parts in a
 		//! MakeUserEntry-produced user entry -- i.e. how many of its

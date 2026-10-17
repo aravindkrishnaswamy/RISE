@@ -173,10 +173,13 @@
 //        element E retires E's earlier build_element / insert_chunks
 //        results ("element_finished_retirement").  L3: a named read_skill
 //        is superseded by a later read of the SAME skill (an argument-
-//        normalized supersession key), and the FIRST successful
-//        place_element -- the loop-observable Compose signal -- retires
-//        every live named read_skill once ("compose_skill_retirement");
-//        a skill read after that stays live.  Same boundary, same wire
+//        normalized supersession key), and the successful finish_element
+//        that reports the COMPOSE phase (every element of the filed plan
+//        finished) retires every live named read_skill once per plan
+//        ("compose_skill_retirement"); a skill read after that stays live
+//        until the next file_build_plan re-arms the rule.  A retirement is
+//        never applied to the entry being flushed, so every result reaches
+//        the model at least once.  Same boundary, same wire
 //        guarantee and same converge-once rule as the two rules above:
 //        RetireToolResultsByLifetime shares RewriteToolResultSlots with
 //        SUPERSEDED-READ RETENTION, so every rewrite goes through the
@@ -333,6 +336,17 @@ namespace RISE
 			//! included).  The first successful place_element retires every
 			//! live slot carrying one.
 			std::string lifetimeSkill;
+
+			//! Doc 91 L2/L3b: set when a lifetime event (an element
+			//! finished; the build plan reached its compose phase) has
+			//! DECIDED to retire this slot -- the stub text and the
+			//! history_edit reason.  The rewrite itself is applied by the
+			//! next flush whose new entry is LATER than this slot's entry,
+			//! and retried on every flush until it lands, so a codec no-op
+			//! can never strand a decided retirement, and a result is always
+			//! delivered at least once before it is retired.
+			std::string pendingRetireNote;
+			std::string pendingRetireReason;
 
 			//! False once this result's payload has been rewritten to the
 			//! superseded-result placeholder (or a lifetime stub), so the
@@ -1239,13 +1253,19 @@ namespace RISE
 
 			//! CONTEXT LIFETIMES (doc 91 slices L2 + L3b): run after the
 			//! newly flushed ToolResults entry `newEntry` is in the
-			//! transcript.  Walks its results in wire order; for each
-			//! successful finish_element (element E) it retires every EARLIER
-			//! live slot whose lifetimeElement is E, and for the FIRST
-			//! successful place_element of the conversation it retires every
-			//! earlier live slot carrying a lifetimeSkill.  Keyed only on data
-			//! in the results/arguments the loop already holds; deterministic
-			//! for a given sequence of flushes.
+			//! transcript.  (1) DECIDE: walks the new entry's results in wire
+			//! order; a successful finish_element (element E) marks every
+			//! earlier live slot whose lifetimeElement is E, and -- once per
+			//! build plan -- a successful finish_element whose result reports
+			//! the COMPOSE phase (every element finished) marks every earlier
+			//! live slot carrying a lifetimeSkill; a successful file_build_plan
+			//! re-arms that.  "Earlier" includes the new entry's own earlier
+			//! results.  (2) APPLY: rewrites every marked, still-live slot in
+			//! an entry BEFORE `newEntry` -- never the entry being flushed, so
+			//! every result reaches the model at least once -- retrying each
+			//! flush until the codec rewrite lands.  Keyed only on data in the
+			//! results/arguments the loop already holds; deterministic for a
+			//! given sequence of flushes.
 			void RetireToolResultsByLifetime( std::size_t newEntry,
 			                                  const std::vector<std::pair<ChatToolCall, std::string>>& ordered );
 
@@ -1426,11 +1446,16 @@ namespace RISE
 			//! mToolRounds.
 			bool                                     mElideAllImages;
 
-			//! Doc 91 slice L3b: set by the FIRST successful place_element
-			//! result flushed in this conversation, when every live named
-			//! read_skill result was retired.  Once set, later read_skill
+			//! Doc 91 slice L3b: set when a successful finish_element reports
+			//! the compose phase -- the moment every live named read_skill
+			//! result is MARKED for retirement (the rewrite itself is
+			//! retried until it lands; see ChatToolResultSlot's
+			//! pendingRetireNote, so setting this on the decision rather than
+			//! on the landing strands nothing).  While set, later read_skill
 			//! results stay live (until a same-name re-read supersedes one).
-			//! Describes the transcript, so Reset() clears it.
+			//! A successful file_build_plan re-arms it (a new plan has its
+			//! own planning phase); it describes the transcript, so Reset()
+			//! clears it too.
 			bool mComposeSkillRetirementDone = false;
 
 			//! REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY: sticky once an

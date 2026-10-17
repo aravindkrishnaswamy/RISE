@@ -1479,6 +1479,16 @@ namespace RISE
 	namespace Agent
 	{
 		class AgentSession;
+		struct AgentChunkResult;
+
+		//! Doc 91 slice L1 (review round 1): the wire's clean-chunk-success
+		//! classifier and the insert_chunks per-element serializer, exposed
+		//! as a TEST SEAM so a success carrying a real notice (an auto-parent
+		//! disclosure, a batch's rawCode-3 cross-element note) can be proved
+		//! to keep its full entry without staging the session state that
+		//! produces one.  Production callers use the dispatcher.
+		bool        AgentRpcIsCleanChunkSuccess( const AgentChunkResult& cr );
+		std::string AgentRpcBatchChunkResultJsonText( const AgentChunkResult& cr, const std::string& element );
 
 		//! Secure-MCP slice 2: the launch-time autonomy posture a headless
 		//! (or embedding) session runs with.  See the file header above for

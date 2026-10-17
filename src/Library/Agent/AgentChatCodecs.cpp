@@ -338,8 +338,10 @@ namespace RISE
 					"insert_chunk returns for chunks[i] (applied, rawCode, status, "
 					"retriable, headVersion, message, name, kind, and optional issues with "
 					"the same reasons insert_chunk documents) -- except that a clean "
-					"success (status applied, no issues) carries only applied, status, "
-					"headVersion, name and kind. Check every element's own "
+					"success (status applied, no issues, nothing to report beyond the "
+					"standard insert) carries only applied, status, headVersion, name and "
+					"kind; any element with something to report keeps every field. Check "
+					"every element's own "
 					"status -- do not assume the whole batch succeeded just because the "
 					"call returned. Each array element must be EXACTLY ONE `keyword "
 					"{ ... }` block, same grammar as insert_chunk's chunkText. "
@@ -1431,8 +1433,9 @@ namespace RISE
 					"statement, nothing else changes, and authoring by hand is not blocked. Returns "
 					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
 					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}; "
-					"landed names every chunk that went in, and chunkResults details only the chunks "
-					"that were rejected, diagnosed or carry issues.",
+					"landed names every chunk that went in (landedKinds gives each one's kind), and "
+					"chunkResults details only the chunks that were rejected, diagnosed or carry a "
+					"notice or issues.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"element\":{\"type\":\"string\",\"description\":"
 						"\"Required. The name of the ACTIVE element, exactly as you filed it in file_build_plan. A name that is not the active element does nothing and says which element is active.\"},"
@@ -2490,8 +2493,9 @@ namespace RISE
 
 		std::string ChatComposeSkillRetirementNote( const std::string& skillName )
 		{
-			return "[read_skill \"" + skillName + "\" elided at the Compose phase -- call read_skill "
-			       "{\"name\":\"" + skillName + "\"} again if you need it]";
+			return "[read_skill \"" + skillName + "\" elided -- every element of the build plan is "
+			       "finished (compose phase); call read_skill {\"name\":\"" + skillName +
+			       "\"} again if you need it]";
 		}
 
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )

@@ -5070,6 +5070,11 @@ namespace RISE
 				//! Chunk names that actually landed in the document, in
 				//! insertion order.
 				std::vector<std::string> landed;
+				//! Doc 91 L1 review round 1: the chunk KIND of each `landed`
+				//! entry, index-parallel -- the builder (not the model) wrote
+				//! these chunks, and once a clean success no longer gets a
+				//! chunkResults entry, this is the only place its kind rides.
+				std::vector<std::string> landedKinds;
 				std::vector<AgentBuildElementRejection> rejected;
 				//! One AgentChunkResult per chunk SUBMITTED (both attempts, in
 				//! submission order) -- the same per-element shape

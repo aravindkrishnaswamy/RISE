@@ -4083,9 +4083,15 @@ static void TestSupersededReadElision()
 //                build_element / insert_chunks results (a FAILED finish
 //                retires nothing);
 //         L3a -- a read_skill of the SAME name supersedes the earlier copy;
-//         L3b -- the FIRST successful place_element retires every live
-//                named read_skill; a read made after it stays live (until a
-//                same-name re-read), and the index form is never retired.
+//         L3b -- the finish_element that reports the COMPOSE phase (every
+//                element finished) retires every live named read_skill, once
+//                per build plan (a new file_build_plan re-arms it); a
+//                pieces-phase place_element is NOT the signal; a read made
+//                after compose stays live (until a same-name re-read), and
+//                the index form is never retired.
+//         A retirement is never applied to the entry being flushed: a
+//         same-turn build+finish delivers the build result once, and it
+//         retires on the next flush.
 //       Proved on all four wire shapes with the pairing invariants, plus
 //       (Anthropic) the history_edit reasons, convergence, determinism and
 //       the EstimateContextTokens drop.
@@ -4186,7 +4192,13 @@ namespace
 
 static void TestContextLifetimeRetirement()
 {
-	std::printf( "T14c: context lifetimes -- element-finished, same-skill and Compose retirement...\n" );
+	std::printf( "T14c: context lifetimes -- element-finished, same-skill and compose-phase retirement...\n" );
+
+	// The loop restates the compose phase name (it does not link the
+	// session); pin it to the session's own spelling.
+	Check( std::string( kChatComposePhaseName ) ==
+	       AgentSession::BuildPhaseName( AgentSession::AgentBuildPhase::Compose ),
+	       "kChatComposePhaseName is AgentSession::BuildPhaseName(Compose)" );
 
 	const std::string pad( 6000, 'p' );   // a realistic report weighs KB, not bytes
 	auto skill = [&]( int id, const std::string& name, const std::string& marker ) {
@@ -4198,19 +4210,27 @@ static void TestContextLifetimeRetirement()
 		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"" + marker +
 			"\"],\"chunkResults\":[],\"message\":\"" + marker + " " + pad + "\"}" );
 	};
+	// One applied chunk of `element` plus one REJECTED chunk whose name-based
+	// attribution is ANOTHER element (a refused duplicate) -- the batch
+	// still belongs to `element`.
 	auto insert = [&]( int id, const std::string& element, const std::string& marker ) {
-		return LifetimeEnv( id, "{\"applied\":1,\"total\":1,\"results\":[{\"applied\":true,\"status\":"
+		return LifetimeEnv( id, "{\"applied\":1,\"total\":2,\"results\":[{\"applied\":true,\"status\":"
 			"\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},\"name\":\"" + marker +
-			"\",\"kind\":\"uniformcolor_painter\",\"element\":\"" + element + "\"}]}" );
+			"\",\"kind\":\"uniformcolor_painter\",\"element\":\"" + element + "\"},"
+			"{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"headVersion\":{\"uuid\":7,\"revision\":3},\"message\":\"duplicate name\","
+			"\"name\":\"dragon_body\",\"kind\":\"uniformcolor_painter\",\"element\":\"dragon\"}]}" );
 	};
-	auto finish = [&]( int id, const std::string& element, bool ok ) {
+	auto finish = [&]( int id, const std::string& element, bool ok, const char* phase ) {
 		return LifetimeEnv( id, std::string( "{\"ok\":" ) + ( ok ? "true" : "false" ) +
-			",\"phase\":\"build\",\"element\":\"" + element + "\",\"chunks\":[],\"message\":\"m\"}" );
+			",\"phase\":\"" + phase + "\",\"element\":\"" + element + "\",\"chunks\":[],\"message\":\"m\"}" );
 	};
 	auto place = [&]( int id, bool ok ) {
 		return LifetimeEnv( id, std::string( "{\"ok\":" ) + ( ok ? "true" : "false" ) +
 			",\"element\":\"wizard\",\"objects\":[],\"message\":\"m\"}" );
 	};
+	const std::string plan = LifetimeEnv( 40, "{\"filed\":true,\"elementCount\":1,\"elements\":[]}" );
+	const std::string renderEnv = LifetimeEnv( 41, "{\"ok\":true,\"width\":16,\"height\":12}" );
 	const std::string doc = DocEnvelope( 30, "DOC_LIFE_MARKER", 3 );
 
 	// The script, round by round.  Round indices are referenced below.
@@ -4221,19 +4241,28 @@ static void TestContextLifetimeRetirement()
 	rounds.push_back( { { "read_skill", "{\"name\":\"lighting-recipes\"}", skill( 4, "lighting-recipes", "SK_L2_MARKER" ) } } );     // R2: L3a
 	rounds.push_back( { { "build_element", "{\"element\":\"wizard\",\"height\":4}", build( 5, "wizard", "BE_W1_MARKER" ) },          // R3 (co-packed)
 	                    { "read_document", "{}", doc } } );
-	rounds.push_back( { { "insert_chunks", "{\"chunks\":[\"x\"]}", insert( 6, "wizard", "IC_W1_MARKER" ) } } );                       // R4
-	rounds.push_back( { { "finish_element", "{}", finish( 7, "wizard", false ) } } );                                                // R5: FAILED
-	rounds.push_back( { { "build_element", "{\"element\":\"dragon\",\"height\":3}", build( 8, "dragon", "BE_D1_MARKER" ) } } );      // R6
-	rounds.push_back( { { "finish_element", "{}", finish( 9, "wizard", true ) } } );                                                 // R7: L2
-	rounds.push_back( { { "place_element", "{\"element\":\"wizard\",\"position\":\"0 0 0\"}", place( 10, true ) } } );               // R8: L3b
-	rounds.push_back( { { "read_skill", "{\"name\":\"materials\"}", skill( 11, "materials", "SK_M2_MARKER" ) } } );                   // R9
-	rounds.push_back( { { "place_element", "{\"element\":\"dragon\",\"position\":\"1 0 0\"}", place( 12, true ) } } );               // R10
-	rounds.push_back( { { "read_skill", "{\"name\":\"materials\"}", skill( 13, "materials", "SK_M3_MARKER" ) } } );                   // R11: L3a again
+	rounds.push_back( { { "insert_chunks", "{\"chunks\":[\"x\",\"y\"]}", insert( 6, "wizard", "IC_W1_MARKER" ) } } );                // R4
+	rounds.push_back( { { "place_element", "{\"element\":\"wizard\",\"position\":\"0 0 0\"}", place( 7, true ) } } );                // R5: pieces-phase place
+	rounds.push_back( { { "finish_element", "{}", finish( 8, "wizard", false, "pieces" ) } } );                                      // R6: FAILED
+	rounds.push_back( { { "build_element", "{\"element\":\"dragon\",\"height\":3}", build( 9, "dragon", "BE_D1_MARKER" ) } } );      // R7
+	rounds.push_back( { { "finish_element", "{}", finish( 10, "wizard", true, "pieces" ) } } );                                      // R8: L2, not compose
+	rounds.push_back( { { "build_element", "{\"element\":\"dragon\",\"height\":3}", build( 11, "dragon", "BE_D2_MARKER" ) },         // R9: same-turn build+finish,
+	                    { "finish_element", "{}", finish( 12, "dragon", true, "compose" ) } } );                                     //     reaching compose
+	rounds.push_back( { { "read_skill", "{\"name\":\"materials\"}", skill( 13, "materials", "SK_M2_MARKER" ) } } );                   // R10
+	rounds.push_back( { { "place_element", "{\"element\":\"dragon\",\"position\":\"1 0 0\"}", place( 14, true ) } } );               // R11
+	rounds.push_back( { { "read_skill", "{\"name\":\"materials\"}", skill( 15, "materials", "SK_M3_MARKER" ) } } );                   // R12: L3a again
+	rounds.push_back( { { "file_build_plan", "{}", plan } } );                                                                       // R13: re-arm
+	rounds.push_back( { { "read_skill", "{\"name\":\"lighting-recipes\"}", skill( 16, "lighting-recipes", "SK_L3_MARKER" ) } } );    // R14
+	rounds.push_back( { { "build_element", "{\"element\":\"tower\",\"height\":2}", build( 17, "tower", "BE_T1_MARKER" ) },           // R15: plan 2 composes
+	                    { "finish_element", "{}", finish( 18, "tower", true, "compose" ) } } );
+	rounds.push_back( { { "render", "{}", renderEnv } } );                                                                           // R16
 
 	struct Prov { ChatProvider p; const char* label; };
 	const Prov provs[] = {
 		{ ChatProvider::Anthropic, "anthropic" }, { ChatProvider::Gemini, "gemini" },
 		{ ChatProvider::OpenAI, "openai/responses" }, { ChatProvider::Local, "openai/chat-completions" } };
+	const char* const kComposeStub = "every element of the build plan is finished";
+	const char* const kFinishedStub = "is finished; read_document shows its chunks";
 
 	std::string anthropicFinalBody;
 	for( const Prov& pv : provs ) {
@@ -4248,7 +4277,7 @@ static void TestContextLifetimeRetirement()
 		}
 		loop.AddUserMessage( "build the wizard and the dragon" );
 
-		std::size_t estBeforeFinish = 0, estAfterFinish = 0, estBeforePlace = 0, estAfterPlace = 0;
+		std::size_t estBeforeFinish = 0, estAfterFinish = 0, estBeforeCompose = 0, estAfterCompose = 0;
 		std::string entryR3AfterFinish;
 		std::size_t entryR3Index = 0;
 		bool driven = true;
@@ -4260,8 +4289,8 @@ static void TestContextLifetimeRetirement()
 				args.push_back( rounds[r][k].args );
 				envs.push_back( rounds[r][k].env );
 			}
-			if( r == 7 ) estBeforeFinish = loop.EstimateContextTokens();
-			if( r == 8 ) estBeforePlace = loop.EstimateContextTokens();
+			if( r == 8 ) estBeforeFinish = loop.EstimateContextTokens();
+			if( r == 9 ) estBeforeCompose = loop.EstimateContextTokens();
 			driven = DriveToolRoundArgs( loop, pv.p, verbs, ids, args, envs );
 			// The flush runs in BuildRequest -- this is when a request goes out.
 			const std::string body = loop.BuildRequest( kApiKey ).body;
@@ -4277,44 +4306,74 @@ static void TestContextLifetimeRetirement()
 				       L + ": L3a -- a DIFFERENT skill is untouched" );
 			}
 			if( r == 5 ) {
+				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 1 && CountOccurrences( body, "SK_M1_MARKER" ) == 1 &&
+				       body.find( kComposeStub ) == std::string::npos,
+				       L + ": L3b -- a place_element in the PIECES phase (later elements unbuilt) retires no skill" );
+			}
+			if( r == 6 ) {
 				Check( CountOccurrences( body, "BE_W1_MARKER" ) == 2 && CountOccurrences( body, "IC_W1_MARKER" ) == 1,
 				       L + ": L2 -- a FAILED finish_element retires nothing" );
-				Check( body.find( "is finished; read_document shows its chunks" ) == std::string::npos,
+				Check( body.find( kFinishedStub ) == std::string::npos,
 				       L + ": L2 -- no element-finished stub after a failed finish" );
 			}
-			if( r == 7 ) {
+			if( r == 8 ) {
 				estAfterFinish = loop.EstimateContextTokens();
-				Check( CountOccurrences( body, "BE_W1_MARKER" ) == 0 && CountOccurrences( body, "IC_W1_MARKER" ) == 0,
-				       L + ": L2 MONEY -- the finished element's build_element AND insert_chunks results are retired" );
+				Check( CountOccurrences( body, "BE_W1_MARKER" ) == 0,
+				       L + ": L2 MONEY -- the finished element's build_element result is retired" );
+				Check( CountOccurrences( body, "IC_W1_MARKER" ) == 0,
+				       L + ": L2 -- its insert_chunks result is retired too, attributed by its APPLIED chunk "
+				       "(the rejected chunk's other-element attribution is ignored)" );
 				Check( body.find( "build_element result for element" ) != std::string::npos &&
 				       body.find( "insert_chunks result for element" ) != std::string::npos &&
-				       body.find( "is finished; read_document shows its chunks" ) != std::string::npos,
+				       body.find( kFinishedStub ) != std::string::npos,
 				       L + ": L2 -- each retired result carries a stub naming its verb and the recovery path" );
 				Check( CountOccurrences( body, "BE_D1_MARKER" ) == 2,
 				       L + ": L2 -- ANOTHER element's build_element result stays live" );
 				Check( CountOccurrences( body, "DOC_LIFE_MARKER" ) == 1,
 				       L + ": L2 -- a CO-PACKED neighbour (read_document) of a retired result is untouched" );
+				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 1 && body.find( kComposeStub ) == std::string::npos,
+				       L + ": L3b -- a finish that leaves the plan in the PIECES phase retires no skill" );
 				for( std::size_t i = 0; i < loop.TranscriptSize(); ++i )
 					if( loop.TranscriptAt( i ).rawJson.find( "DOC_LIFE_MARKER" ) != std::string::npos )
 						entryR3Index = i;
 				entryR3AfterFinish = loop.TranscriptAt( entryR3Index ).rawJson;
 			}
-			if( r == 8 ) {
-				estAfterPlace = loop.EstimateContextTokens();
+			if( r == 9 ) {
+				estAfterCompose = loop.EstimateContextTokens();
+				Check( CountOccurrences( body, "BE_D2_MARKER" ) == 2,
+				       L + ": SAME-FLUSH -- a build_element finished in the SAME turn is still delivered once" );
+				Check( CountOccurrences( body, "BE_D1_MARKER" ) == 0,
+				       L + ": L2 -- the element's build_element from an EARLIER turn retires at the finish" );
 				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 0 && CountOccurrences( body, "SK_M1_MARKER" ) == 0,
-				       L + ": L3b MONEY -- the first successful place_element retires every live named skill" );
-				Check( body.find( "elided at the Compose phase" ) != std::string::npos,
-				       L + ": L3b -- the retired skill carries the re-read stub" );
+				       L + ": L3b MONEY -- the finish that reaches the compose phase retires every live named skill" );
+				Check( body.find( kComposeStub ) != std::string::npos,
+				       L + ": L3b -- the retired skill carries the compose-phase re-read stub" );
 				Check( CountOccurrences( body, "SK_IDX_MARKER" ) == 1,
 				       L + ": L3b -- the INDEX form of read_skill is never retired" );
 			}
 			if( r == 10 ) {
+				Check( CountOccurrences( body, "BE_D2_MARKER" ) == 0,
+				       L + ": SAME-FLUSH -- ... and it retires on the NEXT flush" );
 				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 1,
-				       L + ": L3b -- a skill read AFTER Compose stays live through a later place_element" );
+				       L + ": L3b -- a skill read AFTER compose is live" );
 			}
 			if( r == 11 ) {
+				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 1,
+				       L + ": L3b -- a skill read after compose stays live through a later place_element" );
+			}
+			if( r == 12 ) {
 				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 0 && CountOccurrences( body, "SK_M3_MARKER" ) == 1,
-				       L + ": L3a -- a post-Compose re-read of the same skill still supersedes" );
+				       L + ": L3a -- a post-compose re-read of the same skill still supersedes" );
+			}
+			if( r == 15 ) {
+				Check( CountOccurrences( body, "SK_M3_MARKER" ) == 0 && CountOccurrences( body, "SK_L3_MARKER" ) == 0,
+				       L + ": L3b RE-ARM -- after a new file_build_plan, that plan's compose retires its skills" );
+				Check( CountOccurrences( body, "BE_T1_MARKER" ) == 2,
+				       L + ": SAME-FLUSH -- the new plan's same-turn build_element is delivered once" );
+			}
+			if( r == 16 ) {
+				Check( CountOccurrences( body, "BE_T1_MARKER" ) == 0,
+				       L + ": SAME-FLUSH -- and retires on the next flush" );
 				// CONVERGENCE: the R3 entry (retired build_element + live
 				// read_document) was rewritten once, at the finish, and no
 				// later flush moved its bytes again.
@@ -4326,8 +4385,8 @@ static void TestContextLifetimeRetirement()
 		Check( driven, L + ": every scripted round parsed" );
 		Check( estAfterFinish < estBeforeFinish,
 		       L + ": the context estimate DROPS across the finish_element flush" );
-		Check( estAfterPlace < estBeforePlace,
-		       L + ": the context estimate DROPS across the Compose flush" );
+		Check( estAfterCompose < estBeforeCompose,
+		       L + ": the context estimate DROPS across the compose flush" );
 
 		if( pv.p == ChatProvider::Anthropic ) {
 			int finished = 0, compose = 0, supersede = 0;
@@ -4336,19 +4395,19 @@ static void TestContextLifetimeRetirement()
 				const JsonValue j = ParseBody( lines[i] );
 				if( j.get( "run_type" ).asString() != "history_edit" ) continue;
 				const std::string reason = j.get( "reason" ).asString();
-				if( reason == "element_finished_retirement" ) {
-					++finished;
+				if( reason == "element_finished_retirement" || reason == "compose_skill_retirement" ) {
 					if( j.get( "after_bytes" ).asNumber() >= j.get( "before_bytes" ).asNumber() )
 						nonShrinkingRetirement = true;   // a non-shrinking "retirement" is a defect
 				}
+				if( reason == "element_finished_retirement" ) ++finished;
 				if( reason == "compose_skill_retirement" ) ++compose;
 				if( reason == "tool_result_supersession" ) ++supersede;
 			}
-			Check( finished == 2, "anthropic: one element_finished_retirement history_edit per rewritten "
-			                      "entry (the build_element entry and the insert_chunks entry)" );
-			Check( !nonShrinkingRetirement, "anthropic: every element_finished_retirement shrinks its entry" );
-			Check( compose == 2, "anthropic: one compose_skill_retirement history_edit per rewritten entry "
-			                     "(the R1 and R2 skill entries)" );
+			// R8 flush: the R3 and R4 entries; R9: R7; R10: R9; R16: R15.
+			Check( finished == 5, "anthropic: one element_finished_retirement history_edit per rewritten entry (5)" );
+			Check( !nonShrinkingRetirement, "anthropic: every lifetime retirement shrinks its entry" );
+			// R9 flush: the R1 and R2 skill entries; R15: R12 and R14.
+			Check( compose == 4, "anthropic: one compose_skill_retirement history_edit per rewritten entry (4)" );
 			Check( supersede == 2, "anthropic: the two same-name skill re-reads are tool_result_supersession edits" );
 		}
 	}
@@ -4375,39 +4434,39 @@ static void TestContextLifetimeRetirement()
 		       "the lifetime retirements are deterministic: identical scripts -> identical request bytes" );
 	}
 
-	// RESET clears the Compose signal: a fresh conversation retires its own
-	// planning skills again at its own first place_element.
+	// RESET clears the compose signal: a fresh conversation retires its own
+	// planning skills again at its own compose.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
 		for( int pass = 0; pass < 2; ++pass ) {
 			if( pass ) loop.Reset();
-			loop.AddUserMessage( "plan, then place" );
+			loop.AddUserMessage( "plan, then finish" );
 			if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "rs" ),
 			                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_RESET_MARKER" ) ) ) ||
-			    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "place_element" ), Vec1( "pe" ),
-			                         Vec1( "{}" ), Vec1( place( 2, true ) ) ) ) {
+			    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "fe" ),
+			                         Vec1( "{}" ), Vec1( finish( 2, "wizard", true, "compose" ) ) ) ) {
 				Check( false, "reset: drive rounds" ); return;
 			}
 			Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_RESET_MARKER" ) == 0,
-			       pass ? "after Reset, the new conversation's first place_element retires its skills again"
-			            : "the first conversation's place_element retires its skill" );
+			       pass ? "after Reset, the new conversation's compose retires its skills again"
+			            : "the first conversation's compose retires its skill" );
 		}
 	}
 
-	// A FAILED place_element is not the Compose signal.
+	// A FAILED finish_element is not the compose signal, whatever phase it names.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
-		loop.AddUserMessage( "place too early" );
+		loop.AddUserMessage( "finish too early" );
 		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "rs" ),
-		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_FAILPLACE_MARKER" ) ) ) ||
-		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "place_element" ), Vec1( "pe" ),
-		                         Vec1( "{}" ), Vec1( place( 2, false ) ) ) ) {
-			Check( false, "failed place: drive rounds" ); return;
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_FAILFIN_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "fe" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", false, "compose" ) ) ) ) {
+			Check( false, "failed finish: drive rounds" ); return;
 		}
-		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_FAILPLACE_MARKER" ) == 1,
-		       "an ok:false place_element retires no skill (it is not the Compose signal)" );
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_FAILFIN_MARKER" ) == 1,
+		       "an ok:false finish_element retires no skill (it is not the compose signal)" );
 	}
 }
 

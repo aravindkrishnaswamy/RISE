@@ -767,7 +767,9 @@ namespace RISE
 						"name, or every landed element when they name none; do not resubmit it), and each `results[i]` is the shape insert_chunk "
 						"returns for `chunks[i]` -- {applied,rawCode,status,retriable,headVersion,"
 						"message,name,kind,issues?}, except that a CLEAN success (status applied, no "
-						"issues) carries only {applied,status,headVersion,name,kind} -- including insert_chunk's `issues` reasons "
+						"issues, nothing to report beyond the standard insert) carries only "
+						"{applied,status,headVersion,name,kind}; any element with something to report "
+						"keeps every field -- including insert_chunk's `issues` reasons "
 						"(\"unresolved_reference\", \"unknown_param\", \"numeric_in_reference_slot\", "
 						"\"unknown_chunk_type\") and its forward-reference-warning-on-success "
 						"behaviour. Check every element's own status; do not assume the whole batch "
@@ -1117,8 +1119,8 @@ namespace RISE
 						"Returns {ok,element,provider,model,chunksExtracted,landed,"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
 						"sdfPartCount,bbox:{min,max,height},message}; landed names every chunk that "
-						"went in, and chunkResults details only the chunks that were rejected, "
-						"diagnosed or carry issues." );
+						"went in (landedKinds gives each one's kind), and chunkResults details only the "
+						"chunks that were rejected, diagnosed or carry a notice or issues." );
 					tools.push_back( MakeTool( "build_element", desc, ObjectProp( "", props, required ) ) );
 				}
 				{
