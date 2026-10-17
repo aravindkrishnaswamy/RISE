@@ -103,15 +103,36 @@ bool TriangleMeshGeometryIndexed::TessellateToMesh(
 	TexCoordsListType&     coords,
 	const unsigned int     /*detail*/ ) const
 {
-	// Pass-through: emit triangles with same-index (iVertices == iNormals == iCoords)
-	// semantics.  The source mesh stores pPoints, pNormals, pCoords as INDEPENDENTLY
-	// indexed attribute arrays (a position can be shared across faces with distinct
-	// normals/UVs), but downstream displacement code (`ApplyDisplacementMapToObject`)
-	// indexes vNormals and vCoords by the VERTEX index — so we flatten each triangle
-	// corner to its own (pos, normal, uv) tuple here.  Also handles face-normal source
-	// meshes, which store no normals (pNormals empty, src.pNormals[k]==null): we emit a
-	// placeholder (0,0,1) that the caller's RecomputeVertexNormalsFromTopology will
-	// overwrite.
+	// Emit the stored triangles with same-index (iVertices == iNormals ==
+	// iCoords) semantics.  The source mesh stores pPoints, pNormals, pCoords as
+	// INDEPENDENTLY indexed attribute arrays (a position can be shared across
+	// faces with distinct normals/UVs), but downstream displacement code
+	// (`ApplyDisplacementMapToObject`) indexes vNormals and vCoords by the
+	// VERTEX index -- so each distinct (position, normal, uv) tuple becomes ONE
+	// output vertex.
+	//
+	// SHARING IS PRESERVED.  Each corner is keyed by its ORIGINAL index triple
+	// (recovered by pointer subtraction against the attribute arrays' bases --
+	// `ptr_polygons` is authoritative because DoneIndexedTriangles() clears
+	// indexedtris) and every distinct triple is assigned exactly one output
+	// index, in first-seen order (deterministic, so the vertex count/order is
+	// stable for UpdateVertices / RefreshMeshVertices).  For the procedural
+	// builders (lathe / sweep / skin / loft: MakeIndexedTriangleSameIdx meshes
+	// with smooth per-vertex normals) this reproduces the builder's own topology
+	// exactly: interior vertices stay shared by every incident triangle, while
+	// hard edges, caps and pinch poles -- which the builders intentionally
+	// DUPLICATE with different normals -- keep distinct triples and stay split.
+	// Normals and UVs are never merged across distinct indices, so UV seams
+	// survive.  This matters to DisplacedGeometry: its post-displacement
+	// RecomputeVertexNormalsFromTopology averages face normals per vertex INDEX,
+	// so a shared vertex gets a smooth normal where the old bake (one tuple per
+	// triangle corner, 3N vertices) gave every index exactly one face and
+	// therefore flat shading.
+	//
+	// FACE-NORMAL source meshes store no normals (pNormals empty,
+	// src.pNormals[k]==null).  Their corners are NOT merged: the per-triangle
+	// face normal emitted for them differs triangle to triangle, so each such
+	// triangle keeps its own three flattened vertices.
 	//
 	// DoneIndexedTriangles() clears indexedtris after converting to pointer-triangle
 	// form, so ptr_polygons is the authoritative source.
@@ -119,43 +140,89 @@ bool TriangleMeshGeometryIndexed::TessellateToMesh(
 		return false;
 	}
 
-	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+	struct CornerKey
+	{
+		std::uint32_t v, n, c;
+		bool operator==( const CornerKey& o ) const { return v == o.v && n == o.n && c == o.c; }
+	};
+	struct CornerKeyHash
+	{
+		size_t operator()( const CornerKey& k ) const
+		{
+			std::uint64_t h = k.v;
+			h = h * 0x9E3779B97F4A7C15ull + k.n;
+			h = h * 0x9E3779B97F4A7C15ull + k.c;
+			h ^= h >> 29;
+			return static_cast<size_t>( h );
+		}
+	};
+	std::unordered_map<CornerKey, unsigned int, CornerKeyHash> cornerIdx;
+	cornerIdx.reserve( pPoints.size() );
+
+	const Point3*  const pPointBase  = pPoints.empty()  ? 0 : &pPoints[0];
+	const Vector3* const pNormalBase = pNormals.empty() ? 0 : &pNormals[0];
+	const Point2*  const pCoordBase  = pCoords.empty()  ? 0 : &pCoords[0];
 
 	for( MyPointerTriangleList::const_iterator it = ptr_polygons.begin(); it != ptr_polygons.end(); ++it ) {
 		const PointerTriangle& src = *it;
 
-		// For face-normals source meshes, pNormals is empty and every src.pNormals[k]
-		// is null.  We can't emit a constant placeholder like +Z — downstream code
-		// (DisplacedGeometry) displaces vertices ALONG the stored normal BEFORE any
-		// later normal recompute, so a constant placeholder would push every corner
-		// along +Z regardless of the triangle's actual orientation.  Compute the
-		// true face normal from the triangle's vertex positions and emit it for
-		// all three corners.  Guarded against degenerate triangles (zero-area).
-		Vector3 faceNormal( 0.0, 0.0, 1.0 );
-		if( !src.pNormals[0] ) {
-			const Vector3 e1 = Vector3Ops::mkVector3( *src.pVertices[1], *src.pVertices[0] );
-			const Vector3 e2 = Vector3Ops::mkVector3( *src.pVertices[2], *src.pVertices[0] );
-			const Vector3 cross = Vector3Ops::Cross( e1, e2 );
-			const Scalar mag = Vector3Ops::Magnitude( cross );
-			if( mag > NEARZERO ) {
-				faceNormal = cross * (1.0 / mag);
-			}
-		}
-
 		IndexedTriangle t;
-		for( int k = 0; k < 3; k++ ) {
-			const unsigned int localIdx = static_cast<unsigned int>( vertices.size() );
-			vertices.push_back( *src.pVertices[k] );
-			normals.push_back( src.pNormals[k] ? *src.pNormals[k] : faceNormal );
-			coords.push_back( *src.pCoords[k] );
-			t.iVertices[k] = localIdx;
-			t.iNormals[k]  = localIdx;
-			t.iCoords[k]   = localIdx;
+
+		if( src.pNormals[0] && pPointBase && pNormalBase && pCoordBase ) {
+			// Shared-topology path: one output vertex per distinct original triple.
+			for( int k = 0; k < 3; k++ ) {
+				CornerKey key;
+				key.v = static_cast<std::uint32_t>( src.pVertices[k] - pPointBase );
+				key.n = static_cast<std::uint32_t>( src.pNormals[k]  - pNormalBase );
+				key.c = static_cast<std::uint32_t>( src.pCoords[k]   - pCoordBase );
+
+				unsigned int idx;
+				const auto found = cornerIdx.find( key );
+				if( found != cornerIdx.end() ) {
+					idx = found->second;
+				} else {
+					idx = static_cast<unsigned int>( vertices.size() );
+					vertices.push_back( *src.pVertices[k] );
+					normals.push_back( *src.pNormals[k] );
+					coords.push_back( *src.pCoords[k] );
+					cornerIdx.insert( std::make_pair( key, idx ) );
+				}
+				t.iVertices[k] = idx;
+				t.iNormals[k]  = idx;
+				t.iCoords[k]   = idx;
+			}
+		} else {
+			// Face-normal source: per-corner flattening.  We can't emit a constant
+			// placeholder like +Z -- downstream code (DisplacedGeometry) displaces
+			// vertices ALONG the stored normal BEFORE any later normal recompute, so
+			// a constant placeholder would push every corner along +Z regardless of
+			// the triangle's actual orientation.  Compute the true face normal from
+			// the triangle's vertex positions and emit it for all three corners.
+			// Guarded against degenerate triangles (zero-area).
+			Vector3 faceNormal( 0.0, 0.0, 1.0 );
+			if( !src.pNormals[0] ) {
+				const Vector3 e1 = Vector3Ops::mkVector3( *src.pVertices[1], *src.pVertices[0] );
+				const Vector3 e2 = Vector3Ops::mkVector3( *src.pVertices[2], *src.pVertices[0] );
+				const Vector3 cross = Vector3Ops::Cross( e1, e2 );
+				const Scalar mag = Vector3Ops::Magnitude( cross );
+				if( mag > NEARZERO ) {
+					faceNormal = cross * (1.0 / mag);
+				}
+			}
+
+			for( int k = 0; k < 3; k++ ) {
+				const unsigned int localIdx = static_cast<unsigned int>( vertices.size() );
+				vertices.push_back( *src.pVertices[k] );
+				normals.push_back( src.pNormals[k] ? *src.pNormals[k] : faceNormal );
+				coords.push_back( *src.pCoords[k] );
+				t.iVertices[k] = localIdx;
+				t.iNormals[k]  = localIdx;
+				t.iCoords[k]   = localIdx;
+			}
 		}
 		tris.push_back( t );
 	}
 
-	(void)baseIdx;  // keep variable visible in logs / future debugging
 	return true;
 }
 
@@ -1453,11 +1520,13 @@ int TriangleMeshGeometryIndexed::TopologicalOpenness() const
 //! (glTF's own attribute-tuple dedup granularity, which still splits a
 //! shared corner wherever its normal or UV differs across faces -- any
 //! hard edge or UV seam), and every `TessellateToMesh` producer in this
-//! engine (this class's own pass-through flattens each triangle corner
-//! to its own independent tuple by DESIGN -- see that method's comment
-//! -- and `SphereGeometry`/`BoxGeometry`'s generative tessellators give
-//! each face/pole its own vertex grid with no cross-seam sharing) does
-//! the same.  Keyed by raw index, a mesh built by any of those paths
+//! engine (`SphereGeometry`/`BoxGeometry`'s generative tessellators give
+//! each face/pole its own vertex grid with no cross-seam sharing; this
+//! class's own `TessellateToMesh` re-emits one vertex per distinct
+//! (position, normal, uv) index triple, so it preserves whatever sharing
+//! the source mesh had but still splits a position wherever its normal
+//! or UV index differs -- and flattens a face-normal mesh per corner)
+//! does the same.  Keyed by raw index, a mesh built by any of those paths
 //! reads as an OPEN SHEET regardless of whether it is actually closed --
 //! a hand-welded mesh (a position shared by every triangle that touches
 //! it, one array slot per physical corner) was the only shape that ever

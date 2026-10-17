@@ -645,6 +645,164 @@ static void TestDisplacedOverPinchedLatheTears()
 }
 
 //-----------------------------------------------------------------------------
+// Builder-base SMOOTHNESS (the fix for the "displaced lathe/sweep/skin renders
+// FACETED" defect found by the doc 89 slice D audit).
+//
+// ROOT CAUSE it pins: TriangleMeshGeometryIndexed::TessellateToMesh used to
+// flatten every triangle corner into its own (pos, normal, uv) tuple -- 3N
+// vertices for N triangles -- so DisplacedGeometry's post-displacement
+// RecomputeVertexNormalsFromTopology (which averages face normals per vertex
+// INDEX) saw every index belong to exactly one triangle and returned that
+// triangle's flat face normal.  It now assigns ONE output index per distinct
+// ORIGINAL (position, normal, uv) index triple, reproducing the builder's
+// shared topology exactly (hard edges / caps / pinch poles stay split because
+// their normal indices differ).
+//
+// Three witnesses, each of which FAILS on the flattening and PASSES now:
+//  (a) the baked vertex count equals the base's own unique count (it was 3N);
+//  (b) no two baked vertices share a POSITION (they all did: ~6 per interior
+//      vertex) -- for builders with no intentional duplicate (a seamless
+//      lathe, a capless sweep, a skin sheet);
+//  (c) the post-displacement SHADING normal is not the face normal: the mean
+//      angle between a corner's stored normal and its triangle's geometric
+//      normal is well above zero (it was exactly zero -- flat shading).
+//-----------------------------------------------------------------------------
+static void CheckDisplacedBuilderIsSmooth(
+	const char*                  name,
+	TriangleMeshGeometryIndexed* pBase,
+	const Scalar                 k,
+	const unsigned int           detail )
+{
+	IndexTriangleListType bTris; VerticesListType bVerts; NormalsListType bNorms; TexCoordsListType bCoords;
+	assert( pBase->TessellateToMesh( bTris, bVerts, bNorms, bCoords, 0 ) );
+	assert( !bTris.empty() );
+
+	ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry(
+		pBase, detail, pConst, k,
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	assert( pDisp->IsValid() );
+	pDisp->Realize();
+
+	IndexTriangleListType dTris; VerticesListType dVerts; NormalsListType dNorms; TexCoordsListType dCoords;
+	assert( pDisp->TessellateToMesh( dTris, dVerts, dNorms, dCoords, 0 ) );
+	assert( dTris.size() == bTris.size() );
+	assert( dVerts.size() == dNorms.size() && dVerts.size() == dCoords.size() );
+
+	// (a) shared topology: the builder's own unique vertex count survives the bake.
+	std::cout << "  [info] " << name << ": " << dTris.size() << " tris, base unique corners "
+		<< pBase->numPoints() << ", baked vertices " << dVerts.size() << " (flattened would be " << 3*dTris.size() << ")\n";
+	assert( dVerts.size() == pBase->numPoints() );
+	assert( dVerts.size() * 2 < dTris.size() * 3 );
+
+	// (b) no coincident positions (quantised to 1e-7).
+	{
+		typedef std::pair< long long, std::pair< long long, long long > > Key;
+		std::vector< Key > keys;
+		keys.reserve( dVerts.size() );
+		const Scalar q = 1e7;
+		for( size_t i = 0; i < dVerts.size(); ++i ) {
+			keys.push_back( Key( (long long)std::floor( dVerts[i].x * q + 0.5 ),
+				std::make_pair( (long long)std::floor( dVerts[i].y * q + 0.5 ),
+				                (long long)std::floor( dVerts[i].z * q + 0.5 ) ) ) );
+		}
+		std::sort( keys.begin(), keys.end() );
+		size_t coincident = 0;
+		for( size_t i = 1; i < keys.size(); ++i ) {
+			if( keys[i] == keys[i-1] ) ++coincident;
+		}
+		std::cout << "  [info] " << name << ": " << coincident << " vertices coincide in position with another\n";
+		assert( coincident == 0 );
+	}
+
+	// (c) smooth shading: stored corner normal vs the triangle's own face normal.
+	{
+		Scalar sumAngle = 0.0; size_t n = 0;
+		for( size_t t = 0; t < dTris.size(); ++t ) {
+			const IndexedTriangle& tri = dTris[t];
+			const Vector3 e1 = Vector3Ops::mkVector3( dVerts[tri.iVertices[1]], dVerts[tri.iVertices[0]] );
+			const Vector3 e2 = Vector3Ops::mkVector3( dVerts[tri.iVertices[2]], dVerts[tri.iVertices[0]] );
+			const Vector3 c = Vector3Ops::Cross( e1, e2 );
+			const Scalar m = Vector3Ops::Magnitude( c );
+			if( m < 1e-12 ) continue;	// degenerate (pole fan) -- no face normal to compare
+			const Vector3 fn = c * (1.0 / m);
+			for( int j = 0; j < 3; ++j ) {
+				Scalar d = Vector3Ops::Dot( fn, dNorms[tri.iNormals[j]] );
+				d = std::max( Scalar(-1.0), std::min( Scalar(1.0), d ) );
+				sumAngle += std::acos( d );
+				++n;
+			}
+		}
+		const Scalar meanDeg = ( n ? sumAngle / Scalar(n) : 0.0 ) * 180.0 / PI;
+		std::cout << "  [info] " << name << ": mean corner-normal vs face-normal angle = " << meanDeg << " deg (0 = flat shaded)\n";
+		assert( meanDeg > 0.5 );
+	}
+
+	pDisp->release();
+	pConst->release();
+}
+
+static void TestDisplacedBuildersShadeSmooth()
+{
+	std::cout << "Test 10b: displaced_geometry over lathe / sweep / skin builder meshes keeps SMOOTH shading (no per-corner flattening)...\n";
+
+	// LATHE -- Test 9's unpinched vase (seamless full turn, one pole vertex per end).
+	{
+		const double prof[] = { 0.0, 0.0,  0.7, 0.2,  0.9, 1.0,  0.5, 1.8,  0.0, 2.0 };
+		LatheDescriptor ld;
+		ld.profilePoints = prof; ld.numProfilePoints = 5;
+		ld.nRadial = 32;
+		ld.smooth = true;
+		ITriangleMeshGeometryIndexed* pI = 0;
+		assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		assert( p );
+		CheckDisplacedBuilderIsSmooth( "lathe", p, 0.15, 32 );
+		p->release();
+	}
+
+	// SWEEP -- a 16-gon section swept along a bent 3-point path, NO end caps
+	// (caps are deliberately duplicated hard-edge vertices, so they would
+	// legitimately coincide in position with the tube's rim).
+	{
+		double prof[ 32 ];
+		for( int i = 0; i < 16; ++i ) {
+			const double a = 2.0 * 3.14159265358979323846 * double( i ) / 16.0;
+			prof[ 2*i ] = 0.4 * std::cos( a );
+			prof[ 2*i + 1 ] = 0.4 * std::sin( a );
+		}
+		const double path[] = { 0.0, 0.0, 0.0,   0.0, 1.0, 0.3,   0.4, 2.0, 0.3 };
+		SweepDescriptor sd;
+		sd.profilePoints = prof; sd.numProfilePoints = 16;
+		sd.pathPoints = path;    sd.numPathPoints = 3;
+		sd.nLen = 24;
+		sd.capStart = false; sd.capEnd = false;
+		ITriangleMeshGeometryIndexed* pI = 0;
+		assert( RISE_API_CreateSweepGeometry( &pI, sd ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		assert( p );
+		CheckDisplacedBuilderIsSmooth( "sweep", p, 0.05, 24 );
+		p->release();
+	}
+
+	// SKIN -- a billowed sheet between two rails.
+	{
+		const double railA[] = { -1.6, 0.0, 0.0,   -0.5, 0.45, 0.0,   0.6, 1.1, 0.0,   1.6, 2.0, 0.0 };
+		const double railB[] = { -1.6, 0.4, -1.9,   0.0, 1.5, -1.9,   1.6, 2.6, -1.9 };
+		SkinDescriptor kd;
+		kd.railAPoints = railA; kd.numRailAPoints = 4;
+		kd.railBPoints = railB; kd.numRailBPoints = 3;
+		kd.nLen = 20; kd.nAcross = 10; kd.billow = 0.28;
+		ITriangleMeshGeometryIndexed* pI = 0;
+		assert( RISE_API_CreateSkinGeometry( &pI, kd ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		assert( p );
+		CheckDisplacedBuilderIsSmooth( "skin", p, 0.04, 24 );
+		p->release();
+	}
+}
+
+//-----------------------------------------------------------------------------
 // Concurrency guard (review Finding 1): many threads calling Realize() at once
 // must BuildMesh() the instance EXACTLY once.  Models a GUI viewport render's
 // AttachScene racing a UI-thread PrepareForRendering/picking on the same, not-
@@ -1294,8 +1452,7 @@ static void TestScalarHeightPositionStepClosedForm()
 // of DL-116's own scope rather than a second new row, since it is the
 // same tessellator-does-not-weld-seams mechanism, not a different bug.
 // `TriangleMeshGeometryIndexed::TessellateToMesh` is a pass-through
-// (`the header's own words: "emits the stored indexed triangles
-// unchanged"`), so handing DisplacedGeometry an already-welded mesh as
+// (one output vertex per distinct source index triple), so handing DisplacedGeometry an already-welded mesh as
 // its base is what actually isolates THIS test's own subject -- the
 // SignedDistanceLower forwarding -- from that separate tessellator gap.
 static TriangleMeshGeometryIndexed* BuildWeldedCubeForDisplacement( const Scalar h )
@@ -1348,31 +1505,32 @@ static TriangleMeshGeometryIndexed* BuildWeldedCubeForDisplacement( const Scalar
 // comes from `m_pBase->TessellateToMesh(...)`, and when the base is
 // ITSELF a `TriangleMeshGeometryIndexed` (as it is here -- a hand-welded,
 // genuinely watertight cube, 8 vertices / 12 triangles), that class's OWN
-// `TessellateToMesh` deliberately FLATTENS every triangle corner to its
-// own independent (pos, normal, uv) tuple (see its own doc comment:
-// downstream displacement code indexes normals/UVs by the FLAT vertex
-// index, so a shared position cannot be reused across faces). The baked
-// mesh therefore has 36 vertices for 12 triangles, not 8. Originally
-// (`ComputeWatertightness` keyed by raw POSITION-ARRAY INDEX) that made
-// every edge look like it was used by exactly one triangle, so the
-// watertightness check read this baked mesh as an open sheet even though
-// the ORIGINAL base was perfectly closed -- this test used to be a
-// CONSISTENCY PIN on the refusal, not a red-proof of a successful signed
-// answer, and said so.
+// `TessellateToMesh` re-emits one vertex per distinct original
+// (position, normal, uv) index triple.  HISTORICALLY it flattened every
+// triangle corner to its own independent tuple, so the baked mesh had
+// 36 vertices for 12 triangles, not 8 (that flattening is what made
+// displaced lathe/sweep/skin bases render faceted -- see
+// TestDisplacedBuildersShadeSmooth); it now preserves the source's
+// sharing, so this cube bakes to exactly its own 8 vertices (asserted
+// below).  Originally (`ComputeWatertightness` keyed by raw
+// POSITION-ARRAY INDEX) the 36-vertex bake made every edge look like it
+// was used by exactly one triangle, so the watertightness check read it
+// as an open sheet even though the ORIGINAL base was perfectly closed --
+// this test used to be a CONSISTENCY PIN on the refusal, not a red-proof
+// of a successful signed answer, and said so.
 //
 // DL-143 fixed `ComputeWatertightness` to weld corners by POSITION before
-// counting edges -- and `TessellateToMesh`'s flattening copies each
-// corner's position VERBATIM (see that method's own comment: it emits
-// `*src.pVertices[k]`, not a recomputed value), so the 36 flattened
-// corners weld right back down to the original 8 physical positions and
-// the baked mesh is now CORRECTLY read as watertight. This is therefore
-// now a REAL red/green assertion, not a pin: pre-DL-143 this test's own
-// `!ok` assertion passed (the baked mesh refused); on this tree `ok` is
-// now `true` (measured: `SignedDistanceLower` on the baked mesh answers
-// `-half`, exact) -- the forwarder added by this row is exercised
-// end-to-end for the first time, through a REAL bake, not just by
-// inspection of its textual shape against `DistanceToSurface`'s already-
-// proven forwarder.
+// counting edges, so even a bake that duplicates corners (the old
+// flattening, or any per-corner pipeline) welds right back down to the
+// original 8 physical positions and is read as watertight; with sharing
+// preserved the bake is closed under the raw index check too. This is
+// therefore a REAL red/green assertion, not a pin: pre-DL-143 this
+// test's own `!ok` assertion passed (the baked mesh refused); on this
+// tree `ok` is now `true` (measured: `SignedDistanceLower` on the baked
+// mesh answers `-half`, exact) -- the forwarder added by this row is
+// exercised end-to-end for the first time, through a REAL bake, not just
+// by inspection of its textual shape against `DistanceToSurface`'s
+// already-proven forwarder.
 //-----------------------------------------------------------------------------
 static void TestSignedDistanceLowerForwardsToBakedMesh()
 {
@@ -1393,12 +1551,20 @@ static void TestSignedDistanceLowerForwardsToBakedMesh()
 	}
 
 	// Null displacement: no vertex positions move, only TessellateToMesh's
-	// own flattening runs.
+	// own re-emission runs.
 	DisplacedGeometry* pDisp = new DisplacedGeometry(
 		pWeldedCube, /*detail=*/4, /*displacement=*/0, /*disp_scale=*/0.0,
 		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 	pDisp->Realize();
 	assert( pDisp->IsValid() );
+
+	// Shared topology survives the bake: 8 vertices, not 3 x 12 = 36.
+	{
+		IndexTriangleListType bt; VerticesListType bv; NormalsListType bn; TexCoordsListType bc;
+		assert( pDisp->TessellateToMesh( bt, bv, bn, bc, 0 ) );
+		assert( bt.size() == 12 );
+		assert( bv.size() == 8 );
+	}
 
 	const Point3 centre( 0, 0, 0 );
 
@@ -1411,9 +1577,10 @@ static void TestSignedDistanceLowerForwardsToBakedMesh()
 	assert( std::fabs( (double)dUnsigned - (double)half ) < 1e-6 );
 
 	// The NEW forward: reaches the SAME mesh, which (per the comment
-	// above) is flattened by TessellateToMesh but welds right back down
-	// to the original 8 physical positions under DL-143's position-keyed
-	// watertightness check, so it correctly ANSWERS the signed query --
+	// above) keeps the cube's own 8 shared vertices through
+	// TessellateToMesh (and would weld right back to them under DL-143's
+	// position-keyed watertightness check even if it did not), so it
+	// correctly ANSWERS the signed query --
 	// the true depth to the nearest face at the centre is exactly
 	// `-half`, same as the standalone base mesh's own answer above.
 	Scalar outSigned = 12345.0;	// sentinel: must be overwritten on success
@@ -1440,6 +1607,7 @@ int main()
 	TestFaceNormalMeshDisplacesAlongFaceNormal();
 	TestDisplacedOverLatheAppliesDisplacement();
 	TestDisplacedOverPinchedLatheTears();
+	TestDisplacedBuildersShadeSmooth();
 	TestConcurrentRealize();
 	TestScalarHeightIsObjectSpaceAndExact();
 	TestScalarHeightThroughTheChunk();

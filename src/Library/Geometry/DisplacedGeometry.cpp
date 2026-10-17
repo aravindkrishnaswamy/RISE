@@ -351,7 +351,7 @@ bool DisplacedGeometry::TessellateToMesh(
 	}
 
 	// Delegate via the internal TriangleMeshGeometryIndexed's own TessellateToMesh, which
-	// is a pass-through of its stored arrays.
+	// re-emits its stored arrays with the shared topology intact.
 	return m_pMesh->TessellateToMesh( tris, vertices, normals, coords, 0 );
 }
 

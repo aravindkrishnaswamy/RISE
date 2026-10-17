@@ -297,9 +297,14 @@ namespace RISE
 			void Serialize( IWriteBuffer& buffer ) const override;
 			void Deserialize( IReadBuffer& buffer ) override;
 
-			// Pass-through tessellation: emits the stored indexed triangles unchanged.
+			// Pass-through tessellation: re-emits the stored triangles with same-index
+			// (iVertices == iNormals == iCoords) semantics, ONE output vertex per distinct
+			// original (position, normal, uv) index triple (first-seen order), so the source
+			// mesh's shared topology survives -- smooth per-vertex normals stay smooth under
+			// DisplacedGeometry's post-displacement normal recompute, while intentionally
+			// duplicated hard-edge/cap/pole vertices (distinct normal indices) stay split.
+			// A face-normal mesh (no stored normals) is flattened per corner instead.
 			// The `detail` parameter is ignored — an indexed mesh already IS a mesh.
-			// Index references are offset by the caller's existing vertex count.
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;

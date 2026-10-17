@@ -25,15 +25,15 @@ RISE ASCII SCENE 7
 #                   `Error`/`Warning` grep on this scene is the pass condition, same convention as             #
 #                   loft_stress.RISEscene).  Specimen 7 chains the compositions: a displaced_geometry as the  #
 #                   TEMPLATE of a path_instances_geometry (the audit-verified pairing nothing else pins).     #
-#                   The LATHE, SWEEP/LOFT and SKIN specimens render VISIBLY FACETED                           #
-#                   compared to the SDF specimens' smooth relief -- that is not a bug in this scene, it is    #
-#                   the doc 89 slice D audit's headline finding: a lathe_geometry/sweep_geometry/             #
-#                   skin_geometry base loses its smooth per-vertex shading the instant any non-zero           #
-#                   displacement is applied (their bake re-emits unshared per-triangle-corner topology, so    #
-#                   the post-displacement normal recompute has nothing to average across), while an           #
-#                   sdf_geometry base's own dual-contoured topology keeps real shared vertices and stays      #
-#                   smooth.  See the `displaced_geometry` chunk descriptor and object-modeling-recipes        #
-#                   Recipe 6 for the full writeup.                                                            #
+#                   ALL the builder specimens (LATHE, SWEEP/LOFT, SKIN) and the SDF specimens render         #
+#                   SMOOTH under displacement.  (HISTORY: the doc 89 slice D audit found lathe/sweep/skin     #
+#                   bases rendering visibly FACETED, because the mesh-to-mesh bake re-emitted every           #
+#                   triangle corner as its own unshared vertex and the post-displacement normal recompute     #
+#                   had nothing to average across; TriangleMeshGeometryIndexed::TessellateToMesh now keeps    #
+#                   the builder's shared vertices, which fixed it.)  The builders are displaced at their      #
+#                   OWN vertices (`detail` does not subdivide a mesh base), so the relief reads as coarse     #
+#                   smooth lumps -- raise n_radial / n_len / n_across for finer relief.  See the              #
+#                   `displaced_geometry` chunk descriptor and object-modeling-recipes Recipe 6.               #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #                                                                                                           #
 #############################################################################################################
@@ -198,8 +198,9 @@ standard_object
 }
 
 ##################################################
-# 2. LATHE -- an unpinched vase profile.  FACETED after displacement (the
-# audit's headline finding); compare against specimens 5/6 below.
+# 2. LATHE -- an unpinched vase profile.  Shades smooth after displacement
+# (the bake keeps the builder's shared vertices); compare against specimens
+# 5/6 below.
 ##################################################
 lathe_geometry
 {
@@ -236,8 +237,8 @@ standard_object
 ##################################################
 # 3. SWEEP / LOFT -- a two-profile morph (profile_circle -> profile2_rect,
 # doc 89 slice A) displaced on top, proving the loft composes with
-# displaced_geometry and not just a fixed-section sweep.  Also FACETED --
-# same mechanism as the lathe above.
+# displaced_geometry and not just a fixed-section sweep.  Also shades
+# smooth -- same shared-vertex bake as the lathe above.
 ##################################################
 sweep_geometry
 {
@@ -275,8 +276,8 @@ standard_object
 
 ##################################################
 # 4. SKIN -- a billowed sail.  Double-sided, since a skin sheet has no
-# "back" of its own to hide a bad normal behind.  Same faceting mechanism
-# as specimens 2/3 (skin_geometry bakes into the same kind of plain mesh).
+# "back" of its own to hide a bad normal behind.  Shades smooth like
+# specimens 2/3 (skin_geometry bakes into the same kind of plain mesh).
 ##################################################
 skin_geometry
 {
