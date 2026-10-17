@@ -3155,11 +3155,13 @@ bool SceneEditor::ApplyCstObjectComponents_( const std::string& name, const std:
 // scrub commits on every tick; a transaction rollback flushes once), so the journal is walked newest first as a
 // CHAIN: the newest entry's `post` must be the chunk's current text, each older entry's `post` the next newer one's
 // `pre`, and the walk stops at the first entry whose `prePose` is the pose the Undo restored (`matrix16`, formatted
-// as the commit would write it) -- that entry's `pre` is the text to restore.  A commit that wrote an unchanged
-// pose cannot end the walk early (its prePose is the edited pose).  The swap is then re-derived and the derived
+// as the commit would write it) -- that entry's `pre` is the text to restore.  The walk stops at the NEWEST match:
+// a gesture that passes back through its start pose, or whose first commit wrote an unchanged pose, restores that
+// pose in the `matrix` spelling an intermediate commit left (right pose, not the original bytes) -- telling the
+// gesture's own first entry apart needs a per-gesture tag the journal does not record yet.  The swap is then re-derived and the derived
 // local matrix must reproduce `matrix16`; when it does not (the Document and the live object had diverged), the
-// swap is undone and the caller writes the matrix, as before this change.  A broken chain, a miss, or a target that
-// is already the current text (nothing to restore; the check would be vacuous) clears the object's journal.
+// swap is undone and the caller writes the matrix, as before this change.  A broken chain or a miss clears the
+// object's journal; a target that is already the current text restores nothing (the check would be vacuous).
 bool SceneEditor::RestoreCstObjectSpelling_( const std::string& name, const std::string& matrix16, bool& routed )
 {
 	routed = false;
@@ -3180,7 +3182,8 @@ bool SceneEditor::RestoreCstObjectSpelling_( const std::string& name, const std:
 		if( !e.prePose.empty() && e.prePose == matrix16 ) { target = e.pre; found = true; }
 		link = e.pre;
 	}
-	if( !found || target == current ) { mCstTransformSpellings.erase( name ); return false; }
+	if( !found ) { mCstTransformSpellings.erase( name ); return false; }
+	if( target == current ) return false;   // nothing to restore (the check would be vacuous); older links still chain
 	const int r = jp->ApplyCstParamEditOwnerRestore( name.c_str(), "standard_object", "matrix", current, target,
 	                                                 /*requireFullDerivability*/ false );   // as ApplyCstObjectMatrixEdit
 	if( r >= 2 ) RebindToJob_();

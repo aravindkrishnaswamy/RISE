@@ -13161,7 +13161,7 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 		d1 = RISE::Cst::DocSetOrAddParamValue( d1, plan[i].ownerId, edits[i].first, occ, edits[i].second );
 		if( outUndo ) {   // each recorded slot's value AFTER the write (the redo payload)
 			const RISE::Cst::NodeRef after = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
-			if( after ) outUndo->ownerPostText = RISE::Cst::SerializeNode( after );   // after the LAST pair: the whole write
+			outUndo->ownerPostText = after ? RISE::Cst::SerializeNode( after ) : std::string();   // after the LAST pair
 			if( outUndo->ownerPreText.empty() || outUndo->ownerPostText.size() > kCstUndoOwnerTextCap )
 				outUndo->ownerPostText.clear();   // both or neither (ApplySlots_ needs the pair)
 			for( std::size_t k = 0; after && k < outUndo->slots.size(); ++k ) {
