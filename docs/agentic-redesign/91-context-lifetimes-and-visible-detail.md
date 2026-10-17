@@ -137,11 +137,35 @@ failing.
   `keptSceneFov`, `coverage`, `fitBasis`.  Reach: the production inventory
   appends one sentence naming up to three plan elements whose objects cover
   under 1% of the frame in total.
-- **Camera restore.** `CameraIntrospection::SetProperty("target_orientation")`
-  now accepts the two-component form `GetPropertyValue` emits; before, a
-  capture-set-render-restore sequence that overrode `target_orientation`
-  (the agent's `view` path, and now isolate/zoom) could not write the
-  captured value back and left the override on the scene camera.
+- **Camera restore.** An override render (`view`, `camera`, `isolate`,
+  `zoom`) captures the active camera's pose fields bit-exactly
+  (`CameraIntrospection::CaptureExactValue`: the stored doubles, radians)
+  and puts them back with `RestoreExactValue`.  Capturing through the
+  panel's `%.6g` strings (and degrees) used to round the live camera away
+  from the document on every override render.
+  `SetProperty("target_orientation")` also accepts the two-component form
+  `GetPropertyValue` emits, so the string fallback can write back what it
+  captured.
+- **Zoom's refusals (all `ok:false`, no `zoom` block).** Unknown or
+  non-renderable name (names listed); a conflict with `isolate`/`view`/
+  `camera`, or a non-pinhole active camera; the object **not in view** of
+  the scene camera -- its surface centre behind the camera, or more than
+  10% past the frame edge (`DirectionInSceneView`, shared with the
+  inventory hint); any surface point on or behind the plane through the eye
+  (a floor or room around the camera); a degenerate or unbounded extent.
+  The zoom keeps the scene camera's *realized* up (its own roll), read from
+  the projection matrix; a line of sight parallel to that up falls back to
+  the camera's realized screen-right, never a fixed world axis.  The
+  inventory's hint only names elements that pass the same in-view test.
+- **Thin SDF parts.** The 48-cell SDF grid misses features thinner than
+  about half a cell, so each additive part thinner than 1.5 cells also feeds
+  the fit the corners of its own *unpadded* primitive box
+  (`SDFGeometry::GetAdditivePartExtents`).
+- **Gates.** A zoom render, like an isolate one, is an inspection look: it
+  is not held behind the compose-phase build checklist.  No tonal fact is
+  attached to a zoom frame (a close crop would read as a statement about
+  the scene's picture), and no inventory, anchor or scene-target comparison
+  either.
 
 ## 4. Measurement
 

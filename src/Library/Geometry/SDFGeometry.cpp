@@ -946,6 +946,39 @@ void SDFGeometry::ComputeBounds()
 	m_eps = std::max( m_diagonal * m_epsFrac, Scalar(1e-6) );
 }
 
+void SDFGeometry::GetAdditivePartExtents( std::vector<PartExtent>& out ) const
+{
+	out.clear();
+	if( m_isHeightfield ) return;
+	for( size_t i = 0; i < m_parts.size(); ++i ) {
+		const Part& pt = m_parts[i];
+		if( pt.op != eOpUnion && pt.op != eOpSmin ) continue;
+		Point3 lmin, lmax;
+		primLocalAABB( pt, lmin, lmax );
+		const Scalar xs[2] = { std::min(lmin.x,lmax.x), std::max(lmin.x,lmax.x) };
+		const Scalar ys[2] = { std::min(lmin.y,lmax.y), std::max(lmin.y,lmax.y) };
+		const Scalar zs[2] = { std::min(lmin.z,lmax.z), std::max(lmin.z,lmax.z) };
+		// The same floored scale ComputeBounds uses (see its comment).
+		const Scalar sx = ( std::fabs(pt.scale.x) > Scalar(1e-9) ) ? pt.scale.x : Scalar(1e-9);
+		const Scalar sy = ( std::fabs(pt.scale.y) > Scalar(1e-9) ) ? pt.scale.y : Scalar(1e-9);
+		const Scalar sz = ( std::fabs(pt.scale.z) > Scalar(1e-9) ) ? pt.scale.z : Scalar(1e-9);
+		PartExtent e;
+		int n = 0;
+		for( int a = 0; a < 2; ++a )
+		for( int b = 0; b < 2; ++b )
+		for( int c = 0; c < 2; ++c ) {
+			const Scalar vx = xs[a] * sx, vy = ys[b] * sy, vz = zs[c] * sz;
+			e.corners[n++] = Point3(
+				pt.pos.x + pt.cx.x*vx + pt.cy.x*vy + pt.cz.x*vz,
+				pt.pos.y + pt.cx.y*vx + pt.cy.y*vy + pt.cz.y*vz,
+				pt.pos.z + pt.cx.z*vx + pt.cy.z*vy + pt.cz.z*vz );
+		}
+		e.minThickness = std::min( ( xs[1]-xs[0] ) * std::fabs(sx),
+		                 std::min( ( ys[1]-ys[0] ) * std::fabs(sy), ( zs[1]-zs[0] ) * std::fabs(sz) ) );
+		out.push_back( e );
+	}
+}
+
 // Smallest and largest of a part's scale MAGNITUDES, floored at 1e-9 -- the
 // same flooring `RecomputePartDerived` applies before deriving `invScale` and
 // `minScale`, and the same one `ComputeBounds` documents at its corner

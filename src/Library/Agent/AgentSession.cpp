@@ -21319,6 +21319,11 @@ namespace RISE
 		//! bounded in memory and time; this caps what the fit sees.)
 		const std::size_t kFitMaxPoints = 24000;
 
+		//! How far past the frame edge (1.1 = 10%) the centre of an object's surface may
+		//! sit and still count as 'in view' for render{zoom:} -- shared with the inventory's
+		//! zoom hint (DirectionInSceneView).
+		const double kZoomViewMargin = 1.1;
+
 		//! Vertex budget for a tessellation we ask a geometry for: a patch set
 		//! is tessellated at detail^2 x patches <= this, so a 4000-patch Bezier
 		//! model costs a few MB and a few ms rather than a gigabyte (the
@@ -21326,19 +21331,27 @@ namespace RISE
 		//! patches -- into 4.4M vertices before any point was thinned).
 		const std::size_t kFitTessellationBudget = 50000;
 
+		//! Grid resolution (cells along the longest bbox axis) requested for an SDF body.
+		const unsigned int kSDFFitCells = 48u;
+
 		//! Streaming point reducer: keeps a stride sample of the points fed to
 		//! it (at most ~kFitMaxPoints) PLUS, for each of 26 fixed directions
 		//! (the cube's faces, edges and corners), the single point extreme along
-		//! it -- tracked over EVERY point, sampled or not.  The extremes matter
-		//! because the fit is driven by the extremes of the projection, and a
-		//! stride sample can miss exactly those; with them kept, the world-axis
-		//! bounding box of the full point set is reproduced EXACTLY and any
-		//! other projection's extreme is missed by at most the sample spacing.
-		//! That is not a proof that the retained set contains every silhouette
-		//! extreme of the fixed vantage -- it does not -- and the margin that
-		//! covers the residual is kIsolateFrameFill's 15% of each half-extent,
-		//! which is far larger than the spacing of >=2k samples spread over a
-		//! surface.
+		//! it -- tracked over EVERY point, sampled or not.
+		//!
+		//! WHAT IS GUARANTEED: the world-axis bounding box of the full point set
+		//! (the six face directions) is reproduced exactly, and the fit therefore
+		//! never frames a smaller box than the full set's.
+		//! WHAT IS NOT: the stride sample takes every Nth point in STORAGE order,
+		//! which is an index pattern, not a spatial one -- for a mesh authored
+		//! patch by patch or ring by ring it can leave whole regions with a
+		//! sparse sample or none, and it knows nothing about the silhouette of
+		//! the fixed vantage, so another projection's extreme (or a thin
+		//! feature that lies between strided samples) CAN be missed.  The only
+		//! thing absorbing such a miss is kIsolateFrameFill's 15% margin; that
+		//! covers a miss of a few percent of the object's extent, not an
+		//! arbitrary one.  Meshes small enough to fit under the cap are not
+		//! sampled at all (stride 1), so this concerns only the large ones.
 		struct SurfacePointReducer
 		{
 			std::vector<Point3> out;
@@ -21414,10 +21427,29 @@ namespace RISE
 					dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>( g ) ) {
 				const VerticesListType& vs = mesh->getVertices();
 				if( vs.size() < 4 ) return false;
-				const std::size_t stride = ( vs.size() + kFitMaxPoints - 1 ) / kFitMaxPoints;
+				// Only vertices some face references lie on the surface (an
+				// authored position array can carry orphans, as can a mesh edited
+				// down from a larger one) -- the same filter the tessellation
+				// branch applies.  Faces hold POINTERS into the vertex array.
+				std::vector<unsigned char> used( vs.size(), 0 );
+				std::size_t usedCount = 0;
+				const Point3* base = vs.data();
+				const Implementation::TriangleMeshGeometryIndexed::MyPointerTriangleList& faces = mesh->getFaces();
+				for( std::size_t t = 0; t < faces.size(); ++t ) {
+					for( int k = 0; k < 3; ++k ) {
+						const Point3* pv = faces[t].pVertices[k];
+						if( !pv || pv < base || pv >= base + vs.size() ) continue;
+						const std::size_t vi = static_cast<std::size_t>( pv - base );
+						if( !used[vi] ) { used[vi] = 1; ++usedCount; }
+					}
+				}
+				if( usedCount < 4 ) return false;
+				const std::size_t stride = ( usedCount + kFitMaxPoints - 1 ) / kFitMaxPoints;
 				SurfacePointReducer red( stride );
-				for( std::size_t i = 0; i < vs.size(); ++i )
+				for( std::size_t i = 0; i < vs.size(); ++i ) {
+					if( !used[i] ) continue;
 					if( !red.Add( Point3Ops::Transform( world, vs[i] ) ) ) return false;
+				}
 				red.Finish();
 				out.swap( red.out );
 				return out.size() >= 4;
@@ -21425,7 +21457,7 @@ namespace RISE
 
 			unsigned int detail = 32u;
 			std::size_t patches = 0;
-			if( dynamic_cast<const Implementation::SDFGeometry*>( g ) ) detail = 48u;
+			if( dynamic_cast<const Implementation::SDFGeometry*>( g ) ) detail = kSDFFitCells;
 			else if( const Implementation::BezierPatchGeometry* bz = dynamic_cast<const Implementation::BezierPatchGeometry*>( g ) )
 				patches = bz->NumPatches();
 			else if( const Implementation::BilinearPatchGeometry* bl = dynamic_cast<const Implementation::BilinearPatchGeometry*>( g ) )
@@ -21460,7 +21492,36 @@ namespace RISE
 			}
 			red.Finish();
 			out.swap( red.out );
-			return out.size() >= 4;
+			if( out.size() < 4 ) return false;
+
+			// THIN PARTS.  The SDF/skeleton surface comes from a marching grid of
+			// 48 cells along the longest bbox axis, which misses any feature
+			// thinner than about half a cell -- a 0.02-radius rod on a unit
+			// sphere simply is not in the tessellation, and the fit then runs it
+			// off the frame.  So each additive part thinner than kThinCells grid
+			// cells also contributes the corners of its own UNPADDED primitive
+			// box (no smin padding, so the tightness gain over the padded bound is
+			// kept; a thin part's box hugs it, so the corners add little slack).
+			// Fat parts are resolved by the grid and add nothing.
+			if( const Implementation::SDFGeometry* sdf = dynamic_cast<const Implementation::SDFGeometry*>( g ) ) {
+				const BoundingBox bb = sdf->GenerateBoundingBox();
+				const double longest = std::max( bb.ur.x - bb.ll.x, std::max( bb.ur.y - bb.ll.y, bb.ur.z - bb.ll.z ) );
+				if( longest > 0.0 && RISE::IsFiniteDouble( longest ) ) {
+					const double kThinCells = 1.5;
+					const double thin = kThinCells * longest / static_cast<double>( kSDFFitCells );
+					std::vector<Implementation::SDFGeometry::PartExtent> ext;
+					sdf->GetAdditivePartExtents( ext );
+					for( std::size_t i = 0; i < ext.size(); ++i ) {
+						if( !( ext[i].minThickness < thin ) ) continue;
+						for( int c = 0; c < 8; ++c ) {
+							const Point3 w = Point3Ops::Transform( world, ext[i].corners[c] );
+							if( RISE::IsFiniteDouble( w.x ) && RISE::IsFiniteDouble( w.y ) && RISE::IsFiniteDouble( w.z ) )
+								out.push_back( w );
+						}
+					}
+				}
+			}
+			return true;
 		}
 
 		//! The 8 corners of a world AABB as a point set -- the fallback input
@@ -21581,6 +21642,71 @@ namespace RISE
 			return dist > 0.0 && RISE::IsFiniteDouble( dist );
 		}
 
+		//! The scene camera's REALIZED view axes (unit world vectors: forward,
+		//! screen-right, screen-up), read from its projection matrix with the
+		//! SAME expression PinholeCamera::GenerateRay uses.  Unlike the stored
+		//! look-at / up, these include the camera's own orientation (pitch,
+		//! roll, yaw) and target_orientation orbit, so a rolled (Dutch-angle)
+		//! camera reports the roll it actually renders with.
+		struct SceneCameraAxes
+		{
+			bool   ok;
+			double f[3], r[3], u[3];
+			SceneCameraAxes() : ok( false ) { for( int i = 0; i < 3; ++i ) f[i] = r[i] = u[i] = 0.0; }
+		};
+
+		inline double Dot3( const double a[3], const double b[3] ) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+
+		SceneCameraAxes ReadSceneCameraAxes( const ICamera& cam, const IFilm* film )
+		{
+			SceneCameraAxes ax;
+			if( !film ) return ax;
+			const double cx = 0.5 * static_cast<double>( film->GetWidth() );
+			const double cy = 0.5 * static_cast<double>( film->GetHeight() );
+			const Matrix4 camM = cam.GetMatrix();
+			const Point3 eye = cam.GetLocation();
+			auto dirAt = [&]( const double sx, const double sy, double d[3] ) {
+				const Point3 t = Point3Ops::Transform( camM, Point3( sx, sy, 0.0 ) );
+				const Vector3 v = Vector3Ops::Normalize( Vector3Ops::mkVector3( eye, t ) );
+				d[0] = v.x; d[1] = v.y; d[2] = v.z;
+			};
+			double f[3], r[3], u[3];
+			dirAt( cx, cy, f );
+			dirAt( cx + 1.0, cy, r );
+			dirAt( cx, cy + 1.0, u );
+			for( int a = 0; a < 3; ++a ) { r[a] -= f[a]; u[a] -= f[a]; }
+			auto unit3 = []( double a[3] ) { const double l = std::sqrt( Dot3( a, a ) ); if( l > 0.0 ) for( int i = 0; i < 3; ++i ) a[i] /= l; return l > 0.0; };
+			const double rf = Dot3( r, f ); for( int a = 0; a < 3; ++a ) r[a] -= rf * f[a];
+			if( !unit3( r ) ) return ax;
+			const double uf = Dot3( u, f ); for( int a = 0; a < 3; ++a ) u[a] -= uf * f[a];
+			const double ur = Dot3( u, r ); for( int a = 0; a < 3; ++a ) u[a] -= ur * r[a];
+			if( !unit3( u ) ) return ax;
+			for( int a = 0; a < 3; ++a ) { ax.f[a] = f[a]; ax.r[a] = r[a]; ax.u[a] = u[a]; }
+			ax.ok = true;
+			return ax;
+		}
+
+		//! Is the unit direction `dir` (from the eye) inside the scene camera's
+		//! frustum, with `margin` (1.1 = 10% beyond the frame edge still counts)?
+		//! `tanV` is tan(vertical half fov), `aspect` width/height.  This is THE
+		//! zoom-acceptance test: render{zoom:} refuses an object that fails it,
+		//! and the inventory only recommends zoom for an element that passes it,
+		//! so the two cannot disagree.  `outOffAxisDeg` (optional) receives the
+		//! angle between `dir` and the camera axis.
+		bool DirectionInSceneView( const SceneCameraAxes& ax, const double dir[3], const double tanV,
+		                           const double aspect, const double margin, double* outOffAxisDeg )
+		{
+			const double cf = Dot3( dir, ax.f );
+			if( outOffAxisDeg ) {
+				double cl = cf; if( cl > 1.0 ) cl = 1.0; if( cl < -1.0 ) cl = -1.0;
+				*outOffAxisDeg = std::acos( cl ) * 180.0 / 3.14159265358979323846;
+			}
+			if( !( cf > 1e-6 ) ) return false;
+			const double tx = Dot3( dir, ax.r ) / cf;
+			const double ty = Dot3( dir, ax.u ) / cf;
+			return std::fabs( tx ) <= tanV * aspect * margin && std::fabs( ty ) <= tanV * margin;
+		}
+
 		//! V2: with the eye FIXED at `eye`, find the aim and the vertical
 		//! half-tangent that fit `pts` into `fill` of the frame.  Iterates the
 		//! aim toward the centre of the points' tangent-plane extent (a ray
@@ -21590,13 +21716,16 @@ namespace RISE
 		//! (the camera is inside / past the object: no pinhole frame holds it).
 		bool ZoomFitPoints( const std::vector<Point3>& pts, const double eye[3],
 		                    const double upHintIn[3], const double aspect, const double fill,
-		                    double outForward[3], double& outTanHalfV, double outUp[3] )
+		                    double outForward[3], double& outTanHalfV, double outUp[3],
+		                    const double altUpIn[3] )
 		{
-			// An object straight above or below the eye puts the line of sight
-			// parallel to the scene's up vector, where a look-at basis is
-			// undefined.  Fall back to a perpendicular up (the top-view
-			// convention, world -Z, or +X if that is parallel too) for the
-			// WHOLE solve and report it, so the camera is given the same up.
+			// A line of sight parallel to the up hint leaves a look-at basis
+			// undefined.  Fall back to `altUpIn` -- the caller's own perpendicular
+			// (zoom passes the scene camera's realized screen-RIGHT, so the
+			// fallback is derived from the camera's frame and cannot flip the
+			// picture the way a fixed world axis would) -- then to world -Z / +X
+			// as a last resort, for the WHOLE solve, and report the up used so
+			// the camera is given the same one.
 			double upHint[3] = { upHintIn[0], upHintIn[1], upHintIn[2] };
 			auto parallelToUp = [&]( const double f[3] ) {
 				const double cx = f[1]*upHint[2] - f[2]*upHint[1];
@@ -21606,8 +21735,8 @@ namespace RISE
 				return !( std::sqrt( cx*cx + cy*cy + cz*cz ) > 1e-3 * ( un > 0.0 ? un : 1.0 ) );
 			};
 			auto retarget = [&]( const double f[3] ) {
-				static const double kAlt[2][3] = { { 0.0, 0.0, -1.0 }, { 1.0, 0.0, 0.0 } };
-				for( int a = 0; a < 2; ++a ) {
+				const double kAlt[3][3] = { { altUpIn[0], altUpIn[1], altUpIn[2] }, { 0.0, 0.0, -1.0 }, { 1.0, 0.0, 0.0 } };
+				for( int a = 0; a < 3; ++a ) {
 					const double saved[3] = { upHint[0], upHint[1], upHint[2] };
 					upHint[0] = kAlt[a][0]; upHint[1] = kAlt[a][1]; upHint[2] = kAlt[a][2];
 					if( !parallelToUp( f ) ) return;
@@ -25326,9 +25455,13 @@ namespace RISE
 			//     a diagnostic must be.
 			//   * `isolate` empty excludes looking at ONE part, which is not
 			//     judging the picture and is what FinishElement's render is.
+			//     `zoom` empty is the same exclusion (doc 91 V2): a close look at
+			//     ONE object from the scene camera is an inspection look, not a
+			//     judgement of the whole picture, so it is not held behind the
+			//     build checklist either.
 			//     That is the same exclusion ApplyVisibilityCensus_ makes, for
 			//     the same reason.
-			if( params.fromAgentSurface && params.isolate.empty() ) {
+			if( params.fromAgentSurface && params.isolate.empty() && params.zoom.empty() ) {
 				std::string giveUpNotice;
 				const std::string clause =
 					CheckBuildChecklistBeforeComposeRender_( "render", &giveUpNotice );
@@ -27713,8 +27846,22 @@ namespace RISE
 					// is zoomed from where it actually sits.
 					const Point3 zEyeP = activeCamForZoom->GetLocation();
 					const double zEye[3] = { zEyeP.x, zEyeP.y, zEyeP.z };
-					const double zUp[3]  = { zoomSnap.up[0], zoomSnap.up[1], zoomSnap.up[2] };
 					const double zAspect = resolveRenderAspect();
+
+					// The scene camera's REALIZED axes.  Its up for this render is the
+					// realized screen-up, NOT the stored vUp: the camera applies its
+					// own roll (orientation) and orbit on top of the stored pose, and
+					// the override zeroes those, so a stored-up pose would silently
+					// level a Dutch-angle camera.  The realized up is perpendicular to
+					// the scene's line of sight and is carried to the new one by the
+					// look-at basis, which preserves the roll.  Falls back to the
+					// stored up only if no film exists to read the projection from.
+					const IFilm* zFilm = mJob->GetScene() ? mJob->GetScene()->GetFilm() : nullptr;
+					const SceneCameraAxes zAxes = ReadSceneCameraAxes( *activeCamForZoom, zFilm );
+					const double zUp[3]  = { zAxes.ok ? zAxes.u[0] : zoomSnap.up[0],
+					                         zAxes.ok ? zAxes.u[1] : zoomSnap.up[1],
+					                         zAxes.ok ? zAxes.u[2] : zoomSnap.up[2] };
+					const double zAltUp[3] = { zAxes.ok ? zAxes.r[0] : 0.0, zAxes.ok ? zAxes.r[1] : 0.0, zAxes.ok ? zAxes.r[2] : -1.0 };
 
 					std::vector<Point3> zPts;
 					const auto zoomT0 = std::chrono::steady_clock::now();
@@ -27724,15 +27871,14 @@ namespace RISE
 					double zForward[3] = { 0.0, 0.0, -1.0 };
 					double zTanHalfV = 0.0;
 					double zUpUsed[3] = { zUp[0], zUp[1], zUp[2] };
-					const bool zFit = ZoomFitPoints( zPts, zEye, zUp, zAspect, kIsolateFrameFill, zForward, zTanHalfV, zUpUsed );
+					const bool zFit = ZoomFitPoints( zPts, zEye, zUp, zAspect, kIsolateFrameFill, zForward, zTanHalfV, zUpUsed, zAltUp );
 					res.zoomFitMillis = std::chrono::duration<double, std::milli>(
 						std::chrono::steady_clock::now() - zoomT0 ).count();
 					if( !zFit ) {
 						res.ok = false;
 						res.message = "zoom \"" + params.zoom + "\" cannot be framed from the scene camera: part of the "
-							"object lies at or behind the camera's plane (the camera is inside or beside it), or the "
-							"camera's up axis is parallel to the line of sight.  Use `camera` to look at it from a "
-							"pose you choose.";
+							"object lies at or behind the plane through the camera (the camera is inside or beside it -- "
+							"a floor or room around the camera, say).  Use `camera` to look at it from a pose you choose.";
 						specificFailureReported = true;
 						return;
 					}
@@ -27743,43 +27889,11 @@ namespace RISE
 					// the object", so the object has to be in front of the scene camera
 					// and inside (a margin of) its field of view.  Without this, an
 					// object behind the camera silently turns the view around and the
-					// render reports ok with the object at 0 px.  The scene camera's
-					// own axes come from its projection matrix (the SAME expression
-					// PinholeCamera::GenerateRay uses), so its realized orientation /
-					// target_orientation are honoured.
-					if( const IFilm* zFilm = mJob->GetScene() ? mJob->GetScene()->GetFilm() : nullptr ) {
-						const double cx = 0.5 * static_cast<double>( zFilm->GetWidth() );
-						const double cy = 0.5 * static_cast<double>( zFilm->GetHeight() );
-						const Matrix4 camM = activeCamForZoom->GetMatrix();
-						auto dirAt = [&]( const double sx, const double sy, double d[3] ) {
-							const Point3 t = Point3Ops::Transform( camM, Point3( sx, sy, 0.0 ) );
-							const Vector3 v = Vector3Ops::Normalize( Vector3Ops::mkVector3( zEyeP, t ) );
-							d[0] = v.x; d[1] = v.y; d[2] = v.z;
-						};
-						double sf[3], sr[3], su[3];
-						dirAt( cx, cy, sf );
-						dirAt( cx + 1.0, cy, sr );
-						dirAt( cx, cy + 1.0, su );
-						for( int a = 0; a < 3; ++a ) { sr[a] -= sf[a]; su[a] -= sf[a]; }
-						auto dot3 = []( const double a[3], const double b[3] ) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; };
-						auto unit3 = [&]( double a[3] ) { const double l = std::sqrt( dot3( a, a ) ); if( l > 0.0 ) for( int i = 0; i < 3; ++i ) a[i] /= l; };
-						const double srf = dot3( sr, sf ); for( int a = 0; a < 3; ++a ) sr[a] -= srf * sf[a]; unit3( sr );
-						const double suf = dot3( su, sf ); for( int a = 0; a < 3; ++a ) su[a] -= suf * sf[a];
-						const double sur = dot3( su, sr ); for( int a = 0; a < 3; ++a ) su[a] -= sur * sr[a]; unit3( su );
-						const double cf = dot3( zForward, sf );
-						const double tanVScene = std::tan( zoomSnap.fov * 0.5 );
-						const double tanHScene = tanVScene * zAspect;
-						bool inView = cf > 1e-6;
+					// render reports ok with the object at 0 px.  DirectionInSceneView
+					// is the one acceptance test the inventory's zoom hint shares.
+					if( zAxes.ok ) {
 						double offAxisDeg = 0.0;
-						if( inView ) {
-							const double tx = dot3( zForward, sr ) / cf;
-							const double ty = dot3( zForward, su ) / cf;
-							const double kMargin = 1.1;   // 10% beyond the frame edge still counts as "in view"
-							inView = std::fabs( tx ) <= tanHScene * kMargin && std::fabs( ty ) <= tanVScene * kMargin;
-						}
-						if( !inView ) {
-							double cl = cf; if( cl > 1.0 ) cl = 1.0; if( cl < -1.0 ) cl = -1.0;
-							offAxisDeg = std::acos( cl ) * 180.0 / kPiZ;
+						if( !DirectionInSceneView( zAxes, zForward, std::tan( zoomSnap.fov * 0.5 ), zAspect, kZoomViewMargin, &offAxisDeg ) ) {
 							char where[160];
 							std::snprintf( where, sizeof( where ), "%.0f degrees off the scene camera's axis (its vertical field of view is %.0f degrees)",
 							               offAxisDeg, zoomSnap.fov * 180.0 / kPiZ );
@@ -32707,6 +32821,32 @@ namespace RISE
 				   cam0.hasTargetOrientation || cam0.hasFov );
 			if( attribution && !attribution->empty() && rr.renderMode == "production" && sceneCameraRender ) {
 				struct SmallElement_ { std::string element; double fraction; std::string largestObject; };
+				// The zoom-acceptance test render{zoom:} itself applies (same
+				// DirectionInSceneView, same margin), evaluated at the element's
+				// largest object's bounding-box centre: an element the zoom would
+				// refuse -- behind the camera, or centred well past the frame edge
+				// (mostly off-frame) -- is not recommended to it.  No readable
+				// pinhole scene camera means zoom would refuse everything, so no
+				// sentence at all.
+				SceneCameraAxes zAxesInv;
+				double zEyeInv[3] = { 0.0, 0.0, 0.0 };
+				double zTanVInv = 0.0, zAspectInv = 1.0;
+				if( mJob ) {
+					ICameraManager* camsInv = mJob->GetCameras();
+					const std::string nameInv = mJob->GetActiveCameraName();
+					const ICamera* camInv = ( camsInv && !nameInv.empty() ) ? camsInv->GetItem( nameInv.c_str() ) : nullptr;
+					CameraSnapshot snapInv;
+					const IFilm* filmInv = mJob->GetScene() ? mJob->GetScene()->GetFilm() : nullptr;
+					if( camInv && filmInv && filmInv->GetHeight() > 0 &&
+						CameraIntrospection::CaptureCameraSnapshot( *camInv, snapInv ) &&
+						snapInv.type == RISE::CameraSnapshot::Pinhole && snapInv.fov > 0.0 ) {
+						zAxesInv = ReadSceneCameraAxes( *camInv, filmInv );
+						const Point3 e = camInv->GetLocation();
+						zEyeInv[0] = e.x; zEyeInv[1] = e.y; zEyeInv[2] = e.z;
+						zTanVInv = std::tan( snapInv.fov * 0.5 );
+						zAspectInv = ( static_cast<double>( filmInv->GetWidth() ) / static_cast<double>( filmInv->GetHeight() ) ) * filmInv->GetPixelAR();
+					}
+				}
 				std::vector<SmallElement_> small;
 				std::vector<std::string> seenElements;
 				for( std::size_t i = 0; i < attribution->size(); ++i ) {
@@ -32716,6 +32856,8 @@ namespace RISE
 					seenElements.push_back( el );
 					double total = 0.0, best = -1.0;
 					std::string bestName;
+					bool bestHasCentre = false;
+					double bestCentre[3] = { 0.0, 0.0, 0.0 };
 					for( std::size_t j = 0; j < attribution->size(); ++j ) {
 						if( (*attribution)[j].element != el ) continue;
 						const ChunkDescriptor* d = DescriptorForKeyword( String( (*attribution)[j].kind.c_str() ) );
@@ -32726,11 +32868,19 @@ namespace RISE
 							if( inv.entries[k].frameFraction > best ) {
 								best = inv.entries[k].frameFraction;
 								bestName = inv.entries[k].name;
+								bestHasCentre = inv.entries[k].worldCentreKnown;
+								for( int a = 0; a < 3; ++a ) bestCentre[a] = inv.entries[k].worldCentre[a];
 							}
 						}
 					}
-					if( total > 0.0 && total < kSmallElementFrameFraction )
-						small.push_back( { el, total, bestName } );
+					if( !( total > 0.0 && total < kSmallElementFrameFraction ) ) continue;
+					if( !zAxesInv.ok || !bestHasCentre ) continue;
+					double dir[3] = { bestCentre[0] - zEyeInv[0], bestCentre[1] - zEyeInv[1], bestCentre[2] - zEyeInv[2] };
+					const double dl = std::sqrt( Dot3( dir, dir ) );
+					if( !( dl > 1e-9 ) ) continue;
+					for( int a = 0; a < 3; ++a ) dir[a] /= dl;
+					if( !DirectionInSceneView( zAxesInv, dir, zTanVInv, zAspectInv, kZoomViewMargin, nullptr ) ) continue;
+					small.push_back( { el, total, bestName } );
 				}
 				if( !small.empty() ) {
 					std::stable_sort( small.begin(), small.end(),
@@ -32786,6 +32936,12 @@ namespace RISE
 			if( !rr.ok ) return;
 			if( rr.renderMode != "production" ) return;
 			if( !params.isolate.empty() || rr.isolateApplied ) return;
+			// Doc 91 V2 (decision): NOT for a zoom frame.  The fact is introduced
+			// as a statement about the picture the scene makes (is it flat, can its
+			// parts be told apart); a close crop of one object would read as that
+			// while describing a different, mostly-uniform image.  Same reasoning
+			// as isolate's exclusion above.
+			if( !params.zoom.empty() || rr.zoomApplied ) return;
 			if( rr.png.empty() ) return;
 
 			// THE ONLY WORK: decode the bytes this call already produced.  No
@@ -37535,7 +37691,7 @@ namespace RISE
 			// wire renders as status:"refused" -- the same shape the
 			// no-controller and unresolvable-target refusals above already use,
 			// and nothing is queued.
-			if( params.fromAgentSurface && params.isolate.empty() ) {
+			if( params.fromAgentSurface && params.isolate.empty() && params.zoom.empty() ) {
 				const std::string clause =
 					CheckBuildChecklistBeforeComposeRender_( "render", &a82Fold.notice );
 				if( !clause.empty() ) {

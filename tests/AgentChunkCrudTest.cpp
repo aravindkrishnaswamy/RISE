@@ -12556,7 +12556,7 @@ static void TestInventoryZoomSentence()
 	// Build a session with a two-element plan: `wizard` gets a sphere of radius
 	// `wizardRadius` (off the frame's centre, clear of the fixture's big sphere),
 	// `terrain` gets a box that covers a sizeable share of the frame.
-	auto build = [&]( const char* tag, double wizardRadius, std::unique_ptr<Agent::AgentSession>& out ) -> bool {
+	auto build = [&]( const char* tag, double wizardRadius, std::unique_ptr<Agent::AgentSession>& out, const char* wizPos = "1.0 -0.9 0.5" ) -> bool {
 		const std::string tmp = TempPath( ( std::string( "agentcrud_inv_" ) + tag + ".RISEscene" ).c_str() );
 		Job* pJob = LoadScene( kScene, tmp );
 		if( !pJob ) return false;
@@ -12566,7 +12566,7 @@ static void TestInventoryZoomSentence()
 		std::snprintf( radius, sizeof( radius ), "%.4f", wizardRadius );
 		std::vector<std::string> w;
 		w.push_back( std::string( "sphere_geometry\n{\n\tname wiz_geo\n\tradius " ) + radius + "\n}" );
-		w.push_back( "standard_object\n{\n\tname wiz_obj\n\tgeometry wiz_geo\n\tmaterial mat_diffuse\n\tposition 1.0 -0.9 0.5\n}" );
+		w.push_back( std::string( "standard_object\n{\n\tname wiz_obj\n\tgeometry wiz_geo\n\tmaterial mat_diffuse\n\tposition " ) + wizPos + "\n}" );
 		const std::vector<Agent::AgentChunkResult> wi = out->InsertChunks( w );
 		if( wi.size() != 2 || !wi[0].applied || !wi[1].applied ) return false;
 		if( !out->FinishElement().ok ) return false;
@@ -12639,6 +12639,30 @@ static void TestInventoryZoomSentence()
 			const Agent::AgentRenderResult dr = sess->Render( dp );
 			Check( dr.ok && dr.inventoryApplied && dr.inventoryText.find( kSentence ) == std::string::npos,
 			       "V2-REACH a DRAFT render's inventory does not carry it (production only)" );
+		}
+	}
+
+	// (a2) a small element whose centre lies past the zoom-acceptance margin (the
+	// sphere pokes into the frame but is centred well outside it) gets NO zoom
+	// recommendation -- render{zoom:} would refuse it.  Frame half-width at the
+	// element's depth is 3.5*tan(20deg) = 1.27; centre x = 1.55 is past 1.1x that.
+	{
+		std::unique_ptr<Agent::AgentSession> sess;
+		Check( build( "offframe", 0.40, sess, "1.55 0.0 0.0" ), "V2-REACH the mostly-off-frame fixture builds" );
+		if( sess ) {
+			Agent::AgentRenderParams p;
+			const Agent::AgentRenderResult rr = sess->Render( p );
+			bool onScreen = false;
+			Check( rr.ok && rr.inventoryApplied, "V2-REACH the off-frame fixture renders with an inventory" );
+			onScreen = rr.inventoryText.find( "wiz_obj --" ) != std::string::npos &&
+			           rr.inventoryText.find( "wiz_obj -- 0 px" ) == std::string::npos;
+			Check( onScreen, "V2-REACH sanity: the off-centre sphere is partly ON screen (so only the acceptance test can omit it)" );
+			Check( rr.inventoryText.find( kSentence ) == std::string::npos,
+			       "MONEY ASSERTION (V2-REACH-5): an element centred past the zoom-acceptance margin is not recommended for zoom" );
+			Agent::AgentRenderParams zp; zp.zoom = "wiz_obj"; zp.renderTarget = Agent::AgentRenderTarget::ObjectMap;
+			const Agent::AgentRenderResult zr = sess->Render( zp );
+			Check( !zr.ok && zr.message.find( "not in view" ) != std::string::npos,
+			       "V2-REACH and zoom does refuse it, so the two agree" );
 		}
 	}
 

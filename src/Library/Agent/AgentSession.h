@@ -493,10 +493,13 @@ namespace RISE
 		//! camera's current values.  Values are the SAME string forms
 		//! CameraIntrospection::SetProperty accepts ("x y z" for the Vec3
 		//! fields, a plain number in DEGREES for fov).  Render captures the
-		//! camera's CURRENT value of every overridden field via
-		//! CameraIntrospection::GetPropertyValue BEFORE applying any override,
-		//! and restores every captured field after the render -- the active
-		//! camera's properties are IDENTICAL before and after a Render call,
+		//! camera's CURRENT value of every overridden field BEFORE applying any
+		//! override -- bit-exactly (CameraIntrospection::CaptureExactValue: the
+		//! stored doubles, radians, no text), the panel's `%.6g` GetPropertyValue
+		//! string only as the fallback for a field that has no exact form -- and
+		//! restores every captured field after the render
+		//! (CameraIntrospection::RestoreExactValue), so the active camera's
+		//! properties are IDENTICAL before and after a Render call,
 		//! whether or not an override was requested (see AgentSession.cpp for
 		//! the capture-set-render-restore sequencing and the LIVE-mode safety
 		//! note).
@@ -854,9 +857,23 @@ namespace RISE
 			//!
 			//! MUTUALLY EXCLUSIVE with `isolate` (which owns the camera and the
 			//! visibility), with `view` and with an explicit `camera` -- see
-			//! ZoomConflictMessage.  Needs a PINHOLE active camera.  An unknown
-			//! or non-renderable name FAILS the render (res.ok=false) with the
-			//! available names, the same contract `isolate` has.
+			//! ZoomConflictMessage.  Needs a PINHOLE active camera.  The scene
+			//! camera's REALIZED up (its own roll included) is kept.
+			//!
+			//! FAILS the render (res.ok=false, no `zoom` block, message names the
+			//! alternative) when: the name is unknown or not independently
+			//! renderable (available names listed -- the `isolate` contract); the
+			//! object is NOT IN VIEW of the scene camera (its surface-point centre
+			//! is behind the camera, or past the frame edge by more than the 10%
+			//! margin shared with the inventory's zoom hint -- DirectionInSceneView);
+			//! any point of its surface lies on or behind the plane through the eye
+			//! (the camera is inside or beside it -- a floor or room around the
+			//! camera); or its extent is degenerate or unbounded.
+			//!
+			//! BUILD CHECKLIST: like `isolate`, a zoom render is an inspection look
+			//! at one object, so it is NOT held behind the compose-phase build
+			//! checklist.  TONAL FACT: not attached to a zoom frame (a close crop of
+			//! one object would read as a statement about the scene's picture).
 			std::string          zoom;
 			//! G3b (2026-08-10, "the sketch comparison"): OPTIONAL name of a
 			//! element in the CURRENTLY FILED build plan (see FileBuildPlan /
@@ -7696,10 +7713,11 @@ namespace RISE
 			//! mutation of the derived Scene -- it does NOT touch the CST
 			//! Document; see Job::SetFilm / ScaleFilmToFit), Rasterize, then
 			//! SetFilm back to the captured dims.  Camera override: capture
-			//! every requested field's CURRENT value via
-			//! CameraIntrospection::GetPropertyValue, SetProperty the
-			//! overrides onto the ACTIVE camera, Rasterize, then SetProperty
-			//! every captured field back.  Restoration is RAII-guarded (an
+			//! every requested field's CURRENT value bit-exactly
+			//! (CameraIntrospection::CaptureExactValue), SetProperty the
+			//! overrides onto the ACTIVE camera, Rasterize, then put every
+			//! captured field back with RestoreExactValue (a formatted string
+			//! through SetProperty only for a field with no exact form).  Restoration is RAII-guarded (an
 			//! internal RenderOverrideRestoreGuard, see AgentSession.cpp) so
 			//! it runs on EVERY exit from the render window -- including an
 			//! exception unwinding out of Rasterize() itself (OIDN denoise is

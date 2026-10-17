@@ -157,6 +157,22 @@ namespace RISE
 			//! expansion by hand in a second, driftable copy.
 			const std::vector<Part>& GetParts() const { return m_parts; }
 
+			//! One additive part's UNPADDED extent, for a caller that must know
+			//! where thin features are (the agent's isolate / zoom framing): the
+			//! part's local primitive bounds, scaled and rotated into OBJECT space
+			//! exactly as ComputeBounds does but with NO smin / blend padding.
+			//! `minThickness` is the smallest object-space side of that box, i.e. the
+			//! thickness of the thinnest axis of the primitive.  Subtract and
+			//! intersect parts are omitted (a carve or clip never extends the solid,
+			//! and an intersect part's own box overstates what survives the clip).
+			//! Empty for the heightfield-mode constructor.
+			struct PartExtent
+			{
+				Point3 corners[8];
+				Scalar minThickness;
+			};
+			void GetAdditivePartExtents( std::vector<PartExtent>& out ) const;
+
 			//! Blend-domain-control slice (2026-08-25): the composed signed
 			//! distance of an ARBITRARY parts list at an arbitrary point,
 			//! WITHOUT constructing an SDFGeometry -- the exact same

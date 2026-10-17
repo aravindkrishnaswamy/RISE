@@ -371,7 +371,13 @@ detail can be judged.
 ```
 
 It cannot be combined with `isolate`, `view` or `camera` (a clean
-error), and it needs a pinhole active camera. The result's `zoom`
+error), and it needs a pinhole active camera. It FAILS (`ok:false`, no
+`zoom` block) when the object is not in view of the scene camera (behind
+it, or its surface centre more than about 10% past the frame edge --
+use `isolate` or a `camera` for those), when any part of its surface lies
+on or behind the plane through the camera (the camera is inside or beside
+it, e.g. a floor or room around the camera), or when its extent is
+degenerate or unbounded. The zoom keeps the scene camera's own roll. The result's `zoom`
 object reports `object`, `fovDegrees`, `sceneFovDegrees`,
 `keptSceneFov`, `coverage` (the projected surface bounds' share of the
 frame -- an upper bound on the silhouette) and `fitBasis`. When a

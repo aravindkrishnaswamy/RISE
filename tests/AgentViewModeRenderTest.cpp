@@ -6308,7 +6308,9 @@ static void RunZoomSchemaAndRpcTest()
 			Check( z.isObject() && z.get( "type" ).asString() == "string", "V2 chat-codec render schema declares zoom as a string" );
 			const std::string d = z.get( "description" ).asString();
 			Check( d.find( "CLOSE UP" ) != std::string::npos && d.find( "NOTHING is hidden" ) != std::string::npos &&
-			       d.find( "Mutually exclusive" ) != std::string::npos && d.find( "UPPER BOUND" ) != std::string::npos,
+			       d.find( "Mutually exclusive" ) != std::string::npos && d.find( "UPPER BOUND" ) != std::string::npos &&
+			       d.find( "NOT IN VIEW" ) != std::string::npos && d.find( "on or behind the plane through the camera" ) != std::string::npos &&
+			       d.find( "degenerate or unbounded" ) != std::string::npos,
 			       "V2 the chat-codec zoom description states what it does, that nothing is hidden, the exclusions and the coverage caveat" );
 		}
 	}
@@ -6336,7 +6338,9 @@ static void RunZoomSchemaAndRpcTest()
 			Check( z.isObject() && z.get( "type" ).asString() == "string", "V2 MCP render schema declares zoom as a string" );
 			const std::string d = z.get( "description" ).asString();
 			Check( d.find( "CLOSE UP" ) != std::string::npos && d.find( "NOTHING is hidden" ) != std::string::npos &&
-			       d.find( "Mutually exclusive" ) != std::string::npos && d.find( "UPPER BOUND" ) != std::string::npos,
+			       d.find( "Mutually exclusive" ) != std::string::npos && d.find( "UPPER BOUND" ) != std::string::npos &&
+			       d.find( "NOT IN VIEW" ) != std::string::npos && d.find( "on or behind the plane through the camera" ) != std::string::npos &&
+			       d.find( "degenerate or unbounded" ) != std::string::npos,
 			       "V2 the MCP zoom description matches the chat-codec one on every load-bearing sentence" );
 		}
 		pJob->release();
@@ -6527,7 +6531,9 @@ static void RunZoomRefusesUnseenObjectTest()
 	scene += "\nbox_geometry\n{\n\tname behind_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
 	         "standard_object\n{\n\tname behind\n\tgeometry behind_geo\n\tmaterial mat\n\tposition 0 0 25\n}\n\n"
 	         "standard_object\n{\n\tname aside\n\tgeometry behind_geo\n\tmaterial mat\n\tposition 40 0 0\n}\n\n"
-	         "standard_object\n{\n\tname edge\n\tgeometry part_geo\n\tmaterial mat\n\tposition 8.5 0 0\n}\n";
+	         "standard_object\n{\n\tname edge\n\tgeometry part_geo\n\tmaterial mat\n\tposition 8.5 0 0\n}\n\n"
+	         "box_geometry\n{\n\tname floor_geo\n\twidth 120\n\theight 0.1\n\tdepth 120\n}\n\n"
+	         "standard_object\n{\n\tname floor\n\tgeometry floor_geo\n\tmaterial mat\n\tposition 0 -2 0\n}\n";
 	const std::string path = WriteTemp( "rise_zoom_unseen.RISEscene", scene );
 	Job* pJob = new Job();
 	Check( pJob->LoadAsciiSceneViaCst( path.c_str() ), "R-P2-1 scene loads" );
@@ -6543,6 +6549,15 @@ static void RunZoomRefusesUnseenObjectTest()
 		Check( !r.ok && !r.zoomApplied && r.message.find( "is not in view of the scene camera" ) != std::string::npos &&
 		       r.message.find( "`isolate`" ) != std::string::npos && r.message.find( "`camera`" ) != std::string::npos,
 		       std::string( "MONEY ASSERTION (R-P2-1): zoom on \"" ) + name + "\" is refused, naming isolate / camera as the alternatives" );
+	}
+	// A floor that runs out behind the camera: part of its surface is on / behind
+	// the plane through the eye, so no pinhole frame holds it.
+	{
+		AgentRenderParams p; p.zoom = "floor"; p.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
+		const AgentRenderResult r = session->Render( p );
+		Check( !r.ok && !r.zoomApplied && r.message.find( "at or behind the plane through the camera" ) != std::string::npos,
+		       "R2-P2-2 zoom on a floor that extends behind the camera is refused (camera inside / beside it), no zoom block" );
 	}
 	// An object near the frame edge (centre ~10% beyond it is tolerated) still zooms.
 	{
@@ -6675,6 +6690,193 @@ static void RunBoundedSurfaceGatherTest()
 }
 
 
+//======================================================================
+// DOC 91 review round 2 (2026-10-17)
+//======================================================================
+
+// Pixel bounding box (decoded-PNG space) of the objectmap identity colour of
+// `name`; found == 0 if absent.
+static BBox LegendPixelBBox( const AgentRenderResult& r, const char* name, unsigned int& w, unsigned int& h )
+{
+	BBox none{ 0, 0, 0, 0, 0 };
+	w = h = 0;
+	const LegendEntry* e = FindLegend( r, name );
+	if( !e ) return none;
+	unsigned char rgb[3];
+	if( !HexToBytes( e->colorHex, rgb ) ) return none;
+	Decoded d;
+	if( !DecodePng( r.png, d ) ) return none;
+	w = d.w; h = d.h;
+	return ScanBBoxForColor( d, rgb );
+}
+
+// Principal-axis angle (degrees, image coordinates, y DOWN, folded to
+// (-90, 90]) of the pixels carrying `name`'s identity colour; false if < 8 px.
+static bool LegendPrincipalAngle( const AgentRenderResult& r, const char* name, double& angleDeg )
+{
+	const LegendEntry* e = FindLegend( r, name );
+	if( !e ) return false;
+	unsigned char rgb[3];
+	if( !HexToBytes( e->colorHex, rgb ) ) return false;
+	Decoded d;
+	if( !DecodePng( r.png, d ) ) return false;
+	double n = 0, sx = 0, sy = 0;
+	for( unsigned int y = 0; y < d.h; ++y )
+		for( unsigned int x = 0; x < d.w; ++x ) {
+			const Px& q = d.at( x, y );
+			if( q[0] == rgb[0] && q[1] == rgb[1] && q[2] == rgb[2] ) { n += 1; sx += x; sy += y; }
+		}
+	if( n < 8 ) return false;
+	const double mx = sx / n, my = sy / n;
+	double sxx = 0, syy = 0, sxy = 0;
+	for( unsigned int y = 0; y < d.h; ++y )
+		for( unsigned int x = 0; x < d.w; ++x ) {
+			const Px& q = d.at( x, y );
+			if( q[0] == rgb[0] && q[1] == rgb[1] && q[2] == rgb[2] ) {
+				sxx += ( x - mx ) * ( x - mx ); syy += ( y - my ) * ( y - my ); sxy += ( x - mx ) * ( y - my );
+			}
+		}
+	angleDeg = 0.5 * std::atan2( 2.0 * sxy, sxx - syy ) * 180.0 / 3.14159265358979323846;
+	return true;
+}
+
+static double AngleDiffDeg180( double a, double b )
+{
+	double d = std::fmod( a - b, 180.0 );
+	if( d > 90.0 ) d -= 180.0;
+	if( d < -90.0 ) d += 180.0;
+	return std::fabs( d );
+}
+
+//----------------------------------------------------------------------
+// (R2-P2-1) A thin SDF part (a 0.02-radius rod on a unit sphere) is thinner
+// than half a cell of the 48-cell grid, so the tessellation does not contain
+// it; each thin additive part's own unpadded box corners are fed to the fit.
+//----------------------------------------------------------------------
+static void RunThinSdfPartFramedTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (R2-P2-1) a thin SDF part is framed by isolate AND zoom ===\n" );
+	std::string scene = kSceneIsolateSmallPart;
+	scene += "\nsdf_geometry\n{\n\tname rod_geo\n"
+	         "\tpart sphere union 0 0 0 0 0 0 0 1 1 1 1.0 0 0 0\n"
+	         "\tpart capsule union 0 0 0.75 0 0 0 0 1 1 1 0.02 0.73 0 0\n}\n\n"
+	         "standard_object\n{\n\tname rod_obj\n\tgeometry rod_geo\n\tmaterial mat\n\tposition 0.5 0.3 0\n}\n\n"
+	         "sdf_geometry\n{\n\tname fat_geo\n"
+	         "\tpart sphere union 0 0 0 0 0 0 0 1 1 1 1.0 0 0 0\n"
+	         "\tpart capsule union 0 0 0.75 0 0 0 0 1 1 1 0.06 0.69 0 0\n}\n\n"
+	         "standard_object\n{\n\tname fat_obj\n\tgeometry fat_geo\n\tmaterial mat\n\tposition -0.5 -0.3 0\n}\n";
+	const std::string path = WriteTemp( "rise_thin_sdf.RISEscene", scene );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( path.c_str() ), "R2-P2-1 scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "R2-P2-1 session wraps" ); return; }
+
+	auto framed = [&]( const char* object, bool zoom ) {
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.width = 192; p.height = 144;
+		if( zoom ) p.zoom = object; else p.isolate = object;
+		std::srand( g_renderSeed++ );
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok, std::string( "R2-P2-1 " ) + ( zoom ? "zoom " : "isolate " ) + object + " renders: " + r.message );
+		unsigned int w = 0, h = 0;
+		const BBox b = LegendPixelBBox( r, object, w, h );
+		const bool inside = b.found > 0 && b.minX >= 1 && b.minY >= 1 && b.maxX + 2 <= w && b.maxY + 2 <= h;
+		std::printf( "  %s %s: pixel bbox x[%u,%u] y[%u,%u] of %ux%u, %u px, fitBasis %s\n", zoom ? "zoom" : "isolate", object,
+		             b.minX, b.maxX, b.minY, b.maxY, w, h, b.found, zoom ? r.zoomFitBasis.c_str() : r.isolateFitBasis.c_str() );
+		return inside;
+	};
+	Check( framed( "fat_obj", false ), "R2-P2-1 (control) a 0.06-radius rod is framed by isolate" );
+	Check( framed( "fat_obj", true ),  "R2-P2-1 (control) a 0.06-radius rod is framed by zoom" );
+	Check( framed( "rod_obj", false ),
+	       "MONEY ASSERTION (R2-P2-1): a 0.02-radius rod on a unit sphere is fully inside the ISOLATE frame (its pixels touch no edge)" );
+	Check( framed( "rod_obj", true ),
+	       "MONEY ASSERTION (R2-P2-1): ... and inside the ZOOM frame" );
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (R2-P3-roll) zoom keeps the scene camera's REALIZED up/roll: a Dutch-angle
+// camera's zoom is tilted the same way, not levelled.
+// (R2-P3-flip) a straight-down case with the eye offset toward -Z does not
+// flip the picture: the fallback derives from the camera's own frame.
+//----------------------------------------------------------------------
+static void RunZoomKeepsRollAndOrientationTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (R2-P3) zoom keeps the scene camera's roll, and a straight-down zoom does not flip ===\n" );
+	const std::string oldCam = "pinhole_camera\n{\n\tname cam\n\tlocation 0 0 14\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}";
+	{
+		std::string scene = kSceneIsolateSmallPart;
+		const std::size_t at = scene.find( oldCam );
+		Check( at != std::string::npos, "R2-P3 roll fixture camera chunk found" );
+		if( at == std::string::npos ) return;
+		scene.replace( at, oldCam.size(),
+			"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 14\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n\torientation 0 0 20\n}" );
+		scene += "\nbox_geometry\n{\n\tname bar_geo\n\twidth 4\n\theight 0.4\n\tdepth 0.4\n}\n\n"
+		         "standard_object\n{\n\tname bar\n\tgeometry bar_geo\n\tmaterial mat\n\tposition 0.5 0.3 0\n}\n";
+		const std::string path = WriteTemp( "rise_zoom_roll.RISEscene", scene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( path.c_str() ), "R2-P3 roll scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( session ) {
+			AgentRenderParams plain;
+			plain.renderTarget = AgentRenderTarget::ObjectMap; plain.width = 384; plain.height = 288;
+			std::srand( g_renderSeed++ );
+			const AgentRenderResult pr = session->Render( plain );
+			AgentRenderParams zp = plain; zp.zoom = "bar";
+			std::srand( g_renderSeed++ );
+			const AgentRenderResult zr = session->Render( zp );
+			double aPlain = 0.0, aZoom = 0.0;
+			const bool gotP = LegendPrincipalAngle( pr, "bar", aPlain );
+			const bool gotZ = LegendPrincipalAngle( zr, "bar", aZoom );
+			std::printf( "  Dutch-angle camera: bar's screen tilt plain %.2f deg, zoom %.2f deg (zoom ok=%d: %s)\n", aPlain, aZoom, (int)zr.ok, zr.message.c_str() );
+			Check( gotP && std::fabs( aPlain ) > 10.0, "R2-P3 sanity: the rolled scene camera really tilts the bar in the plain render" );
+			Check( gotZ && AngleDiffDeg180( aPlain, aZoom ) < 6.0,
+			       "MONEY ASSERTION (R2-P3-roll): the zoom keeps the scene camera's roll -- the bar is tilted as in the scene render, not levelled" );
+		}
+		pJob->release();
+	}
+	{
+		std::string scene = kSceneIsolateSmallPart;
+		const std::size_t at = scene.find( oldCam );
+		if( at == std::string::npos ) return;
+		scene.replace( at, oldCam.size(),
+			"pinhole_camera\n{\n\tname cam\n\tlocation 0 14 -0.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}" );
+		scene += "\nbox_geometry\n{\n\tname bar2_geo\n\twidth 0.4\n\theight 0.2\n\tdepth 2.0\n}\n\n"
+		         "standard_object\n{\n\tname bar2\n\tgeometry bar2_geo\n\tmaterial mat\n\tposition 0 0 -0.5\n}\n\n"
+		         "box_geometry\n{\n\tname mark_geo\n\twidth 0.2\n\theight 0.2\n\tdepth 0.2\n}\n\n"
+		         "standard_object\n{\n\tname mark\n\tgeometry mark_geo\n\tmaterial mat\n\tposition 0 0.2 0.3\n}\n";
+		const std::string path = WriteTemp( "rise_zoom_down.RISEscene", scene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( path.c_str() ), "R2-P3 straight-down scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( session ) {
+			AgentRenderParams plain;
+			plain.renderTarget = AgentRenderTarget::ObjectMap; plain.width = 384; plain.height = 288;
+			std::srand( g_renderSeed++ );
+			const AgentRenderResult pr = session->Render( plain );
+			AgentRenderParams zp = plain; zp.zoom = "bar2";
+			std::srand( g_renderSeed++ );
+			const AgentRenderResult zr = session->Render( zp );
+			Check( zr.ok && zr.zoomApplied, std::string( "R2-P3 the straight-down zoom renders: " ) + zr.message );
+			double bx0 = 0, by0 = 0, mx0 = 0, my0 = 0, bx1 = 0, by1 = 0, mx1 = 0, my1 = 0;
+			const bool g0 = LegendCentre( pr, "bar2", bx0, by0 ) && LegendCentre( pr, "mark", mx0, my0 );
+			const bool g1 = LegendCentre( zr, "bar2", bx1, by1 ) && LegendCentre( zr, "mark", mx1, my1 );
+			Check( g0 && g1, "R2-P3 both the bar and its end marker are visible in the plain and the zoomed frame" );
+			if( g0 && g1 ) {
+				const double a0 = std::atan2( my0 - by0, mx0 - bx0 ) * 180.0 / 3.14159265358979323846;
+				const double a1 = std::atan2( my1 - by1, mx1 - bx1 ) * 180.0 / 3.14159265358979323846;
+				double d = std::fabs( a0 - a1 ); if( d > 180.0 ) d = 360.0 - d;
+				std::printf( "  straight-down: marker-from-bar direction plain %.1f deg, zoom %.1f deg (diff %.1f)\n", a0, a1, d );
+				Check( d < 25.0,
+				       "MONEY ASSERTION (R2-P3-flip): the marker stays on the same side of the bar -- the straight-down zoom is not turned around" );
+			}
+		}
+		pJob->release();
+	}
+}
+
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -6735,6 +6937,9 @@ int main()
 	RunZoomRefusesUnseenObjectTest();
 	RunZoomOverheadUpFallbackTest();
 	RunBoundedSurfaceGatherTest();
+	// Doc 91 review round 2
+	RunThinSdfPartFramedTest();
+	RunZoomKeepsRollAndOrientationTest();
 	// G3b (2026-08-10) `render{isolate:, target:}`
 	RunTargetIouTest();
 	RunTargetMirroredIouTest();
