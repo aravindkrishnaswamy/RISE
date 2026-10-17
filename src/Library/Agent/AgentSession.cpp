@@ -24489,15 +24489,14 @@ namespace RISE
 			// characterization of the element, no advice about what to do next,
 			// no score.
 			//------------------------------------------------------------------
+			// Doc 91 L1 (2026-10-17): the landed NAMES ride once, in
+			// `landed`; the message states the count rather than repeating
+			// the list (on a 20-chunk element the repeat was most of the
+			// message, re-sent on every later turn of the session).
 			std::string m = "build_element ran one builder completion for \"" + element + "\" on " +
 				mTextCompleter.providerName + "/" + mTextCompleter.modelId + ". Chunks inserted: ";
 			if( out.landed.empty() ) m += "none";
-			else {
-				for( std::size_t i = 0; i < out.landed.size(); ++i ) {
-					if( i ) m += ", ";
-					m += out.landed[i];
-				}
-			}
+			else m += std::to_string( out.landed.size() ) + " (named in `landed`)";
 			m += ".";
 			if( !out.rejected.empty() ) {
 				m += " Not inserted: ";

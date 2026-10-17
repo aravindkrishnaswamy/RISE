@@ -1,6 +1,7 @@
 # 91 — Context lifetimes and visible detail
 
-Status: DESIGN — slices L1–L3 (context), V1–V2 (visible detail) in progress
+Status: L1–L3 (context) SHIPPED 2026-10-17 (branch `context-lifetimes`; see
+§2 "As shipped"); V1–V2 (visible detail) in progress
 Evidence base: trajectories `20261017T011539Z-71dd70e7` (apothecary) and
 `20261017T133602Z-dbe83160` (dragons/wizards), both gemini-4-argon, the
 default model since `0aa14cf8`.  Measured with `tools/trajectory_census.py`.
@@ -73,6 +74,37 @@ provider-cache miss — the doc 71 / T1c policy, unchanged.
 Simulated on the two runs (live tool-result text re-sent per turn):
 L1+L2+L3 = -41% (apothecary), -31% (dragons).  L3 alone is -18% on the
 apothecary and 0 on the dragons run (which read no skills).
+
+**As shipped (2026-10-17).**
+
+- L1 (`AgentRpc.cpp`): `chunkResults` of `build_element` and of its four
+  clean-room siblings (`light_scene`, `populate_scene`,
+  `environment_scene`, `frame_scene`, which carry the identical pattern)
+  goes through `NotableChunkResultsJson` — only rejected, diagnosed,
+  staged, issue-bearing or unnamed chunks keep a `ChunkResultJson`; every
+  clean success is named in `landed` / `created` / `cameraNameAfter` only.
+  `build_element`'s `message` states the count ("Chunks inserted: 16
+  (named in `landed`)") instead of the names.  `insert_chunks` keeps its
+  index-aligned `results` (ToolOutcomeLine and both GUI retry gates read
+  it) and SLIMS a clean success to `{applied,status,headVersion,name,kind,
+  element?}` (`BatchChunkResultJson`); `headVersion` stays because it is
+  the next call's `baseHeadVersion`.  No top-level `headVersion` was added
+  (it would newly trigger the recorder's head-bump document snapshots).
+  Measured in `AgentChunkCrudTest` S2h-L1: a 16-chunk report 5,452 → 1,068
+  bytes, marginal cost per extra clean chunk 361 → 13 bytes.  Not changed:
+  `place_element` / `environment_scene` / `frame_scene` `patchResults`
+  (no per-entry identity — the per-patch record IS the edit record, pinned
+  as such), and the scaffold / `remove_chunks` batch verbs (1–5 entries).
+  Consumer audit: no eval checkpoint, MCP client code or GUI shell reads a
+  clean entry's `rawCode` / `retriable` / `message`; the GUI gates read
+  them only on wholly-refused batches, whose entries are never slimmed.
+- L2/L3 (`AgentChatLoop.cpp` `RetireToolResultsByLifetime`, sharing
+  `RewriteToolResultSlots` with supersession): slots record `verb`,
+  `lifetimeElement` and `lifetimeSkill` at pack time.  history_edit
+  reasons `element_finished_retirement`, `compose_skill_retirement`; the
+  same-name `read_skill` supersession is `tool_result_supersession`.  An
+  `ok:false` finish or place retires nothing; `Reset()` re-arms the
+  Compose signal.  Tests: `AgentChatLoopTest` T14c (all four wires).
 
 What is deliberately NOT here: LLM summarization (doc 71 S4), aging by
 turn count (an age says nothing about whether the content is still

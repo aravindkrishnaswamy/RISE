@@ -764,9 +764,10 @@ namespace RISE
 						"`total` is chunks.size(), `applied` is how many of `results` have "
 						"applied=true (a status=\"diagnosed\" element is ALSO in the document -- the "
 						"batch is realized by ONE re-derive, whose diagnostics mark the element they "
-						"name, or every landed element when they name none; do not resubmit it), and each `results[i]` is the EXACT same shape insert_chunk "
+						"name, or every landed element when they name none; do not resubmit it), and each `results[i]` is the shape insert_chunk "
 						"returns for `chunks[i]` -- {applied,rawCode,status,retriable,headVersion,"
-						"message,name,kind,issues?} -- including insert_chunk's `issues` reasons "
+						"message,name,kind,issues?}, except that a CLEAN success (status applied, no "
+						"issues) carries only {applied,status,headVersion,name,kind} -- including insert_chunk's `issues` reasons "
 						"(\"unresolved_reference\", \"unknown_param\", \"numeric_in_reference_slot\", "
 						"\"unknown_chunk_type\") and its forward-reference-warning-on-success "
 						"behaviour. Check every element's own status; do not assume the whole batch "
@@ -1115,7 +1116,9 @@ namespace RISE
 						"plain statement, nothing else changes, and authoring by hand is not blocked. "
 						"Returns {ok,element,provider,model,chunksExtracted,landed,"
 						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
-						"sdfPartCount,bbox:{min,max,height},message}." );
+						"sdfPartCount,bbox:{min,max,height},message}; landed names every chunk that "
+						"went in, and chunkResults details only the chunks that were rejected, "
+						"diagnosed or carry issues." );
 					tools.push_back( MakeTool( "build_element", desc, ObjectProp( "", props, required ) ) );
 				}
 				{

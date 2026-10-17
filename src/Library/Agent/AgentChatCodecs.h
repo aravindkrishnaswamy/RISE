@@ -778,6 +778,20 @@ namespace RISE
 		//!       both.)
 		//! ON THE LIST TODAY: read_document and list_proposals.
 		//!
+		//! PLUS ONE ARGUMENT-NORMALIZED KEY (doc 91 slice L3a, 2026-10-17):
+		//! a successful NAMED read_skill (result {name, markdown}) is keyed
+		//! kChatReadSkillKeyPrefix + the skill's name, so a later read of the
+		//! SAME skill supersedes the earlier copy while two different skills
+		//! never collide -- exactly the argument-normalizing key function
+		//! property (3) below asks for.  Per name, property (1) holds (the
+		//! later copy is the whole file again).  Property (2) does NOT: a
+		//! skill file is static, so the elided copy is REDUNDANT rather than
+		//! stale -- admitted on cost (doc 91: three skill reads, 165 KB, live
+		//! to the end of a session), not correctness.  The INDEX form (no
+		//! name) is never keyed.  The exclusions below that name read_skill
+		//! are about the verb as a whole (different names = different
+		//! content), and still hold across names.
+		//!
 		//! list_proposals is a parameterless whole-queue read of mutable
 		//! state and is not image-bearing, so it satisfies (1)-(4).  It is
 		//! NOT declared in kToolDefs, so no model is TOLD about it -- but
@@ -828,6 +842,33 @@ namespace RISE
 		//! removed, WHY, and HOW to get it back, exactly as the image
 		//! elision note does.
 		std::string ChatSupersededResultNote( const std::string& verbName );
+
+		//! The prefix of a read_skill supersession key (see
+		//! ChatToolResultSupersessionKey): the key is this prefix followed
+		//! by the skill name.  A unit-separator byte can never appear in a
+		//! skill name (ReadSkill serves bare .md basenames), so a read_skill
+		//! key can never equal a plain verb-name key.
+		inline constexpr char kChatReadSkillKeyPrefix[] = "read_skill\x1f";
+
+		//! The placeholder for a superseded result, given its SUPERSESSION
+		//! KEY rather than its verb: a plain verb key forwards to
+		//! ChatSupersededResultNote, a read_skill key yields a note naming
+		//! the skill and the exact call that gets it back.  Pure function of
+		//! the key -- deterministic and replay-safe.
+		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey );
+
+		//! CONTEXT LIFETIMES (doc 91 slice L2): the stub an earlier
+		//! build_element / insert_chunks result for `element` is rewritten
+		//! to once a successful finish_element for that element has flowed
+		//! through the chat loop.  Says what was removed, why, and how to get
+		//! it back (read_document; reopen_element to edit).
+		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
+		                                               const std::string& element );
+
+		//! CONTEXT LIFETIMES (doc 91 slice L3b): the stub a live named
+		//! read_skill result is rewritten to when the session reaches the
+		//! Compose phase (the first successful place_element).
+		std::string ChatComposeSkillRetirementNote( const std::string& skillName );
 
 		//! Number of LIVE (not-yet-elided) image blocks/parts in a
 		//! MakeUserEntry-produced user entry -- i.e. how many of its

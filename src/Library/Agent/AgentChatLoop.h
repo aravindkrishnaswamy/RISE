@@ -166,6 +166,22 @@
 //        ChatToolDisplaySummary::resultJson: unlike an image blob that
 //        one is capped at 8 KB, never rides the wire, and is the GUI's
 //        record of what the agent actually saw at that step.
+//      * CONTEXT LIFETIMES (docs/agentic-redesign/91-context-lifetimes-
+//        and-visible-detail.md): a result whose SUBJECT is settled is
+//        retired to a one-line stub saying how to get it back -- by what
+//        it describes, never by age.  L2: a successful finish_element for
+//        element E retires E's earlier build_element / insert_chunks
+//        results ("element_finished_retirement").  L3: a named read_skill
+//        is superseded by a later read of the SAME skill (an argument-
+//        normalized supersession key), and the FIRST successful
+//        place_element -- the loop-observable Compose signal -- retires
+//        every live named read_skill once ("compose_skill_retirement");
+//        a skill read after that stays live.  Same boundary, same wire
+//        guarantee and same converge-once rule as the two rules above:
+//        RetireToolResultsByLifetime shares RewriteToolResultSlots with
+//        SUPERSEDED-READ RETENTION, so every rewrite goes through the
+//        codec's RewriteElidedToolResults and costs one bounded cache
+//        miss.  Unconditional, like supersession.
 //      * USER IMAGE RETENTION (Model-B F5 chat image attachments): a
 //        SEPARATE, INDEPENDENT policy from the tool-result IMAGE
 //        RETENTION rule above -- user reference images are the
@@ -300,9 +316,27 @@ namespace RISE
 			//! and every error envelope).
 			std::string supersessionKey;
 
+			//! CONTEXT LIFETIMES (doc 91): the verb this result answers --
+			//! the lifetime stubs name it.
+			std::string verb;
+
+			//! Doc 91 slice L2: the build-plan element this result DESCRIBES,
+			//! or "" -- set for build_element (the result's `element`, else
+			//! the call's `element` argument) and insert_chunks (the
+			//! per-chunk `element` attribution, when every attributed chunk
+			//! agrees).  A later successful finish_element for that element
+			//! retires the slot.
+			std::string lifetimeElement;
+
+			//! Doc 91 slice L3b: the skill name of a successful NAMED
+			//! read_skill result, or "" (every other result, the index form
+			//! included).  The first successful place_element retires every
+			//! live slot carrying one.
+			std::string lifetimeSkill;
+
 			//! False once this result's payload has been rewritten to the
-			//! superseded-result placeholder, so the pass is idempotent
-			//! and a second sweep re-elides nothing.
+			//! superseded-result placeholder (or a lifetime stub), so the
+			//! pass is idempotent and a second sweep re-elides nothing.
 			bool        live = true;
 		};
 
@@ -1169,7 +1203,7 @@ namespace RISE
 			//! WHOLE transcript and, for every supersession key present in
 			//! more than one still-live tool-result slot, rewrite all but
 			//! the LAST occurrence's payload to
-			//! ChatSupersededResultNote(verb) via the codec's
+			//! ChatSupersededResultNoteForKey(key) via the codec's
 			//! RewriteElidedToolResults.  Handles the cross-entry case (six
 			//! read_documents across six turns) and the entry-internal one
 			//! (two read_documents packed by ONE flush) with the same pass,
@@ -1183,6 +1217,37 @@ namespace RISE
 			//! FlushPendingToolResults -- the only place ToolResults entries
 			//! are created.
 			void ElideSupersededToolResults();
+
+			//! One placeholder rewrite target for RewriteToolResultSlots.
+			struct ToolResultSlotRewrite
+			{
+				std::size_t entry = 0;   //!< mTranscript index (a ToolResults entry)
+				std::size_t slot = 0;    //!< index into that entry's toolResultSlots
+				std::string note;        //!< the placeholder text
+			};
+
+			//! The SHARED rewrite step of every tool-result elision rule
+			//! (superseded reads, doc 91's lifetime retirements): for each
+			//! entry named in `targets`, rewrite the listed slots through the
+			//! codec's RewriteElidedToolResults -- one call per distinct note
+			//! -- mark them dead ONLY when the rewrite landed, and record ONE
+			//! history_edit tagged `reason` per rewritten entry.  Targets on
+			//! already-dead slots are skipped, so every rule built on it
+			//! converges (a slot is rewritten at most once).
+			void RewriteToolResultSlots( const std::vector<ToolResultSlotRewrite>& targets,
+			                             const char* reason );
+
+			//! CONTEXT LIFETIMES (doc 91 slices L2 + L3b): run after the
+			//! newly flushed ToolResults entry `newEntry` is in the
+			//! transcript.  Walks its results in wire order; for each
+			//! successful finish_element (element E) it retires every EARLIER
+			//! live slot whose lifetimeElement is E, and for the FIRST
+			//! successful place_element of the conversation it retires every
+			//! earlier live slot carrying a lifetimeSkill.  Keyed only on data
+			//! in the results/arguments the loop already holds; deterministic
+			//! for a given sequence of flushes.
+			void RetireToolResultsByLifetime( std::size_t newEntry,
+			                                  const std::vector<std::pair<ChatToolCall, std::string>>& ordered );
 
 			//! Context-compaction slice S2: the structural span-dropper
 			//! (Option C core; design doc 71 §7).  When a valid budget
@@ -1360,6 +1425,13 @@ namespace RISE
 			//! See the "TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY" note above
 			//! mToolRounds.
 			bool                                     mElideAllImages;
+
+			//! Doc 91 slice L3b: set by the FIRST successful place_element
+			//! result flushed in this conversation, when every live named
+			//! read_skill result was retired.  Once set, later read_skill
+			//! results stay live (until a same-name re-read supersedes one).
+			//! Describes the transcript, so Reset() clears it.
+			bool mComposeSkillRetirementDone = false;
 
 			//! REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY: sticky once an
 			//! OpenAI-family reasoning model (observed: gpt-5.6-terra) 400-

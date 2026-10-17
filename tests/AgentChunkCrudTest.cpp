@@ -5225,8 +5225,18 @@ static void TestInsertChunksWireShape()
 					const Agent::JsonValue* st = e.find( "status" );
 					Check( st && st->isString() && st->asString() == "applied",
 					       "IC4(a) every wire result element has status \"applied\"" );
+					// Doc 91 L1: a CLEAN success is slimmed -- identity, verdict
+					// and the head (the next call's baseHeadVersion) stay;
+					// rawCode / retriable / the fixed message, implied by
+					// status "applied", are gone.
+					Check( e.get( "applied" ).asBool( false ) && e.get( "headVersion" ).isObject() &&
+					       !e.get( "name" ).asString().empty() && !e.get( "kind" ).asString().empty(),
+					       "IC4(a) L1: a clean element keeps applied, headVersion, name and kind" );
+					Check( !e.has( "rawCode" ) && !e.has( "retriable" ) && !e.has( "message" ),
+					       "IC4(a) L1: a clean element drops rawCode / retriable / message boilerplate" );
 				}
 			}
+			std::printf( "  IC4(a) L1 all-apply report bytes: %zu\n", resp.size() );
 			Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "obj_wire" ) != nullptr,
 			       "IC4(a) the wire batch reached the live managers" );
 
@@ -5280,6 +5290,14 @@ static void TestInsertChunksWireShape()
 				const Agent::JsonValue* issues1 = e1.find( "issues" );
 				Check( issues1 && issues1->isArray() && issues1->size() == 1,
 				       "IC4(c) wire element 1 carries exactly one issue" );
+				// Doc 91 L1: a REJECTED element keeps its full shape -- the GUI
+				// drivers' retry gate reads `retriable` and the head guard
+				// reads `headVersion` on exactly these elements.
+				Check( e1.has( "rawCode" ) && e1.has( "retriable" ) && e1.has( "headVersion" ) &&
+				       !e1.get( "message" ).asString().empty(),
+				       "IC4(c) L1: the rejected element keeps rawCode / retriable / headVersion / message" );
+				Check( !e0.has( "message" ) && e0.get( "headVersion" ).isObject(),
+				       "IC4(c) L1: a clean neighbour in the same batch is slimmed" );
 			}
 
 			pJob->release();
@@ -15436,6 +15454,93 @@ static void TestCleanRoomWireShape()
 	}
 }
 
+//! S2h-L1 (docs/agentic-redesign/91-context-lifetimes-and-visible-detail.md,
+//! slice L1): the build_element report carries a clean success ONCE, as a
+//! name in `landed` -- no per-chunk ChunkResultJson boilerplate, and the
+//! `message` no longer repeats the landed list -- while a rejected chunk
+//! keeps its full per-chunk detail.  The MONEY assertion is a MARGINAL cost:
+//! twelve more clean chunks must add little more than their names.
+static std::string BuildElementWireResponse( const std::vector<std::string>& answers )
+{
+	const std::string tmp = TempPath( "agentcrud_s2h_l1.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return std::string();
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( answers ) );
+	if( !sess->FileBuildPlan( WizardOnlyPlan() ).ok ) { pJob->release(); return std::string(); }
+	std::string resp;
+	{
+		Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+		resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"build_element\",\"params\":"
+			"{\"element\":\"wizard\",\"height\":4.0}}" );
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+	return resp;
+}
+
+static void TestBuildElementReportCompaction()
+{
+	std::printf( "S2h-L1: build_element reports clean chunks once, failed chunks in full...\n" );
+
+	std::string many = kGoodBuilderAnswer;
+	for( int i = 0; i < 12; ++i ) {
+		char nm[32];
+		std::snprintf( nm, sizeof( nm ), "wizard_p%02d", i );
+		many += std::string( "uniformcolor_painter\n{\n\tname " ) + nm + "\n\tcolor 0.3 0.2 0.5\n}\n";
+	}
+	const std::string resp4  = BuildElementWireResponse( std::vector<std::string>( 1, kGoodBuilderAnswer ) );
+	const std::string resp16 = BuildElementWireResponse( std::vector<std::string>( 1, many ) );
+	std::printf( "  S2h-L1 build_element report bytes: 4 chunks %zu, 16 chunks %zu\n",
+	             resp4.size(), resp16.size() );
+
+	Agent::JsonValue r4, r16;
+	Check( JsonResultObj( resp4, r4 ) && r4.get( "ok" ).asBool( false ), "S2h-L1 the 4-chunk build lands" );
+	Check( JsonResultObj( resp16, r16 ) && r16.get( "ok" ).asBool( false ) &&
+	       r16.get( "landed" ).size() == 16, "S2h-L1 the 16-chunk build lands all 16" );
+	Check( r16.get( "chunkResults" ).isArray() && r16.get( "chunkResults" ).size() == 0,
+	       "S2h-L1 an all-clean build carries NO per-chunk chunkResults entries (each is named in `landed`)" );
+	Check( resp16.find( "chunk inserted via a full re-derive" ) == std::string::npos,
+	       "S2h-L1 the per-chunk success boilerplate is gone from the report" );
+	const std::string msg16 = r16.get( "message" ).asString();
+	bool msgRepeats = false;
+	for( std::size_t i = 0; i < r16.get( "landed" ).size(); ++i )
+		if( msg16.find( r16.get( "landed" ).at( i ).asString() ) != std::string::npos ) msgRepeats = true;
+	Check( !msgRepeats, "S2h-L1 `message` no longer repeats the landed names" );
+	Check( msg16.find( "Chunks inserted: 16" ) != std::string::npos &&
+	       msg16.find( "Realised world bounding box" ) != std::string::npos,
+	       "S2h-L1 `message` keeps the count and the bounding-box facts" );
+	// The marginal cost of a clean chunk is its name in `landed` (~16 bytes
+	// here), not a ~300-byte ChunkResultJson plus two more name copies.
+	const double marginal = ( static_cast<double>( resp16.size() ) - static_cast<double>( resp4.size() ) ) / 12.0;
+	std::printf( "  S2h-L1 marginal report bytes per extra clean chunk: %.1f\n", marginal );
+	Check( resp4.size() > 0 && marginal < 40.0,
+	       "S2h-L1 MONEY ASSERTION: each extra clean chunk adds under 40 bytes to the report" );
+
+	// A REJECTED chunk keeps its full detail.  The first answer's expression
+	// painter does not compile (an insertion-time rejection); the one repair
+	// retry then lands the good set.
+	const std::string firstBad =
+		"expression_painter\n{\n\tname wizard_bronze_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n";
+	std::vector<std::string> answers;
+	answers.push_back( firstBad );
+	answers.push_back( kGoodBuilderAnswer );
+	const std::string respBad = BuildElementWireResponse( answers );
+	Agent::JsonValue rb;
+	Check( JsonResultObj( respBad, rb ) && rb.get( "ok" ).asBool( false ), "S2h-L1 the retried build lands" );
+	const Agent::JsonValue& crs = rb.get( "chunkResults" );
+	Check( crs.isArray() && crs.size() == 1, "S2h-L1 exactly the ONE rejected chunk has a chunkResults entry" );
+	if( crs.isArray() && crs.size() == 1 ) {
+		const Agent::JsonValue& e = crs.at( 0 );
+		Check( e.get( "name" ).asString() == "wizard_bronze_pnt" && e.get( "status" ).asString() == "rejected" &&
+		       e.has( "rawCode" ) && e.has( "retriable" ) && e.has( "headVersion" ) && !e.get( "message" ).asString().empty(),
+		       "S2h-L1 the rejected chunk keeps its FULL ChunkResultJson (rawCode, retriable, headVersion, message)" );
+	}
+	Check( rb.get( "message" ).asString().find( "Not inserted:" ) != std::string::npos,
+	       "S2h-L1 `message` keeps the rejection content" );
+}
+
 //! S2i (S2 fix-round, 2026-08-11, P1): replace_geometry_scaffold used to
 //! bypass the first-geometry clean-room gate entirely.  Unlike
 //! insert_geometry_scaffold, it never routes through InsertChunk /
@@ -22278,6 +22383,7 @@ int main()
 	TestInsertRejectionSurfacesExpressionCompileDiag();
 	TestBuildElementDisclosesKindChangedReland();
 	TestCleanRoomWireShape();
+	TestBuildElementReportCompaction();
 	TestCleanRoomReplaceGeometryScaffoldGate();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();

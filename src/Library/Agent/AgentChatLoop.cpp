@@ -794,6 +794,9 @@ namespace RISE
 			// A fresh session may target a different, image-capable model --
 			// the text-only proof does not carry across a Reset/SetProvider.
 			mElideAllImages = false;
+			// Doc 91 L3b: the Compose signal describes the transcript just
+			// cleared, so a fresh conversation retires its skills afresh.
+			mComposeSkillRetirementDone = false;
 			// Likewise, a fresh session may target a different model that
 			// has no reasoning-vs-tools conflict at all -- but re-arm from
 			// the process-wide cache rather than blindly clearing: if THIS
@@ -2185,6 +2188,89 @@ namespace RISE
 					summaries[i].carriesImage = false;
 				}
 			}
+
+			//! CONTEXT LIFETIMES (doc 91): the `result` object of a parseable
+			//! JSON-RPC SUCCESS envelope, or nullptr (error envelope, the
+			//! loop's synthesized "not executed" envelope, unparseable line).
+			//! `env` owns the storage.
+			const JsonValue* LifetimeSuccessResult( const std::string& raw, JsonValue& env )
+			{
+				std::string perr;
+				if( !JsonParse( raw, env, perr ) || !env.isObject() ) return nullptr;
+				if( env.find( "error" ) ) return nullptr;
+				const JsonValue* result = env.find( "result" );
+				return ( result && result->isObject() ) ? result : nullptr;
+			}
+
+			//! The call's string argument `key`, or "".
+			std::string LifetimeArgString( const ChatToolCall& call, const char* key )
+			{
+				JsonValue args;
+				std::string perr;
+				if( !JsonParse( call.argsJson, args, perr ) || !args.isObject() ) return std::string();
+				return args.get( key ).asString();
+			}
+
+			//! Doc 91 slice L2: the element a build_element / insert_chunks
+			//! result describes, or "".  build_element: the result's
+			//! `element` (the session's own spelling), else the call's
+			//! `element` argument -- so an error envelope or an ok:false
+			//! refusal for E is retired with E too.  insert_chunks: the
+			//! per-chunk `element` attribution (AgentRpc.cpp's
+			//! ChunkResultJson), taken only when every attributed chunk names
+			//! the SAME element -- an unattributed batch (no element window)
+			//! or a mixed one is never retired.
+			std::string LifetimeElementOf( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name == "build_element" ) {
+					JsonValue env;
+					if( const JsonValue* r = LifetimeSuccessResult( raw, env ) ) {
+						const std::string e = r->get( "element" ).asString();
+						if( !e.empty() ) return e;
+					}
+					return LifetimeArgString( call, "element" );
+				}
+				if( call.name == "insert_chunks" ) {
+					JsonValue env;
+					const JsonValue* r = LifetimeSuccessResult( raw, env );
+					if( !r ) return std::string();
+					const JsonValue& items = r->get( "results" );
+					if( !items.isArray() ) return std::string();
+					std::string element;
+					for( std::size_t i = 0; i < items.size(); ++i ) {
+						const std::string e = items.at( i ).get( "element" ).asString();
+						if( e.empty() ) continue;
+						if( element.empty() ) element = e;
+						else if( element != e ) return std::string();
+					}
+					return element;
+				}
+				return std::string();
+			}
+
+			//! True for a successful finish_element (result ok:true naming
+			//! its element), with the element in `element`.  A failed finish
+			//! (ok:false, error envelope) is not a lifetime event.
+			bool IsFinishedElementResult( const ChatToolCall& call, const std::string& raw,
+			                              std::string& element )
+			{
+				if( call.name != "finish_element" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r || !r->get( "ok" ).asBool( false ) ) return false;
+				element = r->get( "element" ).asString();
+				return !element.empty();
+			}
+
+			//! True for a successful place_element (result ok:true) -- the
+			//! loop-observable Compose signal of doc 91 slice L3b.
+			bool IsPlacedElementResult( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name != "place_element" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				return r && r->get( "ok" ).asBool( false );
+			}
 		}
 
 		void AgentChatLoop::FlushPendingToolResults()
@@ -2335,10 +2421,21 @@ namespace RISE
 			// PackToolResults writes them, and therefore the index space
 			// RewriteElidedToolResults addresses.  Built here (not lazily)
 			// so the key reflects the envelope AS PACKED.
+			// CONTEXT LIFETIMES (doc 91) are recorded on the same slots:
+			// which element a build/insert result describes (L2) and which
+			// skill a named read_skill carries (L3b, read off its
+			// supersession key so the two can never disagree).
 			entry.toolResultSlots.resize( ordered.size() );
-			for( std::size_t i = 0; i < ordered.size(); ++i )
-				entry.toolResultSlots[i].supersessionKey =
+			for( std::size_t i = 0; i < ordered.size(); ++i ) {
+				ChatToolResultSlot& slot = entry.toolResultSlots[i];
+				slot.supersessionKey =
 					ChatToolResultSupersessionKey( ordered[i].first, ordered[i].second );
+				slot.verb = ordered[i].first.name;
+				slot.lifetimeElement = LifetimeElementOf( ordered[i].first, ordered[i].second );
+				const std::string skillPrefix( kChatReadSkillKeyPrefix );
+				if( slot.supersessionKey.compare( 0, skillPrefix.size(), skillPrefix ) == 0 )
+					slot.lifetimeSkill = slot.supersessionKey.substr( skillPrefix.size() );
+			}
 			entry.rawJson = mCodec->PackToolResults( ordered );
 			entry.carriesLiveImage = carriesImage;
 			if( carriesImage ) {
@@ -2365,6 +2462,12 @@ namespace RISE
 			// (4)), and a text-only shrink of rawJson leaves the tracked
 			// image payload correct either way.
 			ElideSupersededToolResults();
+
+			// CONTEXT LIFETIMES (doc 91 L2 + L3b): a result whose subject is
+			// now SETTLED -- an element just finished, the session just
+			// reached Compose -- is retired to a one-line stub.  Runs after
+			// supersession so a slot either rule already killed is skipped.
+			RetireToolResultsByLifetime( mTranscript.size() - 1, ordered );
 
 			mPendingResults.clear();
 			mPendingCalls.clear();
@@ -2406,22 +2509,17 @@ namespace RISE
 			if( lastLive.empty() ) return;
 
 			// PASS 2: every OTHER live slot sharing a surviving key is
-			// superseded.  Collect per entry so each entry's rawJson is
-			// rewritten (and recorded) exactly once, even when it packs
-			// several superseded results.
+			// superseded.  The placeholder is chosen PER KEY (it names its own
+			// verb -- or, for a read_skill key, its skill), and
+			// RewriteToolResultSlots groups the targets per entry and per note,
+			// so each entry's rawJson is rewritten (and recorded) exactly once
+			// even when it packs several superseded results of different keys.
+			std::vector<ToolResultSlotRewrite> targets;
 			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
-				ChatTranscriptEntry& entry = mTranscript[e];
+				const ChatTranscriptEntry& entry = mTranscript[e];
 				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
-
-				// Grouped BY KEY, not one bucket per entry: the placeholder
-				// names its own verb, so an entry that ever packs superseded
-				// results of TWO different allowlisted verbs must not be told
-				// one verb's note for both.  (Today's single-verb allowlist
-				// makes that unreachable -- grouping keeps it correct by
-				// construction rather than by that coincidence.)
-				std::vector<std::pair<std::string, std::vector<std::size_t>>> byKey;
 				for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
-					ChatToolResultSlot& slot = entry.toolResultSlots[s];
+					const ChatToolResultSlot& slot = entry.toolResultSlots[s];
 					if( !slot.live || slot.supersessionKey.empty() ) continue;
 					bool survives = false;
 					for( std::size_t k = 0; k < lastLive.size(); ++k ) {
@@ -2431,10 +2529,40 @@ namespace RISE
 						break;
 					}
 					if( survives ) continue;
+					ToolResultSlotRewrite t;
+					t.entry = e;
+					t.slot = s;
+					t.note = ChatSupersededResultNoteForKey( slot.supersessionKey );
+					targets.push_back( t );
+				}
+			}
+			RewriteToolResultSlots( targets, "tool_result_supersession" );
+		}
+
+		void AgentChatLoop::RewriteToolResultSlots( const std::vector<ToolResultSlotRewrite>& targets,
+		                                            const char* reason )
+		{
+			// Visit entries in transcript order so the history_edit records
+			// come out in a deterministic order.
+			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
+				ChatTranscriptEntry& entry = mTranscript[e];
+				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+
+				// Grouped BY NOTE: the codec rewrites a set of indices to ONE
+				// placeholder per call, and two targets in one entry may need
+				// different ones (two verbs, two skills, two elements).
+				std::vector<std::pair<std::string, std::vector<std::size_t>>> byNote;
+				for( std::size_t t = 0; t < targets.size(); ++t ) {
+					if( targets[t].entry != e ) continue;
+					const std::size_t s = targets[t].slot;
+					if( s >= entry.toolResultSlots.size() || !entry.toolResultSlots[s].live ) continue;
 					bool bucketed = false;
-					for( std::size_t k = 0; k < byKey.size(); ++k ) {
-						if( byKey[k].first == slot.supersessionKey ) {
-							byKey[k].second.push_back( s );
+					for( std::size_t k = 0; k < byNote.size(); ++k ) {
+						if( byNote[k].first == targets[t].note ) {
+							bool dup = false;
+							for( std::size_t j = 0; j < byNote[k].second.size(); ++j )
+								if( byNote[k].second[j] == s ) dup = true;
+							if( !dup ) byNote[k].second.push_back( s );
 							bucketed = true;
 							break;
 						}
@@ -2442,17 +2570,17 @@ namespace RISE
 					if( !bucketed ) {
 						std::vector<std::size_t> one;
 						one.push_back( s );
-						byKey.push_back( std::make_pair( slot.supersessionKey, one ) );
+						byNote.push_back( std::make_pair( targets[t].note, one ) );
 					}
 				}
-				if( byKey.empty() ) continue;
+				if( byNote.empty() ) continue;
 
 				// REWRITE FIRST, THEN mark the bucket dead -- and only when
 				// the rewrite actually LANDED.  Every codec returns its input
 				// UNCHANGED when the entry does not parse or its shape guards
 				// miss; clearing `live` before knowing that would leave the
 				// payload riding forever while the bookkeeping believed it
-				// elided, and pass 1 (which skips dead slots) would never
+				// elided, and the callers (which skip dead slots) would never
 				// retry.  A no-op rewrite instead leaves the slots live, so
 				// the next flush tries again -- bounded work, and no
 				// history_edit is emitted for a non-edit.
@@ -2471,15 +2599,14 @@ namespace RISE
 				// signal here.
 				const std::size_t beforeBytes = entry.rawJson.size();
 				bool anyLanded = false;
-				for( std::size_t k = 0; k < byKey.size(); ++k ) {
+				for( std::size_t k = 0; k < byNote.size(); ++k ) {
 					const std::string before = entry.rawJson;
 					entry.rawJson = mCodec->RewriteElidedToolResults(
-						entry.rawJson, byKey[k].second,
-						ChatSupersededResultNote( byKey[k].first ) );
+						entry.rawJson, byNote[k].second, byNote[k].first );
 					if( entry.rawJson == before ) continue;
 					anyLanded = true;
-					for( std::size_t j = 0; j < byKey[k].second.size(); ++j )
-						entry.toolResultSlots[ byKey[k].second[j] ].live = false;
+					for( std::size_t j = 0; j < byNote[k].second.size(); ++j )
+						entry.toolResultSlots[ byNote[k].second[j] ].live = false;
 				}
 				if( !anyLanded ) continue;
 				// Eval-harness E1: record the transcript rewrite, exactly as
@@ -2490,8 +2617,67 @@ namespace RISE
 					h.entryIndex = static_cast<int>( e );
 					h.beforeBytes = static_cast<long long>( beforeBytes );
 					h.afterBytes = static_cast<long long>( entry.rawJson.size() );
-					h.reason = "tool_result_supersession";
+					h.reason = reason;
 					mRecorder->EmitHistoryEdit( h );
+				}
+			}
+		}
+
+		void AgentChatLoop::RetireToolResultsByLifetime(
+			std::size_t newEntry,
+			const std::vector<std::pair<ChatToolCall, std::string>>& ordered )
+		{
+			if( newEntry >= mTranscript.size() ) return;
+			// Walk the NEW entry's results in wire order.  A lifetime event
+			// retires only slots that come BEFORE it in wire order: every
+			// earlier entry, plus this entry's own earlier indices (a call the
+			// model made before the event in the same turn).
+			for( std::size_t i = 0; i < ordered.size(); ++i ) {
+				const ChatToolCall& call = ordered[i].first;
+				const std::string& raw = ordered[i].second;
+
+				// L2: a successful finish_element for E settles E -- its
+				// build_element / insert_chunks results are history now.
+				std::string element;
+				if( IsFinishedElementResult( call, raw, element ) ) {
+					std::vector<ToolResultSlotRewrite> targets;
+					for( std::size_t e = 0; e <= newEntry; ++e ) {
+						const ChatTranscriptEntry& entry = mTranscript[e];
+						if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+						const std::size_t limit = ( e == newEntry ) ? i : entry.toolResultSlots.size();
+						for( std::size_t s = 0; s < limit && s < entry.toolResultSlots.size(); ++s ) {
+							const ChatToolResultSlot& slot = entry.toolResultSlots[s];
+							if( !slot.live || slot.lifetimeElement != element ) continue;
+							ToolResultSlotRewrite t;
+							t.entry = e;
+							t.slot = s;
+							t.note = ChatElementFinishedRetirementNote( slot.verb, element );
+							targets.push_back( t );
+						}
+					}
+					RewriteToolResultSlots( targets, "element_finished_retirement" );
+				}
+
+				// L3b: the FIRST successful place_element is the Compose
+				// signal -- every skill read during planning retires once.
+				if( !mComposeSkillRetirementDone && IsPlacedElementResult( call, raw ) ) {
+					mComposeSkillRetirementDone = true;
+					std::vector<ToolResultSlotRewrite> targets;
+					for( std::size_t e = 0; e <= newEntry; ++e ) {
+						const ChatTranscriptEntry& entry = mTranscript[e];
+						if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+						const std::size_t limit = ( e == newEntry ) ? i : entry.toolResultSlots.size();
+						for( std::size_t s = 0; s < limit && s < entry.toolResultSlots.size(); ++s ) {
+							const ChatToolResultSlot& slot = entry.toolResultSlots[s];
+							if( !slot.live || slot.lifetimeSkill.empty() ) continue;
+							ToolResultSlotRewrite t;
+							t.entry = e;
+							t.slot = s;
+							t.note = ChatComposeSkillRetirementNote( slot.lifetimeSkill );
+							targets.push_back( t );
+						}
+					}
+					RewriteToolResultSlots( targets, "compose_skill_retirement" );
 				}
 			}
 		}

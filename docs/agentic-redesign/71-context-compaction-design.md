@@ -280,6 +280,23 @@ deliberate — it is a correctness rule about stale reads, not a cost knob — b
 the 312-run baseline in [70-agent-eval-harness.md](70-agent-eval-harness.md) §6.4
 predates it and is no longer a like-for-like comparison.
 
+## 6c. Lifetime-based retirement (SHIPPED 2026-10-17, doc 91)
+
+Supersession (§6b) retires a result when a NEWER copy of the same view
+arrives.  [91-context-lifetimes-and-visible-detail.md](91-context-lifetimes-and-visible-detail.md)
+§2 adds the other half: a result is retired when the thing it DESCRIBES is
+settled, whatever its age.  Slice L1 trims `build_element` / `insert_chunks`
+reports at the source (no history rewrite); L2 retires an element's
+`build_element` / `insert_chunks` results on a successful `finish_element`
+for it; L3 supersedes a named `read_skill` by a same-name re-read (an
+argument-normalized key in `ChatToolResultSupersessionKey`) and retires
+every live named `read_skill` at the first successful `place_element`.  The
+L2/L3 rewrites share `AgentChatLoop::RewriteToolResultSlots` with §6b, so
+they keep its boundary (ToolResults entries only, C1), its wire guarantee
+(C2), its determinism (§6) and its converge-once rule -- each costs one
+bounded provider-cache miss, the T1c policy unchanged.  history_edit
+reasons: `element_finished_retirement`, `compose_skill_retirement`.
+
 ## 7. Phasing (when built)
 
 - S1: token estimator + high-water/low-water config (no rewriting yet; just

@@ -334,10 +334,12 @@ namespace RISE
 					"baseHeadVersion -- it is checked against the FIRST element only, since "
 					"the whole batch is one logical operation. Returns "
 					"{applied,total,results:[...]}: total is chunks.length, applied is how "
-					"many results have applied=true, and each results[i] is the EXACT same "
-					"shape insert_chunk returns for chunks[i] (applied, rawCode, status, "
+					"many results have applied=true, and each results[i] is the shape "
+					"insert_chunk returns for chunks[i] (applied, rawCode, status, "
 					"retriable, headVersion, message, name, kind, and optional issues with "
-					"the same reasons insert_chunk documents). Check every element's own "
+					"the same reasons insert_chunk documents) -- except that a clean "
+					"success (status applied, no issues) carries only applied, status, "
+					"headVersion, name and kind. Check every element's own "
 					"status -- do not assume the whole batch succeeded just because the "
 					"call returned. Each array element must be EXACTLY ONE `keyword "
 					"{ ... }` block, same grammar as insert_chunk's chunkText. "
@@ -1428,7 +1430,9 @@ namespace RISE
 					"provider that cannot run a separate completion this returns ok:false with a plain "
 					"statement, nothing else changes, and authoring by hand is not blocked. Returns "
 					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
-					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}.",
+					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}; "
+					"landed names every chunk that went in, and chunkResults details only the chunks "
+					"that were rejected, diagnosed or carry issues.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"element\":{\"type\":\"string\",\"description\":"
 						"\"Required. The name of the ACTIVE element, exactly as you filed it in file_build_plan. A name that is not the active element does nothing and says which element is active.\"},"
@@ -2396,6 +2400,35 @@ namespace RISE
 			// read_document still gets correct supersession.
 			static const char* const kSupersedableVerbs[] = { "read_document", "list_proposals" };
 
+			// THE ONE ARGUMENT-NORMALIZING KEY (doc 91 slice L3a): a NAMED
+			// read_skill is the whole view of ONE named skill file, so a later
+			// read of the SAME name fully contains the earlier copy (property
+			// (1) holds per name) and the key is "read_skill" + the skill's
+			// name -- the argument-normalizing key function property (3) calls
+			// for.  Two DIFFERENT skills never share a key, and the INDEX form
+			// (no name; result {skills:[...]}) is never keyed.  The name comes
+			// from the RESULT (AgentSession::ReadSkill's canonical `name`) when
+			// present, else from the call's `name` argument.  Property (2) is
+			// NOT what admits it: a skill file is static, so the earlier copy
+			// is redundant rather than stale -- the cost rule doc 91 measured
+			// (three skill reads, 165 KB live to the end of a session).
+			if( call.name == "read_skill" ) {
+				JsonValue env;
+				std::string perr;
+				if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return std::string();
+				if( env.find( "error" ) ) return std::string();
+				const JsonValue& result = env.get( "result" );
+				if( !result.isObject() || !result.get( "markdown" ).isString() ) return std::string();
+				std::string skill = result.get( "name" ).asString();
+				if( skill.empty() ) {
+					JsonValue args;
+					if( JsonParse( call.argsJson, args, perr ) && args.isObject() )
+						skill = args.get( "name" ).asString();
+				}
+				if( skill.empty() ) return std::string();
+				return std::string( kChatReadSkillKeyPrefix ) + skill;
+			}
+
 			bool listed = false;
 			for( std::size_t i = 0; i < sizeof( kSupersedableVerbs ) / sizeof( kSupersedableVerbs[0] ); ++i )
 				if( call.name == kSupersedableVerbs[i] ) { listed = true; break; }
@@ -2433,6 +2466,32 @@ namespace RISE
 		{
 			return "[" + verbName + " result elided -- superseded by a later " + verbName +
 			       " call in this conversation; call " + verbName + " again for the current state]";
+		}
+
+		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey )
+		{
+			const std::string prefix( kChatReadSkillKeyPrefix );
+			if( supersessionKey.compare( 0, prefix.size(), prefix ) == 0 ) {
+				const std::string skill = supersessionKey.substr( prefix.size() );
+				return "[read_skill \"" + skill + "\" result elided -- superseded by a later read_skill "
+				       "of the same skill in this conversation; call read_skill {\"name\":\"" + skill +
+				       "\"} again if you need it]";
+			}
+			return ChatSupersededResultNote( supersessionKey );
+		}
+
+		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
+		                                               const std::string& element )
+		{
+			return "[" + verbName + " result for element \"" + element + "\" elided -- \"" + element +
+			       "\" is finished; read_document shows its chunks, reopen_element \"" + element +
+			       "\" to edit it]";
+		}
+
+		std::string ChatComposeSkillRetirementNote( const std::string& skillName )
+		{
+			return "[read_skill \"" + skillName + "\" elided at the Compose phase -- call read_skill "
+			       "{\"name\":\"" + skillName + "\"} again if you need it]";
 		}
 
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )
