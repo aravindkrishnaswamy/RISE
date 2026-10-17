@@ -293,6 +293,7 @@ namespace RISE
 			Refusal,       //!< the provider declined the request (safety/refusal)
 			MaxTokens,     //!< the reply hit the output-token cap (truncated; discarded).  A verbatim retry will likely truncate again -- recovery needs a NEW/narrower user message, not an automatic retry.
 			IterationCap,  //!< the loop's per-turn tool-round cap tripped
+			MalformedToolCall, //!< the model attempted a tool call the provider/codec could not accept as a call (Gemini finishReason MALFORMED_FUNCTION_CALL; OpenAI-family arguments that are not a JSON object).  Nothing is executed or recorded; AgentChatLoop::HandleResponse answers it with a bounded corrective retry (see ChatStepResult::retryDegenerateTurn), so only an EXHAUSTED budget reaches the user as an error.
 			Misuse         //!< caller-contract violation (e.g. HandleResponse while calls are pending)
 		};
 
@@ -392,10 +393,15 @@ namespace RISE
 			//! the sibling ChatErrorKind::Refusal branches at the same sites
 			//! (a structured refusal / content_filter is a considered
 			//! decision, not a serving glitch, and must stay terminal), and
-			//! not set on any other structural refusal (malformed tool args,
-			//! id-less tool_call, ...).  Only the eval runner's attempt loop
-			//! consumes this flag; AgentChatLoop's interactive driver does
-			//! not retry on it.  Always false for ToolCalls / FinalText and
+			//! not set on any other structural refusal (id-less tool_call,
+			//! duplicate id, ...).  ALSO set by AgentChatLoop::HandleResponse
+			//! (never by a codec) on a ChatErrorKind::MalformedToolCall
+			//! while that turn's corrective-retry budget lasts: the loop
+			//! queues a corrective user message that the next BuildRequest
+			//! appends, so the driver's recovery is the same "just call
+			//! BuildRequest again" it already performs for a blank turn.
+			//! Consumed by the eval runner's attempt loop and the GUI
+			//! drivers.  Always false for ToolCalls / FinalText and
 			//! for every other error kind.
 			bool                      retryDegenerateTurn = false;
 		};

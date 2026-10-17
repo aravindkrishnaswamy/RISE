@@ -782,6 +782,8 @@ namespace RISE
 			mPendingResults.clear();
 			mToolLineStash.clear();
 			mToolRounds = 0;
+			mMalformedRetries = 0;
+			mPendingCorrective.clear();
 			// Describes the transcript we just cleared, so it goes with it.
 			mCompactedEntryCount = 0;
 			mBlindEditStreak = 0;
@@ -960,6 +962,14 @@ namespace RISE
 			// fires when BOTH are empty.
 			if( IsBlank( text ) && attachments.empty() ) return;
 
+			// A genuine user message starts a new turn: restore the
+			// malformed-tool-call retry budget and discard a corrective
+			// the driver never sent (the user's words supersede it).
+			if( !mAppendingCorrective ) {
+				mMalformedRetries = 0;
+				mPendingCorrective.clear();
+			}
+
 			// Eval-harness E1: ensure the session record leads the trajectory.
 			EnsureSessionRecordEmitted();
 
@@ -1052,6 +1062,21 @@ namespace RISE
 		ChatHttpRequest AgentChatLoop::BuildRequest( const std::string& apiKey )
 		{
 			FlushPendingToolResults();
+
+			// MALFORMED-TOOL-CALL RECOVERY: append the queued corrective as an
+			// ordinary user turn (user-role text after a user turn / tool
+			// results is the shape AddUserMessage already produces for every
+			// provider).  It is NOT a new conversation turn, so the
+			// tool-round counter is preserved.
+			if( !mPendingCorrective.empty() ) {
+				const std::string corrective = mPendingCorrective;
+				mPendingCorrective.clear();
+				const int savedRounds = mToolRounds;
+				mAppendingCorrective = true;
+				AddUserMessage( corrective );
+				mAppendingCorrective = false;
+				mToolRounds = savedRounds;
+			}
 
 			// TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: once a model has
 			// proven text-only, every request stays image-free -- strip any
@@ -1190,6 +1215,35 @@ namespace RISE
 				mForceReasoningEffortNone = true;
 				MarkReasoningEffortNoneKnown( mCodec->ProviderName(), mModelId );
 				pr.step.retryReasoningEffortNone = true;
+				return pr.step;
+			}
+
+			// MALFORMED-TOOL-CALL RECOVERY (Gemini finishReason
+			// MALFORMED_FUNCTION_CALL; OpenAI-family non-object arguments):
+			// the turn carries no executable call and nothing is recorded
+			// (a Gemini one is a single EMPTY text part, invalid to echo).
+			// Within a bounded per-turn budget, queue a corrective user
+			// message for the next BuildRequest and flag the driver to
+			// re-issue; beyond it the error surfaces with a clear message.
+			if( pr.step.kind == ChatStepResult::Kind::ProviderError &&
+			    pr.step.errorKind == ChatErrorKind::MalformedToolCall ) {
+				if( mMalformedRetries >= kMaxMalformedToolCallRetries ) {
+					pr.step.errorMessage += " -- the model produced a malformed tool call " +
+						std::to_string( mMalformedRetries + 1 ) +
+						" times in a row despite corrective instructions; giving up on this turn";
+					return pr.step;
+				}
+				++mMalformedRetries;
+				std::string detail = pr.step.errorMessage;
+				if( detail.size() > 300 ) detail = detail.substr( 0, 300 ) + "...";
+				mPendingCorrective =
+					"[automatic notice] Your previous tool call was malformed and was NOT executed: " +
+					detail + "\n"
+					"Tool arguments must be a valid JSON object. In particular, string values "
+					"(including every element of an array of strings such as `chunks`) must be JSON "
+					"strings: wrapped in double quotes, with newlines escaped as \\n, tabs as \\t "
+					"and inner double quotes as \\\". Please re-issue the tool call with valid JSON arguments.";
+				pr.step.retryDegenerateTurn = true;
 				return pr.step;
 			}
 
@@ -2574,6 +2628,7 @@ namespace RISE
 					case ChatErrorKind::MaxTokens:    return "max_tokens";
 					case ChatErrorKind::IterationCap: return "iteration_cap";
 					case ChatErrorKind::Misuse:       return "misuse";
+					case ChatErrorKind::MalformedToolCall: return "malformed_tool_call";
 					case ChatErrorKind::None:
 					default:                          return "";
 				}

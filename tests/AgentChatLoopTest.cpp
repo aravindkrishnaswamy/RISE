@@ -5116,12 +5116,12 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		ChatStepResult st = loop.HandleResponse( 200, fx );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "malformed function.arguments -> ProviderError (whole turn refused)" );
-		Check( st.errorKind == ChatErrorKind::Provider,
-		       "malformed arguments -> errorKind Provider" );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "malformed arguments -> errorKind MalformedToolCall (recoverable)" );
 		Check( st.errorMessage.find( "malformed arguments" ) != std::string::npos,
 		       "the refusal names the malformed arguments" );
-		Check( !st.retryDegenerateTurn,
-		       "a malformed-arguments STRUCTURAL refusal is not one of the four blank-turn sites -- NOT marked retriable" );
+		Check( st.retryDegenerateTurn,
+		       "a malformed-arguments refusal is answered by the loop's corrective retry (not a blank-turn site)" );
 		Check( loop.TranscriptSize() == 1, "the malformed-args turn records nothing" );
 		Check( loop.PendingToolCalls().empty(),
 		       "no call is pended -- it was never recorded as an executable tool_call" );
@@ -10397,6 +10397,100 @@ static void TestGeminiSchemaKeywordDenylist()
 	       "400 this test exists to prevent (see the header comment for the exact 2026-08-11 error)" );
 }
 
+// Gemini finishReason MALFORMED_FUNCTION_CALL (HTTP 200, one empty text part,
+// finishMessage quoting the unparseable attempt) used to end the turn.  It is
+// now a bounded corrective retry.
+static std::string GeminiMalformedFixture()
+{
+	return "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\","
+		"\"thoughtSignature\":\"sig\"}]},\"finishReason\":\"MALFORMED_FUNCTION_CALL\","
+		"\"finishMessage\":\"Malformed function call: call:default_api:insert_chunks{chunks:[ standard_object\\n{\\n\\tname x} ]}\","
+		"\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":64,\"candidatesTokenCount\":32},"
+		"\"modelVersion\":\"gemini-4-argon\"}";
+}
+
+static void TestMalformedFunctionCallRecovery()
+{
+	std::printf( "T46: Gemini MALFORMED_FUNCTION_CALL corrective retry...\n" );
+	const std::string bad  = GeminiMalformedFixture();
+	const std::string good = GeminiFixture(
+		"{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"read_document\",\"args\":{},\"id\":\"fc_1\"}}]}",
+		"STOP" );
+
+	// (a) malformed then valid: the call executes and the turn continues.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st = loop.HandleResponse( 200, bad );
+		Check( st.kind == ChatStepResult::Kind::ProviderError &&
+		       st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "T46a: MALFORMED_FUNCTION_CALL -> ProviderError/MalformedToolCall" );
+		Check( st.errorMessage.find( "insert_chunks" ) != std::string::npos,
+		       "T46a: the error carries the finishMessage" );
+		Check( st.retryDegenerateTurn, "T46a: the driver is told to re-issue" );
+		Check( loop.TranscriptSize() == 1, "T46a: the malformed (empty-text) model turn is NOT recorded" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == 2, "T46a: BuildRequest appended the corrective user turn" );
+		Check( req.body.find( "was malformed and was NOT executed" ) != std::string::npos &&
+		       req.body.find( "valid JSON" ) != std::string::npos &&
+		       req.body.find( "chunks" ) != std::string::npos,
+		       "T46a: the retry request carries the corrective text" );
+		Check( req.body.find( "thoughtSignature" ) == std::string::npos,
+		       "T46a: the empty malformed model turn is not echoed" );
+
+		ChatStepResult ok = loop.HandleResponse( 200, good );
+		Check( ok.kind == ChatStepResult::Kind::ToolCalls && ok.toolCalls.size() == 1,
+		       "T46a: the re-issued valid call is accepted as ToolCalls" );
+		if( ok.kind == ChatStepResult::Kind::ToolCalls && !ok.toolCalls.empty() ) {
+			loop.AddToolResult( ok.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+			const ChatHttpRequest req2 = loop.BuildRequest( kApiKey );
+			Check( !req2.body.empty() && req2.body.find( "functionResponse" ) != std::string::npos,
+			       "T46a: the turn continues with the tool result on the wire" );
+		}
+	}
+
+	// (b) three consecutive malformed responses: bounded, ends with a clear error.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		for( int i = 0; i < AgentChatLoop::kMaxMalformedToolCallRetries; ++i ) {
+			(void)loop.BuildRequest( kApiKey );
+			ChatStepResult st = loop.HandleResponse( 200, bad );
+			Check( st.retryDegenerateTurn, "T46b: retry " + std::to_string( i + 1 ) + " is offered" );
+		}
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st = loop.HandleResponse( 200, bad );
+		Check( st.kind == ChatStepResult::Kind::ProviderError &&
+		       st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "T46b: the third consecutive malformed response is an error" );
+		Check( !st.retryDegenerateTurn, "T46b: no further retry is offered" );
+		Check( st.errorMessage.find( "giving up" ) != std::string::npos,
+		       "T46b: the error says the loop gave up" );
+		// A fresh user message restores the budget.
+		loop.AddUserMessage( "keep going" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult again = loop.HandleResponse( 200, bad );
+		Check( again.retryDegenerateTurn, "T46b: a new user message restores the retry budget" );
+	}
+
+	// (c) OpenAI malformed arguments recover the same way.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+		const std::string fx = OpenAIFixture( "null",
+			"[{\"id\":\"call_badargs\",\"type\":\"function\",\"function\":"
+			"{\"name\":\"validate\",\"arguments\":\"{ not json\"}}]", "tool_calls" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall && st.retryDegenerateTurn,
+		       "T46c: OpenAI malformed arguments -> MalformedToolCall, retry offered" );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -10480,6 +10574,7 @@ int main()
 	TestFileBuildPlanToolAndGateClassification();
 	TestDriverNoteSmoke();
 	TestGeminiSchemaKeywordDenylist();
+	TestMalformedFunctionCallRecovery();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

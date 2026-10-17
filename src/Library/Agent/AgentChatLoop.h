@@ -1369,6 +1369,29 @@ namespace RISE
 			//! Doubles as the once-per-round retry guard, mirroring
 			//! mElideAllImages exactly.  Cleared by Reset().
 			bool                                     mForceReasoningEffortNone;
+
+			//! MALFORMED-TOOL-CALL RECOVERY: corrective retries already
+			//! spent in the current user turn (reset by a user
+			//! AddUserMessage and by Reset()).  Bounded by
+			//! kMaxMalformedToolCallRetries; the next failure is surfaced.
+			int                                      mMalformedRetries = 0;
+
+			//! Corrective user text queued by HandleResponse on a
+			//! MalformedToolCall and appended to the transcript by the NEXT
+			//! BuildRequest (so the trajectory reads llm(error) -> user ->
+			//! llm).  The malformed model turn itself is never recorded:
+			//! for Gemini it is an empty text part, which is invalid to
+			//! echo back.  Empty when nothing is queued.
+			std::string                              mPendingCorrective;
+
+			//! True only while BuildRequest is appending mPendingCorrective
+			//! through AddUserMessage, so that call neither resets the
+			//! tool-round counter nor the retry budget.
+			bool                                     mAppendingCorrective = false;
+		public:
+			//! Corrective retries allowed per user turn after a
+			//! ChatErrorKind::MalformedToolCall.
+			static const int kMaxMalformedToolCallRetries = 2;
 		};
 	}
 }
