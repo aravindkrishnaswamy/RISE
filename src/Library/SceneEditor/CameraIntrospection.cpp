@@ -699,8 +699,19 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 	}
 	else if( n == "target_orientation" ) {
 		Scalar x, y, z;
-		if( !ParseVec3( value, x, y, z ) ) return false;
-		// Stored as Vec2; only x/y are used.  Convert from degrees.
+		// Stored as Vec2; only x/y are used.  Convert from degrees.  Accept
+		// BOTH spellings: the 3-component form the scene language and the
+		// agent's camera override use ("x y 0"), and the 2-component form this
+		// property's OWN GetPropertyValue emits (DoubleVec2).  Rejecting the
+		// latter made a captured value impossible to write back, so any
+		// capture-set-render-restore sequence that overrode target_orientation
+		// (the agent's `view`/`isolate`/`zoom` renders) left the override in
+		// place on the camera afterwards.
+		if( ParseVec3( value, x, y, z ) ) {
+			// ok
+		} else if( std::sscanf( value.c_str(), "%lf %lf", &x, &y ) != 2 ) {
+			return false;
+		}
 		cam->SetTargetOrientation( Vector2( x * DEG_TO_RAD, y * DEG_TO_RAD ) );
 	}
 	else if( n == "theta" ) {

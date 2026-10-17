@@ -6030,6 +6030,387 @@ static void RunTargetComposesWithShippedGatesTest()
 	}
 }
 
+//======================================================================
+// DOC 91 V2 (2026-10-17): render{zoom:"<object>"} -- a close look from the
+// SCENE camera.  The camera keeps its LOCATION, aims at the object's
+// surface, narrows the vertical fov to fit it; nothing is hidden.
+//======================================================================
+
+// Exact share of the frame an objectmap legend entry covers, or -1.
+static double LegendShareOfFrame( const AgentRenderResult& r, const char* name )
+{
+	const LegendEntry* e = FindLegend( r, name );
+	if( !e || r.width == 0 || r.height == 0 ) return -1.0;
+	return (double)e->pixelCount / (double)( (std::size_t)r.width * r.height );
+}
+
+// Centre (as a fraction of the frame, from the top-left) of the pixels whose
+// identity colour is `name`'s in an objectmap result.  false if absent.
+static bool LegendCentre( const AgentRenderResult& r, const char* name, double& cx, double& cy )
+{
+	const LegendEntry* e = FindLegend( r, name );
+	if( !e ) return false;
+	unsigned char rgb[3];
+	if( !HexToBytes( e->colorHex, rgb ) ) return false;
+	Decoded d;
+	if( !DecodePng( r.png, d ) ) return false;
+	const BBox b = ScanBBoxForColor( d, rgb );
+	if( b.found == 0 ) return false;
+	cx = 0.5 * ( (double)b.minX + (double)b.maxX + 1.0 ) / (double)d.w;
+	cy = 0.5 * ( (double)b.minY + (double)b.maxY + 1.0 ) / (double)d.h;
+	return true;
+}
+
+static std::string SceneWithCameraExtras( const std::string& scene, const std::string& extras )
+{
+	std::string s = scene;
+	const std::string cam = "\tfov 50.0\n}";
+	const std::size_t at = s.find( cam );
+	if( at == std::string::npos ) return std::string();
+	s.replace( at, cam.size(), "\tfov 50.0\n" + extras + "}" );
+	return s;
+}
+
+static void RunZoomTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (V2) render{zoom:} -- a close look from the scene camera ===\n" );
+	const std::string scenePath = WriteTemp( "rise_zoom.RISEscene", kSceneIsolateSmallPart );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "zoom scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "zoom session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	// The reference: the whole scene, objectmap (exact, deterministic).
+	AgentRenderParams fullP;
+	fullP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
+	const AgentRenderResult fullR = session->Render( fullP );
+	Check( fullR.ok && fullR.legend.size() == 2, "V2 whole-scene objectmap renders both objects" );
+	const double fullPart = LegendShareOfFrame( fullR, "part" );
+	const double fullBack = LegendShareOfFrame( fullR, "backdrop" );
+	Check( fullPart > 0.0 && fullPart < 0.01, "V2 sanity: at the scene camera the part is under 1% of the frame" );
+
+	// (V2-a) the zoom render itself.
+	AgentRenderParams zp;
+	zp.renderTarget = AgentRenderTarget::ObjectMap;
+	zp.zoom         = "part";
+	std::srand( g_renderSeed++ );
+	const AgentRenderResult zr = session->Render( zp );
+	Check( zr.ok, std::string( "V2 the zoom objectmap render succeeds: " ) + zr.message );
+	Check( zr.zoomApplied && zr.zoomObject == "part", "V2 the result reports zoomApplied and the resolved object" );
+	Check( !zr.isolateApplied, "V2 zoom is not an isolate" );
+	const double zoomPart = LegendShareOfFrame( zr, "part" );
+	const double zoomBack = LegendShareOfFrame( zr, "backdrop" );
+	std::printf( "  part frame share: scene camera %.5f -> zoom %.4f (backdrop %.4f -> %.4f); fov %.3f -> %.3f deg; "
+	             "coverage %.4f; fitBasis=%s, %u points, %.2f ms\n",
+	             fullPart, zoomPart, fullBack, zoomBack, zr.zoomSceneFovDegrees, zr.zoomFovDegrees,
+	             zr.zoomCoverage, zr.zoomFitBasis.c_str(), zr.zoomSurfacePointCount, zr.zoomFitMillis );
+	Check( zoomPart >= 0.25,
+	       "MONEY ASSERTION (V2-a1): the zoomed part fills >= 25% of the frame (exact objectmap tally)" );
+	Check( zoomPart > fullPart * 50.0,
+	       "MONEY ASSERTION (V2-a2): the zoom shows the part at >50x the pixels the full frame gave it" );
+	Check( zr.legend.size() == 2 && zoomBack > 0.0,
+	       "MONEY ASSERTION (V2-a3): the backdrop is STILL in the frame -- nothing was hidden (isolate would leave one entry)" );
+	Check( std::fabs( zr.zoomEye[0] - 0.0 ) < 1e-9 && std::fabs( zr.zoomEye[1] - 0.0 ) < 1e-9 &&
+	       std::fabs( zr.zoomEye[2] - 14.0 ) < 1e-9,
+	       "MONEY ASSERTION (V2-a4): the camera LOCATION is the scene camera's, unchanged" );
+	Check( std::fabs( zr.zoomSceneFovDegrees - 50.0 ) < 1e-6 && zr.zoomFovDegrees < 50.0 &&
+	       zr.zoomFovDegrees >= 2.0 && !zr.zoomKeptSceneFov,
+	       "V2 the vertical fov was narrowed below the scene's, within the [2 deg, scene fov] clamp" );
+	Check( zr.zoomFitBasis == "surface" && zr.zoomSurfacePointCount > 100,
+	       "V2 the fit used points on the part's real surface" );
+	Check( zr.zoomCoverage > 0.0 && zr.zoomCoverage <= 0.85 * 0.85 + 1e-6,
+	       "V2 the reported coverage is at most the fill squared" );
+	Check( zoomPart <= zr.zoomCoverage + 1e-6,
+	       "V2 and bounds the exact silhouette from above" );
+	{
+		double cx = 0.0, cy = 0.0;
+		const bool got = LegendCentre( zr, "part", cx, cy );
+		Check( got && std::fabs( cx - 0.5 ) < 0.08 && std::fabs( cy - 0.5 ) < 0.08,
+		       "V2 the part is aimed at: its pixel centre sits at the middle of the frame" );
+	}
+	Check( zr.message.find( "zoom:" ) != std::string::npos && zr.message.find( "narrowed from 50.0" ) != std::string::npos,
+	       "V2 the message states what the zoom did" );
+	Check( !zr.inventoryApplied, "V2 a zoom render carries no scene inventory (its camera is not the reconstructable one)" );
+
+	// (V2-b) EPHEMERAL: the scene camera is back, so a plain objectmap is
+	// pixel-identical to the reference.
+	std::srand( g_renderSeed++ );
+	const AgentRenderResult afterR = session->Render( fullP );
+	const LegendEntry* ap = FindLegend( afterR, "part" );
+	const LegendEntry* fp = FindLegend( fullR, "part" );
+	Check( ap && fp && ap->pixelCount == fp->pixelCount &&
+	       FindLegend( afterR, "backdrop" ) && FindLegend( fullR, "backdrop" ) &&
+	       FindLegend( afterR, "backdrop" )->pixelCount == FindLegend( fullR, "backdrop" )->pixelCount,
+	       "MONEY ASSERTION (V2-b): after a zoom render the scene camera is exactly restored" );
+
+	// (V2-c) composes with production and draft quality.
+	{
+		AgentRenderParams dp;
+		dp.zoom    = "part";
+		dp.quality = AgentRenderQuality::Draft;
+		std::srand( g_renderSeed++ );
+		const AgentRenderResult dr = session->Render( dp );
+		Check( dr.ok && dr.zoomApplied && dr.renderMode == "draft" && !dr.png.empty(),
+		       std::string( "V2 zoom composes with quality:\"draft\": " ) + dr.message );
+		AgentRenderParams pp;
+		pp.zoom = "part";
+		std::srand( g_renderSeed++ );
+		const AgentRenderResult pr = session->Render( pp );
+		Check( pr.ok && pr.zoomApplied && pr.renderMode == "production" && !pr.png.empty(),
+		       std::string( "V2 zoom composes with the production render: " ) + pr.message );
+		Check( !pr.inventoryApplied && !pr.anchorApplied,
+		       "V2 and a zoom production render is neither inventoried nor anchored" );
+	}
+
+	// (V2-d) an object that already fills the frame keeps the scene fov.
+	{
+		AgentRenderParams kp;
+		kp.renderTarget = AgentRenderTarget::ObjectMap;
+		kp.zoom         = "backdrop";
+		std::srand( g_renderSeed++ );
+		const AgentRenderResult kr = session->Render( kp );
+		Check( kr.ok && kr.zoomApplied && kr.zoomKeptSceneFov &&
+		       std::fabs( kr.zoomFovDegrees - 50.0 ) < 1e-6,
+		       std::string( "V2 an object that already fills the frame keeps the scene fov (never widened): " ) + kr.message );
+		Check( kr.message.find( "NOT narrowed" ) != std::string::npos, "V2 and the message says so" );
+	}
+
+	// (V2-e) mutual exclusion and unknown names, at the session.
+	{
+		AgentRenderParams a; a.zoom = "part"; a.isolate = "part";
+		AgentRenderResult r = session->Render( a );
+		Check( !r.ok && r.message.find( "cannot be combined with `isolate`" ) != std::string::npos,
+		       "V2 zoom + isolate is refused with a clear error" );
+		AgentRenderParams b; b.zoom = "part"; b.view = "somewhere";
+		r = session->Render( b );
+		Check( !r.ok && r.message.find( "cannot be combined with `view`" ) != std::string::npos,
+		       "V2 zoom + view is refused" );
+		AgentRenderParams c; c.zoom = "part"; c.camera.hasFov = true; c.camera.fov = "30";
+		r = session->Render( c );
+		Check( !r.ok && r.message.find( "cannot be combined with `camera`" ) != std::string::npos,
+		       "V2 zoom + camera is refused" );
+		AgentRenderParams u; u.zoom = "no_such_object";
+		r = session->Render( u );
+		Check( !r.ok && r.message.find( "unknown object \"no_such_object\"" ) != std::string::npos &&
+		       r.message.find( "\"part\"" ) != std::string::npos && !r.zoomApplied,
+		       "V2 an unknown name FAILS naming what is available, and reports no zoom" );
+		AgentRenderParams v; v.zoom = "part";
+		std::srand( g_renderSeed++ );
+		v.renderTarget = AgentRenderTarget::ObjectMap;
+		const AgentRenderResult again = session->Render( v );
+		Check( again.ok && again.zoomApplied, "V2 the session is healthy after the refusals" );
+	}
+	pJob->release();
+
+	// (V2-f) a scene camera carrying orientation + target_orientation must not
+	// swing the aim off the object, and both are restored afterwards.
+	{
+		const std::string oscene = SceneWithCameraExtras( kSceneIsolateSmallPart,
+			"\torientation 12 8 25\n\ttarget_orientation 18 30\n" );
+		Check( !oscene.empty(), "V2 orientation fixture builds" );
+		const std::string opath = WriteTemp( "rise_zoom_orient.RISEscene", oscene );
+		Job* oJob = new Job();
+		Check( oJob->LoadAsciiSceneViaCst( opath.c_str() ), "V2 orientation scene loads" );
+		std::unique_ptr<AgentSession> os = AgentSession::WrapJob( oJob );
+		if( os ) {
+			std::srand( g_renderSeed++ );
+			const AgentRenderResult oFull = os->Render( fullP );
+			AgentRenderParams oz = zp;
+			std::srand( g_renderSeed++ );
+			const AgentRenderResult ozr = os->Render( oz );
+			Check( ozr.ok && ozr.zoomApplied, std::string( "V2 zoom on an orientation-carrying camera renders: " ) + ozr.message );
+			const double oShare = LegendShareOfFrame( ozr, "part" );
+			double cx = 0.0, cy = 0.0;
+			const bool got = LegendCentre( ozr, "part", cx, cy );
+			std::printf( "  orientation-carrying camera: zoomed part share %.4f (plain camera %.4f), centre %.3f,%.3f; eye %.4f %.4f %.4f\n",
+			             oShare, zoomPart, cx, cy, ozr.zoomEye[0], ozr.zoomEye[1], ozr.zoomEye[2] );
+			// The share differs from the plain camera's (the eye is orbited, so the
+			// part is seen from another angle and distance) -- what must hold is
+			// that the part is AIMED AT and fills the frame, not that it matches.
+			Check( oShare >= 0.25 && got && std::fabs( cx - 0.5 ) < 0.08 && std::fabs( cy - 0.5 ) < 0.08,
+			       "MONEY ASSERTION (V2-f1): inherited orientation / target_orientation do not swing the zoom off the "
+			       "object -- it fills >= 25% of the frame, centred" );
+			// The eye is the camera's REAL (post-orbit) position, not the rest location.
+			const double eyeR = std::sqrt( ozr.zoomEye[0]*ozr.zoomEye[0] + ozr.zoomEye[1]*ozr.zoomEye[1] +
+			                               ozr.zoomEye[2]*ozr.zoomEye[2] );
+			Check( std::fabs( eyeR - 14.0 ) < 1e-6 &&
+			       ( std::fabs( ozr.zoomEye[0] ) > 1e-3 || std::fabs( ozr.zoomEye[1] ) > 1e-3 ),
+			       "V2 the eye is the orbited position (same distance from lookat, not the rest location 0 0 14)" );
+			std::srand( g_renderSeed++ );
+			const AgentRenderResult oAfter = os->Render( fullP );
+			const LegendEntry* a1 = FindLegend( oAfter, "part" );
+			const LegendEntry* a0 = FindLegend( oFull, "part" );
+			Check( a0 && a1 && a0->pixelCount == a1->pixelCount,
+			       "V2 and the camera's orientation / target_orientation are restored after the render" );
+		}
+		oJob->release();
+	}
+
+	// (V2-g) a non-pinhole active camera is refused clearly.
+	{
+		const std::string opath = WriteTemp( "rise_zoom_ortho.RISEscene", kSceneIsolateOrtho );
+		Job* oJob = new Job();
+		Check( oJob->LoadAsciiSceneViaCst( opath.c_str() ), "V2 ortho scene loads" );
+		std::unique_ptr<AgentSession> os = AgentSession::WrapJob( oJob );
+		if( os ) {
+			AgentRenderParams p; p.zoom = "sph_obj"; p.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult r = os->Render( p );
+			Check( !r.ok && r.message.find( "pinhole" ) != std::string::npos && !r.zoomApplied,
+			       "V2 an orthographic active camera FAILS zoom naming the pinhole requirement" );
+		}
+		oJob->release();
+	}
+
+	// (V2-h) a CSG operand names the composite, in zoom's own words.
+	{
+		const std::string cpath = WriteTemp( "rise_zoom_csg.RISEscene", kSceneIsolateCsg );
+		Job* cJob = new Job();
+		Check( cJob->LoadAsciiSceneViaCst( cpath.c_str() ), "V2 csg scene loads" );
+		std::unique_ptr<AgentSession> cs = AgentSession::WrapJob( cJob );
+		if( cs ) {
+			AgentRenderParams p; p.zoom = "op_a"; p.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult r = cs->Render( p );
+			Check( !r.ok && r.message.find( "zoom \"op_a\" is not independently renderable" ) != std::string::npos &&
+			       r.message.find( "zoom \"csg_root\" instead" ) != std::string::npos,
+			       "V2 a CSG operand FAILS naming the composite to zoom instead (the verb is zoom's, not isolate's)" );
+			AgentRenderParams q; q.zoom = "csg_root"; q.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult rq = cs->Render( q );
+			Check( rq.ok && rq.zoomApplied && rq.zoomFitBasis == "bbox",
+			       std::string( "V2 a CSG composite zooms through its bounding box: " ) + rq.message );
+		}
+		cJob->release();
+	}
+}
+
+static void RunZoomSchemaAndRpcTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (V2) `zoom` on both model-facing schemas and over the RPC ===\n" );
+	{
+		AnthropicChatCodec codec;
+		const ChatHttpRequest req = codec.BuildRequest(
+			"claude-test-model", std::string(), "system prompt", std::vector<std::string>() );
+		JsonValue root; std::string perr;
+		Check( JsonParse( req.body, root, perr ), "V2 chat-codec request body parses" );
+		const JsonValue& tools = root.get( "tools" );
+		JsonValue renderTool = JsonValue::MakeNull();
+		for( std::size_t i = 0; i < tools.size(); ++i )
+			if( tools.at( i ).get( "name" ).asString() == "render" ) { renderTool = tools.at( i ); break; }
+		Check( renderTool.isObject(), "V2 found the chat-codec render tool" );
+		if( renderTool.isObject() ) {
+			const JsonValue& z = renderTool.get( "input_schema" ).get( "properties" ).get( "zoom" );
+			Check( z.isObject() && z.get( "type" ).asString() == "string", "V2 chat-codec render schema declares zoom as a string" );
+			const std::string d = z.get( "description" ).asString();
+			Check( d.find( "CLOSE UP" ) != std::string::npos && d.find( "NOTHING is hidden" ) != std::string::npos &&
+			       d.find( "Mutually exclusive" ) != std::string::npos && d.find( "UPPER BOUND" ) != std::string::npos,
+			       "V2 the chat-codec zoom description states what it does, that nothing is hidden, the exclusions and the coverage caveat" );
+		}
+	}
+	{
+		const std::string scenePath = WriteTemp( "rise_zoom_mcp.RISEscene", kSceneMeshAndSphere );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "V2 mcp scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "V2 mcp session wraps" ); return; }
+		AgentMcpAdapter mcp( std::move( session ) );
+		JsonValue req = JsonValue::MakeObject();
+		req.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+		req.set( "id", JsonValue::MakeNumber( 1 ) );
+		req.set( "method", JsonValue::MakeString( "tools/list" ) );
+		req.set( "params", JsonValue::MakeObject() );
+		JsonValue env; std::string perr;
+		Check( JsonParse( mcp.HandleLine( JsonSerialize( req ) ), env, perr ), "V2 tools/list parses" );
+		const JsonValue& toolsList = env.get( "result" ).get( "tools" );
+		JsonValue renderTool = JsonValue::MakeNull();
+		for( std::size_t i = 0; i < toolsList.size(); ++i )
+			if( toolsList.at( i ).get( "name" ).asString() == "render" ) { renderTool = toolsList.at( i ); break; }
+		Check( renderTool.isObject(), "V2 found the MCP render tool" );
+		if( renderTool.isObject() ) {
+			const JsonValue& z = renderTool.get( "inputSchema" ).get( "properties" ).get( "zoom" );
+			Check( z.isObject() && z.get( "type" ).asString() == "string", "V2 MCP render schema declares zoom as a string" );
+			const std::string d = z.get( "description" ).asString();
+			Check( d.find( "CLOSE UP" ) != std::string::npos && d.find( "NOTHING is hidden" ) != std::string::npos &&
+			       d.find( "Mutually exclusive" ) != std::string::npos && d.find( "UPPER BOUND" ) != std::string::npos,
+			       "V2 the MCP zoom description matches the chat-codec one on every load-bearing sentence" );
+		}
+		pJob->release();
+	}
+
+	// The RPC surface.
+	const std::string scenePath = WriteTemp( "rise_zoom_rpc.RISEscene", kSceneIsolateSmallPart );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "V2 rpc scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "V2 rpc session wraps" );
+	if( !session ) { pJob->release(); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	auto call = [&]( const char* line, JsonValue& env ) {
+		std::string perr;
+		std::srand( g_renderSeed++ );
+		return JsonParse( rpc.HandleLine( line ), env, perr );
+	};
+	{
+		JsonValue env;
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"zoom\":7}}", env ), "V2 non-string zoom parses" );
+		Check( env.has( "error" ) && (int)env.get( "error" ).get( "code" ).asNumber() == -32602,
+		       "V2 a non-string `zoom` is a clean -32602" );
+	}
+	{
+		JsonValue env;
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\",\"params\":{\"zoom\":\"part\",\"isolate\":\"part\"}}", env ), "V2 zoom+isolate parses" );
+		Check( env.has( "error" ) && (int)env.get( "error" ).get( "code" ).asNumber() == -32602 &&
+		       env.get( "error" ).get( "message" ).asString().find( "cannot be combined with `isolate`" ) != std::string::npos,
+		       "V2 zoom + isolate is a clean -32602 naming the conflict" );
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"render\",\"params\":{\"zoom\":\"part\",\"view\":\"x\"}}", env ) &&
+		       env.has( "error" ) && (int)env.get( "error" ).get( "code" ).asNumber() == -32602,
+		       "V2 zoom + view is a clean -32602" );
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"render\",\"params\":{\"zoom\":\"part\",\"camera\":{\"location\":\"0 0 5\",\"lookat\":\"0 0 0\"}}}", env ) &&
+		       env.has( "error" ) && (int)env.get( "error" ).get( "code" ).asNumber() == -32602,
+		       "V2 zoom + camera is a clean -32602" );
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"render\",\"params\":{\"zoom\":\"part\",\"isolate\":\"part\",\"async\":true}}", env ) &&
+		       env.has( "error" ) && (int)env.get( "error" ).get( "code" ).asNumber() == -32602,
+		       "V2 and the async spelling is refused at the wire too" );
+	}
+	{
+		JsonValue env;
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"render\",\"params\":{\"zoom\":\"part\",\"mode\":\"objectmap\"}}", env ), "V2 zoom render parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.get( "ok" ).asBool(), std::string( "V2 the RPC zoom render succeeds: " ) + result.get( "message" ).asString() );
+		const JsonValue& zm = result.get( "zoom" );
+		Check( zm.isObject() && zm.get( "object" ).asString() == "part", "V2 the result carries the nested `zoom` object" );
+		Check( zm.get( "eye" ).isArray() && zm.get( "eye" ).size() == 3 &&
+		       std::fabs( zm.get( "eye" ).at( 2 ).asNumber() - 14.0 ) < 1e-9,
+		       "V2 zoom.eye is the scene camera's position" );
+		Check( std::fabs( zm.get( "sceneFovDegrees" ).asNumber() - 50.0 ) < 1e-6 &&
+		       zm.get( "fovDegrees" ).asNumber() < 50.0 && !zm.get( "keptSceneFov" ).asBool() &&
+		       zm.get( "fitBasis" ).asString() == "surface" && zm.has( "coverage" ),
+		       "V2 zoom reports the fov used, the scene fov, keptSceneFov, coverage and fitBasis" );
+		Check( !result.has( "isolate" ), "V2 a zoom render has no `isolate` block" );
+	}
+	{
+		JsonValue env;
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"render\",\"params\":{\"width\":64,\"height\":48}}", env ), "V2 plain render parses" );
+		Check( !env.get( "result" ).has( "zoom" ), "V2 a render WITHOUT zoom omits the `zoom` object entirely (strictly additive)" );
+	}
+	{
+		JsonValue env;
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"render\",\"params\":{\"zoom\":\"nope\"}}", env ), "V2 unknown zoom parses" );
+		Check( !env.has( "error" ) && !env.get( "result" ).get( "ok" ).asBool() && !env.get( "result" ).has( "zoom" ),
+		       "V2 an unknown name is a FAILED render (not a -32602) with no zoom block" );
+	}
+	{
+		// V1 at the wire: the isolate block says what the fit was computed from.
+		JsonValue env;
+		Check( call( "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"render\",\"params\":{\"isolate\":\"part\",\"mode\":\"normals\"}}", env ), "V1 isolate render parses" );
+		Check( env.get( "result" ).get( "isolate" ).get( "fitBasis" ).asString() == "surface",
+		       "V1 the isolate block reports fitBasis surface for an object with a real surface" );
+	}
+	pJob->release();
+}
+
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -6082,6 +6463,9 @@ int main()
 	RunIsolateRespectsAgentCapsTest();
 	RunIsolateSchemaParityTest();
 	RunIsolateRpcSurfaceTest();
+	// Doc 91 V2 (2026-10-17) `render{zoom:}`
+	RunZoomTest();
+	RunZoomSchemaAndRpcTest();
 	// G3b (2026-08-10) `render{isolate:, target:}`
 	RunTargetIouTest();
 	RunTargetMirroredIouTest();

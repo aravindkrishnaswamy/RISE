@@ -799,6 +799,40 @@ int main()
 		       "tools/call(render{imageMaxEdge}) still carries a {type:\"text\"} block with the "
 		       "render statistics (byteLength/imageWidth/...) alongside the image block" );
 	}
+	// Doc 91 V2 (2026-10-17): render{zoom} over the MCP transport -- the param
+	// reaches the session, the `zoom` result block comes back in the text content,
+	// and the conflict with `isolate` is a clean error, not a render.
+	std::printf( "[tools/call] V2 render{zoom} -> the zoom block rides back; zoom+isolate is refused\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "zoom", JsonValue::MakeString( "obj_sph" ) );
+		args.set( "imageMaxEdge", JsonValue::MakeNumber( 32 ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 9101, "render", args ) );
+		JsonValue env = ParseResponse( resp, 9101 );
+		Check( !env.has( "error" ), "tools/call(render{zoom}) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(render{zoom}) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		bool sawZoom = false, sawImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			const std::string type = block.get( "type" ).asString();
+			if( type == "image" ) sawImage = true;
+			if( type == "text" && block.get( "text" ).asString().find( "\"zoom\"" ) != std::string::npos &&
+			    block.get( "text" ).asString().find( "\"fovDegrees\"" ) != std::string::npos )
+				sawZoom = true;
+		}
+		Check( sawZoom, "V2 the MCP text content carries the nested `zoom` object (fovDegrees ...)" );
+		Check( sawImage, "V2 and the zoomed frame rides back as an image block" );
+
+		JsonValue bad = JsonValue::MakeObject();
+		bad.set( "zoom", JsonValue::MakeString( "obj_sph" ) );
+		bad.set( "isolate", JsonValue::MakeString( "obj_sph" ) );
+		const std::string badResp = mcp.HandleLine( ReqToolCall( 9102, "render", bad ) );
+		JsonValue badEnv = ParseResponse( badResp, 9102 );
+		const bool refused = badEnv.has( "error" ) || badEnv.get( "result" ).get( "isError" ).asBool( false );
+		Check( refused, "V2 tools/call(render{zoom, isolate}) is refused (isError / JSON-RPC error), not rendered" );
+	}
 	std::printf( "[tools/call] a render WITHOUT imageMaxEdge still returns no image content block\n" );
 	{
 		// Pins that the unification did not WIDEN the statistics-only

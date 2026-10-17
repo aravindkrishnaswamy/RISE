@@ -1,5 +1,5 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:} (with or without target:), a production render, and (once you have called imagine_scene) that same production render shown beneath your imagined scene target -- each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:} (with or without target:), render{zoom:}, a production render, and (once you have called imagine_scene) that same production render shown beneath your imagined scene target -- each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
 There are exactly FOUR FAMILIES of call for looking at the scene
 through the agent surface.  They are not interchangeable, and three of
@@ -34,6 +34,7 @@ table, and "Transport modes" for all four additions.
 | "Is this object roughly where I want it?" | `render {quality:"draft", width, height, camera?}` | Cheap -- a wholly separate fixed studio-preview pipeline, samples capped at 4 regardless of what you ask for | Geometry, silhouette, composition, camera framing; relative depth/placement (ESPECIALLY with a second `camera` angle -- one view alone can't tell front-of/behind/inside); coarse material colour/roughness (the preview shader DOES shade each hit with the material's own BSDF, including procedural/expression painters and relief/bump/normal modifiers, e.g. one querying `proximity`/`occlusion`) | True lighting, exposure, or colour balance -- the preview shader IGNORES the scene's authored LIGHTS entirely (a fixed synthetic studio rig stands in, no shadows, no GI); it also does not show emission, transmission/refraction, or subsurface scattering |
 | "Which object is where? / Find object X on screen." | `render {mode:"objectmap"}` (survey, whole-frame legend) or `query_object_at {x,y}` (one answer) | About one identity render -- fixed 1 spp, no MC noise, ignores `quality`/`samples` entirely | Exact identity: byte-exact `colorHex` <-> `name` legend match, including CSG composites (legend carries the ROOT only, never the hidden operands) and instance arrays (`grid[i,j]`) | The colours as APPEARANCE -- they are arbitrary per-render identity ids, not materials. Read the objectmap PNG at NATIVE size only (omit `maxEdge` -- a box-downscale blends flat ids and breaks the match) |
 | "Is THIS PART's shape right?" (a small, dark, or occluded object you just built) | `render {isolate:"<object>", mode:"normals"}` (or `"facets"`) | One render of that mode, at the same fidelity it always costs | The part's silhouette and proportions, auto-framed to fill the frame instead of the dozen pixels it occupies in the wide shot; the result's `isolate` block reports its real world bbox and longest edge | The part IN CONTEXT -- isolate deletes the rest of the scene, so scale relative to neighbours, occlusion, and any lighting cast BY another object are all gone (a scene lit only by other objects' emissive materials isolates dark) |
+| "Does THIS object's detail read at the size it has in my scene?" (fur, weave, grain, small parts -- an object that is only a few dozen pixels wide in the full frame) | `render {zoom:"<object>"}` | One render at the fidelity you ask for | The object CLOSE UP from your own camera's position, with the field of view narrowed onto it and everything else (neighbours, occlusion, your lights) left in place; the result's `zoom` block reports the fov used and the object's coverage | A different viewpoint -- the camera keeps its position, so a face turned away from it stays turned away (use `isolate` or a `camera` for another angle); cannot combine with `isolate`, `view` or `camera` |
 | "Does it actually look right -- and what geometry/material cues explain it?" | `render {imageMaxEdge:N}` (no `quality`, i.e. production) when appearance alone is enough -- the PNG rides back in that ONE call; add a following `read_image {representation:"perception"}` only when you want the atlas | The real render cost; perception reuses that same render | Beauty is the honest appearance; the atlas adds diffuse albedo, world orientation, and raw primary-hit depth in one bounded image | Do not treat albedo as lit colour, normal RGB as colour, or auto-windowed depth brightness as an absolute cross-frame scale |
 | "Verify after an edit." | The cheap loop first (draft and/or objectmap/query at small dims), production LAST once confident | Escalating -- cheap checks first, one production pass at the end | Catching gross breakage (wrong object, black frame, object moved to the wrong side) cheaply, repeatedly | Calling it "done" off a cheap check alone -- ship the final judgment on one production render |
 | "I am BUILDING a scene from scratch." | One cheap look after EACH object group you place -- `render {quality:"draft", width:192, height:192}` or `render {imageMaxEdge:192}` -- not one look at the end | Cheap, and paid once per group rather than once per chunk | Keeping placement honest while a mistake is still one edit to fix.  Four looks across a six-object scene is too few; blind construction is the failure mode, not over-rendering | Skipping the looks to save turns -- batching chunks into one `insert_chunks` call is where round-trips are saved, NOT here |
@@ -353,6 +354,31 @@ an object with a degenerate/unbounded bounding box FAILS the render
 `view` and `light` use. Nothing is written to the document, the
 viewport, or the user's camera.
 
+## The `zoom` param: a close look from the scene camera
+
+`zoom` is an optional string param on `render` naming ONE object. The
+camera keeps its LOCATION, aims at that object, and narrows its field
+of view until the object fills about 85% of the frame (never below 2
+degrees, never wider than the scene's own fov; an object that already
+fills the frame keeps the scene fov and the result says so). Nothing is
+hidden: every other object, every light and the environment stay in
+place, so the frame is a crop of what a viewer of this scene would see
+of that object, occlusion included, at a size where its material and
+detail can be judged.
+
+```json
+{"method": "render", "params": {"zoom": "cat", "quality": "production"}}
+```
+
+It cannot be combined with `isolate`, `view` or `camera` (a clean
+error), and it needs a pinhole active camera. The result's `zoom`
+object reports `object`, `fovDegrees`, `sceneFovDegrees`,
+`keptSceneFov`, `coverage` (the projected surface bounds' share of the
+frame -- an upper bound on the silhouette) and `fitBasis`. When a
+build-plan element covers under about 1% of a full-frame production
+render, the scene inventory in that render's result says so and names a
+`zoom` target.
+
 ## `finish_element`: an isolate look you did not ask for
 
 `finish_element` closes the element you are working on and, along with
@@ -360,8 +386,11 @@ the facts of what was recorded against it, returns an ISOLATE RENDER of
 it -- the object recorded against that element, alone in the frame and
 auto-framed, at the same agent-surface size cap as any other render.
 When several objects were recorded against the element, the one with
-the largest bounding box is rendered and the message says so; when none
-was, there is no image and the message says that instead. It is the
+the most authored parts (an `sdf_geometry`'s `part` lines, say) is
+rendered, ties going to the larger bounding box and then the name; the
+message says which, and finishing again with no change to the shape shows
+the next one. When none was recorded, there is no image and the message
+says that instead. It is the
 same machinery `render {isolate}` uses, so the two looks are directly
 comparable. Nothing is required of an element before you finish it and
 nothing about the render is scored.

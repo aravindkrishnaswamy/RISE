@@ -110,6 +110,7 @@
 #include <set>      // 88 step 2: collapse_to_instances' member-name / member-item sets
 #include <mutex>    // F5 S3: std::once_flag for AllChunkKeywords' one-time cache (also already relied on by AgentSession.h's mAsyncCacheMutex)
 #include <unordered_set>  // Toolkit slice 3a fix-round P2-1: objectmap palette byte-uniqueness set
+#include <chrono>        // Doc 91 V1/V2: wall-clock cost of the surface-point gather, reported on the result
 
 // Facet 5 slice S1: directory enumeration for the skills index (the one
 // place the Library scans a directory; read-only).
@@ -18857,6 +18858,23 @@ namespace RISE
 				"same call.";
 		}
 
+		std::string AgentSession::ZoomConflictMessage( const AgentRenderParams& params )
+		{
+			if( params.zoom.empty() ) return std::string();
+			const AgentCameraOverride& c = params.camera;
+			const char* other = nullptr;
+			if     ( !params.isolate.empty() ) other = "`isolate` (which renders that one object alone with its own auto-framed camera)";
+			else if( !params.view.empty() )    other = "`view` (which supplies a camera pose)";
+			else if( c.hasLocation || c.hasLookAt || c.hasUp || c.hasOrientation ||
+			         c.hasTargetOrientation || c.hasFov )
+				other = "`camera` (an explicit camera override)";
+			if( !other ) return std::string();
+			return "`zoom` (\"" + params.zoom + "\") cannot be combined with " + std::string( other ) +
+				": zoom keeps the SCENE camera's position and narrows its field of view onto the named "
+				"object with every other object and light left in place, so it owns the camera.  Pass "
+				"`zoom` alone, or drop it and use the other param.";
+		}
+
 		bool AgentSession::ResolveTargetSketch( const std::string& target, const std::string& isolate,
 		                                         AgentElementSketch& out, std::string& outError ) const
 		{
@@ -20983,11 +21001,19 @@ namespace RISE
 		//!     be a claim of precision the old message didn't back up;
 		//!   * the name is unknown -- list what IS available.
 		bool ResolveIsolateObject( IObjectManager* objMgr, const std::string& name,
-		                            IObjectPriv*& outObj, std::string& outMessage )
+		                            IObjectPriv*& outObj, std::string& outMessage,
+		                            const char* verb = "isolate" )
 		{
 			outObj = 0;
+			// Doc 91 V2: `render{zoom:}` resolves its object through this same
+			// function, so the messages name the verb the caller actually used.
+			// With the default "isolate" every string below is byte-identical to
+			// what shipped before the parameter existed.
+			const std::string v( verb );
+			std::string cv = v;
+			if( !cv.empty() && cv[0] >= 'a' && cv[0] <= 'z' ) cv[0] = static_cast<char>( cv[0] - 'a' + 'A' );
 			if( !objMgr ) {
-				outMessage = "isolate \"" + name + "\" could not be applied -- the scene has no object manager";
+				outMessage = v + "\"" + name + "\" could not be applied -- the scene has no object manager";
 				return false;
 			}
 
@@ -21015,18 +21041,18 @@ namespace RISE
 					// IsContainerObject_, which both carry this reasoning.
 					if( !obj->GetGeometry()
 					 && dynamic_cast<const Implementation::CSGObject*>( obj ) == 0 ) {
-						outMessage = "isolate \"" + name + "\" is not renderable -- it is a CONTAINER node "
+						outMessage = v + " \"" + name + "\" is not renderable -- it is a CONTAINER node "
 							"(a `standard_object` with no `geometry`), i.e. a transform its children are "
-							"parented to, with no surface of its own.  Isolate one of its children instead.  "
+							"parented to, with no surface of its own.  " + cv + " one of its children instead.  "
 							"Available: " + FormatRenderableObjectNames( objMgr );
 						return false;
 					}
-					outMessage = "isolate \"" + name + "\" is not independently renderable -- it is marked "
+					outMessage = v + " \"" + name + "\" is not independently renderable -- it is marked "
 						"world-invisible, so no ray lands on it directly.";
 					const std::string parentName = FindCsgParentName( objMgr, obj );
 					if( !parentName.empty() ) {
 						outMessage += "  It is a CSG operand consumed by \"" + parentName +
-							"\" -- isolate \"" + parentName + "\" instead.";
+							"\" -- " + v + " \"" + parentName + "\" instead.";
 					} else {
 						outMessage += "  In-tree that means a CSG object consumed it as an operand, but "
 							"the specific composite could not be identified.  Available: "
@@ -21069,9 +21095,9 @@ namespace RISE
 				char tail[64];
 				std::snprintf( tail, sizeof( tail ), " (%u instance%s in total)",
 					instanceCount, instanceCount == 1 ? "" : "s" );
-				outMessage = "isolate \"" + name + "\" is AMBIGUOUS -- it names a chunk that EXPANDS into several "
+				outMessage = v + " \"" + name + "\" is AMBIGUOUS -- it names a chunk that EXPANDS into several "
 					"objects, not a single object; the scene holds " + instances + tail +
-					".  Isolate ONE instance by its full name.";
+					".  " + cv + " ONE instance by its full name.";
 				return false;
 			}
 
@@ -21257,6 +21283,284 @@ namespace RISE
 			return dist > floorDist ? dist : floorDist;
 		}
 
+		//! DOC 91 V1/V2 (2026-10-17): SURFACE-POINT FITTING.
+		//!
+		//! The framers above fit the 8 corners of an object's WORLD-axis AABB --
+		//! the axis-aligned box of an already-transformed LOCAL box.  Two things
+		//! inflate that box relative to the surface it is meant to bound: the
+		//! geometry's own bounds are conservative (an SDF's ComputeBounds pads
+		//! 1.2-1.35x per axis), and re-AABBing a yawed, elongated body in world
+		//! axes adds the rotation's slack on top.  A box fixture is its own AABB,
+		//! so the box arm of the old coverage test passed while a rotated cat
+		//! filled a quarter of the frame.  The fit below uses points ON the
+		//! surface instead.
+
+		//! Hard cap on points handed to a fit.  A fit is O(points x iterations),
+		//! so this is a cost bound, not an accuracy knob: 24k surface points
+		//! already pin an object's silhouette far below one pixel at the 256 px
+		//! agent edge.
+		const std::size_t kFitMaxPoints = 24000;
+
+		//! Collect world-space points on `obj`'s real surface: the vertices of
+		//! its geometry's tessellation (vertices of a tessellation lie ON the
+		//! surface), transformed by the object's final transform.  Only vertices
+		//! some triangle references are kept, and a point set larger than
+		//! kFitMaxPoints is stride-thinned.  Returns false -- leaving `out`
+		//! empty -- where there are no surface points to offer, so the caller
+		//! falls back to the bounding box: a CSG composite (no single geometry),
+		//! an infinite plane or any geometry that cannot tessellate, a
+		//! tessellation that came back empty, or non-finite coordinates.
+		//!
+		//! DETAIL.  The tessellation detail is per-geometry (see
+		//! IGeometry::TessellateToMesh): cells along the longest bbox axis for an
+		//! SDF/skeleton body (48 resolves a creature's silhouette to ~2% of its
+		//! longest edge), segments per parametric axis for a primitive (32), and
+		//! ignored for meshes.  Callers invoke this AFTER the object manager's
+		//! PrepareForRendering(), which realizes deferred geometries (a
+		//! displaced mesh) -- an unrealized one tessellates to nothing and
+		//! simply falls back.
+		bool CollectObjectSurfacePointsWorld( const IObject& obj, std::vector<Point3>& out )
+		{
+			out.clear();
+			const IGeometry* g = obj.GetGeometry();
+			if( !g || !g->CanTessellate() ) return false;
+			const unsigned int detail = dynamic_cast<const Implementation::SDFGeometry*>( g ) ? 48u : 32u;
+			IndexTriangleListType tris;
+			VerticesListType      verts;
+			NormalsListType       normals;
+			TexCoordsListType     coords;
+			if( !g->TessellateToMesh( tris, verts, normals, coords, detail ) ) return false;
+			if( tris.empty() || verts.empty() ) return false;
+
+			std::vector<unsigned char> used( verts.size(), 0 );
+			std::size_t usedCount = 0;
+			for( std::size_t t = 0; t < tris.size(); ++t ) {
+				for( int k = 0; k < 3; ++k ) {
+					const std::size_t vi = tris[t].iVertices[k];
+					if( vi < used.size() && !used[vi] ) { used[vi] = 1; ++usedCount; }
+				}
+			}
+			if( usedCount < 4 ) return false;
+
+			const Matrix4 world = obj.GetFinalTransformMatrix();
+			const std::size_t stride = usedCount > kFitMaxPoints ? ( usedCount + kFitMaxPoints - 1 ) / kFitMaxPoints : 1;
+			out.reserve( usedCount / stride + 1 );
+			std::size_t seen = 0;
+			for( std::size_t i = 0; i < verts.size(); ++i ) {
+				if( !used[i] ) continue;
+				if( ( seen++ % stride ) != 0 ) continue;
+				const Point3 w = Point3Ops::Transform( world, verts[i] );
+				if( !RISE::IsFiniteDouble( w.x ) || !RISE::IsFiniteDouble( w.y ) || !RISE::IsFiniteDouble( w.z ) ) {
+					out.clear();
+					return false;
+				}
+				out.push_back( w );
+			}
+			if( out.size() < 4 ) { out.clear(); return false; }
+			return true;
+		}
+
+		//! The 8 corners of a world AABB as a point set -- the fallback input
+		//! for the point fits (zoom has no legacy box behaviour to preserve).
+		std::vector<Point3> AabbCornerPoints( const double bbMin[3], const double bbMax[3] )
+		{
+			std::vector<Point3> p;
+			p.reserve( 8 );
+			for( int c = 0; c < 8; ++c ) {
+				p.push_back( Point3( ( c & 1 ) ? bbMax[0] : bbMin[0],
+				                     ( c & 2 ) ? bbMax[1] : bbMin[1],
+				                     ( c & 4 ) ? bbMax[2] : bbMin[2] ) );
+			}
+			return p;
+		}
+
+		//! V1: the eye distance and aim point that fit every point of `pts` into
+		//! kIsolateFrameFill of the frame from the fixed vantage `dir` (unit
+		//! vector from the aim toward the eye), for a pinhole of vertical
+		//! half-tangent `tanHalfV` and aspect `aspect`.  The perspective
+		//! generalisation of IsolateFitDistance from 8 corners to N points,
+		//! with one addition: the AIM is not the bounding-box centre.  An
+		//! elongated body seen from a three-quarter angle projects to an extent
+		//! whose centre is not the centre of its 3D box, and a symmetric fit
+		//! about the wrong aim wastes the frame on the empty side.  The aim is
+		//! therefore refined in the view plane to the centre of the projected
+		//! extent (a few fixed-point steps; each step recomputes the exact
+		//! distance, so the final answer satisfies every point's constraint by
+		//! construction whether or not the iteration has fully converged).
+		//!
+		//! Returns false on a degenerate basis/lens or an empty set.
+		bool IsolateFitPoints( const std::vector<Point3>& pts, const double dir[3],
+		                       const double upHint[3], const double tanHalfV, const double aspect,
+		                       double outAim[3], double& outDist )
+		{
+			if( pts.empty() ) return false;
+			const double f[3] = { -dir[0], -dir[1], -dir[2] };
+			double r[3] = { f[1]*upHint[2] - f[2]*upHint[1],
+			                f[2]*upHint[0] - f[0]*upHint[2],
+			                f[0]*upHint[1] - f[1]*upHint[0] };
+			const double rl = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
+			if( !( rl > 1e-12 ) ) return false;
+			r[0] /= rl; r[1] /= rl; r[2] /= rl;
+			const double u[3] = { r[1]*f[2] - r[2]*f[1],
+			                      r[2]*f[0] - r[0]*f[2],
+			                      r[0]*f[1] - r[1]*f[0] };
+			const double limV = tanHalfV * kIsolateFrameFill;
+			const double limH = tanHalfV * aspect * kIsolateFrameFill;
+			if( !( limV > 1e-9 ) || !( limH > 1e-9 ) ) return false;
+
+			// Every point in the (r, u, dir) view basis, once.
+			struct VP { double r, u, d; };
+			std::vector<VP> v;
+			v.reserve( pts.size() );
+			double lo[3] = {  1e300,  1e300,  1e300 };
+			double hi[3] = { -1e300, -1e300, -1e300 };
+			for( std::size_t i = 0; i < pts.size(); ++i ) {
+				const VP q = {
+					pts[i].x*r[0] + pts[i].y*r[1] + pts[i].z*r[2],
+					pts[i].x*u[0] + pts[i].y*u[1] + pts[i].z*u[2],
+					pts[i].x*dir[0] + pts[i].y*dir[1] + pts[i].z*dir[2] };
+				v.push_back( q );
+				if( q.r < lo[0] ) lo[0] = q.r;
+				if( q.r > hi[0] ) hi[0] = q.r;
+				if( q.u < lo[1] ) lo[1] = q.u;
+				if( q.u > hi[1] ) hi[1] = q.u;
+				if( q.d < lo[2] ) lo[2] = q.d;
+				if( q.d > hi[2] ) hi[2] = q.d;
+			}
+			const double ext[3] = { hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2] };
+			const double diag = std::sqrt( ext[0]*ext[0] + ext[1]*ext[1] + ext[2]*ext[2] );
+
+			double ar = 0.5 * ( lo[0] + hi[0] );
+			double au = 0.5 * ( lo[1] + hi[1] );
+			const double ad = 0.5 * ( lo[2] + hi[2] );
+
+			// Exact distance for a given aim: the max over points of the
+			// perspective lower bound, floored so the eye clears the nearest
+			// point (same clearance IsolateFitDistance keeps).
+			auto solveDist = [&]( const double aimR, const double aimU ) -> double {
+				double dist = 0.0, maxToward = -1e300;
+				for( std::size_t i = 0; i < v.size(); ++i ) {
+					const double toward = v[i].d - ad;
+					const double needH = std::fabs( v[i].r - aimR ) / limH + toward;
+					const double needV = std::fabs( v[i].u - aimU ) / limV + toward;
+					if( needH > dist ) dist = needH;
+					if( needV > dist ) dist = needV;
+					if( toward > maxToward ) maxToward = toward;
+				}
+				const double floorDist = maxToward + diag * 0.1;
+				return dist > floorDist ? dist : floorDist;
+			};
+
+			double dist = solveDist( ar, au );
+			for( int it = 0; it < 6; ++it ) {
+				double minSx = 1e300, maxSx = -1e300, minSy = 1e300, maxSy = -1e300;
+				const double eyeD = ad + dist;
+				for( std::size_t i = 0; i < v.size(); ++i ) {
+					const double z = eyeD - v[i].d;
+					if( !( z > 1e-9 ) ) continue;
+					const double sx = ( v[i].r - ar ) / ( z * tanHalfV * aspect );
+					const double sy = ( v[i].u - au ) / ( z * tanHalfV );
+					if( sx < minSx ) minSx = sx;
+					if( sx > maxSx ) maxSx = sx;
+					if( sy < minSy ) minSy = sy;
+					if( sy > maxSy ) maxSy = sy;
+				}
+				if( !( maxSx >= minSx ) ) break;
+				const double dr = 0.5 * ( minSx + maxSx ) * tanHalfV * aspect * dist;
+				const double du = 0.5 * ( minSy + maxSy ) * tanHalfV * dist;
+				ar += dr;
+				au += du;
+				dist = solveDist( ar, au );
+				if( std::fabs( dr ) < 1e-9 * diag && std::fabs( du ) < 1e-9 * diag ) break;
+			}
+			for( int a = 0; a < 3; ++a ) outAim[a] = ar*r[a] + au*u[a] + ad*dir[a];
+			outDist = dist;
+			return dist > 0.0 && RISE::IsFiniteDouble( dist );
+		}
+
+		//! V2: with the eye FIXED at `eye`, find the aim and the vertical
+		//! half-tangent that fit `pts` into `fill` of the frame.  Iterates the
+		//! aim toward the centre of the points' tangent-plane extent (a ray
+		//! through the extent's centre becomes the new forward), then takes the
+		//! half-tangent from the symmetric extent about that axis.  Returns
+		//! false when any point lies at or behind the eye's plane through it
+		//! (the camera is inside / past the object: no pinhole frame holds it).
+		bool ZoomFitPoints( const std::vector<Point3>& pts, const double eye[3],
+		                    const double upHint[3], const double aspect, const double fill,
+		                    double outForward[3], double& outTanHalfV )
+		{
+			if( pts.empty() || !( aspect > 0.0 ) || !( fill > 0.0 ) ) return false;
+			double c[3] = { 0.0, 0.0, 0.0 };
+			{
+				double lo[3] = {  1e300,  1e300,  1e300 };
+				double hi[3] = { -1e300, -1e300, -1e300 };
+				for( std::size_t i = 0; i < pts.size(); ++i ) {
+					const double q[3] = { pts[i].x, pts[i].y, pts[i].z };
+					for( int a = 0; a < 3; ++a ) {
+						if( q[a] < lo[a] ) lo[a] = q[a];
+						if( q[a] > hi[a] ) hi[a] = q[a];
+					}
+				}
+				for( int a = 0; a < 3; ++a ) c[a] = 0.5 * ( lo[a] + hi[a] );
+			}
+			double f[3] = { c[0]-eye[0], c[1]-eye[1], c[2]-eye[2] };
+			const double fl = std::sqrt( f[0]*f[0] + f[1]*f[1] + f[2]*f[2] );
+			if( !( fl > 1e-12 ) ) return false;
+			f[0] /= fl; f[1] /= fl; f[2] /= fl;
+
+			// Tangent-plane extents of `pts` about the axis `f`; false when a
+			// point is at/behind the eye plane or the up hint is parallel to f.
+			auto measure = [&]( const double axis[3], double r[3], double u[3],
+			                    double& minTx, double& maxTx, double& minTy, double& maxTy ) -> bool {
+				r[0] = axis[1]*upHint[2] - axis[2]*upHint[1];
+				r[1] = axis[2]*upHint[0] - axis[0]*upHint[2];
+				r[2] = axis[0]*upHint[1] - axis[1]*upHint[0];
+				const double rl = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
+				if( !( rl > 1e-12 ) ) return false;
+				r[0] /= rl; r[1] /= rl; r[2] /= rl;
+				u[0] = r[1]*axis[2] - r[2]*axis[1];
+				u[1] = r[2]*axis[0] - r[0]*axis[2];
+				u[2] = r[0]*axis[1] - r[1]*axis[0];
+				minTx = 1e300; maxTx = -1e300; minTy = 1e300; maxTy = -1e300;
+				for( std::size_t i = 0; i < pts.size(); ++i ) {
+					const double d[3] = { pts[i].x-eye[0], pts[i].y-eye[1], pts[i].z-eye[2] };
+					const double z = d[0]*axis[0] + d[1]*axis[1] + d[2]*axis[2];
+					if( !( z > 1e-9 ) ) return false;
+					const double tx = ( d[0]*r[0] + d[1]*r[1] + d[2]*r[2] ) / z;
+					const double ty = ( d[0]*u[0] + d[1]*u[1] + d[2]*u[2] ) / z;
+					if( tx < minTx ) minTx = tx;
+					if( tx > maxTx ) maxTx = tx;
+					if( ty < minTy ) minTy = ty;
+					if( ty > maxTy ) maxTy = ty;
+				}
+				return true;
+			};
+
+			double r[3], u[3], minTx, maxTx, minTy, maxTy;
+			for( int it = 0; it < 12; ++it ) {
+				if( !measure( f, r, u, minTx, maxTx, minTy, maxTy ) ) return false;
+				const double mx = 0.5 * ( minTx + maxTx );
+				const double my = 0.5 * ( minTy + maxTy );
+				if( std::fabs( mx ) < 1e-10 && std::fabs( my ) < 1e-10 ) break;
+				const double nf[3] = { f[0] + mx*r[0] + my*u[0],
+				                       f[1] + mx*r[1] + my*u[1],
+				                       f[2] + mx*r[2] + my*u[2] };
+				const double nl = std::sqrt( nf[0]*nf[0] + nf[1]*nf[1] + nf[2]*nf[2] );
+				if( !( nl > 1e-12 ) ) return false;
+				f[0] = nf[0]/nl; f[1] = nf[1]/nl; f[2] = nf[2]/nl;
+			}
+			// Re-measure about the FINAL axis (the loop may have exited on its
+			// iteration cap right after a re-aim).
+			if( !measure( f, r, u, minTx, maxTx, minTy, maxTy ) ) return false;
+			const double maxAbsTx = std::max( std::fabs( minTx ), std::fabs( maxTx ) );
+			const double maxAbsTy = std::max( std::fabs( minTy ), std::fabs( maxTy ) );
+			const double tanHalfV = std::max( maxAbsTx / ( aspect * fill ), maxAbsTy / fill );
+			if( !( tanHalfV > 0.0 ) || !RISE::IsFiniteDouble( tanHalfV ) ) return false;
+			outForward[0] = f[0]; outForward[1] = f[1]; outForward[2] = f[2];
+			outTanHalfV = tanHalfV;
+			return true;
+		}
+
 		//! Screen-space coverage of a world AABB through an explicit camera.
 		//! Projects the 8 corners, takes their axis-aligned screen-space
 		//! bounds, clips to the frame, and returns area/(W*H) in [0,1].  An
@@ -21318,6 +21622,52 @@ namespace RISE
 			const double w = maxX - minX;
 			const double h = maxY - minY;
 			if( !( w > 0.0 ) || !( h > 0.0 ) ) return 0.0;   // entirely off-frame
+			const double coverage = ( w * 0.5 ) * ( h * 0.5 );
+			return coverage > 1.0 ? 1.0 : coverage;
+		}
+
+		//! ProjectedBBoxCoverage for an arbitrary point set (V1/V2): the frame
+		//! fraction of the clipped axis-aligned screen bounds of `pts` through an
+		//! explicit pinhole.  Same conventions, same -1.0 "undefined" sentinel
+		//! (any point at/behind the camera plane, or degenerate inputs).
+		double ProjectedPointsCoverage( const std::vector<Point3>& pts,
+		                                const double eye[3], const double target[3],
+		                                const double upHint[3],
+		                                const double tanHalfVFov, const double aspect )
+		{
+			if( pts.empty() || !( tanHalfVFov > 0.0 ) || !( aspect > 0.0 ) ) return -1.0;
+			double f[3] = { target[0]-eye[0], target[1]-eye[1], target[2]-eye[2] };
+			const double fl = std::sqrt( f[0]*f[0] + f[1]*f[1] + f[2]*f[2] );
+			if( !( fl > 0.0 ) ) return -1.0;
+			f[0] /= fl; f[1] /= fl; f[2] /= fl;
+			double r[3] = { f[1]*upHint[2] - f[2]*upHint[1],
+			                f[2]*upHint[0] - f[0]*upHint[2],
+			                f[0]*upHint[1] - f[1]*upHint[0] };
+			const double rl = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
+			if( !( rl > 1e-12 ) ) return -1.0;
+			r[0] /= rl; r[1] /= rl; r[2] /= rl;
+			const double u[3] = { r[1]*f[2] - r[2]*f[1],
+			                      r[2]*f[0] - r[0]*f[2],
+			                      r[0]*f[1] - r[1]*f[0] };
+			double minX = 1e300, maxX = -1e300, minY = 1e300, maxY = -1e300;
+			for( std::size_t i = 0; i < pts.size(); ++i ) {
+				const double v[3] = { pts[i].x-eye[0], pts[i].y-eye[1], pts[i].z-eye[2] };
+				const double z = v[0]*f[0] + v[1]*f[1] + v[2]*f[2];
+				if( !( z > 1e-9 ) ) return -1.0;
+				const double sx = ( v[0]*r[0] + v[1]*r[1] + v[2]*r[2] ) / ( z * tanHalfVFov * aspect );
+				const double sy = ( v[0]*u[0] + v[1]*u[1] + v[2]*u[2] ) / ( z * tanHalfVFov );
+				if( sx < minX ) minX = sx;
+				if( sx > maxX ) maxX = sx;
+				if( sy < minY ) minY = sy;
+				if( sy > maxY ) maxY = sy;
+			}
+			if( minX < -1.0 ) minX = -1.0;
+			if( maxX >  1.0 ) maxX =  1.0;
+			if( minY < -1.0 ) minY = -1.0;
+			if( maxY >  1.0 ) maxY =  1.0;
+			const double w = maxX - minX;
+			const double h = maxY - minY;
+			if( !( w > 0.0 ) || !( h > 0.0 ) ) return 0.0;
 			const double coverage = ( w * 0.5 ) * ( h * 0.5 );
 			return coverage > 1.0 ? 1.0 : coverage;
 		}
@@ -24893,6 +25243,18 @@ namespace RISE
 			// reports the target failure rather than "no head loaded".  Both
 			// are honest, the target check is the cheaper one, and a wrapped
 			// session always has a head.
+			// Doc 91 V2: `zoom` owns the camera, so it refuses to share a call with
+			// anything else that does -- decidable from the params alone, before
+			// any scene state is touched.
+			{
+				const std::string zoomConflict = ZoomConflictMessage( params );
+				if( !zoomConflict.empty() ) {
+					AgentRenderResult bad;
+					bad.ok      = false;
+					bad.message = zoomConflict;
+					return bad;
+				}
+			}
 			AgentElementSketch resolvedTarget;
 			const AgentElementSketch* resolvedTargetPtr = nullptr;
 			if( !params.target.empty() ) {
@@ -24987,7 +25349,7 @@ namespace RISE
 			// RenderCore_ -- it fires one more internal render of its own and
 			// must not be inside the first one's critical section.  A no-op
 			// unless the render qualifies (see ApplyVisibilityCensus_).
-			ApplyVisibilityCensus_( params, rr, /*assumeParked=*/false );
+			ApplyVisibilityCensus_( params, rr, /*assumeParked=*/false, &chunkAttributionSnapshot );
 			// Arc 81 (2026-08-12): the TONAL FACT.  Unlike the three
 			// mechanisms above it fires NO render of its own -- it reads the
 			// pixels `rr` already carries -- so it needs no park reasoning and
@@ -25439,7 +25801,7 @@ namespace RISE
 			// is never a false negative; when the caller DID supply one, the
 			// camera terms below already fire.
 			const bool wantCameraOverrideForRouting =
-				!params.view.empty() || !params.isolate.empty() ||
+				!params.view.empty() || !params.isolate.empty() || !params.zoom.empty() ||
 				( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
 					effectiveCamera.hasUp || effectiveCamera.hasOrientation ||
 					effectiveCamera.hasTargetOrientation || effectiveCamera.hasFov );
@@ -26733,6 +27095,33 @@ namespace RISE
 				// Scene's light generation, so it has no ordering
 				// relationship with those three.
 				ObjectSoloRestoreGuard isolateGuard( mJob->GetScene() );
+
+				// The aspect ratio THIS render will actually use: an explicit
+				// width/height pair when given, else the live Film's -- every
+				// implicit path (the agent-surface absent-dims default, the
+				// BeautyVariant divisor) preserves the Film's ratio, so the Film
+				// is the right fallback for all of them.  Shared by the isolate
+				// framer and the zoom framer (doc 91 V2).
+				auto resolveRenderAspect = [&]() -> double
+				{
+					double aspect = 1.0;
+					unsigned int aspW = params.width, aspH = params.height;
+					double pixAR = 1.0;
+					const IScenePriv* scenePrivForAspect = mJob->GetScene();
+					const IFilm* filmForAspect = scenePrivForAspect ? scenePrivForAspect->GetFilm() : nullptr;
+					if( filmForAspect ) {
+						pixAR = filmForAspect->GetPixelAR();
+						if( !( aspW > 0 && aspH > 0 ) ) {
+							aspW = filmForAspect->GetWidth();
+							aspH = filmForAspect->GetHeight();
+						}
+					}
+					if( aspW > 0 && aspH > 0 && RISE::IsFiniteDouble( pixAR ) && pixAR > 0.0 ) {
+						aspect = ( static_cast<double>( aspW ) / static_cast<double>( aspH ) ) * pixAR;
+					}
+					return aspect;
+				};
+
 				if( !params.isolate.empty() )
 				{
 					IObjectManager* objMgrForIsolate = mJob->GetObjects();
@@ -26870,6 +27259,7 @@ namespace RISE
 					double camUp[3]     = { 0.0, 1.0, 0.0 };
 					double camVFovRad   = kDefaultVFovRad;
 					bool   haveActiveSnapshot = false;
+					bool   camExtraOrientation = false;   // doc 91 V1: the scene camera carries orientation / target_orientation
 					if( ICameraManager* camsForIsolate = mJob->GetCameras() ) {
 						const std::string activeNameForIsolate = mJob->GetActiveCameraName();
 						const ICamera* activeCamForIsolate = !activeNameForIsolate.empty()
@@ -26882,6 +27272,10 @@ namespace RISE
 								camTarget[a] = snap.lookat[a];
 								camUp[a]     = snap.up[a];
 							}
+							for( int a = 0; a < 3; ++a )
+								if( std::fabs( snap.orientation[a] ) > 1e-12 ) camExtraOrientation = true;
+							for( int a = 0; a < 2; ++a )
+								if( std::fabs( snap.target_orientation[a] ) > 1e-12 ) camExtraOrientation = true;
 							if( snap.type == RISE::CameraSnapshot::Pinhole && snap.fov > 0.0 ) {
 								camVFovRad = snap.fov;   // CameraSnapshot::fov is RADIANS (CameraIntrospection's convention)
 							} else {
@@ -26891,29 +27285,20 @@ namespace RISE
 					}
 					if( !haveActiveSnapshot ) isolateFovAssumed = true;
 
-					// The aspect ratio THIS render will actually use: an
-					// explicit width/height pair when given, else the live
-					// Film's -- every implicit path (the agent-surface
-					// absent-dims default, the BeautyVariant divisor)
-					// preserves the Film's ratio, so the Film is the right
-					// fallback for all of them.
-					double renderAspect = 1.0;
-					{
-						unsigned int aspW = params.width, aspH = params.height;
-						double pixAR = 1.0;
-						const IScenePriv* scenePrivForAspect = mJob->GetScene();
-						const IFilm* filmForAspect = scenePrivForAspect ? scenePrivForAspect->GetFilm() : nullptr;
-						if( filmForAspect ) {
-							pixAR = filmForAspect->GetPixelAR();
-							if( !( aspW > 0 && aspH > 0 ) ) {
-								aspW = filmForAspect->GetWidth();
-								aspH = filmForAspect->GetHeight();
-							}
-						}
-						if( aspW > 0 && aspH > 0 && RISE::IsFiniteDouble( pixAR ) && pixAR > 0.0 ) {
-							renderAspect = ( static_cast<double>( aspW ) / static_cast<double>( aspH ) ) * pixAR;
-						}
+					const double renderAspect = resolveRenderAspect();
+
+					// Doc 91 V1 (2026-10-17): points ON the object's real surface
+					// (a tessellation of its geometry, in world space) for the fit
+					// and the coverage figure; the world AABB only where there are
+					// none.  See CollectObjectSurfacePointsWorld.
+					std::vector<Point3> surfPts;
+					bool haveSurf = false;
+					const auto surfT0 = std::chrono::steady_clock::now();
+					if( bboxUsable ) {
+						haveSurf = CollectObjectSurfacePointsWorld( *static_cast<const IObject*>( isolateObj ), surfPts );
 					}
+					res.isolateFitMillis = std::chrono::duration<double, std::milli>(
+						std::chrono::steady_clock::now() - surfT0 ).count();
 
 					if( !callerSuppliedCamera )
 					{
@@ -26937,12 +27322,31 @@ namespace RISE
 						double worldUp[3];
 						IsolateVantageOffset( targetSketch ? targetSketch->view : std::string(),
 						                      offset, worldUp );
-						const double center[3] = { ( bbMin[0]+bbMax[0] ) * 0.5,
-						                            ( bbMin[1]+bbMax[1] ) * 0.5,
-						                            ( bbMin[2]+bbMax[2] ) * 0.5 };
+						double center[3] = { ( bbMin[0]+bbMax[0] ) * 0.5,
+						                     ( bbMin[1]+bbMax[1] ) * 0.5,
+						                     ( bbMin[2]+bbMax[2] ) * 0.5 };
 						const double tanHalfV   = std::tan( camVFovRad * 0.5 );
-						double distance = IsolateFitDistance( bbMin, bbMax, center, offset,
-						                                       worldUp, tanHalfV, renderAspect );
+						double distance = 0.0;
+						// V1: fit the SURFACE points when there are any (the
+						// aim is refined to the projected extent's centre too);
+						// fall back to the AABB-corner fit otherwise.
+						if( haveSurf ) {
+							const auto fitT0 = std::chrono::steady_clock::now();
+							double aim[3] = { 0.0, 0.0, 0.0 };
+							double fitDist = 0.0;
+							if( IsolateFitPoints( surfPts, offset, worldUp, tanHalfV, renderAspect, aim, fitDist ) ) {
+								center[0] = aim[0]; center[1] = aim[1]; center[2] = aim[2];
+								distance = fitDist;
+							} else {
+								haveSurf = false;   // degenerate basis/lens: the box fit below owns the fallback
+							}
+							res.isolateFitMillis += std::chrono::duration<double, std::milli>(
+								std::chrono::steady_clock::now() - fitT0 ).count();
+						}
+						if( !haveSurf ) {
+							distance = IsolateFitDistance( bbMin, bbMax, center, offset,
+							                                worldUp, tanHalfV, renderAspect );
+						}
 						if( !( distance > 0.0 ) ) distance = diag * 2.0;   // degenerate basis/FOV -- a sane, non-zero fallback
 						for( int a = 0; a < 3; ++a ) {
 							camTarget[a] = center[a];
@@ -26966,6 +27370,21 @@ namespace RISE
 						effectiveCamera.lookAt      = Vec3ToOverrideStr( camTarget );
 						effectiveCamera.hasUp       = true;
 						effectiveCamera.up          = Vec3ToOverrideStr( camUp );
+						// Doc 91 V1: the pose above is a lookat/up pair, but the
+						// scene camera's own `orientation` (a Euler rotation of the
+						// view) and `target_orientation` (an orbit about lookat)
+						// are applied ON TOP of it by the camera and are NOT part of
+						// the override -- a scene camera authored with either would
+						// swing the aim off the object or orbit the eye to a
+						// different vantage.  Clear them for this one render (the
+						// override machinery restores them afterwards).
+						if( camExtraOrientation ) {
+							const double zero3[3] = { 0.0, 0.0, 0.0 };
+							effectiveCamera.hasOrientation       = true;
+							effectiveCamera.orientation          = Vec3ToOverrideStr( zero3 );
+							effectiveCamera.hasTargetOrientation = true;
+							effectiveCamera.targetOrientation    = Vec3ToOverrideStr( zero3 );
+						}
 						res.isolateAutoFramed = true;
 					}
 					else
@@ -27054,9 +27473,14 @@ namespace RISE
 					// forced the sentinel, so a caller-supplied camera over a
 					// non-pinhole active camera fell through to a computed
 					// (wrong-model) number with nothing disclosing it.
+					res.isolateFitBasis = haveSurf ? "surface" : "bbox";
+					res.isolateSurfacePointCount = haveSurf ? static_cast<unsigned int>( surfPts.size() ) : 0u;
 					res.isolateBBoxCoverage = ( bboxUsable && !isolateFovAssumed && camVFovRad > 0.0 )
-						? ProjectedBBoxCoverage( bbMin, bbMax, camEye, camTarget, camUp,
-						                          std::tan( camVFovRad * 0.5 ), renderAspect )
+						? ( haveSurf
+							? ProjectedPointsCoverage( surfPts, camEye, camTarget, camUp,
+							                            std::tan( camVFovRad * 0.5 ), renderAspect )
+							: ProjectedBBoxCoverage( bbMin, bbMax, camEye, camTarget, camUp,
+							                          std::tan( camVFovRad * 0.5 ), renderAspect ) )
 						: -1.0;
 
 					// Apply the isolation LAST, once every read of the
@@ -27074,6 +27498,164 @@ namespace RISE
 						concreteSceneForIsolate->BumpLightTopologyGeneration();
 					}
 					res.isolateApplied = true;
+				}
+
+				// ---- Doc 91 V2 (2026-10-17) `render{zoom:}`: keep the SCENE
+				// camera's position, aim it at the named object's surface and
+				// narrow the field of view to fit it, with every other object and
+				// light left exactly where they are.
+				//
+				// Placed beside the isolate block for the same reasons: after the
+				// `view` block (so a `view`/`camera` conflict is already visible)
+				// and BEFORE `wantCameraOverride` is computed, so the solved pose
+				// flows through the SAME applyCameraOverride machinery as every
+				// other camera override -- nothing parallel, and the active
+				// camera's fields are restored afterwards by the same guard.
+				// Nothing is hidden, so there is no visibility guard to arm.
+				if( !params.zoom.empty() )
+				{
+					const std::string zoomConflict = ZoomConflictMessage( params );
+					if( !zoomConflict.empty() ) {
+						res.ok = false;
+						res.message = zoomConflict;
+						specificFailureReported = true;
+						return;
+					}
+
+					IObjectManager* objMgrForZoom = mJob->GetObjects();
+					IObjectPriv* zoomObj = nullptr;
+					std::string zoomMessage;
+					if( !ResolveIsolateObject( objMgrForZoom, params.zoom, zoomObj, zoomMessage, "zoom" ) ) {
+						res.ok = false;
+						res.message = zoomMessage;
+						specificFailureReported = true;
+						return;
+					}
+					// Realize deferred geometries (a displaced mesh) so the
+					// bounding box and the tessellation read the real baked
+					// surface -- idempotent, and the render does it anyway.
+					if( objMgrForZoom ) objMgrForZoom->PrepareForRendering();
+
+					const BoundingBox zbb = static_cast<const IObject*>( zoomObj )->getBoundingBox();
+					const double zMin[3] = { zbb.ll.x, zbb.ll.y, zbb.ll.z };
+					const double zMax[3] = { zbb.ur.x, zbb.ur.y, zbb.ur.z };
+					bool zUsable = true;
+					double zExt2 = 0.0;
+					for( int a = 0; a < 3; ++a ) {
+						const double e = zMax[a] - zMin[a];
+						if( !RISE::IsFiniteDouble( zMin[a] ) || !RISE::IsFiniteDouble( zMax[a] ) ||
+							!( e >= 0.0 ) || e > 1.0e12 ) zUsable = false;
+						else zExt2 += e * e;
+					}
+					if( zUsable && !( zExt2 > 0.0 ) ) zUsable = false;
+					if( !zUsable ) {
+						res.ok = false;
+						res.message = "zoom \"" + params.zoom + "\" cannot be framed: the object has a degenerate "
+							"or unbounded extent.  Use `camera` to look at it from a pose you choose.";
+						specificFailureReported = true;
+						return;
+					}
+
+					// The scene camera.  A pinhole only: zoom changes the field
+					// of view, and only a PinholeCamera has one to change
+					// (CameraIntrospection::SetProperty refuses `fov` on the
+					// rest) -- the same limit `view` documents.
+					ICameraManager* camsForZoom = mJob->GetCameras();
+					const std::string activeNameForZoom = mJob->GetActiveCameraName();
+					const ICamera* activeCamForZoom = ( camsForZoom && !activeNameForZoom.empty() )
+						? camsForZoom->GetItem( activeNameForZoom.c_str() ) : nullptr;
+					CameraSnapshot zoomSnap;
+					if( !activeCamForZoom ||
+						!CameraIntrospection::CaptureCameraSnapshot( *activeCamForZoom, zoomSnap ) ||
+						zoomSnap.type != RISE::CameraSnapshot::Pinhole || !( zoomSnap.fov > 0.0 ) ) {
+						res.ok = false;
+						res.message = "zoom \"" + params.zoom + "\" needs the active camera to be a pinhole camera "
+							"with a stored field of view (zoom narrows that fov); the active camera is not one, "
+							"or its pose cannot be read.  Use `camera` to look at the object from a pose you choose.";
+						specificFailureReported = true;
+						return;
+					}
+
+					// The camera's REAL eye: GetLocation() is the post-orbit
+					// position (the snapshot's `location` is the pre-orbit rest
+					// value), so a scene camera authored with target_orientation
+					// is zoomed from where it actually sits.
+					const Point3 zEyeP = activeCamForZoom->GetLocation();
+					const double zEye[3] = { zEyeP.x, zEyeP.y, zEyeP.z };
+					const double zUp[3]  = { zoomSnap.up[0], zoomSnap.up[1], zoomSnap.up[2] };
+					const double zAspect = resolveRenderAspect();
+
+					std::vector<Point3> zPts;
+					const auto zoomT0 = std::chrono::steady_clock::now();
+					const bool zSurf = CollectObjectSurfacePointsWorld( *static_cast<const IObject*>( zoomObj ), zPts );
+					if( !zSurf ) zPts = AabbCornerPoints( zMin, zMax );
+
+					double zForward[3] = { 0.0, 0.0, -1.0 };
+					double zTanHalfV = 0.0;
+					const bool zFit = ZoomFitPoints( zPts, zEye, zUp, zAspect, kIsolateFrameFill, zForward, zTanHalfV );
+					res.zoomFitMillis = std::chrono::duration<double, std::milli>(
+						std::chrono::steady_clock::now() - zoomT0 ).count();
+					if( !zFit ) {
+						res.ok = false;
+						res.message = "zoom \"" + params.zoom + "\" cannot be framed from the scene camera: part of the "
+							"object lies at or behind the camera's plane (the camera is inside or beside it), or the "
+							"camera's up axis is parallel to the line of sight.  Use `camera` to look at it from a "
+							"pose you choose.";
+						specificFailureReported = true;
+						return;
+					}
+
+					static const double kPiZ = 3.14159265358979323846;
+					static const double kMinZoomFovRad = 2.0 * kPiZ / 180.0;
+					const double sceneFovRad = zoomSnap.fov;   // RADIANS (CameraSnapshot convention), vertical
+					double fovRad = 2.0 * std::atan( zTanHalfV );
+					if( fovRad < kMinZoomFovRad ) fovRad = kMinZoomFovRad;
+					bool keptSceneFov = false;
+					if( !( fovRad < sceneFovRad ) ) { fovRad = sceneFovRad; keptSceneFov = true; }
+
+					// Aim: along the solved forward, at the distance to the
+					// object's bbox centre (any positive length aims the same
+					// way; this one keeps the numbers sane).
+					const double zc[3] = { 0.5*( zMin[0]+zMax[0] ), 0.5*( zMin[1]+zMax[1] ), 0.5*( zMin[2]+zMax[2] ) };
+					double aimLen = std::sqrt( ( zc[0]-zEye[0] )*( zc[0]-zEye[0] ) +
+					                           ( zc[1]-zEye[1] )*( zc[1]-zEye[1] ) +
+					                           ( zc[2]-zEye[2] )*( zc[2]-zEye[2] ) );
+					if( !( aimLen > 1e-6 ) ) aimLen = 1.0;
+					const double zTarget[3] = { zEye[0] + zForward[0]*aimLen,
+					                            zEye[1] + zForward[1]*aimLen,
+					                            zEye[2] + zForward[2]*aimLen };
+
+					effectiveCamera.hasLocation = true;
+					effectiveCamera.location    = Vec3ToOverrideStr( zEye );
+					effectiveCamera.hasLookAt   = true;
+					effectiveCamera.lookAt      = Vec3ToOverrideStr( zTarget );
+					effectiveCamera.hasUp       = true;
+					effectiveCamera.up          = Vec3ToOverrideStr( zUp );
+					// The camera applies `orientation` / `target_orientation` ON TOP
+					// of lookat; either would swing the aim off the object, so
+					// both are zeroed for this one render (restored afterwards).
+					const double zero3[3] = { 0.0, 0.0, 0.0 };
+					effectiveCamera.hasOrientation       = true;
+					effectiveCamera.orientation          = Vec3ToOverrideStr( zero3 );
+					effectiveCamera.hasTargetOrientation = true;
+					effectiveCamera.targetOrientation    = Vec3ToOverrideStr( zero3 );
+					if( !keptSceneFov ) {
+						char fovBuf[48];
+						std::snprintf( fovBuf, sizeof( fovBuf ), "%.17g", fovRad * 180.0 / kPiZ );
+						effectiveCamera.hasFov = true;
+						effectiveCamera.fov    = fovBuf;
+					}
+
+					res.zoomObject          = params.zoom;
+					res.zoomFovDegrees      = fovRad * 180.0 / kPiZ;
+					res.zoomSceneFovDegrees = sceneFovRad * 180.0 / kPiZ;
+					res.zoomKeptSceneFov    = keptSceneFov;
+					res.zoomFitBasis        = zSurf ? "surface" : "bbox";
+					res.zoomSurfacePointCount = zSurf ? static_cast<unsigned int>( zPts.size() ) : 0u;
+					res.zoomCoverage        = ProjectedPointsCoverage( zPts, zEye, zTarget, zUp,
+					                                                   std::tan( fovRad * 0.5 ), zAspect );
+					for( int a = 0; a < 3; ++a ) res.zoomEye[a] = zEye[a];
+					res.zoomApplied         = true;
 				}
 
 				wantCameraOverride =
@@ -28439,6 +29021,31 @@ namespace RISE
 							: "" );
 				}
 				res.message += isoNote;
+			}
+
+			// Doc 91 V2: say what the zoom camera did, as facts.  Gated on
+			// `ok && zoomApplied` for the same reason the isolate note is.
+			if( res.ok && res.zoomApplied ) {
+				char zoomNote[640];
+				char covBuf[96];
+				std::snprintf( covBuf, sizeof( covBuf ), "%.1f%%", res.zoomCoverage * 100.0 );
+				const std::string covText = res.zoomCoverage >= 0.0
+					? ( "the object's projected surface bounds cover up to " + std::string( covBuf ) +
+					    " of the frame (an upper bound on its silhouette)" )
+					: std::string( "its frame coverage was not computed" );
+				if( res.zoomKeptSceneFov ) {
+					std::snprintf( zoomNote, sizeof( zoomNote ),
+						" (zoom: \"%s\" -- the scene camera's position kept and re-aimed at the object; it already "
+						"fills the frame at the scene's %.1f deg vertical field of view, so the field of view was "
+						"NOT narrowed; every other object and light is in place; %s)",
+						res.zoomObject.c_str(), res.zoomSceneFovDegrees, covText.c_str() );
+				} else {
+					std::snprintf( zoomNote, sizeof( zoomNote ),
+						" (zoom: \"%s\" -- the scene camera's position kept, aimed at the object, vertical field of "
+						"view narrowed from %.1f to %.1f deg; every other object and light is in place; %s)",
+						res.zoomObject.c_str(), res.zoomSceneFovDegrees, res.zoomFovDegrees, covText.c_str() );
+				}
+				res.message += zoomNote;
 			}
 
 			// Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
@@ -30227,6 +30834,9 @@ namespace RISE
 			if( params.quality == AgentRenderQuality::MaterialLook ) return;
 			if( params.renderTarget != AgentRenderTarget::Beauty ) return;
 			if( !params.isolate.empty() || rr.isolateApplied ) return;
+			// Doc 91 V2: a zoom frame is a CROP of the scene from a narrowed
+			// camera, not the whole-scene picture the imagined target depicts.
+			if( !params.zoom.empty() || rr.zoomApplied ) return;
 			// A part-sketch comparison already owns this call's image and its
 			// own criterion; two comparisons on one render would also mean two
 			// png_base64 writes (see AgentRpc.cpp's exactly-one discipline).
@@ -30570,6 +31180,10 @@ namespace RISE
 			if( params.quality == AgentRenderQuality::MaterialLook ) return false;
 			if( params.renderTarget != AgentRenderTarget::Beauty ) return false;
 			if( !params.isolate.empty() || rr.isolateApplied ) return false;
+			// Doc 91 V2: a zoom frame is a crop from a narrowed camera -- an
+			// anchor made of one would make every later full-frame render look
+			// like a regression (or an improvement) that is only the lens.
+			if( !params.zoom.empty() || rr.zoomApplied ) return false;
 			if( !params.target.empty() || rr.targetApplied ) return false;
 			if( rr.png.empty() ) return false;
 			// AND ONE EXCLUSION THE SCENE TARGET DOES NOT MAKE: the render has
@@ -30940,6 +31554,11 @@ namespace RISE
 			//! 50 emissive csg_objects) cannot prepend an unbounded amount of
 			//! text ahead of the capped lists below it.
 			const std::size_t kInventoryMaxNotAreaSampledLines = 12;
+
+			//! Doc 91 V2: a plan element whose objects together cover less than
+			//! this share of a full-frame render gets the zoom sentence.
+			//! Descriptive of "too small to read", not a target to chase.
+			const double kSmallElementFrameFraction = 0.01;
 
 			//! How a world AABB sits relative to a pinhole view.
 			enum class InventoryPlacement_
@@ -31820,7 +32439,8 @@ namespace RISE
 
 		void AgentSession::ApplyVisibilityCensus_( const AgentRenderParams& params,
 		                                            AgentRenderResult& rr,
-		                                            bool assumeParked )
+		                                            bool assumeParked,
+		                                            const std::vector<ChunkAttribution_>* attribution )
 		{
 			// THE QUALIFICATION RULE, in one place.  Every term is a pure
 			// function of `params` or of the completed result.
@@ -31848,6 +32468,12 @@ namespace RISE
 			if( !rr.ok ) return;
 			if( rr.renderMode != "production" && rr.renderMode != "draft" ) return;
 			if( !params.isolate.empty() || rr.isolateApplied ) return;
+			// Doc 91 V2: the identity pass reconstructs the camera from the
+			// scene camera plus `params.camera`; a zoom render's camera is
+			// solved inside RenderCore_ and is in neither, so an inventory
+			// here would put objects "off-frame" against the wrong pose --
+			// exactly the false payload fact this mechanism exists to avoid.
+			if( !params.zoom.empty() || rr.zoomApplied ) return;
 			if( !mJob ) return;
 
 			const AgentSceneInventoryResult inv =
@@ -31870,6 +32496,63 @@ namespace RISE
 			rr.inventoryPassHeight  = inv.passHeight;
 			rr.inventoryText        = inv.text;
 			rr.inventoryNotAreaSampled = inv.notAreaSampled;
+
+			// DOC 91 V2 REACH (2026-10-17): the inventory says where each object
+			// is on a 96 px identity pass, but a plan ELEMENT that is a few dozen
+			// pixels of a full-frame render (an apothecary cat authored with six
+			// fur coats, ~20 px wide) never reads as itself.  When a build-plan
+			// element's objects cover less than ~1% of the frame in TOTAL -- and
+			// more than nothing, since zero is a different fact the per-object
+			// listing already states -- name up to three of them with the
+			// measured percentage and the call that shows each at full
+			// resolution from THIS camera.  One sentence, measured, advisory: no
+			// threshold is a target and nothing is scored.  PRODUCTION only (the
+			// frame whose detail the sentence is about), never for a zoom render
+			// (excluded above), and absent when no plan ever attributed a chunk.
+			if( attribution && !attribution->empty() && rr.renderMode == "production" ) {
+				struct SmallElement_ { std::string element; double fraction; std::string largestObject; };
+				std::vector<SmallElement_> small;
+				std::vector<std::string> seenElements;
+				for( std::size_t i = 0; i < attribution->size(); ++i ) {
+					const std::string& el = (*attribution)[i].element;
+					if( el.empty() ) continue;
+					if( std::find( seenElements.begin(), seenElements.end(), el ) != seenElements.end() ) continue;
+					seenElements.push_back( el );
+					double total = 0.0, best = -1.0;
+					std::string bestName;
+					for( std::size_t j = 0; j < attribution->size(); ++j ) {
+						if( (*attribution)[j].element != el ) continue;
+						const ChunkDescriptor* d = DescriptorForKeyword( String( (*attribution)[j].kind.c_str() ) );
+						if( !d || d->category != ChunkCategory::Object ) continue;
+						for( std::size_t k = 0; k < inv.entries.size(); ++k ) {
+							if( inv.entries[k].name != (*attribution)[j].chunk || !inv.entries[k].onScreen ) continue;
+							total += inv.entries[k].frameFraction;
+							if( inv.entries[k].frameFraction > best ) {
+								best = inv.entries[k].frameFraction;
+								bestName = inv.entries[k].name;
+							}
+						}
+					}
+					if( total > 0.0 && total < kSmallElementFrameFraction )
+						small.push_back( { el, total, bestName } );
+				}
+				if( !small.empty() ) {
+					std::stable_sort( small.begin(), small.end(),
+						[]( const SmallElement_& a, const SmallElement_& b ) { return a.fraction < b.fraction; } );
+					std::string sentence = "\nPLAN ELEMENTS UNDER 1% OF THIS FRAME (measured in the identity pass above, summed over each "
+						"element's objects): ";
+					const std::size_t shown = std::min<std::size_t>( small.size(), 3 );
+					for( std::size_t i = 0; i < shown; ++i ) {
+						if( i > 0 ) sentence += ", ";
+						sentence += small[i].element + " " + InventoryPercent_( small[i].fraction ) +
+							" (its largest object is " + small[i].largestObject + ")";
+					}
+					if( shown < small.size() )
+						sentence += ", and " + std::to_string( small.size() - shown ) + " more";
+					sentence += " -- render{zoom:\"<one of an element's objects>\"} shows it at full resolution from this camera.";
+					rr.inventoryText += sentence;
+				}
+			}
 
 			// GPT slice item 1 (2026-08-24): the coverage-delta note, off
 			// this SAME `inv` -- this function's own qualification rule
@@ -36633,6 +37316,15 @@ namespace RISE
 			// reads, not only in a log line).
 			BuildPlanGiveUpFold_ a82Fold{ out.message, std::string() };
 
+			{
+				const std::string zoomConflict = ZoomConflictMessage( params );
+				if( !zoomConflict.empty() ) {
+					out.accepted = false;
+					out.message  = zoomConflict;
+					return out;
+				}
+			}
+
 			if( !mController ) {
 				out.accepted = false;
 				out.message  = "no controller attached -- RenderAsync requires a LIVE controller (headless sessions have no coordinator/worker to submit to); use the synchronous Render() instead";
@@ -36944,7 +37636,7 @@ namespace RISE
 					// (ApplyTargetComparison_'s reason, unchanged).  Placed
 					// before the mLastAsyncRenderResult store below so the
 					// cached result a later render_wait echoes carries it.
-					ApplyVisibilityCensus_( params, r, /*assumeParked=*/true );
+					ApplyVisibilityCensus_( params, r, /*assumeParked=*/true, &chunkAttributionSnapshot );
 					// Arc 81 (2026-08-12): the TONAL FACT, on the async path
 					// exactly as on the synchronous one.  It reads only the
 					// pixels `r` already carries, so it needs no park flag --

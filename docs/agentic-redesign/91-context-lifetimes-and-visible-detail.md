@@ -1,6 +1,6 @@
 # 91 — Context lifetimes and visible detail
 
-Status: DESIGN — slices L1–L3 (context), V1–V2 (visible detail) in progress
+Status: V1–V2 (visible detail) implemented; L1–L3 (context) in progress
 Evidence base: trajectories `20261017T011539Z-71dd70e7` (apothecary) and
 `20261017T133602Z-dbe83160` (dragons/wizards), both gemini-4-argon, the
 default model since `0aa14cf8`.  Measured with `tools/trajectory_census.py`.
@@ -106,6 +106,42 @@ failing.
   ("`cat` covers 0.4% of this frame — render{zoom:...} shows it at full
   resolution from this camera").  Advisory, self-disarming, no number to
   chase.
+
+### 3.1 As built (V1, V2)
+
+- **V1.** `render{isolate:}` (and so `finish_element`'s close-up) gathers
+  world-space points on the object's real surface -- the vertices of its
+  geometry's tessellation (SDF/skeleton: 48 cells along the longest axis;
+  primitives: 32 segments; meshes as authored; capped at 24k points) -- and
+  fits THEM (`IsolateFitPoints`): the perspective generalisation of the old
+  8-corner fit, with the aim refined to the centre of the projected extent
+  rather than the 3D box centre.  CSG composites, infinite planes and any
+  geometry that cannot tessellate fall back to the old AABB-corner fit
+  (`isolate.fitBasis` says which).  The scene camera's own `orientation` /
+  `target_orientation` are cleared for the render (they were applied ON TOP
+  of the override and swung the aim off the object).  Measured on the exact
+  objectmap pixel share of the isolated frame: rotated elongated creature
+  0.038 -> 0.300, smin blob (draft panel) 0.083 -> 0.484, box 0.402 -> 0.529;
+  gather + fit 7-15 ms.  Side finding: the pinned finish_element coverage
+  arms measured the two-panel composite and had been vacuous (~0.95-0.99 for
+  any fit) since the material-look panel was added; they now crop to the
+  draft panel.
+- **V2.** `render{zoom:"<object>"}` keeps the scene camera's real (post-orbit)
+  eye, aims at the surface-point extent's centre and narrows the vertical fov
+  to fit at the same 0.85 fill (floor 2 deg; never wider than the scene fov --
+  an object that already fills the frame keeps it and the result says so).
+  Nothing is hidden.  Exclusive with `isolate`, `view` and `camera`; pinhole
+  only.  A zoom render carries no scene inventory, anchor or scene-target
+  comparison (its camera is not the reconstructable one).  The result's
+  `zoom` block: `object`, `eye`, `fovDegrees`, `sceneFovDegrees`,
+  `keptSceneFov`, `coverage`, `fitBasis`.  Reach: the production inventory
+  appends one sentence naming up to three plan elements whose objects cover
+  under 1% of the frame in total.
+- **Camera restore.** `CameraIntrospection::SetProperty("target_orientation")`
+  now accepts the two-component form `GetPropertyValue` emits; before, a
+  capture-set-render-restore sequence that overrode `target_orientation`
+  (the agent's `view` path, and now isolate/zoom) could not write the
+  captured value back and left the override on the scene camera.
 
 ## 4. Measurement
 
