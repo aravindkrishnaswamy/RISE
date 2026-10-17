@@ -21431,6 +21431,13 @@ namespace RISE
 			// path): tessellating it would re-copy every array of a bake that `detail` can
 			// make up to the 1.5M-triangle refinement cap -- the very copy this gather
 			// exists to avoid.  Unrealized (no bake yet) falls through to the tessellation.
+			// Concurrency (UNCHANGED, pre-existing): DisplacedGeometry::RefreshMeshVertices refits
+			// the bake in place on an animated displacement's painter notification, and neither
+			// this read nor the TessellateToMesh copy it replaces is synchronized against that --
+			// both read the same m_pMesh the render's own IntersectRay reads.  The gather runs on
+			// the control thread after PrepareForRendering, between renders, so there is no
+			// concurrent refit on any path today; a caller that animates a displacement painter
+			// from another thread while an isolate / zoom gathers would race either way.
 			const Implementation::TriangleMeshGeometryIndexed* mesh =
 				dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>( g );
 			if( !mesh ) {

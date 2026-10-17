@@ -26,27 +26,30 @@ RISE ASCII SCENE 7
 #                   TEMPLATE of a path_instances_geometry (the audit-verified pairing nothing else pins).      #
 #                   ALL the builder specimens (LATHE, SWEEP/LOFT, SKIN) and the SDF specimens render SMOOTH    #
 #                   under displacement. (HISTORY: the doc 89 slice D audit found lathe/sweep/skin bases        #
-#                   rendering visibly FACETED, because the mesh-to-mesh bake re-emitted every triangle         #
-#                   corner as its own unshared vertex and the post-displacement normal recompute had           #
-#                   nothing to average across; TriangleMeshGeometryIndexed::TessellateToMesh now keeps the     #
-#                   builder's shared vertices, which fixed it.) A builder is already a mesh and its own        #
-#                   tessellation ignores `detail`, so displaced_geometry subdivides the lathe's, the loft's    #
-#                   and the skin's AUTHORED grid at spacing (bbox diagonal / detail): REFINEMENT NEVER         #
-#                   CHANGES THE AUTHORED SURFACE -- new vertices lie on the authored polygon with              #
-#                   interpolated normals and UVs, creases only where authored, loft pairing as authored --     #
-#                   so the silhouette is the authored polygon (a coarse base stays a polygon; author it        #
-#                   denser to round it) and, as disp_scale approaches 0, the render matches the undisplaced    #
-#                   base up to a small tolerance (a refined vertex inside a non-planar authored quad can       #
-#                   sit up to ~0.1% of its diagonal off the authored pair of triangles). Measured at detail    #
-#                   48: the 6-row vase 384 -> ~9.6k triangles, the leg ~11k, and the billowed sail 1170 ->     #
-#                   ~1.95k (refined too, to the same spacing).                                                 #
+#                   rendering visibly FACETED, because the mesh-to-mesh bake re-emitted every triangle corner  #
+#                   as its own unshared vertex and the post-displacement normal recompute had nothing to       #
+#                   average across; TriangleMeshGeometryIndexed::TessellateToMesh now keeps the builder's      #
+#                   shared vertices, which fixed it.) A builder is already a mesh and its own tessellation     #
+#                   ignores `detail`, so displaced_geometry subdivides the lathe's, the loft's and the skin's  #
+#                   AUTHORED grid at spacing (bbox diagonal / detail): REFINEMENT NEVER CHANGES THE AUTHORED   #
+#                   SURFACE -- new vertices lie on the authored polygon with interpolated normals and UVs,     #
+#                   creases only where authored, loft pairing as authored -- so the silhouette is the authored #
+#                   polygon (a coarse base stays a polygon; author it denser to round it) and, as disp_scale   #
+#                   approaches 0, the render matches the undisplaced base up to a small tolerance (a refined   #
+#                   vertex inside a non-planar authored quad can sit up to ~0.1% of its diagonal off the       #
+#                   authored pair of triangles). Triangle counts at the scene's own detail: the 6-row vase     #
+#                   (detail 48) 384 -> ~9.6k, the leg (detail 48) ~11k, and the billowed sail (detail 32) 1170 #
+#                   -> ~1.95k -- the sail is refined too, just to a coarser spacing.                           #
 #                                                                                                              #
-#                   Crease / cap / pinch vertices are separate vertices in the base but are WATERTIGHT         #
-#                   under displacement: every group of base-coincident vertices moves to one shared            #
-#                   position (the mean of its members' displacement vectors) while keeping its own shading     #
-#                   normal, and an end cap is refined on its rim so its rim matches the wall's vertex for      #
-#                   vertex (the leg's top no longer shows a slit; a cap carries relief at its rim and one      #
-#                   centroid point, not across its interior). See the `displaced_geometry` chunk descriptor    #
+#                   Crease / cap / pinch vertices are separate vertices in the base but are WELDED under       #
+#                   displacement (a lathe / sweep / skin welds every coincident group: the mean of the group's #
+#                   displacement vectors, each vertex keeping its own shading normal), and an end cap is       #
+#                   refined on its rim so its rim matches the wall's vertex for vertex (the leg's top no       #
+#                   longer shows a slit; a cap carries relief at its rim and one centroid point, not across    #
+#                   its interior). The BOX CONTROL is the exception that proves the rule: an analytic box      #
+#                   tessellates with per-face duplicate corners that this weld does not touch, so its edges    #
+#                   still crack under displacement -- a pre-existing limitation of that tessellation, not      #
+#                   something refinement or the weld changed. See the `displaced_geometry` chunk descriptor    #
 #                   and object-modeling-recipes Recipe 6.                                                      #
 #   Author:         Aravind Krishnaswamy                                                                       #
 #                                                                                                              #

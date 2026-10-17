@@ -2014,6 +2014,7 @@ namespace RISE
 
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 		pGeom->BeginIndexedTriangles();
 
 		// rings.  frac doubles as the linear-taper parameter and the V texture
@@ -2620,6 +2621,7 @@ namespace RISE
 
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "lathe geometry" );
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 		pGeom->BeginIndexedTriangles();
 
 		std::vector<int>  rowBase( rows.size(), 0 );
@@ -3892,6 +3894,7 @@ namespace RISE
 		// ---- emit ----------------------------------------------------------
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "skin geometry" );
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
 		pGeom->BeginIndexedTriangles();
 
 		for( size_t i = 0; i < nStations; i++ ) {
@@ -4050,6 +4053,7 @@ namespace RISE
 
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "path instances geometry" );
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldNone );
 		pGeom->BeginIndexedTriangles();
 
 		int vc = 0;

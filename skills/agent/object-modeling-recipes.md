@@ -1862,16 +1862,27 @@ plumbing:
   through the displacement.  This is the recipe above (scales, dimples, skin
   pores).  Limits worth knowing: crease / cap / duplicated-profile-point
   vertices are SEPARATE vertices in the base (that is what keeps their crease
-  and each band's shading normal), but under displacement every group of them
-  that is coincident in the base moves to ONE shared position -- the mean of its
-  members' displacement vectors -- while each keeps its own shading normal, so
-  cap rims, duplicated profile points, a lathe pinch's two poles and skin
-  crease stations stay WATERTIGHT (no slit between a cap and the wall); a
-  sweep's or partial lathe's END CAP is refined on its rim only, its rim points
-  matching the wall's vertex for vertex, so it carries relief at the rim and
-  one centroid point, not across its interior; a mesh with `face_normals TRUE`
-  and the legacy non-indexed `rawmesh_geometry` are flat per triangle and crack
-  at every edge (neither is refined).
+  and each band's shading normal), but under displacement coincident vertices
+  are WELDED to one shared position -- the mean of the group's displacement
+  vectors -- while each keeps its own shading normal, by the BASE MESH's own
+  rule: a lathe / sweep / skin welds EVERY coincident group (they are its own
+  creases, cap rims, duplicated profile points, pinch poles and skin crease
+  stations, so none slits open); an imported or hand-built mesh welds only
+  members whose base normals are within a 120-degree crease cone (a UV seam, a
+  cube edge), so two coincident OPPOSITE-facing sheets (a two-sided leaf,
+  cloth) stay independent surfaces that each keep their full relief and may
+  separate; `path_instances_geometry` welds nothing (touching instances are
+  separate bodies).  It applies at every layer (a displaced base is welded
+  again by its own base's rule) and does not depend on the displaced chunk's
+  own `face_normals`, which only chooses how the result shades; a base that is
+  itself face-normal, an analytic primitive and an SDF are never welded (a
+  box's per-face corner duplicates still crack under displacement).  Costs: a
+  pinch's two poles are averaged against each other, so the relief at that
+  ring is ~zero; a sweep's or partial lathe's END CAP is refined on its rim
+  only, its rim points matching the wall's vertex for vertex, so it carries
+  relief at the rim and one centroid point, not across its interior; a mesh
+  with `face_normals TRUE` and the legacy non-indexed `rawmesh_geometry` are
+  flat per triangle and crack at every edge (neither is refined).
   **`detail` sets how finely a MESH base is displaced** (a mesh ignores
   `detail` in its own tessellation), with target spacing
   (bounding-box diagonal / `detail`).  **Refinement never changes the authored

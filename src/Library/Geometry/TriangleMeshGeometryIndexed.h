@@ -125,6 +125,7 @@ namespace RISE
 			// it built the mesh.  A deserialized (imported) mesh therefore never wraps its chart
 			// and is refined uniformly (median-edge 1->4 levels), never grid-wise.
 			std::shared_ptr<const MeshGrid>	m_grid;		//!< set by a builder (lathe / sweep / skin); see MeshGrid
+			int							m_weldPolicy;	//!< DisplacementWeldPolicy: how DisplacedGeometry welds this mesh's coincident vertices
 			std::vector<unsigned char>	m_uvPeriodic;	//!< per-position-index kUPeriodic/kVPeriodic bits (see SetUVPeriodicRegion); empty = none
 
 			//! Computes and caches `m_bWatertight`.  Called from
@@ -397,6 +398,25 @@ namespace RISE
 
 			//! Install per-position periodicity bits wholesale (DisplacedGeometry's baked mesh).
 			void SetUVPeriodicFlags( const std::vector<unsigned char>& flags ) { m_uvPeriodic = flags; }
+
+			//! How DisplacedGeometry welds the vertices of this mesh that are COINCIDENT in the
+			//! undisplaced mesh (a crease, a cap rim, a pinch's two poles, a UV seam are separate
+			//! vertices at one position).  Welded vertices move to one shared displaced position
+			//! (the mean of their displacement vectors), so the crease stays closed.
+			//!  kWeldCreaseCone : (default; an import, a deserialized .risemesh, a hand-built mesh)
+			//!                    weld a coincident group's members whose base normals lie within a
+			//!                    crease cone of each other (angle < 120 deg: a seam, a cube edge, a
+			//!                    cap against a wall) -- coincident OPPOSITE-facing sheets (a two-sided
+			//!                    leaf, cloth) are NOT one surface and stay independent.
+			//!  kWeldAll        : a procedural builder (lathe / sweep / skin): every coincident group
+			//!                    is, by construction, the builder's own crease / cap rim / duplicated
+			//!                    profile point / pinch pole / skin crease station, so all of it is welded
+			//!                    whatever its normals (a pinch's two poles face opposite ways).
+			//!  kWeldNone       : path_instances_geometry -- coincident vertices of TOUCHING instances
+			//!                    belong to different bodies, so none is welded across (or within) them.
+			enum DisplacementWeldPolicy { kWeldCreaseCone = 0, kWeldAll = 1, kWeldNone = 2 };
+			void SetDisplacementWeldPolicy( const int p ) { m_weldPolicy = p; }
+			int  GetDisplacementWeldPolicy() const { return m_weldPolicy; }
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;

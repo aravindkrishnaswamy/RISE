@@ -84,6 +84,7 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
   bDoubleSided( bDoubleSided_ ),
   bUseFaceNormals( bUseFaceNormals_ ),
   m_bWatertight( false ),
+  m_weldPolicy( kWeldCreaseCone ),
   pPtrBVH( 0 )
 #ifdef RISE_ENABLE_MAILBOXING
   , geometryId( s_nextGeometryId.fetch_add(1) )

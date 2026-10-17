@@ -85,15 +85,24 @@ namespace RISE
 		// every edge of it is already a crack -- so it is not refined and displaces along
 		// each face normal as it always did.
 		//
-		// WATERTIGHT AT AUTHORED CREASES.  Crease / cap / pinch / UV-seam vertices are
-		// separate vertices in the base (that is what keeps a crease) -- coincident in
-		// position, different in normal and UV.  Displacing each along its own normal by
-		// its own height tore them apart (cap rims off the walls, a pinch's two poles by
-		// 2*disp_scale, crease rows).  WeldCoincidentDisplacement instead moves every group
-		// of vertices coincident in the UNdisplaced mesh to ONE shared position, the mean of
-		// its members' displacement vectors, each member keeping its own shading normal.
-		// Smooth-normal TriangleMeshGeometryIndexed bases only (a face-normal base, an
-		// analytic / SDF base and a displaced base are not touched).
+		// WATERTIGHT AT CREASES (see BaseWeldPolicy for the full rule).  Crease / cap / pinch /
+		// UV-seam vertices are separate vertices in the base (that is what keeps a crease) --
+		// coincident in position, different in normal and UV.  Displacing each along its own
+		// normal by its own height tore them apart (cap rims off the walls, a pinch's two poles
+		// by 2*disp_scale, crease rows).  WeldCoincidentDisplacement moves the groups the BASE
+		// MESH says are one surface to ONE shared position, the mean of the members'
+		// displacement vectors, each keeping its own shading normal: a lathe / sweep / skin
+		// welds every coincident group (its recorded creases, cap rims, duplicated profile
+		// points, pinch poles, skin crease stations); an import / hand-built mesh welds members
+		// whose base normals are within a 120-degree crease cone, so coincident OPPOSITE-facing
+		// sheets (leaf, cloth) stay independent and keep their full relief; path_instances_
+		// geometry welds nothing (touching instances are separate bodies).  A displaced base is
+		// welded again by its base's policy.  Consequences: a pinch ring displaces to ~zero
+		// relief (its poles are averaged against each other); knife-edge opposite sheets may
+		// separate.  Smooth-normal TriangleMeshGeometryIndexed bases only -- a face-normal
+		// base, an analytic and an SDF base are not touched (a box's per-face corner
+		// duplicates still crack: a pre-existing limitation of that tessellation) -- and
+		// gated on the BASE's normal source, not this chunk's own face_normals flag.
 		//
 		// SHADING.  For every smooth-normal mesh base that is displaced (refined or
 		// not) the base's own shading-normal field is carried through the
@@ -242,18 +251,32 @@ namespace RISE
 				NormalsListType&       geom0,
 				std::vector<unsigned char>& uvFlags ) const;
 
-			// WATERTIGHT DISPLACEMENT at authored creases.  A mesh base keeps a crease /
-			// cap / pinch / seam as SEPARATE vertices -- coincident in the base, different
-			// normal and UV -- and each would displace along its own normal by its own
-			// height, tearing the crease open.  Every group of vertices coincident in the
-			// UNdisplaced mesh (positions welded by GeometricUtilities::WeldVertexPositions)
-			// instead moves by the MEAN of its members' displacement vectors, to one shared
-			// position; each member keeps its own shading normal (the crease still shades as
-			// a crease).  Applied to a smooth-normal TriangleMeshGeometryIndexed base only:
-			// analytic / SDF bases already tessellate crack-free, a displaced base is already
-			// welded, and a face-normal base is flattened per corner by design.
-			bool ShouldWeldCoincident() const;
-			void WeldCoincidentDisplacement( const VerticesListType& undisplaced, VerticesListType& displaced ) const;
+			// WATERTIGHT DISPLACEMENT at creases.  A mesh base keeps a crease / cap / pinch /
+			// UV seam as SEPARATE vertices -- coincident in position, different in normal and
+			// UV -- and each would displace along its own normal by its own height, tearing the
+			// crease open.  The vertices that are coincident in the UNdisplaced mesh (positions
+			// welded by GeometricUtilities::WeldVertexPositions) are therefore moved to ONE
+			// shared position, the mean of the group's displacement vectors; each member keeps
+			// its own shading normal (the crease still shades as a crease).  WHICH coincident
+			// groups are welded is the BASE MESH's own say (TriangleMeshGeometryIndexed::
+			// DisplacementWeldPolicy): a lathe / sweep / skin welds every group (they are its
+			// recorded creases, cap rims, duplicated profile points, pinch poles, crease
+			// stations); an import or hand-built mesh welds only members whose base normals lie
+			// within a crease cone (< 120 deg) -- coincident OPPOSITE-facing sheets (a two-sided
+			// leaf, cloth) are separate surfaces and stay independent, so each keeps its full
+			// relief -- and path_instances_geometry welds nothing (touching instances are
+			// separate bodies).  Consequences: a pinch's two poles stay together and the relief
+			// averages to ~zero on that ring; opposite sheets may separate under displacement.
+			// A displaced base is welded again (its baked mesh inherits the policy of ITS base),
+			// because its coincident vertices leave the inner bake with different transported
+			// shading normals.  Gated on the BASE MESH's normal source (a face-normal base is
+			// flattened per corner by design and is not welded), NOT on this geometry's own
+			// face_normals flag, which only chooses how the result SHADES.  Analytic and SDF
+			// bases are not touched (a box's per-face corner duplicates still crack under
+			// displacement: a pre-existing limitation of those tessellations).
+			// Returns the base's policy, or -1 for no weld.
+			int  BaseWeldPolicy() const;
+			void WeldCoincidentDisplacement( const VerticesListType& undisplaced, const NormalsListType& baseNormals, const int policy, VerticesListType& displaced ) const;
 
 			// Topology signature (FNV-1a over the triangle index list and vertex
 			// count) of the mesh the current m_pMesh was built from.
@@ -357,7 +380,9 @@ namespace RISE
 			//! bake.  A read-only view for a consumer that needs the surface's vertices
 			//! without TessellateToMesh's full copy of every array -- the agent's isolate
 			//! surface-point gather stride-reads it, so its memory stays bounded however
-			//! fine `detail` made the bake (up to the 1.5M-triangle refinement cap).
+			//! fine `detail` made the bake (up to the 1.5M-triangle refinement cap).  Not
+			//! synchronized against RefreshMeshVertices' in-place refit (nor is
+			//! TessellateToMeshEx, nor the render's IntersectRay): call it between renders.
 			const ITriangleMeshGeometryIndexed* GetBakedMesh() const { return m_pMesh; }
 
 			// IGeometry

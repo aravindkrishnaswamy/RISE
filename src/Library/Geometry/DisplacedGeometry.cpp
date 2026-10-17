@@ -399,36 +399,83 @@ namespace {
 	}
 }
 
-bool DisplacedGeometry::ShouldWeldCoincident() const
+int DisplacedGeometry::BaseWeldPolicy() const
 {
+	// The base MESH: the base itself, or a displaced base's baked mesh.
 	const TriangleMeshGeometryIndexed* pIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( m_pBase );
-	return pIdx && !pIdx->UsesFaceNormals() && !m_bUseFaceNormals;
+	if( !pIdx ) {
+		if( const DisplacedGeometry* pDsp = dynamic_cast<const DisplacedGeometry*>( m_pBase ) ) {
+			pIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( pDsp->GetBakedMesh() );
+		}
+	}
+	if( !pIdx || pIdx->UsesFaceNormals() ) {
+		return -1;
+	}
+	return pIdx->GetDisplacementWeldPolicy();
 }
 
-void DisplacedGeometry::WeldCoincidentDisplacement( const VerticesListType& undisplaced, VerticesListType& displaced ) const
+void DisplacedGeometry::WeldCoincidentDisplacement(
+	const VerticesListType& undisplaced, const NormalsListType& baseNormals, const int policy, VerticesListType& displaced ) const
 {
-	if( undisplaced.size() != displaced.size() || undisplaced.size() < 2 ) {
+	if( policy == TriangleMeshGeometryIndexed::kWeldNone || undisplaced.size() != displaced.size() || undisplaced.size() < 2 ) {
 		return;
 	}
 	std::vector<unsigned int> wid;
 	if( !GeometricUtilities::WeldVertexPositions( undisplaced, wid ) ) {
 		return;
 	}
+	const bool cone = ( policy == TriangleMeshGeometryIndexed::kWeldCreaseCone ) && baseNormals.size() == undisplaced.size();
 	unsigned int maxId = 0;
 	for( size_t i = 0; i < wid.size(); ++i ) maxId = std::max( maxId, wid[i] );
-	std::vector<unsigned int> count( size_t( maxId ) + 1, 0 ), first( size_t( maxId ) + 1, 0 );
-	std::vector<Vector3>      sum( size_t( maxId ) + 1, Vector3( 0, 0, 0 ) );
-	for( size_t i = 0; i < wid.size(); ++i ) {
-		const unsigned int g = wid[i];
-		if( count[g]++ == 0 ) first[g] = static_cast<unsigned int>( i );
-		sum[g] = sum[g] + Vector3Ops::mkVector3( displaced[i], undisplaced[i] );
-	}
-	for( size_t i = 0; i < wid.size(); ++i ) {
-		const unsigned int g = wid[i];
-		if( count[g] < 2 ) continue;
-		const Vector3 mean = sum[g] * ( 1.0 / Scalar( count[g] ) );
-		const Point3& o = undisplaced[first[g]];
-		displaced[i] = Point3( o.x + mean.x, o.y + mean.y, o.z + mean.z );
+
+	// Members of each position group (CSR), then -- for the crease-cone policy -- split the group
+	// into connected components of "base normals within 120 degrees" (dot > -1/2).
+	std::vector<unsigned int> start( size_t( maxId ) + 2, 0 );
+	for( size_t i = 0; i < wid.size(); ++i ) ++start[ size_t( wid[i] ) + 1 ];
+	for( size_t g = 0; g <= maxId; ++g ) start[g + 1] += start[g];
+	std::vector<unsigned int> members( wid.size() ), fill( start.begin(), start.end() - 1 );
+	for( size_t i = 0; i < wid.size(); ++i ) members[ fill[ wid[i] ]++ ] = static_cast<unsigned int>( i );
+
+	std::vector<unsigned int> comp;		// scratch: component label per member of the current group
+	for( size_t g = 0; g <= maxId; ++g ) {
+		const unsigned int b = start[g], e = start[g + 1], m = e - b;
+		if( m < 2 ) continue;
+		comp.assign( m, 0 );
+		for( unsigned int k = 0; k < m; ++k ) comp[k] = k;
+		if( cone ) {
+			auto find = [&]( unsigned int x ) { while( comp[x] != x ) { comp[x] = comp[comp[x]]; x = comp[x]; } return x; };
+			for( unsigned int i = 0; i < m; ++i ) {
+				const Vector3& ni = baseNormals[ members[b + i] ];
+				for( unsigned int j = i + 1; j < m; ++j ) {
+					const Vector3& nj = baseNormals[ members[b + j] ];
+					if( Vector3Ops::Dot( ni, nj ) > -0.5 ) {
+						const unsigned int ri = find( i ), rj = find( j );
+						if( ri != rj ) comp[ri] = rj;
+					}
+				}
+			}
+			for( unsigned int k = 0; k < m; ++k ) comp[k] = find( k );
+		} else {
+			for( unsigned int k = 0; k < m; ++k ) comp[k] = 0;		// the whole group is one crease
+		}
+		// weld each component with >= 2 members to its mean displacement vector
+		for( unsigned int root = 0; root < m; ++root ) {
+			unsigned int count = 0, first = 0;
+			Vector3 sum( 0, 0, 0 );
+			for( unsigned int k = 0; k < m; ++k ) {
+				if( comp[k] != root ) continue;
+				const unsigned int vi = members[b + k];
+				if( count++ == 0 ) first = vi;
+				sum = sum + Vector3Ops::mkVector3( displaced[vi], undisplaced[vi] );
+			}
+			if( count < 2 ) continue;
+			const Vector3 mean = sum * ( 1.0 / Scalar( count ) );
+			const Point3& o = undisplaced[first];
+			const Point3 target( o.x + mean.x, o.y + mean.y, o.z + mean.z );
+			for( unsigned int k = 0; k < m; ++k ) {
+				if( comp[k] == root ) displaced[ members[b + k] ] = target;
+			}
+		}
 	}
 }
 
@@ -812,8 +859,11 @@ void DisplacedGeometry::BuildMesh() const
 	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
 	if( bVerticesDisplaced ) {
 		AveragePolarDisplacement( preDisplaceVertices, normals, tris, uvFlags, vertices );
-		if( ShouldWeldCoincident() ) {
-			WeldCoincidentDisplacement( preDisplaceVertices, vertices );
+		{
+			const int weldPolicy = BaseWeldPolicy();
+			if( weldPolicy >= 0 ) {
+				WeldCoincidentDisplacement( preDisplaceVertices, normals, weldPolicy, vertices );
+			}
 		}
 	}
 
@@ -832,8 +882,16 @@ void DisplacedGeometry::BuildMesh() const
 	m_pMesh->AddTexCoords( coords );
 	m_pMesh->AddIndexedTriangles( tris );
 	m_pMesh->DoneIndexedTriangles();
-	// Chart periodicity travels with the mesh (a displaced-of-displaced base reads it).
+	// Chart periodicity travels with the mesh (a displaced-of-displaced base reads it), and so does
+	// the base's weld policy: a displaced layer over this one welds its coincident vertices by the
+	// SAME rule (they leave this bake with different transported shading normals, so without it the
+	// outer layer would re-open every crease).  A base that is not a smooth mesh (analytic, SDF,
+	// face-normal) leaves the bake unwelded, as before.
 	pNewMesh->SetUVPeriodicFlags( uvFlags );
+	{
+		const int basePolicy = BaseWeldPolicy();
+		pNewMesh->SetDisplacementWeldPolicy( basePolicy >= 0 ? basePolicy : int( TriangleMeshGeometryIndexed::kWeldNone ) );
+	}
 }
 
 void DisplacedGeometry::RefreshMeshVertices()
@@ -863,8 +921,11 @@ void DisplacedGeometry::RefreshMeshVertices()
 	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
 	if( bVerticesDisplaced ) {
 		AveragePolarDisplacement( preDisplaceVertices, normals, tris, uvFlags, vertices );
-		if( ShouldWeldCoincident() ) {
-			WeldCoincidentDisplacement( preDisplaceVertices, vertices );
+		{
+			const int weldPolicy = BaseWeldPolicy();
+			if( weldPolicy >= 0 ) {
+				WeldCoincidentDisplacement( preDisplaceVertices, normals, weldPolicy, vertices );
+			}
 		}
 	}
 

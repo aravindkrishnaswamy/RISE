@@ -141,8 +141,10 @@ namespace RISE
 	//! split and DisplacedGeometry closes the crack in the DISPLACEMENT: every
 	//! group of base-coincident vertices moves to one shared position (the mean
 	//! of its members' displacement vectors) while each keeps its own shading
-	//! normal.  A pinch's two poles therefore stay together under displacement
-	//! (Test 10 of DisplacedGeometryTest asserts the gap closed).
+	//! normal -- a lathe / sweep / skin carries TriangleMeshGeometryIndexed::kWeldAll,
+	//! so EVERY coincident group of its mesh is welded.  A pinch's two poles
+	//! therefore stay together under displacement (Test 10 of DisplacedGeometryTest
+	//! asserts the gap closed) and the relief averages to ~zero at that ring.
 	struct LatheDescriptor
 	{
 		const double* profilePoints;	//!< r0 h0 r1 h1 ... (pairs; OPEN polyline, >= 2, every r >= 0, not ALL r == 0)

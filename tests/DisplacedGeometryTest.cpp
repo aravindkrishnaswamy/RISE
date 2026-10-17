@@ -1,3 +1,9 @@
+// This suite's assertions WRAP REAL CALLS (assert( RISE_API_CreateLatheGeometry( &p, d ) ),
+// assert( geom->TessellateToMesh( ... ) )) and are its only checks, so they must run in EVERY build
+// configuration: a Release build defines NDEBUG, which would compile the calls away and test nothing.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <iostream>
 #include <chrono>
 #include <cassert>
@@ -2319,6 +2325,183 @@ static void TestDisplacementIsWatertightAtCreases()
 }
 
 //-----------------------------------------------------------------------------
+// Round-6: WHICH coincident vertices the displacement welds is the BASE MESH's say
+// (TriangleMeshGeometryIndexed::DisplacementWeldPolicy).
+//  * a builder (lathe / sweep / skin) welds every coincident group -- its recorded creases,
+//    cap rims, duplicated profile points, pinch poles;
+//  * that holds at EVERY layer: a displaced base is welded again (its coincident vertices
+//    leave the inner bake with different transported shading normals), and the displaced
+//    chunk's own face_normals flag (how the result SHADES) does not disable it;
+//  * an import / hand-built mesh welds only members whose base normals are within a crease
+//    cone (< 120 deg): a folded sheet stays closed, but two coincident OPPOSITE-facing sheets
+//    (a two-sided leaf) are separate surfaces and each keeps its full relief;
+//  * path_instances_geometry welds nothing: touching instances are separate bodies.
+//-----------------------------------------------------------------------------
+class WaveFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar x, const Scalar y ) const { return 0.5 + 0.5 * std::sin( 23.0 * x ) * std::cos( 17.0 * y ); }
+};
+
+class VOnlyFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar /*x*/, const Scalar y ) const { return y; }
+};
+
+static VerticesListType BakedVertices( DisplacedGeometry* pDisp )
+{
+	pDisp->Realize();
+	const TriangleMeshGeometryIndexed* pMesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( pDisp->GetBakedMesh() );
+	assert( pMesh );
+	return pMesh->getVertices();
+}
+
+// Worst distance between members of one coincident group of v0 (the UNdisplaced vertices), measured
+// on the same-index displaced vertices v1; `groups` receives the number of coincident groups.
+static Scalar CoincidentSpread( const VerticesListType& v0, const VerticesListType& v1, size_t* groups )
+{
+	assert( v0.size() == v1.size() );
+	const Scalar diag = BBoxDiagonal( v0 ), q = 1e-6 * diag;
+	std::map<std::tuple<long long, long long, long long>, std::vector<unsigned int> > g;
+	for( unsigned int k = 0; k < v0.size(); ++k ) g[ std::make_tuple( (long long)std::floor( v0[k].x / q + 0.5 ), (long long)std::floor( v0[k].y / q + 0.5 ), (long long)std::floor( v0[k].z / q + 0.5 ) ) ].push_back( k );
+	size_t multi = 0; Scalar worst = 0;
+	for( std::map<std::tuple<long long, long long, long long>, std::vector<unsigned int> >::const_iterator it = g.begin(); it != g.end(); ++it ) {
+		if( it->second.size() < 2 ) continue;
+		++multi;
+		for( size_t a = 1; a < it->second.size(); ++a ) {
+			const Point3& p0 = v1[it->second[0]]; const Point3& pa = v1[it->second[a]];
+			worst = std::max( worst, std::sqrt( ( p0.x - pa.x )*( p0.x - pa.x ) + ( p0.y - pa.y )*( p0.y - pa.y ) + ( p0.z - pa.z )*( p0.z - pa.z ) ) );
+		}
+	}
+	if( groups ) *groups = multi;
+	return worst;
+}
+
+static Scalar MaxMove( const VerticesListType& a, const VerticesListType& b )
+{
+	Scalar m = 0;
+	for( size_t k = 0; k < a.size() && k < b.size(); ++k ) m = std::max( m, std::sqrt( ( a[k].x - b[k].x )*( a[k].x - b[k].x ) + ( a[k].y - b[k].y )*( a[k].y - b[k].y ) + ( a[k].z - b[k].z )*( a[k].z - b[k].z ) ) );
+	return m;
+}
+
+static void TestWeldPoliciesPerBaseMesh()
+{
+	std::cout << "Test 10s: the weld follows the BASE mesh (builder: every group, at every layer, whatever face_normals; import: crease cone; path instances: none)...\n";
+	int softFails = 0;
+#define SOFT( cond ) do { if( !( cond ) ) { ++softFails; std::cout << "  [FAIL] " #cond "\n"; } } while( 0 )
+
+	// ---- a 270 degree FACETED lathe with a knife-edge step: caps, creases at every profile point ----
+	static const double prof[] = { 0.0,0,  1,0,  1,1.5,  0.6,1.5,  0.6,3,  0,3 };
+	LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 6; ld.nRadial = 16; ld.sweepDegrees = 270; ld.smooth = false;
+	ITriangleMeshGeometryIndexed* pI = 0;
+	assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+	TriangleMeshGeometryIndexed* pLathe = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+	assert( pLathe );
+	WaveFunction2D* pWave = new WaveFunction2D();
+	const Scalar ds = 0.05;
+
+	for( int faceN = 0; faceN < 2; ++faceN ) {
+		DisplacedGeometry* pFlat = new DisplacedGeometry( pLathe, 24, pWave, 1e-12, false, faceN == 1, false );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pLathe, 24, pWave, ds, false, faceN == 1, false );
+		const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
+		size_t groups = 0; const Scalar spread = CoincidentSpread( v0, v1, &groups );
+		std::cout << "  [info] lathe base, displaced chunk face_normals " << ( faceN ? "TRUE" : "FALSE" ) << ": " << groups << " coincident groups, worst crack " << spread << " (max move " << MaxMove( v0, v1 ) << ")\n";
+		SOFT( groups > 0 && MaxMove( v0, v1 ) > 0.01 );
+		SOFT( spread < 1e-9 );
+		pFlat->release(); pDisp->release();
+	}
+	{	// displaced OVER displaced: the outer layer welds again (the inner bake's coincident vertices carry different shading normals)
+		DisplacedGeometry* pInner = new DisplacedGeometry( pLathe, 24, pWave, 0.02, false, false, false );
+		DisplacedGeometry* pFlat = new DisplacedGeometry( pInner, 24, pWave, 1e-12, false, false, false );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pInner, 24, pWave, ds, false, false, false );
+		const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
+		size_t groups = 0; const Scalar spread = CoincidentSpread( v0, v1, &groups );
+		std::cout << "  [info] displaced over displaced lathe: " << groups << " coincident groups, worst crack " << spread << " (max move " << MaxMove( v0, v1 ) << ")\n";
+		SOFT( groups > 0 && MaxMove( v0, v1 ) > 0.01 );
+		SOFT( spread < 1e-9 );
+		pFlat->release(); pDisp->release(); pInner->release();
+	}
+	pWave->release();
+
+	// ---- imports: two coincident OPPOSITE sheets stay independent; a 90 degree fold stays closed ----
+	ConstFunction2D* pOne = new ConstFunction2D( 1.0 );
+	auto buildImport = [&]( const VerticesListType& V, const NormalsListType& N, const IndexTriangleListType& T ) {
+		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( true, false );
+		TexCoordsListType C; for( size_t i = 0; i < V.size(); ++i ) C.push_back( TexCoord( V[i].x, V[i].z ) );
+		m->BeginIndexedTriangles(); m->AddVertices( V ); m->AddNormals( N ); m->AddTexCoords( C ); m->AddIndexedTriangles( T ); m->DoneIndexedTriangles();
+		return m;
+	};
+	auto quad = [&]( IndexTriangleListType& T, const unsigned int a, const unsigned int b, const unsigned int c, const unsigned int d ) {
+		IndexedTriangle x, y;
+		x.iVertices[0] = x.iNormals[0] = x.iCoords[0] = a; x.iVertices[1] = x.iNormals[1] = x.iCoords[1] = b; x.iVertices[2] = x.iNormals[2] = x.iCoords[2] = c;
+		y.iVertices[0] = y.iNormals[0] = y.iCoords[0] = a; y.iVertices[1] = y.iNormals[1] = y.iCoords[1] = c; y.iVertices[2] = y.iNormals[2] = y.iCoords[2] = d;
+		T.push_back( x ); T.push_back( y );
+	};
+	{	// double-sided leaf: two coincident quads with opposite normals
+		VerticesListType V; NormalsListType N; IndexTriangleListType T;
+		for( int s = 0; s < 2; ++s ) for( int j = 0; j < 2; ++j ) for( int i = 0; i < 2; ++i ) { V.push_back( Point3( i, 0, j ) ); N.push_back( Vector3( 0, s ? -1 : 1, 0 ) ); }
+		quad( T, 0, 2, 3, 1 ); quad( T, 4, 5, 7, 6 );
+		TriangleMeshGeometryIndexed* pLeaf = buildImport( V, N, T );
+		DisplacedGeometry* pFlat = new DisplacedGeometry( pLeaf, 8, pOne, 1e-12, true, false, false );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pLeaf, 8, pOne, 0.1, true, false, false );
+		const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
+		Scalar maxY = 0; for( size_t k = 0; k < v1.size(); ++k ) maxY = std::max( maxY, std::fabs( v1[k].y ) );
+		size_t groups = 0; const Scalar spread = CoincidentSpread( v0, v1, &groups );
+		std::cout << "  [info] two-sided leaf import: max |y| displacement " << maxY << " (single sheet: 0.1), " << groups << " coincident groups, sheets end " << spread << " apart\n";
+		SOFT( std::fabs( maxY - 0.1 ) < 1e-9 );		// averaging the opposite normals cancelled it to 0
+		SOFT( std::fabs( spread - 0.2 ) < 1e-9 );		// +0.1 and -0.1: independent
+		pFlat->release(); pDisp->release(); pLeaf->release();
+	}
+	{	// a 90 degree fold with duplicated edge vertices: inside the crease cone, welded
+		VerticesListType V; NormalsListType N; IndexTriangleListType T;
+		V.push_back( Point3( 0, 0, 0 ) ); V.push_back( Point3( 1, 0, 0 ) ); V.push_back( Point3( 1, 0, 1 ) ); V.push_back( Point3( 0, 0, 1 ) );
+		for( int i = 0; i < 4; ++i ) N.push_back( Vector3( 0, 1, 0 ) );
+		V.push_back( Point3( 1, 0, 0 ) ); V.push_back( Point3( 1, 1, 0 ) ); V.push_back( Point3( 1, 1, 1 ) ); V.push_back( Point3( 1, 0, 1 ) );
+		for( int i = 0; i < 4; ++i ) N.push_back( Vector3( 1, 0, 0 ) );
+		quad( T, 0, 1, 2, 3 ); quad( T, 4, 5, 6, 7 );
+		TriangleMeshGeometryIndexed* pFold = buildImport( V, N, T );
+		DisplacedGeometry* pFlat = new DisplacedGeometry( pFold, 8, pOne, 1e-12, true, false, false );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pFold, 8, pOne, 0.1, true, false, false );
+		const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
+		size_t groups = 0; const Scalar spread = CoincidentSpread( v0, v1, &groups );
+		std::cout << "  [info] folded-sheet import: " << groups << " coincident groups, worst crack " << spread << "\n";
+		SOFT( groups > 0 && spread < 1e-9 );
+		pFlat->release(); pDisp->release(); pFold->release();
+	}
+	pOne->release();
+
+	// ---- touching path instances stay independent bodies ----
+	{
+		static const double tube[] = { 1.0, 0.0,  1.0, 2.0 };
+		LatheDescriptor td; td.profilePoints = tube; td.numProfilePoints = 2; td.nRadial = 16;
+		ITriangleMeshGeometryIndexed* pTplI = 0;
+		assert( RISE_API_CreateLatheGeometry( &pTplI, td ) );
+		static const double path[] = { 0.0, 0.0, 0.0,   0.0, 0.0, 10.0 };
+		PathInstancesDescriptor pd;
+		pd.pGeometry = dynamic_cast<IGeometry*>( pTplI ); pd.pathPoints = path; pd.numPathPoints = 2;
+		pd.nLen = 8; pd.pitch = 2.0; pd.phase = 1.0; pd.scale = 1.0; pd.detail = 16;		// pitch == the tube's length: instances touch rim to rim
+		ITriangleMeshGeometryIndexed* pInstI = 0;
+		assert( RISE_API_CreatePathInstancesGeometry( &pInstI, pd ) );
+		TriangleMeshGeometryIndexed* pInst = dynamic_cast<TriangleMeshGeometryIndexed*>( pInstI );
+		assert( pInst );
+		SOFT( pInst->GetDisplacementWeldPolicy() == TriangleMeshGeometryIndexed::kWeldNone );
+		VOnlyFunction2D* pV = new VOnlyFunction2D();
+		DisplacedGeometry* pFlat = new DisplacedGeometry( pInst, 16, pV, 1e-12, false, false, false );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pInst, 16, pV, 0.05, false, false, false );
+		const VerticesListType v0 = BakedVertices( pFlat ), v1 = BakedVertices( pDisp );
+		size_t groups = 0; const Scalar spread = CoincidentSpread( v0, v1, &groups );
+		std::cout << "  [info] touching path instances: " << groups << " coincident groups across/within instances, worst separation " << spread << " (independent: ~disp_scale)\n";
+		SOFT( groups > 0 );
+		SOFT( spread > 0.02 );		// each instance displaced by ITS OWN field at its rim; welding would have fused them to 0
+		pFlat->release(); pDisp->release(); pV->release(); pInst->release(); pTplI->release();
+	}
+	pLathe->release();
+	assert( softFails == 0 );
+#undef SOFT
+}
+
+//-----------------------------------------------------------------------------
 // Concurrency guard (review Finding 1): many threads calling Realize() at once
 // must BuildMesh() the instance EXACTLY once.  Models a GUI viewport render's
 // AttachScene racing a UI-thread PrepareForRendering/picking on the same, not-
@@ -3116,6 +3299,7 @@ int main()
 	if( const char* only = std::getenv( "DG_ONLY" ) ) {
 		if( only[0] == 'q' ) { TestRefinementHasNoTJunctions(); return 0; }
 		if( only[0] == 'r' ) { TestDisplacementIsWatertightAtCreases(); return 0; }
+		if( only[0] == 's' ) { TestWeldPoliciesPerBaseMesh(); return 0; }
 	}
 	TestPureTessellationBBox();
 	TestConstantDisplacement();
@@ -3143,6 +3327,7 @@ int main()
 	TestCreasesOnlyWhereAuthoredAndPolygonsStayPolygons();
 	TestRefinementHasNoTJunctions();
 	TestDisplacementIsWatertightAtCreases();
+	TestWeldPoliciesPerBaseMesh();
 	TestDisplacedBaseIsNotRefinedAgain();
 	TestShadingTransportIsRotation();
 	TestConcurrentRealize();
