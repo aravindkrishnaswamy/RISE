@@ -1791,12 +1791,12 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 	std::printf( "T4: Gemini request shape + tool loop...\n" );
 	AgentChatLoop loop;
 	loop.SetProvider( ChatProvider::Gemini );
-	Check( loop.ModelId() == "gemini-3.7-flash", "default Gemini model id" );
+	Check( loop.ModelId() == "gemini-4-argon", "default Gemini model id" );
 
 	loop.AddUserMessage( "Show me the current rendering" );
 	{
 		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
-		Check( req.url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent",
+		Check( req.url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent",
 		       "url is the v1beta generateContent endpoint" );
 		CheckKeyOnlyInAuthHeader( req, "x-goog-api-key", "T4" );
 
@@ -2871,7 +2871,7 @@ static void TestRequestGuards()
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hi" );
 		Check( loop.BuildRequest( kApiKey ).url ==
-		       "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent",
+		       "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent",
 		       "a normal model id passes through unchanged" );
 	}
 }
@@ -10145,12 +10145,12 @@ static void TestTextCompletionWireShapes()
 		ChatHttpRequest req;
 		std::string err;
 		const bool built = BuildTextCompletionRequest(
-			"gemini", "gemini-3.7-flash", "SECRET-GEMINI-KEY",
+			"gemini", "gemini-4-argon", "SECRET-GEMINI-KEY",
 			"build the wizard element", req, err );
 		Check( built && err.empty(), "T51: gemini text request builds" );
 		Check( req.url ==
 		       "https://generativelanguage.googleapis.com/v1beta/models/"
-		       "gemini-3.7-flash:generateContent",
+		       "gemini-4-argon:generateContent",
 		       "T51: got: " + req.url );
 		bool sawKeyHeader = false;
 		for( std::size_t i = 0; i < req.headers.size(); ++i )
@@ -10162,6 +10162,8 @@ static void TestTextCompletionWireShapes()
 		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
 		Check( req.body.find( "build the wizard element" ) != std::string::npos,
 		       "T51: and the body carries the prompt verbatim" );
+		Check( req.body.find( "\"maxOutputTokens\":32768" ) != std::string::npos,
+		       "T51: gemini text completion requests the full 32K output ceiling for Argon thinking+text" );
 	}
 
 	// --- openai: /v1/responses, LOWERCASE `authorization` (the text-
@@ -10232,6 +10234,15 @@ static void TestTextCompletionWireShapes()
 			       "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"box_geometry { }\"}]}}]}",
 			       text, err ) && text == "box_geometry { }",
 		       "T51: the gemini candidates[0].content.parts[0].text parses" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "gemini",
+			       "{\"candidates\":[{\"content\":{\"parts\":["
+			       "{\"thought\":true,\"text\":\"reasoning trace that must not leak\"},"
+			       "{\"text\":\"box_geometry { }\"}"
+			       "]}}]}",
+			       text, err ) && text == "box_geometry { }",
+		       "T51: gemini thought:true parts are skipped so reasoning traces never pollute builder chunks" );
 
 		text.clear(); err.clear();
 		Check( ParseTextCompletionResponse( "openai",

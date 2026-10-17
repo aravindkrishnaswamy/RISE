@@ -1096,7 +1096,7 @@ namespace RISE
 		//! that provider's own chat default, overridden by an environment
 		//! variable so a hand test can retarget without recompiling:
 		//!   anthropic -> RISE_BUILDER_MODEL_ANTHROPIC (default "claude-sonnet-5")
-		//!   gemini    -> RISE_BUILDER_MODEL_GEMINI    (default "gemini-3.7-flash")
+		//!   gemini    -> RISE_BUILDER_MODEL_GEMINI    (default "gemini-4-argon")
 		//!   openai    -> RISE_BUILDER_MODEL_OPENAI    (default "gpt-5.6-terra")
 		//!   xai       -> RISE_BUILDER_MODEL_XAI       (default "grok-4.5")
 		//! The defaults are the SAME ids the four chat codecs declare as
@@ -1108,13 +1108,15 @@ namespace RISE
 		//! no key is ever read from the environment here.
 		std::string ChatTextCompletionModelId( const std::string& providerName );
 
-		//! The output-token budget every text completion asks for.  One
+		//! The baseline output-token budget a text completion asks for.  One
 		//! builder answer is a handful of chunks (the hand simulation's
 		//! richest element was 15 SDF parts plus a material, a painter and
-		//! an object), but the reasoning models on three of the four
-		//! providers spend output tokens on reasoning before the first
-		//! visible character, so the budget is set well above the visible
-		//! answer's size rather than at it.
+		//! an object), but the reasoning models spend output tokens on
+		//! reasoning before the first visible character, so the budget is
+		//! set well above the visible answer's size rather than at it
+		//! (Gemini requests 2x this baseline -- 32,768 -- because Gemini 4
+		//! Argon bills thoughtsTokenCount against maxOutputTokens up to a
+		//! 32K non-streaming ceiling).
 		unsigned int ChatTextCompletionMaxTokens();
 
 		//! Build the POST that asks `providerName` for ONE single-turn

@@ -4945,7 +4945,7 @@ namespace RISE
 			{
 				bool        supported = false;
 				std::string providerName;   //!< e.g. "gemini" -- named in the capability statement
-				std::string modelId;        //!< e.g. "gemini-3.7-flash"
+				std::string modelId;        //!< e.g. "gemini-4-argon"
 				//! Perform ONE blocking completion of `prompt`.  Called on the
 				//! dispatcher thread inside tool dispatch; a generous transport
 				//! timeout is the host's to set.  Never throws.

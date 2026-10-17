@@ -3300,7 +3300,7 @@ namespace RISE
 
 		const char* GeminiChatCodec::ProviderName() const { return "gemini"; }
 
-		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-3.7-flash"; }
+		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-4-argon"; }
 
 		std::string GeminiChatCodec::MakeUserEntry(
 			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
@@ -5392,6 +5392,13 @@ namespace RISE
 				for( std::size_t i = 0; i < arr.size(); ++i ) {
 					const JsonValue& b = arr.at( i );
 					if( !b.isObject() ) continue;
+					// Gemini thinking models (e.g. gemini-4-argon) may emit
+					// thought-summary parts marked `"thought": true` alongside
+					// the visible answer text; skip them just as
+					// GeminiChatCodec::ParseResponse does so reasoning traces
+					// never leak into extracted builder chunks.
+					const JsonValue* thoughtFlag = b.find( "thought" );
+					if( thoughtFlag && thoughtFlag->isBool() && thoughtFlag->asBool() ) continue;
 					if( typeFilter && *typeFilter ) {
 						const JsonValue* t = b.find( "type" );
 						if( !t || !t->isString() || t->asString() != typeFilter ) continue;
@@ -5420,7 +5427,7 @@ namespace RISE
 			if( providerName == "anthropic" )
 				return ImageEnvOr_( "RISE_BUILDER_MODEL_ANTHROPIC", "claude-sonnet-5" );
 			if( providerName == "gemini" )
-				return ImageEnvOr_( "RISE_BUILDER_MODEL_GEMINI", "gemini-3.7-flash" );
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_GEMINI", "gemini-4-argon" );
 			if( providerName == "openai" )
 				return ImageEnvOr_( "RISE_BUILDER_MODEL_OPENAI", "gpt-5.6-terra" );
 			if( providerName == "xai" )
@@ -5484,9 +5491,15 @@ namespace RISE
 				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
 				outRequest.headers.push_back(
 					std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+				// Gemini 4 Argon counts thinking tokens (thoughtsTokenCount)
+				// toward maxOutputTokens with a 32,768 non-streaming ceiling;
+				// use the full 32K ceiling so deep spatial reasoning on complex
+				// builder prompts never starves the visible .RISEscene output.
+				const std::string geminiMaxTok =
+					std::to_string( ChatTextCompletionMaxTokens() * 2u );
 				std::string body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":";
 				JsonAppendEscapedString( body, prompt );
-				body += "}]}],\"generationConfig\":{\"maxOutputTokens\":" + maxTok + "}}";
+				body += "}]}],\"generationConfig\":{\"maxOutputTokens\":" + geminiMaxTok + "}}";
 				outRequest.body = body;
 				return true;
 			}
