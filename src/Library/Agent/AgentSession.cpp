@@ -21689,9 +21689,11 @@ namespace RISE
 		//! Is the unit direction `dir` (from the eye) inside the scene camera's
 		//! frustum, with `margin` (1.1 = 10% beyond the frame edge still counts)?
 		//! `tanV` is tan(vertical half fov), `aspect` width/height.  This is THE
-		//! zoom-acceptance test: render{zoom:} refuses an object that fails it,
-		//! and the inventory only recommends zoom for an element that passes it,
-		//! so the two cannot disagree.  `outOffAxisDeg` (optional) receives the
+		//! zoom-acceptance test: render{zoom:} applies it to the centre of the
+		//! chosen object's solved surface extent, and the inventory hint applies
+		//! the SAME test to the world-bbox centre of the element's largest
+		//! object.  Same test on different points, so the two can differ near the
+		//! margin.  `outOffAxisDeg` (optional) receives the
 		//! angle between `dir` and the camera axis.
 		bool DirectionInSceneView( const SceneCameraAxes& ax, const double dir[3], const double tanV,
 		                           const double aspect, const double margin, double* outOffAxisDeg )

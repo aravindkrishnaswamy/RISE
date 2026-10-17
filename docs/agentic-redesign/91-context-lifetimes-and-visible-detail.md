@@ -257,17 +257,26 @@ failing.
   non-renderable name (names listed); a conflict with `isolate`/`view`/
   `camera`, or a non-pinhole active camera; the object **not in view** of
   the scene camera -- its surface centre behind the camera, or more than
-  10% past the frame edge (`DirectionInSceneView`, shared with the
-  inventory hint); any surface point on or behind the plane through the eye
+  10% past the frame edge (`DirectionInSceneView`, applied to the solved
+  surface-extent centre; the inventory hint applies the same test to a
+  different point); any surface point on or behind the plane through the eye
   (a floor or room around the camera); a degenerate or unbounded extent.
   The zoom keeps the scene camera's *realized* up (its own roll), read from
   the projection matrix; a line of sight parallel to that up falls back to
   the camera's realized screen-right, never a fixed world axis.  The
-  inventory's hint only names elements that pass the same in-view test.
-- **Thin SDF parts.** The 48-cell SDF grid misses features thinner than
-  about half a cell, so each additive part thinner than 1.5 cells also feeds
-  the fit the corners of its own *unpadded* primitive box
-  (`SDFGeometry::GetAdditivePartExtents`).
+  inventory's hint only names elements whose largest object's world-bbox
+  centre passes the same in-view test -- the same test on a different point
+  than zoom uses, so the two can differ for an element near the margin.
+- **Thin SDF parts.** The 48-cell SDF grid misses features whose
+  cross-section is about a cell or less, so `SDFGeometry::GetThinPartPoints`
+  reports UNPADDED points bounding every additive part's thin portion
+  (threshold 1.5 cells): a thin sphere/box/cylinder/capsule contributes its
+  primitive box corners; a torus with a thin tube contributes samples around
+  the ring centreline and rim (not its huge box); a roundcone is classified
+  per end -- a thin cap sphere plus the cross-section where the radius
+  reaches half the threshold -- so a needle tip and the thin run before it
+  are bounded.  Known gap: a thin union part wholly inside a later
+  subtract/intersect is still reported.
 - **Gates.** A zoom render, like an isolate one, is an inspection look: it
   is not held behind the compose-phase build checklist.  No tonal fact is
   attached to a zoom frame (a close crop would read as a statement about

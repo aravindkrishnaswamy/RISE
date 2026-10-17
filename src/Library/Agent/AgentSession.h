@@ -865,7 +865,8 @@ namespace RISE
 			//! renderable (available names listed -- the `isolate` contract); the
 			//! object is NOT IN VIEW of the scene camera (its surface-point centre
 			//! is behind the camera, or past the frame edge by more than the 10%
-			//! margin shared with the inventory's zoom hint -- DirectionInSceneView);
+			//! margin the inventory's zoom hint also applies, to a different point
+			//! (the largest object's bbox centre) -- DirectionInSceneView);
 			//! any point of its surface lies on or behind the plane through the eye
 			//! (the camera is inside or beside it -- a floor or room around the
 			//! camera); or its extent is degenerate or unbounded.
