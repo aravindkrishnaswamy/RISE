@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <chrono>
 #include "PhotonMapping/GlobalPelPhotonMap.h"
 #include "PhotonMapping/GlobalSpectralPhotonMap.h"
 #include "PhotonMapping/CausticSpectralPhotonMap.h"
@@ -13285,6 +13286,11 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 	ClearAll();
 	std::vector<std::string> fdiags;
 	RISE::Cst::DeriveToJob( d1, *this, &fdiags, nullptr, activeVariant );
+	if( !mForTestInjectLiveDeriveDiag.empty() ) {   // test seam only -- see ForTest_InjectNextLiveDeriveDiagnostic
+		fdiags.push_back( mForTestInjectLiveDeriveDiag );
+		mForTestInjectLiveDeriveDiag.clear();
+	}
+	mLastCstLiveDeriveDiag = fdiags.empty() ? std::string() : fdiags[0];
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // re-retain (intact even if the re-derive erred)
 	mCstHeadVersion = keepHeadVersion;   // restore the load-time uuid (ClearAll had zeroed it)
 	BumpCstHeadRevision();               // the retained Document content changed (edit committed) -> bump revision
@@ -14531,7 +14537,11 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 		// (1) DEGENERATE HEAD: if the document as it stands does not derive, no element can -- which is exactly
 		// what N single calls would have answered, each with this diagnostic.  Refuse all, no isolation.
 		std::string headDiag;
-		if( !DryRunCstDocument_( *pCstDocument, &headDiag ) ) {
+		const std::chrono::steady_clock::time_point headT0 = std::chrono::steady_clock::now();
+		const bool headDerives = DryRunCstDocument_( *pCstDocument, &headDiag );
+		const double dryRunSeconds =
+			std::chrono::duration<double>( std::chrono::steady_clock::now() - headT0 ).count();
+		if( !headDerives ) {
 			GlobalLog()->PrintEx( eLog_Warning,
 				"Job::ApplyCstEditBatch:: the CURRENT document itself does not derive (%s) -- every element of the "
 				"batch is refused (a single insert/edit would be refused for the same reason)", headDiag.c_str() );
@@ -14554,10 +14564,17 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 			int lg = 0;
 			while( ( static_cast<std::size_t>( 1 ) << lg ) < n ) ++lg;
 			// One offender costs ~2*log2(N) bisection dry-runs plus up to 3 in its own leaf and retry; budget
-			// for two, capped so the controller's lock is never held for more than ~32 dry-runs.  Past it the
-			// caller commits element by element, releasing the lock between elements.
+			// for two.  The controller's lock is held for all of it, so the budget is ALSO bounded by TIME,
+			// using the head dry-run just measured as the unit cost (review round 2): at most ~3 s of isolation
+			// dry-runs and never more than 12, never fewer than 2.  Past it the caller commits element by
+			// element, releasing the lock between elements.
 			budget = 2 * ( 2 * lg + 3 ) + 4;
-			if( budget > 32 ) budget = 32;
+			const double kIsolationSeconds = 3.0;
+			int byTime = ( dryRunSeconds > 0.0 ) ? static_cast<int>( kIsolationSeconds / dryRunSeconds ) : budget;
+			if( byTime < 2 ) byTime = 2;
+			if( budget > byTime ) budget = byTime;
+			if( budget > 12 && dryRunSeconds > 0.05 ) budget = 12;
+			if( mForTestBatchBudget >= 0 ) budget = mForTestBatchBudget;
 		}
 		CstBatchIsolation_ st;
 		st.edits         = &edits;
@@ -14570,9 +14587,14 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 		for( std::size_t i = 0; i < n; ++i ) all[i] = static_cast<int>( i );
 		bool ok = IsolateCstBatch_( st, all, /*knownFailing*/ true );
 		// P2-B: ONE in-order retry of every derive-refused element against the final accepted document, so the
-		// verdict follows the end-state rule above whatever the bisection's split points were.
-		for( std::size_t i = 0; ok && i < n; ++i )
-			if( st.deriveRefused[i] ) ok = TryLandCstBatchElement_( st, static_cast<int>( i ), /*allowAppend*/ true );
+		// verdict follows the end-state rule above whatever the bisection's split points were.  A param edit is
+		// NOT retried when a LATER element of the batch that landed wrote the same (entity, role): landing it now
+		// would overwrite the later value with the earlier one (review round 2).
+		for( std::size_t i = 0; ok && i < n; ++i ) {
+			if( !st.deriveRefused[i] ) continue;
+			if( CstBatchLaterLandedWriteSameSlot( edits, st.landed, i ) ) continue;
+			ok = TryLandCstBatchElement_( st, static_cast<int>( i ), /*allowAppend*/ true );
+		}
 		if( !ok || st.exhausted ) {
 			GlobalLog()->PrintEx( eLog_Event,
 				"Job::ApplyCstEditBatch:: isolation exceeded its %d dry-run budget -- NOTHING committed; the caller "
@@ -14602,11 +14624,16 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 	}
 
 	for( std::size_t i = 0; i < n; ++i ) {
-		if( landed[i] ) outcomes[i].code = code;                     // 2 or 3 -- the batch shares one realization
+		if( landed[i] ) {
+			outcomes[i].code = code;                                    // 2 or 3 -- the batch shares one realization
+			if( code == 3 ) outcomes[i].diag = mLastCstLiveDeriveDiag; // the diagnostic, for attribution + reporting
+		}
 		else if( outcomes[i].code == 2 ) outcomes[i].code = 0;       // defensive: written-but-not-landed
 	}
 	return code;
 }
+
+
 
 // R1a (2026-08-09, batched remove_chunks): the SHARED target -> top-level-index resolver behind BOTH
 // Job::ApplyCstRemoveChunk and Job::ApplyCstRemoveChunks.  Extracted VERBATIM from ApplyCstRemoveChunk's own

@@ -412,6 +412,11 @@ namespace RISE
 		//! Test hook (2026-10-16): how many validate-before-destroy DRY-RUN derives (into a throwaway staging Job)
 		//! the CST edit paths have run on this Job.  Monotonic; not part of IJobPriv.
 		unsigned long long			GetCstDryRunCount() const			{ return mCstDryRunCount; }
+		//! Test seam (2026-10-16): make the NEXT full live re-derive report `diag` as a diagnostic (code 3),
+		//! so the "dry-run clean, live re-derive diagnosed" path can be exercised.  Not part of IJobPriv.
+		void						ForTest_InjectNextLiveDeriveDiagnostic( const std::string& diag ) { mForTestInjectLiveDeriveDiag = diag; }
+		//! Test seam (2026-10-16): override ApplyCstEditBatch's DEFAULT isolation dry-run budget (-1 = no override).
+		void						ForTest_SetCstBatchIsolationBudget( int budget ) { mForTestBatchBudget = budget; }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -3641,6 +3646,10 @@ namespace RISE
 		unsigned long long m_containerRebuildCount = 0;
 		// 2026-10-16: see GetCstDryRunCount.
 		unsigned long long mCstDryRunCount = 0;
+		// 2026-10-16: the first diagnostic of the last full live re-derive ("" when clean), and the test seam.
+		std::string mLastCstLiveDeriveDiag;
+		std::string mForTestInjectLiveDeriveDiag;
+		int mForTestBatchBudget = -1;
 
 		//! `gltf_import` name_prefix values already consumed THIS derive (reset in
 		//! InitializeContainers, so a fresh Job -- or a ClearAll'd one -- starts empty).

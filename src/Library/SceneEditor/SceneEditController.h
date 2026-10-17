@@ -729,7 +729,15 @@ namespace RISE
 		//!
 		//! A batch whose failure isolation exceeds Job's dry-run budget commits NOTHING and returns every
 		//! admitted element with status "sequential" / needsSequential -- the caller then commits them one at
-		//! a time through the single verbs, so this lock is not held for O(N) dry-runs.
+		//! a time through the single verbs, so this lock is not held for O(N) dry-runs.  Those fallback commits are
+		//! PER-ELEMENT undo steps (each single verb pushes its own record); they cannot be bracketed by
+		//! CompositeBegin/End, because an open composite refuses agent commits by design.
+		//!
+		//! A diagnosed (code 3) batch re-derive is reported per element: an element the diagnostic NAMES is
+		//! "diagnosed"; every other landed element is "applied" (rawCode 3) with the diagnostic quoted -- it did
+		//! land.  An Undo/Redo of this batch's record that cannot be applied (document structure changed, or the
+		//! pre-batch document no longer derives) DROPS the record with SceneEditor::ConsumeHistoryNotice set,
+		//! rather than wedging every later Cmd-Z.
 		std::vector<AgentCommitResult> ApplyAgentEditBatch( const std::vector<CstBatchEdit>& edits );
 
 		//! R2 (2026-08-10, replace_geometry_scaffold): install `candidateDocText` -- a WHOLE candidate

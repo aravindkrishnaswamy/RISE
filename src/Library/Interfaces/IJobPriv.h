@@ -85,6 +85,36 @@ namespace RISE
 	//! must fall back to committing the elements one at a time through the single primitives.
 	const int kCstEditBatchNeedsSequential = -3;
 
+	//! Batched agent edits (2026-10-16, review round 2): a batch is realized by ONE live re-derive, so when that
+	//! re-derive reports a diagnostic (code 3) every landed element shares it.  Attribute it to an element only
+	//! when the diagnostic NAMES that element's entity (backtick- or quote-delimited, the way derive diagnostics
+	//! name chunks); the caller reports that element "diagnosed" and every other landed element "applied" with
+	//! the diagnostic quoted as a note -- they DID land, and reporting them rejected makes a caller resubmit them.
+	//! Batched agent edits (2026-10-16, review round 2): does an element AFTER `i` that LANDED write the same param
+	//! slot (entity, kind, role, occ) as param element `i`?  A retry of `i` would then overwrite the later value with
+	//! an earlier one, so retry passes skip it.
+	inline bool CstBatchLaterLandedWriteSameSlot( const std::vector<CstBatchEdit>& edits,
+	                                              const std::vector<char>& landed, std::size_t i )
+	{
+		const CstBatchEdit& e = edits[i];
+		if( e.isInsert ) return false;
+		for( std::size_t j = i + 1; j < edits.size() && j < landed.size(); ++j ) {
+			const CstBatchEdit& o = edits[j];
+			if( !landed[j] || o.isInsert ) continue;
+			if( o.entityName == e.entityName && o.entityKind == e.entityKind && o.role == e.role && o.occ == e.occ )
+				return true;
+		}
+		return false;
+	}
+
+	inline bool CstBatchDiagnosticNames( const std::string& diag, const std::string& name )
+	{
+		if( name.empty() || diag.empty() ) return false;
+		return diag.find( "`" + name + "`" ) != std::string::npos ||
+		       diag.find( "'" + name + "'" ) != std::string::npos ||
+		       diag.find( "\"" + name + "\"" ) != std::string::npos;
+	}
+
 	//! IJobPriv - Priviledged interface with getters
 	class IJobPriv : public virtual IJob
 	{

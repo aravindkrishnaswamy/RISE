@@ -75,6 +75,12 @@ namespace RISE
 		/// the most recently popped edit back from the undo stack to the redo stack.
 		void RestoreLastRedoFromUndo();
 
+		/// Review round 2 (P1): DISCARD the most recently popped edit (top of the redo stack after a failed undo,
+		/// top of the undo stack after a failed redo) instead of restoring it -- for a record that can never be
+		/// applied, which would otherwise refuse every later Undo/Redo.
+		void DropLastRedo();
+		void DropLastUndo();
+
 		//! Discard the redo stack ONLY, leaving the undo stack and the
 		//! dirty-object set untouched.  The transactional rollback uses
 		//! this AFTER it has reverted live state by applying the inverse

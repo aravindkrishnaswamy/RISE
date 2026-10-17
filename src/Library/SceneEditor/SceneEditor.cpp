@@ -2667,7 +2667,7 @@ bool SceneEditor::RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forw
 	return r >= 1;
 }
 
-// Batched agent edits (2026-10-16, review P2-D): the COMPACT, byte-exact undo payload of an AgentEditBatch.
+// Batched agent edits (2026-10-16, review P2-D): the COMPACT undo payload of an AgentEditBatch.
 //
 // WHY NOT N per-element records (AgentInsertChunk / SetAgentCstParam) bracketed by CompositeBegin/End.  Each of
 // those inverses re-derives the document it lands on and refuses one that does not derive -- and a batch only
@@ -2678,10 +2678,19 @@ bool SceneEditor::RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forw
 // documents: only the top-level items that changed.
 //
 // Both texts are split into their top-level CST items (the canonical parse of the text, so the split is a
-// function of the bytes alone), aligned with Myers' O(ND) diff, and every non-equal run becomes a hunk carrying
-// its position in BOTH sequences plus the removed and added bytes.  Applying the diff in either direction
-// re-segments the CURRENT document the same way, VERIFIES each hunk's expected bytes are what is there (undo is
-// LIFO, so they are; a mismatch refuses rather than guessing), and splices -- exact by construction.
+// function of the bytes alone).  The common prefix and suffix are trimmed first -- a batch touches a handful of
+// items, so the Myers O(ND) alignment then runs on a small middle, never on the whole document (review round 2:
+// it runs under the controller lock).  Every non-equal run becomes a hunk carrying its position in BOTH
+// sequences plus the removed and added bytes.
+//
+// APPLYING NEVER WEDGES (review round 2, P1).  Undo is LIFO, but a GUI edit made AFTER the batch and then undone
+// does not restore the bytes it touched -- an inspector/gizmo revert rewrites `position` as a `matrix`, prints
+// `4.0` as `4`, adds orientation lines -- so the CURRENT document can differ from the recorded "after" bytes while
+// meaning the same thing.  So a hunk first tries an exact byte match; failing that, a STRUCTURAL match (same item
+// count, and item by item the same chunk keyword + name, trivia matching trivia) -- and splices the recorded bytes
+// anyway: every later edit has already been reverted in meaning, so the region IS the batch's.  Only when even the
+// structure differs is the record unappliable, and then the caller DROPS it with a visible notice rather than
+// leaving a record that would refuse every Cmd-Z forever and hide all older history.
 namespace
 {
 	std::vector<std::string> SplitTopLevelItems_( const std::string& text )
@@ -2701,21 +2710,61 @@ namespace
 		return items;
 	}
 
+	// The STRUCTURAL identity of one top-level item: "keyword/name" for a chunk, a fixed tag for anything else.
+	std::string ItemIdentity_( const std::string& itemText )
+	{
+		const RISE::Cst::Document doc = RISE::Cst::ParseToCst( itemText );
+		if( RISE::Cst::DocItemCount( doc ) != 1 ) return std::string( "#multi" );
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, 0 ) );
+		if( !it ) return std::string( "#none" );
+		if( it->kind == RISE::Cst::NodeKind::Chunk ) {
+			const std::string path = RISE::Cst::ChunkNamePath( it );
+			return std::string( "chunk:" ) + it->role + ( path.empty() ? std::string() : ( "|" + path ) );
+		}
+		if( it->kind == RISE::Cst::NodeKind::Trivia ) return std::string( "#trivia" );
+		return std::string( "#token" );
+	}
+
 	struct DocDiffHunk_ { std::size_t a, b, da, db; std::string delText, insText; };
 
-	// Myers' greedy O((N+M)D) shortest edit script over item sequences (equality = identical bytes).
 	std::vector<DocDiffHunk_> DiffItems_( const std::vector<std::string>& A, const std::vector<std::string>& B )
 	{
-		const long N = static_cast<long>( A.size() ), M = static_cast<long>( B.size() ), MAX = N + M;
-		std::vector<std::size_t> ha( A.size() ), hb( B.size() );
-		for( std::size_t i = 0; i < A.size(); ++i ) ha[i] = std::hash<std::string>()( A[i] );
-		for( std::size_t i = 0; i < B.size(); ++i ) hb[i] = std::hash<std::string>()( B[i] );
-		auto eq = [&]( long x, long y ) { return ha[x] == hb[y] && A[x] == B[y]; };
+		std::vector<DocDiffHunk_> hunks;
+		// Trim the common prefix and suffix: the alignment below only ever sees the region the batch touched.
+		std::size_t pre = 0;
+		while( pre < A.size() && pre < B.size() && A[pre] == B[pre] ) ++pre;
+		std::size_t suf = 0;
+		while( suf < A.size() - pre && suf < B.size() - pre &&
+		       A[A.size() - 1 - suf] == B[B.size() - 1 - suf] ) ++suf;
+		const long N = static_cast<long>( A.size() - pre - suf );
+		const long M = static_cast<long>( B.size() - pre - suf );
+		if( N == 0 && M == 0 ) return hunks;
+		auto oneHunk = [&]() {
+			DocDiffHunk_ h;
+			h.a = pre; h.b = pre; h.da = static_cast<std::size_t>( N ); h.db = static_cast<std::size_t>( M );
+			for( long i = 0; i < N; ++i ) h.delText += A[pre + static_cast<std::size_t>( i )];
+			for( long i = 0; i < M; ++i ) h.insText += B[pre + static_cast<std::size_t>( i )];
+			hunks.push_back( h );
+			return hunks;
+		};
+		if( N == 0 || M == 0 ) return oneHunk();
+
+		// Myers' greedy O((N+M)D) shortest edit script over the trimmed middle (equality = identical bytes),
+		// with D bounded: past kMaxD the middle is recorded as ONE hunk (exact, merely less compact).
+		const long MAX = N + M;
+		const long kMaxD = 512;
+		std::vector<std::size_t> ha( static_cast<std::size_t>( N ) ), hb( static_cast<std::size_t>( M ) );
+		for( long i = 0; i < N; ++i ) ha[static_cast<std::size_t>( i )] = std::hash<std::string>()( A[pre + static_cast<std::size_t>( i )] );
+		for( long i = 0; i < M; ++i ) hb[static_cast<std::size_t>( i )] = std::hash<std::string>()( B[pre + static_cast<std::size_t>( i )] );
+		auto eq = [&]( long x, long y ) {
+			return ha[static_cast<std::size_t>( x )] == hb[static_cast<std::size_t>( y )] &&
+			       A[pre + static_cast<std::size_t>( x )] == B[pre + static_cast<std::size_t>( y )];
+		};
 		std::vector<long> v( static_cast<std::size_t>( 2 * MAX + 2 ), 0 );
-		std::vector< std::vector<long> > trace;
+		std::vector< std::vector<long> > trace;   // only the [-d, d] window of v per step
 		long dEnd = -1;
-		for( long d = 0; d <= MAX && dEnd < 0; ++d ) {
-			trace.push_back( v );
+		for( long d = 0; d <= MAX && d <= kMaxD && dEnd < 0; ++d ) {
+			trace.push_back( std::vector<long>( v.begin() + ( MAX - d ), v.begin() + ( MAX + d + 1 ) ) );
 			for( long k = -d; k <= d; k += 2 ) {
 				long x;
 				if( k == -d || ( k != d && v[k - 1 + MAX] < v[k + 1 + MAX] ) ) x = v[k + 1 + MAX];
@@ -2726,15 +2775,17 @@ namespace
 				if( x >= N && y >= M ) { dEnd = d; break; }
 			}
 		}
-		// Backtrack into per-step ops (0 = equal, 1 = delete A[x], 2 = insert B[y]), then group into hunks.
-		std::vector< std::pair<int, std::pair<long, long> > > ops;   // op, (x, y) BEFORE the op
+		if( dEnd < 0 ) return oneHunk();
+		// trace[d][k + d] == v[k] as it stood BEFORE step d.
+		auto vAt = [&]( long d, long k ) { return trace[static_cast<std::size_t>( d )][static_cast<std::size_t>( k + d )]; };
+
+		std::vector< std::pair<int, std::pair<long, long> > > ops;   // 0 equal / 1 delete A[x] / 2 insert B[y]
 		long x = N, y = M;
 		for( long d = dEnd; d > 0; --d ) {
-			const std::vector<long>& vp = trace[static_cast<std::size_t>( d )];
 			const long k = x - y;
 			long pk;
-			if( k == -d || ( k != d && vp[k - 1 + MAX] < vp[k + 1 + MAX] ) ) pk = k + 1; else pk = k - 1;
-			const long px = vp[pk + MAX], py = px - pk;
+			if( k == -d || ( k != d && vAt( d, k - 1 ) < vAt( d, k + 1 ) ) ) pk = k + 1; else pk = k - 1;
+			const long px = vAt( d, pk ), py = px - pk;
 			while( x > px && y > py ) { --x; --y; ops.push_back( std::make_pair( 0, std::make_pair( x, y ) ) ); }
 			if( pk == k + 1 ) { --y; ops.push_back( std::make_pair( 2, std::make_pair( x, y ) ) ); }
 			else              { --x; ops.push_back( std::make_pair( 1, std::make_pair( x, y ) ) ); }
@@ -2742,16 +2793,15 @@ namespace
 		while( x > 0 && y > 0 ) { --x; --y; ops.push_back( std::make_pair( 0, std::make_pair( x, y ) ) ); }
 		std::reverse( ops.begin(), ops.end() );
 
-		std::vector<DocDiffHunk_> hunks;
 		for( std::size_t i = 0; i < ops.size(); ) {
 			if( ops[i].first == 0 ) { ++i; continue; }
 			DocDiffHunk_ h;
-			h.a = static_cast<std::size_t>( ops[i].second.first );
-			h.b = static_cast<std::size_t>( ops[i].second.second );
+			h.a = pre + static_cast<std::size_t>( ops[i].second.first );
+			h.b = pre + static_cast<std::size_t>( ops[i].second.second );
 			h.da = h.db = 0;
 			while( i < ops.size() && ops[i].first != 0 ) {
-				if( ops[i].first == 1 ) { h.delText += A[static_cast<std::size_t>( ops[i].second.first )]; ++h.da; }
-				else                    { h.insText += B[static_cast<std::size_t>( ops[i].second.second )]; ++h.db; }
+				if( ops[i].first == 1 ) { h.delText += A[pre + static_cast<std::size_t>( ops[i].second.first )]; ++h.da; }
+				else                    { h.insText += B[pre + static_cast<std::size_t>( ops[i].second.second )]; ++h.db; }
 				++i;
 			}
 			hunks.push_back( h );
@@ -2805,10 +2855,13 @@ namespace
 		return true;
 	}
 
-	// forward = before -> after (Redo); !forward = after -> before (Undo).  False (nothing produced) when the
-	// current document does not have the shape/bytes the diff expects.
-	bool ApplyDocDiff_( const std::string& current, const std::string& enc, bool forward, std::string& out )
+	// forward = before -> after (Redo); !forward = after -> before (Undo).  `outStructural` reports that at least
+	// one hunk matched by structure rather than by bytes (see the file comment).  False (nothing produced) only
+	// when the current document's STRUCTURE differs from what the diff expects.
+	bool ApplyDocDiff_( const std::string& current, const std::string& enc, bool forward, std::string& out,
+	                    bool* outStructural = nullptr )
 	{
+		if( outStructural ) *outStructural = false;
 		std::size_t N = 0, M = 0;
 		std::vector<DocDiffHunk_> hunks;
 		if( !DecodeDocDiff_( enc, N, M, hunks ) ) return false;
@@ -2826,7 +2879,14 @@ namespace
 			for( ; cursor < at; ++cursor ) out += cur[cursor];
 			std::string have;
 			for( std::size_t k = 0; k < cnt; ++k ) have += cur[at + k];
-			if( have != expect ) return false;
+			if( have != expect ) {
+				// Structural match: the same items, item by item (see the file comment).
+				const std::vector<std::string> exp = expect.empty() ? std::vector<std::string>() : SplitTopLevelItems_( expect );
+				if( exp.size() != cnt ) return false;
+				for( std::size_t k = 0; k < cnt; ++k )
+					if( ItemIdentity_( exp[k] ) != ItemIdentity_( cur[at + k] ) ) return false;
+				if( outStructural ) *outStructural = true;
+			}
 			out += put;
 			cursor = at + cnt;
 		}
@@ -2857,12 +2917,17 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 	std::string batchText;
 	if( batch ) {
 		const RISE::Cst::Document* cur = mJob->GetCstDocument();
+		bool structural = false;
 		if( !cur || !ApplyDocDiff_( RISE::Cst::SerializeCst( *cur ), std::string( edit.propertyValue.c_str() ),
-		                            forward, batchText ) ) {
-			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: agent edit batch %s refused: the current document does "
-			                      "not match the recorded batch diff", forward ? "redo" : "undo" );
-			return false;
+		                            forward, batchText, &structural ) ) {
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: agent edit batch %s refused: the current document's "
+			                      "structure does not match the recorded batch diff", forward ? "redo" : "undo" );
+			return false;   // the caller DROPS the record (DropUnappliableBatchRecord_) -- never a wedge
 		}
+		if( structural )
+			GlobalLog()->PrintEx( eLog_Info, "SceneEditor:: agent edit batch %s matched by structure (a later edit "
+			                      "rewrote the bytes of an item the batch touched); the recorded bytes were restored",
+			                      forward ? "redo" : "undo" );
 	}
 	const String text = batch ? String( batchText.c_str() )
 	                          : ( forward ? edit.prevPropertyValue : edit.propertyValue );
@@ -3495,7 +3560,10 @@ void SceneEditor::PushAgentEditBatchEdit(
 {
 	SceneEdit edit;
 	edit.op                      = SceneEdit::AgentEditBatch;
-	edit.objectName              = label;              // DISPLAY-ONLY -- see the op doc
+	// DISPLAY-ONLY -- see the op doc.  Capped (review round 2): a 80-element batch's label is otherwise kilobytes.
+	std::string lbl( label.c_str() );
+	if( lbl.size() > 120 ) { lbl.resize( 117 ); lbl += "..."; }
+	edit.objectName              = String( lbl.c_str() );
 	// cstEntityKind deliberately left EMPTY: the boolean CST-head dirty channel.
 	edit.propertyValue           = String( EncodeDocDiff_( priorDocText, postDocText ).c_str() );   // both directions
 	edit.agentChunkWasRasterizer = landedRasterizerInsert;
@@ -3684,11 +3752,35 @@ bool SceneEditor::Undo()
 	// depth, make the un-reverted edit redo-able, or (P3-e) mark anything dirty: the
 	// Document did not change, so HasUnsavedChanges() must not either.
 	if( !ApplyRevertMutation( edit ) ) {
+		// Review round 2 (P1): an AgentEditBatch record that cannot be applied (the document's structure no longer
+		// matches, or the pre-batch document no longer derives) would refuse EVERY later Cmd-Z if restored, and
+		// hide all older history.  Drop it instead, visibly.
+		if( edit.op == SceneEdit::AgentEditBatch ) {
+			mHistory.DropLastRedo();
+			NoteHistoryDrop_( edit, /*forward*/ false );
+			return false;
+		}
 		mHistory.RestoreLastUndoFromRedo();
 		return false;
 	}
 	MarkEditEntityDirty( edit );   // P3-e: only after the revert actually landed
 	return true;
+}
+
+// Review round 2 (P1): see Undo/Redo.  The notice is consumable by the GUI (ConsumeHistoryNotice) and logged.
+void SceneEditor::NoteHistoryDrop_( const SceneEdit& edit, bool forward )
+{
+	mHistoryNotice = std::string( forward ? "Redo" : "Undo" ) + " of the agent batch edit (" +
+		std::string( edit.objectName.c_str() ) + ") could not be applied to the current document, so that history "
+		"step was removed; the earlier history is still available.";
+	GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: %s", mHistoryNotice.c_str() );
+}
+
+std::string SceneEditor::ConsumeHistoryNotice()
+{
+	std::string n;
+	n.swap( mHistoryNotice );
+	return n;
 }
 
 // 87 -- A CREATION RULE MUST NOT BE APPLIED TO A HISTORY REPLAY.
@@ -4743,6 +4835,11 @@ bool SceneEditor::Redo()
 	// redo stack) where a refused undo is not, but the argument is the same and
 	// the pair must be symmetric or the comment that says so is a lie.
 	if( !ApplyForwardMutation( edit, /*isReplay*/true ) ) {
+		if( edit.op == SceneEdit::AgentEditBatch ) {   // review round 2 (P1): never wedge -- see Undo
+			mHistory.DropLastUndo();
+			NoteHistoryDrop_( edit, /*forward*/ true );
+			return false;
+		}
 		mHistory.RestoreLastRedoFromUndo();
 		return false;
 	}

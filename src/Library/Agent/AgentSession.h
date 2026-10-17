@@ -2684,6 +2684,10 @@ namespace RISE
 			//! before the next was considered.  ReadDocumentSnapshotReal_ is
 			//! the unpreviewed read.
 			AgentDocumentSnapshot ReadDocumentSnapshot() const;
+
+			//! Test seam (2026-10-16): called with the element index after each element an InsertChunks /
+			//! ProposePatches batch DEFERS (null = none).  Lets a test move the head mid-batch.
+			void ForTest_SetAfterDeferHook( std::function<void( std::size_t )> hook ) { mForTestAfterDeferHook = hook; }
 			AgentDocumentSnapshot ReadDocumentSnapshotReal_() const;
 
 			//! The head-version alone, read with the SAME discipline as
@@ -10691,6 +10695,8 @@ namespace RISE
 			//! from inside a gate -- e.g. the element-root mint), so document
 			//! order always equals call order.  No-op when nothing is deferred.
 			void FlushEditBatch_();
+			static bool LaterLandedPatchWritesSameSlot_( const std::vector<PendingBatchEdit_>& pend,
+			                                             const std::vector<char>& landed, std::size_t k );
 
 			//! Batched agent edits (2026-10-16): the incremental preview
 			//! (review P2-E).  EnsureBatchPreview_ makes sure the open batch's
@@ -10704,6 +10710,7 @@ namespace RISE
 			void DeferBatchEdit_( PendingBatchEdit_& pe );
 
 			EditBatchCollector_* mEditBatch = nullptr;
+			std::function<void( std::size_t )> mForTestAfterDeferHook;
 
 			//! GPT slice item 1: the coverage-delta note's camera-patch
 			//! detector, called after EVERY ProposePatch call (applied or

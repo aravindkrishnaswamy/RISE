@@ -264,6 +264,19 @@ void EditHistory::RestoreLastRedoFromUndo()
 	mUndoStack.pop_back();
 }
 
+void EditHistory::DropLastRedo()
+{
+	if( mRedoStack.empty() ) return;
+	mRedoStack.pop_back();   // redo entries are not byte-tracked (P2-4 tracks the undo stack only)
+}
+
+void EditHistory::DropLastUndo()
+{
+	if( mUndoStack.empty() ) return;
+	mCurrentBytes -= HeavyPayloadBytes_( mUndoStack.back() );
+	mUndoStack.pop_back();
+}
+
 void EditHistory::TrimToMax()
 {
 	// P2-4: evaluate the byte budget ALONGSIDE the entry cap, not instead of

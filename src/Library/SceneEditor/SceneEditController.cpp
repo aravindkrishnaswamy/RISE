@@ -8402,7 +8402,14 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 		RebindEditorToJob();
 
 	bool anyRasterizerLanded = false;
-	bool diagnosedReported  = false;
+	// Review round 2: a diagnosed (code 3) batch re-derive is attributed to the element(s) its diagnostic NAMES;
+	// every other landed element reports applied (it did land) with the diagnostic quoted.
+	bool anyAttributed = false;
+	for( std::size_t k = 0; k < admitted.size(); ++k )
+		if( outcomes.size() > k && outcomes[k].code == 3 &&
+		    CstBatchDiagnosticNames( outcomes[k].diag,
+		                             admitted[k].isInsert ? outcomes[k].name : admitted[k].entityName ) )
+			anyAttributed = true;
 	std::string label;
 	for( std::size_t k = 0; k < admitted.size(); ++k )
 	{
@@ -8428,20 +8435,29 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 					: String( "applied via a full re-derive (Scene + managers were replaced)" );
 				break;
 			case 3:
-				// ONE re-derive realized the whole batch, so its diagnostics belong to the batch, not to any
-				// element we can single out (the dry-run of the identical document was clean).  Say it in full
-				// ONCE, on the first landed element, and point the others at it.
-				r.applied = false;
-				r.status  = String( "diagnosed" );
-				if( !diagnosedReported ) {
-					r.message = String( "edit NOT a clean success: the Document was mutated and the live managers were "
-					                    "replaced, BUT the batch's single full re-derive emitted diagnostics (see log) -- "
-					                    "do NOT treat this batch as applied" );
-					diagnosedReported = true;
+			{
+				// ONE re-derive realized the whole batch (its dry-run of the identical document was clean).
+				const bool offender = CstBatchDiagnosticNames( oc.diag, e.isInsert ? oc.name : e.entityName );
+				if( offender ) {
+					r.applied = false;
+					r.status  = String( "diagnosed" );
+					std::string m = "edit NOT a clean success: the Document was mutated and the live managers were "
+					                "replaced, BUT the batch's full re-derive reported a diagnostic naming this element -- "
+					                "do NOT treat it as applied: ";
+					m += oc.diag;
+					r.message = String( m.c_str() );
 				} else {
-					r.message = String( "landed in the same diagnosed batch re-derive (see the first diagnosed element)" );
+					r.applied = true;
+					r.status  = String( "applied" );
+					std::string m = e.isInsert ? "chunk inserted via a full re-derive (Scene + managers were replaced)"
+					                           : "applied via a full re-derive (Scene + managers were replaced)";
+					m += anyAttributed ? "; note: the batch's re-derive reported a diagnostic for ANOTHER element: "
+					                   : "; note: the batch's re-derive reported a diagnostic it could not attribute to one element: ";
+					m += oc.diag;
+					r.message = String( m.c_str() );
 				}
 				break;
+			}
 			case -1:
 			{
 				r.applied = false;

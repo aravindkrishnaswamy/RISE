@@ -142,6 +142,8 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IAnimator.h"
 #include "../src/Library/Interfaces/IPainter.h"
@@ -13783,6 +13785,330 @@ static void TestCleanRoomRepairRetry()
 	}
 }
 
+//----------------------------------------------------------------------
+// Review round 2 regressions (2026-10-16).
+//----------------------------------------------------------------------
+struct BrMeaning_
+{
+	bool   ok = false;
+	double m[16];
+	double cam[3];
+	double sphRadius = 0.0;
+	double emitScale = 0.0;
+};
+
+static double BrParamNumber_( const std::string& docText, const char* name, const char* kind, const char* param )
+{
+	const RISE::Cst::Document doc = RISE::Cst::ParseToCst( docText );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, kind, false );
+	if( id == 0 ) return -1.0;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
+	if( !chunk ) return -1.0;
+	return std::atof( RISE::Cst::ParamValueAsParsed( chunk, param ).c_str() );
+}
+
+//! The MEANING of a document for the round-2 undo tests: derive it and read back obj_sph's world matrix and the
+//! camera location, plus the two scalar params the scenarios touch.
+static BrMeaning_ BrMeaningOf_( const std::string& docText )
+{
+	BrMeaning_ out;
+	const std::string tmp = TempPath( "agentcrud_brmeaning.RISEscene" );
+	Job* pJob = LoadScene( docText.c_str(), tmp );
+	if( !pJob ) return out;
+	const IObject* obj = pJob->GetObjects() ? pJob->GetObjects()->GetItem( "obj_sph" ) : nullptr;
+	const ICamera* cam = pJob->GetScene() ? pJob->GetScene()->GetCamera() : nullptr;
+	if( obj && cam ) {
+		const Matrix4 mx = obj->GetFinalTransformMatrix();
+		const double vals[16] = { mx._00, mx._01, mx._02, mx._03, mx._10, mx._11, mx._12, mx._13,
+		                          mx._20, mx._21, mx._22, mx._23, mx._30, mx._31, mx._32, mx._33 };
+		for( int i = 0; i < 16; ++i ) out.m[i] = vals[i];
+		const Point3 p = cam->GetLocation();
+		out.cam[0] = p.x; out.cam[1] = p.y; out.cam[2] = p.z;
+		out.sphRadius = BrParamNumber_( docText, "sph", "", "radius" );
+		out.emitScale = BrParamNumber_( docText, "mat_emit", "", "scale" );
+		out.ok = true;
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+	return out;
+}
+
+static bool BrSameMeaning_( const BrMeaning_& a, const BrMeaning_& b )
+{
+	if( !a.ok || !b.ok ) return false;
+	for( int i = 0; i < 16; ++i ) if( std::fabs( a.m[i] - b.m[i] ) > 1e-9 ) return false;
+	for( int i = 0; i < 3; ++i ) if( std::fabs( a.cam[i] - b.cam[i] ) > 1e-9 ) return false;
+	return std::fabs( a.sphRadius - b.sphRadius ) < 1e-12 && std::fabs( a.emitScale - b.emitScale ) < 1e-12;
+}
+
+//! BR10 (round-2 P1): batch -> GUI edit on an entity the batch patched -> Undo -> Undo restores the pre-batch
+//! document BY MEANING (the GUI revert rewrote the item's bytes), and older history stays reachable.  Three GUI
+//! edit shapes: an inspector position edit, a real gizmo drag, and a camera transform after a camera.location
+//! patch.
+static void TestBatchUndoNeverWedges()
+{
+	std::printf( "BR10: batch undo after a GUI edit on a patched entity never wedges ...\n" );
+	const char* const kWhat[3] = { "inspector position", "gizmo drag", "camera transform" };
+	for( int which = 0; which < 3; ++which )
+	{
+		const std::string tmp = TempPath( "agentcrud_br10.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR10 fixture loads" );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = std::string( "BR10 [" ) + kWhat[which] + "] ";
+			const BrMeaning_ m0 = BrMeaningOf_( sess->ReadDocument() );
+
+			// An OLDER GUI edit, which must stay reachable afterwards.
+			controller.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_emit" ) );
+			Check( controller.SetProperty( String( "scale" ), String( "21" ) ), w + "older GUI edit applies" );
+			const BrMeaning_ mA = BrMeaningOf_( sess->ReadDocument() );
+
+			// The batch: the entity the GUI will touch next, plus an unrelated patch.
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			if( which == 2 ) { p.target = ""; p.kind = "camera"; p.param = "location"; p.value = "0 0.5 3.6"; }
+			else             { p.target = "obj_sph"; p.kind = "standard_object"; p.param = "position"; p.value = "0.2 0.1 0"; }
+			ps.push_back( p );
+			p = Agent::AgentSetPatch();
+			p.target = "sph"; p.param = "radius"; p.value = "0.65"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+			Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the batch applies" );
+			const std::string docBatch = sess->ReadDocument();
+
+			// The GUI edit on the patched entity.
+			if( which == 0 ) {
+				controller.ForTest_SetSelection( SceneEditController::Category::Object, String( "obj_sph" ) );
+				Check( controller.SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ), w + "inspector edit applies" );
+			} else if( which == 1 ) {
+				controller.SetSelection( SceneEditController::Category::Object, String( "obj_sph" ) );
+				controller.SetTool( SceneEditController::Tool::TranslateObject );
+				controller.RefreshGizmoHandles();
+				int h = -1;
+				for( unsigned int i = 0; i < controller.GizmoHandleCount() && h < 0; ++i )
+					if( controller.GizmoHandleKind( i ) == static_cast<int>( SceneEditController::GizmoHandle::Kind::AxisPlane ) )
+						h = static_cast<int>( i );
+				Check( h >= 0, w + "a plane handle exists" );
+				if( h >= 0 ) {
+					const Point2 down( controller.GizmoHandleScreenX( h ), controller.GizmoHandleScreenY( h ) );
+					controller.OnPointerDown( down );
+					controller.OnPointerMove( Point2( down.x + 4.0, down.y - 3.0 ) );
+					controller.OnPointerUp( Point2( down.x + 4.0, down.y - 3.0 ) );
+				}
+				controller.SetTool( SceneEditController::Tool::Select );
+			} else {
+				// A real camera PAN gesture: SetCameraTransform per frame, the net pose committed at pointer-up.
+				controller.SetTool( SceneEditController::Tool::PanCamera );
+				controller.OnPointerDown( Point2( 12.0, 12.0 ) );
+				controller.OnPointerMove( Point2( 16.0, 15.0 ) );
+				controller.OnPointerUp( Point2( 16.0, 15.0 ) );
+				controller.SetTool( SceneEditController::Tool::Select );
+			}
+			Check( sess->ReadDocument() != docBatch, w + "the GUI edit changed the document" );
+
+			controller.Undo();   // the GUI edit
+			controller.Undo();   // the batch
+			Check( controller.Editor().ConsumeHistoryNotice().empty(), w + "no record had to be dropped" );
+			Check( BrSameMeaning_( BrMeaningOf_( sess->ReadDocument() ), mA ),
+			       w + "Undo x2 restores the PRE-batch document by meaning" );
+			controller.Undo();   // the older GUI edit
+			Check( BrSameMeaning_( BrMeaningOf_( sess->ReadDocument() ), m0 ),
+			       w + "older history is still reachable (Undo #3 reverts the earlier GUI edit)" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// An UNAPPLIABLE record is dropped, visibly, never wedged.  The reachable case (review round 2, P3-4): a batch
+	// that REPAIRED a document which did not derive -- its undo would re-install a document the re-derive refuses.
+	{
+		const std::string tmp = TempPath( "agentcrud_br10b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			controller.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_emit" ) );
+			Check( controller.SetProperty( String( "scale" ), String( "21" ) ), "BR10b older GUI edit applies" );
+			// The UNGATED panel primitive commits a forward reference INCREMENTALLY (code 1: managers untouched, so
+			// the controller's cached pointers stay valid): the head no longer derives in document order.
+			Check( pJob->ApplyCstParamEdit( "mat_diffuse", "material", "reflectance", 0, "pnt_emit" ) == 1,
+			       "BR10b a forward reference committed incrementally" );
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			p.target = "mat_diffuse"; p.kind = "material"; p.param = "reflectance"; p.value = "pnt_albedo"; ps.push_back( p );
+			p.target = "sph"; p.kind = ""; p.param = "radius"; p.value = "0.7"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+			Check( res.size() == 2 && res[0].applied && res[1].applied, "BR10b the repairing batch lands" );
+			controller.Undo();
+			const std::string notice = controller.Editor().ConsumeHistoryNotice();
+			Check( !notice.empty() && notice.find( "could not be applied" ) != std::string::npos,
+			       "BR10b the unappliable batch record is DROPPED with a user-facing notice" );
+			controller.Undo();   // the older GUI edit
+			Check( std::fabs( BrParamNumber_( sess->ReadDocument(), "mat_emit", "", "scale" ) - 30.0 ) < 1e-9,
+			       "BR10b MONEY: later Undos reach the older GUI edit (history is not wedged)" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR11 (round-2 P2): a DIAGNOSED batch re-derive reports the landed elements as landed -- only the element the
+//! diagnostic names is "diagnosed" -- and build_element counts every landed chunk as landed (no repair retry
+//! resubmitting chunks that are already in the document).
+static void TestBatchDiagnosedReporting()
+{
+	std::printf( "BR11: a diagnosed batch re-derive is attributed, followers report landed ...\n" );
+	for( int live = 0; live < 2; ++live )
+	for( int attributed = 0; attributed < 2; ++attributed )
+	{
+		const std::string tmp = TempPath( "agentcrud_br11.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		{
+			std::unique_ptr<SceneEditController> controller;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			if( live ) {
+				controller.reset( new SceneEditController( *pJob, /*interactiveRasterizer*/0 ) );
+				sess->AttachController( controller.get() );
+			}
+			const std::string w = std::string( "BR11 " ) + ( live ? "live" : "headless" ) +
+			                      ( attributed ? " attributed: " : " unattributed: " );
+			pJob->ForTest_InjectNextLiveDeriveDiagnostic( attributed ? "fake diagnostic for `br11_b`" : "fake generic diagnostic" );
+			std::vector<std::string> chunks;
+			chunks.push_back( "uniformcolor_painter\n{\n\tname br11_a\n\tcolor 0.1 0.2 0.3\n}" );
+			chunks.push_back( "uniformcolor_painter\n{\n\tname br11_b\n\tcolor 0.3 0.2 0.1\n}" );
+			const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+			Check( res.size() == 2, w + "two results" );
+			if( res.size() == 2 ) {
+				Check( res[0].applied && res[0].rawCode == 3 &&
+				       res[0].message.find( attributed ? "fake diagnostic for" : "fake generic diagnostic" ) != std::string::npos,
+				       w + "a landed, non-offending element reports APPLIED with the diagnostic quoted (not a log pointer)" );
+				if( attributed )
+					Check( !res[1].applied && res[1].status == "diagnosed" &&
+					       res[1].message.find( "br11_b" ) != std::string::npos,
+					       w + "only the element the diagnostic names is reported diagnosed" );
+				else
+					Check( res[1].applied, w + "an unattributable diagnostic marks no element as failed" );
+			}
+			if( controller ) sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// build_element: the diagnosed chunk counts as LANDED, so no repair retry resubmits anything.
+	{
+		const std::string tmp = TempPath( "agentcrud_br11b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer, kGoodBuilderAnswer }, &calls ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "BR11b the plan files" );
+		pJob->ForTest_InjectNextLiveDeriveDiagnostic( "fake diagnostic for `wizard_robe_mat`" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( calls == 1, "BR11b MONEY: no repair retry -- the diagnosed chunk is in the document" );
+		Check( r.landed.size() == 4 && r.rejected.empty(), "BR11b every chunk counts as landed" );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR12 (round-2 P2): the per-element FALLBACK's retry is only for would-not-derive refusals and never lands a
+//! patch whose slot a LATER landed patch wrote: [X.material m1 (container -> refused), X.geometry g,
+//! X.material m2] must end with m2.
+static void TestBatchFallbackRetryRestrictions()
+{
+	std::printf( "BR12: fallback retry never overwrites a later patch nor lifts a policy refusal ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br12.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		Check( sess->InsertChunk( "standard_object\n{\n\tname br12_x\n}" ).applied, "BR12 container inserts" );
+		pJob->ForTest_SetCstBatchIsolationBudget( 0 );   // any failing batch falls back to per-element commits
+		std::vector<Agent::AgentSetPatch> ps;
+		Agent::AgentSetPatch p;
+		p.target = "mat_diffuse"; p.kind = "material"; p.param = "reflectance"; p.value = "pnt_emit";   // forward ref: will not derive
+		ps.push_back( p );
+		p.target = "br12_x"; p.kind = "standard_object"; p.param = "material"; p.value = "mat_diffuse"; ps.push_back( p );
+		p.target = "br12_x"; p.kind = "standard_object"; p.param = "geometry"; p.value = "sph";         ps.push_back( p );
+		p.target = "br12_x"; p.kind = "standard_object"; p.param = "material"; p.value = "mat_emit";    ps.push_back( p );
+		const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+		Check( res.size() == 4 && !res[0].applied && !res[1].applied && res[2].applied && res[3].applied,
+		       "BR12 verdicts: forward ref refused, container binding refused, geometry + later material land" );
+		Check( res.size() == 4 && res[1].message.find( "container node" ) != std::string::npos,
+		       "BR12 the container refusal keeps its reason (not retried away)" );
+		Check( std::string( RISE::Cst::ParamValueAsParsed(
+		           RISE::Cst::DocResolveNodeId( RISE::Cst::ParseToCst( sess->ReadDocument() ),
+		               RISE::Cst::DocFindByNameAnyRole( RISE::Cst::ParseToCst( sess->ReadDocument() ), "br12_x", nullptr, "standard_object", false ) ),
+		           "material" ) ).find( "mat_emit" ) != std::string::npos,
+		       "BR12 MONEY: the object ends with the LATER material (m2), not the earlier one" );
+		pJob->ForTest_SetCstBatchIsolationBudget( -1 );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR13 (round-2 P3): the incremental preview is REBUILT when a GUI edit moves the head mid-batch -- the next
+//! element's gates see both the GUI edit and the earlier deferred elements, and the batch lands on top of it.
+static void TestBatchPreviewRebuildsOnHeadMove()
+{
+	std::printf( "BR13: the batch preview follows a head moved by a co-editor mid-batch ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br13.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		bool sawBoth = false;
+		Agent::AgentSession* raw = sess.get();
+		sess->ForTest_SetAfterDeferHook( [&]( std::size_t idx ) {
+			if( idx == 0 ) {
+				controller.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_emit" ) );
+				controller.SetProperty( String( "scale" ), String( "27" ) );   // the co-editor moves the head
+			} else if( idx == 1 ) {
+				const Agent::AgentSession::AgentDocumentSnapshot snap = raw->ReadDocumentSnapshot();
+				sawBoth = snap.document.find( "br13_p" ) != std::string::npos &&
+				          std::fabs( BrParamNumber_( snap.document, "mat_emit", "", "scale" ) - 27.0 ) < 1e-9;
+			}
+		} );
+		std::vector<std::string> chunks;
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br13_p\n\tcolor 0.1 0.2 0.3\n}" );
+		chunks.push_back( "lambertian_material\n{\n\tname br13_m\n\treflectance br13_p\n}" );
+		chunks.push_back( "sphere_geometry\n{\n\tname br13_g\n\tradius 0.1\n}" );
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		sess->ForTest_SetAfterDeferHook( nullptr );
+		Check( sawBoth, "BR13 the rebuilt preview carries BOTH the co-editor's edit and the earlier deferred element" );
+		bool all = res.size() == 3;
+		for( std::size_t i = 0; i < res.size(); ++i ) all = all && res[i].applied;
+		Check( all, "BR13 the batch lands on the moved head" );
+		const std::string doc = sess->ReadDocument();
+		Check( std::fabs( BrParamNumber_( doc, "mat_emit", "", "scale" ) - 27.0 ) < 1e-9 && doc.find( "br13_m" ) != std::string::npos,
+		       "BR13 the final document keeps the co-editor's edit AND the batch" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 //! S2d: the do-nothing cases -- wrong phase, wrong element, no capability.
 static void TestCleanRoomBuildElementRefusals()
 {
@@ -20967,6 +21293,10 @@ int main()
 	TestBatchedVerdictIndependentOfSplits();
 	TestBatchedDegenerateHeadAndBudget();
 	TestBatchedUndoCompactAndInterleaved();
+	TestBatchUndoNeverWedges();               // review round 2
+	TestBatchDiagnosedReporting();
+	TestBatchFallbackRetryRestrictions();
+	TestBatchPreviewRebuildsOnHeadMove();
 	TestMaterialScaffoldFamilies();
 	TestMaterialScaffoldDeterminism();
 	TestMaterialScaffoldMissingParams();

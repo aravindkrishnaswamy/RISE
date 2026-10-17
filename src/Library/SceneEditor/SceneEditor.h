@@ -532,6 +532,10 @@ namespace RISE
 		//! Test hooks (2026-10-16) for the AgentEditBatch diff: encode a before/after pair, and apply an
 		//! encoded diff to `current` (forward = before->after).
 		static std::string ForTest_EncodeDocDiff( const std::string& before, const std::string& after );
+
+		//! Review round 2 (P1): a user-facing notice set when an Undo/Redo had to DROP an unappliable agent batch
+		//! record (so history never wedges).  Returns it and clears it ("" when none).
+		std::string ConsumeHistoryNotice();
 		static std::string ForTest_ApplyDocDiff( const std::string& current, const std::string& encodedDiff,
 		                                         bool forward, bool* outOk );
 
@@ -719,6 +723,8 @@ namespace RISE
 		class IPainterManager*        mPainterManager;        // borrowed; nullable (Phase 4)
 		class IScalarPainterManager*  mScalarPainterManager;  // borrowed; nullable (Phase 4)
 		IJob*                         mJob;                   // borrowed; nullable
+		std::string                   mHistoryNotice;         // review round 2: see ConsumeHistoryNotice
+		void NoteHistoryDrop_( const SceneEdit& edit, bool forward );
 		EditHistory  mHistory;
 		DirtyScope   mLastScope;
 		int          mCompositeDepth;

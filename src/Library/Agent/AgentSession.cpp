@@ -12712,11 +12712,23 @@ namespace RISE
 			ApplyToBatchPreview_( pe.edit );
 			if( !pe.isInsert && have ) pe.orphanPostDoc = b.previewDoc;
 			b.pending.push_back( pe );
+			if( mForTestAfterDeferHook ) mForTestAfterDeferHook( pe.outIndex );
 		}
 
 		// Batched agent edits (2026-10-16): see the header doc.  Every per-element step below is the SINGLE
 		// verb's own commit tail (InsertChunk's / ProposePatchImpl_'s LIVE and HEADLESS branches, and the
 		// destructor-time folds they declare), applied to the element's real result once the batch landed.
+		// Review round 2: does an element AFTER `k` that landed write the same param slot as patch `k`?
+		bool AgentSession::LaterLandedPatchWritesSameSlot_( const std::vector<PendingBatchEdit_>& pend,
+		                                                     const std::vector<char>& landed, std::size_t k )
+		{
+			if( pend[k].isInsert ) return false;
+			std::vector<CstBatchEdit> edits;
+			edits.reserve( pend.size() );
+			for( std::size_t i = 0; i < pend.size(); ++i ) edits.push_back( pend[i].edit );
+			return CstBatchLaterLandedWriteSameSlot( edits, landed, k );
+		}
+
 		void AgentSession::FlushEditBatch_()
 		{
 			if( !mEditBatch || mEditBatch->pending.empty() ) return;
@@ -12784,11 +12796,27 @@ namespace RISE
 						// co-editing GUI is never held for the whole run -- then give every would-not-derive
 						// refusal ONE in-order retry against the final document, the same end-state rule the
 						// batch applies.
+						//
+						// The retry is ONLY for would-not-derive refusals (review round 2) -- never a policy
+						// refusal such as the container gate, which a later element cannot legitimately lift
+						// for an EARLIER one -- and never for a patch whose (entity, role) a LATER element that
+						// landed also wrote: landing it now would overwrite the later value with the earlier.
+						// These fallback commits are per-element undo steps (each single verb pushes its own
+						// record; a CompositeBegin/End bracket cannot be used -- an open composite refuses agent
+						// commits by design).
 						for( std::size_t k = 0; k < n; ++k ) crs[k] = liveSingle( pend[k] );
+						std::vector<char> landedFlags( n, 0 );
+						for( std::size_t k = 0; k < n; ++k ) landedFlags[k] = ( crs[k].rawCode >= 1 ) ? 1 : 0;
 						for( std::size_t k = 0; k < n; ++k ) {
 							if( crs[k].applied || crs[k].rawCode != 0 || crs[k].retriable || crs[k].status != String( "rejected" ) ) continue;
+							const std::string msg = crs[k].message.c_str();
+							const bool wouldNotDerive = pend[k].isInsert
+								? msg.find( "would not derive in context" ) != std::string::npos
+								: msg.find( "the edit would not derive" ) != std::string::npos;
+							if( !wouldNotDerive ) continue;
+							if( LaterLandedPatchWritesSameSlot_( pend, landedFlags, k ) ) continue;
 							const SceneEditController::AgentCommitResult again = liveSingle( pend[k] );
-							if( again.rawCode != 0 ) crs[k] = again;
+							if( again.rawCode != 0 ) { crs[k] = again; landedFlags[k] = 1; }
 						}
 						const RISE::Cst::CstHeadVersion h = ReadHeadVersion();
 						for( std::size_t k = 0; k < crs.size(); ++k ) crs[k].headVersion = h;
@@ -12886,11 +12914,16 @@ namespace RISE
 				for( std::size_t k = 0; k < n; ++k ) edits.push_back( pend[k].edit );
 				if( mJob->ApplyCstEditBatch( edits, oc ) == kCstEditBatchNeedsSequential ) {
 					// Review P2-C: see the live branch -- per-element commits, then one in-order retry.
+					// Same retry restrictions as the live branch (headless has no policy gate at this layer: a
+					// code-0 refusal there is would-not-derive / unresolvable, so only the slot rule applies).
 					for( std::size_t k = 0; k < n; ++k ) oc[k] = headlessSingle( pend[k] );
+					std::vector<char> landedFlags( n, 0 );
+					for( std::size_t k = 0; k < n; ++k ) landedFlags[k] = ( oc[k].code >= 1 ) ? 1 : 0;
 					for( std::size_t k = 0; k < n; ++k ) {
 						if( oc[k].code != 0 ) continue;
+						if( LaterLandedPatchWritesSameSlot_( pend, landedFlags, k ) ) continue;
 						const CstBatchOutcome again = headlessSingle( pend[k] );
-						if( again.code > 0 ) oc[k] = again;
+						if( again.code > 0 ) { oc[k] = again; landedFlags[k] = 1; }
 					}
 				} else {
 					batchedRealization = true;
@@ -12899,22 +12932,37 @@ namespace RISE
 			const RISE::Cst::CstHeadVersion head = mJob->GetCstHeadVersion();
 			const RISE::Cst::Document* headDocPtr = mJob->GetCstDocument();
 
-			// P3: ONE re-derive realized a batch, so its diagnostics are reported in full ONCE.
-			bool diagnosedReported = false;
-			const char* const kDiagnosedFollower = "landed in the same diagnosed batch re-derive (see the first diagnosed element)";
+			// Review round 2: a diagnosed (code 3) BATCH re-derive is attributed to the element(s) its diagnostic
+			// NAMES; every other landed element reports applied (it did land) with the diagnostic quoted -- the
+			// same rule the live controller applies (CstBatchDiagnosticNames).
+			bool anyAttributed = false;
+			if( batchedRealization )
+				for( std::size_t k = 0; k < n; ++k )
+					if( oc[k].code == 3 && CstBatchDiagnosticNames( oc[k].diag, pend[k].isInsert ? oc[k].name : pend[k].patch.target ) )
+						anyAttributed = true;
 			for( std::size_t k = 0; k < n; ++k )
 			{
 				PendingBatchEdit_& p = pend[k];
-				const int code = oc[k].code;
-				const bool follower = batchedRealization && code == 3 && diagnosedReported;
-				if( code == 3 ) diagnosedReported = true;
+				int code = oc[k].code;
+				// A landed, NOT-attributed element of a diagnosed batch: report it as landed, with a note.
+				std::string landedNote;
+				if( batchedRealization && code == 3 &&
+				    !CstBatchDiagnosticNames( oc[k].diag, p.isInsert ? oc[k].name : p.patch.target ) ) {
+					landedNote = std::string( anyAttributed
+						? "; note: the batch's re-derive reported a diagnostic for ANOTHER element: "
+						: "; note: the batch's re-derive reported a diagnostic it could not attribute to one element: " )
+						+ oc[k].diag;
+					code = 2;
+				}
+				const bool attributed3 = batchedRealization && code == 3;
 				if( p.isInsert )
 				{
 					AgentChunkResult r;
 					r.kind = oc[k].keyword;
 					r.name = oc[k].name;
 					FoldChunkCode( r, code, /*isInsert*/ true, std::string(), oc[k].diag.c_str(), /*kindWasPassed*/ false );
-					if( follower ) r.message = kDiagnosedFollower;
+					if( !landedNote.empty() ) { r.rawCode = 3; r.message += landedNote; }
+					if( attributed3 ) r.message += ": " + oc[k].diag;
 					r.headVersion = head;
 					if( r.applied && headDocPtr )
 						AttachChunkIssueWarnings( r, *headDocPtr, p.applyText );
@@ -12940,9 +12988,9 @@ namespace RISE
 						case 3:
 							r.applied = false;
 							r.status  = "diagnosed";
-							r.message = follower ? kDiagnosedFollower
-							          : "edit NOT a clean success: the Document was mutated and the live managers were "
+							r.message = "edit NOT a clean success: the Document was mutated and the live managers were "
 							            "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+							if( attributed3 ) r.message += ": " + oc[k].diag;
 							break;
 						case 0:
 						default:
@@ -12951,6 +12999,7 @@ namespace RISE
 							r.message = "edit rejected (entity/param not found or the edit would not derive) -- head unchanged";
 							break;
 					}
+					if( !landedNote.empty() ) { r.rawCode = 3; r.message += landedNote; }
 					r.headVersion = head;
 					if( code == 0 && headDocPtr )
 						AttachParamEditRejectionIssues( r, *headDocPtr,
@@ -24339,7 +24388,9 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
+					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
+					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						out.landed.push_back( results[i].name );
 						out.sdfPartCount += CountSdfPartLines_( submit[i] );
@@ -33115,7 +33166,9 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
+					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
+					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						landedKinds.push_back( results[i].kind );
 						out.landed.push_back( results[i].name );
@@ -34210,7 +34263,9 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
+					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
+					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						AgentPopulateSceneCreation c;
 						c.name = results[i].name;
@@ -35001,7 +35056,9 @@ namespace RISE
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {
 					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
+					// Review round 2: a DIAGNOSED insert is in the document too -- counting it as rejected made
+					// the repair retry resubmit it and draw a duplicate-name refusal with a misleading reason.
+					if( ResultMutatedDocument_( results[i] ) ) {
 						landedNames.push_back( results[i].name );
 						landedKinds.push_back( results[i].kind );
 						out.landed.push_back( results[i].name );
