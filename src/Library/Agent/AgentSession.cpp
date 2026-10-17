@@ -33692,8 +33692,17 @@ namespace RISE
 					for( int c = 0; c < pn; ++c ) {
 						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( pd, RISE::Cst::DocNodeIdAt( pd, c ) );
 						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
-						const std::string par = ChunkParamString_( it, "parent" );
-						if( !par.empty() && par != "none" ) answerParents.push_back( par );
+						// EVERY occurrence, not just the first (the derive keeps the last).
+						for( const RISE::Cst::NodeRef& kid : it->kids ) {
+							if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+							std::string thisName, val;
+							for( const RISE::Cst::NodeRef& tk : kid->kids ) {
+								if( !tk || tk->kind != RISE::Cst::NodeKind::Token ) continue;
+								if( tk->role == "pname" ) thisName = tk->text;
+								else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+							}
+							if( thisName == "parent" && !val.empty() && val != "none" ) answerParents.push_back( val );
+						}
 						break;
 					}
 				}
@@ -33702,7 +33711,7 @@ namespace RISE
 				std::vector<AgentPopulateSceneCreation> submitInfo;
 				for( std::size_t i = 0; i < chunks.size(); ++i ) {
 					RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunks[i] );
-					std::string kind, oname, gname, mname, sname, cuText, cvText;
+					std::string kind, oname, gname, mname, sname, cuText, cvText, dupParam;
 					RISE::Cst::NodeId nodeId = 0;
 					{
 						const int n = RISE::Cst::DocItemCount( doc );
@@ -33716,6 +33725,23 @@ namespace RISE
 							mname  = ChunkParamString_( it, "material" );
 							sname  = ChunkParamString_( it, "source" );
 							if( sname == "none" ) sname.clear();
+							// ChunkParamString_ is FIRST-wins; the derive (Cst::ParamValue) is
+							// LAST-wins.  A repeated singleton would make this pre-check
+							// price one value and the scene build another, so it is refused.
+							{
+								static const char* const kSingletons[] =
+									{ "name", "geometry", "material", "source", "count_u", "count_v", "parent" };
+								for( std::size_t sg = 0; sg < sizeof( kSingletons ) / sizeof( kSingletons[0] ) && dupParam.empty(); ++sg ) {
+									int seen = 0;
+									for( const RISE::Cst::NodeRef& kid : it->kids ) {
+										if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+										for( const RISE::Cst::NodeRef& tk : kid->kids )
+											if( tk && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" &&
+											    tk->text == kSingletons[sg] ) ++seen;
+									}
+									if( seen > 1 ) dupParam = kSingletons[sg];
+								}
+							}
 							cuText = ChunkParamString_( it, "count_u" );
 							cvText = ChunkParamString_( it, "count_v" );
 							nodeId = nid;
@@ -33742,6 +33768,20 @@ namespace RISE
 						continue;
 					}
 
+					if( !dupParam.empty() ) {
+						AgentPopulateSceneRejection r;
+						r.name   = oname;
+						r.kind   = kind;
+						r.reason = "the standard_object" +
+							( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+							" was not inserted: it repeats `" + dupParam + "` -- write each parameter once "
+							"(the scene build keeps the LAST occurrence while populate_scene's size check "
+							"reads the first, so a repeat could hide how many objects it makes)";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+
 					// A QUOTED name is tolerated, not rejected -- arc 79 sec
 					// 8.1's live-run defect and its fix, applied from the start.
 					// This scene language has no quoted-string syntax at all.
@@ -33751,6 +33791,11 @@ namespace RISE
 						chunks[i] = RISE::Cst::SerializeCst( doc );
 						unquotedNames.push_back( stripped );
 						oname = stripped;
+					}
+					if( sname.size() >= 2 && sname.front() == '"' && sname.back() == '"' ) {
+						sname = sname.substr( 1, sname.size() - 2 );
+						doc = RISE::Cst::DocSetParamValue( doc, nodeId, "source", 0, sname );
+						chunks[i] = RISE::Cst::SerializeCst( doc );
 					}
 
 					// THE REFERENCE RULE.  A repeat must name a geometry and a
@@ -33769,7 +33814,7 @@ namespace RISE
 					// `source` together are the parser's own mutual-exclusion
 					// error and are left to InsertChunks to report.
 					const bool cloneForm = !sname.empty();
-					long long estimate = 1;   // EXACT object count of this chunk (see below)
+					long long estimate = 1;   // object count of this chunk: exact for ordinary objects, an upper bound otherwise (a geometry-less container source over-counts)
 					if( cloneForm ) {
 						// A clone's source must already exist in the LIVE scene.
 						// A source declared in this same answer would make the
@@ -33985,7 +34030,7 @@ namespace RISE
 
 				// ONE InsertChunks call for the whole pre-checked batch (one
 				// re-derive).  Both caps were enforced exactly in the pre-check,
-				// so `expandedCount` is the real object count of each chunk.
+				// so `expandedCount` is an upper bound on each chunk's object count (exact for ordinary objects).
 				const std::vector<AgentChunkResult> results = InsertChunks( submit );
 				bool landedAny = false;
 				for( std::size_t i = 0; i < results.size(); ++i ) {

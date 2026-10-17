@@ -3029,6 +3029,10 @@ namespace RISE
 			AgentChunkResult InsertChunk( const std::string& chunkText,
 			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! How many InsertChunks calls this session has made (diagnostic; tests use it
+			//! to prove a batch lands in one call).
+			unsigned int InsertChunksCallCount() const { return mInsertChunksCalls; }
+
 			//! BATCH form of InsertChunk (insert_chunks): apply MULTIPLE
 			//! complete chunks in ONE call instead of one round-trip per
 			//! chunk.  Motivation: a scene assembled one insert_chunk at a
@@ -3075,10 +3079,6 @@ namespace RISE
 			//!
 			//! `chunkTexts` empty -> returns an empty vector (no-op); no
 			//! InsertChunk call is made.
-			//! How many InsertChunks calls this session has made (diagnostic; tests use it
-			//! to prove a batch lands in one call).
-			unsigned int InsertChunksCallCount() const { return mInsertChunksCalls; }
-
 			std::vector<AgentChunkResult> InsertChunks( const std::vector<std::string>& chunkTexts,
 			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 

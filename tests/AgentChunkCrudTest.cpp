@@ -17707,6 +17707,31 @@ static void TestPopulateSceneParentSubtreeAndRefund()
 		       "A82j while the five children themselves land" );
 		pJob->release();
 	}
+	// A repeated singleton parameter is refused: the pre-check reads the FIRST
+	// occurrence but the scene build keeps the LAST, so a repeat could hide the size.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j/dup fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string answer =
+			"standard_object\n{\n\tname dup_counts\n\tsource obj_sph\n\tcount_u 2\n\tcount_u 3000\n}\n"
+			"standard_object\n{\n\tname dup_kid\n\tgeometry sph\n\tmaterial mat_diffuse\n"
+			"\tparent none\n\tparent obj_sph\n}\n"
+			"standard_object\n{\n\tname dup_grow\n\tsource obj_sph\n\tposition 1 1 1\n}\n"
+			"standard_object\n{\n\tname quoted_src\n\tsource \"obj_emit\"\n\tposition 2 2 2\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( A82AnyRejection( r, "repeats `count_u`" ),
+		       "A82j MONEY ASSERTION: `count_u 2` then `count_u 3000` is refused, not priced as 2" );
+		Check( A82AnyRejection( r, "repeats `parent`" ),
+		       "A82j `parent none` then `parent obj_sph` is refused" );
+		Check( A82AnyRejection( r, "also parents a chunk to \"obj_sph\"" ),
+		       "A82j and the hidden second `parent` still blocks a clone of the source it points into" );
+		Check( r.created.size() == 1 && r.created[0].name == "quoted_src" &&
+		       r.objectCountAfter - r.objectCountBefore == 1 && A82CreatedObjects( r ) == 1,
+		       "A82j a quoted `source` is unquoted and lands; nothing else lands; reported count equals the real delta" );
+		pJob->release();
+	}
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		if( !pJob ) { Check( false, "A82j/refund fixture loads" ); return; }
