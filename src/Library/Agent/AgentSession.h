@@ -10268,24 +10268,6 @@ namespace RISE
 			//! turn, and a failed pass must not strand the session.
 			bool mPopulateSceneRan = false;
 
-			//! PopulateScene's private rollback channel.  While `mHarnessRollbackScope`
-			//! is set (only ever by HarnessRollbackGuard_, below), RemoveChunks skips
-			//! the element-window / compose-phase REMOVAL gates -- but ONLY when every
-			//! target is in `mHarnessRollbackTargets`, the names this same populate_scene
-			//! call's own InsertChunks reported as landed.  Not reachable from any tool
-			//! or RPC path: those never set the flag.
-			bool                     mHarnessRollbackScope = false;
-			std::vector<std::string> mHarnessRollbackTargets;
-			struct HarnessRollbackGuard_
-			{
-				AgentSession& s;
-				HarnessRollbackGuard_( AgentSession& session, const std::vector<std::string>& targets ) : s( session )
-				{ s.mHarnessRollbackTargets = targets; s.mHarnessRollbackScope = true; }
-				~HarnessRollbackGuard_()
-				{ s.mHarnessRollbackScope = false; s.mHarnessRollbackTargets.clear(); }
-				HarnessRollbackGuard_( const HarnessRollbackGuard_& ) = delete;
-				HarnessRollbackGuard_& operator=( const HarnessRollbackGuard_& ) = delete;
-			};
 			//! Number of InsertChunks calls made on this session (diagnostic).
 			unsigned int mInsertChunksCalls = 0;
 

@@ -17560,9 +17560,24 @@ static void TestPopulateSceneContractAndRetry()
 	}
 }
 
-//! A82h: the `source` CLONE form (count_u / expr positions) is a legal way to
-//! place existing geometry; a `source` naming nothing is rejected naming it;
-//! a clone needs no `material` line, but one that is written must exist.
+//! Does any rejection reason contain `needle`?
+static bool A82AnyRejection( const Agent::AgentSession::AgentPopulateSceneResult& r, const char* needle )
+{
+	for( std::size_t i = 0; i < r.rejected.size(); ++i )
+		if( r.rejected[i].reason.find( needle ) != std::string::npos ) return true;
+	return false;
+}
+
+//! Sum of the creation records' expandedCount.
+static int A82CreatedObjects( const Agent::AgentSession::AgentPopulateSceneResult& r )
+{
+	int n = 0;
+	for( std::size_t i = 0; i < r.created.size(); ++i ) n += r.created[i].expandedCount;
+	return n;
+}
+
+//! A82h: the `source` CLONE form -- accepted for a LIVE source, with an exact
+//! object count; every other source shape is refused with its reason.
 static void TestPopulateSceneSourceClone()
 {
 	std::printf( "A82h: populate_scene accepts the source clone form...\n" );
@@ -17576,70 +17591,57 @@ static void TestPopulateSceneSourceClone()
 		"standard_object\n{\n\tname pop_clone_row\n\tsource obj_sph\n\tcount_u 3\n"
 		"\tposition expr(-0.67 + i*0.075) 1.050 -0.355\n}\n"
 		"standard_object\n{\n\tname pop_clone_plain\n\tsource obj_sph\n\tposition 3 0 0\n}\n"
-		"standard_object\n{\n\tname pop_clone_of_clone\n\tsource pop_clone_plain\n"
-		"\tposition 0 2 0\n}\n"
-		"standard_object\n{\n\tname pop_clone_ghost_src\n\tsource no_such_object\n"
-		"\tposition 0 0 1\n}\n"
+		"standard_object\n{\n\tname pop_clone_samesrc\n\tsource pop_clone_plain\n\tposition 0 2 0\n}\n"
+		"standard_object\n{\n\tname pop_clone_ghost_src\n\tsource no_such_object\n\tposition 0 0 1\n}\n"
 		"standard_object\n{\n\tname pop_clone_ghost_mat\n\tsource obj_sph\n"
 		"\tmaterial ghost_mat\n\tposition 0 0 2\n}\n"
 		"standard_object\n{\n\tname pop_clone_geomsrc\n\tsource sph\n\tposition 0 0 3\n}\n"
-		"standard_object\n{\n\tname pop_clone_countedsrc\n\tsource pop_clone_row\n\tposition 0 0 4\n}\n"
+		"standard_object\n{\n\tname pop_clone_vonly\n\tsource obj_sph\n\tcount_v 2\n}\n"
+		"standard_object\n{\n\tname pop_clone_dec\n\tsource obj_sph\n\tcount_u 2.5\n}\n"
 		"standard_object\n{\n\tname pop_clone_big\n\tsource obj_sph\n\tcount_u 20\n\tcount_v 20\n}\n";
-	sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+	// The repair retry gets a different (still unusable) answer: resubmitting the first
+	// answer would legitimately turn `pop_clone_samesrc` valid, since by then
+	// pop_clone_plain is LIVE.
+	sess->SetTextCompleter( MakeFakeCompleter( { answer,
+		"standard_object\n{\n\tname pop_clone_retry\n\tsource no_such_object\n}\n" } ) );
+	const unsigned int callsBefore = sess->InsertChunksCallCount();
 	const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
 
-	Check( r.objectCountAfter - r.objectCountBefore == 5,
-	       "A82h objects grew by exactly 3 (count_u 3) + 1 + 1 = 5" );
-	Check( r.created.size() == 3, "A82h exactly three chunks landed" );
-	for( std::size_t i = 0; i < r.created.size(); ++i ) {
-		Check( r.created[i].source.size() > 0 && r.created[i].geometry.empty(),
-		       "A82h a clone's creation record carries `source`, not a fake geometry" );
-		if( r.created[i].name == "pop_clone_row" )
-			Check( r.created[i].expandedCount == 3, "A82h the counted clone reports 3 objects" );
-	}
-	Check( r.message.find( "clone of obj_sph, 3 objects" ) != std::string::npos,
-	       "A82h the human message renders the clone and its expansion" );
-	{
-		bool geomSrc = false, countedSrc = false, big = false;
-		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
-			const std::string& why = r.rejected[i].reason;
-			if( why.find( "\"sph\", which this scene does not have" ) != std::string::npos ) geomSrc = true;
-			if( why.find( "carrying `count_u` / `count_v`" ) != std::string::npos ) countedSrc = true;
-			if( why.find( "exceeds the populate_scene cap of 256" ) != std::string::npos ) big = true;
-		}
-		Check( geomSrc, "A82h a `source` naming a GEOMETRY (not an object) is rejected" );
-		Check( countedSrc, "A82h a `source` that is a counted chunk is rejected" );
-		Check( big, "A82h a 20x20 clone is rejected over the cap" );
-	}
-	Check( pJob->GetObjects()->GetItem( "obj_sph" ) != nullptr, "A82h obj_sph still exists" );
+	Check( r.created.size() == 2, "A82h exactly the counted clone and the plain clone land" );
+	Check( r.objectCountAfter - r.objectCountBefore == 4 && A82CreatedObjects( r ) == 4,
+	       "A82h MONEY ASSERTION: created[].expandedCount is exact -- 3 + 1 = 4 = the real object delta" );
+	Check( A82AnyRejection( r, "\"pop_clone_samesrc\"" ) &&
+	       A82AnyRejection( r, "clone sources must already exist" ),
+	       "A82h a clone of a source declared in the SAME answer is refused" );
+	Check( A82AnyRejection( r, "\"no_such_object\", which this scene does not have" ),
+	       "A82h a nonexistent source is refused naming it" );
+	Check( A82AnyRejection( r, "the material \"ghost_mat\", which this scene does not have" ),
+	       "A82h a clone naming a nonexistent material is still refused" );
+	Check( A82AnyRejection( r, "\"sph\", which this scene does not have" ),
+	       "A82h a source naming a GEOMETRY (not an object) is refused" );
+	Check( A82AnyRejection( r, "`count_v` without `count_u`" ), "A82h count_v alone is refused" );
+	Check( A82AnyRejection( r, "positive integer literal" ), "A82h a decimal count is refused with the accepted form stated" );
+	Check( A82AnyRejection( r, "exceeds the populate_scene cap of 256" ), "A82h a 20x20 clone is refused over the cap" );
+	Check( !A82AnyRejection( r, "names no geometry" ), "A82h no clone is refused as 'names no geometry'" );
+	// the retry resubmits the answer, so the first attempt + one retry = 2 InsertChunks calls at most
+	Check( sess->InsertChunksCallCount() - callsBefore <= 2, "A82h batches land in one InsertChunks call per attempt" );
 
-	const std::string doc = sess->ReadDocument();
-	Check( doc.find( "pop_clone_row" ) != std::string::npos,
-	       "A82h MONEY ASSERTION: a `source` + count_u + expr() clone of an existing object is inserted" );
-	Check( doc.find( "pop_clone_of_clone" ) != std::string::npos,
-	       "A82h a clone of a clone from the same answer is inserted" );
-	Check( doc.find( "pop_clone_ghost_src" ) == std::string::npos,
-	       "A82h a `source` naming a nonexistent object does not reach the document" );
-	bool sawSrc = false, sawMat = false, sawNoGeom = false;
-	for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
-		const std::string& why = r.rejected[i].reason;
-		if( why.find( "\"no_such_object\", which this scene does not have" ) != std::string::npos ) sawSrc = true;
-		if( why.find( "the material \"ghost_mat\", which this scene does not have" ) != std::string::npos ) sawMat = true;
-		if( why.find( "names no geometry at all" ) != std::string::npos ) sawNoGeom = true;
-	}
-	Check( sawSrc, "A82h the bad `source` is rejected with a reason naming it" );
-	Check( sawMat, "A82h a clone naming a nonexistent material is still rejected" );
-	Check( !sawNoGeom, "A82h no clone is rejected as 'names no geometry'" );
-	Check( doc.find( "pop_clone_ghost_mat" ) == std::string::npos, "A82h ghost-material clone not inserted" );
+	// A LIVE counted chunk is not a valid source.
+	sess->SetTextCompleter( MakeFakeCompleter( {
+		"standard_object\n{\n\tname pop_clone_ofrow\n\tsource pop_clone_row\n\tposition 0 0 5\n}\n",
+		"standard_object\n{\n\tname pop_clone_ofrow\n\tsource pop_clone_row\n\tposition 0 0 5\n}\n" } ) );
+	const Agent::AgentSession::AgentPopulateSceneResult r2 = sess->PopulateScene();
+	Check( A82AnyRejection( r2, "carries `count_u` / `count_v`" ) || A82AnyRejection( r2, "clone sources must already exist" ),
+	       "A82h a counted source is refused" );
+	Check( r2.created.empty(), "A82h and nothing lands for it" );
 	pJob->release();
 }
 
-//! A82i: clone fan-out bounds -- a source with a real subtree expands by it,
-//! a clone-of-clone chain within one answer compounds, the per-call total
-//! stops later chunks, and malformed counts are rejected with exact reasons.
+//! A82i: exact clone fan-out of a source with a real subtree, the per-call
+//! total cut-off, and a source that gains children in the same answer.
 static void TestPopulateSceneCloneFanOutBounds()
 {
-	std::printf( "A82i: populate_scene bounds clone fan-out...\n" );
+	std::printf( "A82i: populate_scene bounds clone fan-out exactly...\n" );
 	const std::string tmp = TempPath( "agentcrud_a82i.RISEscene" );
 	std::string scene = kScene;
 	for( int k = 0; k < 130; ++k )
@@ -17653,34 +17655,17 @@ static void TestPopulateSceneCloneFanOutBounds()
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
 		const std::string answer =
-			"standard_object\n{\n\tname fan_a\n\tsource obj_sph\n\tposition 5 0 0\n}\n"
-			"standard_object\n{\n\tname fan_b\n\tsource fan_a\n\tcount_u 8\n}\n"
-			"standard_object\n{\n\tname fan_vonly\n\tsource obj_sph\n\tcount_v 2\n}\n"
-			"standard_object\n{\n\tname fan_dec\n\tsource obj_sph\n\tcount_u 2.5\n}\n";
+			"standard_object\n{\n\tname fan_one\n\tsource obj_sph\n\tposition 5 0 0\n}\n"
+			"standard_object\n{\n\tname fan_x3\n\tsource obj_sph\n\tcount_u 3\n}\n";
 		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
 		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
-		bool a = false;
-		for( std::size_t i = 0; i < r.created.size(); ++i )
-			if( r.created[i].name == "fan_a" ) {
-				a = true;
-				Check( r.created[i].expandedCount == 131,
-				       "A82i a clone of a source with a 130-child subtree expands to 131 objects" );
-			}
-		Check( a, "A82i fan_a landed" );
-		bool chain = false, vonly = false, dec = false;
-		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
-			const std::string& why = r.rejected[i].reason;
-			if( why.find( "really made 1048 objects" ) != std::string::npos ) chain = true;
-			if( why.find( "`count_v` without `count_u`" ) != std::string::npos ) vonly = true;
-			if( why.find( "positive integer literal" ) != std::string::npos ) dec = true;
-		}
-		Check( chain, "A82i MONEY ASSERTION: a clone-of-clone in the SAME answer compounds the pending "
-		              "source's expansion (131 x 8 = 1048 > 256) and is rejected" );
-		Check( vonly, "A82i count_v without count_u is rejected" );
-		Check( dec, "A82i a decimal count is rejected with the accepted form stated" );
+		Check( r.created.size() == 1 && r.created[0].name == "fan_one" && r.created[0].expandedCount == 131,
+		       "A82i a clone of a 131-object source lands and reports 131" );
+		Check( r.objectCountAfter - r.objectCountBefore == 131, "A82i and that equals the real object delta" );
+		Check( A82AnyRejection( r, "= 393 exceeds the populate_scene cap of 256" ),
+		       "A82i MONEY ASSERTION: x3 of the same source is 393 > 256 and is refused before insertion" );
 		pJob->release();
 	}
-
 	{
 		Job* pJob = LoadScene( scene.c_str(), tmp );
 		if( !pJob ) return;
@@ -17691,100 +17676,35 @@ static void TestPopulateSceneCloneFanOutBounds()
 			          "\n\tsource obj_sph\n\tposition " + std::to_string( k ) + " 0 0\n}\n";
 		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
 		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
-		Check( r.created.size() == 7,
-		       "A82i per-call total: 7 clones of 131 (917) land, the 8th would pass 1024 and is refused" );
-		bool cap = false;
-		for( std::size_t i = 0; i < r.rejected.size(); ++i )
-			if( r.rejected[i].reason.find( "per-call cap of 1024" ) != std::string::npos ) cap = true;
-		Check( cap, "A82i the per-call rejection names the cap" );
+		Check( r.created.size() == 7 && r.objectCountAfter - r.objectCountBefore == 917 &&
+		       A82CreatedObjects( r ) == 917,
+		       "A82i per-call total: 7 clones of 131 (917) land exactly, the 8th would pass 1024 and is refused" );
+		Check( A82AnyRejection( r, "per-call cap of 1024" ), "A82i the per-call rejection names the cap" );
 		pJob->release();
 	}
 }
 
-//! A82j: children declared in the SAME answer via `parent` count toward a
-//! clone's fan-out, and chunks InsertChunks refuses refund the per-call total.
+//! A82j: a source that gains children in the same answer is refused; plain
+//! placements count 1 each toward the per-call total; refused chunks refund.
 static void TestPopulateSceneParentSubtreeAndRefund()
 {
-	std::printf( "A82j: populate_scene counts same-answer children and refunds refused chunks...\n" );
+	std::printf( "A82j: populate_scene refuses growing sources and refunds refused chunks...\n" );
 	const std::string tmp = TempPath( "agentcrud_a82j.RISEscene" );
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		if( !pJob ) { Check( false, "A82j fixture loads" ); return; }
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
 		std::string answer;
-		for( int k = 0; k < 100; ++k )
+		for( int k = 0; k < 5; ++k )
 			answer += "standard_object\n{\n\tname pkid_" + std::to_string( k ) +
 			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
-		answer += "standard_object\n{\n\tname pbig\n\tsource obj_sph\n\tcount_u 12\n}\n";
+		answer += "standard_object\n{\n\tname pbig\n\tsource obj_sph\n\tcount_u 2\n}\n";
 		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
 		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
-		bool big = false;
-		for( std::size_t i = 0; i < r.rejected.size(); ++i )
-			if( r.rejected[i].reason.find( "really made 1212 objects" ) != std::string::npos ) big = true;
-		Check( big, "A82j MONEY ASSERTION: 100 children declared via `parent obj_sph` in this answer make "
-		            "the source 101 objects, so count_u 3 (1212) is rejected" );
-		pJob->release();
-	}
-	// P2-1 / P2-2: the fan-out the parser really produces is measured, not
-	// predicted.  obj_sph gets ONE authored child so clones have a synthesized
-	// `<clone>.kid0` entry to hang more children on.
-	{
-		std::string scene = kScene;
-		scene += "\nstandard_object\n{\n\tname kid0\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
-		Job* pJob = LoadScene( scene.c_str(), tmp );
-		if( !pJob ) { Check( false, "A82j/measured fixture loads" ); return; }
-		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
-		std::string answer;
-		// P2-2: a clone C, then 100 children parented to its synthesized entry C.kid0,
-		// then D = clone of C x3 -> real 3 * (2 + 100) = 306 > 256.
-		answer += "standard_object\n{\n\tname mc\n\tsource obj_sph\n\tposition 4 0 0\n}\n";
-		for( int k = 0; k < 100; ++k )
-			answer += "standard_object\n{\n\tname mkid_" + std::to_string( k ) +
-			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent mc.kid0\n}\n";
-		answer += "standard_object\n{\n\tname md\n\tsource mc\n\tcount_u 12\n}\n";
-		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
-		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
-		const std::string doc = sess->ReadDocument();
-		bool measured = false;
-		for( std::size_t i = 0; i < r.rejected.size(); ++i )
-			if( r.rejected[i].reason.find( "REMOVED again" ) != std::string::npos &&
-			    r.rejected[i].reason.find( "really made" ) != std::string::npos ) measured = true;
-		Check( measured, "A82j/measured an over-cap chunk is removed again with the MEASURED count in its reason" );
-		bool md = false;
-		for( std::size_t i = 0; i < r.created.size(); ++i ) {
-			if( r.created[i].name == "md" ) md = true;
-			Check( r.created[i].expandedCount <= 256, "A82j/measured no landed chunk exceeds the per-chunk cap" );
-		}
-		Check( !md && doc.find( "name\tmd" ) == std::string::npos && doc.find( "\nmd\n" ) == std::string::npos,
-		       "A82j/measured P2-2: the clone of C (children parented to C.kid0) is not left in the scene" );
-		Check( r.objectCountAfter - r.objectCountBefore <= 1024,
-		       "A82j/measured the scene grew by no more than the per-call cap" );
-		pJob->release();
-	}
-	// P2-1: children added to a clone's source AFTER the clone.  The parser
-	// itself refuses that late child (the earlier clone could not be re-derived),
-	// so nothing over the cap can come of it; the measured caps are the backstop.
-	{
-		Job* pJob = LoadScene( kScene, tmp );
-		if( !pJob ) { Check( false, "A82j/late fixture loads" ); return; }
-		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
-		std::string answer = "standard_object\n{\n\tname la\n\tsource obj_sph\n\tposition 6 0 0\n}\n";
-		for( int k = 0; k < 100; ++k )
-			answer += "standard_object\n{\n\tname llate_" + std::to_string( k ) +
-			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
-		answer += "standard_object\n{\n\tname lb\n\tsource la\n\tcount_u 3\n}\n";
-		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
-		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
-		Check( r.objectCountAfter - r.objectCountBefore <= 1024,
-		       "A82j/late the scene stays within the per-call cap" );
-		{
-			// An ORDINARY remove of form during compose is still refused after
-			// populate: the harness's private rollback channel is not left open.
-			const Agent::AgentSession::AgentRemoveBatchResult rm = sess->RemoveChunks( std::vector<std::string>( 1, "la" ) );
-			Check( !rm.applied, "A82j/late an ordinary RemoveChunks of form during compose is still refused" );
-		}
-		for( std::size_t i = 0; i < r.created.size(); ++i )
-			Check( r.created[i].expandedCount <= 256, "A82j/late no landed chunk exceeds the per-chunk cap" );
+		Check( A82AnyRejection( r, "also parents a chunk to \"obj_sph\"" ),
+		       "A82j MONEY ASSERTION: a clone whose source gains children in the same answer is refused" );
+		Check( r.created.size() == 5 && r.objectCountAfter - r.objectCountBefore == 5,
+		       "A82j while the five children themselves land" );
 		pJob->release();
 	}
 	{
@@ -17801,6 +17721,8 @@ static void TestPopulateSceneParentSubtreeAndRefund()
 		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
 		Check( r.created.size() == 5,
 		       "A82j chunks the first attempt got refused for give their share back, so the retry's 5 x 200 land" );
+		Check( r.objectCountAfter - r.objectCountBefore == 1000 && A82CreatedObjects( r ) == 1000,
+		       "A82j and the reported counts equal the real delta" );
 		pJob->release();
 	}
 }
