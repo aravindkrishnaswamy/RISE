@@ -9868,8 +9868,17 @@ namespace RISE
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase, derivedJob,
 				                                                                     soloCache );
+				// Condition E (param-metadata erosion) is deliberately ABSENT
+				// from the render note and lives only in validate
+				// (AppendDesignDiagnostics_).  Census 2026-10-17 over every
+				// banked GUI trajectory: the clause fired 83 times in 10 runs
+				// and was acted on in 0 -- it describes art-directability, not
+				// the render, so it is advice about the document the model
+				// asks validate for, not iteration-loop feedback.  A
+				// consistently declined advisory is evidence about the
+				// advisory.
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
-				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
+				    !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
 				    !c.conditionM && !c.conditionN && !c.conditionO && !c.conditionP &&
 				    !c.conditionQ ) return std::string();
@@ -9925,9 +9934,6 @@ namespace RISE
 					                                                 c.roughnessFlattestNames,
 					                                                 c.varyMaterialName, c.varyMaterialKind,
 					                                                 c.varyMaterialRoughness );
-				}
-				if( c.conditionE ) {
-					note += " " + FormatParamErosionClause_( c.paramErodedChunkNames );
 				}
 				if( c.conditionF ) {
 					note += " " + FormatOrphanedPaintersClause_( c.orphanedPainterNames );
