@@ -824,9 +824,29 @@ namespace RISE
 						iso.set( "longestEdge", JsonValue::MakeNumber( rr.isolateLongestEdge ) );
 					}
 					iso.set( "autoFramed", JsonValue::MakeBool( rr.isolateAutoFramed ) );
+					if( !rr.isolateFitBasis.empty() )
+						iso.set( "fitBasis", JsonValue::MakeString( rr.isolateFitBasis ) );
 					if( rr.isolateBBoxCoverage >= 0.0 )
 						iso.set( "bboxCoverage", JsonValue::MakeNumber( rr.isolateBBoxCoverage ) );
 					result.set( "isolate", iso );
+				}
+				// Doc 91 V2 `render{zoom:}`: what the zoom camera did, under ONE
+				// nested key.  Conditional and gated on `ok` from the start, the
+				// same discipline as `isolate` above (facts about an image that
+				// never happened are the one defect this payload cannot afford).
+				if( rr.ok && rr.zoomApplied ) {
+					JsonValue zm = JsonValue::MakeObject();
+					zm.set( "object", JsonValue::MakeString( rr.zoomObject ) );
+					zm.set( "fovDegrees", JsonValue::MakeNumber( rr.zoomFovDegrees ) );
+					zm.set( "sceneFovDegrees", JsonValue::MakeNumber( rr.zoomSceneFovDegrees ) );
+					zm.set( "keptSceneFov", JsonValue::MakeBool( rr.zoomKeptSceneFov ) );
+					if( rr.zoomCoverage >= 0.0 )
+						zm.set( "coverage", JsonValue::MakeNumber( rr.zoomCoverage ) );
+					zm.set( "fitBasis", JsonValue::MakeString( rr.zoomFitBasis ) );
+					JsonValue eye = JsonValue::MakeArray();
+					for( int a = 0; a < 3; ++a ) eye.push_back( JsonValue::MakeNumber( rr.zoomEye[a] ) );
+					zm.set( "eye", eye );
+					result.set( "zoom", zm );
 				}
 				// G3b (2026-08-10) `render{target:}`: the measured shape match
 				// against the part's filed sketch, under ONE nested key.
@@ -5290,6 +5310,30 @@ namespace RISE
 						}
 						else if( !iv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'isolate' must be a string" );
+					}
+
+					// Doc 91 V2 `render{zoom:}` ADDITIVE param:
+					// {"zoom":"<object name>"} -> AgentRenderParams::zoom -- look at
+					// ONE object close up from the SCENE camera's own position (the
+					// field of view narrowed onto it, everything else in place).
+					// Any non-string, non-null value is a clean -32602, and so is
+					// combining it with `isolate`, `view` or an explicit `camera`
+					// (all decidable with no live scene; the sentence comes from
+					// AgentSession::ZoomConflictMessage so the wire and the session
+					// state the rule identically).  An unresolvable name is NOT
+					// rejected here (that needs a live Job) -- RenderCore_ fails
+					// the render itself with the available names, like `isolate`.
+					if( const JsonValue* zv = params.find( "zoom" ) ) {
+						if( zv->isString() ) {
+							rparams.zoom = zv->asString();
+						}
+						else if( !zv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'zoom' must be a string" );
+					}
+					{
+						const std::string zoomConflict = AgentSession::ZoomConflictMessage( rparams );
+						if( !zoomConflict.empty() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: " + zoomConflict );
 					}
 
 					// G3b (2026-08-10) `render{target:}` ADDITIVE param:

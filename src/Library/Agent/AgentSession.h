@@ -493,10 +493,13 @@ namespace RISE
 		//! camera's current values.  Values are the SAME string forms
 		//! CameraIntrospection::SetProperty accepts ("x y z" for the Vec3
 		//! fields, a plain number in DEGREES for fov).  Render captures the
-		//! camera's CURRENT value of every overridden field via
-		//! CameraIntrospection::GetPropertyValue BEFORE applying any override,
-		//! and restores every captured field after the render -- the active
-		//! camera's properties are IDENTICAL before and after a Render call,
+		//! camera's CURRENT value of every overridden field BEFORE applying any
+		//! override -- bit-exactly (CameraIntrospection::CaptureExactValue: the
+		//! stored doubles, radians, no text), the panel's `%.6g` GetPropertyValue
+		//! string only as the fallback for a field that has no exact form -- and
+		//! restores every captured field after the render
+		//! (CameraIntrospection::RestoreExactValue), so the active camera's
+		//! properties are IDENTICAL before and after a Render call,
 		//! whether or not an override was requested (see AgentSession.cpp for
 		//! the capture-set-render-restore sequencing and the LIVE-mode safety
 		//! note).
@@ -834,6 +837,51 @@ namespace RISE
 			//! written to the document, the GUI viewport, or the user's
 			//! camera.
 			std::string          isolate;
+			//! Doc 91 V2 (2026-10-17, "the zoom look"): OPTIONAL name of ONE
+			//! object to look at CLOSE UP from the SCENE camera's own position.
+			//! "" (default) = no zoom.  Unlike `isolate`, nothing is hidden: every
+			//! other object, every light and the environment stay in place, so
+			//! the frame is a crop of what a viewer of THIS scene would see of
+			//! that object -- occlusion included -- at a size where its material
+			//! and surface detail read.  The camera keeps its LOCATION, is
+			//! aimed at the centre of the object's SURFACE points (a tessellation
+			//! of its real geometry, falling back to its bounding box only where
+			//! no surface points exist) and its vertical field of view is
+			//! narrowed so those points fill ~kIsolateFrameFill of the frame
+			//! (never below 2 deg, never wider than the scene's own fov -- an
+			//! object that already fills the frame keeps the scene fov and the
+			//! result says so).  Any extra camera orientation/target-orientation
+			//! on the scene camera is cleared for this one render (it would
+			//! swing the aim off the object); nothing is written to the document
+			//! or the user's camera.
+			//!
+			//! MUTUALLY EXCLUSIVE with `isolate` (which owns the camera and the
+			//! visibility), with `view` and with an explicit `camera` -- see
+			//! ZoomConflictMessage.  Needs a PINHOLE active camera.  The scene
+			//! camera's REALIZED up (its own roll included) is kept.
+			//!
+			//! FAILS the render (res.ok=false, no `zoom` block, message names the
+			//! alternative) when: the name is unknown or not independently
+			//! renderable (available names listed -- the `isolate` contract); the
+			//! object is NOT IN VIEW of the scene camera (its surface-point centre
+			//! is behind the camera, or past the frame edge by more than the 10%
+			//! margin the inventory's zoom hint also applies, to a different point
+			//! (the largest object's bbox centre) -- DirectionInSceneView);
+			//! any point of its surface lies on or behind the plane through the eye
+			//! (the camera is inside or beside it -- a floor or room around the
+			//! camera); or its extent is degenerate or unbounded.
+			//!
+			//! BUILD CHECKLIST: like `isolate`, a zoom render is an inspection look
+			//! at one object, so it is NOT held behind the compose-phase build
+			//! checklist.  Accepted loophole, documented rather than closed: the
+			//! gate runs before the camera is solved, so a zoom on an object that
+			//! fills the frame (and so keeps the scene fov) is a near-full-scene
+			//! frame that is not refused -- but the checklist is a ONE-refusal
+			//! nudge ("after which every render proceeds"), and such a frame
+			//! carries no inventory, anchor, sceneTarget or tonal fact, so
+			//! nothing else is bypassed.  TONAL FACT: not attached to a zoom frame (a close crop of
+			//! one object would read as a statement about the scene's picture).
+			std::string          zoom;
 			//! G3b (2026-08-10, "the sketch comparison"): OPTIONAL name of a
 			//! element in the CURRENTLY FILED build plan (see FileBuildPlan /
 			//! ElementSketches).  "" (default) = no comparison, the render
@@ -1342,6 +1390,45 @@ namespace RISE
 			double                     isolateLongestEdge = 0.0;
 			bool                       isolateAutoFramed = false;
 			double                     isolateBBoxCoverage = -1.0;
+			//! Doc 91 V1 (2026-10-17): what the isolate fit (and the coverage
+			//! figure above) was computed from.  "surface" = points ON the
+			//! object's real geometry (a tessellation, transformed to world --
+			//! `isolateSurfacePointCount` of them, gathered in
+			//! `isolateFitMillis`); in that case `isolateBBoxCoverage` is the
+			//! frame fraction of the projected bounds of THOSE points (still an
+			//! upper bound on the silhouette, but not inflated by the
+			//! geometry's conservative bounds or by rotating a local box into
+			//! world axes).  "bbox" = no surface points were available (a CSG
+			//! composite, an infinite plane, a geometry that cannot tessellate)
+			//! and the world AABB corners were fitted, exactly as before V1.
+			//! Empty when no isolate render ran.
+			std::string                isolateFitBasis;
+			unsigned int               isolateSurfacePointCount = 0;
+			double                     isolateFitMillis = 0.0;
+			//! Doc 91 V2: the measured facts of a `zoom` render.  `zoomApplied`
+			//! is true iff the zoom camera was solved and applied; it gates the
+			//! whole `zoom` block on the wire together with `ok`, for the same
+			//! reason `isolateApplied` does.  `zoomFovDegrees` is the vertical
+			//! fov the render used, `zoomSceneFovDegrees` the scene camera's own;
+			//! `zoomKeptSceneFov` is true when the object already fills the
+			//! frame at the scene fov so it was not narrowed.  `zoomCoverage` is
+			//! the frame fraction of the projected bounds of the object's
+			//! surface points through the camera that rendered (-1 = not
+			//! computed), an upper bound on its silhouette exactly like
+			//! `isolateBBoxCoverage`.  `zoomFitBasis`/`zoomSurfacePointCount`/
+			//! `zoomFitMillis` mirror the isolate trio.
+			bool                       zoomApplied = false;
+			std::string                zoomObject;
+			double                     zoomFovDegrees = 0.0;
+			double                     zoomSceneFovDegrees = 0.0;
+			bool                       zoomKeptSceneFov = false;
+			double                     zoomCoverage = -1.0;
+			//! The eye the zoom render used (the scene camera's real, post-orbit
+			//! position -- unchanged by the zoom, reported so that is checkable).
+			double                     zoomEye[3] = { 0.0, 0.0, 0.0 };
+			std::string                zoomFitBasis;
+			unsigned int               zoomSurfacePointCount = 0;
+			double                     zoomFitMillis = 0.0;
 			//! G3b (2026-08-10): the measured facts of a `target` comparison
 			//! -- the isolated object's rendered silhouette against the
 			//! element's filed sketch.  ALL default to the "no comparison
@@ -4240,6 +4327,15 @@ namespace RISE
 			//! render for a direct C++ caller that bypassed the wire), so a
 			//! caller cannot be told the requirement two different ways.
 			static std::string TargetRequiresIsolateMessage( const std::string& target );
+
+			//! Doc 91 V2: the ONE sentence for `zoom` combined with a param that
+			//! also owns the camera (`isolate`, `view`, an explicit `camera`
+			//! override).  Returns "" when `params` has no conflict (including
+			//! when `zoom` is empty).  Decidable with no live scene, so the RPC
+			//! layer rejects with it as a clean -32602 and RenderCore_ fails the
+			//! render with the same text for a direct C++ caller -- the
+			//! TargetRequiresIsolateMessage shared-validator discipline.
+			static std::string ZoomConflictMessage( const AgentRenderParams& params );
 
 			//! Has the gate refused at least one call in this session?
 			//! Observation only.  True from the FIRST refusal onward, whether
@@ -7650,10 +7746,11 @@ namespace RISE
 			//! mutation of the derived Scene -- it does NOT touch the CST
 			//! Document; see Job::SetFilm / ScaleFilmToFit), Rasterize, then
 			//! SetFilm back to the captured dims.  Camera override: capture
-			//! every requested field's CURRENT value via
-			//! CameraIntrospection::GetPropertyValue, SetProperty the
-			//! overrides onto the ACTIVE camera, Rasterize, then SetProperty
-			//! every captured field back.  Restoration is RAII-guarded (an
+			//! every requested field's CURRENT value bit-exactly
+			//! (CameraIntrospection::CaptureExactValue), SetProperty the
+			//! overrides onto the ACTIVE camera, Rasterize, then put every
+			//! captured field back with RestoreExactValue (a formatted string
+			//! through SetProperty only for a field with no exact form).  Restoration is RAII-guarded (an
 			//! internal RenderOverrideRestoreGuard, see AgentSession.cpp) so
 			//! it runs on EVERY exit from the render window -- including an
 			//! exception unwinding out of Rasterize() itself (OIDN denoise is
@@ -8935,9 +9032,20 @@ namespace RISE
 			//! inventoryApplied for the qualification rule.  A no-op for
 			//! every render that does not qualify, so a non-qualifying call
 			//! is byte-identical to before this mechanism existed.
+			//!
+			//! Doc 91 V2 reach: `attribution` is the dispatcher-thread chunk ->
+			//! element ledger SNAPSHOT the caller took at submission (never the
+			//! live member -- this runs on the async worker too).  When it names
+			//! plan elements whose objects cover under ~1% of a full-frame
+			//! PRODUCTION render in total, ONE sentence is appended to the
+			//! inventory text naming up to three of them with their measured
+			//! coverage and the `render{zoom:}` call that shows each at full
+			//! resolution.  Null / empty (no plan) -> no sentence.
+			struct ChunkAttribution_;   // defined below (hoisted there for RevisionSnapshot_); only a pointer to it appears here
 			void ApplyVisibilityCensus_( const AgentRenderParams& params,
 			                              AgentRenderResult& rr,
-			                              bool assumeParked );
+			                              bool assumeParked,
+			                              const std::vector<ChunkAttribution_>* attribution = nullptr );
 
 			//! Arc 81 (2026-08-12): attach the TONAL FACT to a render result
 			//! that qualifies for it -- see AgentRenderResult::tonalApplied

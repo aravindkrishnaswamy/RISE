@@ -1,7 +1,8 @@
 # 91 — Context lifetimes and visible detail
 
 Status: L1–L3 (context) SHIPPED 2026-10-17 (branch `context-lifetimes`; see
-§2 "As shipped"); V1–V2 (visible detail) in progress
+§2 "As shipped"); V1–V2 (visible detail) SHIPPED (branch `visible-detail`; see
+§3.1 "As built")
 Evidence base: trajectories `20261017T011539Z-71dd70e7` (apothecary) and
 `20261017T133602Z-dbe83160` (dragons/wizards), both gemini-4-argon, the
 default model since `0aa14cf8`.  Measured with `tools/trajectory_census.py`.
@@ -212,6 +213,75 @@ failing.
   ("`cat` covers 0.4% of this frame — render{zoom:...} shows it at full
   resolution from this camera").  Advisory, self-disarming, no number to
   chase.
+
+### 3.1 As built (V1, V2)
+
+- **V1.** `render{isolate:}` (and so `finish_element`'s close-up) gathers
+  world-space points on the object's real surface -- the vertices of its
+  geometry's tessellation (SDF/skeleton: 48 cells along the longest axis;
+  primitives: 32 segments; meshes as authored; capped at 24k points) -- and
+  fits THEM (`IsolateFitPoints`): the perspective generalisation of the old
+  8-corner fit, with the aim refined to the centre of the projected extent
+  rather than the 3D box centre.  CSG composites, infinite planes and any
+  geometry that cannot tessellate fall back to the old AABB-corner fit
+  (`isolate.fitBasis` says which).  The scene camera's own `orientation` /
+  `target_orientation` are cleared for the render (they were applied ON TOP
+  of the override and swung the aim off the object).  Measured on the exact
+  objectmap pixel share of the isolated frame: rotated elongated creature
+  0.038 -> 0.300, smin blob (draft panel) 0.083 -> 0.484, box 0.402 -> 0.529;
+  gather + fit 7-15 ms.  Side finding: the pinned finish_element coverage
+  arms measured the two-panel composite and had been vacuous (~0.95-0.99 for
+  any fit) since the material-look panel was added; they now crop to the
+  draft panel.
+- **V2.** `render{zoom:"<object>"}` keeps the scene camera's real (post-orbit)
+  eye, aims at the surface-point extent's centre and narrows the vertical fov
+  to fit at the same 0.85 fill (floor 2 deg; never wider than the scene fov --
+  an object that already fills the frame keeps it and the result says so).
+  Nothing is hidden.  Exclusive with `isolate`, `view` and `camera`; pinhole
+  only.  A zoom render carries no scene inventory, anchor or scene-target
+  comparison (its camera is not the reconstructable one).  The result's
+  `zoom` block: `object`, `eye`, `fovDegrees`, `sceneFovDegrees`,
+  `keptSceneFov`, `coverage`, `fitBasis`.  Reach: the production inventory
+  appends one sentence naming up to three plan elements whose objects cover
+  under 1% of the frame in total.
+- **Camera restore.** An override render (`view`, `camera`, `isolate`,
+  `zoom`) captures the active camera's pose fields bit-exactly
+  (`CameraIntrospection::CaptureExactValue`: the stored doubles, radians)
+  and puts them back with `RestoreExactValue`.  Capturing through the
+  panel's `%.6g` strings (and degrees) used to round the live camera away
+  from the document on every override render.
+  `SetProperty("target_orientation")` also accepts the two-component form
+  `GetPropertyValue` emits, so the string fallback can write back what it
+  captured.
+- **Zoom's refusals (all `ok:false`, no `zoom` block).** Unknown or
+  non-renderable name (names listed); a conflict with `isolate`/`view`/
+  `camera`, or a non-pinhole active camera; the object **not in view** of
+  the scene camera -- its surface centre behind the camera, or more than
+  10% past the frame edge (`DirectionInSceneView`, applied to the solved
+  surface-extent centre; the inventory hint applies the same test to a
+  different point); any surface point on or behind the plane through the eye
+  (a floor or room around the camera); a degenerate or unbounded extent.
+  The zoom keeps the scene camera's *realized* up (its own roll), read from
+  the projection matrix; a line of sight parallel to that up falls back to
+  the camera's realized screen-right, never a fixed world axis.  The
+  inventory's hint only names elements whose largest object's world-bbox
+  centre passes the same in-view test -- the same test on a different point
+  than zoom uses, so the two can differ for an element near the margin.
+- **Thin SDF parts.** The 48-cell SDF grid misses features whose
+  cross-section is about a cell or less, so `SDFGeometry::GetThinPartPoints`
+  reports UNPADDED points bounding every additive part's thin portion
+  (threshold 1.5 cells): a thin sphere/box/cylinder/capsule contributes its
+  primitive box corners; a torus with a thin tube contributes samples around
+  the ring centreline and rim (not its huge box); a roundcone is classified
+  per end -- a thin cap sphere plus the cross-section where the radius
+  reaches half the threshold -- so a needle tip and the thin run before it
+  are bounded.  Known gap: a thin union part wholly inside a later
+  subtract/intersect is still reported.
+- **Gates.** A zoom render, like an isolate one, is an inspection look: it
+  is not held behind the compose-phase build checklist.  No tonal fact is
+  attached to a zoom frame (a close crop would read as a statement about
+  the scene's picture), and no inventory, anchor or scene-target comparison
+  either.
 
 ## 4. Measurement
 

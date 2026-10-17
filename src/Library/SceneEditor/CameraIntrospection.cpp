@@ -699,8 +699,19 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 	}
 	else if( n == "target_orientation" ) {
 		Scalar x, y, z;
-		if( !ParseVec3( value, x, y, z ) ) return false;
-		// Stored as Vec2; only x/y are used.  Convert from degrees.
+		// Stored as Vec2; only x/y are used.  Convert from degrees.  Accept
+		// BOTH spellings: the 3-component form the scene language and the
+		// agent's camera override use ("x y 0"), and the 2-component form this
+		// property's OWN GetPropertyValue emits (DoubleVec2).  Rejecting the
+		// latter made a captured value impossible to write back, so any
+		// capture-set-render-restore sequence that overrode target_orientation
+		// (the agent's `view`/`isolate`/`zoom` renders) left the override in
+		// place on the camera afterwards.
+		if( ParseVec3( value, x, y, z ) ) {
+			// ok
+		} else if( std::sscanf( value.c_str(), "%lf %lf", &x, &y ) != 2 ) {
+			return false;
+		}
 		cam->SetTargetOrientation( Vector2( x * DEG_TO_RAD, y * DEG_TO_RAD ) );
 	}
 	else if( n == "theta" ) {
@@ -910,6 +921,44 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 // the discriminator and calls the matching `IJob::Add*Camera`.  See
 // CameraIntrospection.h for the contract.
 // -------------------------------------------------------------------
+
+bool CameraIntrospection::CaptureExactValue( const ICamera& camera, const String& name, double out[3] )
+{
+	const CameraCommon* cam = dynamic_cast<const CameraCommon*>( &camera );
+	if( !cam ) return false;
+	const std::string n( name.c_str() );
+	out[0] = out[1] = out[2] = 0.0;
+	if( n == "location" )  { const Point3  p = cam->GetRestLocation();       out[0] = p.x; out[1] = p.y; out[2] = p.z; return true; }
+	if( n == "lookat" )    { const Point3  p = cam->GetStoredLookAt();       out[0] = p.x; out[1] = p.y; out[2] = p.z; return true; }
+	if( n == "up" )        { const Vector3 v = cam->GetStoredUp();           out[0] = v.x; out[1] = v.y; out[2] = v.z; return true; }
+	if( n == "orientation" ) { const Vector3 v = cam->GetEulerOrientation(); out[0] = v.x; out[1] = v.y; out[2] = v.z; return true; }
+	if( n == "target_orientation" ) { const Vector2 v = cam->GetTargetOrientation(); out[0] = v.x; out[1] = v.y; return true; }
+	if( n == "fov" ) {
+		if( const PinholeCamera* p = dynamic_cast<const PinholeCamera*>( cam ) ) { out[0] = p->GetFovStored(); return true; }
+		return false;
+	}
+	return false;
+}
+
+bool CameraIntrospection::RestoreExactValue( ICamera& camera, const String& name, const double in[3] )
+{
+	CameraCommon* cam = dynamic_cast<CameraCommon*>( &camera );
+	if( !cam ) return false;
+	const std::string n( name.c_str() );
+	if( n == "location" )         cam->SetLocation( Point3( in[0], in[1], in[2] ) );
+	else if( n == "lookat" )      cam->SetLookAt( Point3( in[0], in[1], in[2] ) );
+	else if( n == "up" )          cam->SetUp( Vector3( in[0], in[1], in[2] ) );
+	else if( n == "orientation" ) cam->SetEulerOrientation( Vector3( in[0], in[1], in[2] ) );
+	else if( n == "target_orientation" ) cam->SetTargetOrientation( Vector2( in[0], in[1] ) );
+	else if( n == "fov" ) {
+		PinholeCamera* p = dynamic_cast<PinholeCamera*>( cam );
+		if( !p ) return false;
+		p->SetFovStored( in[0] );
+	}
+	else return false;
+	cam->RegenerateData();
+	return true;
+}
 
 bool CameraIntrospection::CaptureCameraSnapshot( const ICamera& camera, CameraSnapshot& out )
 {

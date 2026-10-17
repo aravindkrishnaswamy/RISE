@@ -137,6 +137,22 @@ namespace RISE
 		static String GetPropertyValue( const ICamera& camera,
 		                                const String& name );
 
+		//! BIT-EXACT capture / restore of the pose fields a transient
+		//! override (the agent's `view` / `camera` / `isolate` / `zoom`
+		//! renders) touches: "location" (the REST position, pre-orbit),
+		//! "lookat", "up", "orientation", "target_orientation" and (pinhole)
+		//! "fov".  The values are the camera's STORED doubles in their native
+		//! units (radians for the angles) -- no string formatting, no degree
+		//! round trip -- so capture -> override -> restore leaves the live
+		//! camera exactly as it was.  GetPropertyValue/SetProperty cannot do
+		//! that: they format with `%.6g` and convert through degrees, which is
+		//! right for a panel and wrong for "put it back".  `out` / `in` hold
+		//! up to three components (target_orientation uses two, fov one).
+		//! Returns false for any other name or a camera that cannot carry the
+		//! field; RestoreExactValue regenerates the camera's derived data.
+		static bool CaptureExactValue( const ICamera& camera, const String& name, double out[3] );
+		static bool RestoreExactValue( ICamera& camera, const String& name, const double in[3] );
+
 		//! Snapshot every field of the camera into a value-typed
 		//! struct.  Used by `SceneEdit::AddCamera` so Redo can
 		//! deterministically recreate the new camera even after the

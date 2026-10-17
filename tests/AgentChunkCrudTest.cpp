@@ -6732,6 +6732,26 @@ static double NonBackgroundFraction( const DecodedLuma& d, double eps = 0.02 )
 	return static_cast<double>( count ) / static_cast<double>( d.luma.size() );
 }
 
+//! The left (draft) panel of a finish_element composite: the first `d.h`
+//! columns (the panels are square).
+static DecodedLuma LeftPanelOf( const DecodedLuma& d )
+{
+	DecodedLuma out;
+	if( d.w == 0 || d.h == 0 ) return out;
+	// Precondition (the fixtures here are square): the composite is two SQUARE
+	// panels and a small gap, i.e. h <= w <= 2h + 16.  A different layout would
+	// make "the first h columns" the wrong crop, so fail loudly rather than
+	// silently measure it.
+	Check( d.w > d.h && d.w <= 2 * d.h + 16, "LeftPanelOf precondition: the composite is two square panels side by side" );
+	out.w = ( d.h < d.w ) ? d.h : d.w;
+	out.h = d.h;
+	out.luma.resize( (std::size_t)out.w * out.h );
+	for( unsigned int y = 0; y < out.h; ++y )
+		for( unsigned int x = 0; x < out.w; ++x )
+			out.luma[(std::size_t)y * out.w + x] = d.luma[(std::size_t)y * d.w + x];
+	return out;
+}
+
 //! A tiny dedicated scene (no pre-existing objects/lights beyond camera +
 //! one directional key) for GS1b's flat-vs-bumpy comparison.  Camera
 //! looks STRAIGHT DOWN (-Y) from close range at a NARROW fov chosen so
@@ -12135,13 +12155,21 @@ static void TestFinishElementIsolateCoverage()
 
 	DecodedLuma luma;
 	Check( DecodeRenderLuma( f.png, luma ), "S1-COVERAGE the image decodes" );
-	const double frac = NonBackgroundFraction( luma );
-	std::printf( "S1-COVERAGE: finish_element isolate non-background fraction = %.4f (dims %ux%u)\n",
+	// V1 (doc 91): the LEFT (draft) panel only -- the composite's right panel is
+	// a studio-lit render whose whole frame differs from its corner luma, so the
+	// whole-composite fraction read ~0.95 for any fit (see TestIsolateFitsSurfaceNotBox).
+	const double frac = NonBackgroundFraction( LeftPanelOf( luma ) );
+	std::printf( "S1-COVERAGE: finish_element isolate (draft panel) non-background fraction = %.4f (composite dims %ux%u)\n",
 	             frac, luma.w, luma.h );
 	Check( frac >= 0.25,
 	       "S1-COVERAGE MONEY ASSERTION: the isolated part fills a SUBSTANTIAL fraction of the frame "
 	       "(>=25%, see the fitted-fov derivation above) -- not the ~1% (measured) a scene-camera-sized "
 	       "render of the same small off-center object would give" );
+	// V1 (doc 91): measured on the DRAFT panel, the old AABB-corner fit read 0.4015
+	// here and the surface fit reads 0.5289 (the aim moves to the projected
+	// extent's centre).  0.45 sits between the two.
+	Check( frac >= 0.45,
+	       "S1-COVERAGE (V1): the surface fit frames the box tighter than the AABB-corner fit did (>=45%; old 0.4015)" );
 
 	// The COMPARISON case, kept as a live measurement rather than a
 	// hardcoded number: the SAME isolate, but with the scene's own
@@ -12257,14 +12285,433 @@ static void TestFinishElementIsolateCoverage()
 
 		DecodedLuma luma2;
 		Check( DecodeRenderLuma( f2.png, luma2 ), "S1-COVERAGE/sdf the image decodes" );
-		const double frac2 = NonBackgroundFraction( luma2 );
-		std::printf( "S1-COVERAGE/sdf: smin-blend isolate non-background fraction = %.4f (dims %ux%u)\n",
+		const double frac2 = NonBackgroundFraction( LeftPanelOf( luma2 ) );
+		std::printf( "S1-COVERAGE/sdf: smin-blend isolate (draft panel) non-background fraction = %.4f (composite dims %ux%u)\n",
 		             frac2, luma2.w, luma2.h );
+		// V1 (doc 91): this arm used to measure the whole composite (~0.99 for any
+		// fit -- the 0.055 floor below was written before the second panel existed
+		// and has been vacuous since).  On the DRAFT panel the old AABB-corner fit
+		// measured 0.0826 and the surface fit measures 0.4844; 0.30 sits well
+		// between, so this arm discriminates again.
+		Check( frac2 >= 0.30,
+		       "S1-COVERAGE/sdf (V1): a SMIN-BLENDED SDF element fills >= 30% of the draft panel "
+		       "(surface fit 0.4844; the old AABB-corner fit read 0.0826)" );
 		Check( frac2 >= 0.055,
 		       "S1-COVERAGE/sdf MONEY ASSERTION: a SMIN-BLENDED SDF element fills the frame too -- "
 		       "the pre-fix ComputeBounds padded the running box by the FULL k once per smin part "
 		       "(vs the k/4-per-chain the sminP formula actually allows), and the auto-framer fitted "
 		       "that inflated box instead of the geometry" );
+	}
+}
+
+//----------------------------------------------------------------------
+// DOC 91 V1 (2026-10-17): THE CLOSE-UP FITS THE SURFACE, NOT THE BOX.
+//
+// Everything above measures finish_element's two-panel composite, and that
+// number has been MEANINGLESS for the SDF arm since the composite grew a
+// material-look panel: the right panel is a studio-lit render whose whole
+// frame differs from its corner luma, so the non-background fraction of the
+// COMPOSITE reads ~0.99 for ANY fit.  (The arm's own comment pins 0.0826 /
+// floor 0.055 -- both from before that panel existed.)  Two things follow:
+//   * the finish_element arms above now crop to the LEFT (draft) panel, which
+//     has the flat background the measure assumes, and their floors were
+//     re-measured there; and
+//   * the V1 fixture below measures the isolated object's EXACT pixel share
+//     of the frame with an objectmap render -- no luma threshold, no panel
+//     layout, no background assumption.
+//
+// THE FIXTURE is the shape that failed in reality: an ELONGATED creature
+// (a superellipsoid body, a smin-blended head, two ears, a tail, four legs)
+// with a conservatively padded SDF bound, rotated off every axis and parked
+// off-origin.  The old fit handed the world AABB of the already-transformed
+// local box to an 8-corner perspective fit: the box is bigger than the
+// creature (the SDF pad) and re-AABBing it after a 3-axis rotation adds the
+// rotation's slack on top, so the creature filled a fraction of the frame
+// the box fixtures never showed.
+//----------------------------------------------------------------------
+
+//! EXACT share of the frame covered by `object`, from an auto-framed isolate
+//! objectmap render at the agent edge cap.  Returns a negative number if the
+//! render or the legend lookup failed.  `outResult` receives the render result
+//! (basis, coverage, timing) when non-null.
+static double IsolatedObjectPixelShare( Agent::AgentSession* sess, const char* object,
+                                        Agent::AgentRenderResult* outResult = nullptr )
+{
+	Agent::AgentRenderParams p;
+	p.isolate          = object;
+	p.renderTarget     = Agent::AgentRenderTarget::ObjectMap;
+	p.fromAgentSurface = true;
+	p.width            = Agent::kAgentSurfaceMaxRenderEdge;
+	p.height           = Agent::kAgentSurfaceMaxRenderEdge;
+	const Agent::AgentRenderResult r = sess->Render( p );
+	if( outResult ) *outResult = r;
+	if( !r.ok || r.width == 0 || r.height == 0 ) return -1.0;
+	for( std::size_t i = 0; i < r.legend.size(); ++i )
+		if( r.legend[i].name == object )
+			return static_cast<double>( r.legend[i].pixelCount ) /
+			       static_cast<double>( (std::size_t)r.width * r.height );
+	return -1.0;
+}
+
+static void TestIsolateFitsSurfaceNotBox()
+{
+	std::printf( "V1: the isolate close-up fits the object's SURFACE (rotated, elongated, padded-bounds creature)...\n" );
+	const std::string tmp = TempPath( "agentcrud_v1_surface_fit.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "V1 fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "V1 the plan files" );
+
+	std::vector<std::string> chunks;
+	chunks.push_back(
+		"sdf_geometry\n{\n\tname v1_cat\n"
+		// <prim> <op> <k>  <px py pz>  <ex ey ez>  <sx sy sz>  <a b c>  <round>
+		// body: a long superellipsoid, ~0.5 x 0.2 x 0.25 in the local frame
+		"\tpart superellipsoid union 0.0    0.00  0.00  0.00   0 0 0    1.9 0.75 0.95   0.14 0.6 0.6   0\n"
+		// head, ahead of the body along +X
+		"\tpart superellipsoid smin  0.030  0.30  0.06  0.00   0 0 0    1 1 1           0.085 0.8 0.8   0\n"
+		// ears
+		"\tpart roundcone smin 0.012       0.32  0.11  0.05   0 0 0    1 1 1           0.030 0.006 0.070 0\n"
+		"\tpart roundcone smin 0.012       0.32  0.11 -0.05   0 0 0    1 1 1           0.030 0.006 0.070 0\n"
+		// tail, trailing behind and curving up
+		"\tpart capsule smin 0.020        -0.34  0.07  0.00   0 0 55   1 1 1           0.022 0.120 0     0\n"
+		// legs
+		"\tpart capsule smin 0.015         0.17 -0.12  0.07   0 0 0    1 1 1           0.028 0.070 0     0\n"
+		"\tpart capsule smin 0.015         0.17 -0.12 -0.07   0 0 0    1 1 1           0.028 0.070 0     0\n"
+		"\tpart capsule smin 0.015        -0.17 -0.12  0.07   0 0 0    1 1 1           0.028 0.070 0     0\n"
+		"\tpart capsule smin 0.015        -0.17 -0.12 -0.07   0 0 0    1 1 1           0.028 0.070 0     0\n"
+		"}" );
+	// Rotated off every axis and parked off the camera axis, so the world AABB
+	// of the local box carries the rotation's slack on all three axes.
+	chunks.push_back( "standard_object\n{\n\tname v1_cat_obj\n\tgeometry v1_cat\n\tmaterial mat_diffuse\n"
+	                  "\tposition 0.7 0.3 0\n\torientation 14 -40 9\n}" );
+	const std::vector<Agent::AgentChunkResult> ins = sess->InsertChunks( chunks );
+	Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "V1 both chunks land" );
+	for( std::size_t ci = 0; ci < ins.size(); ++ci )
+		if( !ins[ci].applied )
+			std::printf( "V1: chunk %u (%s `%s`) refused: %s\n", (unsigned)ci,
+			             ins[ci].kind.c_str(), ins[ci].name.c_str(), ins[ci].message.c_str() );
+
+	Agent::AgentRenderResult r;
+	const double share = IsolatedObjectPixelShare( sess.get(), "v1_cat_obj", &r );
+	Check( share >= 0.0, std::string( "V1 the isolate objectmap render succeeds: " ) + r.message );
+	std::printf( "V1: creature pixel share of the isolated frame = %.4f  (fitBasis=%s, %u surface points, "
+	             "gather+fit %.2f ms, reported bboxCoverage %.4f)\n",
+	             share, r.isolateFitBasis.c_str(), r.isolateSurfacePointCount, r.isolateFitMillis,
+	             r.isolateBBoxCoverage );
+
+	// MONEY ASSERTION.  The floor comes from MEASUREMENT on this fixture (see the
+	// commit log for the old-fit number the same fixture gives): the old
+	// world-AABB fit left this creature at a fraction of the frame, the surface
+	// fit puts it at a readable share.  An elongated body in a square frame is
+	// width-limited, so the share is well below the box arm's 0.40 -- the number
+	// that carries meaning is fixed-vs-unfixed on THIS fixture.
+	Check( r.isolateFitBasis == "surface",
+	       "V1 the fit used points on the creature's real surface, not its box" );
+	Check( r.isolateSurfacePointCount > 500,
+	       "V1 the gathered surface is a real tessellation, not a handful of corners" );
+	Check( share >= 0.19,
+	       "V1 MONEY ASSERTION: the rotated, elongated creature covers >= 19% of the isolated frame "
+	       "(exact objectmap tally) -- the old AABB-corner fit measured far below this" );
+	// The surface fit is an inner bound the creature must still fit inside:
+	// kIsolateFrameFill is 0.85 of each half-extent, so the projected surface
+	// bounds can never exceed 0.85^2 of the frame.
+	Check( r.isolateBBoxCoverage > 0.0 && r.isolateBBoxCoverage <= 0.85 * 0.85 + 1e-6,
+	       "V1 the reported coverage is the projected surface bounds, at most the fill squared" );
+	Check( share <= r.isolateBBoxCoverage + 1e-6,
+	       "V1 and it bounds the exact silhouette from above (an AABB of the surface contains it)" );
+	// Cost.  Reported, with a generous guard against a pathological regression
+	// (the measurement is in the commit log; this only trips on a 10x blow-up).
+	Check( r.isolateFitMillis < 1500.0,
+	       "V1 gathering + fitting the surface points stays cheap (guard, not a benchmark)" );
+
+	// A SKELETON body (a quadruped joint graph -> one sdf_geometry of roundcones): the
+	// same fit, a different authoring route, and the heaviest tessellation of the
+	// fixtures here (17 joints -> 16 bones), so it carries the cost figure.
+	{
+		std::vector<std::string> sk;
+		sk.push_back(
+			"skeleton_geometry\n{\n\tname v1_skel\n"
+			"\tjoint hip none 0 0 0 0.10\n"
+			"\tjoint spine hip 0.20 0.02 0 0.09\n"
+			"\tjoint chest spine 0.40 0.05 0 0.11\n"
+			"\tjoint neck chest 0.52 0.16 0 0.05\n"
+			"\tjoint head neck 0.60 0.20 0 0.07\n"
+			"\tjoint snout head 0.70 0.18 0 0.03\n"
+			"\tjoint tail1 hip -0.18 0.02 0 0.05\n"
+			"\tjoint tail2 tail1 -0.38 0.10 0 0.04\n"
+			"\tjoint tail3 tail2 -0.55 0.22 0 0.025\n"
+			"\tjoint fl_up chest 0.38 -0.10 0.08 0.04\n"
+			"\tjoint fl_dn fl_up 0.38 -0.30 0.08 0.025\n"
+			"\tjoint fr_up chest 0.38 -0.10 -0.08 0.04\n"
+			"\tjoint fr_dn fr_up 0.38 -0.30 -0.08 0.025\n"
+			"\tjoint bl_up hip 0.0 -0.10 0.08 0.04\n"
+			"\tjoint bl_dn bl_up 0.0 -0.30 0.08 0.025\n"
+			"\tjoint br_up hip 0.0 -0.10 -0.08 0.04\n"
+			"\tjoint br_dn br_up 0.0 -0.30 -0.08 0.025\n"
+			"}" );
+		sk.push_back( "standard_object\n{\n\tname v1_skel_obj\n\tgeometry v1_skel\n\tmaterial mat_diffuse\n"
+		              "\tposition -0.7 0.4 0\n\torientation 10 35 -8\n}" );
+		const std::vector<Agent::AgentChunkResult> si = sess->InsertChunks( sk );
+		bool landed = si.size() == 2 && si[0].applied && si[1].applied;
+		for( std::size_t i = 0; i < si.size(); ++i )
+			if( !si[i].applied )
+				std::printf( "V1: skeleton chunk %u (%s `%s`) refused: %s\n", (unsigned)i,
+				             si[i].kind.c_str(), si[i].name.c_str(), si[i].message.c_str() );
+		Check( landed, "V1 the skeleton fixture lands" );
+		if( landed ) {
+			Agent::AgentRenderResult sr;
+			const double sshare = IsolatedObjectPixelShare( sess.get(), "v1_skel_obj", &sr );
+			std::printf( "V1: skeleton body pixel share = %.4f (fitBasis=%s, %u surface points, gather+fit %.2f ms, "
+			             "reported bboxCoverage %.4f)\n", sshare, sr.isolateFitBasis.c_str(),
+			             sr.isolateSurfacePointCount, sr.isolateFitMillis, sr.isolateBBoxCoverage );
+			Check( sr.ok && sr.isolateFitBasis == "surface", "V1 the skeleton body is fitted by its surface" );
+			// Thin legs and a tail make a skeleton's silhouette sparse in its own
+			// rectangle, so the share is far below the blob's; measured old fit
+			// 0.0368 against 0.0918 for the surface fit.
+			Check( sshare >= 0.07,
+			       "V1 MONEY ASSERTION: a rotated quadruped skeleton covers >= 7% of its isolated frame (old fit 0.0368)" );
+			Check( sr.isolateFitMillis < 1500.0, "V1 the skeleton's gather + fit stays cheap (guard)" );
+		}
+	}
+
+	// The other side of the contract: a BOX fits at least as well as it did.
+	double plainBoxShare = -1.0;
+	{
+		std::vector<std::string> bx;
+		bx.push_back( "box_geometry\n{\n\tname v1_box\n\twidth 0.2\n\theight 0.2\n\tdepth 0.2\n}" );
+		bx.push_back( "standard_object\n{\n\tname v1_box_obj\n\tgeometry v1_box\n\tmaterial mat_diffuse\n"
+		              "\tposition 0.9 -0.5 0\n}" );
+		const std::vector<Agent::AgentChunkResult> bi = sess->InsertChunks( bx );
+		Check( bi.size() == 2 && bi[0].applied && bi[1].applied, "V1 the box control lands" );
+		Agent::AgentRenderResult br;
+		const double bshare = IsolatedObjectPixelShare( sess.get(), "v1_box_obj", &br );
+		plainBoxShare = bshare;
+		std::printf( "V1: box control pixel share = %.4f (fitBasis=%s)\n", bshare, br.isolateFitBasis.c_str() );
+		// Measured: the old AABB-corner fit left this box at 0.4015 (the aim sat at
+		// the 3D box centre, off the projected extent's centre); the surface fit
+		// re-aims at the projected extent and measures 0.5289.
+		Check( bshare >= 0.45, "V1 a plain box fills >= 45% of its isolated frame (old fit 0.4015)" );
+	}
+
+	// A CSG composite has no single geometry to tessellate: the AABB fallback
+	// must still produce a framed render, say so, and not fail.
+	{
+		std::vector<std::string> cs;
+		cs.push_back( "box_geometry\n{\n\tname v1_opa\n\twidth 0.3\n\theight 0.3\n\tdepth 0.3\n}" );
+		cs.push_back( "sphere_geometry\n{\n\tname v1_opb\n\tradius 0.2\n}" );
+		cs.push_back( "standard_object\n{\n\tname v1_op_a\n\tgeometry v1_opa\n\tmaterial mat_diffuse\n\tposition -0.9 -0.5 0\n}" );
+		cs.push_back( "standard_object\n{\n\tname v1_op_b\n\tgeometry v1_opb\n\tmaterial mat_diffuse\n\tposition -0.8 -0.4 0\n}" );
+		cs.push_back( "csg_object\n{\n\tname v1_comp\n\tobja v1_op_a\n\tobjb v1_op_b\n\toperation union\n\tmaterial mat_diffuse\n}" );
+		const std::vector<Agent::AgentChunkResult> ci2 = sess->InsertChunks( cs );
+		bool allLanded = !ci2.empty();
+		for( std::size_t i = 0; i < ci2.size(); ++i ) {
+			if( !ci2[i].applied ) {
+				allLanded = false;
+				std::printf( "V1: csg chunk %u (%s `%s`) refused: %s\n", (unsigned)i,
+				             ci2[i].kind.c_str(), ci2[i].name.c_str(), ci2[i].message.c_str() );
+			}
+		}
+		if( allLanded ) {
+			Agent::AgentRenderResult cr;
+			const double cshare = IsolatedObjectPixelShare( sess.get(), "v1_comp", &cr );
+			std::printf( "V1: csg composite pixel share = %.4f (fitBasis=%s)\n", cshare, cr.isolateFitBasis.c_str() );
+			Check( cr.ok && cr.isolateFitBasis == "bbox",
+			       "V1 a CSG composite falls back to the bounding box and still renders" );
+			Check( cshare >= 0.10, "V1 and the fallback framing still fills the frame readably" );
+		}
+	}
+
+	// Inherited camera orientation must not swing the aim off the object.  The
+	// same creature, but the SCENE camera carries `orientation` and
+	// `target_orientation`: the isolate camera overrides only location /
+	// lookat / up, and the camera applies those two ON TOP.
+	{
+		const std::string tmp2 = TempPath( "agentcrud_v1_orient.RISEscene" );
+		std::string scene2 = kScene;
+		const std::string cam = "pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}";
+		const std::size_t at = scene2.find( cam );
+		Check( at != std::string::npos, "V1 orientation fixture: the scene camera chunk is where expected" );
+		if( at != std::string::npos ) {
+			scene2.replace( at, cam.size(),
+				"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n"
+				"\torientation 12 8 25\n\ttarget_orientation 18 30\n}" );
+			Job* pJob2 = LoadScene( scene2.c_str(), tmp2 );
+			Check( pJob2 != nullptr, "V1 orientation fixture loads" );
+			if( pJob2 ) {
+				std::unique_ptr<Agent::AgentSession> sess2 = WrapJobGateArmed( pJob2 );
+				Check( sess2->FileBuildPlan( TwoElementPlan() ).ok, "V1 orientation: the plan files" );
+				std::vector<std::string> bx;
+				bx.push_back( "box_geometry\n{\n\tname v1o_box\n\twidth 0.2\n\theight 0.2\n\tdepth 0.2\n}" );
+				bx.push_back( "standard_object\n{\n\tname v1o_obj\n\tgeometry v1o_box\n\tmaterial mat_diffuse\n"
+				              "\tposition 0.9 -0.5 0\n}" );
+				const std::vector<Agent::AgentChunkResult> bi = sess2->InsertChunks( bx );
+				Check( bi.size() == 2 && bi[0].applied && bi[1].applied, "V1 orientation: the box lands" );
+				const double oshare = IsolatedObjectPixelShare( sess2.get(), "v1o_obj" );
+				std::printf( "V1: box pixel share under an inherited orientation/target_orientation = %.4f\n", oshare );
+				// Measured: with the inherited rotation left in place the same box
+				// reads 0.4035 against 0.5289 under a plain camera -- the aim is
+				// swung off the object and the fit wasted on empty frame.
+				Check( plainBoxShare > 0.0 && oshare >= plainBoxShare * 0.97,
+				       "V1 MONEY ASSERTION: a scene camera carrying orientation + target_orientation does not "
+				       "swing the isolate aim off the object (within 3% of the identical box under a plain camera)" );
+			}
+		}
+	}
+}
+
+//----------------------------------------------------------------------
+// DOC 91 V2 REACH (2026-10-17): the scene inventory of a full-frame production
+// render says, in ONE measured sentence, when a build-plan ELEMENT covers under
+// ~1% of the frame in total, and names the render{zoom:} call that shows it.
+//----------------------------------------------------------------------
+static void TestInventoryZoomSentence()
+{
+	std::printf( "V2-REACH: the production inventory names plan elements under 1%% of the frame and the zoom call...\n" );
+	const char* const kSentence = "PLAN ELEMENTS UNDER 1% OF THIS FRAME";
+
+	// Build a session with a two-element plan: `wizard` gets a sphere of radius
+	// `wizardRadius` (off the frame's centre, clear of the fixture's big sphere),
+	// `terrain` gets a box that covers a sizeable share of the frame.
+	auto build = [&]( const char* tag, double wizardRadius, std::unique_ptr<Agent::AgentSession>& out, const char* wizPos = "1.0 -0.9 0.5" ) -> bool {
+		const std::string tmp = TempPath( ( std::string( "agentcrud_inv_" ) + tag + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return false;
+		out = WrapJobGateArmed( pJob );
+		if( !out->FileBuildPlan( TwoElementPlan() ).ok ) return false;
+		char radius[32];
+		std::snprintf( radius, sizeof( radius ), "%.4f", wizardRadius );
+		std::vector<std::string> w;
+		w.push_back( std::string( "sphere_geometry\n{\n\tname wiz_geo\n\tradius " ) + radius + "\n}" );
+		w.push_back( std::string( "standard_object\n{\n\tname wiz_obj\n\tgeometry wiz_geo\n\tmaterial mat_diffuse\n\tposition " ) + wizPos + "\n}" );
+		const std::vector<Agent::AgentChunkResult> wi = out->InsertChunks( w );
+		if( wi.size() != 2 || !wi[0].applied || !wi[1].applied ) return false;
+		if( !out->FinishElement().ok ) return false;
+		std::vector<std::string> t;
+		t.push_back( "box_geometry\n{\n\tname terr_geo\n\twidth 1.5\n\theight 0.6\n\tdepth 0.6\n}" );
+		t.push_back( "standard_object\n{\n\tname terr_obj\n\tgeometry terr_geo\n\tmaterial mat_diffuse\n\tposition -1.0 0.9 0\n}" );
+		const std::vector<Agent::AgentChunkResult> ti = out->InsertChunks( t );
+		if( ti.size() != 2 || !ti[0].applied || !ti[1].applied ) return false;
+		return out->FinishElement().ok;
+	};
+
+	// (a) a small element triggers; a big one is not named.
+	{
+		std::unique_ptr<Agent::AgentSession> sess;
+		Check( build( "small", 0.10, sess ), "V2-REACH the two-element fixture builds (wizard small, terrain large)" );
+		if( sess ) {
+			Agent::AgentRenderParams p;
+			const Agent::AgentRenderResult rr = sess->Render( p );
+			Check( rr.ok && rr.inventoryApplied, "V2-REACH the production render carries an inventory" );
+			const std::size_t at = rr.inventoryText.find( kSentence );
+			std::printf( "V2-REACH: %s\n", at == std::string::npos ? "(no sentence)" : rr.inventoryText.substr( at ).c_str() );
+			Check( at != std::string::npos,
+			       "MONEY ASSERTION (V2-REACH-1): an element covering well under 1% of the frame gets the zoom sentence" );
+			if( at != std::string::npos ) {
+				const std::string tail = rr.inventoryText.substr( at );
+				Check( tail.find( "wizard" ) != std::string::npos && tail.find( "wiz_obj" ) != std::string::npos,
+				       "V2-REACH the sentence names the element and its largest object" );
+				Check( tail.find( "% of frame" ) != std::string::npos,
+				       "V2-REACH and the measured coverage" );
+				Check( tail.find( "render{zoom:" ) != std::string::npos && tail.find( "full resolution from this camera" ) != std::string::npos,
+				       "V2-REACH and the call that shows it at full resolution" );
+				Check( tail.find( "terrain" ) == std::string::npos,
+				       "MONEY ASSERTION (V2-REACH-2): an element well above 1% of the frame is NOT named" );
+				Check( rr.inventoryText.find( kSentence, at + 1 ) == std::string::npos, "V2-REACH exactly ONE such sentence" );
+			}
+			// The advice is actionable: the named object zooms.
+			Agent::AgentRenderParams zp;
+			zp.zoom = "wiz_obj";
+			zp.renderTarget = Agent::AgentRenderTarget::ObjectMap;
+			const Agent::AgentRenderResult zr = sess->Render( zp );
+			Check( zr.ok && zr.zoomApplied, std::string( "V2-REACH the named object zooms: " ) + zr.message );
+			double share = -1.0;
+			for( std::size_t i = 0; i < zr.legend.size(); ++i )
+				if( zr.legend[i].name == "wiz_obj" )
+					share = (double)zr.legend[i].pixelCount / (double)( (std::size_t)zr.width * zr.height );
+			std::printf( "V2-REACH: wiz_obj zoom pixel share = %.4f\n", share );
+			Check( share >= 0.2, "V2-REACH and it then fills a readable share of the frame" );
+
+			// Only for a render through the SCENE camera: zoom is refused alongside
+			// `camera` / `view`, so the advice would name a call that cannot
+			// reproduce a frame taken through an override.
+			{
+				Agent::AgentRenderParams cp;
+				cp.camera.hasLocation = true; cp.camera.location = "0 0 3.5";
+				cp.camera.hasLookAt   = true; cp.camera.lookAt   = "0 0 0";
+				cp.camera.hasUp       = true; cp.camera.up       = "0 1 0";
+				const Agent::AgentRenderResult cr = sess->Render( cp );
+				Check( cr.ok && cr.inventoryApplied && cr.inventoryText.find( kSentence ) == std::string::npos,
+				       "MONEY ASSERTION (V2-REACH-4): a render through a `camera` override carries no zoom sentence" );
+				Agent::AgentRenderParams vp;
+				vp.view = "no_such_view";
+				const Agent::AgentRenderResult vr = sess->Render( vp );
+				Check( vr.inventoryText.find( kSentence ) == std::string::npos,
+				       "V2-REACH a render through a `view` carries no zoom sentence either" );
+			}
+
+			// Production only: a draft render carries no such sentence.
+			Agent::AgentRenderParams dp;
+			dp.quality = Agent::AgentRenderQuality::Draft;
+			const Agent::AgentRenderResult dr = sess->Render( dp );
+			Check( dr.ok && dr.inventoryApplied && dr.inventoryText.find( kSentence ) == std::string::npos,
+			       "V2-REACH a DRAFT render's inventory does not carry it (production only)" );
+		}
+	}
+
+	// (a2) a small element whose centre lies past the zoom-acceptance margin (the
+	// sphere pokes into the frame but is centred well outside it) gets NO zoom
+	// recommendation -- render{zoom:} would refuse it.  Frame half-width at the
+	// element's depth is 3.5*tan(20deg) = 1.27; centre x = 1.55 is past 1.1x that.
+	{
+		std::unique_ptr<Agent::AgentSession> sess;
+		Check( build( "offframe", 0.40, sess, "1.55 0.0 0.0" ), "V2-REACH the mostly-off-frame fixture builds" );
+		if( sess ) {
+			Agent::AgentRenderParams p;
+			const Agent::AgentRenderResult rr = sess->Render( p );
+			bool onScreen = false;
+			Check( rr.ok && rr.inventoryApplied, "V2-REACH the off-frame fixture renders with an inventory" );
+			onScreen = rr.inventoryText.find( "wiz_obj --" ) != std::string::npos &&
+			           rr.inventoryText.find( "wiz_obj -- 0 px" ) == std::string::npos;
+			Check( onScreen, "V2-REACH sanity: the off-centre sphere is partly ON screen (so only the acceptance test can omit it)" );
+			Check( rr.inventoryText.find( kSentence ) == std::string::npos,
+			       "MONEY ASSERTION (V2-REACH-5): an element centred past the zoom-acceptance margin is not recommended for zoom" );
+			Agent::AgentRenderParams zp; zp.zoom = "wiz_obj"; zp.renderTarget = Agent::AgentRenderTarget::ObjectMap;
+			const Agent::AgentRenderResult zr = sess->Render( zp );
+			Check( !zr.ok && zr.message.find( "not in view" ) != std::string::npos,
+			       "V2-REACH and zoom does refuse it, so the two agree" );
+		}
+	}
+
+	// (b) every element above the threshold: no sentence.
+	{
+		std::unique_ptr<Agent::AgentSession> sess;
+		Check( build( "big", 0.55, sess ), "V2-REACH the all-large fixture builds" );
+		if( sess ) {
+			Agent::AgentRenderParams p;
+			const Agent::AgentRenderResult rr = sess->Render( p );
+			Check( rr.ok && rr.inventoryApplied && rr.inventoryText.find( kSentence ) == std::string::npos,
+			       "V2-REACH with every plan element above 1% there is no sentence" );
+		}
+	}
+
+	// (c) no build plan: no sentence, however small the objects.
+	{
+		const std::string tmp = TempPath( "agentcrud_inv_noplan.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "V2-REACH the no-plan fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			std::vector<std::string> w;
+			w.push_back( "sphere_geometry\n{\n\tname tiny_geo\n\tradius 0.05\n}" );
+			w.push_back( "standard_object\n{\n\tname tiny_obj\n\tgeometry tiny_geo\n\tmaterial mat_diffuse\n\tposition 1.0 -0.9 0.5\n}" );
+			sess->InsertChunks( w );
+			Agent::AgentRenderParams p;
+			const Agent::AgentRenderResult rr = sess->Render( p );
+			Check( rr.ok && rr.inventoryApplied && rr.inventoryText.find( kSentence ) == std::string::npos,
+			       "MONEY ASSERTION (V2-REACH-3): with no build plan filed there is no sentence" );
+		}
 	}
 }
 
@@ -22505,6 +22952,8 @@ int main()
 	TestFinishElementObjectPickAndCycle();
 	TestFinishElementTemplatedGeometryRank();
 	TestFinishElementIsolateCoverage();
+	TestIsolateFitsSurfaceNotBox();
+	TestInventoryZoomSentence();
 	TestBuildProtocolRefusalCallSites();
 	TestBuildProtocolErasedGeometryAttribution();
 	TestBuildProtocolDiagnosedAttribution();
