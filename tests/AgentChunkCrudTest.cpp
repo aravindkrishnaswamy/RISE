@@ -17348,7 +17348,10 @@ static void TestPopulateSceneHappyPath()
 	std::vector<std::string> prompts;
 	sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer }, &calls, &prompts ) );
 
+	const unsigned int insertCallsBefore = sess->InsertChunksCallCount();
 	const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+	Check( sess->InsertChunksCallCount() - insertCallsBefore == 1,
+	       "A82a MONEY ASSERTION: an under-cap populate lands its whole batch with exactly ONE InsertChunks call" );
 	Check( r.ok, "A82a populate_scene succeeds" );
 	Check( calls == 1, "A82a MONEY ASSERTION: exactly ONE completion -- no retry on a clean answer" );
 	Check( !r.retryRan, "A82a and the result says the retry did not run" );
@@ -17651,7 +17654,7 @@ static void TestPopulateSceneCloneFanOutBounds()
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
 		const std::string answer =
 			"standard_object\n{\n\tname fan_a\n\tsource obj_sph\n\tposition 5 0 0\n}\n"
-			"standard_object\n{\n\tname fan_b\n\tsource fan_a\n\tcount_u 2\n}\n"
+			"standard_object\n{\n\tname fan_b\n\tsource fan_a\n\tcount_u 8\n}\n"
 			"standard_object\n{\n\tname fan_vonly\n\tsource obj_sph\n\tcount_v 2\n}\n"
 			"standard_object\n{\n\tname fan_dec\n\tsource obj_sph\n\tcount_u 2.5\n}\n";
 		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
@@ -17667,12 +17670,12 @@ static void TestPopulateSceneCloneFanOutBounds()
 		bool chain = false, vonly = false, dec = false;
 		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
 			const std::string& why = r.rejected[i].reason;
-			if( why.find( "really made 262 objects" ) != std::string::npos ) chain = true;
+			if( why.find( "really made 1048 objects" ) != std::string::npos ) chain = true;
 			if( why.find( "`count_v` without `count_u`" ) != std::string::npos ) vonly = true;
 			if( why.find( "positive integer literal" ) != std::string::npos ) dec = true;
 		}
 		Check( chain, "A82i MONEY ASSERTION: a clone-of-clone in the SAME answer compounds the pending "
-		              "source's expansion (131 x 2 = 262 > 256) and is rejected" );
+		              "source's expansion (131 x 8 = 1048 > 256) and is rejected" );
 		Check( vonly, "A82i count_v without count_u is rejected" );
 		Check( dec, "A82i a decimal count is rejected with the accepted form stated" );
 		pJob->release();
@@ -17712,14 +17715,14 @@ static void TestPopulateSceneParentSubtreeAndRefund()
 		for( int k = 0; k < 100; ++k )
 			answer += "standard_object\n{\n\tname pkid_" + std::to_string( k ) +
 			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
-		answer += "standard_object\n{\n\tname pbig\n\tsource obj_sph\n\tcount_u 3\n}\n";
+		answer += "standard_object\n{\n\tname pbig\n\tsource obj_sph\n\tcount_u 12\n}\n";
 		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
 		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
 		bool big = false;
 		for( std::size_t i = 0; i < r.rejected.size(); ++i )
-			if( r.rejected[i].reason.find( "really made 303 objects" ) != std::string::npos ) big = true;
+			if( r.rejected[i].reason.find( "really made 1212 objects" ) != std::string::npos ) big = true;
 		Check( big, "A82j MONEY ASSERTION: 100 children declared via `parent obj_sph` in this answer make "
-		            "the source 101 objects, so count_u 3 (303) is rejected" );
+		            "the source 101 objects, so count_u 3 (1212) is rejected" );
 		pJob->release();
 	}
 	// P2-1 / P2-2: the fan-out the parser really produces is measured, not
@@ -17738,7 +17741,7 @@ static void TestPopulateSceneParentSubtreeAndRefund()
 		for( int k = 0; k < 100; ++k )
 			answer += "standard_object\n{\n\tname mkid_" + std::to_string( k ) +
 			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent mc.kid0\n}\n";
-		answer += "standard_object\n{\n\tname md\n\tsource mc\n\tcount_u 3\n}\n";
+		answer += "standard_object\n{\n\tname md\n\tsource mc\n\tcount_u 12\n}\n";
 		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
 		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
 		const std::string doc = sess->ReadDocument();
@@ -17774,6 +17777,12 @@ static void TestPopulateSceneParentSubtreeAndRefund()
 		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
 		Check( r.objectCountAfter - r.objectCountBefore <= 1024,
 		       "A82j/late the scene stays within the per-call cap" );
+		{
+			// An ORDINARY remove of form during compose is still refused after
+			// populate: the harness's private rollback channel is not left open.
+			const Agent::AgentSession::AgentRemoveBatchResult rm = sess->RemoveChunks( std::vector<std::string>( 1, "la" ) );
+			Check( !rm.applied, "A82j/late an ordinary RemoveChunks of form during compose is still refused" );
+		}
 		for( std::size_t i = 0; i < r.created.size(); ++i )
 			Check( r.created[i].expandedCount <= 256, "A82j/late no landed chunk exceeds the per-chunk cap" );
 		pJob->release();

@@ -13206,6 +13206,7 @@ namespace RISE
 		                                                          const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			std::vector<AgentChunkResult> out;
+			++mInsertChunksCalls;
 
 			// Empty input is a no-op -- return an empty vector, don't call
 			// InsertChunk at all (see the header doc).
@@ -18631,7 +18632,19 @@ namespace RISE
 			// one standard_object -- refuses WHOLE, and CheckComposePhaseForRemove_'s text states
 			// that so the model knows the light was not removed either.  The two arms are mutually
 			// exclusive by phase, and at most ONE refusal is spent per call either way.
-			if( !mHarnessRollbackScope )
+			// PopulateScene's own rollback of chunks IT just inserted: honoured only when
+			// every target is on the list its InsertChunks reported as landed.
+			bool harnessRollback = false;
+			if( mHarnessRollbackScope ) {
+				harnessRollback = true;
+				for( std::size_t u = 0; u < unique.size() && harnessRollback; ++u ) {
+					bool listed = false;
+					for( std::size_t k = 0; k < mHarnessRollbackTargets.size() && !listed; ++k )
+						listed = ( mHarnessRollbackTargets[k] == unique[u] );
+					harnessRollback = listed;
+				}
+			}
+			if( !harnessRollback )
 			{
 				std::string s1Clause;
 				for( std::size_t u = 0; u < unique.size() && s1Clause.empty(); ++u )
@@ -33656,6 +33669,47 @@ namespace RISE
 				IGeometryManager* geos = mJob->GetGeometries();
 				IMaterialManager* mats = mJob->GetMaterials();
 
+				// Live parent -> children map, built lazily ONCE per attempt, for the
+				// advisory fan-out estimate.
+				std::map<std::string, std::vector<std::string> > liveKids;
+				bool liveKidsBuilt = false;
+				const std::function<long long( const std::string&, int )> liveDescendantsRec =
+					[&]( const std::string& root, int depth ) -> long long
+				{
+					if( depth > 64 ) return 0;
+					const std::map<std::string, std::vector<std::string> >::const_iterator it = liveKids.find( root );
+					if( it == liveKids.end() ) return 0;
+					long long n = 0;
+					for( std::size_t k = 0; k < it->second.size(); ++k ) {
+						n += 1 + liveDescendantsRec( it->second[k], depth + 1 );
+						if( n > 1000000 ) return n;
+					}
+					return n;
+				};
+				const auto liveDescendants = [&]( const std::string& root ) -> long long
+				{
+					if( !liveKidsBuilt ) {
+						liveKidsBuilt = true;
+						if( IObjectManager* lo = mJob->GetObjects() ) {
+							struct NameCollect : public IEnumCallback<const char*>
+							{
+								std::vector<std::string> names;
+								bool operator()( const char* const& nm ) override
+								{
+									if( nm ) names.push_back( nm );
+									return true;
+								}
+							} scan;
+							lo->EnumerateItemNames( scan );
+							for( std::size_t k = 0; k < scan.names.size(); ++k ) {
+								const char* par = lo->GetObjectParent( scan.names[k].c_str() );
+								if( par && par[0] ) liveKids[par].push_back( scan.names[k] );
+							}
+						}
+					}
+					return liveDescendantsRec( root, 0 );
+				};
+
 				std::vector<std::string> submit;
 				std::vector<AgentPopulateSceneCreation> submitInfo;
 				for( std::size_t i = 0; i < chunks.size(); ++i ) {
@@ -33727,6 +33781,7 @@ namespace RISE
 					// `source` together are the parser's own mutual-exclusion
 					// error and are left to InsertChunks to report.
 					const bool cloneForm = !sname.empty();
+					long long estimate = 1;   // advisory object count for this chunk
 					if( cloneForm ) {
 						IObjectManager* objs = mJob->GetObjects();
 						bool known = ( objs && objs->GetItem( sname.c_str() ) );
@@ -33826,7 +33881,11 @@ namespace RISE
 						// produces, so the binding check is the MEASURED one
 						// after each chunk lands (see the insertion loop).  Here
 						// we only refuse what is certain from the text alone.
-						if( !countOk || mult > kCloneCap || callObjectTotal + mult > kCallCap ) {
+						// Known LIVE subtree of the source (advisory: a source declared
+						// in this same answer is not in the manager yet).
+						const long long liveSub = 1 + liveDescendants( sname );
+						estimate = mult * liveSub;
+						if( !countOk || estimate > kCloneCap || callObjectTotal + estimate > kCallCap ) {
 							AgentPopulateSceneRejection r;
 							r.name   = oname;
 							r.kind   = kind;
@@ -33837,10 +33896,11 @@ namespace RISE
 									? std::string( "its `count_u` / `count_v` must each be a positive integer literal "
 									               "(digits only: no expr(...), no let names, no decimals) so the number "
 									               "of clones can be bounded" )
-									: ( mult > kCloneCap
-									    ? "count_u * count_v alone exceeds the populate_scene cap of " +
+									: ( estimate > kCloneCap
+									    ? "count_u * count_v * the source's " + std::to_string( liveSub ) +
+									      " object(s) = " + std::to_string( estimate ) + " exceeds the populate_scene cap of " +
 									      std::to_string( kCloneCap ) + " objects per chunk"
-									    : "count_u * count_v = " + std::to_string( mult ) + " clones would pass the per-call cap of " +
+									    : "it would make about " + std::to_string( estimate ) + " objects, passing the per-call cap of " +
 									      std::to_string( kCallCap ) + " objects (" + std::to_string( callObjectTotal ) +
 									      " already landed)" ) ) +
 								" -- split it into several smaller chunks";
@@ -33901,19 +33961,19 @@ namespace RISE
 					info.geometry = cloneForm ? std::string() : gname;
 					info.source   = sname;
 					info.material = mname;
+					info.expandedCount = static_cast<int>( estimate );
 					submit.push_back( chunks[i] );
 					submitInfo.push_back( info );
 				}
 				if( submit.empty() ) return false;
 
-				// GROUND TRUTH.  Each chunk is inserted ALONE and the real
-				// object-count delta of the live manager is measured around
-				// it, so the attribution is exact by construction (nothing to
-				// infer from names) and does not depend on how InsertChunks
-				// batches its derive.  A chunk that really made more than
-				// kCloneCap objects, or that pushes the call's real total past
-				// kCallCap, is removed again through RemoveChunks (one coherent
-				// head/undo step) and reported rejected with the measured count.
+				// MEASURED CAPS.  Common path: ONE InsertChunks call for the whole
+				// pre-checked batch (one re-derive), and the real object delta of the
+				// live manager across it is the hard per-call safety bound.  Only if
+				// that delta busts the call budget is the batch rolled back (one
+				// RemoveChunks) and re-landed chunk by chunk with exact per-chunk
+				// measurement, so the offender is removed and the rest keep the budget.
+				// The per-chunk 256 limit is only enforced exactly on that fallback.
 				const auto liveObjectCount = [&]() -> long long
 				{
 					IObjectManager* om = mJob->GetObjects();
@@ -33927,6 +33987,71 @@ namespace RISE
 					return cnt.n;
 				};
 				bool landedAny = false;
+				const auto recordRejected = [&]( const AgentChunkResult& res )
+				{
+					AgentPopulateSceneRejection r;
+					r.name   = res.name;
+					r.kind   = res.kind;
+					r.reason = res.message.empty()
+						? std::string( "the insertion was rejected with no reason given" )
+						: res.message;
+					out.rejected.push_back( r );
+					rejectionLines.push_back(
+						( r.name.empty() ? std::string( "a chunk" ) : ( "the chunk \"" + r.name + "\"" ) ) +
+						" was rejected: " + r.reason );
+				};
+				const auto recordLanded = [&]( const AgentChunkResult& res, std::size_t i, long long made )
+				{
+					landedNames.push_back( res.name );
+					AgentPopulateSceneCreation c;
+					c.name = res.name;
+					c.geometry = submitInfo[i].geometry;
+					c.source   = submitInfo[i].source;
+					c.expandedCount = static_cast<int>( made );
+					c.material = submitInfo[i].material;
+					out.created.push_back( c );
+					landedAny = true;
+				};
+
+				const long long beforeBatch = liveObjectCount();
+				const std::vector<AgentChunkResult> batch = InsertChunks( submit );
+				const long long batchDelta = liveObjectCount() - beforeBatch;
+				if( callObjectTotal + batchDelta <= kCallCap ) {
+					for( std::size_t i = 0; i < batch.size(); ++i ) {
+						out.chunkResults.push_back( batch[i] );
+						if( batch[i].applied && i < submitInfo.size() )
+							recordLanded( batch[i], i, submitInfo[i].expandedCount );   // advisory per-chunk figure
+						else recordRejected( batch[i] );
+					}
+					callObjectTotal += batchDelta;
+					return landedAny;
+				}
+
+				// OVER BUDGET: roll the whole batch back, then land one at a time.
+				{
+					std::vector<std::string> landedHere;
+					for( std::size_t i = 0; i < batch.size(); ++i )
+						if( batch[i].applied && !batch[i].name.empty() ) landedHere.push_back( batch[i].name );
+					bool rolledBack = landedHere.empty();
+					if( !landedHere.empty() ) {
+						HarnessRollbackGuard_ guard( *this, landedHere );
+						rolledBack = RemoveChunks( landedHere ).applied;
+					}
+					if( !rolledBack ) {
+						// Could not undo the batch: keep it, and say so rather than hide it.
+						for( std::size_t i = 0; i < batch.size(); ++i ) {
+							AgentChunkResult res = batch[i];
+							if( res.applied ) res.message = "this call's batch really made " + std::to_string( batchDelta ) +
+								" objects, over the per-call cap of " + std::to_string( kCallCap ) +
+								", and could not be rolled back, so it stays";
+							out.chunkResults.push_back( res );
+							if( res.applied && i < submitInfo.size() ) recordLanded( res, i, submitInfo[i].expandedCount );
+							else recordRejected( res );
+						}
+						callObjectTotal += batchDelta;
+						return landedAny;
+					}
+				}
 				for( std::size_t i = 0; i < submit.size(); ++i ) {
 					const long long before = liveObjectCount();
 					const std::vector<AgentChunkResult> rs = InsertChunks( std::vector<std::string>( 1, submit[i] ) );
@@ -33954,9 +34079,8 @@ namespace RISE
 							bool removed = false;
 							std::string rmWhy;
 							if( !who.empty() ) {
-								mHarnessRollbackScope = true;
+								HarnessRollbackGuard_ guard( *this, std::vector<std::string>( 1, who ) );
 								const AgentRemoveBatchResult rm = RemoveChunks( std::vector<std::string>( 1, who ) );
-								mHarnessRollbackScope = false;
 								removed = rm.applied;
 								rmWhy = rm.message;
 							}
@@ -33978,28 +34102,9 @@ namespace RISE
 					out.chunkResults.push_back( res );
 					if( landed ) {
 						callObjectTotal += made;
-						landedNames.push_back( res.name );
-						AgentPopulateSceneCreation c;
-						c.name = res.name;
-						c.geometry = submitInfo[i].geometry;
-						c.source   = submitInfo[i].source;
-						c.expandedCount = static_cast<int>( made );
-						c.material = submitInfo[i].material;
-						out.created.push_back( c );
-						landedAny = true;
+						recordLanded( res, i, made );
 					}
-					else {
-						AgentPopulateSceneRejection r;
-						r.name   = res.name;
-						r.kind   = res.kind;
-						r.reason = res.message.empty()
-							? std::string( "the insertion was rejected with no reason given" )
-							: res.message;
-						out.rejected.push_back( r );
-						rejectionLines.push_back(
-							( r.name.empty() ? std::string( "a chunk" ) : ( "the chunk \"" + r.name + "\"" ) ) +
-							" was rejected: " + r.reason );
-					}
+					else recordRejected( res );
 				}
 				return landedAny;
 			};

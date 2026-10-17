@@ -3075,6 +3075,10 @@ namespace RISE
 			//!
 			//! `chunkTexts` empty -> returns an empty vector (no-op); no
 			//! InsertChunk call is made.
+			//! How many InsertChunks calls this session has made (diagnostic; tests use it
+			//! to prove a batch lands in one call).
+			unsigned int InsertChunksCallCount() const { return mInsertChunksCalls; }
+
 			std::vector<AgentChunkResult> InsertChunks( const std::vector<std::string>& chunkTexts,
 			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
@@ -5618,12 +5622,6 @@ namespace RISE
 			//! headroom while keeping one call far from a runaway scene.
 			static constexpr int kPopulateSceneMaxObjectsPerCall = 1024;
 
-			//! True only inside PopulateScene's own rollback of a chunk it just
-			//! inserted: RemoveChunks then skips the element-window and
-			//! compose-phase REMOVAL gates (they exist to stop a model tearing
-			//! down form, not the harness undoing its own insert) and spends no
-			//! phase budget. Never set by any external entry point.
-			bool mHarnessRollbackScope = false;
 
 			//! The longest `notes` string a `populate_scene` call may carry
 			//! -- the ONE model-supplied span in the host-composed prompt,
@@ -10269,6 +10267,27 @@ namespace RISE
 			//! exactly: a pass whose chunks were all rejected still had its
 			//! turn, and a failed pass must not strand the session.
 			bool mPopulateSceneRan = false;
+
+			//! PopulateScene's private rollback channel.  While `mHarnessRollbackScope`
+			//! is set (only ever by HarnessRollbackGuard_, below), RemoveChunks skips
+			//! the element-window / compose-phase REMOVAL gates -- but ONLY when every
+			//! target is in `mHarnessRollbackTargets`, the names this same populate_scene
+			//! call's own InsertChunks reported as landed.  Not reachable from any tool
+			//! or RPC path: those never set the flag.
+			bool                     mHarnessRollbackScope = false;
+			std::vector<std::string> mHarnessRollbackTargets;
+			struct HarnessRollbackGuard_
+			{
+				AgentSession& s;
+				HarnessRollbackGuard_( AgentSession& session, const std::vector<std::string>& targets ) : s( session )
+				{ s.mHarnessRollbackTargets = targets; s.mHarnessRollbackScope = true; }
+				~HarnessRollbackGuard_()
+				{ s.mHarnessRollbackScope = false; s.mHarnessRollbackTargets.clear(); }
+				HarnessRollbackGuard_( const HarnessRollbackGuard_& ) = delete;
+				HarnessRollbackGuard_& operator=( const HarnessRollbackGuard_& ) = delete;
+			};
+			//! Number of InsertChunks calls made on this session (diagnostic).
+			unsigned int mInsertChunksCalls = 0;
 
 			//! Arc 82: ONE geometry the scene already has, and the objects
 			//! currently drawn with it -- the RAW MATERIAL a repeat is made
