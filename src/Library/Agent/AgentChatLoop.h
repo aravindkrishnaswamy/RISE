@@ -320,8 +320,11 @@ namespace RISE
 				//! A note the LOOP ITSELF injects into the conversation as
 				//! ordinary user content -- the human never typed it.
 				//!
-				//! NO CURRENT PRODUCER (E4, 2026-08).  The one message this
-				//! enumerator existed for -- the blind-edit NUDGE
+				//! ONE PRODUCER: the MALFORMED-TOOL-CALL corrective (BuildRequest
+				//! appends it after a ChatErrorKind::MalformedToolCall; it is
+				//! recorded in the trajectory as a history_edit, never as a
+				//! "user" record).  HISTORY: the message this enumerator
+				//! originally existed for (E4, 2026-08) -- the blind-edit NUDGE
 				//! (AppendPendingBuildNudge) -- was REMOVED: a live GUI run
 				//! showed the nudge's advisory text, injected adjacent to the
 				//! generation point, gets ECHOED BACK by the model as its own
@@ -1109,10 +1112,16 @@ namespace RISE
 			//! `reason` is a short machine tag (e.g. "scenario_intervention");
 			//! `beforeBytes`/`afterBytes` record the affected document's byte
 			//! size before/after the edit; `entryIndex` is advisory (-1 = not
-			//! tied to a transcript entry, the intervention case).  No-op when
-			//! no trajectory sink is attached.
+			//! tied to a transcript entry, the intervention case).  Byte-field
+			//! meaning per reason (see TrajectoryHistoryEditRecord): image
+			//! elisions = entry rawJson size before/after; context_compaction
+			//! = token estimates; scenario_intervention = document bytes;
+			//! malformed_tool_call_corrective = an insertion (before 0, after
+			//! = the new entry's size).  `text` is an optional payload (the
+			//! corrective message).  No-op when no trajectory sink is attached.
 			void RecordHistoryEdit( const std::string& reason, long long beforeBytes = 0,
-			                        long long afterBytes = 0, int entryIndex = -1 );
+			                        long long afterBytes = 0, int entryIndex = -1,
+			                        const std::string& text = std::string() );
 
 		private:
 			AgentChatLoop( const AgentChatLoop& );             // deleted
@@ -1369,6 +1378,29 @@ namespace RISE
 			//! Doubles as the once-per-round retry guard, mirroring
 			//! mElideAllImages exactly.  Cleared by Reset().
 			bool                                     mForceReasoningEffortNone;
+
+			//! MALFORMED-TOOL-CALL RECOVERY: corrective retries already
+			//! spent in the current user turn (reset by a user
+			//! AddUserMessage and by Reset()).  Bounded by
+			//! kMaxMalformedToolCallRetries; the next failure is surfaced.
+			int                                      mMalformedRetries = 0;
+
+			//! Corrective user text queued by HandleResponse on a
+			//! MalformedToolCall and appended to the transcript by the NEXT
+			//! BuildRequest (so the trajectory reads llm(error) -> user ->
+			//! llm).  The malformed model turn itself is never recorded:
+			//! for Gemini it is an empty text part, which is invalid to
+			//! echo back.  Empty when nothing is queued.
+			std::string                              mPendingCorrective;
+
+			//! True only while BuildRequest is appending mPendingCorrective
+			//! through AddUserMessage, so that call neither resets the
+			//! tool-round counter nor the retry budget.
+			bool                                     mAppendingCorrective = false;
+		public:
+			//! Corrective retries allowed per user turn after a
+			//! ChatErrorKind::MalformedToolCall.
+			static const int kMaxMalformedToolCallRetries = 2;
 		};
 	}
 }

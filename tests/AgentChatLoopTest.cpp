@@ -5116,12 +5116,12 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		ChatStepResult st = loop.HandleResponse( 200, fx );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "malformed function.arguments -> ProviderError (whole turn refused)" );
-		Check( st.errorKind == ChatErrorKind::Provider,
-		       "malformed arguments -> errorKind Provider" );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "malformed arguments -> errorKind MalformedToolCall (recoverable)" );
 		Check( st.errorMessage.find( "malformed arguments" ) != std::string::npos,
 		       "the refusal names the malformed arguments" );
-		Check( !st.retryDegenerateTurn,
-		       "a malformed-arguments STRUCTURAL refusal is not one of the four blank-turn sites -- NOT marked retriable" );
+		Check( st.retryDegenerateTurn,
+		       "a malformed-arguments refusal is answered by the loop's corrective retry (not a blank-turn site)" );
 		Check( loop.TranscriptSize() == 1, "the malformed-args turn records nothing" );
 		Check( loop.PendingToolCalls().empty(),
 		       "no call is pended -- it was never recorded as an executable tool_call" );
@@ -10406,6 +10406,206 @@ static void TestGeminiSchemaKeywordDenylist()
 	       "400 this test exists to prevent (see the header comment for the exact 2026-08-11 error)" );
 }
 
+// Gemini finishReason MALFORMED_FUNCTION_CALL (HTTP 200, one empty text part,
+// finishMessage quoting the unparseable attempt) used to end the turn.  It is
+// now a bounded corrective retry.
+static std::string GeminiMalformedFixture()
+{
+	return "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\","
+		"\"thoughtSignature\":\"sig\"}]},\"finishReason\":\"MALFORMED_FUNCTION_CALL\","
+		"\"finishMessage\":\"Malformed function call: call:default_api:insert_chunks{chunks:[ standard_object\\n{\\n\\tname x} ]}\","
+		"\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":64,\"candidatesTokenCount\":32},"
+		"\"modelVersion\":\"gemini-4-argon\"}";
+}
+
+static void TestMalformedFunctionCallRecovery()
+{
+	std::printf( "T60: Gemini MALFORMED_FUNCTION_CALL corrective retry...\n" );
+	const std::string bad  = GeminiMalformedFixture();
+	const std::string good = GeminiFixture(
+		"{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"read_document\",\"args\":{},\"id\":\"fc_1\"}}]}",
+		"STOP" );
+
+	// (a) malformed then valid: the call executes and the turn continues.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st = loop.HandleResponse( 200, bad );
+		Check( st.kind == ChatStepResult::Kind::ProviderError &&
+		       st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "T60a: MALFORMED_FUNCTION_CALL -> ProviderError/MalformedToolCall" );
+		Check( st.errorMessage.find( "insert_chunks" ) != std::string::npos,
+		       "T60a: the error carries the finishMessage" );
+		Check( st.retryDegenerateTurn, "T60a: the driver is told to re-issue" );
+		Check( loop.TranscriptSize() == 1, "T60a: the malformed (empty-text) model turn is NOT recorded" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == 2, "T60a: BuildRequest appended the corrective user turn" );
+		Check( req.body.find( "was malformed and was NOT executed" ) != std::string::npos &&
+		       req.body.find( "valid JSON" ) != std::string::npos &&
+		       req.body.find( "chunks" ) != std::string::npos,
+		       "T60a: the retry request carries the corrective text" );
+		Check( req.body.find( "thoughtSignature" ) == std::string::npos,
+		       "T60a: the empty malformed model turn is not echoed" );
+
+		ChatStepResult ok = loop.HandleResponse( 200, good );
+		Check( ok.kind == ChatStepResult::Kind::ToolCalls && ok.toolCalls.size() == 1,
+		       "T60a: the re-issued valid call is accepted as ToolCalls" );
+		if( ok.kind == ChatStepResult::Kind::ToolCalls && !ok.toolCalls.empty() ) {
+			loop.AddToolResult( ok.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+			const ChatHttpRequest req2 = loop.BuildRequest( kApiKey );
+			Check( !req2.body.empty() && req2.body.find( "functionResponse" ) != std::string::npos,
+			       "T60a: the turn continues with the tool result on the wire" );
+		}
+	}
+
+	// (b) three consecutive malformed responses: bounded, ends with a clear error.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		for( int i = 0; i < AgentChatLoop::kMaxMalformedToolCallRetries; ++i ) {
+			(void)loop.BuildRequest( kApiKey );
+			ChatStepResult st = loop.HandleResponse( 200, bad );
+			Check( st.retryDegenerateTurn, "T60b: retry " + std::to_string( i + 1 ) + " is offered" );
+		}
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st = loop.HandleResponse( 200, bad );
+		Check( st.kind == ChatStepResult::Kind::ProviderError &&
+		       st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "T60b: the third consecutive malformed response is an error" );
+		Check( !st.retryDegenerateTurn, "T60b: no further retry is offered" );
+		Check( st.errorMessage.find( "giving up" ) != std::string::npos,
+		       "T60b: the error says the loop gave up" );
+		// A fresh user message restores the budget.
+		loop.AddUserMessage( "keep going" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult again = loop.HandleResponse( 200, bad );
+		Check( again.retryDegenerateTurn, "T60b: a new user message restores the retry budget" );
+	}
+
+	// (c) OpenAI malformed arguments recover the same way.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+		const std::string fx = OpenAIFixture( "null",
+			"[{\"id\":\"call_badargs\",\"type\":\"function\",\"function\":"
+			"{\"name\":\"validate\",\"arguments\":\"{ not json\"}}]", "tool_calls" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall && st.retryDegenerateTurn,
+		       "T60c: OpenAI malformed arguments -> MalformedToolCall, retry offered" );
+
+		// Truncated by the token cap: MaxTokens, no corrective retry.
+		AgentChatLoop loop2;
+		loop2.AddUserMessage( "hi" );
+		(void)loop2.BuildRequest( kApiKey );
+		const std::string fxLen = OpenAIFixture( "null",
+			"[{\"id\":\"call_cut\",\"type\":\"function\",\"function\":"
+			"{\"name\":\"validate\",\"arguments\":\"{\\\"a\\\":\"}}]", "length" );
+		ChatStepResult stl = loop2.HandleResponse( 200, fxLen );
+		Check( stl.errorKind == ChatErrorKind::MaxTokens && !stl.retryDegenerateTurn,
+		       "T60c: unparseable arguments with finish_reason length -> MaxTokens, no retry" );
+	}
+
+	// (d) the cap counts CONSECUTIVE failures: a valid tool round resets it.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn, "T60d: malformed #1 retried" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult ok = loop.HandleResponse( 200, good );
+		Check( ok.kind == ChatStepResult::Kind::ToolCalls, "T60d: valid call after recovery" );
+		loop.AddToolResult( ok.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		// Malformed DIRECTLY after a functionResponse turn.
+		const ChatHttpRequest r1 = loop.BuildRequest( kApiKey );
+		Check( r1.body.find( "functionResponse" ) != std::string::npos, "T60d: functionResponse on the wire" );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn, "T60d: malformed #2 (post-tool) retried" );
+		const ChatHttpRequest r2 = loop.BuildRequest( kApiKey );
+		Check( r2.body.find( "functionResponse" ) != std::string::npos &&
+		       r2.body.find( "was malformed and was NOT executed" ) != std::string::npos,
+		       "T60d: corrective follows the functionResponse turn" );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn,
+		       "T60d: malformed #3 total but only #2 consecutive -> still retried (budget reset by the valid round)" );
+	}
+
+	// (f) correctives are NOT compaction span boundaries: with two of them
+	//     in one turn and an over-budget window, the real request survives.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "REAL-REQUEST-MARKER build the scene" );
+		(void)loop.BuildRequest( kApiKey );
+		(void)loop.HandleResponse( 200, bad );
+		(void)loop.BuildRequest( kApiKey );
+		(void)loop.HandleResponse( 200, bad );
+		loop.SetContextBudget( 2, 1 );   // everything is over budget
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == 3, "T60f: request + two correctives retained (no span dropped)" );
+		Check( loop.TranscriptAt( 0 ).role == ChatTranscriptEntry::Role::User &&
+		       loop.TranscriptAt( 0 ).displayText.find( "REAL-REQUEST-MARKER" ) != std::string::npos,
+		       "T60f: the first real user entry survives compaction" );
+		Check( loop.TranscriptAt( 2 ).role == ChatTranscriptEntry::Role::DriverNote,
+		       "T60f: the corrective is a DriverNote entry" );
+		Check( req.body.find( "REAL-REQUEST-MARKER" ) != std::string::npos,
+		       "T60f: the real request is still on the wire" );
+	}
+
+	// (g) the corrective is NOT a human turn in the trajectory: user-record
+	//     count is unchanged; a history_edit marks it instead.
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-malformed-60g";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, bad, 4, 1, -1 );
+		(void)loop.HandleResponse( 200, bad );
+		(void)loop.BuildRequest( kApiKey );   // appends the corrective
+		int users = 0, edits = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const std::string rt = ParseBody( lines[i] ).get( "run_type" ).asString();
+			if( rt == "user" ) ++users;
+			if( rt == "history_edit" &&
+			    lines[i].find( "malformed_tool_call_corrective" ) != std::string::npos ) ++edits;
+		}
+		Check( users == 1, "T60g: exactly one user record (the real request) despite the corrective" );
+		Check( edits == 1, "T60g: the corrective is recorded as one history_edit" );
+		bool textOk = false;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const JsonValue j = ParseBody( lines[i] );
+			if( j.get( "run_type" ).asString() == "history_edit" &&
+			    j.get( "reason" ).asString() == "malformed_tool_call_corrective" &&
+			    j.get( "text" ).asString().find( "was malformed and was NOT executed" ) != std::string::npos &&
+			    j.get( "before_bytes" ).asNumber() == 0 )
+				textOk = true;
+		}
+		Check( textOk, "T60g: the history_edit carries the corrective text (insertion, before_bytes 0)" );
+	}
+
+	// (e) Responses wire.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+		const std::string fx =
+			"{\"id\":\"resp_x\",\"object\":\"response\",\"status\":\"completed\",\"output\":["
+			"{\"type\":\"function_call\",\"call_id\":\"fc_1\",\"name\":\"validate\","
+			"\"arguments\":\"{ not json\"}]}";
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall && st.retryDegenerateTurn,
+		       "T60e: Responses malformed arguments -> MalformedToolCall, retry offered" );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -10489,6 +10689,7 @@ int main()
 	TestFileBuildPlanToolAndGateClassification();
 	TestDriverNoteSmoke();
 	TestGeminiSchemaKeywordDenylist();
+	TestMalformedFunctionCallRecovery();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

@@ -3004,6 +3004,15 @@ namespace RISE
 							// so the ProviderError branch after the attempt
 							// loop sets terminalStatus/errorMessage exactly as
 							// it would have with no retry arm at all.
+							// ChatErrorKind::MalformedToolCall also arrives here
+							// (AgentChatLoop queued a corrective user message that
+							// the next BuildRequest appends).  DECISION: the eval
+							// runner allows ONE such retry per round, not the
+							// loop's two -- an eval measures the model, and a
+							// model that needs a second correction in the same
+							// round is a result worth reporting as provider_error
+							// rather than hiding behind extra attempts; the loop's
+							// own per-turn cap still bounds the interactive GUIs.
 							if( st.kind == ChatStepResult::Kind::ProviderError &&
 							    st.retryDegenerateTurn && attempt == 1 &&
 							    ( scenario.budgets.maxLlmCalls < 0 || llmCalls < scenario.budgets.maxLlmCalls ) ) {

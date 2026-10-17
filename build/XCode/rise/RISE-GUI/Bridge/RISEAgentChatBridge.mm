@@ -188,6 +188,8 @@ static NSString *ToNS(const std::string& s) {
             _errorKind = RISEAgentChatErrorKindHttp;         break;
         case Agent::ChatErrorKind::Parse:
             _errorKind = RISEAgentChatErrorKindParse;        break;
+        case Agent::ChatErrorKind::MalformedToolCall:
+            _errorKind = RISEAgentChatErrorKindMalformedToolCall; break;
         case Agent::ChatErrorKind::Provider:
             _errorKind = RISEAgentChatErrorKindProvider;     break;
         case Agent::ChatErrorKind::Refusal:

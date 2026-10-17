@@ -2237,6 +2237,9 @@ final class ChatViewModel: ObservableObject {
                         + "no longer see them."))
             }
 
+            // NOTE: the loop now injects ONE DriverNote (the malformed-tool-call
+            // corrective); this driver surfaces it with its own "Retrying
+            // malformed tool call..." notice at the retry site, not by polling.
             // E4 (2026-08): this driver used to poll `driverNoteCount` /
             // `lastDriverNoteText` here to surface the blind-edit NUDGE —
             // advisory text the loop injected into the conversation.  That
@@ -2544,6 +2547,16 @@ final class ChatViewModel: ObservableObject {
                 // buildRequest at the top of the loop rebuilds from the
                 // unchanged transcript -- a true verbatim resend, no
                 // request change needed.
+                if step.retryDegenerateTurn && step.errorKind == .malformedToolCall {
+                    // Malformed tool call: the C++ loop already queued a
+                    // corrective user message for the next buildRequest and
+                    // bounds the retries (2 per user turn), so this case is
+                    // deliberately NOT gated by degenerateTurnRetried.
+                    transcript.append(Entry(
+                        kind: .notice, text: "Retrying malformed tool call..."))
+                    httpAttempt += 1
+                    continue
+                }
                 if step.retryDegenerateTurn && !degenerateTurnRetried {
                     degenerateTurnRetried = true
                     httpAttempt += 1
@@ -3913,6 +3926,15 @@ final class ChatViewModel: ObservableObject {
                 kind: .error,
                 text: "Stopped after \(RISEAgentChatBridge.maxToolRoundsPerTurn) tool "
                     + "rounds in one turn.  Send a new message to continue."))
+
+        case .malformedToolCall:
+            // Corrective retries were exhausted (the loop gave up).
+            consecutiveHttp400s = 0
+            transcript.append(Entry(
+                kind: .error,
+                text: "The model kept producing a malformed tool call.  "
+                    + "Send a new message (e.g. \"keep going\") to try again.  "
+                    + step.errorMessage))
 
         case .parse, .provider:
             consecutiveHttp400s = 0

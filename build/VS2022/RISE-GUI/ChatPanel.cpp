@@ -1487,6 +1487,16 @@ void ChatPanel::networkFinished()
     refreshTranscript(step.assistantDisplayText.empty() ? QString() : "Running tools...");
 
     if (step.kind == ChatStepResult::Kind::ProviderError) {
+        // Malformed tool call: the loop queued a corrective user message
+        // for the next BuildRequest and bounds the retries itself, so
+        // re-issue the request exactly as retryLastRequest() does (m_busy
+        // stays set; nothing was recorded for the malformed response).
+        if (step.retryDegenerateTurn &&
+            step.errorKind == ChatErrorKind::MalformedToolCall) {
+            refreshTranscript("Retrying malformed tool call...");
+            runNextStep();
+            return;
+        }
         handleProviderError(step);
         return;
     }
@@ -2418,6 +2428,13 @@ void ChatPanel::handleProviderError(const RISE::Agent::ChatStepResult& step)
         // show a generic message.
         qWarning("RISE agent chat: driver misuse: %s", step.errorMessage.c_str());
         finishBusy("Internal chat error. Reset the conversation if it persists.");
+        break;
+
+    case ChatErrorKind::MalformedToolCall:
+        // Corrective retries exhausted (the loop gave up).
+        finishBusy("The model kept producing a malformed tool call. "
+                   "Send a new message (e.g. \"keep going\") to try again. "
+                   + toQString(step.errorMessage));
         break;
 
     case ChatErrorKind::Parse:

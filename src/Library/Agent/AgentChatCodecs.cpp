@@ -2099,6 +2099,13 @@ namespace RISE
 				return out;
 			}
 
+			//! Bound model-authored text quoted into an error message.
+			std::string CapSnippet( const std::string& t )
+			{
+				const std::size_t kCap = 600;
+				return t.size() <= kCap ? t : t.substr( 0, kCap ) + "...";
+			}
+
 			ChatStepResult MakeProviderError( ChatErrorKind kind, const std::string& message )
 			{
 				ChatStepResult r;
@@ -3955,6 +3962,12 @@ namespace RISE
 				( finishReason == "SAFETY" || finishReason == "RECITATION" ||
 				  finishReason == "BLOCKLIST" || finishReason == "PROHIBITED_CONTENT" ||
 				  finishReason == "SPII" || finishReason == "IMAGE_SAFETY" ) ? ChatErrorKind::Refusal :
+				// MALFORMED_FUNCTION_CALL: the model tried to call a tool but
+				// emitted an unparseable call (observed: chunk text without
+				// JSON string quoting).  The candidate carries one empty text
+				// part and a finishMessage quoting the attempt; recoverable by
+				// asking the model to re-issue -- see AgentChatLoop::HandleResponse.
+				( finishReason == "MALFORMED_FUNCTION_CALL" ) ? ChatErrorKind::MalformedToolCall :
 				ChatErrorKind::Provider;
 			if( !calls.empty() ) {
 				// Mirror the Anthropic stop_reason gate: a call turn that
@@ -4009,8 +4022,13 @@ namespace RISE
 			else {
 				// SAFETY / MAX_TOKENS / RECITATION / ... -> error with the
 				// finishReason in the message.
-				out.step = MakeProviderError( finishKind,
-					"gemini stopped with finishReason \"" + finishReason + "\"" );
+				std::string stopMsg = "gemini stopped with finishReason \"" + finishReason + "\"";
+				if( finishKind == ChatErrorKind::MalformedToolCall ) {
+					const JsonValue fm = cand.get( "finishMessage" );
+					if( fm.isString() && !fm.asString().empty() )
+						stopMsg += ": " + CapSnippet( fm.asString() );
+				}
+				out.step = MakeProviderError( finishKind, stopMsg );
 				return AttachReasoning();
 			}
 			out.assistantDisplayText = text;
@@ -4605,9 +4623,10 @@ namespace RISE
 						std::string aerr;
 						if( !JsonParse( item.get( "arguments" ).asString(), args, aerr ) ||
 						    !args.isObject() ) {
-							out.step = MakeProviderError( ChatErrorKind::Provider,
+							out.step = MakeProviderError( ChatErrorKind::MalformedToolCall,
 								"openai function_call \"" + c.name +
-								"\" carries malformed arguments JSON" );
+								"\" carries malformed arguments JSON: " +
+								CapSnippet( item.get( "arguments" ).asString() ) );
 							return out;
 						}
 						c.argsJson = JsonSerialize( args );
@@ -4812,9 +4831,14 @@ namespace RISE
 						// parse as a JSON object must not be recorded and then
 						// executed with fabricated empty args -- refuse the
 						// WHOLE response instead of silently degrading to "{}".
-						out.step = MakeProviderError( ChatErrorKind::Provider,
+						// A reply cut off by the token cap is truncation, not a
+						// model formatting error: a corrective retry would just
+						// truncate again.
+						out.step = MakeProviderError(
+							choice.get( "finish_reason" ).asString() == "length"
+								? ChatErrorKind::MaxTokens : ChatErrorKind::MalformedToolCall,
 							"openai tool_call \"" + c.name + "\" carries malformed arguments JSON -- "
-							"refusing the turn (executing it would fabricate empty args)" );
+							"refusing the turn (executing it would fabricate empty args): " + CapSnippet( argText ) );
 						return out;
 					}
 					c.argsJson = JsonSerialize( args );

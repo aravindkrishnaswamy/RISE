@@ -782,6 +782,8 @@ namespace RISE
 			mPendingResults.clear();
 			mToolLineStash.clear();
 			mToolRounds = 0;
+			mMalformedRetries = 0;
+			mPendingCorrective.clear();
 			// Describes the transcript we just cleared, so it goes with it.
 			mCompactedEntryCount = 0;
 			mBlindEditStreak = 0;
@@ -960,6 +962,14 @@ namespace RISE
 			// fires when BOTH are empty.
 			if( IsBlank( text ) && attachments.empty() ) return;
 
+			// A genuine user message starts a new turn: restore the
+			// malformed-tool-call retry budget and discard a corrective
+			// the driver never sent (the user's words supersede it).
+			if( !mAppendingCorrective ) {
+				mMalformedRetries = 0;
+				mPendingCorrective.clear();
+			}
+
 			// Eval-harness E1: ensure the session record leads the trajectory.
 			EnsureSessionRecordEmitted();
 
@@ -983,7 +993,10 @@ namespace RISE
 			mTranscript.push_back( entry );
 
 			// Eval-harness E1: record the user turn (text + attachment count).
-			if( mRecorder ) {
+			// A loop-injected corrective is NOT a human turn: it is recorded
+			// as a history_edit by BuildRequest instead (eval readers count
+			// run_type "user" records as human turns).
+			if( mRecorder && !mAppendingCorrective ) {
 				TrajectoryUserRecord u;
 				u.text = text;
 				u.attachments = static_cast<int>( attachments.size() );
@@ -1052,6 +1065,36 @@ namespace RISE
 		ChatHttpRequest AgentChatLoop::BuildRequest( const std::string& apiKey )
 		{
 			FlushPendingToolResults();
+
+			// MALFORMED-TOOL-CALL RECOVERY: append the queued corrective as an
+			// ordinary user turn (user-role text after a user turn / tool
+			// results is the shape AddUserMessage already produces for every
+			// provider).  It is NOT a new conversation turn, so the
+			// tool-round counter is preserved.
+			if( !mPendingCorrective.empty() ) {
+				const std::string corrective = mPendingCorrective;
+				mPendingCorrective.clear();
+				const int savedRounds = mToolRounds;
+				const int savedBlindStreak = mBlindEditStreak;
+				mAppendingCorrective = true;
+				AddUserMessage( corrective );
+				mAppendingCorrective = false;
+				// Same wire shape as a user entry (MakeUserEntry), but a
+				// loop-injected note, NOT a span boundary: CompactTranscript
+				// must never treat it as a turn the user took, or repeated
+				// correctives could let it erase the real request's span.
+				if( !mTranscript.empty() &&
+				    mTranscript.back().role == ChatTranscriptEntry::Role::User ) {
+					mTranscript.back().role = ChatTranscriptEntry::Role::DriverNote;
+					++mDriverNoteCount;
+					mLastDriverNoteText = corrective;
+					RecordHistoryEdit( "malformed_tool_call_corrective", 0,
+					                   static_cast<long long>( mTranscript.back().rawJson.size() ),
+					                   static_cast<int>( mTranscript.size() ) - 1, corrective );
+				}
+				mToolRounds = savedRounds;
+				mBlindEditStreak = savedBlindStreak;
+			}
 
 			// TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: once a model has
 			// proven text-only, every request stays image-free -- strip any
@@ -1193,6 +1236,41 @@ namespace RISE
 				return pr.step;
 			}
 
+			// MALFORMED-TOOL-CALL RECOVERY (Gemini finishReason
+			// MALFORMED_FUNCTION_CALL; OpenAI-family non-object arguments):
+			// the turn carries no executable call and nothing is recorded
+			// (a Gemini one is a single EMPTY text part, invalid to echo).
+			// Within a bounded per-turn budget, queue a corrective user
+			// message for the next BuildRequest and flag the driver to
+			// re-issue; beyond it the error surfaces with a clear message.
+			if( pr.step.kind == ChatStepResult::Kind::ProviderError &&
+			    pr.step.errorKind == ChatErrorKind::MalformedToolCall ) {
+				if( mMalformedRetries >= kMaxMalformedToolCallRetries ) {
+					pr.step.errorMessage += " -- the model produced a malformed tool call " +
+						std::to_string( mMalformedRetries + 1 ) +
+						" times in a row despite corrective instructions; giving up on this turn";
+					return pr.step;
+				}
+				++mMalformedRetries;
+				// Provider text is model-authored: flatten control characters
+				// and newlines so it cannot restructure the corrective.
+				std::string detail = pr.step.errorMessage;
+				for( std::size_t i = 0; i < detail.size(); ++i ) {
+					const unsigned char ch = static_cast<unsigned char>( detail[i] );
+					if( ch < 0x20 || ch == 0x7f ) detail[i] = ' ';
+				}
+				if( detail.size() > 300 ) detail = detail.substr( 0, 300 ) + "...";
+				mPendingCorrective =
+					"[automatic notice] Your previous tool call was malformed and was NOT executed: " +
+					detail + "\n"
+					"Tool arguments must be a valid JSON object. In particular, string values "
+					"(including every element of an array of strings such as `chunks`) must be JSON "
+					"strings: wrapped in double quotes, with newlines escaped as \\n, tabs as \\t "
+					"and inner double quotes as \\\". Please re-issue the tool call with valid JSON arguments.";
+				pr.step.retryDegenerateTurn = true;
+				return pr.step;
+			}
+
 			if( pr.step.kind == ChatStepResult::Kind::ToolCalls ) {
 				// Iteration cap: the (kMaxToolRoundsPerTurn+1)-th tool round
 				// within one conversation-turn is refused WITHOUT recording
@@ -1210,6 +1288,7 @@ namespace RISE
 					return capped;
 				}
 				++mToolRounds;
+				mMalformedRetries = 0;   // the cap counts CONSECUTIVE malformed calls
 
 				ChatTranscriptEntry entry;
 				entry.role = ChatTranscriptEntry::Role::Assistant;
@@ -1225,6 +1304,7 @@ namespace RISE
 				mPendingResults.clear();
 			}
 			else if( pr.step.kind == ChatStepResult::Kind::FinalText ) {
+				mMalformedRetries = 0;
 				ChatTranscriptEntry entry;
 				entry.role = ChatTranscriptEntry::Role::Assistant;
 				entry.displayText = pr.assistantDisplayText;
@@ -2586,6 +2666,7 @@ namespace RISE
 					case ChatErrorKind::MaxTokens:    return "max_tokens";
 					case ChatErrorKind::IterationCap: return "iteration_cap";
 					case ChatErrorKind::Misuse:       return "misuse";
+					case ChatErrorKind::MalformedToolCall: return "malformed_tool_call";
 					case ChatErrorKind::None:
 					default:                          return "";
 				}
@@ -2960,7 +3041,8 @@ namespace RISE
 		}
 
 		void AgentChatLoop::RecordHistoryEdit( const std::string& reason, long long beforeBytes,
-		                                       long long afterBytes, int entryIndex )
+		                                       long long afterBytes, int entryIndex,
+		                                       const std::string& text )
 		{
 			if( !mRecorder ) return;
 			EnsureSessionRecordEmitted();   // keep the `session` record leading, like RecordHttpRound
@@ -2969,6 +3051,7 @@ namespace RISE
 			rec.beforeBytes = beforeBytes;
 			rec.afterBytes  = afterBytes;
 			rec.reason      = reason;
+			rec.text        = text;
 			mRecorder->EmitHistoryEdit( rec );
 		}
 	}

@@ -281,6 +281,7 @@ namespace RISE
 			o.set( "before_bytes", Num( static_cast<double>( r.beforeBytes ) ) );
 			o.set( "after_bytes", Num( static_cast<double>( r.afterBytes ) ) );
 			o.set( "reason", JsonValue::MakeString( r.reason ) );
+			if( !r.text.empty() ) o.set( "text", JsonValue::MakeString( r.text ) );
 			return JsonSerialize( o );
 		}
 
