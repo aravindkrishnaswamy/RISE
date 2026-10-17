@@ -17732,6 +17732,32 @@ static void TestPopulateSceneParentSubtreeAndRefund()
 		       "A82j a quoted `source` is unquoted and lands; nothing else lands; reported count equals the real delta" );
 		pJob->release();
 	}
+	// PIECES PHASE: InsertChunk auto-parents every parentable chunk lacking a `parent` to
+	// the active element's root, so the pre-check must price the clone against the subtree
+	// AS IT WILL BE after those placements land.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j/pieces fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A82j/pieces the plan files" );
+		Check( sess->InsertChunk( "standard_object\n{\n\tname wiz_first\n\tgeometry sph\n\tmaterial mat_diffuse\n}" ).applied,
+		       "A82j/pieces the first object lands and mints the element root" );
+		const std::string root = Agent::AgentSession::ElementRootName( "wizard" );
+		std::string answer;
+		for( int k = 0; k < 6; ++k )
+			answer += "standard_object\n{\n\tname wiz_p" + std::to_string( k ) +
+			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n";
+		answer += "standard_object\n{\n\tname wiz_biggy\n\tparent none\n\tsource " + root +
+		          "\n\tcount_u 100\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( A82AnyRejection( r, ( "also parents a chunk to \"" + root + "\"" ).c_str() ),
+		       "A82j/pieces MONEY ASSERTION: placements that InsertChunk will auto-parent to the element root "
+		       "count as children of that root, so a clone of the root is refused" );
+		Check( r.objectCountAfter - r.objectCountBefore <= 6 && A82CreatedObjects( r ) == r.objectCountAfter - r.objectCountBefore,
+		       "A82j/pieces only the plain placements land, and the reported count equals the real delta" );
+		pJob->release();
+	}
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		if( !pJob ) { Check( false, "A82j/refund fixture loads" ); return; }

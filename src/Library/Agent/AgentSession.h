@@ -9669,6 +9669,15 @@ namespace RISE
 			                              std::string& outRoot,
 			                              std::string& outWhyNot );
 
+			//! The ONE definition of when InsertChunk auto-parents a chunk to the
+			//! active element's root (87 step 5).  InsertChunk applies exactly this;
+			//! populate_scene's pre-check asks it too, so the size check sees the
+			//! parent the chunk will really land with.
+			bool InsertAutoParentActive_() const;
+			bool InsertWouldAutoParent_( const std::string& role, const std::string& name,
+			                             const std::string& existingParent,
+			                             std::string* outRootName ) const;
+
 			//! Re-entrancy guard for EnsureElementRootChunk_'s own InsertChunk
 			//! call: the root is itself a `standard_object`, so without this
 			//! the auto-parent hook would try to give it a parent.

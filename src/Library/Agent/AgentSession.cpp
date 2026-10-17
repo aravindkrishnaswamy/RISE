@@ -12566,6 +12566,29 @@ namespace RISE
 			return out;
 		}
 
+		bool AgentSession::InsertAutoParentActive_() const
+		{
+			return BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces &&
+			       !mCreatingElementRoot && mAuthority != AgentAuthority::External &&
+			       mActiveElement < mBuildPlan.size();
+		}
+
+		bool AgentSession::InsertWouldAutoParent_( const std::string& role, const std::string& name,
+		                                           const std::string& existingParent,
+		                                           std::string* outRootName ) const
+		{
+			if( !InsertAutoParentActive_() ) return false;
+			const std::string element = mBuildPlan[ mActiveElement ].element;
+			// AN AUTHORED `parent` WINS, always (even `parent none`).
+			if( RoleIsParentableObject_( role ) && !name.empty() &&
+			    existingParent.empty() && name != ElementRootName( element ) )
+			{
+				if( outRootName ) *outRootName = ElementRootName( element );
+				return true;
+			}
+			return false;
+		}
+
 		AgentChunkResult AgentSession::InsertChunk( const std::string& chunkText,
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
@@ -12972,9 +12995,7 @@ namespace RISE
 			//------------------------------------------------------------------
 			std::string applyText = chunkText;
 			std::string autoParentNotice;
-			if( BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces &&
-			    !mCreatingElementRoot && mAuthority != AgentAuthority::External &&
-			    mActiveElement < mBuildPlan.size() )
+			if( InsertAutoParentActive_() )
 			{
 				RISE::Cst::Document cdoc = RISE::Cst::ParseToCst( chunkText );
 				RISE::Cst::NodeId chunkNodeId = 0;
@@ -12997,8 +13018,7 @@ namespace RISE
 				// how an element builds real internal hierarchy (a hand or a
 				// finger parented to a wrist) and still rides the root.
 				const std::string element = mBuildPlan[ mActiveElement ].element;
-				if( chunkNodeId != 0 && RoleIsParentableObject_( role ) && !cname.empty() &&
-				    existingParent.empty() && cname != ElementRootName( element ) )
+				if( chunkNodeId != 0 && InsertWouldAutoParent_( role, cname, existingParent, nullptr ) )
 				{
 					std::string rootName, whyNot;
 					if( EnsureElementRootChunk_( element, rootName, whyNot ) ) {
@@ -33692,7 +33712,10 @@ namespace RISE
 					for( int c = 0; c < pn; ++c ) {
 						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( pd, RISE::Cst::DocNodeIdAt( pd, c ) );
 						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
-						// EVERY occurrence, not just the first (the derive keeps the last).
+						// EVERY occurrence, not just the first (the derive keeps the last);
+						// and the parent InsertChunk will ADD when none is written (auto-parent
+						// to the active element's root) -- asked of the same helper InsertChunk uses.
+						bool wroteParent = false;
 						for( const RISE::Cst::NodeRef& kid : it->kids ) {
 							if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
 							std::string thisName, val;
@@ -33701,7 +33724,13 @@ namespace RISE
 								if( tk->role == "pname" ) thisName = tk->text;
 								else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
 							}
+							if( thisName == "parent" ) wroteParent = true;
 							if( thisName == "parent" && !val.empty() && val != "none" ) answerParents.push_back( val );
+						}
+						if( !wroteParent ) {
+							std::string rootName;
+							if( InsertWouldAutoParent_( it->role, ChunkParamString_( it, "name" ), std::string(), &rootName ) )
+								answerParents.push_back( rootName );
 						}
 						break;
 					}
