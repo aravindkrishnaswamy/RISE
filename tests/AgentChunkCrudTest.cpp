@@ -14634,7 +14634,7 @@ static void TestUndoFidelityChainsAndFallbacks()
 		close( f );
 	}
 
-	// (c) A rename patch: no post text resolves by the old name, so the value replay renames it back.
+	// (c) A rename patch: the post text and the Undo resolve by the NEW name (the batch postEntityName rule).
 	{
 		Fixture f;
 		Check( open( f ), "BR25 fixture loads" );
@@ -14668,15 +14668,16 @@ static void TestUndoFidelityChainsAndFallbacks()
 		close( f );
 	}
 
-	// (e) A ROLLBACK reverting two transform commits in ONE flush: the journal's latest entry restores the
-	// intermediate text, the verification sees that pose is not the restored one, and the pose is re-asserted
-	// as a `matrix` -- the object must end where it started, never at the intermediate pose.
+	// (e) A ROLLBACK reverting two transform commits in ONE flush (a scrub has the same shape): the journal is
+	// walked as a chain -- the latest entry's pre-pose is the intermediate pose, the first entry's is the start
+	// pose -- so the chunk returns to its inserted bytes, never to the intermediate pose.
 	{
 		Fixture f;
 		Check( open( f ), "BR25 fixture loads" );
 		if( !f.pJob ) return;
 		const std::string w = "BR25e [rollback of two edits] ";
 		Check( f.sess->InsertChunk( kObj ).applied, w + "the object inserts" );
+		const std::string d1e = f.sess->ReadDocument();
 		f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "br25_o" ) );
 		Check( f.ctrl->BeginTransaction(), w + "transaction opens" );
 		Check( f.ctrl->SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ), w + "edit 1 applies" );
@@ -14685,9 +14686,7 @@ static void TestUndoFidelityChainsAndFallbacks()
 		const std::string d = f.sess->ReadDocument();
 		Check( d.find( "0.40000000000000002" ) == std::string::npos && d.find( "0.69999999999999996" ) == std::string::npos,
 		       w + "MONEY: no intermediate pose survives in the document" );
-		const bool exact = d.find( "position 0.1  0 0" ) != std::string::npos;
-		const bool asMatrix = d.find( "0.10000000000000001 0 0 1" ) != std::string::npos;
-		Check( exact || asMatrix, w + "the object is back at its starting pose" );
+		Check( d == d1e, w + "MONEY: the Document is back at the inserted bytes" );
 		close( f );
 	}
 
@@ -14705,7 +14704,10 @@ static void TestUndoFidelityChainsAndFallbacks()
 		f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "br25_o" ) );
 		Check( f.ctrl->BeginTransaction(), w + "transaction opens" );
 		Check( f.ctrl->SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ), w + "the edit applies" );
-		f.ctrl->SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) );   // same pose again (may be a no-op)
+		const unsigned int depthBefore = f.ctrl->Editor().History().UndoDepth();
+		Check( f.ctrl->SetProperty( String( "position" ), String( "0.4 0.4 0.4" ) ) &&
+		       f.ctrl->Editor().History().UndoDepth() > depthBefore,
+		       w + "the same-pose edit commits (the pre == post journal entry exists)" );
 		Check( f.ctrl->RollbackTransaction(), w + "rollback succeeds" );
 		Check( f.sess->ReadDocument() == d1, w + "MONEY: the Document is back at the inserted bytes" );
 		close( f );

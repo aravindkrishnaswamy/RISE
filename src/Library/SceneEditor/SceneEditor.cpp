@@ -2424,8 +2424,7 @@ bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char*
 // the restored line (WithParamValue single-spaces values) and cannot re-add a param the write stripped (a
 // `position` patch strips `matrix`) where it was -- and either difference makes an OLDER insert record's
 // exact-bytes inverse refuse.  Returns -1 when the swap does not apply (no captured texts, a non-IJobPriv Job,
-// the owner gone, or its text changed since) -- the caller then replays values as before (which, for a rename,
-// still resolves by the old name and refuses, as it always did); 0 when the swapped
+// the owner gone, or its text changed since) -- the caller then replays values as before; 0 when the swapped
 // document would not derive (nothing changed); 1 when it landed (with the same rebind / dirty bookkeeping, and
 // `outDiagnosed`, as RouteCstParamEditChecked_).
 int SceneEditor::RouteCstParamOwnerRestore_( const SceneEdit& edit, bool forward, bool* outDiagnosed )
@@ -2887,8 +2886,7 @@ namespace
 			const std::string what = "the inserted `" + o.keyword + "` " +
 				( o.namePath.empty() ? std::string( "(unnamed)" ) : ( "`" + RISE::CstNameFromPath( o.namePath ) + "`" ) );
 			ref.why = sameIdentityChanged
-				? what + " no longer has the exact text it was inserted with (it was edited since, and undoing those "
-				         "edits did not restore that text)"
+				? what + " was edited since it was inserted and no longer has the exact text it was inserted with"
 				: what + " no longer exists";
 			return false;
 		}
@@ -2967,7 +2965,7 @@ namespace
 		// swap in the other side verbatim -- every line back with its own spacing and in its own place.  Replaying
 		// the slots below cannot do that: a write re-spells the line it touches (`0.1  0.2\t0.3` -> `0.1 0.2 0.3`)
 		// and re-adds a stripped param at the END of the chunk, and either one makes an older insert record's
-		// exact-bytes inverse refuse.  An exact match means nothing has touched THIS chunk since,
+		// exact-bytes inverse refuse.  An exact match means this chunk holds the text the write left,
 		// so the swap loses nothing in it (a param write lands on its owner chunk alone).
 		{
 			const std::string& expect = forward ? o.ownerPreText : o.ownerPostText;
@@ -3153,37 +3151,46 @@ bool SceneEditor::ApplyCstObjectComponents_( const std::string& name, const std:
 	return r == 1 || r == 2;
 }
 
-// Undo fidelity (2026-10-17): see the header doc.  Entries are consumed newest first; the first one whose `prePose`
-// is the pose the Undo restored (`matrix16`, formatted as the commit would write it) is tried -- one Undo can revert
-// several forward commits (a transaction rollback), and the entry of a commit that wrote an unchanged pose cannot
-// match.  That entry's `post` text must still be the chunk's exact text (nothing touched it since); then its `pre`
-// text is swapped in and re-derived, and the derived local matrix must reproduce `matrix16`.  When it does not
-// (the Document and the live object had diverged), the swap is undone and the caller writes the matrix, exactly
-// as before this change.  Any miss clears the object's journal: its remaining entries no longer chain.
+// Undo fidelity (2026-10-17): see the header doc.  One Undo can revert SEVERAL forward commits at once (a panel
+// scrub commits on every tick; a transaction rollback flushes once), so the journal is walked newest first as a
+// CHAIN: the newest entry's `post` must be the chunk's current text, each older entry's `post` the next newer one's
+// `pre`, and the walk stops at the first entry whose `prePose` is the pose the Undo restored (`matrix16`, formatted
+// as the commit would write it) -- that entry's `pre` is the text to restore.  A commit that wrote an unchanged
+// pose cannot end the walk early (its prePose is the edited pose).  The swap is then re-derived and the derived
+// local matrix must reproduce `matrix16`; when it does not (the Document and the live object had diverged), the
+// swap is undone and the caller writes the matrix, as before this change.  A broken chain, a miss, or a target that
+// is already the current text (nothing to restore; the check would be vacuous) clears the object's journal.
 bool SceneEditor::RestoreCstObjectSpelling_( const std::string& name, const std::string& matrix16, bool& routed )
 {
 	routed = false;
 	IJobPriv* const jp = dynamic_cast<IJobPriv*>( mJob );
 	std::unordered_map< std::string, std::vector<CstTransformSpelling_> >::iterator it = mCstTransformSpellings.find( name );
 	if( !jp || it == mCstTransformSpellings.end() ) return false;
-	CstTransformSpelling_ e;
+	std::string current;
+	if( !jp->CstParamEditOwnerChunkText( name.c_str(), "standard_object", "matrix", current ) ) {
+		mCstTransformSpellings.erase( it );
+		return false;
+	}
+	std::string link = current, target;
 	bool found = false;
 	while( !it->second.empty() && !found ) {
-		e = it->second.back();
+		const CstTransformSpelling_ e = it->second.back();
 		it->second.pop_back();
-		found = !e.prePose.empty() && e.prePose == matrix16;
+		if( e.post != link ) break;   // the chain is broken: the chunk changed outside these commits
+		if( !e.prePose.empty() && e.prePose == matrix16 ) { target = e.pre; found = true; }
+		link = e.pre;
 	}
-	if( !found ) { mCstTransformSpellings.erase( it ); return false; }
-	const int r = jp->ApplyCstParamEditOwnerRestore( name.c_str(), "standard_object", "matrix", e.post, e.pre,
+	if( !found || target == current ) { mCstTransformSpellings.erase( name ); return false; }
+	const int r = jp->ApplyCstParamEditOwnerRestore( name.c_str(), "standard_object", "matrix", current, target,
 	                                                 /*requireFullDerivability*/ false );   // as ApplyCstObjectMatrixEdit
 	if( r >= 2 ) RebindToJob_();
 	if( r >= 1 ) mCstLiveSceneChanged = true;
-	if( r <= 0 ) { mCstTransformSpellings.erase( name ); return false; }   // chunk changed since / would not derive
+	if( r <= 0 ) { mCstTransformSpellings.erase( name ); return false; }   // chunk changed / would not derive
 	IObjectPriv* const obj = FindObject( String( name.c_str() ) );
 	if( !obj || FormatMatrix16( MirrorFreeLocal_( *obj ) ) != matrix16 ) {
 		// The text does not reproduce the restored pose: put the chunk back as it was, then let the caller write
-		// the matrix -- never leave the Document at a pose that is neither the undone state nor the prior one.
-		const int back = jp->ApplyCstParamEditOwnerRestore( name.c_str(), "standard_object", "matrix", e.pre, e.post,
+		// the matrix, so the Document does not end at a pose that is neither the undone state nor the prior one.
+		const int back = jp->ApplyCstParamEditOwnerRestore( name.c_str(), "standard_object", "matrix", target, current,
 		                                                    /*requireFullDerivability*/ false );
 		if( back >= 2 ) RebindToJob_();
 		mCstTransformSpellings.erase( name );
@@ -3207,7 +3214,10 @@ bool SceneEditor::RestoreCstObjectSpelling_( const std::string& name, const std:
 // Either way the live edit stands right now and the failure is logged.
 bool SceneEditor::CommitPendingCstObjectTransforms()
 {
-	if( mPendingCstObjMatrix.empty() ) return true;
+	if( mPendingCstObjMatrix.empty() ) {
+		mPendingCstObjPrePose.clear();   // a refused forward op captured a pose but noted nothing
+		return true;
+	}
 	// Snapshot EACH pending object's route BEFORE applying ANY -- the first route's D2 rebuilds the scene from the
 	// Document, which would reset a not-yet-routed object's live transform to its (stale) Document value.  Per
 	// object: kind 1 (standard_object) commits the full `matrix`; kind 2 (csg_object) commits decomposed position +

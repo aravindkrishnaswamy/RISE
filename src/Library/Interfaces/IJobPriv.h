@@ -72,6 +72,11 @@ namespace RISE
 	//! (re-insert the recorded chunk text after its recorded anchor; re-set each slot's post value), and either
 	//! direction is realized by ONE dry-run-gated derive.  Nothing the batch did not touch is ever rewritten, so
 	//! edits made outside the history (film / environment inspector edits) survive an Undo/Redo of the batch.
+	//! Undo fidelity (2026-10-17): the largest owner chunk whose exact text an undo record keeps for its verbatim
+	//! inverse.  The swap is a fidelity optimisation (value replay stays the fallback), so a huge inline-mesh chunk
+	//! is not copied twice per edit into the history's byte budget.
+	static constexpr std::size_t kCstUndoOwnerTextCap = std::size_t( 1 ) << 20;
+
 	struct CstBatchUndoOp
 	{
 		struct Slot

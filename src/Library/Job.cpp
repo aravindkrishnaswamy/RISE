@@ -13141,7 +13141,10 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 			if( owner ) {
 				// Undo fidelity: the owner's exact text BEFORE the first pair writes (every pair lands on this one
 				// chunk -- the one-owner refusal above), so Undo can put every line back exactly as it was.
-				if( i == 0 ) outUndo->ownerPreText = RISE::Cst::SerializeNode( owner );
+				if( i == 0 ) {
+					outUndo->ownerPreText = RISE::Cst::SerializeNode( owner );
+					if( outUndo->ownerPreText.size() > kCstUndoOwnerTextCap ) outUndo->ownerPreText.clear();   // too large
+				}
 				outUndo->ownerKeyword  = owner->role;
 				outUndo->ownerNamePath = RISE::Cst::ChunkNamePath( owner );
 				for( std::size_t k = 0; k < slotRoles.size(); ++k ) {
@@ -13159,6 +13162,8 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 		if( outUndo ) {   // each recorded slot's value AFTER the write (the redo payload)
 			const RISE::Cst::NodeRef after = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
 			if( after ) outUndo->ownerPostText = RISE::Cst::SerializeNode( after );   // after the LAST pair: the whole write
+			if( outUndo->ownerPreText.empty() || outUndo->ownerPostText.size() > kCstUndoOwnerTextCap )
+				outUndo->ownerPostText.clear();   // both or neither (ApplySlots_ needs the pair)
 			for( std::size_t k = 0; after && k < outUndo->slots.size(); ++k ) {
 				CstBatchUndoOp::Slot& slot = outUndo->slots[k];
 				slot.postAbsent = RISE::Cst::ParamOccurrenceCount( after, slot.role ) <= slot.occ;
@@ -13199,6 +13204,7 @@ bool Job::CstParamEditOwnerChunkText( const char* entityName, const char* entity
 	const RISE::Cst::NodeRef owner = RISE::Cst::DocResolveNodeId( *pCstDocument, ownerId );
 	if( !owner || owner->kind != RISE::Cst::NodeKind::Chunk ) return false;
 	out = RISE::Cst::SerializeNode( owner );
+	if( out.size() > kCstUndoOwnerTextCap ) { out.clear(); return false; }   // too large to keep (see the cap's doc)
 	return true;
 }
 
@@ -13212,7 +13218,7 @@ int Job::ApplyCstParamEditOwnerRestore( const char* entityName, const char* enti
 	bool replaced = false;
 	RISE::Cst::Document d1 = RISE::Cst::DocReplaceChunkIfText( *pCstDocument, ownerId, expectText, newText, &replaced );
 	if( !replaced ) return -1;
-	if( expectText == newText ) return 1;   // nothing to change (never produced by a real edit; defensive)
+	if( expectText == newText ) return 1;   // nothing to change (a GUI commit can rewrite identical text)
 	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, requireFullDerivability );
 }
 
