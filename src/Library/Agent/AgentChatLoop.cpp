@@ -1090,7 +1090,7 @@ namespace RISE
 					mLastDriverNoteText = corrective;
 					RecordHistoryEdit( "malformed_tool_call_corrective", 0,
 					                   static_cast<long long>( mTranscript.back().rawJson.size() ),
-					                   static_cast<int>( mTranscript.size() ) - 1 );
+					                   static_cast<int>( mTranscript.size() ) - 1, corrective );
 				}
 				mToolRounds = savedRounds;
 				mBlindEditStreak = savedBlindStreak;
@@ -3029,7 +3029,8 @@ namespace RISE
 		}
 
 		void AgentChatLoop::RecordHistoryEdit( const std::string& reason, long long beforeBytes,
-		                                       long long afterBytes, int entryIndex )
+		                                       long long afterBytes, int entryIndex,
+		                                       const std::string& text )
 		{
 			if( !mRecorder ) return;
 			EnsureSessionRecordEmitted();   // keep the `session` record leading, like RecordHttpRound
@@ -3038,6 +3039,7 @@ namespace RISE
 			rec.beforeBytes = beforeBytes;
 			rec.afterBytes  = afterBytes;
 			rec.reason      = reason;
+			rec.text        = text;
 			mRecorder->EmitHistoryEdit( rec );
 		}
 	}

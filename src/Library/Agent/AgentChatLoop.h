@@ -1112,10 +1112,16 @@ namespace RISE
 			//! `reason` is a short machine tag (e.g. "scenario_intervention");
 			//! `beforeBytes`/`afterBytes` record the affected document's byte
 			//! size before/after the edit; `entryIndex` is advisory (-1 = not
-			//! tied to a transcript entry, the intervention case).  No-op when
-			//! no trajectory sink is attached.
+			//! tied to a transcript entry, the intervention case).  Byte-field
+			//! meaning per reason (see TrajectoryHistoryEditRecord): image
+			//! elisions = entry rawJson size before/after; context_compaction
+			//! = token estimates; scenario_intervention = document bytes;
+			//! malformed_tool_call_corrective = an insertion (before 0, after
+			//! = the new entry's size).  `text` is an optional payload (the
+			//! corrective message).  No-op when no trajectory sink is attached.
 			void RecordHistoryEdit( const std::string& reason, long long beforeBytes = 0,
-			                        long long afterBytes = 0, int entryIndex = -1 );
+			                        long long afterBytes = 0, int entryIndex = -1,
+			                        const std::string& text = std::string() );
 
 		private:
 			AgentChatLoop( const AgentChatLoop& );             // deleted

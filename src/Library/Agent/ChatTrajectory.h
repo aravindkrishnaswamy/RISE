@@ -155,14 +155,24 @@ namespace RISE
 			bool        error = false;         //!< the envelope carried a JSON-RPC error
 		};
 
-		//! run_type "history_edit": one loop-driven transcript rewrite (an
-		//! image elision).  `reason` is a short machine tag.
+		//! run_type "history_edit": one loop-driven change to the history the
+		//! model sees.  `reason` is a short machine tag; the byte fields mean:
+		//!  - "tool_image_elision" / "user_image_elision": entryIndex = the
+		//!    rewritten entry; before/after = its rawJson size around the rewrite.
+		//!  - "context_compaction": entryIndex -1; before/after = the token
+		//!    ESTIMATE around the whole-span drop (not bytes).
+		//!  - "scenario_intervention": entryIndex -1; before/after = the
+		//!    affected document's byte size around the edit.
+		//!  - "malformed_tool_call_corrective": an INSERTION -- entryIndex =
+		//!    the new entry, before = 0, after = its rawJson size, `text` =
+		//!    the corrective message (it is NOT a human "user" record).
 		struct TrajectoryHistoryEditRecord
 		{
 			int         entryIndex = -1;   //!< which transcript entry was rewritten
-			long long   beforeBytes = 0;   //!< rawJson byte size before the rewrite
-			long long   afterBytes = 0;    //!< rawJson byte size after the rewrite
-			std::string reason;            //!< "tool_image_elision" / "user_image_elision"
+			long long   beforeBytes = 0;   //!< see the per-reason table above
+			long long   afterBytes = 0;    //!< see the per-reason table above
+			std::string reason;            //!< machine tag, see above
+			std::string text;              //!< optional payload; serialized only when non-empty
 		};
 
 		//! run_type "document_snapshot": a durable copy of the FULL scene

@@ -10570,6 +10570,16 @@ static void TestMalformedFunctionCallRecovery()
 		}
 		Check( users == 1, "T60g: exactly one user record (the real request) despite the corrective" );
 		Check( edits == 1, "T60g: the corrective is recorded as one history_edit" );
+		bool textOk = false;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const JsonValue j = ParseBody( lines[i] );
+			if( j.get( "run_type" ).asString() == "history_edit" &&
+			    j.get( "reason" ).asString() == "malformed_tool_call_corrective" &&
+			    j.get( "text" ).asString().find( "was malformed and was NOT executed" ) != std::string::npos &&
+			    j.get( "before_bytes" ).asNumber() == 0 )
+				textOk = true;
+		}
+		Check( textOk, "T60g: the history_edit carries the corrective text (insertion, before_bytes 0)" );
 	}
 
 	// (e) Responses wire.
