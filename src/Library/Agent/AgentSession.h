@@ -5618,6 +5618,13 @@ namespace RISE
 			//! headroom while keeping one call far from a runaway scene.
 			static constexpr int kPopulateSceneMaxObjectsPerCall = 1024;
 
+			//! True only inside PopulateScene's own rollback of a chunk it just
+			//! inserted: RemoveChunks then skips the element-window and
+			//! compose-phase REMOVAL gates (they exist to stop a model tearing
+			//! down form, not the harness undoing its own insert) and spends no
+			//! phase budget. Never set by any external entry point.
+			bool mHarnessRollbackScope = false;
+
 			//! The longest `notes` string a `populate_scene` call may carry
 			//! -- the ONE model-supplied span in the host-composed prompt,
 			//! TRUNCATED with the truncation stated, never silently.

@@ -17601,8 +17601,8 @@ static void TestPopulateSceneSourceClone()
 		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
 			const std::string& why = r.rejected[i].reason;
 			if( why.find( "\"sph\", which this scene does not have" ) != std::string::npos ) geomSrc = true;
-			if( why.find( "carries `count_u` / `count_v`" ) != std::string::npos ) countedSrc = true;
-			if( why.find( "over the populate_scene cap of 256" ) != std::string::npos ) big = true;
+			if( why.find( "carrying `count_u` / `count_v`" ) != std::string::npos ) countedSrc = true;
+			if( why.find( "exceeds the populate_scene cap of 256" ) != std::string::npos ) big = true;
 		}
 		Check( geomSrc, "A82h a `source` naming a GEOMETRY (not an object) is rejected" );
 		Check( countedSrc, "A82h a `source` that is a counted chunk is rejected" );
@@ -17667,7 +17667,7 @@ static void TestPopulateSceneCloneFanOutBounds()
 		bool chain = false, vonly = false, dec = false;
 		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
 			const std::string& why = r.rejected[i].reason;
-			if( why.find( "would create 262 objects" ) != std::string::npos ) chain = true;
+			if( why.find( "really made 262 objects" ) != std::string::npos ) chain = true;
 			if( why.find( "`count_v` without `count_u`" ) != std::string::npos ) vonly = true;
 			if( why.find( "positive integer literal" ) != std::string::npos ) dec = true;
 		}
@@ -17717,9 +17717,65 @@ static void TestPopulateSceneParentSubtreeAndRefund()
 		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
 		bool big = false;
 		for( std::size_t i = 0; i < r.rejected.size(); ++i )
-			if( r.rejected[i].reason.find( "would create 303 objects" ) != std::string::npos ) big = true;
+			if( r.rejected[i].reason.find( "really made 303 objects" ) != std::string::npos ) big = true;
 		Check( big, "A82j MONEY ASSERTION: 100 children declared via `parent obj_sph` in this answer make "
 		            "the source 101 objects, so count_u 3 (303) is rejected" );
+		pJob->release();
+	}
+	// P2-1 / P2-2: the fan-out the parser really produces is measured, not
+	// predicted.  obj_sph gets ONE authored child so clones have a synthesized
+	// `<clone>.kid0` entry to hang more children on.
+	{
+		std::string scene = kScene;
+		scene += "\nstandard_object\n{\n\tname kid0\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		if( !pJob ) { Check( false, "A82j/measured fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::string answer;
+		// P2-2: a clone C, then 100 children parented to its synthesized entry C.kid0,
+		// then D = clone of C x3 -> real 3 * (2 + 100) = 306 > 256.
+		answer += "standard_object\n{\n\tname mc\n\tsource obj_sph\n\tposition 4 0 0\n}\n";
+		for( int k = 0; k < 100; ++k )
+			answer += "standard_object\n{\n\tname mkid_" + std::to_string( k ) +
+			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent mc.kid0\n}\n";
+		answer += "standard_object\n{\n\tname md\n\tsource mc\n\tcount_u 3\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		const std::string doc = sess->ReadDocument();
+		bool measured = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].reason.find( "REMOVED again" ) != std::string::npos &&
+			    r.rejected[i].reason.find( "really made" ) != std::string::npos ) measured = true;
+		Check( measured, "A82j/measured an over-cap chunk is removed again with the MEASURED count in its reason" );
+		bool md = false;
+		for( std::size_t i = 0; i < r.created.size(); ++i ) {
+			if( r.created[i].name == "md" ) md = true;
+			Check( r.created[i].expandedCount <= 256, "A82j/measured no landed chunk exceeds the per-chunk cap" );
+		}
+		Check( !md && doc.find( "name\tmd" ) == std::string::npos && doc.find( "\nmd\n" ) == std::string::npos,
+		       "A82j/measured P2-2: the clone of C (children parented to C.kid0) is not left in the scene" );
+		Check( r.objectCountAfter - r.objectCountBefore <= 1024,
+		       "A82j/measured the scene grew by no more than the per-call cap" );
+		pJob->release();
+	}
+	// P2-1: children added to a clone's source AFTER the clone.  The parser
+	// itself refuses that late child (the earlier clone could not be re-derived),
+	// so nothing over the cap can come of it; the measured caps are the backstop.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) { Check( false, "A82j/late fixture loads" ); return; }
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::string answer = "standard_object\n{\n\tname la\n\tsource obj_sph\n\tposition 6 0 0\n}\n";
+		for( int k = 0; k < 100; ++k )
+			answer += "standard_object\n{\n\tname llate_" + std::to_string( k ) +
+			          "\n\tgeometry sph\n\tmaterial mat_diffuse\n\tparent obj_sph\n}\n";
+		answer += "standard_object\n{\n\tname lb\n\tsource la\n\tcount_u 3\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( r.objectCountAfter - r.objectCountBefore <= 1024,
+		       "A82j/late the scene stays within the per-call cap" );
+		for( std::size_t i = 0; i < r.created.size(); ++i )
+			Check( r.created[i].expandedCount <= 256, "A82j/late no landed chunk exceeds the per-chunk cap" );
 		pJob->release();
 	}
 	{
