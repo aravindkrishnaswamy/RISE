@@ -788,6 +788,8 @@ void MainWindow::createMenuBar()
     connect(m_undoAction, &QAction::triggered, this, [this]() {
         if (!canUseSceneTransport()) return;
         m_viewportBridge->undo();
+        const QString notice = m_viewportBridge->consumeHistoryNotice();   // a refused step explains itself
+        if (!notice.isEmpty()) QMessageBox::warning(this, "Undo/Redo Refused", notice);
     });
 
     m_redoAction = editMenu->addAction("Redo");
@@ -795,6 +797,8 @@ void MainWindow::createMenuBar()
     connect(m_redoAction, &QAction::triggered, this, [this]() {
         if (!canUseSceneTransport()) return;
         m_viewportBridge->redo();
+        const QString notice = m_viewportBridge->consumeHistoryNotice();   // a refused step explains itself
+        if (!notice.isEmpty()) QMessageBox::warning(this, "Undo/Redo Refused", notice);
     });
 
     editMenu->addSeparator();
@@ -2716,11 +2720,15 @@ void MainWindow::rebuildViewportForLoadedScene()
             this, [this]() {
                 if (!canUseSceneTransport()) return;
                 m_viewportBridge->undo();
+                const QString notice = m_viewportBridge->consumeHistoryNotice();
+                if (!notice.isEmpty()) QMessageBox::warning(this, "Undo/Redo Refused", notice);
             });
     connect(m_viewportToolbar,  &ViewportToolbar::redoClicked,
             this, [this]() {
                 if (!canUseSceneTransport()) return;
                 m_viewportBridge->redo();
+                const QString notice = m_viewportBridge->consumeHistoryNotice();
+                if (!notice.isEmpty()) QMessageBox::warning(this, "Undo/Redo Refused", notice);
             });
 
     connect(m_viewportTimeline, &ViewportTimeline::scrubBegin,

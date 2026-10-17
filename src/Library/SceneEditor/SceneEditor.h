@@ -27,6 +27,7 @@
 
 #include "SceneEdit.h"
 #include "EditHistory.h"
+#include "../Interfaces/IJobPriv.h"   // RISE::CstBatchUndoOp (2026-10-16)
 #include "DirtyTracker.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Cst/Cst.h"   // Document-first ADR phase 1: CstHeadVersion (derived dirty)
@@ -520,21 +521,15 @@ namespace RISE
 			const String& priorDocText, const String& postDocText );
 
 		//! Batched agent edits (2026-10-16): push the ONE EditHistory record (SceneEdit::AgentEditBatch) for
-		//! a whole agent edit batch already applied via SceneEditController::ApplyAgentEditBatch.  Same
-		//! "forward already happened" shape as PushAgentReplaceGeometryEdit, but the record stores only a
-		//! COMPACT diff of the top-level items that changed between `priorDocText` and `postDocText` (see the
-		//! op doc).  `label` is display-only; `landedRasterizerInsert` = the batch landed a `*_rasterizer`
-		//! insert.  Does NOT mark dirty -- the caller does.
+		//! a whole agent edit batch already applied via SceneEditController::ApplyAgentEditBatch.  The record
+		//! holds the landed elements' OPERATION-LEVEL inverses in landing order (see the op doc).  `label` is
+		//! display-only; `landedRasterizerInsert` = the batch landed a `*_rasterizer` insert.  Does NOT mark
+		//! dirty -- the caller does.
 		void PushAgentEditBatchEdit(
-			const String& label, const std::string& priorDocText, const std::string& postDocText,
-			bool landedRasterizerInsert );
+			const String& label, const std::vector<RISE::CstBatchUndoOp>& ops, bool landedRasterizerInsert );
 
-		//! Test hooks (2026-10-16) for the AgentEditBatch diff: encode a before/after pair, and apply an
-		//! encoded diff to `current` (forward = before->after).
-		static std::string ForTest_EncodeDocDiff( const std::string& before, const std::string& after );
-
-		//! Review round 2 (P1): a user-facing notice set when an Undo/Redo had to DROP an unappliable agent batch
-		//! record (so history never wedges).  Returns it and clears it ("" when none).
+		//! Review round 3: a user-facing notice set when an Undo/Redo of an agent batch edit was REFUSED (the record
+		//! stays in the history, as every refused record does).  Returns it and clears it ("" when none).
 		std::string ConsumeHistoryNotice();
 		static std::string ForTest_ApplyDocDiff( const std::string& current, const std::string& encodedDiff,
 		                                         bool forward, bool* outOk );
@@ -724,7 +719,7 @@ namespace RISE
 		class IScalarPainterManager*  mScalarPainterManager;  // borrowed; nullable (Phase 4)
 		IJob*                         mJob;                   // borrowed; nullable
 		std::string                   mHistoryNotice;         // review round 2: see ConsumeHistoryNotice
-		void NoteHistoryDrop_( const SceneEdit& edit, bool forward );
+		void NoteHistoryRefusal_( const SceneEdit& edit, bool forward, const std::string& why );
 		EditHistory  mHistory;
 		DirtyScope   mLastScope;
 		int          mCompositeDepth;

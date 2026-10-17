@@ -601,6 +601,10 @@ namespace RISE
 			//! budget and committed NOTHING -- the caller must commit this element on its own (status
 			//! "sequential").
 			bool                       needsSequential = false;
+			//! Review round 3 (chunk-CRUD / param verbs and ApplyAgentEditBatch): the refusal is a
+			//! WOULD-NOT-DERIVE (Job's code 0) -- as opposed to a policy gate, a malformed chunk or a duplicate.
+			//! The batch fallback's retry keys on this, never on the message text.
+			bool                       wouldNotDerive = false;
 		};
 
 		//! Facet 5 slice 1b: route an agent param-value commit through the
@@ -1883,8 +1887,14 @@ namespace RISE
 		void BeginPropertyScrub();
 		void EndPropertyScrub();
 
-		void Undo();
-		void Redo();
+		//! Return whether the step was applied (false = nothing to undo/redo, refused, or blocked).  A refused
+		//! AgentEditBatch step sets a user-facing notice -- read it with ConsumeHistoryNotice.
+		bool Undo();
+		bool Redo();
+
+		//! Review round 3: the notice the last refused Undo/Redo set (e.g. an agent batch edit whose inverse would
+		//! leave a document that does not derive), cleared on read; "" when none.
+		std::string ConsumeHistoryNotice();
 
 		//! Human-readable labels for the next Undo()/Redo() step
 		//! ("Translate", "Agent Edit", …) for the platform shells'
@@ -7045,8 +7055,8 @@ namespace RISE
 		EditorStateSnapshot CaptureEditorStateLocked_() const;
 		void RestoreEditorStateLocked_( const EditorStateSnapshot& s, bool restoreDirty );
 		bool SetSelectionInner_( Category cat, const String& entityName );
-		void UndoInner_();
-		void RedoInner_();
+		bool UndoInner_();
+		bool RedoInner_();
 		//! doc 88 S4b: `occ` is WHICH occurrence of `param` to write (0 = first),
 		//! and `occAddressed` says the caller reached this param through an
 		//! occurrence-addressed row (`stop[2]`) rather than by naming a param the

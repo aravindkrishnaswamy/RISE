@@ -5956,20 +5956,6 @@ static void TestBatchedDegenerateHeadAndBudget()
 static void TestBatchedUndoCompactAndInterleaved()
 {
 	std::printf( "BR9: batch undo record is a compact exact diff; interleaved GUI edits ...\n" );
-	// The codec on its own: both directions exact, a mismatched current document refused.
-	{
-		const std::string a = std::string( kScene );
-		std::string b = a;
-		b.insert( b.find( "lambertian_material" ), "uniformcolor_painter\n{\n\tname dz\n\tcolor 1 0 0\n}\n\n" );
-		b += "\nsphere_geometry\n{\n\tname dz_g\n\tradius 1\n}\n";
-		const std::string enc = SceneEditor::ForTest_EncodeDocDiff( a, b );
-		bool ok = false;
-		Check( SceneEditor::ForTest_ApplyDocDiff( b, enc, /*forward*/ false, &ok ) == a && ok, "BR9 codec: undo is exact" );
-		Check( SceneEditor::ForTest_ApplyDocDiff( a, enc, /*forward*/ true, &ok ) == b && ok, "BR9 codec: redo is exact" );
-		Check( enc.size() < a.size(), "BR9 codec: the diff is smaller than the document" );
-		( void )SceneEditor::ForTest_ApplyDocDiff( a, enc, /*forward*/ false, &ok );
-		Check( !ok, "BR9 codec: applying the undo to the WRONG document is refused" );
-	}
 
 	const std::string tmp = TempPath( "agentcrud_br9.RISEscene" );
 	Job* pJob = LoadScene( kScene, tmp );
@@ -13800,7 +13786,7 @@ struct BrMeaning_
 static double BrParamNumber_( const std::string& docText, const char* name, const char* kind, const char* param )
 {
 	const RISE::Cst::Document doc = RISE::Cst::ParseToCst( docText );
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, kind, false );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, kind, name[0] == '\0' );
 	if( id == 0 ) return -1.0;
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
 	if( !chunk ) return -1.0;
@@ -13946,13 +13932,17 @@ static void TestBatchUndoNeverWedges()
 			p.target = "sph"; p.kind = ""; p.param = "radius"; p.value = "0.7"; ps.push_back( p );
 			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
 			Check( res.size() == 2 && res[0].applied && res[1].applied, "BR10b the repairing batch lands" );
-			controller.Undo();
-			const std::string notice = controller.Editor().ConsumeHistoryNotice();
-			Check( !notice.empty() && notice.find( "could not be applied" ) != std::string::npos,
-			       "BR10b the unappliable batch record is DROPPED with a user-facing notice" );
-			controller.Undo();   // the older GUI edit
-			Check( std::fabs( BrParamNumber_( sess->ReadDocument(), "mat_emit", "", "scale" ) - 30.0 ) < 1e-9,
-			       "BR10b MONEY: later Undos reach the older GUI edit (history is not wedged)" );
+			const std::string before = sess->ReadDocument();
+			const unsigned int depth = controller.Editor().History().UndoDepth();
+			Check( !controller.Undo(), "BR10b the Undo whose inverse would not derive REPORTS failure" );
+			const std::string notice = controller.ConsumeHistoryNotice();
+			Check( !notice.empty() && notice.find( "was refused" ) != std::string::npos &&
+			       notice.find( "would not derive" ) != std::string::npos,
+			       "BR10b MONEY: the refusal is VISIBLE (a user-facing notice naming the cause)" );
+			Check( sess->ReadDocument() == before, "BR10b nothing changed" );
+			Check( controller.Editor().History().UndoDepth() == depth,
+			       "BR10b the stack stays coherent: the refused step is still the next Undo (the single-record rule)" );
+			Check( controller.ConsumeHistoryNotice().empty(), "BR10b the notice is cleared on read" );
 			sess->AttachController( nullptr );
 			sess.reset();
 		}
@@ -13982,22 +13972,30 @@ static void TestBatchDiagnosedReporting()
 			}
 			const std::string w = std::string( "BR11 " ) + ( live ? "live" : "headless" ) +
 			                      ( attributed ? " attributed: " : " unattributed: " );
-			pJob->ForTest_InjectNextLiveDeriveDiagnostic( attributed ? "fake diagnostic for `br11_b`" : "fake generic diagnostic" );
+			// Attributable only when the diagnostic OPENS with the element's own `<keyword> `<name>``; a name merely
+			// QUOTED inside a diagnostic is usually a referenced entity, not the culprit.
+			pJob->ForTest_InjectNextLiveDeriveDiagnostic( attributed
+				? "uniformcolor_painter `br11_b` fake failure"
+				: "voronoi2d_painter: gen 0 painter 'br11_b' not found" );
 			std::vector<std::string> chunks;
 			chunks.push_back( "uniformcolor_painter\n{\n\tname br11_a\n\tcolor 0.1 0.2 0.3\n}" );
 			chunks.push_back( "uniformcolor_painter\n{\n\tname br11_b\n\tcolor 0.3 0.2 0.1\n}" );
 			const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
 			Check( res.size() == 2, w + "two results" );
 			if( res.size() == 2 ) {
-				Check( res[0].applied && res[0].rawCode == 3 &&
-				       res[0].message.find( attributed ? "fake diagnostic for" : "fake generic diagnostic" ) != std::string::npos,
-				       w + "a landed, non-offending element reports APPLIED with the diagnostic quoted (not a log pointer)" );
-				if( attributed )
+				if( attributed ) {
+					Check( res[0].applied && res[0].rawCode == 3 &&
+					       res[0].message.find( "fake failure" ) != std::string::npos,
+					       w + "a landed, non-offending element reports APPLIED with the diagnostic quoted (not a log pointer)" );
 					Check( !res[1].applied && res[1].status == "diagnosed" &&
 					       res[1].message.find( "br11_b" ) != std::string::npos,
-					       w + "only the element the diagnostic names is reported diagnosed" );
-				else
-					Check( res[1].applied, w + "an unattributable diagnostic marks no element as failed" );
+					       w + "only the element the diagnostic is attributed to is reported diagnosed" );
+				} else {
+					Check( !res[0].applied && res[0].status == "diagnosed" && !res[1].applied && res[1].status == "diagnosed",
+					       w + "an unattributable diagnostic (a QUOTED referenced name) marks EVERY landed element diagnosed" );
+					Check( res[0].message.find( "not found" ) != std::string::npos,
+					       w + "the diagnostic text is carried in the message" );
+				}
 			}
 			if( controller ) sess->AttachController( nullptr );
 			sess.reset();
@@ -14103,6 +14101,134 @@ static void TestBatchPreviewRebuildsOnHeadMove()
 		Check( std::fabs( BrParamNumber_( doc, "mat_emit", "", "scale" ) - 27.0 ) < 1e-9 && doc.find( "br13_m" ) != std::string::npos,
 		       "BR13 the final document keeps the co-editor's edit AND the batch" );
 		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR14 (round-3 P1): edits made OUTSIDE the history -- a film inspector edit, an environment edit -- survive an
+//! Undo AND a Redo of an agent batch, even on the very chunk the batch patched (the record is operation-level:
+//! it touches only the slots the batch wrote).
+static void TestBatchUndoKeepsNonHistoryEdits()
+{
+	std::printf( "BR14: batch undo/redo keeps later film / environment edits ...\n" );
+	for( int which = 0; which < 2; ++which )
+	{
+		const std::string tmp = TempPath( "agentcrud_br14.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = which == 0 ? "BR14 [film] " : "BR14 [environment] ";
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			if( which == 0 ) { p.target = ""; p.kind = "film"; p.param = "width"; p.value = "32"; }
+			else             { p.target = ""; p.kind = "pathtracing_pel_rasterizer"; p.param = "samples"; p.value = "4"; }
+			ps.push_back( p );
+			p = Agent::AgentSetPatch();
+			p.target = "sph"; p.param = "radius"; p.value = "0.65"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> res = sess->ProposePatches( ps );
+			Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the batch applies" );
+
+			// The non-history edit, on the SAME chunk the batch patched.
+			if( which == 0 ) {
+				controller.ForTest_SetSelection( SceneEditController::Category::Film, String( "" ) );
+				Check( controller.SetProperty( String( "height" ), String( "40" ) ), w + "film height edit applies" );
+			} else {
+				Check( controller.SetEnvironmentScale( 2.5 ), w + "environment scale edit applies" );
+			}
+			const char* keptKind  = which == 0 ? "film" : "pathtracing_pel_rasterizer";
+			const char* keptParam = which == 0 ? "height" : "radiance_scale";
+			const double keptVal  = which == 0 ? 40.0 : 2.5;
+			const char* batchParam = which == 0 ? "width" : "samples";
+			const double preVal    = which == 0 ? 24.0 : 8.0;
+			const double postVal   = which == 0 ? 32.0 : 4.0;
+			Check( std::fabs( BrParamNumber_( sess->ReadDocument(), "", keptKind, keptParam ) - keptVal ) < 1e-9,
+			       w + "the non-history edit is in the document" );
+
+			Check( controller.Undo(), w + "Undo of the batch applies" );
+			const std::string du = sess->ReadDocument();
+			Check( std::fabs( BrParamNumber_( du, "", keptKind, batchParam ) - preVal ) < 1e-9 &&
+			       std::fabs( BrParamNumber_( du, "sph", "", "radius" ) - 0.8 ) < 1e-9,
+			       w + "Undo reverts the batch's own slots" );
+			Check( std::fabs( BrParamNumber_( du, "", keptKind, keptParam ) - keptVal ) < 1e-9,
+			       w + "MONEY: Undo KEEPS the later non-history edit" );
+			Check( controller.Redo(), w + "Redo of the batch applies" );
+			const std::string dr = sess->ReadDocument();
+			Check( std::fabs( BrParamNumber_( dr, "", keptKind, batchParam ) - postVal ) < 1e-9 &&
+			       std::fabs( BrParamNumber_( dr, "", keptKind, keptParam ) - keptVal ) < 1e-9,
+			       w + "MONEY: Redo re-applies the batch and STILL keeps the non-history edit" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR15 (round 3): a batch that inserts a chunk AND patches that same chunk undoes and redoes byte-exactly.
+static void TestBatchInsertThenPatchUndoRedo()
+{
+	std::printf( "BR15: insert + patch-on-the-inserted-chunk batches undo/redo exactly ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br15.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<std::string> chunks;
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br15_p\n\tcolor 0.1 0.2 0.3\n}" );
+		chunks.push_back( "sphere_geometry\n{\n\tname br15_g\n\tradius 0.1\n}" );
+		chunks.push_back( "standard_object\n{\n\tname br15_o\n\tgeometry br15_g\n\tmaterial mat_diffuse\n}" );
+		// insert_chunks and propose_patches are separate batches (separate verbs): an insert batch, then a patch
+		// batch over the chunks it created -- undone and redone across both.
+		Check( sess->InsertChunks( chunks ).size() == 3, "BR15 inserts land" );
+		const std::string d1 = sess->ReadDocument();
+		std::vector<Agent::AgentSetPatch> ps;
+		Agent::AgentSetPatch p;
+		p.target = "br15_g"; p.param = "radius"; p.value = "0.33"; ps.push_back( p );
+		p.target = "br15_o"; p.kind = "standard_object"; p.param = "position"; p.value = "1 2 3"; ps.push_back( p );
+		p.target = "br15_p"; p.kind = ""; p.param = "color"; p.value = "0.9 0.9 0.9"; ps.push_back( p );
+		const std::vector<Agent::AgentPatchResult> pr = sess->ProposePatches( ps );
+		Check( pr.size() == 3 && pr[0].applied && pr[1].applied && pr[2].applied, "BR15 patches on the inserted chunks land" );
+		const std::string d2 = sess->ReadDocument();
+		Check( controller.Undo() && sess->ReadDocument() == d1, "BR15 Undo of the patch batch is byte-exact" );
+		Check( controller.Undo() && sess->ReadDocument() == d0, "BR15 Undo of the insert batch is byte-exact" );
+		Check( controller.Redo() && sess->ReadDocument() == d1, "BR15 Redo of the insert batch is byte-exact" );
+		Check( controller.Redo() && sess->ReadDocument() == d2, "BR15 Redo of the patch batch is byte-exact" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR16 (round-3 P3): HEADLESS fallback retry -- over the isolation budget, the per-element commits refuse a
+//! material listed before its painter, and the one in-order retry lands it.
+static void TestBatchHeadlessFallbackRetry()
+{
+	std::printf( "BR16: headless fallback retry lands a material listed before its painter ...\n" );
+	const std::string tmp = TempPath( "agentcrud_br16.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	if( !pJob ) return;
+	{
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		pJob->ForTest_SetCstBatchIsolationBudget( 0 );
+		std::vector<std::string> chunks;
+		chunks.push_back( "lambertian_material\n{\n\tname br16_m\n\treflectance br16_p\n}" );
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br16_p\n\tcolor 0.4 0.4 0.4\n}" );
+		chunks.push_back( "lambertian_material\n{\n\tname br16_bad\n\treflectance nope_br16\n}" );
+		const unsigned long long r0 = pJob->GetContainerRebuildCount();
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		Check( pJob->GetContainerRebuildCount() - r0 > 1, "BR16 the batch fell back to per-element commits" );
+		Check( res.size() == 3 && res[0].applied && res[1].applied && !res[2].applied,
+		       "BR16 MONEY: the retry landed the material listed before its painter; the bad one stays refused" );
+		pJob->ForTest_SetCstBatchIsolationBudget( -1 );
 		sess.reset();
 	}
 	pJob->release();
@@ -21297,6 +21423,9 @@ int main()
 	TestBatchDiagnosedReporting();
 	TestBatchFallbackRetryRestrictions();
 	TestBatchPreviewRebuildsOnHeadMove();
+	TestBatchUndoKeepsNonHistoryEdits();        // review round 3
+	TestBatchInsertThenPatchUndoRedo();
+	TestBatchHeadlessFallbackRetry();
 	TestMaterialScaffoldFamilies();
 	TestMaterialScaffoldDeterminism();
 	TestMaterialScaffoldMissingParams();

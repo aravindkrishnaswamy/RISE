@@ -12932,7 +12932,7 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entityName, const char* entityKind,
                              const std::vector< std::pair< std::string, std::string > >& edits, int occ,
                              RISE::Cst::Document& outDoc, RISE::Cst::NodeId& outAnchor, std::string& outRoleDiag,
-                             bool logRefusals )
+                             bool logRefusals, CstBatchUndoOp* outUndo )
 {
 	if( !entityName || edits.empty() ) return 0;
 	for( size_t i = 0; i < edits.size(); ++i )
@@ -12959,7 +12959,7 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 	const RISE::Cst::NodeRef editTarget = RISE::Cst::DocResolveNodeId( base, id );
 
 	// PLAN, then write.  One entry per pair: which chunk the write lands on and what it strips first.
-	struct PlannedWrite { RISE::Cst::NodeId ownerId; const char* const* strip; };
+	struct PlannedWrite { RISE::Cst::NodeId ownerId; const char* const* strip; bool transform; };
 	std::vector< PlannedWrite > plan;
 	plan.reserve( edits.size() );
 	RISE::Cst::NodeId anchorId = 0;
@@ -13090,7 +13090,7 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 			else                                 strip = kStripMatrix;   // position / scale / quaternion
 		}
 
-		const PlannedWrite pw = { ownerId, strip };
+		const PlannedWrite pw = { ownerId, strip, objectTransformEdit };
 		plan.push_back( pw );
 	}
 
@@ -13121,8 +13121,45 @@ int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entity
 	RISE::Cst::Document d1 = base;
 	std::string roleDiag;
 	for( size_t i = 0; i < plan.size(); ++i ) {
+		// Batched agent edits (review round 3): capture the operation-level inverse -- the owner chunk's identity
+		// and every slot this write changes, with its value BEFORE and AFTER.  An object TRANSFORM edit records the
+		// object's WHOLE transform (position / orientation / quaternion / scale / matrix): an editor gesture made
+		// after the batch and then undone re-commits the pose in another spelling (a `matrix` where the batch wrote
+		// a `position`), so restoring only the written role would leave the object where the batch put it.
+		// Otherwise: the role itself plus each masking param the write strips.
+		static const char* const kTransformRoles[] = { "position", "orientation", "quaternion", "scale", "matrix", nullptr };
+		std::vector<std::string> slotRoles;
+		if( outUndo ) {
+			if( plan[i].transform ) {
+				for( const char* const* r = kTransformRoles; *r; ++r ) slotRoles.push_back( *r );
+			} else {
+				for( const char* const* st = plan[i].strip; *st; ++st ) slotRoles.push_back( *st );
+				slotRoles.push_back( edits[i].first );
+			}
+			const RISE::Cst::NodeRef owner = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
+			if( owner ) {
+				outUndo->ownerKeyword  = owner->role;
+				outUndo->ownerNamePath = RISE::Cst::ChunkNamePath( owner );
+				for( std::size_t k = 0; k < slotRoles.size(); ++k ) {
+					CstBatchUndoOp::Slot slot;
+					slot.role        = slotRoles[k];
+					slot.occ         = ( slotRoles[k] == edits[i].first ) ? occ : 0;
+					slot.priorAbsent = RISE::Cst::ParamOccurrenceCount( owner, slot.role ) <= slot.occ;
+					if( !slot.priorAbsent ) slot.priorValue = RISE::Cst::ParamValueAtOccurrence( owner, slot.role, slot.occ );
+					outUndo->slots.push_back( slot );
+				}
+			}
+		}
 		for( const char* const* s = plan[i].strip; *s; ++s ) d1 = RISE::Cst::DocRemoveParam( d1, plan[i].ownerId, *s );
 		d1 = RISE::Cst::DocSetOrAddParamValue( d1, plan[i].ownerId, edits[i].first, occ, edits[i].second );
+		if( outUndo ) {   // each recorded slot's value AFTER the write (the redo payload)
+			const RISE::Cst::NodeRef after = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
+			for( std::size_t k = 0; after && k < outUndo->slots.size(); ++k ) {
+				CstBatchUndoOp::Slot& slot = outUndo->slots[k];
+				slot.postAbsent = RISE::Cst::ParamOccurrenceCount( after, slot.role ) <= slot.occ;
+				slot.postValue  = slot.postAbsent ? std::string() : RISE::Cst::ParamValueAtOccurrence( after, slot.role, slot.occ );
+			}
+		}
 		if( i ) roleDiag += "+";
 		roleDiag += edits[i].first;
 	}
@@ -13290,7 +13327,8 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 		fdiags.push_back( mForTestInjectLiveDeriveDiag );
 		mForTestInjectLiveDeriveDiag.clear();
 	}
-	mLastCstLiveDeriveDiag = fdiags.empty() ? std::string() : fdiags[0];
+	mLastCstLiveDeriveDiag.clear();   // EVERY diagnostic, one per line (batch attribution reads them all)
+	for( size_t i = 0; i < fdiags.size(); ++i ) { if( i ) mLastCstLiveDeriveDiag += "\n"; mLastCstLiveDeriveDiag += fdiags[i]; }
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // re-retain (intact even if the re-derive erred)
 	mCstHeadVersion = keepHeadVersion;   // restore the load-time uuid (ClearAll had zeroed it)
 	BumpCstHeadRevision();               // the retained Document content changed (edit committed) -> bump revision
@@ -14342,6 +14380,8 @@ int Job::ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e,
 	outcome.insertedAt       = -1;
 	outcome.isRasterizer     = false;
 	outcome.refusedContainer = false;
+	outcome.wouldNotDerive   = false;
+	outcome.landOrder        = -1;
 	if( e.isInsert )
 	{
 		RISE::Cst::NodeRef chunk;
@@ -14351,6 +14391,21 @@ int Job::ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e,
 		                                    chunk, isRast, at, endAt, logRefusals );
 		if( prep != 1 ) return prep;
 		const int where = appendAtEnd ? endAt : at;
+		// Review round 3: the operation-level inverse -- the chunk's exact bytes and identity, and the identity of
+		// the nearest chunk BEFORE the splice point (the redo anchor).
+		outcome.undo = CstBatchUndoOp();
+		outcome.undo.isInsert  = true;
+		outcome.undo.chunkText = RISE::Cst::SerializeNode( chunk );
+		outcome.undo.keyword   = chunk->role;
+		outcome.undo.namePath  = RISE::Cst::ChunkNamePath( chunk );
+		for( int k = where - 1; k >= 0; --k ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, k ) );
+			if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+			outcome.undo.hasAnchor      = true;
+			outcome.undo.anchorKeyword  = it->role;
+			outcome.undo.anchorNamePath = RISE::Cst::ChunkNamePath( it );
+			break;
+		}
 		doc = SpliceCstInsert_( doc, chunk, where );
 		outcome.insertedAt   = where;
 		outcome.isRasterizer = isRast;
@@ -14374,8 +14429,9 @@ int Job::ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e,
 	RISE::Cst::Document written;
 	RISE::Cst::NodeId anchor = 0;
 	std::string roleDiag;
+	outcome.undo = CstBatchUndoOp();
 	if( PlanCstParamEdits_( doc, e.entityName.c_str(), e.entityKind.empty() ? nullptr : e.entityKind.c_str(),
-	                        one, e.occ, written, anchor, roleDiag, logRefusals ) != 1 ) {
+	                        one, e.occ, written, anchor, roleDiag, logRefusals, &outcome.undo ) != 1 ) {
 		outcome.diag = "entity/param not found or the edit was refused";
 		return 0;
 	}
@@ -14399,6 +14455,15 @@ struct Job::CstBatchIsolation_
 	std::vector<char>                 deriveRefused;   //!< refused because it would not derive (retry-eligible)
 	int                               dryRunsLeft = 0;
 	bool                              exhausted = false;
+	int                               nextLandOrder = 0;   //!< order in which elements entered `accepted`
+	std::chrono::steady_clock::time_point deadline;        //!< wall-clock bound on the whole isolation (round 3)
+	//! Spend one dry-run from the budget, or report exhaustion (budget OR wall-clock deadline).
+	bool Spend()
+	{
+		if( dryRunsLeft <= 0 || std::chrono::steady_clock::now() > deadline ) { exhausted = true; return false; }
+		--dryRunsLeft;
+		return true;
+	}
 };
 
 // ONE element against the accepted document: validate + positioned write, dry-run; with `allowAppend`, an insert
@@ -14417,12 +14482,12 @@ bool Job::TryLandCstBatchElement_( CstBatchIsolation_& st, int i, bool allowAppe
 		st.deriveRefused[i] = 0;
 		return true;
 	}
-	if( st.dryRunsLeft <= 0 ) { st.exhausted = true; return false; }
-	--st.dryRunsLeft;
+	if( !st.Spend() ) return false;
 	std::string diag;
 	if( DryRunCstDocument_( trial, &diag ) ) {
 		st.accepted = std::move( trial );
 		oc.code = 2;
+		oc.landOrder = st.nextLandOrder++;
 		st.landed[i] = 1;
 		st.deriveRefused[i] = 0;
 		return true;
@@ -14432,13 +14497,13 @@ bool Job::TryLandCstBatchElement_( CstBatchIsolation_& st, int i, bool allowAppe
 		CstBatchOutcome alt = oc;
 		if( ApplyCstBatchElement_( appended, e, alt, /*appendAtEnd*/ true, /*logRefusals*/ false ) == 1 &&
 		    alt.insertedAt != oc.insertedAt ) {
-			if( st.dryRunsLeft <= 0 ) { st.exhausted = true; return false; }
-			--st.dryRunsLeft;
+			if( !st.Spend() ) return false;
 			std::string endDiag;
 			if( DryRunCstDocument_( appended, &endDiag ) ) {
 				st.accepted = std::move( appended );
 				oc = alt;
 				oc.code = 2;
+				oc.landOrder = st.nextLandOrder++;
 				st.landed[i] = 1;
 				st.deriveRefused[i] = 0;
 				return true;
@@ -14449,6 +14514,7 @@ bool Job::TryLandCstBatchElement_( CstBatchIsolation_& st, int i, bool allowAppe
 	oc.code = 0;
 	oc.insertedAt = -1;
 	oc.diag = diag;
+	oc.wouldNotDerive = true;
 	st.deriveRefused[i] = 1;
 	return true;
 }
@@ -14479,12 +14545,15 @@ bool Job::IsolateCstBatch_( CstBatchIsolation_& st, const std::vector<int>& idxs
 			else st.deriveRefused[i] = 0;
 		}
 		if( !anyWrote ) return true;      // every element refused at validation -- final
-		if( st.dryRunsLeft <= 0 ) { st.exhausted = true; return false; }
-		--st.dryRunsLeft;
+		if( !st.Spend() ) return false;
 		if( DryRunCstDocument_( trial, nullptr ) ) {
 			st.accepted = std::move( trial );
 			for( std::size_t k = 0; k < idxs.size(); ++k )
-				if( wrote[k] ) { st.landed[idxs[k]] = 1; st.deriveRefused[idxs[k]] = 0; }
+				if( wrote[k] ) {
+					st.landed[idxs[k]] = 1;
+					st.deriveRefused[idxs[k]] = 0;
+					( *st.outcomes )[idxs[k]].landOrder = st.nextLandOrder++;
+				}
 			return true;
 		}
 	}
@@ -14522,6 +14591,7 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 		if( rc == 1 ) {
 			anyWrote = true;
 			landed[i] = 1;
+			outcomes[i].landOrder = static_cast<int>( i );
 			if( outcomes[i].isRasterizer ) anyRasterizer = true;
 		}
 	}
@@ -14530,8 +14600,12 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 	char ctx[96];
 	std::snprintf( ctx, sizeof( ctx ), "edit batch (%u elements)", static_cast<unsigned int>( n ) );
 	std::string firstDiag;
+	const std::chrono::steady_clock::time_point wholeT0 = std::chrono::steady_clock::now();
 	int code = RederiveCstDocumentFull_( std::move( whole ), ctx, &firstDiag,
 	                                     /*restoreActiveRasterizer*/ !anyRasterizer, /*skipDryRun*/ false );
+	// When it fails this was ONLY the (cold, whole-batch) dry-run -- the realistic unit cost of an isolation step.
+	const double wholeDryRunSeconds =
+		std::chrono::duration<double>( std::chrono::steady_clock::now() - wholeT0 ).count();
 	if( code == 0 )
 	{
 		// (1) DEGENERATE HEAD: if the document as it stands does not derive, no element can -- which is exactly
@@ -14539,8 +14613,11 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 		std::string headDiag;
 		const std::chrono::steady_clock::time_point headT0 = std::chrono::steady_clock::now();
 		const bool headDerives = DryRunCstDocument_( *pCstDocument, &headDiag );
-		const double dryRunSeconds =
+		const double headDryRunSeconds =
 			std::chrono::duration<double>( std::chrono::steady_clock::now() - headT0 ).count();
+		// Review round 3: calibrate on the SLOWER of the two measured dry-runs (the head dry-run is warm and does
+		// not include the batch's own chunks).
+		const double dryRunSeconds = ( wholeDryRunSeconds > headDryRunSeconds ) ? wholeDryRunSeconds : headDryRunSeconds;
 		if( !headDerives ) {
 			GlobalLog()->PrintEx( eLog_Warning,
 				"Job::ApplyCstEditBatch:: the CURRENT document itself does not derive (%s) -- every element of the "
@@ -14559,17 +14636,17 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 			"Job::ApplyCstEditBatch:: the batch as a whole would not derive (%s) -- isolating the offending element(s); "
 			"the `would not derive` diagnostics above are superseded by the per-element verdicts below",
 			firstDiag.c_str() );
+		const double kIsolationSeconds = 3.0;
 		int budget = maxIsolationDryRuns;
 		if( budget < 0 ) {
 			int lg = 0;
 			while( ( static_cast<std::size_t>( 1 ) << lg ) < n ) ++lg;
 			// One offender costs ~2*log2(N) bisection dry-runs plus up to 3 in its own leaf and retry; budget
 			// for two.  The controller's lock is held for all of it, so the budget is ALSO bounded by TIME,
-			// using the head dry-run just measured as the unit cost (review round 2): at most ~3 s of isolation
+			// using the slower measured dry-run as the unit cost (review rounds 2-3): at most ~3 s of isolation
 			// dry-runs and never more than 12, never fewer than 2.  Past it the caller commits element by
 			// element, releasing the lock between elements.
 			budget = 2 * ( 2 * lg + 3 ) + 4;
-			const double kIsolationSeconds = 3.0;
 			int byTime = ( dryRunSeconds > 0.0 ) ? static_cast<int>( kIsolationSeconds / dryRunSeconds ) : budget;
 			if( byTime < 2 ) byTime = 2;
 			if( budget > byTime ) budget = byTime;
@@ -14583,6 +14660,9 @@ int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<
 		st.landed.assign( n, 0 );
 		st.deriveRefused.assign( n, 0 );
 		st.dryRunsLeft   = budget;
+		// A wall-clock DEADLINE on top of the count: the caller holds its mutex across all of this.
+		st.deadline      = std::chrono::steady_clock::now() +
+		                   std::chrono::milliseconds( static_cast<long long>( kIsolationSeconds * 1000.0 ) );
 		std::vector<int> all( n );
 		for( std::size_t i = 0; i < n; ++i ) all[i] = static_cast<int>( i );
 		bool ok = IsolateCstBatch_( st, all, /*knownFailing*/ true );

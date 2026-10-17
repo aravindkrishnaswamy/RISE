@@ -3389,16 +3389,16 @@ void SceneEditController::DropStaleSelection_()
 	}
 }
 
-void SceneEditController::UndoInner_()
+bool SceneEditController::UndoInner_()
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// Latent-guard (re-review): refuse user Undo while a transaction is open --
 	// undoing PAST the baseline would break RollbackTransaction's revert
 	// guarantee (and ClearRedo would then drop a pre-baseline edit).  The
 	// rollback path uses mEditor.Undo() directly, bypassing this guard.
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction is open; use Rollback/EndTransaction." );
-		return;
+		return false;
 	}
 	// Cancel-and-park around Undo: many ops mutate state the render
 	// thread reads per-pixel (camera pointers via AddCamera/RemoveCamera,
@@ -3411,7 +3411,7 @@ void SceneEditController::UndoInner_()
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction opened before the undo acquired the mutation lock." );
-		return;
+		return false;
 	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
@@ -3459,19 +3459,20 @@ void SceneEditController::UndoInner_()
 		lk.unlock();
 		mCV.notify_one();
 	}
+	return ok;
 }
 
-void SceneEditController::RedoInner_()
+bool SceneEditController::RedoInner_()
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
-		return;
+		return false;
 	}
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction opened before the redo acquired the mutation lock." );
-		return;
+		return false;
 	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
@@ -3505,6 +3506,7 @@ void SceneEditController::RedoInner_()
 		lk.unlock();
 		mCV.notify_one();
 	}
+	return ok;
 }
 
 Scalar SceneEditController::LastSceneTime() const
@@ -7748,6 +7750,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 		default:
 			r.applied = false;
 			r.status  = String( "rejected" );
+			r.wouldNotDerive = true;   // Job's checked code 0: not found OR would not derive (structured, for retries)
 			r.message = String( "edit rejected (entity/param not found or the edit would not derive) -- head unchanged" );
 			break;
 	}
@@ -8373,11 +8376,6 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 		admittedIndex.push_back( i );
 	}
 
-	// UNDO capture under this same lock hold as the mutation (no TOCTOU): a persistent-structure COPY of the
-	// pre-batch document (cheap -- no serialization unless the batch lands).
-	RISE::Cst::Document priorDoc;
-	const bool havePrior = mJob.CopyCstDocument( priorDoc );
-
 	std::vector<CstBatchOutcome> outcomes;
 	const int code = admitted.empty() ? 0 : mJob.ApplyCstEditBatch( admitted, outcomes );
 
@@ -8402,14 +8400,21 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 		RebindEditorToJob();
 
 	bool anyRasterizerLanded = false;
-	// Review round 2: a diagnosed (code 3) batch re-derive is attributed to the element(s) its diagnostic NAMES;
-	// every other landed element reports applied (it did land) with the diagnostic quoted.
+	// Review round 3: a diagnosed (code 3) batch re-derive is attributed to an element ONLY when a diagnostic OPENS
+	// with that element's own `<keyword> `<name>`` (CstBatchDiagnosticIsFor); when nothing is attributed, EVERY
+	// landed element is reported diagnosed (callers count diagnosed as landed, so over-flagging is harmless).
+	auto ownIdentity = [&]( std::size_t k, std::string& kw, std::string& nm ) {
+		const CstBatchOutcome& o = outcomes[k];
+		if( admitted[k].isInsert ) { kw = o.keyword; nm = o.name; }
+		else { kw = o.undo.ownerKeyword; nm = CstNameFromPath( o.undo.ownerNamePath ); }
+	};
 	bool anyAttributed = false;
-	for( std::size_t k = 0; k < admitted.size(); ++k )
-		if( outcomes.size() > k && outcomes[k].code == 3 &&
-		    CstBatchDiagnosticNames( outcomes[k].diag,
-		                             admitted[k].isInsert ? outcomes[k].name : admitted[k].entityName ) )
-			anyAttributed = true;
+	for( std::size_t k = 0; k < admitted.size() && k < outcomes.size(); ++k ) {
+		if( outcomes[k].code != 3 ) continue;
+		std::string kw, nm;
+		ownIdentity( k, kw, nm );
+		if( CstBatchDiagnosticIsFor( outcomes[k].diag, kw, nm ) ) anyAttributed = true;
+	}
 	std::string label;
 	for( std::size_t k = 0; k < admitted.size(); ++k )
 	{
@@ -8437,13 +8442,18 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 			case 3:
 			{
 				// ONE re-derive realized the whole batch (its dry-run of the identical document was clean).
-				const bool offender = CstBatchDiagnosticNames( oc.diag, e.isInsert ? oc.name : e.entityName );
+				std::string kw, nm;
+				ownIdentity( k, kw, nm );
+				const bool offender = !anyAttributed || CstBatchDiagnosticIsFor( oc.diag, kw, nm );
 				if( offender ) {
 					r.applied = false;
 					r.status  = String( "diagnosed" );
-					std::string m = "edit NOT a clean success: the Document was mutated and the live managers were "
-					                "replaced, BUT the batch's full re-derive reported a diagnostic naming this element -- "
-					                "do NOT treat it as applied: ";
+					std::string m = anyAttributed
+						? "edit NOT a clean success: the Document was mutated and the live managers were replaced, BUT "
+						  "the batch's full re-derive reported a diagnostic for THIS element -- do NOT treat it as applied: "
+						: "edit NOT a clean success: the chunk/edit IS in the Document and the live managers were replaced, "
+						  "BUT the batch's full re-derive reported diagnostics it could not attribute to one element -- "
+						  "do NOT treat it as applied: ";
 					m += oc.diag;
 					r.message = String( m.c_str() );
 				} else {
@@ -8451,8 +8461,7 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 					r.status  = String( "applied" );
 					std::string m = e.isInsert ? "chunk inserted via a full re-derive (Scene + managers were replaced)"
 					                           : "applied via a full re-derive (Scene + managers were replaced)";
-					m += anyAttributed ? "; note: the batch's re-derive reported a diagnostic for ANOTHER element: "
-					                   : "; note: the batch's re-derive reported a diagnostic it could not attribute to one element: ";
+					m += "; note: the batch's re-derive reported a diagnostic for ANOTHER element: ";
 					m += oc.diag;
 					r.message = String( m.c_str() );
 				}
@@ -8497,10 +8506,12 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 						e.entityName.empty() ? "(unnamed)" : e.entityName.c_str(), e.role.c_str() );
 					r.message = String( buf );
 				} else if( e.isInsert ) {
+					r.wouldNotDerive = oc.wouldNotDerive || oc.code == 0;
 					std::string m = "insert rejected: the chunk would not derive in context -- head unchanged";
 					if( diag[0] ) { m += ": "; m += diag; }
 					r.message = String( m.c_str() );
 				} else {
+					r.wouldNotDerive = true;
 					r.message = String( "edit rejected (entity/param not found or the edit would not derive) -- head unchanged" );
 				}
 				break;
@@ -8546,21 +8557,17 @@ std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAg
 		// ONE history record for the WHOLE batch (one Cmd-Z undoes it -- the remove_chunks rule), carrying a
 		// COMPACT top-level-item diff rather than two whole documents (review P2-D; see the op doc for why
 		// per-element records are not an exact inverse of a batch).
-		const RISE::Cst::Document* post = mJob.GetCstDocument();
-		if( havePrior && post )
-		{
-			mEditor.PushAgentEditBatchEdit( String( label.c_str() ),
-			                                RISE::Cst::SerializeCst( priorDoc ),
-			                                RISE::Cst::SerializeCst( *post ),
-			                                anyRasterizerLanded );
-		}
-		else
-		{
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditController: agent edit batch applied (code %d) but the prior/post document capture was "
-				"empty -- NO undo history record was pushed for this batch (should not happen: the capture ran "
-				"under the same lock hold as the mutation).", code );
-		}
+		// The record is the landed elements' OPERATION-LEVEL inverses in landing order (review round 3; see
+		// CstBatchUndoOp) -- never a document snapshot, so an Undo/Redo touches only what the batch touched.
+		std::vector< std::pair<int, CstBatchUndoOp> > ordered;
+		for( std::size_t k = 0; k < admitted.size() && k < outcomes.size(); ++k )
+			if( outcomes[k].code == 2 || outcomes[k].code == 3 )
+				ordered.push_back( std::make_pair( outcomes[k].landOrder, outcomes[k].undo ) );
+		std::stable_sort( ordered.begin(), ordered.end(),
+			[]( const std::pair<int, CstBatchUndoOp>& x, const std::pair<int, CstBatchUndoOp>& y ) { return x.first < y.first; } );
+		std::vector<CstBatchUndoOp> ops;
+		for( std::size_t k = 0; k < ordered.size(); ++k ) ops.push_back( ordered[k].second );
+		mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, anyRasterizerLanded );
 
 		// The entity set and/or graph edges changed -- bump the epoch live GUI outliners cache against.
 		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
@@ -10682,6 +10689,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 			// Round-2 P1-A: name BOTH would-not-derive causes honestly -- the
 			// old "likely still REFERENCED" wording sent agents chasing a
 			// phantom consumer when the real cause was an order-invalid head.
+			if( isInsert ) r.wouldNotDerive = true;   // Job's code 0 for an insert IS would-not-derive
 			std::string m = isInsert
 				? std::string( "insert rejected: the chunk would not derive in context -- head unchanged" )
 				: std::string( "remove rejected: removing '" ) + a.c_str() + "' would not derive (it is likely still REFERENCED by another chunk, or the remaining document no longer derives in order -- read_document and validate to inspect) -- head unchanged";
@@ -17990,26 +17998,36 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	return ok;
 }
 
-void SceneEditController::Undo()
+bool SceneEditController::Undo()
 {
+	bool ok = false;
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
-			return;
-		UndoInner_();
+			return false;
+		ok = UndoInner_();
 	}
 	mEditor.DrainDirtyNotification();
+	return ok;
 }
 
-void SceneEditController::Redo()
+bool SceneEditController::Redo()
 {
+	bool ok = false;
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
-			return;
-		RedoInner_();
+			return false;
+		ok = RedoInner_();
 	}
 	mEditor.DrainDirtyNotification();
+	return ok;
+}
+
+std::string SceneEditController::ConsumeHistoryNotice()
+{
+	std::lock_guard<std::mutex> lk( mMutex );   // the notice is written by Undo/Redo under this lock
+	return mEditor.ConsumeHistoryNotice();
 }
 
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(

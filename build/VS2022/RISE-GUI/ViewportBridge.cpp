@@ -1196,6 +1196,14 @@ void ViewportBridge::endPropertyScrub()   { if (m_controller) RISE_API_SceneEdit
 void ViewportBridge::undo() { if (m_controller) RISE_API_SceneEditController_Undo(m_controller); }
 void ViewportBridge::redo() { if (m_controller) RISE_API_SceneEditController_Redo(m_controller); }
 
+QString ViewportBridge::consumeHistoryNotice()
+{
+    if (!m_controller) return QString();
+    char buf[1024] = {0};
+    if (!RISE_API_SceneEditController_ConsumeHistoryNotice(m_controller, buf, sizeof(buf))) return QString();
+    return QString::fromUtf8(buf);
+}
+
 QString ViewportBridge::undoActionLabel() const
 {
     if (!m_controller) return QString();

@@ -4498,6 +4498,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_RedoLabel(
 		SceneEditController* p, char* buf, unsigned int bufLen );
 
+	//! 2026-10-16: the user-facing notice the last REFUSED Undo/Redo set (e.g. an agent batch edit whose inverse
+	//! would leave a document that does not derive -- the step stays in the history), cleared on read.  Returns
+	//! true and fills `buf` when there is one; false (buf = "") when there is none.  Shells call it after
+	//! Undo/Redo and show the text to the user.
+	bool RISE_API_SceneEditController_ConsumeHistoryNotice(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
 	// ---- Refinement pause + status (UI redesign, design brief A2) ----
 	// See SceneEditController::PauseRefinement / GetRefinementStatus.
 

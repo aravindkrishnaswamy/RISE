@@ -794,6 +794,12 @@ typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
 - (void)undo;
 - (void)redo;
 
+/// The user-facing notice a REFUSED undo/redo left (e.g. an agent batch
+/// edit whose inverse would leave a document that does not derive -- the
+/// step stays in the history).  Empty string when there is none; cleared
+/// on read, so call it once after each undo/redo.
+- (NSString *)consumeHistoryNotice;
+
 /// Human-readable label of the next undo/redo step ("Translate",
 /// "Agent Edit", ...) for the Edit-menu items.  Empty string when the
 /// corresponding stack is empty.

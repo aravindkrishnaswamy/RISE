@@ -1722,6 +1722,15 @@ private:
     RISE_API_SceneEditController_Redo(_controller);
 }
 
+// 2026-10-16: the notice a refused Undo/Redo left (e.g. an agent batch edit whose inverse would not derive);
+// "" when none.  Cleared on read.
+- (NSString *)consumeHistoryNotice {
+    if (!_controller) return @"";
+    char buf[1024] = {0};
+    if (!RISE_API_SceneEditController_ConsumeHistoryNotice(_controller, buf, sizeof(buf))) return @"";
+    return [NSString stringWithUTF8String:buf] ?: @"";
+}
+
 - (NSString *)undoActionLabel {
     if (!_controller) return @"";
     char buf[256] = {0};

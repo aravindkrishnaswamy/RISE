@@ -193,6 +193,16 @@ namespace RISE
 		//!            mutated and the managers replaced -- so `message` states
 		//!            that nuance plainly (a caller must not assume nothing
 		//!            changed either).
+		//!            BATCHES (propose_patches / insert_chunks, 2026-10-16):
+		//!            a batch is realized by ONE re-derive, so its diagnostics
+		//!            are shared.  An element a diagnostic is attributed to
+		//!            (it OPENS with that element's own `<keyword> `<name>``)
+		//!            is "diagnosed"; every OTHER landed element is then
+		//!            applied=TRUE, status="applied", rawCode=3, with the
+		//!            diagnostics quoted in `message` -- it did land.  When
+		//!            no diagnostic can be attributed, EVERY landed element is
+		//!            "diagnosed".  A caller that needs "is it in the document"
+		//!            must test applied OR status=="diagnosed".
 		//!   * 0   -> applied=false, status="rejected": edit refused; the head
 		//!            is byte-identical (nothing changed).  The pre-flight
 		//!            guards (no Document / empty target/param/value, and --

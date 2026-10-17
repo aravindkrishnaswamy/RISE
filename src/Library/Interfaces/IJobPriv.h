@@ -62,37 +62,70 @@ namespace RISE
 		bool        refuseSurfaceBindingOnContainer = false;
 	};
 
+	//! Batched agent edits (2026-10-16, review round 3): the OPERATION-LEVEL inverse of ONE landed batch element,
+	//! captured against the document exactly as that element found it.  An AgentEditBatch history record is the
+	//! ordered list of these: Undo applies them in REVERSE landing order to the CURRENT document (remove the
+	//! inserted chunk; restore each touched param slot's prior value or absence), Redo re-applies them forward
+	//! (re-insert the recorded chunk text after its recorded anchor; re-set each slot's post value), and either
+	//! direction is realized by ONE dry-run-gated derive.  Nothing the batch did not touch is ever rewritten, so
+	//! edits made outside the history (film / environment inspector edits) survive an Undo/Redo of the batch.
+	struct CstBatchUndoOp
+	{
+		struct Slot
+		{
+			std::string role;
+			int         occ = 0;
+			bool        priorAbsent = true;
+			std::string priorValue;
+			bool        postAbsent = true;
+			std::string postValue;
+		};
+		bool        isInsert = false;
+		// INSERT: the exact chunk bytes, its identity, and the identity of the nearest chunk BEFORE it at splice
+		// time ("" = no chunk before it) -- the redo anchor.
+		std::string chunkText;
+		std::string keyword;
+		std::string namePath;          //!< Cst::ChunkNamePath ("keyword/name"), "" for an unnamed chunk
+		std::string anchorKeyword;
+		std::string anchorNamePath;
+		bool        hasAnchor = false;
+		// PARAM EDIT: the chunk the write landed on (after the owner walk) and every slot it changed -- the
+		// written role and each param the write stripped as masking it.
+		std::string ownerKeyword;
+		std::string ownerNamePath;
+		std::vector<Slot> slots;
+	};
+
 	//! Per-element outcome of IJobPriv::ApplyCstEditBatch.  `code` follows the SINGLE-element
 	//! primitive's own contract: an insert reports Job::ApplyCstInsertChunk's 2/3/0/-1/-2, a param edit
 	//! Job::ApplyCstParamEditChecked's 2/3/0 (never 1 -- a batch always realizes through ONE full
-	//! re-derive).  `keyword`/`name` echo an insert's parsed identity, `diag` carries the refusal reason
-	//! (the first dry-run diagnostic for a would-not-derive), and `insertedAt` is a LANDED insert's exact
-	//! splice index (the leading separator of its [leadSep][chunk][trailSep] triple) in the document as it
-	//! stood when that element was spliced -- the landed elements are spliced in batch order, so undoing
-	//! them in REVERSE order with Job::ApplyCstRemoveItemsAt is exact.  -1 for everything else.
+	//! re-derive).  `keyword`/`name` echo an insert's parsed identity; `diag` carries the refusal reason
+	//! (the first dry-run diagnostic for a would-not-derive) or, for a landed element of a diagnosed batch
+	//! (code 3), EVERY diagnostic of the batch's live re-derive, one per line.  For a LANDED element `undo` is
+	//! its operation-level inverse and `landOrder` its position in the order elements were written into the
+	//! committed document (batch order, except for elements an isolation retry landed later).
 	struct CstBatchOutcome
 	{
-		int         code = 0;
-		std::string keyword;
-		std::string name;
-		std::string diag;
-		int         insertedAt = -1;
-		bool        isRasterizer = false;       //!< insert: the chunk is a `*_rasterizer` (Job's category+suffix rule)
-		bool        refusedContainer = false;   //!< param: refused by the container gate (see CstBatchEdit)
+		int             code = 0;
+		std::string     keyword;
+		std::string     name;
+		std::string     diag;
+		int             insertedAt = -1;
+		bool            isRasterizer = false;       //!< insert: the chunk is a `*_rasterizer` (Job's category+suffix rule)
+		bool            refusedContainer = false;   //!< param: refused by the container gate (see CstBatchEdit)
+		bool            wouldNotDerive = false;     //!< refused because it would not derive in context
+		int             landOrder = -1;
+		CstBatchUndoOp  undo;
 	};
 
 	//! IJobPriv::ApplyCstEditBatch's "isolation budget exhausted" return: NOTHING was committed, and the caller
 	//! must fall back to committing the elements one at a time through the single primitives.
 	const int kCstEditBatchNeedsSequential = -3;
 
-	//! Batched agent edits (2026-10-16, review round 2): a batch is realized by ONE live re-derive, so when that
-	//! re-derive reports a diagnostic (code 3) every landed element shares it.  Attribute it to an element only
-	//! when the diagnostic NAMES that element's entity (backtick- or quote-delimited, the way derive diagnostics
-	//! name chunks); the caller reports that element "diagnosed" and every other landed element "applied" with
-	//! the diagnostic quoted as a note -- they DID land, and reporting them rejected makes a caller resubmit them.
-	//! Batched agent edits (2026-10-16, review round 2): does an element AFTER `i` that LANDED write the same param
-	//! slot (entity, kind, role, occ) as param element `i`?  A retry of `i` would then overwrite the later value with
-	//! an earlier one, so retry passes skip it.
+	//! Batched agent edits (2026-10-16, review rounds 2-3): does an element AFTER `i` that LANDED write the same
+	//! param slot (entity, role, occ) as param element `i`?  A retry of `i` would then overwrite the later value
+	//! with an earlier one, so retry passes skip it.  An EMPTY kind on either side means "no kind narrowing" and
+	//! therefore matches any kind.
 	inline bool CstBatchLaterLandedWriteSameSlot( const std::vector<CstBatchEdit>& edits,
 	                                              const std::vector<char>& landed, std::size_t i )
 	{
@@ -101,18 +134,41 @@ namespace RISE
 		for( std::size_t j = i + 1; j < edits.size() && j < landed.size(); ++j ) {
 			const CstBatchEdit& o = edits[j];
 			if( !landed[j] || o.isInsert ) continue;
-			if( o.entityName == e.entityName && o.entityKind == e.entityKind && o.role == e.role && o.occ == e.occ )
+			const bool kindMatches = e.entityKind.empty() || o.entityKind.empty() || o.entityKind == e.entityKind;
+			if( o.entityName == e.entityName && kindMatches && o.role == e.role && o.occ == e.occ )
 				return true;
 		}
 		return false;
 	}
 
-	inline bool CstBatchDiagnosticNames( const std::string& diag, const std::string& name )
+	//! Batched agent edits (2026-10-16, review round 3): a batch is realized by ONE live re-derive, so when that
+	//! re-derive reports diagnostics (code 3) every landed element shares them.  A diagnostic is attributed to an
+	//! element ONLY when it OPENS with that element's own chunk identity -- `<keyword> `<name>`` (or the
+	//! quote-delimited forms) -- never on a name merely QUOTED inside it, which is usually a REFERENCED entity
+	//! ("voronoi2d_painter: gen 0 painter 'foo' not found" names foo, not the voronoi).  `diags` holds one
+	//! diagnostic per line.  When nothing is attributed the caller marks EVERY landed element diagnosed.
+	inline bool CstBatchDiagnosticIsFor( const std::string& diags, const std::string& keyword, const std::string& name )
 	{
-		if( name.empty() || diag.empty() ) return false;
-		return diag.find( "`" + name + "`" ) != std::string::npos ||
-		       diag.find( "'" + name + "'" ) != std::string::npos ||
-		       diag.find( "\"" + name + "\"" ) != std::string::npos;
+		if( keyword.empty() || name.empty() || diags.empty() ) return false;
+		const std::string forms[3] = { keyword + " `" + name + "`", keyword + " '" + name + "'",
+		                               keyword + " \"" + name + "\"" };
+		std::size_t at = 0;
+		while( at <= diags.size() ) {
+			const std::size_t nl = diags.find( '\n', at );
+			const std::string line = diags.substr( at, nl == std::string::npos ? std::string::npos : nl - at );
+			for( int f = 0; f < 3; ++f )
+				if( line.compare( 0, forms[f].size(), forms[f] ) == 0 ) return true;
+			if( nl == std::string::npos ) break;
+			at = nl + 1;
+		}
+		return false;
+	}
+
+	//! The bare name of a Cst::ChunkNamePath ("keyword/name" -> "name").
+	inline std::string CstNameFromPath( const std::string& namePath )
+	{
+		const std::size_t slash = namePath.find( '/' );
+		return slash == std::string::npos ? namePath : namePath.substr( slash + 1 );
 	}
 
 	//! IJobPriv - Priviledged interface with getters

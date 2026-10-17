@@ -56,7 +56,7 @@ unsigned long long EditHistory::HeavyPayloadBytes_( const SceneEdit& e )
 		return static_cast<unsigned long long>( e.propertyValue.size() )
 		     + static_cast<unsigned long long>( e.prevPropertyValue.size() );
 	case SceneEdit::AgentRemoveChunks:
-	case SceneEdit::AgentEditBatch:     // 2026-10-16: the compact diff (both directions in one field)
+	case SceneEdit::AgentEditBatch:     // 2026-10-16: the operation list (both directions in one field)
 		return static_cast<unsigned long long>( e.propertyValue.size() );
 	default:
 		return 0;
@@ -261,19 +261,6 @@ void EditHistory::RestoreLastRedoFromUndo()
 	if( mUndoStack.empty() ) return;
 	mRedoStack.push_back( mUndoStack.back() );
 	mCurrentBytes -= HeavyPayloadBytes_( mUndoStack.back() );   // P2-4: left the tracked (undo) stack
-	mUndoStack.pop_back();
-}
-
-void EditHistory::DropLastRedo()
-{
-	if( mRedoStack.empty() ) return;
-	mRedoStack.pop_back();   // redo entries are not byte-tracked (P2-4 tracks the undo stack only)
-}
-
-void EditHistory::DropLastUndo()
-{
-	if( mUndoStack.empty() ) return;
-	mCurrentBytes -= HeavyPayloadBytes_( mUndoStack.back() );
 	mUndoStack.pop_back();
 }
 

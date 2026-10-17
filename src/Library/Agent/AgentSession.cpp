@@ -12808,12 +12808,8 @@ namespace RISE
 						std::vector<char> landedFlags( n, 0 );
 						for( std::size_t k = 0; k < n; ++k ) landedFlags[k] = ( crs[k].rawCode >= 1 ) ? 1 : 0;
 						for( std::size_t k = 0; k < n; ++k ) {
-							if( crs[k].applied || crs[k].rawCode != 0 || crs[k].retriable || crs[k].status != String( "rejected" ) ) continue;
-							const std::string msg = crs[k].message.c_str();
-							const bool wouldNotDerive = pend[k].isInsert
-								? msg.find( "would not derive in context" ) != std::string::npos
-								: msg.find( "the edit would not derive" ) != std::string::npos;
-							if( !wouldNotDerive ) continue;
+							// Structured flag (review round 3), never the message text.
+							if( crs[k].applied || !crs[k].wouldNotDerive ) continue;
 							if( LaterLandedPatchWritesSameSlot_( pend, landedFlags, k ) ) continue;
 							const SceneEditController::AgentCommitResult again = liveSingle( pend[k] );
 							if( again.rawCode != 0 ) { crs[k] = again; landedFlags[k] = 1; }
@@ -12920,7 +12916,7 @@ namespace RISE
 					std::vector<char> landedFlags( n, 0 );
 					for( std::size_t k = 0; k < n; ++k ) landedFlags[k] = ( oc[k].code >= 1 ) ? 1 : 0;
 					for( std::size_t k = 0; k < n; ++k ) {
-						if( oc[k].code != 0 ) continue;
+						if( oc[k].code != 0 ) continue;   // headless single primitives: code 0 IS would-not-derive / unresolvable
 						if( LaterLandedPatchWritesSameSlot_( pend, landedFlags, k ) ) continue;
 						const CstBatchOutcome again = headlessSingle( pend[k] );
 						if( again.code > 0 ) { oc[k] = again; landedFlags[k] = 1; }
@@ -12932,26 +12928,27 @@ namespace RISE
 			const RISE::Cst::CstHeadVersion head = mJob->GetCstHeadVersion();
 			const RISE::Cst::Document* headDocPtr = mJob->GetCstDocument();
 
-			// Review round 2: a diagnosed (code 3) BATCH re-derive is attributed to the element(s) its diagnostic
-			// NAMES; every other landed element reports applied (it did land) with the diagnostic quoted -- the
-			// same rule the live controller applies (CstBatchDiagnosticNames).
+			// Review round 3: a diagnosed (code 3) BATCH re-derive is attributed to an element only when a diagnostic
+			// OPENS with that element's own `<keyword> `<name>`` (CstBatchDiagnosticIsFor); then every OTHER landed
+			// element reports applied with the diagnostics quoted.  Nothing attributed -> every landed element stays
+			// diagnosed (builders count diagnosed as landed, so over-flagging is harmless) -- the controller's rule.
+			auto ownIs = [&]( std::size_t k ) {
+				const std::string kw = pend[k].isInsert ? oc[k].keyword : oc[k].undo.ownerKeyword;
+				const std::string nm = pend[k].isInsert ? oc[k].name : CstNameFromPath( oc[k].undo.ownerNamePath );
+				return CstBatchDiagnosticIsFor( oc[k].diag, kw, nm );
+			};
 			bool anyAttributed = false;
 			if( batchedRealization )
 				for( std::size_t k = 0; k < n; ++k )
-					if( oc[k].code == 3 && CstBatchDiagnosticNames( oc[k].diag, pend[k].isInsert ? oc[k].name : pend[k].patch.target ) )
-						anyAttributed = true;
+					if( oc[k].code == 3 && ownIs( k ) ) anyAttributed = true;
 			for( std::size_t k = 0; k < n; ++k )
 			{
 				PendingBatchEdit_& p = pend[k];
 				int code = oc[k].code;
-				// A landed, NOT-attributed element of a diagnosed batch: report it as landed, with a note.
+				// A landed element of a diagnosed batch that ANOTHER element's diagnostic was attributed to: landed.
 				std::string landedNote;
-				if( batchedRealization && code == 3 &&
-				    !CstBatchDiagnosticNames( oc[k].diag, p.isInsert ? oc[k].name : p.patch.target ) ) {
-					landedNote = std::string( anyAttributed
-						? "; note: the batch's re-derive reported a diagnostic for ANOTHER element: "
-						: "; note: the batch's re-derive reported a diagnostic it could not attribute to one element: " )
-						+ oc[k].diag;
+				if( batchedRealization && code == 3 && anyAttributed && !ownIs( k ) ) {
+					landedNote = "; note: the batch's re-derive reported a diagnostic for ANOTHER element: " + oc[k].diag;
 					code = 2;
 				}
 				const bool attributed3 = batchedRealization && code == 3;
@@ -24741,8 +24738,9 @@ namespace RISE
 
 			out.patchResults = ProposePatches( patches );
 			for( std::size_t i = 0; i < out.patchResults.size(); ++i ) {
-				if( out.patchResults[i].applied ) ++out.patchesApplied;
-				else                              ++out.patchesRejected;
+				// Review round 3: a DIAGNOSED patch is in the document too -- count it as applied.
+				if( ResultMutatedDocument_( out.patchResults[i] ) ) ++out.patchesApplied;
+				else                                                 ++out.patchesRejected;
 			}
 			out.ok = ( out.patchesRejected == 0 );
 			out.bboxValid = ElementWorldBounds_( element, out.bboxMin, out.bboxMax );
@@ -35231,7 +35229,7 @@ namespace RISE
 					std::string firstFailure;
 					for( std::size_t i = 0; i < results.size(); ++i ) {
 						out.patchResults.push_back( results[i] );
-						if( results[i].applied ) continue;
+						if( ResultMutatedDocument_( results[i] ) ) continue;   // round 3: diagnosed = landed
 						allApplied = false;
 						if( firstFailure.empty() )
 							firstFailure = results[i].message.empty()
@@ -35985,7 +35983,7 @@ namespace RISE
 					bool any = false;
 					for( std::size_t i = 0; i < results.size(); ++i ) {
 						out.patchResults.push_back( results[i] );
-						if( results[i].applied ) {
+						if( ResultMutatedDocument_( results[i] ) ) {   // round 3: diagnosed = landed
 							out.paramsApplied.push_back( names[i] );
 							any = true;
 						}

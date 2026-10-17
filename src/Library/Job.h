@@ -3582,7 +3582,7 @@ namespace RISE
 		int PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entityName, const char* entityKind,
 		                        const std::vector< std::pair< std::string, std::string > >& edits, int occ,
 		                        RISE::Cst::Document& outDoc, RISE::Cst::NodeId& outAnchor, std::string& outRoleDiag,
-		                        bool logRefusals );
+		                        bool logRefusals, CstBatchUndoOp* outUndo = nullptr );
 		//! Batched agent edits (2026-10-16): apply ONE batch element to `doc` (positioned insert, or the
 		//! param write, after the optional container gate).  Returns 1 = written (outcome.insertedAt /
 		//! isRasterizer set for an insert), else the element's refusal code with outcome.diag set.

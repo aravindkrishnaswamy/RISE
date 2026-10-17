@@ -416,17 +416,20 @@ namespace RISE
 			//! other agent op.  One record so a single Cmd-Z undoes the whole batch, the way
 			//! AgentRemoveChunks undoes a whole batch remove.
 			//!
+			//! The record is OPERATION-LEVEL (review round 3): the landed elements' inverses
+			//! (RISE::CstBatchUndoOp) in landing order -- remove an inserted chunk, restore a touched param slot.
+			//! Undo applies them in reverse to the CURRENT document and Redo forward, each direction realized by
+			//! ONE dry-run-gated derive; nothing the batch did not touch is rewritten, so edits made outside the
+			//! history (film / environment inspector edits) survive.  A refused Undo/Redo keeps the record in
+			//! place, like every refused record, and sets SceneEditor::ConsumeHistoryNotice.
+			//!
 			//! WHY NOT N AgentInsertChunk / SetAgentCstParam records bracketed by CompositeBegin/End: each of
 			//! those inverses re-derives the document it lands on and refuses one that does not derive, but a
 			//! batch validates only its END state -- an element listed before what it references lands (see
-			//! Job::ApplyCstEditBatch) -- so replaying per-element inverses can pass through a document that
-			//! does not derive and stop half-way.  Per-element records are not an exact inverse of a batch.
+			//! Job::ApplyCstEditBatch) -- so replaying them one derive at a time can stop half-way.
 			//!
 			//! FIELD USE:
-			//!   * `propertyValue`     = a COMPACT, byte-exact diff of the two documents: only the top-level
-			//!                           items that changed, with their positions (SceneEditor.cpp's
-			//!                           EncodeDocDiff_).  Undo and Redo both rebuild their target from the
-			//!                           CURRENT document, verifying every hunk's bytes first.
+			//!   * `propertyValue`     = the encoded operation list (SceneEditor.cpp's EncodeBatchOps_).
 			//!   * `prevPropertyValue` = UNUSED.
 			//!   * `objectName`        = a DISPLAY-ONLY label (logs); `cstEntityKind` left EMPTY so
 			//!                           MarkCstHeadDirty routes to the boolean CST-head channel.

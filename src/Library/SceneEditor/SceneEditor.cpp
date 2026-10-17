@@ -2667,230 +2667,248 @@ bool SceneEditor::RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forw
 	return r >= 1;
 }
 
-// Batched agent edits (2026-10-16, review P2-D): the COMPACT undo payload of an AgentEditBatch.
+// Batched agent edits (2026-10-16, review round 3): the AgentEditBatch history record is OPERATION-LEVEL -- the
+// landed elements' inverses (RISE::CstBatchUndoOp), in landing order.  Undo applies them in REVERSE to the
+// CURRENT document (remove each inserted chunk together with exactly the separators its insert added; restore
+// each touched param slot's prior value or absence), Redo re-applies them forward (re-insert each recorded chunk
+// before the first chunk following its recorded anchor; re-set each slot's post value), and the result is
+// realized by ONE dry-run-gated derive (IJob::ApplyCstReplaceDocumentText).
 //
-// WHY NOT N per-element records (AgentInsertChunk / SetAgentCstParam) bracketed by CompositeBegin/End.  Each of
-// those inverses re-derives the document it lands on and refuses one that does not derive -- and a batch only
-// ever validated its END state, not its prefixes: a material listed before the painter it reads lands (see
-// Job::ApplyCstEditBatch), so undoing the painter first leaves a document that does not derive and the undo
-// refuses midway, while redoing the material first fails the same way.  Per-element inverses are genuinely
-// inexact for a batch, so the record is a DIFF of the two whole documents instead -- but not two whole
-// documents: only the top-level items that changed.
-//
-// Both texts are split into their top-level CST items (the canonical parse of the text, so the split is a
-// function of the bytes alone).  The common prefix and suffix are trimmed first -- a batch touches a handful of
-// items, so the Myers O(ND) alignment then runs on a small middle, never on the whole document (review round 2:
-// it runs under the controller lock).  Every non-equal run becomes a hunk carrying its position in BOTH
-// sequences plus the removed and added bytes.
-//
-// APPLYING NEVER WEDGES (review round 2, P1).  Undo is LIFO, but a GUI edit made AFTER the batch and then undone
-// does not restore the bytes it touched -- an inspector/gizmo revert rewrites `position` as a `matrix`, prints
-// `4.0` as `4`, adds orientation lines -- so the CURRENT document can differ from the recorded "after" bytes while
-// meaning the same thing.  So a hunk first tries an exact byte match; failing that, a STRUCTURAL match (same item
-// count, and item by item the same chunk keyword + name, trivia matching trivia) -- and splices the recorded bytes
-// anyway: every later edit has already been reverted in meaning, so the region IS the batch's.  Only when even the
-// structure differs is the record unappliable, and then the caller DROPS it with a visible notice rather than
-// leaving a record that would refuse every Cmd-Z forever and hide all older history.
+// WHY NOT A DOCUMENT SNAPSHOT OR DIFF (the previous two designs).  Film / environment inspector edits change the
+// document WITHOUT pushing history, so restoring whole documents -- or whole items -- silently reverted them; and
+// a byte diff had to guess when a later edit had rewritten bytes the batch touched.  Operations touch only what
+// the batch touched, exactly like the per-element records a sequence of single agent commits pushes, but realize
+// with one derive instead of one per element.  WHY NOT those per-element records themselves: each re-derives its
+// own intermediate document, and a batch never validated its prefixes (a material listed before the painter it
+// reads lands), so replaying them one at a time can stop half-way on a document that does not derive.
 namespace
 {
-	std::vector<std::string> SplitTopLevelItems_( const std::string& text )
+	void PutField_( std::string& out, const std::string& v )
 	{
-		std::vector<std::string> items;
-		const RISE::Cst::Document doc = RISE::Cst::ParseToCst( text );
-		const int n = RISE::Cst::DocItemCount( doc );
-		std::string joined;
-		for( int i = 0; i < n; ++i ) {
-			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
-			items.push_back( it ? RISE::Cst::SerializeNode( it ) : std::string() );
-			joined += items.back();
-		}
-		// The split must reproduce the bytes; if it ever does not, fall back to ONE item (still exact, just not
-		// compact) rather than risk a lossy diff.
-		if( joined != text ) { items.clear(); items.push_back( text ); }
-		return items;
-	}
-
-	// The STRUCTURAL identity of one top-level item: "keyword/name" for a chunk, a fixed tag for anything else.
-	std::string ItemIdentity_( const std::string& itemText )
-	{
-		const RISE::Cst::Document doc = RISE::Cst::ParseToCst( itemText );
-		if( RISE::Cst::DocItemCount( doc ) != 1 ) return std::string( "#multi" );
-		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, 0 ) );
-		if( !it ) return std::string( "#none" );
-		if( it->kind == RISE::Cst::NodeKind::Chunk ) {
-			const std::string path = RISE::Cst::ChunkNamePath( it );
-			return std::string( "chunk:" ) + it->role + ( path.empty() ? std::string() : ( "|" + path ) );
-		}
-		if( it->kind == RISE::Cst::NodeKind::Trivia ) return std::string( "#trivia" );
-		return std::string( "#token" );
-	}
-
-	struct DocDiffHunk_ { std::size_t a, b, da, db; std::string delText, insText; };
-
-	std::vector<DocDiffHunk_> DiffItems_( const std::vector<std::string>& A, const std::vector<std::string>& B )
-	{
-		std::vector<DocDiffHunk_> hunks;
-		// Trim the common prefix and suffix: the alignment below only ever sees the region the batch touched.
-		std::size_t pre = 0;
-		while( pre < A.size() && pre < B.size() && A[pre] == B[pre] ) ++pre;
-		std::size_t suf = 0;
-		while( suf < A.size() - pre && suf < B.size() - pre &&
-		       A[A.size() - 1 - suf] == B[B.size() - 1 - suf] ) ++suf;
-		const long N = static_cast<long>( A.size() - pre - suf );
-		const long M = static_cast<long>( B.size() - pre - suf );
-		if( N == 0 && M == 0 ) return hunks;
-		auto oneHunk = [&]() {
-			DocDiffHunk_ h;
-			h.a = pre; h.b = pre; h.da = static_cast<std::size_t>( N ); h.db = static_cast<std::size_t>( M );
-			for( long i = 0; i < N; ++i ) h.delText += A[pre + static_cast<std::size_t>( i )];
-			for( long i = 0; i < M; ++i ) h.insText += B[pre + static_cast<std::size_t>( i )];
-			hunks.push_back( h );
-			return hunks;
-		};
-		if( N == 0 || M == 0 ) return oneHunk();
-
-		// Myers' greedy O((N+M)D) shortest edit script over the trimmed middle (equality = identical bytes),
-		// with D bounded: past kMaxD the middle is recorded as ONE hunk (exact, merely less compact).
-		const long MAX = N + M;
-		const long kMaxD = 512;
-		std::vector<std::size_t> ha( static_cast<std::size_t>( N ) ), hb( static_cast<std::size_t>( M ) );
-		for( long i = 0; i < N; ++i ) ha[static_cast<std::size_t>( i )] = std::hash<std::string>()( A[pre + static_cast<std::size_t>( i )] );
-		for( long i = 0; i < M; ++i ) hb[static_cast<std::size_t>( i )] = std::hash<std::string>()( B[pre + static_cast<std::size_t>( i )] );
-		auto eq = [&]( long x, long y ) {
-			return ha[static_cast<std::size_t>( x )] == hb[static_cast<std::size_t>( y )] &&
-			       A[pre + static_cast<std::size_t>( x )] == B[pre + static_cast<std::size_t>( y )];
-		};
-		std::vector<long> v( static_cast<std::size_t>( 2 * MAX + 2 ), 0 );
-		std::vector< std::vector<long> > trace;   // only the [-d, d] window of v per step
-		long dEnd = -1;
-		for( long d = 0; d <= MAX && d <= kMaxD && dEnd < 0; ++d ) {
-			trace.push_back( std::vector<long>( v.begin() + ( MAX - d ), v.begin() + ( MAX + d + 1 ) ) );
-			for( long k = -d; k <= d; k += 2 ) {
-				long x;
-				if( k == -d || ( k != d && v[k - 1 + MAX] < v[k + 1 + MAX] ) ) x = v[k + 1 + MAX];
-				else x = v[k - 1 + MAX] + 1;
-				long y = x - k;
-				while( x < N && y < M && eq( x, y ) ) { ++x; ++y; }
-				v[k + MAX] = x;
-				if( x >= N && y >= M ) { dEnd = d; break; }
-			}
-		}
-		if( dEnd < 0 ) return oneHunk();
-		// trace[d][k + d] == v[k] as it stood BEFORE step d.
-		auto vAt = [&]( long d, long k ) { return trace[static_cast<std::size_t>( d )][static_cast<std::size_t>( k + d )]; };
-
-		std::vector< std::pair<int, std::pair<long, long> > > ops;   // 0 equal / 1 delete A[x] / 2 insert B[y]
-		long x = N, y = M;
-		for( long d = dEnd; d > 0; --d ) {
-			const long k = x - y;
-			long pk;
-			if( k == -d || ( k != d && vAt( d, k - 1 ) < vAt( d, k + 1 ) ) ) pk = k + 1; else pk = k - 1;
-			const long px = vAt( d, pk ), py = px - pk;
-			while( x > px && y > py ) { --x; --y; ops.push_back( std::make_pair( 0, std::make_pair( x, y ) ) ); }
-			if( pk == k + 1 ) { --y; ops.push_back( std::make_pair( 2, std::make_pair( x, y ) ) ); }
-			else              { --x; ops.push_back( std::make_pair( 1, std::make_pair( x, y ) ) ); }
-		}
-		while( x > 0 && y > 0 ) { --x; --y; ops.push_back( std::make_pair( 0, std::make_pair( x, y ) ) ); }
-		std::reverse( ops.begin(), ops.end() );
-
-		for( std::size_t i = 0; i < ops.size(); ) {
-			if( ops[i].first == 0 ) { ++i; continue; }
-			DocDiffHunk_ h;
-			h.a = pre + static_cast<std::size_t>( ops[i].second.first );
-			h.b = pre + static_cast<std::size_t>( ops[i].second.second );
-			h.da = h.db = 0;
-			while( i < ops.size() && ops[i].first != 0 ) {
-				if( ops[i].first == 1 ) { h.delText += A[pre + static_cast<std::size_t>( ops[i].second.first )]; ++h.da; }
-				else                    { h.insText += B[pre + static_cast<std::size_t>( ops[i].second.second )]; ++h.db; }
-				++i;
-			}
-			hunks.push_back( h );
-		}
-		return hunks;
-	}
-
-	// Encoding: "RISEDOCDIFF1 <N> <M> <hunks>\n" then per hunk "<a> <b> <da> <db> <delBytes> <insBytes>\n" +
-	// delText + insText.
-	std::string EncodeDocDiff_( const std::string& before, const std::string& after )
-	{
-		const std::vector<std::string> A = SplitTopLevelItems_( before );
-		const std::vector<std::string> B = SplitTopLevelItems_( after );
-		const std::vector<DocDiffHunk_> hunks = DiffItems_( A, B );
-		std::string out;
-		char buf[160];
-		std::snprintf( buf, sizeof( buf ), "RISEDOCDIFF1 %zu %zu %zu\n", A.size(), B.size(), hunks.size() );
+		char buf[32];
+		std::snprintf( buf, sizeof( buf ), "%zu:", v.size() );
 		out += buf;
-		for( std::size_t i = 0; i < hunks.size(); ++i ) {
-			const DocDiffHunk_& h = hunks[i];
-			std::snprintf( buf, sizeof( buf ), "%zu %zu %zu %zu %zu %zu\n", h.a, h.b, h.da, h.db,
-			               h.delText.size(), h.insText.size() );
-			out += buf;
-			out += h.delText;
-			out += h.insText;
+		out += v;
+	}
+	bool GetField_( const std::string& in, std::size_t& pos, std::string& v )
+	{
+		const std::size_t colon = in.find( ':', pos );
+		if( colon == std::string::npos ) return false;
+		const std::size_t n = static_cast<std::size_t>( std::strtoull( in.substr( pos, colon - pos ).c_str(), nullptr, 10 ) );
+		if( colon + 1 + n > in.size() ) return false;
+		v = in.substr( colon + 1, n );
+		pos = colon + 1 + n;
+		return true;
+	}
+	void PutInt_( std::string& out, long long v ) { PutField_( out, std::to_string( v ) ); }
+	bool GetInt_( const std::string& in, std::size_t& pos, long long& v )
+	{
+		std::string s;
+		if( !GetField_( in, pos, s ) ) return false;
+		v = std::strtoll( s.c_str(), nullptr, 10 );
+		return true;
+	}
+
+	std::string EncodeBatchOps_( const std::vector<RISE::CstBatchUndoOp>& ops )
+	{
+		std::string out = "RISEBATCHOPS1\n";
+		PutInt_( out, static_cast<long long>( ops.size() ) );
+		for( std::size_t i = 0; i < ops.size(); ++i ) {
+			const RISE::CstBatchUndoOp& o = ops[i];
+			PutInt_( out, o.isInsert ? 1 : 0 );
+			PutField_( out, o.chunkText );
+			PutField_( out, o.keyword );
+			PutField_( out, o.namePath );
+			PutInt_( out, o.hasAnchor ? 1 : 0 );
+			PutField_( out, o.anchorKeyword );
+			PutField_( out, o.anchorNamePath );
+			PutField_( out, o.ownerKeyword );
+			PutField_( out, o.ownerNamePath );
+			PutInt_( out, static_cast<long long>( o.slots.size() ) );
+			for( std::size_t k = 0; k < o.slots.size(); ++k ) {
+				const RISE::CstBatchUndoOp::Slot& sl = o.slots[k];
+				PutField_( out, sl.role );
+				PutInt_( out, sl.occ );
+				PutInt_( out, sl.priorAbsent ? 1 : 0 );
+				PutField_( out, sl.priorValue );
+				PutInt_( out, sl.postAbsent ? 1 : 0 );
+				PutField_( out, sl.postValue );
+			}
 		}
 		return out;
 	}
 
-	bool DecodeDocDiff_( const std::string& enc, std::size_t& N, std::size_t& M, std::vector<DocDiffHunk_>& hunks )
+	bool DecodeBatchOps_( const std::string& in, std::vector<RISE::CstBatchUndoOp>& ops )
 	{
-		hunks.clear();
-		std::size_t pos = enc.find( '\n' );
-		if( pos == std::string::npos ) return false;
-		std::size_t nh = 0;
-		if( std::sscanf( enc.substr( 0, pos ).c_str(), "RISEDOCDIFF1 %zu %zu %zu", &N, &M, &nh ) != 3 ) return false;
-		++pos;
-		for( std::size_t i = 0; i < nh; ++i ) {
-			const std::size_t nl = enc.find( '\n', pos );
-			if( nl == std::string::npos ) return false;
-			DocDiffHunk_ h;
-			std::size_t dl = 0, il = 0;
-			if( std::sscanf( enc.substr( pos, nl - pos ).c_str(), "%zu %zu %zu %zu %zu %zu",
-			                 &h.a, &h.b, &h.da, &h.db, &dl, &il ) != 6 ) return false;
-			pos = nl + 1;
-			if( pos + dl + il > enc.size() ) return false;
-			h.delText = enc.substr( pos, dl ); pos += dl;
-			h.insText = enc.substr( pos, il ); pos += il;
-			hunks.push_back( h );
+		ops.clear();
+		const std::string magic = "RISEBATCHOPS1\n";
+		if( in.compare( 0, magic.size(), magic ) != 0 ) return false;
+		std::size_t pos = magic.size();
+		long long n = 0;
+		if( !GetInt_( in, pos, n ) || n < 0 ) return false;
+		for( long long i = 0; i < n; ++i ) {
+			RISE::CstBatchUndoOp o;
+			long long b = 0, ns = 0;
+			if( !GetInt_( in, pos, b ) ) return false;
+			o.isInsert = ( b != 0 );
+			if( !GetField_( in, pos, o.chunkText ) || !GetField_( in, pos, o.keyword ) || !GetField_( in, pos, o.namePath ) ) return false;
+			if( !GetInt_( in, pos, b ) ) return false;
+			o.hasAnchor = ( b != 0 );
+			if( !GetField_( in, pos, o.anchorKeyword ) || !GetField_( in, pos, o.anchorNamePath ) ) return false;
+			if( !GetField_( in, pos, o.ownerKeyword ) || !GetField_( in, pos, o.ownerNamePath ) ) return false;
+			if( !GetInt_( in, pos, ns ) || ns < 0 ) return false;
+			for( long long k = 0; k < ns; ++k ) {
+				RISE::CstBatchUndoOp::Slot sl;
+				long long occ = 0, pa = 0, qa = 0;
+				if( !GetField_( in, pos, sl.role ) || !GetInt_( in, pos, occ ) || !GetInt_( in, pos, pa ) ||
+				    !GetField_( in, pos, sl.priorValue ) || !GetInt_( in, pos, qa ) || !GetField_( in, pos, sl.postValue ) )
+					return false;
+				sl.occ = static_cast<int>( occ );
+				sl.priorAbsent = ( pa != 0 );
+				sl.postAbsent  = ( qa != 0 );
+				o.slots.push_back( sl );
+			}
+			ops.push_back( o );
 		}
 		return true;
 	}
 
-	// forward = before -> after (Redo); !forward = after -> before (Undo).  `outStructural` reports that at least
-	// one hunk matched by structure rather than by bytes (see the file comment).  False (nothing produced) only
-	// when the current document's STRUCTURE differs from what the diff expects.
-	bool ApplyDocDiff_( const std::string& current, const std::string& enc, bool forward, std::string& out,
-	                    bool* outStructural = nullptr )
+	// Top-level indices of the chunks with identity (keyword, namePath).
+	std::vector<int> FindChunksByIdentity_( const RISE::Cst::Document& doc, const std::string& keyword, const std::string& namePath )
 	{
-		if( outStructural ) *outStructural = false;
-		std::size_t N = 0, M = 0;
-		std::vector<DocDiffHunk_> hunks;
-		if( !DecodeDocDiff_( enc, N, M, hunks ) ) return false;
-		const std::vector<std::string> cur = SplitTopLevelItems_( current );
-		if( cur.size() != ( forward ? N : M ) ) return false;
-		out.clear();
-		std::size_t cursor = 0;
-		for( std::size_t i = 0; i < hunks.size(); ++i ) {
-			const DocDiffHunk_& h = hunks[i];
-			const std::size_t at   = forward ? h.a : h.b;
-			const std::size_t cnt  = forward ? h.da : h.db;
-			const std::string& expect = forward ? h.delText : h.insText;
-			const std::string& put    = forward ? h.insText : h.delText;
-			if( at < cursor || at + cnt > cur.size() ) return false;
-			for( ; cursor < at; ++cursor ) out += cur[cursor];
-			std::string have;
-			for( std::size_t k = 0; k < cnt; ++k ) have += cur[at + k];
-			if( have != expect ) {
-				// Structural match: the same items, item by item (see the file comment).
-				const std::vector<std::string> exp = expect.empty() ? std::vector<std::string>() : SplitTopLevelItems_( expect );
-				if( exp.size() != cnt ) return false;
-				for( std::size_t k = 0; k < cnt; ++k )
-					if( ItemIdentity_( exp[k] ) != ItemIdentity_( cur[at + k] ) ) return false;
-				if( outStructural ) *outStructural = true;
-			}
-			out += put;
-			cursor = at + cnt;
+		std::vector<int> out;
+		const int n = RISE::Cst::DocItemCount( doc );
+		for( int i = 0; i < n; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword && RISE::Cst::ChunkNamePath( it ) == namePath )
+				out.push_back( i );
 		}
-		for( ; cursor < cur.size(); ++cursor ) out += cur[cursor];
+		return out;
+	}
+
+	bool IsTrivia_( const RISE::Cst::Document& doc, int i, std::string* text )
+	{
+		if( i < 0 || i >= RISE::Cst::DocItemCount( doc ) ) return false;
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+		if( !it || it->kind != RISE::Cst::NodeKind::Trivia ) return false;
+		if( text ) *text = RISE::Cst::SerializeNode( it );
+		return true;
+	}
+
+	// Replace trivia item `i` by `text` (removing it when empty).
+	RISE::Cst::Document ReplaceTrivia_( const RISE::Cst::Document& doc, int i, const std::string& text )
+	{
+		RISE::Cst::Document d = RISE::Cst::DocRemoveItem( doc, i );
+		if( text.empty() ) return d;
+		const RISE::Cst::Document t = RISE::Cst::ParseToCst( text );
+		const RISE::Cst::NodeRef item = RISE::Cst::DocResolveNodeId( t, RISE::Cst::DocNodeIdAt( t, 0 ) );
+		return item ? RISE::Cst::DocInsertItem( d, i, item ) : d;
+	}
+
+	// UNDO of an insert: remove the chunk and exactly the "\n" its insert put on either side (whether or not a
+	// re-parse has since merged those separators into neighbouring trivia).
+	bool UndoInsert_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, std::string& why )
+	{
+		std::vector<int> idx = FindChunksByIdentity_( doc, o.keyword, o.namePath );
+		if( idx.size() > 1 ) {   // e.g. several unnamed timelines: the one with the recorded bytes
+			std::vector<int> exact;
+			for( std::size_t k = 0; k < idx.size(); ++k ) {
+				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, idx[k] ) );
+				if( it && RISE::Cst::SerializeNode( it ) == o.chunkText ) exact.push_back( idx[k] );
+			}
+			idx.swap( exact );
+		}
+		if( idx.size() != 1 ) {
+			why = "the inserted `" + o.keyword + "` " + ( o.namePath.empty() ? std::string( "(unnamed)" ) : ( "`" + RISE::CstNameFromPath( o.namePath ) + "`" ) ) +
+			      ( idx.empty() ? " no longer exists" : " is ambiguous" );
+			return false;
+		}
+		const int at = idx[0];
+		doc = RISE::Cst::DocRemoveItem( doc, at );
+		std::string t;
+		if( IsTrivia_( doc, at, &t ) && !t.empty() && t[0] == '\n' )                      // trailing separator
+			doc = ReplaceTrivia_( doc, at, t.substr( 1 ) );
+		if( IsTrivia_( doc, at - 1, &t ) && !t.empty() && t[t.size() - 1] == '\n' )      // leading separator
+			doc = ReplaceTrivia_( doc, at - 1, t.substr( 0, t.size() - 1 ) );
+		return true;
+	}
+
+	// REDO of an insert: [ "\n" ][chunk][ "\n" ] before the first chunk that follows the recorded anchor chunk
+	// (the end when none follows; the first chunk of the document when the insert had no anchor).
+	bool RedoInsert_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, std::string& why )
+	{
+		const RISE::Cst::Document c = RISE::Cst::ParseToCst( o.chunkText );
+		RISE::Cst::NodeRef chunk;
+		for( int i = 0; i < RISE::Cst::DocItemCount( c ); ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( c, RISE::Cst::DocNodeIdAt( c, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunk = it; break; }
+		}
+		if( !chunk ) { why = "the recorded chunk text no longer parses"; return false; }
+		const int n = RISE::Cst::DocItemCount( doc );
+		int from = 0;
+		if( o.hasAnchor ) {
+			const std::vector<int> a = FindChunksByIdentity_( doc, o.anchorKeyword, o.anchorNamePath );
+			from = a.empty() ? n : a[0] + 1;   // anchor gone: append at the end
+		}
+		int at = n;
+		for( int i = from; i < n; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { at = i; break; }
+		}
+		const RISE::Cst::Document nl = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		const RISE::Cst::NodeRef sep = RISE::Cst::DocResolveNodeId( nl, RISE::Cst::DocNodeIdAt( nl, 0 ) );
+		const RISE::Cst::Document nl2 = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		const RISE::Cst::NodeRef lead = RISE::Cst::DocResolveNodeId( nl2, RISE::Cst::DocNodeIdAt( nl2, 0 ) );
+		doc = RISE::Cst::DocInsertItem( doc, at,     lead );
+		doc = RISE::Cst::DocInsertItem( doc, at + 1, chunk );
+		doc = RISE::Cst::DocInsertItem( doc, at + 2, sep );
+		return true;
+	}
+
+	// A param edit's slots, backward (undo: prior values) or forward (redo: post values).
+	bool ApplySlots_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, bool forward, std::string& why )
+	{
+		const std::vector<int> idx = FindChunksByIdentity_( doc, o.ownerKeyword, o.ownerNamePath );
+		if( idx.size() != 1 ) {
+			why = "the edited `" + o.ownerKeyword + "` " +
+			      ( o.ownerNamePath.empty() ? std::string( "(unnamed)" ) : ( "`" + RISE::CstNameFromPath( o.ownerNamePath ) + "`" ) ) +
+			      ( idx.empty() ? " no longer exists" : " is ambiguous" );
+			return false;
+		}
+		const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, idx[0] );
+		const std::size_t n = o.slots.size();
+		for( std::size_t s = 0; s < n; ++s ) {
+			const RISE::CstBatchUndoOp::Slot& sl = o.slots[ forward ? s : n - 1 - s ];
+			const bool absent      = forward ? sl.postAbsent : sl.priorAbsent;
+			const std::string& val = forward ? sl.postValue  : sl.priorValue;
+			const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
+			if( !chunk ) { why = "the edited chunk vanished mid-replay"; return false; }
+			if( absent ) {
+				if( forward ) doc = RISE::Cst::DocRemoveParam( doc, id, sl.role );   // the forward write stripped every occurrence
+				else if( RISE::Cst::ParamOccurrenceCount( chunk, sl.role ) > sl.occ )
+					doc = RISE::Cst::DocRemoveParamOcc( doc, id, sl.role, sl.occ );
+			} else {
+				doc = RISE::Cst::DocSetOrAddParamValue( doc, id, sl.role, sl.occ, val );
+			}
+		}
+		return true;
+	}
+
+	// Build the target document text from the CURRENT one.  False with `why` when an operation cannot apply.
+	bool ApplyBatchOps_( const RISE::Cst::Document& current, const std::string& encoded, bool forward,
+	                     std::string& outText, std::string& why )
+	{
+		std::vector<RISE::CstBatchUndoOp> ops;
+		if( !DecodeBatchOps_( encoded, ops ) ) { why = "the history record is unreadable"; return false; }
+		RISE::Cst::Document doc = current;
+		const std::size_t n = ops.size();
+		for( std::size_t i = 0; i < n; ++i ) {
+			const RISE::CstBatchUndoOp& o = ops[ forward ? i : n - 1 - i ];
+			const bool ok = o.isInsert ? ( forward ? RedoInsert_( doc, o, why ) : UndoInsert_( doc, o, why ) )
+			                           : ApplySlots_( doc, o, forward, why );
+			if( !ok ) return false;
+		}
+		outText = RISE::Cst::SerializeCst( doc );
 		return true;
 	}
 }
@@ -2912,22 +2930,16 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 	if( !mJob ) return false;
 	const bool dup   = ( edit.op == SceneEdit::AgentDuplicateNode );
 	const bool batch = ( edit.op == SceneEdit::AgentEditBatch );
-	// 2026-10-16 (review P2-D): an AgentEditBatch carries a compact item diff, not two documents -- rebuild
-	// the target document from the CURRENT one (verified hunk by hunk; a mismatch refuses).
+	// 2026-10-16 (review round 3): an AgentEditBatch carries OPERATIONS, not documents -- build the target from
+	// the CURRENT document by applying them (see ApplyBatchOps_), then realize it with the one derive below.
 	std::string batchText;
 	if( batch ) {
 		const RISE::Cst::Document* cur = mJob->GetCstDocument();
-		bool structural = false;
-		if( !cur || !ApplyDocDiff_( RISE::Cst::SerializeCst( *cur ), std::string( edit.propertyValue.c_str() ),
-		                            forward, batchText, &structural ) ) {
-			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: agent edit batch %s refused: the current document's "
-			                      "structure does not match the recorded batch diff", forward ? "redo" : "undo" );
-			return false;   // the caller DROPS the record (DropUnappliableBatchRecord_) -- never a wedge
+		std::string why;
+		if( !cur || !ApplyBatchOps_( *cur, std::string( edit.propertyValue.c_str() ), forward, batchText, why ) ) {
+			NoteHistoryRefusal_( edit, forward, why.empty() ? std::string( "no retained document" ) : why );
+			return false;   // the caller restores the record (the single-record refusal rule) -- the user is told
 		}
-		if( structural )
-			GlobalLog()->PrintEx( eLog_Info, "SceneEditor:: agent edit batch %s matched by structure (a later edit "
-			                      "rewrote the bytes of an item the batch touched); the recorded bytes were restored",
-			                      forward ? "redo" : "undo" );
 	}
 	const String text = batch ? String( batchText.c_str() )
 	                          : ( forward ? edit.prevPropertyValue : edit.propertyValue );
@@ -2948,6 +2960,9 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;
 	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	if( r == 0 && batch )
+		NoteHistoryRefusal_( edit, forward, std::string( "the result would not derive" ) +
+		                     ( diagBuf[0] ? std::string( ": " ) + diagBuf : std::string() ) );
 	return r >= 1;
 }
 
@@ -3555,33 +3570,18 @@ void SceneEditor::PushAgentDuplicateNodeEdit(
 
 // Batched agent edits (2026-10-16): see the header doc.  Same shape as PushAgentReplaceGeometryEdit.
 void SceneEditor::PushAgentEditBatchEdit(
-	const String& label, const std::string& priorDocText, const std::string& postDocText,
-	bool landedRasterizerInsert )
+	const String& label, const std::vector<RISE::CstBatchUndoOp>& ops, bool landedRasterizerInsert )
 {
 	SceneEdit edit;
 	edit.op                      = SceneEdit::AgentEditBatch;
-	// DISPLAY-ONLY -- see the op doc.  Capped (review round 2): a 80-element batch's label is otherwise kilobytes.
+	// DISPLAY-ONLY -- see the op doc.  Capped (review round 2): an 80-element batch's label is otherwise kilobytes.
 	std::string lbl( label.c_str() );
 	if( lbl.size() > 120 ) { lbl.resize( 117 ); lbl += "..."; }
 	edit.objectName              = String( lbl.c_str() );
 	// cstEntityKind deliberately left EMPTY: the boolean CST-head dirty channel.
-	edit.propertyValue           = String( EncodeDocDiff_( priorDocText, postDocText ).c_str() );   // both directions
+	edit.propertyValue           = String( EncodeBatchOps_( ops ).c_str() );   // both directions
 	edit.agentChunkWasRasterizer = landedRasterizerInsert;
 	mHistory.Push( edit );
-}
-
-std::string SceneEditor::ForTest_ApplyDocDiff( const std::string& current, const std::string& encodedDiff,
-                                               bool forward, bool* outOk )
-{
-	std::string out;
-	const bool ok = ApplyDocDiff_( current, encodedDiff, forward, out );
-	if( outOk ) *outOk = ok;
-	return out;
-}
-
-std::string SceneEditor::ForTest_EncodeDocDiff( const std::string& before, const std::string& after )
-{
-	return EncodeDocDiff_( before, after );
 }
 
 bool SceneEditor::Apply( const SceneEdit& editIn )
@@ -3752,14 +3752,6 @@ bool SceneEditor::Undo()
 	// depth, make the un-reverted edit redo-able, or (P3-e) mark anything dirty: the
 	// Document did not change, so HasUnsavedChanges() must not either.
 	if( !ApplyRevertMutation( edit ) ) {
-		// Review round 2 (P1): an AgentEditBatch record that cannot be applied (the document's structure no longer
-		// matches, or the pre-batch document no longer derives) would refuse EVERY later Cmd-Z if restored, and
-		// hide all older history.  Drop it instead, visibly.
-		if( edit.op == SceneEdit::AgentEditBatch ) {
-			mHistory.DropLastRedo();
-			NoteHistoryDrop_( edit, /*forward*/ false );
-			return false;
-		}
 		mHistory.RestoreLastUndoFromRedo();
 		return false;
 	}
@@ -3767,12 +3759,13 @@ bool SceneEditor::Undo()
 	return true;
 }
 
-// Review round 2 (P1): see Undo/Redo.  The notice is consumable by the GUI (ConsumeHistoryNotice) and logged.
-void SceneEditor::NoteHistoryDrop_( const SceneEdit& edit, bool forward )
+// Review round 3: a refused Undo/Redo of an agent batch keeps the record where it was (the same coherent rule
+// every single record's refusal follows) and TELLS the user why -- ConsumeHistoryNotice, surfaced by the GUI.
+void SceneEditor::NoteHistoryRefusal_( const SceneEdit& edit, bool forward, const std::string& why )
 {
 	mHistoryNotice = std::string( forward ? "Redo" : "Undo" ) + " of the agent batch edit (" +
-		std::string( edit.objectName.c_str() ) + ") could not be applied to the current document, so that history "
-		"step was removed; the earlier history is still available.";
+		std::string( edit.objectName.c_str() ) + ") was refused and nothing changed: " + why +
+		".  Edit or remove whatever now depends on it, then try again; the step stays in the history.";
 	GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: %s", mHistoryNotice.c_str() );
 }
 
@@ -4835,11 +4828,6 @@ bool SceneEditor::Redo()
 	// redo stack) where a refused undo is not, but the argument is the same and
 	// the pair must be symmetric or the comment that says so is a lie.
 	if( !ApplyForwardMutation( edit, /*isReplay*/true ) ) {
-		if( edit.op == SceneEdit::AgentEditBatch ) {   // review round 2 (P1): never wedge -- see Undo
-			mHistory.DropLastUndo();
-			NoteHistoryDrop_( edit, /*forward*/ true );
-			return false;
-		}
 		mHistory.RestoreLastRedoFromUndo();
 		return false;
 	}
