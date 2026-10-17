@@ -33474,7 +33474,13 @@ namespace RISE
 			p += "\nWHAT THIS CALL WILL ACCEPT: standard_object chunks, and nothing else. A chunk of "
 			     "any other kind is rejected, and so is a standard_object naming a geometry or a "
 			     "material that is not in the list above -- this call creates no geometry, no "
-			     "material and no painter.\n";
+			     "material and no painter.\n"
+			     "THE CLONE FORM IS ALSO ACCEPTED: instead of `geometry`, a standard_object may say "
+			     "`source <existing object name>` (an object this scene already has, or one you "
+			     "declare EARLIER in this same answer), optionally with `count_u` / `count_v` and "
+			     "expr(...) positions to repeat it. A clone keeps its source's geometry and material, "
+			     "so leave the `material` line out (a `material` you do write must be one from the "
+			     "list above). `geometry` and `source` together are an error.\n";
 
 			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- a sequence of complete chunks, each in "
 			     "the form\n"
@@ -33643,7 +33649,7 @@ namespace RISE
 				std::vector<AgentPopulateSceneCreation> submitInfo;
 				for( std::size_t i = 0; i < chunks.size(); ++i ) {
 					RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunks[i] );
-					std::string kind, oname, gname, mname;
+					std::string kind, oname, gname, mname, sname;
 					RISE::Cst::NodeId nodeId = 0;
 					{
 						const int n = RISE::Cst::DocItemCount( doc );
@@ -33655,6 +33661,8 @@ namespace RISE
 							oname  = ChunkParamString_( it, "name" );
 							gname  = ChunkParamString_( it, "geometry" );
 							mname  = ChunkParamString_( it, "material" );
+							sname  = ChunkParamString_( it, "source" );
+							if( sname == "none" ) sname.clear();
 							nodeId = nid;
 							break;
 						}
@@ -33694,14 +33702,46 @@ namespace RISE
 					// material that ALREADY EXIST -- asked of the live managers,
 					// which is what the derive would resolve against anyway, so
 					// a name that passes here cannot dangle later.
-					if( gname.empty() || !geos || !geos->GetItem( gname.c_str() ) ) {
+					//
+					// THE CLONE FORM.  `source <object>` (with optional
+					// count_u / count_v / expr positions) clones an EXISTING
+					// object -- geometry, material and children come from it --
+					// so it creates no geometry, and it is a legal way to place
+					// existing geometry.  The source must be an object this scene
+					// already has (a clone is itself a valid source) or one an
+					// earlier chunk of this same answer lands.  `geometry` and
+					// `source` together are the parser's own mutual-exclusion
+					// error and are left to InsertChunks to report.
+					const bool cloneForm = !sname.empty();
+					if( cloneForm ) {
+						IObjectManager* objs = mJob->GetObjects();
+						bool known = ( objs && objs->GetItem( sname.c_str() ) );
+						for( std::size_t l = 0; l < landedNames.size() && !known; ++l )
+							known = ( landedNames[l] == sname );
+						for( std::size_t l = 0; l < submitInfo.size() && !known; ++l )
+							known = ( submitInfo[l].name == sname );
+						if( !known ) {
+							AgentPopulateSceneRejection r;
+							r.name   = oname;
+							r.kind   = kind;
+							r.reason = "the standard_object" +
+								( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+								" was not inserted: its `source` names the object \"" + sname +
+								"\", which this scene does not have -- `source` clones an object that "
+								"already exists (declared earlier), and populate_scene creates none";
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+					}
+					if( !cloneForm && ( gname.empty() || !geos || !geos->GetItem( gname.c_str() ) ) ) {
 						AgentPopulateSceneRejection r;
 						r.name   = oname;
 						r.kind   = kind;
 						r.reason = "the standard_object" +
 							( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
 							" was not inserted: it names " +
-							( gname.empty() ? std::string( "no geometry at all" )
+							( gname.empty() ? std::string( "no geometry at all (and no `source` object to clone)" )
 							                : ( "the geometry \"" + gname + "\", which this scene does "
 							                    "not have" ) ) +
 							" -- populate_scene places geometries that already exist and creates none";
@@ -33709,7 +33749,10 @@ namespace RISE
 						rejectionLines.push_back( r.reason );
 						continue;
 					}
-					if( mname.empty() || !mats || !mats->GetItem( mname.c_str() ) ) {
+					// A clone inherits its source's material, so the line is
+					// optional there; if one IS written it must still exist.
+					if( ( !cloneForm && mname.empty() ) ||
+					    ( !mname.empty() && ( !mats || !mats->GetItem( mname.c_str() ) ) ) ) {
 						AgentPopulateSceneRejection r;
 						r.name   = oname;
 						r.kind   = kind;
@@ -33719,7 +33762,10 @@ namespace RISE
 							( mname.empty() ? std::string( "no material at all" )
 							                : ( "the material \"" + mname + "\", which this scene does "
 							                    "not have" ) ) +
-							" -- populate_scene places materials that already exist and creates none";
+							" -- populate_scene places materials that already exist and creates none" +
+							( cloneForm ? std::string( " (a `source` clone keeps its source's material, so you can "
+							                           "simply omit the `material` line)" )
+							            : std::string() );
 						out.rejected.push_back( r );
 						rejectionLines.push_back( r.reason );
 						continue;
@@ -33737,7 +33783,7 @@ namespace RISE
 
 					AgentPopulateSceneCreation info;
 					info.name     = oname;
-					info.geometry = gname;
+					info.geometry = cloneForm ? ( "(clone of " + sname + ")" ) : gname;
 					info.material = mname;
 					submit.push_back( chunks[i] );
 					submitInfo.push_back( info );

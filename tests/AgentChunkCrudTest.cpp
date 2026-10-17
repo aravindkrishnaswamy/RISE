@@ -17557,6 +17557,52 @@ static void TestPopulateSceneContractAndRetry()
 	}
 }
 
+//! A82h: the `source` CLONE form (count_u / expr positions) is a legal way to
+//! place existing geometry; a `source` naming nothing is rejected naming it;
+//! a clone needs no `material` line, but one that is written must exist.
+static void TestPopulateSceneSourceClone()
+{
+	std::printf( "A82h: populate_scene accepts the source clone form...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82h.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A82h fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+
+	const std::string answer =
+		"standard_object\n{\n\tname pop_clone_row\n\tsource obj_sph\n\tcount_u 3\n"
+		"\tposition expr(-0.67 + i*0.075) 1.050 -0.355\n}\n"
+		"standard_object\n{\n\tname pop_clone_plain\n\tsource obj_sph\n\tposition 3 0 0\n}\n"
+		"standard_object\n{\n\tname pop_clone_of_clone\n\tsource pop_clone_plain\n"
+		"\tposition 0 2 0\n}\n"
+		"standard_object\n{\n\tname pop_clone_ghost_src\n\tsource no_such_object\n"
+		"\tposition 0 0 1\n}\n"
+		"standard_object\n{\n\tname pop_clone_ghost_mat\n\tsource obj_sph\n"
+		"\tmaterial ghost_mat\n\tposition 0 0 2\n}\n";
+	sess->SetTextCompleter( MakeFakeCompleter( { answer, answer } ) );
+	const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "pop_clone_row" ) != std::string::npos,
+	       "A82h MONEY ASSERTION: a `source` + count_u + expr() clone of an existing object is inserted" );
+	Check( doc.find( "pop_clone_of_clone" ) != std::string::npos,
+	       "A82h a clone of a clone from the same answer is inserted" );
+	Check( doc.find( "pop_clone_ghost_src" ) == std::string::npos,
+	       "A82h a `source` naming a nonexistent object does not reach the document" );
+	bool sawSrc = false, sawMat = false, sawNoGeom = false;
+	for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
+		const std::string& why = r.rejected[i].reason;
+		if( why.find( "\"no_such_object\", which this scene does not have" ) != std::string::npos ) sawSrc = true;
+		if( why.find( "the material \"ghost_mat\", which this scene does not have" ) != std::string::npos ) sawMat = true;
+		if( why.find( "names no geometry at all" ) != std::string::npos ) sawNoGeom = true;
+	}
+	Check( sawSrc, "A82h the bad `source` is rejected with a reason naming it" );
+	Check( sawMat, "A82h a clone naming a nonexistent material is still rejected" );
+	Check( !sawNoGeom, "A82h no clone is rejected as 'names no geometry'" );
+	Check( doc.find( "pop_clone_ghost_mat" ) == std::string::npos, "A82h ghost-material clone not inserted" );
+	pJob->release();
+}
+
 //! A82c: the capability refusal, the per-session spend cap, and the
 //! nothing-to-repeat case -- the three bounds, each of which must cost the
 //! provider nothing.
@@ -20505,6 +20551,7 @@ int main()
 	// Arc 82 (2026-08-12): the clean-room population pass and its render gate.
 	TestPopulateSceneHappyPath();
 	TestPopulateSceneContractAndRetry();
+	TestPopulateSceneSourceClone();
 	TestPopulateSceneCapabilityCapAndNoStock();
 	TestComposePhaseFirstRenderRefusal();
 	TestComposeArmsShareOneCap();
