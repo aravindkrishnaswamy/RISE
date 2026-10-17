@@ -94,6 +94,11 @@ namespace RISE
 		std::string anchorKeyword;
 		std::string anchorNamePath;
 		bool        hasAnchor = false;
+		//! Review round 5 (P1-2): the anchor's ORDINAL among the chunks sharing its identity (keyword + name
+		//! path) -- unnamed chunks all share "" -- so Redo resolves the k-th, not the first; and whether the
+		//! insert was spliced at the document END (Redo then appends at the end, whatever follows the anchor).
+		int         anchorOrdinal = 0;
+		bool        appendedAtEnd = false;
 		// PARAM EDIT: how the FORWARD write addressed its target -- (entityName, entityKind, editRole) resolved
 		// through Cst::DocFindByNameAnyRole + Cst::DocTransformOwnerId -- so Undo and Redo resolve it the SAME
 		// way (review round 4); `postEntityName` is the entity's name AFTER the write (differs only when the
@@ -146,10 +151,30 @@ namespace RISE
 		return r == "position" || r == "orientation" || r == "quaternion" || r == "scale" || r == "matrix";
 	}
 
-	//! Batched agent edits (2026-10-16, review rounds 2-3): does an element AFTER `i` that LANDED write the same
-	//! param slot (entity, role, occ) as param element `i`?  A retry of `i` would then overwrite the later value
-	//! with an earlier one, so retry passes skip it.  An EMPTY kind on either side means "no kind narrowing" and
-	//! therefore matches any kind.
+	//! Would re-writing the EARLIER object-transform param `earlier` after the LATER landed one `later` (both on
+	//! the same entity) change the later write's effect?  Job::PlanCstParamEdits_'s masking rules (review round 5,
+	//! directional rather than "every transform role is one slot"): a write strips exactly what outranks it
+	//! (matrix > quaternion > orientation; position and scale are independent of everything but matrix), and a
+	//! re-written param that outranks the later one masks it.  So the earlier write conflicts when
+	//!   * it is the same role (the occurrence is compared by the caller);
+	//!   * the later write is a `matrix` (re-writing any component strips it), or the earlier is (re-writing it
+	//!     strips every later component);
+	//!   * the pair is quaternion / orientation -- a re-written orientation strips a later quaternion, a
+	//!     re-written quaternion masks a later orientation.
+	//! position / scale / quaternion against one another (other than themselves) do not conflict.
+	inline bool CstTransformRetryConflicts( const std::string& earlier, const std::string& later )
+	{
+		if( earlier == later ) return true;
+		if( earlier == "matrix" || later == "matrix" ) return true;
+		return ( earlier == "quaternion" && later == "orientation" ) ||
+		       ( earlier == "orientation" && later == "quaternion" );
+	}
+
+	//! Batched agent edits (2026-10-16, review rounds 2-5): does an element AFTER `i` that LANDED write the same
+	//! param slot (entity, role, occ) as param element `i` -- or, for the object-transform params, one a retry of
+	//! `i` would strip or mask (CstTransformRetryConflicts)?  A retry of `i` would then overwrite the later
+	//! value with an earlier one, so retry passes skip it.  An EMPTY kind on either side means "no kind
+	//! narrowing" and therefore matches any kind.
 	inline bool CstBatchLaterLandedWriteSameSlot( const std::vector<CstBatchEdit>& edits,
 	                                              const std::vector<char>& landed, std::size_t i )
 	{
@@ -159,9 +184,9 @@ namespace RISE
 			const CstBatchEdit& o = edits[j];
 			if( !landed[j] || o.isInsert ) continue;
 			const bool kindMatches = e.entityKind.empty() || o.entityKind.empty() || o.entityKind == e.entityKind;
-			// The object-transform params mask one another (matrix > quaternion > per-field), so they are ONE slot.
 			const bool sameRole = ( o.role == e.role && o.occ == e.occ ) ||
-			                      ( CstIsObjectTransformRole( o.role ) && CstIsObjectTransformRole( e.role ) );
+			                      ( CstIsObjectTransformRole( o.role ) && CstIsObjectTransformRole( e.role ) &&
+			                        o.role != e.role && CstTransformRetryConflicts( e.role, o.role ) );
 			if( o.entityName == e.entityName && kindMatches && sameRole )
 				return true;
 		}

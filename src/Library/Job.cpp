@@ -14400,13 +14400,24 @@ int Job::ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e,
 		outcome.undo.keyword   = chunk->role;
 		outcome.undo.namePath  = RISE::Cst::ChunkNamePath( chunk );
 		outcome.undo.chunkIndex = where + 1;   // [lead][chunk][sep] spliced at `where`
+		// Review round 5 (P1-2): the splice at the document END is recorded as such (Redo appends at the end),
+		// and the anchor by its ORDINAL among same-identity chunks (unnamed twins share one identity).
+		outcome.undo.appendedAtEnd = ( where >= RISE::Cst::DocItemCount( doc ) );
+		int anchorAt = -1;
 		for( int k = where - 1; k >= 0; --k ) {
 			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, k ) );
 			if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
 			outcome.undo.hasAnchor      = true;
 			outcome.undo.anchorKeyword  = it->role;
 			outcome.undo.anchorNamePath = RISE::Cst::ChunkNamePath( it );
+			anchorAt = k;
 			break;
+		}
+		for( int k = 0; k < anchorAt; ++k ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, k ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == outcome.undo.anchorKeyword &&
+			    RISE::Cst::ChunkNamePath( it ) == outcome.undo.anchorNamePath )
+				++outcome.undo.anchorOrdinal;
 		}
 		doc = SpliceCstInsert_( doc, chunk, where );
 		outcome.insertedAt   = where;
@@ -15039,19 +15050,6 @@ int Job::ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRa
 	return code;
 }
 
-// Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk -- see the IJob virtual doc for the full
-// contract.  `bytesInOrder` is the caller's captured concatenation of every top-level item a PRIOR
-// DocEraseChunkTidy actually dropped (the chunk + at most its own tidied trailing separator), in document
-// order; parse it back into its constituent top-level items and splice them at `atIndex` in order -- the
-// documented exact inverse of DocRemoveItem (Cst.h): DocRemoveItem(DocInsertItem(doc,i,x),i) round-trips
-// byte-for-byte, so re-inserting the SAME items at the SAME index restores the pre-erase Document exactly
-// (subject to the dry-run below proving the restored Document still derives -- e.g. nothing removed in the
-// interim now collides with the restored chunk's name).
-// Round-1 P1-B glue-safety helper: true iff the top-level item at `index` in `doc` serializes to bytes
-// whose LAST byte is a newline.  Mirrors Cst.cpp's own (internal-linkage) `ItemEndsInNewline` predicate --
-// that one is `static` and not exposed via Cst.h, so this is a local, deliberately identical reimplementation
-// via the PUBLIC RISE::Cst::SerializeNode surface (same O(one item's bytes) cost).  An out-of-range/absent
-// item is NOT newline-terminated.
 // Batched agent edits (2026-10-16, review round 4): ApplyCstReplaceDocumentText for an already-built Document --
 // installed AS IS (no serialize + re-parse), so its top-level item structure is preserved.  An agent batch
 // Undo/Redo builds its target by editing the CURRENT Document; a re-parse would merge adjacent trivia items and
@@ -15073,6 +15071,19 @@ int Job::ApplyCstReplaceDocument( const RISE::Cst::Document& doc, bool restoreAc
 	return code;
 }
 
+// Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk -- see the IJob virtual doc for the full
+// contract.  `bytesInOrder` is the caller's captured concatenation of every top-level item a PRIOR
+// DocEraseChunkTidy actually dropped (the chunk + at most its own tidied trailing separator), in document
+// order; parse it back into its constituent top-level items and splice them at `atIndex` in order -- the
+// documented exact inverse of DocRemoveItem (Cst.h): DocRemoveItem(DocInsertItem(doc,i,x),i) round-trips
+// byte-for-byte, so re-inserting the SAME items at the SAME index restores the pre-erase Document exactly
+// (subject to the dry-run below proving the restored Document still derives -- e.g. nothing removed in the
+// interim now collides with the restored chunk's name).
+// Round-1 P1-B glue-safety helper: true iff the top-level item at `index` in `doc` serializes to bytes
+// whose LAST byte is a newline.  Mirrors Cst.cpp's own (internal-linkage) `ItemEndsInNewline` predicate --
+// that one is `static` and not exposed via Cst.h, so this is a local, deliberately identical reimplementation
+// via the PUBLIC RISE::Cst::SerializeNode surface (same O(one item's bytes) cost).  An out-of-range/absent
+// item is NOT newline-terminated.
 static bool JobItemEndsInNewline_( const RISE::Cst::Document& doc, int index )
 {
 	if( index < 0 || index >= RISE::Cst::DocItemCount( doc ) ) return false;

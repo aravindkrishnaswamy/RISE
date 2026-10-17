@@ -222,7 +222,8 @@ namespace RISE
 		//! `rawCode` preserves the underlying contract value (0/1/2/3) for a
 		//! caller that wants the raw code (0 for a conflict, since nothing was
 		//! applied); `status` is the recommended gate:
-		//!   applied  <=> a CLEAN apply (rawCode 1 or 2);
+		//!   applied  <=> a CLEAN apply (rawCode 1 or 2) -- except batch siblings
+		//!            (see BATCHES above: applied=true with rawCode 3);
 		//!   status   in {"applied","rejected","diagnosed","conflict"}.
 		//! `headVersion` is the Job's head-version AFTER the call: the POST-COMMIT
 		//! head on a clean apply (its revision bumped), and the CURRENT (unchanged)

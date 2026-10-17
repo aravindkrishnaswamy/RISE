@@ -1576,6 +1576,18 @@ namespace RISE
 				    call.name == "insert_geometry_scaffold" ) {
 					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
 					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
+					// 2026-10-16 (batch review round 5): a "diagnosed" element LANDED (it is in the document,
+					// applied=false only because the shared re-derive's diagnostics are attributed to it), so it
+					// counts toward what the batch changed -- reported distinctly, never as "not applied".
+					long long diagnosed = 0;
+					const JsonValue& items = result.get( "results" );
+					if( items.isArray() )
+						for( std::size_t k = 0; k < items.size(); ++k )
+							if( !items.at( k ).get( "applied" ).asBool() && items.at( k ).get( "status" ).asString() == "diagnosed" )
+								++diagnosed;
+					if( diagnosed > 0 )
+						return std::to_string( applied + diagnosed ) + "/" + std::to_string( total ) + " landed (" +
+						       std::to_string( diagnosed ) + " diagnosed)";
 					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";
 				}
 

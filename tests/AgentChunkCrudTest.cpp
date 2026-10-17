@@ -5950,12 +5950,13 @@ static void TestBatchedDegenerateHeadAndBudget()
 	}
 }
 
-//! BR9 (review P2-D): the batch's ONE history record is a compact diff (not two whole documents) and undo /
+//! BR9 (review P2-D, rounds 3-5): the batch's ONE history record is a compact operation-level record (the landed
+//! elements' inverses -- not two whole documents) and undo /
 //! redo stay byte-exact -- including a reverse-dependency batch (which per-element inverses could not undo)
 //! and with a GUI edit interleaved before and after the batch.
-static void TestBatchedUndoCompactAndInterleaved()
+static void TestBatchedUndoCompactRecordAndInterleaved()
 {
-	std::printf( "BR9: batch undo record is a compact exact diff; interleaved GUI edits ...\n" );
+	std::printf( "BR9: batch undo record is a compact operation-level record; interleaved GUI edits ...\n" );
 
 	const std::string tmp = TempPath( "agentcrud_br9.RISEscene" );
 	Job* pJob = LoadScene( kScene, tmp );
@@ -5989,7 +5990,7 @@ static void TestBatchedUndoCompactAndInterleaved()
 		std::printf( "  batch undo record: %llu bytes (document: %u bytes)\n", recordBytes,
 		             static_cast<unsigned int>( doc2.size() ) );
 		Check( recordBytes > 0 && recordBytes < doc2.size(),
-		       "BR9(d) the batch's undo record is a compact diff -- smaller than ONE copy of the document" );
+		       "BR9(d) the batch's undo record is compact -- smaller than ONE copy of the document" );
 
 		// A GUI edit AFTER the batch.
 		Check( controller.SetProperty( String( "scale" ), String( "33" ) ), "BR9 GUI edit after the batch applies" );
@@ -14384,6 +14385,129 @@ static void TestBatchUndoOccurrenceDriftParity()
 	}
 }
 
+//! BR21 (round-5 P1-1): a transform patch batch never RE-SPELLS a transform slot it did not change.  An object
+//! inserted with `scale 1  1 1` (two spaces) and then patched (position) in a batch undoes back to the original
+//! bytes -- an older insert record (A: a batch insert; B: a single insert_chunk) below it still undoes.
+static void TestBatchUndoKeepsUnchangedTransformSpelling()
+{
+	std::printf( "BR21: batch transform undo keeps unchanged slots' spelling ...\n" );
+	const std::string X = "standard_object\n{\n\tname br21_x\n\tgeometry sph\n\tmaterial mat_diffuse\n\tscale 1  1 1\n}";
+	for( int probe = 0; probe < 2; ++probe )
+	{
+		const std::string tmp = TempPath( "agentcrud_br21.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "BR21 fixture loads" );
+		if( !pJob ) return;
+		{
+			SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &controller );
+			const std::string w = probe == 0 ? "BR21 [A batch insert] " : "BR21 [B single insert] ";
+			const std::string d0 = sess->ReadDocument();
+			if( probe == 0 ) {
+				std::vector<std::string> chunks;
+				chunks.push_back( X );
+				chunks.push_back( "uniformcolor_painter\n{\n\tname br21_p\n\tcolor 0.1 0.2 0.3\n}" );
+				const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+				Check( res.size() == 2 && res[0].applied && res[1].applied, w + "the insert batch lands" );
+			} else {
+				Check( sess->InsertChunk( X ).applied, w + "the object inserts (single verb)" );
+			}
+			const std::string d1 = sess->ReadDocument();
+			Check( d1.find( "scale 1  1 1" ) != std::string::npos, w + "the authored spelling is in the document" );
+			std::vector<Agent::AgentSetPatch> ps;
+			Agent::AgentSetPatch p;
+			p.target = "br21_x"; p.kind = "standard_object"; p.param = "position"; p.value = "0.3 0 0"; ps.push_back( p );
+			p = Agent::AgentSetPatch();
+			p.target = "sph"; p.param = "radius"; p.value = "0.6"; ps.push_back( p );
+			const std::vector<Agent::AgentPatchResult> pres = sess->ProposePatches( ps );
+			Check( pres.size() == 2 && pres[0].applied && pres[1].applied, w + "the patch batch applies" );
+			Check( controller.Undo() && sess->ReadDocument() == d1,
+			       w + "Undo of the patch batch restores the post-insert bytes (unchanged `scale` not re-spelled)" );
+			Check( controller.Undo(), w + "MONEY: the older insert record still undoes" );
+			Check( sess->ReadDocument() == d0, w + "...back to the original document bytes" );
+			sess->AttachController( nullptr );
+			sess.reset();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! BR22 (round-5 P1-2): Redo of a batch insert lands where the forward insert did, even when the anchor chunk has
+//! an identity twin -- two UNNAMED pathtracing rasterizers share one identity, and a vcm rasterizer appended after
+//! the SECOND must not be re-inserted after the FIRST (which would change the active rasterizer).
+static void TestBatchRedoInsertAnchorTwin()
+{
+	std::printf( "BR22: batch redo of an insert anchored after an identity twin ...\n" );
+	const std::string scene = std::string( kScene ) +
+		"\npathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	const std::string tmp = TempPath( "agentcrud_br22.RISEscene" );
+	Job* pJob = LoadScene( scene.c_str(), tmp );
+	Check( pJob != nullptr, "BR22 fixture (two unnamed PT rasterizers) loads" );
+	if( !pJob ) return;
+	{
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
+		const std::string d0 = sess->ReadDocument();
+		std::vector<std::string> chunks;
+		chunks.push_back( "vcm_pel_rasterizer\n{\n\tsamples 4\n}" );
+		chunks.push_back( "uniformcolor_painter\n{\n\tname br22_p\n\tcolor 0.1 0.2 0.3\n}" );
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( chunks );
+		Check( res.size() == 2 && res[0].applied && res[1].applied, "BR22 the batch (a rasterizer + a painter) lands" );
+		const std::string d1 = sess->ReadDocument();
+		Check( pJob->GetActiveRasterizerName() == "vcm_pel_rasterizer", "BR22 the inserted rasterizer is active" );
+		Check( controller.Undo() && sess->ReadDocument() == d0, "BR22 Undo restores the pre-batch bytes" );
+		Check( controller.Redo(), "BR22 Redo applies" );
+		Check( sess->ReadDocument() == d1, "BR22 MONEY: Redo is byte-identical to the forward commit" );
+		Check( pJob->GetActiveRasterizerName() == "vcm_pel_rasterizer",
+		       "BR22 MONEY: ...and the active rasterizer matches the forward commit" );
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! BR23 (round-5 P2): the retry pass's "a later landed write owns this slot" test is DIRECTIONAL over the
+//! object-transform params (Job::PlanCstParamEdits_'s masking rules), not "every transform role is one slot".
+static void TestBatchRetrySameSlotDirectional()
+{
+	std::printf( "BR23: retry same-slot rule is directional over transform params ...\n" );
+	struct Case { const char* earlier; const char* later; bool conflicts; };
+	const Case cases[] = {
+		{ "position",    "scale",       false },   // independent
+		{ "scale",       "position",    false },
+		{ "position",    "quaternion",  false },   // the quaternion branch READS position
+		{ "quaternion",  "scale",       false },
+		{ "position",    "matrix",      true  },   // a re-written component strips the later matrix
+		{ "orientation", "matrix",      true  },
+		{ "quaternion",  "matrix",      true  },
+		{ "scale",       "matrix",      true  },
+		{ "matrix",      "position",    true  },   // a re-written matrix strips every later component
+		{ "matrix",      "scale",       true  },
+		{ "orientation", "quaternion",  true  },   // a re-written orientation strips the later quaternion
+		{ "quaternion",  "orientation", true  },   // a re-written quaternion masks the later orientation
+		{ "position",    "position",    true  },   // the same slot
+	};
+	for( const Case& c : cases ) {
+		std::vector<RISE::CstBatchEdit> edits( 2 );
+		edits[0].entityName = "obj"; edits[0].entityKind = "standard_object"; edits[0].role = c.earlier; edits[0].value = "x";
+		edits[1].entityName = "obj"; edits[1].entityKind = "standard_object"; edits[1].role = c.later;   edits[1].value = "y";
+		std::vector<char> landed( 2, 0 );
+		landed[1] = 1;
+		const std::string what = std::string( "BR23 earlier `" ) + c.earlier + "` vs later landed `" + c.later + "`";
+		Check( RISE::CstBatchLaterLandedWriteSameSlot( edits, landed, 0 ) == c.conflicts,
+		       what + ( c.conflicts ? " -> skip the retry" : " -> the retry may land" ) );
+		landed[1] = 0;
+		Check( !RISE::CstBatchLaterLandedWriteSameSlot( edits, landed, 0 ), what + " (not landed) -> no skip" );
+		edits[1].entityName = "other";
+		landed[1] = 1;
+		Check( !RISE::CstBatchLaterLandedWriteSameSlot( edits, landed, 0 ), what + " (other entity) -> no skip" );
+	}
+}
+
 //! S2d: the do-nothing cases -- wrong phase, wrong element, no capability.
 static void TestCleanRoomBuildElementRefusals()
 {
@@ -21567,7 +21691,7 @@ int main()
 	TestBatchedContainerGateEvolvingDocument();
 	TestBatchedVerdictIndependentOfSplits();
 	TestBatchedDegenerateHeadAndBudget();
-	TestBatchedUndoCompactAndInterleaved();
+	TestBatchedUndoCompactRecordAndInterleaved();
 	TestBatchUndoAfterGuiEditRestoresMeaning();               // review round 2
 	TestBatchDiagnosedReporting();
 	TestBatchFallbackRetryRestrictions();
@@ -21579,6 +21703,9 @@ int main()
 	TestBatchUndoOverrideLayers();
 	TestBatchUndoRename();
 	TestBatchUndoOccurrenceDriftParity();
+	TestBatchUndoKeepsUnchangedTransformSpelling();
+	TestBatchRedoInsertAnchorTwin();
+	TestBatchRetrySameSlotDirectional();
 	TestMaterialScaffoldFamilies();
 	TestMaterialScaffoldDeterminism();
 	TestMaterialScaffoldMissingParams();

@@ -2670,8 +2670,8 @@ bool SceneEditor::RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forw
 // Batched agent edits (2026-10-16, review rounds 3-4): the AgentEditBatch history record is OPERATION-LEVEL -- the
 // landed elements' inverses (RISE::CstBatchUndoOp), in landing order.  Undo applies them in REVERSE to the
 // CURRENT document (remove each inserted chunk together with exactly the separators its insert added; restore
-// each slot the write changed), Redo re-applies them forward, and the result is realized by ONE dry-run-gated
-// derive (IJob::ApplyCstReplaceDocumentText).
+// each slot the write changed), Redo re-applies them forward, and the resulting Document is installed AS IS (no
+// re-parse) by ONE dry-run-gated derive (IJobPriv::ApplyCstReplaceDocument).
 //
 // THE GOVERNING RULE (review round 4): every target is resolved EXACTLY the way the forward write resolved it,
 // and nothing refuses where the per-element records a run of single agent commits pushes would have succeeded:
@@ -2682,7 +2682,11 @@ bool SceneEditor::RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forw
 //     the write made (so several same-named override_object layers resolve to the LAST one, as the write did),
 //     with the entity's post-write name on Undo when the edit renamed it;
 //   * an occurrence-addressed edit gets base's occurrence-drift guard;
-//   * a slot the write did not change is never written.
+//   * a slot the write did not change is never written (an object's whole transform excepted), and no slot is
+//     re-written when the CURRENT document already holds its target tokens -- a no-op re-write re-spells the
+//     line, which breaks older records' exact-bytes inverses (round 5);
+//   * a redone insert lands where the forward insert did: at the end when it was spliced there, else after the
+//     anchor chunk resolved by its ordinal among same-identity chunks (round 5).
 //
 // WHY NOT A DOCUMENT SNAPSHOT OR DIFF (rounds 1-2).  Film / environment inspector edits change the document
 // WITHOUT pushing history, so restoring whole documents -- or whole items -- silently reverted them.  WHY NOT
@@ -2719,7 +2723,7 @@ namespace
 
 	std::string EncodeBatchOps_( const std::vector<RISE::CstBatchUndoOp>& ops )
 	{
-		std::string out = "RISEBATCHOPS2\n";
+		std::string out = "RISEBATCHOPS3\n";
 		PutInt_( out, static_cast<long long>( ops.size() ) );
 		for( std::size_t i = 0; i < ops.size(); ++i ) {
 			const RISE::CstBatchUndoOp& o = ops[i];
@@ -2731,6 +2735,8 @@ namespace
 			PutInt_( out, o.hasAnchor ? 1 : 0 );
 			PutField_( out, o.anchorKeyword );
 			PutField_( out, o.anchorNamePath );
+			PutInt_( out, o.anchorOrdinal );
+			PutInt_( out, o.appendedAtEnd ? 1 : 0 );
 			PutField_( out, o.entityName );
 			PutField_( out, o.entityKind );
 			PutField_( out, o.editRole );
@@ -2756,7 +2762,7 @@ namespace
 	bool DecodeBatchOps_( const std::string& in, std::vector<RISE::CstBatchUndoOp>& ops )
 	{
 		ops.clear();
-		const std::string magic = "RISEBATCHOPS2\n";
+		const std::string magic = "RISEBATCHOPS3\n";
 		if( in.compare( 0, magic.size(), magic ) != 0 ) return false;
 		std::size_t pos = magic.size();
 		long long n = 0;
@@ -2772,6 +2778,10 @@ namespace
 			if( !GetInt_( in, pos, b ) ) return false;
 			o.hasAnchor = ( b != 0 );
 			if( !GetField_( in, pos, o.anchorKeyword ) || !GetField_( in, pos, o.anchorNamePath ) ) return false;
+			if( !GetInt_( in, pos, ci ) ) return false;
+			o.anchorOrdinal = static_cast<int>( ci );
+			if( !GetInt_( in, pos, b ) ) return false;
+			o.appendedAtEnd = ( b != 0 );
 			if( !GetField_( in, pos, o.entityName ) || !GetField_( in, pos, o.entityKind ) ||
 			    !GetField_( in, pos, o.editRole ) || !GetField_( in, pos, o.postEntityName ) ) return false;
 			if( !GetInt_( in, pos, b ) ) return false;
@@ -2854,8 +2864,9 @@ namespace
 		return true;
 	}
 
-	// REDO of an insert: [ "\n" ][chunk][ "\n" ] before the first chunk that follows the recorded anchor chunk
-	// (the end when none follows; the first chunk of the document when the insert had no anchor).
+	// REDO of an insert: [ "\n" ][chunk][ "\n" ] at the document end when the forward insert was spliced there;
+	// otherwise before the first chunk that follows the recorded anchor chunk -- resolved by its ordinal among
+	// same-identity chunks -- (the end when none follows; the first chunk when the insert had no anchor).
 	bool RedoInsert_( RISE::Cst::Document& doc, const RISE::CstBatchUndoOp& o, OpRefusal_& ref )
 	{
 		const RISE::Cst::Document c = RISE::Cst::ParseToCst( o.chunkText );
@@ -2867,12 +2878,19 @@ namespace
 		if( !chunk ) { ref.why = "the recorded chunk text no longer parses"; return false; }
 		const int n = RISE::Cst::DocItemCount( doc );
 		int from = 0;
-		if( o.hasAnchor ) {
-			from = n;   // anchor gone: append at the end
+		if( o.appendedAtEnd ) {
+			from = n;   // the forward insert was spliced at the document END (review round 5, P1-2)
+		} else if( o.hasAnchor ) {
+			// The anchor-ordinal-th chunk sharing the anchor's identity (unnamed chunks share ""); when fewer
+			// remain, the last of them; when none does, the end.
+			from = n;
+			int seen = 0;
 			for( int i = 0; i < n; ++i ) {
 				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
-				if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == o.anchorKeyword &&
-				    RISE::Cst::ChunkNamePath( it ) == o.anchorNamePath ) { from = i + 1; break; }
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk || it->role != o.anchorKeyword ||
+				    RISE::Cst::ChunkNamePath( it ) != o.anchorNamePath ) continue;
+				from = i + 1;
+				if( seen++ == o.anchorOrdinal ) break;
 			}
 		}
 		int at = n;
@@ -2941,10 +2959,19 @@ namespace
 			if( !o.wholeTransform && fromAbsent == toAbsent && ( toAbsent || from == val ) ) continue;
 			const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
 			if( !chunk ) { ref.why = "the edited chunk vanished mid-replay"; return false; }
+			// Review round 5 (P1-1): never re-write a slot the CURRENT document already holds at its target --
+			// absent where the target is absent, or the same whitespace-normalised tokens.  A no-op re-write
+			// still RE-SPELLS the line (`scale 1  1 1` -> `scale 1 1 1`), and that alone makes an older record
+			// below this one (an insert's exact-bytes inverse) refuse.  A pose an editor gesture re-spelled (a
+			// `matrix` where the batch wrote a `position`) differs in tokens, so it is still re-asserted.
+			const bool curPresent = RISE::Cst::ParamOccurrenceCount( chunk, sl.role ) > sl.occ;
 			if( toAbsent ) {
-				if( RISE::Cst::ParamOccurrenceCount( chunk, sl.role ) > sl.occ )   // occurrence in range
+				if( curPresent )
 					doc = RISE::Cst::DocRemoveParamOcc( doc, id, sl.role, sl.occ );
 			} else {
+				if( curPresent && NormalizeParamValueWs_( RISE::Cst::ParamValueAtOccurrence( chunk, sl.role, sl.occ ) ) ==
+				                  NormalizeParamValueWs_( val ) )
+					continue;
 				doc = RISE::Cst::DocSetOrAddParamValue( doc, id, sl.role, sl.occ, val );
 			}
 		}
@@ -2985,51 +3012,49 @@ bool SceneEditor::RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, 
 {
 	if( outDiagnosed ) *outDiagnosed = false;
 	if( !mJob ) return false;
-	const bool dup   = ( edit.op == SceneEdit::AgentDuplicateNode );
-	const bool batch = ( edit.op == SceneEdit::AgentEditBatch );
-	// 2026-10-16 (review round 3): an AgentEditBatch carries OPERATIONS, not documents -- build the target from
-	// the CURRENT document by applying them (see ApplyBatchOps_), then realize it with the one derive below.
-	std::string batchText;
-	RISE::Cst::Document batchDoc;
-	if( batch ) {
+	const bool dup = ( edit.op == SceneEdit::AgentDuplicateNode );
+	char diagBuf[512]; diagBuf[0] = '\0';
+	if( edit.op == SceneEdit::AgentEditBatch ) {
+		// 2026-10-16 (review rounds 3-5): an AgentEditBatch carries OPERATIONS, not documents -- build the target
+		// from the CURRENT document by applying them (see ApplyBatchOps_), then install that Document AS IS (no
+		// re-parse: older history records' exact-index inverses depend on the top-level item structure a re-parse
+		// would merge) with ONE dry-run-gated derive.  Only IJobPriv can install a Document; there is no text
+		// fallback (a re-parse is exactly what the record must not go through), so a Job without it refuses.
+		IJobPriv* const jp = dynamic_cast<IJobPriv*>( mJob );
 		const RISE::Cst::Document* cur = mJob->GetCstDocument();
+		RISE::Cst::Document batchDoc;
 		OpRefusal_ ref;
-		if( !cur || !ApplyBatchOps_( *cur, std::string( edit.propertyValue.c_str() ), forward,
-		                             mJob->GetActiveCameraName(), batchDoc, ref ) ) {
-			NoteHistoryRefusal_( edit, forward, ref.why.empty() ? std::string( "no retained document" ) : ref.why,
-			                     /*fixable*/ false );
+		if( !jp ) ref.why = "this job cannot install an edited document";
+		else if( !cur ) ref.why = "no retained document";
+		if( !jp || !cur || !ApplyBatchOps_( *cur, std::string( edit.propertyValue.c_str() ), forward,
+		                                    mJob->GetActiveCameraName(), batchDoc, ref ) ) {
+			NoteHistoryRefusal_( edit, forward, ref.why, /*fixable*/ false );
 			return false;   // the caller restores the record (the single-record refusal rule) -- the user is told
 		}
-		batchText = RISE::Cst::SerializeCst( batchDoc );   // only for the IJob text fallback below
+		// An AgentEditBatch that LANDED a rasterizer insert re-installs (Redo) with the document's last-wins
+		// activation left standing, as its forward commit did (the P1-B rule); Undo keeps the restore.
+		const bool restoreRasterizer = !( forward && edit.agentChunkWasRasterizer );
+		const int r = jp->ApplyCstReplaceDocument( batchDoc, restoreRasterizer, diagBuf, sizeof( diagBuf ),
+		                                           forward ? "agent_edit_batch (redo)" : "agent_edit_batch (undo)" );
+		if( r >= 2 ) RebindToJob_();
+		if( r != 0 ) mCstLiveSceneChanged = true;
+		if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+		if( r == 0 )
+			NoteHistoryRefusal_( edit, forward, std::string( "the result would not derive" ) +
+			                     ( diagBuf[0] ? std::string( ": " ) + diagBuf : std::string() ), /*fixable*/ true );
+		return r >= 1;
 	}
-	const String text = batch ? String( batchText.c_str() )
-	                          : ( forward ? edit.prevPropertyValue : edit.propertyValue );
+	const String text = forward ? edit.prevPropertyValue : edit.propertyValue;
 	if( text.size() <= 1 ) return false;   // RString::size() counts the trailing NUL; <=1 is empty
-	// 2026-10-16: an AgentEditBatch that LANDED a rasterizer insert re-installs (Redo) with the document's
-	// last-wins activation left standing, as its forward commit did (the P1-B rule); every other direction
-	// and op keeps the unconditional restore.
-	const bool restoreRasterizer = !( batch && forward && edit.agentChunkWasRasterizer );
-	char diagBuf[512]; diagBuf[0] = '\0';
-	// An agent batch installs its edited Document AS IS (no re-parse): older history records' exact-index
-	// inverses depend on the top-level item structure a re-parse would merge.
-	IJobPriv* const jp = batch ? dynamic_cast<IJobPriv*>( mJob ) : nullptr;
-	const int r = jp
-		? jp->ApplyCstReplaceDocument( batchDoc, restoreRasterizer, diagBuf, sizeof( diagBuf ),
-		                               forward ? "agent_edit_batch (redo)" : "agent_edit_batch (undo)" )
-		: mJob->ApplyCstReplaceDocumentText( text.c_str(), restoreRasterizer,
+	const int r = mJob->ApplyCstReplaceDocumentText( text.c_str(), /*restoreActiveRasterizer*/ true,
 	                                                 diagBuf, sizeof( diagBuf ),
-	                                                 batch ? ( forward ? "agent_edit_batch (redo)"
-	                                                                   : "agent_edit_batch (undo)" )
-	                                                 : dup ? ( forward ? "duplicate_graph_node (redo)"
-	                                                                   : "duplicate_graph_node (undo)" )
-	                                                       : ( forward ? "replace_geometry_scaffold (redo)"
-	                                                                   : "replace_geometry_scaffold (undo)" ) );
+	                                                 dup ? ( forward ? "duplicate_graph_node (redo)"
+	                                                                 : "duplicate_graph_node (undo)" )
+	                                                     : ( forward ? "replace_geometry_scaffold (redo)"
+	                                                                 : "replace_geometry_scaffold (undo)" ) );
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;
 	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
-	if( r == 0 && batch )
-		NoteHistoryRefusal_( edit, forward, std::string( "the result would not derive" ) +
-		                     ( diagBuf[0] ? std::string( ": " ) + diagBuf : std::string() ), /*fixable*/ true );
 	return r >= 1;
 }
 
