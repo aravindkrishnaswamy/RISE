@@ -39,15 +39,22 @@ namespace {
 	//
 	// A base that is already a MESH ignores `detail` in its TessellateToMesh and
 	// would be displaced only at its own vertices -- a 4-point-profile lathe has
-	// 4 rows however fine the relief.  TWO constructions, both REGULAR (a first
-	// cut used adaptive per-edge splitting; its 1/2/3-edge splits made 48% of the
-	// triangles slivers under 20 degrees and tore directional relief):
+	// 4 rows however fine the relief.  PRINCIPLE: REFINEMENT NEVER CHANGES THE
+	// AUTHORED SURFACE.  It adds samples on the authored piecewise-linear surface
+	// (new vertices lie on authored chords / inside authored triangles, with
+	// interpolated normals and UVs); creases exist only where the author made them;
+	// the authored correspondence is kept; the silhouette is the authored polygon.
+	// (An earlier cut re-baked the builder from its descriptor at higher density;
+	// that re-ran loft alignment, smoothed straight profile segments' normals and
+	// turned every inserted row of a non-smooth lathe into a crease -- it changed
+	// the surface, and is gone.)  TWO constructions, both REGULAR (a first adaptive
+	// per-edge splitting made 48% of the triangles slivers under 20 degrees):
 	//
-	//  (a) BUILDER BASES (lathe / sweep / skin): the builder RE-BAKES ITSELF from its
-	//      own descriptor at the needed density (TriangleMeshGeometryIndexed::
-	//      IMeshRebaker) -- rows and columns on its own (u, v) grid, regular quads,
-	//      and EXACT surface positions (a smooth silhouette, not linear chords).
-	//      Crease / cap / pole / pinch / chart semantics are the builder's own.
+	//  (a) BUILDER BASES (lathe / sweep / skin): the factory records its authored grid
+	//      (TriangleMeshGeometryIndexed::MeshGrid) and TessellateRefined() subdivides
+	//      each line family by its own length -- quads stay regular quads, pole /
+	//      pinch fans stay fans, caps are left alone -- interpolating position,
+	//      normal and UV barycentrically inside the authored triangles.
 	//  (b) OTHER indexed meshes (imports, path instances): UNIFORM whole-level 1->4
 	//      midpoint subdivision (RefineUniform below) -- every edge splits, so edges
 	//      stay parallel to the base's and every child is similar to its parent.  The
@@ -67,7 +74,7 @@ namespace {
 	// an edge to a normal vertex takes the normal vertex's value).  A chart that is
 	// NOT declared periodic (an imported mesh, planar caps, a [0,4] tiled chart) is
 	// always linear.  Linear positions: the silhouette of a coarse (b) base stays
-	// polygonal -- (b) adds relief resolution, it does not round the base.
+	// polygonal -- (b) adds relief resolution, it does not round the base (nor does (a)).
 	//
 	// Requires iVertices == iNormals == iCoords on every triangle (the
 	// TessellateToMesh contract); otherwise the mesh is left unrefined.
@@ -448,29 +455,20 @@ bool DisplacedGeometry::TessellateAndRefine(
 		const Scalar diag = Vector3Ops::Magnitude( Vector3Ops::mkVector3( hi, lo ) );
 		const Scalar target = diag / Scalar( m_detail );
 
-		int rebake = -1;		// -1: no rebaker / failed (use the uniform path), 0: already dense enough, 1: re-baked
-		if( const TriangleMeshGeometryIndexed::IMeshRebaker* pRebaker = pIdx->GetRebaker() ) {
-			TriangleMeshGeometryIndexed* pNew = 0;
-			const int rc = pRebaker->Rebake( target, kMaxRefineTriangles, &pNew );
-			if( rc > 0 && pNew ) {
-				const size_t trisBefore = tris.size();
-				IndexTriangleListType nt; VerticesListType nv; NormalsListType nn; TexCoordsListType nc;
-				std::vector<unsigned char> nf;
-				if( pNew->TessellateToMeshEx( nt, nv, nn, nc, m_detail, &nf ) && !nt.empty() ) {
-					tris.swap( nt ); vertices.swap( nv ); normals.swap( nn ); coords.swap( nc ); uvFlags.swap( nf );
-					rebake = 1;
-					if( bLog ) {
-						GlobalLog()->PrintEx( eLog_Event,
-							"DisplacedGeometry: re-baked the builder base at its native resolution for detail %u (target edge %g): %u -> %u triangles",
-							m_detail, (double)target, (unsigned)trisBefore, (unsigned)tris.size() );
-					}
+		if( pIdx->GetGrid() ) {
+			// (a) a BUILDER base: subdivide its authored grid -- never changes the authored surface
+			IndexTriangleListType nt; VerticesListType nv; NormalsListType nn; TexCoordsListType nc;
+			std::vector<unsigned char> nf;
+			const size_t trisBefore = tris.size();
+			if( pIdx->TessellateRefined( target, kMaxRefineTriangles, nt, nv, nn, nc, &nf ) > 0 && !nt.empty() ) {
+				tris.swap( nt ); vertices.swap( nv ); normals.swap( nn ); coords.swap( nc ); uvFlags.swap( nf );
+				if( bLog ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"DisplacedGeometry: refined the builder base's authored grid for detail %u (target edge %g): %u -> %u triangles",
+						m_detail, (double)target, (unsigned)trisBefore, (unsigned)tris.size() );
 				}
-				pNew->release();
-			} else if( rc == 0 ) {
-				rebake = 0;
 			}
-		}
-		if( rebake < 0 ) {
+		} else {
 			const RefineResult r = RefineUniform( tris, vertices, normals, coords, uvFlags, target );
 			if( r.levels > 0 && bLog ) {
 				GlobalLog()->PrintEx( eLog_Event,

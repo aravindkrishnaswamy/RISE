@@ -545,19 +545,19 @@ static void TestDisplacedOverLatheAppliesDisplacement()
 
 	IndexTriangleListType dTris; VerticesListType dVerts; NormalsListType dNorms; TexCoordsListType dCoords;
 	assert( pDisp->TessellateToMesh( dTris, dVerts, dNorms, dCoords, 0 ) );
-	// `detail` (32) now makes the LATHE re-bake itself at a higher native density
-	// (rows along the profile, more radial columns -- see IMeshRebaker), so the baked
+	// `detail` (32) now makes the LATHE's authored grid get subdivided (more rows along
+	// the profile, more radial columns -- see TessellateRefined), so the baked
 	// mesh is finer than the 5-row base.  Exact count expectation WITHOUT replicating
 	// the builder: the vase is a closed genus-0 surface (a pole at each end), so Euler
 	// gives V - E + F = 2 with E = 3F/2, i.e. V = F/2 + 2 -- true of the base
-	// (98 = 192/2 + 2) and of any crack-free re-bake, but NOT of one with duplicated
+	// (98 = 192/2 + 2) and of any crack-free refinement, but NOT of one with duplicated
 	// or missing seam vertices.
 	assert( baseVerts.size() == baseTris.size() / 2 + 2 );
 	assert( dTris.size() > baseTris.size() );
 	assert( dVerts.size() > baseVerts.size() );
 	assert( dVerts.size() == dTris.size() / 2 + 2 );
 
-	// The re-bake keeps every profile row (original profile points are re-emitted
+	// The refinement keeps every profile row (original profile points are re-emitted
 	// exactly) and the angle-0 radial column, so each ORIGINAL base vertex on that
 	// column and both poles must reappear displaced by exactly k along its own unit
 	// normal (displaced indices are NOT preserved: TessellateToMesh re-emits in
@@ -889,7 +889,7 @@ static TriangleMeshGeometryIndexed* MakeCoarseLathe( const int nRadial )
 // OWN vertices: a 4-point-profile lathe has 4 vertex rows however fine the
 // relief, and `detail 48` did nothing.  DisplacedGeometry::BuildMesh now brings a
 // mesh base to spacing (base bbox diagonal / detail) before displacing: a lathe /
-// sweep / skin re-bakes itself at that density (row and column spacing <= target;
+// sweep / skin subdivides its authored grid to that density (row and column spacing <= target;
 // the quad diagonal is sqrt(2) longer), other indexed meshes subdivide uniformly.
 //
 // RED on the unrefined bake (vertical spacing = the profile rows, ~1.5 vs a
@@ -929,7 +929,7 @@ static void TestDetailRefinesMeshBases()
 		std::cout << "  [info] displaced: " << dTris.size() << " tris, longest edge " << maxEdge << ", largest vertical gap between vertices " << maxGap << "\n";
 
 		// MONEY ASSERTIONS (red before the refinement: maxEdge ~ 1.5, maxGap ~ 1.5).
-		// a re-baked grid bounds its ROW and COLUMN spacing by the target; the quad diagonal is sqrt(2) longer
+		// a refined grid bounds its ROW and COLUMN spacing by the target; the quad diagonal is sqrt(2) longer
 		assert( maxEdge <= 1.5 * target );
 		assert( maxGap  <= 1.3 * target );
 		// crack-free: refinement preserves the Euler characteristic of the base.
@@ -1590,8 +1590,8 @@ static void TestFaceNormalBaseIsNotRefined()
 // 56% of its edges ran across the (u,v) diagonal (a regular grid has 1/3), so
 // directional relief (ribs / flutes) rendered zig-zag and torn at 2.4x the
 // triangles of a regular grid.  Now
-//   (a) a lathe / sweep / skin RE-BAKES ITSELF at the needed native density
-//       (IMeshRebaker: regular quads, exact surface positions), and
+//   (a) a lathe / sweep / skin subdivides its AUTHORED GRID (MeshGrid: regular
+//       quads, positions on the authored polygon), and
 //   (b) any other indexed mesh is subdivided UNIFORMLY (whole 1->4 levels, level
 //       count from the base's MEDIAN edge length, so one outlier edge cannot
 //       drive it).
@@ -1634,7 +1634,7 @@ static MeshQuality MeasureLatheQuality( const IndexTriangleListType& t, const Ve
 
 static void TestRefinementIsRegular()
 {
-	std::cout << "Test 10j: a re-baked lathe is a REGULAR grid (triangle count and quality vs an independently built control)...\n";
+	std::cout << "Test 10j: a refined lathe is a REGULAR grid (triangle count and quality vs an independently built control)...\n";
 
 	// the reviewer's dome: 4-point profile, 32 radial, detail 64
 	static const double prof[] = { 0.0, 0.0,  1.2, 0.3,  1.2, 1.0,  0.0, 2.2 };
@@ -1729,14 +1729,14 @@ static void TestRefinementIsRegular()
 }
 
 //-----------------------------------------------------------------------------
-// A LOFT (circle -> rect morph sweep) re-bakes with both profiles refined at ONE
-// common parameter set; refining them independently left the factory's union
-// resample with near-coincident parameters -- razor-thin ring rows (min triangle
-// area 4e-7 against 2e-4 in the base, black dashes in the render).
+// A LOFT (circle -> rect morph sweep) is refined on its authored grid; an earlier
+// descriptor re-bake that refined the two profiles independently left the factory's
+// union resample with near-coincident parameters -- razor-thin ring rows (min
+// triangle area 4e-7 against 2e-4 in the base, black dashes in the render).
 //-----------------------------------------------------------------------------
-static void TestLoftRebakeHasNoSlivers()
+static void TestLoftRefineHasNoSlivers()
 {
-	std::cout << "Test 10m: a re-baked circle->rect loft has no razor-thin ring rows...\n";
+	std::cout << "Test 10m: a refined circle->rect loft has no razor-thin ring rows...\n";
 	const int nCirc = 28;
 	double circ[ 2 * 28 ];
 	for( int i = 0; i < nCirc; ++i ) { const double a = 2.0 * 3.14159265358979323846 * i / nCirc; circ[2*i] = 0.52 * std::cos( a ); circ[2*i+1] = 0.52 * std::sin( a ); }
@@ -1760,7 +1760,7 @@ static void TestLoftRebakeHasNoSlivers()
 	}
 	std::sort( areas.begin(), areas.end() );
 	const double minA = areas.front(), medA = areas[areas.size() / 2];
-	std::cout << "  [info] re-baked loft: " << t.size() << " triangles, smallest area " << minA << ", median " << medA << " (ratio " << minA / medA << ")\n";
+	std::cout << "  [info] refined loft: " << t.size() << " triangles, smallest area " << minA << ", median " << medA << " (ratio " << minA / medA << ")\n";
 	assert( t.size() > 1000 );
 	assert( minA > 0.02 * medA );
 	pDisp->release(); pConst->release(); pSweep->release();
@@ -1910,6 +1910,212 @@ static void TestShadingTransportIsRotation()
 	assert( worstAngle < 1e-6 );
 	assert( worstVec < 1e-9 );
 	pDisp->release(); pFn->release(); m->release();
+}
+
+//-----------------------------------------------------------------------------
+// Round-4: REFINEMENT NEVER CHANGES THE AUTHORED SURFACE.
+//
+// The round-3 re-bake re-ran each builder's factory on a denser descriptor, which is
+// a DIFFERENT surface: rows inserted on a straight profile segment got that
+// segment's flat normal (a smooth lathe lost its interpolated shading: a 22 degree
+// jump on the stress vase), a smooth=FALSE lathe split a crease at every inserted
+// row (stair-step banding), a loft re-ran its twist alignment and centring (leg
+// vertices 0.017 off the authored surface), and an authored hexagonal column turned
+// round.  Refinement now subdivides the AUTHORED GRID (MeshGrid): every new vertex lies
+// on the authored piecewise-linear surface, takes its normal and UV barycentrically
+// from the authored vertices, and creases exist only where the author made them.
+//
+// The oracle is the authored (coarse) mesh itself: for every refined vertex of a
+// displacement-free (disp_scale 1e-12) bake, (a) its distance to the nearest authored
+// triangle is ~0 and (b) its shading normal equals the authored mesh's interpolated
+// normal at that point.  (Where authored triangles coincide with different normals -- a
+// cap rim against the wall -- the best-matching one counts.)
+//-----------------------------------------------------------------------------
+static void ClosestPointOnTriangle( const Point3& p, const Point3& a, const Point3& b, const Point3& c, Scalar& u, Scalar& v, Scalar& w, Point3& out )
+{
+	const Vector3 ab = Vector3Ops::mkVector3( b, a ), ac = Vector3Ops::mkVector3( c, a ), ap = Vector3Ops::mkVector3( p, a );
+	const Scalar d1 = Vector3Ops::Dot( ab, ap ), d2 = Vector3Ops::Dot( ac, ap );
+	if( d1 <= 0 && d2 <= 0 ) { u = 1; v = 0; w = 0; out = a; return; }
+	const Vector3 bp = Vector3Ops::mkVector3( p, b );
+	const Scalar d3 = Vector3Ops::Dot( ab, bp ), d4 = Vector3Ops::Dot( ac, bp );
+	if( d3 >= 0 && d4 <= d3 ) { u = 0; v = 1; w = 0; out = b; return; }
+	const Scalar vc = d1 * d4 - d3 * d2;
+	if( vc <= 0 && d1 >= 0 && d3 <= 0 ) { const Scalar t = d1 / ( d1 - d3 ); u = 1 - t; v = t; w = 0; out = Point3( a.x + ab.x * t, a.y + ab.y * t, a.z + ab.z * t ); return; }
+	const Vector3 cp = Vector3Ops::mkVector3( p, c );
+	const Scalar d5 = Vector3Ops::Dot( ab, cp ), d6 = Vector3Ops::Dot( ac, cp );
+	if( d6 >= 0 && d5 <= d6 ) { u = 0; v = 0; w = 1; out = c; return; }
+	const Scalar vb = d5 * d2 - d1 * d6;
+	if( vb <= 0 && d2 >= 0 && d6 <= 0 ) { const Scalar t = d2 / ( d2 - d6 ); u = 1 - t; v = 0; w = t; out = Point3( a.x + ac.x * t, a.y + ac.y * t, a.z + ac.z * t ); return; }
+	const Scalar va = d3 * d6 - d5 * d4;
+	if( va <= 0 && ( d4 - d3 ) >= 0 && ( d5 - d6 ) >= 0 ) { const Scalar t = ( d4 - d3 ) / ( ( d4 - d3 ) + ( d5 - d6 ) ); u = 0; v = 1 - t; w = t; out = Point3( b.x + ( c.x - b.x ) * t, b.y + ( c.y - b.y ) * t, b.z + ( c.z - b.z ) * t ); return; }
+	const Scalar den = 1.0 / ( va + vb + vc ); v = vb * den; w = vc * den; u = 1.0 - v - w;
+	out = Point3( a.x + ab.x * v + ac.x * w, a.y + ab.y * v + ac.y * w, a.z + ab.z * v + ac.z * w );
+}
+
+struct SurfaceCheck { size_t baseTris, outTris, outVerts; Scalar maxDist, maxAngleDeg; };
+
+static SurfaceCheck CheckRefinementOnAuthoredSurface( TriangleMeshGeometryIndexed* pBase, const unsigned int detail )
+{
+	IndexTriangleListType bt; VerticesListType bv; NormalsListType bn; TexCoordsListType bc;
+	assert( pBase->TessellateToMesh( bt, bv, bn, bc, 0 ) );
+	const Scalar diag = BBoxDiagonal( bv );
+	ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry( pBase, detail, pConst, 1e-12, false, false, false );
+	pDisp->Realize();
+	IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+	assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+	SurfaceCheck r; r.baseTris = bt.size(); r.outTris = t.size(); r.outVerts = v.size(); r.maxDist = 0; r.maxAngleDeg = 0;
+	for( size_t i = 0; i < v.size(); ++i ) {
+		Scalar bestDist = 1e30, bestAngle = 1e30;
+		for( size_t k = 0; k < bt.size(); ++k ) {
+			const unsigned int i0 = bt[k].iVertices[0], i1 = bt[k].iVertices[1], i2 = bt[k].iVertices[2];
+			Scalar u, vv, w; Point3 cp;
+			ClosestPointOnTriangle( v[i], bv[i0], bv[i1], bv[i2], u, vv, w, cp );
+			const Scalar d = std::sqrt( ( cp.x - v[i].x )*( cp.x - v[i].x ) + ( cp.y - v[i].y )*( cp.y - v[i].y ) + ( cp.z - v[i].z )*( cp.z - v[i].z ) );
+			if( d > bestDist + 1e-9 * diag ) continue;
+			Vector3 nm = bn[bt[k].iNormals[0]] * u + bn[bt[k].iNormals[1]] * vv + bn[bt[k].iNormals[2]] * w;
+			const Scalar nl = Vector3Ops::Magnitude( nm );
+			Scalar ang = 180.0;
+			if( nl > 1e-12 ) ang = std::acos( std::max( Scalar(-1), std::min( Scalar(1), Vector3Ops::Dot( nm * ( 1.0 / nl ), n[i] ) ) ) ) * 180.0 / PI;
+			if( d < bestDist - 1e-9 * diag ) { bestDist = d; bestAngle = ang; }
+			else { bestDist = std::min( bestDist, d ); bestAngle = std::min( bestAngle, ang ); }
+		}
+		r.maxDist = std::max( r.maxDist, bestDist ); r.maxAngleDeg = std::max( r.maxAngleDeg, bestAngle );
+	}
+	r.maxDist /= diag;
+	pDisp->release(); pConst->release();
+	return r;
+}
+
+static void TestRefinementKeepsAuthoredSurface()
+{
+	std::cout << "Test 10o: refined vertices lie on the AUTHORED surface and shade with its interpolated normals (lathe, sweep, loft, skin)...\n";
+	int softFails = 0;
+#define SOFT( cond ) do { if( !( cond ) ) { ++softFails; std::cout << "  [FAIL] " #cond "\n"; } } while( 0 )
+	auto report = [&]( const char* name, const SurfaceCheck& r ) {
+		std::cout << "  [info] " << name << ": " << r.baseTris << " -> " << r.outTris << " tris; worst distance to the authored mesh " << r.maxDist
+			<< " x diagonal, worst shading-normal difference " << r.maxAngleDeg << " deg\n";
+		SOFT( r.outTris > r.baseTris );
+		SOFT( r.maxDist <= 1e-9 );
+		SOFT( r.maxAngleDeg <= 1.0 );
+	};
+
+	{	// smooth TRUE lathe dome (the stress vase's character)
+		static const double prof[] = { 0.0, 0.0,  1.2, 0.3,  1.2, 1.0,  0.0, 2.2 };
+		LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 4; ld.nRadial = 32; ld.smooth = true;
+		ITriangleMeshGeometryIndexed* pI = 0; assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		report( "smooth lathe dome", CheckRefinementOnAuthoredSurface( p, 64 ) );
+		p->release();
+	}
+	{	// smooth FALSE lathe (authored creases at every profile point)
+		static const double prof[] = { 0.0, 0.0,  1.0, 0.25,  1.0, 1.75,  0.0, 2.0 };
+		LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 4; ld.nRadial = 24; ld.smooth = false;
+		ITriangleMeshGeometryIndexed* pI = 0; assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		report( "faceted (smooth FALSE) lathe", CheckRefinementOnAuthoredSurface( p, 48 ) );
+		p->release();
+	}
+	{	// a profile_circle-10 sweep (a 10-gon column with smooth corner normals) and caps
+		double circ[ 2 * 10 ];
+		for( int i = 0; i < 10; ++i ) { const double a = 2.0 * 3.14159265358979323846 * i / 10; circ[2*i] = 0.9 * std::cos( a ); circ[2*i+1] = 0.9 * std::sin( a ); }
+		static const double path[] = { 0, 0, 0,  0, 1.5, 0,  0, 3.0, 0 };
+		SweepDescriptor sd; sd.profilePoints = circ; sd.numProfilePoints = 10; sd.pathPoints = path; sd.numPathPoints = 3; sd.nLen = 4; sd.frameHintX = 1.0;
+		ITriangleMeshGeometryIndexed* pI = 0; assert( RISE_API_CreateSweepGeometry( &pI, sd ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		report( "profile_circle-10 sweep (capped)", CheckRefinementOnAuthoredSurface( p, 48 ) );
+		p->release();
+	}
+	{	// a loft: circle -> square, twist alignment and centring authored
+		const int nCirc = 28; double circ[ 2 * 28 ];
+		for( int i = 0; i < nCirc; ++i ) { const double a = 2.0 * 3.14159265358979323846 * i / nCirc; circ[2*i] = 0.52 * std::cos( a ); circ[2*i+1] = 0.52 * std::sin( a ); }
+		static const double rect[] = { -0.65, -0.65,  0.65, -0.65,  0.65, 0.65,  -0.65, 0.65 };
+		static const double path[] = { 0, 4.2, 0,  0, 2.8, 0,  0, 1.4, 0,  0, 0.0, 0 };
+		SweepDescriptor sd; sd.profilePoints = circ; sd.numProfilePoints = nCirc; sd.profile2Points = rect; sd.numProfile2Points = 4;
+		sd.pathPoints = path; sd.numPathPoints = 4; sd.nLen = 16; sd.frameHintX = 1.0;
+		ITriangleMeshGeometryIndexed* pI = 0; assert( RISE_API_CreateSweepGeometry( &pI, sd ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		report( "circle->square loft", CheckRefinementOnAuthoredSurface( p, 48 ) );
+		p->release();
+	}
+	{	// a billowed skin
+		const double railA[] = { -1.6, 0.0, 0.0,   -0.5, 0.45, 0.0,   0.6, 1.1, 0.0,   1.6, 2.0, 0.0 };
+		const double railB[] = { -1.6, 0.4, -1.9,   0.0, 1.5, -1.9,   1.6, 2.6, -1.9 };
+		SkinDescriptor kd; kd.railAPoints = railA; kd.numRailAPoints = 4; kd.railBPoints = railB; kd.numRailBPoints = 3;
+		kd.nLen = 6; kd.nAcross = 3; kd.billow = 0.28;
+		ITriangleMeshGeometryIndexed* pI = 0; assert( RISE_API_CreateSkinGeometry( &pI, kd ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		report( "billowed skin", CheckRefinementOnAuthoredSurface( p, 48 ) );
+		p->release();
+	}
+	{	// a skin whose rails meet at both ends (pinch fans)
+		const double railA[] = { 0, 0, 0,   1, 0.4, 0,   2, 0, 0 };
+		const double railB[] = { 0, 0, 0,   1, 1.2, -0.6,   2, 0, 0 };
+		SkinDescriptor kd; kd.railAPoints = railA; kd.numRailAPoints = 3; kd.railBPoints = railB; kd.numRailBPoints = 3;
+		kd.nLen = 6; kd.nAcross = 3; kd.billow = 0.0;
+		ITriangleMeshGeometryIndexed* pI = 0; assert( RISE_API_CreateSkinGeometry( &pI, kd ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		report( "pinched skin", CheckRefinementOnAuthoredSurface( p, 48 ) );
+		p->release();
+	}
+	assert( softFails == 0 );
+#undef SOFT
+}
+
+//-----------------------------------------------------------------------------
+// Round-4 P1-2 / P2: crease rows exist only at AUTHORED profile points, and an
+// authored coarse polygon stays a polygon.
+//  * smooth=FALSE lathe: the refined mesh has a duplicated (split) ring only at the
+//    authored profile points where two segments meet -- the first cut split a crease at
+//    EVERY inserted row (stair-step banding).
+//  * an authored n_radial 6 column stays a hexagon (the first cut raised the radial count
+//    on the exact circle and turned it round).
+//-----------------------------------------------------------------------------
+static void TestCreasesOnlyWhereAuthoredAndPolygonsStayPolygons()
+{
+	std::cout << "Test 10p: crease rows only at authored profile points; a hexagonal column stays hexagonal...\n";
+	{
+		static const double prof[] = { 0.0, 0.0,  1.0, 0.25,  1.0, 1.75,  0.0, 2.0 };
+		LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 4; ld.nRadial = 24; ld.smooth = false;
+		ITriangleMeshGeometryIndexed* pI = 0; assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( p, 48, pConst, 1e-12, false, false, false );
+		pDisp->Realize();
+		IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+		assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+		// vertices on the angle-0 column (x = 0, z > 0), grouped by height
+		std::vector<Scalar> ys;
+		for( size_t i = 0; i < v.size(); ++i ) if( std::fabs( v[i].x ) < 1e-9 && v[i].z > 1e-6 ) ys.push_back( std::floor( v[i].y * 1e7 + 0.5 ) / 1e7 );
+		std::sort( ys.begin(), ys.end() );
+		size_t splitRows = 0, rows = 0;
+		for( size_t i = 0; i < ys.size(); ) {
+			size_t j = i; while( j < ys.size() && ys[j] == ys[i] ) ++j;
+			++rows; if( j - i > 1 ) ++splitRows;
+			i = j;
+		}
+		std::cout << "  [info] faceted lathe refined: " << rows << " distinct rows on the angle-0 column, " << splitRows << " of them split (authored creases: 2)\n";
+		assert( rows > 20 );
+		assert( splitRows == 2 );
+		pDisp->release(); pConst->release(); p->release();
+	}
+	{
+		static const double prof[] = { 1.0, 0.0,  1.0, 2.0 };
+		LatheDescriptor ld; ld.profilePoints = prof; ld.numProfilePoints = 2; ld.nRadial = 6; ld.smooth = true;
+		ITriangleMeshGeometryIndexed* pI = 0; assert( RISE_API_CreateLatheGeometry( &pI, ld ) );
+		TriangleMeshGeometryIndexed* p = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
+		ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+		DisplacedGeometry* pDisp = new DisplacedGeometry( p, 48, pConst, 1e-12, false, false, false );
+		pDisp->Realize();
+		IndexTriangleListType t; VerticesListType v; NormalsListType n; TexCoordsListType c;
+		assert( pDisp->TessellateToMesh( t, v, n, c, 0 ) );
+		Scalar rMin = 1e9, rMax = 0;
+		for( size_t i = 0; i < v.size(); ++i ) { const Scalar r = std::sqrt( v[i].x*v[i].x + v[i].z*v[i].z ); rMin = std::min( rMin, r ); rMax = std::max( rMax, r ); }
+		std::cout << "  [info] hexagonal column refined to " << t.size() << " triangles: radius from the axis spans [" << rMin << ", " << rMax << "] (hexagon: 0.866 at an edge middle, 1 at a corner; a circle: 1)\n";
+		assert( t.size() > 100 );
+		assert( rMin < 0.87 && rMax < 1.0 + 1e-9 );
+		pDisp->release(); pConst->release(); p->release();
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -2726,8 +2932,10 @@ int main()
 	TestTransportedShadingNormals();
 	TestFaceNormalBaseIsNotRefined();
 	TestRefinementIsRegular();
-	TestLoftRebakeHasNoSlivers();
+	TestLoftRefineHasNoSlivers();
 	TestPolarVertexDisplacesByNeighbourAverage();
+	TestRefinementKeepsAuthoredSurface();
+	TestCreasesOnlyWhereAuthoredAndPolygonsStayPolygons();
 	TestDisplacedBaseIsNotRefinedAgain();
 	TestShadingTransportIsRotation();
 	TestConcurrentRealize();

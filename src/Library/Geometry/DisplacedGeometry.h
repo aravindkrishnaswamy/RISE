@@ -40,18 +40,33 @@ namespace RISE
 		// NOT the legacy non-indexed TriangleMeshGeometry, whose tessellation is
 		// per-corner) ignores `detail` in its own TessellateToMesh, which would leave it
 		// displaced only at its own vertices.  TessellateAndRefine() therefore brings it
-		// to spacing (base bbox diagonal / detail) with a REGULAR construction:
-		//   (a) a lathe / sweep / skin RE-BAKES ITSELF from its own descriptor at that
-		//       density (TriangleMeshGeometryIndexed::IMeshRebaker, set by the builder):
-		//       regular quads on the builder's own (u, v) grid, EXACT surface positions,
-		//       and the factory's own crease / cap / pole / pinch / chart rules;
+		// to spacing (base bbox diagonal / detail).
+		//
+		// REFINEMENT NEVER CHANGES THE AUTHORED SURFACE.  It only adds SAMPLES for the
+		// displacement to act on: every new vertex lies on the authored piecewise-linear
+		// surface (a chord between authored vertices, a point inside an authored
+		// triangle), takes a normal interpolated (lerp + normalize) from the authored
+		// vertex normals and a UV interpolated from the authored UVs (respecting the
+		// chart's periodic / polar bits); creases exist only where the author made them
+		// (crease / cap / duplicated-point vertices stay separate vertices) and the
+		// authored correspondence (loft pairing, caps) is kept.  At disp_scale -> 0 the
+		// displaced geometry therefore renders identically to the undisplaced base --
+		// the SILHOUETTE IS THE AUTHORED POLYGON; a coarse lathe stays a polygon.  What
+		// the author wants rounder, the author makes denser.
+		//   (a) a lathe / sweep / skin RECORDS ITS AUTHORED GRID (TriangleMeshGeometryIndexed::
+		//       MeshGrid: quads between line FAMILIES, fans around poles / pinches) and
+		//       TessellateRefined() subdivides each family by its own length, so shared edges
+		//       agree, quads stay regular quads (near-square cells, clean ribs, about the
+		//       triangle count of a hand-authored grid at that spacing) and position / normal
+		//       / UV are interpolated barycentrically inside the AUTHORED triangles.  End caps
+		//       (a triangulation of the profile polygon) are NOT refined: a cap displaces only
+		//       along its rim.
 		//   (b) any other indexed mesh is subdivided UNIFORMLY (whole 1->4 levels, level
 		//       count from the base's MEDIAN edge length, midpoints shared per unordered
-		//       combined-index pair, linear positions and UVs -- its silhouette stays its
-		//       polygon -- except across a chart axis the base DECLARES periodic (a
-		//       ring-stitch edge is taken the short way round) and at a POLAR vertex (a
-		//       placeholder u / v: an edge to a normal vertex takes the normal vertex's
-		//       value).
+		//       combined-index pair, linear positions, lerped normals and UVs) -- except
+		//       across a chart axis the base DECLARES periodic (a ring-stitch edge is taken
+		//       the short way round) and at a POLAR vertex (a placeholder u / v: an edge to a
+		//       normal vertex takes the normal vertex's value).
 		// Capped at 1.5M triangles (6 levels for (b)).  A pole / pinch is DISPLACED by
 		// the average of its neighbours' displacements, not by the field at its
 		// placeholder UV.  Analytic and SDF bases already honour `detail` and are
@@ -71,14 +86,13 @@ namespace RISE
 		// perturbs the base's smooth field instead of replacing it.
 		//
 		// REFIT.  An animated displacement refits the baked mesh in place
-		// (RefreshMeshVertices) -- unless the re-bake / refinement came out different
-		// (it is size driven, so a moving base can change topology at an unchanged
-		// vertex count), detected by a topology signature, in which case the mesh is
-		// rebuilt from scratch.  Cost: every painter notification re-tessellates the base
-		// and RE-RUNS the builder's re-bake (O(triangles), allocation-heavy): measured
-		// 6.3 ms for a 3.9k-triangle lathe bake (the re-bake dominates), against ~0.3 ms
-		// for the unrefined 384-triangle stress-scene vase -- a keyframed displacement
-		// pays it per frame.
+		// (RefreshMeshVertices) -- unless the refinement came out different (it is size
+		// driven, so a moving base can change topology at an unchanged vertex count),
+		// detected by a topology signature, in which case the mesh is rebuilt from
+		// scratch.  Cost: every painter notification re-tessellates and re-refines the
+		// base (O(triangles), allocation-heavy): measured ~6-8 ms for the 10-11k-triangle
+		// stress-scene vase / leg, ~3 ms for the sail, against ~0.3 ms for an unrefined
+		// small mesh -- a keyframed displacement pays it per frame.
 		//
 		// TWO HEIGHT ROUTES, MUTUALLY EXCLUSIVE (2026-09-06).  The offset scalar comes
 		// from EXACTLY ONE of:

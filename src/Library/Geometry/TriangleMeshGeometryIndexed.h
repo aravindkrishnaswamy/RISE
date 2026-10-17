@@ -48,7 +48,7 @@ namespace RISE
 			public MeshSignalBake::IInputSource
 		{
 		public:
-			class IMeshRebaker;		// defined below (builders' re-bake recipe)
+			class MeshGrid;			// defined below (a builder's authored grid structure)
 		protected:
 			virtual ~TriangleMeshGeometryIndexed();
 
@@ -120,11 +120,11 @@ namespace RISE
 			//! for the full account and the current mechanism's documented
 			//! residual.)
 			bool					m_bWatertight;
-			// NOTE: neither the chart bits (m_uvPeriodic) nor the rebaker are carried by .risemesh
-			// Serialize/Deserialize -- both describe what a procedural BUILDER knew when it
-			// built the mesh.  A deserialized (imported) mesh therefore never wraps its chart
-			// and is refined uniformly, never re-baked.
-			std::shared_ptr<const IMeshRebaker>	m_rebaker;		//!< set by a builder (lathe / sweep / skin); see IMeshRebaker
+			// NOTE: neither the chart bits (m_uvPeriodic) nor the grid structure are carried by
+			// .risemesh Serialize/Deserialize -- both describe what a procedural BUILDER knew when
+			// it built the mesh.  A deserialized (imported) mesh therefore never wraps its chart
+			// and is refined uniformly (median-edge 1->4 levels), never grid-wise.
+			std::shared_ptr<const MeshGrid>	m_grid;		//!< set by a builder (lathe / sweep / skin); see MeshGrid
 			std::vector<unsigned char>	m_uvPeriodic;	//!< per-position-index kUPeriodic/kVPeriodic bits (see SetUVPeriodicRegion); empty = none
 
 			//! Computes and caches `m_bWatertight`.  Called from
@@ -326,23 +326,45 @@ namespace RISE
 			//!                  the OTHER end's value on that axis.
 			enum { kUPeriodic = 1, kVPeriodic = 2, kUPolar = 4, kVPolar = 8 };
 
-			//! A BUILDER's way to rebuild itself at a higher native density: lathe / sweep / skin
-			//! keep a copy of their descriptor and re-run their own factory with more rows and
-			//! columns, so DisplacedGeometry can honour `detail` with REGULAR quads and EXACT
-			//! surface positions instead of subdividing the baked triangles.
-			class IMeshRebaker
+			//! The AUTHORED GRID STRUCTURE a procedural builder (lathe / sweep / skin) records
+			//! while it emits its triangles: which authored triangles form quads of a regular
+			//! grid (and between which line FAMILIES -- every edge of a family is subdivided the
+			//! same number of times, so neighbouring quads agree on shared edges), and which form
+			//! pole / pinch fans.  Triangles in neither (end caps, degenerate leftovers) are not
+			//! refined.  Used by TessellateRefined() to put MORE SAMPLES on the authored surface
+			//! without changing it -- see the principle there.
+			class MeshGrid
 			{
 			public:
-				virtual ~IMeshRebaker() {}
-				//! Re-bake so every row/column spacing is <= targetEdge (the grid's diagonal is up
-				//! to sqrt(2) longer) and the triangle count stays <= maxTriangles.
-				//! Returns > 0 and a NEW mesh in *ppOut (the caller releases it) if a denser bake
-				//! was produced; 0 if the existing bake already meets the target (*ppOut untouched);
-				//! < 0 if the rebuild failed (the caller falls back to uniform subdivision).
-				virtual int Rebake( const Scalar targetEdge, const size_t maxTriangles, TriangleMeshGeometryIndexed** ppOut ) const = 0;
+				//! A quad: the two authored triangles are (q0,q1,q2) and (q0,q2,q3) (diagonal
+				//! q0-q2).  Edges q0q1 and q3q2 are in family famS, q0q3 and q1q2 in famT.
+				struct Quad { unsigned int q[4]; unsigned int famS, famT, tri[2]; };
+				//! A fan around a pole / pinch: the authored triangle (t0,t1,t2), t[pole] being the
+				//! collapsed vertex.  The two spokes are in family famSpoke, the opposite (ring)
+				//! edge in famRing.
+				struct Fan { unsigned int t[3]; unsigned int pole, famSpoke, famRing, tri; };
+				std::vector<Quad> quads;
+				std::vector<Fan>  fans;
+				unsigned int      numFamilies;
+				MeshGrid() : numFamilies( 0 ) {}
 			};
-			void SetRebaker( const std::shared_ptr<const IMeshRebaker>& r ) { m_rebaker = r; }
-			const IMeshRebaker* GetRebaker() const { return m_rebaker.get(); }
+			void SetGrid( const std::shared_ptr<const MeshGrid>& g ) { m_grid = g; }
+			const MeshGrid* GetGrid() const { return m_grid.get(); }
+
+			//! REFINEMENT NEVER CHANGES THE AUTHORED SURFACE.  Subdivides the recorded grid so
+			//! every edge family is <= targetEdge long (quad diagonals are up to sqrt(2) longer)
+			//! while the total stays <= maxTriangles.  Every new vertex lies on the authored
+			//! piecewise-linear surface (the authored triangles, never a re-evaluated or rounded
+			//! one), its normal and UV are interpolated from the authored vertices' (barycentric
+			//! within the authored triangle; UVs respect the periodic / polar chart bits), creases
+			//! exist only where the author made them (inserted rows are single, smooth rows),
+			//! and correspondence (loft pairing, caps) is the authored one.  Output uses the
+			//! same-index contract; authored vertices keep their indices, new ones follow.
+			//! Returns 1 with the refined arrays, or 0 (arrays untouched) when there is no grid or
+			//! the authored mesh is already at least that dense.
+			int TessellateRefined( const Scalar targetEdge, const size_t maxTriangles,
+				IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals,
+				TexCoordsListType& coords, std::vector<unsigned char>* pUVFlags ) const;
 
 			//! True when this mesh shades with computed face normals (bUseFaceNormals): its
 			//! tessellation is flattened per corner, so it has no shared topology to refine.

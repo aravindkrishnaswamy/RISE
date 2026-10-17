@@ -1541,175 +1541,6 @@ namespace RISE
 		}
 	}
 
-	// (the rebakers below call the factories they belong to, defined after them)
-	bool RISE_API_CreateSweepGeometry( ITriangleMeshGeometryIndexed** ppi, const SweepDescriptor& desc );
-	bool RISE_API_CreateLatheGeometry( ITriangleMeshGeometryIndexed** ppi, const LatheDescriptor& desc );
-	bool RISE_API_CreateSkinGeometry( ITriangleMeshGeometryIndexed** ppi, const SkinDescriptor& desc );
-
-	// ------------------------------------------------------------------
-	// BUILDER RE-BAKE (DisplacedGeometry's `detail` on a lathe / sweep / skin).
-	// Each procedural mesh builder keeps a deep copy of its descriptor and
-	// can re-run its OWN factory at a higher native density: more profile
-	// rows and radial columns (lathe), more stations and a resampled section
-	// (sweep), more stations and rows across (skin).  The result is a REGULAR
-	// quad grid on the builder's own (u, v) chart with EXACT surface positions
-	// -- what an author raising n_radial / n_len / n_across by hand would get --
-	// rather than a subdivision of the baked triangles.  Every crease / cap /
-	// pole / pinch / chart-periodicity rule is the factory's own, because it is
-	// the factory that runs.  See TriangleMeshGeometryIndexed::IMeshRebaker.
-	// ------------------------------------------------------------------
-	namespace {
-		// Subdivide each edge of the closed polygon p (x0 h0 x1 h1 ...) into the
-		// smallest number of equal pieces whose (scaled) length is <= target.  Vertex
-		// 0 and every original vertex stay exactly where they are; a zero-length edge
-		// (the duplicated-point hard-edge idiom) is never split.  Returns true if any
-		// edge was split; counts the output points.
-		inline void ResampleClosedPolygon( const std::vector<double>& p, const double sx, const double sy, const double target,
-			std::vector<double>* pOut, size_t* pCount )
-		{
-			const size_t n = p.size() / 2;
-			size_t count = 0;
-			for( size_t e = 0; e < n; ++e ) {
-				const double ax = p[2*e], ah = p[2*e+1];
-				const double bx = p[2*((e+1)%n)], bh = p[2*((e+1)%n)+1];
-				const double dx = ( bx - ax ) * sx, dh = ( bh - ah ) * sy;
-				const double L = std::sqrt( dx*dx + dh*dh );
-				const size_t k = ( L > 0 ) ? std::max<size_t>( 1, (size_t)std::ceil( L / target ) ) : 1;
-				count += k;
-				if( pOut ) {
-					pOut->push_back( ax ); pOut->push_back( ah );
-					for( size_t i = 1; i < k; ++i ) {
-						const double t = double( i ) / double( k );
-						pOut->push_back( ax + ( bx - ax ) * t ); pOut->push_back( ah + ( bh - ah ) * t );
-					}
-				}
-			}
-			*pCount = count;
-		}
-	}
-
-	// Sweep re-bake: more stations along the path and a resampled section (both
-	// profiles, so a loft stays aligned), spacing bounded with the largest
-	// per-station scale the descriptor can produce.
-	class SweepRebaker : public TriangleMeshGeometryIndexed::IMeshRebaker
-	{
-		SweepDescriptor d;
-		std::vector<double> prof, prof2, path, widths, scales, scalesY, morphs;
-	public:
-		explicit SweepRebaker( const SweepDescriptor& src ) : d( src )
-		{
-			prof.assign( src.profilePoints, src.profilePoints + 2 * (size_t)src.numProfilePoints );
-			if( src.profile2Points && src.numProfile2Points ) prof2.assign( src.profile2Points, src.profile2Points + 2 * (size_t)src.numProfile2Points );
-			path.assign( src.pathPoints, src.pathPoints + 3 * (size_t)src.numPathPoints );
-			if( src.pointWidths && src.numPointWidths ) widths.assign( src.pointWidths, src.pointWidths + src.numPointWidths );
-			if( src.pointScales && src.numPointScales ) scales.assign( src.pointScales, src.pointScales + src.numPointScales );
-			if( src.pointScalesY && src.numPointScalesY ) scalesY.assign( src.pointScalesY, src.pointScalesY + src.numPointScalesY );
-			if( src.pointMorphs && src.numPointMorphs ) morphs.assign( src.pointMorphs, src.pointMorphs + src.numPointMorphs );
-		}
-
-		int Rebake( const Scalar targetEdge, const size_t maxTriangles, TriangleMeshGeometryIndexed** ppOut ) const override
-		{
-			auto maxOf = []( const std::vector<double>& v, const double dflt ) { double m = 0; for( size_t i = 0; i < v.size(); ++i ) m = std::max( m, v[i] ); return v.empty() ? dflt : m; };
-			const double wMax = maxOf( widths, 1.0 ), sMax = maxOf( scales, 1.0 );
-			const double sx = std::max( 1.0, d.endScaleX ) * wMax * sMax;
-			const double sy = std::max( 1.0, d.endScaleY ) * ( scalesY.empty() ? sMax : maxOf( scalesY, 1.0 ) );
-
-			// path length from a dense sampling of the SAME Catmull-Rom the factory uses
-			std::vector<SweepV3> pp;
-			if( d.pathClosed ) SampleCatmullRom3Periodic( path.data(), (unsigned int)( path.size() / 3 ), 2048, pp );
-			else               SampleCatmullRom3( path.data(), (unsigned int)( path.size() / 3 ), 2048, pp );
-			double pathLen = 0;
-			for( size_t i = 0; i + 1 < pp.size(); ++i ) pathLen += svLen( svSub( pp[i+1], pp[i] ) );
-			if( d.pathClosed && pp.size() > 1 ) pathLen += svLen( svSub( pp[0], pp.back() ) );
-
-			std::vector<double> r1, r2;
-			size_t c1 = 0, c2 = 0;
-			int nLen = d.nLen;
-			double t = targetEdge;
-			const bool morph = !prof2.empty();
-
-			// LOFT (a second profile): refine BOTH profiles at ONE common set of normalized
-			// arc-length parameters -- the union of both profiles' own vertex parameters,
-			// each interval split equally.  Refining the two polygons independently would
-			// leave the factory's union-resample with near-coincident but unequal
-			// parameters, i.e. razor-thin ring rows (tiny triangles).  A profile that is
-			// wound opposite is reversed here exactly as the factory would, and a
-			// duplicated point (a hard edge) cannot be expressed as a parameter set, so
-			// that case is declined (-1: the caller falls back to uniform subdivision).
-			std::vector<Scalar> x1, h1, x2, h2, par1, par2, U;
-			if( morph ) {
-				auto load = []( const std::vector<double>& p, std::vector<Scalar>& x, std::vector<Scalar>& h ) {
-					x.resize( p.size() / 2 ); h.resize( p.size() / 2 );
-					for( size_t i = 0; i < x.size(); ++i ) { x[i] = p[2*i]; h[i] = p[2*i+1]; }
-				};
-				load( prof, x1, h1 ); load( prof2, x2, h2 );
-				auto area2 = []( const std::vector<Scalar>& x, const std::vector<Scalar>& h ) {
-					Scalar a = 0; for( size_t k = 0; k < x.size(); ++k ) { const size_t j = ( k + 1 ) % x.size(); a += x[k]*h[j] - x[j]*h[k]; } return a; };
-				const Scalar a1 = area2( x1, h1 ), a2 = area2( x2, h2 );
-				if( a1 != 0 && ( ( a1 > 0 ) != ( a2 > 0 ) ) ) {
-					std::reverse( x2.begin() + 1, x2.end() ); std::reverse( h2.begin() + 1, h2.end() );
-				}
-				ProfileArcParams( x1, h1, par1 ); ProfileArcParams( x2, h2, par2 );
-				for( size_t k = 0; k + 1 < par1.size(); ++k ) if( par1[k+1] - par1[k] <= 1e-12 ) return -1;
-				for( size_t k = 0; k + 1 < par2.size(); ++k ) if( par2[k+1] - par2[k] <= 1e-12 ) return -1;
-				U = par1; U.insert( U.end(), par2.begin(), par2.end() );
-				std::sort( U.begin(), U.end() );
-				std::vector<Scalar> Um;
-				for( size_t k = 0; k < U.size(); ++k ) if( Um.empty() || U[k] - Um.back() > 1e-9 ) Um.push_back( U[k] );
-				U.swap( Um );
-			}
-
-			for( int iter = 0; iter < 80; ++iter ) {
-				r1.clear(); r2.clear();
-				if( morph ) {
-					std::vector<Scalar> P;
-					for( size_t i = 0; i < U.size(); ++i ) {
-						const Scalar p0 = U[i], p1 = ( i + 1 < U.size() ) ? U[i+1] : Scalar(1);
-						Scalar ax, ah, bx, bh, ex, eh, fx, fh;
-						ProfilePointAt( x1, h1, par1, p0, ax, ah ); ProfilePointAt( x1, h1, par1, std::min( p1, Scalar(1) - Scalar(1e-12) ), bx, bh );
-						ProfilePointAt( x2, h2, par2, p0, ex, eh ); ProfilePointAt( x2, h2, par2, std::min( p1, Scalar(1) - Scalar(1e-12) ), fx, fh );
-						const double L1 = std::sqrt( ( bx - ax )*sx*( bx - ax )*sx + ( bh - ah )*sy*( bh - ah )*sy );
-						const double L2 = std::sqrt( ( fx - ex )*sx*( fx - ex )*sx + ( fh - eh )*sy*( fh - eh )*sy );
-						const size_t m = std::max<size_t>( 1, (size_t)std::ceil( std::max( L1, L2 ) / t ) );
-						for( size_t j = 0; j < m; ++j ) P.push_back( p0 + ( p1 - p0 ) * Scalar( j ) / Scalar( m ) );
-					}
-					c1 = c2 = P.size();
-					for( size_t i = 0; i < P.size(); ++i ) {
-						Scalar x, h;
-						ProfilePointAt( x1, h1, par1, P[i], x, h ); r1.push_back( x ); r1.push_back( h );
-						ProfilePointAt( x2, h2, par2, P[i], x, h ); r2.push_back( x ); r2.push_back( h );
-					}
-				} else {
-					ResampleClosedPolygon( prof, sx, sy, t, &r1, &c1 );
-					c2 = 0;
-				}
-				const int need = (int)std::ceil( pathLen / t ) + ( d.pathClosed ? 0 : 1 );
-				nLen = std::min( 4096, std::max( std::max( 2, d.nLen ), need ) );
-				const size_t nProfEst = c1;
-				const double est = 2.0 * double( nProfEst ) * double( nLen );
-				if( nProfEst <= 4096 && est <= double( maxTriangles ) ) break;
-				t *= 1.15;
-			}
-			if( c1 > 4096 ) return -1;
-			const bool profileChanged = morph ? ( c1 > U.size() ) : ( c1 > prof.size() / 2 );
-			if( !profileChanged && nLen <= d.nLen ) return 0;		// already dense enough
-
-			SweepDescriptor d2 = d;
-			d2.profilePoints = r1.data(); d2.numProfilePoints = (unsigned int)( r1.size() / 2 );
-			if( !prof2.empty() ) { d2.profile2Points = r2.data(); d2.numProfile2Points = (unsigned int)( r2.size() / 2 ); }
-			d2.pathPoints = path.data();
-			d2.pointWidths = widths.empty() ? 0 : widths.data();
-			d2.pointScales = scales.empty() ? 0 : scales.data();
-			d2.pointScalesY = scalesY.empty() ? 0 : scalesY.data();
-			d2.pointMorphs = morphs.empty() ? 0 : morphs.data();
-			d2.nLen = nLen;
-			ITriangleMeshGeometryIndexed* pI = 0;
-			if( !RISE_API_CreateSweepGeometry( &pI, d2 ) || !pI ) return -1;
-			*ppOut = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
-			return *ppOut ? 1 : -1;
-		}
-	};
-
 	// General profile sweep: an arbitrary CLOSED 2D profile polygon swept
 	// along an arbitrary 3D Catmull-Rom path with rotation-minimizing
 	// frames, optional linear per-axis taper, optional NON-linear per-station
@@ -2283,7 +2114,13 @@ namespace RISE
 		// winding gives outward-facing triangles for a CCW profile.  A closed
 		// path additionally wraps ring (n-1) to ring 0 (no open-path "ends"),
 		// so it walks all n rings instead of stopping at n-1.
+		// The AUTHORED GRID STRUCTURE (TriangleMeshGeometryIndexed::MeshGrid): the path-direction
+		// edges of ring interval i are family i; the profile-direction edges of profile edge k
+		// are family sideRingCount + k (shared by every station).  End caps are in no cell.
 		const size_t sideRingCount = desc.pathClosed ? n : ( n - 1 );
+		std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+		grid->numFamilies = (unsigned int)( sideRingCount + nProf );
+		unsigned int triCount = 0;
 		for( size_t i = 0; i < sideRingCount; i++ ) {
 			const size_t i1 = desc.pathClosed ? ( ( i + 1 ) % n ) : ( i + 1 );
 			const int r0 = int(i) * int(nProf);
@@ -2294,6 +2131,17 @@ namespace RISE
 				const int b = r1 + int(k);
 				const int c = r1 + int(kn);
 				const int d = r0 + int(kn);
+				{
+					TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+					q.tri[0] = triCount; q.tri[1] = triCount + 1;
+					const unsigned int pathFam = (unsigned int)i, profFam = (unsigned int)( sideRingCount + k );
+					// authored triangles (q0,q1,q2),(q0,q2,q3): outward -> (a,b,c)+(a,c,d), q = a,b,c,d;
+					// otherwise (a,c,b)+(a,d,c), q = a,d,c,b
+					if( outward > 0 ) { q.q[0] = a; q.q[1] = b; q.q[2] = c; q.q[3] = d; q.famS = pathFam; q.famT = profFam; }
+					else              { q.q[0] = a; q.q[1] = d; q.q[2] = c; q.q[3] = b; q.famS = profFam; q.famT = pathFam; }
+					grid->quads.push_back( q );
+					triCount += 2;
+				}
 				if( outward > 0 ) {
 					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
 					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
@@ -2408,63 +2256,11 @@ namespace RISE
 			}
 		}
 
-		pGeom->SetRebaker( std::make_shared<SweepRebaker>( desc ) );
+		pGeom->SetGrid( grid );
 		pGeom->DoneIndexedTriangles();
 		*ppi = pGeom;
 		return true;
 	}
-
-	// Lathe re-bake: resample each LIVE profile segment into rows <= target and raise
-	// the radial count so the circumferential spacing at the widest radius is <= target.
-	class LatheRebaker : public TriangleMeshGeometryIndexed::IMeshRebaker
-	{
-		std::vector<double> prof;
-		int axis; double sweepDegrees; int nRadial; bool smooth;
-	public:
-		explicit LatheRebaker( const LatheDescriptor& d ) :
-			prof( d.profilePoints, d.profilePoints + 2 * (size_t)d.numProfilePoints ),
-			axis( d.axis ), sweepDegrees( d.sweepDegrees ), nRadial( d.nRadial ), smooth( d.smooth ) {}
-
-		int Rebake( const Scalar targetEdge, const size_t maxTriangles, TriangleMeshGeometryIndexed** ppOut ) const override
-		{
-			const size_t nPts = prof.size() / 2;
-			double rMax = 0;
-			for( size_t i = 0; i < nPts; ++i ) rMax = std::max( rMax, prof[2*i] );
-			const double arcFrac = sweepDegrees / 360.0;
-			std::vector<double> np;
-			int nRad = nRadial;
-			double t = targetEdge;
-			for( int iter = 0; iter < 80; ++iter ) {
-				np.assign( 1, prof[0] ); np.push_back( prof[1] );
-				for( size_t i = 0; i + 1 < nPts; ++i ) {
-					const double r0 = prof[2*i], h0 = prof[2*i+1], r1 = prof[2*i+2], h1 = prof[2*i+3];
-					const double L = std::sqrt( ( r1 - r0 ) * ( r1 - r0 ) + ( h1 - h0 ) * ( h1 - h0 ) );
-					const bool live = L > 0 && ( r0 > 0 || r1 > 0 );
-					const size_t k = live ? std::max<size_t>( 1, (size_t)std::ceil( L / t ) ) : 1;
-					for( size_t j = 1; j < k; ++j ) {
-						const double f = double( j ) / double( k );
-						np.push_back( r0 + ( r1 - r0 ) * f ); np.push_back( h0 + ( h1 - h0 ) * f );
-					}
-					np.push_back( r1 ); np.push_back( h1 );		// the original point, exactly
-				}
-				const double arc = 2.0 * 3.14159265358979323846 * rMax * arcFrac;
-				nRad = std::min( 2048, std::max( nRadial, (int)std::ceil( arc / t ) ) );
-				const size_t rows = np.size() / 2;
-				const double est = 2.0 * double( rows ) * double( nRad + 1 );
-				if( rows <= 4096 && est <= double( maxTriangles ) ) break;
-				t *= 1.15;
-			}
-			if( np.size() / 2 > 4096 ) return -1;
-			if( np.size() / 2 <= nPts && nRad <= nRadial ) return 0;		// already dense enough
-			LatheDescriptor d2;
-			d2.profilePoints = np.data(); d2.numProfilePoints = (unsigned int)( np.size() / 2 );
-			d2.axis = axis; d2.sweepDegrees = sweepDegrees; d2.nRadial = nRad; d2.smooth = smooth;
-			ITriangleMeshGeometryIndexed* pI = 0;
-			if( !RISE_API_CreateLatheGeometry( &pI, d2 ) || !pI ) return -1;
-			*ppOut = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
-			return *ppOut ? 1 : -1;
-		}
-	};
 
 	// Surface of revolution (lathe): an OPEN 2D profile polyline authored
 	// in the (r, h) half-plane -- r = radius from the axis, h = height
@@ -2892,12 +2688,20 @@ namespace RISE
 
 		// One place for the orientation flip derived above.
 		const bool flip = ( outward < 0 );
+		// The AUTHORED GRID STRUCTURE, recorded as the triangles are emitted (see
+		// TriangleMeshGeometryIndexed::MeshGrid): line family 0 is the radial ring (every
+		// ring edge of the lathe), family 1+band is that band's profile direction.  Pole
+		// fans are recorded as fans; the partial-sweep caps are in no cell (not refined).
+		std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+		grid->numFamilies = 1u + (unsigned int)bands.size();
+		unsigned int triCount = 0;
 		auto emitTri = [&]( const int a, const int b, const int c ) {
 			if( flip ) {
 				pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
 			} else {
 				pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
 			}
+			++triCount;
 		};
 
 		for( size_t bi = 0; bi < bands.size(); bi++ ) {
@@ -2914,11 +2718,29 @@ namespace RISE
 				// b = (j1,k).  Collapsing either row to a pole degenerates
 				// exactly one of the two triangles, so a pole emits a FAN of
 				// nRadial triangles instead of nRadial zero-area quads.
+				const unsigned int bandFam = 1u + (unsigned int)bi;
 				if( pole0 ) {
+					TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+					f.tri = triCount;
+					if( flip ) { f.t[0] = a; f.t[1] = b; f.t[2] = c; } else { f.t[0] = a; f.t[1] = c; f.t[2] = b; }
+					f.pole = 0; f.famSpoke = bandFam; f.famRing = 0;
+					grid->fans.push_back( f );
 					emitTri( a, c, b );
 				} else if( pole1 ) {
+					TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+					f.tri = triCount;
+					if( flip ) { f.t[0] = a; f.t[1] = c; f.t[2] = d; f.pole = 1; } else { f.t[0] = a; f.t[1] = d; f.t[2] = c; f.pole = 2; }
+					f.famSpoke = bandFam; f.famRing = 0;
+					grid->fans.push_back( f );
 					emitTri( a, d, c );
 				} else {
+					TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+					q.tri[0] = triCount; q.tri[1] = triCount + 1;
+					// authored triangles (q0,q1,q2),(q0,q2,q3): unflipped (a,d,c)+(a,c,b) -> q = a,d,c,b;
+					// flipped (a,c,d)+(a,b,c) -> q = a,b,c,d
+					if( flip ) { q.q[0] = a; q.q[1] = b; q.q[2] = c; q.q[3] = d; q.famS = bandFam; q.famT = 0; }
+					else       { q.q[0] = a; q.q[1] = d; q.q[2] = c; q.q[3] = b; q.famS = 0; q.famT = bandFam; }
+					grid->quads.push_back( q );
 					emitTri( a, d, c );
 					emitTri( a, c, b );
 				}
@@ -3131,7 +2953,7 @@ namespace RISE
 			}
 		}
 
-		pGeom->SetRebaker( std::make_shared<LatheRebaker>( desc ) );
+		pGeom->SetGrid( grid );
 		pGeom->DoneIndexedTriangles();
 		*ppi = pGeom;
 		return true;
@@ -3247,73 +3069,6 @@ namespace RISE
 				pts[seg].z + ( pts[seg+1].z - pts[seg].z ) * f );
 		}
 	}
-
-	// Skin re-bake: more stations along the rails and more rows across.
-	class SkinRebaker : public TriangleMeshGeometryIndexed::IMeshRebaker
-	{
-		SkinDescriptor d;
-		std::vector<double> railA, railB;
-		static double PolyLen( const std::vector<double>& r )
-		{
-			double L = 0;
-			for( size_t i = 0; i + 1 < r.size() / 3; ++i ) {
-				const double dx = r[3*i+3]-r[3*i], dy = r[3*i+4]-r[3*i+1], dz = r[3*i+5]-r[3*i+2];
-				L += std::sqrt( dx*dx + dy*dy + dz*dz );
-			}
-			return L;
-		}
-		// point at normalized arc length u on a polyline
-		static void PolyAt( const std::vector<double>& r, const double u, double p[3] )
-		{
-			const double total = PolyLen( r );
-			double want = u * total, acc = 0;
-			const size_t n = r.size() / 3;
-			for( size_t i = 0; i + 1 < n; ++i ) {
-				const double dx = r[3*i+3]-r[3*i], dy = r[3*i+4]-r[3*i+1], dz = r[3*i+5]-r[3*i+2];
-				const double L = std::sqrt( dx*dx + dy*dy + dz*dz );
-				if( acc + L >= want || i + 2 == n ) {
-					const double f = ( L > 0 ) ? std::min( 1.0, std::max( 0.0, ( want - acc ) / L ) ) : 0.0;
-					p[0] = r[3*i] + dx*f; p[1] = r[3*i+1] + dy*f; p[2] = r[3*i+2] + dz*f;
-					return;
-				}
-				acc += L;
-			}
-			p[0] = r[0]; p[1] = r[1]; p[2] = r[2];
-		}
-	public:
-		explicit SkinRebaker( const SkinDescriptor& src ) : d( src )
-		{
-			railA.assign( src.railAPoints, src.railAPoints + 3 * (size_t)src.numRailAPoints );
-			railB.assign( src.railBPoints, src.railBPoints + 3 * (size_t)src.numRailBPoints );
-		}
-
-		int Rebake( const Scalar targetEdge, const size_t maxTriangles, TriangleMeshGeometryIndexed** ppOut ) const override
-		{
-			const double lenA = PolyLen( railA ), lenB = PolyLen( railB );
-			double span = 0;
-			for( int i = 0; i <= 64; ++i ) {
-				double a[3], b[3]; const double u = double( i ) / 64.0;
-				PolyAt( railA, u, a ); PolyAt( railB, u, b );
-				span = std::max( span, std::sqrt( ( a[0]-b[0] )*( a[0]-b[0] ) + ( a[1]-b[1] )*( a[1]-b[1] ) + ( a[2]-b[2] )*( a[2]-b[2] ) ) );
-			}
-			int nLen = d.nLen, nAcross = d.nAcross;
-			double t = targetEdge;
-			for( int iter = 0; iter < 80; ++iter ) {
-				nLen = std::min( 4096, std::max( std::max( 2, d.nLen ), (int)std::ceil( std::max( lenA, lenB ) / t ) + 1 ) );
-				nAcross = std::min( 1024, std::max( std::max( 2, d.nAcross ), (int)std::ceil( span / t ) + 1 ) );
-				if( 2.0 * double( nLen ) * double( nAcross ) <= double( maxTriangles ) ) break;
-				t *= 1.15;
-			}
-			if( nLen <= d.nLen && nAcross <= d.nAcross ) return 0;		// already dense enough
-			SkinDescriptor d2 = d;
-			d2.railAPoints = railA.data(); d2.railBPoints = railB.data();
-			d2.nLen = nLen; d2.nAcross = nAcross;
-			ITriangleMeshGeometryIndexed* pI = 0;
-			if( !RISE_API_CreateSkinGeometry( &pI, d2 ) || !pI ) return -1;
-			*ppOut = dynamic_cast<TriangleMeshGeometryIndexed*>( pI );
-			return *ppOut ? 1 : -1;
-		}
-	};
 
 	// SKIN: the open ruled / billowed sheet spanning two boundary polylines.
 	//
@@ -4165,7 +3920,49 @@ namespace RISE
 				siteVertex[x], siteVertex[y], siteVertex[z] ) );
 		} );
 
-		pGeom->SetRebaker( std::make_shared<SkinRebaker>( desc ) );
+		// The AUTHORED GRID STRUCTURE (TriangleMeshGeometryIndexed::MeshGrid), recorded by
+		// re-walking the quads with the SAME survival predicate walkTriangles used (so the
+		// running triangle count is the emission index): a quad whose two triangles both
+		// survive is a grid quad (family i = the station interval's edges, family
+		// (nStations-1)+j = the across-row j edges); a quad that lost one triangle to a
+		// collapsed pinch (a == d, or b == c) is a pole fan; anything else (a triangle the
+		// zero-area test ate) is left unrefined.
+		{
+			std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+			grid->numFamilies = (unsigned int)( ( nStations - 1 ) + ( nAcrossSz - 1 ) );
+			unsigned int triCount = 0;
+			for( size_t i = 0; i + 1 < nStations; i++ ) {
+				for( size_t j = 0; j + 1 < nAcrossSz; j++ ) {
+					const size_t a = site( i,     j,     true  );
+					const size_t b = site( i + 1, j,     false );
+					const size_t c = site( i + 1, j + 1, false );
+					const size_t d = site( i,     j + 1, true  );
+					const bool t1 = ( a != b && a != d && b != d && triArea2( a, b, d ) > areaEps );
+					const bool t2 = ( b != c && b != d && c != d && triArea2( b, c, d ) > areaEps );
+					const unsigned int stationFam = (unsigned int)i, acrossFam = (unsigned int)( ( nStations - 1 ) + j );
+					if( t1 && t2 && a != c ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+						// authored (a,b,d) + (b,c,d): q = b,c,d,a
+						q.q[0] = siteVertex[b]; q.q[1] = siteVertex[c]; q.q[2] = siteVertex[d]; q.q[3] = siteVertex[a];
+						q.famS = acrossFam; q.famT = stationFam; q.tri[0] = triCount; q.tri[1] = triCount + 1;
+						grid->quads.push_back( q );
+					} else if( t2 && !t1 && a == d ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+						f.t[0] = siteVertex[b]; f.t[1] = siteVertex[c]; f.t[2] = siteVertex[d]; f.pole = 2;
+						f.famSpoke = stationFam; f.famRing = acrossFam; f.tri = triCount;
+						grid->fans.push_back( f );
+					} else if( t1 && !t2 && b == c ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+						f.t[0] = siteVertex[a]; f.t[1] = siteVertex[b]; f.t[2] = siteVertex[d]; f.pole = 1;
+						f.famSpoke = stationFam; f.famRing = acrossFam; f.tri = triCount;
+						grid->fans.push_back( f );
+					}
+					triCount += ( t1 ? 1u : 0u ) + ( t2 ? 1u : 0u );
+				}
+			}
+			pGeom->SetGrid( grid );
+		}
+
 		pGeom->DoneIndexedTriangles();
 		*ppi = pGeom;
 		return true;

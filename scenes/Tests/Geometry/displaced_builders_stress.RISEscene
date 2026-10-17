@@ -31,12 +31,14 @@ RISE ASCII SCENE 7
 #                   triangle corner as its own unshared vertex and the post-displacement normal recompute     #
 #                   had nothing to average across; TriangleMeshGeometryIndexed::TessellateToMesh now keeps    #
 #                   the builder's shared vertices, which fixed it.)  A builder is already a mesh and its      #
-#                   own tessellation ignores `detail`, so displaced_geometry has the lathe, the loft and the  #
-#                   skin RE-BAKE THEMSELVES at spacing (bbox diagonal / detail): regular quads and exact      #
-#                   surface positions (the 6-row vase becomes ~8.4k triangles at detail 48; the sail is       #
-#                   already dense enough and is left alone).  Crease / cap vertices stay separate vertices,   #
-#                   so under displacement they can open a gap along that edge (the loft's end caps are        #
-#                   triangulated from the profile polygon only).  See the `displaced_geometry` chunk          #
+#                   own tessellation ignores `detail`, so displaced_geometry subdivides the lathe's, the loft's and the#
+#                   skin's AUTHORED grid at spacing (bbox diagonal / detail): REFINEMENT NEVER CHANGES THE AUTHORED#
+#                   SURFACE -- new vertices lie on the authored polygon with interpolated normals and UVs, creases only#
+#                   where authored, loft pairing as authored, so the silhouette is the authored polygon and at disp_scale#
+#                   0 this renders identically to the undisplaced base (the 6-row vase becomes ~9.6k triangles at detail#
+#                   48; the sail is already dense enough and is left alone).  Crease / cap vertices stay separate#
+#                   vertices, so under displacement they can open a gap along that edge (the loft's end caps are#
+#                   triangulated from the profile polygon only and are not refined).  See the `displaced_geometry` chunk#
 #                   descriptor and object-modeling-recipes Recipe 6.                                          #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #                                                                                                           #

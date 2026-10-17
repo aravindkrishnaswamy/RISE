@@ -117,6 +117,255 @@ void TriangleMeshGeometryIndexed::SetUVPeriodicRegion( const unsigned char mask,
 	}
 }
 
+namespace {
+	// A vertex created on an authored EDGE: key = (lower authored index, higher, k steps from the lower).
+	struct EdgePointKey
+	{
+		std::uint32_t a, b, k;
+		bool operator==( const EdgePointKey& o ) const { return a == o.a && b == o.b && k == o.k; }
+	};
+	struct EdgePointKeyHash
+	{
+		size_t operator()( const EdgePointKey& e ) const
+		{
+			std::uint64_t h = e.a;
+			h = h * 0x9E3779B97F4A7C15ull + e.b;
+			h = h * 0x9E3779B97F4A7C15ull + e.k;
+			h ^= h >> 31;
+			return static_cast<size_t>( h );
+		}
+	};
+}
+
+int TriangleMeshGeometryIndexed::TessellateRefined(
+	const Scalar           targetEdge,
+	const size_t           maxTriangles,
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	std::vector<unsigned char>* pUVFlags ) const
+{
+	if( !m_grid || !( targetEdge > 0 ) || ptr_polygons.empty() ) {
+		return 0;
+	}
+	const size_t nV = pPoints.size();
+	if( pNormals.size() != nV || pCoords.size() != nV ) {
+		return 0;		// the grid indexes the same-index arrays a builder emits
+	}
+	const MeshGrid& g = *m_grid;
+	const unsigned int maxCount = 4096;
+
+	auto len = [&]( const unsigned int a, const unsigned int b ) {
+		return Vector3Ops::Magnitude( Vector3Ops::mkVector3( pPoints[a], pPoints[b] ) );
+	};
+
+	// Longest authored edge of each family.
+	std::vector<Scalar> famLen( g.numFamilies, 0.0 );
+	for( size_t i = 0; i < g.quads.size(); ++i ) {
+		const MeshGrid::Quad& q = g.quads[i];
+		famLen[q.famS] = std::max( famLen[q.famS], std::max( len( q.q[0], q.q[1] ), len( q.q[3], q.q[2] ) ) );
+		famLen[q.famT] = std::max( famLen[q.famT], std::max( len( q.q[0], q.q[3] ), len( q.q[1], q.q[2] ) ) );
+	}
+	for( size_t i = 0; i < g.fans.size(); ++i ) {
+		const MeshGrid::Fan& f = g.fans[i];
+		const unsigned int P = f.t[f.pole], R1 = f.t[( f.pole + 1 ) % 3], R2 = f.t[( f.pole + 2 ) % 3];
+		famLen[f.famSpoke] = std::max( famLen[f.famSpoke], std::max( len( P, R1 ), len( P, R2 ) ) );
+		famLen[f.famRing]  = std::max( famLen[f.famRing], len( R1, R2 ) );
+	}
+
+	// Per-family subdivision counts for spacing t, grown until the triangle budget fits.
+	std::vector<unsigned int> cnt( g.numFamilies, 1 );
+	Scalar t = targetEdge;
+	for( int iter = 0; iter < 80; ++iter ) {
+		for( unsigned int f = 0; f < g.numFamilies; ++f ) {
+			const double c = std::ceil( famLen[f] / t );
+			cnt[f] = c < 1.0 ? 1u : ( c > double( maxCount ) ? maxCount : static_cast<unsigned int>( c ) );
+		}
+		double est = double( ptr_polygons.size() );
+		for( size_t i = 0; i < g.quads.size(); ++i ) {
+			const MeshGrid::Quad& q = g.quads[i];
+			est += 2.0 * double( cnt[q.famS] ) * double( cnt[q.famT] ) - 2.0;
+		}
+		for( size_t i = 0; i < g.fans.size(); ++i ) {
+			const MeshGrid::Fan& f = g.fans[i];
+			est += double( cnt[f.famRing] ) * ( 2.0 * double( cnt[f.famSpoke] ) - 1.0 ) - 1.0;
+		}
+		if( est <= double( maxTriangles ) ) break;
+		t *= 1.15;
+	}
+	bool anyRefined = false;
+	for( unsigned int f = 0; f < g.numFamilies; ++f ) if( cnt[f] > 1 ) anyRefined = true;
+	if( !anyRefined ) {
+		return 0;
+	}
+
+	// ---- which authored triangles a cell replaces ----
+	std::vector<unsigned char> replaced( ptr_polygons.size(), 0 );
+	for( size_t i = 0; i < g.quads.size(); ++i ) { replaced[g.quads[i].tri[0]] = 1; replaced[g.quads[i].tri[1]] = 1; }
+	for( size_t i = 0; i < g.fans.size(); ++i ) replaced[g.fans[i].tri] = 1;
+
+	VerticesListType  outV = pPoints;
+	NormalsListType   outN = pNormals;
+	TexCoordsListType outC = pCoords;
+	std::vector<unsigned char> flags( nV, 0 );
+	for( size_t i = 0; i < nV && i < m_uvPeriodic.size(); ++i ) flags[i] = m_uvPeriodic[i];
+	const std::vector<unsigned char> authoredFlags = flags;
+	IndexTriangleListType outT;
+
+	// A new vertex at the barycentric combination (ids[i], w[i]) of up to 3 AUTHORED vertices.
+	auto addVertex = [&]( const unsigned int* ids, const double* w, const int n ) -> unsigned int {
+		Scalar px = 0, py = 0, pz = 0;
+		Vector3 nm( 0, 0, 0 );
+		for( int i = 0; i < n; ++i ) {
+			px += w[i] * pPoints[ids[i]].x; py += w[i] * pPoints[ids[i]].y; pz += w[i] * pPoints[ids[i]].z;
+			nm = nm + pNormals[ids[i]] * w[i];
+		}
+		const Scalar nl = Vector3Ops::Magnitude( nm );
+		if( !( nl > 1e-12 ) ) nm = pNormals[ids[0]]; else nm = nm * ( 1.0 / nl );
+		// chart: per axis, a POLAR corner (placeholder coordinate) is left out and the weights
+		// renormalized; on an axis every remaining corner declares periodic, the corners are
+		// unwrapped (short way round, modulo 1) before the weighted sum.
+		Scalar uv[2] = { 0, 0 };
+		for( int axis = 0; axis < 2; ++axis ) {
+			const unsigned char polarBit = axis == 0 ? kUPolar : kVPolar, perBit = axis == 0 ? kUPeriodic : kVPeriodic;
+			Scalar cs[3]; double ws[3]; bool allPer = true; int m = 0; double wsum = 0;
+			for( int pass = 0; pass < 2 && m == 0; ++pass ) {
+				for( int i = 0; i < n; ++i ) {
+					if( !( w[i] > 0 ) ) continue;
+					if( pass == 0 && ( authoredFlags[ids[i]] & polarBit ) ) continue;
+					cs[m] = axis == 0 ? pCoords[ids[i]].x : pCoords[ids[i]].y; ws[m] = w[i]; wsum += w[i];
+					if( !( authoredFlags[ids[i]] & perBit ) ) allPer = false;
+					++m;
+				}
+			}
+			if( m == 0 ) { cs[0] = axis == 0 ? pCoords[ids[0]].x : pCoords[ids[0]].y; ws[0] = 1; wsum = 1; m = 1; allPer = false; }
+			Scalar val = 0, lo = cs[0];
+			for( int i = 0; i < m; ++i ) {
+				Scalar c = cs[i];
+				if( allPer && i > 0 ) c -= std::floor( c - cs[0] + 0.5 );		// within half a turn of the first
+				lo = std::min( lo, cs[i] );
+				val += ( ws[i] / wsum ) * c;
+			}
+			if( allPer ) val -= std::floor( val - std::floor( lo ) );
+			uv[axis] = val;
+		}
+		unsigned char fl = 0xFF;
+		for( int i = 0; i < n; ++i ) fl &= authoredFlags[ids[i]];
+		fl &= static_cast<unsigned char>( kUPeriodic | kVPeriodic );			// a new vertex is never polar
+		const unsigned int idx = static_cast<unsigned int>( outV.size() );
+		outV.push_back( Point3( px, py, pz ) );
+		outN.push_back( nm );
+		outC.push_back( TexCoord( uv[0], uv[1] ) );
+		flags.push_back( fl );
+		return idx;
+	};
+
+	std::unordered_map<EdgePointKey, unsigned int, EdgePointKeyHash> edgePts;
+	// k-th of n equal divisions along the authored edge X -> Y (shared with every cell on that edge).
+	auto edgePoint = [&]( const unsigned int X, const unsigned int Y, const unsigned int n, const unsigned int k ) -> unsigned int {
+		if( k == 0 ) return X;
+		if( k == n ) return Y;
+		const bool fwd = X < Y;
+		EdgePointKey key; key.a = fwd ? X : Y; key.b = fwd ? Y : X; key.k = fwd ? k : n - k;
+		const auto it = edgePts.find( key );
+		if( it != edgePts.end() ) return it->second;
+		const double f = double( key.k ) / double( n );
+		const unsigned int ids[2] = { key.a, key.b };
+		const double w[2] = { 1.0 - f, f };
+		const unsigned int idx = addVertex( ids, w, 2 );
+		edgePts[key] = idx;
+		return idx;
+	};
+
+	for( size_t qi = 0; qi < g.quads.size(); ++qi ) {
+		const MeshGrid::Quad& q = g.quads[qi];
+		const unsigned int Ms = cnt[q.famS], Mt = cnt[q.famT];
+		std::vector<unsigned int> lat( size_t( Ms + 1 ) * size_t( Mt + 1 ) );
+		for( unsigned int j = 0; j <= Mt; ++j ) {
+			for( unsigned int i = 0; i <= Ms; ++i ) {
+				unsigned int v;
+				if( j == 0 )       v = edgePoint( q.q[0], q.q[1], Ms, i );
+				else if( j == Mt ) v = edgePoint( q.q[3], q.q[2], Ms, i );
+				else if( i == 0 )  v = edgePoint( q.q[0], q.q[3], Mt, j );
+				else if( i == Ms ) v = edgePoint( q.q[1], q.q[2], Mt, j );
+				else {
+					// interior: the point (s,t) of the authored quad, taken on whichever authored
+					// triangle (q0,q1,q2) | (q0,q2,q3) the fold q0-q2 puts it in
+					const double s = double( i ) / double( Ms ), tt = double( j ) / double( Mt );
+					if( s >= tt ) {
+						const unsigned int ids[3] = { q.q[0], q.q[1], q.q[2] }; const double w[3] = { 1.0 - s, s - tt, tt };
+						v = addVertex( ids, w, 3 );
+					} else {
+						const unsigned int ids[3] = { q.q[0], q.q[2], q.q[3] }; const double w[3] = { 1.0 - tt, s, tt - s };
+						v = addVertex( ids, w, 3 );
+					}
+				}
+				lat[ size_t( j ) * ( Ms + 1 ) + i ] = v;
+			}
+		}
+		auto emit = [&]( const unsigned int a, const unsigned int b, const unsigned int c ) { outT.push_back( MakeIndexedTriangleSameIdx( a, b, c ) ); };
+		for( unsigned int j = 0; j < Mt; ++j ) {
+			for( unsigned int i = 0; i < Ms; ++i ) {
+				const unsigned int c00 = lat[ size_t( j ) * ( Ms + 1 ) + i ], c10 = lat[ size_t( j ) * ( Ms + 1 ) + i + 1 ];
+				const unsigned int c11 = lat[ size_t( j + 1 ) * ( Ms + 1 ) + i + 1 ], c01 = lat[ size_t( j + 1 ) * ( Ms + 1 ) + i ];
+				emit( c00, c10, c11 );		// the authored orientation: (q0,q1,q2) and (q0,q2,q3)
+				emit( c00, c11, c01 );
+			}
+		}
+	}
+
+	for( size_t fi = 0; fi < g.fans.size(); ++fi ) {
+		const MeshGrid::Fan& f = g.fans[fi];
+		const unsigned int P = f.t[f.pole], R1 = f.t[( f.pole + 1 ) % 3], R2 = f.t[( f.pole + 2 ) % 3];
+		const unsigned int kB = cnt[f.famSpoke], mc = cnt[f.famRing];
+		// V(s,u): s = 0..kB outward from the pole, u = 0..mc along the ring edge R1 -> R2
+		std::vector<unsigned int> V( size_t( kB + 1 ) * size_t( mc + 1 ), P );
+		for( unsigned int s = 1; s <= kB; ++s ) {
+			for( unsigned int u = 0; u <= mc; ++u ) {
+				unsigned int v;
+				if( s == kB )      v = edgePoint( R1, R2, mc, u );
+				else if( u == 0 )  v = edgePoint( P, R1, kB, s );
+				else if( u == mc ) v = edgePoint( P, R2, kB, s );
+				else {
+					const double sg = double( s ) / double( kB ), uf = double( u ) / double( mc );
+					const unsigned int ids[3] = { P, R1, R2 }; const double w[3] = { 1.0 - sg, sg * ( 1.0 - uf ), sg * uf };
+					v = addVertex( ids, w, 3 );
+				}
+				V[ size_t( s ) * ( mc + 1 ) + u ] = v;
+			}
+		}
+		auto emit = [&]( const unsigned int a, const unsigned int b, const unsigned int c ) { outT.push_back( MakeIndexedTriangleSameIdx( a, b, c ) ); };
+		for( unsigned int u = 0; u < mc; ++u ) emit( P, V[ size_t( 1 ) * ( mc + 1 ) + u ], V[ size_t( 1 ) * ( mc + 1 ) + u + 1 ] );
+		for( unsigned int s = 1; s < kB; ++s ) {
+			for( unsigned int u = 0; u < mc; ++u ) {
+				const unsigned int A = V[ size_t( s ) * ( mc + 1 ) + u ], B = V[ size_t( s ) * ( mc + 1 ) + u + 1 ];
+				const unsigned int C = V[ size_t( s + 1 ) * ( mc + 1 ) + u + 1 ], D = V[ size_t( s + 1 ) * ( mc + 1 ) + u ];
+				emit( A, D, C );
+				emit( A, C, B );
+			}
+		}
+	}
+
+	// authored triangles no cell replaced (end caps, degenerate leftovers) pass through
+	const Point3* pBase = &pPoints[0];
+	for( size_t i = 0; i < ptr_polygons.size(); ++i ) {
+		if( replaced[i] ) continue;
+		const PointerTriangle& src = ptr_polygons[i];
+		outT.push_back( MakeIndexedTriangleSameIdx(
+			static_cast<unsigned int>( src.pVertices[0] - pBase ),
+			static_cast<unsigned int>( src.pVertices[1] - pBase ),
+			static_cast<unsigned int>( src.pVertices[2] - pBase ) ) );
+	}
+
+	tris.swap( outT );
+	vertices.swap( outV );
+	normals.swap( outN );
+	coords.swap( outC );
+	if( pUVFlags ) pUVFlags->swap( flags );
+	return 1;
+}
+
 bool TriangleMeshGeometryIndexed::TessellateToMeshEx(
 	IndexTriangleListType& tris,
 	VerticesListType&      vertices,
@@ -455,7 +704,7 @@ void TriangleMeshGeometryIndexed::InvalidateTopologyProofCaches()
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
     m_uvPeriodic.clear();	// chart bits describe the vertices about to be (re)fed
-    m_rebaker.reset();		// a builder's re-bake recipe describes the mesh it just built, not a re-fed one
+    m_grid.reset();			// a builder's grid structure describes the mesh it just built, not a re-fed one
     smsUncertainNormalOrientation=true;
     m_bProvablyOpenSheet=false;
     m_bZeroVolumeSheet=false;
