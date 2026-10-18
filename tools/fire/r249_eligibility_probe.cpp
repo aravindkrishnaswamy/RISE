@@ -39,6 +39,21 @@ std::vector<bool> Reach(const IgnitionGrid& g,const std::vector<bool>& vertices,
 }
 int main(int argc,char** argv)
 {
+ if(argc==4&&std::string(argv[1])=="--retained-profile"){
+  MethaneRunCheckpoint c;std::string e;
+  if(!LoadMethaneRunCheckpoint(argv[2],c,e)){std::cerr<<e;return 20;}
+  if(c.centerlineStatisticsDurationS<=0.0||c.planeHeatReleaseIntegral.size()!=c.dimensions[2])return 21;
+  std::ofstream output(argv[3]);
+  output<<std::setprecision(17)<<"z,lower_m,upper_m,center_m,statistics_duration_s,integrated_heat_J,mean_heat_W\n";
+  for(size_t z=0;z<c.dimensions[2];++z)
+   output<<z<<','<<z*c.cellWidthM<<','<<(z+1)*c.cellWidthM<<','<<(z+.5)*c.cellWidthM<<','
+    <<c.centerlineStatisticsDurationS<<','<<c.planeHeatReleaseIntegral[z]<<','
+    <<c.planeHeatReleaseIntegral[z]/c.centerlineStatisticsDurationS<<'\n';
+  if(!ClosePublishedStream(output))return 22;
+  std::cout<<std::setprecision(17)<<"accepted_time_s="<<c.simulationTimeS
+   <<"\naccepted_steps="<<c.acceptedSteps<<"\nstatistics_duration_s="<<c.centerlineStatisticsDurationS<<'\n';
+  return 0;
+ }
  if(argc!=3)return 1;
  std::ifstream inputs(argv[1]);std::ofstream profile(argv[2]);
  if(!inputs||!profile)return 2;

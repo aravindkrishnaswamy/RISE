@@ -102,3 +102,14 @@ Eligibility of retained fuel is not a surrogate for those measurements. If dynam
 consumption remains low despite the new eligibility, measure the tier-8
 mixing-time distribution and its realized extent before tuning it. Tier 10
 and McCaffrey follow the tier-8 fuel-balance result.
+
+
+## First dynamic result (2026-10-18)
+
+[r250](FIRE_SMOKE_PARCEL_EDGE_R250.md) stopped at 21.466 s with stage-2
+Picard nonconvergence, short of the target 25.091 s. The accepted statistics
+prefix burns 99.5005% with closing balance and 0.4874% top methane export.
+The retained heat profile puts essentially all heat below 1.5 m; the nominal
+input H99 is 0.783 m versus 0.646 m Heskestad (+21.2%). This supports the
+parcel-edge correction but **does not complete acceptance**. No restart or
+tier-10 run has been made; owner review is next.

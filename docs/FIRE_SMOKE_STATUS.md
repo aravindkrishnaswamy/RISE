@@ -72,7 +72,7 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    change −0.0309 g, balance remainder 3.452 g; sampled top donor export
    3.451 g. This is sampled localization, not an exact historical accepted
    boundary integral. An established-flame mixing/combustion closure correction
-   is proposed; its causal effectiveness remains untested.
+   was proposed; its full-window causal effectiveness is not yet established.
    **Offline eligibility follow-up:** [four-gate comparison](FIRE_SMOKE_TIER8_ELIGIBILITY_R249.md)
    gives mean eligible CH4 (a/b/c/d) 0.0360/0.0771/0.5774/0.5774 g.
    Parcel CFT alone recovers 7.51% of stranded inventory; allowing cold
@@ -80,14 +80,21 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    The [one-cell follow-up](FIRE_SMOKE_TIER8_EDGE_R249.md) selects (e): mean
    eligible mass 0.136754 g, retaining 57.72% of (c) below 1 m while putting
    99.91% of (e) below 1 m. [Revision (e)](FIRE_SMOKE_EXTINCTION_PARCEL_R249.md)
-   is implemented. The tier-8 from-zero acceptance run is active in
+   is implemented. The tier-8 from-zero acceptance run stopped incomplete in
    `r250_tier8_parcel_edge` (started 2026-10-17 12:50 UTC): ≥95% fuel
    consumption with closing balance, near-zero top CH4 export, and plausible
    heat-release height against Heskestad. The read-only early balance over
    5.993–9.974 s gives 2.618534 g burned / 2.625777 g supplied (**99.724%**),
    top export 0.013432 g (0.512%), Δinventory −0.006205 g and residual
    −5.08×10⁻⁸ g. This precedes the statistics window; all final criteria remain
-   pending. Stop for review before tier 10.
+   unavailable for the full window. r250 stopped at 21.466 s (13,555 accepted
+   steps), stage-2 Picard nonconvergence, exit 94. Its 11.000 s statistics
+   prefix burns **99.5005%** with a −6.31×10⁻⁸ g balance residual and top
+   export **0.035365 g (0.4874%)**. The last retained heat integral, through
+   21.441 s, puts 99.9999916% below 1.5 m; nominal-input H99 is **0.783 m**
+   against Heskestad **0.646 m** (+21.2%).
+   [Run/failure report](FIRE_SMOKE_PARCEL_EDGE_R250.md): **not passed,
+   incomplete**. Stop for owner review before a restart or tier 10.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
    incandescence, only blue chemiluminescence. The zero is methane's
@@ -157,7 +164,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
-| `r250_tier8_parcel_edge` | active from-zero tier-8 run of the one-cell parcel-edge gate; fuel/export/heat-height acceptance pending |
+| `r250_tier8_parcel_edge` | incomplete tier-8 parcel-edge run; solver stopped at 21.466 s, accepted-prefix fuel/export/heat-height measurements retained |
 | `r249_tier8_fuel_balance` | read-only r241 retained fuel inventory, sampled boundary localization, and native chemistry-state checks |
 | `r243_nonphysical_diagnostic.v3` | temperature-mapped structure clips, labelled non-physical |
 | `r244_tier6_*`, `r245_*`, `r246_tier6_top_double.v1`, `r246_recovered_top_*`, `r247_transport.v3`, `r247_source_spatial.v2` | tier-6 domain, budget and top-boundary studies: summaries, spectra and previews only; raw frames and snapshots deleted 2026-10-17 |

@@ -73,8 +73,8 @@ The sibling `r250_tier8_parcel_edge.log` contains progress and the existing
 no memory stop. The prior tier-8 window took 21.8 hours; this run's elapsed
 cost remains to be measured.
 
-Status: from-zero run active; all three physical acceptance measurements pending.
-No tier-10 run has been started.
+Status: **run stopped incomplete at 21.466 s**, exit 94; see the measured
+accepted-prefix results below. No tier-10 run has been started.
 
 
 ## Early retained-checkpoint trend (not final acceptance)
@@ -112,4 +112,74 @@ Interstep inventory change is zero.
 Values above 100% draw from stored inventory. These early results support the
 correction but do not replace any of the three full statistics-window criteria.
 [Small data and endpoint provenance](data/fire_r250/early_fuel_balance.json)
-and the five endpoint ledgers are retained in git. The simulation continues.
+and the five endpoint ledgers are retained in git. At that point the simulation
+was left running; its subsequent stop is recorded below.
+
+
+## Run outcome — incomplete, stop for review
+
+The from-zero run accepted **13,555 steps to 21.466040127 s**, then exited 94.
+The target was 25.091040127 s. Only **11.000 of 14.625 statistics seconds
+(75.214%)** were completed. The stop receipt records a projected-Heun resident
+Picard **stage-2 nonconvergence**, momentum residual 0.000507 against target
+0.000056 (transport residual 0.000023). This was a solver stop, not the RSS
+ceiling. No restart, timestep adjustment or solver change was made afterward.
+
+The failure followed a 3.4156 µs accepted step landing on the 21.466040127 s
+frame boundary. That is a diagnostic observation, not a demonstrated cause.
+The complete log, checkpoints and original stopped output remain in the same
+run directory. There is no successful capstone summary or final checkpoint.
+
+### All three requested measurements
+
+These are **accepted-prefix observations, not full-window acceptance**.
+Fuel/export use every accepted statistics increment through 21.466040127 s.
+Heat uses the last retained checkpoint, step 13,539 at 21.441342722 s, covering
+10.975302595 statistics seconds. Its matching ledger is also retained so the
+slightly different endpoints are explicit.
+
+| Requirement | Measured accepted prefix | Full-window verdict |
+|---|---|---|
+| ≥95% consumed and balance closes | **99.500462%** burned; residual −6.31×10⁻⁸ g (−8.70×10⁻⁹ of supply) | Incomplete; prefix meets the fuel threshold |
+| Near-zero top methane export | **0.035365277 g**, **0.487387%** of supply | Incomplete; approximately half a percent in the prefix |
+| Most heat below ~1.5 m, height near Heskestad | **99.9999916%** below 1.5 m; nominal-input H99 **0.782710 m** vs **0.645642 m**, **21.23% high** | Incomplete; vertical localization is good, height remains above prediction |
+
+The fuel balance in grams is:
+
+`7.256096185 supplied = 7.219849259 burned + 0.000859449 inventory gain + 0.035387414 outward export + 0.000000063 residual correction`.
+
+Inventory starts at 0.071400516 g and ends at 0.072259964 g. All boundary inflows
+are included; prescribed burner supply alone is 7.256028692 g. Top inward
+methane is 0.000026862 g and interstep inventory change is zero. The signed
+residual definition remains `Δinventory + burned − supplied + outward`.
+
+The matched retained-checkpoint prefix burns 99.512739% of supply. Its mean
+HRR is **32.839510 kW**; **99.918120%** of heat lies below 1 m. The separate
+99%-of-realized-heat quantile is **0.694606 m**, but the preregistered
+99%-of-nominal-input proxy, 0.782710 m, is the acceptance comparison. No height
+tolerance is invented after seeing the result. Both quantities are heat-profile
+proxies, distinct from the experimental visual intermittency definition.
+
+
+| Height band | Mean heat, kW | Fraction of realized heat |
+|---|---:|---:|
+| 0–0.25 m | 25.902242179 | 78.87524043% |
+| 0.25–0.5 m | 5.603997704 | 17.06480324% |
+| 0.5–1 m | 1.306380660 | 3.97807603% |
+| 1–1.5 m | 0.026886333 | 0.08187191% |
+| 1.5–3.24287 m | 0.000002757 | 0.00000840% |
+
+The existing native probe's `--retained-profile` mode reads the checkpoint's
+stored plane integral and duration; it does not recompute chemistry, step the
+solver, or modify the checkpoint or accepted ledgers. The read-only extraction was compiled only after
+the simulation had exited, with no compiler warnings. Its output goes to a
+separate CSV. Source, endpoint ledgers, profile, hashes and failure excerpt are
+in [the small evidence set](data/fire_r250/incomplete_acceptance.json).
+Independent review recomputed both balances, height quantiles, profile totals
+and provenance hashes with no P1/P2 findings. The complete-window reducer deliberately remains strict and cannot report this
+failed run as a completed acceptance window.
+
+**Overall: not passed because the run is incomplete. Stop for owner review
+before any restart or tier 10.** The next issue to investigate is this solver
+nonconvergence, including the frame-boundary step history; the fuel correction
+has encouraging prefix measurements but no completed dynamic acceptance.
