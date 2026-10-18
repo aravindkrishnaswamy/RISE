@@ -1883,10 +1883,10 @@ namespace
 
 	const RISECBOR64::Bytes& ProductionBurnerPolicyBytes()
 	{
-		static const std::string preimage="rise.fire.production.burner.v4:"
+		static const std::string preimage="rise.fire.production.burner.v5:"
 			"wall-bed;prescribed-shared-fct-inlet;chemistry-at-Q0;no-volumetric-fuel;"
 			"accepted-represented-flux-ledger;canonical-source-temperature;segment-anchored-physical-enthalpy;"
-			"parcel-cft;seeded-one-cell-warm-edge-v1";
+			"parcel-cft;seeded-one-cell-warm-edge-v1;balanced-output-event-pair-v1";
 		static const RISECBOR64::Bytes bytes(preimage.begin(),preimage.end());
 		return bytes;
 	}
@@ -2620,14 +2620,44 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		const double eventTimeS,double& timeStepS)
 	{
 		if(!std::isfinite(simulationTimeS)||!std::isfinite(eventTimeS)||
-			!std::isfinite(timeStepS)||!(timeStepS>0.0)||!(simulationTimeS<eventTimeS)||
-			!(eventTimeS-simulationTimeS<timeStepS))return false;
+			!std::isfinite(timeStepS)||!(timeStepS>0.0)||!(simulationTimeS<eventTimeS))return false;
 		const double remaining=eventTimeS-simulationTimeS;
+		// If one full step would leave a sliver, divide the remaining interval
+		// evenly over two steps. Output alignment must not force a microscopic
+		// step (and hence a microscopic growth-limited successor) into the EOS solve.
+		if(remaining>timeStepS&&remaining<2.0*timeStepS){
+			float half=static_cast<float>(0.5*remaining);
+			if(static_cast<double>(half)>0.5*remaining)half=std::nextafter(half,0.0f);
+			if(!(half>0.0f))return false;
+			timeStepS=static_cast<double>(half);return true;
+		}
+		if(!(remaining<timeStepS))return false;
 		float represented=static_cast<float>(remaining);
 		if(static_cast<double>(represented)<remaining)represented=std::nextafter(represented,
 			std::numeric_limits<float>::infinity());
 		if(!std::isfinite(represented)||!(represented>0.0f))return false;
 		timeStepS=static_cast<double>(represented);return true;
+	}
+
+	bool ProductionEventStepRegression()
+	{
+		const double cap=0.0016462659696117043;
+		const double beginning=21.4643904455761,event=21.466040127156969;
+		double first=cap;
+		if(!LimitBinary32ProductionStepToEvent(beginning,event,first)||
+			first<0.5*cap||first>cap)return false;
+		double second=1.1*first;
+		if(!LimitBinary32ProductionStepToEvent(beginning+first,event,second)||
+			beginning+first+second<event||second>1.1*first)return false;
+		for(const double step:{1.0e-6,cap,0.01})for(const double ratio:{1.000001,1.1,1.5,1.999999}){
+			const double deadline=ratio*step;double part=step;
+			if(!LimitBinary32ProductionStepToEvent(0.0,deadline,part)||part<0.5*step||part>step)return false;
+			double tail=1.1*part;
+			if(!LimitBinary32ProductionStepToEvent(part,deadline,tail)||part+tail<deadline||
+				tail>1.1*part)return false;
+		}
+		double unaffected=cap;
+		return !LimitBinary32ProductionStepToEvent(0.0,1.0,unaffected)&&unaffected==cap;
 	}
 
 	bool ProductionSourceBoundaryContactCell(const std::size_t cell,const std::size_t nx,
@@ -5342,17 +5372,20 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		if(!oracleComposition&&persistence.maximumOracleCompositionStepS!=0.0){
 			values.structuredError="oracle_composition_step_without_scope";return values;
 		}
-		// This production entry is from-zero until an operator-bound checkpoint
-		// authority exists. Same build/case/precision is not transport lineage.
-		// The separately sealed r78 continuation retains its own admission path.
-		if(persistence.portedProductionTransport&&persistence.resume){
+		// A bounded isolated diagnostic may reproduce a retained production state;
+		// it grants no empirical continuation or checkpoint migration authority.
+		const bool retainedProductionProbe=persistence.portedProductionTransport&&persistence.resume&&
+			persistence.isolatedEquivalenceProbe&&persistence.stopAfterAdditionalAcceptedSteps>=8u&&
+			persistence.stopAfterAdditionalAcceptedSteps<=64u&&
+			persistence.finalCheckpointPath.empty()&&persistence.retainedCheckpointDirectory.empty();
+		if(persistence.portedProductionTransport&&persistence.resume&&!retainedProductionProbe){
 			values.structuredError="production_transport_resume_requires_operator_lineage";return values;
 		}
 		if(persistence.portedProductionTransport&&(!persistence.productionMetal||
 			persistence.compatibleMomentumDiagnostic||persistence.singleStageFCTDiagnostic||
 			persistence.sealedLegacyMomentumReplay||persistence.sealedProjectedHeunReplay||
 			persistence.sealedProjectedHeunContinuation||persistence.projectedHeunCostDiagnostic||
-			persistence.projectedHeunEOSDiagnostic||persistence.isolatedEquivalenceProbe||
+			persistence.projectedHeunEOSDiagnostic||(persistence.isolatedEquivalenceProbe&&!retainedProductionProbe)||
 			persistence.tier10RetainedContinuation)){
 			values.structuredError="production_transport_owner_scope_conflict";return values;
 		}
@@ -5724,7 +5757,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 				values.structuredError="oracle_composition_checkpoint_identity_mismatch";return values;
 			}
 			const bool exactDiagnosticCaseReplay=persistence.isolatedEquivalenceProbe&&
-				persistence.stopAfterAdditionalAcceptedSteps==8u&&
+				(persistence.stopAfterAdditionalAcceptedSteps==8u||retainedProductionProbe)&&
 				persistence.isolatedExpectedCheckpointBuildId==checkpoint.producerBuildId&&
 				!loadedCheckpointDigest.empty()&&
 				persistence.isolatedExpectedCheckpointDigest==loadedCheckpointDigest;
@@ -6441,6 +6474,9 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 									production.acceptedShape=request.force.shape;
 								}
 							}else if(persistence.UsesProjectedHeunOwner()){
+								if(std::getenv("RISE_FIRE_PICARD_TRACE"))std::fprintf(stderr,
+									"PICARD_ATTEMPT step=%u beginning=%.17g reduction=%u dt=%.17g\n",
+									acceptedSteps,simulationTimeS,reduction,trialStep);
 								attemptComputed=packetOK&&BuildProductionProjectedHeunOwnerRequest(request,
 									projectedHeunSource,caseRecord.envelopeBytes,
 									static_cast<float>(config.projectionTolerancePerS),
@@ -22913,6 +22949,8 @@ static int RunProductionPayloadMerkleFixture(bool metal)
 
 int main(int argc,char** argv)
 {
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-event-step-test")==0)
+		return ProductionEventStepRegression()?0:1;
 	if(argc==2&&std::strcmp(argv[1],"--fire-r248-caller-ingress-fixture")==0)
 		return RunR248CallerIngressFixture();
 	if(argc==2&&std::strcmp(argv[1],"--fire-r245-budget-reducer-gate")==0){
@@ -23635,6 +23673,7 @@ int main(int argc,char** argv)
 	}
 	{
 		const double beginning=2.1054894166300073;
+		Check(ProductionEventStepRegression(),"output event alignment uses two balanced steps instead of an EOS sliver");
 		const double pilotEnd=2.1063728557800188;
 		double representedStep=0.0016462659696117043;
 		Check(LimitBinary32ProductionStepToEvent(beginning,pilotEnd,representedStep)&&

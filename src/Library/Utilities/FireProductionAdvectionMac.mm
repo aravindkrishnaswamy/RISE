@@ -9610,6 +9610,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 					&lastResidualComponents))return false;
 				lastResidual=currentResidual;lastClassStable=classStable;
 				residualHistory.push_back(currentResidual);
+
+				if(std::getenv("RISE_FIRE_PICARD_TRACE"))std::fprintf(stderr,
+					"PICARD dt=%.17g stage=%u iteration=%u residual=%.9g target_change=%.9g momentum_change=%.9g transport_change=%.9g tolerance=%.9g class_stable=%u frozen_cycle=%u\n",
+					static_cast<double>(ownerMetadata_.timeStepS),stage,iteration,static_cast<double>(currentResidual),
+					static_cast<double>(lastResidualComponents[0]),static_cast<double>(lastResidualComponents[1]),
+					static_cast<double>(lastResidualComponents[2]),static_cast<double>(request_.projectionTolerancePerS),
+					classStable?1u:0u,frozenCycle?1u:0u);
 				if(havePrior&&classStable&&currentResidual<=request_.projectionTolerancePerS){
 					profileIteration_=iteration|UINT32_C(0x80000000);
 					ProfileScope terminalProfile(*this,"TerminalVerification");
@@ -9689,9 +9696,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			}
 			if(error){*error="projected-Heun resident Picard stage did not converge: stage="+
 				std::to_string(stage)+" residual="+std::to_string(lastResidual)+
-				" target="+std::to_string(lastResidualComponents[0])+
-				" momentum="+std::to_string(lastResidualComponents[1])+
-				" transport="+std::to_string(lastResidualComponents[2])+
+				" tolerance="+std::to_string(request_.projectionTolerancePerS)+
+				" target_change="+std::to_string(lastResidualComponents[0])+
+				" momentum_change="+std::to_string(lastResidualComponents[1])+
+				" transport_change="+std::to_string(lastResidualComponents[2])+
 				" class_stable="+std::to_string(lastClassStable?1u:0u)+
 				" frozen_cycle="+std::to_string(frozenCycle?1u:0u)+" history=";
 				for(const float residualValue:residualHistory)*error+=

@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-18, during the r249 one-cell parcel-edge correction. This page
+Last updated 2026-10-18, during the r251 Picard event-step correction. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -54,7 +54,12 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
 
 ## Open problems, in priority order
 
-1. **Incomplete combustion.** Only 58–64% of the supplied fuel burns inside
+1. **Picard convergence after the combustion correction.** The owner accepted
+   r250's partial-window combustion result on 2026-10-18: 99.5% burned,
+   about 0.5% top export, balance closing and heat below 1.5 m. The current
+   task is the stage-2 stop and a full tier-8 rerun, with an approximately
+   one-day diagnosis/fix time box. See [r251](FIRE_SMOKE_PICARD_EVENT_R251.md).
+   Historical r237/r241 baselines: only 58–64% of supplied fuel burned inside
    the statistics window. This is the leading explanation for the low
    McCaffrey centerline, though r237 did not formally assign the cause.
    r239 found that production injected fuel into bottom cells while treating
@@ -94,7 +99,11 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    21.441 s, puts 99.9999916% below 1.5 m; nominal-input H99 is **0.783 m**
    against Heskestad **0.646 m** (+21.2%).
    [Run/failure report](FIRE_SMOKE_PARCEL_EDGE_R250.md): **not passed,
-   incomplete**. Stop for owner review before a restart or tier 10.
+   incomplete** as a full run; the owner has since accepted the partial-window
+   combustion result and authorized the convergence fix/full tier-8 rerun.
+   The FDS Validation Guide definition gives **0.690 m** mean flame height
+   (+6.9% vs Heskestad), replacing the nominal-input H99 for that comparison.
+   Stop for review before tier 10.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
    incandescence, only blue chemiluminescence. The zero is methane's

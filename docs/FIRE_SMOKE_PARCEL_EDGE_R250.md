@@ -121,8 +121,10 @@ was left running; its subsequent stop is recorded below.
 The from-zero run accepted **13,555 steps to 21.466040127 s**, then exited 94.
 The target was 25.091040127 s. Only **11.000 of 14.625 statistics seconds
 (75.214%)** were completed. The stop receipt records a projected-Heun resident
-Picard **stage-2 nonconvergence**, momentum residual 0.000507 against target
-0.000056 (transport residual 0.000023). This was a solver stop, not the RSS
+Picard **stage-2 nonconvergence**, momentum residual 0.000507. The log field
+`target=0.000056` is the divergence-target **change**, not the convergence
+tolerance (transport change 0.000023). r251 measured the actual Picard tolerance
+as 0.000477736; the earlier report misinterpreted that field. This was a solver stop, not the RSS
 ceiling. No restart, timestep adjustment or solver change was made afterward.
 
 The failure followed a 3.4156 µs accepted step landing on the 21.466040127 s
@@ -183,3 +185,20 @@ failed run as a completed acceptance window.
 before any restart or tier 10.** The next issue to investigate is this solver
 nonconvergence, including the frame-boundary step history; the fuel correction
 has encouraging prefix measurements but no completed dynamic acceptance.
+
+
+## Owner disposition and corrected flame-height comparison
+
+On 2026-10-18, the owner accepted r250's **combustion result on the partial
+window**: 99.5% burned, about 0.5% top methane export, closing balance and heat
+below 1.5 m. The stop remains a convergence defect, investigated in
+[r251](FIRE_SMOKE_PICARD_EVENT_R251.md).
+
+The FDS Validation Guide's Heskestad comparison uses a time average of the
+instantaneous height enclosing 99% of the instantaneous total heat release.
+Reprocessing all 177 retained 16 Hz frames gives **0.690166 m**, versus
+**0.782710 m** for the previously reported nominal-input H99 of the accepted
+mean profile, and Heskestad **0.645642 m**. The FDS definition is 6.90% above
+the correlation. It is a heat-release surrogate for the experimental 50%
+luminous-flame intermittency definition. See r251 for the exact tagged FDS
+sources, sampling limits and matched-frame comparison.

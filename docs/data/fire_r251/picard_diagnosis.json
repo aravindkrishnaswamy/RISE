@@ -1,0 +1,33 @@
+{
+  "scope": "bounded_retained_state_diagnostic_not_empirical_continuation",
+  "checkpoint": "/Volumes/SSD/RISE/fire_production_calibration/r250_tier8_parcel_edge/checkpoint_history/step_0000013539.checkpoint",
+  "beginning_s": 21.441342722001536,
+  "beginning_step": 13539,
+  "baseline_failed_s": 21.466040127157157,
+  "baseline_failed_step": 13555,
+  "classification": "b: small-step residual stagnation near unchanged tolerance; artificial output-event remainder is the identified trigger",
+  "picard_tolerance": 0.000477735593,
+  "original_retry_count": 0,
+  "diagnostic_dt_s": [
+    3.757172635232564e-06,
+    1.8785837028190144e-06,
+    9.392918514095072e-07
+  ],
+  "diagnostic_final_residual": [
+    0.00050655863,
+    0.000502662035,
+    0.000502662035
+  ],
+  "balanced_accepted_steps": 64,
+  "balanced_end_s": 21.541635783581114,
+  "balanced_end_step": 13603,
+  "fix": "Split a remaining output-event interval of between one and two admissible steps into two balanced steps; round first downward, final existing endpoint step outward. No tolerance change.",
+  "red_event_test_exit": 1,
+  "green_event_test_exit": 0,
+  "artifacts": {
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/balanced_iterations.csv": "255f7c425ba46b7c6bf0d794089c73828163ea7b4baf7bc19a09adad4e81a411",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/diagnostic_iterations.csv": "16cbec8384e9f3f91abe3dc87683e3d921da1a2710ca57bcd1ecc5abe4883ffc",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/half_iterations.csv": "60d895c18d89171e4a4ada55e89b1328f54e5b7263ea0984c36d6ad5bc414679",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/quarter_iterations.csv": "5ded613d55cb0a291f13951f5b44a64ec7845ef740b5c493c6213570fd8c205c"
+  }
+}

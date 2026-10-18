@@ -9,12 +9,14 @@
   "failure": {
     "stage": 2,
     "residual": 0.000507,
-    "target": 5.6e-05,
     "momentum": 0.000507,
     "transport": 2.3e-05,
     "class_stable": true,
     "frozen_cycle": false,
-    "last_accepted_dt_s": 3.4156114452e-06
+    "last_accepted_dt_s": 3.4156114452e-06,
+    "target_component_change_per_s": 5.6e-05,
+    "picard_tolerance_per_s": 0.000477735593,
+    "correction": "The prior report mistook target-field change for convergence tolerance; corrected during r251 diagnosis."
   },
   "latest_accepted_balance": {
     "accepted_step": 13555,
@@ -93,5 +95,6 @@
     "/Volumes/SSD/RISE/fire_production_calibration/r250_profile_build.sh": "0bf82c3361db02e2d6ad47f24c3219b940eae3137b0b6563cc879992049af1af",
     "/Volumes/SSD/RISE/fire_production_calibration/r250_profile_build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "/Volumes/SSD/RISE/fire_production_calibration/r249_tier8_fuel_balance/native_r250_profile_probe": "620c738adcf8fdb90e4fe37a4134bb5d35a7f0391e39116dc03d922bf75643ed"
-  }
+  },
+  "owner_disposition_2026_10_18": "Partial-window combustion result accepted; numerical stop remains open."
 }
