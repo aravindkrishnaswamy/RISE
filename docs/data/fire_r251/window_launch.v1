@@ -1,0 +1,16 @@
+accepted_stage_budget r245-v1
+schema rise.fire.full-window-launch.v1
+producer_build_id 40598e4768fcfadfa663779b38b5f9df07531a67092892e89425184ce4ff33a1
+producer_executable_sha256 d1cebdd779a5d18a9e5b92ec162ddfcfc51aaae1a8963104bcdc633fb7bab033
+case_record_id 67cc1791c825804074981412c74a76e15eded57e47f970cb96600731ff4b26e7
+resolution_tier 8
+from_zero true
+statistics_start_s 10.466040127156969
+statistics_duration_s 14.625
+target_time_s 25.091040127156969
+frame_cadence_s 0.0625
+checkpoint_cadence_wall_s 300
+authored_case_frames_per_s 16
+crossing_stop_enabled false
+empirical_claim_tier 10
+exclusive_host_rule no_builds_no_qualification_no_oracle_no_render

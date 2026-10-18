@@ -138,4 +138,25 @@ while Xcode was building; its one uncontended repeat passes (46.0 ms device,
 The pure event regression was also compiled against the old helper (exit 1)
 and corrected helper (exit 0).
 
-Status: bounded diagnosis and prelaunch checks passed; independent review next.
+Both independent reviewers found no remaining P1/P2 issues. Review tightened
+one diagnostic admission condition: a positive time target cannot defeat the
+stated 64-step bound. Recorded probes already used target zero.
+
+## Launch
+
+Started **2026-10-18 14:05 UTC (07:05 PDT)** from zero, code commit
+`41686d325`, using the command above. The existing launch receipt matches the
+finished executable (SHA-256
+`d1cebdd779a5d18a9e5b92ec162ddfcfc51aaae1a8963104bcdc633fb7bab033`),
+and records `from_zero true`. A startup a minute earlier was interrupted
+because it overlapped the final relink; its receipt/log were preserved in
+`r251_picard_diagnostic/aborted_startup.tar.gz` and `aborted_startup.log`.
+The same output directory was cleared and reused before the valid launch.
+No results from that aborted startup are used.
+
+The diagnosis, bounded confirmation, clean builds, tests and review took about
+30 minutes, within the requested one-day work time box. The full window is the
+remaining experiment. No builds, qualification, oracle or renders run alongside it.
+
+Status: **full from-zero tier-8 run active; results pending.** Stop for owner
+review before tier 10.

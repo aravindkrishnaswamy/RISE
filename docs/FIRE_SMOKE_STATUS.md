@@ -57,8 +57,12 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
 1. **Picard convergence after the combustion correction.** The owner accepted
    r250's partial-window combustion result on 2026-10-18: 99.5% burned,
    about 0.5% top export, balance closing and heat below 1.5 m. The current
-   task is the stage-2 stop and a full tier-8 rerun, with an approximately
-   one-day diagnosis/fix time box. See [r251](FIRE_SMOKE_PICARD_EVENT_R251.md).
+   task is the full tier-8 rerun after the stage-2 correction. [r251](FIRE_SMOKE_PICARD_EVENT_R251.md)
+   classifies the stop as small-step stagnation near unchanged tolerance, triggered
+   by an output-event sliver. Two balanced event steps remove that trigger;
+   a retained probe accepted 64 steps past it. The full from-zero run is active
+   in `r251_tier8_full_window`, started 2026-10-18 14:05 UTC. Diagnosis/build/
+   review took about 30 minutes, within the one-day work time box.
    Historical r237/r241 baselines: only 58–64% of supplied fuel burned inside
    the statistics window. This is the leading explanation for the low
    McCaffrey centerline, though r237 did not formally assign the cause.
@@ -173,6 +177,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
+| `r251_tier8_full_window` | active from-zero tier-8 run with balanced output-event steps; full fuel/export/height, HRR and spectrum results pending |
 | `r250_tier8_parcel_edge` | incomplete tier-8 parcel-edge run; solver stopped at 21.466 s, accepted-prefix fuel/export/heat-height measurements retained |
 | `r249_tier8_fuel_balance` | read-only r241 retained fuel inventory, sampled boundary localization, and native chemistry-state checks |
 | `r243_nonphysical_diagnostic.v3` | temperature-mapped structure clips, labelled non-physical |
