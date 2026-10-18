@@ -5375,7 +5375,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		// A bounded isolated diagnostic may reproduce a retained production state;
 		// it grants no empirical continuation or checkpoint migration authority.
 		const bool retainedProductionProbe=persistence.portedProductionTransport&&persistence.resume&&
-			persistence.isolatedEquivalenceProbe&&persistence.stopAfterAdditionalAcceptedSteps>=8u&&
+			persistence.isolatedEquivalenceProbe&&targetTimeS==0.0&&persistence.stopAfterAdditionalAcceptedSteps>=8u&&
 			persistence.stopAfterAdditionalAcceptedSteps<=64u&&
 			persistence.finalCheckpointPath.empty()&&persistence.retainedCheckpointDirectory.empty();
 		if(persistence.portedProductionTransport&&persistence.resume&&!retainedProductionProbe){
