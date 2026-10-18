@@ -290,3 +290,37 @@ curve (L1–L3 working = flatter curve, lower total), skill re-reads after
 Compose, zoom calls and whether an edit followed one, finish-element
 close-up coverage, and the usual adoption/orphan columns.  Delivery is
 not compliance — census the document and the results, never the note.
+
+### 4.1 First live measurement (2026-10-18, apothecary, gemini-4-argon)
+
+Trajectory `20261018T001803Z-fd7879b9`, measured with
+`tools/trajectory_census.py`.  The scene came out larger than the
+pre-change baseline (`71dd70e7`): 427 chunks / 97 KB vs 321 / 72 KB, 50
+turns vs 40, so raw totals do not compare (7.66M input tokens vs 6.47M).
+
+- **L2/L3 fired and held.**  11 `element_finished_retirement` and 1
+  `compose_skill_retirement` edits.  Against the same run without them
+  (saved bytes × the turns after each edit), they saved ~1.7M tokens,
+  ~18% of the counterfactual: compose retirement ~0.86M (per-turn input
+  drops 196K → 145K at the transition), element retirement ~0.83M.  L1's
+  source-side savings come on top and are not counted here.  The model did
+  not re-read a skill after Compose.
+- **Remaining carriers:** `read_document` (305 KB over 5 reads; ~25K
+  tokens live per turn), `remove_chunks` results (42 KB: a 62-chunk
+  removal returns 62 full per-chunk entries, and L1 does not cover this
+  verb), `finish_element` chunk lists (47 KB), `place_element` (34 KB).
+  Next cheap lever: extend L1's compaction to those three verbs.
+- **V1 works:** the cat close-up fills its panel (was ~25% width).  It
+  made the cat's blob-like form visible and the model reworked it
+  (removed the spine skeleton).
+- **V2 hint fired, zoom unused.**  Both full renders named brass_balance,
+  mortar and articulated_lamp at 0.6–0.7% of frame.  The model never
+  called `zoom`; it scaled up all five bench elements by 8–25% and
+  reframed the camera, which improved the composition.  The cat's fur was
+  never inspected up close.  Collect a second run before retuning the
+  hint.
+- **Churn is not caused by L2.**  9 `remove_chunks` / 3 `reopen_element`:
+  a typo'd chunk name, a stale head version, and two Compose-phase
+  refusals to remove geometry that the model resolved by reopening the
+  element, as the refusal message directs (the retired stubs no longer
+  state phase rules, by design).
