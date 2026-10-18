@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-17, during the r249 one-cell parcel-edge correction. This page
+Last updated 2026-10-18, during the r249 one-cell parcel-edge correction. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -83,7 +83,11 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    is implemented. The tier-8 from-zero acceptance run is active in
    `r250_tier8_parcel_edge` (started 2026-10-17 12:50 UTC): ≥95% fuel
    consumption with closing balance, near-zero top CH4 export, and plausible
-   heat-release height against Heskestad. Stop for review before tier 10.
+   heat-release height against Heskestad. The read-only early balance over
+   5.993–9.974 s gives 2.618534 g burned / 2.625777 g supplied (**99.724%**),
+   top export 0.013432 g (0.512%), Δinventory −0.006205 g and residual
+   −5.08×10⁻⁸ g. This precedes the statistics window; all final criteria remain
+   pending. Stop for review before tier 10.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
    incandescence, only blue chemiluminescence. The zero is methane's

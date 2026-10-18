@@ -75,3 +75,41 @@ cost remains to be measured.
 
 Status: from-zero run active; all three physical acceptance measurements pending.
 No tier-10 run has been started.
+
+
+## Early retained-checkpoint trend (not final acceptance)
+
+At the owner's request, a read-only reduction uses the retained checkpoint
+endpoints nearest 6 and 10 s: steps 3730 and 6148, at 5.993228656–9.973831141 s.
+The matching immutable accepted-stage ledgers supply both inventory and exact
+accepted R1 boundary/source totals. No solver replay, build, restart or run
+mutation was performed. This precedes the 10.466040127 s statistics boundary.
+
+| Methane quantity | Grams |
+|---|---:|
+| Supplied (all inward boundaries) | 2.625777421 |
+| Prescribed burner supply | 2.625760531 |
+| Burned | 2.618533724 |
+| Initial inventory | 0.073505712 |
+| Final inventory | 0.067300743 |
+| Inventory change | −0.006204968 |
+| Top outward export | 0.013431603 |
+| All outward export | 0.013448615 |
+| Balance residual, Δinventory + burned − supplied + exported | −0.000000051 |
+
+**Burn fraction: 99.724131%.** Top outward export is **0.511529%** of supply.
+The residual is −1.94×10⁻⁸ of supply. Top inward methane is 0.000002257 g;
+all inlet directions are retained in the balance rather than silently discarded.
+Interstep inventory change is zero.
+
+| Retained interval, s | Burned / supplied |
+|---|---:|
+| 5.993–6.981 | 100.561% |
+| 6.981–8.005 | 98.544% |
+| 8.005–9.019 | 100.019% |
+| 9.019–9.974 | 99.811% |
+
+Values above 100% draw from stored inventory. These early results support the
+correction but do not replace any of the three full statistics-window criteria.
+[Small data and endpoint provenance](data/fire_r250/early_fuel_balance.json)
+and the five endpoint ledgers are retained in git. The simulation continues.
