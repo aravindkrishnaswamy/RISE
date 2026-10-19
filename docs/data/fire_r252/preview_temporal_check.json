@@ -1,0 +1,20 @@
+{
+  "scope": "denoised_PNG_frame0_vs117_RGB8_display_values",
+  "size": [
+    128,
+    192
+  ],
+  "mean_absolute_difference_per_channel_0_to255": [
+    0.3782958984375,
+    3.5934651692708335,
+    6.1573486328125
+  ],
+  "maximum_absolute_difference_per_channel_0_to255": [
+    29,
+    103,
+    104
+  ],
+  "fraction_pixels_any_channel_difference_at_least_8": 0.2254638671875,
+  "source_time_mapping": "simulation_time=10.466040127212182+scene_time; alpha=1, scene_origin=0, cadence=0.0625s",
+  "interpretation": "Observed changing plume shape plus pixel differences; statistic is reported, not a new pass threshold."
+}

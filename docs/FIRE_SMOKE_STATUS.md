@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-19, during the r251 Picard event-step correction. This page
+Last updated 2026-10-19, after the r252 centerline comparison and soot design draft. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -78,24 +78,50 @@ Realized HRR **32.837 kW (99.51% of 33 kW)**, radiative fraction **0.19889**.
 The averaged subwindow puffing peak is **3.003 Hz** (+9.64% vs 2.739 Hz), but
 the full-window peak is **4.504 Hz** and individual windows differ. Do not
 claim a single stationary mode. Diagnosis/fix/review took about half an hour;
-the full simulation took 30.14 h. **Stopped for owner review before tier 10.**
+the full simulation took 30.14 h. The owner accepted r251 combustion, realized
+HRR, flame height and averaged puffing.
+
+[r252 centerline extraction](FIRE_SMOKE_CENTERLINE_R252.md), using exactly the
+r237 station-selection rule and 33 kW reference, gives maximum temperature-rise
+error **+87.29%** and vertical-velocity error **+25.01%**, against r237’s
+−45.05% / −28.14%. Both exceed the owner’s 15% condition. **Do not launch
+tier 10.** Complete station profiles and extraction hashes are committed with
+the report; no new simulation was run for this comparison.
 
 ## Open problems, in priority order
 
-1. **The fire renders blue.** The methane record's gross soot yield is 0,
+1. **Upper-plume centerline profiles fail the tier-10 gate.** r251 is too
+   hot and too fast above the flame relative to McCaffrey at 33 kW. See
+   [the profiles](FIRE_SMOKE_CENTERLINE_R252.md); the cause is not yet diagnosed.
+   Tier 10 remains unlaunched under the owner’s conditional instruction.
+2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
    incandescence, only blue chemiluminescence. The zero is methane's
    escaping smoke yield; real methane flames at this scale form roughly
    0.1–1 ppm soot in the flame and burn it out. The fix is a soot
    formation–oxidation closure calibrated to published in-flame data.
+   [r252 evidence](FIRE_SMOKE_METHANE_SOOT_DATA_R252.md) records a near-scale
+   37 cm/34.5 kW measured axial soot mass-fraction profile (peak 0.0008 kg/kg
+   at 0.14 m) and a smaller-flame direct LII volume-fraction profile (local
+   ensemble mean peak about 0.5 ppm). Mass and volume fractions are kept
+   distinct. The [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md)
+   retains existing oxidation and proposes fitting gross formation to in-flame
+   data; the
+   coefficient remains unfitted pending owner review and calibration.
+   **No soot implementation or simulation has been made.** The
+   [r251 preview](FIRE_SMOKE_PREVIEW_R252.md) uses the r242 spectral scene at
+   the owner-selected 128×192, denoising enabled; all 235 frames and the
+   16 fps MOV completed and passed full decode verification.
    Radiation is budget-partitioned at χᵣ = 0.20, so this changes the
-   appearance, not the energy balance.
-2. **Puffing has substantial window dependence.** r251's three-window mean
+   spectrum and spatial radiation allocation within that budget. The proposed
+   chemistry must reserve carbon chemical energy at formation and release it
+   on oxidation; unchanged χᵣ does not imply unchanged solver dynamics.
+3. **Puffing has substantial window dependence.** r251's three-window mean
    peaks at 3.003 Hz, within 20% of the 2.739 Hz burner law, while individual
    overlapping windows peak at 2.866/4.504/3.003 Hz and the full periodogram
    peaks at 4.504 Hz. Review the native spectrum before assigning one mode.
    Do not reopen the tier-6 domain study: its burner resolution is inadequate.
-3. **Cost.** Tier 10 takes about 39 hours. Faster steps would make the
+4. **Cost.** Tier 10 takes about 39 hours. Faster steps would make the
    iteration loop practical, but cost work comes after the outstanding physics items.
 
 ## Known failing tests (pre-existing)
@@ -149,6 +175,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
+| `r252_r251_centerline`, `r252_r251_preview`, `r252_soot_sources` | r251 native centerline extraction (tier-10 condition fails), r242-scene preview render, primary soot papers and extraction images |
 | `r251_tier8_full_window` | completed from-zero tier-8 run; 99.506% burned, 0.483% top export, 32.837 kW, FDS height0.683m; full spectrum/data retained |
 | `r250_tier8_parcel_edge` | incomplete tier-8 parcel-edge run; solver stopped at 21.466 s, accepted-prefix fuel/export/heat-height measurements retained |
 | `r249_tier8_fuel_balance` | read-only r241 retained fuel inventory, sampled boundary localization, and native chemistry-state checks |

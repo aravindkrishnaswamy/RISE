@@ -1,0 +1,2 @@
+measured count=235 status=2 rate=16.0 duration=235000/16000
+PASS decoded_frames=235 exact_PTS_n_over_16=1 nominal_fps=16 duration_s=14.6875
