@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-18, during the r251 Picard event-step correction. This page
+Last updated 2026-10-19, during the r251 Picard event-step correction. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -29,7 +29,8 @@ pages are a historical log, not instructions.
 
 | Tier | Steps | Wall time | Per step |
 |---|---:|---:|---:|
-| 8 | 15,309 | 21.8 h | 5.1 s |
+| 8 (r241 baseline) | 15,309 | 21.8 h | 5.1 s |
+| 8 (r251 parcel edge + balanced events) | 15,348 | 30.14 h | 7.07 s |
 | 10 | 16,298 | 38.8 h | 8.6 s |
 
 - Render a sequence through the spectral path with
@@ -50,65 +51,38 @@ The statistics window is 14.625 s. Supplied heat is 33 kW.
 | McCaffrey max temperature rise error | −45% | not extracted | within 10% |
 | McCaffrey max velocity error | −28% | not extracted | within 10% |
 
-Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
+Tier 10 ran before the r239 burner-boundary fix; r241 tier 8 ran after it.
+These are historical baselines; the corrected r251 result is below.
+
+## r249–r251: combustion and Picard stop resolved
+
+The r237/r241 baselines below burned only 58–64%. r249 localized the lost
+fuel to cold, dilute top methane export and selected the stoichiometric-parcel
+CFT plus one-cell warm-edge waiver. The owner accepted r250's partial-window
+combustion result. r251 reproduced its stage-2 Picard stop: a microscopic output
+alignment step and its growth-limited successor produced residual stagnation
+near unchanged tolerance. Two balanced event steps remove that trigger.
+
+[r251 full from-zero tier-8 run](FIRE_SMOKE_PICARD_EVENT_R251.md) completed
+**25.091 s, 15,348 accepted steps**, all **14.625 statistics seconds**, exit 0.
+All three combustion checks are met:
+
+- Fuel consumed **99.5063%**, 9.599681 g / 9.647308 g supplied; balance residual
+  **−1.48×10⁻⁷ g**. Inventory gain 0.000997 g; all export 0.046630 g.
+- Top methane export **0.046600 g (0.4830%)**, at the owner-accepted near-zero scale.
+- Essentially all heat below 1.5 m. FDS Validation Guide mean flame height
+  **0.683 m**, vs Heskestad **0.646 m** (+5.84%). Nominal-input profile H99 is
+  **0.779 m** and is reported separately.
+
+Realized HRR **32.837 kW (99.51% of 33 kW)**, radiative fraction **0.19889**.
+The averaged subwindow puffing peak is **3.003 Hz** (+9.64% vs 2.739 Hz), but
+the full-window peak is **4.504 Hz** and individual windows differ. Do not
+claim a single stationary mode. Diagnosis/fix/review took about half an hour;
+the full simulation took 30.14 h. **Stopped for owner review before tier 10.**
 
 ## Open problems, in priority order
 
-1. **Picard convergence after the combustion correction.** The owner accepted
-   r250's partial-window combustion result on 2026-10-18: 99.5% burned,
-   about 0.5% top export, balance closing and heat below 1.5 m. The current
-   task is the full tier-8 rerun after the stage-2 correction. [r251](FIRE_SMOKE_PICARD_EVENT_R251.md)
-   classifies the stop as small-step stagnation near unchanged tolerance, triggered
-   by an output-event sliver. Two balanced event steps remove that trigger;
-   a retained probe accepted 64 steps past it. The full from-zero run is active
-   in `r251_tier8_full_window`, started 2026-10-18 14:05 UTC. Diagnosis/build/
-   review took about 30 minutes, within the one-day work time box.
-   Historical r237/r241 baselines: only 58–64% of supplied fuel burned inside
-   the statistics window. This is the leading explanation for the low
-   McCaffrey centerline, though r237 did not formally assign the cause.
-   r239 found that production injected fuel into bottom cells while treating
-   the bottom boundary as open, so fuel could leave the domain; it restored
-   the oracle's sealed burner floor with a prescribed inlet. The tier-10 run
-   before that fix released 58% and the tier-8 run after it released 64%,
-   but they differ in resolution, so the fix's effect is not isolated. The
-   remaining unburned fuel is not attributed. It may leave through the top
-   or sides, or the mixing-limited reaction closure may under-burn at this
-   resolution. Measure where the missing fuel goes, fix the cause, then
-   rerun tier 10 to check McCaffrey.
-   **r249 measurement:** [tier-8 fuel balance](FIRE_SMOKE_TIER8_FUEL_BALANCE_R249.md)
-   attributes the dominant loss to cold, dilute methane escaping the top.
-   Over 99.47% of statistics time: inlet 9.596 g, burned 6.175 g, inventory
-   change −0.0309 g, balance remainder 3.452 g; sampled top donor export
-   3.451 g. This is sampled localization, not an exact historical accepted
-   boundary integral. An established-flame mixing/combustion closure correction
-   was proposed; its full-window causal effectiveness is not yet established.
-   **Offline eligibility follow-up:** [four-gate comparison](FIRE_SMOKE_TIER8_ELIGIBILITY_R249.md)
-   gives mean eligible CH4 (a/b/c/d) 0.0360/0.0771/0.5774/0.5774 g.
-   Parcel CFT alone recovers 7.51% of stranded inventory; allowing cold
-   vertices connected to warm seeded components recovers 98.98%.
-   The [one-cell follow-up](FIRE_SMOKE_TIER8_EDGE_R249.md) selects (e): mean
-   eligible mass 0.136754 g, retaining 57.72% of (c) below 1 m while putting
-   99.91% of (e) below 1 m. [Revision (e)](FIRE_SMOKE_EXTINCTION_PARCEL_R249.md)
-   is implemented. The tier-8 from-zero acceptance run stopped incomplete in
-   `r250_tier8_parcel_edge` (started 2026-10-17 12:50 UTC): ≥95% fuel
-   consumption with closing balance, near-zero top CH4 export, and plausible
-   heat-release height against Heskestad. The read-only early balance over
-   5.993–9.974 s gives 2.618534 g burned / 2.625777 g supplied (**99.724%**),
-   top export 0.013432 g (0.512%), Δinventory −0.006205 g and residual
-   −5.08×10⁻⁸ g. This precedes the statistics window; all final criteria remain
-   unavailable for the full window. r250 stopped at 21.466 s (13,555 accepted
-   steps), stage-2 Picard nonconvergence, exit 94. Its 11.000 s statistics
-   prefix burns **99.5005%** with a −6.31×10⁻⁸ g balance residual and top
-   export **0.035365 g (0.4874%)**. The last retained heat integral, through
-   21.441 s, puts 99.9999916% below 1.5 m; nominal-input H99 is **0.783 m**
-   against Heskestad **0.646 m** (+21.2%).
-   [Run/failure report](FIRE_SMOKE_PARCEL_EDGE_R250.md): **not passed,
-   incomplete** as a full run; the owner has since accepted the partial-window
-   combustion result and authorized the convergence fix/full tier-8 rerun.
-   The FDS Validation Guide definition gives **0.690 m** mean flame height
-   (+6.9% vs Heskestad), replacing the nominal-input H99 for that comparison.
-   Stop for review before tier 10.
-2. **The fire renders blue.** The methane record's gross soot yield is 0,
+1. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
    incandescence, only blue chemiluminescence. The zero is methane's
    escaping smoke yield; real methane flames at this scale form roughly
@@ -116,15 +90,13 @@ Tier 10 ran before the r239 burner-boundary fix; tier 8 ran after it.
    formation–oxidation closure calibrated to published in-flame data.
    Radiation is budget-partitioned at χᵣ = 0.20, so this changes the
    appearance, not the energy balance.
-3. **Puffing is close but high.** Centerline heat-release spectra peak at
-   3.1–3.4 Hz against the 2.74 Hz law. The "0.137 Hz slow mode" seen in
-   earlier image-based measurements is not supported by the centerline
-   observable. Do not reopen the tier-6 domain study (r244–r247): tier 6 has
-   only about 7 cells across the burner and its spectra are noise-dominated.
-   Average several sub-windows of the tier-8 or tier-10 runs instead of
-   using one raw periodogram.
-4. **Cost.** Tier 10 takes about 39 hours. Faster steps would make the
-   iteration loop practical, but cost work comes after items 1 and 2.
+2. **Puffing has substantial window dependence.** r251's three-window mean
+   peaks at 3.003 Hz, within 20% of the 2.739 Hz burner law, while individual
+   overlapping windows peak at 2.866/4.504/3.003 Hz and the full periodogram
+   peaks at 4.504 Hz. Review the native spectrum before assigning one mode.
+   Do not reopen the tier-6 domain study: its burner resolution is inadequate.
+3. **Cost.** Tier 10 takes about 39 hours. Faster steps would make the
+   iteration loop practical, but cost work comes after the outstanding physics items.
 
 ## Known failing tests (pre-existing)
 
@@ -177,7 +149,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
-| `r251_tier8_full_window` | active from-zero tier-8 run with balanced output-event steps; full fuel/export/height, HRR and spectrum results pending |
+| `r251_tier8_full_window` | completed from-zero tier-8 run; 99.506% burned, 0.483% top export, 32.837 kW, FDS height0.683m; full spectrum/data retained |
 | `r250_tier8_parcel_edge` | incomplete tier-8 parcel-edge run; solver stopped at 21.466 s, accepted-prefix fuel/export/heat-height measurements retained |
 | `r249_tier8_fuel_balance` | read-only r241 retained fuel inventory, sampled boundary localization, and native chemistry-state checks |
 | `r243_nonphysical_diagnostic.v3` | temperature-mapped structure clips, labelled non-physical |

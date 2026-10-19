@@ -1,0 +1,38 @@
+{
+  "scope": "complete_tier8_statistics_window_accepted_R1_flux_and_source_integrals",
+  "accepted_time_s": 25.09104012721218,
+  "statistics_duration_s": 14.625000000055213,
+  "supplied_kg": 0.009647307732970655,
+  "consumed_kg": 0.009599680717350026,
+  "consumed_fraction": 0.9950631806366185,
+  "consumed_at_least_95_percent": true,
+  "beginning_inventory_kg": 6.669594429285957e-05,
+  "ending_inventory_kg": 6.769289758781294e-05,
+  "inventory_change_kg": 9.96953294953368e-07,
+  "outward_methane_kg": 4.662991469638636e-05,
+  "top_outward_methane_kg": 4.660010250773703e-05,
+  "top_outward_fraction_of_supply": 0.0048303737993633635,
+  "balance_residual_kg": -1.4762929057830665e-10,
+  "reported_solver_residual_kg": -1.4763148261127619e-10,
+  "interstep_change_kg": 0.0,
+  "balance_residual_fraction_of_supply": -1.5302641386028198e-08,
+  "mean_hrr_W": 32837.38401932022,
+  "heat_below_1_5m_fraction": 0.9999999978587316,
+  "mean_flame_height_99_percent_input_m": 0.7793897635347314,
+  "heskestad_expected_m": 0.6456416432144874,
+  "flame_height_relative_error": 0.20715534960592974,
+  "height_99_percent_realized_heat_m": 0.6885686516385917,
+  "height_definition": "99% of nominal input HRR integrated vertically through the time-averaged plane profile; null if unreached. Intracell interpolation. Realized-heat quantile reported separately.",
+  "flame_height_reference": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=907227 (p.7; nominal-input normalization)",
+  "limitations": [
+    "Statistics initial inventory uses the existing clipped-linear increment, not a saved interior state.",
+    "No new numerical conservation tolerance or near-zero export cutoff is imposed; report residual and export relative to supply.",
+    "This HRR-based flame-height proxy differs from the visual intermittency definition of experimental Heskestad data."
+  ],
+  "artifacts": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/production_capstone_summary.txt": "da5aeec4ae8ecfe9b83c9be898da312cec719d754c40c5d8d5e05427232c5c6e",
+    "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/budgets/step_015348.csv": "f9049170d15be9b7338128fa3bf642d8430f408ba65b9a398463514d4598b718",
+    "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/budgets/heat_release_height.csv": "29a9089acb6616a30813b293c52d222b55ec58c105bf4dd79d3c6a8997b203bd",
+    "/Volumes/SSD/Working/RISE/tools/fire/r250_acceptance.py": "ea3593d1c373eb244de45edbe5716d83e9f98003fd66ece0521481bd0ca52f5f"
+  }
+}

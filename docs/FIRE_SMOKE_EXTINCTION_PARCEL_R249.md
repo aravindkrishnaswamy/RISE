@@ -113,3 +113,15 @@ The retained heat profile puts essentially all heat below 1.5 m; the nominal
 input H99 is 0.783 m versus 0.646 m Heskestad (+21.2%). This supports the
 parcel-edge correction but **does not complete acceptance**. No restart or
 tier-10 run has been made; owner review is next.
+
+
+## Completed dynamic result (2026-10-19)
+
+[r251](FIRE_SMOKE_PICARD_EVENT_R251.md) completed the entire tier-8 window from
+zero after correcting the output-event sliver, with unchanged Picard tolerance.
+Consumption is **99.5063%**, top methane export **0.4830%**, and the balance
+closes to −1.48×10⁻⁷ g. Heat is essentially all below 1.5 m; FDS-defined mean
+flame height is **0.683 m** versus Heskestad **0.646 m**. Nominal-input H99 of
+the averaged profile remains a separate diagnostic (**0.779 m**). All three
+requested combustion checks hold on the complete statistics window. Realized
+HRR is **32.837 kW**. Stop for owner review before tier 10.

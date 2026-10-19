@@ -158,5 +158,90 @@ The diagnosis, bounded confirmation, clean builds, tests and review took about
 30 minutes, within the requested one-day work time box. The full window is the
 remaining experiment. No builds, qualification, oracle or renders run alongside it.
 
-Status: **full from-zero tier-8 run active; results pending.** Stop for owner
-review before tier 10.
+Status: **full from-zero tier-8 run completed successfully**; measured results
+follow. Stop for owner review before tier 10.
+
+
+## Full-window result — completed from zero
+
+Exit **0**, accepted time **25.091040127 s**, **15,348 accepted steps**,
+**235 frames**, complete statistics duration **14.625 s**. No hard-bound or
+physical-projection retries were recorded, and the Picard stop did not recur.
+Wall time was **30.140 h**. The diagnosis/fix/review took about half an hour;
+the requested full simulation accounted for the remaining elapsed time.
+
+### Three acceptance measurements
+
+| Requirement | Full statistics-window measurement | Result |
+|---|---|---|
+| Fuel consumed ≥95%, balance closes | **99.506318%**; residual **−1.4763×10⁻⁷ g**, −1.5303×10⁻⁸ of supply | Met |
+| Top methane export near zero | **0.046600103 g**, **0.483037%** of supplied methane | Met, at the owner's accepted ~0.5% scale |
+| Most heat below 1.5 m; FDS height near Heskestad | **99.999999786%** of accepted heat below 1.5 m; FDS mean height **0.683339 m** vs **0.645642 m**, **+5.84%** | Met |
+
+The complete methane balance, in grams:
+
+| Term | Grams |
+|---|---:|
+| Inward supply, all boundaries | 9.647307733 |
+| Burned | 9.599680717 |
+| Initial inventory | 0.066695944 |
+| Final inventory | 0.067692898 |
+| Inventory increase | 0.000996953 |
+| Outward export, all boundaries | 0.046629915 |
+| Top outward export | 0.046600103 |
+| Δinventory + burned − supplied + outward | −0.000000148 |
+
+The ledger uses actual accepted R1 boundary fluxes and source increments,
+with the existing clipped-linear initial statistics inventory. Interstep
+inventory change is zero. This is the full statistics window, not sampled
+localization or a resumed continuation.
+
+FDS height is the time average of instantaneous 99%-of-realized-HRR heights,
+using all 235 retained 16 Hz frames. The previously specified nominal-input
+H99 of the every-step mean profile is **0.779390 m** (+20.72% vs Heskestad),
+reported separately. The realized-heat H99 of that averaged profile is
+**0.688569 m**. These averaging/normalization definitions are not interchangeable.
+The sampling-based FDS mean is a heat-release surrogate, not a claim to measure
+50% luminous intermittency. Frame-sampled mean HRR is 32.8607 kW; the authoritative
+every-step integral below is used for the energy result.
+
+### Realized heat release
+
+**32.837384 kW**, **99.5072% of 33 kW**, from **480,246.741 J** over
+14.625 s. Integrated radiative fraction is **0.1988925** against authored 0.20.
+No fuel-rate, heat-of-combustion, source-energy or radiation tuning was made.
+
+### Puffing spectrum
+
+The observable is the existing native accepted-step **centerline heat-release
+probe**, not image brightness. The retained final checkpoint contains every
+sample. The existing affine detrend/Hann/DFT reducer resamples the full window
+to 512 points. Three 256-point windows, starting at samples 0, 128 and 256,
+provide equal-duration 50%-overlapping periodograms. Their powers are averaged
+on the common frequency grid, as selected before the run.
+
+| Spectrum | Dominant frequency |
+|---|---:|
+| **Mean of three overlapping windows** | **3.002671 Hz** |
+| Window 0 | 2.866186 Hz |
+| Window 1 | 4.504006 Hz |
+| Window 2 | 3.002671 Hz |
+| Full-window periodogram | 4.504006 Hz |
+| Burner law, `1.5/sqrt(0.30)` | 2.738613 Hz |
+
+The averaged peak is **9.64% high**, within the existing 20% comparison band.
+The full-window peak is **64.46% high**. The changing subwindow peaks indicate
+substantial window dependence; do not claim one stable 3.003 Hz mode or conceal
+the higher-frequency peak. The mean frequency-bin spacing is approximately
+0.136485 Hz; the full-window spacing is approximately 0.068243 Hz.
+
+[Complete results and hashes](data/fire_r251/full_window_results.json),
+[all spectrum bins](data/fire_r251/puffing_spectrum.csv), and
+[native source samples](data/fire_r251/puffing_centerline_signal.csv) are in git.
+The checkpoint, frames, binary and full log remain outside git in the unchanged
+run directory. The old summary's `formal_contract_verdict=pending_equal_time_composition`
+is historical certification bookkeeping; no new certification is created for
+these empirical measurements.
+
+**The convergence fix and all three requested combustion checks succeed on the
+full tier-8 window. Stop here for owner review. No tier-10 run was started.**

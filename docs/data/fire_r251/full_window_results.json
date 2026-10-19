@@ -1,0 +1,95 @@
+{
+  "scope": "complete_from_zero_tier8_33kW_r251",
+  "exit_code": 0,
+  "accepted_steps": 15348,
+  "accepted_time_s": 25.09104012721218,
+  "wall_s": 108503.874204334,
+  "wall_hours": 30.139965056759443,
+  "hard_bound_retries": 0,
+  "physical_projection_retries": 0,
+  "fuel_balance": {
+    "scope": "complete_tier8_statistics_window_accepted_R1_flux_and_source_integrals",
+    "accepted_time_s": 25.09104012721218,
+    "statistics_duration_s": 14.625000000055213,
+    "supplied_kg": 0.009647307732970655,
+    "consumed_kg": 0.009599680717350026,
+    "consumed_fraction": 0.9950631806366185,
+    "consumed_at_least_95_percent": true,
+    "beginning_inventory_kg": 6.669594429285957e-05,
+    "ending_inventory_kg": 6.769289758781294e-05,
+    "inventory_change_kg": 9.96953294953368e-07,
+    "outward_methane_kg": 4.662991469638636e-05,
+    "top_outward_methane_kg": 4.660010250773703e-05,
+    "top_outward_fraction_of_supply": 0.0048303737993633635,
+    "balance_residual_kg": -1.4762929057830665e-10,
+    "reported_solver_residual_kg": -1.4763148261127619e-10,
+    "interstep_change_kg": 0.0,
+    "balance_residual_fraction_of_supply": -1.5302641386028198e-08,
+    "mean_hrr_W": 32837.38401932022,
+    "heat_below_1_5m_fraction": 0.9999999978587316,
+    "mean_flame_height_99_percent_input_m": 0.7793897635347314,
+    "heskestad_expected_m": 0.6456416432144874,
+    "flame_height_relative_error": 0.20715534960592974,
+    "height_99_percent_realized_heat_m": 0.6885686516385917,
+    "height_definition": "99% of nominal input HRR integrated vertically through the time-averaged plane profile; null if unreached. Intracell interpolation. Realized-heat quantile reported separately.",
+    "flame_height_reference": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=907227 (p.7; nominal-input normalization)",
+    "limitations": [
+      "Statistics initial inventory uses the existing clipped-linear increment, not a saved interior state.",
+      "No new numerical conservation tolerance or near-zero export cutoff is imposed; report residual and export relative to supply.",
+      "This HRR-based flame-height proxy differs from the visual intermittency definition of experimental Heskestad data."
+    ],
+    "artifacts": {
+      "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/production_capstone_summary.txt": "da5aeec4ae8ecfe9b83c9be898da312cec719d754c40c5d8d5e05427232c5c6e",
+      "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/budgets/step_015348.csv": "f9049170d15be9b7338128fa3bf642d8430f408ba65b9a398463514d4598b718",
+      "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/budgets/heat_release_height.csv": "29a9089acb6616a30813b293c52d222b55ec58c105bf4dd79d3c6a8997b203bd",
+      "/Volumes/SSD/Working/RISE/tools/fire/r250_acceptance.py": "ea3593d1c373eb244de45edbe5716d83e9f98003fd66ece0521481bd0ca52f5f"
+    }
+  },
+  "flame_height": {
+    "frames": 235,
+    "start_s": 10.466040127212182,
+    "end_s": 25.09104012721218,
+    "duration_s": 14.625,
+    "method": "16 Hz retained-frame trapezoidal temporal average of instantaneous realized-HRR percentiles, FDS Validation Guide Heskestad definition.",
+    "h95_realized_m_mean": 0.4591786022451112,
+    "h97_realized_m_mean": 0.5300147131587993,
+    "h99_realized_m_mean": 0.6833394296749035,
+    "total_hrr_W_mean": 32860.71277442177,
+    "fds_h99_relative_error": 0.05838809633270903
+  },
+  "puffing": {
+    "observable": "native accepted-step centerline heat-release probe; no images",
+    "method": "512-point uniform interpolation; affine detrend and Hann; full periodogram plus arithmetic mean of three 256-point, 50%-overlapping Hann-window powers.",
+    "expected_hz": 2.7386127875258306,
+    "peak_hz": {
+      "full": 4.504006410256411,
+      "three_window_mean": 3.002670940170939,
+      "window_0": 2.8661858974358965,
+      "window_1": 4.5040064102564115,
+      "window_2": 3.002670940170939
+    },
+    "mean_peak_relative_error": 0.09642040446457889,
+    "full_peak_relative_error": 0.644630606696869,
+    "mean_within_20_percent": true,
+    "nonstationarity": "Individual overlapping-window peaks vary from 2.866 to4.504Hz; full periodogram strongest at4.504Hz. Report both rather than claiming a unique stable frequency."
+  },
+  "realized_hrr_fraction_of_33kW": 0.9950722430097036,
+  "radiative_fraction": 0.19889247586468287,
+  "acceptance": {
+    "fuel": "met:99.506% consumed and balance closes",
+    "top_export": "met:0.483% supplied, matching owner-accepted near-zero scale inr250",
+    "heat_height": "met:essentially all below1.5m and FDS mean H99 near Heskestad; nominal-input profileH99 separately reported"
+  },
+  "tier10_started": false,
+  "artifacts": {
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/full_window_acceptance.json": "1807cf46c8b1fcb81f2edf7950d461b38655bdd0e42f53828048f35194bbedaf",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/production_capstone_summary.txt": "da5aeec4ae8ecfe9b83c9be898da312cec719d754c40c5d8d5e05427232c5c6e",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/final_accepted_ledger.csv": "f9049170d15be9b7338128fa3bf642d8430f408ba65b9a398463514d4598b718",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/full_heat_release_height.csv": "29a9089acb6616a30813b293c52d222b55ec58c105bf4dd79d3c6a8997b203bd",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/full_instantaneous_flame_height.csv": "45d537c6fe2f1798206c99e99e0973f7bba1296c9e6e711395a31a8c37bc09c0",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/full_sampled_mean_heat_profile.csv": "c6c8505ef2216310d032d50434f179ea7355063dadf26020bcd1b16c8f277d76",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/puffing_spectrum.csv": "aa64b81501466659170971471b559a8e679240d1807273ab7f22c8745a5f47db",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/puffing_centerline_signal.csv": "d9a6b156b1588ce67ba2d167553377aef47ab38a93bd6040c0cd4b183080f4e6",
+    "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/production_final.checkpoint": "417472aa4449dcff81de248978780182b16d7d8701eb067b928cd0704c85c5e7"
+  }
+}
