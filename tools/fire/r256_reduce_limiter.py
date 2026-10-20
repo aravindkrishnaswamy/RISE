@@ -17,7 +17,7 @@ def main():
    rows.append({'axis':axis,'z':int(z),'slab_center_height_m':float(p[0]['height_m']),'face_seconds':den,'scalar_limited_fraction':count/den if den else None,'shared_momentum_carrier_limited_fraction':count/den if den else None,'mean_scalar_alpha':alpha/den if den else None,'mean_momentum_carrier_source_alpha':alpha/den if den else None,'independent_momentum_alpha':'not defined; centered velocity factor','note':'both numeric alpha columns are the same shared primal field; not an averaged dual-face alpha'})
  write('alpha_height_profile.csv',rows)
  m=np.genfromtxt(BASE/'run/mass_timeseries.csv',names=True,delimiter=',');start=float(receipt['start_time_s']);end=float(receipt['end_time_s']);duration=end-start
- old=np.genfromtxt(BASE.parent/'r253_plume_diagnosis/instant_planes.csv',names=True,delimiter=',');full={int(r['z']):r for r in csv.DictReader((ROOT/'docs/data/fire_r253/mean_height_profile.csv').open())};masses=[]
+ old=np.genfromtxt(BASE.parent/'r253_plume_diagnosis/instant_planes.csv',names=True,delimiter=',');full={int(round(float(r['z']))):r for r in csv.DictReader((ROOT/'docs/data/fire_r253/mean_height_profile.csv').open())};masses=[]
  for z in np.unique(m['z']).astype(int):
   p=m[m['z']==z];ref=old[old['z']==z];t=ref['time_s'];tt=np.r_[start,t[(t>start)&(t<end)],end]
   if t[0]>start or t[-1]<end:raise ValueError('reference does not bracket diagnostic')
