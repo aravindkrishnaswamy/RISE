@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-19, after the FDS comparison and r256 diagnostic authorization. This page
+Last updated 2026-10-20, after the completed r256 limiter diagnostic. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -120,12 +120,16 @@ The old batch is disabled. Its restart comparison failed after 52 steps with
 15,043 differing values; that is a separate low-priority issue, explicitly
 not being investigated now.
 
-[r256 observer continuation](FIRE_SMOKE_LIMITER_ACTIVITY_R256.md) is authorized
-for about four seconds from r251 step 9,224, without identity tests. It will
-measure accepted alpha activity and same-window entrainment at 1/2/3 m.
-Production code/kernels remain unchanged. The cited RISE/FDS momentum comparison
-and conditional A/B decision are in the report; full-window diagnostic results
-are pending. No tier 6 or tier 10. Stop before production changes.
+[r256 observer continuation](FIRE_SMOKE_LIMITER_ACTIVITY_R256.md) completed
+15.0187–19.0187 s, 2,432 accepted steps, without identity tests. At 1/2/3 m,
+scalar/shared momentum-carrier alpha activity is **zero**, mean alpha **one**.
+Mass flux is **0.24316/0.47883/0.71846 kg/s**, within **0.20%** of r251's same
+window: the entrainment deficit is statistically reproduced. Only five slabs
+below 0.20 m show tiny activity. **No limiter-removal A/B**: the additional FCT
+correction is inactive in the deficient upper plume. MC reconstruction before
+alpha acceptance, momentum formulation/pressure coupling, discrete SGS stresses,
+and source/divergence coupling remain candidate differences from FDS.
+Production solver unchanged. Tier 6 cancelled; no tier 10. **Stopped for review.**
 
 ## Open problems, in priority order
 
@@ -136,8 +140,9 @@ are pending. No tier 6 or tier 10. Stop before production changes.
    increasing entrainment deficit with height, rather than bulk ambient warming
    or excess transported heat. Which turbulence/transport/domain term causes
    that deficiency is not yet isolated. r254 finds reduced resolved fluctuations
-   but no Vreman constant/formula mismatch; unsaved stage alphas prevent a
-   historical limiter-activity measurement.
+   but no Vreman constant/formula mismatch. r256 statistically reproduces
+   the deficit with zero additional FCT alpha activity in the upper plume;
+   MC reconstruction and other discrete operator differences remain candidates.
    Tier 10 remains unlaunched under the owner’s conditional instruction.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
