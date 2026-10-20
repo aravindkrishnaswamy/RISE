@@ -33,9 +33,12 @@
 //
 //    Scenes A and S run on combo and ext_combo (thin lens f/1.4, keyframed
 //    directional + ambient lights, a non-uniformly scaling luminary, a
-//    keyframed matrix-authored object); B on their 192x192 twins.
+//    keyframed matrix-authored object); B runs on their 192x192 twins
+//    (in default `all` mode, B runs a fast subset on `combo_big` with `pt`
+//    and `bdpt`; pass `--extended`, `RISE_TEST_EXTENDED=1`, or explicit
+//    section `B` for the full 2-scene x 6-rasterizer matrix).
 //
-//    Usage: TimeIndexedMotionBlurTest [all|S|A|B|C|D] [spp] [n]
+//    Usage: TimeIndexedMotionBlurTest [--extended] [all|S|A|B|C|D] [spp] [n]
 //
 //  Author: Claude (debt-dl465)
 //  Tabs: 4
@@ -579,7 +582,7 @@ int main( int argc, char** argv )
 	g_self = std::filesystem::absolute( argv[0] ).string();
 	bool extended = false;
 	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
-		if( ext[0] == '1' ) extended = true;
+		if( ext[0] != '\0' && std::string( ext ) != "0" ) extended = true;
 	}
 	std::vector<const char*> posArgs;
 	for( int i = 1; i < argc; ++i ) {
@@ -596,8 +599,9 @@ int main( int argc, char** argv )
 	if( only == "all" || only == "S" ) SectionS( spp );
 	if( only == "all" || only == "A" ) SectionA( spp );
 	if( only == "all" ) {
-		if( extended ) SectionB( spp, n, false );
-		else           SectionB( 8, 4, true );
+		const int bSpp = posArgs.size() > 1 ? spp : ( extended ? 16 : 8 );
+		const int bN   = posArgs.size() > 2 ? n   : ( extended ? 8  : 4 );
+		SectionB( bSpp, bN, !extended );
 	} else if( only == "B" ) {
 		SectionB( spp, n, false );
 	}

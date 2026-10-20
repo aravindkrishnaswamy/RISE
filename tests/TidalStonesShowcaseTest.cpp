@@ -26,7 +26,8 @@
 //    (f) The painter-probe harness: a PROBE copy (`expr` -> `vec3(buried,
 //        buried, buried)`) and a CONTROL copy (`expr` -> `vec3(1,1,1)`)
 //        built in-process from the tracked file via `Cst::DocSetOrAddParamValue`
-//        (never `DocSetParamValue`), rendered at 512 spp with
+//        (never `DocSetParamValue`), rendered at 64 spp by default (512 spp
+//        under `--extended` or `RISE_TEST_EXTENDED=1`) with
 //        `oidn_denoise FALSE` -- comment carries the literal substring
 //        `oidn_denoise FALSE` for SourceHygieneTest -- and read back
 //        through `Job::RemoveRasterizerOutputs()` +
@@ -35,9 +36,11 @@
 //        points are read from the spec's OVERHEAD probe camera, which
 //        the probe/control copies dial in by re-pointing the shipped
 //        `thinlens_camera`'s `location`/`lookat`/`up`/`focus_distance`.
-//    (g) The cost gate: live vs `def buried 0` in all three chunks that
-//        declare it, at the shipped 32 spp, 2 warm-ups then >= 3
-//        interleaved pairs.
+//    (g) The cost gate: verifies the three `def buried` text substitutions
+//        in default fast mode, and when `--check-cost-gate`, `--extended`,
+//        `TIDAL_RUN_COST_GATE=1`, or `RISE_TEST_EXTENDED=1` is passed,
+//        runs live vs `def buried 0` at the shipped 32 spp (2 warm-ups then
+//        >= 3 interleaved pairs).
 //
 //  Tabs: 4
 //

@@ -12,8 +12,11 @@
 //  a second set of stations on `column2` to prove the composite's own
 //  transform is applied correctly regardless of which column carries the
 //  receiver), and ADDS what (l) does not: the painter stations read
-//  through an in-process probe/control render pair, and a live-vs-zero
-//  wall-clock cost gate.
+//  through an in-process probe/control render pair (64 spp by default;
+//  512 spp under `--extended` or `RISE_TEST_EXTENDED=1`), and a
+//  live-vs-zero wall-clock cost gate (text-substitution check in default
+//  fast mode; full timed renders under `--check-cost-gate`, `--extended`,
+//  `PAVILION_RUN_COST_GATE=1`, or `RISE_TEST_EXTENDED=1`).
 //
 //  Every world point below is DERIVED from the scene's own chunks (radius
 //  0.25, azimuth 20 deg, slot half-width 0.04, cap top y = 0.175, camera
@@ -505,10 +508,10 @@ static double TimeRasterize( const std::string& sceneText, bool& outOk )
 int main( int argc, char** argv )
 {
 	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
-		if( ext[0] == '1' ) gExtended = true;
+		if( ext[0] != '\0' && std::string( ext ) != "0" ) gExtended = true;
 	}
 	if( const char* cg = std::getenv( "PAVILION_RUN_COST_GATE" ) ) {
-		if( cg[0] == '1' ) gRunCostGate = true;
+		if( cg[0] != '\0' && std::string( cg ) != "0" ) gRunCostGate = true;
 	}
 	for( int i = 1; i < argc; ++i ) {
 		if( std::strcmp( argv[i], "--extended" ) == 0 ) gExtended = true;
@@ -994,7 +997,7 @@ int main( int argc, char** argv )
 				Check( ratio > 0 && ratio <= 1.15, "(c) live/def-0 ratio is bounded (recorded in the scene header; target <= 1.15x)" );
 			}
 		} else {
-			std::cout << "    COST: 8 full-frame timed renders skipped by default (pass --check-cost-gate or --extended)" << std::endl;
+			std::cout << "    COST: 8 full-frame timed renders skipped by default (pass --check-cost-gate, --extended, PAVILION_RUN_COST_GATE=1, or RISE_TEST_EXTENDED=1)" << std::endl;
 		}
 	}
 

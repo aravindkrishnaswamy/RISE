@@ -45,8 +45,9 @@
 //  out of the picture (sparse points, or a family like mesh with no
 //  interior fast path).
 //
-//  METRICS.  Per query: wall-clock (mean +/- stddev over 5 repeated
-//  batches, `performance-work-with-baselines.md`'s minimum), plus two
+//  METRICS.  Per query: wall-clock (1 batch by default, or mean +/- stddev
+//  over 5 repeated batches under `--benchmark`, `--extended`, or
+//  `RISE_TEST_EXTENDED=1`, `performance-work-with-baselines.md`'s minimum), plus two
 //  counters threaded through via DL-33's new `outNodesVisited` /
 //  `outCandidatesVisited` parameters on `IObjectManager::NearestOther-
 //  Surface` / `DeepestOtherContainment` -- deterministic, so THOSE are
@@ -563,7 +564,7 @@ static void TestShowcaseScene()
 int main( int argc, char** argv )
 {
 	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
-		if( ext[0] == '1' ) gRepeats = 5;
+		if( ext[0] != '\0' && std::string( ext ) != "0" ) gRepeats = 5;
 	}
 	for( int i = 1; i < argc; ++i ) {
 		if( std::strcmp( argv[i], "--benchmark" ) == 0 ||

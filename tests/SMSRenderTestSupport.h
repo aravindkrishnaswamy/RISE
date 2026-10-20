@@ -58,6 +58,7 @@ inline void Check( bool condition, const std::string& testName )
 //////////////////////////////////////////////////////////////////////
 // Capture
 //////////////////////////////////////////////////////////////////////
+// OIDN-DENOISED-OK: captures both OutputPreDenoisedImage and OutputImage for denoiser parity checks.
 class CapturingRasterizerOutput
 	: public virtual IRasterizerOutput
 	, public virtual Reference

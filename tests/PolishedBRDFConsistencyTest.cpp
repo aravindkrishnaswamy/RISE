@@ -692,7 +692,7 @@ int main( int argc, char** argv )
 {
 	bool skipHG = false;
 	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
-		if( ext[0] == '1' ) g_extended = true;
+		if( ext[0] != '\0' && std::string( ext ) != "0" ) g_extended = true;
 	}
 	for( int i = 1; i < argc; ++i ) {
 		if( std::strcmp( argv[i], "--skip-hg" ) == 0 ) skipHG = true;

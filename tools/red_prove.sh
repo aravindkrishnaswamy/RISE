@@ -52,8 +52,9 @@ marker_fails() {
 	# predicate is governed by the marker match, not the expected test exit.
 	local output
 	if [ -n "$TEST_ARGS" ]; then
-		# shellcheck disable=SC2086
-		output="$(./bin/tests/"$TEST" $TEST_ARGS 2>&1)" || true
+		local -a test_args_arr=()
+		read -r -a test_args_arr <<< "$TEST_ARGS"
+		output="$(./bin/tests/"$TEST" "${test_args_arr[@]}" 2>&1)" || true
 	else
 		output="$(./bin/tests/"$TEST" 2>&1)" || true
 	fi

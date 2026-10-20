@@ -2380,9 +2380,9 @@ static void RunPaneIndexedGestureTest()
 	Check( f.ctrl->OnPanePointerUp( 1, Point2( 60, 34 ) ), "pane-indexed Up accepted" );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 	       "orbit release drains its two-pane final/polish sequence" );
-	const std::size_t orbitReleaseCount = f.ctrl->Sequence().size();
-	Check( orbitReleaseCount >= 4
-	    && f.ctrl->SettlesAt( orbitReleaseCount, kSettleMs ),
+	std::size_t orbitReleaseCount = 0;
+	Check( f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, orbitReleaseCount )
+	    && orbitReleaseCount >= 4,
 	       "orbit release sequence quiesces" );
 
 	// The scene camera must be untouched: pane 1's fly went to ITS
@@ -2408,9 +2408,9 @@ static void RunPaneIndexedGestureTest()
 	f.ctrl->OnPanePointerUp( 1, Point2( 12, 12 ) );
 	Check( f.ctrl->WaitForPassCount( orbitReleaseCount + 2, kWaitMs ),
 	       "pointer release sequences drain before the free-fly twin checks" );
-	const std::size_t releaseCount = f.ctrl->Sequence().size();
-	Check( releaseCount >= orbitReleaseCount + 2
-	    && f.ctrl->SettlesAt( releaseCount, kSettleMs ),
+	std::size_t releaseCount = 0;
+	Check( f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, releaseCount )
+	    && releaseCount >= orbitReleaseCount + 2,
 	       "pane-indexed gesture release sequences quiesce" );
 
 	// review-s3 P2 coverage: hidden-pane and free-fly-twin contracts.

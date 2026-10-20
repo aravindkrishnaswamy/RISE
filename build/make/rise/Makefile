@@ -318,8 +318,9 @@ clean:
 # prerequisites: it was compiled by an older make (pre -MMD), orphaned when a
 # .d was deleted, or carried in from another tree.  It therefore looks up to
 # date against its lone .cpp prerequisite even after a header it includes has
-# changed.  The test and standalone binaries link the object list directly
-# ($(OBJLIB) + the per-binary .o), and compile/link are separate rules, so such
+# changed.  Test and tool binaries link $(LIBRISE_A) + the per-binary .o (and
+# standalone binaries link $(OBJLIB) + the per-binary .o), and compile/link are
+# separate rules, so such
 # a stale object is RELINKED in place when a library-header change rebuilds the
 # library half: a stale vtable at best, an "Undefined symbols" link failure on
 # any signature change at worst (the exact failure mode this tracking exists to

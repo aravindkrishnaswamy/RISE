@@ -24,14 +24,17 @@ TIER="${RISE_TEST_TIER:-all}"
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--filter|-Filter)
+			[ "$#" -ge 2 ] || { echo "Missing value for $1" >&2; exit 64; }
 			FILTER="$2"
 			shift 2
 			;;
 		--tier|-Tier)
+			[ "$#" -ge 2 ] || { echo "Missing value for $1" >&2; exit 64; }
 			TIER="$2"
 			shift 2
 			;;
 		--timeout|-TimeoutSeconds)
+			[ "$#" -ge 2 ] || { echo "Missing value for $1" >&2; exit 64; }
 			RISE_TEST_TIMEOUT="$2"
 			shift 2
 			;;
@@ -47,15 +50,23 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$TIER" in
-	all|fast|extended) ;;
+	all)
+		export RISE_TEST_EXTENDED="${RISE_TEST_EXTENDED:-1}"
+		;;
+	fast)
+		export RISE_TEST_EXTENDED=0
+		;;
+	extended)
+		export RISE_TEST_EXTENDED=1
+		;;
 	*)
 		echo "Invalid --tier '$TIER' (expected all, fast, or extended)" >&2
 		exit 64
 		;;
 esac
 
-# Heavy multi-minute statistical/integration sweep suites assigned to the
-# extended tier when --tier fast or --tier extended is requested.
+# Heavy multi-minute statistical/integration sweep suites assigned exclusively
+# to the extended tier when --tier fast or --tier extended is requested.
 is_extended_test() {
 	case "$1" in
 		BDPTStrategyBalanceTest|VCMStrategyBalanceTest|SMSExtendedReferenceTest|\
@@ -73,28 +84,44 @@ is_extended_test() {
 	esac
 }
 
+# Dual-mode suites that run fast smoke/structural checks under --tier fast
+# (RISE_TEST_EXTENDED=0) and full extended workloads under --tier extended / all
+# (RISE_TEST_EXTENDED=1).
+has_extended_mode() {
+	case "$1" in
+		AgentSkillsTest|InteriorCandidateWalkCostTest|LightExitanceTest|\
+		PavilionColonnadeShowcaseTest|PolishedBRDFConsistencyTest|\
+		SPFPdfConsistencyTest|ShelfBunnyShowcaseTest|TidalStonesShowcaseTest|\
+		TimeIndexedMotionBlurTest)
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
 matches_selection() {
 	tname="$1"
 	if [ "$TIER" = "fast" ] && is_extended_test "$tname"; then
 		return 1
 	fi
-	if [ "$TIER" = "extended" ] && ! is_extended_test "$tname"; then
+	if [ "$TIER" = "extended" ] && ! is_extended_test "$tname" && ! has_extended_mode "$tname"; then
 		return 1
 	fi
 	if [ -z "$FILTER" ]; then
 		return 0
 	fi
-	old_ifs="$IFS"
-	IFS=','
-	for pat in $FILTER; do
-		IFS="$old_ifs"
+	rest="$FILTER,"
+	while [ -n "$rest" ]; do
+		pat="${rest%%,*}"
+		rest="${rest#*,}"
 		[ -n "$pat" ] || continue
 		# shellcheck disable=SC2254
 		case "$tname" in
 			$pat) return 0 ;;
 		esac
 	done
-	IFS="$old_ifs"
 	return 1
 }
 
@@ -277,12 +304,14 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	log="$LOG_DIR/$name.build.log"
 	prefix="$(printf '[ %3d/%3d ] %-46s' "$i" "$total" "$name")"
 
-	# Fast up-to-date short-circuit: Phase 1.5 just ran make over the selected
-	# targets with full -MMD header dependency tracking, and Phase 1 updated
-	# $LIB_ARCHIVE. Checking against $test_src and $LIB_ARCHIVE avoids spawning
-	# a `find $LIB_DIR -name '*.o'` subprocess on every iteration.
+	# Fast up-to-date short-circuit: when Phase 1.5 succeeded ($bulk_rc == 0),
+	# make just verified every selected target with full -MMD header dependency
+	# tracking. When Phase 1.5 failed ($bulk_rc != 0), query `make -q` (which
+	# honors .d header dependencies as well as .cpp and $LIB_ARCHIVE) before
+	# skipping, so a header-induced compile error never masks behind a stale
+	# pre-existing binary.
 	if [ -x "$test_path" ] \
-	   && { [ "$bulk_rc" -eq 0 ] || { [ "$test_path" -nt "$test_src" ] && [ "$test_path" -nt "$LIB_ARCHIVE" ]; }; }
+	   && { [ "$bulk_rc" -eq 0 ] || make -q -C "$BUILD_DIR" --no-print-directory "build-test/$name" >/dev/null 2>&1; }
 	then
 		printf '%s UP TO DATE\n' "$prefix"
 		built=$((built + 1))
@@ -363,7 +392,7 @@ done
 
 print_summary
 
-if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ]; then
+if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] || [ "$bulk_rc" -ne 0 ]; then
 	exit 1
 fi
 echo "All $found tests passed"

@@ -992,7 +992,7 @@ static bool IsFullSphereSampler( const std::string& name, const char* const* nam
 int main( int argc, char** argv )
 {
     if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
-        if( ext[0] == '1' ) g_extended = true;
+        if( ext[0] != '\0' && std::string( ext ) != "0" ) g_extended = true;
     }
     for( int i = 1; i < argc; ++i ) {
         if( std::strcmp( argv[i], "--extended" ) == 0 ) g_extended = true;
@@ -2056,9 +2056,15 @@ int main( int argc, char** argv )
         const TestResult& r = results[i];
         // Determine which SPFEntry this result corresponds to
         int si = (int)(i % numSPFs);
+        const bool isDuplicateCosineChi2 =
+            !g_extended &&
+            ( spfs[si].name == "DataDriven_constant0.4" ||
+              spfs[si].name == "DataDriven_varied" ||
+              spfs[si].name == "OrenNayar" );
+        const bool effectiveSkipChi2 = spfs[si].skipChi2 || isDuplicateCosineChi2;
         bool passed = r.integralPassed;
         if( !spfs[si].skipCrossVal ) passed = passed && r.crossValPassed;
-        if( !spfs[si].skipChi2 )     passed = passed && r.chi2Passed;
+        if( !effectiveSkipChi2 )     passed = passed && r.chi2Passed;
         std::cout << (passed ? "PASS" : "FAIL") << "  " << r.name;
         if( spfs[si].skipCrossVal && r.crossValFailures > 0 )
             std::cout << " [cross-val: skipped]";
@@ -2073,7 +2079,7 @@ int main( int argc, char** argv )
         if( !r.domainSplitPassed )
             std::cout << " [domain split: Pdf share " << r.pdfUpperShare
                       << " vs emitted share " << r.emittedUpperShare << "]";
-        if( spfs[si].skipChi2 )
+        if( effectiveSkipChi2 )
             std::cout << " [chi2: skipped]";
         else if( !r.chi2Passed )
             std::cout << " [chi2 seed-mean: " << r.chi2Stat << ", dof " << r.chi2Dof

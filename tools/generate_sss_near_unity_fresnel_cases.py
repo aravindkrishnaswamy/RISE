@@ -25,9 +25,12 @@ def compute_oracle(nt_f: float, ni_f: float, mu_f: float):
 
     if ni == nt:
         c_val = float(mu)
-        cos_bound = float(Decimal(32) * EPS * mu)
-        ref_bound = float(Decimal(64) * EPS)
-        return 0.0, c_val, True, cos_bound, ref_bound
+        cos_bound_d = Decimal(32) * EPS * mu
+        if mu > 0:
+            ref_bound_d = Decimal(64) * EPS + Decimal(8) * cos_bound_d / mu
+        else:
+            ref_bound_d = Decimal(64) * EPS
+        return 0.0, c_val, True, float(cos_bound_d), float(ref_bound_d)
 
     L = max(ni, nt)
     S = min(ni, nt)
@@ -100,15 +103,37 @@ def parse_rows(path: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--verify", action="store_true", help="Verify existing .inl against Decimal(110) oracle")
+    ap.add_argument("--write", metavar="OUT_PATH", help="Recompute and write .inl rows from the existing input grid")
     ap.add_argument("--inl", default="tests/SSSNearUnityFresnelCases.inl", help="Path to .inl file")
     args = ap.parse_args()
 
     rows = parse_rows(args.inl)
+    if args.write:
+        with open(args.write, "w", encoding="utf-8") as out:
+            for painter, nm, nt, ni, mu, _, _, _, _, _, _ in rows:
+                r_calc, c_calc, trans_calc, cb_calc, rb_calc = compute_oracle(nt, ni, mu)
+                t_str = "true" if trans_calc else "false"
+                out.write(
+                    f"{{{painter},{nm:.17g},{nt:.17g},{ni:.17g},{mu:.17g},"
+                    f"{r_calc:.17g},{c_calc:.17g},{t_str},{cb_calc:.17g},{rb_calc:.17g}}},\n"
+                )
+        print(f"Wrote {len(rows)} rows to {args.write}")
+        return 0
+
     mismatches = 0
     for idx, (painter, nm, nt, ni, mu, r_ref, c_ref, trans_ref, cb_ref, rb_ref, _) in enumerate(rows):
-        r_calc, c_calc, trans_calc, _, _ = compute_oracle(nt, ni, mu)
-        if trans_calc != trans_ref or abs(r_calc - r_ref) > 1e-15 or abs(c_calc - c_ref) > 1e-15:
-            print(f"Row {idx} mismatch: got ({r_calc}, {c_calc}, {trans_calc}) vs ({r_ref}, {c_ref}, {trans_ref})")
+        r_calc, c_calc, trans_calc, cb_calc, rb_calc = compute_oracle(nt, ni, mu)
+        if (
+            trans_calc != trans_ref
+            or abs(r_calc - r_ref) > 1e-15
+            or abs(c_calc - c_ref) > 1e-15
+            or abs(cb_calc - cb_ref) > 1e-25
+            or abs(rb_calc - rb_ref) > 1e-25
+        ):
+            print(
+                f"Row {idx} mismatch: got ({r_calc}, {c_calc}, {trans_calc}, {cb_calc}, {rb_calc}) "
+                f"vs ({r_ref}, {c_ref}, {trans_ref}, {cb_ref}, {rb_ref})"
+            )
             mismatches += 1
     if mismatches:
         print(f"FAILED: {mismatches} / {len(rows)} rows mismatched Decimal(110) oracle")

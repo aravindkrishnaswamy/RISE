@@ -1,13 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  LightExitanceTest.cpp - Verifies that radiantExitance() matches
-//    the Monte Carlo integral of emittedRadiance() for all light
-//    types.  This catches energy-budget regressions in light sources.
+//    the integral of emittedRadiance() over the sphere for all light
+//    types, catching energy-budget regressions in light sources.
 //
-//    For each light with non-zero radiantExitance, we uniformly
-//    sample directions on the sphere, evaluate emittedRadiance(),
-//    and compare the integral (average * 4pi) against the reported
-//    radiantExitance.
+//    For PointLight and SpotLight, emittedRadiance() and pdfDirection()
+//    are integrated over the sphere via piecewise 4-point Gauss-Legendre
+//    polar quadrature aligned to the emission cone boundaries (with 8
+//    azimuth samples per polar ring), while TestPhotonPowerWeighting()
+//    validates generateRandomPhoton() importance sampling via Monte Carlo.
 //
 //    Additionally verifies that pdfDirection() integrates to 1
 //    over the emission solid angle for lights that support it,
@@ -53,9 +54,10 @@ static int          gPhotonSamples   = 20000;
 // ============================================================
 
 /// Piecewise polar quadrature of emittedRadiance over the full sphere,
-/// aligned to the light's emission axis (with 8 azimuth samples per polar
-/// ring to verify 3D frame alignment and azimuthal symmetry, and 1e-6 outside
-/// the outer cone to verify zero leakage).
+/// aligned to the light's emission axis (partitioned into [0, halfInner],
+/// [halfInner, halfOuter], and [halfOuter, PI] with 8 azimuth samples per
+/// polar ring to verify 3D frame alignment, azimuthal symmetry, and zero
+/// leakage outside the outer cone).
 static RISEPel QuadratureConeExitance( const ILightPriv& light, const Scalar halfInner, const Scalar halfOuter )
 {
 	static const double kGL4X[4] = {
@@ -397,7 +399,7 @@ static void TestPhotonPowerWeighting( const char* label, ILightPriv& light )
 int main( int argc, char** argv )
 {
 	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
-		if( ext[0] == '1' ) { gMcSamples = 4000000; gPhotonSamples = 100000; }
+		if( ext[0] != '\0' && std::string( ext ) != "0" ) { gMcSamples = 4000000; gPhotonSamples = 100000; }
 	}
 	for( int i = 1; i < argc; ++i ) {
 		if( std::strcmp( argv[i], "--extended" ) == 0 ) {

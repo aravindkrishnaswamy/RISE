@@ -23,7 +23,8 @@
 //    (c) SHADOW RAYS + n.L at M1p/M1q/M3, cast against the loaded scene.
 //    (d) PAINTER STATIONS: an in-process PROBE copy (`expr` swapped to
 //        `vec3(dust,dust,dust)`) and CONTROL copy (`vec3(1,1,1)`), both
-//        path-traced at 512 spp with `oidn_denoise FALSE` forced on the
+//        path-traced at 64 spp by default (512 spp under `--extended` or
+//        `RISE_TEST_EXTENDED=1`) with `oidn_denoise FALSE` forced on the
 //        rasterizer chunk and every non-receiver object repointed to a
 //        black Lambertian, read back at the stations' projected pixels.
 //
@@ -579,7 +580,7 @@ static bool SamplePixel( const RenderResult& r, double px, double py, double& ou
 int main( int argc, char** argv )
 {
 	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
-		if( ext[0] == '1' ) gExtended = true;
+		if( ext[0] != '\0' && std::string( ext ) != "0" ) gExtended = true;
 	}
 	for( int i = 1; i < argc; ++i ) {
 		if( std::strcmp( argv[i], "--extended" ) == 0 ) gExtended = true;

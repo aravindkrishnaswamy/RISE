@@ -757,7 +757,8 @@ int main()
 	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
 		if( !entry.is_regular_file() ) { continue; }
 		const fs::path& f = entry.path();
-		if( f.extension() != ".cpp" ) { continue; }
+		const std::string ext = f.extension().string();
+		if( ext != ".cpp" && ext != ".h" && ext != ".inl" ) { continue; }
 		if( f.filename() == "SourceHygieneTest.cpp" ) { continue; }   // don't scan ourselves
 		++scanned;
 
@@ -795,17 +796,20 @@ int main()
 			}
 		}
 
-		// (2) Check capturing IRasterizerOutput sinks for oidn_denoise FALSE.
-		const bool definesCapturingSink =
-			src.find( "public IRasterizerOutput" ) != std::string::npos
-			|| src.find( "public virtual IRasterizerOutput" ) != std::string::npos;
-		if( definesCapturingSink && src.find( "OIDN-DENOISED-OK" ) == std::string::npos ) {
-			std::string norm = src;
-			std::transform( norm.begin(), norm.end(), norm.begin(),
-				[]( unsigned char c ){ return std::tolower( c ); } );
-			for( size_t p = 0; ( p = norm.find( "\\t", p ) ) != std::string::npos; ) { norm.replace( p, 2, " " ); }
-			if( norm.find( "oidn_denoise false" ) == std::string::npos ) {
-				undenoised.push_back( f.filename().string() );
+		// (2) Check capturing IRasterizerOutput sinks for oidn_denoise FALSE
+		// across both .cpp tests and shared test fixture .h headers.
+		if( ext == ".cpp" || ext == ".h" ) {
+			const bool definesCapturingSink =
+				src.find( "public IRasterizerOutput" ) != std::string::npos
+				|| src.find( "public virtual IRasterizerOutput" ) != std::string::npos;
+			if( definesCapturingSink && src.find( "OIDN-DENOISED-OK" ) == std::string::npos ) {
+				std::string norm = src;
+				std::transform( norm.begin(), norm.end(), norm.begin(),
+					[]( unsigned char c ){ return std::tolower( c ); } );
+				for( size_t p = 0; ( p = norm.find( "\\t", p ) ) != std::string::npos; ) { norm.replace( p, 2, " " ); }
+				if( norm.find( "oidn_denoise false" ) == std::string::npos ) {
+					undenoised.push_back( f.filename().string() );
+				}
 			}
 		}
 	}
@@ -2626,6 +2630,199 @@ int main()
 		       "Windows MainWindow has one ordered shutdown path" );
 	}
 
+	// ---- IJob vtable-manifest extractor self-coverage (2026-08-20) -------
+	// Prove ExtractVirtualDecls/NormalizeDeclSignature on synthetic text
+	// BEFORE trusting them against the real header.  Self-test (d) below is
+	// the actual regression guard for the doc-88 S7 blindness: a trailing
+	// defaulted parameter appended to an EXISTING virtual must change the
+	// pinned signature even though the name and position do not move --
+	// exactly what the old name-only manifest could not see.  Self-tests
+	// (g)-(h) guard the QUOTE-UNAWARE-SCAN fix (a `)`, `;`, or `{` inside a
+	// string/char literal default value desynchronizing the walk);
+	// (i)-(j) guard the WHITESPACE/`inline` widening (a literal 8-byte
+	// "virtual " match silently skipping `virtual\t...` and
+	// `inline virtual ...`).  Letters are sequential in FILE ORDER (one per
+	// Check() call, not grouped by fixture) so the prose maps directly to
+	// the call it names.
+	{
+		const std::string synth =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"protected:\n"
+			"\tIJob(){};\n"
+			"\tvirtual ~IJob(){};\n"
+			"public:\n"
+			"\t//! Adds a pinhole camera\n"
+			"\tvirtual bool AddPinholeCamera(\n"
+			"\t\tconst char* name,                          ///< [in] Camera name\n"
+			"\t\tconst double ptLocation[3],                ///< [in] Location\n"
+			"\t\tconst double fstop = 0.0                   ///< [in] F-stop\n"
+			"\t\t) = 0;\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::string kExpectedPinhole =
+			"virtual bool AddPinholeCamera(const char*name,const double ptLocation[3],"
+			"const double fstop=0.0)=0;";
+		const std::string kExpectedActiveCameraName =
+			"virtual std::string GetActiveCameraName()const=0;";
+
+		const std::vector<IJobVirtualDecl> decls =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( synth ) );
+		Check( decls.size() == 2,
+		       "self-test (a): synthetic IJob yields exactly the two pure virtuals "
+		       "(protected ctor and destructor excluded)" );
+		Check( decls.size() >= 1 && decls[0].name == "AddPinholeCamera"
+		       && decls[0].signature == kExpectedPinhole,
+		       "self-test (b): a multi-line decl with ///< trailers and a defaulted "
+		       "param normalizes to the exact expected canonical string" );
+		bool sawDestructorLeak = false;
+		for( const IJobVirtualDecl& d : decls ) { if( d.name == "IJob" ) sawDestructorLeak = true; }
+		Check( decls.size() >= 2 && decls[1].name == "GetActiveCameraName"
+		       && decls[1].signature == kExpectedActiveCameraName && !sawDestructorLeak,
+		       "self-test (c): the destructor is skipped (never leaks in under its "
+		       "'~'-stripped name) and a single-line `const = 0;` decl is extracted" );
+
+		const std::string synthWithTail =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"protected:\n"
+			"\tIJob(){};\n"
+			"\tvirtual ~IJob(){};\n"
+			"public:\n"
+			"\tvirtual bool AddPinholeCamera(\n"
+			"\t\tconst char* name,                          ///< [in] Camera name\n"
+			"\t\tconst double ptLocation[3],                ///< [in] Location\n"
+			"\t\tconst double fstop = 0.0,                  ///< [in] F-stop\n"
+			"\t\tconst double zz = 0.0                      ///< [in] NEW trailing default\n"
+			"\t\t) = 0;\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTail =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( synthWithTail ) );
+		Check( declsTail.size() >= 1 && declsTail[0].name == "AddPinholeCamera"
+		       && declsTail[0].signature != kExpectedPinhole,
+		       "self-test (d, S7 REGRESSION GUARD): a trailing defaulted parameter "
+		       "appended to an EXISTING virtual keeps its name and slot but changes "
+		       "the pinned signature -- the exact mutation a name-only manifest "
+		       "missed in the doc-88 S7 review (2026-08-20)" );
+
+		const std::string reflowed =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"  virtual bool AddPinholeCamera(\n"
+			"      const char*   name,\n"
+			"      const double  ptLocation[3], const double fstop = 0.0 ) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsReflow =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( reflowed ) );
+		Check( declsReflow.size() == 1 && declsReflow[0].signature == kExpectedPinhole,
+		       "self-test (e): reflowing/reindenting the same declaration normalizes "
+		       "to the IDENTICAL signature string" );
+
+		const std::string withTrickyComment =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\t// a decoy: virtual void Evil() { trap(); } ;\n"
+			"\t/* another decoy -- virtual int AlsoEvil() = 0; { } */\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTricky =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( withTrickyComment ) );
+		bool sawEvil = false;
+		for( const IJobVirtualDecl& d : declsTricky ) {
+			if( d.name == "Evil" || d.name == "AlsoEvil" ) sawEvil = true;
+		}
+		Check( declsTricky.size() == 1 && declsTricky[0].name == "GetActiveCameraName" && !sawEvil,
+		       "self-test (f): a comment containing a brace or the word `virtual` does "
+		       "not desynchronize extraction" );
+
+		const std::string trickyDefault =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual bool TrickyDefault(\n"
+			"\t\tconst char* s = \");evil;\",\n"
+			"\t\tconst char c = ';',\n"
+			"\t\tconst double after = 1.0\n"
+			"\t\t) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTrickyDefault =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( trickyDefault ) );
+		Check( declsTrickyDefault.size() == 1 && declsTrickyDefault[0].name == "TrickyDefault"
+		       && declsTrickyDefault[0].signature.find( "after" ) != std::string::npos,
+		       "self-test (g): a `)`/`;` inside a string or char literal default value "
+		       "does not truncate the declaration -- the trailing `after` parameter is "
+		       "captured in full" );
+
+		const std::string trickyDefaultWithTail =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual bool TrickyDefault(\n"
+			"\t\tconst char* s = \");evil;\",\n"
+			"\t\tconst char c = ';',\n"
+			"\t\tconst double after = 1.0,\n"
+			"\t\tconst double zzz = 2.0\n"
+			"\t\t) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTrickyDefaultTail =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( trickyDefaultWithTail ) );
+		Check( declsTrickyDefaultTail.size() == 1
+		       && declsTrickyDefaultTail[0].name == declsTrickyDefault[0].name
+		       && declsTrickyDefaultTail[0].signature != declsTrickyDefault[0].signature,
+		       "self-test (h): appending a further trailing defaulted parameter past "
+		       "the tricky literals keeps the name equal but changes the captured "
+		       "signature -- proves the earlier capture wasn't accidentally already "
+		       "full-width" );
+
+		const std::string tabAndInline =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual\tbool TabDecl( const double x ) = 0;\n"
+			"\tinline virtual bool InlineDecl() = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTabInline =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( tabAndInline ) );
+		bool sawTabDecl = false, sawInlineDecl = false;
+		std::string inlineDeclSignature, tabDeclSignature;
+		for( const IJobVirtualDecl& d : declsTabInline ) {
+			if( d.name == "TabDecl" ) { sawTabDecl = true; tabDeclSignature = d.signature; }
+			if( d.name == "InlineDecl" ) { sawInlineDecl = true; inlineDeclSignature = d.signature; }
+		}
+		Check( declsTabInline.size() == 2 && sawTabDecl
+		       && tabDeclSignature == "virtual bool TabDecl(const double x)=0;",
+		       "self-test (i): `virtual` followed by a TAB (not just a literal space) "
+		       "is still recognized as a declaration start AND captures the exact "
+		       "normalized signature" );
+		Check( sawInlineDecl && inlineDeclSignature == "inline virtual bool InlineDecl()=0;",
+		       "self-test (j): a leading `inline` token ahead of `virtual` is still "
+		       "recognized as a declaration start, and normalizes with the `inline` "
+		       "prefix intact" );
+
+		const std::string operatorTilde =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual ~IJob(){};\n"
+			"\tvirtual IJob& operator~() = 0;\n"
+			"\tvirtual bool Bar() = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsOpTilde =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( operatorTilde ) );
+		bool opTildePinned = false, dtorLeaked = false;
+		for( const IJobVirtualDecl& d : declsOpTilde ) {
+			if( d.signature == "virtual IJob&operator~()=0;" ) { opTildePinned = true; }
+			if( d.name == "IJob" ) { dtorLeaked = true; }
+		}
+		Check( declsOpTilde.size() == 2 && opTildePinned && !dtorLeaked,
+		       "self-test (k): a `virtual operator~()` overload is NOT mistaken for the "
+		       "destructor -- its full signature pins (empty name) while the real "
+		       "destructor stays skipped" );
+	}
+
 	// ---- IJob vtable append-only + full-signature manifest ---------------
 	// (round-4 review, 2026-07-22; hardened to pin FULL SIGNATURES rather
 	// than names alone, 2026-08-20, per the doc-88 S7 review finding above.)
@@ -3175,6 +3372,56 @@ int main()
 		       + ") -- a zero here means the anchor phrasings were reworded away; a zero on "
 		       "the LAST one means no model-facing description carries a checkable claim, "
 		       "which is where this family's findings keep landing" );
+	}
+
+	// ---- The enumeration guards' own parser, red-proved (fix round 20) --
+	// The round-17 mechanism was defective in ways only a test of the TEST
+	// can pin: it ingested comment text as ground truth and saw neither
+	// `/* */` blocks nor string literals.  Each case below is one of the
+	// reviewer's red-proofs, frozen so the mechanism cannot regress to it.
+	{
+		const std::string sample =
+			"bool Pick( const std::string& m )\n"
+			"{\n"
+			"\t// a comment that says \"ghost\" must not become a value\n"
+			"\treturn m == \"alpha\" || m == \"beta\";\n"
+			"}\n"
+			"//! run line one\n"
+			"//! run line two\n"
+			"int x = 1;   // detached\n"
+			"/* block comment mentions five mutating verbs */\n"
+			"const char* d = \"first literal \"\n"
+			"                \"second literal, escaped \\\"quoted\\\" word\";\n"
+			"// value = \"dead\";\n";
+
+		const std::string code = StripCommentsPreservingLayout( sample );
+		Check( code.size() == sample.size(),
+		       "self-test: comment stripping preserves offsets" );
+		Check( code.find( "ghost" ) == std::string::npos
+		       && code.find( "dead" ) == std::string::npos
+		       && code.find( "block comment" ) == std::string::npos,
+		       "self-test: a quoted word inside a `//` comment, a commented-out assignment, and a "
+		       "`/* */` block are ALL invisible to a ground-truth parser" );
+		Check( code.find( "\"alpha\"" ) != std::string::npos
+		       && code.find( "\"beta\"" ) != std::string::npos,
+		       "self-test: real string literals survive comment stripping" );
+
+		const std::vector<ProseBlock> blocks = ExtractProseBlocks( sample );
+		bool sawRun = false, sawBlockComment = false, sawJoinedLiteral = false, sawGhost = false;
+		for( const ProseBlock& b : blocks ) {
+			if( b.text.find( "run line one" ) != std::string::npos
+			    && b.text.find( "run line two" ) != std::string::npos ) { sawRun = true; }
+			if( b.text.find( "five mutating verbs" ) != std::string::npos ) { sawBlockComment = true; }
+			if( b.text.find( "first literal" ) != std::string::npos
+			    && b.text.find( "second literal" ) != std::string::npos
+			    && b.text.find( "\"quoted\"" ) != std::string::npos ) { sawJoinedLiteral = true; }
+			if( b.text.find( "ghost" ) != std::string::npos ) { sawGhost = true; }
+		}
+		Check( sawRun, "self-test: consecutive `//` lines join into ONE prose run" );
+		Check( sawBlockComment, "self-test: a `/* */` block is scanned for claims" );
+		Check( sawJoinedLiteral,
+		       "self-test: adjacent MODEL-FACING string literals join, with `\\\"` decoded" );
+		Check( sawGhost, "self-test: comment prose is still scanned as PROSE (only ground truth excludes it)" );
 	}
 
 	// ---- GUI edit-refusal retry gate (FIX 2) --------------------------

@@ -36,13 +36,16 @@
 //        (RED-proven during slice S1: a bogus parameter injected into
 //        one snippet made this section fail with an "invalid
 //        parameter(s)" derive diagnostic; reverted.)
-//        S1 review round 1 adds THE RENDER CONTRACT: each snippet is
-//        also RENDERED (AgentSession::LoadFromFile + Render on the
-//        extracted scene) and its linear mean luma must land in
+//        S1 review round 1 adds THE RENDER CONTRACT (enabled when
+//        --render-snippets, --extended, or RISE_TEST_EXTENDED=1 is passed):
+//        each snippet is also RENDERED (AgentSession::LoadFromFile + Render
+//        on the extracted scene) and its linear mean luma must land in
 //        (0.02, 0.98) -- a snippet that renders black (the lone-glass-
 //        under-a-delta-light anti-pattern) or a solid-white washout
-//        FAILS.  Renders are not bit-deterministic across thread
-//        schedules, so the contract is THRESHOLDS, never exact values.
+//        FAILS.  In default fast mode all 33 snippets are CST-parsed,
+//        round-tripped, and derived into a Job without running full
+//        path-traced renders.  Renders are not bit-deterministic across
+//        thread schedules, so the contract is THRESHOLDS, never exact values.
 //        (RED-proven: removing the crown-glass snippet's backdrop wall
 //        + dome makes that snippet render 100% black and this section
 //        fail; reverted.)  Plus the untagged-fence escape sweep: NO
@@ -795,7 +798,7 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc, const bool renderSnipp
 	// solid, not depth below its top, so a shallow pool would saturate at
 	// mid-water and read LESS at the stone's lowest point -- the opposite
 	// of a wet line, and what the first draft of this fence taught.
-	Check( totalSnippets >= 20, "the seed skills carry at least 20 ```rise snippets in total (got " +
+	Check( totalSnippets == 33, "the seed skills carry the expected 33 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
