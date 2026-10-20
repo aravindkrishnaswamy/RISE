@@ -95,6 +95,7 @@ all : librise rise meshconverter imageconverter biospecbsdfmaker
 drise : drise_server drise_client drise_submitter
 
 LIBRISE_A = $(PATHDEST)librise.a
+ARCHIVE_BUILD_DEFS = Makefile Filelist Config.common Config.specific
 ifdef IS_MACOS_BUILD
 ARCHIVE_LINK_LIBRISE = -Wl,-dead_strip $(LIBRISE_A)
 else
@@ -103,7 +104,11 @@ endif
 
 librise : $(LIBRISE_A)
 
-$(LIBRISE_A) : $(OBJLIB)
+# Depend on $(ARCHIVE_BUILD_DEFS) in addition to $(OBJLIB) so removing a
+# translation unit from Filelist (or changing platform gates in Config.*)
+# invalidates and recreates the archive rather than leaving removed members
+# inside a stale librise.a.
+$(LIBRISE_A) : $(OBJLIB) $(ARCHIVE_BUILD_DEFS)
 	@mkdir -p $(PATHDEST)
 	@echo Creating archive
 	@rm -f $(LIBRISE_A)

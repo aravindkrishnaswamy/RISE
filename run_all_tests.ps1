@@ -7,8 +7,10 @@
 # under build/cmake/rise-tests.
 #
 # Usage:
-#   .\run_all_tests.ps1                          # Release, no timeout
+#   .\run_all_tests.ps1                          # Release, Tier=all (extended on)
 #   .\run_all_tests.ps1 -Config Debug            # Use dbin/RISE.lib
+#   .\run_all_tests.ps1 -Tier fast               # Fast tier (RISE_TEST_EXTENDED=0)
+#   .\run_all_tests.ps1 -Tier extended           # Extended tier only (RISE_TEST_EXTENDED=1)
 #   .\run_all_tests.ps1 -TimeoutSeconds 60       # Kill any test exceeding 60s
 #   .\run_all_tests.ps1 -NoBuild                 # Run pre-built tests only
 #   .\run_all_tests.ps1 -BuildOnly               # Build only, don't run
@@ -22,6 +24,8 @@
 param(
     [ValidateSet('Release', 'Debug')]
     [string]$Config = 'Release',
+    [ValidateSet('all', 'fast', 'extended')]
+    [string]$Tier = $(if ($env:RISE_TEST_TIER) { $env:RISE_TEST_TIER } else { 'all' }),
     [int]$TimeoutSeconds = 0,
     [string]$LogDir,
     [switch]$NoBuild,
@@ -30,6 +34,49 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+$Tier = $Tier.ToLowerInvariant()
+switch ($Tier) {
+    'all' {
+        if ([string]::IsNullOrEmpty($env:RISE_TEST_EXTENDED)) {
+            $env:RISE_TEST_EXTENDED = '1'
+        }
+    }
+    'fast' {
+        $env:RISE_TEST_EXTENDED = '0'
+    }
+    'extended' {
+        $env:RISE_TEST_EXTENDED = '1'
+    }
+}
+
+# Heavy multi-minute statistical/integration sweep suites assigned exclusively
+# to the extended tier when -Tier fast or -Tier extended is requested.
+$ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]@(
+        'BDPTStrategyBalanceTest', 'VCMStrategyBalanceTest', 'SMSExtendedReferenceTest',
+        'SMSExtendedPartitionTest', 'SMSUniformDispersionTest', 'SMSSupersededRowsTest',
+        'SMSFourVertexVarianceTest', 'PTGuidingMISPartitionTest', 'BDPTGuidedContinuationTest',
+        'CompositeEnergyConservationTest', 'LayeredWhiteFurnaceTest',
+        'VolumeAbsorptionAttenuationTest', 'MediumInsideOutsideInvariantTest',
+        'ExteriorIndexInvarianceTest', 'SSSExteriorIndexInvarianceTest',
+        'CstDeriveGoldenTest', 'AgentViewModeRenderTest', 'AgentProposeRenderTest'
+    ),
+    [System.StringComparer]::Ordinal
+)
+
+# Dual-mode suites that run fast smoke/structural checks under -Tier fast
+# (RISE_TEST_EXTENDED=0) and full extended workloads under -Tier extended / all
+# (RISE_TEST_EXTENDED=1).
+$DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]@(
+        'AgentSkillsTest', 'InteriorCandidateWalkCostTest', 'LightExitanceTest',
+        'PavilionColonnadeShowcaseTest', 'PolishedBRDFConsistencyTest',
+        'SPFPdfConsistencyTest', 'ShelfBunnyShowcaseTest', 'TidalStonesShowcaseTest',
+        'TimeIndexedMotionBlurTest'
+    ),
+    [System.StringComparer]::Ordinal
+)
 
 $RepoRoot      = Split-Path -Parent $PSCommandPath
 $BinSubdir     = if ($Config -eq 'Debug') { 'dbin' } else { 'bin' }
@@ -87,6 +134,13 @@ if (-not (Test-Path -LiteralPath $SrcDir)) {
 }
 
 $testSources = Get-ChildItem -Path $SrcDir -Filter '*.cpp' -File | Sort-Object Name
+if ($Tier -eq 'fast') {
+    $testSources = $testSources | Where-Object { -not $ExtendedTests.Contains($_.BaseName) }
+} elseif ($Tier -eq 'extended') {
+    $testSources = $testSources | Where-Object {
+        $ExtendedTests.Contains($_.BaseName) -or $DualModeExtendedTests.Contains($_.BaseName)
+    }
+}
 if ($Filter) {
     # Accept "-Filter A,B,C" passed via powershell -File (which arrives as a
     # single string with commas) by splitting it into a real array.
@@ -104,7 +158,7 @@ if ($Filter) {
 
 $total = $testSources.Count
 if ($total -eq 0) {
-    Write-Host "ERROR: No test sources found under $SrcDir matching filter." -ForegroundColor Red
+    Write-Host "ERROR: No test sources found under $SrcDir matching selection." -ForegroundColor Red
     exit 1
 }
 
@@ -146,12 +200,12 @@ $buildFailures = @()
 
 if (-not $NoBuild) {
     $buildLog = Join-Path $LogDir 'build.log'
-    Write-Host ('Building {0} test(s) [{1}]...' -f $total, $Config)
+    Write-Host ('Building {0} test(s) [{1}, tier={2}]...' -f $total, $Config, $Tier)
     $bs = Get-Date
 
-    if ($Filter) {
-        # Filtered subset: build each matching target individually so we don't
-        # over-build. msbuild startup overhead is acceptable for small subsets.
+    if ($Filter -or $Tier -eq 'extended') {
+        # Filtered or extended subset: build each matching target individually so
+        # we don't over-build. msbuild startup overhead is acceptable for small subsets.
         # Continue past per-test failures so one broken test doesn't mask the
         # state of the others (matches the bash script's loop semantics).
         foreach ($src in $testSources) {
