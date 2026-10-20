@@ -86,13 +86,16 @@ using namespace RISE::Implementation;
 //  Test configuration
 // ============================================================
 
-static const int NUM_SAMPLES        = 500000;   // Samples for histogram test
-static const int NUM_CROSS_VALIDATE = 50000;    // Samples for cross-validation
+static const int MAX_CHI2_SEEDS     = 8;
+static int       NUM_SAMPLES        = 200000;   // Samples for histogram test (500000 under --extended)
+static int       NUM_CROSS_VALIDATE = 20000;    // Samples for cross-validation (50000 under --extended)
+static int       NUM_SUBDENSITY     = 50000;    // Samples for Part 2b emission-probability (200000 under --extended)
 static const int NUM_THETA_BINS     = 20;       // Bins in polar angle
 static const int NUM_PHI_BINS       = 40;       // Bins in azimuthal angle
 static const double CHI2_ALPHA      = 0.001;    // Significance level
 static const double CROSS_VAL_TOL   = 1e-6;     // Tolerance for relative error
 static const double INTEGRAL_TOL    = 0.05;     // Tolerance for PDF integral (5%)
+static bool      g_extended         = false;
 
 // ------------------------------------------------------------
 //  DL-176: seeds, and the multi-seed chi-squared criterion.
@@ -133,7 +136,7 @@ static const double INTEGRAL_TOL    = 0.05;     // Tolerance for PDF integral (5
 //  independent statistics and 0.190 % over all 30 evaluations, against
 //  a single-seed alpha=0.001 threshold's 3.0 % over 30.
 // ------------------------------------------------------------
-static const int    NUM_CHI2_SEEDS  = 8;        // Independent seeds per chi2 row
+static int          NUM_CHI2_SEEDS  = 4;        // Independent seeds per chi2 row (8 under --extended)
 static const unsigned int SUBDENSITY_SEED = 777001u;
 static const double SUBDENSITY_TOL  = 0.01;     // Part 2b band (see there)
 static const unsigned int CHI2_SEED_BASE  = 20260918u;
@@ -239,7 +242,7 @@ struct TestResult {
     double chi2Z;           //!< ( mean - dof ) / sqrt( 2*dof / NUM_CHI2_SEEDS )
     double chi2Min;
     double chi2Max;
-    double chi2Seeds[ NUM_CHI2_SEEDS ];
+    double chi2Seeds[ MAX_CHI2_SEEDS ];
 };
 
 // ============================================================
@@ -512,7 +515,7 @@ static TestResult TestSPF(
         // not perturb Part 1's or Part 3's streams.
         RandomNumberGenerator rngE( SUBDENSITY_SEED );
         Implementation::IndependentSampler samplerE( rngE );
-        const int NE = 200000;
+        const int NE = ( subDensityTol < 1e-3 ) ? 200000 : NUM_SUBDENSITY;
         int emitted = 0, emittedUp = 0;
         for( int i = 0; i < NE; i++ )
         {
@@ -882,7 +885,7 @@ static NMResult TestSPFNM(
         }
         RandomNumberGenerator rngE( SUBDENSITY_SEED );
         Implementation::IndependentSampler samplerE( rngE );
-        const int NE = 200000;
+        const int NE = NUM_SUBDENSITY;
         int emitted = 0;
         for( int i = 0; i < NE; i++ ) {
             ScatteredRayContainer scattered;
@@ -986,8 +989,21 @@ static bool IsFullSphereSampler( const std::string& name, const char* const* nam
 //  Main
 // ============================================================
 
-int main()
+int main( int argc, char** argv )
 {
+    if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+        if( ext[0] == '1' ) g_extended = true;
+    }
+    for( int i = 1; i < argc; ++i ) {
+        if( std::strcmp( argv[i], "--extended" ) == 0 ) g_extended = true;
+    }
+    if( g_extended ) {
+        NUM_SAMPLES        = 500000;
+        NUM_CROSS_VALIDATE = 50000;
+        NUM_SUBDENSITY     = 200000;
+        NUM_CHI2_SEEDS     = 8;
+    }
+
     std::cout << "===== SPF PDF Consistency Test =====" << std::endl;
     std::cout << "Cross-validation samples: " << NUM_CROSS_VALIDATE << std::endl;
     std::cout << "Histogram samples: " << NUM_SAMPLES << std::endl;
@@ -1690,6 +1706,18 @@ int main()
             std::string fullName = spfs[s].name + " @ " + angleNames[a];
             std::cout << "Testing " << fullName << "..." << std::endl;
 
+            // As documented in the DL-176 header note, DataDriven_constant0.4,
+            // DataDriven_varied, and OrenNayar share the exact same cosine-hemisphere
+            // direction sampler and seed stream as Lambertian (producing bit-identical
+            // chi2 statistics).  Skip their duplicate chi2 histogram passes in default
+            // fast mode while keeping Part 1 cross-validation, Part 2 integral, and
+            // Part 2b sub-density/domain-split active on every row.
+            const bool duplicateCosineChi2 = !g_extended && (
+                spfs[s].name == "DataDriven_constant0.4" ||
+                spfs[s].name == "DataDriven_varied" ||
+                spfs[s].name == "OrenNayar" );
+            const bool effectiveSkipChi2 = spfs[s].skipChi2 || duplicateCosineChi2;
+
             TestResult r = TestSPF(
                 fullName,
                 *spfs[s].spf,
@@ -1697,7 +1725,7 @@ int main()
                 spfs[s].singleLobe,
                 spfs[s].exactSelectedPdf,
                 spfs[s].skipCrossVal,
-                spfs[s].skipChi2,
+                effectiveSkipChi2,
                 spfs[s].integralTol,
                 // Pinned rows get a band wide enough that the pin below
                 // is what gates them, not this.
@@ -1780,9 +1808,11 @@ int main()
             }
 
             // Report chi-squared
-            if( spfs[s].skipChi2 )
+            if( effectiveSkipChi2 )
             {
-                std::cout << "  SKIP chi2 (known model limitation — see per-material notes)" << std::endl;
+                std::cout << "  SKIP chi2 ("
+                          << ( duplicateCosineChi2 ? "bit-identical cosine-hemisphere sampler covered by Lambertian" : "known model limitation — see per-material notes" )
+                          << ")" << std::endl;
             }
             else if( r.chi2Dof > 0 )
             {

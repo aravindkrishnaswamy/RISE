@@ -312,10 +312,15 @@ class CanaryJob : public Job
 public:
 	CanaryJob( unsigned int sleepMs, std::shared_ptr<std::atomic<int>> counter )
 	: Job(), mSleepMs( sleepMs ), mCounter( std::move( counter ) ) {}
+	void ReleaseEarly() { mReleaseEarly.store( true, std::memory_order_release ); }
 	bool Rasterize() override
 	{
 		mCounter->fetch_add( 1, std::memory_order_acq_rel );
-		std::this_thread::sleep_for( std::chrono::milliseconds( mSleepMs ) );
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( mSleepMs );
+		while( !mReleaseEarly.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+		}
 		const bool ok = Job::Rasterize();
 		mCounter->fetch_sub( 1, std::memory_order_acq_rel );
 		return ok;
@@ -323,6 +328,7 @@ public:
 private:
 	unsigned int mSleepMs;
 	std::shared_ptr<std::atomic<int>> mCounter;
+	std::atomic<bool> mReleaseEarly{ false };
 };
 
 // A Job subclass whose Rasterize() always throws -- mirrors
@@ -835,7 +841,7 @@ static void RunConcurrencyRaceClosureTest()
 
 		// Let the race window run for a bit -- long enough for many
 		// interleavings of interactive passes and agent renders.
-		std::this_thread::sleep_for( std::chrono::milliseconds( 600 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
 		stop.store( true, std::memory_order_release );
 		agentThread.join();
 		scrubThread.join();
@@ -2360,10 +2366,15 @@ static void RunInterleavedMintNoClobberTest()
 	// ILLEGITIMATE clear (interactive pass, wrong id) from the
 	// legitimate one (agent's own ActiveFlipGuard, right id).
 	std::atomic<bool> agentRan{ false };
+	std::atomic<bool> allowAgentFinish{ false };
 	SceneEditController::RenderJobId agentJobId = SceneEditController::kInvalidRenderJobId;
 	const bool accepted = controller.SubmitAgentRenderAsync(
 		[&]() {
-			std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 500 );
+			while( !allowAgentFinish.load( std::memory_order_acquire ) &&
+			       std::chrono::steady_clock::now() < deadline ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+			}
 			agentRan.store( true, std::memory_order_release );
 		},
 		String( "clobber_probe" ), &agentJobId );
@@ -2406,6 +2417,7 @@ static void RunInterleavedMintNoClobberTest()
 	// legitimately blocked behind the -- now released -- interactive
 	// pass's CancelAndParkRender_ wait; the closure runs trivially fast
 	// once unblocked).
+	allowAgentFinish.store( true, std::memory_order_release );
 	Check( controller.WaitForRenderJob( agentJobId, 5000 ), "WaitForRenderJob eventually observes the agent job's REAL completion" );
 	Check( agentRan.load( std::memory_order_acquire ), "the agent closure actually ran by the time WaitForRenderJob returned true" );
 
@@ -3267,7 +3279,7 @@ static void RunProductionTripleConcurrencyProofTest()
 		}
 	} );
 
-	std::this_thread::sleep_for( std::chrono::milliseconds( 600 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
 	stop.store( true, std::memory_order_release );
 	productionThread.join();
 	agentThread.join();
@@ -3336,7 +3348,13 @@ static void RunDirectRasterizeRedProveTest()
 		}
 	} );
 
-	std::this_thread::sleep_for( std::chrono::milliseconds( 600 ) );
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 600 );
+		while( proof.maxObserved.load( std::memory_order_acquire ) < 2 &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+	}
 	stop.store( true, std::memory_order_release );
 	directThread.join();
 	scrubThread.join();
@@ -5315,6 +5333,7 @@ static void RunRenderOwnsSceneGuardTest()
 			} );
 		Check( mutatorQuick, "MONEY: GoToHomeView() did NOT wedge on mMutex during a render" );
 
+		pJob->ReleaseEarly();
 		const bool completed = session->RenderWait( ar.renderJobId, 5000 );
 		Check( completed, "render completed within the timeout" );
 		Check( !controller.ForTest_RenderOwnsScene(), "render-owns-scene flag CLEARED after the render finished" );

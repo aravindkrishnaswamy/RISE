@@ -1663,41 +1663,46 @@ static void AuditPSSMLTSample( const StreamRecordingPSSMLT& m, size_t lightEnd, 
 	t.pssmltSamples++;
 }
 
-static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t, int* pMaxPssmltStream )
+static IJobPriv* LoadMediumBoxJob( bool heterogeneous )
 {
 	char path[512];
 	std::snprintf( path, sizeof(path), "/tmp/sobol_budget_medium_%d.RISEscene", (int)::getpid() );
 	{
 		std::ofstream ofs( path );
-		if( !ofs ) return false;
+		if( !ofs ) return nullptr;
 		ofs << MediumBoxScene( heterogeneous );
 	}
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob || !pJob->LoadAsciiSceneViaCst( path ) ) {
 		if( pJob ) safe_release( pJob );
 		std::remove( path );
-		return false;
+		return nullptr;
 	}
 	std::remove( path );
+	const IScene* pScene = pJob->GetScene();
+	auto* pRaster = dynamic_cast<PixelBasedRasterizerHelper*>( pJob->GetRasterizer() );
+	IRayCaster* pCaster = pRaster ? pRaster->GetRayCaster() : nullptr;
+	if( pScene && pCaster ) {
+		pCaster->AttachScene( pScene );
+		pScene->GetObjects()->PrepareForRendering();
+	}
+	return pJob;
+}
+
+static bool RunStreamAudit( IJobPriv* pJob, bool nm, StreamAuditTally& t, int* pMaxPssmltStream )
+{
+	if( !pJob ) return false;
 	const IScene* pScene = pJob->GetScene();
 	const ICamera* pCamera = pScene ? pScene->GetCamera() : nullptr;
 	auto* pRaster = dynamic_cast<PixelBasedRasterizerHelper*>( pJob->GetRasterizer() );
 	IRayCaster* pCaster = pRaster ? pRaster->GetRayCaster() : nullptr;
-	if( !pScene || !pCamera || !pCaster ) { safe_release( pJob ); return false; }
+	if( !pScene || !pCamera || !pCaster || !pCaster->GetLightSampler() ) return false;
 
 	RandomNumberGenerator rng( 283u );
 	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
 	StabilityConfig stability;		// max_volume_bounce 64
 	BDPTIntegrator* pBdpt = new BDPTIntegrator( 20, 20, stability );
-
-	// The LIGHT walk needs a light sampler: without one
-	// GenerateLightSubpathImpl returns before drawing anything, and an
-	// earlier revision of this test audited only the eye walk (review of
-	// DL-283, P1-2).  Same wiring the rasterizers do.
-	pCaster->AttachScene( pScene );
-	pScene->GetObjects()->PrepareForRendering();
 	pBdpt->SetLightSampler( pCaster->GetLightSampler() );
-	if( !pCaster->GetLightSampler() ) { safe_release( pBdpt ); safe_release( pJob ); return false; }
 
 	for( unsigned int i = 0; i < 4096u; i++ ) {
 		const Point2 screen( ( ( i % 64u ) + 0.5 ) / 64.0, ( ( i / 64u ) + 0.5 ) / 64.0 );
@@ -1729,7 +1734,6 @@ static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t, in
 		}
 	}
 	safe_release( pBdpt );
-	safe_release( pJob );
 	return true;
 }
 
@@ -1738,10 +1742,12 @@ static void TestMediumDistanceStreamAudit()
 	std::cout << "\nTest H: BDPT medium distance sampling stays in its own stream block (DL-283)\n";
 	bool ok = true;
 	for( int het = 1; het >= 0; het-- ) {
+		IJobPriv* pJob = LoadMediumBoxJob( het != 0 );
 		for( int nm = 0; nm < 2; nm++ ) {
 			StreamAuditTally t;
 			int maxPssmlt = 0;
-			if( !RunStreamAudit( het != 0, nm != 0, t, !nm ? &maxPssmlt : nullptr ) || t.samples == 0 ) {
+			if( !RunStreamAudit( pJob, nm != 0, t, !nm ? &maxPssmlt : nullptr ) || t.samples == 0 ) {
+				if( pJob ) safe_release( pJob );
 				std::cerr << "  FAIL: could not build/drive the medium box scene.\n";
 				exit( 1 );
 			}
@@ -1823,6 +1829,7 @@ static void TestMediumDistanceStreamAudit()
 				ok = false;
 			}
 		}
+		if( pJob ) safe_release( pJob );
 	}
 	if( !ok ) exit( 1 );
 	std::cout << "  Passed!\n";

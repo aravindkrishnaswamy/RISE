@@ -102,6 +102,7 @@ using namespace RISE::Implementation;
 
 static int g_pass = 0;
 static int g_fail = 0;
+static bool g_extended = false;
 
 static void Check( bool ok, const std::string& what )
 {
@@ -320,7 +321,9 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 	double pdfMass = 0;
 	std::vector<double> histQ( kBins, 0.0 ), histPdf( kBins, 0.0 );
 	std::vector<double> lHistQ( kLobeBins, 0.0 ), lHistPdf( kLobeBins, 0.0 );
-	SphereQuadrature( axis, 1500, 512, [&]( const Vector3& w, double dOm ) {
+	const int qNs   = g_extended ? 1500 : 600;
+	const int qNpsi = g_extended ? 512  : 128;
+	SphereQuadrature( axis, qNs, qNpsi, [&]( const Vector3& w, double dOm ) {
 		const RISEPel f = bsdf.value( w, ri );
 		const double cw = std::fabs( Vector3Ops::Dot( w, ri.vNormal ) );
 		const int b = BinOf( w, binOnb );
@@ -498,16 +501,39 @@ static void RunBuildingBlocks()
 	Check( worstF <= 1e-10, "gate 0a: PolishedBRDF::Fresnel equals Optics::CalculateDielectricReflectanceCosine" );
 
 	// (b) T_avg closed form (+ eta<1 identity, + near-1 quadrature) vs a
-	//     4e6-point midpoint rule of 2 mu (1 - F(mu)).
+	//     composite 4-point Gauss-Legendre quadrature of 2 mu (1 - F(mu)).
+	//     For eta < 1, substituting u = cos(theta_t) = sqrt(1 - (1 - mu^2)/eta^2)
+	//     maps the non-TIR support [sqrt(1 - eta^2), 1] smoothly onto u in [0, 1]
+	//     with 2 mu dmu = 2 eta^2 u du, removing the critical-angle branch-point
+	//     derivative singularity.
+	static const double kGL4X[4] = {
+		-0.86113631159405257522, -0.33998104358485626480,
+		 0.33998104358485626480,  0.86113631159405257522
+	};
+	static const double kGL4W[4] = {
+		 0.34785484513745385737,  0.65214515486254614263,
+		 0.65214515486254614263,  0.34785484513745385737
+	};
 	double worstT = 0;
 	for( double eta : etas ) {
-		const int n = 4000000;
+		const int nPanels = 64;
 		double q = 0;
-		for( int i = 0; i < n; ++i ) {
-			const double mu = ( i + 0.5 ) / n;
-			q += 2.0 * mu * ( 1.0 - Optics::CalculateDielectricReflectanceCosine( mu, 1.0, eta ) );
+		for( int i = 0; i < nPanels; ++i ) {
+			const double a = double( i ) / nPanels;
+			const double b = double( i + 1 ) / nPanels;
+			const double mid = 0.5 * ( a + b );
+			const double half = 0.5 * ( b - a );
+			for( int g = 0; g < 4; ++g ) {
+				const double u = mid + half * kGL4X[g];
+				const double w = half * kGL4W[g];
+				if( eta < 1.0 ) {
+					const double mu = std::sqrt( std::max( 0.0, 1.0 - eta * eta * ( 1.0 - u * u ) ) );
+					q += w * 2.0 * eta * eta * u * ( 1.0 - Optics::CalculateDielectricReflectanceCosine( mu, 1.0, eta ) );
+				} else {
+					q += w * 2.0 * u * ( 1.0 - Optics::CalculateDielectricReflectanceCosine( u, 1.0, eta ) );
+				}
+			}
 		}
-		q /= n;
 		const double t = PolishedBRDF::HemisphericalTransmittance( 1.0, eta );
 		worstT = std::max( worstT, std::fabs( t - q ) );
 	}
@@ -561,10 +587,11 @@ static void RunPerChannelRows( unsigned int& seed )
 		{ "per-channel N (8,40,200) ior1.5",            ior1,   scatRGB },
 		{ "per-channel N (20,DELTA,60) ior(1.3,1.5,1.8)", iorRGB, scatMix },
 	};
+	const int rowDraws = g_extended ? 400000 : 100000;
 	for( const Row& r : rows ) {
 		PolishedMaterial* mat = new PolishedMaterial( *rd, *tau, *r.nt, *r.sc, false );  mat->addref();
-		RunRowMaterial( *mat, r.name, Fixture{ 0.0, 0.0, false }, 400000, seed++ );
-		RunRowMaterial( *mat, r.name, Fixture{ 70.0, 0.0, false }, 400000, seed++ );
+		RunRowMaterial( *mat, r.name, Fixture{ 0.0, 0.0, false }, rowDraws, seed++ );
+		RunRowMaterial( *mat, r.name, Fixture{ 70.0, 0.0, false }, rowDraws, seed++ );
 		safe_release( mat );
 	}
 	safe_release( scatMix ); safe_release( scatRGB ); safe_release( iorRGB );
@@ -577,6 +604,7 @@ static void RunPerChannelRows( unsigned int& seed )
 static void RunSiblingAudit( unsigned int& seed )
 {
 	std::cout << "-- gate 6 (sibling audit) --" << std::endl;
+	const int rowDraws = g_extended ? 400000 : 100000;
 	{
 		UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) );  white->addref();
 		const double roughs[] = { 0.3, 0.8 };
@@ -585,8 +613,8 @@ static void RunSiblingAudit( unsigned int& seed )
 			SheenMaterial* sheen = new SheenMaterial( *white, *rough );  sheen->addref();
 			char name[64];
 			std::snprintf( name, sizeof(name), "sibling sheen rough%.1f", r );
-			RunRowMaterial( *sheen, name, Fixture{ 0.0, 0.0, false }, 400000, seed++ );
-			RunRowMaterial( *sheen, name, Fixture{ 60.0, 0.0, false }, 400000, seed++ );
+			RunRowMaterial( *sheen, name, Fixture{ 0.0, 0.0, false }, rowDraws, seed++ );
+			RunRowMaterial( *sheen, name, Fixture{ 60.0, 0.0, false }, rowDraws, seed++ );
 			safe_release( sheen );
 			safe_release( rough );
 		}
@@ -616,16 +644,16 @@ static void RunSiblingAudit( unsigned int& seed )
 		                                       : "gate 6 (DL-325): datadriven_material (varied table) HAS an SPF" );
 		if( dd->GetSPF() ) {
 			const char* nm = variant == 0 ? "datadriven constant 0.4" : "datadriven varied chromatic";
-			RunRowMaterial( *dd, nm, Fixture{ 0.0,  0.0, false }, 400000, seed++ );
-			RunRowMaterial( *dd, nm, Fixture{ 30.0, 0.0, false }, 400000, seed++ );
-			RunRowMaterial( *dd, nm, Fixture{ 70.0, 0.0, false }, 400000, seed++ );
+			RunRowMaterial( *dd, nm, Fixture{ 0.0,  0.0, false }, rowDraws, seed++ );
+			RunRowMaterial( *dd, nm, Fixture{ 30.0, 0.0, false }, rowDraws, seed++ );
+			RunRowMaterial( *dd, nm, Fixture{ 70.0, 0.0, false }, rowDraws, seed++ );
 			// Tilted SHADING normal (bump / normal map / glint): directions above the
 			// shading plane but below the true surface must be outside BOTH the BSDF's
 			// and the SPF's support (DL-325 review P1) -- else PT's sampled continuation
 			// loses energy NEE and connections still see.
 			const double tilts[4][2] = { { 45, 15 }, { 30, 40 }, { 70, -25 }, { 20, 50 } };
 			for( const auto& tp : tilts ) {
-				RunRowMaterial( *dd, nm, Fixture{ tp[0], tp[1], false }, 400000, seed++ );
+				RunRowMaterial( *dd, nm, Fixture{ tp[0], tp[1], false }, rowDraws, seed++ );
 			}
 			if( variant == 0 ) {
 				const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, false } );
@@ -663,8 +691,12 @@ static void RunSiblingAudit( unsigned int& seed )
 int main( int argc, char** argv )
 {
 	bool skipHG = false;
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		if( ext[0] == '1' ) g_extended = true;
+	}
 	for( int i = 1; i < argc; ++i ) {
 		if( std::strcmp( argv[i], "--skip-hg" ) == 0 ) skipHG = true;
+		if( std::strcmp( argv[i], "--extended" ) == 0 ) g_extended = true;
 	}
 
 	g_stub = new StubObject();
@@ -686,17 +718,18 @@ int main( int argc, char** argv )
 	}
 
 	const double thetas[] = { 0.0, 30.0, 60.0, 80.0 };
+	const int rowDraws = g_extended ? 400000 : 100000;
 	unsigned int seed = 20260928;
 	std::cout << "-- gates 1, 2, 4, 5 --" << std::endl;
 	for( const Config& c : cfgs ) {
 		for( double t : thetas ) {
-			RunRow( c, Fixture{ t, 0.0, false }, 400000, seed++ );
+			RunRow( c, Fixture{ t, 0.0, false }, rowDraws, seed++ );
 		}
 	}
 	// Tilted shading normal and back-face rows on the topology-L material.
-	RunRow( cfgs[0], Fixture{ 45.0, 15.0, false }, 400000, seed++ );
-	RunRow( cfgs[0], Fixture{ 30.0, 0.0,  true  }, 400000, seed++ );
-	RunRow( cfgs[1], Fixture{ 60.0, 0.0,  true  }, 400000, seed++ );
+	RunRow( cfgs[0], Fixture{ 45.0, 15.0, false }, rowDraws, seed++ );
+	RunRow( cfgs[0], Fixture{ 30.0, 0.0,  true  }, rowDraws, seed++ );
+	RunRow( cfgs[1], Fixture{ 60.0, 0.0,  true  }, rowDraws, seed++ );
 
 	RunPerChannelRows( seed );
 	RunSiblingAudit( seed );

@@ -470,15 +470,23 @@ static void SectionS( const int spp )
 
 //! On the 192x192 film: the 32x32 film is ONE FrameStore tile, which one
 //! worker renders alone, so only the big film exercises concurrent posing.
-static void SectionB( const int spp, const int n )
+static void SectionB( const int spp, const int n, const bool fastSubset = false )
 {
-	std::cout << "\nB: all threads TI vs OLD (single-threaded), 192x192, " << n << " salted renders each\n";
-	static const char* kScenes[] = { "combo_big", "ext_combo_big" };
-	const int nRas = int( sizeof( kRasterizers ) / sizeof( kRasterizers[0] ) );
-	const int family = 2 * nRas * 17;
+	std::cout << "\nB: all threads TI vs OLD (single-threaded), 192x192, " << n << " salted renders each"
+		<< ( fastSubset ? " (fast representative subset; pass --extended for full 2x6 matrix)" : "" ) << "\n";
+	static const char* kAllScenes[] = { "combo_big", "ext_combo_big" };
+	static const char* kFastScenes[] = { "combo_big" };
+	static const char* kFastRasterizers[] = { "pt", "bdpt" };
+	const char* const* scenes = fastSubset ? kFastScenes : kAllScenes;
+	const int nScenes = fastSubset ? 1 : 2;
+	const char* const* rasList = fastSubset ? kFastRasterizers : kRasterizers;
+	const int nRas = fastSubset ? 2 : int( sizeof( kRasterizers ) / sizeof( kRasterizers[0] ) );
+	const int family = nScenes * nRas * 17;
 	const double alpha = 0.01 / family;
-	for( const char* scene : kScenes ) {
-		for( const char* ras : kRasterizers ) {
+	for( int si = 0; si < nScenes; ++si ) {
+		const char* scene = scenes[si];
+		for( int ri = 0; ri < nRas; ++ri ) {
+			const char* ras = rasList[ri];
 			std::vector<double> tiMean, oldMean;
 			std::vector<std::vector<double> > tiReg( 16 ), oldReg( 16 );
 			bool ok = true, allTI = true;
@@ -569,13 +577,30 @@ int main( int argc, char** argv )
 		return 0;
 	}
 	g_self = std::filesystem::absolute( argv[0] ).string();
-	const std::string only = argc > 1 ? argv[1] : "all";
-	const int spp = argc > 2 ? std::atoi( argv[2] ) : 16;
-	const int n = argc > 3 ? std::atoi( argv[3] ) : 8;
+	bool extended = false;
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		if( ext[0] == '1' ) extended = true;
+	}
+	std::vector<const char*> posArgs;
+	for( int i = 1; i < argc; ++i ) {
+		if( std::strcmp( argv[i], "--extended" ) == 0 ) {
+			extended = true;
+		} else {
+			posArgs.push_back( argv[i] );
+		}
+	}
+	const std::string only = !posArgs.empty() ? posArgs[0] : "all";
+	const int spp = posArgs.size() > 1 ? std::atoi( posArgs[1] ) : 16;
+	const int n = posArgs.size() > 2 ? std::atoi( posArgs[2] ) : 8;
 	std::cout << "TimeIndexedMotionBlurTest (DL-465)\n";
 	if( only == "all" || only == "S" ) SectionS( spp );
 	if( only == "all" || only == "A" ) SectionA( spp );
-	if( only == "all" || only == "B" ) SectionB( spp, n );
+	if( only == "all" ) {
+		if( extended ) SectionB( spp, n, false );
+		else           SectionB( 8, 4, true );
+	} else if( only == "B" ) {
+		SectionB( spp, n, false );
+	}
 	if( only == "all" || only == "C" ) SectionC( spp );
 	if( only == "D" ) SectionD( spp, n );
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";

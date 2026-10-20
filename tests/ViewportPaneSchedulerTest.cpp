@@ -2380,7 +2380,6 @@ static void RunPaneIndexedGestureTest()
 	Check( f.ctrl->OnPanePointerUp( 1, Point2( 60, 34 ) ), "pane-indexed Up accepted" );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 	       "orbit release drains its two-pane final/polish sequence" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
 	const std::size_t orbitReleaseCount = f.ctrl->Sequence().size();
 	Check( orbitReleaseCount >= 4
 	    && f.ctrl->SettlesAt( orbitReleaseCount, kSettleMs ),
@@ -2409,7 +2408,6 @@ static void RunPaneIndexedGestureTest()
 	f.ctrl->OnPanePointerUp( 1, Point2( 12, 12 ) );
 	Check( f.ctrl->WaitForPassCount( orbitReleaseCount + 2, kWaitMs ),
 	       "pointer release sequences drain before the free-fly twin checks" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
 	const std::size_t releaseCount = f.ctrl->Sequence().size();
 	Check( releaseCount >= orbitReleaseCount + 2
 	    && f.ctrl->SettlesAt( releaseCount, kSettleMs ),
@@ -4844,6 +4842,14 @@ public:
 	{
 		return mFailCommits ? 0
 			: Job::ApplyCstObjectMatrixEdit( objectName, matrix );
+	}
+	int ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind,
+	                                   const char* role, const std::string& expectText,
+	                                   const std::string& newText,
+	                                   bool requireFullDerivability = true ) override
+	{
+		return mFailCommits ? 0
+			: Job::ApplyCstParamEditOwnerRestore( entityName, entityKind, role, expectText, newText, requireFullDerivability );
 	}
 private:
 	bool mFailCommits = true;

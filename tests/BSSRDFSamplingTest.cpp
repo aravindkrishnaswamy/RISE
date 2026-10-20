@@ -75,16 +75,38 @@ static Scalar ExactFresnel( Scalar cosTheta, Scalar eta )
 	return 0.5 * (rs * rs + rp * rp);
 }
 
-/// c = 2 * integral_0^1 (1 - F(mu)) mu dmu by a 2^20-bin midpoint rule.
+/// c = 2 * integral_0^1 (1 - F(mu)) mu dmu by a 64-panel 4-point Gauss-Legendre
+/// quadrature with the u = cos(theta_t) critical-angle substitution when eta < 1.
 static Scalar ExactNormalization( Scalar eta )
 {
-	const int count = 1 << 20;
+	static const double kGL4X[4] = {
+		-0.86113631159405257522, -0.33998104358485626480,
+		 0.33998104358485626480,  0.86113631159405257522
+	};
+	static const double kGL4W[4] = {
+		 0.34785484513745385737,  0.65214515486254614263,
+		 0.65214515486254614263,  0.34785484513745385737
+	};
+	const int nPanels = 64;
 	Scalar sum = 0;
-	for( int i = 0; i < count; ++i ) {
-		const Scalar mu = (Scalar(i) + 0.5) / count;
-		sum += 2.0 * mu * (1.0 - ExactFresnel( mu, eta ));
+	for( int i = 0; i < nPanels; ++i ) {
+		const Scalar a = Scalar( i ) / nPanels;
+		const Scalar b = Scalar( i + 1 ) / nPanels;
+		const Scalar mid = 0.5 * ( a + b );
+		const Scalar half = 0.5 * ( b - a );
+		for( int g = 0; g < 4; ++g ) {
+			const Scalar u = mid + half * kGL4X[g];
+			const Scalar w = half * kGL4W[g];
+			if( eta < 1.0 ) {
+				const Scalar arg = 1.0 - eta * eta * ( 1.0 - u * u );
+				const Scalar mu = sqrt( arg > 0.0 ? arg : 0.0 );
+				sum += w * 2.0 * eta * eta * u * ( 1.0 - ExactFresnel( mu, eta ) );
+			} else {
+				sum += w * 2.0 * u * ( 1.0 - ExactFresnel( u, eta ) );
+			}
+		}
 	}
-	return sum / count;
+	return sum;
 }
 
 /// Helper to create a heap-allocated BurleyNormalizedDiffusionProfile

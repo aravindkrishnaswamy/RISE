@@ -24,9 +24,12 @@
 #include <iostream>
 #include <cmath>
 #include <cassert>
+#include <cstdlib>
+#include <cstring>
 #include <iomanip>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
+#include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Lights/PointLight.h"
 #include "../src/Library/Lights/SpotLight.h"
@@ -40,55 +43,111 @@ using namespace RISE::Implementation;
 //  Configuration
 // ============================================================
 
-static const int    MC_SAMPLES       = 4000000;
-static const double EXITANCE_TOL     = 0.01;    // 1% relative tolerance
-static const double PDF_TOL          = 0.01;    // 1% tolerance for PDF integral
-static const int    PHOTON_SAMPLES   = 100000;
+static int          gMcSamples       = 100000;
+static const double EXITANCE_TOL     = 0.01;    // 1% relative tolerance for MC
+static const double QUAD_TOL         = 1e-4;    // 0.01% relative tolerance for piecewise quadrature
+static int          gPhotonSamples   = 20000;
 
 // ============================================================
 //  Helpers
 // ============================================================
 
-/// Generate a uniformly distributed direction on the unit sphere
-/// using two uniform random numbers in [0,1).
-static Vector3 UniformSphereDirection( const double u1, const double u2 )
+/// Piecewise polar quadrature of emittedRadiance over the full sphere,
+/// aligned to the light's emission axis (with 8 azimuth samples per polar
+/// ring to verify 3D frame alignment and azimuthal symmetry, and 1e-6 outside
+/// the outer cone to verify zero leakage).
+static RISEPel QuadratureConeExitance( const ILightPriv& light, const Scalar halfInner, const Scalar halfOuter )
 {
-	const double cosTheta = 1.0 - 2.0 * u1;
-	const double sinTheta = sqrt( 1.0 - cosTheta * cosTheta );
-	const double phi = TWO_PI * u2;
-	return Vector3( cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta );
+	static const double kGL4X[4] = {
+		-0.86113631159405257522, -0.33998104358485626480,
+		 0.33998104358485626480,  0.86113631159405257522
+	};
+	static const double kGL4W[4] = {
+		 0.34785484513745385737,  0.65214515486254614263,
+		 0.65214515486254614263,  0.34785484513745385737
+	};
+	OrthonormalBasis3D onb;
+	onb.CreateFromW( light.emissionDirection() );
+
+	auto integrateBand = [&]( Scalar theta0, Scalar theta1, int nPanels ) -> RISEPel {
+		if( theta1 <= theta0 ) return RISEPel( 0, 0, 0 );
+		const int nPhi = 8;
+		const Scalar dPanel = ( theta1 - theta0 ) / Scalar( nPanels );
+		const Scalar dPhi = TWO_PI / Scalar( nPhi );
+		RISEPel acc( 0, 0, 0 );
+		for( int ipn = 0; ipn < nPanels; ++ipn ) {
+			const Scalar a = theta0 + Scalar( ipn ) * dPanel;
+			const Scalar mid = a + 0.5 * dPanel;
+			const Scalar half = 0.5 * dPanel;
+			for( int g = 0; g < 4; ++g ) {
+				const Scalar theta = mid + half * kGL4X[g];
+				const Scalar wTheta = half * kGL4W[g];
+				const Scalar sinT = sin( theta );
+				const Scalar cosT = cos( theta );
+				for( int ip = 0; ip < nPhi; ++ip ) {
+					const Scalar phi = ( Scalar( ip ) + 0.5 ) * dPhi;
+					const Vector3 localDir( cos( phi ) * sinT, sin( phi ) * sinT, cosT );
+					const Vector3 worldDir(
+						onb.u().x * localDir.x + onb.v().x * localDir.y + onb.w().x * localDir.z,
+						onb.u().y * localDir.x + onb.v().y * localDir.y + onb.w().y * localDir.z,
+						onb.u().z * localDir.x + onb.v().z * localDir.y + onb.w().z * localDir.z );
+					acc = acc + light.emittedRadiance( worldDir ) * ( sinT * wTheta * dPhi );
+				}
+			}
+		}
+		return acc;
+	};
+
+	return integrateBand( 0.0, halfInner, 16 )
+	     + integrateBand( halfInner, halfOuter, 32 )
+	     + integrateBand( halfOuter, PI, 8 );
 }
 
-/// Monte Carlo estimate of integral of emittedRadiance over the
-/// full sphere.  Each sample contributes emittedRadiance(dir) * 4pi / N.
-static RISEPel MonteCarloExitance( const ILight& light, const int N )
+static double QuadratureConePdfIntegral( const ILightPriv& light, const Scalar halfInner, const Scalar halfOuter )
 {
-	RISEPel sum( 0, 0, 0 );
-	RandomNumberGenerator rng;
+	static const double kGL4X[4] = {
+		-0.86113631159405257522, -0.33998104358485626480,
+		 0.33998104358485626480,  0.86113631159405257522
+	};
+	static const double kGL4W[4] = {
+		 0.34785484513745385737,  0.65214515486254614263,
+		 0.65214515486254614263,  0.34785484513745385737
+	};
+	OrthonormalBasis3D onb;
+	onb.CreateFromW( light.emissionDirection() );
 
-	for( int i = 0; i < N; i++ )
-	{
-		const Vector3 dir = UniformSphereDirection( rng.CanonicalRandom(), rng.CanonicalRandom() );
-		sum = sum + light.emittedRadiance( dir );
-	}
+	auto integrateBand = [&]( Scalar theta0, Scalar theta1, int nPanels ) -> double {
+		if( theta1 <= theta0 ) return 0.0;
+		const int nPhi = 8;
+		const double dPanel = ( theta1 - theta0 ) / double( nPanels );
+		const double dPhi = TWO_PI / double( nPhi );
+		double acc = 0.0;
+		for( int ipn = 0; ipn < nPanels; ++ipn ) {
+			const double a = theta0 + double( ipn ) * dPanel;
+			const double mid = a + 0.5 * dPanel;
+			const double half = 0.5 * dPanel;
+			for( int g = 0; g < 4; ++g ) {
+				const double theta = mid + half * kGL4X[g];
+				const double wTheta = half * kGL4W[g];
+				const double sinT = sin( theta );
+				const double cosT = cos( theta );
+				for( int ip = 0; ip < nPhi; ++ip ) {
+					const double phi = ( double( ip ) + 0.5 ) * dPhi;
+					const Vector3 localDir( cos( phi ) * sinT, sin( phi ) * sinT, cosT );
+					const Vector3 worldDir(
+						onb.u().x * localDir.x + onb.v().x * localDir.y + onb.w().x * localDir.z,
+						onb.u().y * localDir.x + onb.v().y * localDir.y + onb.w().y * localDir.z,
+						onb.u().z * localDir.x + onb.v().z * localDir.y + onb.w().z * localDir.z );
+					acc += light.pdfDirection( worldDir ) * sinT * wTheta * dPhi;
+				}
+			}
+		}
+		return acc;
+	};
 
-	return sum * (FOUR_PI / Scalar(N));
-}
-
-/// Monte Carlo estimate of integral of pdfDirection over the
-/// full sphere.  Should equal 1.0 for a normalized PDF.
-static double MonteCarloPdfIntegral( const ILightPriv& light, const int N )
-{
-	double sum = 0;
-	RandomNumberGenerator rng;
-
-	for( int i = 0; i < N; i++ )
-	{
-		const Vector3 dir = UniformSphereDirection( rng.CanonicalRandom(), rng.CanonicalRandom() );
-		sum += light.pdfDirection( dir );
-	}
-
-	return sum * FOUR_PI / double(N);
+	return integrateBand( 0.0, halfInner, 16 )
+	     + integrateBand( halfInner, halfOuter, 32 )
+	     + integrateBand( halfOuter, PI, 8 );
 }
 
 /// Check that the relative error between two values is within tolerance.
@@ -125,11 +184,11 @@ static void TestPointLight()
 
 	// radiantExitance should equal integral of emittedRadiance over sphere
 	const RISEPel exitance = light.radiantExitance();
-	const RISEPel mcExitance = MonteCarloExitance( light, MC_SAMPLES );
+	const RISEPel quadExitance = QuadratureConeExitance( light, PI / 2.0, PI );
 
-	assert( CheckRelative( mcExitance[0], exitance[0], EXITANCE_TOL, "PointLight R" ) );
-	assert( CheckRelative( mcExitance[1], exitance[1], EXITANCE_TOL, "PointLight G" ) );
-	assert( CheckRelative( mcExitance[2], exitance[2], EXITANCE_TOL, "PointLight B" ) );
+	assert( CheckRelative( quadExitance[0], exitance[0], 1e-10, "PointLight R" ) );
+	assert( CheckRelative( quadExitance[1], exitance[1], 1e-10, "PointLight G" ) );
+	assert( CheckRelative( quadExitance[2], exitance[2], 1e-10, "PointLight B" ) );
 
 	// Verify analytical value: exitance = color * energy * 4pi
 	const RISEPel expected = color * energy * FOUR_PI;
@@ -138,11 +197,11 @@ static void TestPointLight()
 	assert( CheckRelative( exitance[2], expected[2], 1e-10, "PointLight analytical B" ) );
 
 	// pdfDirection should integrate to 1
-	const double pdfInt = MonteCarloPdfIntegral( light, MC_SAMPLES );
-	assert( CheckRelative( pdfInt, 1.0, PDF_TOL, "PointLight PDF integral" ) );
+	const double pdfInt = QuadratureConePdfIntegral( light, PI / 2.0, PI );
+	assert( CheckRelative( pdfInt, 1.0, 1e-10, "PointLight PDF integral" ) );
 
-	std::cout << "  exitance: (" << exitance[0] << ", " << exitance[1] << ", " << exitance[2] << ")" << std::endl;
-	std::cout << "  MC check: (" << mcExitance[0] << ", " << mcExitance[1] << ", " << mcExitance[2] << ")" << std::endl;
+	std::cout << "  exitance:   (" << exitance[0] << ", " << exitance[1] << ", " << exitance[2] << ")" << std::endl;
+	std::cout << "  quad check: (" << quadExitance[0] << ", " << quadExitance[1] << ", " << quadExitance[2] << ")" << std::endl;
 	std::cout << "TestPointLight passed!" << std::endl;
 
 	pLight->release();
@@ -164,26 +223,26 @@ static void TestSpotLight( const Scalar innerDeg, const Scalar outerDeg )
 	const ILightPriv& light = *pLight;
 
 	const RISEPel exitance = light.radiantExitance();
-	const RISEPel mcExitance = MonteCarloExitance( light, MC_SAMPLES );
+	const RISEPel quadExitance = QuadratureConeExitance( light, inner / 2.0, outer / 2.0 );
 
-	std::cout << "  exitance: (" << exitance[0] << ", " << exitance[1] << ", " << exitance[2] << ")" << std::endl;
-	std::cout << "  MC check: (" << mcExitance[0] << ", " << mcExitance[1] << ", " << mcExitance[2] << ")" << std::endl;
+	std::cout << "  exitance:   (" << exitance[0] << ", " << exitance[1] << ", " << exitance[2] << ")" << std::endl;
+	std::cout << "  quad check: (" << quadExitance[0] << ", " << quadExitance[1] << ", " << quadExitance[2] << ")" << std::endl;
 
-	assert( CheckRelative( mcExitance[0], exitance[0], EXITANCE_TOL, "SpotLight R" ) );
-	assert( CheckRelative( mcExitance[1], exitance[1], EXITANCE_TOL, "SpotLight G" ) );
-	assert( CheckRelative( mcExitance[2], exitance[2], EXITANCE_TOL, "SpotLight B" ) );
+	assert( CheckRelative( quadExitance[0], exitance[0], QUAD_TOL, "SpotLight R" ) );
+	assert( CheckRelative( quadExitance[1], exitance[1], QUAD_TOL, "SpotLight G" ) );
+	assert( CheckRelative( quadExitance[2], exitance[2], QUAD_TOL, "SpotLight B" ) );
 
 	// pdfDirection should integrate to 1
-	const double pdfInt = MonteCarloPdfIntegral( light, MC_SAMPLES );
+	const double pdfInt = QuadratureConePdfIntegral( light, inner / 2.0, outer / 2.0 );
 	std::cout << "  PDF integral: " << pdfInt << std::endl;
-	assert( CheckRelative( pdfInt, 1.0, PDF_TOL, "SpotLight PDF integral" ) );
+	assert( CheckRelative( pdfInt, 1.0, 1e-10, "SpotLight PDF integral" ) );
 
 	// All photons should land within the outer half-cone
 	const Scalar halfOuter = outer / 2.0;
 	const Vector3 dir = pLight->emissionDirection();
 	RandomNumberGenerator rng;
 	int outsideCone = 0;
-	for( int i = 0; i < PHOTON_SAMPLES; i++ )
+	for( int i = 0; i < gPhotonSamples; i++ )
 	{
 		const Ray photon = pLight->generateRandomPhoton( Point3(
 			rng.CanonicalRandom(), rng.CanonicalRandom(), rng.CanonicalRandom() ) );
@@ -194,7 +253,7 @@ static void TestSpotLight( const Scalar innerDeg, const Scalar outerDeg )
 		}
 	}
 	if( outsideCone > 0 ) {
-		std::cout << "  FAIL: " << outsideCone << "/" << PHOTON_SAMPLES
+		std::cout << "  FAIL: " << outsideCone << "/" << gPhotonSamples
 				  << " photons outside outer cone" << std::endl;
 	}
 	assert( outsideCone == 0 );
@@ -234,11 +293,11 @@ static void TestSpotLightDegenerateCases()
 		SpotLight* pLight = new SpotLight( energy, Point3( 0, 0, -1 ), inner, outer, color, true );
 
 		const RISEPel exitance = pLight->radiantExitance();
-		const RISEPel mcExitance = MonteCarloExitance( *pLight, MC_SAMPLES );
+		const RISEPel quadExitance = QuadratureConeExitance( *pLight, inner / 2.0, outer / 2.0 );
 
 		std::cout << "  narrow (2/5): exitance=" << exitance[0]
-				  << " MC=" << mcExitance[0] << std::endl;
-		assert( CheckRelative( mcExitance[0], exitance[0], EXITANCE_TOL, "SpotLight narrow" ) );
+				  << " quad=" << quadExitance[0] << std::endl;
+		assert( CheckRelative( quadExitance[0], exitance[0], QUAD_TOL, "SpotLight narrow" ) );
 		pLight->release();
 	}
 
@@ -249,11 +308,11 @@ static void TestSpotLightDegenerateCases()
 		SpotLight* pLight = new SpotLight( energy, Point3( 0, 0, -1 ), inner, outer, color, true );
 
 		const RISEPel exitance = pLight->radiantExitance();
-		const RISEPel mcExitance = MonteCarloExitance( *pLight, MC_SAMPLES );
+		const RISEPel quadExitance = QuadratureConeExitance( *pLight, inner / 2.0, outer / 2.0 );
 
 		std::cout << "  wide (60/120): exitance=" << exitance[0]
-				  << " MC=" << mcExitance[0] << std::endl;
-		assert( CheckRelative( mcExitance[0], exitance[0], EXITANCE_TOL, "SpotLight wide" ) );
+				  << " quad=" << quadExitance[0] << std::endl;
+		assert( CheckRelative( quadExitance[0], exitance[0], QUAD_TOL, "SpotLight wide" ) );
 		pLight->release();
 	}
 
@@ -307,7 +366,7 @@ static void TestPhotonPowerWeighting( const char* label, ILightPriv& light )
 	// Sample photon directions and accumulate weighted power
 	RISEPel sumWeightedPower( 0, 0, 0 );
 	RandomNumberGenerator rng;
-	const int N = MC_SAMPLES;
+	const int N = gMcSamples;
 
 	for( int i = 0; i < N; i++ )
 	{
@@ -335,10 +394,20 @@ static void TestPhotonPowerWeighting( const char* label, ILightPriv& light )
 //  Main
 // ============================================================
 
-int main()
+int main( int argc, char** argv )
 {
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		if( ext[0] == '1' ) { gMcSamples = 4000000; gPhotonSamples = 100000; }
+	}
+	for( int i = 1; i < argc; ++i ) {
+		if( std::strcmp( argv[i], "--extended" ) == 0 ) {
+			gMcSamples = 4000000;
+			gPhotonSamples = 100000;
+		}
+	}
+
 	std::cout << "=== LightExitanceTest ===" << std::endl;
-	std::cout << "MC samples: " << MC_SAMPLES << std::endl;
+	std::cout << "MC samples: " << gMcSamples << std::endl;
 	std::cout << std::endl;
 
 	TestPointLight();
