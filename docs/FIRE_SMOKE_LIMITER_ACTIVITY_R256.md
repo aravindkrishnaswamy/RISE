@@ -3,7 +3,9 @@
 2026-10-19. The owner cancels tier 6, defers restart non-identity, and authorizes
 a ~4 s statistical continuation from r251 step 9,224 at 15.01872063824 s without
 any bit-identity requirement. No production solver source/kernel changes.
-Measured four-second results and the A/B decision are **pending**.
+The continuation started at 2026-10-20 03:47 UTC (Oct 19 local), with 2,432
+additional steps planned from the original history. Measured four-second results
+and the A/B decision are **pending**. See the committed launch manifest.
 
 The standalone observer calls the unchanged production API and only reads its
 accepted publication. It retains the same source, original authored duration,
