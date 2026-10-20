@@ -8,7 +8,7 @@
 # tautological, read the wrong observable, or be -ffast-math-foldable).
 #
 # Usage:
-#   tools/red_prove.sh <TestBinaryName> <assertion-marker-substring> <src-file> [<src-file> ...]
+#   tools/red_prove.sh [--args "<test-args>"] <TestBinaryName> <assertion-marker-substring> <src-file> [<src-file> ...]
 #
 # It git-stashes ONLY the listed source files (the fix), rebuilds, runs the
 # test and asserts the marker FAILS; then restores the fix, rebuilds, and
@@ -21,8 +21,18 @@
 #
 set -uo pipefail
 
+TEST_ARGS=""
+if [ "${1:-}" = "--args" ]; then
+	if [ "$#" -lt 5 ]; then
+		echo "usage: $0 [--args \"<test-args>\"] <TestBinaryName> <marker> <src-file> [<src-file> ...]" >&2
+		exit 64
+	fi
+	TEST_ARGS="$2"
+	shift 2
+fi
+
 if [ "$#" -lt 3 ]; then
-	echo "usage: $0 <TestBinaryName> <marker> <src-file> [<src-file> ...]" >&2
+	echo "usage: $0 [--args \"<test-args>\"] <TestBinaryName> <marker> <src-file> [<src-file> ...]" >&2
 	exit 64
 fi
 
@@ -41,8 +51,13 @@ marker_fails() {
 	# fail even when grep found the requested FAIL line. Capture first so this
 	# predicate is governed by the marker match, not the expected test exit.
 	local output
-	output="$(./bin/tests/"$TEST" 2>&1)" || true
-	printf '%s\n' "$output" | grep -q "FAIL:.*${MARKER}"
+	if [ -n "$TEST_ARGS" ]; then
+		# shellcheck disable=SC2086
+		output="$(./bin/tests/"$TEST" $TEST_ARGS 2>&1)" || true
+	else
+		output="$(./bin/tests/"$TEST" 2>&1)" || true
+	fi
+	printf '%s\n' "$output" | grep -q "FAIL.*${MARKER}"
 }
 
 rc=0

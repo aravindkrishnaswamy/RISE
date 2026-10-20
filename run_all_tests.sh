@@ -7,6 +7,7 @@ BIN_DIR="$REPO_ROOT/bin/tests"
 SRC_DIR="$REPO_ROOT/tests"
 BUILD_DIR="$REPO_ROOT/build/make/rise"
 LIB_DIR="$REPO_ROOT/src/Library"
+LIB_ARCHIVE="$REPO_ROOT/bin/librise.a"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
@@ -17,6 +18,85 @@ LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
 # relinked one at a time — tens of minutes that looked like "the tests are
 # slow" (the test RUNS are seconds).  Override with RISE_TEST_BUILD_JOBS.
 JOBS="${RISE_TEST_BUILD_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )}"
+FILTER="${RISE_TEST_FILTER:-}"
+TIER="${RISE_TEST_TIER:-all}"
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--filter|-Filter)
+			FILTER="$2"
+			shift 2
+			;;
+		--tier|-Tier)
+			TIER="$2"
+			shift 2
+			;;
+		--timeout|-TimeoutSeconds)
+			RISE_TEST_TIMEOUT="$2"
+			shift 2
+			;;
+		-h|--help)
+			echo "Usage: $0 [--filter <glob1,glob2,...>] [--tier all|fast|extended] [--timeout <sec>]"
+			exit 0
+			;;
+		*)
+			echo "Unknown argument: $1" >&2
+			exit 64
+			;;
+	esac
+done
+
+case "$TIER" in
+	all|fast|extended) ;;
+	*)
+		echo "Invalid --tier '$TIER' (expected all, fast, or extended)" >&2
+		exit 64
+		;;
+esac
+
+# Heavy multi-minute statistical/integration sweep suites assigned to the
+# extended tier when --tier fast or --tier extended is requested.
+is_extended_test() {
+	case "$1" in
+		BDPTStrategyBalanceTest|VCMStrategyBalanceTest|SMSExtendedReferenceTest|\
+		SMSExtendedPartitionTest|SMSUniformDispersionTest|SMSSupersededRowsTest|\
+		SMSFourVertexVarianceTest|PTGuidingMISPartitionTest|BDPTGuidedContinuationTest|\
+		CompositeEnergyConservationTest|LayeredWhiteFurnaceTest|\
+		VolumeAbsorptionAttenuationTest|MediumInsideOutsideInvariantTest|\
+		ExteriorIndexInvarianceTest|SSSExteriorIndexInvarianceTest|\
+		CstDeriveGoldenTest|AgentViewModeRenderTest|AgentProposeRenderTest)
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+matches_selection() {
+	tname="$1"
+	if [ "$TIER" = "fast" ] && is_extended_test "$tname"; then
+		return 1
+	fi
+	if [ "$TIER" = "extended" ] && ! is_extended_test "$tname"; then
+		return 1
+	fi
+	if [ -z "$FILTER" ]; then
+		return 0
+	fi
+	old_ifs="$IFS"
+	IFS=','
+	for pat in $FILTER; do
+		IFS="$old_ifs"
+		[ -n "$pat" ] || continue
+		# shellcheck disable=SC2254
+		case "$tname" in
+			$pat) return 0 ;;
+		esac
+	done
+	IFS="$old_ifs"
+	return 1
+}
 
 if [ ! -d "$BUILD_DIR" ]; then
 	echo "Missing build directory: $BUILD_DIR"
@@ -43,8 +123,10 @@ rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
 BUILD_FAIL_TSV="$LOG_DIR/.build_failures.tsv"
 RUN_FAIL_TSV="$LOG_DIR/.run_failures.tsv"
+TIMINGS_TSV="$LOG_DIR/.timings.tsv"
 : > "$BUILD_FAIL_TSV"
 : > "$RUN_FAIL_TSV"
+: > "$TIMINGS_TSV"
 
 TAB="$(printf '\t')"
 
@@ -55,15 +137,20 @@ found=0
 passed=0
 failed=0
 skipped=0
+bulk_targets=""
 
-# Discover total test count first so the [ i/N ] display is correctly sized.
+# Discover selected test count first so the [ i/N ] display is correctly sized.
 for test_src in "$SRC_DIR"/*.cpp; do
 	[ -f "$test_src" ] || continue
-	total=$((total + 1))
+	tname="$(basename "$test_src" .cpp)"
+	if matches_selection "$tname"; then
+		total=$((total + 1))
+		bulk_targets="$bulk_targets build-test/$tname"
+	fi
 done
 
 if [ "$total" -eq 0 ]; then
-	echo "No test sources found in: $SRC_DIR"
+	echo "No matching test sources found in: $SRC_DIR (filter='${FILTER}', tier='${TIER}')"
 	exit 1
 fi
 
@@ -84,6 +171,15 @@ print_summary() {
 	echo "============================================================"
 	echo "Build: $built built, $build_failed failed (of $total)"
 	echo "Run:   $passed passed, $failed failed, $skipped skipped (of $found run)"
+
+	if [ "$found" -gt 1 ] && [ -s "$TIMINGS_TSV" ]; then
+		echo
+		echo "Slowest tests (s):"
+		sort -rn -k1,1 "$TIMINGS_TSV" | head -n 10 | while IFS="$TAB" read -r tdur tname; do
+			[ -n "$tname" ] || continue
+			printf '  %4ds  %s\n' "$tdur" "$tname"
+		done
+	fi
 
 	if [ "$build_failed" -gt 0 ] && [ -s "$BUILD_FAIL_TSV" ]; then
 		echo
@@ -123,7 +219,7 @@ cleanup_interrupted() {
 trap cleanup_interrupted INT TERM
 
 # ============================================================
-# Phase 1: Build the library .o files used to link tests.
+# Phase 1: Build the library .o files and librise.a used to link tests.
 # ============================================================
 lib_log="$LOG_DIR/.library.log"
 printf 'Building library ... '
@@ -143,19 +239,22 @@ fi
 echo
 
 # ============================================================
-# Phase 1.5: Bulk-build every test binary IN PARALLEL (the Makefile's
-# `tests` target is prerequisite-driven, so -j fans the links out).
-# -k keeps building past an individual failure; the per-test loop in
-# Phase 2 then short-circuits on everything up to date and re-runs
-# make only for the failures, capturing each one's error in its own
-# log.  Net effect: the heavy lifting happens wide, the diagnostics
-# stay per-test.
+# Phase 1.5: Bulk-build selected test binaries IN PARALLEL (the Makefile's
+# `tests` and `build-test/%` targets are prerequisite-driven, so -j fans
+# the links out). -k keeps building past an individual failure; the per-test
+# loop in Phase 2 then short-circuits on everything up to date and re-runs
+# make only for the failures, capturing each one's error in its own log.
 # ============================================================
 bulk_log="$LOG_DIR/.tests-bulk.log"
 printf 'Building tests (-j %s) ... ' "$JOBS"
 bulk_start=$(date +%s)
 bulk_rc=0
-make -s -j "$JOBS" -k -C "$BUILD_DIR" --no-print-directory tests > "$bulk_log" 2>&1 || bulk_rc=$?
+if [ -z "$FILTER" ] && [ "$TIER" = "all" ]; then
+	make -s -j "$JOBS" -k -C "$BUILD_DIR" --no-print-directory tests > "$bulk_log" 2>&1 || bulk_rc=$?
+else
+	# shellcheck disable=SC2086
+	make -s -j "$JOBS" -k -C "$BUILD_DIR" --no-print-directory $bulk_targets > "$bulk_log" 2>&1 || bulk_rc=$?
+fi
 bulk_dur=$(( $(date +%s) - bulk_start ))
 if [ "$bulk_rc" -eq 0 ]; then
 	printf 'done (%ds)\n' "$bulk_dur"
@@ -171,18 +270,19 @@ echo
 i=0
 for test_src in "$SRC_DIR"/*.cpp; do
 	[ -f "$test_src" ] || continue
-	i=$((i + 1))
 	name="$(basename "$test_src" .cpp)"
+	matches_selection "$name" || continue
+	i=$((i + 1))
 	test_path="$BIN_DIR/$name"
 	log="$LOG_DIR/$name.build.log"
 	prefix="$(printf '[ %3d/%3d ] %-46s' "$i" "$total" "$name")"
 
-	# Fast up-to-date short-circuit: skip the make call (which would otherwise
-	# stat the entire $(OBJLIB) tree — ~3s per test) when the binary is
-	# already newer than its source and every library .o file.
+	# Fast up-to-date short-circuit: Phase 1.5 just ran make over the selected
+	# targets with full -MMD header dependency tracking, and Phase 1 updated
+	# $LIB_ARCHIVE. Checking against $test_src and $LIB_ARCHIVE avoids spawning
+	# a `find $LIB_DIR -name '*.o'` subprocess on every iteration.
 	if [ -x "$test_path" ] \
-	   && [ "$test_path" -nt "$test_src" ] \
-	   && [ -z "$(find "$LIB_DIR" -name '*.o' -newer "$test_path" -print -quit 2>/dev/null)" ]
+	   && { [ "$bulk_rc" -eq 0 ] || { [ "$test_path" -nt "$test_src" ] && [ "$test_path" -nt "$LIB_ARCHIVE" ]; }; }
 	then
 		printf '%s UP TO DATE\n' "$prefix"
 		built=$((built + 1))
@@ -223,8 +323,9 @@ echo
 i=0
 for test_src in "$SRC_DIR"/*.cpp; do
 	[ -f "$test_src" ] || continue
-	i=$((i + 1))
 	name="$(basename "$test_src" .cpp)"
+	matches_selection "$name" || continue
+	i=$((i + 1))
 	test_path="$BIN_DIR/$name"
 	prefix="$(printf '[ %3d/%3d ] %-46s' "$i" "$total" "$name")"
 
@@ -247,6 +348,7 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	fi
 	end_ts=$(date +%s)
 	dur=$((end_ts - start_ts))
+	printf '%d\t%s\n' "$dur" "$name" >> "$TIMINGS_TSV"
 
 	if [ "$rc" -eq 0 ]; then
 		printf 'PASS (%ds)\n' "$dur"
