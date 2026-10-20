@@ -1,5 +1,10 @@
 # r251 — Picard stop at an output-event sliver
 
+Owner-directed cleanup, 2026-10-19: the Xcode cache, Picard probe runs and
+other r251 scratch artifacts were deleted after acceptance. Committed data,
+the accepted full-window run and its retained states remain. See
+[r253 cleanup inventory](data/fire_r253/cleanup.json).
+
 The owner accepted r250's partial-window combustion result. This task addresses
 its numerical stop, within an approximately one-day diagnosis/fix time box,
 then repeats tier 8 from zero at unchanged 33 kW. No tier 10 before review.

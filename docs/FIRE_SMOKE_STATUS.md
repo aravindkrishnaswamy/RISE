@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-19, after the r252 centerline comparison and soot design draft. This page
+Last updated 2026-10-19, after the r253 retained-state plume diagnosis and scratch cleanup. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -88,11 +88,27 @@ error **+87.29%** and vertical-velocity error **+25.01%**, against r237’s
 tier 10.** Complete station profiles and extraction hashes are committed with
 the report; no new simulation was run for this comparison.
 
+[r253 retained-state diagnosis](FIRE_SMOKE_PLUME_DIAGNOSIS_R253.md) finds
+**insufficient entrainment** with essentially the correct convective heat:
+at 3.013 m, 0.7424 kg/s net plume mass against 1.3564 kg/s from Heskestad at
+26.4 kW convective power; even all upward flow in the entire plane is only
+0.7994 kg/s. The requested convective cp flux is 26.347 kW. Side bands remain
+exactly 300 K through 3.044 m; tiny positive outlet-zone temperatures cool
+through the window rather than build up. Width and reconstructed Vreman
+viscosity profiles are in the report. **No wider-domain test or other new run;
+no solver change. Stopped for review.** Seven r251 scratch folders (including
+Xcode and Picard probes) and 32 scratch files were deleted; the accepted run,
+retained states, production log, committed evidence and movie are preserved.
+
 ## Open problems, in priority order
 
 1. **Upper-plume centerline profiles fail the tier-10 gate.** r251 is too
    hot and too fast above the flame relative to McCaffrey at 33 kW. See
-   [the profiles](FIRE_SMOKE_CENTERLINE_R252.md); the cause is not yet diagnosed.
+   [the profiles](FIRE_SMOKE_CENTERLINE_R252.md). The
+   [r253 measurements](FIRE_SMOKE_PLUME_DIAGNOSIS_R253.md) identify an
+   increasing entrainment deficit with height, rather than bulk ambient warming
+   or excess transported heat. Which turbulence/transport/domain term causes
+   that deficiency is not yet isolated.
    Tier 10 remains unlaunched under the owner’s conditional instruction.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
@@ -175,6 +191,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
+| `r253_plume_diagnosis` | read-only r251 thermodynamic/velocity integrals, source/input manifest, cleanup inventory; no simulation |
 | `r252_r251_centerline`, `r252_r251_preview`, `r252_soot_sources` | r251 native centerline extraction (tier-10 condition fails), r242-scene preview render, primary soot papers and extraction images |
 | `r251_tier8_full_window` | completed from-zero tier-8 run; 99.506% burned, 0.483% top export, 32.837 kW, FDS height0.683m; full spectrum/data retained |
 | `r250_tier8_parcel_edge` | incomplete tier-8 parcel-edge run; solver stopped at 21.466 s, accepted-prefix fuel/export/heat-height measurements retained |

@@ -1,0 +1,195 @@
+{
+  "deleted": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_balanced",
+      "bytes_logical": 6943553031
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_diagnostic",
+      "bytes_logical": 1739053365
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_half",
+      "bytes_logical": 0
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_quarter",
+      "bytes_logical": 0
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_xcode",
+      "bytes_logical": 662352883
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_sources",
+      "bytes_logical": 130022
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_spectrum_reader_check",
+      "bytes_logical": 323804
+    }
+  ],
+  "accepted_run_preserved": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window",
+  "deleted_scratch_files": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_budget_test.log",
+      "bytes_logical": 143,
+      "sha256": "a6adff039fb0359122a0b6b7e44ca7428d76b4481dbfc4838c4d6a2ba474e288"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_build.log",
+      "bytes_logical": 325,
+      "sha256": "0ddb86ffb0c780d51fc792c1378f859ee6afdb2803e7fd6fa08ca8a78a6b59c7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_burner_launcher_test.log",
+      "bytes_logical": 1348,
+      "sha256": "3ae3f5c3eaea5bf878f5f5178f19a775e3c3eb28a4cfd87e6ae1af7fd37e4203"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_case_test.log",
+      "bytes_logical": 135,
+      "sha256": "62d4c78e2d8616ff5a735ad7ddee1404f3041f027a4e0e6972eb3d22dc886cdc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_clean_make.log",
+      "bytes_logical": 39,
+      "sha256": "09155cd7b2f99672f8f213b798682fc13fdd3602f019b4c35e86d49af827ebe1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_clean_make_build.log",
+      "bytes_logical": 24763,
+      "sha256": "a9240b4a7dc83721863ff80dab647a3413c26a03a7e53c6f1581e87907da7b3a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_committed_build.log",
+      "bytes_logical": 350,
+      "sha256": "775cb55a375a4097f910d1d14a6f7c7d1ec8c417ab2e2be107461151e47c4364"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_event_green",
+      "bytes_logical": 33648,
+      "sha256": "f622b778a087534bc272c2b047709a2d7a6d327fe9cab211e9ac89675a24323f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_event_green.cpp",
+      "bytes_logical": 2250,
+      "sha256": "9bfff6848926463a90e7a613cf28738aaaf8cc19245a0ba8cd263a7096c6f9cb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_event_red",
+      "bytes_logical": 33648,
+      "sha256": "4e71ff56cce4f52f06f78b20e95da01b6039088abdd01cb320a6e47454e04b70"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_event_red.cpp",
+      "bytes_logical": 1756,
+      "sha256": "3922b26fb1949dda52c7ce363ef0b786136051327415fa92c7e6bd7f507f2c7b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_event_red_green.json",
+      "bytes_logical": 23,
+      "sha256": "21553e6e81023ebc6680037fe71f96c2faab945ffdc0a45434b212e3ec29ee8a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_event_test.log",
+      "bytes_logical": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_flame_build.log",
+      "bytes_logical": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_flame_height",
+      "bytes_logical": 93424,
+      "sha256": "daacd3993eec5a2235098a9faf7af677eed52764581c5a3680e24624ddce8999"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_fuel_budget_test.log",
+      "bytes_logical": 32,
+      "sha256": "56531224c222870e5332d355c5eebf8629514f6f56caf77b4a5cda7552f4be6a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_parcel_test.log",
+      "bytes_logical": 98,
+      "sha256": "d3cfcf4a2243ae9d7c7335242a3e4cf0ab5f9ef912a568d416d9cb240f760eca"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_balanced.log",
+      "bytes_logical": 163176,
+      "sha256": "e701d355f53b21b22ab6c48e9966a33efceaab2efa2e54cb4f937cefcf463dd7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_diagnostic.log",
+      "bytes_logical": 56409,
+      "sha256": "5651f878909b4ebf82eb6892b8bffd6282e1a8d587d81bd8eb1047d487a06d40"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_half.log",
+      "bytes_logical": 19097,
+      "sha256": "2d129a6640746542697df7f87f61142387edaa2071fe6a8c7fae5835f3d1f27d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_probe",
+      "bytes_logical": 4157408,
+      "sha256": "7a15e8f7f83728d8e0c86c63ee1a1b854b7dcd9519782225cc0adb91efd146f4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_probe.d",
+      "bytes_logical": 98911,
+      "sha256": "cfeb965d6f2a51964e85b4c7b3ab584935b52096446f5968ac9f6e26d894c802"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_probe.o",
+      "bytes_logical": 10437408,
+      "sha256": "ac83be239cbef7f74b3636d8530c2abd33e4902440eb557fd6f187d923284f7c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_picard_quarter.log",
+      "bytes_logical": 25892,
+      "sha256": "9a26a30c862a6d63831dd41650c5b1c38d8f4eca22096c4ff43976aa0622c848"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_probe_build.log",
+      "bytes_logical": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_probe_build.sh",
+      "bytes_logical": 20711,
+      "sha256": "209c3583225dca2066a963fba82efe984fb1f4e24f2dc34dc51efdbbcbd40202"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_projection_alone_test.log",
+      "bytes_logical": 293,
+      "sha256": "9cff1f173b068d6b722df28657fa8c31ed9a22285d3878edf6e6b4fd849c10b4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_projection_test.log",
+      "bytes_logical": 122,
+      "sha256": "0b57562ce5bd07dbbd0eea6baf2a82314d1822d12b624c13cc2cc8628fdd4fac"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_spectrum_reader_check.log",
+      "bytes_logical": 185,
+      "sha256": "9f0b8a7d32b9b29c6c07b32cc5a0df6f6151553aa2d875d1e33469a594756b41"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_test_results.json",
+      "bytes_logical": 123,
+      "sha256": "eb5293dd3d32461389735597f8e967e336d6144d0062289b48c56fd18ae1fc2c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_xcode_deployment.log",
+      "bytes_logical": 1464052,
+      "sha256": "9f464e721461b9f73aeb0e9ad1815a5f0fde9d27a928bf705aeba511986de7c7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_xcode_opto.log",
+      "bytes_logical": 1438911,
+      "sha256": "d62b8b4db35eff42866945b00e7077aa4ddcaf24674a4554c32811eda05841b7"
+    }
+  ]
+}
