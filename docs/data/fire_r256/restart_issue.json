@@ -1,0 +1,15 @@
+{
+  "priority": "low",
+  "disposition": "deferred by owner; do not investigate",
+  "step": 9276,
+  "start_step": 9224,
+  "elapsed_steps": 52,
+  "time_s": 15.104210254969075,
+  "differing_binary32_values": 15043,
+  "timesteps_matched": true,
+  "runtime_status_at_stop": {
+    "stage": "stopped_error",
+    "utc": "2026-10-20T02:11:53Z",
+    "error": "limiter_continuation exited 120; see /Volumes/SSD/RISE/fire_production_calibration/r255_comparison/limiter_run.log"
+  }
+}

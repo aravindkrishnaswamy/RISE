@@ -1,6 +1,8 @@
-# r255 — sequential entrainment discriminators (in progress)
+# r255 — sequential entrainment discriminators (superseded)
 
-2026-10-19. Owner approved installing FDS 6.11 and its matched comparison.
+2026-10-19. Superseded by the completed [FDS comparison](FIRE_SMOKE_FDS_COMPARISON_R255.md) and [r256 diagnostic](FIRE_SMOKE_LIMITER_ACTIVITY_R256.md). Tier 6 is cancelled and this old batch is disabled. The launch plan below is historical.
+
+Owner approved installing FDS 6.11 and its matched comparison.
 **Results are pending.** This page records the bounded campaign; it does not
 claim completed comparisons. No production solver source or kernel changes.
 

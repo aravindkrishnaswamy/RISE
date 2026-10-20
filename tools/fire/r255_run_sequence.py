@@ -28,24 +28,7 @@ def completed_table():
  (OUT/'comparison_table.md').write_text(table)
 
 def main():
- pid=int(sys.argv[1]);status('waiting_for_fds',pid=pid)
- while True:
-  try:os.kill(pid,0)
-  except ProcessLookupError:break
-  time.sleep(10)
- if 'FDS completed successfully' not in (BASE/'fds_run.log').read_text():raise RuntimeError('FDS did not complete successfully')
- run('reduce_fds',[PYTHON,ROOT/'tools/fire/r255_reduce_fds.py'],BASE/'reduce_fds.log')
- if hashlib.sha256((ROOT/'bin/tests/FireSequenceTest').read_bytes()).hexdigest()!=EXPECTED:raise RuntimeError('production binary changed')
- refs=(BASE/'selected_checkpoints.txt').read_text().splitlines();start=refs[0].split(' ',1)[1];final=BASE.parent/'r251_tier8_full_window/production_final.checkpoint'
- run('limiter_continuation',[BASE.parent/'r255_limiter_driver',start,final,BASE/'verification_references.txt',BASE/'limiter_run'],BASE/'limiter_run.log')
- run('reduce_limiter',[PYTHON,ROOT/'tools/fire/r255_reduce_runs.py','limiter'],BASE/'reduce_limiter.log')
- env=os.environ.copy();env['RISE_FIRE_CAPSTONE_OUTPUT']='1'
- run('tier6_from_zero',[ROOT/'bin/tests/FireSequenceTest','--fire-production-temporal-capstone','6','0.0625',BASE/'tier6_run'],BASE/'tier6_run.log',env=env)
- run('tier6_centerline',[BASE.parent/'r255_case_metadata',BASE/'tier6_run/production_final.checkpoint','--statistics'],BASE/'tier6_centerline.log',BASE/'tier6_centerline_native.csv')
- inputs=sorted((BASE/'tier6_run/checkpoint_history').glob('step_*.checkpoint'))+[BASE/'tier6_run/production_final.checkpoint'];(BASE/'tier6_inputs.txt').write_text(''.join(str(p)+'\n' for p in inputs))
- run('tier6_plume_integrals',[BASE.parent/'r253_plume_probe',BASE/'tier6_inputs.txt',BASE/'tier6_instant_planes.csv'],BASE/'tier6_probe.log')
- run('reduce_tier6',[PYTHON,ROOT/'tools/fire/r255_reduce_runs.py','tier6'],BASE/'reduce_tier6.log')
- completed_table();status('finished_stopped_for_review',comparison_table=str(BASE/'comparison_table.md'))
+ raise RuntimeError('r255 sequence superseded: tier6 cancelled by owner; use r256 observer diagnostic')
 if __name__=='__main__':
  try:main()
  except Exception as e:status('stopped_error',error=str(e));raise

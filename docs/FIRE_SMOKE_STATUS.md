@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-19, during the authorized r255 sequential comparison runs. This page
+Last updated 2026-10-19, after the FDS comparison and r256 diagnostic authorization. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -112,15 +112,20 @@ from these states. The active compatible flux has centered velocity and no
 independent upwind-velocity blend. **No limiter-damping cause or solver fix is
 established; solver unchanged, no new run. Stopped for review.**
 
-[r255 discriminating runs](FIRE_SMOKE_DISCRIMINATING_RUNS_R255.md) are in progress.
-The owner approved installing FDS 6.11.1; its unmodified source was built natively
-and the matched physical case is running. A bounded serial batch will then run
-an observer-only ~4 s continuation from r251 step 9,224 (first checking original
-retained Q/T/M/U states bit-for-bit), followed by canonical tier 6 from zero
-with the existing binary. Results and comparison table are pending. Production
-solver sources and kernels are unchanged; tier 10 remains unlaunched. Live
-stage and outputs are in `r255_comparison/campaign_status.json` under the external
-campaign directory. Stop for owner review after the comparison.
+[r255 FDS comparison](FIRE_SMOKE_FDS_COMPARISON_R255.md) completed and is accepted.
+At the same grid FDS entrains **1.3113 kg/s at 3.013 m (96.7% of Heskestad)**,
+against r251's 0.7424 kg/s. FDS maximum McCaffrey errors are −14.10% temperature
+rise and −15.08% velocity; realized HRR is 32.993 kW. **Tier 6 is cancelled.**
+The old batch is disabled. Its restart comparison failed after 52 steps with
+15,043 differing values; that is a separate low-priority issue, explicitly
+not being investigated now.
+
+[r256 observer continuation](FIRE_SMOKE_LIMITER_ACTIVITY_R256.md) is authorized
+for about four seconds from r251 step 9,224, without identity tests. It will
+measure accepted alpha activity and same-window entrainment at 1/2/3 m.
+Production code/kernels remain unchanged. The cited RISE/FDS momentum comparison
+and conditional A/B decision are in the report; full-window diagnostic results
+are pending. No tier 6 or tier 10. Stop before production changes.
 
 ## Open problems, in priority order
 
@@ -163,6 +168,11 @@ campaign directory. Stop for owner review after the comparison.
    Do not reopen the tier-6 domain study: its burner resolution is inadequate.
 4. **Cost.** Tier 10 takes about 39 hours. Faster steps would make the
    iteration loop practical, but cost work comes after the outstanding physics items.
+
+5. **Restart non-identity (low priority, deferred by owner).** r255's observer
+   continuation matched the timesteps but differed in 15,043 Q/T/M/U values at
+   step 9,276 after 52 steps. See [the issue record](FIRE_SMOKE_FDS_COMPARISON_R255.md).
+   Do not investigate now; no identity requirement applies to r256.
 
 ## Known failing tests (pre-existing)
 
@@ -215,7 +225,8 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
-| `r255_comparison` | authorized one-at-a-time FDS, ~4 s limiter continuation and full tier-6 comparison; in progress, no solver arithmetic changes |
+| `r255_comparison` | completed FDS comparison; stopped identity-check prefix; tier 6 cancelled |
+| `r256_limiter_diagnostic` | ~4 s observer continuation without identity tests; alpha and entrainment logging |
 | `r254_turbulence_diagnosis` | offline retained-frame/checkpoint moments, independent Vreman comparison and primary source PDFs; no simulation |
 | `r253_plume_diagnosis` | read-only r251 thermodynamic/velocity integrals, source/input manifest, cleanup inventory; no simulation |
 | `r252_r251_centerline`, `r252_r251_preview`, `r252_soot_sources` | r251 native centerline extraction (tier-10 condition fails), r242-scene preview render, primary soot papers and extraction images |

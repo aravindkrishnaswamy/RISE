@@ -1,0 +1,93 @@
+{
+  "statistics_start_s": 10.466040127212182,
+  "statistics_end_s": 25.09104012721218,
+  "fds_version": "6.11.1",
+  "source_commit": "ff928db",
+  "max_temperature_error_station": {
+    "z": 46,
+    "height_m": 1.4225798971346122,
+    "selected": true,
+    "fds_theta_K": 114.43999447396516,
+    "r251_theta_K": 194.17187289952943,
+    "mccaffrey_theta_K": 133.22041089436382,
+    "fds_temperature_relative_error": -0.1409725153549516,
+    "r251_temperature_relative_error": 0.4575234500177052,
+    "fds_w_m_s": 2.951110962652098,
+    "r251_w_m_s": 3.4640397138280115,
+    "mccaffrey_w_m_s": 3.222732071324656,
+    "fds_velocity_relative_error": -0.08428287014282032,
+    "r251_velocity_relative_error": 0.07487673103528247
+  },
+  "max_velocity_error_station": {
+    "z": 101,
+    "height_m": 3.105201280842218,
+    "selected": true,
+    "fds_theta_K": 32.1372016345789,
+    "r251_theta_K": 67.86964119333282,
+    "mccaffrey_theta_K": 36.2701167243256,
+    "fds_temperature_relative_error": -0.11394821585933412,
+    "r251_temperature_relative_error": 0.8712275372362972,
+    "fds_w_m_s": 2.1096389279829686,
+    "r251_w_m_s": 3.079360140238055,
+    "mccaffrey_w_m_s": 2.4843903742091005,
+    "fds_velocity_relative_error": -0.15084241595704662,
+    "r251_velocity_relative_error": 0.23948320368869624
+  },
+  "mean_hrr_kW": 32.99335759491974,
+  "mean_radiative_loss_kW": 6.716233010859574,
+  "selected_mass": [
+    {
+      "z": 32,
+      "height_m": 0.9942762721908573,
+      "mass_r08_kg_s": 0.30056327754318773,
+      "whole_plane_up_kg_s": 0.34391602338785743,
+      "whole_plane_net_kg_s": 0.3352417686366312,
+      "r251_mass_r08_kg_s": 0.24148412963394678,
+      "r251_plane_up_kg_s": 0.29790976313708656,
+      "heskestad_total_kg_s": 0.2483292160456868
+    },
+    {
+      "z": 49,
+      "height_m": 1.514359245336844,
+      "mass_r08_kg_s": 0.49041694484284537,
+      "whole_plane_up_kg_s": 0.5535413004340148,
+      "whole_plane_net_kg_s": 0.533155346972624,
+      "r251_mass_r08_kg_s": 0.3698183793720474,
+      "r251_plane_up_kg_s": 0.4297775521160559,
+      "heskestad_total_kg_s": 0.45768541705264537
+    },
+    {
+      "z": 65,
+      "height_m": 2.003849102415422,
+      "mass_r08_kg_s": 0.7215251610974115,
+      "whole_plane_up_kg_s": 0.7911643994574795,
+      "whole_plane_net_kg_s": 0.7586168107053722,
+      "r251_mass_r08_kg_s": 0.48618267153618944,
+      "r251_plane_up_kg_s": 0.5527148524614626,
+      "heskestad_total_kg_s": 0.7059553164496003
+    },
+    {
+      "z": 81,
+      "height_m": 2.4933389594939963,
+      "mass_r08_kg_s": 0.9995661979999675,
+      "whole_plane_up_kg_s": 1.0618794476736084,
+      "whole_plane_net_kg_s": 1.0020541819529378,
+      "r251_mass_r08_kg_s": 0.6024798607853572,
+      "r251_plane_up_kg_s": 0.672454424265676,
+      "heskestad_total_kg_s": 0.9991975832540918
+    },
+    {
+      "z": 98,
+      "height_m": 3.0134219326399867,
+      "mass_r08_kg_s": 1.3112741512768493,
+      "whole_plane_up_kg_s": 1.3619756249647144,
+      "whole_plane_net_kg_s": 1.2532776710366975,
+      "r251_mass_r08_kg_s": 0.7423568321264503,
+      "r251_plane_up_kg_s": 0.7993585646091539,
+      "heskestad_total_kg_s": 1.3564384572531747
+    }
+  ],
+  "selection": "same native stations selected for r251 in r252; no FDS flame-tip reselection",
+  "lowest_cell_mass_row": "z=0 unavailable: native slice system omits floor face0; not extrapolated",
+  "mass_convention": "FDS face flux rho_face*w_face; adjacent z-face averages at r251 cell heights. Not identical to r251 rho_cell*mean(w_faces); no hidden equivalence claimed."
+}
