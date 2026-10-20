@@ -40,12 +40,18 @@ and radiation are measured for interpretation, not assumed equal to input.
 
 FDS centerline comparisons use the identical native heights and selected-station
 mask as r252's r251 row. Temperatures are converted from °C to K, then subtract
-300 K. FDS mass uses native conservative face flux ρ_face w_face, integrated in
+300 K. Vertical velocity devices are placed at all 107 native z faces; adjacent
+face values are averaged offline to match r251’s cell-centered velocity.
+Temperature and velocity devices explicitly use instantaneous sampling. FDS mass uses native conservative face flux ρ_face w_face, integrated in
 the same R<0.8 m cylinder, and adjacent vertical-face averages at r251 cell
 heights. This is explicitly distinct from r253's ρ_cell mean(w_faces) quadrature.
-The entire-plane upward bound is retained as well. Heskestad's same 26.4 kW
+The entire-plane upward bound is retained as well. Native mass slices cover
+faces 1–106; floor face 0 and therefore the lowest cell-center mass row are
+unavailable and are not extrapolated. Heskestad's same 26.4 kW
 correlation and virtual origin are used. Device/slice products are averaged
 over the same 10.46604–25.09104 s statistics interval with interpolated endpoints.
+FDS HRR/radiation CSVs contain interval means; their duration weights are used
+instead, with fractional boundary intervals assuming uniform means.
 
 The RISE observer records **accepted R1 scalar-carrier alpha on native MAC
 faces**, inherited by the compatible momentum flux. There is no independent
@@ -53,7 +59,9 @@ momentum-velocity blend. It records x/y/z faces separately and together, with
 R<0.8 m and the adjacent accepted temperatures averaging above 301 K. A face
 is limited if alpha<1 exactly. Mean low-order blend is 1−alpha; both all-face
 and limited-face-only means are reported. Count and blend sums are weighted
-by the represented dt. This measures inherited coefficient activity, not
+by the represented dt. Transverse faces lie at the slab center. Vertical faces
+are assigned to the slab immediately above them, with the top face included
+in the final slab; they are not asserted to lie at the slab-center height. This measures inherited coefficient activity, not
 kinetic-energy loss or the magnitude of a gas-flux correction when its delta
 is zero. It does not average alpha to fabricate a dual-face limiter coefficient.
 
@@ -76,7 +84,11 @@ A setup attempt was stopped at 0.814 s after FDS reported overlapping full-floor
 and burner vents (burner vents rejected). That input was corrected to use the
 adiabatic floor as the default surface, then the comparison restarted from zero
 in the same directory. The failed setup log is retained; it is not a comparison
-result. Earlier input-parser refusals did not advance a simulation.
+result. Earlier input-parser refusals did not advance a simulation. A second attempt
+was stopped during its pre-statistics interval when review found that FDS
+velocity devices at cell centers selected rounded staggered faces, duplicating
+some faces. The corrected input records all vertical faces explicitly; this
+setup attempt is also excluded from the comparison.
 
 ## Comparison
 

@@ -15,10 +15,12 @@ for k,row in enumerate(rows[3:]):
  lines.append(f"&VENT XB={','.join(format(v,'.17g') for v in xb)}, SURF_ID='B{k}' / ")
 for z in range(106):
  h=(z+.5)*dx
- for name,q in [('T','TEMPERATURE'),('W','W-VELOCITY')]:lines.append(f"&DEVC ID='{name}{z:03}', XYZ=0,0,{h:.17g}, QUANTITY='{q}' /")
+ lines.append(f"&DEVC ID='T{z:03}', XYZ=0,0,{h:.17g}, QUANTITY='TEMPERATURE', TEMPORAL_STATISTIC='INSTANT VALUE' /")
+# FDS velocity devices select a nearest staggered face, not a cell-center mean.
+for k in range(107):lines.append(f"&DEVC ID='WF{k:03}', XYZ=0,0,{k*dx:.17g}, QUANTITY='W-VELOCITY', TEMPORAL_STATISTIC='INSTANT VALUE' /")
 # Conservative face mass flux; reduce at native z faces and interpolate to the
 # cell-center heights used by r253, retaining the face/cell convention explicitly.
-for k in range(107):lines.append(f"&SLCF PBZ={k*dx:.17g}, QUANTITY='MASS FLUX Z', CELL_CENTERED=T /")
+for k in range(1,107):lines.append(f"&SLCF PBZ={(k-.5)*dx:.17g}, QUANTITY='MASS FLUX Z', CELL_CENTERED=T /")
 lines.extend(['&DUMP DT_DEVC=0.03125, DT_HRR=0.03125, DT_SLCF=0.0625, DT_RESTART=5 /','&TAIL /'])
 (BASE/'fds_run').mkdir(exist_ok=True);text='\n'.join(lines)+'\n';(BASE/'fds_run/r255_fds.fds').write_text(text)
 (Path(__file__).resolve().parents[2]/'docs/data/fire_r255/r255_fds.fds').write_text(text)
