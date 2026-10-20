@@ -1767,10 +1767,12 @@ The most notorious practical trap in fire LES; specified accordingly:
   G_i=I_i(J_g)(u_i,L+u_i,R)/2 on each dual face. Consequently K_i(U)=U
   I_i(Φ̂_g) and the commuting identity preserves M_i−U I_ρ,iρ_g to roundoff
   even when spatially varying α is active. The arithmetic velocity factor also
-  gives the compatible face kinetic-energy identity. The unlimited high-order
-  candidate is the second-order central, kinetic-energy-conserving LES
-  discretization; limiter blending adds only its explicit dissipation while
-  preserving free stream. An independent central momentum flux, interpolation
+  gives the compatible interior semidiscrete kinetic-energy identity with
+  the same restricted density continuity, for any accepted mass carrier.
+  Scalar limiting changes scalar mixing and the carrier, but adds no independent
+  upwind-velocity diffusion term to this centered momentum factor. Exact energy
+  conservation is not claimed for finite-step Heun, projection, SGS, reacting
+  source or open-boundary updates. An independent central momentum flux, interpolation
   of α, or a density restriction different from I_ρ,i is forbidden.
   **Advection–reflection is dropped**: it is derived for constant-density
   incompressible flow (orthogonal L² projection onto a divergence-free
