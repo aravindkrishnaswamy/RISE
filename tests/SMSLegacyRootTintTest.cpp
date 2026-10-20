@@ -1,7 +1,5 @@
 // DL-398: final-root tint against a native material query at that root.
-#define main SMSDomainSuiteMain
-#include "SMSDomainReplayTest.cpp"
-#undef main
+#include "SMSDomainReplayFixture.h"
 int main()
 {
     LoadedScene loaded(Materials(false)+

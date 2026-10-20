@@ -1,7 +1,5 @@
 // DL-475: automatic routing must avoid the proved missing medium/delta class.
-#define main VCMVolumeMergeRegressionMain
-#include "VCMVolumeMergeTest.cpp"
-#undef main
+#include "VCMVolumeMergeFixture.h"
 #include "../src/Library/Rendering/AutoRasterizer.h"
 namespace {
 std::string SingleScatter(const char* rasterizer, unsigned spp) {

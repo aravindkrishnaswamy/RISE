@@ -1,8 +1,6 @@
 // DL-417: K8's explicit layer walk is the independent reference. Unlike
 // K8's historical residual pins, --gate requires equality at three SEM.
-#define main CompositeFixtureMain
-#include "CompositeEnergyConservationTest.cpp"
-#undef main
+#include "CompositeEnergyFixture.h"
 #include "CoatedAmbientReference.h"
 int main(int argc,char** argv)
 {

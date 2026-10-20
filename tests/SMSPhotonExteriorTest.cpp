@@ -1,7 +1,5 @@
 // DL-331: actual emitted photons, independently known nested interfaces.
-#define main SMSDomainSuiteMain
-#include "SMSDomainReplayTest.cpp"
-#undef main
+#include "SMSDomainReplayFixture.h"
 #include "../src/Library/Utilities/SMSPhotonMap.h"
 int main()
 {

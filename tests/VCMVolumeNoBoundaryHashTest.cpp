@@ -1,7 +1,5 @@
 // DL-474: a boundary-free global medium must retain exact pixel values.
-#define main VCMVolumeMergeRegressionMain
-#include "VCMVolumeMergeTest.cpp"
-#undef main
+#include "VCMVolumeMergeFixture.h"
 #include <cstdint>
 int main() {
     const std::string opts=WriteScene("force_number_of_threads 1\nrender_thread_reserve_count 0\n", "hashopts");

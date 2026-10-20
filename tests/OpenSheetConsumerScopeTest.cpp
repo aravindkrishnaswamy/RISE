@@ -1,7 +1,5 @@
 // DL-382: wider certificates must not change legacy consumer records.
-#define main DomainFixtureMain
-#include "SMSDomainReplayTest.cpp"
-#undef main
+#include "SMSDomainReplayFixture.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Geometry/HairGeometry.h"

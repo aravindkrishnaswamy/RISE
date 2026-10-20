@@ -1,8 +1,6 @@
 // DL-417 diagnostic: solve the full discretized angular return operator,
 // without replacing the substrate distribution by a cosine reservoir.
-#define main CompositeFixtureMain
-#include "CompositeEnergyConservationTest.cpp"
-#undef main
+#include "CompositeEnergyFixture.h"
 static double Fresnel(double mu,double ni,double nt) {
     const double st2=(ni/nt)*(ni/nt)*(1-mu*mu);
     if(st2>=1)return 1;

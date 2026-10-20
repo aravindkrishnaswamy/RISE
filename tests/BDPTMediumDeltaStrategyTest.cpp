@@ -1,8 +1,6 @@
 // DL-475: exact missing single-scatter class; strict energy pin stays red.
 // Reuse the ledger's fog-box fixture and in-memory linear image capture.
-#define main VCMVolumeMergeRegressionMain
-#include "VCMVolumeMergeTest.cpp"
-#undef main
+#include "VCMVolumeMergeFixture.h"
 
 namespace {
 std::string SingleScatter(const char* rasterizer, unsigned spp) {

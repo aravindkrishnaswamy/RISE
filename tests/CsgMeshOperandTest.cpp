@@ -31,9 +31,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#define main DomainFixtureMain
-#include "SMSDomainReplayTest.cpp"
-#undef main
+#include "SMSDomainReplayFixture.h"
 
 #include <atomic>
 #include <chrono>

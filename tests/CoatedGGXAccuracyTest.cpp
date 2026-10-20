@@ -1,7 +1,5 @@
 // DL-423: K4's explicit composite walk, without the residual pin.
-#define main CompositeFixtureMain
-#include "CompositeEnergyConservationTest.cpp"
-#undef main
+#include "CompositeEnergyFixture.h"
 static FurnaceStats OffMirror(const ISPF& spf,double theta,unsigned seed) {
     auto ri=MakeIntersection(theta*kPi/180);const Point3 origin=ri.ray.origin;
     const Vector3 mirror(std::sin(theta*kPi/180),0,std::cos(theta*kPi/180));

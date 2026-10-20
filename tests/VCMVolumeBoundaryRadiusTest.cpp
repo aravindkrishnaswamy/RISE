@@ -1,7 +1,5 @@
 // DL-474 single-boundary exact and own-box corner conservative normalization.
-#define main VCMVolumeMergeRegressionMain
-#include "VCMVolumeMergeTest.cpp"
-#undef main
+#include "VCMVolumeMergeFixture.h"
 #include "../src/Library/Shaders/VCMIntegrator.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 

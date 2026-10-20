@@ -108,14 +108,7 @@
 #include <string>
 #include <vector>
 #include <set>
-// Per-process scratch directory -- see ScratchRunDir below.
-#ifdef _WIN32
-	#include <process.h>
-	#define getpid _getpid
-#else
-	#include <unistd.h>			// getpid(), fork(), pipe()
-	#include <sys/wait.h>		// waitpid() -- collision-hazard proof below
-#endif
+#include "TestTempDir.h"
 
 #ifndef NO_PNG_SUPPORT
 	#include <zlib.h>   // P1 fix test: WriteSyntheticSolidPng streams a genuinely valid oversized PNG
@@ -305,77 +298,21 @@ static const char* const kBodyFinalText =
 // unique per process; ScratchTestRoot() is split out so main() can
 // recursively remove the ENTIRE per-process tree on exit, not just
 // individual leaf directories.
+static constexpr const char* kScratchPrefix = "rise_agent_eval_check_test_";
+
 static std::string ScratchTestRoot()
 {
-	const char* base = std::getenv( "TMPDIR" );
-	if( !base ) base = std::getenv( "TMP" );
-	std::string dir = base ? base : "/tmp";
-	// Forward slashes throughout: several tests embed these paths RAW inside
-	// JSON string literals, where a Windows '\' backslash is an (invalid)
-	// escape introducer ("C:\Users" -> bad escape "\U" -> JsonParse refusal).
-	// Win32 accepts '/' in paths everywhere the CRT/std::filesystem does.
-	for( char& c : dir ) if( c == '\\' ) c = '/';
-	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	dir += "rise_agent_eval_check_test_";
-	dir += std::to_string( (long)getpid() );
-	return dir;
+	return RISE::TestSupport::ScratchTestRoot( kScratchPrefix );
 }
 
 static std::string ScratchRunDir( const char* leaf )
 {
-	std::string dir = ScratchTestRoot() + "/" + leaf;
-	std::error_code ec;
-	std::filesystem::remove_all( dir, ec );
-	return dir;
+	return RISE::TestSupport::ScratchRunDir( kScratchPrefix, leaf );
 }
 
-//----------------------------------------------------------------------
-// Collision-hazard proof: two processes calling ScratchTestRoot() must
-// get DISTINCT trees.  This is a cheap, honest regression guard for the
-// exact bug the pid suffix above fixes -- a real fork() (no exec, no
-// scene load, no render) is negligible cost, and it proves the actual
-// property (parent and child disagree) rather than just re-reading the
-// same source line back.  POSIX-only: Windows has no fork(), and the
-// pid-suffix logic itself is still exercised implicitly by every
-// ScratchRunDir() call the other tests make.
-//----------------------------------------------------------------------
 static void TestScratchRootDiffersAcrossProcesses()
 {
-#ifndef _WIN32
-	std::printf( "Collision-hazard check: ScratchTestRoot() differs across processes...\n" );
-	int fds[2];
-	if( pipe( fds ) != 0 ) { Check( false, "collision check: pipe() succeeded" ); return; }
-	const pid_t child = fork();
-	if( child < 0 ) {
-		Check( false, "collision check: fork() succeeded" );
-		close( fds[0] ); close( fds[1] );
-		return;
-	}
-	if( child == 0 ) {
-		// ---- child: report its OWN ScratchTestRoot() back to the parent ----
-		close( fds[0] );
-		const std::string childRoot = ScratchTestRoot();
-		ssize_t w = write( fds[1], childRoot.data(), childRoot.size() );
-		(void)w;
-		close( fds[1] );
-		_exit( 0 );
-	}
-	// ---- parent ----
-	close( fds[1] );
-	std::string childRoot;
-	char buf[4096]; ssize_t n;
-	while( ( n = read( fds[0], buf, sizeof( buf ) ) ) > 0 ) childRoot.append( buf, (size_t)n );
-	close( fds[0] );
-	int status = 0;
-	waitpid( child, &status, 0 );
-
-	const std::string parentRoot = ScratchTestRoot();
-	Check( !childRoot.empty(), "collision check: child reported a non-empty scratch root" );
-	Check( childRoot != parentRoot,
-		"collision check: parent (" + parentRoot + ") and child (" + childRoot + ") scratch roots differ" );
-#else
-	std::printf( "Collision-hazard check: skipped on Windows (no fork()); pid-suffix logic is still exercised by every ScratchRunDir() call above.\n" );
-#endif
+	RISE::TestSupport::VerifyScratchRootDiffersAcrossProcesses( kScratchPrefix, Check );
 }
 
 static bool WriteFile( const std::string& path, const std::string& text )

@@ -1,7 +1,5 @@
 // DL-382: warning coverage; no claim that a patch has empty interior.
-#define main DomainFixtureMain
-#include "SMSDomainReplayTest.cpp"
-#undef main
+#include "SMSDomainReplayFixture.h"
 #include "../src/Library/Interfaces/ILogPrinter.h"
 #include "../src/Library/Utilities/Reference.h"
 class CaptureWarnings : public ILogPrinter, public Reference {

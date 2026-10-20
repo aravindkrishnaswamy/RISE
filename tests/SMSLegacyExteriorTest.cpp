@@ -1,7 +1,5 @@
 // DL-391: use actual geometry and the native wavelength query as oracle.
-#define main SMSDomainSuiteMain
-#include "SMSDomainReplayTest.cpp"
-#undef main
+#include "SMSDomainReplayFixture.h"
 int main()
 {
     LoadedScene nested(Materials(false)+Mesh(true,false)+

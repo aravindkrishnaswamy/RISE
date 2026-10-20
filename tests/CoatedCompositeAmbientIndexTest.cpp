@@ -1,9 +1,7 @@
 // DL-490 exact record contract, independent of a rendered energy estimate.
 // Production and the independent test adapter must satisfy the same live
 // record/stack contract. RGB, NM and HWSS companion evaluation are gated.
-#define main CompositeFixtureMain
-#include "CompositeEnergyConservationTest.cpp"
-#undef main
+#include "CompositeEnergyFixture.h"
 #include "CoatedAmbientReference.h"
 int main(int argc,char** argv) {
     if(argc>2 || (argc>1 && std::string(argv[1])!="--gate")) return 1;
