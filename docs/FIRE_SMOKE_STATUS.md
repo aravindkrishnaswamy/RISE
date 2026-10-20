@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-19, after the r254 retained-state turbulence diagnosis. This page
+Last updated 2026-10-19, during the authorized r255 sequential comparison runs. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -112,6 +112,16 @@ from these states. The active compatible flux has centered velocity and no
 independent upwind-velocity blend. **No limiter-damping cause or solver fix is
 established; solver unchanged, no new run. Stopped for review.**
 
+[r255 discriminating runs](FIRE_SMOKE_DISCRIMINATING_RUNS_R255.md) are in progress.
+The owner approved installing FDS 6.11.1; its unmodified source was built natively
+and the matched physical case is running. A bounded serial batch will then run
+an observer-only ~4 s continuation from r251 step 9,224 (first checking original
+retained Q/T/M/U states bit-for-bit), followed by canonical tier 6 from zero
+with the existing binary. Results and comparison table are pending. Production
+solver sources and kernels are unchanged; tier 10 remains unlaunched. Live
+stage and outputs are in `r255_comparison/campaign_status.json` under the external
+campaign directory. Stop for owner review after the comparison.
+
 ## Open problems, in priority order
 
 1. **Upper-plume centerline profiles fail the tier-10 gate.** r251 is too
@@ -205,6 +215,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
+| `r255_comparison` | authorized one-at-a-time FDS, ~4 s limiter continuation and full tier-6 comparison; in progress, no solver arithmetic changes |
 | `r254_turbulence_diagnosis` | offline retained-frame/checkpoint moments, independent Vreman comparison and primary source PDFs; no simulation |
 | `r253_plume_diagnosis` | read-only r251 thermodynamic/velocity integrals, source/input manifest, cleanup inventory; no simulation |
 | `r252_r251_centerline`, `r252_r251_preview`, `r252_soot_sources` | r251 native centerline extraction (tier-10 condition fails), r242-scene preview render, primary soot papers and extraction images |

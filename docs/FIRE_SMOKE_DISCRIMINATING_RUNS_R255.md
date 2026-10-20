@@ -102,3 +102,12 @@ setup attempt is also excluded from the comparison.
 
 Stop for owner review after these results. No solver remedy is selected by this
 launch record.
+
+The one-shot `tools/fire/r255_run_sequence.py` waits for the active FDS PID to
+exit successfully, reduces its outputs, runs the observer continuation, reduces
+its activity, then launches the unchanged canonical tier-6 binary and performs
+the existing plume integrals. It stops on failure and never starts concurrent
+simulations. Its live stage is in external `campaign_status.json`; the final
+`comparison_table.md` is written only after all three stages and reductions
+succeed. This is a bounded requested batch, not a recurring automation. No
+result is accepted or automatically committed by that script.
