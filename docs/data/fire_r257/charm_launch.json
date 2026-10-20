@@ -1,0 +1,18 @@
+{
+  "state": "running",
+  "command": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/Volumes/SSD/RISE/fire_production_calibration/r257_charm_ab/charm_driver",
+    "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoint_history/step_0000009224.checkpoint",
+    "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/production_final.checkpoint",
+    "/Volumes/SSD/RISE/fire_production_calibration/r257_charm_ab/run"
+  ],
+  "limiter": "CHARM (explicit LES default)",
+  "A": "completed r256",
+  "production_change": false,
+  "updated_utc": "2026-10-20T12:08:55.524528+00:00",
+  "planned_additional_steps": 2432,
+  "common_interval_comparison": true,
+  "controller_sha256": "60993c95d811095d93d0efd9f78dd196d64baa498a0607bb48263b0168a71331"
+}

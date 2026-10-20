@@ -96,4 +96,12 @@ compatible momentum, source, timesteps/event policy and focusing protection.
 Use completed r256 as A (same 15.0187 s checkpoint and exactly four seconds),
 and run B from that checkpoint with the same observer and compare 1/2/3 m mass
 flux. No bit-identity gate. This is a checkpoint diagnostic, not a production
-change or a new accepted from-zero result. **A/B results pending.**
+change or a new accepted from-zero result. B launched at **2026-10-20 05:08 PDT**, with 2,432 additional accepted steps
+planned (about four seconds). The independent review found no P1/P2 in the
+CHARM formula or build isolation; the external build produced zero warnings.
+If B changes timestep sizes, reduce both runs over their common physical
+interval, not unequal windows. The production source and objects remain
+untouched. Build hashes and the exact diagnostic patch are committed under
+`docs/data/fire_r257/`; runtime log/status are in
+`/Volumes/SSD/RISE/fire_production_calibration/r257_charm_ab/`.
+**A/B results pending; stop for review when they are available.**

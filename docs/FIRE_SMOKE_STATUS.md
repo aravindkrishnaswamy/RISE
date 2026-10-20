@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-20, after the completed r256 limiter diagnostic. This page
+Last updated 2026-10-20, after the r257 read-only comparison and diagnostic A/B selection. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -130,6 +130,18 @@ correction is inactive in the deficient upper plume. MC reconstruction before
 alpha acceptance, momentum formulation/pressure coupling, discrete SGS stresses,
 and source/divergence coupling remain candidate differences from FDS.
 Production solver unchanged. Tier 6 cancelled; no tier 10. **Stopped for review.**
+
+[r257 retained comparison](FIRE_SMOKE_RETAINED_COMPARISON_R257.md) finds much
+less absolute 1–3 Hz centerline power at 1 m (RISE/FDS 0.259 temperature,
+0.298 velocity), but no consistent high-frequency roll-off. FDS radial T/w
+histories were not retained, so edge overlays/half-widths are unavailable.
+RISE's interior compatible advection has the semidiscrete kinetic-energy
+identity; the whole reacting/projected Heun update is not exactly KE-conserving.
+FDS explicit LES defaults to **CHARM**, while the matched VLES run used
+**Superbee**. The spectral deficit selects the authorized four-second
+reconstruction A/B: completed r256 is A; B uses an external CHARM-only build
+from the same checkpoint. B launched 2026-10-20 05:08 PDT; results pending. Production sources and
+binary untouched. No tier 6 or tier 10. Stop for review after A/B.
 
 ## Open problems, in priority order
 
