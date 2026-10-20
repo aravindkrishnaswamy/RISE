@@ -4179,12 +4179,10 @@ namespace RISE
 			//! an agent-surface render are the same size by construction.
 			static constexpr int kElementSketchCanvas = 256;
 			//! G3a: the fraction of the canvas the outline's own bbox is fit
-			//! into, aspect preserved and letterboxed.  Deliberately the SAME
-			//! 0.85 as G1's auto-framing kIsolateFrameFill (AgentSession.cpp)
-			//! -- G3b compares a target mask against an ISOLATE render's
-			//! silhouette, and the two are directly comparable only if both
-			//! were framed at the same fill.  Changing one without the other
-			//! silently biases every comparison.
+			//! into, aspect preserved and letterboxed.  G1's auto-framing
+			//! kIsolateFrameFill (AgentSession.cpp) aliases this constant
+			//! directly so G3b's target mask and isolate render silhouette
+			//! are always framed at the same fill by construction.
 			static constexpr double kElementSketchFillFraction = 0.85;
 			//! G3a: how many sketch tiles the composite PNG puts in one row
 			//! before wrapping.  4 keeps an 8-build plan at 1024x512 -- inside

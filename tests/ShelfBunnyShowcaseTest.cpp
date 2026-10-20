@@ -37,6 +37,8 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -67,6 +69,7 @@ namespace fs = std::filesystem;
 
 static int passCount = 0;
 static int failCount = 0;
+static bool gExtended = false;
 
 static void Check( const bool cond, const std::string& name )
 {
@@ -461,7 +464,7 @@ static Cst::Document BuildProbeDocument( const Cst::Document& baseDoc, const std
 		// looks for this literal contiguous substring in the file):
 		// oidn_denoise FALSE
 		doc = Cst::DocSetOrAddParamValue( doc, rastId, "oidn_denoise", 0, "FALSE" );
-		doc = Cst::DocSetOrAddParamValue( doc, rastId, "samples", 0, "512" );
+		doc = Cst::DocSetOrAddParamValue( doc, rastId, "samples", 0, gExtended ? "512" : "64" );
 	}
 
 	return doc;
@@ -573,8 +576,15 @@ static bool SamplePixel( const RenderResult& r, double px, double py, double& ou
 
 //======================================================================
 
-int main( int, char** )
+int main( int argc, char** argv )
 {
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		if( ext[0] == '1' ) gExtended = true;
+	}
+	for( int i = 1; i < argc; ++i ) {
+		if( std::strcmp( argv[i], "--extended" ) == 0 ) gExtended = true;
+	}
+
 	std::cout << "ShelfBunnyShowcaseTest -- docs/PROXIMITY_SHOWCASES.md 3 (shelf_bunny)" << std::endl;
 
 	const fs::path root = FindRepoRoot();

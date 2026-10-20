@@ -21232,11 +21232,10 @@ namespace RISE
 		//! The fraction of each frame half-extent the object's bounding BOX is
 		//! allowed to fill -- i.e. a 15% margin on every side, so the
 		//! silhouette never touches the frame edge.
-		//! G3a (2026-08-10): AgentSession::kElementSketchFillFraction is
-		//! deliberately the SAME 0.85 -- G3b compares a sketch target against
-		//! an isolate render's silhouette, and the two are comparable only if
-		//! both were framed at the same fill.  Change one, change both.
-		const double kIsolateFrameFill = 0.85;
+		//! G3a (2026-08-10): bound directly to AgentSession::kElementSketchFillFraction
+		//! (0.85) so G3b's sketch target and isolate render silhouette are
+		//! always framed at the exact same fill by construction.
+		constexpr double kIsolateFrameFill = AgentSession::kElementSketchFillFraction;
 
 		//! Solve the eye distance (along `dir`, the unit vector from the box
 		//! centre toward the eye) that fits the WHOLE world AABB inside

@@ -111,6 +111,8 @@
 #include <string>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <random>
 #include <numeric>
@@ -380,9 +382,12 @@ struct WalkStats
 //! null counter costs one predicted-not-taken compare, but keeps the
 //! timed numbers honestly representative of the null-counter production
 //! path).
+static int gRepeats = 1;
+
 static WalkStats Measure( IObjectManager* mgr, const std::vector<Point3>& points,
-	const Scalar radius, const int repeats = 5 )
+	const Scalar radius, const int repeats = -1 )
 {
+	const int effectiveRepeats = ( repeats > 0 ) ? repeats : gRepeats;
 	WalkStats out;
 	out.queries = points.size();
 	if( points.empty() ) return out;
@@ -405,7 +410,7 @@ static WalkStats Measure( IObjectManager* mgr, const std::vector<Point3>& points
 	// Timed passes, proximity.
 	{
 		std::vector<double> perRunNs;
-		for( int r = 0; r < repeats; ++r ) {
+		for( int r = 0; r < effectiveRepeats; ++r ) {
 			const auto t0 = std::chrono::steady_clock::now();
 			for( const Point3& p : points ) {
 				Scalar d = 0;
@@ -415,10 +420,10 @@ static WalkStats Measure( IObjectManager* mgr, const std::vector<Point3>& points
 			perRunNs.push_back(
 				std::chrono::duration<double, std::nano>( t1 - t0 ).count() / (double)points.size() );
 		}
-		const double mean = std::accumulate( perRunNs.begin(), perRunNs.end(), 0.0 ) / (double)repeats;
+		const double mean = std::accumulate( perRunNs.begin(), perRunNs.end(), 0.0 ) / (double)effectiveRepeats;
 		double var = 0;
 		for( double v : perRunNs ) var += ( v - mean ) * ( v - mean );
-		var /= (double)repeats;
+		var /= (double)effectiveRepeats;
 		out.nsPerQueryNS   = mean;
 		out.sdNsPerQueryNS = std::sqrt( var );
 	}
@@ -426,7 +431,7 @@ static WalkStats Measure( IObjectManager* mgr, const std::vector<Point3>& points
 	// Timed passes, interior.
 	{
 		std::vector<double> perRunNs;
-		for( int r = 0; r < repeats; ++r ) {
+		for( int r = 0; r < effectiveRepeats; ++r ) {
 			const auto t0 = std::chrono::steady_clock::now();
 			for( const Point3& p : points ) {
 				Scalar depth = 0;
@@ -436,10 +441,10 @@ static WalkStats Measure( IObjectManager* mgr, const std::vector<Point3>& points
 			perRunNs.push_back(
 				std::chrono::duration<double, std::nano>( t1 - t0 ).count() / (double)points.size() );
 		}
-		const double mean = std::accumulate( perRunNs.begin(), perRunNs.end(), 0.0 ) / (double)repeats;
+		const double mean = std::accumulate( perRunNs.begin(), perRunNs.end(), 0.0 ) / (double)effectiveRepeats;
 		double var = 0;
 		for( double v : perRunNs ) var += ( v - mean ) * ( v - mean );
-		var /= (double)repeats;
+		var /= (double)effectiveRepeats;
 		out.nsPerQueryInterior   = mean;
 		out.sdNsPerQueryInterior = std::sqrt( var );
 	}
@@ -555,10 +560,20 @@ static void TestShowcaseScene()
 // main
 //======================================================================
 
-int main()
+int main( int argc, char** argv )
 {
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		if( ext[0] == '1' ) gRepeats = 5;
+	}
+	for( int i = 1; i < argc; ++i ) {
+		if( std::strcmp( argv[i], "--benchmark" ) == 0 ||
+			std::strcmp( argv[i], "--extended" ) == 0 ) {
+			gRepeats = 5;
+		}
+	}
+
 	std::cout << "DL-33: interior(r)'s TLAS-backed candidate walk cost shape vs proximity(r)'s"
-		<< std::endl;
+		<< " (timed repeats=" << gRepeats << ")" << std::endl;
 	std::cout << "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §10 / docs/DEBT_LEDGER.md DL-33"
 		<< std::endl << std::endl;
 

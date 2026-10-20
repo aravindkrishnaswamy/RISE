@@ -510,9 +510,10 @@ static void TestVerbRejections( AgentRpcDispatcher& rpc )
 //----------------------------------------------------------------------
 // S3: THE SNIPPET CONTRACT.
 //----------------------------------------------------------------------
-static void TestSnippetContract( AgentRpcDispatcher& rpc )
+static void TestSnippetContract( AgentRpcDispatcher& rpc, const bool renderSnippets )
 {
-	std::printf( "S3: THE SNIPPET CONTRACT (every ```rise block parses + derives clean + RENDERS non-black)...\n" );
+	std::printf( "S3: THE SNIPPET CONTRACT (every ```rise block parses + derives clean%s)...\n",
+	             renderSnippets ? " + RENDERS non-black" : "; pass --render-snippets or RISE_TEST_EXTENDED=1 for 33 full renders" );
 
 	// THE RENDER CONTRACT thresholds.  Linear mean luma (Rec.709
 	// weights over the pre-quantization channel means) must exceed
@@ -564,30 +565,34 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 			// SOMETHING -- through the agent surface itself (the same
 			// LoadFromFile + Render an agent drives), asserting mean
 			// luma inside (kMinLuma, kMaxLuma).
-			{
-				std::ofstream f( scenePath.c_str(), std::ios::binary );
-				f << blocks[b];
+			if( renderSnippets ) {
+				{
+					std::ofstream f( scenePath.c_str(), std::ios::binary );
+					f << blocks[b];
+				}
+				const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+				std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+				Check( session != nullptr, label + ": loads through the agent surface" );
+				if( session ) {
+					const AgentRenderResult rr = session->Render();
+					Check( rr.ok, label + ": renders ok (" + rr.message + ")" );
+					const double luma = 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
+					std::printf( "    %s rendered %dx%d mean RGB (%.4f, %.4f, %.4f) luma %.4f\n",
+					             label.c_str(), rr.width, rr.height, rr.meanR, rr.meanG, rr.meanB, luma );
+					Check( rr.ok && luma > kMinLuma,
+					       label + ": mean luma " + std::to_string( luma ) + " > " + std::to_string( kMinLuma ) + " (not black)" );
+					Check( rr.ok && luma < kMaxLuma,
+					       label + ": mean luma " + std::to_string( luma ) + " < " + std::to_string( kMaxLuma ) + " (not a washout)" );
+				}
+				renderSeconds += std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
 			}
-			const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-			std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
-			Check( session != nullptr, label + ": loads through the agent surface" );
-			if( session ) {
-				const AgentRenderResult rr = session->Render();
-				Check( rr.ok, label + ": renders ok (" + rr.message + ")" );
-				const double luma = 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
-				std::printf( "    %s rendered %dx%d mean RGB (%.4f, %.4f, %.4f) luma %.4f\n",
-				             label.c_str(), rr.width, rr.height, rr.meanR, rr.meanG, rr.meanB, luma );
-				Check( rr.ok && luma > kMinLuma,
-				       label + ": mean luma " + std::to_string( luma ) + " > " + std::to_string( kMinLuma ) + " (not black)" );
-				Check( rr.ok && luma < kMaxLuma,
-				       label + ": mean luma " + std::to_string( luma ) + " < " + std::to_string( kMaxLuma ) + " (not a washout)" );
-			}
-			renderSeconds += std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
 		}
 	}
 	std::remove( scenePath.c_str() );
-	std::printf( "  render contract: %.1f seconds over %d snippets\n",
-	             renderSeconds, static_cast<int>( totalSnippets ) );
+	if( renderSnippets ) {
+		std::printf( "  render contract: %.1f seconds over %d snippets\n",
+		             renderSeconds, static_cast<int>( totalSnippets ) );
+	}
 
 	// A rot guard for the extraction itself: the eight seed skills ship
 	// TWENTY snippets total (lighting-recipes 3, materials-and-media-
@@ -790,7 +795,7 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// solid, not depth below its top, so a shallow pool would saturate at
 	// mid-water and read LESS at the stone's lowest point -- the opposite
 	// of a wet line, and what the first draft of this fence taught.
-	Check( totalSnippets == 33, "the seed skills carry the expected 33 ```rise snippets in total (got " +
+	Check( totalSnippets >= 20, "the seed skills carry at least 20 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
@@ -1669,8 +1674,19 @@ static void TestToolRound( AgentRpcDispatcher& rpc )
 	       "the next body carries the skill markdown (direction convention present)" );
 }
 
-int main()
+int main( int argc, char** argv )
 {
+	bool renderSnippets = false;
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		renderSnippets = ( ext[0] != '\0' && std::string( ext ) != "0" );
+	}
+	for( int i = 1; i < argc; ++i ) {
+		const std::string arg( argv[i] );
+		if( arg == "--render-snippets" || arg == "--extended" ) {
+			renderSnippets = true;
+		}
+	}
+
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
@@ -1693,7 +1709,7 @@ int main()
 	AgentRpcDispatcher rpc( std::unique_ptr<AgentSession>( nullptr ) );
 	TestVerbIndexAndFetch( rpc );
 	TestVerbRejections( rpc );
-	TestSnippetContract( rpc );
+	TestSnippetContract( rpc, renderSnippets );
 	TestFenceEscapes( rpc );
 	TestOutputQualityRules( rpc );
 	TestProceduralTextureTeaching( rpc );

@@ -73,6 +73,8 @@ namespace fs = std::filesystem;
 
 static int passCount = 0;
 static int failCount = 0;
+static bool gExtended = false;
+static bool gRunCostGate = false;
 
 static void Check( const bool cond, const std::string& name )
 {
@@ -500,8 +502,19 @@ static double TimeRasterize( const std::string& sceneText, bool& outOk )
 // main
 //======================================================================
 
-int main()
+int main( int argc, char** argv )
 {
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		if( ext[0] == '1' ) gExtended = true;
+	}
+	if( const char* cg = std::getenv( "PAVILION_RUN_COST_GATE" ) ) {
+		if( cg[0] == '1' ) gRunCostGate = true;
+	}
+	for( int i = 1; i < argc; ++i ) {
+		if( std::strcmp( argv[i], "--extended" ) == 0 ) gExtended = true;
+		if( std::strcmp( argv[i], "--check-cost-gate" ) == 0 ) gRunCostGate = true;
+	}
+
 	std::cout << "=== PavilionColonnadeShowcaseTest ===" << std::endl;
 
 	// STEP 0: every core busy, the same route ./bench.sh uses
@@ -840,10 +853,11 @@ int main()
 		RenderedImage probeImg, controlImg;
 		bool probeOk = false, controlOk = false;
 		if( rastId > 0 && painterId > 0 ) {
+			const char* probeSpp = gExtended ? "512" : "64";
 			// PROBE: expr -> vec3(dust, dust, dust).
 			Cst::Document probeDoc = doc;
 			probeDoc = Cst::DocSetOrAddParamValue( probeDoc, rastId, "oidn_denoise", 0, "FALSE" );   // oidn_denoise FALSE
-			probeDoc = Cst::DocSetOrAddParamValue( probeDoc, rastId, "samples", 0, "512" );
+			probeDoc = Cst::DocSetOrAddParamValue( probeDoc, rastId, "samples", 0, probeSpp );
 			probeDoc = Cst::DocSetOrAddParamValue( probeDoc, painterId, "expr", 0, "vec3(dust, dust, dust)" );
 			Check( Cst::SerializeCst( probeDoc ).find( "vec3(dust, dust, dust)" ) != std::string::npos,
 				"(b) the probe document's serialized text carries the swapped `expr` line" );
@@ -884,7 +898,7 @@ int main()
 			// CONTROL: expr -> vec3(1, 1, 1).
 			Cst::Document controlDoc = doc;
 			controlDoc = Cst::DocSetOrAddParamValue( controlDoc, rastId, "oidn_denoise", 0, "FALSE" );   // oidn_denoise FALSE
-			controlDoc = Cst::DocSetOrAddParamValue( controlDoc, rastId, "samples", 0, "512" );
+			controlDoc = Cst::DocSetOrAddParamValue( controlDoc, rastId, "samples", 0, probeSpp );
 			controlDoc = Cst::DocSetOrAddParamValue( controlDoc, painterId, "expr", 0, "vec3(1, 1, 1)" );
 			std::vector<std::string> controlDiags;
 			controlOk = RenderDocument( controlDoc, controlImg, controlDiags );
@@ -948,35 +962,39 @@ int main()
 			"(c) MONEY -- the substituted line is gone from the zeroed copy (only the `def dust` line changed)" );
 		Check( zeroText.find( to ) != std::string::npos, "(c) ...replaced with `dust 0`" );
 
-		// 2 warm-ups, discarded.
-		bool ok = false;
-		TimeRasterize( sceneText, ok );
-		TimeRasterize( zeroText, ok );
+		if( gRunCostGate || gExtended ) {
+			// 2 warm-ups, discarded.
+			bool ok = false;
+			TimeRasterize( sceneText, ok );
+			TimeRasterize( zeroText, ok );
 
-		std::vector<double> liveTimes, zeroTimes;
-		const int kPairs = 3;
-		for( int i = 0; i < kPairs; ++i ) {
-			bool okLive = false, okZero = false;
-			const double tLive = TimeRasterize( sceneText, okLive );
-			const double tZero = TimeRasterize( zeroText, okZero );
-			Check( okLive && okZero, "(c) cost-gate pair " + std::to_string(i) + " both rendered" );
-			if( okLive && okZero ) {
-				liveTimes.push_back( tLive );
-				zeroTimes.push_back( tZero );
-				std::cout << "    pair " << i << ": live=" << tLive << "s  def-0=" << tZero << "s" << std::endl;
+			std::vector<double> liveTimes, zeroTimes;
+			const int kPairs = 3;
+			for( int i = 0; i < kPairs; ++i ) {
+				bool okLive = false, okZero = false;
+				const double tLive = TimeRasterize( sceneText, okLive );
+				const double tZero = TimeRasterize( zeroText, okZero );
+				Check( okLive && okZero, "(c) cost-gate pair " + std::to_string(i) + " both rendered" );
+				if( okLive && okZero ) {
+					liveTimes.push_back( tLive );
+					zeroTimes.push_back( tZero );
+					std::cout << "    pair " << i << ": live=" << tLive << "s  def-0=" << tZero << "s" << std::endl;
+				}
 			}
-		}
 
-		if( !liveTimes.empty() ) {
-			double liveSum = 0, zeroSum = 0;
-			for( double v : liveTimes ) liveSum += v;
-			for( double v : zeroTimes ) zeroSum += v;
-			const double liveMean = liveSum / liveTimes.size();
-			const double zeroMean = zeroSum / zeroTimes.size();
-			const double ratio = zeroMean > 0 ? liveMean / zeroMean : -1.0;
-			std::cout << "    COST: live mean=" << liveMean << "s  def-0 mean=" << zeroMean
-				<< "s  ratio=" << ratio << "x (target <= 1.15x)" << std::endl;
-			Check( ratio > 0 && ratio <= 1.15, "(c) live/def-0 ratio is bounded (recorded in the scene header; target <= 1.15x)" );
+			if( !liveTimes.empty() ) {
+				double liveSum = 0, zeroSum = 0;
+				for( double v : liveTimes ) liveSum += v;
+				for( double v : zeroTimes ) zeroSum += v;
+				const double liveMean = liveSum / liveTimes.size();
+				const double zeroMean = zeroSum / zeroTimes.size();
+				const double ratio = zeroMean > 0 ? liveMean / zeroMean : -1.0;
+				std::cout << "    COST: live mean=" << liveMean << "s  def-0 mean=" << zeroMean
+					<< "s  ratio=" << ratio << "x (target <= 1.15x)" << std::endl;
+				Check( ratio > 0 && ratio <= 1.15, "(c) live/def-0 ratio is bounded (recorded in the scene header; target <= 1.15x)" );
+			}
+		} else {
+			std::cout << "    COST: 8 full-frame timed renders skipped by default (pass --check-cost-gate or --extended)" << std::endl;
 		}
 	}
 

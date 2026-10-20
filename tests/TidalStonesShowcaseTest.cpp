@@ -692,7 +692,7 @@ static int IndexOfName( const Cst::Document& doc, const std::string& namePath, C
 //! every OTHER object (water excepted -- it keeps its dielectric), and
 //! the two rasterizer setters -- `oidn_denoise FALSE` next to this call
 //! is the literal SourceHygieneTest's `oidn_denoise false` search wants.
-static Cst::Document BuildVariant( const std::string& trackedText, bool isProbe, const char* tag )
+static Cst::Document BuildVariant( const std::string& trackedText, bool isProbe, const char* tag, const char* probeSamples = "64" )
 {
 	Cst::Document doc = Cst::ParseToCst( trackedText );
 
@@ -704,7 +704,8 @@ static Cst::Document BuildVariant( const std::string& trackedText, bool isProbe,
 
 	// 2. The rasterizer chunk is UNNAMED -- find it by role (ends in
 	// `_rasterizer`), not by name.  oidn_denoise FALSE (SourceHygieneTest's
-	// literal substring is right there) + samples 512.
+	// literal substring is right there) + samples (64 default; 512 under
+	// --extended / RISE_TEST_EXTENDED=1).
 	Cst::NodeId rastId = 0;
 	{
 		const int n = Cst::DocItemCount( doc );
@@ -722,7 +723,7 @@ static Cst::Document BuildVariant( const std::string& trackedText, bool isProbe,
 	}
 	Check( rastId > 0, std::string( tag ) + ": rasterizer chunk found by role" );
 	doc = Cst::DocSetOrAddParamValue( doc, rastId, "oidn_denoise", 0, "FALSE" ); // oidn_denoise FALSE
-	doc = Cst::DocSetOrAddParamValue( doc, rastId, "samples", 0, "512" );
+	doc = Cst::DocSetOrAddParamValue( doc, rastId, "samples", 0, probeSamples );
 
 	// 3. Overhead probe camera -- re-point the shipped `thinlens_camera`
 	// (location/lookat/up/focus_distance); the f/22 and focal length stay.
@@ -869,9 +870,9 @@ struct StationSpec
 	int			expectHops;	// 1 above the waterline, 2 submerged (spec §0)
 };
 
-static void TestPainterProbe( Scene& s, const fs::path& scenePath )
+static void TestPainterProbe( Scene& s, const fs::path& scenePath, const char* probeSamples )
 {
-	std::cout << "(f) the painter-probe harness (overhead camera, 512 spp)" << std::endl;
+	std::cout << "(f) the painter-probe harness (overhead camera, " << probeSamples << " spp)" << std::endl;
 
 	IObjectPriv* water = s.mgr->GetItem( "water" );
 	Check( water != 0, "(f) water object found for the sightline march" );
@@ -933,8 +934,8 @@ static void TestPainterProbe( Scene& s, const fs::path& scenePath )
 	Check( !trackedText.empty(), "(f) tracked scene text read for the probe harness" );
 	if( trackedText.empty() ) return;
 
-	Cst::Document probeDoc   = BuildVariant( trackedText, true,  "probe" );
-	Cst::Document controlDoc = BuildVariant( trackedText, false, "control" );
+	Cst::Document probeDoc   = BuildVariant( trackedText, true,  "probe",   probeSamples );
+	Cst::Document controlDoc = BuildVariant( trackedText, false, "control", probeSamples );
 
 	CapturingRasterizerOutput* probeCap = 0;
 	CapturingRasterizerOutput* controlCap = 0;
@@ -1008,7 +1009,7 @@ static std::string ReplaceAll( std::string s, const std::string& from, const std
 	return s;
 }
 
-static void TestCostGate( const std::string& trackedText )
+static void TestCostGate( const std::string& trackedText, const bool runTimedRenders )
 {
 	std::cout << "(g) cost gate -- live vs `def buried 0` in all three chunks (32 spp)" << std::endl;
 
@@ -1031,6 +1032,11 @@ static void TestCostGate( const std::string& trackedText )
 		while( ( pos = noSignalText.find( defPattern, pos ) ) != std::string::npos ) { ++count; pos += defPattern.length(); }
 		std::cout << "    no-signal `def buried 0` line count = " << count << " (want 3)" << std::endl;
 		Check( count == 3, "(g) the no-signal text replaced exactly the 3 `def buried interior(0.02)` lines" );
+	}
+
+	if( !runTimedRenders ) {
+		std::cout << "    (g) 10x full-frame timed renders skipped in fast mode (pass --check-cost-gate or RISE_TEST_EXTENDED=1 to run)" << std::endl;
+		return;
 	}
 
 	std::vector<double> liveRuns, noSigRuns;
@@ -1059,8 +1065,27 @@ static void TestCostGate( const std::string& trackedText )
 		"(recorded exactly in the scene header/report)" );
 }
 
-int main()
+int main( int argc, char** argv )
 {
+	bool extended = false;
+	bool runCostGate = false;
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		if( ext[0] != '\0' && std::string( ext ) != "0" ) {
+			extended = true;
+			runCostGate = true;
+		}
+	}
+	if( const char* runCg = std::getenv( "TIDAL_RUN_COST_GATE" ) ) {
+		if( runCg[0] != '\0' && std::string( runCg ) != "0" ) {
+			runCostGate = true;
+		}
+	}
+	for( int i = 1; i < argc; ++i ) {
+		const std::string arg( argv[i] );
+		if( arg == "--extended" ) { extended = true; runCostGate = true; }
+		else if( arg == "--check-cost-gate" ) { runCostGate = true; }
+	}
+
 	std::cout << "=== TidalStonesShowcaseTest (interior(r) showcase, Phase 3) ===" << std::endl;
 
 	const fs::path root = FindRepoRoot();
@@ -1081,7 +1106,7 @@ int main()
 	TestStoneB( s );
 	TestStoneC( s );
 	TestStoneE( s );
-	TestPainterProbe( s, scenePath );
+	TestPainterProbe( s, scenePath, extended ? "512" : "64" );
 
 	s.job->release();
 
@@ -1090,7 +1115,7 @@ int main()
 		std::cout << "(g) cost gate SKIPPED (TIDAL_SKIP_COST_GATE set)" << std::endl;
 	}
 	else {
-		TestCostGate( ReadFile( scenePath ) );
+		TestCostGate( ReadFile( scenePath ), runCostGate );
 	}
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

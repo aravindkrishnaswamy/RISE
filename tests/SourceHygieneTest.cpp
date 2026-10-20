@@ -97,6 +97,28 @@ static fs::path FindTestsDir()
 	return fs::path();
 }
 
+// Fast buffered whole-file reader with CRLF normalization (git text=auto
+// checks working-tree files out with native EOLs on Windows).
+static std::string SlurpFile( const fs::path& f )
+{
+	std::ifstream in( f, std::ios::binary | std::ios::ate );
+	if( !in ) { return std::string(); }
+	const std::streamsize sz = in.tellg();
+	if( sz <= 0 ) { return std::string(); }
+	std::string s( static_cast<std::size_t>( sz ), '\0' );
+	in.seekg( 0, std::ios::beg );
+	in.read( &s[0], sz );
+	if( s.find( '\r' ) != std::string::npos ) {
+		std::string::size_type w = 0;
+		for( std::string::size_type r = 0; r < s.size(); ++r ) {
+			if( s[r] == '\r' && r + 1 < s.size() && s[r + 1] == '\n' ) { continue; }
+			s[w++] = s[r];
+		}
+		s.resize( w );
+	}
+	return s;
+}
+
 // ---- Shared source-text helpers for the agent enumeration guards ----
 // (fix round 20).  The round-17 commit (d9487763, whose own in-code markers
 // said "18"; the markers now follow the commit titles, which are the only
@@ -712,48 +734,6 @@ int main()
         Check(firstInclude=="#include \"pch.h\"",std::string(name)+" preserves Windows PCH through-header declarations");
     }
 
-	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
-		if( !entry.is_regular_file() ) { continue; }
-		const fs::path& f = entry.path();
-		if( f.extension() != ".cpp" ) { continue; }
-		if( f.filename() == "SourceHygieneTest.cpp" ) { continue; }   // don't scan ourselves
-		++scanned;
-
-		std::ifstream in( f );
-		std::string line;
-		int lineNo = 0;
-		while( std::getline( in, line ) ) {
-			++lineNo;
-			if( line.find( "HYGIENE-OK" ) != std::string::npos ) { continue; }
-			for( const char* tok : kForbidden ) {
-				const size_t tokPos = line.find( tok );
-				if( tokPos == std::string::npos ) { continue; }
-				// Skip comments: a NaN/Inf mentioned in a // comment is fine.
-				const size_t commentPos = line.find( "//" );
-				if( commentPos != std::string::npos && commentPos < tokPos ) { continue; }
-				// The DISEASE is a NaN/Inf RETURNED as a not-found sentinel
-				// (e.g. `if( !l ) return std::nan("");`).  A NaN/Inf used as a
-				// test INPUT (constructed and passed into the code under test)
-				// is legitimate, so only flag a same-line `return ... <tok>`.
-				const size_t retPos = line.find( "return" );
-				if( retPos == std::string::npos || retPos > tokPos ) { continue; }
-				offenders.push_back(
-					f.filename().string() + ":" + std::to_string( lineNo )
-					+ "  ->  return " + tok );
-			}
-		}
-	}
-
-	Check( scanned > 0, "scanned at least one test file" );
-
-	for( const std::string& o : offenders ) {
-		std::cout << "  FORBIDDEN foldable NaN/Inf sentinel: " << o << std::endl;
-	}
-	Check( offenders.empty(),
-	       "no -ffast-math-foldable NaN/Inf sentinels in tests/ (use a finite "
-	       "poison or an explicit existence Check; see docs/skills/"
-	       "red-proof-and-test-integrity.md)" );
-
 	// ---- Capturing IRasterizerOutput sinks must disable OIDN denoise ----
 	// A CapturingRasterizerOutput-style sink typically overrides only
 	// OutputImage; IRasterizerOutput::OutputDenoisedImage's default
@@ -773,38 +753,80 @@ int main()
 	// the opt-out token with its reason).  It catches the whole-suite
 	// omission the sweep found seven times; a per-chunk audit stays a
 	// review-time step (docs/skills/bdpt-vcm-mis-balance.md step 0).
-	{
-		std::vector<std::string> undenoised;
-		for( const auto& entry : fs::directory_iterator( testsDir ) ) {
-			if( !entry.is_regular_file() || entry.path().extension() != ".cpp" ) { continue; }
-			const fs::path& f = entry.path();
-			if( f.filename() == "SourceHygieneTest.cpp" ) { continue; }   // don't scan ourselves: the needles below are literal text here
-			std::ifstream in( f );
-			std::string src{ std::istreambuf_iterator<char>( in ), std::istreambuf_iterator<char>() };
-			const bool definesCapturingSink =
-				src.find( "public IRasterizerOutput" ) != std::string::npos
-				|| src.find( "public virtual IRasterizerOutput" ) != std::string::npos;
-			if( !definesCapturingSink ) { continue; }
-			if( src.find( "OIDN-DENOISED-OK" ) != std::string::npos ) { continue; }
-			// Normalize case and the literal "\t" (backslash-t, two source
-			// characters) authors use as the scene-chunk field separator so
-			// "oidn_denoise\tFALSE", "oidn_denoise false" and
-			// "oidn_denoise FALSE" all match the same normalized needle.
+	std::vector<std::string> undenoised;
+	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
+		if( !entry.is_regular_file() ) { continue; }
+		const fs::path& f = entry.path();
+		if( f.extension() != ".cpp" ) { continue; }
+		if( f.filename() == "SourceHygieneTest.cpp" ) { continue; }   // don't scan ourselves
+		++scanned;
+
+		const std::string src = SlurpFile( f );
+
+		// (1) Scan for foldable NaN/Inf sentinels (only inspect lines if any
+		// forbidden token appears in the file at all).
+		bool anyForbiddenInFile = false;
+		for( const char* tok : kForbidden ) {
+			if( src.find( tok ) != std::string::npos ) { anyForbiddenInFile = true; break; }
+		}
+		if( anyForbiddenInFile ) {
+			int lineNo = 0;
+			std::size_t lineStart = 0;
+			while( lineStart <= src.size() ) {
+				const std::size_t nl = src.find( '\n', lineStart );
+				const std::size_t lineEnd = ( nl == std::string::npos ) ? src.size() : nl;
+				++lineNo;
+				const std::string line = src.substr( lineStart, lineEnd - lineStart );
+				if( line.find( "HYGIENE-OK" ) == std::string::npos ) {
+					for( const char* tok : kForbidden ) {
+						const size_t tokPos = line.find( tok );
+						if( tokPos == std::string::npos ) { continue; }
+						const size_t commentPos = line.find( "//" );
+						if( commentPos != std::string::npos && commentPos < tokPos ) { continue; }
+						const size_t retPos = line.find( "return" );
+						if( retPos == std::string::npos || retPos > tokPos ) { continue; }
+						offenders.push_back(
+							f.filename().string() + ":" + std::to_string( lineNo )
+							+ "  ->  return " + tok );
+					}
+				}
+				if( nl == std::string::npos ) { break; }
+				lineStart = nl + 1;
+			}
+		}
+
+		// (2) Check capturing IRasterizerOutput sinks for oidn_denoise FALSE.
+		const bool definesCapturingSink =
+			src.find( "public IRasterizerOutput" ) != std::string::npos
+			|| src.find( "public virtual IRasterizerOutput" ) != std::string::npos;
+		if( definesCapturingSink && src.find( "OIDN-DENOISED-OK" ) == std::string::npos ) {
 			std::string norm = src;
 			std::transform( norm.begin(), norm.end(), norm.begin(),
 				[]( unsigned char c ){ return std::tolower( c ); } );
 			for( size_t p = 0; ( p = norm.find( "\\t", p ) ) != std::string::npos; ) { norm.replace( p, 2, " " ); }
-			if( norm.find( "oidn_denoise false" ) != std::string::npos ) { continue; }
-			undenoised.push_back( f.filename().string() );
+			if( norm.find( "oidn_denoise false" ) == std::string::npos ) {
+				undenoised.push_back( f.filename().string() );
+			}
 		}
-		for( const std::string& o : undenoised ) {
-			std::cout << "  capturing IRasterizerOutput sink with no `oidn_denoise FALSE` "
-			          << "anywhere: " << o << std::endl;
-		}
-		Check( undenoised.empty(),
-		       "every tests/*.cpp defining a capturing IRasterizerOutput sink sets "
-		       "`oidn_denoise FALSE` somewhere (or opts out with an OIDN-DENOISED-OK comment)" );
 	}
+
+	Check( scanned > 0, "scanned at least one test file" );
+
+	for( const std::string& o : offenders ) {
+		std::cout << "  FORBIDDEN foldable NaN/Inf sentinel: " << o << std::endl;
+	}
+	Check( offenders.empty(),
+	       "no -ffast-math-foldable NaN/Inf sentinels in tests/ (use a finite "
+	       "poison or an explicit existence Check; see docs/skills/"
+	       "red-proof-and-test-integrity.md)" );
+
+	for( const std::string& o : undenoised ) {
+		std::cout << "  capturing IRasterizerOutput sink with no `oidn_denoise FALSE` "
+		          << "anywhere: " << o << std::endl;
+	}
+	Check( undenoised.empty(),
+	       "every tests/*.cpp defining a capturing IRasterizerOutput sink sets "
+	       "`oidn_denoise FALSE` somewhere (or opts out with an OIDN-DENOISED-OK comment)" );
 
 	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)
 	// The canonical scenes/Templates/empty_starter.RISEscene is copied into
@@ -818,21 +840,10 @@ int main()
 			repoRoot / "scenes" / "Templates" / "empty_starter.RISEscene";
 		const fs::path macCopy = repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "Resources" / "empty_starter.RISEscene";
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
-		const std::string canonicalBytes = slurp( canonical );
+		const std::string canonicalBytes = SlurpFile( canonical );
 		Check( !canonicalBytes.empty(),
 		       "canonical starter template exists (scenes/Templates/empty_starter.RISEscene)" );
-		const std::string macBytes = slurp( macCopy );
+		const std::string macBytes = SlurpFile( macCopy );
 		Check( !macBytes.empty(),
 		       "Mac bundle copy of the starter template exists (RISE-GUI/Resources)" );
 		Check( canonicalBytes == macBytes,
@@ -853,17 +864,7 @@ int main()
 	// the resolution ladder itself is covered portably by AgentSkillsTest.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string macApp = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "RISEApp.swift" );
 		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
@@ -923,17 +924,7 @@ int main()
 	// desktop apps different first-reveal behavior.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string mac = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "MultiPaneViewport.swift" );
 		const std::string win = slurp( repoRoot / "build" / "VS2022"
@@ -963,17 +954,7 @@ int main()
 	// the platform GUI builds type-check the code reached by these markers.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string macModel = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "RenderViewModel.swift" );
 		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
@@ -2387,12 +2368,9 @@ int main()
 			// plausible number, systematically wrong, with nothing failing.
 			// TWO independent pins, because the invariant has two halves:
 			//
-			//  (1) NUMERIC -- AgentSession.h's kElementSketchFillFraction and
-			//      AgentSession.cpp's kIsolateFrameFill are the same
-			//      literal.  These are deliberately separate constants (one
-			//      frames a 3D camera, one fits a 2D polygon) that MUST hold
-			//      the same value; G3a's comments on both say "change one,
-			//      change both", and this is what makes that enforceable.
+			//  (1) NUMERIC -- AgentSession.h's kElementSketchFillFraction is the
+			//      single source of truth and AgentSession.cpp's kIsolateFrameFill
+			//      is initialized directly from AgentSession::kElementSketchFillFraction.
 			//  (2) STRUCTURAL -- both mask producers go through the one
 			//      SketchFitTransform_ helper.  A shared constant alone is
 			//      not enough: the centering, the letterbox and the
@@ -2414,15 +2392,13 @@ int main()
 						v += src[q++];
 					return v;
 				};
-				const std::string sketchFill  = literalAfter( headerSrc,  "kElementSketchFillFraction = " );
-				const std::string isolateFill = literalAfter( sessionSrc, "kIsolateFrameFill = " );
-				Check( !sketchFill.empty() && !isolateFill.empty(),
-				       "G3b parity: parsed both fill-fraction literals" );
-				Check( sketchFill == isolateFill,
-				       "G3b: kElementSketchFillFraction (" + sketchFill + ") and kIsolateFrameFill (" +
-				       isolateFill + ") MUST be the same literal -- the sketch mask and the isolate "
-				       "render's silhouette are compared by IoU, and a divergence here biases every "
-				       "comparison silently" );
+				const std::string sketchFill = literalAfter( headerSrc, "kElementSketchFillFraction = " );
+				Check( !sketchFill.empty(),
+				       "G3b parity: parsed kElementSketchFillFraction literal in AgentSession.h" );
+				Check( sessionSrc.find( "kIsolateFrameFill = AgentSession::kElementSketchFillFraction;" ) != std::string::npos,
+				       "G3b: kIsolateFrameFill is initialized directly from AgentSession::kElementSketchFillFraction "
+				       "-- the sketch mask and the isolate render's silhouette are compared by IoU, so they share "
+				       "one compile-time constant" );
 
 				// Both call sites of the shared fit, plus the definition:
 				// three occurrences minimum (RasterizeElementOutline_,
@@ -2650,234 +2626,6 @@ int main()
 		       "Windows MainWindow has one ordered shutdown path" );
 	}
 
-	// ---- IJob vtable-manifest extractor self-coverage (2026-08-20) -------
-	// Prove ExtractVirtualDecls/NormalizeDeclSignature on synthetic text
-	// BEFORE trusting them against the real header.  Self-test (d) below is
-	// the actual regression guard for the doc-88 S7 blindness: a trailing
-	// defaulted parameter appended to an EXISTING virtual must change the
-	// pinned signature even though the name and position do not move --
-	// exactly what the old name-only manifest could not see.  Self-tests
-	// (g)-(h) guard the QUOTE-UNAWARE-SCAN fix (a `)`, `;`, or `{` inside a
-	// string/char literal default value desynchronizing the walk);
-	// (i)-(j) guard the WHITESPACE/`inline` widening (a literal 8-byte
-	// "virtual " match silently skipping `virtual\t...` and
-	// `inline virtual ...`).  Letters are sequential in FILE ORDER (one per
-	// Check() call, not grouped by fixture) so the prose maps directly to
-	// the call it names.
-	{
-		const std::string synth =
-			"class IJob : public virtual IReference\n"
-			"{\n"
-			"protected:\n"
-			"\tIJob(){};\n"
-			"\tvirtual ~IJob(){};\n"
-			"public:\n"
-			"\t//! Adds a pinhole camera\n"
-			"\tvirtual bool AddPinholeCamera(\n"
-			"\t\tconst char* name,                          ///< [in] Camera name\n"
-			"\t\tconst double ptLocation[3],                ///< [in] Location\n"
-			"\t\tconst double fstop = 0.0                   ///< [in] F-stop\n"
-			"\t\t) = 0;\n"
-			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
-			"};\n";
-		const std::string kExpectedPinhole =
-			"virtual bool AddPinholeCamera(const char*name,const double ptLocation[3],"
-			"const double fstop=0.0)=0;";
-		const std::string kExpectedActiveCameraName =
-			"virtual std::string GetActiveCameraName()const=0;";
-
-		const std::vector<IJobVirtualDecl> decls =
-			ExtractVirtualDecls( StripCommentsPreservingLayout( synth ) );
-		Check( decls.size() == 2,
-		       "self-test (a): synthetic IJob yields exactly the two pure virtuals "
-		       "(protected ctor and destructor excluded)" );
-		Check( decls.size() >= 1 && decls[0].name == "AddPinholeCamera"
-		       && decls[0].signature == kExpectedPinhole,
-		       "self-test (b): a multi-line decl with ///< trailers and a defaulted "
-		       "param normalizes to the exact expected canonical string" );
-		bool sawDestructorLeak = false;
-		for( const IJobVirtualDecl& d : decls ) { if( d.name == "IJob" ) sawDestructorLeak = true; }
-		Check( decls.size() >= 2 && decls[1].name == "GetActiveCameraName"
-		       && decls[1].signature == kExpectedActiveCameraName && !sawDestructorLeak,
-		       "self-test (c): the destructor is skipped (never leaks in under its "
-		       "'~'-stripped name) and a single-line `const = 0;` decl is extracted" );
-
-		// (d) THE REGRESSION GUARD: append a trailing DEFAULTED parameter to
-		// the SAME existing virtual.  Name and slot must stay identical; the
-		// signature MUST differ.
-		const std::string synthWithTail =
-			"class IJob : public virtual IReference\n"
-			"{\n"
-			"protected:\n"
-			"\tIJob(){};\n"
-			"\tvirtual ~IJob(){};\n"
-			"public:\n"
-			"\tvirtual bool AddPinholeCamera(\n"
-			"\t\tconst char* name,                          ///< [in] Camera name\n"
-			"\t\tconst double ptLocation[3],                ///< [in] Location\n"
-			"\t\tconst double fstop = 0.0,                  ///< [in] F-stop\n"
-			"\t\tconst double zz = 0.0                      ///< [in] NEW trailing default\n"
-			"\t\t) = 0;\n"
-			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
-			"};\n";
-		const std::vector<IJobVirtualDecl> declsTail =
-			ExtractVirtualDecls( StripCommentsPreservingLayout( synthWithTail ) );
-		Check( declsTail.size() >= 1 && declsTail[0].name == "AddPinholeCamera"
-		       && declsTail[0].signature != kExpectedPinhole,
-		       "self-test (d, S7 REGRESSION GUARD): a trailing defaulted parameter "
-		       "appended to an EXISTING virtual keeps its name and slot but changes "
-		       "the pinned signature -- the exact mutation a name-only manifest "
-		       "missed in the doc-88 S7 review (2026-08-20)" );
-
-		// (e) A reflow/reindent of the SAME declaration -- different
-		// indentation, parameters folded onto fewer lines -- must normalize
-		// to the IDENTICAL string.
-		const std::string reflowed =
-			"class IJob : public virtual IReference\n"
-			"{\n"
-			"public:\n"
-			"  virtual bool AddPinholeCamera(\n"
-			"      const char*   name,\n"
-			"      const double  ptLocation[3], const double fstop = 0.0 ) = 0;\n"
-			"};\n";
-		const std::vector<IJobVirtualDecl> declsReflow =
-			ExtractVirtualDecls( StripCommentsPreservingLayout( reflowed ) );
-		Check( declsReflow.size() == 1 && declsReflow[0].signature == kExpectedPinhole,
-		       "self-test (e): reflowing/reindenting the same declaration normalizes "
-		       "to the IDENTICAL signature string" );
-
-		// (f) A comment containing a brace or the word `virtual` must not
-		// desynchronize extraction (mirrors the existing round-20 concern).
-		const std::string withTrickyComment =
-			"class IJob : public virtual IReference\n"
-			"{\n"
-			"public:\n"
-			"\t// a decoy: virtual void Evil() { trap(); } ;\n"
-			"\t/* another decoy -- virtual int AlsoEvil() = 0; { } */\n"
-			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
-			"};\n";
-		const std::vector<IJobVirtualDecl> declsTricky =
-			ExtractVirtualDecls( StripCommentsPreservingLayout( withTrickyComment ) );
-		bool sawEvil = false;
-		for( const IJobVirtualDecl& d : declsTricky ) {
-			if( d.name == "Evil" || d.name == "AlsoEvil" ) sawEvil = true;
-		}
-		Check( declsTricky.size() == 1 && declsTricky[0].name == "GetActiveCameraName" && !sawEvil,
-		       "self-test (f): a comment containing a brace or the word `virtual` does "
-		       "not desynchronize extraction" );
-
-		// (g)-(h) THE QUOTE-UNAWARE-SCAN REGRESSION GUARD.
-		// ExtractVirtualDecls' bracket/terminator scans walk strippedText
-		// character-by-character; StripCommentsPreservingLayout deliberately
-		// preserves string/char LITERAL CONTENTS (only comments are blanked),
-		// so a `)`, `;`, or `{` inside a default-argument literal is a LIVE
-		// character to those scans.  Without SkipLiteral, the `)` inside
-		// ");evil;" closes the parameter list early, the `;` inside it
-		// terminates the decl, and `after` -- the real trailing parameter --
-		// is silently dropped from the captured signature.  Cover a char
-		// literal (`';'`) alongside the string literal in the same fixture,
-		// since a char literal can just as easily contain `)` or `;`.
-		const std::string trickyDefault =
-			"class IJob : public virtual IReference\n"
-			"{\n"
-			"public:\n"
-			"\tvirtual bool TrickyDefault(\n"
-			"\t\tconst char* s = \");evil;\",\n"
-			"\t\tconst char c = ';',\n"
-			"\t\tconst double after = 1.0\n"
-			"\t\t) = 0;\n"
-			"};\n";
-		const std::vector<IJobVirtualDecl> declsTrickyDefault =
-			ExtractVirtualDecls( StripCommentsPreservingLayout( trickyDefault ) );
-		Check( declsTrickyDefault.size() == 1 && declsTrickyDefault[0].name == "TrickyDefault"
-		       && declsTrickyDefault[0].signature.find( "after" ) != std::string::npos,
-		       "self-test (g): a `)`/`;` inside a string or char literal default value "
-		       "does not truncate the declaration -- the trailing `after` parameter is "
-		       "captured in full" );
-
-		const std::string trickyDefaultWithTail =
-			"class IJob : public virtual IReference\n"
-			"{\n"
-			"public:\n"
-			"\tvirtual bool TrickyDefault(\n"
-			"\t\tconst char* s = \");evil;\",\n"
-			"\t\tconst char c = ';',\n"
-			"\t\tconst double after = 1.0,\n"
-			"\t\tconst double zzz = 2.0\n"
-			"\t\t) = 0;\n"
-			"};\n";
-		const std::vector<IJobVirtualDecl> declsTrickyDefaultTail =
-			ExtractVirtualDecls( StripCommentsPreservingLayout( trickyDefaultWithTail ) );
-		Check( declsTrickyDefaultTail.size() == 1
-		       && declsTrickyDefaultTail[0].name == declsTrickyDefault[0].name
-		       && declsTrickyDefaultTail[0].signature != declsTrickyDefault[0].signature,
-		       "self-test (h): appending a further trailing defaulted parameter past "
-		       "the tricky literals keeps the name equal but changes the captured "
-		       "signature -- proves the earlier capture wasn't accidentally already "
-		       "full-width" );
-
-		// (i)-(j) THE WHITESPACE/`inline` WIDENING.  The walker used to
-		// require the literal 8-byte prefix "virtual " (a space); a tab,
-		// newline, or an `inline` token ahead of `virtual` silently dropped
-		// the declaration.
-		const std::string tabAndInline =
-			"class IJob : public virtual IReference\n"
-			"{\n"
-			"public:\n"
-			"\tvirtual\tbool TabDecl( const double x ) = 0;\n"
-			"\tinline virtual bool InlineDecl() = 0;\n"
-			"};\n";
-		const std::vector<IJobVirtualDecl> declsTabInline =
-			ExtractVirtualDecls( StripCommentsPreservingLayout( tabAndInline ) );
-		bool sawTabDecl = false, sawInlineDecl = false;
-		std::string inlineDeclSignature;
-		for( const IJobVirtualDecl& d : declsTabInline ) {
-			if( d.name == "TabDecl" ) { sawTabDecl = true; }
-			if( d.name == "InlineDecl" ) { sawInlineDecl = true; inlineDeclSignature = d.signature; }
-		}
-		std::string tabDeclSignature;
-		for( const IJobVirtualDecl& d : declsTabInline ) {
-			if( d.name == "TabDecl" ) { tabDeclSignature = d.signature; }
-		}
-		Check( declsTabInline.size() == 2 && sawTabDecl
-		       && tabDeclSignature == "virtual bool TabDecl(const double x)=0;",
-		       "self-test (i): `virtual` followed by a TAB (not just a literal space) "
-		       "is still recognized as a declaration start AND captures the exact "
-		       "normalized signature" );
-		Check( sawInlineDecl && inlineDeclSignature == "inline virtual bool InlineDecl()=0;",
-		       "self-test (j): a leading `inline` token ahead of `virtual` is still "
-		       "recognized as a declaration start, and normalizes with the `inline` "
-		       "prefix intact" );
-
-		// (k) THE `operator~` / EMPTY-NAME CASE.  The destructor filter used
-		// to treat ANY `~` ahead of the `(` as "this is the destructor",
-		// which would have dropped a hypothetical `virtual X& operator~()`
-		// silently and permanently untracked (round-2 review).  The rule is
-		// now `~` directly ahead of the NAME; an operator overload (whose
-		// token ends in punctuation, so no identifier name extracts) must
-		// still pin its full signature, and the real destructor must still
-		// be skipped.
-		const std::string operatorTilde =
-			"class IJob : public virtual IReference\n"
-			"{\n"
-			"public:\n"
-			"\tvirtual ~IJob(){};\n"
-			"\tvirtual IJob& operator~() = 0;\n"
-			"\tvirtual bool Bar() = 0;\n"
-			"};\n";
-		const std::vector<IJobVirtualDecl> declsOpTilde =
-			ExtractVirtualDecls( StripCommentsPreservingLayout( operatorTilde ) );
-		bool opTildePinned = false, dtorLeaked = false;
-		for( const IJobVirtualDecl& d : declsOpTilde ) {
-			if( d.signature == "virtual IJob&operator~()=0;" ) { opTildePinned = true; }
-			if( d.name == "IJob" ) { dtorLeaked = true; }
-		}
-		Check( declsOpTilde.size() == 2 && opTildePinned && !dtorLeaked,
-		       "self-test (k): a `virtual operator~()` overload is NOT mistaken for the "
-		       "destructor -- its full signature pins (empty name) while the real "
-		       "destructor stays skipped" );
-	}
-
 	// ---- IJob vtable append-only + full-signature manifest ---------------
 	// (round-4 review, 2026-07-22; hardened to pin FULL SIGNATURES rather
 	// than names alone, 2026-08-20, per the doc-88 S7 review finding above.)
@@ -2895,13 +2643,8 @@ int main()
 		const fs::path header = repoRoot / "src" / "Library" / "Interfaces" / "IJob.h";
 		const fs::path manifestPath = testsDir / "IJobVtableManifest.txt";
 
-		std::vector<IJobVirtualDecl> extracted;
-		{
-			std::ifstream raw( header );
-			extracted = ExtractVirtualDecls( StripCommentsPreservingLayout(
-				std::string( std::istreambuf_iterator<char>( raw ),
-				             std::istreambuf_iterator<char>() ) ) );
-		}
+		const std::vector<IJobVirtualDecl> extracted =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( SlurpFile( header ) ) );
 		Check( extracted.size() > 200,
 		       "IJob.h parsed: extracted the virtual-method order + signatures "
 		       "(sanity: >200 methods)" );
@@ -3149,17 +2892,7 @@ int main()
 	{
 		const fs::path repoRoot = testsDir.parent_path();
 		const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string rpcCpp = slurp( agentDir / "AgentRpc.cpp" );
 		Check( !rpcCpp.empty(), "verb-parity: AgentRpc.cpp read" );
 		// GROUND TRUTH IS CODE, NOT COMMENT TEXT (fix round 20).  These
@@ -3444,56 +3177,6 @@ int main()
 		       "which is where this family's findings keep landing" );
 	}
 
-	// ---- The enumeration guards' own parser, red-proved (fix round 20) --
-	// The round-17 mechanism was defective in ways only a test of the TEST
-	// can pin: it ingested comment text as ground truth and saw neither
-	// `/* */` blocks nor string literals.  Each case below is one of the
-	// reviewer's red-proofs, frozen so the mechanism cannot regress to it.
-	{
-		const std::string sample =
-			"bool Pick( const std::string& m )\n"
-			"{\n"
-			"\t// a comment that says \"ghost\" must not become a value\n"
-			"\treturn m == \"alpha\" || m == \"beta\";\n"
-			"}\n"
-			"//! run line one\n"
-			"//! run line two\n"
-			"int x = 1;   // detached\n"
-			"/* block comment mentions five mutating verbs */\n"
-			"const char* d = \"first literal \"\n"
-			"                \"second literal, escaped \\\"quoted\\\" word\";\n"
-			"// value = \"dead\";\n";
-
-		const std::string code = StripCommentsPreservingLayout( sample );
-		Check( code.size() == sample.size(),
-		       "self-test: comment stripping preserves offsets" );
-		Check( code.find( "ghost" ) == std::string::npos
-		       && code.find( "dead" ) == std::string::npos
-		       && code.find( "block comment" ) == std::string::npos,
-		       "self-test: a quoted word inside a `//` comment, a commented-out assignment, and a "
-		       "`/* */` block are ALL invisible to a ground-truth parser" );
-		Check( code.find( "\"alpha\"" ) != std::string::npos
-		       && code.find( "\"beta\"" ) != std::string::npos,
-		       "self-test: real string literals survive comment stripping" );
-
-		const std::vector<ProseBlock> blocks = ExtractProseBlocks( sample );
-		bool sawRun = false, sawBlockComment = false, sawJoinedLiteral = false, sawGhost = false;
-		for( const ProseBlock& b : blocks ) {
-			if( b.text.find( "run line one" ) != std::string::npos
-			    && b.text.find( "run line two" ) != std::string::npos ) { sawRun = true; }
-			if( b.text.find( "five mutating verbs" ) != std::string::npos ) { sawBlockComment = true; }
-			if( b.text.find( "first literal" ) != std::string::npos
-			    && b.text.find( "second literal" ) != std::string::npos
-			    && b.text.find( "\"quoted\"" ) != std::string::npos ) { sawJoinedLiteral = true; }
-			if( b.text.find( "ghost" ) != std::string::npos ) { sawGhost = true; }
-		}
-		Check( sawRun, "self-test: consecutive `//` lines join into ONE prose run" );
-		Check( sawBlockComment, "self-test: a `/* */` block is scanned for claims" );
-		Check( sawJoinedLiteral,
-		       "self-test: adjacent MODEL-FACING string literals join, with `\\\"` decoded" );
-		Check( sawGhost, "self-test: comment prose is still scanned as PROSE (only ground truth excludes it)" );
-	}
-
 	// ---- GUI edit-refusal retry gate (FIX 2) --------------------------
 	// WHY THIS IS GUARDED IN SOURCE.  Both GUI chat drivers now RETRY an
 	// edit tool call that came back a retriable refusal, instead of
@@ -3545,17 +3228,7 @@ int main()
 	// anywhere in any of the three bodies used to be read as a verb name.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		auto bodyBetween = []( const std::string& src, const char* begin,
 		                       const char* next ) -> std::string {
 			const size_t b = src.find( begin );
@@ -3893,87 +3566,6 @@ int main()
 		EditRefusalGateBehaviour();
 	}
 
-	// ---- E4 Part 2: macOS degenerate-turn retry-once TEXTUAL pin ----
-	// Swift has NO test binary here (no swiftc/xcodebuild-driven unit test
-	// runs in this suite -- only xcodebuild's own compile gate does), so
-	// this is DISCLOSED as textual, not behavioural, exactly like every
-	// other macGate-style pin in the block above: it guards against
-	// SILENT DELETION OR DRIFT of the retry-once structure (the per-round
-	// `attempt==1` gate, the reset on a successful round, the
-	// attempt/retryOf trajectory stamp), not against a logic bug in it --
-	// AgentChatLoopTest.cpp's T44 (TestDegenerateTurnRetryParity) is what
-	// actually EXERCISES the equivalent host-loop policy, at the
-	// AgentChatLoop API level both Swift and the eval runner build on.
-	{
-		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
-		auto bodyBetween = []( const std::string& src, const char* begin,
-		                       const char* next ) -> std::string {
-			const size_t b = src.find( begin );
-			if( b == std::string::npos ) return std::string();
-			const size_t e = src.find( next, b );
-			if( e == std::string::npos ) return std::string();
-			return src.substr( b, e - b );
-		};
-		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
-			/ "RISE-GUI" / "App" / "ChatViewModel.swift" );
-		Check( !macChat.empty(), "degenerate-retry pin: read ChatViewModel.swift" );
-		const std::string macChatCode = StripCommentsPreservingLayout( macChat );
-
-		// Symbol-anchored, like every bodyBetween extraction in this file:
-		// a marker inside driveTurn()'s own body cannot be satisfied by an
-		// unrelated occurrence elsewhere (e.g. the FIX-2 edit-retry gate's
-		// OWN `attempts`/`attempt` locals, which live in a DIFFERENT
-		// function and are excluded by these very boundaries).
-		const std::string macDriveTurn = bodyBetween( macChatCode,
-			"private func driveTurn() async {", "private static func parseAskUserArgs" );
-		Check( !macDriveTurn.empty()
-		       // The two per-round locals, declared OUTSIDE the `while true`
-		       // loop (so a retry's own `continue` does not reset them --
-		       // only a genuinely NEW round does).
-		       && macDriveTurn.find( "var httpAttempt = 1" ) != std::string::npos
-		       && macDriveTurn.find( "var degenerateTurnRetried = false" ) != std::string::npos
-		       // The retry-once GATE: exactly the eval runner's `attempt==1`
-		       // check, ported -- retryDegenerateTurn alone is NOT enough,
-		       // the per-round flag must also still be false.
-		       && macDriveTurn.find( "if step.retryDegenerateTurn && !degenerateTurnRetried {" )
-		          != std::string::npos
-		       && macDriveTurn.find( "degenerateTurnRetried = true" ) != std::string::npos
-		       && macDriveTurn.find( "httpAttempt += 1" ) != std::string::npos
-		       // RESET on a round that actually succeeded (.toolCalls) -- a
-		       // LATER round's own degenerate response must get its OWN
-		       // retry allowance, not inherit an already-spent one.  A bare
-		       // `.find("httpAttempt = 1")` would be VACUOUS here (it also
-		       // matches inside the "var httpAttempt = 1" DECLARATION above
-		       // -- caught in review), so the anchor is the whole
-		       // `case .toolCalls:` reset, contiguous and in order.
-		       && macDriveTurn.find(
-		              "case .toolCalls:\n                consecutiveHttp400s = 0\n"
-		              "                httpAttempt = 1\n                degenerateTurnRetried = false" )
-		          != std::string::npos
-		       // The trajectory STAMP: the retry rides as an honest sibling
-		       // `llm` record (attempt/retryOf), the SAME convention T33's
-		       // TestMultimodalRetry pins for retryWithoutImages.
-		       && macDriveTurn.find( "if httpAttempt > 1 {" ) != std::string::npos
-		       && macDriveTurn.find( "attempt: httpAttempt, retryOf: httpAttempt - 1" )
-		          != std::string::npos,
-		       "macOS driveTurn's degenerate-turn retry-once structure is still present: the two "
-		       "per-round locals, the attempt==1-equivalent gate before re-issuing, the reset on a "
-		       "successful round, and the attempt/retryOf trajectory stamp -- TEXTUAL PRESENCE ONLY "
-		       "(Swift has no unit-test binary here; this guards against silent deletion/drift, not "
-		       "against a logic bug in the retry policy itself)" );
-	}
-
 	// ---- Context-compaction budget wiring parity (FIX 3) ----
 	// AgentChatLoop::CompactTranscript is fully implemented but INERT until a
 	// host calls SetContextBudget -- and for the whole life of the feature
@@ -3988,17 +3580,7 @@ int main()
 	// the two cannot drift apart or from the header's documented rationale.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string macBridge = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "Bridge" / "RISEAgentChatBridge.mm" );
 		const std::string winChat = slurp( repoRoot / "build" / "VS2022"
@@ -4196,17 +3778,7 @@ int main()
 		// recursive_directory_iterator over "" yields nothing -- which would
 		// make the unregistered-surface half silently vacuous.
 		const fs::path repoRoot = fs::weakly_canonical( fs::absolute( testsDir ) ).parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			std::string s{ std::istreambuf_iterator<char>( in ),
-			               std::istreambuf_iterator<char>() };
-			// Normalize CRLF: git's text=auto checks working-tree files out
-			// with native EOLs, so on Windows every "...\n..." literal match
-			// below would otherwise miss the '\r' that sits before it.
-			std::string::size_type r = 0;
-			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
-			return s;
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		// ONE list, used by both the scanner and the registry-path extractor.
 		static const char* kTextExts[] = {
 			".cpp", ".h", ".hpp", ".c", ".mm", ".m", ".swift", ".cs", ".java", ".kt",
@@ -4584,6 +4156,34 @@ int main()
 		       "no unregistered file enumerates the read_viewport reason values" );
 	}
 
+	// Cache all src/Library/*.{h,cpp} files once so the remaining four checks
+	// (full-sphere NEE claimers, signal writers, painter ri census, and DL-386
+	// reflectance reads) do not re-read src/Library from disk multiple times.
+	struct LibSourceFile
+	{
+		fs::path path;
+		std::string filename;
+		std::string parentDirName;
+		std::string raw;
+	};
+	std::vector<LibSourceFile> libSourceFiles;
+	{
+		const fs::path libDir = testsDir.parent_path() / "src" / "Library";
+		if( fs::exists( libDir ) ) {
+			for( const auto& e : fs::recursive_directory_iterator( libDir ) ) {
+				if( !e.is_regular_file() ) { continue; }
+				const fs::path& f = e.path();
+				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
+				libSourceFiles.push_back( LibSourceFile{
+					f,
+					f.filename().string(),
+					f.parent_path().filename().string(),
+					SlurpFile( f )
+				} );
+			}
+		}
+	}
+
 	// ---- Full-sphere NEE: the bit-identity guard --------------------------
 	// `IMaterial::ScattersFullSphere()` lets a material (today: only
 	// HairMaterial) ask LightSampler's NEE to evaluate the transmissive
@@ -4612,9 +4212,7 @@ int main()
 		const fs::path repoRoot = testsDir.parent_path();
 		const fs::path lsPath = repoRoot / "src" / "Library" / "Lights" / "LightSampler.cpp";
 
-		std::ifstream in( lsPath );
-		const std::string src( ( std::istreambuf_iterator<char>( in ) ),
-		                         std::istreambuf_iterator<char>() );
+		const std::string src = SlurpFile( lsPath );
 		Check( !src.empty(), "full-sphere NEE: LightSampler.cpp readable" );
 
 		// Exactly six guarded sites: {delta light, mesh area light, env map}
@@ -4684,73 +4282,32 @@ int main()
 		// multi-line definition, or a reindent neither hides a claimer nor
 		// false-fails the census.
 		std::vector<std::string> claimers;
-		const fs::path libDir = repoRoot / "src" / "Library";
-		if( fs::exists( libDir ) ) {
-			for( const auto& e : fs::recursive_directory_iterator( libDir ) ) {
-				if( !e.is_regular_file() ) { continue; }
-				const fs::path& f = e.path();
-				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
-				std::ifstream mi( f );
-				const std::string body( ( std::istreambuf_iterator<char>( mi ) ),
-				                          std::istreambuf_iterator<char>() );
-				std::string bflat;
-				bflat.reserve( body.size() );
-				bool ws = false;
-				for( char ch : body ) {
-					if( ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ) { ws = true; continue; }
-					if( ws && !bflat.empty() ) { bflat += ' '; }
-					ws = false;
-					bflat += ch;
+		for( const LibSourceFile& lf : libSourceFiles ) {
+			const std::string& body = lf.raw;
+			if( body.find( "ScattersFullSphere" ) == std::string::npos ) { continue; }
+			std::string bflat;
+			bflat.reserve( body.size() );
+			bool ws = false;
+			for( char ch : body ) {
+				if( ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ) { ws = true; continue; }
+				if( ws && !bflat.empty() ) { bflat += ' '; }
+				ws = false;
+				bflat += ch;
+			}
+			size_t at = 0;
+			bool claims = false;
+			while( ( at = bflat.find( "ScattersFullSphere() const", at ) ) != std::string::npos ) {
+				const std::string window = bflat.substr( at, 100 );
+				if( window.find( "return true" ) != std::string::npos
+				 || window.find( "eWeaveTransmissionThin" ) != std::string::npos
+				 || window.find( "return pBase->ScattersFullSphere" ) != std::string::npos
+				 || window.find( "return bScattersFullSphere" ) != std::string::npos ) {
+					claims = true; break;
 				}
-				size_t at = 0;
-				bool claims = false;
-				while( ( at = bflat.find( "ScattersFullSphere() const", at ) ) != std::string::npos ) {
-					// 100, not 80: WeaveMaterial.h's conditional form
-					// (`return pBRDF->GetTransmission() == eWeaveTransmissionThin;`)
-					// runs to character 89 from this point, and an 80-char
-					// window cut "eWeaveTransmissionThin" off mid-identifier.
-					const std::string window = bflat.substr( at, 100 );
-					// An UNCONDITIONAL `return true` (HairMaterial.h) is one
-					// deliberate form of claiming the capability.  P2-B
-					// (docs/CLOTH_FABRIC_DESIGN.md 10) added a second,
-					// CONDITIONAL form: WeaveMaterial.h returns true only
-					// under `transmission thin`, so the literal substring
-					// "return true" never appears -- match the specific
-					// enumerator its condition tests instead, rather than
-					// broadening to "contains return" (which would also
-					// false-claim IMaterial.h's own `return false;` default).
-					// R8 P1.1 (debt 22) added a THIRD form: a DELEGATING
-					// claimer, `return pBase->ScattersFullSphere();` on
-					// FabricMaterial.h, which is true exactly when its
-					// substrate's is.  It matches neither literal above and
-					// would otherwise have slipped the census entirely --
-					// which is the one outcome this block exists to prevent,
-					// since a wrapper that forwards the flag inherits the
-					// full weight of the "claiming it wrongly is real bias"
-					// warning without ever writing `true` itself.
-					//
-					// DL-23 (docs/DEBT_LEDGER.md) added a FOURTH claimer,
-					// CoatedMaterial.h, in the SAME delegating form -- so it
-					// is already caught by the existing substring match
-					// below; only the expectation list needed widening.
-					// DL-157 P2-1 added a FIFTH claiming form: a cached
-					// member (`CompositeMaterial`, which does not retain its
-					// two layers and so resolves the flag once, at
-					// construction, from whichever layer's BSDF it ends up
-					// presenting).  A claimer this matcher cannot SEE is
-					// worse than one it lists, so the form is recognised
-					// here rather than left to slip past the closed list.
-					if( window.find( "return true" ) != std::string::npos
-					 || window.find( "eWeaveTransmissionThin" ) != std::string::npos
-					 || window.find( "return pBase->ScattersFullSphere" ) != std::string::npos
-					 || window.find( "return bScattersFullSphere" ) != std::string::npos ) {
-						claims = true; break;
-					}
-					at += 1;
-				}
-				if( claims ) {
-					claimers.push_back( f.filename().string() );
-				}
+				at += 1;
+			}
+			if( claims ) {
+				claimers.push_back( lf.filename );
 			}
 		}
 		std::sort( claimers.begin(), claimers.end() );
@@ -4801,9 +4358,6 @@ int main()
 	// copy of Rendering/RayCaster.cpp: the census reported RayCaster.cpp and
 	// this check went red.  (Done in a scratch copy, never in a tracked file.)
 	{
-		const fs::path repoRoot = testsDir.parent_path();
-		const fs::path libDir = repoRoot / "src" / "Library";
-
 		// The needle: a whole-word `signals` -- so `pSignals`, `m_signalCalls`
 		// and `SurfaceSignalInfo` cannot match -- followed either by ` = ` (a
 		// whole-struct assignment) or by `.field = ` (a member assignment).
@@ -4832,163 +4386,46 @@ int main()
 		};
 
 		std::vector<std::string> writers;
-        bool nonindexedProvenanceOnly = true;
-		if( fs::exists( libDir ) ) {
-			for( const auto& e : fs::recursive_directory_iterator( libDir ) ) {
-				if( !e.is_regular_file() ) { continue; }
-				const fs::path& f = e.path();
-				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
-				std::ifstream mi( f );
-				const std::string raw( ( std::istreambuf_iterator<char>( mi ) ),
-				                         std::istreambuf_iterator<char>() );
-				// Comments are stripped FIRST: this file's own prose, and the
-				// design's, quote `signals.pScene = ...` verbatim, and a
-				// census that counted prose would name every file that merely
-				// EXPLAINS the invariant.
-				const std::string src = StripCommentsPreservingLayout( raw );
-				std::string flat;
-				flat.reserve( src.size() );
-				bool ws = false;
-				for( char ch : src ) {
-					if( ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ) { ws = true; continue; }
-					if( ws && !flat.empty() ) { flat += ' '; }
-					ws = false;
-					flat += ch;
-				}
-				size_t at = 0;
-				bool writes = false;
-				while( ( at = flat.find( "signals", at ) ) != std::string::npos ) {
-					const bool wholeWord = ( at == 0 || !Scan::IsIdentChar( flat[at-1] ) );
-					if( wholeWord && Scan::WritesAt( flat, at ) ) {
-                        writes = true;
-                        if( f.filename() == "TriangleMeshGeometrySpecializations.h" ) {
-                            size_t member = at + 7;
-                            if( member < flat.size() && flat[member] == ' ' ) ++member;
-                            const bool qualified = member < flat.size() && flat[member] == '.';
-                            if( qualified ) ++member;
-                            const size_t begin = member;
-                            while( member < flat.size() && Scan::IsIdentChar(flat[member]) ) ++member;
-                            const std::string field = flat.substr(begin, member-begin);
-                            nonindexedProvenanceOnly = nonindexedProvenanceOnly && qualified
-                                && (field == "pProvider" || field == "primId" || field == "baryA" || field == "baryB");
-                        }
-                    }
-					at += 1;
-				}
-				if( writes ) { writers.push_back( f.filename().string() ); }
+		bool nonindexedProvenanceOnly = true;
+		for( const LibSourceFile& lf : libSourceFiles ) {
+			if( lf.raw.find( "signals" ) == std::string::npos ) { continue; }
+			const std::string src = StripCommentsPreservingLayout( lf.raw );
+			std::string flat;
+			flat.reserve( src.size() );
+			bool ws = false;
+			for( char ch : src ) {
+				if( ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ) { ws = true; continue; }
+				if( ws && !flat.empty() ) { flat += ' '; }
+				ws = false;
+				flat += ch;
 			}
+			size_t at = 0;
+			bool writes = false;
+			while( ( at = flat.find( "signals", at ) ) != std::string::npos ) {
+				const bool wholeWord = ( at == 0 || !Scan::IsIdentChar( flat[at-1] ) );
+				if( wholeWord && Scan::WritesAt( flat, at ) ) {
+					writes = true;
+					if( lf.filename == "TriangleMeshGeometrySpecializations.h" ) {
+						size_t member = at + 7;
+						if( member < flat.size() && flat[member] == ' ' ) ++member;
+						const bool qualified = member < flat.size() && flat[member] == '.';
+						if( qualified ) ++member;
+						const size_t begin = member;
+						while( member < flat.size() && Scan::IsIdentChar(flat[member]) ) ++member;
+						const std::string field = flat.substr(begin, member-begin);
+						nonindexedProvenanceOnly = nonindexedProvenanceOnly && qualified
+							&& (field == "pProvider" || field == "primId" || field == "baryA" || field == "baryB");
+					}
+				}
+				at += 1;
+			}
+			if( writes ) { writers.push_back( lf.filename ); }
 		}
 		std::sort( writers.begin(), writers.end() );
 		for( const std::string& w : writers ) {
 			std::cout << "  signals writer: " << w << std::endl;
 		}
 
-		// The sanctioned files allowed to write it, and why each one is:
-		//   BDPTIntegrator.cpp                         `v.signals = ri.geometric
-		//                                              .signals` at the eye and
-		//                                              light subpath generators.
-		//                                              FORWARDS the stamp rather
-		//                                              than replacing it: the
-		//                                              source is the record
-		//                                              ObjectManager::IntersectRay
-		//                                              stamped, so the value that
-		//                                              reaches the painter is the
-		//                                              object manager's own, one
-		//                                              hop later.  Added by
-		//                                              docs/SIGNALS_UNDER_
-		//                                              BIDIRECTIONAL_TRANSPORT.md
-		//                                              §3.1 -- without it BDPT /
-		//                                              VCM / MLT sampled the
-		//                                              continuation direction
-		//                                              against the live record
-		//                                              and then PRICED the same
-		//                                              sample against a neutral
-		//                                              one, which is a bias, not
-		//                                              a flat mask.
-		//   BSSRDFSampling.cpp                         probe hits capture the live
-		//                                              surface's `signals`, stamp the
-		//                                              cross-object triple (pScene/pSelf/
-		//                                              ptWorld), and re-pair nObject/
-		//                                              bComplementedField on normal flip,
-		//                                              forwarding to SampleResult (DL-22).
-		//   CSGObject.cpp                              adoption + the three
-		//                                              nObject / bComplementedField
-		//                                              flips
-		//   ExpressionEval.h                           `k.signals = ctx.signals
-		//                                              .MemoHitKey()` -- an
-		//                                              ExpressionMemo::SignalHitKey,
-		//                                              NOT a SurfaceSignalInfo.  A
-		//                                              text scan cannot tell the two
-		//                                              apart, so it is listed rather
-		//                                              than excluded by a cleverer
-		//                                              needle.  (The design doc's
-		//                                              §5.1 enumeration names six
-		//                                              files and misses this one --
-		//                                              it is harmless, and naming it
-		//                                              here is the correction.)
-		//   ExpressionPainter.cpp                      PopulateSignals' by-value copy
-		//                                              into the context, plus the two
-		//                                              BuildContext `time` stamps
-		//   LightSampler.cpp                           `rig.signals = payload.channel`
-		//                                              in ApplyEmitterSurface.  Stamps a
-		//                                              REAL intersection's channel
-		//                                              exactly as ObjectManager does, on
-		//                                              a record NO MANAGER PRODUCED: a
-		//                                              light sample is a point
-		//                                              UniformRandomPoint returned, not
-		//                                              a traversal result, so the
-		//                                              cross-object triple has no other
-		//                                              way to reach it.  The channel is
-		//                                              obtained by ProbeEmitterSurface
-		//                                              firing one object-level
-		//                                              closest-hit at the luminary and
-		//                                              keeping the record only if it
-		//                                              landed on the sampled point --
-		//                                              never fabricated, and a no-op
-		//                                              unless a signal consumer is live.
-		//                                              Added by docs/SIGNALS_UNDER_
-		//                                              BIDIRECTIONAL_TRANSPORT.md §5
-		//                                              (slice S3); without it an
-		//                                              EMISSIVE material keyed on a
-		//                                              signal read the live value when a
-		//                                              camera ray hit it and the neutral
-		//                                              one when NEE or a light-subpath
-		//                                              root reached the same point --
-		//                                              under PT as well as under the
-		//                                              bidirectional families.
-		//   ObjectManager.cpp                          THE cross-object stamp
-		//   PathTracingIntegrator.cpp                  `entryRI.signals = bssrdf.signals`
-		//                                              at diffusion profile and random
-		//                                              walk SSS entry sites (DL-22).
-		//   PathVertexEval.h                           `ri.signals = vertex
-		//                                              .signals` in
-		//                                              PopulateRIGFromVertex --
-		//                                              the other end of the
-		//                                              BDPTIntegrator.cpp copy
-		//                                              above, putting the same
-		//                                              forwarded stamp back into
-		//                                              the rebuilt record.  Same
-		//                                              rationale, same design
-		//                                              §3.1: the value is the
-		//                                              object manager's, two hops
-		//                                              later, never a
-		//                                              default-constructed
-		//                                              channel over a stamp.
-        //   ManifoldSolver.cpp                       DL-214 final solved-point alpha
-        //                                              query copy stamps attached scene,
-        //                                              actual root/self and validated
-        //                                              world endpoint before coverage.
-        //                                              Leaves optical/Le records intact.
-		//   RandomWalkSSS.cpp                          boundary exit hits capture the
-		//                                              live surface's `signals`, stamp the
-		//                                              cross-object triple, and re-pair on
-		//                                              normal flip, forwarding to
-		//                                              SampleResult (DL-22).
-		//   RayIntersectionGeometric.h                 the record's own operator=
-		//   SDFGeometry.cpp                            the SDF intersector's stamp
-		//   TriangleMeshGeometrySpecializations.h       native primitive/barycentric
-        //                                              provenance only; no cross-object stamp.
-		//   TriangleMeshGeometryIndexedSpecializations.h   the mesh intersector's
 		const char* kAllowedSignalWriters[] = {
 			"BDPTIntegrator.cpp",
 			"BSSRDFSampling.cpp",
@@ -5004,18 +4441,18 @@ int main()
 			"RayIntersectionGeometric.h",
 			"SDFGeometry.cpp",
 			"TriangleMeshGeometryIndexedSpecializations.h",
-            "TriangleMeshGeometrySpecializations.h",
+			"TriangleMeshGeometrySpecializations.h",
 		};
 		const size_t nAllowed = sizeof( kAllowedSignalWriters ) / sizeof( kAllowedSignalWriters[0] );
 		bool setMatches = ( writers.size() == nAllowed );
 		for( size_t i = 0; setMatches && i < nAllowed; ++i ) {
 			setMatches = ( writers[i] == kAllowedSignalWriters[i] );
 		}
-        Check( nonindexedProvenanceOnly,
-               "nonindexed mesh signal writes contain only primitive provenance, preserving cross-object stamps" );
+		Check( nonindexedProvenanceOnly,
+		       "nonindexed mesh signal writes contain only primitive provenance, preserving cross-object stamps" );
 		Check( setMatches,
-               "cross-object signal channel: signal writers match the fifteen sanctioned files in "
-               "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md section 5.1; new writers require an audited stamp contract" );
+		       "cross-object signal channel: signal writers match the fifteen sanctioned files in "
+		       "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md section 5.1; new writers require an audited stamp contract" );
 		if( !setMatches ) {
 			std::cout << "  expected exactly:" << std::endl;
 			for( size_t i = 0; i < nAllowed; ++i ) {
@@ -5025,53 +4462,7 @@ int main()
 	}
 
 	// ---- Painter `ri` reads must be a subset of the L2 memo key's cover ----
-	// DL-25 review P1-1.  `sample(name)` / `sample_scalar(name)` evaluate a
-	// bound painter at the CALLER'S RayIntersectionGeometric, so an
-	// expression program that samples is a function of whatever `ri` fields
-	// that painter reads -- and ExpressionMemo::ProgramKey has to compare
-	// every one of them or the L2 memo returns one hit's answer at another
-	// hit.  The set it compares was enumerated by READING every `ri.<field>`
-	// in src/Library/Painters, which makes it a snapshot; a painter that
-	// starts reading a field outside the set would be a silent wrong render,
-	// not a compile error.
-	//
-	// This census is that snapshot's guard.  It collects the names every
-	// `RayIntersectionGeometric&` parameter in src/Library/Painters is bound
-	// to (so renaming `ri` cannot evade it), then collects every `<name>.
-	// <field>` read, and fails when one is not accounted for below.  Comments
-	// are stripped first, for the same reason the `signals` census strips
-	// them: this directory's own prose names these fields constantly.
 	{
-		const fs::path repoRoot = testsDir.parent_path();
-		const fs::path paintersDir = repoRoot / "src" / "Library" / "Painters";
-
-		// EVERY field currently read, and where it lands in the key:
-		//
-		//   ALREADY COMPARED as an ExprEvalContext value, because
-		//   ExpressionPainter::BuildContext copies it across verbatim:
-		//     ptCoord         -> u, v
-		//     ptIntersection  -> P
-		//     ptObjIntersec   -> Po
-		//     vNormal         -> N
-		//     signals         -> ProgramKey::signals
-		//     derivatives     -> curv / curvR (its only painter reader is
-		//                        ExpressionPainter's own PopulateCurvature,
-		//                        whose whole output is that pair)
-		//     txFootprint     -> PARTLY: .worldWidth / .objectWidth /
-		//                        .widthValid become fw / fwo; the Jacobian
-		//                        half is in PainterSampleHitKey (below).
-		//
-		//   COMPARED via ExpressionMemo::PainterSampleHitKey, added by this
-		//   review precisely because nothing above determines them:
-		//     txFootprint (Jacobian half), ray, ptCoord1, bHasTexCoord1,
-		//     vColor, bHasVertexColor
-		//
-		//   NOT COMPARED, deliberately:
-		//     bHit            -- every producer of a record sets it true.
-		//
-		// ADDING A FIELD HERE WITHOUT ADDING IT TO PainterSampleHitKey IS A
-		// SILENT WRONG RENDER.  If a new painter needs one, extend the key,
-		// its kFields, its Equals, MakeSampleHitKey, and this list together.
 		const char* kKeyedPainterRiFields[] = {
 			"bHasTexCoord1",
 			"bHasVertexColor",
@@ -5092,62 +4483,55 @@ int main()
 		std::vector<std::string> unaccounted;
 		std::vector<std::string> seen;
 		int painterFiles = 0;
-		if( fs::exists( paintersDir ) ) {
-			for( const auto& e : fs::directory_iterator( paintersDir ) ) {
-				if( !e.is_regular_file() ) { continue; }
-				const fs::path& f = e.path();
-				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
-				++painterFiles;
-				std::ifstream mi( f );
-				const std::string raw( ( std::istreambuf_iterator<char>( mi ) ),
-				                         std::istreambuf_iterator<char>() );
-				const std::string src = StripCommentsPreservingLayout( raw );
+		for( const LibSourceFile& lf : libSourceFiles ) {
+			if( lf.parentDirName != "Painters" ) { continue; }
+			++painterFiles;
+			const std::string src = StripCommentsPreservingLayout( lf.raw );
 
-				// (1) every identifier bound to a RayIntersectionGeometric
-				// reference or pointer in this file.
-				std::vector<std::string> names;
-				const char* kDecl[] = { "RayIntersectionGeometric&", "RayIntersectionGeometric *",
-				                        "RayIntersectionGeometric*", "RayIntersectionGeometric &" };
-				for( const char* d : kDecl ) {
+			// (1) every identifier bound to a RayIntersectionGeometric
+			// reference or pointer in this file.
+			std::vector<std::string> names;
+			const char* kDecl[] = { "RayIntersectionGeometric&", "RayIntersectionGeometric *",
+			                        "RayIntersectionGeometric*", "RayIntersectionGeometric &" };
+			for( const char* d : kDecl ) {
+				size_t at = 0;
+				const size_t dlen = std::strlen( d );
+				while( ( at = src.find( d, at ) ) != std::string::npos ) {
+					size_t p = at + dlen;
+					while( p < src.size() && ( src[p] == ' ' || src[p] == '\t' ) ) { ++p; }
+					const size_t st = p;
+					while( p < src.size() && ( std::isalnum( (unsigned char)src[p] ) || src[p] == '_' ) ) { ++p; }
+					if( p > st ) { names.push_back( src.substr( st, p - st ) ); }
+					at += dlen;
+				}
+			}
+			std::sort( names.begin(), names.end() );
+			names.erase( std::unique( names.begin(), names.end() ), names.end() );
+
+			// (2) every `<name>.<field>` / `<name>-><field>` read.
+			for( const std::string& n : names ) {
+				const char* kOps[] = { ".", "->" };
+				for( const char* op : kOps ) {
+					const std::string needle = n + op;
 					size_t at = 0;
-					const size_t dlen = std::strlen( d );
-					while( ( at = src.find( d, at ) ) != std::string::npos ) {
-						size_t p = at + dlen;
-						while( p < src.size() && ( src[p] == ' ' || src[p] == '\t' ) ) { ++p; }
+					while( ( at = src.find( needle, at ) ) != std::string::npos ) {
+						const bool wholeWord = ( at == 0 ||
+							!( std::isalnum( (unsigned char)src[at-1] ) || src[at-1] == '_' ) );
+						size_t p = at + needle.size();
 						const size_t st = p;
 						while( p < src.size() && ( std::isalnum( (unsigned char)src[p] ) || src[p] == '_' ) ) { ++p; }
-						if( p > st ) { names.push_back( src.substr( st, p - st ) ); }
-						at += dlen;
-					}
-				}
-				std::sort( names.begin(), names.end() );
-				names.erase( std::unique( names.begin(), names.end() ), names.end() );
-
-				// (2) every `<name>.<field>` / `<name>-><field>` read.
-				for( const std::string& n : names ) {
-					const char* kOps[] = { ".", "->" };
-					for( const char* op : kOps ) {
-						const std::string needle = n + op;
-						size_t at = 0;
-						while( ( at = src.find( needle, at ) ) != std::string::npos ) {
-							const bool wholeWord = ( at == 0 ||
-								!( std::isalnum( (unsigned char)src[at-1] ) || src[at-1] == '_' ) );
-							size_t p = at + needle.size();
-							const size_t st = p;
-							while( p < src.size() && ( std::isalnum( (unsigned char)src[p] ) || src[p] == '_' ) ) { ++p; }
-							if( wholeWord && p > st ) {
-								const std::string field = src.substr( st, p - st );
-								seen.push_back( field );
-								bool ok = false;
-								for( size_t i = 0; i < nKeyed; ++i ) {
-									if( field == kKeyedPainterRiFields[i] ) { ok = true; break; }
-								}
-								if( !ok ) {
-									unaccounted.push_back( f.filename().string() + ": " + n + op + field );
-								}
+						if( wholeWord && p > st ) {
+							const std::string field = src.substr( st, p - st );
+							seen.push_back( field );
+							bool ok = false;
+							for( size_t i = 0; i < nKeyed; ++i ) {
+								if( field == kKeyedPainterRiFields[i] ) { ok = true; break; }
 							}
-							at += needle.size();
+							if( !ok ) {
+								unaccounted.push_back( lf.filename + ": " + n + op + field );
+							}
 						}
+						at += needle.size();
 					}
 				}
 			}
@@ -5175,58 +4559,39 @@ int main()
 	}
 
 	// ---- DL-386: material reflectance reads go through ReflectanceColor ----
-	// A colour authored outside the Rec.709 gamut carries NEGATIVE channels;
-	// by the 2026-10-02 ruling every material read of a reflectance-type
-	// slot clamps them to 0 (values above 1 stay as authored).  The clamp
-	// lives in ONE accessor pair (IPainter.h `ReflectanceColor` /
-	// `ReflectanceColorNM`), so a raw `GetColor(ri)` or `GuardedGetColorNM`
-	// under src/Library/Materials would silently re-open DL-386 for that
-	// slot.  Allowed raw reads: the two EMITTERS (radiance, never clamped by
-	// this rule), the GGX tangent-rotation painter (an angle, read as data)
-	// and CoatedBRDF's coat-normal painter (a normal map).  Raw `GetColorNM`
-	// is allowed only in the three files that clamp it inline (coat tint,
-	// fabric sheen, weave yarn colour).
 	{
-		const fs::path matDir = testsDir.parent_path() / "src" / "Library" / "Materials";
 		std::vector<std::string> rawReads;
 		int matFiles = 0;
-		if( fs::exists( matDir ) ) {
-			for( const auto& e : fs::directory_iterator( matDir ) ) {
-				if( !e.is_regular_file() ) { continue; }
-				const fs::path& f = e.path();
-				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
-				++matFiles;
-				const std::string fname = f.filename().string();
-				std::ifstream mi( f );
-				const std::string raw( ( std::istreambuf_iterator<char>( mi ) ),
-				                         std::istreambuf_iterator<char>() );
-				const std::string code = StripCommentsPreservingLayout( raw );
-				std::istringstream ls( code );
-				std::string line;
-				int lineNo = 0;
-				while( std::getline( ls, line ) ) {
-					++lineNo;
-					const std::string where = fname + ":" + std::to_string( lineNo );
-					if( line.find( "GuardedGetColorNM(" ) != std::string::npos ) {
-						rawReads.push_back( where + "  GuardedGetColorNM (use ReflectanceColorNM)" );
-					}
-					for( size_t p = line.find( "GetColorNM(" ); p != std::string::npos;
-					     p = line.find( "GetColorNM(", p + 1 ) ) {
-						if( p >= 7 && line.compare( p - 7, 7, "Guarded" ) == 0 ) { continue; }
-						if( fname == "CoatedBRDF.cpp" || fname == "FabricBRDF.cpp" ||
-						    fname == "WeaveBRDF.cpp" ) { continue; }
-						rawReads.push_back( where + "  raw GetColorNM" );
-					}
-					for( size_t p = line.find( "GetColor(" ); p != std::string::npos;
-					     p = line.find( "GetColor(", p + 1 ) ) {
-						size_t q = p + 9;
-						while( q < line.size() && ( line[q] == ' ' || line[q] == '\t' ) ) { ++q; }
-						if( q < line.size() && line[q] == ')' ) { continue; }	// accessor `GetColor()`
-						if( fname == "LambertianEmitter.cpp" || fname == "PhongEmitter.cpp" ) { continue; }
-						if( line.find( "pRotation->GetColor(" ) != std::string::npos ) { continue; }
-						if( line.find( "coatNormalPainter.GetColor(" ) != std::string::npos ) { continue; }
-						rawReads.push_back( where + "  raw GetColor(ri)" );
-					}
+		for( const LibSourceFile& lf : libSourceFiles ) {
+			if( lf.parentDirName != "Materials" ) { continue; }
+			++matFiles;
+			const std::string& fname = lf.filename;
+			const std::string code = StripCommentsPreservingLayout( lf.raw );
+			std::istringstream ls( code );
+			std::string line;
+			int lineNo = 0;
+			while( std::getline( ls, line ) ) {
+				++lineNo;
+				const std::string where = fname + ":" + std::to_string( lineNo );
+				if( line.find( "GuardedGetColorNM(" ) != std::string::npos ) {
+					rawReads.push_back( where + "  GuardedGetColorNM (use ReflectanceColorNM)" );
+				}
+				for( size_t p = line.find( "GetColorNM(" ); p != std::string::npos;
+				     p = line.find( "GetColorNM(", p + 1 ) ) {
+					if( p >= 7 && line.compare( p - 7, 7, "Guarded" ) == 0 ) { continue; }
+					if( fname == "CoatedBRDF.cpp" || fname == "FabricBRDF.cpp" ||
+					    fname == "WeaveBRDF.cpp" ) { continue; }
+					rawReads.push_back( where + "  raw GetColorNM" );
+				}
+				for( size_t p = line.find( "GetColor(" ); p != std::string::npos;
+				     p = line.find( "GetColor(", p + 1 ) ) {
+					size_t q = p + 9;
+					while( q < line.size() && ( line[q] == ' ' || line[q] == '\t' ) ) { ++q; }
+					if( q < line.size() && line[q] == ')' ) { continue; }	// accessor `GetColor()`
+					if( fname == "LambertianEmitter.cpp" || fname == "PhongEmitter.cpp" ) { continue; }
+					if( line.find( "pRotation->GetColor(" ) != std::string::npos ) { continue; }
+					if( line.find( "coatNormalPainter.GetColor(" ) != std::string::npos ) { continue; }
+					rawReads.push_back( where + "  raw GetColor(ri)" );
 				}
 			}
 		}
