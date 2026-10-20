@@ -1,0 +1,9 @@
+quantity,value,source_location,status
+center_w_rms_over_mean,0.33,SG94 Table2 p14,tabulated
+center_theta_rms_over_rise,0.4,SG94 Table2 p14,tabulated
+w_halfwidth_over_height,0.107,SG94 Table2 p14,tabulated
+theta_halfwidth_over_height,0.1,SG94 Table2 p14,tabulated
+halfwidth_w_rms_over_local_mean_low,0.5,SG94 Fig7d p17 and Table2,broad visual estimate
+halfwidth_w_rms_over_local_mean_high,0.65,SG94 Fig7d p17 and Table2,broad visual estimate
+halfwidth_theta_rms_over_local_mean_low,0.6,SG94 Fig7a p17 and Table2,broad visual estimate
+halfwidth_theta_rms_over_local_mean_high,0.8,SG94 Fig7a p17 and Table2,broad visual estimate

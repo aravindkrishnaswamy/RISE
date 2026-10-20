@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-19, after the r253 retained-state plume diagnosis and scratch cleanup. This page
+Last updated 2026-10-19, after the r254 retained-state turbulence diagnosis. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -100,6 +100,18 @@ no solver change. Stopped for review.** Seven r251 scratch folders (including
 Xcode and Picard probes) and 32 scratch files were deleted; the accepted run,
 retained states, production log, committed evidence and movie are preserved.
 
+
+[r254 turbulence audit](FIRE_SMOKE_TURBULENCE_DIAGNOSIS_R254.md) measures upper
+centerline RMS/mean ratios **0.200 for vertical velocity and 0.266 for temperature
+rise** at 3.013 m, against Shabbir & George's 0.33/0.40. Half-width ratios are
+0.424/0.491. Vreman Cv=0.07, filter width and formula match FDS; independent
+recomputation agrees with the production evaluator to about 6.6×10⁻⁸ relative
+L1 difference. Historical face limiter alphas/stage flux pairs were not retained,
+so their activity and the complete momentum update's damping cannot be measured
+from these states. The active compatible flux has centered velocity and no
+independent upwind-velocity blend. **No limiter-damping cause or solver fix is
+established; solver unchanged, no new run. Stopped for review.**
+
 ## Open problems, in priority order
 
 1. **Upper-plume centerline profiles fail the tier-10 gate.** r251 is too
@@ -108,7 +120,9 @@ retained states, production log, committed evidence and movie are preserved.
    [r253 measurements](FIRE_SMOKE_PLUME_DIAGNOSIS_R253.md) identify an
    increasing entrainment deficit with height, rather than bulk ambient warming
    or excess transported heat. Which turbulence/transport/domain term causes
-   that deficiency is not yet isolated.
+   that deficiency is not yet isolated. r254 finds reduced resolved fluctuations
+   but no Vreman constant/formula mismatch; unsaved stage alphas prevent a
+   historical limiter-activity measurement.
    Tier 10 remains unlaunched under the owner’s conditional instruction.
 2. **The fire renders blue.** The methane record's gross soot yield is 0,
    and `FireSimulationRecords.cpp` enforces that. With no soot there is no
@@ -191,6 +205,7 @@ memory bounds by disassembling the compiled binary and no physics ran.
 | `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
 | `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
 | `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
+| `r254_turbulence_diagnosis` | offline retained-frame/checkpoint moments, independent Vreman comparison and primary source PDFs; no simulation |
 | `r253_plume_diagnosis` | read-only r251 thermodynamic/velocity integrals, source/input manifest, cleanup inventory; no simulation |
 | `r252_r251_centerline`, `r252_r251_preview`, `r252_soot_sources` | r251 native centerline extraction (tier-10 condition fails), r242-scene preview render, primary soot papers and extraction images |
 | `r251_tier8_full_window` | completed from-zero tier-8 run; 99.506% burned, 0.483% top export, 32.837 kW, FDS height0.683m; full spectrum/data retained |

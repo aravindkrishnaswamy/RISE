@@ -1,0 +1,1219 @@
+{
+  "simulation_steps_executed": 0,
+  "solver_changed": false,
+  "frame_input_hash_authority": "r251 frame_times.csv producer hashes; no independent rehash claimed",
+  "frame_times_csv_sha256": "282d5ec44def44db3dd3ec7ead511d276a34969f8541f4a4ca289a98655cea1a",
+  "frames": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00000.vdb",
+      "time_s": 10.466040127212182,
+      "producer_sha256": "59a73f39006b5323413bd486a5cb727a198c85d8697bd2699eab538a09a47586"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00001.vdb",
+      "time_s": 10.528540127212182,
+      "producer_sha256": "e7632c53d4e7f1447daade5971776c3c08a6df81fe33c5a4aaff9a2f872d7139"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00002.vdb",
+      "time_s": 10.591040127212182,
+      "producer_sha256": "3dbd55697f6ce34c1289f324749c257a7952ccbbeb90c7a9edcff6732287a193"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00003.vdb",
+      "time_s": 10.653540127212182,
+      "producer_sha256": "8ce94a3e075ef8c17ac82c83cd3ba63755101cf1d19a0e0d68f8a52e572ed60e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00004.vdb",
+      "time_s": 10.716040127212182,
+      "producer_sha256": "d363a764f0f3a51b4acbf35eb2f752135f9bf3d85d6ae058bb3b202732670bff"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00005.vdb",
+      "time_s": 10.778540127212182,
+      "producer_sha256": "ba009e1f505ee34b7958f18c95e2594a8552e0048ec925e1e0058a8b63de81f8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00006.vdb",
+      "time_s": 10.841040127212182,
+      "producer_sha256": "e100194f09f474631197eb2cf25f4c1df60d7e2cc7f7026d36d3dacfea7dfdaf"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00007.vdb",
+      "time_s": 10.903540127212182,
+      "producer_sha256": "10c328259503707966673649603cd47a528b4f541a2a0d724f8b999ec5e66ef4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00008.vdb",
+      "time_s": 10.966040127212182,
+      "producer_sha256": "3768dcff923eec49e6040bc4540eeb0e03fec9630f11e0a74e7905bfcd93a970"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00009.vdb",
+      "time_s": 11.028540127212182,
+      "producer_sha256": "412f774fdddde4f07ae4dac3f0db01dd30ab8ae1bb610b110939133ccb13dff2"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00010.vdb",
+      "time_s": 11.091040127212182,
+      "producer_sha256": "4bb7969c2be566d8c1cb99e312b772f26148330b0cfe4ada577fd0d459351434"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00011.vdb",
+      "time_s": 11.153540127212182,
+      "producer_sha256": "0e16b2908d85389e03e0e88b312d67821bb9b814f39489f3cc0c49dd5a7dec16"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00012.vdb",
+      "time_s": 11.216040127212182,
+      "producer_sha256": "2d7af450be8c6056342ed7d0e3630f78052631b48aa3787d45ed58992a5502be"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00013.vdb",
+      "time_s": 11.278540127212182,
+      "producer_sha256": "a5d12af3d6f061a8c49a59614c3e502deb75d8e0ae29ee9bc400406d521a9a5f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00014.vdb",
+      "time_s": 11.341040127212182,
+      "producer_sha256": "8787373b2702185b1fcaa8bd336328fe2a3d158f5474f9f69d4348cf16be2ad9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00015.vdb",
+      "time_s": 11.403540127212182,
+      "producer_sha256": "02b859ab6ec90120173a9d7969404276fbf0dbf7f70492a88b649698b23bbc86"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00016.vdb",
+      "time_s": 11.466040127212182,
+      "producer_sha256": "a4a1c60961b251cf5a692c00075a3804c3f88372e95f2e08bb7db89923a2d7b2"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00017.vdb",
+      "time_s": 11.528540127212182,
+      "producer_sha256": "54e5fa561a9c52784d7f433331a5b2c174b4e3af6636b40debbc638052bf89f7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00018.vdb",
+      "time_s": 11.591040127212182,
+      "producer_sha256": "45b0e9a52e687ad084a28dc52b4eab9a9d345152859cd2b578c4660bdb94d368"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00019.vdb",
+      "time_s": 11.653540127212182,
+      "producer_sha256": "aa5f560e94b5816f82936004f13339507b1ad477b6f41f48dcb6f5017a44526e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00020.vdb",
+      "time_s": 11.716040127212182,
+      "producer_sha256": "f98d352b766209405f0827a6f575f6e7ce1adf922fc9a9a853144034d332af56"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00021.vdb",
+      "time_s": 11.778540127212182,
+      "producer_sha256": "42e73354c4f32e4113d19a2517391b632de3653d46e1bf6b0ae4c2c663852c9b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00022.vdb",
+      "time_s": 11.841040127212182,
+      "producer_sha256": "c44ed566b7243a298cc7fe4f2a9a5947ee7a0eec94a278a68a8fd3d43be9983e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00023.vdb",
+      "time_s": 11.903540127212182,
+      "producer_sha256": "8098283124361d0bca3a98c7a2f5cbc3b3b4b3f08481388e221fede6d2b8221b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00024.vdb",
+      "time_s": 11.966040127212182,
+      "producer_sha256": "fc3363c70fbc201717d7711547f1906b8e7e0e87c1c7fc84120c29477fa228af"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00025.vdb",
+      "time_s": 12.028540127212182,
+      "producer_sha256": "ec8a235d8abef0b4de635b9bae4bb500804fafbf3a6bd16dd2a78213c290511d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00026.vdb",
+      "time_s": 12.091040127212182,
+      "producer_sha256": "f57521425b19f249458921d265e7e214353280b7e5de80b24c99ce345026d113"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00027.vdb",
+      "time_s": 12.153540127212182,
+      "producer_sha256": "145a25f54c87f5e6d9d2f6e6c7e4ef7f6610d86e9728a41fb4934d707b130a72"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00028.vdb",
+      "time_s": 12.216040127212182,
+      "producer_sha256": "1b20867a1a2363af69409e3f30519abd937338b65c963f0c126721a4fa13c4ef"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00029.vdb",
+      "time_s": 12.278540127212182,
+      "producer_sha256": "27aebbe1fe6c56c4ddc31a908ab5d57e912fe1ccbfe438f44626221db76849de"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00030.vdb",
+      "time_s": 12.341040127212182,
+      "producer_sha256": "07db1c639a7d996389cd55be88d9e4f20b39adea2ebb7bcc4a820880d87ee9ad"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00031.vdb",
+      "time_s": 12.403540127212182,
+      "producer_sha256": "27fdc0eb5e9803de2b709cf337cf3cf9fb4065fd704280038e160d35152f2b44"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00032.vdb",
+      "time_s": 12.466040127212182,
+      "producer_sha256": "b4249b236865faf1d67708cd4cad167d6460de2007aa32a0c801a929e46c6719"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00033.vdb",
+      "time_s": 12.528540127212182,
+      "producer_sha256": "17e93df3c256cb49ff841749e84a7d505945f52b88242e39673a38343823ee20"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00034.vdb",
+      "time_s": 12.591040127212182,
+      "producer_sha256": "9d76cdebba2cbef109fff57b940aab82b9a000bf0d499ab35c550a3d09698acd"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00035.vdb",
+      "time_s": 12.653540127212182,
+      "producer_sha256": "4f64a0b2397bd019d494f8ca4367a28e393297b8a920b3d7e0f4080ce171bc27"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00036.vdb",
+      "time_s": 12.716040127212182,
+      "producer_sha256": "d237c7a08ad657dab8f025e9c303ff3ca1d7ec7a52a902fd9b41aaea40fdacb3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00037.vdb",
+      "time_s": 12.778540127212182,
+      "producer_sha256": "33a300a56a82cdf77a2ca5795bce4eedb7220fd473ddede36fbb0de35a1654de"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00038.vdb",
+      "time_s": 12.841040127212182,
+      "producer_sha256": "98ab51998d21d8e7e8531bc44e4677fb542b4f3d976e72844e41264ffbedef9b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00039.vdb",
+      "time_s": 12.903540127212182,
+      "producer_sha256": "d7db20f36d210b4ce31b9b43a7017d8677a680198b70309fae83b9b4c3901bbf"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00040.vdb",
+      "time_s": 12.966040127212182,
+      "producer_sha256": "e60d28e455850c6ca11f4e5f9a5dbe168413ddd54f3c75a06e6dee1bba870949"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00041.vdb",
+      "time_s": 13.028540127212182,
+      "producer_sha256": "2bc6e5724e140bbd55db3f5fbad7210ab351d4415ce86310ec7809caff94761d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00042.vdb",
+      "time_s": 13.091040127212182,
+      "producer_sha256": "03da68cc0323461cdab0d1a025a7d7d10f86cf967d594c0a9943b68bc746d032"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00043.vdb",
+      "time_s": 13.153540127212182,
+      "producer_sha256": "4c52338a5a85023217be6eca864580a0ee8620d18394e08aba817105ee306568"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00044.vdb",
+      "time_s": 13.216040127212182,
+      "producer_sha256": "77ee55906a1ade65eaebe00b72df3b20bab80aeadf4b19910f394e1b2bb062db"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00045.vdb",
+      "time_s": 13.278540127212182,
+      "producer_sha256": "07a33cb2b9620f88c40068f2f0a70a31e2c4eacf5d8d0387aeab4a521b6bfc63"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00046.vdb",
+      "time_s": 13.341040127212182,
+      "producer_sha256": "5c1d47dab90503bc48a1d493b8dd3615f19e7a2a4cbda7141cbdaa24b7494a32"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00047.vdb",
+      "time_s": 13.40354012727039,
+      "producer_sha256": "7dc8b23155b36bfeb940531ed8433396fe79d12e4473896fd004bbcf4702c599"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00048.vdb",
+      "time_s": 13.46604012727039,
+      "producer_sha256": "18939e65e89ddf8c116d1884ef8d2285fee0311c9bb8a53527ee5ba8d57f04b9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00049.vdb",
+      "time_s": 13.52854012727039,
+      "producer_sha256": "ef2b04e587aaee2a10d5183cd9d8b55a1065869d9a5c80c942d9a1cb471a48e9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00050.vdb",
+      "time_s": 13.59104012727039,
+      "producer_sha256": "bb213ffa338f5031ffbe2143b7992da9df5533931a3fa1f36544b7bac3011a80"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00051.vdb",
+      "time_s": 13.65354012727039,
+      "producer_sha256": "f662883c3b09c8f47766e12d9dfdabe83f2c98177bc87250d3835b3032554b62"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00052.vdb",
+      "time_s": 13.71604012727039,
+      "producer_sha256": "efb07bf6ab432498959ed6e42f192d5b9ed8c96cf08aa46e92e0c796853d0650"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00053.vdb",
+      "time_s": 13.77854012727039,
+      "producer_sha256": "60d64b31714978397ee6a8260d23e1932ba7be85a48f7a3bb0f5820448b37d7a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00054.vdb",
+      "time_s": 13.84104012727039,
+      "producer_sha256": "68bf5d533bad27717879a38e58870020f911bdb83852ac666f50f075d9ec7fd5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00055.vdb",
+      "time_s": 13.90354012727039,
+      "producer_sha256": "167de483fef61f494efe401f6d548d37027416ea2757979c4e2d0dfe6c6aa130"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00056.vdb",
+      "time_s": 13.96604012727039,
+      "producer_sha256": "b642dd742610dcfed2d4dee69b8ef34bd380bf43733911ed71a965598720128d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00057.vdb",
+      "time_s": 14.02854012727039,
+      "producer_sha256": "c599294ebd94ac4d6b834b273f78b6605aaefe4f4d59b8bfdf4ed5589cf12359"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00058.vdb",
+      "time_s": 14.09104012727039,
+      "producer_sha256": "f45d407b38040557ceb975d6e09a69c2c4a0b2bfec02400dda2955cf3b616bcf"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00059.vdb",
+      "time_s": 14.15354012727039,
+      "producer_sha256": "d4b55aa00bcbf4d26624342dc8aa95dfc7d58f0a594fc9a3969aa2e3d2030467"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00060.vdb",
+      "time_s": 14.21604012727039,
+      "producer_sha256": "58b0a5a6d5fc498a1c8d4dfb94d60ae61d5c5ae9d553f623f38e2f1a980ce485"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00061.vdb",
+      "time_s": 14.27854012727039,
+      "producer_sha256": "63ddbebc3d752aaf143df9b856302c3fe590847d12a914633a67fef1ba5e1efa"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00062.vdb",
+      "time_s": 14.34104012727039,
+      "producer_sha256": "0a7215bee35177af3a67352398b2d8a43b39a41083a486dde5c4122fa68e69d7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00063.vdb",
+      "time_s": 14.40354012727039,
+      "producer_sha256": "041c717bd07086d31bbec7e5f54d79e13beef61b6de8c4c88e33478476c9bf78"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00064.vdb",
+      "time_s": 14.46604012727039,
+      "producer_sha256": "94393f0d588ade9076c9ac884b3d702de3694f790dbd8ce18b2bae084d5811ab"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00065.vdb",
+      "time_s": 14.52854012727039,
+      "producer_sha256": "122bdd36a80cec0d2ef068c559323d8286f0e808bb4eee8319c58b88befcc0a4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00066.vdb",
+      "time_s": 14.59104012727039,
+      "producer_sha256": "3ea193785997daa8a515fb6b8bf6f4e421747a49ed3e8f3a307f59e40ac9351a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00067.vdb",
+      "time_s": 14.653540127212182,
+      "producer_sha256": "b7a5aeb993115977f518c9db7ce6bf41f2fc4d775c6de2868d34a56c35e54396"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00068.vdb",
+      "time_s": 14.716040127212182,
+      "producer_sha256": "d64f023f339128f77f6f3b5a37dacb2dd775eaf2a6fda03c2266608871ee0e72"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00069.vdb",
+      "time_s": 14.778540127212182,
+      "producer_sha256": "2ac55ec53366959f99a10e806a8ae1d631ebcb5f425293851c720ce0717e5654"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00070.vdb",
+      "time_s": 14.841040127212182,
+      "producer_sha256": "6aebf96e3397a72576d10b24bb5adade5fb991eec3b1bd26ba6ff70989acc0d4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00071.vdb",
+      "time_s": 14.903540127212182,
+      "producer_sha256": "1c5892406c3f1e2182fc9f2a4750973d815fa57322bfb860d496b752c31bec54"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00072.vdb",
+      "time_s": 14.966040127212182,
+      "producer_sha256": "839f32d26da0569f5aa2be16ccdac9e5bd932b29f4c38a4d686c28cbfa029ded"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00073.vdb",
+      "time_s": 15.028540127212182,
+      "producer_sha256": "0b316bcbf40080118fb7fd735da91435ebac2bb5ab1de7ecc264ed3d9c9c53aa"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00074.vdb",
+      "time_s": 15.091040127212182,
+      "producer_sha256": "bcca4ff5644af1e0f127e421743bb45c0c48e6e68bec1aaba2a68f0636f96f89"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00075.vdb",
+      "time_s": 15.153540127212182,
+      "producer_sha256": "f46936dd86f1dbf0131c0f15ebcd6a34291a1265c7b2294f1528941e22d21f78"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00076.vdb",
+      "time_s": 15.216040127212182,
+      "producer_sha256": "c267e0f7eb64800aeaa834c7fe2f2467aa5d9911c8ffc800f0db16a6e5322557"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00077.vdb",
+      "time_s": 15.278540127212182,
+      "producer_sha256": "04ab10a44cb697439a11391abe0df711e7aca2d19ed5a3cc7e0be9acac71c4c7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00078.vdb",
+      "time_s": 15.341040127212182,
+      "producer_sha256": "7912998301b52f9a7e52fb92f1c338def409ca151bc976d102297f71cbf98f44"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00079.vdb",
+      "time_s": 15.403540127212182,
+      "producer_sha256": "27d847da7b813f382c0864e5efb45afb8a222f720d8d47dfc3ff35a506aa33a5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00080.vdb",
+      "time_s": 15.466040127212182,
+      "producer_sha256": "5f4c4712103fd20a7bf0d15d71fe5d9e67b9bf6c7d3e0c082d2b2931b37e1c40"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00081.vdb",
+      "time_s": 15.528540127212182,
+      "producer_sha256": "972130abe51003fd627f8d0467e94bc22fc729e9d48283d52e2ee85471377024"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00082.vdb",
+      "time_s": 15.591040127212182,
+      "producer_sha256": "36606b0b7d3aaea27ef8d566a48043140b12a786835839b11df4aa16cf224df7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00083.vdb",
+      "time_s": 15.653540127212182,
+      "producer_sha256": "2237e18cbe9ad905726ec1c74431db51ef4c980fdc04bffdb1022786796e80d6"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00084.vdb",
+      "time_s": 15.716040127212182,
+      "producer_sha256": "738b08576ce24e58bec9b992aed10c7a060c924ea3ac38bacf374b8be3ca685a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00085.vdb",
+      "time_s": 15.778540127212182,
+      "producer_sha256": "6f414bd88f440dbc7f47293d578470ee060c056843dde531798d9494bfee9479"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00086.vdb",
+      "time_s": 15.841040127212182,
+      "producer_sha256": "25c6de4e45a9794cb8d40701fb4c1daf9fa06f79acae61a827d131da397589d1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00087.vdb",
+      "time_s": 15.903540127212182,
+      "producer_sha256": "cc11b25d67e2350cdcedc14337f1f844019d871037fc48d372168aed10d26800"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00088.vdb",
+      "time_s": 15.966040127212182,
+      "producer_sha256": "977a7b1a1b490b1a6f54d7a57918a72129989f82ca837fa82b2a691bf15a18fd"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00089.vdb",
+      "time_s": 16.02854012721218,
+      "producer_sha256": "c1ab38655f8a9820b6aa9e45fe4cace0abd200dd74a2bbbda7b5dcf2db92bee9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00090.vdb",
+      "time_s": 16.09104012721218,
+      "producer_sha256": "f57489d7a15b9f465b5488f06974c92c75e54f6f7b69a849e5b01775756cdfd8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00091.vdb",
+      "time_s": 16.15354012721218,
+      "producer_sha256": "e6f04a0a50d048ca7da5ecf479af9c135ff2bb133bec9c6ff40f6fc7ac42b8e4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00092.vdb",
+      "time_s": 16.21604012721218,
+      "producer_sha256": "872f380b1a39d6b2c9ceb6db622628ca20b8bb2a1bc60d1553343b4105a313fb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00093.vdb",
+      "time_s": 16.27854012721218,
+      "producer_sha256": "e141df4aa42cb77150b3c65f916a78b3e3c0fda919405248d15e51ee8e01043b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00094.vdb",
+      "time_s": 16.34104012721218,
+      "producer_sha256": "04c25a85f83b26b3e23cb2174908736dd2e04f3b5fe67c3d5da67e4b2a77e8fe"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00095.vdb",
+      "time_s": 16.40354012721218,
+      "producer_sha256": "47ad9e67f75d4d10120fd30ad0a9bab200866abda2f4b9fc77242878fa31cf43"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00096.vdb",
+      "time_s": 16.46604012721218,
+      "producer_sha256": "27bb1b136c7565741be7950b5c18dae179446c7637e45d7e24d6ac1967d465a4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00097.vdb",
+      "time_s": 16.52854012721218,
+      "producer_sha256": "5e5e3f3896930deff130dcd908da2051169791912104e29fb24eef6b0655a518"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00098.vdb",
+      "time_s": 16.59104012721218,
+      "producer_sha256": "dbf4e012910a84a7ea7522e40602d1623a6bc7e45cfa51f21d124fb7fec6c328"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00099.vdb",
+      "time_s": 16.65354012721218,
+      "producer_sha256": "315619b949cf64e7d17e00ce3b7c197aa449cf816c11b0066787f410b43a21fc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00100.vdb",
+      "time_s": 16.71604012721218,
+      "producer_sha256": "c3a20c68ebde7ee2e79b8b77c3359e80083a09e5c08bbd8288231a41c112c120"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00101.vdb",
+      "time_s": 16.77854012721218,
+      "producer_sha256": "0fbba4dbb33225f07e50c3d8c79011c8f9fbdb2bba0e95344bd29e1f5499e38d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00102.vdb",
+      "time_s": 16.84104012721218,
+      "producer_sha256": "d49d45f057489ee8a460ab875322737f98933d8a474eb8ab8784d95e93c25205"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00103.vdb",
+      "time_s": 16.90354012721218,
+      "producer_sha256": "edd1a82fd786a921de296805f6b20a81c4addc6ce50b166be460912ac67691f3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00104.vdb",
+      "time_s": 16.96604012721218,
+      "producer_sha256": "90232a4daa3b75a8f6bc1cbe4cfdc74c748311121985928d300e87d2603f3ed7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00105.vdb",
+      "time_s": 17.02854012721218,
+      "producer_sha256": "f4203139ccd9cdf3b52fa9f7e05d954825fff933546c5ddf915711da826f4f0c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00106.vdb",
+      "time_s": 17.09104012721218,
+      "producer_sha256": "001f23732203b5e5137bf36eaa9de780983439c2d4881b89a2d72b4d002cff25"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00107.vdb",
+      "time_s": 17.15354012721218,
+      "producer_sha256": "e91f869df3db2d339d8d88a8ee005d728660a0189330ec4e762e98c58e49a0dc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00108.vdb",
+      "time_s": 17.21604012721218,
+      "producer_sha256": "c17e759727f38563c5cc175479b63cec29dee111f36caf5640f9737d903498c5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00109.vdb",
+      "time_s": 17.27854012721218,
+      "producer_sha256": "fc97cf7c9db4262b04c88a1f74774c2eeec78034365491a4d5baf6b9abca5da7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00110.vdb",
+      "time_s": 17.34104012721218,
+      "producer_sha256": "e47e2c75f256789eff9bd03da6749c046de13cfcde99fd80c1511ca444f53ad0"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00111.vdb",
+      "time_s": 17.40354012721218,
+      "producer_sha256": "c69fba62ffdd6a50ed30e01693069926f6441907535f5e3cd3a2d1fa5431acdc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00112.vdb",
+      "time_s": 17.46604012721218,
+      "producer_sha256": "5b82e5acff2f9905652277e75a5009cf7a097beae2f49497a2712ee9927c134e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00113.vdb",
+      "time_s": 17.52854012721218,
+      "producer_sha256": "ba3ce29c89a9f2141024bfc36cfeeb7d458bc95cd4ec8051ec2bc133dbca114a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00114.vdb",
+      "time_s": 17.59104012721218,
+      "producer_sha256": "e0e18c4914bf6c6194b337ea06cc56f82d57ae076d0b7bf36926876d84221739"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00115.vdb",
+      "time_s": 17.65354012721218,
+      "producer_sha256": "f44a770a930a173780eacb6847c4a3cb909933c30b01bb12aac5c4e897de8ed4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00116.vdb",
+      "time_s": 17.71604012721218,
+      "producer_sha256": "f440eb0eb829a9af91e406a3e1cf48b62c95a8ad153628286c8cbf3bd66a2006"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00117.vdb",
+      "time_s": 17.77854012721218,
+      "producer_sha256": "5a380cc90dffc3e048b0c29d84709db75dfda20920b10f7a1553356002385e9d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00118.vdb",
+      "time_s": 17.84104012721218,
+      "producer_sha256": "0f40b96c1fbd925e5bd1012f3176d194624892a7abfe527843ac439b69274b7c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00119.vdb",
+      "time_s": 17.90354012721218,
+      "producer_sha256": "5f7199a825239cf9549de97e8a7f4e82a3373268a5d39808b47535df71ef36c4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00120.vdb",
+      "time_s": 17.96604012721218,
+      "producer_sha256": "47bc79013a20e9f2e51335e0f0dc0c03d3e91b558259af406988e28c79d9a3b4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00121.vdb",
+      "time_s": 18.02854012721218,
+      "producer_sha256": "38272b9accaac1458ed43ed744b3b559eeea8abde68a691a151b3258ab5f125d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00122.vdb",
+      "time_s": 18.09104012721218,
+      "producer_sha256": "46e495f607662246a5013761139a3f65fd02d9c1d8a7811bcdcb4bdf4dafc31f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00123.vdb",
+      "time_s": 18.15354012721218,
+      "producer_sha256": "6d88134198fab205f0e1b332d69e76b4bdb790ae6a07e7188b8d5c093d2cbfc8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00124.vdb",
+      "time_s": 18.21604012721218,
+      "producer_sha256": "417dfc09fa27cf33beccd159800fedc9ad49e24012f9a1149cf0593d0c73ebd2"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00125.vdb",
+      "time_s": 18.27854012721218,
+      "producer_sha256": "703096c735a0f2977e1507030afa2077e5d9b1e78dae55fc2dd120e7e7b02e90"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00126.vdb",
+      "time_s": 18.34104012721218,
+      "producer_sha256": "9f8f18ef647b745888a04785d908b113b12e8affac130a0ee1a57f7ad073aabf"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00127.vdb",
+      "time_s": 18.40354012721218,
+      "producer_sha256": "d3f8cd93d9ca7d03d40b2c6640a99f399cb9808a661f925769b612b675728088"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00128.vdb",
+      "time_s": 18.46604012721218,
+      "producer_sha256": "f805bb0d22057233696e7a28da351efe8519a837765477c55c8cce9d5bf8ff66"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00129.vdb",
+      "time_s": 18.52854012721218,
+      "producer_sha256": "052ceda2a3d26fa14ca6108c5662c85ae1dcce73033e221658e706d8be2f8607"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00130.vdb",
+      "time_s": 18.59104012721218,
+      "producer_sha256": "719794a96027a8eeb7bfa8ac68aa74ff057b239eb07658b82f1f5557b60987e4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00131.vdb",
+      "time_s": 18.65354012721218,
+      "producer_sha256": "be35cb865d11e1eb4662934c9f556742bd2cbf20a815b3a2f22fdf4d35feeaac"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00132.vdb",
+      "time_s": 18.71604012721218,
+      "producer_sha256": "0799397dbe3f15a612eca80df00c53f9c5da8782957d93e208549fe1e7162c9c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00133.vdb",
+      "time_s": 18.77854012721218,
+      "producer_sha256": "9e23036b03726e261cb78648bcbd23ddaa3261e754dc300250470cd5abf1b6aa"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00134.vdb",
+      "time_s": 18.84104012721218,
+      "producer_sha256": "6ab15cbca4df122869da68810df808b098f66ddee0f18e7167ca3554bbc631ab"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00135.vdb",
+      "time_s": 18.90354012721218,
+      "producer_sha256": "05efc6ed2286efad179be904d301dab3359c7953dd82ccb758a6ba9bebfbec20"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00136.vdb",
+      "time_s": 18.96604012721218,
+      "producer_sha256": "08368b4856455bb8e401bfd952b7ede3c8331dc7606e644780dd6a29453db3eb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00137.vdb",
+      "time_s": 19.02854012721218,
+      "producer_sha256": "719f63b6a21772449f1e2012048b4b24dc6944665aa99581cd6ffc31b3f5ab66"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00138.vdb",
+      "time_s": 19.09104012721218,
+      "producer_sha256": "4454fe70584821a5076f4af4e5a83d2ebd93d19a7708c9b769c61b9aabd88a75"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00139.vdb",
+      "time_s": 19.15354012721218,
+      "producer_sha256": "798adb5b32b099bb64da57349e6ce69570cfd1d5bca413ec191c2d950cd5d20c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00140.vdb",
+      "time_s": 19.21604012721218,
+      "producer_sha256": "83bb6cd1545537f70f855929e07d5f7499b0896a123817175e440b3946279db3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00141.vdb",
+      "time_s": 19.27854012721218,
+      "producer_sha256": "b642ccf9058cf03fece393146c2a1d7a044fb342aa378637297cdf3006295fac"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00142.vdb",
+      "time_s": 19.34104012721218,
+      "producer_sha256": "ab803b6fa989822192db674d30882a42c9f43ac7fe10af77121add28cfd4b7f3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00143.vdb",
+      "time_s": 19.40354012721218,
+      "producer_sha256": "58f0b60d2ad42ac9f8da1dec69312c16467b312801f5362e1eb700246e297331"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00144.vdb",
+      "time_s": 19.46604012721218,
+      "producer_sha256": "e95f3796cf914cf9ab8b21309dbf9b8b02b7dcef8cec77e9cc1301b1536ff38c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00145.vdb",
+      "time_s": 19.52854012721218,
+      "producer_sha256": "74ff7c0c5fbe8a30746eba00fa02a739180cab27505c3b8f2519373ce3fbf624"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00146.vdb",
+      "time_s": 19.59104012721218,
+      "producer_sha256": "7c5017e827e5d06b811efd70f9ca2cf1787c0c79ba3103be675051582d8323a4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00147.vdb",
+      "time_s": 19.65354012721218,
+      "producer_sha256": "9003a86340c591aecbae97905cbeb4e047c3cb0dee5990ce50b67763560894de"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00148.vdb",
+      "time_s": 19.71604012721218,
+      "producer_sha256": "01fe38625d47afb2e90191ea824f5e2f7e161a678eb63ba701424a3bf04a6495"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00149.vdb",
+      "time_s": 19.77854012721218,
+      "producer_sha256": "2607f35ba3e8a651cfdd2bf950172cacdf636d2fd95492d3616b1a29c24f9073"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00150.vdb",
+      "time_s": 19.84104012721218,
+      "producer_sha256": "5a081d6e36683f878cf5f3ac84c50bf6669911186596f510cc804a15550f72f8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00151.vdb",
+      "time_s": 19.90354012721218,
+      "producer_sha256": "934dd8b54cac9ffb28ed32aa9f9143e2b8392db0527b3c20c8f820be7c44812a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00152.vdb",
+      "time_s": 19.96604012721218,
+      "producer_sha256": "99d60d8988b4b27524cd4d4673495dab5309487c5b080615d786d693d4440b43"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00153.vdb",
+      "time_s": 20.02854012721218,
+      "producer_sha256": "16c3958cfb679f9924739ecd4198ca1a0b61b7f9f970649db2fa6d2dfb2cc09f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00154.vdb",
+      "time_s": 20.09104012721218,
+      "producer_sha256": "763b6c5edd0375bff9f91dac34b1442647adac260a57ec05f04a8a98568a2633"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00155.vdb",
+      "time_s": 20.15354012721218,
+      "producer_sha256": "0969b753b82cc0e0fde6dc180a4206d6a73785a43e1fa9afe92f023cfd14bbd5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00156.vdb",
+      "time_s": 20.21604012721218,
+      "producer_sha256": "a9fc680aafa1d072025c5d9c25f7aac1de76eea5c7836778f16d258e37439184"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00157.vdb",
+      "time_s": 20.27854012721218,
+      "producer_sha256": "ddacdeaa65574abc9a5e44c91361287ff141afd99e817122031128eb47426707"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00158.vdb",
+      "time_s": 20.34104012721218,
+      "producer_sha256": "d1a738f32ace57cf76c1011545779305846a9fe4791c04a40d1d8a635e0e88cc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00159.vdb",
+      "time_s": 20.40354012721218,
+      "producer_sha256": "a833c8ffe349374a699772b723873774c38a8b5e0374bf08775d03e54b6439d9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00160.vdb",
+      "time_s": 20.46604012721218,
+      "producer_sha256": "ec61941b4fd667cc109355959434c0527a294334774f704a5363b4572c338a00"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00161.vdb",
+      "time_s": 20.52854012721218,
+      "producer_sha256": "174bfeebdae0355416290dc2002365d2e5bab8be2cfcd70a0eace08c362c8fe2"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00162.vdb",
+      "time_s": 20.59104012721218,
+      "producer_sha256": "529e6912d5153007ecb1a629806a135c80abd660cb5462781c77cedb3966e824"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00163.vdb",
+      "time_s": 20.65354012721218,
+      "producer_sha256": "b5c839786c6f6b37a9169f09d05990d2b64c61ff59c9b390605320da10518320"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00164.vdb",
+      "time_s": 20.71604012721218,
+      "producer_sha256": "29adfc25d2b41a0ad79981d2b570a343cd6cad01940a6e9887ce0185cc2f1098"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00165.vdb",
+      "time_s": 20.77854012721218,
+      "producer_sha256": "c940bf0f63756e77c338b4d81cbe70dead9806e863fa4aaf57d954fd5f2fb3ff"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00166.vdb",
+      "time_s": 20.84104012721218,
+      "producer_sha256": "90879b226fd10c1b09a1f8d5d723b951774594616c31d8377f20f1dbafc4a452"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00167.vdb",
+      "time_s": 20.90354012721218,
+      "producer_sha256": "3761654889ac840b7f0544d3f063c8770719e1c18c79a86439fe7f3dc5d06935"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00168.vdb",
+      "time_s": 20.96604012721218,
+      "producer_sha256": "11d7e396019db2b58a7bcd2157058aab95172096755a4f569e829a9be2e63427"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00169.vdb",
+      "time_s": 21.02854012721218,
+      "producer_sha256": "707f5cc0f71a4567b74c7c8490d1f016381587804194474d2506919c3700da5d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00170.vdb",
+      "time_s": 21.09104012721218,
+      "producer_sha256": "3ed45a7bcc6645e11533e0b4d1107a886152b6c3a09f366841b27fc127822910"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00171.vdb",
+      "time_s": 21.15354012721218,
+      "producer_sha256": "dd2ddb48c06bfeb4b5e90577a7e7129dff55074a2ad8a6466b1ba22ae3cc2df7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00172.vdb",
+      "time_s": 21.21604012721218,
+      "producer_sha256": "1fd2cea3e66329d1ff6c0f192893d93086b096f0e4eb5e9a14b54bb3b3dd92c9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00173.vdb",
+      "time_s": 21.27854012721218,
+      "producer_sha256": "5eb8ee11e7284c074a0f373e85a12b50c6e977ae33fb473a75fef36f49353ee7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00174.vdb",
+      "time_s": 21.34104012721218,
+      "producer_sha256": "0cea3c90c14034dc360262ee591c198c9b9015b5b408f2451d96c09a1a5f5159"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00175.vdb",
+      "time_s": 21.40354012721218,
+      "producer_sha256": "ada24192ab6d361b03601db6edf72af55482e76c182474d06f9964e2c07415aa"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00176.vdb",
+      "time_s": 21.46604012721218,
+      "producer_sha256": "88c16ec1b0059496e9a0b39e38b7e45b121963db852b23b021eca6659aedaa86"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00177.vdb",
+      "time_s": 21.52854012721218,
+      "producer_sha256": "9585d824bab44c6dbf3c5f13165a26327f2844f56f096c37a3be5d348a34ca1c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00178.vdb",
+      "time_s": 21.59104012721218,
+      "producer_sha256": "1a4d0da726c2c7905ff5182708b201c362b36b6cd779cf82fd05ef55366ebb5a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00179.vdb",
+      "time_s": 21.65354012721218,
+      "producer_sha256": "30cb0167a84db51b62f722deecd3106579a13a8c1090be63c1bf70c1efea8946"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00180.vdb",
+      "time_s": 21.71604012721218,
+      "producer_sha256": "34e4ec6cbbaaed2893bd1ff2d618f2fe1bd28843da60505d48353f38da729186"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00181.vdb",
+      "time_s": 21.77854012721218,
+      "producer_sha256": "e0e52172efacb00f1e239f8414d64b7952508a169bfa37002dc6fe12311deec3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00182.vdb",
+      "time_s": 21.84104012721218,
+      "producer_sha256": "3c5cf77208985d2cd3ac7ace1b6a0932ea8e71e6ababbb70c07591bb68bd6dfb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00183.vdb",
+      "time_s": 21.90354012721218,
+      "producer_sha256": "e7eecec093d0d66d25ac2f6e548c11f9bc572e39940f930d48d232687110d248"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00184.vdb",
+      "time_s": 21.96604012721218,
+      "producer_sha256": "801be580c4049fc3ac4f807f27212416274808cf811d23a987f2557b1ed107bc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00185.vdb",
+      "time_s": 22.02854012721218,
+      "producer_sha256": "3ff7aadae8cfd64cd4ddfe2a2a931fa9b9a28b5cd888d6f2a6d1b26b438f39eb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00186.vdb",
+      "time_s": 22.09104012721218,
+      "producer_sha256": "61eba72684cbfc6feda8cd6e1e6533c8abf1b51d6e3a2c4e689afbf88b2cf810"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00187.vdb",
+      "time_s": 22.15354012721218,
+      "producer_sha256": "6d2a7e7cb48de566b45af62bf315144978ef8de18b14799fc38276e8bf48b62e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00188.vdb",
+      "time_s": 22.21604012721218,
+      "producer_sha256": "fcf1c29f2930953e5304d4465ac58f062160e4ff51d56b0e65d21838058290cd"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00189.vdb",
+      "time_s": 22.27854012721218,
+      "producer_sha256": "36943c04c3448616cc691ce74fc5572a9190e6d84958fcde67927742a23d8bc7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00190.vdb",
+      "time_s": 22.34104012721218,
+      "producer_sha256": "a8e04c648cb21ea74ee4544f28e7cc1affeaf69211044421b4da280e5d753b87"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00191.vdb",
+      "time_s": 22.40354012721218,
+      "producer_sha256": "e5a9029f988c6c9cd1817d8e5216ce70928aeb62a6dd9878de5413a9d169df09"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00192.vdb",
+      "time_s": 22.46604012721218,
+      "producer_sha256": "32198e32cf80fe9d7a8e3991bb83ddec9806700f1f2c9ac4a140b0826fc86938"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00193.vdb",
+      "time_s": 22.52854012721218,
+      "producer_sha256": "77973463d1a317e072823df06df43b4b7297568816167e88678ecea8be3308fe"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00194.vdb",
+      "time_s": 22.59104012721218,
+      "producer_sha256": "dc6de5f711afc7a90e250b2e6aeb6c5ed0c912097e0afb31dabd0783087bff34"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00195.vdb",
+      "time_s": 22.65354012721218,
+      "producer_sha256": "df4780e236554204fdd2d08cc874228d3bc462ffdc351935ab142b2c2f73332e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00196.vdb",
+      "time_s": 22.71604012721218,
+      "producer_sha256": "833650adcef85375941aa44b4a7860e202a354d0be3bf380ea925f0cf6200e1f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00197.vdb",
+      "time_s": 22.77854012721218,
+      "producer_sha256": "af065aeef2a5553dd6792cd1d0be3134cf8272e80035f3f6550fb35633a35493"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00198.vdb",
+      "time_s": 22.84104012721218,
+      "producer_sha256": "59f712e76baf2e1598e1a929ceee02388e5f6153a9f85e60bed0872e131ed07e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00199.vdb",
+      "time_s": 22.90354012721218,
+      "producer_sha256": "342e9fefc49508b68c2f6f478d5a9a8775e47c662523fb611f6267fc2d858e62"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00200.vdb",
+      "time_s": 22.96604012721218,
+      "producer_sha256": "30339006bbec096f07e3efc90c617221c57307e0d08b0fbe22136013f108b8b1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00201.vdb",
+      "time_s": 23.02854012721218,
+      "producer_sha256": "4089f987b521ba9186a57b01ff98a75825c9c6f8be7f89bcc114689c3f96c01f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00202.vdb",
+      "time_s": 23.09104012721218,
+      "producer_sha256": "fb38cfaa6d141c626361e32c60d0d76cedc6b2f77b8805f85783492d6455012f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00203.vdb",
+      "time_s": 23.15354012721218,
+      "producer_sha256": "1db2a8d65ca52118db395b4a7066665cdea7b34c92293b50104b86d8cef93e46"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00204.vdb",
+      "time_s": 23.21604012721218,
+      "producer_sha256": "7bdc44a60878c49e65e19d597bcaef0ef0aca3a541dca3b9b78ca5195c6519fe"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00205.vdb",
+      "time_s": 23.27854012721218,
+      "producer_sha256": "578426b74b46d2bdc6ecd468eb79eb58aa551a731aad077101e4218ea715cdba"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00206.vdb",
+      "time_s": 23.34104012721218,
+      "producer_sha256": "05f8a46e4a1a8452ed3e06b45f913450fb4d263e1b9dc4cf529f0e0ce54a16a3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00207.vdb",
+      "time_s": 23.40354012721218,
+      "producer_sha256": "1ce44f2491b4531d784932417e83ace52d085dc4977fc6dd089fa5d41b54af58"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00208.vdb",
+      "time_s": 23.46604012721218,
+      "producer_sha256": "53be2bbd1936278c5d4afb28716a068a6ac0ac56faf9ef313b7cccbdfb29b399"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00209.vdb",
+      "time_s": 23.52854012721218,
+      "producer_sha256": "e9f03d3075dafb782b496cf62ef1264934fd667bfc5fd348cea459b476e85930"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00210.vdb",
+      "time_s": 23.59104012721218,
+      "producer_sha256": "aa289b721fc579250542ff8b7528ffa4eab7172b6528ae73e080c6c6dd544a5e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00211.vdb",
+      "time_s": 23.65354012721218,
+      "producer_sha256": "b383a42f27635ccc5a58da0ca27fef734af6911594c1ca2c4421ab3191ddf62d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00212.vdb",
+      "time_s": 23.71604012721218,
+      "producer_sha256": "119fda8709a23848118b8f805c891df7a9a6e5903306921f58d6eb4a34be5d31"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00213.vdb",
+      "time_s": 23.77854012721218,
+      "producer_sha256": "94f687fd8000605b4b6048fdcd83874d902d6892a4c7853b28053c5b132870d7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00214.vdb",
+      "time_s": 23.84104012721218,
+      "producer_sha256": "a7e1ca0957b9400765b8b9285a373ed80cd63860aa0fbc208d36ff7a213c3b59"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00215.vdb",
+      "time_s": 23.90354012721218,
+      "producer_sha256": "8bdcbe4e2d15cc963c22c27f18da5acde8b154d7103986d6ff5890d7fa5622b0"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00216.vdb",
+      "time_s": 23.96604012721218,
+      "producer_sha256": "eebd7a7cef97df334a3ed8e3a7e066e0e8bd952f1ab7d46925a311bec08f2cd7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00217.vdb",
+      "time_s": 24.02854012721218,
+      "producer_sha256": "859ee06660269930e421d4b4e3a705b0a007fb93e190c36609b26d348196a425"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00218.vdb",
+      "time_s": 24.09104012721218,
+      "producer_sha256": "ef9acc2d9d313ee77fab29c91f97df7cd5e7fa5483befc143005d551d85b7066"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00219.vdb",
+      "time_s": 24.15354012721218,
+      "producer_sha256": "21fe970afb5ff85a7d4db13c2fb0e8d38b2da7f6c95bd1d01bbc087672b28680"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00220.vdb",
+      "time_s": 24.21604012721218,
+      "producer_sha256": "9ee4b3ecc8c391992d2437b7e6fc58a404c144735b33a7dec24a21eed0a784a9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00221.vdb",
+      "time_s": 24.27854012721218,
+      "producer_sha256": "e69c6cb4010b65fcc27a306b090acde8b84189115dc2a7fc6609ddfb6cb75e82"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00222.vdb",
+      "time_s": 24.34104012721218,
+      "producer_sha256": "bb5fd463f133ed4c07c7dbd3d1e1615fac14b886aa94e0ceba02ac5377f738df"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00223.vdb",
+      "time_s": 24.40354012721218,
+      "producer_sha256": "39325aa89bd2f5458f653473214f9b63589b010cf4130e4d0ea619db18044842"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00224.vdb",
+      "time_s": 24.46604012721218,
+      "producer_sha256": "fafdad96164dcea9874c1bff9bb12f5e9ca2863fc49a8af6a1c63ee5993d716b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00225.vdb",
+      "time_s": 24.52854012721218,
+      "producer_sha256": "ddce68677f53c4509531850a20bd39f9ad9b7d3c9f0b5474c98ec1ddfef5a776"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00226.vdb",
+      "time_s": 24.59104012721218,
+      "producer_sha256": "6c4efe2b98b8d6c8816623be9c3587c88d0a248700dfc8b5da873966b0d0986b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00227.vdb",
+      "time_s": 24.65354012721218,
+      "producer_sha256": "8feb593e99927614c5db9f65b13729576ca1fef13641c5a8ebdbaabeb119c5e6"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00228.vdb",
+      "time_s": 24.71604012721218,
+      "producer_sha256": "f15e60f8f777e246fca3883375ca1f1d80edd1f6ab7f1f87a9150b9a32a15473"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00229.vdb",
+      "time_s": 24.77854012721218,
+      "producer_sha256": "8cda9dc0bf2fdbec892f2dc3cdf40390d59ea1d991b33bb69e129ab43f4768ee"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00230.vdb",
+      "time_s": 24.84104012721218,
+      "producer_sha256": "c0f450225e78df0ef6b34ae6696f5d39494ca036d200cfbfd9eb415a39e993df"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00231.vdb",
+      "time_s": 24.90354012721218,
+      "producer_sha256": "0fc61a3f385dfe1e6ac5976ba2814a302c152a9cea41ec8dc6f827da31dd8bba"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00232.vdb",
+      "time_s": 24.96604012721218,
+      "producer_sha256": "a623ee4cc06f863296b6cbce670573911d2f6bd88e043ad5ca16303712fc1610"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00233.vdb",
+      "time_s": 25.02854012721218,
+      "producer_sha256": "c19461ca92af2971cd589739851b96b5e8fc3725733aa2d91257fbe00b38c293"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoints/frame_00234.vdb",
+      "time_s": 25.09104012721218,
+      "producer_sha256": "2d35e70d8ee16b0e3ead74c8b57c2d6f48ce61dc7cba3474b41d7ba7abcdc626"
+    }
+  ],
+  "checkpoint_inputs_manifest": "../fire_r253/inputs_and_sources.json",
+  "checkpoint_inputs_manifest_sha256": "ee342bc8ae9145ea83f03bd7a689e98ce60f037cb00ea29762a0dffdfd388d01",
+  "weighted_inputs_sha256": "e16da1e473f5e73af6a1d652ccdc56eaa29411ecfee949f248f697c785fa249d",
+  "sources": [
+    {
+      "title": "Shabbir and George 1994",
+      "url": "https://turbulence-online.com/Publications/Papers/SG94.pdf",
+      "doi": "10.1017/S0022112094002260",
+      "sha256": "6a1397ac2fe2bdf6a8626cf9a2c9d2e5aa44d6547278ba3e777ad46448d72fc8",
+      "location": "Table 2 printed p14, Figure 7 printed p17",
+      "access_note": "Author-hosted scanned PDF; downloaded with curl -k because this host has an invalid/self-signed TLS certificate. DOI metadata verified at publisher."
+    },
+    {
+      "title": "FDS 6.11.1 Technical Reference Guide Momentum Chapter",
+      "url": "https://raw.githubusercontent.com/firemodels/fds/FDS-6.11.1/Manuals/FDS_Technical_Reference_Guide/Momentum_Chapter.tex",
+      "sha256": "944fe6583a608d65fe37b58193ed07f21b19243fe02ab129a495dbde7a3e336e",
+      "location": "LES opening definition and Vreman subsection lines155-170"
+    }
+  ],
+  "measurement_limits": {
+    "historical_shared_face_alpha": "not retained; not estimated from hypothetical stages",
+    "complete_solver_numerical_damping": "not identifiable from sparse accepted snapshots",
+    "turbulent_share_of_lateral_entrainment": "not inferred from axial density-velocity covariance"
+  },
+  "observer_sources": {
+    "tools/fire/r254_turbulence_probe.cpp": "a98980047d527cadd3a0d0aaf61b375bba3792ccc3d67a09b7738d268c710266",
+    "tools/fire/r254_reduce_turbulence.py": "27650992dc9d17b6b1e10115665811d02b5d4b18cd40486aee511596ab0ac292"
+  },
+  "raw_products": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r254_turbulence_diagnosis/cell_moments.csv": "16c01e4c7681bd9381c2a8241fb82a2a8fbc476cfa88232f656fa9db6939ccb2",
+    "/Volumes/SSD/RISE/fire_production_calibration/r254_turbulence_diagnosis/frame_moments.csv": "f3b7c933fb37202cd08b4e1d0017cb64172464b8fea8eb9be2d3ea3604d4d4b0",
+    "/Volumes/SSD/RISE/fire_production_calibration/r254_turbulence_diagnosis/viscosity.csv": "c34e03a8e5cac051fc092570144aca5200db6443b642b5b130cb753cb959084e"
+  },
+  "observer_binary_sha256": "1b937154212b8cb697b1899e8b96b0523e6a7e6cf2f43cd49f0ca33942a59545",
+  "build_log_bytes": 0,
+  "production_binary_sha256": "d1cebdd779a5d18a9e5b92ec162ddfcfc51aaae1a8963104bcdc633fb7bab033"
+}
