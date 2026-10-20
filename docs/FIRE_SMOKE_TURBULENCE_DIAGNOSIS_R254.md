@@ -1,7 +1,7 @@
 # r254 — resolved turbulence and momentum-damping audit of r251
 
-2026-10-19. **Resolved fluctuations are deficient, especially in the upper
-plume. The Vreman constant and formula match FDS. A limiter-caused damping
+2026-10-19. **Resolved relative fluctuation intensities are deficient, especially in the
+upper plume. The Vreman constant and formula match FDS. A limiter-caused damping
 rate cannot be recovered from the retained data.** No solver change, solver
 advance, replay, or new simulation was made. Tier 10 remains unlaunched.
 
@@ -10,7 +10,7 @@ advance, replay, or new simulation was made. Tier 10 remains unlaunched.
 All 235 retained VDB frames cover 10.466040127212–25.091040127212 s at
 0.0625 s spacing. Endpoints receive half weight. The observer reads the native
 scalar `(x,y,z)` and exported velocity `(x+1,y+1,z+1)` coordinates, following
-`WriteNativeFrame` in `FireSequenceTest.cpp`; it does not sample the shifted
+`WriteFrame` in `FireSequenceTest.cpp`; it does not sample the shifted
 velocity grid at scalar indices. Native dimensions are 69×69×106, dx =
 0.030593116067411014 m. No rendered movie pixels are used.
 
@@ -59,7 +59,11 @@ numbers, which determine the comparison, are directly tabulated.
 
 At 3.013 m, r251's centerline velocity ratio is **39.4% below** 0.33 and its
 temperature ratio **33.5% below** 0.40. Half-width fluctuations are also low.
-The upper plume has resolved motion, but less than this experimental plume.
+The upper plume has resolved motion, with smaller normalized intensities than
+this experimental plume. At 3.013 m its dimensional RMS values are 0.637 m/s
+and 18.954 K. Because the mean velocity and temperature rise are already
+excessive, low normalized intensities alone do not establish a deficit of
+absolute temperature variance or identify numerical damping as its cause.
 Using r253's virtual origin 0.03011 m, the upper w/θ half-width growth ratios
 are 0.0755/0.0670, about 29%/33% below Table 2. This supports the measured
 entrainment deficit and narrow plume; it does not identify its numerical cause.
@@ -196,7 +200,7 @@ not evidence that SGS viscosity is dynamically sufficient or excessive.
 
 ## Decision and deliverables
 
-**Keep the solver unchanged for review.** The fluctuation deficit is measured,
+**Keep the solver unchanged for review.** The relative-intensity deficit is measured,
 but the second condition—substantial inherited limiter activity in the plume—is
 unmeasured, and the assumed independent upwind momentum blend is absent.
 Removing alpha from the momentum carrier would break the accepted mass/momentum
