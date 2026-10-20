@@ -37,6 +37,7 @@ if [ "$#" -lt 3 ]; then
 fi
 
 TEST="$1"; MARKER="$2"; shift 2
+export RISE_RED_PROVE_MARKER="$MARKER"
 SRCS=("$@")
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -46,24 +47,30 @@ build() {
 	&& make -C build/make/rise build-test/"$TEST" >>/tmp/red_prove_build.log 2>&1
 }
 
-TEST_OUTPUT=""
+TEST_LOG="$(mktemp "${TMPDIR:-/tmp}/red_prove_test.XXXXXX")"
 TEST_RC=0
 run_test() {
-	TEST_OUTPUT=""
+	: > "$TEST_LOG"
 	TEST_RC=0
 	if [ -n "$TEST_ARGS" ]; then
 		local -a test_args_arr=()
 		read -r -a test_args_arr <<< "$TEST_ARGS"
-		TEST_OUTPUT="$(./bin/tests/"$TEST" "${test_args_arr[@]}" 2>&1)" || TEST_RC=$?
+		./bin/tests/"$TEST" "${test_args_arr[@]}" >"$TEST_LOG" 2>&1 || TEST_RC=$?
 	else
-		TEST_OUTPUT="$(./bin/tests/"$TEST" 2>&1)" || TEST_RC=$?
+		./bin/tests/"$TEST" >"$TEST_LOG" 2>&1 || TEST_RC=$?
 	fi
 }
 
 extract_pass_count() {
-	printf '%s\n' "$1" \
-		| sed -nE 's/.*(^|[^0-9])([0-9]+) passed.*/\2/p' \
-		| tail -n 1
+	awk '
+		match($0, /(^|[^0-9])[0-9]+ passed/) {
+			s = substr($0, RSTART, RLENGTH)
+			sub(/^[^0-9]+/, "", s)
+			sub(/[^0-9].*$/, "", s)
+			val = s
+		}
+		END { if (val != "") print val }
+	' "$1"
 }
 
 RED_MARKER_FAILS=0
@@ -77,14 +84,15 @@ check_red_phase() {
 		return 1
 	fi
 	RED_MARKER_FAILS="$(
-		printf '%s\n' "$TEST_OUTPUT" \
-			| grep -E '(^|[[:space:]])FAIL(:|[[:space:]])' \
-			| grep -F -c -- "$MARKER" || true
+		awk -v marker="$MARKER" '
+			/(^|[[:space:]\[])FAIL([[:space:]:\]]|$)/ && index($0, marker) > 0 { c++ }
+			END { print c + 0 }
+		' "$TEST_LOG"
 	)"
 	if [ "${RED_MARKER_FAILS:-0}" -lt 1 ]; then
 		return 1
 	fi
-	RED_PASSED="$(extract_pass_count "$TEST_OUTPUT")"
+	RED_PASSED="$(extract_pass_count "$TEST_LOG")"
 	return 0
 }
 
@@ -94,47 +102,55 @@ check_green_phase() {
 		echo "GREEN ✗  '${TEST}' exited with non-zero status ${TEST_RC}"
 		return 1
 	fi
-	if printf '%s\n' "$TEST_OUTPUT" \
-		| grep -E '(^|[[:space:]])FAIL(:|[[:space:]])' \
-		| grep -Fq -- "$MARKER"; then
+
+	local stats marker_fails any_fails marker_ok_lines
+	stats="$(
+		awk -v marker="$MARKER" '
+			{
+				is_fail = ($0 ~ /(^|[[:space:]\[])FAIL([[:space:]:\]]|$)/)
+				has_marker = (index($0, marker) > 0)
+				is_ok = (!is_fail && $0 ~ /(^|[[:space:]\[])(ok:|OK:|PASS|PASSED|pass:|passed:|✓)([[:space:]:\]]|$)/)
+				if (is_fail) {
+					any_fails++
+					if (has_marker) marker_fails++
+				} else if (is_ok && has_marker) {
+					marker_ok_lines++
+				}
+			}
+			END {
+				printf "%d %d %d\n",
+					marker_fails + 0, any_fails + 0, marker_ok_lines + 0
+			}
+		' "$TEST_LOG"
+	)"
+	read -r marker_fails any_fails marker_ok_lines <<< "$stats"
+
+	if [ "$marker_fails" -gt 0 ]; then
 		echo "GREEN ✗  '${MARKER}' STILL fails with the fix"
 		return 1
 	fi
-	if printf '%s\n' "$TEST_OUTPUT" | grep -qE '(^|[[:space:]])FAIL(:|[[:space:]])'; then
+	if [ "$any_fails" -gt 0 ]; then
 		echo "GREEN ✗  '${TEST}' reported another failure in GREEN output"
 		return 1
 	fi
 
-	# Require positive evidence that the intended assertion actually ran and passed:
-	# - Whenever both RED and GREEN report `<N> passed`, GREEN's pass count must
-	#   increase by at least RED_MARKER_FAILS over RED's pass count.
-	# - Otherwise, require an explicit pass line mentioning MARKER or a positive
-	#   completion summary after MARKER output.
 	local green_passed
-	green_passed="$(extract_pass_count "$TEST_OUTPUT")"
+	green_passed="$(extract_pass_count "$TEST_LOG")"
 	if [ -n "$green_passed" ] && [ -n "$RED_PASSED" ]; then
 		local min_expected=$(( RED_PASSED + RED_MARKER_FAILS ))
 		if [ "$green_passed" -lt "$min_expected" ]; then
 			echo "GREEN ✗  pass count (${green_passed}) did not increase by >= ${RED_MARKER_FAILS} over RED (${RED_PASSED}) -- assertion may have been skipped"
 			return 1
 		fi
-		return 0
-	fi
-	if printf '%s\n' "$TEST_OUTPUT" \
-		| grep -E '(^|[[:space:]])(ok:|PASS)([[:space:]]|:|$)' \
-		| grep -Fq -- "$MARKER"; then
-		return 0
-	fi
-	if [ -n "$green_passed" ] && [ "$green_passed" -gt 0 ]; then
-		return 0
-	fi
-	if printf '%s\n' "$TEST_OUTPUT" | grep -Fq -- "$MARKER" \
-		&& printf '%s\n' "$TEST_OUTPUT" | grep -qE '(ALL PASSED|PASSED)'; then
-		return 0
 	fi
 
-	echo "GREEN ✗  no evidence that '${MARKER}' assertion executed in GREEN output"
-	return 1
+	# Require positive evidence tied to MARKER in GREEN output: at least
+	# RED_MARKER_FAILS explicit pass lines (ok:/PASS/PASSED/✓) containing MARKER.
+	if [ "$marker_ok_lines" -lt "$RED_MARKER_FAILS" ]; then
+		echo "GREEN ✗  expected >= ${RED_MARKER_FAILS} passing line(s) for '${MARKER}', saw ${marker_ok_lines}"
+		return 1
+	fi
+	return 0
 }
 
 STASH_OID=""
@@ -152,6 +168,12 @@ restore_stash() {
 	fi
 }
 
+cleanup() {
+	restore_stash >/dev/null 2>&1 || true
+	rm -f "$TEST_LOG"
+}
+trap cleanup EXIT
+
 rc=0
 
 echo "== RED phase: stashing ${#SRCS[@]} source file(s) (the fix) =="
@@ -167,14 +189,12 @@ if [ -z "$after_stash" ] || [ "$after_stash" = "$before_stash" ]; then
 	exit 2
 fi
 STASH_OID="$after_stash"
-trap 'restore_stash >/dev/null 2>&1 || true' EXIT
 
 if build; then
 	if check_red_phase; then echo "RED  ✓  '${MARKER}' FAILS without the fix"
 	else echo "RED  ✗  '${MARKER}' did NOT fail cleanly without the fix (rc=${TEST_RC}) -- test may be FALSE-GREEN"; rc=1; fi
 else echo "RED build failed (see /tmp/red_prove_build.log)"; rc=2; fi
 restore_stash || rc=2
-trap - EXIT
 
 echo "== GREEN phase: fix restored =="
 if build; then

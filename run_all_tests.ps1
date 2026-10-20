@@ -35,10 +35,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+$origRiseTestExtended = $env:RISE_TEST_EXTENDED
+try {
+
 $Tier = $Tier.ToLowerInvariant()
 switch ($Tier) {
     'all' {
-        if ([string]::IsNullOrEmpty($env:RISE_TEST_EXTENDED)) {
+        if ([string]::IsNullOrEmpty($origRiseTestExtended)) {
             $env:RISE_TEST_EXTENDED = '1'
         }
     }
@@ -365,3 +368,7 @@ if ($failed -ne 0 -or $buildFailed -ne 0) {
 }
 Write-Host "All $found tests passed"
 exit 0
+
+} finally {
+    $env:RISE_TEST_EXTENDED = $origRiseTestExtended
+}
