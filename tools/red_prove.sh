@@ -61,6 +61,10 @@ run_test() {
 	fi
 }
 
+is_uint() {
+	[[ "${1:-}" =~ ^[0-9]+$ ]]
+}
+
 extract_pass_count() {
 	awk '
 		match($0, /(^|[^0-9])[0-9]+ passed/) {
@@ -83,16 +87,24 @@ check_red_phase() {
 	if [ "$TEST_RC" -eq 0 ] || [ "$TEST_RC" -ge 128 ]; then
 		return 1
 	fi
-	RED_MARKER_FAILS="$(
-		awk -v marker="$MARKER" '
+	if ! RED_MARKER_FAILS="$(
+		awk '
+			BEGIN { marker = ENVIRON["RISE_RED_PROVE_MARKER"] }
 			/(^|[[:space:]\[])FAIL([[:space:]:\]]|$)/ && index($0, marker) > 0 { c++ }
 			END { print c + 0 }
 		' "$TEST_LOG"
-	)"
-	if [ "${RED_MARKER_FAILS:-0}" -lt 1 ]; then
+	)"; then
 		return 1
 	fi
-	RED_PASSED="$(extract_pass_count "$TEST_LOG")"
+	if ! is_uint "$RED_MARKER_FAILS" || [ "$RED_MARKER_FAILS" -lt 1 ]; then
+		return 1
+	fi
+	if ! RED_PASSED="$(extract_pass_count "$TEST_LOG")"; then
+		return 1
+	fi
+	if [ -n "$RED_PASSED" ] && ! is_uint "$RED_PASSED"; then
+		return 1
+	fi
 	return 0
 }
 
@@ -103,9 +115,10 @@ check_green_phase() {
 		return 1
 	fi
 
-	local stats marker_fails any_fails marker_ok_lines
-	stats="$(
-		awk -v marker="$MARKER" '
+	local stats="" marker_fails="" any_fails="" marker_ok_lines=""
+	if ! stats="$(
+		awk '
+			BEGIN { marker = ENVIRON["RISE_RED_PROVE_MARKER"] }
 			{
 				is_fail = ($0 ~ /(^|[[:space:]\[])FAIL([[:space:]:\]]|$)/)
 				has_marker = (index($0, marker) > 0)
@@ -122,8 +135,15 @@ check_green_phase() {
 					marker_fails + 0, any_fails + 0, marker_ok_lines + 0
 			}
 		' "$TEST_LOG"
-	)"
+	)"; then
+		echo "GREEN ✗  failed to parse GREEN test output"
+		return 1
+	fi
 	read -r marker_fails any_fails marker_ok_lines <<< "$stats"
+	if ! is_uint "$marker_fails" || ! is_uint "$any_fails" || ! is_uint "$marker_ok_lines"; then
+		echo "GREEN ✗  invalid parser counters (${stats})"
+		return 1
+	fi
 
 	if [ "$marker_fails" -gt 0 ]; then
 		echo "GREEN ✗  '${MARKER}' STILL fails with the fix"
@@ -134,8 +154,15 @@ check_green_phase() {
 		return 1
 	fi
 
-	local green_passed
-	green_passed="$(extract_pass_count "$TEST_LOG")"
+	local green_passed=""
+	if ! green_passed="$(extract_pass_count "$TEST_LOG")"; then
+		echo "GREEN ✗  failed to parse GREEN pass count"
+		return 1
+	fi
+	if [ -n "$green_passed" ] && ! is_uint "$green_passed"; then
+		echo "GREEN ✗  invalid GREEN pass count (${green_passed})"
+		return 1
+	fi
 	if [ -n "$green_passed" ] && [ -n "$RED_PASSED" ]; then
 		local min_expected=$(( RED_PASSED + RED_MARKER_FAILS ))
 		if [ "$green_passed" -lt "$min_expected" ]; then
@@ -146,11 +173,11 @@ check_green_phase() {
 
 	# Require positive evidence tied to MARKER in GREEN output: at least
 	# RED_MARKER_FAILS explicit pass lines (ok:/PASS/PASSED/✓) containing MARKER.
-	if [ "$marker_ok_lines" -lt "$RED_MARKER_FAILS" ]; then
-		echo "GREEN ✗  expected >= ${RED_MARKER_FAILS} passing line(s) for '${MARKER}', saw ${marker_ok_lines}"
-		return 1
+	if [ "$marker_ok_lines" -ge "$RED_MARKER_FAILS" ]; then
+		return 0
 	fi
-	return 0
+	echo "GREEN ✗  expected >= ${RED_MARKER_FAILS} passing line(s) for '${MARKER}', saw ${marker_ok_lines}"
+	return 1
 }
 
 STASH_OID=""
