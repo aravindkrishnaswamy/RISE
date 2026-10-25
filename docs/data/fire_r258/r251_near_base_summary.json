@@ -1,0 +1,35 @@
+{
+  "status": "RISE retained-state values only; FDS comparison pending",
+  "divergence_mask": "r<0.30m",
+  "selected_divergence": [
+    {
+      "height_m": 0.10707590623593854,
+      "mean_abs_div_s_1": 0.5249174381583389,
+      "rms_div_s_1": 1.5572139738208253
+    },
+    {
+      "height_m": 0.1988552544381716,
+      "mean_abs_div_s_1": 0.39453173721530493,
+      "rms_div_s_1": 1.2099866180523564
+    },
+    {
+      "height_m": 0.29063460264040464,
+      "mean_abs_div_s_1": 0.3352989060025807,
+      "rms_div_s_1": 0.9839677645823461
+    },
+    {
+      "height_m": 0.3824139508426377,
+      "mean_abs_div_s_1": 0.2775486668957843,
+      "rms_div_s_1": 0.7499238291809488
+    },
+    {
+      "height_m": 0.5047864151122817,
+      "mean_abs_div_s_1": 0.238946315292084,
+      "rms_div_s_1": 0.5771721640546342
+    }
+  ],
+  "positive_inlet_faces": 69,
+  "mean_positive_inflow_w_m_s": 0.02013113815147732,
+  "min_positive_inflow_w_m_s": 0.015380210468257488,
+  "max_positive_inflow_w_m_s": 0.023771493027537977
+}

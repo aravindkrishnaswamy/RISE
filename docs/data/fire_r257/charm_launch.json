@@ -14,5 +14,7 @@
   "updated_utc": "2026-10-20T12:08:55.524528+00:00",
   "planned_additional_steps": 2432,
   "common_interval_comparison": true,
-  "controller_sha256": "60993c95d811095d93d0efd9f78dd196d64baa498a0607bb48263b0168a71331"
+  "controller_sha256": "60993c95d811095d93d0efd9f78dd196d64baa498a0607bb48263b0168a71331",
+  "experiment_valid_for_CHARM_sensitivity": false,
+  "invalid_reason": "Changed inactive fct reconstruction; resident path used unchanged pf_mc. See r258."
 }

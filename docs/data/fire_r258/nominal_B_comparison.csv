@@ -1,0 +1,4 @@
+z,height_m,A_MC_kg_s,reported_B_kg_s,B_status,earlier_FDS_VLES_same_window_kg_s,statistics_start_s,statistics_end_s
+32,0.994276272190858,0.2431580354062643,0.2431580354062643,invalid limiter sensitivity test: changed inactive fct path; resident pf reconstruction remained MC,0.2922865157494182,15.018720638239756,19.018720638239756
+65,2.0038491024154212,0.4788319307027343,0.4788319307027343,invalid limiter sensitivity test: changed inactive fct path; resident pf reconstruction remained MC,0.6677790705456049,15.018720638239756,19.018720638239756
+98,3.013421932639985,0.7184583248787348,0.7184583248787348,invalid limiter sensitivity test: changed inactive fct path; resident pf reconstruction remained MC,1.2081868188554377,15.018720638239756,19.018720638239756

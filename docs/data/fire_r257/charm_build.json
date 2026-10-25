@@ -4,5 +4,7 @@
   "diagnostic_binary_sha256": "23f23fda8ed1f9ea761e56d7facee0aa8291aba922d4f7b54e0b00d6b5e2e470",
   "only_kernel_change": "MC scalar reconstruction -> direction-aware CHARM, affine basis/projection unchanged",
   "host_observer": "existing r256 observer object, no identity gate",
-  "A": "completed r256 15.01872063824\u201319.01872063824s"
+  "A": "completed r256 15.01872063824\u201319.01872063824s",
+  "experiment_valid_for_CHARM_sensitivity": false,
+  "invalid_reason": "Changed inactive fct reconstruction; resident path used unchanged pf_mc. See r258."
 }

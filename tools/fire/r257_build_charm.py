@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""External diagnostic-only CHARM substitution; production checkout/objects untouched."""
+"""Historical INVALID B: changed inactive fct path. Use r258_build_resident_charm.py."""
 from pathlib import Path
 import subprocess,shlex,difflib,hashlib,json
 ROOT=Path(__file__).resolve().parents[2];BASE=Path('/Volumes/SSD/RISE/fire_production_calibration');OUT=BASE/'r257_charm_ab';OUT.mkdir(exist_ok=True)

@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-20, after the r257 read-only comparison and diagnostic A/B selection. This page
+Last updated 2026-10-25, after discovering invalid first B and launching explicit LES FDS. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -140,8 +140,16 @@ identity; the whole reacting/projected Heun update is not exactly KE-conserving.
 FDS explicit LES defaults to **CHARM**, while the matched VLES run used
 **Superbee**. The spectral deficit selects the authorized four-second
 reconstruction A/B: completed r256 is A; B uses an external CHARM-only build
-from the same checkpoint. B launched 2026-10-20 05:08 PDT; results pending. Production sources and
-binary untouched. No tier 6 or tier 10. Stop for review after A/B.
+from the same checkpoint. First B completed but is invalid: it changed the inactive fct reconstruction,
+not the active resident pf path. Its exact match with A cannot exclude
+reconstruction. See r258. Production sources and binary untouched. No tier 6 or tier 10. Stop for review after A/B.
+
+[r258 LES/base comparison](FIRE_SMOKE_LES_BASE_COMPARISON_R258.md) records the
+invalid first B, corrected active-path external CHARM build, and explicit
+LES/Vreman/CHARM FDS repeat launched 2026-10-25 07:20 PDT. Near-base native
+velocity/divergence and radial fields are now retained by FDS. Corrected B
+runs serially after FDS; full results and conditional near-base interpretation
+pending. No generation/dissipation conclusion yet. Production solver unchanged.
 
 ## Open problems, in priority order
 

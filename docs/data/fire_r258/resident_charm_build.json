@@ -1,0 +1,8 @@
+{
+  "production_source_sha256": "b990750bbe9f5ea5d0969736df7735c22010c0dccf685579b70af7f531a5726b",
+  "diagnostic_source_sha256": "bc33074cc018d08b173a0de8356fa9a666f5acaa721ae55e9b7a76833dc52a6e",
+  "diagnostic_binary_sha256": "b92d638e9bab2fe48ac5c3dc2bc049028b2af90f70f1a1ad08196eca90bf1328",
+  "only_kernel_change": "ACTIVE resident pf MC scalar reconstruction -> direction-aware CHARM, affine basis/projection unchanged",
+  "host_observer": "existing r256 observer object, no identity gate",
+  "A": "completed r256 15.01872063824\u201319.01872063824s"
+}

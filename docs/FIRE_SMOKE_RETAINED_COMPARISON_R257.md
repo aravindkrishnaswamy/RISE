@@ -3,6 +3,16 @@
 2026-10-20. Read-only comparison over 10.4660401272–25.0910401272 s.
 No new simulation or production source change produced these measurements.
 
+## Correction — 2026-10-25: first B is not a limiter experiment
+
+The completed nominal B exactly matches A, but its patch changed `fct_mc`,
+which is not consumed by the active resident run. The actual resident advective
+kernel calls `pf_mass_slope` / `pf_mc`; these stayed MC. **First B is invalid
+as a CHARM sensitivity test.** Its match does not show limiter insensitivity.
+The failed-experiment raw data and patch are retained. See
+[r258](FIRE_SMOKE_LES_BASE_COMPARISON_R258.md) for the active-path correction and
+explicit LES FDS repeat. Production solver sources/binary remain unchanged.
+
 ## Radial profiles: a retained-data gap
 
 r251's temperature-rise and vertical-velocity radial profiles are available,

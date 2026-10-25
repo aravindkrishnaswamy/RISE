@@ -1,0 +1,14 @@
+{
+  "state": "running",
+  "command": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/fds_source/Build/ompi_gnu_osx/fds_ompi_gnu_osx",
+    "r258_fds.fds"
+  ],
+  "OMP_NUM_THREADS": 8,
+  "updated_utc": "2026-10-25T14:20:50.978988+00:00",
+  "completion_controller": "bounded one-shot FDS reduction then corrected B then stop",
+  "controller_sha256": "98469f092f3c0d7f30ec2de20313ecae33d16d94a4580a32c60c130efe111bf0",
+  "production_solver_changed": false
+}

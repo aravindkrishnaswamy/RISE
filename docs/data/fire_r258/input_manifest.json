@@ -1,0 +1,18 @@
+{
+  "mode": "LES",
+  "scalar_limiter": "CHARM",
+  "sgs": "VREMAN",
+  "C_VREMAN": 0.07,
+  "PR": 0.7,
+  "SC": 0.7,
+  "grid": [
+    69,
+    69,
+    106
+  ],
+  "dx_m": 0.030593116067411014,
+  "geometry_and_burner": "unchanged r255 input",
+  "output_additions": "instantaneous near-base T/u/v/w/rho/thermodynamicD and 1/2/3m planes; burner-face w devices",
+  "input_sha256": "d016bd31959e01ba94347bea9d2af595ff4f66b0dec9be5d717953144d1a7153",
+  "no_RISE_production_changes": true
+}
