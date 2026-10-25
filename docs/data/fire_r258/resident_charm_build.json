@@ -4,5 +4,6 @@
   "diagnostic_binary_sha256": "b92d638e9bab2fe48ac5c3dc2bc049028b2af90f70f1a1ad08196eca90bf1328",
   "only_kernel_change": "ACTIVE resident pf MC scalar reconstruction -> direction-aware CHARM, affine basis/projection unchanged",
   "host_observer": "existing r256 observer object, no identity gate",
-  "A": "completed r256 15.01872063824\u201319.01872063824s"
+  "A": "completed r256 15.01872063824\u201319.01872063824s",
+  "diagnostic_binary_note": "Pre-sanity host binary superseded by paired observer build; current executable hashes in early_check_build.json"
 }

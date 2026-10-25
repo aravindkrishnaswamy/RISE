@@ -91,3 +91,20 @@ RISE-only retained summary (FDS comparison pending): over r<0.30 m, mean absolut
 MAC divergence is 0.52492 s⁻¹ at 0.107 m and 0.23895 s⁻¹ at 0.505 m; RMS is
 1.55721 and 0.57717 s⁻¹. Its 69 positive burner faces have mean w 0.0201311 m/s,
 range 0.0153802–0.0237715 m/s. These are measurements, not a comparison verdict.
+
+## Standing A/B rule: prove a change within two steps
+
+Before the corrected four-second B, replay exactly two MC accepted steps from
+this checkpoint with a paired host observer and save all Q/T/M/U reference
+fields. The CHARM process starts from the same checkpoint, compares its first
+two accepted states, and writes per-field numeric differing-value counts and
+maximum absolute differences to `early_fields.csv`. If all fields are unchanged,
+it exits before taking a third step. Signed-zero bit changes do not qualify.
+A changed field is proof against a no-op experiment, not proof of its physical
+cause. Historical r251 restart identity remains waived and deferred.
+
+The same observer object is linked to MC and CHARM. An external launcher-only
+copy permits a two-step witness; no production test/source is edited. Build is
+warning-free and both observer/admission and paired-link reviews are clean.
+The early check runs after the higher-priority FDS measurements. No full B
+window can proceed without its first-two-step difference check passing.

@@ -226,6 +226,12 @@ memory bounds by disassembling the compiled binary and no physics ran.
 - **Every task names a tangible output**: a run, a spectrum, a movie, a
   measured number. Infrastructure is built only when a run cannot complete
   without it, and then in its smallest form.
+- **Before every A/B window, verify the variant changes the computation.**
+  Trace the active routine and compare accepted physical fields against A in
+  the first one or two steps. Record differing-value counts and magnitudes.
+  If unchanged, stop before the full window and resolve the experiment setup.
+  This is a short sanity check, not a new certification framework or a demand
+  that a continuation reproduce historical fields bit-for-bit.
 - **Memory protection is the existing 32 GiB RSS ceiling with graceful
   checkpoint-and-exit.** Do not add launch-admission gates, a-priori memory
   proofs, allocation accounting or binary disassembly.
