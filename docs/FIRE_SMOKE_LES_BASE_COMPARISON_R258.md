@@ -108,3 +108,14 @@ copy permits a two-step witness; no production test/source is edited. Build is
 warning-free and both observer/admission and paired-link reviews are clean.
 The early check runs after the higher-priority FDS measurements. No full B
 window can proceed without its first-two-step difference check passing.
+
+## Interruption and recovery — 2026-10-25
+
+The first FDS process and both wrappers disappeared after the last logged
+step 4,400 at 12.58312 s (07:55:18 PDT), without a logged FDS error or normal
+completion. Cause is unknown; stale status JSON is not evidence of a live run.
+Interrupted diagnostics are preserved. The same unchanged input was relaunched
+from zero at **07:59:37 PDT**, with a detached one-shot wrapper ignoring SIGHUP.
+The FDS process and advancing simulation time were verified. No recurring job
+or launchd service remains registered. The wrapper still reduces FDS first,
+then performs the two-step MC/CHARM check before the long B window.
