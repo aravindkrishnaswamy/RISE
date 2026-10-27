@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-25, after discovering invalid first B and launching explicit LES FDS. This page
+Last updated 2026-10-27, after completed explicit-LES FDS and valid CHARM B results. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -144,12 +144,20 @@ from the same checkpoint. First B completed but is invalid: it changed the inact
 not the active resident pf path. Its exact match with A cannot exclude
 reconstruction. See r258. Production sources and binary untouched. No tier 6 or tier 10. Stop for review after A/B.
 
-[r258 LES/base comparison](FIRE_SMOKE_LES_BASE_COMPARISON_R258.md) records the
-invalid first B, corrected active-path external CHARM build, and explicit
-LES/Vreman/CHARM FDS repeat launched 2026-10-25 07:20 PDT. Near-base native
-velocity/divergence and radial fields are now retained by FDS. Corrected B
-runs serially after FDS; full results and conditional near-base interpretation
-pending. No generation/dissipation conclusion yet. Production solver unchanged.
+[r258 LES/base comparison](FIRE_SMOKE_LES_BASE_COMPARISON_R258.md) completed
+both runs on Oct 25; final bookkeeping was repaired read-only Oct 27 after a
+system-Python NumPy import failed after the physical results were saved.
+The corrected CHARM B passed the first-two-step full-field sanity check and
+increased 1/2/3 m mass flux **1.65/4.66/5.48%**, but remains **38.8% below
+new FDS at 3 m** over the common 15.0187–19.0006 s interval.
+Full-window LES/Vreman/CHARM FDS entrains **1.2679 kg/s at 3 m (93.47% of
+Heskestad)**. At 1 m r251 has **31.6%** of new FDS's 1–3 Hz velocity power,
+and **49.3%** of its thermal power. Near-base actual divergence magnitudes
+are broadly comparable; RISE's burner-face w is **0.02013 vs 0.01032 m/s**, a
+**1.95×** difference. Mean rim-width differences are below one grid cell.
+Next question is inlet density/source/divergence/momentum coupling, with no
+causal formula established. All simulations stopped. Production solver unchanged;
+tier 6 cancelled, no tier 10. **Stopped for owner review.**
 
 ## Open problems, in priority order
 
