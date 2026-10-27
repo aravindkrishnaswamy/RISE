@@ -1,0 +1,17 @@
+{
+  "half_dt": {
+    "state": "ready",
+    "binary": "mc_driver",
+    "env": {
+      "RISE_R260_HALF_STEP": "1"
+    }
+  },
+  "restoration_off": {
+    "state": "definition_pending",
+    "reason": "No separate legacy restoration call in active owner; clarify whether to disable activeR0/R1EOS-tail correction"
+  },
+  "centered_momentum": {
+    "state": "ready",
+    "binary": "centered_driver"
+  }
+}

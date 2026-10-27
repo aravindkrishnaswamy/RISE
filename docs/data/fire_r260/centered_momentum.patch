@@ -1,0 +1,103 @@
+--- production
++++ external_centered_momentum
+@@ -1968,7 +1968,7 @@
+    -scale*fluxDelta[component*all+gid];
+   if(haveLeft&&fct_inequality(correction,inequality,enthalpyBounds)>0.0f)
+    accepted=min(accepted,ratio[inequality*p.cells+left]);
+-  for(uint component=0u;component<9u;++component)correction[component]=-
++  for(uint component=0u;component<9u;++component)correction[component] = -
+    correction[component];
+   if(haveRight&&fct_inequality(correction,inequality,enthalpyBounds)>0.0f)
+    accepted=min(accepted,ratio[inequality*p.cells+right]);
+@@ -2013,6 +2013,28 @@
+   gas+=low[component*all+packed]+alpha[packed]*delta[component*all+packed];
+  return gas;
+ }
++
++// Diagnostic only: centered interior advective gas mass carrier plus unchanged
++// physical gas diffusion. Boundary total carriers remain the accepted ones.
++kernel void r260_centered_carrier(device const float* low [[buffer(0)]],
++ device const float* delta [[buffer(1)]],device const float* alpha [[buffer(2)]],
++ device const float* q [[buffer(3)]],device const float* ux [[buffer(4)]],
++ device const float* uy [[buffer(5)]],device const float* uz [[buffer(6)]],
++ device const float* physicalGas [[buffer(7)]],device float* central [[buffer(8)]],
++ device float* zero [[buffer(9)]],constant FCTParams& p [[buffer(10)]],
++ uint gid [[thread_position_in_grid]]){
++ uint all=fct_all_faces(p);if(gid>=all)return;uint axis,x,y,z;fct_decode_face(p,gid,axis,x,y,z);
++ for(uint component=0u;component<9u;++component){central[component*all+gid]=0.0f;zero[component*all+gid]=0.0f;}
++ uint coordinate=fct_coordinate(axis,x,y,z),extent=fct_extent(p,axis);float gas=0.0f;
++ if(coordinate==0u||coordinate==extent)gas=fct_accepted_gas(low,delta,alpha,p,axis,x,y,z);
++ else{uint lx=x,ly=y,lz=z;fct_set_coordinate(axis,coordinate-1u,lx,ly,lz);
++  float rhoL=0.0f,rhoR=0.0f;for(uint k=1u;k<=6u;++k){rhoL+=q[k*p.cells+fct_cell(p,lx,ly,lz)];rhoR+=q[k*p.cells+fct_cell(p,x,y,z)];}
++  device const float* v=axis==0u?ux:(axis==1u?uy:uz);
++  gas=0.5f*(rhoL+rhoR)*v[gid-fct_face_offset(p,axis)]+physicalGas[gid];
++ }
++ central[all+gid]=gas;
++}
++
+ inline float fct_velocity(device const float* ux,device const float* uy,device const float* uz,
+  constant FCTParams& p,uint component,uint x,uint y,uint z){device const float* values=
+  component==0u?ux:(component==1u?uy:uz);return values[fct_face(p,component,x,y,z)];}
+@@ -2248,6 +2270,7 @@
+ 			id<MTLComputePipelineState> buildFaceAlpha;
+ 			id<MTLComputePipelineState> commitScalar;
+ 			id<MTLComputePipelineState> compatibleStageRate;
++			id<MTLComputePipelineState> centeredCarrier;
+ 			id<MTLComputePipelineState> applyMomentumRate;
+ 			id<MTLComputePipelineState> extractGasDensity;
+ 			id<MTLComputePipelineState> fillOne;
+@@ -2256,7 +2279,7 @@
+ 
+ 			SingleStageFCTMetalContext() : device(nil),queue(nil),buildFluxPair(nil),
+ 				averageFluxPair(nil),validateFluxPair(nil),buildRatios(nil),
+-				buildFaceAlpha(nil),commitScalar(nil),compatibleStageRate(nil),applyMomentumRate(nil),
++				buildFaceAlpha(nil),commitScalar(nil),compatibleStageRate(nil),centeredCarrier(nil),applyMomentumRate(nil),
+ 				extractGasDensity(nil),fillOne(nil),commutingIdentity(nil)
+ 			{
+ 				ResidentContextConstructionAttempts[2].fetch_add(1u,std::memory_order_relaxed);
+@@ -2285,12 +2308,13 @@
+ 					buildFaceAlpha=makePipeline("fct_build_face_alpha");
+ 					commitScalar=makePipeline("fct_commit_scalar");
+ 					compatibleStageRate=makePipeline("fct_compatible_stage_rate");
++					centeredCarrier=makePipeline("r260_centered_carrier");
+ 					applyMomentumRate=makePipeline("fct_apply_momentum_rate");
+ 				extractGasDensity=makePipeline("fct_extract_gas_density");
+ 				fillOne=makePipeline("fct_fill_one");
+ 				commutingIdentity=makePipeline("fct_commuting_identity");
+ 					if(!buildFluxPair||!averageFluxPair||!validateFluxPair||!buildRatios||!buildFaceAlpha||!commitScalar||
+-						!compatibleStageRate||!applyMomentumRate||!extractGasDensity||!fillOne||
++						!compatibleStageRate||!centeredCarrier||!applyMomentumRate||!extractGasDensity||!fillOne||
+ 						!commutingIdentity){error=MetalError(
+ 						"production single-stage FCT diagnostic pipeline creation failed",
+ 						metalError);return;}
+@@ -8867,14 +8891,28 @@
+ 					molecular,0u,cells_*sizeof(float),TransferKind::Internal);
+ 				[coefficientBlit endEncoding];
+ 				rhs.molecularKinematicViscosityM2PerS=molecular;
++				const std::size_t carrierBytes=9u*allFaces_*sizeof(float);
++                id<MTLBuffer> central=Private(carrierBytes),zero=Private(carrierBytes);
++                id<MTLBuffer> centralR0=stage==1u?Private(carrierBytes):nil;
++                id<MTLBuffer> zeroR0=stage==1u?Private(carrierBytes):nil;
++                if(!central||!zero||!Encode(command,fct_.centeredCarrier,
++                    {output.physical->lowComposite,output.physical->advectiveDelta,
++                     output.candidate->faceAlpha,state,output.projection.velocityMPerS[0],
++                     output.projection.velocityMPerS[1],output.projection.velocityMPerS[2],
++                     output.physical->physicalGas,central,zero,fctParameters_[stage]},allFaces_))return false;
++                if(stage==1u&&r0&&(!centralR0||!zeroR0||!Encode(command,fct_.centeredCarrier,
++                    {r0->physical->lowComposite,r0->physical->advectiveDelta,
++                     output.candidate->faceAlpha,q0_,r0->projection.velocityMPerS[0],
++                     r0->projection.velocityMPerS[1],r0->projection.velocityMPerS[2],
++                     r0->physical->physicalGas,centralR0,zeroR0,fctParameters_[0]},allFaces_)))return false;
+ 				if(!EvaluateFireProductionNonpressureMomentumRHSMetalResident(rhs,output.nonpressure,
+ 					rhsDiagnostics,error)||!Encode(command,fct_.compatibleStageRate,
+-					{output.physical->lowComposite,output.physical->advectiveDelta,
++					{central,zero,
+ 					 output.candidate->faceAlpha,output.projection.velocityMPerS[0],
+ 					 output.projection.velocityMPerS[1],output.projection.velocityMPerS[2],
+ 					 output.advectionRate,failure_,fctParameters_[stage]},allFaces_)||
+ 					(stage==1u&&r0&&!Encode(command,fct_.compatibleStageRate,
+-					 {r0->physical->lowComposite,r0->physical->advectiveDelta,
++					 {centralR0,zeroR0,
+ 					  output.candidate->faceAlpha,r0->projection.velocityMPerS[0],
+ 					  r0->projection.velocityMPerS[1],r0->projection.velocityMPerS[2],
+ 					  output.heunR0AdvectionRate,failure_,fctParameters_[stage]},allFaces_)))return false;

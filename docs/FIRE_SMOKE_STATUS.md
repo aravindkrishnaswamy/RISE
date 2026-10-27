@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-27, after the read-only r259 inlet/forcing analysis. This page
+Last updated 2026-10-27, after owner acceptance of r259 and component A/B authorization. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -171,6 +171,16 @@ were not retained; its fire display is node-averaged, clipped at1200kW/m³ and
 quantized. **Regional forcing and mixing-time/eligibility attribution remain
 unresolved.** RISE regional/plane histories and base-cell rates are saved.
 No new run or solver change. **Stopped for review.**
+
+**Owner disposition:** r259 accepted. Drop inlet diagnosis; whole-domain forcing
+is accepted as comparable within about15%. Do not extend read-only causal
+surveys. [r260 component A/Bs](FIRE_SMOKE_COMPONENT_AB_R260.md) test halfdt,
+restoration-off (active-term definition awaiting owner clarification) and
+centered momentum carrier, with two-step full-field difference checks first.
+All are external diagnostics, serial, four seconds from the15s checkpoint.
+[r261 full-output FDS](FIRE_SMOKE_FDS_FULL_OUTPUT_R261.md) is running first;
+physical HRR and full spatial/device histories will be retained. No production
+change or from-zero RISE run until a measured proposal is reviewed.
 
 ## Open problems, in priority order
 

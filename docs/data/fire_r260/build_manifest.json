@@ -1,0 +1,13 @@
+{
+  "production_changed": false,
+  "half_step": "half ordinary CFL/source-cap admissible step before eventalignment",
+  "end_condition": "first ordinary accepted step reaching4s, no extra endpoint shortening",
+  "centered": "interior centered rho*u plus unchanged physical gas flux; boundary accepted carriers unchanged; scalar MC/FCT untouched; not full FDS rotational formulation",
+  "sha256": {
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionAdvectionMac.mm": "b990750bbe9f5ea5d0969736df7735c22010c0dccf685579b70af7f531a5726b",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/mc_driver": "1f6e6c17556dcf8c5d20ecf18545aa489d76465dcaa2240f20847cb6d1f724b5",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/centered_driver": "dd7b2e63103ccea221504c0c69346e6f9278ace795318c5f18477bc56c71488d",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/Harness.cpp": "2433e6a1f4c4356fabf43e4c2245a9c8cb895f21db68005bf6f2a17add566bc3",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/CenteredAdvection.mm": "c6c5c70ab7ea139b450cc1c6c213e6f8d5c78f1239d0c4216e49487dafad117c"
+  }
+}
