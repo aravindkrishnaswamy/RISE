@@ -1,0 +1,12 @@
+{
+  "source": "FDS Smoke3D HRRPUV; not physical cell HRR history",
+  "mapping": "cell HRR first averaged to nodes, then clipped to1200kW/m3, round254*q/qmax, RLE encoded",
+  "nodes": 524300,
+  "frames_in_statistics": 583,
+  "display_domain_mean_W": 18049.594956752295,
+  "reason_not_a_forcing_measurement": "clipping loses unbounded peak rate information; node interpolation is not native cell-plane HRR; cannot recover physical plane RMS/PSD",
+  "display_csv_external": "/Volumes/SSD/RISE/fire_production_calibration/r259_inlet_forcing/fds_clipped_display.csv",
+  "frames_with_top_quantization_code": 583,
+  "max_top_coded_nodes": 412,
+  "top_code_note": "254 includes rounding at >=1197.64kW/m3; not an exact count of values strictly above1200kW/m3"
+}

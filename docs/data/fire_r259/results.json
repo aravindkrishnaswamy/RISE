@@ -1,0 +1,87 @@
+{
+  "statistics_start_s": 10.466040127212182,
+  "statistics_end_s": 25.09104012721218,
+  "heat_summary": [
+    {
+      "code": "RISE",
+      "region": "whole_domain",
+      "units": "W",
+      "mean": 32860.71277442176,
+      "rms": 1730.107805850804,
+      "rms_over_mean": 0.05264973458510893,
+      "power_1_le_f_lt_3_Hz": 1347684.7006907284,
+      "FDS_comparable_region_available": true
+    },
+    {
+      "code": "RISE",
+      "region": "0_to_0p7m",
+      "units": "W",
+      "mean": 32558.72350191047,
+      "rms": 1772.5347816972678,
+      "rms_over_mean": 0.05444116325977152,
+      "power_1_le_f_lt_3_Hz": 1418418.5391827752,
+      "FDS_comparable_region_available": false
+    },
+    {
+      "code": "FDS",
+      "region": "whole_domain_proxy_only",
+      "units": "W",
+      "mean": 32987.556581385456,
+      "rms": 2047.2698062104885,
+      "rms_over_mean": 0.062061880853756295,
+      "power_1_le_f_lt_3_Hz": 2174813.483576468,
+      "FDS_comparable_region_available": true
+    },
+    {
+      "code": "RISE",
+      "region": "plane_z3_center_0.107076m",
+      "units": "W/m",
+      "mean": 63600.86764232766,
+      "rms": 7045.926853604989,
+      "rms_over_mean": 0.1107835020935435,
+      "power_1_le_f_lt_3_Hz": 16562124.431807045,
+      "FDS_comparable_region_available": false
+    },
+    {
+      "code": "RISE",
+      "region": "plane_z9_center_0.290635m",
+      "units": "W/m",
+      "mean": 32130.25083948999,
+      "rms": 7583.7481478921945,
+      "rms_over_mean": 0.23603140186416838,
+      "power_1_le_f_lt_3_Hz": 18606259.834984124,
+      "FDS_comparable_region_available": false
+    },
+    {
+      "code": "RISE",
+      "region": "plane_z16_center_0.504786m",
+      "units": "W/m",
+      "mean": 8634.724343740136,
+      "rms": 3685.927708818596,
+      "rms_over_mean": 0.42687265534895286,
+      "power_1_le_f_lt_3_Hz": 4301076.467678374,
+      "FDS_comparable_region_available": false
+    }
+  ],
+  "heat_limit": "FDS physical regional and plane HRR not retained; whole-domain comparison is a proxy and cannot select mixing-time versus eligibility or establish regional forcing equality",
+  "inlet": {
+    "measurement": "both native bottom z-face, z=0; RISE checkpoint component[2][x+nx*y]; FDS W-VELOCITY device XYZ=(facecenter,0), face index NINT(ZK)=0",
+    "rho_CH4_kg_m3": 0.6516766162577914,
+    "active_area_m2": 0.06457977379927166,
+    "nominal_circle_area_m2": 0.07068583470577035,
+    "supplied_mdot_kg_s": 0.000659638981162826,
+    "expected_pure_CH4_mean_face_u_m_s": 0.01567392105411323,
+    "expected_using_nominal_area_u_m_s": 0.01431995930210955,
+    "measured_RISE_mean_face_u_m_s": 0.020131138151477324,
+    "measured_FDS_mean_face_u_m_s": 0.010322181790568388,
+    "RISE_to_FDS_ratio": 1.9502793653442145,
+    "RISE_relative_to_pure_CH4": 0.284371541873653,
+    "FDS_relative_to_pure_CH4": -0.3414422750419821,
+    "max_abs_RISE_dual_formula_error_m_s": 3.5784228392954365e-09,
+    "max_abs_prescribed_momentum_error_kg_m2_s": 4.631736088417382e-10,
+    "formula": "RISE u=j/[0.5*rho_inj+0.5*rho_cell]; FDS UN=MFT/RHO_F, with wall mixture density from species diffusive boundary solve",
+    "RISE_aggregate_effective_density_jbar_over_ubar": 0.5073894858392142,
+    "FDS_aggregate_effective_density_jbar_over_ubar": 0.9895512444248298,
+    "classification": "density-definition difference; no area or face-versus-cell measurement mismatch; pure-methane prescribed-speed expectation is not what either boundary implementation uses"
+  }
+}

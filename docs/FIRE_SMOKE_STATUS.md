@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-27, after completed explicit-LES FDS and valid CHARM B results. This page
+Last updated 2026-10-27, after the read-only r259 inlet/forcing analysis. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -158,6 +158,19 @@ are broadly comparable; RISE's burner-face w is **0.02013 vs 0.01032 m/s**, a
 Next question is inlet density/source/divergence/momentum coupling, with no
 causal formula established. All simulations stopped. Production solver unchanged;
 tier 6 cancelled, no tier 10. **Stopped for owner review.**
+
+[r259 inlet/forcing analysis](FIRE_SMOKE_INLET_FORCING_R259.md) confirms both
+inlet measurements are bottom MAC faces. RISE uses
+u=j/[0.5 rho_inj+0.5 rho_first_cell]; FDS uses a diffusive wall-mixture density.
+The pure-CH4 expectation is **0.015674 m/s**, versus RISE **0.020131 (+28.4%)**
+and FDS **0.010322 m/s**. The 1.95 ratio is a density-definition difference,
+not area/location or a doubled mass flux. Whether to change the boundary model
+requires review. Whole-domain HRR normalized RMS is **5.27/6.21%**, and 1–3 Hz
+power **1.35/2.17 kW²**, RISE/FDS. Physical FDS 0–0.7m and plane HRR histories
+were not retained; its fire display is node-averaged, clipped at1200kW/m³ and
+quantized. **Regional forcing and mixing-time/eligibility attribution remain
+unresolved.** RISE regional/plane histories and base-cell rates are saved.
+No new run or solver change. **Stopped for review.**
 
 ## Open problems, in priority order
 
