@@ -32,8 +32,8 @@ try:
   receipt=dict(l.split(' ',1) for l in (out/'result.txt').read_text().splitlines() if ' ' in l)
   state='complete' if receipt['succeeded']=='1' and float(receipt['end_time_s'])>=15.018720638239756+4 else 'incomplete'
   status(out/'status.json',state=state,end_time_s=receipt['end_time_s'])
-  process([sys.executable,'tools/fire/r260_reduce_components.py'],WORK/'reduction.log')
- process([sys.executable,'tools/fire/r260_reduce_components.py'],WORK/'reduction.log')
+  if process([sys.executable,'tools/fire/r260_reduce_components.py'],WORK/'reduction.log'):raise RuntimeError('component reduction failed; native outputs retained')
+ if process([sys.executable,'tools/fire/r260_reduce_components.py'],WORK/'reduction.log'):raise RuntimeError('final comparison reduction failed; native outputs retained')
  status(WORK/'campaign_status.json',stage='stopped_for_owner_review_no_production_change')
 except Exception as e:
  status(WORK/'campaign_status.json',stage='stopped_error',error=str(e));raise

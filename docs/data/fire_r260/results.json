@@ -1,0 +1,61 @@
+{
+  "window_start_s": 15.018720638239756,
+  "window_end_s": 19.018720638239756,
+  "rows": [
+    {
+      "variant": "MC baseline A",
+      "status": "complete",
+      "window_s": 4.0,
+      "m1_kg_s": 0.2431580354062643,
+      "m2_kg_s": 0.4788319307027343,
+      "m3_kg_s": 0.7184583248787348,
+      "recovered_3m_gap_fraction": 0.0
+    },
+    {
+      "variant": "CHARM",
+      "status": "complete; original common window3.981891s",
+      "window_s": 3.981891074392479,
+      "m1_kg_s": 0.24709719996007856,
+      "m2_kg_s": 0.5011933153642871,
+      "m3_kg_s": 0.7580194155390355,
+      "recovered_3m_gap_fraction": 0.0761241620068273
+    },
+    {
+      "variant": "half_dt",
+      "status": "pending",
+      "window_s": null,
+      "m1_kg_s": null,
+      "m2_kg_s": null,
+      "m3_kg_s": null,
+      "recovered_3m_gap_fraction": null
+    },
+    {
+      "variant": "restoration_off",
+      "status": "pending",
+      "window_s": null,
+      "m1_kg_s": null,
+      "m2_kg_s": null,
+      "m3_kg_s": null,
+      "recovered_3m_gap_fraction": null
+    },
+    {
+      "variant": "centered_momentum",
+      "status": "pending",
+      "window_s": null,
+      "m1_kg_s": null,
+      "m2_kg_s": null,
+      "m3_kg_s": null,
+      "recovered_3m_gap_fraction": null
+    },
+    {
+      "variant": "LES FDS reference (r258)",
+      "status": "common15.018721\u201319.000612s",
+      "window_s": 3.981891074392479,
+      "m1_kg_s": 0.30253307319452427,
+      "m2_kg_s": 0.701386878509548,
+      "m3_kg_s": 1.2381499657108872,
+      "recovered_3m_gap_fraction": 1.0
+    }
+  ],
+  "decision": "owner review required; no production change or from-zero validation launched"
+}

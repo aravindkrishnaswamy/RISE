@@ -1,0 +1,19 @@
+{
+  "FDS": {
+    "state": "running",
+    "command": [
+      "/usr/bin/caffeinate",
+      "-i",
+      "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/fds_source/Build/ompi_gnu_osx/fds_ompi_gnu_osx",
+      "r261_fds.fds"
+    ],
+    "OMP_NUM_THREADS": 8,
+    "updated_utc": "2026-10-27T22:21:31.877910+00:00"
+  },
+  "component_controller_pid": 6511,
+  "review": "momentum/isolation and campaign/control reviews clean after reducer exit-status fix",
+  "restoration_definition": "pending human clarification; will not remove physical R2 silently",
+  "simulation_order": "full-outputFDS,MCtwo-stepreference,halfdt,clarifiedrestorationifready,centeredmomentum; one at a time",
+  "production_change": false,
+  "run_controller_sha256": "fbd8a17320b1ff0a9883b1a9ed6832162f829f723a96c3665a51736eccbc5850"
+}
