@@ -1,0 +1,11 @@
+{
+  "owner_choice": "Test EOS-tail correction off",
+  "change": "CorrectTargetAuthority correction=false inR0/R1; R2alreadyfalse. All physical projections retained.",
+  "production_change": false,
+  "sha256": {
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionAdvectionMac.mm": "b990750bbe9f5ea5d0969736df7735c22010c0dccf685579b70af7f531a5726b",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/TailOffAdvection.mm": "1b9739a65431ca642784016f1164e768b6e96796e31ed578a1fa13e823a6047f",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/tail_off_driver": "3e8440aa365b62ad2da5bac4f77200317dcc3cbf3dd030e1b838e23e37b69a58",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/observer.o": "89d78572ee7fa30597775daef8f41c434bad52c59bfc5a1d42f0d8faf288bcda"
+  }
+}

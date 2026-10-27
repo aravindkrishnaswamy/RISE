@@ -24,14 +24,13 @@ This is a no-op check, not historical checkpoint bit-identity certification.
    bound: the original selector receives twice the previous dt before halving,
    avoiding a recursive 0.55× timestep collapse. Source/closure formulas,
    scalar/momentum schemes, projection and tolerances remain unchanged.
-2. **Restoration off — definition pending.** The active resident path has no
-   separate legacy physical-then-manifold-restoration projection call. R2 is
-   force-inclusive physical projection of frozen accepted scalars; its composed
-   target already omits the absolute EOS tail. The active R0/R1 target iteration
-   can apply EOS-tail correction. The owner has been asked whether to test that
-   term off while retaining all physical projections, or record the separate
-   restoration pass as absent. Do not silently remove physical R2 or publish
-   predictor momentum as the accepted Heun result. Independent tests proceed.
+2. **EOS-tail correction off (owner clarification accepted).** Disable the
+   active absolute EOS-tail correction in R0/R1 target composition. Keep every
+   physical projection, including force-inclusive R2; R2 already excludes this
+   tail term. The external patch passes `false` to `CorrectTargetAuthority`
+   without removing a projection or replacing accepted momentum with predictor
+   momentum. Tail diagnostics remain computed. The same first-two-step field
+   check refuses the long run if this component is inactive at the start.
 3. **Plain centered momentum mass carrier.** For interior primal faces,
    Fadv_g=0.5(rho_g,L+rho_g,R)u_face, with unchanged physical gas-diffusion flux
    added. Restrict to dual faces with the existing arithmetic MAC map, then use

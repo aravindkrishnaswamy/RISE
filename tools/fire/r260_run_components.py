@@ -28,7 +28,10 @@ try:
   env=ENV.copy();env.update(plan.get('env',{}));status(WORK/'campaign_status.json',stage='running_'+name)
   status(out/'status.json',state='running',early_check='firsttwo fullfields must differ before step3')
   code=process(['/usr/bin/caffeinate','-i',WORK/plan['binary'],START,FINAL,out,'B4',reference],WORK/(name+'.log'),env)
-  if code:status(out/'status.json',state='failed_or_sanity_refused',exitcode=code);continue
+  if code:
+   text=(WORK/(name+'.log')).read_text(errors='replace')
+   state='unchanged_first_two_steps_no_full_run' if 'A/B unchanged in first two accepted states' in text else 'failed_or_sanity_refused'
+   status(out/'status.json',state=state,exitcode=code);continue
   receipt=dict(l.split(' ',1) for l in (out/'result.txt').read_text().splitlines() if ' ' in l)
   state='complete' if receipt['succeeded']=='1' and float(receipt['end_time_s'])>=15.018720638239756+4 else 'incomplete'
   status(out/'status.json',state=state,end_time_s=receipt['end_time_s'])

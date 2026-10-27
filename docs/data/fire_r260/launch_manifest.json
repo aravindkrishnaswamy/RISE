@@ -10,10 +10,10 @@
     "OMP_NUM_THREADS": 8,
     "updated_utc": "2026-10-27T22:21:31.877910+00:00"
   },
-  "component_controller_pid": 6511,
+  "component_controller_pid": 10968,
   "review": "momentum/isolation and campaign/control reviews clean after reducer exit-status fix",
-  "restoration_definition": "pending human clarification; will not remove physical R2 silently",
+  "restoration_definition": "owner confirmed: R0/R1 EOS-tail correction off, physical projections retained",
   "simulation_order": "full-outputFDS,MCtwo-stepreference,halfdt,clarifiedrestorationifready,centeredmomentum; one at a time",
   "production_change": false,
-  "run_controller_sha256": "fbd8a17320b1ff0a9883b1a9ed6832162f829f723a96c3665a51736eccbc5850"
+  "run_controller_sha256": "98efaad2e738b9dc4ed718ee707d61048e64e0058540ef8092248ead9d772a36"
 }

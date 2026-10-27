@@ -7,8 +7,9 @@
     }
   },
   "restoration_off": {
-    "state": "definition_pending",
-    "reason": "No separate legacy restoration call in active owner; clarify whether to disable activeR0/R1EOS-tail correction"
+    "state": "ready",
+    "binary": "tail_off_driver",
+    "definition": "owner-approved R0/R1 EOS-tail correction off; all physical projections retained"
   },
   "centered_momentum": {
     "state": "ready",

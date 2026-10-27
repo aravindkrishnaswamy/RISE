@@ -18,6 +18,11 @@ def main():
   row={'variant':name,'status':'pending','window_s':None,'m1_kg_s':None,'m2_kg_s':None,'m3_kg_s':None,'recovered_3m_gap_fraction':None}
   path=WORK/name
   if (path/'status.json').exists():row['status']=json.loads((path/'status.json').read_text())['state']
+  if (path/'early_fields.csv').exists():
+   evidence=list(csv.DictReader((path/'early_fields.csv').open()))
+   if evidence:
+    with (OUT/(name+'_early_fields.csv')).open('w') as f:
+     w=csv.DictWriter(f,fieldnames=list(evidence[0]),lineterminator='\n');w.writeheader();w.writerows(evidence)
   if row['status']=='complete':
    receipt=dict(line.split(' ',1) for line in (path/'result.txt').read_text().splitlines() if ' ' in line);assert receipt['succeeded']=='1'
    early=list(csv.DictReader((path/'early_fields.csv').open()));assert any(int(r['different_numeric_values']) for r in early)

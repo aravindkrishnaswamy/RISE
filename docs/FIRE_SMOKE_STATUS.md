@@ -175,7 +175,7 @@ No new run or solver change. **Stopped for review.**
 **Owner disposition:** r259 accepted. Drop inlet diagnosis; whole-domain forcing
 is accepted as comparable within about15%. Do not extend read-only causal
 surveys. [r260 component A/Bs](FIRE_SMOKE_COMPONENT_AB_R260.md) test halfdt,
-restoration-off (active-term definition awaiting owner clarification) and
+EOS-tail correction off in R0/R1 (owner-confirmed, physical projections retained) and
 centered momentum carrier, with two-step full-field difference checks first.
 All are external diagnostics, serial, four seconds from the15s checkpoint.
 [r261 full-output FDS](FIRE_SMOKE_FDS_FULL_OUTPUT_R261.md) is running first;
