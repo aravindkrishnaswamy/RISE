@@ -194,6 +194,13 @@ side openings match. The near-base comparison cannot isolate transport
 from wall treatment. No production change; stop for
 review after the bounded diagnostic campaign.
 
+[r263 no-slip FDS repeat](FIRE_SMOKE_NO_SLIP_FDS_R263.md) is owner-authorized
+after the current r262 queue: same full-output LES case with `NO_SLIP=T` on
+floor and all69 burner surfaces. Compare upward mass flux at0.29/0.5/1/2/3m
+against default-wall FDS and r251. No RISE wall-function implementation before
+review. Existing FDS near-wall SGS treatment stays unchanged to isolate the
+wall velocity/shear choice.
+
 ## Open problems, in priority order
 
 1. **Upper-plume centerline profiles fail the tier-10 gate.** r251 is too
