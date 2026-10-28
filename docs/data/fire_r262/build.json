@@ -1,0 +1,9 @@
+{
+  "production_change": false,
+  "composition": "r260 centered momentum plus exactly r258 active resident direction-aware CHARM",
+  "sha256": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r262_combined/CombinedAdvection.mm": "eb0d396265c3a9287694be6a2d192f423b5e781aa6cd184f499969a3b148ebf4",
+    "/Volumes/SSD/RISE/fire_production_calibration/r262_combined/combined_driver": "08a09901b36141cf98c7f28dcd1a68f6a3785af405129bc153cb1cc7f221837d",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/observer.o": "89d78572ee7fa30597775daef8f41c434bad52c59bfc5a1d42f0d8faf288bcda"
+  }
+}

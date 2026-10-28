@@ -22,16 +22,16 @@
     },
     {
       "variant": "half_dt",
-      "status": "pending",
-      "window_s": null,
-      "m1_kg_s": null,
-      "m2_kg_s": null,
-      "m3_kg_s": null,
-      "recovered_3m_gap_fraction": null
+      "status": "complete; mean dt=0.00081716037",
+      "window_s": 4.0,
+      "m1_kg_s": 0.24303643461256375,
+      "m2_kg_s": 0.48954887454386853,
+      "m3_kg_s": 0.7362530496362503,
+      "recovered_3m_gap_fraction": 0.03424092934999253
     },
     {
       "variant": "restoration_off",
-      "status": "pending",
+      "status": "failed_or_sanity_refused",
       "window_s": null,
       "m1_kg_s": null,
       "m2_kg_s": null,
@@ -40,12 +40,12 @@
     },
     {
       "variant": "centered_momentum",
-      "status": "pending",
-      "window_s": null,
-      "m1_kg_s": null,
-      "m2_kg_s": null,
-      "m3_kg_s": null,
-      "recovered_3m_gap_fraction": null
+      "status": "complete; mean dt=0.0016447368",
+      "window_s": 4.0,
+      "m1_kg_s": 0.24467801143154455,
+      "m2_kg_s": 0.5487884964681975,
+      "m3_kg_s": 0.9130850842907371,
+      "recovered_3m_gap_fraction": 0.3745043100950356
     },
     {
       "variant": "LES FDS reference (r258)",

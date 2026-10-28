@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-27, after owner acceptance of r259 and component A/B authorization. This page
+Last updated 2026-10-28, after owner acceptance of r260 and combined/onset authorization. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -172,15 +172,23 @@ quantized. **Regional forcing and mixing-time/eligibility attribution remain
 unresolved.** RISE regional/plane histories and base-cell rates are saved.
 No new run or solver change. **Stopped for review.**
 
-**Owner disposition:** r259 accepted. Drop inlet diagnosis; whole-domain forcing
-is accepted as comparable within about15%. Do not extend read-only causal
-surveys. [r260 component A/Bs](FIRE_SMOKE_COMPONENT_AB_R260.md) test halfdt,
-EOS-tail correction off in R0/R1 (owner-confirmed, physical projections retained) and
-centered momentum carrier, with two-step full-field difference checks first.
-All are external diagnostics, serial, four seconds from the15s checkpoint.
-[r261 full-output FDS](FIRE_SMOKE_FDS_FULL_OUTPUT_R261.md) is running first;
-physical HRR and full spatial/device histories will be retained. No production
-change or from-zero RISE run until a measured proposal is reviewed.
+**Owner disposition:** r260 accepted. Halfdt gives0.243/0.490/0.736kg/s;
+centered momentum0.245/0.549/0.913kg/s at1/2/3m, recovering37.5% of
+the3m gap. EOS-tail-off changes the computation but fails stage0 Picard
+at15.1388s, so has no four-second result. Production unchanged.
+[r261 full-output FDS](FIRE_SMOKE_FDS_FULL_OUTPUT_R261.md) completed25.091s,
+exit0; all physical outputs retained.
+
+[r262 combined transport and near-flame comparison](FIRE_SMOKE_COMBINED_FLAME_R262.md)
+is authorized. CHARM plus centered momentum passed the first-two-step field
+check and is running. The best centered/combined candidate will receive
+serial from-zero onset checks only: tier8 through3.5s, tier10 through3s.
+This explicitly authorized tier10 onset is distinct from the unlaunched
+full-window tier10 acceptance run. Read-only near-flame comparison is complete:
+upward mass flux is33.6/22.2/15.2% below FDS at0.291/0.505/0.994m,
+with a hotter and narrower plume developing despite closely matched mean
+heat placement (32.835/32.957kW below1m). No production change; stop for
+review after the bounded diagnostic campaign.
 
 ## Open problems, in priority order
 
