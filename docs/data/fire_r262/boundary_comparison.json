@@ -1,0 +1,53 @@
+{
+  "checked_utc": "2026-10-28T13:33:25.929362+00:00",
+  "rows": [
+    {
+      "item": "Floor normal boundary",
+      "RISE": "impermeable adiabatic wall outside burner; bottom MAC w=0",
+      "FDS": "ADIABATIC=T default FLOOR, no OPEN ZMIN; impermeable outside burner",
+      "match": true
+    },
+    {
+      "item": "Floor tangential velocity / shear",
+      "RISE": "no-slip-style reflected ghost u_g=-u_cell in stress/SGS gradients; no wall function",
+      "FDS": "default LES WALL_MODEL_BC; log-law wall function, no NO_SLIP/FREE_SLIP override",
+      "match": false
+    },
+    {
+      "item": "Burner tangential velocity / shear",
+      "RISE": "zero tangential wall value via reflected ghosts; prescribed nonzero normal inflow on burner mask",
+      "FDS": "B0..B68 HRRPUA surfaces at z=0 retain default LES wall model, prescribed normal fuel mass flux",
+      "match": false
+    },
+    {
+      "item": "Burner elevation",
+      "RISE": "bottom z-face z=0; first gas cell center dz/2=0.015296558m",
+      "FDS": "all burner VENT XB end in 0,0; first cell center dz/2=0.015296558m",
+      "match": true
+    },
+    {
+      "item": "Surroundings",
+      "RISE": "flush burner mask in full flat domain bed; no resolved lip, pedestal, pan or obstacle",
+      "FDS": "flush burner vents in flat default FLOOR; no OBST/GEOM/lip/pedestal",
+      "match": true
+    },
+    {
+      "item": "Side openings reach floor",
+      "RISE": "all four lateral faces PressureOpenBoundary3D at every z row, including bottom row",
+      "FDS": "MB=XMIN/XMAX/YMIN/YMAX OPEN covers entire mesh height, z=0..3.242870303m",
+      "match": true
+    }
+  ],
+  "verdict": "wall shear treatment differs; near-base comparison is not a controlled transport-only comparison",
+  "onset_effect": "RISE-to-RISE transport and onset safety comparisons remain meaningful; no FDS or RISE setting changed",
+  "sha256": {
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r261/r261_fds.fds": "97b8ee923103a54cd283cc5e9db6fd53db628086f8b62c8e58d2b681eaca7069",
+    "/Volumes/SSD/Working/RISE/tools/fire_simulator_core.h": "21a5cf2c6177cc535d9ff8ced6835a7b0b09b2fe19dfed887c76d7e89c61eae1",
+    "/Volumes/SSD/Working/RISE/tests/FireSequenceTest.cpp": "5c36fe28c0fe5f59a07aac3f39ab1267741cea10457bdfa1a21d7ae08bd8d953",
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionForceMac.mm": "d6da83c9e3514c8dff56840b7bf6950aad9ad55721fdab171be89fd261e3fbd0",
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionAdvectionMac.mm": "b990750bbe9f5ea5d0969736df7735c22010c0dccf685579b70af7f531a5726b",
+    "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/fds_source/Source/read.f90": "ff2f44a1dc896417adfb097867dac42c2b23eef10fc2cc7533b9c9c64972d9cf",
+    "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/fds_source/Source/velo.f90": "dffcc98c73185cb01c944e37567661f55ede3e3598167ba611f47993a0c202db",
+    "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/fds_source/Manuals/FDS_User_Guide/FDS_User_Guide.tex": "bbecf7e0b4fe5d330f19d7f9750ed3a6d44ba83ffbb5a5a5db0623fddb77a774"
+  }
+}

@@ -25,6 +25,49 @@ Pending: combined entrainment, candidate selection, and both onset maxima.
 Measured results will be in `docs/data/fire_r262/results.json` and
 `component_comparison.csv`; complete onset trajectories are retained there.
 
+## Boundary audit before onset — material mismatch
+
+The owner requested this read-only audit before onset. The queue was held
+while checking; no onset had started. **The wall shear treatment differs.**
+The near-base profiles remain measurements of the two runs, but are not a
+controlled transport-only comparison and cannot isolate a transport cause.
+The RISE-to-RISE A/B and from-zero onset safety comparisons remain meaningful.
+No input or solver setting was changed by this audit.
+
+| Item | RISE r251 | FDS r261 | Match? |
+|---|---|---|---|
+| Floor outside burner | Impermeable, adiabatic wall; normal velocity zero | Default `FLOOR`, `ADIABATIC=T`; no bottom OPEN vent | Yes |
+| Floor tangential treatment | No-slip-style reflected ghosts, `u_ghost=-u_cell`; no wall function | Default LES log-law wall model; neither `NO_SLIP` nor `FREE_SLIP` specified | **No** |
+| Burner tangential treatment | Zero tangential wall value through reflected ghosts; prescribed normal fuel flux | Burner SURFs retain default LES wall model, with prescribed normal fuel flux | **No** |
+| Burner elevation | Bottom face at z=0; first gas center at 0.01530m | All burner vents at z=0; same first gas center | Yes |
+| Burner surroundings | Flush mask in flat full-domain bed; no resolved pan, lip or pedestal | Flush vents in flat floor; no OBST/GEOM, pan, lip or pedestal | Yes |
+| Side boundaries down to floor | All four sides pressure-open through lowest cell row | Four full-face MB OPEN vents, z=0 through mesh top | Yes |
+
+Evidence: [actual FDS input](data/fire_r261/r261_fds.fds), lines2,6–12
+and all burner vents. RISE `tools/fire_simulator_core.h:716–736` defaults
+to pressure-open on all sides except the adiabatic bottom. The active
+`BindProductionBurnerBoundary` in `tests/FireSequenceTest.cpp:1850–1882`
+copies these kinds and places the fuel mask on bottom side4.
+`FireProductionForceMac.mm:186–213` reflects cell velocity at walls,
+retaining nonzero normal injection only on burner faces. Its stress is
+computed from those gradients and molecular plus Vreman viscosity, with no
+log-law friction-velocity calculation. The resident transport gradients
+use the same zero tangential boundary value in
+`FireProductionAdvectionMac.mm:2380–2383,2441–2452`. This describes the
+implemented discrete treatment, rather than claiming a resolved physical
+viscous sublayer at this coarse grid.
+
+The exact installed FDS6.11.1 source sets `WALL_MODEL_BC` by default in
+`Source/read.f90:9687–9690`; DNS or explicit `NO_SLIP` would select the
+reflected-ghost alternative. `Source/velo.f90:2368–2387` calls `WALL_MODEL`
+for the LES treatment. Its User Guide source, section `info:WALL_MODEL`,
+line3592, confirms the LES log-law default and the explicit no-slip override.
+These files are under the retained external `r255_comparison/fds_source`
+checkout; exact file hashes are in
+[boundary_comparison.json](data/fire_r262/boundary_comparison.json).
+No claim is made that wall shear causes all or a specified part of the gap;
+that has not been tested. No additional matched FDS run is authorized here.
+
 ## Near-flame result — existing r251 against full-output LES FDS r261
 
 Statistics window10.4660401272–25.0910401272s. Actual common native cell

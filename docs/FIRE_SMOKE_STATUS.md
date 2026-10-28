@@ -187,7 +187,11 @@ This explicitly authorized tier10 onset is distinct from the unlaunched
 full-window tier10 acceptance run. Read-only near-flame comparison is complete:
 upward mass flux is33.6/22.2/15.2% below FDS at0.291/0.505/0.994m,
 with a hotter and narrower plume developing despite closely matched mean
-heat placement (32.835/32.957kW below1m). No production change; stop for
+heat placement (32.835/32.957kW below1m). A subsequent pre-onset boundary audit found a material mismatch: FDS uses
+its default LES wall function, whereas RISE uses reflected no-slip-style
+wall gradients without a wall function. Elevation, flush surroundings and
+side openings match. The near-base comparison cannot isolate transport
+from wall treatment. No production change; stop for
 review after the bounded diagnostic campaign.
 
 ## Open problems, in priority order
