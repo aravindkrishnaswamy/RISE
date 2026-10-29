@@ -1,8 +1,15 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-28, after r263 acceptance and centered-momentum production adoption. This page
+Last updated 2026-10-29, after the r266 plume-turbulence diagnosis (Claude now runs the campaign directly; r264 full tier-8 run in progress). This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
+
+[r266 plume turbulence](FIRE_SMOKE_PLUME_TURBULENCE_R266.md) (Claude, read-only):
+- **No in-flame deficit.** The 0.29 m "deficit" is ambient updraft outside the plume; the plume core is within 5–11% of FDS below 1.5 m.
+- **The real gap is in the far plume.** It is missing large-scale (0.25–3.5 Hz) turbulence above the flame. FDS on the same grid matches Shabbir & George; r251 has about 60% of their fluctuation levels and spreads at 0.066 against 0.10.
+- **Centered momentum restores most of it.** In the r260 A/B frames, 2–3 m RMS, spreading and centreline values come within about 15% of FDS and McCaffrey.
+- **Still open:** the 1 m excess, about 310 K against FDS's 249.
+- **Next:** confirm on r264's full window with `tools/fire/r266/`.
 
 ## Where things are
 
