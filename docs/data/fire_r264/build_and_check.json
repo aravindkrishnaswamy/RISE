@@ -1,0 +1,19 @@
+{
+  "production_two_step_success": true,
+  "changes_physical_fields_vs_MC": true,
+  "r260_counts_and_maxima_reproduced_for_all_fields": true,
+  "builds": {
+    "make_clean_all": 0,
+    "make_fire_test_binaries": 0,
+    "xcode_Deployment_clean_build": 0,
+    "xcode_Opto_clean_build": 0
+  },
+  "compiler_warnings": "No RISE source warnings. Xcode third-party Homebrew dylib newer-deployment-target linker warnings and AppIntents metadata notice excluded.",
+  "legacy_test_observation": "FireProductionSolverTest reports13 failures in old timing/2GiB/source-text-topology gates; historical status records12. No new resident-centered arithmetic failure. Not represented as a passing whole suite.",
+  "sha256": {
+    "/Volumes/SSD/Working/RISE/bin/tests/FireSequenceTest": "2ca55c106244da990fdfd551ebd85a0d778dab75b3c3ca62f1081fde679d9051",
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionAdvectionMac.mm": "53b69c68c005a46cc4e632ae50bb8f97f3e14c7dd60904ccf963707502e4e8c6",
+    "/Volumes/SSD/RISE/fire_production_calibration/r260_components/CenteredAdvection.mm": "c6c5c70ab7ea139b450cc1c6c213e6f8d5c78f1239d0c4216e49487dafad117c",
+    "/Volumes/SSD/RISE/fire_production_calibration/r264_centered_production/production_observer": "ffda503031611f0094601e31d95beb7078e7f9c0369d67088198b154f65466ae"
+  }
+}

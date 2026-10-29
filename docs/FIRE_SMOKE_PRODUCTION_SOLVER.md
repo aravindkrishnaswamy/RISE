@@ -6,6 +6,18 @@ Normative companions: [FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md),
 [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md), and
 [FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md).
 
+## Current transport amendment — r264
+
+The owner-authorized [centered momentum revision](FIRE_SMOKE_CENTERED_MOMENTUM_R264.md)
+supersedes earlier shared-scalar-carrier requirements for interior momentum
+in the active resident Metal production owner. Its primal gas carrier is
+centered density times projected face velocity plus unchanged physical gas
+diffusion; boundary carriers remain the accepted scalar carriers. Scalar
+MC/FCT is unchanged. The existing scalar commuting diagnostic does not certify
+the resulting distinct momentum pair. Historical oracle and diagnostic
+operators below retain their reference definitions. Full tier-8 from-zero
+verification is required before reporting the revised production result.
+
 ## 1. Role and non-goals
 
 RISE has two deliberately different fire solvers.

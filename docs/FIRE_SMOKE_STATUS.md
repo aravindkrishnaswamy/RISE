@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-28, after owner acceptance of r260 and combined/onset authorization. This page
+Last updated 2026-10-28, after r263 acceptance and centered-momentum production adoption. This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -197,6 +197,23 @@ closing48.5% of the default-FDS-to-RISE gap; at2/3m reductions are8.80/9.12%.
 A floor/burner wall-function proposal is recorded for review as a secondary
 contributor, not a demonstrated base-deficit fix. No implementation or new
 run after these diagnostics. **All queues finished; stopped for review.**
+
+[r264 centered momentum production adoption](FIRE_SMOKE_CENTERED_MOMENTUM_R264.md)
+is authorized and implemented, with MC scalar transport retained and no wall
+function change. It ports the tested centered interior gas carrier and accepted
+boundary carriers into the active resident Metal owner. Production two-step
+field witnesses reproduce the accepted r260 counts/maxima, and code/build/
+launch review is complete. A full tier8 from-zero window is being launched;
+combustion, no-slip-FDS entrainment, McCaffrey and peak velocity remain pending.
+No full tier10 run is authorized.
+
+[r265 read-only flame structure](FIRE_SMOKE_REACTION_STRUCTURE_R265.md) finds
+RISE reaction-zone R90 is not narrower at0.291/0.505m:0.09057/0.10386m
+versus no-slip FDS0.08295/0.09745m. The interpolated differences are under
+0.25cells and cell-center R90 quantiles match. Source-only checkpoint replay
+is measuring edge-waived versus warm-cell heat fractions; no new physical
+run or eligibility change belongs to this analysis. Stop for owner review
+with the r264 full-window and r265 measurements.
 
 ## Open problems, in priority order
 
