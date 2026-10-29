@@ -1,0 +1,83 @@
+{
+  "statistics_start_s": 10.466040127212182,
+  "statistics_end_s": 25.09104012721218,
+  "rows": [
+    {
+      "z": 9,
+      "height_m": 0.29063460264040464,
+      "r251_up_r08_kg_s": 0.09300822169961198,
+      "r251_up_plane_kg_s": 0.11274290042229661,
+      "r251_net_r08_kg_s": 0.06983882762675872,
+      "default_wall_FDS_up_r08_kg_s": 0.13996602867882077,
+      "default_wall_FDS_up_plane_kg_s": 0.1532259574791016,
+      "default_wall_FDS_net_r08_kg_s": 0.11530836325368268,
+      "no_slip_FDS_up_r08_kg_s": 0.14185874079185154,
+      "no_slip_FDS_up_plane_kg_s": 0.15613594144499024,
+      "no_slip_FDS_net_r08_kg_s": 0.11469467523293193,
+      "no_slip_fractional_change_vs_default": 0.013522653538838192,
+      "fraction_of_default_to_RISE_gap_closed": -0.04030665473514967
+    },
+    {
+      "z": 16,
+      "height_m": 0.5047864151122817,
+      "r251_up_r08_kg_s": 0.14370476652947528,
+      "r251_up_plane_kg_s": 0.16899556457770493,
+      "r251_net_r08_kg_s": 0.1218224009887194,
+      "default_wall_FDS_up_r08_kg_s": 0.18471837812161937,
+      "default_wall_FDS_up_plane_kg_s": 0.19266792604586613,
+      "default_wall_FDS_net_r08_kg_s": 0.17468789984804858,
+      "no_slip_FDS_up_r08_kg_s": 0.18185777045628782,
+      "no_slip_FDS_up_plane_kg_s": 0.18982543705664343,
+      "no_slip_FDS_net_r08_kg_s": 0.17100298471267578,
+      "no_slip_fractional_change_vs_default": -0.015486318656653175,
+      "fraction_of_default_to_RISE_gap_closed": 0.06974776310310324
+    },
+    {
+      "z": 32,
+      "height_m": 0.994276272190858,
+      "r251_up_r08_kg_s": 0.26331435736877457,
+      "r251_up_plane_kg_s": 0.29790976313708656,
+      "r251_net_r08_kg_s": 0.24148412963394678,
+      "default_wall_FDS_up_r08_kg_s": 0.310628512797993,
+      "default_wall_FDS_up_plane_kg_s": 0.3407098258750563,
+      "default_wall_FDS_net_r08_kg_s": 0.3026520003687864,
+      "no_slip_FDS_up_r08_kg_s": 0.28768886625949125,
+      "no_slip_FDS_up_plane_kg_s": 0.31541018289466066,
+      "no_slip_FDS_net_r08_kg_s": 0.28209059072517806,
+      "no_slip_fractional_change_vs_default": -0.07384913359006351,
+      "fraction_of_default_to_RISE_gap_closed": 0.484836859717791
+    },
+    {
+      "z": 65,
+      "height_m": 2.0038491024154212,
+      "r251_up_r08_kg_s": 0.5128711759894691,
+      "r251_up_plane_kg_s": 0.5527148524614626,
+      "r251_net_r08_kg_s": 0.48618267153618944,
+      "default_wall_FDS_up_r08_kg_s": 0.7422178029743484,
+      "default_wall_FDS_up_plane_kg_s": 0.7764551205555112,
+      "default_wall_FDS_net_r08_kg_s": 0.7171857639534339,
+      "no_slip_FDS_up_r08_kg_s": 0.6768991308441084,
+      "no_slip_FDS_up_plane_kg_s": 0.7088941933106436,
+      "no_slip_FDS_net_r08_kg_s": 0.6525194879101092,
+      "no_slip_fractional_change_vs_default": -0.08800472296471917,
+      "fraction_of_default_to_RISE_gap_closed": 0.28480328221503093
+    },
+    {
+      "z": 98,
+      "height_m": 3.013421932639985,
+      "r251_up_r08_kg_s": 0.7780126305647512,
+      "r251_up_plane_kg_s": 0.7993585646091539,
+      "r251_net_r08_kg_s": 0.7423568321264503,
+      "default_wall_FDS_up_r08_kg_s": 1.3038836399859914,
+      "default_wall_FDS_up_plane_kg_s": 1.326289794964235,
+      "default_wall_FDS_net_r08_kg_s": 1.2836364043187256,
+      "no_slip_FDS_up_r08_kg_s": 1.1849998324781785,
+      "no_slip_FDS_up_plane_kg_s": 1.1970434626007056,
+      "no_slip_FDS_net_r08_kg_s": 1.1604841457438617,
+      "no_slip_fractional_change_vs_default": -0.0911767000229331,
+      "fraction_of_default_to_RISE_gap_closed": 0.22607028221360462
+    }
+  ],
+  "definition": "positive part after adjacent native FDS mass-face centering; integrate r<0.8m and whole plane; same r251 checkpoint quadrature and coordinates as r253/r262. Upward and net flux are separate.",
+  "decision": "stop for owner review; interpret measured base-gap movement before proposing any RISE wall function; no production change"
+}

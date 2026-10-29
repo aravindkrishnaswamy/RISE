@@ -1,0 +1,35 @@
+{
+  "native_full_trajectories": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r262_combined/onset_tier8/budgets/maximum_velocity_trajectory.csv": {
+      "sha256": "2644cda9e98fd66fed6021bcc4dcc1ebabc49be4bcf4b1b9dcc9dc61e4ed2bab",
+      "accepted_rows": 2248,
+      "retained_columns": [
+        "accepted_step",
+        "time_s",
+        "dt_s",
+        "maximum_velocity_m_per_s",
+        "axis",
+        "face",
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "/Volumes/SSD/RISE/fire_production_calibration/r262_combined/onset_tier10/budgets/maximum_velocity_trajectory.csv": {
+      "sha256": "479084bd69e4a6df26d26e98b38202155a575bb293206cbf84aaacef66e25bb9",
+      "accepted_rows": 2261,
+      "retained_columns": [
+        "accepted_step",
+        "time_s",
+        "dt_s",
+        "maximum_velocity_m_per_s",
+        "axis",
+        "face",
+        "x",
+        "y",
+        "z"
+      ]
+    }
+  },
+  "scope": "all accepted-step physical velocity maxima retained in compact CSV; owner digests and timing columns stay in external full native trajectory"
+}

@@ -4,26 +4,47 @@ Owner accepted r260 and authorized one combined four-second continuation,
 read-only comparison with the retained r261 FDS outputs, and from-zero onset
 checks of the better centered/combined candidate. Production solver unchanged.
 
-## Execution status
+## Completed result
 
-Combined CHARM plus centered momentum is running externally from r251's
-step9224 checkpoint, t=15.018720638239756s, to at least19.018720638239756s.
-The shared r260 observer compares all accepted Q/T/M/U fields against the
-same MC baseline in the first two steps. Both steps differ: first-step maximum
-vertical-face velocity difference0.222298m/s; second-step0.406099m/s. The
-four-second window proceeds only after that check.
+The combined run completed4s and passed its first-two-step physical-field
+check. **Centered momentum alone remains the best tested transport candidate.**
 
-External directory: `/Volumes/SSD/RISE/fire_production_calibration/r262_combined`.
-`campaign_status.json` records the bounded serial controller's current stage.
-After successful reduction it selects the larger3m mass flux of centered
-and combined, then runs that candidate from zero at tier8 through3.5s and
-at tier10 through3s, sequentially. Existing stops are60m/s and15m/s,
-respectively. These are diagnostic onset checks, not full-window acceptance.
-No production adoption follows automatically. An execution failure stops the queue.
+| Variant |1m kg/s|2m kg/s|3m kg/s|3m gap recovered|
+|---|---:|---:|---:|---:|
+|MC baseline A|0.2432|0.4788|0.7185|0%|
+|CHARM|0.2471|0.5012|0.7580|7.6%|
+|Half timestep|0.2430|0.4895|0.7363|3.4%|
+|Centered momentum|0.2447|0.5488|0.9131|37.5%|
+|CHARM + centered momentum|0.2459|0.5329|0.8683|28.8%|
+|LES FDS reference r258|0.3025|0.7014|1.2381|100%|
 
-Pending: combined entrainment, candidate selection, and both onset maxima.
-Measured results will be in `docs/data/fire_r262/results.json` and
-`component_comparison.csv`; complete onset trajectories are retained there.
+EOS-tail-off failed Picard after0.12s and has no4s value. A and new variants
+use15.0187206382–19.0187206382s. Historical CHARM/FDS reference rows use
+the original3.981891s common window, ending19.0006117126s; this small
+window difference is preserved rather than silently relabelled.
+This table is **net** mass flux inside radius0.8m, unlike the upward-flux
+comparison below and in r263.
+
+The same centered solver object was linked into a from-zero onset driver:
+
+|Tier|Completed through|Accepted steps|Maximum velocity|Time of maximum|Historical runaway|
+|---|---:|---:|---:|---:|---|
+|8|3.500s|2248|14.443m/s|1.165s|63.96m/s at2.699s|
+|10|3.000s|2261|14.713m/s|1.386s|15m/s crossing at2.131s|
+
+Both targets completed with exit0. Tier10 never reached its15m/s stop;
+tier8 remained well below its60m/s stop. Thus the tested onset windows do
+not reproduce the historical focusing runaway. These short onsets do not
+establish full-window stability or acceptance of the entrainment/centerline
+profiles. No full-window tier10 run or production change was made.
+All accepted-step velocity maxima are in the compact CSVs; complete native
+traces, checkpoints and logs remain external, with hashes in
+`docs/data/fire_r262/onset_evidence.json`.
+
+The bounded queue completed at16:27 PDT on2026-10-28 and stopped for review.
+Full results: `docs/data/fire_r262/results.json`. The near-flame finding is
+a hotter/narrower RISE plume despite closely matched mean heat placement,
+with the important wall-treatment mismatch documented immediately below.
 
 ## Boundary audit before onset — material mismatch
 

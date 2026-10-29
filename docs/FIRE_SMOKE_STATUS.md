@@ -179,27 +179,24 @@ at15.1388s, so has no four-second result. Production unchanged.
 [r261 full-output FDS](FIRE_SMOKE_FDS_FULL_OUTPUT_R261.md) completed25.091s,
 exit0; all physical outputs retained.
 
-[r262 combined transport and near-flame comparison](FIRE_SMOKE_COMBINED_FLAME_R262.md)
-is authorized. CHARM plus centered momentum passed the first-two-step field
-check and is running. The best centered/combined candidate will receive
-serial from-zero onset checks only: tier8 through3.5s, tier10 through3s.
-This explicitly authorized tier10 onset is distinct from the unlaunched
-full-window tier10 acceptance run. Read-only near-flame comparison is complete:
-upward mass flux is33.6/22.2/15.2% below FDS at0.291/0.505/0.994m,
-with a hotter and narrower plume developing despite closely matched mean
-heat placement (32.835/32.957kW below1m). A subsequent pre-onset boundary audit found a material mismatch: FDS uses
-its default LES wall function, whereas RISE uses reflected no-slip-style
-wall gradients without a wall function. Elevation, flush surroundings and
-side openings match. The near-base comparison cannot isolate transport
-from wall treatment. No production change; stop for
-review after the bounded diagnostic campaign.
+[r262 combined transport and onset](FIRE_SMOKE_COMBINED_FLAME_R262.md) is complete.
+Combined CHARM+centered gives0.2459/0.5329/0.8683kg/s at1/2/3m,
+recovering28.8% of the3m gap; centered alone remains best at37.5%.
+Centered completed from-zero tier8 through3.5s (maximum14.443m/s) and
+tier10 through3s (maximum14.713m/s), avoiding the historical focusing
+runaway in these onset windows. No full-window tier10 acceptance run.
+Near-flame RISE/FDS heat placement is close, but RISE is hotter/narrower.
+The pre-onset audit found matching geometry/openings but different wall
+shear: RISE reflected no-slip-style ghosts versus FDS's default LES wall function.
 
-[r263 no-slip FDS repeat](FIRE_SMOKE_NO_SLIP_FDS_R263.md) is owner-authorized
-after the current r262 queue: same full-output LES case with `NO_SLIP=T` on
-floor and all69 burner surfaces. Compare upward mass flux at0.29/0.5/1/2/3m
-against default-wall FDS and r251. No RISE wall-function implementation before
-review. Existing FDS near-wall SGS treatment stays unchanged to isolate the
-wall velocity/shear choice.
+[r263 no-slip FDS repeat](FIRE_SMOKE_NO_SLIP_FDS_R263.md) completed25.091s,
+exit0, with all physical outputs retained. NO_SLIP on the floor and69burner
+surfaces changes upward mass flux by+1.35/−1.55% at0.29/0.5m, so it does
+not explain most of the in-flame base deficit. At1m it reduces flux7.38%,
+closing48.5% of the default-FDS-to-RISE gap; at2/3m reductions are8.80/9.12%.
+A floor/burner wall-function proposal is recorded for review as a secondary
+contributor, not a demonstrated base-deficit fix. No implementation or new
+run after these diagnostics. **All queues finished; stopped for review.**
 
 ## Open problems, in priority order
 
