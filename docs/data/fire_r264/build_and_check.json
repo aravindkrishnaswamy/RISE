@@ -15,5 +15,7 @@
     "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionAdvectionMac.mm": "53b69c68c005a46cc4e632ae50bb8f97f3e14c7dd60904ccf963707502e4e8c6",
     "/Volumes/SSD/RISE/fire_production_calibration/r260_components/CenteredAdvection.mm": "c6c5c70ab7ea139b450cc1c6c213e6f8d5c78f1239d0c4216e49487dafad117c",
     "/Volumes/SSD/RISE/fire_production_calibration/r264_centered_production/production_observer": "ffda503031611f0094601e31d95beb7078e7f9c0369d67088198b154f65466ae"
-  }
+  },
+  "offline_mass_probe_control": "all three net fluxes exactly reproduce original r256 beginning-checkpoint observation",
+  "full_window_launch_utc": "2026-10-29T02:30:18.235877+00:00"
 }

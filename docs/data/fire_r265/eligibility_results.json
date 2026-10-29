@@ -1,0 +1,122 @@
+{
+  "scope": "checkpoint-sampled canonical source reconstruction at retained r251 beginning states; no solver stage or new physical run; not an all-step historical eligibility log",
+  "records": "actual next accepted dt from final checkpoint; source case+mixing-time coefficients+canonical source authority unchanged; final endpoint reuses last dt and is separately sensitivity-checked",
+  "temperature_classification": "eligibilityBeginning conservative state inverted by same canonical accepted-state inversion, before source; warm strictly T>600K; edge T<=600K and connected eligible; floor-holder cold separate",
+  "weights": "existing normalized retained-checkpoint quadrature from r254; same weight for every layer within a beginning; divide weighted category heat by weighted total heat, not average instantaneous percentages",
+  "limitations": [
+    "Retained snapshots and VDB temperature are post-step whereas reaction is the preceding source packet; directly masking that HRR by the post-step temperature would mislabel edge-waived burning.",
+    "These are sparse retained beginning reconstructions. Full all-step heat-weighted historical classification was not logged.",
+    "Two temporal-half fractions and endpoint exclusion quantify observed sampling sensitivity, not an ensemble confidence interval.",
+    "Eligibility is a binary rule. A small or large waived fraction does not alone establish whether it causes a radial-width difference; that would need a controlled change, which is not authorized here."
+  ],
+  "checks": {
+    "source_samples_compared": 203,
+    "max_abs_relative_source_budget_difference": 8.877660073736138e-08,
+    "rms_relative_source_budget_difference": 5.868385098917607e-08,
+    "final_endpoint_weight": 0.0011799479834690848,
+    "total_weight": 1.0,
+    "sampled_next_source_matches_budget": true,
+    "all_step_mean_hrr_W": 32837.38401932022,
+    "sampled_source_mean_hrr_W": 32858.80124950275,
+    "sampled_mean_hrr_relative_difference": 0.0006522209616310892,
+    "plane_sampling_checks": [
+      {
+        "z": 9,
+        "sampled_source_mean_plane_W": 997.6161026703285,
+        "retained_235_frame_mean_plane_W": 982.9644932075474,
+        "relative_difference": 0.01490553276748674
+      },
+      {
+        "z": 16,
+        "sampled_source_mean_plane_W": 265.56454389546747,
+        "retained_235_frame_mean_plane_W": 264.1631240581414,
+        "relative_difference": 0.005305130465589114
+      }
+    ]
+  },
+  "summary": [
+    {
+      "region": "plane_0p29m",
+      "sampled_beginnings": 204,
+      "beginning_min_s": 10.45522938563954,
+      "beginning_max_s": 25.09104012721218,
+      "mean_total_heat_W": 997.6161026703285,
+      "mean_warm_heat_W": 936.1327771507647,
+      "mean_edge_heat_W": 61.48332551956382,
+      "mean_holder_cold_heat_W": 0.0,
+      "mean_unclassified_cold_heat_W": 0.0,
+      "warm_heat_fraction": 0.9383697543022904,
+      "edge_heat_fraction": 0.06163024569770959,
+      "holder_cold_heat_fraction": 0.0,
+      "unclassified_cold_heat_fraction": 0.0,
+      "edge_fraction_excluding_final_endpoint": 0.06167921927650382,
+      "first_half_edge_fraction": 0.06100750687194738,
+      "second_half_edge_fraction": 0.062233005783329035
+    },
+    {
+      "region": "plane_0p5m",
+      "sampled_beginnings": 204,
+      "beginning_min_s": 10.45522938563954,
+      "beginning_max_s": 25.09104012721218,
+      "mean_total_heat_W": 265.56454389546747,
+      "mean_warm_heat_W": 230.98204346098174,
+      "mean_edge_heat_W": 34.58250043448574,
+      "mean_holder_cold_heat_W": 0.0,
+      "mean_unclassified_cold_heat_W": 0.0,
+      "warm_heat_fraction": 0.8697774185996071,
+      "edge_heat_fraction": 0.13022258140039294,
+      "holder_cold_heat_fraction": 0.0,
+      "unclassified_cold_heat_fraction": 0.0,
+      "edge_fraction_excluding_final_endpoint": 0.1302384073339935,
+      "first_half_edge_fraction": 0.12744724345265693,
+      "second_half_edge_fraction": 0.13302899043473437
+    },
+    {
+      "region": "below_1m",
+      "sampled_beginnings": 204,
+      "beginning_min_s": 10.45522938563954,
+      "beginning_max_s": 25.09104012721218,
+      "mean_total_heat_W": 32832.77487693638,
+      "mean_warm_heat_W": 28528.84038520911,
+      "mean_edge_heat_W": 4302.729747742027,
+      "mean_holder_cold_heat_W": 1.2047439852718334,
+      "mean_unclassified_cold_heat_W": 0.0,
+      "warm_heat_fraction": 0.8689134711318415,
+      "edge_heat_fraction": 0.13104983553383756,
+      "holder_cold_heat_fraction": 3.669333432180033e-05,
+      "unclassified_cold_heat_fraction": 0.0,
+      "edge_fraction_excluding_final_endpoint": 0.13104826909361053,
+      "first_half_edge_fraction": 0.1309537781409244,
+      "second_half_edge_fraction": 0.13114549867198688
+    },
+    {
+      "region": "whole_domain",
+      "sampled_beginnings": 204,
+      "beginning_min_s": 10.45522938563954,
+      "beginning_max_s": 25.09104012721218,
+      "mean_total_heat_W": 32858.80124950275,
+      "mean_warm_heat_W": 28539.086081978414,
+      "mean_edge_heat_W": 4318.510423539118,
+      "mean_holder_cold_heat_W": 1.2047439852718334,
+      "mean_unclassified_cold_heat_W": 0.0,
+      "warm_heat_fraction": 0.8685370432498749,
+      "edge_heat_fraction": 0.13142629247938464,
+      "holder_cold_heat_fraction": 3.666427074207598e-05,
+      "unclassified_cold_heat_fraction": 0.0,
+      "edge_fraction_excluding_final_endpoint": 0.13142456015769188,
+      "first_half_edge_fraction": 0.13133827689715588,
+      "second_half_edge_fraction": 0.13151395150016232
+    }
+  ],
+  "sha256": {
+    "/Volumes/SSD/Working/RISE/tools/fire/r265_eligibility_probe.cpp": "6ded93a401bd356858fce21524ee8441e33d2b04f78faf0d26cb0a31a7b03089",
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionSource.cpp": "161cff5d3d10c1c546a17aec068b8f853faaecf7a3ead88db9fb8251e525b005",
+    "/Volumes/SSD/Working/RISE/src/Library/Utilities/FireProductionSourceKernel.h": "d7e64e84e2ea5b1ace500b091ed62fb9ff95cb1e7480b3e5f41507026baf2938",
+    "/Volumes/SSD/RISE/fire_production_calibration/r265_reaction_structure/eligibility_probe": "5d854eb108820ca33e7fbbb87f06aea288093e22ff11eb9aad9f5364ce1d2729",
+    "/Volumes/SSD/RISE/fire_production_calibration/r265_reaction_structure/build_eligibility.sh": "656bf7a1e911c3cf7ca7cef8e7aee7f82d83a56b44751e577e1216378fb0f3f2",
+    "/Volumes/SSD/RISE/fire_production_calibration/r265_reaction_structure/build_eligibility.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/Volumes/SSD/RISE/fire_production_calibration/r265_reaction_structure/eligibility_samples.csv": "5bb58852a96996d476ba7709386635a707b8b71f8639566edb69af325be36f79",
+    "/Volumes/SSD/RISE/fire_production_calibration/r265_reaction_structure/eligibility_budget_check.csv": "d9f17d9c3c39664f04a2f2383a354f75a52a63820132030b2e924fa708cc37f6",
+    "/Volumes/SSD/RISE/fire_production_calibration/r254_turbulence_diagnosis/weighted_inputs.txt": "e16da1e473f5e73af6a1d652ccdc56eaa29411ecfee949f248f697c785fa249d"
+  }
+}

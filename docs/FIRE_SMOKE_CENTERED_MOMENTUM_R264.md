@@ -89,7 +89,8 @@ not a passing whole-suite result. No new centered-physics failure was found.
 The production two-step replay from the15s checkpoint changed every checked
 physical field versus MC and exactly reproduced the accepted r260 differing
 counts/maxima for all16 field snapshots. The actual full-window verification
-starts from zero, not from that replay. Results pending; external
+started from zero at19:30 PDT on2026-10-28, not from that replay.
+Initial steps are accepted with the existing32GiB ceiling active. Results pending; external
 `r264_centered_production/run_status.json` records current state.
 
 Review found one launcher P1: precreating the run folder conflicted with the
