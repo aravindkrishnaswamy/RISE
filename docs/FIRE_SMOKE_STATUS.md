@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-29, after the r267 analysis of the r264 full window the r268 step profile and the r269 ambient-inflow diagnosis (Claude now runs the campaign directly). This page
+Last updated 2026-10-30, after the r270 floor-radiation design (Claude now runs the campaign directly). This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -18,7 +18,17 @@ pages are a historical log, not instructions.
 - **RISE's floor never heats,** because radiation is an optically thin loss, and its floor-level air outside the burner stays exactly ambient.
 - **Air reaching the flame itself (r = 0.2 m) differs by only 9–14%.**
 - **The far-plume (>1.5 m) entrainment deficit is separate.**
-- **Proposed, awaiting owner approval:** an FDS r263 variant with floor `EMISSIVITY=0`, about 1.5 h.
+- **Owner decision (2026-10-30):** make RISE's floor absorb radiation, rather than strip it from FDS. The FDS `EMISSIVITY=0` rerun is now optional.
+
+[r270 floor radiation design](FIRE_SMOKE_FLOOR_RADIATION_R270.md):
+- **The floor becomes a gray, radiatively adiabatic surface,** ε = 0.9.
+- **Each step it computes:**
+  - irradiance from the existing optically thin emission field, using the cosine point-kernel;
+  - T_w from the zero-net-flux balance;
+  - a convective flux, from FDS's h correlation, into the first gas cell.
+- **That flux is frozen per step,** like the radiation sink.
+- **ε = 0 reproduces the current model bit-for-bit.**
+- **Design only: no code yet.** It awaits owner review of the §6 choices.
 
 [r268 step profile](FIRE_SMOKE_STEP_PROFILE_R268.md):
 - **The GPU is busy only 37% of each step.** About 48% is a single GPU-idle block, while the main thread hashes, seals and re-checks source packets and EOS admissibility on the CPU. The rest is command-buffer sync stalls.
