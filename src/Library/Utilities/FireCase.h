@@ -37,6 +37,11 @@ namespace RISE
 			// doubles lateral extents with an exactly translated source/pilot.
 			// r246 additionally doubles height under an explicit matched schedule.
 			std::string domainStudy;
+			// r270: absent retains canonical bytes and the gas-only adiabatic bed.
+			// Present makes the bed outside the burner a gray zero-net-flux
+			// (FDS ADIABATIC) surface that absorbs optically thin gas emission.
+			bool hasFloorEmissivity=false;
+			double floorEmissivity=0.0;
 		};
 
 		struct DerivedV1
@@ -62,6 +67,9 @@ namespace RISE
 			double pilotSetpointTemperatureK=0.0,pilotExpansionVolumeRatioCap=0.0,
 				pilotDurationMultiplier=0.0,pilotAmbientTemperatureK=0.0,
 				pilotRampExponentPerFlowThrough=0.0;
+			// Zero with an empty model version unless the case authors floor_emissivity.
+			double floorEmissivity=0.0;
+			std::string floorRadiationModelVersion;
 		};
 
 		struct RecordV1

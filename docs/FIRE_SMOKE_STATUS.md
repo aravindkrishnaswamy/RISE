@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-30, after the r270 floor-radiation design (Claude now runs the campaign directly). This page
+Last updated 2026-10-30, after the r270 floor-radiation implementation (Claude now runs the campaign directly). This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -20,15 +20,17 @@ pages are a historical log, not instructions.
 - **The far-plume (>1.5 m) entrainment deficit is separate.**
 - **Owner decision (2026-10-30):** make RISE's floor absorb radiation, rather than strip it from FDS. The FDS `EMISSIVITY=0` rerun is now optional.
 
-[r270 floor radiation design](FIRE_SMOKE_FLOOR_RADIATION_R270.md):
-- **The floor becomes a gray, radiatively adiabatic surface,** ε = 0.9.
-- **Each step it computes:**
-  - irradiance from the existing optically thin emission field, using the cosine point-kernel;
-  - T_w from the zero-net-flux balance;
-  - a convective flux, from FDS's h correlation, into the first gas cell.
-- **That flux is frozen per step,** like the radiation sink.
-- **ε = 0 reproduces the current model bit-for-bit.**
-- **Design only: no code yet.** It awaits owner review of the §6 choices.
+[r270 floor radiation](FIRE_SMOKE_FLOOR_RADIATION_R270.md) is implemented and verified up to a short tier-6 run:
+- **The model:** an opt-in gray, radiatively adiabatic floor (`RISE_FIRE_FLOOR_EMISSIVITY=1`; ε = 1 is what FDS's ADIABATIC=T forces).
+  - Thin irradiance from the existing emission field.
+  - FDS 6.11's own wall heat transfer coefficient.
+  - A per-step frozen energy dose into the first gas layer.
+- **Floor off is bit-identical to r264.** Case ID `67cc1791` unchanged; 25 production steps match byte for byte.
+- **Tier-6 run to 2.5 s with the floor on:**
+  - The floor returns about 0.5 kW to the gas, matching FDS's +0.51 kW.
+  - Floor-level air outside the burner warms 2–6 K and is still rising (r264: 0 K).
+- **Build fix:** `FireCase.o` is now built outside LTO, because fast-math under LTO let unrelated edits move case IDs.
+- **Next:** the tier-8 full window with the floor on, which awaits owner approval.
 
 [r268 step profile](FIRE_SMOKE_STEP_PROFILE_R268.md):
 - **The GPU is busy only 37% of each step.** About 48% is a single GPU-idle block, while the main thread hashes, seals and re-checks source packets and EOS admissibility on the CPU. The rest is command-buffer sync stalls.

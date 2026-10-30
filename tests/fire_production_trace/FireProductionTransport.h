@@ -426,6 +426,12 @@ namespace RISEFireProductionTrace
 		//! Stage-derived mixing time is an input coefficient, not a source dose.
 		//! Its exact bytes and the canonical transport record identity are bound.
 		std::vector<double> mixingTimeS;
+		//! r270 floor radiation inputs, face-major y*nx+x on the lower-z wall.
+		//! Required exactly when the case authors floor_emissivity, else empty.
+		//! The absorbing mask excludes the burner; speed is the first-layer
+		//! cell-centred tangential velocity magnitude.
+		std::vector<unsigned char> floorAbsorbingFaceMask;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> floorTangentialSpeedMPerS;
 		bool predictiveRadiation;
 		unsigned int workerCount;
 
@@ -456,6 +462,10 @@ namespace RISEFireProductionTrace
 		std::vector<double> grossCarbonFormedKGPerM3_,gasHeatReleaseWPerM3_;
 		std::vector<double> sootHeatReleaseWPerM3_,pilotEnergyDeltaJPerM3_;
 		std::vector<double> pilotExpansionIntegral_,radiativeCoolingWPerM3_;
+		// r270: empty unless the case enables floor radiation.  Heating is
+		// per cell (nonzero only in the first layer); the rest are per floor face.
+		std::vector<double> floorHeatingWPerM3_,floorIrradianceWPerM2_;
+		std::vector<double> floorWallTemperatureK_,floorConvectiveFluxWPerM2_;
 		double radiationBeta_,radiationGamma_,radiationEscapeFactor_;
 		double maximumScaledExpansion_;
 		std::uint64_t beginningStateIdentity_,reactionControlIdentity_;
@@ -498,6 +508,11 @@ namespace RISEFireProductionTrace
 			{ return pilotExpansionIntegral_; }
 		const std::vector<double>& RadiativeCoolingWPerM3() const
 			{ return radiativeCoolingWPerM3_; }
+		const std::vector<double>& FloorHeatingWPerM3() const { return floorHeatingWPerM3_; }
+		const std::vector<double>& FloorIrradianceWPerM2() const { return floorIrradianceWPerM2_; }
+		const std::vector<double>& FloorWallTemperatureK() const { return floorWallTemperatureK_; }
+		const std::vector<double>& FloorConvectiveFluxWPerM2() const
+			{ return floorConvectiveFluxWPerM2_; }
 		double RadiationBeta() const { return radiationBeta_; }
 		double RadiationGamma() const { return radiationGamma_; }
 		double RadiationEscapeFactor() const { return radiationEscapeFactor_; }

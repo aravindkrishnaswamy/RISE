@@ -5461,6 +5461,17 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		authored.plumeLaw=true;
 		if(persistence.r244LateralDouble)authored.domainStudy=persistence.r246TopDouble?
 			"r246-lateral-double-top-double-v1":"r244-lateral-double-v1";
+		// r270: the radiatively adiabatic floor is opt-in and identity-bearing;
+		// only the canonical source authority implements it.
+		if(const char* floorOption=std::getenv("RISE_FIRE_FLOOR_EMISSIVITY")){
+			char* end=nullptr;const double emissivity=std::strtod(floorOption,&end);
+			if(end==floorOption||*end!='\0'||!std::isfinite(emissivity)||!(emissivity>0.0)||
+				emissivity>1.0){
+				values.structuredError="case_derivation_failure:floor emissivity is invalid";
+				return values;
+			}
+			authored.hasFloorEmissivity=true;authored.floorEmissivity=emissivity;
+		}
 		FireCase::RecordV1 caseRecord;
 		const RISECBOR64::Bytes aerosol=AerosolRecord();
 		const RISECBOR64::Bytes chem=SyntheticChemRecord();
@@ -6259,6 +6270,10 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 						productionMomentum,productionVelocity));
 				bool packetOK=true;profileStageStart=std::chrono::steady_clock::now();
 				RISE::FireProductionFrozenSourcePacketSeal projectedHeunSource;
+				double floorInterceptedW=-1.0,floorConvectedW=0.0,floorMaximumWallK=0.0;
+				// First-layer gas temperature rise outside the burner, r bands 0.15-0.3,
+				// 0.3-0.5, 0.5-0.7 and 0.7-1.0 m from the domain centre (r269 comparison).
+				std::array<double,4> floorBandRiseK={{0.0,0.0,0.0,0.0}};
 				if(persistence.UsesProjectedHeunOwner()){
 					// The canonical producer owns the source bytes AND their diagnostics.
 					// Neither the tangent preparation nor persistence calls the legacy
@@ -6312,9 +6327,54 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 					if(sourceRequest.attemptIdentity==0u)sourceRequest.attemptIdentity=1u;
 					sourceRequest.pilotEstablished=simulationTimeS>=pilotEndS;
 					sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=workerCount;
+					if(caseRecord.derived.floorEmissivity>0.0){
+						const std::size_t floorFaces=shape.nx*shape.ny;
+						sourceRequest.floorAbsorbingFaceMask.resize(floorFaces);
+						sourceRequest.floorTangentialSpeedMPerS.resize(floorFaces);
+						for(std::size_t y=0u;y<shape.ny;++y)for(std::size_t x=0u;x<shape.nx;++x){
+							const std::size_t face=y*shape.nx+x;
+							sourceRequest.floorAbsorbingFaceMask[face]=sourcePattern[face]!=0.0?0u:1u;
+							const double u=0.5*(productionVelocity.component[0][y*(shape.nx+1u)+x]+
+								productionVelocity.component[0][y*(shape.nx+1u)+x+1u]);
+							const double v=0.5*(productionVelocity.component[1][y*shape.nx+x]+
+								productionVelocity.component[1][(y+1u)*shape.nx+x]);
+							sourceRequest.floorTangentialSpeedMPerS[face]=
+								static_cast<float>(std::sqrt(u*u+v*v));
+						}
+					}
 					packetOK=!persistence.forceZeroSourceForTest&&
 						FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,projectedHeunSource,&error)&&
 						CarryCanonicalSourceForPersistence(projectedHeunSource,packets,escape,error);
+					if(packetOK&&!projectedHeunSource.FloorHeatingWPerM3().empty()){
+						const double faceArea=shape.cellWidthM*shape.cellWidthM;
+						floorInterceptedW=0.0;floorConvectedW=0.0;floorMaximumWallK=0.0;
+						for(std::size_t face=0u;face<shape.nx*shape.ny;++face){
+							if(sourceRequest.floorAbsorbingFaceMask[face]==0u)continue;
+							floorInterceptedW+=caseRecord.derived.floorEmissivity*
+								projectedHeunSource.FloorIrradianceWPerM2()[face]*faceArea;
+							floorConvectedW+=projectedHeunSource.FloorConvectiveFluxWPerM2()[face]*faceArea;
+							floorMaximumWallK=std::max(floorMaximumWallK,
+								projectedHeunSource.FloorWallTemperatureK()[face]);
+						}
+						static const double bandEdgeM[5]={0.15,0.3,0.5,0.7,1.0};
+						std::array<double,4> bandCount={{0.0,0.0,0.0,0.0}};
+						for(std::size_t face=0u;face<shape.nx*shape.ny;++face){
+							if(sourceRequest.floorAbsorbingFaceMask[face]==0u)continue;
+							const double x=(static_cast<double>(face%shape.nx)+0.5-0.5*shape.nx)*shape.cellWidthM;
+							const double y=(static_cast<double>(face/shape.nx)+0.5-0.5*shape.ny)*shape.cellWidthM;
+							const double r=std::sqrt(x*x+y*y);
+							for(unsigned int band=0u;band<4u;++band)if(r>=bandEdgeM[band]&&r<bandEdgeM[band+1u]){
+								floorBandRiseK[band]+=static_cast<double>(
+									projectedHeunSource.BeginningTemperatureK()[face])-
+									caseRecord.derived.pilotAmbientTemperatureK;
+								bandCount[band]+=1.0;}
+						}
+						for(unsigned int band=0u;band<4u;++band)
+							if(bandCount[band]>0.0)floorBandRiseK[band]/=bandCount[band];
+					}
+				}else if(caseRecord.derived.floorEmissivity>0.0){
+					// Only the canonical source authority implements the r270 floor.
+					packetOK=false;error="r270 floor radiation requires the canonical source authority";
 				}else if(persistence.forceZeroSourceForTest){
 					packets.assign(shape.CellCount(),MethaneSourcePacket());escape=RadiationEscapeFactor();
 				}else packetOK=BuildFrozenMethaneSourcePackets(packetBeginning,reactions,
@@ -7180,6 +7240,19 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 									production.manifoldTailDrainedVolumeM3);
 								values.productionDeviceHistoryMS.push_back(deviceMS);
 								values.productionWallHistoryMS.push_back(wallMS);
+								if(floorInterceptedW>=0.0&&!persistence.productionOnsetDiagnosticDirectory.empty()){
+									const std::filesystem::path floorPath=
+										persistence.productionOnsetDiagnosticDirectory/"floor_radiation.csv";
+									const bool floorHeader=!std::filesystem::exists(floorPath);
+									std::ofstream floorLog(floorPath,std::ios::app);
+									if(floorHeader)floorLog<<"step,beginning_time_s,absorbed_W,convected_W,maximum_wall_K,"
+										"gas_rise_r015_030_K,gas_rise_r030_050_K,gas_rise_r050_070_K,gas_rise_r070_100_K\n";
+									floorLog<<std::setprecision(17)<<values.productionWallHistoryMS.size()<<','<<
+										simulationTimeS<<','<<floorInterceptedW<<','<<floorConvectedW<<','<<
+										floorMaximumWallK;
+									for(const double rise:floorBandRiseK)floorLog<<','<<rise;
+									floorLog<<'\n';
+								}
 								if(!persistence.productionOnsetDiagnosticDirectory.empty()){
 									std::ofstream trajectory(persistence.productionOnsetDiagnosticDirectory/
 										"maximum_velocity_trajectory.csv",std::ios::app);

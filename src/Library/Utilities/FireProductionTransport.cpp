@@ -176,6 +176,16 @@ namespace RISE
 			HashSourceDoubleValues(hash,seal.PilotEnergyDeltaJPerM3());
 			HashSourceDoubleValues(hash,seal.PilotExpansionIntegral());
 			HashSourceDoubleValues(hash,seal.RadiativeCoolingWPerM3());
+			// r270 floor radiation is hashed only when present, so a case
+			// without it keeps its historical content identity.
+			if(!seal.FloorHeatingWPerM3().empty()){
+				static const char floorDomain[]="RISE canonical frozen source floor radiation v1";
+				for(const unsigned char byte:floorDomain)HashEOSByte(hash,byte);
+				HashSourceDoubleValues(hash,seal.FloorHeatingWPerM3());
+				HashSourceDoubleValues(hash,seal.FloorIrradianceWPerM2());
+				HashSourceDoubleValues(hash,seal.FloorWallTemperatureK());
+				HashSourceDoubleValues(hash,seal.FloorConvectiveFluxWPerM2());
+			}
 			return hash;
 		}
 
@@ -1073,6 +1083,12 @@ namespace RISE
 			gasHeatReleaseWPerM3_.size()!=cells||sootHeatReleaseWPerM3_.size()!=cells||
 			pilotEnergyDeltaJPerM3_.size()!=cells||pilotExpansionIntegral_.size()!=cells||
 			radiativeCoolingWPerM3_.size()!=cells||
+			(!floorHeatingWPerM3_.empty()&&(floorHeatingWPerM3_.size()!=cells||
+				floorIrradianceWPerM2_.size()!=shape_.nx*shape_.ny||
+				floorWallTemperatureK_.size()!=shape_.nx*shape_.ny||
+				floorConvectiveFluxWPerM2_.size()!=shape_.nx*shape_.ny))||
+			(floorHeatingWPerM3_.empty()&&(!floorIrradianceWPerM2_.empty()||
+				!floorWallTemperatureK_.empty()||!floorConvectiveFluxWPerM2_.empty()))||
 			!std::isfinite(radiationBeta_)||radiationBeta_<0.0||
 			!std::isfinite(radiationGamma_)||radiationGamma_<0.0||radiationGamma_>1.0||
 			!std::isfinite(radiationEscapeFactor_)||radiationEscapeFactor_<0.0||
@@ -1094,7 +1110,8 @@ namespace RISE
 		const std::vector<double>* diagnostic[]={&reactedFuelKGPerM3_,
 			&oxidizedCarbonKGPerM3_,&grossCarbonFormedKGPerM3_,&gasHeatReleaseWPerM3_,
 			&sootHeatReleaseWPerM3_,&pilotEnergyDeltaJPerM3_,&pilotExpansionIntegral_,
-			&radiativeCoolingWPerM3_};
+			&radiativeCoolingWPerM3_,&floorHeatingWPerM3_,&floorIrradianceWPerM2_,
+			&floorWallTemperatureK_,&floorConvectiveFluxWPerM2_};
 		for(const std::vector<double>* values:diagnostic)for(const double value:*values)
 			if(!std::isfinite(value)||(value==0.0&&std::signbit(value)))return Fail(error,
 				"canonical frozen source-packet diagnostic is noncanonical");

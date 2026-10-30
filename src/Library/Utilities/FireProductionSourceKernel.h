@@ -2295,6 +2295,181 @@ namespace RISE
 			factor = candidateFactor;
 			return true;
 		}
+		// r270 radiatively adiabatic floor.  The bed outside the burner is a
+		// gray, opaque, zero-heat-capacity surface with zero net heat flux
+		// (FDS 6.11 ADIABATIC=T, NET_FLUX_BC): it absorbs the optically thin net
+		// gas emission through the cosine point kernel, re-emits to the open
+		// surroundings, and returns the rest to the first gas cell by
+		// convection with FDS's default LES coefficient (func.f90
+		// HEAT_TRANSFER_COEFFICIENT, L = 1 m).  Every evaluation is fp64,
+		// order-fixed per face, and independent of the worker count.
+		static const double FloorStefanBoltzmannWPerM2K4=5.670374419e-8;
+		static const double FloorGravityMPerS2=9.80665;
+		static const double FloorConvectionLengthM=1.0;
+		static const double FloorAirPrandtl=0.7;
+
+		struct FloorRadiationFace
+		{
+			double irradianceWPerM2;
+			double wallTemperatureK;
+			double heatTransferCoefficientWPerM2K;
+			double convectiveFluxWPerM2;
+			FloorRadiationFace() : irradianceWPerM2(0.0),wallTemperatureK(0.0),
+				heatTransferCoefficientWPerM2K(0.0),convectiveFluxWPerM2(0.0) {}
+		};
+
+		//! Face-mean irradiance on each lower-z face from isotropic, unattenuated
+		//! cell emission: G = sum e V z / (4 pi r^3) at the face centre, or
+		//! e V Omega / (4 pi A) with the face's exact solid angle for near pairs.  Emission is cell-major
+		//! (z*ny+y)*nx+x; the result is face-major y*nx+x.
+		inline bool ComputeFloorIrradianceWPerM2(
+			const std::size_t nx,const std::size_t ny,const std::size_t nz,
+			const double cellWidthM,const std::vector<double>& netEmissionWPerM3,
+			const unsigned int workerCount,std::vector<double>& irradianceWPerM2,
+			std::string* error )
+		{
+			if(nx==0u||ny==0u||nz==0u||!(cellWidthM>0.0)||!std::isfinite(cellWidthM)||
+				netEmissionWPerM3.size()!=nx*ny*nz)
+				return Fail(error,"fire floor irradiance input is malformed");
+			struct Emitter { double x,y,z,power; };
+			std::vector<Emitter> emitters;
+			const double volume=cellWidthM*cellWidthM*cellWidthM;
+			for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)for(std::size_t x=0u;x<nx;++x){
+				const double value=netEmissionWPerM3[(z*ny+y)*nx+x];
+				if(!std::isfinite(value))return Fail(error,"fire floor irradiance emission is nonfinite");
+				if(value==0.0)continue;
+				Emitter emitter;emitter.x=(static_cast<double>(x)+0.5)*cellWidthM;
+				emitter.y=(static_cast<double>(y)+0.5)*cellWidthM;
+				emitter.z=(static_cast<double>(z)+0.5)*cellWidthM;
+				emitter.power=value*volume;emitters.push_back(emitter);
+			}
+			irradianceWPerM2.assign(nx*ny,0.0);
+			const double inverseFourPi=1.0/(4.0*3.14159265358979323846);
+			ParallelFireSlices(nx*ny,workerCount,[&](const std::size_t face){
+				const double fx=(static_cast<double>(face%nx)+0.5)*cellWidthM;
+				const double fy=(static_cast<double>(face/nx)+0.5)*cellWidthM;
+				const double half=0.5*cellWidthM,area=cellWidthM*cellWidthM;
+				double sum=0.0;
+				for(const Emitter& emitter:emitters){
+					const double dx=emitter.x-fx,dy=emitter.y-fy;
+					// Near the face the centre-point kernel overstates the intercepted
+					// power (1/pi instead of 1/6 of a first-layer emitter directly
+					// above), so close pairs use the exact solid angle of the face.
+					if(emitter.z<3.0*cellWidthM&&std::fabs(dx)<2.5*cellWidthM&&
+						std::fabs(dy)<2.5*cellWidthM){
+						const double h=emitter.z;
+						auto corner=[h](const double x,const double y){
+							return std::atan(x*y/(h*std::sqrt(x*x+y*y+h*h)));};
+						const double x1=-dx-half,x2=-dx+half,y1=-dy-half,y2=-dy+half;
+						const double solidAngle=corner(x2,y2)-corner(x1,y2)-corner(x2,y1)+corner(x1,y1);
+						sum+=emitter.power*solidAngle/area;
+						continue;
+					}
+					const double r2=dx*dx+dy*dy+emitter.z*emitter.z;
+					sum+=emitter.power*emitter.z/(r2*std::sqrt(r2));
+				}
+				irradianceWPerM2[face]=sum*inverseFourPi;
+			});
+			for(const double value:irradianceWPerM2)if(!std::isfinite(value))
+				return Fail(error,"fire floor irradiance overflowed");
+			return true;
+		}
+
+		//! FDS 6.11 default HTC for an upward-facing horizontal plate
+		//! (IOR=3): max(Nu_free, Nu_forced, 2L/dn) k/L, film properties.
+		inline double FloorHeatTransferCoefficientWPerM2K(
+			const double gasTemperatureK,const double wallTemperatureK,
+			const double gasDensityKGPerM3,const double tangentialSpeedMPerS,
+			const double filmViscosityPaS,const double filmConductivityWPerMK,
+			const double wallNormalDistanceM )
+		{
+			const double L=FloorConvectionLengthM;
+			const double filmTemperatureK=wallTemperatureK+(gasTemperatureK-wallTemperatureK)/3.0;
+			const double deltaK=gasTemperatureK-wallTemperatureK;
+			const double kinematic=gasDensityKGPerM3/filmViscosityPaS;
+			const double reynolds=gasDensityKGPerM3*tangentialSpeedMPerS*L/filmViscosityPaS;
+			const double grashof=FloorGravityMPerS2*std::fabs(deltaK)*L*L*L*kinematic*kinematic/
+				filmTemperatureK;
+			const double rayleigh=grashof*FloorAirPrandtl;
+			const double prandtlThird=std::cbrt(FloorAirPrandtl);
+			const double forced=0.0296*std::pow(reynolds,0.8)*prandtlThird;
+			double free=0.0;
+			if(deltaK<0.0)free=rayleigh<1.0e7?0.54*std::pow(rayleigh,0.25):0.15*std::cbrt(rayleigh);
+			else free=0.52*std::pow(rayleigh,0.2);
+			const double resolved=2.0*L/wallNormalDistanceM;
+			return std::max({free,forced,resolved})*filmConductivityWPerMK/L;
+		}
+
+		//! Zero-net-flux balance eps(G + sigma Tamb^4 - sigma Tw^4) = h(Tw)(Tw - T1).
+		//! G is net irradiance above the ambient background.  The residual is
+		//! monotone in Tw and bracketed by T1 and the radiative-equilibrium
+		//! temperature; bisection makes the root order-fixed.
+		template<typename FilmProperties>
+		inline bool SolveFloorSurfaceBalance(
+			const double irradianceWPerM2,const double gasTemperatureK,
+			const double gasDensityKGPerM3,const double tangentialSpeedMPerS,
+			const double emissivity,const double ambientTemperatureK,
+			const double wallNormalDistanceM,const FilmProperties& properties,
+			FloorRadiationFace& result,std::string* error )
+		{
+			result=FloorRadiationFace();
+			if(!std::isfinite(irradianceWPerM2)||!(gasTemperatureK>0.0)||
+				!std::isfinite(gasTemperatureK)||!(gasDensityKGPerM3>0.0)||
+				!std::isfinite(tangentialSpeedMPerS)||tangentialSpeedMPerS<0.0||
+				!(emissivity>0.0)||emissivity>1.0||!(ambientTemperatureK>0.0)||
+				!(wallNormalDistanceM>0.0))
+				return Fail(error,"fire floor surface balance input is invalid");
+			const double sigma=FloorStefanBoltzmannWPerM2K4;
+			const double ambient4=ambientTemperatureK*ambientTemperatureK*
+				ambientTemperatureK*ambientTemperatureK;
+			const double equilibrium4=irradianceWPerM2/sigma+ambient4;
+			if(!(equilibrium4>0.0))return Fail(error,"fire floor irradiance is below absolute zero");
+			const double equilibriumK=std::sqrt(std::sqrt(equilibrium4));
+			double h=0.0;
+			auto residual=[&](const double wallK,double& value)->bool{
+				double viscosity=0.0,conductivity=0.0;
+				if(!properties(wallK+(gasTemperatureK-wallK)/3.0,viscosity,conductivity))return false;
+				if(!(viscosity>0.0)||!(conductivity>0.0))return Fail(error,
+					"fire floor film properties are invalid");
+				h=FloorHeatTransferCoefficientWPerM2K(gasTemperatureK,wallK,gasDensityKGPerM3,
+					tangentialSpeedMPerS,viscosity,conductivity,wallNormalDistanceM);
+				const double wall4=wallK*wallK*wallK*wallK;
+				value=emissivity*sigma*(equilibrium4-wall4)-h*(wallK-gasTemperatureK);
+				return std::isfinite(value);
+			};
+			double low=std::min(gasTemperatureK,equilibriumK);
+			double high=std::max(gasTemperatureK,equilibriumK);
+			double wallK=gasTemperatureK;
+			if(high>low){
+				double lowValue=0.0,highValue=0.0;
+				if(!residual(low,lowValue)||!residual(high,highValue))return Fail(error,
+					"fire floor surface balance residual failed");
+				// A wrong-signed endpoint within roundoff of zero is already the root.
+				const double roundoff=64.0*std::numeric_limits<double>::epsilon()*
+					(emissivity*sigma*(equilibrium4+high*high*high*high)+1.0);
+				if(lowValue<0.0&&lowValue>=-roundoff)high=low;
+				else if(highValue>0.0&&highValue<=roundoff)low=high;
+				else if(lowValue<0.0||highValue>0.0)return Fail(error,
+					"fire floor surface balance lacks its bracket");
+				for(unsigned int iteration=0u;iteration<200u;++iteration){
+					const double middle=0.5*(low+high);
+					if(!(middle>low&&middle<high)||high-low<=1.0e-10*high)break;
+					double value=0.0;
+					if(!residual(middle,value))return Fail(error,
+						"fire floor surface balance residual failed");
+					if(value>0.0)low=middle;else high=middle;
+				}
+				wallK=0.5*(low+high);
+			}
+			double finalValue=0.0;
+			if(!residual(wallK,finalValue))return Fail(error,"fire floor surface balance residual failed");
+			result.irradianceWPerM2=irradianceWPerM2;result.wallTemperatureK=wallK;
+			result.heatTransferCoefficientWPerM2K=h;
+			result.convectiveFluxWPerM2=h*(wallK-gasTemperatureK);
+			if(!std::isfinite(result.convectiveFluxWPerM2))return Fail(error,
+				"fire floor convective flux overflowed");
+			return true;
+		}
 	}
 }
 

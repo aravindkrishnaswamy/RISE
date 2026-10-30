@@ -428,6 +428,78 @@ namespace
 		derivativeWPerM3K=derivativeIntegral*dx;
 		return std::isfinite(exchangeWPerM3)&&std::isfinite(derivativeWPerM3K);
 	}
+
+	// r270: thin point-kernel floor irradiance and the FDS zero-net-flux floor.
+	void TestFloorRadiation()
+	{
+		const std::size_t nx=41u,ny=41u,nz=10u;const double width=0.05;
+		std::vector<double> emission(nx*ny*nz,0.0);
+		const std::size_t ex=20u,ey=20u,ez=5u;const double e=2.0e6;
+		emission[(ez*ny+ey)*nx+ex]=e;
+		std::vector<double> serial,threaded;std::string error;
+		Check(ComputeFloorIrradianceWPerM2(nx,ny,nz,width,emission,1u,serial,&error)&&
+			ComputeFloorIrradianceWPerM2(nx,ny,nz,width,emission,8u,threaded,&error),
+			"r270 floor irradiance evaluates a single emitter");
+		Check(serial==threaded,"r270 floor irradiance is independent of the worker count");
+		const double power=e*width*width*width,h=(ez+0.5)*width;
+		const double pi=3.14159265358979323846;
+		bool pointwise=serial.size()==nx*ny;double intercepted=0.0;
+		for(std::size_t y=0u;pointwise&&y<ny;++y)for(std::size_t x=0u;x<nx;++x){
+			const double dx=(static_cast<double>(x)-ex)*width,dy=(static_cast<double>(y)-ey)*width;
+			const double r=std::sqrt(dx*dx+dy*dy+h*h);
+			if(!Near(serial[y*nx+x],power*h/(4.0*pi*r*r*r),1.0e-12))pointwise=false;
+			intercepted+=serial[y*nx+x]*width*width;
+		}
+		Check(pointwise,"r270 floor irradiance matches P z / (4 pi r^3) on every face");
+		const double a=0.5*nx*width;
+		const double solidAngle=4.0*std::asin(a*a/((a*a+h*h)));
+		Check(Near(intercepted/power,solidAngle/(4.0*pi),0.02),
+			"r270 intercepted floor power matches the square's analytic solid angle");
+		// A first-layer emitter sends at most half its power to the floor and
+		// exactly 1/6 through the face directly beneath it.
+		std::vector<double> low(nx*ny*nz,0.0),lowG;low[(0u*ny+ey)*nx+ex]=e;
+		Check(ComputeFloorIrradianceWPerM2(nx,ny,nz,width,low,1u,lowG,&error),
+			"r270 floor irradiance evaluates a first-layer emitter");
+		double lowIntercepted=0.0;for(const double g:lowG)lowIntercepted+=g*width*width;
+		const double lowH=0.5*width,lowA=0.5*nx*width;
+		const double lowSolid=4.0*std::asin(lowA*lowA/(lowA*lowA+lowH*lowH));
+		Check(Near(lowG[ey*nx+ex]*width*width/power,1.0/6.0,1.0e-12)&&
+			lowIntercepted<0.5*power&&Near(lowIntercepted/power,lowSolid/(4.0*pi),0.02),
+			"r270 near-field floor irradiance uses the exact face solid angle");
+		std::vector<double> bad=emission;bad.pop_back();
+		Check(!ComputeFloorIrradianceWPerM2(nx,ny,nz,width,bad,1u,serial,&error),
+			"r270 floor irradiance refuses a malformed emission field");
+
+		auto air=[](const double temperatureK,double& viscosity,double& conductivity){
+			viscosity=1.85e-5*std::pow(temperatureK/300.0,0.7);
+			conductivity=0.0263*std::pow(temperatureK/300.0,0.8);return true;};
+		FloorRadiationFace face;
+		Check(SolveFloorSurfaceBalance(0.0,300.0,1.17,0.0,1.0,300.0,width,air,face,&error)&&
+			face.wallTemperatureK==300.0&&face.convectiveFluxWPerM2==0.0,
+			"r270 floor without irradiance under ambient gas carries no heat");
+		Check(SolveFloorSurfaceBalance(0.0,400.0,0.88,0.0,1.0,300.0,width,air,face,&error)&&
+			face.wallTemperatureK>300.0&&face.wallTemperatureK<400.0&&face.convectiveFluxWPerM2<0.0,
+			"r270 floor under hot gas without irradiance cools the gas");
+		const double G=2000.0;
+		Check(SolveFloorSurfaceBalance(G,300.0,1.17,0.5,1.0,300.0,width,air,face,&error),
+			"r270 irradiated floor balance solves");
+		const double sigma=FloorStefanBoltzmannWPerM2K4;
+		const double absorbed=G-sigma*(std::pow(face.wallTemperatureK,4.0)-std::pow(300.0,4.0));
+		Check(face.wallTemperatureK>330.0&&face.wallTemperatureK<450.0&&
+			face.convectiveFluxWPerM2>0.0&&face.convectiveFluxWPerM2<G&&
+			Near(absorbed,face.convectiveFluxWPerM2,1.0e-6),
+			"r270 irradiated floor balances absorbed radiation against convection");
+		Check(face.heatTransferCoefficientWPerM2K>4.0&&face.heatTransferCoefficientWPerM2K<10.0,
+			"r270 FDS natural-convection coefficient is in its expected range");
+		FloorRadiationFace half;
+		Check(SolveFloorSurfaceBalance(G,300.0,1.17,0.5,0.5,300.0,width,air,half,&error)&&
+			half.wallTemperatureK<face.wallTemperatureK&&
+			half.convectiveFluxWPerM2<face.convectiveFluxWPerM2,
+			"r270 lower floor emissivity absorbs and returns less");
+		Check(!SolveFloorSurfaceBalance(G,300.0,1.17,0.5,0.0,300.0,width,air,face,&error)&&
+			!SolveFloorSurfaceBalance(G,300.0,1.17,-1.0,1.0,300.0,width,air,face,&error),
+			"r270 floor balance refuses zero emissivity and negative speed");
+	}
 }
 
 int main()
@@ -439,6 +511,7 @@ int main()
 		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	Check(thermochemistry.IsValid() && fuel.IsValid() && transport.IsValid() && opacity.IsValid(),
 		"V-tier tests start from the adopted physical records");
+	TestFloorRadiation();
 	const FireAcceptedStateFeasibilityEnvelope& r60Envelope=
 		fuel.AcceptedStateFeasibilityEnvelope();
 	Check(r60Envelope.limiterOutwardFactorEpsilon64==1024.0&&

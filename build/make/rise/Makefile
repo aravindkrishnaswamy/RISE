@@ -338,6 +338,14 @@ test : tests
 .SUFFIXES:
 .SUFFIXES: .cpp .o
 
+# r270 the case record derives identity-bearing floats (grid, source
+# pattern, flame height).  Keep its historical fast-math codegen but out of
+# link-time optimization, so edits to the executables that link it cannot
+# re-optimize the derivation and silently move canonical case IDs.
+$(PATHLIBRARY)Utilities/FireCase.o : $(PATHLIBRARY)Utilities/FireCase.cpp
+	@echo "Compiling (no LTO): $<"
+	@$(CXX) $(filter-out -flto,$(CPPFLAGS)) $(filter-out -flto,$(CXXFLAGS)) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 # r84 production remap arithmetic is a recorded binary32 operator.  It must
 # not inherit the renderer's reassociation/contract flags.
 $(PATHLIBRARY)Utilities/FireProductionAdvection.o : $(PATHLIBRARY)Utilities/FireProductionAdvection.cpp

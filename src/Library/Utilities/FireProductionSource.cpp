@@ -296,6 +296,69 @@ namespace RISE
 					fireCase.derived.referenceHeatReleaseRateW,
 					fireCase.derived.effectiveRadiativeFraction,request.predictiveRadiation,
 					fuel,fuel,opacity,packets,factor,error,request.workerCount))return false;
+				// r270: the radiatively adiabatic floor returns its convective flux
+				// to the first gas layer as a frozen energy dose, q/dz, before the
+				// expansion target is derived from the packet.
+				const bool floorRadiation=fireCase.derived.floorEmissivity>0.0;
+				const std::size_t floorFaces=request.shape.nx*request.shape.ny;
+				std::vector<double> floorHeating,floorIrradiance,floorWall,floorFlux;
+				if(!floorRadiation){
+					if(!request.floorAbsorbingFaceMask.empty()||
+						!request.floorTangentialSpeedMPerS.empty())return Fail(error,
+						"production canonical source has floor inputs without floor radiation");
+				} else {
+					if(request.floorAbsorbingFaceMask.size()!=floorFaces||
+						request.floorTangentialSpeedMPerS.size()!=floorFaces)return Fail(error,
+						"production canonical source floor radiation inputs are malformed");
+					std::vector<double> emission(cells);
+					for(std::size_t cell=0u;cell<cells;++cell)
+						emission[cell]=packets[cell].radiativeCoolingWPerM3;
+					const double width=static_cast<double>(request.shape.cellWidthM);
+					if(!ComputeFloorIrradianceWPerM2(request.shape.nx,request.shape.ny,
+						request.shape.nz,width,emission,request.workerCount,floorIrradiance,error))
+						return false;
+					floorHeating.assign(cells,0.0);floorWall.assign(floorFaces,0.0);
+					floorFlux.assign(floorFaces,0.0);
+					std::vector<unsigned char> faceFailed(floorFaces,0u);
+					std::vector<std::string> faceError(floorFaces);
+					ParallelFireSlices(floorFaces,request.workerCount,[&](const std::size_t face){
+						const unsigned char mask=request.floorAbsorbingFaceMask[face];
+						const MethaneCellState& gas=sourceBeginning[face];
+						floorWall[face]=gas.temperatureK;
+						if(mask==0u)return;
+						const float speed=request.floorTangentialSpeedMPerS[face];
+						if(mask!=1u||!std::isfinite(speed)||speed<0.0f){
+							faceFailed[face]=1u;faceError[face]="floor radiation face input is invalid";return;}
+						const double gasDensity=gas.GasDensity();
+						std::array<double,MethaneCarbon> massFractions;
+						for(std::size_t species=0u;species<MethaneCarbon;++species)
+							massFractions[species]=std::max(0.0,gas.constituent[species])/gasDensity;
+						auto properties=[&](const double temperatureK,double& viscosity,double& conductivity){
+							return transport.MixturePropertiesBySpeciesOrder(massFractions.data(),
+								massFractions.size(),fuel,temperatureK,viscosity,conductivity,&faceError[face]);
+						};
+						FloorRadiationFace solved;
+						if(!SolveFloorSurfaceBalance(floorIrradiance[face],gas.temperatureK,gasDensity,
+							static_cast<double>(speed),fireCase.derived.floorEmissivity,
+							fireCase.derived.pilotAmbientTemperatureK,width,properties,solved,
+							&faceError[face])){faceFailed[face]=1u;return;}
+						floorWall[face]=solved.wallTemperatureK;
+						floorFlux[face]=solved.convectiveFluxWPerM2+0.0;
+						floorHeating[face]=solved.convectiveFluxWPerM2/width+0.0;
+					});
+					for(std::size_t face=0u;face<floorFaces;++face)if(faceFailed[face])
+						return Fail(error,"production canonical source floor radiation failed: "+faceError[face]);
+					for(std::size_t face=0u;face<floorFaces;++face){
+						if(floorHeating[face]==0.0){floorHeating[face]=0.0;floorFlux[face]=0.0;continue;}
+						packets[face].sensibleEnergyDeltaJPerM3+=
+							floorHeating[face]*static_cast<double>(request.timeStepS);
+						// The divergence target must derive from the dose the resident
+						// update applies, so the floor-augmented packet is re-represented.
+						RepresentMethaneSourcePacketBinary32(packets[face]);
+						if(!CertifiedBinary32SourcePacket(packets[face],fuel))return Fail(error,
+							"production canonical source floor dose failed its Binary32 certificate");
+					}
+				}
 				FireProductionFrozenSourcePacketSeal candidate;
 				candidate.shape_=request.shape;candidate.timeStepS_=request.timeStepS;
 				candidate.beginningTimeS_=request.beginningTimeS;
@@ -343,6 +406,10 @@ namespace RISE
 							"production canonical source divergence target is noncanonical");
 					candidate.divergenceTargetPerS_[cell]=divergenceTargetPerS;
 				}
+				candidate.floorHeatingWPerM3_=std::move(floorHeating);
+				candidate.floorIrradianceWPerM2_=std::move(floorIrradiance);
+				candidate.floorWallTemperatureK_=std::move(floorWall);
+				candidate.floorConvectiveFluxWPerM2_=std::move(floorFlux);
 				candidate.radiationBeta_=factor.beta;candidate.radiationGamma_=factor.gamma;
 				candidate.radiationEscapeFactor_=factor.accepted;
 				candidate.beginningStateIdentity_=UINT64_C(14695981039346656037);
@@ -395,6 +462,12 @@ namespace RISE
 				HashDouble(candidate.sourceInputIdentity_,
 					fireCase.derived.effectiveRadiativeFraction);
 				HashUInt64(candidate.sourceInputIdentity_,request.predictiveRadiation?1u:0u);
+				if(floorRadiation){
+					HashDomain(candidate.sourceInputIdentity_,"RISE canonical frozen source floor input v1");
+					HashDouble(candidate.sourceInputIdentity_,fireCase.derived.floorEmissivity);
+					HashByteValues(candidate.sourceInputIdentity_,request.floorAbsorbingFaceMask);
+					HashFloatValues(candidate.sourceInputIdentity_,request.floorTangentialSpeedMPerS);
+				}
 				candidate.FinalizeIdentities();
 				if(!candidate.Matches(error))return false;
 				result=std::move(candidate);return true;

@@ -82,6 +82,37 @@ std::uint64_t RISE::FireCase::SplitMix64(std::uint64_t value)
 	return value^(value>>31);
 }
 
+namespace
+{
+	// r270 floor radiation stays out of line: BuildMethaneV1 is compiled with
+	// fast-math, and inlining new code there would perturb its historical
+	// identity-bearing arithmetic.
+	__attribute__((noinline)) bool DeriveFloorRadiationV1(const RISE::FireCase::AuthoredV1& a,
+		RISE::FireCase::DerivedV1& d,std::string& error)
+	{
+		if(!std::isfinite(a.floorEmissivity)||!(a.floorEmissivity>0.0)||a.floorEmissivity>1.0) {
+			error="fire case floor emissivity is invalid"; return false;
+		}
+		d.floorEmissivity=a.floorEmissivity;
+		d.floorRadiationModelVersion="r270_fds_adiabatic_gray_floor_thin_point_kernel_v1";
+		return true;
+	}
+
+	__attribute__((noinline)) void AppendFloorAuthoredV1(const RISE::FireCase::AuthoredV1& a,
+		Value::Members& members)
+	{
+		members.push_back({"floor_emissivity",Value::Float(a.floorEmissivity)});
+	}
+
+	__attribute__((noinline)) void AppendFloorDerivedV1(const RISE::FireCase::DerivedV1& d,
+		Value::Members& members)
+	{
+		members.push_back({"floor_radiation",Value::MapValue({
+			{"emissivity",Value::Float(d.floorEmissivity)},
+			{"model_version",Value::String(d.floorRadiationModelVersion)}})});
+	}
+}
+
 bool RISE::FireCase::BuildSourcePattern(const AuthoredV1& authored,
 	const DerivedV1& derived,std::vector<double>& result,std::string& error)
 {
@@ -375,6 +406,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	RISECBOR64::Bytes patternBytes;
 	if(!RISECBOR64::Encode(Value::ArrayValue(activePattern),patternBytes,&error)) return false;
 	d.perturbationDigest=RISECBOR64::SHA256Hex(patternBytes);
+	if(a.hasFloorEmissivity&&!DeriveFloorRadiationV1(a,d,error)) return false;
 
 	Value::Values knots; for(const EnvelopeKnot& k:envelope) knots.push_back(Value::MapValue({
 		{"time_s",Value::Float(k.timeS)},{"value",Value::Float(k.value)}}));
@@ -407,6 +439,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 		{"output_frames_per_s",Value::Float(a.outputFramesPerS)}, {"plume_law",Value::Bool(a.plumeLaw)},
 		{"quality",quality}, {"seed",Value::Unsigned(a.seed)}, {"source",source} };
 	if(!a.domainStudy.empty()) authoredMembers.push_back({"domain_study",Value::String(a.domainStudy)});
+	if(a.hasFloorEmissivity) AppendFloorAuthoredV1(a,authoredMembers);
 	const Value authored=Value::MapValue(authoredMembers);
 	Value::Members derivedMembers={
 		{"ambient_cp_J_per_kg_K",Value::Float(d.ambientCpJPerKGK)},
@@ -447,6 +480,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 				Value::Unsigned(d.ny),Value::Unsigned(d.nz/2u)})},
 			{"reference_flow_through_time_s",Value::Float(d.matchedScheduleFlowThroughTimeS)}
 		})});
+	if(a.hasFloorEmissivity) AppendFloorDerivedV1(d,derivedMembers);
 	const Value derived=Value::MapValue(derivedMembers);
 	const Value payload=Value::MapValue({{"authored",authored},{"derived",derived},
 		{"record_kind",Value::String("fire-case-v1")},{"referenced_record_ids",Value::ArrayValue(refs)},
@@ -488,6 +522,7 @@ bool RISE::FireCase::ValidateMethaneEnvelopeV1(const RISECBOR64::Bytes& bytes,
 	std::vector<std::string> authoredKeys={"chi_r","duration_s","envelope","fuel_record_id",
 		"intensity","output_frames_per_s","plume_law","quality","seed","source"};
 	if(authored&&authored->Find("domain_study")) authoredKeys.push_back("domain_study");
+	if(authored&&authored->Find("floor_emissivity")) authoredKeys.push_back("floor_emissivity");
 	if(!authored || !ExactKeys(*authored,authoredKeys) ||
 		!refs || refs->GetType()!=Value::Array) return Fail(error,
 		"fire case methane authored schema is not exact v1");
@@ -541,6 +576,11 @@ bool RISE::FireCase::ValidateMethaneEnvelopeV1(const RISECBOR64::Bytes& bytes,
 		if(!ReadFloat(chi,parsed.radiativeFractionOverride)) return Fail(error,
 			"fire case methane chi_r is malformed");
 		parsed.hasRadiativeFractionOverride=true;
+	}
+	if(const Value* floor=authored->Find("floor_emissivity")) {
+		if(!ReadFloat(floor,parsed.floorEmissivity)) return Fail(error,
+			"fire case methane floor emissivity is malformed");
+		parsed.hasFloorEmissivity=true;
 	}
 	const Value* knots=authored->Find("envelope");
 	if(!knots || knots->GetType()!=Value::Array) return Fail(error,

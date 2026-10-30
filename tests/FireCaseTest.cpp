@@ -287,6 +287,24 @@ int main(int argc,char** argv)
 	Check(FireCase::BuildMethaneV1(overrideCase,fuel,{fuel.RecordId()},overridden,error) &&
 		overridden.derived.effectiveRadiativeFraction==0.14 &&
 		overridden.caseRecordId!=record.caseRecordId,"chi_r override is identity-bearing");
+	Check(record.derived.floorEmissivity==0.0&&record.derived.floorRadiationModelVersion.empty(),
+		"an unauthored floor keeps the gas-only adiabatic bed");
+	FireCase::AuthoredV1 floorCase=authored; floorCase.hasFloorEmissivity=true;
+	floorCase.floorEmissivity=1.0; FireCase::RecordV1 floored,floorParsed;
+	Check(FireCase::BuildMethaneV1(floorCase,fuel,{fuel.RecordId()},floored,error) &&
+		floored.derived.floorEmissivity==1.0 &&
+		!floored.derived.floorRadiationModelVersion.empty() &&
+		floored.caseRecordId!=record.caseRecordId,"r270 floor emissivity is identity-bearing");
+	Check(FireCase::ValidateMethaneEnvelopeV1(floored.envelopeBytes,fuel,floorParsed,error) &&
+		floorParsed.caseRecordId==floored.caseRecordId &&
+		floorParsed.authored.hasFloorEmissivity&&floorParsed.authored.floorEmissivity==1.0,
+		"r270 floor emissivity round-trips through the methane envelope");
+	for(const double invalid:{0.0,-0.5,1.5}){
+		FireCase::AuthoredV1 badFloor=authored; badFloor.hasFloorEmissivity=true;
+		badFloor.floorEmissivity=invalid; FireCase::RecordV1 refused;
+		Check(!FireCase::BuildMethaneV1(badFloor,fuel,{fuel.RecordId()},refused,error),
+			"r270 floor emissivity outside (0,1] is refused");
+	}
 	FireCase::AuthoredV1 patchCase=authored;
 	patchCase.sourceKind="patch"; patchCase.patchXM=0.03; patchCase.patchZM=0.02;
 	patchCase.poolDiameterM=0.0; patchCase.intensityKind="mass_flux";
