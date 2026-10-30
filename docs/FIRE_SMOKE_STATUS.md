@@ -1,15 +1,19 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-29, after the r266 plume-turbulence diagnosis (Claude now runs the campaign directly; r264 full tier-8 run in progress). This page
+Last updated 2026-10-29, after the r267 analysis of the r264 full window (Claude now runs the campaign directly). This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
-[r266 plume turbulence](FIRE_SMOKE_PLUME_TURBULENCE_R266.md) (Claude, read-only):
-- **No in-flame deficit.** The 0.29 m "deficit" is ambient updraft outside the plume; the plume core is within 5–11% of FDS below 1.5 m.
-- **The real gap is in the far plume.** It is missing large-scale (0.25–3.5 Hz) turbulence above the flame. FDS on the same grid matches Shabbir & George; r251 has about 60% of their fluctuation levels and spreads at 0.066 against 0.10.
-- **Centered momentum restores most of it.** In the r260 A/B frames, 2–3 m RMS, spreading and centreline values come within about 15% of FDS and McCaffrey.
-- **Still open:** the 1 m excess, about 310 K against FDS's 249.
-- **Next:** confirm on r264's full window with `tools/fire/r266/`.
+[r267 r264 full window](FIRE_SMOKE_R264_FULL_WINDOW_R267.md):
+- **r264 ran cleanly.** Centered momentum, from zero to 25.09 s: no retries, 99.55% of the fuel burned, 5.45 s/step.
+- **The improvement is only partial.** Temperature fluctuation and meander rose. Spreading (0.074 against 0.10 at 3 m), core mass flux (−23% at 3 m) and θ_c (60 K against McCaffrey's 38–40 at 3 m) are still off.
+- **The McCaffrey 15% condition fails:** +56% temperature at 2.95 m. Tier 10 stays blocked.
+- **The near field got worse.** Flame height is 0.92 m against 0.78 (r251), FDS 0.81 and Heskestad 0.65; θ_c at 1 m is 356 K against FDS's 249.
+- **r266 §3 overstated the A/B result.** Its 48-frame window was a favourable sample.
+- **Leading lead:** RISE lacks FDS's induced ambient inflow outside the plume.
+- **Next:** profile a production step, then diagnose the side-boundary inflow (read-only).
+
+[r266 plume turbulence](FIRE_SMOKE_PLUME_TURBULENCE_R266.md): the 0.29 m "deficit" is ambient updraft outside the plume, and the plume core matches FDS within 5–11% below 1.5 m. The gap is missing large-scale turbulence and entrainment above the flame.
 
 ## Where things are
 

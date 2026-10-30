@@ -48,6 +48,8 @@ Same grid and SGS constants, full window:
 
 ## 3. Centered momentum restores most of it
 
+> **Superseded by [r267](FIRE_SMOKE_R264_FULL_WINDOW_R267.md).** The r264 full window shows only a partial recovery. The 48-frame A/B sample below was a favourable one; 3 s blocks vary by about ±20%.
+
 The r260/r262 four-second A/B runs start from the r251 state at 15.019 s. Statistics below use the last 3 s, which is 48 frames, so they are noisy:
 
 | z (m) | Run | w_c | w_rms/w_c | θ_c (K) | θ_rms/θ_c | b_T/z | Meander/b |

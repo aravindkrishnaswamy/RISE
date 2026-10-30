@@ -1,0 +1,41 @@
+{
+  "scope": "complete_tier8_statistics_window_accepted_R1_flux_and_source_integrals",
+  "accepted_time_s": 25.09104012721218,
+  "statistics_duration_s": 14.625000000055213,
+  "supplied_kg": 0.009647284082742841,
+  "consumed_kg": 0.009604209223027887,
+  "consumed_fraction": 0.99553502733562,
+  "consumed_at_least_95_percent": true,
+  "beginning_inventory_kg": 7.419783927127462e-05,
+  "ending_inventory_kg": 6.871950457597556e-05,
+  "inventory_change_kg": -5.478334695299068e-06,
+  "outward_methane_kg": 4.855309767957216e-05,
+  "top_outward_methane_kg": 4.8515231900729236e-05,
+  "top_outward_fraction_of_supply": 0.005028900515898954,
+  "balance_residual_kg": -9.673068109973833e-11,
+  "reported_solver_residual_kg": -9.673283953231173e-11,
+  "interstep_change_kg": 0.0,
+  "balance_residual_fraction_of_supply": -1.0026726721230398e-08,
+  "mean_hrr_W": 32852.874559168944,
+  "heat_below_1_5m_fraction": 0.999982293968159,
+  "mean_flame_height_99_percent_input_m": 0.9157221771956712,
+  "heskestad_expected_m": 0.6456416432144874,
+  "flame_height_relative_error": 0.41831337371071786,
+  "height_99_percent_realized_heat_m": 0.8207589422462345,
+  "height_definition": "99% of nominal input HRR integrated vertically through the time-averaged plane profile; null if unreached. Intracell interpolation. Realized-heat quantile reported separately.",
+  "flame_height_reference": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=907227 (p.7; nominal-input normalization)",
+  "limitations": [
+    "Statistics initial inventory uses the existing clipped-linear increment, not a saved interior state.",
+    "No new numerical conservation tolerance or near-zero export cutoff is imposed; report residual and export relative to supply.",
+    "This HRR-based flame-height proxy differs from the visual intermittency definition of experimental Heskestad data."
+  ],
+  "artifacts": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r264_centered_production/run/production_capstone_summary.txt": "88b50f0e723de4a8155e1818f4b1b052f7a8bcf63fadfcf55aab45232f07cf27",
+    "/Volumes/SSD/RISE/fire_production_calibration/r264_centered_production/run/budgets/step_015380.csv": "b8665d46767f47b0353797fbd45d9dc52c1c6c90e485239412d27b215aba4759",
+    "/Volumes/SSD/RISE/fire_production_calibration/r264_centered_production/run/budgets/heat_release_height.csv": "6ff045c3e61fb6d6cf633a58615cfa1b81c09b4f22de18d18c85227d5adacd9f",
+    "/Volumes/SSD/Working/RISE/tools/fire/r250_acceptance.py": "ea3593d1c373eb244de45edbe5716d83e9f98003fd66ece0521481bd0ca52f5f"
+  },
+  "FDS_mean_instantaneous_h99_realized_m": 0.812699330560753,
+  "FDS_flame_height_relative_error": 0.2587467662626708,
+  "FDS_height_definition": "time mean of per-frame height containing99% realized instantaneous HRR; retained16Hzframes, trapezoidal time quadrature"
+}
