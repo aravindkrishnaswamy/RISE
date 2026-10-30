@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-29, after the r267 analysis of the r264 full window and the r268 step profile (Claude now runs the campaign directly). This page
+Last updated 2026-10-29, after the r267 analysis of the r264 full window the r268 step profile and the r269 ambient-inflow diagnosis (Claude now runs the campaign directly). This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -11,7 +11,14 @@ pages are a historical log, not instructions.
 - **The near field got worse.** Flame height is 0.92 m against 0.78 (r251), FDS 0.81 and Heskestad 0.65; θ_c at 1 m is 356 K against FDS's 249.
 - **r266 §3 overstated the A/B result.** Its 48-frame window was a favourable sample.
 - **Leading lead:** RISE lacks FDS's induced ambient inflow outside the plume.
-- **Next:** diagnose the side-boundary inflow (read-only).
+- **Next:** see r269 below.
+
+[r269 ambient inflow](FIRE_SMOKE_AMBIENT_INFLOW_R269.md):
+- **The missing near-field inflow is FDS-specific.** FDS's `ADIABATIC=T` floor absorbs flame radiation and returns about 0.5 kW to the gas (Q_COND). That warms the near-floor air out to r ≈ 1 m (3–15 K) and drives a 0.02–0.06 kg/s annular updraft at r = 0.2–0.5 m.
+- **RISE's floor never heats,** because radiation is an optically thin loss, and its floor-level air outside the burner stays exactly ambient.
+- **Air reaching the flame itself (r = 0.2 m) differs by only 9–14%.**
+- **The far-plume (>1.5 m) entrainment deficit is separate.**
+- **Proposed, awaiting owner approval:** an FDS r263 variant with floor `EMISSIVITY=0`, about 1.5 h.
 
 [r268 step profile](FIRE_SMOKE_STEP_PROFILE_R268.md):
 - **The GPU is busy only 37% of each step.** About 48% is a single GPU-idle block, while the main thread hashes, seals and re-checks source packets and EOS admissibility on the CPU. The rest is command-buffer sync stalls.
