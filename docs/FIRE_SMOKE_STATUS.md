@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-29, after the r267 analysis of the r264 full window (Claude now runs the campaign directly). This page
+Last updated 2026-10-29, after the r267 analysis of the r264 full window and the r268 step profile (Claude now runs the campaign directly). This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -11,7 +11,12 @@ pages are a historical log, not instructions.
 - **The near field got worse.** Flame height is 0.92 m against 0.78 (r251), FDS 0.81 and Heskestad 0.65; θ_c at 1 m is 356 K against FDS's 249.
 - **r266 §3 overstated the A/B result.** Its 48-frame window was a favourable sample.
 - **Leading lead:** RISE lacks FDS's induced ambient inflow outside the plume.
-- **Next:** profile a production step, then diagnose the side-boundary inflow (read-only).
+- **Next:** diagnose the side-boundary inflow (read-only).
+
+[r268 step profile](FIRE_SMOKE_STEP_PROFILE_R268.md):
+- **The GPU is busy only 37% of each step.** About 48% is a single GPU-idle block, while the main thread hashes, seals and re-checks source packets and EOS admissibility on the CPU. The rest is command-buffer sync stalls.
+- **r264 also spent 1.76 s/step between steps,** on budgets, checkpoint history and digests.
+- **Host-side fixes** (items 1–3) could take about 5.45 s down to about 2.5 s/step. They await owner review.
 
 [r266 plume turbulence](FIRE_SMOKE_PLUME_TURBULENCE_R266.md): the 0.29 m "deficit" is ambient updraft outside the plume, and the plume core matches FDS within 5–11% below 1.5 m. The gap is missing large-scale turbulence and entrainment above the flame.
 
