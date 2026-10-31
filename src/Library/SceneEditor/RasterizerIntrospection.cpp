@@ -111,6 +111,12 @@ std::vector<CameraProperty> RasterizerIntrospection::Inspect( const IJob& job, c
 		if( !current.empty() ) {
 			cp.value    = String( current.c_str() );
 			cp.editable = true;
+			for( ChunkCategory rc : p.referenceCategories ) {
+				if( rc == ChunkCategory::Painter || rc == ChunkCategory::Function ) {
+					cp.targetsPainter = true;
+					break;
+				}
+			}
 		} else {
 			cp.value    = String( "(scene-file only)" );
 			cp.editable = false;

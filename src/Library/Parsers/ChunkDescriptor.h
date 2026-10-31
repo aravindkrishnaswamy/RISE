@@ -655,6 +655,26 @@ namespace RISE
 		//! reports `"deprecated":true`, and the agent refuses to insert/patch it.
 		bool                         deprecated = false;
 		std::string                  replacement;                            //!< human-readable replacement hint
+
+		//! Optional presentation soft range for the Properties panel slider
+		//! (docs/gui/MATERIAL_EDITOR.md §6.3, docs/gui/PROPERTIES_AND_REFERENCES.md §4.1).
+		//! Pure presentation hint — the scene language and text well still accept
+		//! values outside `[softMin, softMax]`, and Reference-kind painter slots
+		//! only surface the slider while their current value is a single finite
+		//! numeric literal (never when bound to a named painter).
+		bool                         hasSoftRange = false;
+		double                       softMin      = 0.0;
+		double                       softMax      = 0.0;
+		double                       softStep     = 0.0;
+
+		ParameterDescriptor& SoftRange( double lo, double hi, double step = 0.0 )
+		{
+			hasSoftRange = true;
+			softMin      = lo;
+			softMax      = hi;
+			softStep     = step;
+			return *this;
+		}
 	};
 
 	struct ChunkDescriptor

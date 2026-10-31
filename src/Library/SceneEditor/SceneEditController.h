@@ -4240,6 +4240,10 @@ namespace RISE
 		double       PropertyRangeMinFor( Category cat, unsigned int idx ) const;
 		double       PropertyRangeMaxFor( Category cat, unsigned int idx ) const;
 		double       PropertyRangeStepFor( Category cat, unsigned int idx ) const;
+		bool         PropertyTargetsPainterFor( Category cat, unsigned int idx ) const;
+		int          PropertyInlinePainterKindFor( Category cat, unsigned int idx ) const;
+		String       PropertyInlinePainterValueFor( Category cat, unsigned int idx ) const;
+		unsigned int PropertyInlinePainterRefCountFor( Category cat, unsigned int idx ) const;
 
 		//! Quick-pick preset accessors for the editor combo box.
 		//! Empty for parameters whose descriptor declares no presets.
@@ -4272,6 +4276,13 @@ namespace RISE
 		double PropertyRangeMin( unsigned int idx ) const;
 		double PropertyRangeMax( unsigned int idx ) const;
 		double PropertyRangeStep( unsigned int idx ) const;
+
+		//! Material Editor Slice 3: inline constant-painter editing & slot
+		//! swatch metadata for ValueKind::Reference rows targeting painters.
+		bool         PropertyTargetsPainter( unsigned int idx ) const;
+		int          PropertyInlinePainterKind( unsigned int idx ) const;
+		String       PropertyInlinePainterValue( unsigned int idx ) const;
+		unsigned int PropertyInlinePainterRefCount( unsigned int idx ) const;
 
 		//! Jump-to-definition (GUI redesign, 2026-07-22): for a
 		//! ValueKind::Reference row whose value names another element,
@@ -4317,6 +4328,21 @@ namespace RISE
 		//! with `cat = Material` and the controller resolves the
 		//! material name via the Object's bound material.
 		bool SetPropertyForCategory( Category cat, const String& name, const String& valueStr );
+
+		//! Material Editor Slice 3: edit the `color` or `value` parameter of
+		//! the CST-authored constant painter (`uniformcolor_painter` or Form-1
+		//! `scalar_painter`) currently bound to reference slot `slotParam` on
+		//! the active selection in `cat`.  Routes through the checked CST
+		//! transaction path so undo/redo, dirty state, and re-render all stay
+		//! in sync.
+		bool SetReferenceSlotPainterValue( Category cat, const String& slotParam, const String& valueStr );
+
+		//! Material Editor Slice 3: fork the CST-authored painter currently
+		//! bound to reference slot `slotParam` on the active selection in `cat`
+		//! into a new copy placed immediately after the original painter in
+		//! declaration order, and rebind ONLY `slotParam` to the new copy in a
+		//! single atomic whole-document commit (1 Undo step).
+		bool ForkReferenceSlotPainter( Category cat, const String& slotParam, String* outNewPainterName = nullptr );
 
 		//! Clone the currently-active camera under a new name and
 		//! promote the clone to active. `proposedName` is canonicalized to a

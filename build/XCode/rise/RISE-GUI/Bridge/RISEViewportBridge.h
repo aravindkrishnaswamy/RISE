@@ -1002,6 +1002,15 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                           outName:(NSString * _Nullable * _Nonnull)outName
     NS_SWIFT_NAME(propertyJumpTarget(atIndex:outCategory:outName:));
 
+/// Per-category twin of `-propertyJumpTargetAtIndex:outCategory:outName:`:
+/// resolves the jump target against `category`'s own property snapshot rather
+/// than the primary selection's snapshot.
+- (BOOL)propertyJumpTargetForCategory:(RISEViewportCategory)category
+                              atIndex:(NSUInteger)idx
+                          outCategory:(RISEViewportCategory *)outCategory
+                              outName:(NSString * _Nullable * _Nonnull)outName
+    NS_SWIFT_NAME(propertyJumpTarget(forCategory:atIndex:outCategory:outName:));
+
 /// Apply an edit to a named property.  Returns YES on success.
 - (BOOL)setPropertyName:(NSString *)name value:(NSString *)value;
 
@@ -1020,6 +1029,23 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                           name:(NSString *)name
                          value:(NSString *)value
     NS_SWIFT_NAME(setProperty(for:name:value:));
+
+/// Material Editor Slice 3: edit the constant value (`color` or `value`) of the
+/// CST-authored painter currently bound to `slotParam` on `category`'s active
+/// selection.
+- (BOOL)setReferenceSlotPainterValueForCategory:(RISEViewportCategory)category
+                                      slotParam:(NSString *)slotParam
+                                          value:(NSString *)value
+    NS_SWIFT_NAME(setReferenceSlotPainterValue(for:slotParam:value:));
+
+/// Material Editor Slice 3: fork the CST-authored painter currently bound to
+/// `slotParam` on `category`'s active selection into an owned copy placed
+/// immediately after the original painter, and rebind `slotParam` to the new
+/// copy in one atomic Undo step.  Returns the new painter name on success, or
+/// nil on refusal.
+- (nullable NSString *)forkReferenceSlotPainterForCategory:(RISEViewportCategory)category
+                                                 slotParam:(NSString *)slotParam
+    NS_SWIFT_NAME(forkReferenceSlotPainter(for:slotParam:));
 
 #pragma mark - Accordion list entries
 
@@ -2064,6 +2090,10 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 @property (nonatomic, readonly) double rangeMin;
 @property (nonatomic, readonly) double rangeMax;
 @property (nonatomic, readonly) double rangeStep;
+@property (nonatomic, readonly) BOOL targetsPainter;
+@property (nonatomic, readonly) NSInteger inlinePainterKind;
+@property (nonatomic, readonly) NSString *inlinePainterValue;
+@property (nonatomic, readonly) NSUInteger inlinePainterRefCount;
 @end
 
 NS_ASSUME_NONNULL_END

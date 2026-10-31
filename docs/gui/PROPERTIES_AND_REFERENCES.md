@@ -39,8 +39,13 @@ usable for ANY named chunk:
   enumerated from the referenced categories' managers
   (`CandidateNamesForChunkCategory`) — pick-from-what-exists.
 
-`PainterIntrospection.{h,cpp}` was **deleted**; the painter panel is now
-`CstIntrospection::Inspect(doc, job, name, "painter", ...)`.
+`PainterIntrospection.{h,cpp}` ([../../src/Library/SceneEditor/PainterIntrospection.h](../../src/Library/SceneEditor/PainterIntrospection.h))
+was originally replaced by `CstIntrospection::Inspect(doc, job, name, "painter", ...)`
+and then **re-introduced as a thin painter-specific layer on top of
+`CstIntrospection::Inspect`** in doc 88 S4/S4b to prepend the read-only
+`pipe` row (`IPainter` vs `IScalarPainter`), expand repeatable parameters
+(`stop[i]`, `param[i]`, `def[i]`) into occurrence-addressed editable rows,
+and populate `ExpressionParamSpec` slider range fields (`hasRange`/`rangeMin`/`rangeMax`/`rangeStep`).
 
 ## 2. Geometry category (`Category::Geometry = 11`)
 

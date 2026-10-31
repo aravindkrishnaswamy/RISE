@@ -2423,7 +2423,7 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
     out.reserve(static_cast<int>(n));
     char nameBuf[128];
     char valBuf[256];
-    char descBuf[512];
+    char descBuf[2048];
     // Generously sized so future descriptors with longer labels
     // (multi-byte UTF-8 for non-ASCII names) can grow without churn.
     // QString::fromUtf8 silently substitutes replacement chars on
@@ -2432,6 +2432,7 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
     char presetLabelBuf[256];
     char presetValueBuf[256];
     char unitLabelBuf[64];
+    char inlinePainterValBuf[256];
     for (unsigned int i = 0; i < n; ++i) {
         RISE_API_SceneEditController_PropertyName(m_controller, i, nameBuf, sizeof(nameBuf));
         RISE_API_SceneEditController_PropertyValue(m_controller, i, valBuf, sizeof(valBuf));
@@ -2471,6 +2472,13 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
         p.rangeMax  = RISE_API_SceneEditController_PropertyRangeMax(m_controller, i);
         p.rangeStep = RISE_API_SceneEditController_PropertyRangeStep(m_controller, i);
 
+        p.targetsPainter        = RISE_API_SceneEditController_PropertyTargetsPainter(m_controller, i) != 0;
+        p.inlinePainterKind     = RISE_API_SceneEditController_PropertyInlinePainterKind(m_controller, i);
+        if (p.inlinePainterKind != 0 && RISE_API_SceneEditController_PropertyInlinePainterValue(m_controller, i, inlinePainterValBuf, sizeof(inlinePainterValBuf))) {
+            p.inlinePainterValue = QString::fromUtf8(inlinePainterValBuf);
+        }
+        p.inlinePainterRefCount = RISE_API_SceneEditController_PropertyInlinePainterRefCount(m_controller, i);
+
         out.append(p);
     }
     return out;
@@ -2498,7 +2506,7 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshotFor(Category cat)
     out.reserve(static_cast<int>(n));
     char nameBuf[128];
     char valBuf[256];
-    char descBuf[512];
+    char descBuf[2048];
     char presetLabelBuf[256];
     char presetValueBuf[256];
     char unitLabelBuf[64];
@@ -2535,6 +2543,15 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshotFor(Category cat)
         p.rangeMin  = RISE_API_SceneEditController_PropertyRangeMinFor(m_controller, catInt, i);
         p.rangeMax  = RISE_API_SceneEditController_PropertyRangeMaxFor(m_controller, catInt, i);
         p.rangeStep = RISE_API_SceneEditController_PropertyRangeStepFor(m_controller, catInt, i);
+
+        p.targetsPainter = RISE_API_SceneEditController_PropertyTargetsPainterFor(m_controller, catInt, i);
+        p.inlinePainterKind = RISE_API_SceneEditController_PropertyInlinePainterKindFor(m_controller, catInt, i);
+        char inlineValBuf[256];
+        if (p.inlinePainterKind != 0 &&
+            RISE_API_SceneEditController_PropertyInlinePainterValueFor(m_controller, catInt, i, inlineValBuf, sizeof(inlineValBuf))) {
+            p.inlinePainterValue = QString::fromUtf8(inlineValBuf);
+        }
+        p.inlinePainterRefCount = RISE_API_SceneEditController_PropertyInlinePainterRefCountFor(m_controller, catInt, i);
 
         out.append(p);
     }
@@ -2574,6 +2591,28 @@ bool ViewportBridge::setPropertyForCategory(Category cat, const QString& name, c
     return RISE_API_SceneEditController_SetPropertyForCategory(
         m_controller, static_cast<int>(cat),
         name.toUtf8().constData(), value.toUtf8().constData());
+}
+
+bool ViewportBridge::setReferenceSlotPainterValue(Category cat, const QString& slotParam, const QString& value)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+        m_controller, static_cast<int>(cat),
+        slotParam.toUtf8().constData(), value.toUtf8().constData());
+}
+
+bool ViewportBridge::forkReferenceSlotPainter(Category cat, const QString& slotParam, QString* outNewPainterName)
+{
+    if (outNewPainterName) outNewPainterName->clear();
+    if (!m_controller) return false;
+    char newNameBuf[256] = { 0 };
+    const bool ok = RISE_API_SceneEditController_ForkReferenceSlotPainter(
+        m_controller, static_cast<int>(cat),
+        slotParam.toUtf8().constData(), newNameBuf, sizeof(newNameBuf));
+    if (ok && outNewPainterName && newNameBuf[0]) {
+        *outNewPainterName = QString::fromUtf8(newNameBuf);
+    }
+    return ok;
 }
 
 QString ViewportBridge::selectionNameForCategory(Category cat) const

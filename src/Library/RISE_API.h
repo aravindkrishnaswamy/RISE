@@ -4739,6 +4739,15 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, unsigned int idx );
 	double RISE_API_SceneEditController_PropertyRangeStep(
 		SceneEditController* p, unsigned int idx );
+	bool   RISE_API_SceneEditController_PropertyTargetsPainter(
+		SceneEditController* p, unsigned int idx );
+	int    RISE_API_SceneEditController_PropertyInlinePainterKind(
+		SceneEditController* p, unsigned int idx );
+	bool   RISE_API_SceneEditController_PropertyInlinePainterValue(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	unsigned int RISE_API_SceneEditController_PropertyInlinePainterRefCount(
+		SceneEditController* p, unsigned int idx );
 
 	//! Jump-to-definition (GUI redesign, 2026-07-22): for a Reference-kind
 	//! row whose value names another element, resolve which UI category
@@ -5397,6 +5406,15 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, int category, unsigned int idx );
 	double RISE_API_SceneEditController_PropertyRangeStepFor(
 		SceneEditController* p, int category, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyTargetsPainterFor(
+		SceneEditController* p, int category, unsigned int idx );
+	int RISE_API_SceneEditController_PropertyInlinePainterKindFor(
+		SceneEditController* p, int category, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyInlinePainterValueFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	unsigned int RISE_API_SceneEditController_PropertyInlinePainterRefCountFor(
+		SceneEditController* p, int category, unsigned int idx );
 
 	//! Phase 4b — per-category SetProperty.  Routes the edit through
 	//! `category`'s per-section selection (matches the panel's
@@ -5404,6 +5422,14 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! while Object is the primary still targets the right material).
 	bool RISE_API_SceneEditController_SetPropertyForCategory(
 		SceneEditController* p, int category, const char* name, const char* valueStr );
+
+	//! Material Editor Slice 3 — inline constant-painter editing & fork on
+	//! reference slots targeting painters.
+	bool RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+		SceneEditController* p, int category, const char* slotParam, const char* valueStr );
+	bool RISE_API_SceneEditController_ForkReferenceSlotPainter(
+		SceneEditController* p, int category, const char* slotParam,
+		char* outNewPainterName, unsigned int outNewPainterNameLen );
 
 	//! Clone the currently-active camera under a new name and switch
 	//! the scene to the new camera.  `proposedName` is canonicalized to a

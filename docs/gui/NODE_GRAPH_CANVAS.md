@@ -54,16 +54,19 @@ intermediate read-only-only Windows state worth a separate commit.
    The def rows themselves ARE visible once the node is selected; they are
    just not auto-scrolled-to.  Closing this is `ViewportProperties` work,
    out of the canvas arc's own scope.
-3. **`fw` (filter-width) domain-scaling caveat still applies to canvas-authored
-   expression nodes.**  Not a canvas defect — a standing limitation of the
-   underlying expression VM this doc's nodes wrap, documented in
-   `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md`
-   §7 decision 3: `fw` is passed into noise builtins in whatever domain the
-   body's own position argument is already in (e.g. `fbm(P*10, ...)` makes
-   the fade threshold off by that 10x), since the VM has no autodiff to
-   track a caller's own scale multiply.  Pointed to here because the canvas
-   makes expression-family nodes easier to author and wire, which raises
-   the odds an author hits this while working visually rather than in text.
+3. **`fw` (filter-width) domain-scaling caveat — RESOLVED (2026-09-06).**  Originally
+   documented as a standing limitation (`docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md`
+   §7 decision 3) where `fw` was passed unscaled into noise builtins when the
+   position argument was scaled (e.g. `fbm(P*10, ...)`).  Resolved via
+   compile-time forward-mode Jacobian singular-value analysis
+   (`Builder::NoiseFwScales` in `src/Library/Functions/ExpressionEval.h`,
+   covered by `tests/ExpressionFunctionTest.cpp`), so both final renders and
+   `PainterPreview` node/stage thumbnails rescale `fw` automatically.
+4. **Post-S23 canvas enhancements shipped:** Both the macOS and Windows canvases
+   also carry the **`All` vs. `Focused` view-scope toggle** (`PainterMaterialGraphFocused`
+   centered on the sticky object's appearance closure) and the **object-pick
+   spotlight** (`AppearanceClosureForObject` highlights and auto-scrolls the
+   picked object's material/painter subgraph).
 
 
 Companion to `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md` §4 P5.4 and §7 decision 6 (canvas is ON the roadmap, Phase 3, "no longer only if data demands"), and to `docs/gui/MATERIAL_EDITOR.md` §3/§3.7/§3.8 (C2 node graph — the design this doc narrows into an implementable slice plan).

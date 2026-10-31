@@ -1377,6 +1377,728 @@ int main()
 		std::remove( tmp7.c_str() );
 	}
 
+	// ---------- T35-T38: Material Editor Slice 1 + Slice 2 ----------
+	std::printf( "T35-T38: Material Editor inspector upgrades, pipe-filtered presets, inline/composed slot rebinds, and soft ranges...\n" );
+	{
+		static const char* kMatEditorScene =
+			"RISE ASCII SCENE 7\n"
+			"\n"
+			"film\n"
+			"{\n"
+			"\twidth\t\t24\n"
+			"\theight\t\t24\n"
+			"}\n"
+			"\n"
+			"pinhole_camera\n"
+			"{\n"
+			"\tlocation\t0 0 5\n"
+			"\tlookat\t\t0 0 0\n"
+			"\tup\t\t0 1 0\n"
+			"\tfov\t\t45\n"
+			"}\n"
+			"\n"
+			"uniformcolor_painter\n"
+			"{\n"
+			"\tname\t\tpnt_white\n"
+			"\tcolor\t\t0.8 0.8 0.8\n"
+			"}\n"
+			"\n"
+			"uniformcolor_painter\n"
+			"{\n"
+			"\tname\t\tpnt_blue\n"
+			"\tcolor\t\t0.2 0.4 0.9\n"
+			"}\n"
+			"\n"
+			"uniformcolor_painter\n"
+			"{\n"
+			"\tname\t\tpnt_emit\n"
+			"\tcolor\t\t2.0 2.0 2.0\n"
+			"}\n"
+			"\n"
+			"scalar_painter\n"
+			"{\n"
+			"\tname\t\tsp_rough\n"
+			"\tvalue\t\t0.25\n"
+			"}\n"
+			"\n"
+			"scalar_painter\n"
+			"{\n"
+			"\tname\t\tsp_ior\n"
+			"\tvalue\t\t1.52\n"
+			"}\n"
+			"\n"
+			"scalar_painter\n"
+			"{\n"
+			"\tname\t\tsp_rgb\n"
+			"\tvalues\t\t1.2 1.5 1.8\n"
+			"}\n"
+			"\n"
+			"scalar_painter\n"
+			"{\n"
+			"\tname\t\tsp_expr_rgb\n"
+			"\texpression\tvec3(0.2, 0.5, 0.8)\n"
+			"}\n"
+			"\n"
+			"scalar_painter\n"
+			"{\n"
+			"\tname\t\tsp_sellmeier\n"
+			"\tsellmeier\t1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653\n"
+			"}\n"
+			"\n"
+			"perlin3d_painter\n"
+			"{\n"
+			"\tname\t\tpnt_perlin\n"
+			"\tcolora\t\tpnt_white\n"
+			"\tcolorb\t\tpnt_blue\n"
+			"\tscale\t\t2.0 2.0 2.0\n"
+			"\tpersistence\t0.5\n"
+			"\toctaves\t\t4\n"
+			"}\n"
+			"\n"
+			"blend_painter\n"
+			"{\n"
+			"\tname\t\tbp_leaf\n"
+			"\tcolora\t\tpnt_white\n"
+			"\tcolorb\t\tpnt_blue\n"
+			"\tmask\t\tpnt_white\n"
+			"}\n"
+			"\n"
+			"blend_painter\n"
+			"{\n"
+			"\tname\t\tbp_root\n"
+			"\tcolora\t\tbp_leaf\n"
+			"\tcolorb\t\tpnt_blue\n"
+			"\tmask\t\tpnt_white\n"
+			"}\n"
+			"\n"
+			"lambertian_material\n"
+			"{\n"
+			"\tname\t\tmat_lamb\n"
+			"\treflectance\tpnt_white\n"
+			"}\n"
+			"\n"
+			"uniformcolor_painter\n"
+			"{\n"
+			"\tname\t\tpnt_after_lamb\n"
+			"\tcolor\t\t0.9 0.1 0.1\n"
+			"}\n"
+			"\n"
+			"dielectric_material\n"
+			"{\n"
+			"\tname\t\tmat_glass\n"
+			"\ttau\t\t0.9\n"
+			"\tior\t\t1.5\n"
+			"\tscattering\t100.0\n"
+			"}\n"
+			"\n"
+			"ggx_material\n"
+			"{\n"
+			"\tname\t\tmat_ggx_defaults\n"
+			"\trs\t\tpnt_blue\n"
+			"}\n"
+			"\n"
+			"ggx_material\n"
+			"{\n"
+			"\tname\t\tmat_ggx_lit\n"
+			"\trd\t\tpnt_white\n"
+			"\trs\t\tpnt_blue\n"
+			"\talphax\t\t0.15\n"
+			"\talphay\t\tsp_rough\n"
+			"\tior\t\t1.8\n"
+			"\textinction\t0.0\n"
+			"\tfresnel_mode\tconductor\n"
+			"\temissive\tpnt_emit\n"
+			"\temissive_scale\t2.5\n"
+			"}\n"
+			"\n"
+			"coated_material\n"
+			"{\n"
+			"\tname\t\tmat_coated\n"
+			"\tbase\t\tmat_lamb\n"
+			"\tcoat_roughness\t0.1\n"
+			"\tcoat_ior\t1.5\n"
+			"\tcoat_thickness\t2.5\n"
+			"\tcoat_absorption\t0.2\n"
+			"\tcoat_weight\t0.8\n"
+			"}\n"
+			"\n"
+			"weave_material\n"
+			"{\n"
+			"\tname\t\tmat_weave\n"
+			"\tfabric\t\tsilk\n"
+			"\twarp_color\tpnt_white\n"
+			"\tweft_color\tpnt_blue\n"
+			"\tweave_scale\t60\n"
+			"}\n";
+
+		const std::string tmp8 = TempPath( "geometry_panel_jump_mateditor.RISEscene" );
+		Job* pJob8 = LoadScene( kMatEditorScene, tmp8 );
+		Check( pJob8 != nullptr, "T25: Material Editor fixture loads" );
+		if( pJob8 )
+		{
+			SceneEditController ctrl8( *pJob8, nullptr );
+
+			auto hasPreset = [&]( Category cat, int rowIdx, const std::string& val ) -> bool
+			{
+				if( rowIdx < 0 ) return false;
+				const unsigned int n = ctrl8.PropertyPresetCountFor( cat, static_cast<unsigned int>( rowIdx ) );
+				for( unsigned int i = 0; i < n; ++i )
+				{
+					if( std::string( ctrl8.PropertyPresetValueFor( cat, static_cast<unsigned int>( rowIdx ), i ).c_str() ) == val )
+						return true;
+				}
+				return false;
+			};
+
+			// T25: ggx_material.fresnel_mode upgraded to ValueKind::Enum with presets & round-trip edit
+			ctrl8.SetSelection( Category::Material, String( "mat_ggx_lit" ) );
+			ctrl8.RefreshProperties();
+			const int fmRow = RowIndexFor( ctrl8, Category::Material, "fresnel_mode" );
+			Check( fmRow >= 0, "T25: ggx_material exposes fresnel_mode row" );
+			if( fmRow >= 0 )
+			{
+				const unsigned int uFm = static_cast<unsigned int>( fmRow );
+				Check( ctrl8.PropertyEditableFor( Category::Material, uFm ),
+					"MONEY (T25): ggx_material.fresnel_mode upgraded from read-only live row to editable CST row" );
+				Check( ctrl8.PropertyKindFor( Category::Material, uFm ) == static_cast<int>( ValueKind::Enum ),
+					"MONEY (T25): ggx_material.fresnel_mode upgraded from ValueKind::String to ValueKind::Enum" );
+				Check( hasPreset( Category::Material, fmRow, "conductor" )
+					&& hasPreset( Category::Material, fmRow, "schlick_f0" )
+					&& hasPreset( Category::Material, fmRow, "thinfilm" ),
+					"MONEY (T25): ggx_material.fresnel_mode carries enum presets conductor / schlick_f0 / thinfilm" );
+
+				Check( ctrl8.SetProperty( String( "fresnel_mode" ), String( "schlick_f0" ) ),
+					"T25: SetProperty(fresnel_mode, schlick_f0) succeeds" );
+				ctrl8.RefreshProperties();
+				Check( std::string( ctrl8.PropertyValueFor( Category::Material, uFm ).c_str() ) == "schlick_f0",
+					"T25: fresnel_mode value reflects schlick_f0 after edit" );
+				ctrl8.Undo();
+				ctrl8.RefreshProperties();
+				Check( std::string( ctrl8.PropertyValueFor( Category::Material, uFm ).c_str() ) == "conductor",
+					"T25: fresnel_mode value restored to conductor after Undo" );
+			}
+
+			// T26: Pipe-filtered and cycle-filtered Reference presets
+			// 26a: Color-only slot (lambertian_material.reflectance) offers colour painters, excludes scalar painters
+			ctrl8.SetSelection( Category::Material, String( "mat_lamb" ) );
+			ctrl8.RefreshProperties();
+			const int rdRow = RowIndexFor( ctrl8, Category::Material, "reflectance" );
+			Check( rdRow >= 0, "T26a: lambertian_material.reflectance row exists" );
+			if( rdRow >= 0 )
+			{
+				Check( hasPreset( Category::Material, rdRow, "pnt_white" )
+					&& hasPreset( Category::Material, rdRow, "pnt_blue" ),
+					"T26a: Color slot `reflectance` includes colour painters pnt_white and pnt_blue" );
+				Check( !hasPreset( Category::Material, rdRow, "sp_rough" )
+					&& !hasPreset( Category::Material, rdRow, "sp_rgb" ),
+					"MONEY (T26a): Color slot `reflectance` excludes scalar painters sp_rough and sp_rgb" );
+				Check( !hasPreset( Category::Material, rdRow, "pnt_after_lamb" ),
+					"MONEY (T26a): Color slot `mat_lamb.reflectance` excludes forward-declared painter `pnt_after_lamb`" );
+			}
+
+			// 26b: Scalar slot (ggx_material.alphay allows per-channel scalar painters;
+			// coated_material.coat_roughness and ggx_material.tangent_rotation_scalar have requireSingle=true)
+			ctrl8.SetSelection( Category::Material, String( "mat_ggx_lit" ) );
+			ctrl8.RefreshProperties();
+			const int ayRow = RowIndexFor( ctrl8, Category::Material, "alphay" );
+			Check( ayRow >= 0, "T26b: ggx_material.alphay row exists" );
+			if( ayRow >= 0 )
+			{
+				Check( hasPreset( Category::Material, ayRow, "sp_rough" )
+					&& hasPreset( Category::Material, ayRow, "sp_rgb" ),
+					"T26b: non-requireSingle Scalar slot `alphay` includes both 1-value and 3-value scalar painters" );
+				Check( !hasPreset( Category::Material, ayRow, "pnt_white" ),
+					"MONEY (T26b): Scalar slot `alphay` excludes colour painter pnt_white" );
+				// Also verify that attempting to set a CST colour painter on a Scalar
+				// slot is rejected by the derive path (not misclassified as a runtime-only
+				// dangling reference) and preserves the existing value.
+				Check( !ctrl8.SetProperty( "alphay", "pnt_white" ),
+					"T26b: setting colour painter `pnt_white` on Scalar slot `alphay` is rejected" );
+			}
+			const int trsRow = RowIndexFor( ctrl8, Category::Material, "tangent_rotation_scalar" );
+			Check( trsRow >= 0, "T26b: ggx_material.tangent_rotation_scalar row exists" );
+			if( trsRow >= 0 )
+			{
+				Check( hasPreset( Category::Material, trsRow, "sp_rough" )
+					&& hasPreset( Category::Material, trsRow, "sp_ior" ),
+					"T26b: requireSingle Scalar slot `tangent_rotation_scalar` includes 1-value scalar painters" );
+				Check( !hasPreset( Category::Material, trsRow, "sp_rgb" ),
+					"MONEY (T26b): requireSingle Scalar slot `tangent_rotation_scalar` excludes 3-value `values` scalar painter sp_rgb" );
+				Check( !hasPreset( Category::Material, trsRow, "sp_expr_rgb" ),
+					"MONEY (T26b): requireSingle Scalar slot `tangent_rotation_scalar` excludes per-channel vec3 expression scalar painter sp_expr_rgb" );
+				Check( !hasPreset( Category::Material, trsRow, "pnt_white" ),
+					"MONEY (T26b): Scalar slot `tangent_rotation_scalar` excludes colour painter pnt_white" );
+			}
+
+			// 26c: colorAlsoAcceptsScalar slot (ggx_material.tangent_rotation) offers both colour and 1-value scalar painters,
+			// while perlin3d_painter.colora (Color pipe) offers colour painters and excludes scalar painters + self
+			const int trRow = RowIndexFor( ctrl8, Category::Material, "tangent_rotation" );
+			Check( trRow >= 0, "T26c: ggx_material.tangent_rotation row exists" );
+			if( trRow >= 0 )
+			{
+				Check( hasPreset( Category::Material, trRow, "pnt_white" )
+					&& hasPreset( Category::Material, trRow, "sp_rough" ),
+					"MONEY (T26c): colorAlsoAcceptsScalar slot `ggx_material.tangent_rotation` includes both colour and 1-value scalar painters" );
+				Check( !hasPreset( Category::Material, trRow, "sp_rgb" )
+					&& !hasPreset( Category::Material, trRow, "sp_expr_rgb" )
+					&& !hasPreset( Category::Material, trRow, "sp_sellmeier" ),
+					"MONEY (T26c): `ggx_material.tangent_rotation` (ResolveRotationPainterDual) excludes per-channel and spectral-curve scalar painters" );
+			}
+			ctrl8.SetSelection( Category::Painter, String( "pnt_perlin" ) );
+			ctrl8.RefreshProperties();
+			const int caRow = RowIndexFor( ctrl8, Category::Painter, "colora" );
+			Check( caRow >= 0, "T26c: perlin3d_painter.colora row exists" );
+			if( caRow >= 0 )
+			{
+				Check( hasPreset( Category::Painter, caRow, "pnt_white" )
+					&& !hasPreset( Category::Painter, caRow, "sp_rough" ),
+					"MONEY (T26c): Color-pipe `perlin3d_painter.colora` includes colour painters and excludes scalar painters" );
+				Check( !hasPreset( Category::Painter, caRow, "pnt_perlin" ),
+					"MONEY (T26c): `perlin3d_painter.colora` excludes self-reference pnt_perlin" );
+			}
+
+			// 26d: Cycle exclusion on painter reference chain (bp_root -> bp_leaf)
+			ctrl8.SetSelection( Category::Painter, String( "bp_leaf" ) );
+			ctrl8.RefreshProperties();
+			const int leafCaRow = RowIndexFor( ctrl8, Category::Painter, "colora" );
+			Check( leafCaRow >= 0, "T26d: bp_leaf.colora row exists" );
+			if( leafCaRow >= 0 )
+			{
+				Check( !hasPreset( Category::Painter, leafCaRow, "bp_leaf" ),
+					"MONEY (T26d): bp_leaf.colora excludes self-reference bp_leaf" );
+				Check( !hasPreset( Category::Painter, leafCaRow, "bp_root" ),
+					"MONEY (T26d): bp_leaf.colora excludes ancestor bp_root (would form cycle bp_root -> bp_leaf -> bp_root)" );
+				Check( hasPreset( Category::Painter, leafCaRow, "pnt_white" ),
+					"T26d: bp_leaf.colora still includes non-cyclic pnt_white" );
+			}
+
+			// 26e: Material base slot on coated_material excludes self and "none"
+			ctrl8.SetSelection( Category::Material, String( "mat_coated" ) );
+			ctrl8.RefreshProperties();
+			const int subRow = RowIndexFor( ctrl8, Category::Material, "base" );
+			Check( subRow >= 0, "T26e: coated_material.base row exists" );
+			if( subRow >= 0 )
+			{
+				Check( hasPreset( Category::Material, subRow, "mat_lamb" ),
+					"T26e: coated_material.base includes lambertian substrate mat_lamb" );
+				Check( !hasPreset( Category::Material, subRow, "mat_coated" ),
+					"MONEY (T26e): coated_material.base excludes self-reference mat_coated" );
+				Check( !hasPreset( Category::Material, subRow, "none" ),
+					"MONEY (T26e): required Material slot coated_material.base excludes built-in `none`" );
+			}
+			const int coatIorRow = RowIndexFor( ctrl8, Category::Material, "coat_ior" );
+			Check( coatIorRow >= 0, "T26e: coated_material.coat_ior row exists" );
+			if( coatIorRow >= 0 )
+			{
+				Check( hasPreset( Category::Material, coatIorRow, "sp_sellmeier" ),
+					"MONEY (T26e): DL-29 spectral-curve scalar_painter `sp_sellmeier` is accepted on requireSingle Scalar slot `coated_material.coat_ior`" );
+				Check( !hasPreset( Category::Material, coatIorRow, "sp_rgb" )
+					&& !hasPreset( Category::Material, coatIorRow, "sp_expr_rgb" ),
+					"MONEY (T26e): 3-value `values` and `vec3(...)` expression scalar painters remain excluded on `coated_material.coat_ior`" );
+			}
+
+			// T27: Inline-literal-to-painter-name rebind & composed-material slot rebind
+			// 27a: dielectric_material.ior authored as inline scalar `1.5`, rebound to named `sp_ior`, then undone
+			ctrl8.SetSelection( Category::Material, String( "mat_glass" ) );
+			ctrl8.RefreshProperties();
+			int glassIorRow = RowIndexFor( ctrl8, Category::Material, "ior" );
+			Check( glassIorRow >= 0, "T27a: dielectric_material.ior row exists" );
+			if( glassIorRow >= 0 )
+			{
+				const unsigned int uIor = static_cast<unsigned int>( glassIorRow );
+				Check( std::string( ctrl8.PropertyValueFor( Category::Material, uIor ).c_str() ) == "1.5",
+					"T27a: dielectric_material.ior starts as inline literal 1.5" );
+				Check( ctrl8.PropertyHasRangeFor( Category::Material, uIor ),
+					"MONEY (T27a/T28): inline numeric dielectric_material.ior carries soft range" );
+				Check( hasPreset( Category::Material, glassIorRow, "sp_ior" ),
+					"MONEY (T27a): upgraded dielectric_material.ior carries scalar-painter presets including sp_ior" );
+
+				Check( ctrl8.SetProperty( String( "ior" ), String( "sp_ior" ) ),
+					"MONEY (T27a): rebinding inline literal dielectric_material.ior -> sp_ior succeeds via CST edit path" );
+				ctrl8.RefreshProperties();
+				glassIorRow = RowIndexFor( ctrl8, Category::Material, "ior" );
+				Check( glassIorRow >= 0
+					&& std::string( ctrl8.PropertyValueFor( Category::Material, static_cast<unsigned int>( glassIorRow ) ).c_str() ) == "sp_ior",
+					"T27a: dielectric_material.ior now reads sp_ior" );
+				Check( !ctrl8.PropertyHasRangeFor( Category::Material, static_cast<unsigned int>( glassIorRow ) ),
+					"MONEY (T28): dielectric_material.ior suppresses slider soft range when bound to named painter sp_ior" );
+
+				ctrl8.Undo();
+				ctrl8.RefreshProperties();
+				glassIorRow = RowIndexFor( ctrl8, Category::Material, "ior" );
+				Check( glassIorRow >= 0
+					&& std::string( ctrl8.PropertyValueFor( Category::Material, static_cast<unsigned int>( glassIorRow ) ).c_str() ) == "1.5",
+					"MONEY (T27a): Undo restores inline literal 1.5 on dielectric_material.ior" );
+				Check( ctrl8.PropertyHasRangeFor( Category::Material, static_cast<unsigned int>( glassIorRow ) ),
+					"T27a/T28: soft range restored when Undo brings dielectric_material.ior back to 1.5" );
+
+				// Inline numeric -> inline numeric slider edit round-trip
+				Check( ctrl8.SetProperty( String( "ior" ), String( "1.75" ) ),
+					"MONEY (T27a): numeric slider edit dielectric_material.ior 1.5 -> 1.75 succeeds" );
+				ctrl8.RefreshProperties();
+				glassIorRow = RowIndexFor( ctrl8, Category::Material, "ior" );
+				Check( glassIorRow >= 0
+					&& std::string( ctrl8.PropertyValueFor( Category::Material, static_cast<unsigned int>( glassIorRow ) ).c_str() ) == "1.75"
+					&& ctrl8.PropertyHasRangeFor( Category::Material, static_cast<unsigned int>( glassIorRow ) ),
+					"T27a: dielectric_material.ior reads 1.75 and keeps its soft range" );
+				ctrl8.Undo();
+				ctrl8.RefreshProperties();
+				glassIorRow = RowIndexFor( ctrl8, Category::Material, "ior" );
+				Check( glassIorRow >= 0
+					&& std::string( ctrl8.PropertyValueFor( Category::Material, static_cast<unsigned int>( glassIorRow ) ).c_str() ) == "1.5",
+					"T27a: Undo restores dielectric_material.ior to 1.5 after numeric edit" );
+			}
+
+			// 27c: omitted parameter on ggx_material (`mat_ggx_defaults` omits `rd` and `alphax`):
+			// - `alphax` gets defaultValueHint "0.15" and soft range enabled
+			// - editing omitted `rd` to `pnt_blue` and pressing Undo removes `rd` from the CST chunk cleanly
+			ctrl8.SetSelection( Category::Material, String( "mat_ggx_defaults" ) );
+			ctrl8.RefreshProperties();
+			const int defAxRow = RowIndexFor( ctrl8, Category::Material, "alphax" );
+			Check( defAxRow >= 0 && ctrl8.PropertyHasRangeFor( Category::Material, static_cast<unsigned int>( defAxRow ) ),
+				"MONEY (T27c/T28): omitted ggx_material.alphax gets defaultValueHint 0.15 and soft range enabled" );
+			Check( ctrl8.SetProperty( String( "rd" ), String( "pnt_blue" ) ),
+				"T27c: setting omitted ggx_material.rd -> pnt_blue succeeds" );
+			Check( CstValueOf( pJob8, "mat_ggx_defaults", "material", "rd" ) == "pnt_blue",
+				"T27c: CST chunk mat_ggx_defaults now has rd pnt_blue" );
+			ctrl8.Undo();
+			Check( CstValueOf( pJob8, "mat_ggx_defaults", "material", "rd" ).empty(),
+				"MONEY (T27c): Undo on previously-omitted ggx_material.rd removes the parameter line from CST instead of leaving `rd none`" );
+
+			// 27b: composed material (mat_ggx_lit has emissive -> CompositeMaterial wrapper) slot rebind
+			ctrl8.SetSelection( Category::Material, String( "mat_ggx_lit" ) );
+			ctrl8.RefreshProperties();
+			int ggxRdRow = RowIndexFor( ctrl8, Category::Material, "rd" );
+			Check( ggxRdRow >= 0, "T27b: composed ggx_material.rd row exists" );
+			if( ggxRdRow >= 0 )
+			{
+				Check( ctrl8.PropertyEditableFor( Category::Material, static_cast<unsigned int>( ggxRdRow ) ),
+					"MONEY (T27b): composed ggx_material.rd upgraded to editable via AugmentWithCstRows" );
+				Check( ctrl8.SetProperty( String( "rd" ), String( "pnt_blue" ) ),
+					"MONEY (T27b): SetProperty on composed ggx_material.rd routes through CST edit and succeeds" );
+				ctrl8.RefreshProperties();
+				ggxRdRow = RowIndexFor( ctrl8, Category::Material, "rd" );
+				Check( ggxRdRow >= 0
+					&& std::string( ctrl8.PropertyValueFor( Category::Material, static_cast<unsigned int>( ggxRdRow ) ).c_str() ) == "pnt_blue",
+					"T27b: composed ggx_material.rd now reads pnt_blue" );
+				ctrl8.Undo();
+				ctrl8.RefreshProperties();
+				ggxRdRow = RowIndexFor( ctrl8, Category::Material, "rd" );
+				Check( ggxRdRow >= 0
+					&& std::string( ctrl8.PropertyValueFor( Category::Material, static_cast<unsigned int>( ggxRdRow ) ).c_str() ) == "pnt_white",
+					"T27b: Undo restores pnt_white on composed ggx_material.rd" );
+			}
+
+			// T28: Soft ranges on material and painter rows
+			ctrl8.SetSelection( Category::Material, String( "mat_coated" ) );
+			ctrl8.RefreshProperties();
+			const int thickRow = RowIndexFor( ctrl8, Category::Material, "coat_thickness" );
+			const int weightRow = RowIndexFor( ctrl8, Category::Material, "coat_weight" );
+			Check( thickRow >= 0 && ctrl8.PropertyHasRangeFor( Category::Material, static_cast<unsigned int>( thickRow ) ),
+				"MONEY (T28): coated_material.coat_thickness (literal 2.5) has soft range enabled" );
+			if( thickRow >= 0 )
+			{
+				const unsigned int uThick = static_cast<unsigned int>( thickRow );
+				Check( std::fabs( ctrl8.PropertyRangeMinFor( Category::Material, uThick ) - 0.0 ) < 1e-6
+					&& std::fabs( ctrl8.PropertyRangeMaxFor( Category::Material, uThick ) - 10.0 ) < 1e-6,
+					"T28: coated_material.coat_thickness range is [0, 10]" );
+			}
+			Check( weightRow >= 0 && ctrl8.PropertyHasRangeFor( Category::Material, static_cast<unsigned int>( weightRow ) ),
+				"MONEY (T28): coated_material.coat_weight (literal 0.8) has soft range [0, 1] enabled" );
+
+			ctrl8.SetSelection( Category::Painter, String( "pnt_perlin" ) );
+			ctrl8.RefreshProperties();
+			const int persRow = RowIndexFor( ctrl8, Category::Painter, "persistence" );
+			const int octRow  = RowIndexFor( ctrl8, Category::Painter, "octaves" );
+			Check( persRow >= 0 && ctrl8.PropertyHasRangeFor( Category::Painter, static_cast<unsigned int>( persRow ) ),
+				"MONEY (T28): perlin3d_painter.persistence has soft range [0, 1] enabled" );
+			Check( octRow >= 0 && ctrl8.PropertyHasRangeFor( Category::Painter, static_cast<unsigned int>( octRow ) )
+				&& std::fabs( ctrl8.PropertyRangeMinFor( Category::Painter, static_cast<unsigned int>( octRow ) ) - 1.0 ) < 1e-6
+				&& std::fabs( ctrl8.PropertyRangeMaxFor( Category::Painter, static_cast<unsigned int>( octRow ) ) - 16.0 ) < 1e-6
+				&& std::fabs( ctrl8.PropertyRangeStepFor( Category::Painter, static_cast<unsigned int>( octRow ) ) - 1.0 ) < 1e-6,
+				"MONEY (T28): perlin3d_painter.octaves has integer soft range [1, 16] step 1" );
+
+			// T28b (External-review P2 regression): weave_material `mat_weave`
+			// omits `sheer` (CST-only row with defaultValueHint `"per \`fabric\` (custom: 0)"`)
+			// and `weave_scale` (live row with runtime value from preset + soft range).
+			// The CST-only `sheer` row must keep its honest hint and NOT activate a
+			// misleading `0` slider, while live `weave_scale` has a numeric runtime
+			// value and activates its soft range.
+			ctrl8.SetSelection( Category::Material, String( "mat_weave" ) );
+			ctrl8.RefreshProperties();
+			const int sheerRow = RowIndexFor( ctrl8, Category::Material, "sheer" );
+			const int weaveScaleRow = RowIndexFor( ctrl8, Category::Material, "weave_scale" );
+			Check( sheerRow >= 0, "T28b: weave_material.sheer row exists" );
+			if( sheerRow >= 0 )
+			{
+				const unsigned int uSheer = static_cast<unsigned int>( sheerRow );
+				const std::string sheerVal( ctrl8.PropertyValueFor( Category::Material, uSheer ).c_str() );
+				Check( sheerVal.find( "per `fabric`" ) != std::string::npos
+					&& !ctrl8.PropertyHasRangeFor( Category::Material, uSheer ),
+					"MONEY (T28b): omitted CST-only weave_material.sheer keeps honest `per \\`fabric\\`` hint and hasRange == false" );
+			}
+			Check( weaveScaleRow >= 0 && ctrl8.PropertyHasRangeFor( Category::Material, static_cast<unsigned int>( weaveScaleRow ) ),
+				"MONEY (T28b): live weave_material.weave_scale row with numeric runtime value activates soft range" );
+
+			// T29: Inline Painter Swatch + Constant Painter Quick Editing + Shared/Fork
+			// 29a: TargetsPainter & InlinePainter metadata on material and painter slots
+			ctrl8.SetSelection( Category::Material, String( "mat_coated" ) );
+			ctrl8.RefreshProperties();
+			const int coatedBaseRow = RowIndexFor( ctrl8, Category::Material, "base" );
+			Check( coatedBaseRow >= 0
+				&& !RISE_API_SceneEditController_PropertyTargetsPainterFor( &ctrl8, static_cast<int>( Category::Material ), static_cast<unsigned int>( coatedBaseRow ) )
+				&& RISE_API_SceneEditController_PropertyInlinePainterKindFor( &ctrl8, static_cast<int>( Category::Material ), static_cast<unsigned int>( coatedBaseRow ) ) == 0,
+				"MONEY (T29a): coated_material.base targets Material (targetsPainter == false, inlinePainterKind == 0)" );
+
+			ctrl8.SetSelection( Category::Material, String( "mat_ggx_lit" ) );
+			ctrl8.RefreshProperties();
+			const int litRdRow = RowIndexFor( ctrl8, Category::Material, "rd" );
+			const int litAyRow = RowIndexFor( ctrl8, Category::Material, "alphay" );
+			Check( litRdRow >= 0 && litAyRow >= 0, "T29a: mat_ggx_lit.rd and alphay rows exist" );
+			if( litRdRow >= 0 && litAyRow >= 0 )
+			{
+				const unsigned int uRd = static_cast<unsigned int>( litRdRow );
+				const unsigned int uAy = static_cast<unsigned int>( litAyRow );
+				Check( RISE_API_SceneEditController_PropertyTargetsPainterFor( &ctrl8, static_cast<int>( Category::Material ), uRd )
+					&& RISE_API_SceneEditController_PropertyInlinePainterKindFor( &ctrl8, static_cast<int>( Category::Material ), uRd ) == 1,
+					"MONEY (T29a): mat_ggx_lit.rd -> pnt_white reports targetsPainter == true and inlinePainterKind == 1 (UniformColor)" );
+				char valBuf[128] = {};
+				Check( RISE_API_SceneEditController_PropertyInlinePainterValueFor( &ctrl8, static_cast<int>( Category::Material ), uRd, valBuf, sizeof( valBuf ) )
+					&& std::string( valBuf ) == "0.8 0.8 0.8",
+					"T29a: mat_ggx_lit.rd inlinePainterValue reads '0.8 0.8 0.8'" );
+				// pnt_white is referenced by pnt_perlin.colora, bp_leaf.colora, bp_leaf.mask,
+				// bp_root.mask, mat_lamb.reflectance, mat_ggx_lit.rd, mat_weave.warp_color -> 7 slots
+				Check( RISE_API_SceneEditController_PropertyInlinePainterRefCountFor( &ctrl8, static_cast<int>( Category::Material ), uRd ) == 7,
+					"MONEY (T29a): shared pnt_white reports inlinePainterRefCount == 7" );
+
+				Check( RISE_API_SceneEditController_PropertyTargetsPainterFor( &ctrl8, static_cast<int>( Category::Material ), uAy )
+					&& RISE_API_SceneEditController_PropertyInlinePainterKindFor( &ctrl8, static_cast<int>( Category::Material ), uAy ) == 2,
+					"MONEY (T29a): mat_ggx_lit.alphay -> sp_rough reports targetsPainter == true and inlinePainterKind == 2 (ScalarValue)" );
+				Check( RISE_API_SceneEditController_PropertyInlinePainterValueFor( &ctrl8, static_cast<int>( Category::Material ), uAy, valBuf, sizeof( valBuf ) )
+					&& std::string( valBuf ) == "0.25",
+					"T29a: mat_ggx_lit.alphay inlinePainterValue reads '0.25'" );
+				Check( RISE_API_SceneEditController_PropertyInlinePainterRefCountFor( &ctrl8, static_cast<int>( Category::Material ), uAy ) == 1,
+					"MONEY (T29a): solely-owned sp_rough reports inlinePainterRefCount == 1" );
+				// Verify soft-range bounds are preserved on the Reference row for the inline scalar slider
+				Check( !ctrl8.PropertyHasRangeFor( Category::Material, uAy )
+					&& std::fabs( ctrl8.PropertyRangeMinFor( Category::Material, uAy ) - 0.001 ) < 1e-6
+					&& std::fabs( ctrl8.PropertyRangeMaxFor( Category::Material, uAy ) - 1.0 ) < 1e-6,
+					"MONEY (T29a): Reference row mat_ggx_lit.alphay keeps hasRange == false while carrying soft-range bounds [0.001, 1.0] for the inline scalar slider" );
+			}
+
+			// 29b: SetReferenceSlotPainterValue on scalar_painter { value } + Undo/Redo
+			Check( RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+				&ctrl8, static_cast<int>( Category::Material ), "alphay", "0.42" ),
+				"MONEY (T29b): SetReferenceSlotPainterValue(Material, alphay, 0.42) succeeds" );
+			Check( CstValueOf( pJob8, "sp_rough", "painter", "value" ) == "0.42",
+				"T29b: CST chunk sp_rough.value updated to 0.42" );
+			ctrl8.RefreshProperties();
+			{
+				const int ayIdx = RowIndexFor( ctrl8, Category::Material, "alphay" );
+				Check( ayIdx >= 0
+					&& std::string( ctrl8.PropertyInlinePainterValueFor( Category::Material, static_cast<unsigned int>( ayIdx ) ).c_str() ) == "0.42",
+					"T29b: refreshed inlinePainterValue on alphay reads 0.42" );
+			}
+			ctrl8.Undo();
+			Check( CstValueOf( pJob8, "sp_rough", "painter", "value" ) == "0.25",
+				"MONEY (T29b): Undo restores sp_rough.value to 0.25" );
+			ctrl8.Redo();
+			Check( CstValueOf( pJob8, "sp_rough", "painter", "value" ) == "0.42",
+				"T29b: Redo re-applies sp_rough.value 0.42" );
+			ctrl8.Undo();
+
+			// 29c: Non-constant painters (perlin3d_painter, 3-value scalar_painter { values }) report inlinePainterKind == 0
+			Check( ctrl8.SetProperty( String( "rd" ), String( "pnt_perlin" ) ),
+				"T29c: rebind mat_ggx_lit.rd -> pnt_perlin" );
+			Check( ctrl8.SetProperty( String( "alphay" ), String( "sp_rgb" ) ),
+				"T29c: rebind mat_ggx_lit.alphay -> sp_rgb" );
+			ctrl8.RefreshProperties();
+			{
+				const int rdIdx = RowIndexFor( ctrl8, Category::Material, "rd" );
+				const int ayIdx = RowIndexFor( ctrl8, Category::Material, "alphay" );
+				Check( rdIdx >= 0
+					&& ctrl8.PropertyTargetsPainterFor( Category::Material, static_cast<unsigned int>( rdIdx ) )
+					&& ctrl8.PropertyInlinePainterKindFor( Category::Material, static_cast<unsigned int>( rdIdx ) ) == 0,
+					"MONEY (T29c): procedural pnt_perlin has targetsPainter == true but inlinePainterKind == 0" );
+				Check( ayIdx >= 0
+					&& ctrl8.PropertyTargetsPainterFor( Category::Material, static_cast<unsigned int>( ayIdx ) )
+					&& ctrl8.PropertyInlinePainterKindFor( Category::Material, static_cast<unsigned int>( ayIdx ) ) == 0,
+					"MONEY (T29c): 3-value scalar_painter `sp_rgb` (values, not value) has inlinePainterKind == 0" );
+				Check( !ctrl8.SetReferenceSlotPainterValue( Category::Material, String( "rd" ), String( "0.1 0.2 0.3" ) ),
+					"T29c: SetReferenceSlotPainterValue refuses non-constant painter pnt_perlin" );
+			}
+			ctrl8.Undo();
+			ctrl8.Undo();
+
+			// 29d: ForkReferenceSlotPainter on shared uniformcolor_painter (`pnt_white`, refCount == 7)
+			ctrl8.SetSelection( Category::Material, String( "mat_lamb" ) );
+			ctrl8.RefreshProperties();
+			{
+				const int reflIdx = RowIndexFor( ctrl8, Category::Material, "reflectance" );
+				Check( reflIdx >= 0
+					&& ctrl8.PropertyInlinePainterKindFor( Category::Material, static_cast<unsigned int>( reflIdx ) ) == 1
+					&& ctrl8.PropertyInlinePainterRefCountFor( Category::Material, static_cast<unsigned int>( reflIdx ) ) == 7,
+					"T29d: mat_lamb.reflectance starts bound to shared pnt_white (refCount == 7)" );
+			}
+			char forkedNameBuf[128] = {};
+			Check( RISE_API_SceneEditController_ForkReferenceSlotPainter(
+				&ctrl8, static_cast<int>( Category::Material ), "reflectance", forkedNameBuf, sizeof( forkedNameBuf ) ),
+				"MONEY (T29d): ForkReferenceSlotPainter on mat_lamb.reflectance succeeds" );
+			Check( std::string( forkedNameBuf ) == "pnt_white_2",
+				"MONEY (T29d): forked painter is named pnt_white_2" );
+			Check( CstValueOf( pJob8, "mat_lamb", "material", "reflectance" ) == "pnt_white_2",
+				"T29d: mat_lamb.reflectance CST parameter rebound to pnt_white_2" );
+			ctrl8.RefreshProperties();
+			{
+				const int reflIdx = RowIndexFor( ctrl8, Category::Material, "reflectance" );
+				Check( reflIdx >= 0
+					&& std::string( ctrl8.PropertyValueFor( Category::Material, static_cast<unsigned int>( reflIdx ) ).c_str() ) == "pnt_white_2"
+					&& ctrl8.PropertyInlinePainterKindFor( Category::Material, static_cast<unsigned int>( reflIdx ) ) == 1
+					&& ctrl8.PropertyInlinePainterRefCountFor( Category::Material, static_cast<unsigned int>( reflIdx ) ) == 1,
+					"MONEY (T29d): after Fork, mat_lamb.reflectance is bound to pnt_white_2 with refCount == 1" );
+			}
+			// Edit the forked painter via SetReferenceSlotPainterValue and verify pnt_white is untouched
+			Check( ctrl8.SetReferenceSlotPainterValue( Category::Material, String( "reflectance" ), String( "0.1 0.9 0.2" ) ),
+				"MONEY (T29d): SetReferenceSlotPainterValue on forked mat_lamb.reflectance succeeds" );
+			Check( CstValueOf( pJob8, "pnt_white_2", "painter", "color" ) == "0.1 0.9 0.2"
+				&& CstValueOf( pJob8, "pnt_white", "painter", "color" ) == "0.8 0.8 0.8",
+				"MONEY (T29d): editing forked painter updates pnt_white_2 while leaving shared pnt_white untouched" );
+
+			// Undo the colour edit, then change Film width (24 -> 48) before undoing Fork:
+			// Fork undo must be operation-level (removing only pnt_white_2 and restoring
+			// mat_lamb.reflectance -> pnt_white) without reverting the unrelated film edit.
+			ctrl8.Undo();
+			Check( CstValueOf( pJob8, "pnt_white_2", "painter", "color" ) == "0.8 0.8 0.8",
+				"T29d: first Undo restores pnt_white_2 colour to 0.8 0.8 0.8" );
+			Check( ctrl8.SetPropertyForCategory( Category::Film, String( "width" ), String( "48" ) )
+				&& pJob8->GetScene() && pJob8->GetScene()->GetFilm()
+				&& pJob8->GetScene()->GetFilm()->GetWidth() == 48,
+				"T29d: changing film width from 24 to 48 after Fork succeeds" );
+			ctrl8.Undo();
+			Check( CstValueOf( pJob8, "mat_lamb", "material", "reflectance" ) == "pnt_white"
+				&& CstValueOf( pJob8, "pnt_white_2", "painter", "color" ) == "<missing>",
+				"MONEY (T29d): single Undo of ForkReferenceSlotPainter atomically restores mat_lamb.reflectance -> pnt_white and removes pnt_white_2" );
+			Check( pJob8->GetScene() && pJob8->GetScene()->GetFilm()
+				&& pJob8->GetScene()->GetFilm()->GetWidth() == 48
+				&& pJob8->GetCstDocument()
+				&& RISE::Cst::SerializeCst( *pJob8->GetCstDocument() ).find( "width\t\t48" ) != std::string::npos,
+				"MONEY (T29d): Undo of ForkReferenceSlotPainter preserves unrelated film width 48 in both live scene and retained CST" );
+			ctrl8.Redo();
+			Check( CstValueOf( pJob8, "mat_lamb", "material", "reflectance" ) == "pnt_white_2"
+				&& CstValueOf( pJob8, "pnt_white_2", "painter", "color" ) == "0.8 0.8 0.8"
+				&& pJob8->GetScene() && pJob8->GetScene()->GetFilm()
+				&& pJob8->GetScene()->GetFilm()->GetWidth() == 48,
+				"MONEY (T29d): Redo of ForkReferenceSlotPainter re-inserts pnt_white_2 and rebinds mat_lamb.reflectance while keeping film width 48" );
+			ctrl8.Undo();
+			ctrl8.RefreshProperties();
+			{
+				const int reflIdx = RowIndexFor( ctrl8, Category::Material, "reflectance" );
+				Check( reflIdx >= 0
+					&& ctrl8.PropertyInlinePainterRefCountFor( Category::Material, static_cast<unsigned int>( reflIdx ) ) == 7,
+					"T29d: after Undo of Fork, pnt_white refCount is back to 7" );
+			}
+
+			// 29e: Intra-chunk multi-slot sharing: bind mat_ggx_lit.alphax to sp_rough
+			// (while mat_ggx_lit.alphay is already bound to sp_rough) -> both slots must
+			// report inlinePainterRefCount == 2 so Shared (2) + Fork appear.
+			ctrl8.SetSelection( Category::Material, String( "mat_ggx_lit" ) );
+			Check( ctrl8.SetProperty( String( "alphax" ), String( "sp_rough" ) ),
+				"T29e: rebind mat_ggx_lit.alphax -> sp_rough succeeds" );
+			ctrl8.RefreshProperties();
+			{
+				const int axIdx = RowIndexFor( ctrl8, Category::Material, "alphax" );
+				const int ayIdx = RowIndexFor( ctrl8, Category::Material, "alphay" );
+				Check( axIdx >= 0 && ayIdx >= 0
+					&& ctrl8.PropertyInlinePainterRefCountFor( Category::Material, static_cast<unsigned int>( axIdx ) ) == 2
+					&& ctrl8.PropertyInlinePainterRefCountFor( Category::Material, static_cast<unsigned int>( ayIdx ) ) == 2,
+					"MONEY (T29e): intra-chunk multi-slot sharing (alphax + alphay both bound to sp_rough) reports inlinePainterRefCount == 2" );
+			}
+			ctrl8.Undo();
+
+			pJob8->release();
+		}
+		std::remove( tmp8.c_str() );
+
+		// 29f: Same-named colour painter + scalar_painter disambiguation,
+		// colorAlsoAcceptsScalar tie-breaking, and non-linear colorspace rejection.
+		const char* kPipeScene =
+			"RISE ASCII SCENE 7\n"
+			"\n"
+			"uniformcolor_painter\n"
+			"{\n"
+			"\tname\t\tshared_name\n"
+			"\tcolor\t\t0.9 0.2 0.1\n"
+			"}\n"
+			"\n"
+			"scalar_painter\n"
+			"{\n"
+			"\tname\t\tshared_name\n"
+			"\tvalue\t\t0.35\n"
+			"}\n"
+			"\n"
+			"uniformcolor_painter\n"
+			"{\n"
+			"\tname\t\tpnt_srgb\n"
+			"\tcolor\t\t0.5 0.5 0.5\n"
+			"\tcolorspace\tsRGB\n"
+			"}\n"
+			"\n"
+			"ggx_material\n"
+			"{\n"
+			"\tname\t\tmat_pipe\n"
+			"\trd\t\tshared_name\n"
+			"\trs\t\tpnt_srgb\n"
+			"\talphax\t\tshared_name\n"
+			"\talphay\t\t0.2\n"
+			"\tior\t\t1.5\n"
+			"\textinction\t0.0\n"
+			"\ttangent_rotation\tshared_name\n"
+			"}\n";
+		const std::string tmp9 = TempPath( "geometry_panel_jump_pipedisambig.RISEscene" );
+		Job* pJob9 = LoadScene( kPipeScene, tmp9 );
+		Check( pJob9 != nullptr, "T29f: pipe-disambiguation fixture loads" );
+		if( pJob9 )
+		{
+			SceneEditController ctrl9( *pJob9, nullptr );
+			ctrl9.SetSelection( Category::Material, String( "mat_pipe" ) );
+			ctrl9.RefreshProperties();
+
+			const int rdIdx = RowIndexFor( ctrl9, Category::Material, "rd" );
+			const int rsIdx = RowIndexFor( ctrl9, Category::Material, "rs" );
+			const int axIdx = RowIndexFor( ctrl9, Category::Material, "alphax" );
+			const int trIdx = RowIndexFor( ctrl9, Category::Material, "tangent_rotation" );
+
+			Check( rdIdx >= 0
+				&& ctrl9.PropertyInlinePainterKindFor( Category::Material, static_cast<unsigned int>( rdIdx ) ) == 1
+				&& std::string( ctrl9.PropertyInlinePainterValueFor( Category::Material, static_cast<unsigned int>( rdIdx ) ).c_str() ) == "0.9 0.2 0.1"
+				&& ctrl9.PropertyInlinePainterRefCountFor( Category::Material, static_cast<unsigned int>( rdIdx ) ) == 1,
+				"MONEY (T29f): colour-pipe slot mat_pipe.rd resolves same-named uniformcolor_painter with refCount == 1" );
+
+			// alphax and tangent_rotation (colorAlsoAcceptsScalar prefers scalar_painter) both resolve to scalar_painter shared_name (refCount == 2)
+			Check( axIdx >= 0
+				&& ctrl9.PropertyInlinePainterKindFor( Category::Material, static_cast<unsigned int>( axIdx ) ) == 2
+				&& std::string( ctrl9.PropertyInlinePainterValueFor( Category::Material, static_cast<unsigned int>( axIdx ) ).c_str() ) == "0.35"
+				&& ctrl9.PropertyInlinePainterRefCountFor( Category::Material, static_cast<unsigned int>( axIdx ) ) == 2,
+				"MONEY (T29f): scalar-pipe slot mat_pipe.alphax resolves same-named scalar_painter with refCount == 2" );
+
+			Check( trIdx >= 0
+				&& ctrl9.PropertyInlinePainterKindFor( Category::Material, static_cast<unsigned int>( trIdx ) ) == 2
+				&& std::string( ctrl9.PropertyInlinePainterValueFor( Category::Material, static_cast<unsigned int>( trIdx ) ).c_str() ) == "0.35",
+				"MONEY (T29f): colorAlsoAcceptsScalar slot mat_pipe.tangent_rotation prefers scalar_painter to match Job::ResolveRotationPainterDual" );
+
+			Check( rsIdx >= 0
+				&& ctrl9.PropertyTargetsPainterFor( Category::Material, static_cast<unsigned int>( rsIdx ) )
+				&& ctrl9.PropertyInlinePainterKindFor( Category::Material, static_cast<unsigned int>( rsIdx ) ) == 0,
+				"MONEY (T29f): uniformcolor_painter with non-linear `colorspace sRGB` suppresses inline quick colour editing" );
+
+			Check( !ctrl9.SetReferenceSlotPainterValue( Category::Material, String( "rs" ), String( "0.2 0.3 0.4" ) ),
+				"MONEY (T29f): SetReferenceSlotPainterValue rejects uniformcolor_painter with `colorspace sRGB`" );
+
+			pJob9->release();
+		}
+		std::remove( tmp9.c_str() );
+	}
+
 	pJob->release();
 	std::remove( tmp.c_str() );
 	std::printf( "=== GeometryPanelJumpTest: %d passed, %d failed ===\n", g_pass, g_fail );

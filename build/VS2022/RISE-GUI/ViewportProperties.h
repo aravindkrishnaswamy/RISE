@@ -27,6 +27,7 @@
 #include <QVector>
 #include <QHash>
 #include <QString>
+#include <memory>
 
 #include "ViewportBridge.h"   // for ViewportBridge::Category / PanelMode
 
@@ -43,6 +44,7 @@ class ViewportProperties : public QWidget
 
 public:
     explicit ViewportProperties(ViewportBridge* bridge, QWidget* parent = nullptr);
+    ~ViewportProperties() override;
 
 public slots:
     /// Re-snapshot from the live entity.  Called on each render frame
@@ -109,6 +111,8 @@ private:
 
     void performSceneSave(bool useLoadedPath);
     void clearPropertyRows();
+    void beginScrubBracket();
+    void endScrubBracket();
 
     // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every one of
     // this panel's PERSISTENT-CHROME token-dependent styling sites
@@ -167,6 +171,12 @@ private:
     /// Commits an edited value through setPropertyForCategory against
     /// the CURRENT primary selection category, then refresh()es.
     void commitEdit(const QString& name, const QString& value);
+    void commitInlinePainterEdit(const QString& slotParam, const QString& value);
+    void forkInlinePainter(const QString& slotParam);
+
+    QPixmap fetchPainterThumbnail(const QString& painterName, int defIndex, int sizePt);
+    QPixmap fetchRampStripThumbnail(const QString& painterName, int widthPt, int heightPt);
+    QLabel* createPainterSwatchLabel(const QString& painterName, int defIndex, int sizePt, QWidget* parent = nullptr);
 
     void updateAdvancedToggleLabel(int advancedCount);
     void onAdvancedToggleClicked();
@@ -253,12 +263,16 @@ private:
     // first move.  The ScrubHandle's begin/end bracket flips this on
     // and off; refresh() short-circuits while it is set.
     bool m_scrubbing = false;
+    bool m_scrubBracketOpen = false;
+    std::shared_ptr<bool> m_rowAlive = std::make_shared<bool>(true);
     // GUI redesign 2026-07-22: true while a per-row context menu is
     // modally open (exec).  refresh() early-returns on it -- the props
     // panel refreshes on every imageUpdated frame, and a rebuild would
     // deleteLater() the row widgets (incl. the line-edit the open menu is
     // a child of) mid-exec -> UAF.  Same guard shape as m_scrubbing.
     bool m_contextMenuOpen = false;
+    quint64 m_lastSceneRevision = 0;
+    QHash<QString, QPixmap> m_painterThumbCache;
 };
 
 #endif // VIEWPORTPROPERTIES_H

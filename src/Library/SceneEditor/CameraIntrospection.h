@@ -89,6 +89,30 @@ namespace RISE
 		Scalar                       rangeMax;
 		Scalar                       rangeStep;
 
+		// Material Editor Slice 3 (inline constant painter editing & slot swatches):
+		// For a ValueKind::Reference row whose referenceCategories include
+		// ChunkCategory::Painter or ChunkCategory::Function:
+		//   - `targetsPainter` is true so the inspector can show a 18x18
+		//     PainterPreview thumbnail next to the reference chip.
+		//   - When the slot is bound to a CST-authored constant painter chunk
+		//     (`uniformcolor_painter` with 3 finite decimal numbers in `color`, or
+		//     Form-1 `scalar_painter` with a single `value` parameter),
+		//     `inlinePainterKind` identifies the constant form,
+		//     `inlinePainterValue` holds the painter's `color` or `value` text, and
+		//     `inlinePainterRefCount` reports how many reference uses in the CST
+		//     document resolve to that painter chunk (`1` = solely owned by this
+		//     slot; `> 1` = shared across multiple slots/entities).
+		enum class InlinePainterKind : int
+		{
+			None         = 0,
+			UniformColor = 1,
+			ScalarValue  = 2
+		};
+		bool                         targetsPainter;
+		InlinePainterKind            inlinePainterKind;
+		String                       inlinePainterValue;
+		unsigned int                 inlinePainterRefCount;
+
 		// Every producer sets name/kind/value/description/editable explicitly;
 		// this ctor exists so the S4b range trio (and `editable`, historically
 		// indeterminate until assigned) has a defined value on a default-
@@ -101,6 +125,9 @@ namespace RISE
 		, rangeMin( 0 )
 		, rangeMax( 0 )
 		, rangeStep( 0 )
+		, targetsPainter( false )
+		, inlinePainterKind( InlinePainterKind::None )
+		, inlinePainterRefCount( 0 )
 		{}
 	};
 

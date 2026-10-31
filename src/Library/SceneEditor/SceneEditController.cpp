@@ -12752,6 +12752,31 @@ double SceneEditController::PropertyRangeStep( unsigned int idx ) const
 	return idx < mUi.properties.size() ? (double)mUi.properties[idx].rangeStep : 0.0;
 }
 
+bool SceneEditController::PropertyTargetsPainter( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() && mUi.properties[idx].targetsPainter;
+}
+
+int SceneEditController::PropertyInlinePainterKind( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size()
+		? static_cast<int>( mUi.properties[idx].inlinePainterKind ) : 0;
+}
+
+String SceneEditController::PropertyInlinePainterValue( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? mUi.properties[idx].inlinePainterValue : String();
+}
+
+unsigned int SceneEditController::PropertyInlinePainterRefCount( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? mUi.properties[idx].inlinePainterRefCount : 0u;
+}
+
 // -------------------------------------------------------------------
 // Jump-to-definition (GUI redesign, 2026-07-22).  See the header doc.
 // -------------------------------------------------------------------
@@ -12911,6 +12936,15 @@ bool SceneEditController::WouldPersistDanglingReference_(
 		if( RISE::Cst::DocNodeIdAt( *doc, i ) == id ) { refIdx = i; break; }
 	if( refIdx < 0 ) return false;   // cannot locate the referencer -> defer to the derive path
 	auto categorySatisfies = [&]( ChunkCategory chunkCat, const std::string& role, ChunkCategory rc ) {
+		if( pd->semantics.pipe == ParameterPipe::Scalar )
+			return role == "scalar_painter";
+		if( pd->semantics.pipe == ParameterPipe::Color && !pd->semantics.colorAlsoAcceptsScalar )
+			return ( chunkCat == ChunkCategory::Painter && role != "scalar_painter" )
+				|| role == "piecewise_linear_function";
+		if( pd->semantics.pipe == ParameterPipe::Function1D )
+			return role == "piecewise_linear_function";
+		if( pd->semantics.pipe == ParameterPipe::Function2D )
+			return ConnectionLegality::IsFunction2DCapable( role.c_str(), chunkCat );
 		if( chunkCat == rc ) return true;
 		if( rc == ChunkCategory::Function && chunkCat == ChunkCategory::Painter
 		 && role != "scalar_painter" ) return true;   // colour painter dual-registers as Function2D
@@ -12935,12 +12969,38 @@ bool SceneEditController::WouldPersistDanglingReference_(
 	}
 
 	// No category-correct, earlier-declared CST target.  Reject ONLY if `value`
-	// is a RUNTIME-registered entity
-	// of an allowed referenceCategory -- that confirms it is a reference NAME (not
-	// an inline literal like `ior 1.7`) that renders now but would DANGLE on
-	// save/reload.  A value resolving in NEITHER the CST nor a manager is an
-	// inline literal / not-yet-created name; leave it to the existing derive path
-	// (conservative -- never a false rejection of a legitimate edit).
+	// is a RUNTIME-registered entity of the parameter's pipe / allowed
+	// referenceCategory -- that confirms it is a reference NAME (not an inline
+	// literal like `ior 1.7`) that renders now in that pipe's manager but would
+	// DANGLE on save/reload.  Scoping by `pd->semantics.pipe` ensures a
+	// CST-authored colour painter passed to a `Scalar` parameter (or a
+	// `scalar_painter` passed to a strict `Color` parameter) is NOT misclassified
+	// as a runtime-only dangling reference and instead reaches the derive path's
+	// pipe-mismatch diagnostic.
+	if( pd->semantics.pipe == ParameterPipe::Scalar )
+	{
+		if( IScalarPainterManager* spm = mJob.GetScalarPainters() )
+			return spm->GetItem( value.c_str() ) != nullptr;
+		return false;
+	}
+	if( pd->semantics.pipe == ParameterPipe::Color && !pd->semantics.colorAlsoAcceptsScalar )
+	{
+		if( IPainterManager* pm = mJob.GetPainters() )
+			return pm->GetItem( value.c_str() ) != nullptr;
+		return false;
+	}
+	if( pd->semantics.pipe == ParameterPipe::Function1D )
+	{
+		if( IFunction1DManager* fm = mJob.GetFunction1Ds() )
+			return fm->GetItem( value.c_str() ) != nullptr;
+		return false;
+	}
+	if( pd->semantics.pipe == ParameterPipe::Function2D )
+	{
+		if( IFunction2DManager* fm = mJob.GetFunction2Ds() )
+			return fm->GetItem( value.c_str() ) != nullptr;
+		return false;
+	}
 	for( ChunkCategory rc : pd->referenceCategories )
 	{
 		const std::vector<String> names =
@@ -13078,6 +13138,34 @@ double SceneEditController::PropertyRangeStepFor( Category cat, unsigned int idx
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (double)(*v)[idx].rangeStep : 0.0;
+}
+
+bool SceneEditController::PropertyTargetsPainterFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].targetsPainter : false;
+}
+
+int SceneEditController::PropertyInlinePainterKindFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? static_cast<int>( (*v)[idx].inlinePainterKind ) : 0;
+}
+
+String SceneEditController::PropertyInlinePainterValueFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].inlinePainterValue : String();
+}
+
+unsigned int SceneEditController::PropertyInlinePainterRefCountFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].inlinePainterRefCount : 0u;
 }
 
 namespace {
@@ -17966,12 +18054,16 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 {
 	const int idx = static_cast<int>( cat );
 	if( idx < 0 || idx >= kNumCategories ) return false;
-	const String targetName = mSelectionByCategory[idx];
 	bool ok = false;
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 			return false;
+		String targetName;
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			targetName = mSelectionByCategory[idx];
+		}
 		ok = SetPropertyInner_( cat, targetName, name, valueStr );
 	}
 	// The primary selection was never overwritten, so a synchronous dirty
@@ -17979,6 +18071,537 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 	// remains authoritative.
 	mEditor.DrainDirtyNotification();
 	return ok;
+}
+
+namespace {
+
+bool IsSingleFiniteDecimalNumber( const char* s )
+{
+	if( !s || !s[0] ) return false;
+	const char* p = s;
+	while( *p == ' ' || *p == '\t' ) ++p;
+	if( *p == '\0' ) return false;
+	const char* q = ( *p == '+' || *p == '-' ) ? ( p + 1 ) : p;
+	if( q[0] == '0' && ( q[1] == 'x' || q[1] == 'X' ) ) return false;
+	char* end = nullptr;
+	errno = 0;
+	const double v = std::strtod( p, &end );
+	if( end == p || errno == ERANGE || !std::isfinite( v ) ) return false;
+	while( *end == ' ' || *end == '\t' ) ++end;
+	return *end == '\0';
+}
+
+bool IsThreeFiniteDecimalNumbers( const char* s )
+{
+	if( !s || !s[0] ) return false;
+	const char* p = s;
+	for( int i = 0; i < 3; ++i )
+	{
+		while( *p == ' ' || *p == '\t' ) ++p;
+		if( *p == '\0' ) return false;
+		const char* q = ( *p == '+' || *p == '-' ) ? ( p + 1 ) : p;
+		if( q[0] == '0' && ( q[1] == 'x' || q[1] == 'X' ) ) return false;
+		char* end = nullptr;
+		errno = 0;
+		const double v = std::strtod( p, &end );
+		if( end == p || errno == ERANGE || !std::isfinite( v ) ) return false;
+		if( i < 2 && end && *end != ' ' && *end != '\t' ) return false;
+		p = end;
+	}
+	while( *p == ' ' || *p == '\t' ) ++p;
+	return *p == '\0';
+}
+
+bool SlotParamTargetsPainter( const ParameterDescriptor& pd )
+{
+	if( pd.kind != ValueKind::Reference || pd.repeatable ) return false;
+	for( ChunkCategory rc : pd.referenceCategories )
+	{
+		if( rc == ChunkCategory::Painter || rc == ChunkCategory::Function )
+			return true;
+	}
+	return false;
+}
+
+bool SlotParamDomainMatchesChunk(
+	const SceneReferenceGraph::DocumentChunk& dc,
+	const ParameterDescriptor& pd )
+{
+	if( !dc.hasCategory ) return false;
+	switch( pd.semantics.pipe )
+	{
+	case ParameterPipe::Scalar:
+		return dc.keyword == String( "scalar_painter" );
+	case ParameterPipe::Color:
+		if( ConnectionLegality::IsColorCapable( dc.keyword.c_str(), dc.category ) )
+			return true;
+		if( pd.semantics.colorAlsoAcceptsScalar && dc.keyword == String( "scalar_painter" ) )
+			return true;
+		return false;
+	case ParameterPipe::Function1D:
+		return dc.keyword == String( "piecewise_linear_function" );
+	case ParameterPipe::Function2D:
+		return ConnectionLegality::IsFunction2DCapable( dc.keyword.c_str(), dc.category );
+	case ParameterPipe::Material:
+		return dc.category == ChunkCategory::Material;
+	case ParameterPipe::Geometry:
+		return dc.category == ChunkCategory::Geometry;
+	default:
+		if( pd.referenceCategories.empty() ) return true;
+		for( ChunkCategory rc : pd.referenceCategories )
+		{
+			if( dc.category == rc ) return true;
+			if( rc == ChunkCategory::Function && dc.category == ChunkCategory::Painter
+				&& dc.keyword != String( "scalar_painter" ) )
+				return true;
+			if( rc == ChunkCategory::Painter && dc.keyword == String( "piecewise_linear_function" ) )
+				return true;
+		}
+		return false;
+	}
+}
+
+const SceneReferenceGraph::DocumentChunk* SelectSingleBoundSlotPainterChunk(
+	const std::vector<const SceneReferenceGraph::DocumentChunk*>& matches,
+	const ParameterDescriptor& pd )
+{
+	if( matches.size() == 1 ) return matches[0];
+	if( matches.size() > 1
+		&& pd.semantics.pipe == ParameterPipe::Color
+		&& pd.semantics.colorAlsoAcceptsScalar )
+	{
+		std::vector<const SceneReferenceGraph::DocumentChunk*> scalarMatches;
+		for( const SceneReferenceGraph::DocumentChunk* dc : matches )
+		{
+			if( dc && dc->keyword == String( "scalar_painter" ) )
+				scalarMatches.push_back( dc );
+		}
+		if( scalarMatches.size() == 1 ) return scalarMatches[0];
+	}
+	return nullptr;
+}
+
+bool IsInlineEditableConstantPainterChunk(
+	const RISE::Cst::NodeRef& chunk,
+	std::string& outParamName )
+{
+	outParamName.clear();
+	if( !chunk || RISE::Cst::ParamOccurrenceCount( chunk, "name" ) != 1 )
+		return false;
+	if( chunk->role == "uniformcolor_painter" )
+	{
+		if( RISE::Cst::ParamOccurrenceCount( chunk, "color" ) != 1 )
+			return false;
+		for( const RISE::Cst::NodeRef& kid : chunk->kids )
+		{
+			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+			if( kid->role != "name" && kid->role != "color" && kid->role != "colorspace" )
+				return false;
+		}
+		if( RISE::Cst::ParamOccurrenceCount( chunk, "colorspace" ) > 0 )
+		{
+			if( RISE::Cst::ParamOccurrenceCount( chunk, "colorspace" ) != 1 )
+				return false;
+			bool csPresent = false;
+			const std::string cs = RISE::Cst::ParamValueAsParsed( chunk, "colorspace", &csPresent );
+			if( !csPresent || cs != "Rec709RGB_Linear" )
+				return false;
+		}
+		bool present = false;
+		const std::string val = RISE::Cst::ParamValueAsParsed( chunk, "color", &present );
+		if( !present || !IsThreeFiniteDecimalNumbers( val.c_str() ) )
+			return false;
+		outParamName = "color";
+		return true;
+	}
+	if( chunk->role == "scalar_painter" )
+	{
+		if( RISE::Cst::ParamOccurrenceCount( chunk, "value" ) != 1 )
+			return false;
+		for( const RISE::Cst::NodeRef& kid : chunk->kids )
+		{
+			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+			if( kid->role != "name" && kid->role != "value" )
+				return false;
+		}
+		bool present = false;
+		const std::string val = RISE::Cst::ParamValueAsParsed( chunk, "value", &present );
+		if( !present || !IsSingleFiniteDecimalNumber( val.c_str() ) )
+			return false;
+		outParamName = "value";
+		return true;
+	}
+	return false;
+}
+
+}   // namespace
+
+bool SceneEditController::SetReferenceSlotPainterValue(
+	Category cat, const String& slotParam, const String& valueStr )
+{
+	const int catIdx = static_cast<int>( cat );
+	if( catIdx <= 0 || catIdx >= kNumCategories ) return false;
+	if( slotParam.size() <= 1 || valueStr.size() <= 1 ) return false;
+
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return false;
+
+	String painterName;
+	String painterKeyword;
+	String painterParam;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		String ownerName = mSelectionByCategory[catIdx];
+		if( ownerName.size() <= 1 && mSelectionCategory == cat )
+			ownerName = mSelectionName;
+		if( ownerName.size() <= 1 ) return false;
+
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( !doc ) return false;
+
+		const RISE::Cst::NodeId ownerId = ResolveSourceChunkId(
+			*doc, cat, std::string( ownerName.c_str() ), std::string(),
+			mJob.GetActiveCameraName(), mJob.GetObjects() );
+		if( ownerId == 0 ) return false;
+		const RISE::Cst::NodeRef ownerChunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
+		if( !ownerChunk ) return false;
+		if( RISE::Cst::ParamOccurrenceCount( ownerChunk, slotParam.c_str() ) != 1 )
+			return false;
+
+		const ChunkDescriptor* ownerCd = DescriptorForKeyword( String( ownerChunk->role.c_str() ) );
+		if( !ownerCd ) return false;
+		const ParameterDescriptor* pd = nullptr;
+		const std::string wantSlot( slotParam.c_str() );
+		for( const ParameterDescriptor& p : ownerCd->parameters )
+		{
+			if( p.name == wantSlot ) { pd = &p; break; }
+		}
+		if( !pd || !SlotParamTargetsPainter( *pd ) ) return false;
+
+		bool present = false;
+		const std::string boundName = RISE::Cst::ParamValueAsParsed( ownerChunk, wantSlot, &present );
+		if( !present || boundName.empty() || boundName == "none" ) return false;
+
+		const std::vector<SceneReferenceGraph::DocumentChunk> allChunks =
+			SceneReferenceGraph::AllChunks( *doc );
+		std::vector<const SceneReferenceGraph::DocumentChunk*> matches;
+		for( const SceneReferenceGraph::DocumentChunk& dc : allChunks )
+		{
+			if( dc.id == ownerId ) break;
+			if( dc.name == String( boundName.c_str() ) && SlotParamDomainMatchesChunk( dc, *pd ) )
+			{
+				matches.push_back( &dc );
+			}
+		}
+		const SceneReferenceGraph::DocumentChunk* targetDc =
+			SelectSingleBoundSlotPainterChunk( matches, *pd );
+		if( !targetDc || !targetDc->item ) return false;
+		if( RISE::Cst::DocFindByNameAnyRole(
+			*doc, boundName.c_str(), nullptr, std::string( targetDc->keyword.c_str() ), /*uniqueFallback=*/false ) != targetDc->id )
+		{
+			return false;
+		}
+
+		std::string resolvedParam;
+		if( !IsInlineEditableConstantPainterChunk( targetDc->item, resolvedParam ) )
+			return false;
+		if( resolvedParam == "color" && !IsThreeFiniteDecimalNumbers( valueStr.c_str() ) )
+			return false;
+		if( resolvedParam == "value" && !IsSingleFiniteDecimalNumber( valueStr.c_str() ) )
+			return false;
+
+		painterName    = String( boundName.c_str() );
+		painterKeyword = targetDc->keyword;
+		painterParam   = String( resolvedParam.c_str() );
+	}
+
+	const AgentCommitResult r = ApplyAgentParamEditInner_(
+		painterName, painterKeyword, painterParam, valueStr, nullptr );
+	mEditor.DrainDirtyNotification();
+	return r.applied;
+}
+
+bool SceneEditController::ForkReferenceSlotPainter(
+	Category cat, const String& slotParam, String* outNewPainterName )
+{
+	if( outNewPainterName ) *outNewPainterName = String();
+	const int catIdx = static_cast<int>( cat );
+	if( catIdx <= 0 || catIdx >= kNumCategories ) return false;
+	if( slotParam.size() <= 1 ) return false;
+
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return false;
+
+	String landedName;
+	bool   applied = false;
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mTxnOpen.load( std::memory_order_acquire )
+		 || mEditor.IsCompositeOpen() )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: fork reference slot painter refused while an editor transaction/gesture is open." );
+			return false;
+		}
+		CancelAndParkRender_( lk );
+
+		String ownerName = mSelectionByCategory[catIdx];
+		if( ownerName.size() <= 1 && mSelectionCategory == cat )
+			ownerName = mSelectionName;
+		if( ownerName.size() <= 1 ) return false;
+
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( !doc ) return false;
+
+		const RISE::Cst::NodeId ownerId = ResolveSourceChunkId(
+			*doc, cat, std::string( ownerName.c_str() ), std::string(),
+			mJob.GetActiveCameraName(), mJob.GetObjects() );
+		if( ownerId == 0 ) return false;
+		const RISE::Cst::NodeRef ownerChunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
+		if( !ownerChunk ) return false;
+		if( RISE::Cst::ParamOccurrenceCount( ownerChunk, slotParam.c_str() ) != 1 )
+			return false;
+
+		const ChunkDescriptor* ownerCd = DescriptorForKeyword( String( ownerChunk->role.c_str() ) );
+		if( !ownerCd ) return false;
+		const ParameterDescriptor* pd = nullptr;
+		const std::string wantSlot( slotParam.c_str() );
+		for( const ParameterDescriptor& p : ownerCd->parameters )
+		{
+			if( p.name == wantSlot ) { pd = &p; break; }
+		}
+		if( !pd || !SlotParamTargetsPainter( *pd ) ) return false;
+
+		const std::string ownerKeyword = ownerChunk->role;
+		const std::string ownerNamePath = RISE::Cst::ChunkNamePath( ownerChunk );
+		const std::string ownerCstName = ( ownerNamePath.size() > ownerKeyword.size() )
+			? ownerNamePath.substr( ownerKeyword.size() + 1 )
+			: std::string();
+		const bool ownerUniqueFallback = ( ownerKeyword == "camera" )
+			? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, ownerCstName, mJob.GetActiveCameraName() )
+			: ( ownerCstName.empty() && !ownerKeyword.empty() );
+		const RISE::Cst::NodeId resolvedOwnerTarget = RISE::Cst::DocFindByNameAnyRole(
+			*doc, ownerCstName.c_str(), nullptr, ownerKeyword, ownerUniqueFallback );
+		if( resolvedOwnerTarget == 0
+		 || RISE::Cst::DocTransformOwnerId( *doc, resolvedOwnerTarget, wantSlot ) != ownerId )
+		{
+			return false;
+		}
+
+		bool present = false;
+		const std::string boundName = RISE::Cst::ParamValueAsParsed( ownerChunk, wantSlot, &present );
+		if( !present || boundName.empty() || boundName == "none" ) return false;
+
+		const std::vector<SceneReferenceGraph::DocumentChunk> allChunks =
+			SceneReferenceGraph::AllChunks( *doc );
+		std::vector<const SceneReferenceGraph::DocumentChunk*> matches;
+		for( const SceneReferenceGraph::DocumentChunk& dc : allChunks )
+		{
+			if( dc.id == ownerId ) break;
+			if( dc.name == String( boundName.c_str() ) && SlotParamDomainMatchesChunk( dc, *pd ) )
+			{
+				matches.push_back( &dc );
+			}
+		}
+		const SceneReferenceGraph::DocumentChunk* targetDc =
+			SelectSingleBoundSlotPainterChunk( matches, *pd );
+		if( !targetDc || !targetDc->item ) return false;
+		if( targetDc->category != ChunkCategory::Painter && targetDc->category != ChunkCategory::Function )
+			return false;
+		if( RISE::Cst::DocFindByNameAnyRole(
+			*doc, boundName.c_str(), nullptr, std::string( targetDc->keyword.c_str() ), /*uniqueFallback=*/false ) != targetDc->id )
+		{
+			return false;
+		}
+		std::string resolvedParam;
+		if( !IsInlineEditableConstantPainterChunk( targetDc->item, resolvedParam ) )
+			return false;
+
+		const int originalIndex = RISE::Cst::DocIndexOfNodeId( *doc, targetDc->id, nullptr );
+		if( originalIndex < 0 ) return false;
+
+		const std::string originalKeyword = targetDc->keyword.c_str();
+		const std::string copyBytes = RISE::Cst::SerializeNode( targetDc->item );
+
+		std::vector<std::string> inCat;
+		const unsigned int nc = CategoryEntityCountLocked_( Category::Painter );
+		inCat.reserve( nc );
+		for( unsigned int i = 0; i < nc; ++i )
+			inCat.emplace_back( CategoryEntityNameLocked_( Category::Painter, i ).c_str() );
+		auto candidateClear = [&]( const std::string& cand ) {
+			if( std::find( inCat.begin(), inCat.end(), cand ) != inCat.end() ) return false;
+			if( AnyNameTakenDocWide( *doc, std::vector<std::string>{ cand } ) ) return false;
+			return true;
+		};
+		const size_t kMaxPayloadBytes = 255;
+		std::string base = boundName.substr( 0, kMaxPayloadBytes );
+		std::string chosen = base;
+		if( !candidateClear( chosen ) )
+		{
+			chosen.clear();
+			for( int i = 2; i < 1000; ++i )
+			{
+				const std::string suffix = "_" + std::to_string( i );
+				const std::string candidate =
+					base.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+				if( candidateClear( candidate ) ) { chosen = candidate; break; }
+			}
+		}
+		if( chosen.empty() ) return false;
+
+		RISE::Cst::Document sepA  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::Document sepB  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::Document copyD = RISE::Cst::ParseToCst( copyBytes );
+		RISE::Cst::NodeRef  sepAI = RISE::Cst::DocResolveNodeId( sepA, RISE::Cst::DocNodeIdAt( sepA, 0 ) );
+		RISE::Cst::NodeRef  sepBI = RISE::Cst::DocResolveNodeId( sepB, RISE::Cst::DocNodeIdAt( sepB, 0 ) );
+		RISE::Cst::NodeId   copyChunkId = 0;
+		int copyChunks = 0;
+		const int nCopyItems = RISE::Cst::DocItemCount( copyD );
+		for( int i = 0; i < nCopyItems; ++i )
+		{
+			const RISE::Cst::NodeId cid = RISE::Cst::DocNodeIdAt( copyD, i );
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( copyD, cid );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { ++copyChunks; if( copyChunkId == 0 ) copyChunkId = cid; }
+		}
+		if( !sepAI || !sepBI || copyChunkId == 0 || copyChunks != 1 )
+			return false;
+
+		copyD = RISE::Cst::DocSetParamValue( copyD, copyChunkId, "name", 0, chosen );
+		RISE::Cst::NodeRef copyI = RISE::Cst::DocResolveNodeId( copyD, copyChunkId );
+		if( !copyI ) return false;
+
+		const std::string np = RISE::Cst::ChunkNamePath( copyI );
+		landedName = ( np.size() > originalKeyword.size() )
+			? String( np.substr( originalKeyword.size() + 1 ).c_str() )
+			: String( chosen.c_str() );
+
+		// Build operation-level undo ops (CstBatchUndoOp) rather than a
+		// whole-document snapshot so Undo/Redo removes/restores ONLY the
+		// cloned painter chunk and the rebound reference slot, preserving
+		// unrelated in-place edits (such as film width/height/pixelAR).
+		const int nDocItems = RISE::Cst::DocItemCount( *doc );
+		int at = nDocItems;
+		for( int i = originalIndex + 1; i < nDocItems; ++i )
+		{
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { at = i; break; }
+		}
+
+		CstBatchUndoOp insertOp;
+		insertOp.isInsert       = true;
+		insertOp.chunkText      = RISE::Cst::SerializeNode( copyI );
+		insertOp.keyword        = originalKeyword;
+		insertOp.namePath       = np;
+		insertOp.chunkIndex     = at + 1;
+		insertOp.appendedAtEnd  = ( at >= nDocItems );
+		insertOp.hasAnchor      = true;
+		insertOp.anchorKeyword  = originalKeyword;
+		insertOp.anchorNamePath = RISE::Cst::ChunkNamePath( targetDc->item );
+		insertOp.anchorOrdinal  = 0;
+		for( int k = 0; k < originalIndex; ++k )
+		{
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, k ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == originalKeyword &&
+			    RISE::Cst::ChunkNamePath( it ) == insertOp.anchorNamePath )
+			{
+				++insertOp.anchorOrdinal;
+			}
+		}
+
+		CstBatchUndoOp slotOp;
+		slotOp.isInsert       = false;
+		slotOp.entityName     = ownerCstName;
+		slotOp.entityKind     = ownerKeyword;
+		slotOp.editRole       = wantSlot;
+		slotOp.postEntityName = ownerCstName;
+		slotOp.occAddressed   = false;
+		slotOp.wholeTransform = false;
+		slotOp.ownerKeyword   = ownerKeyword;
+		slotOp.ownerNamePath  = ownerNamePath;
+		slotOp.ownerPreText   = RISE::Cst::SerializeNode( ownerChunk );
+		if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap )
+			slotOp.ownerPreText.clear();
+
+		CstBatchUndoOp::Slot sl;
+		sl.role        = wantSlot;
+		sl.occ         = 0;
+		sl.priorAbsent = false;
+		sl.priorValue  = RISE::Cst::ParamValueAtOccurrence( ownerChunk, wantSlot, 0 );
+
+		RISE::Cst::Document d = *doc;
+		d = RISE::Cst::DocSetParamValue(
+			d, ownerId, wantSlot, 0, std::string( landedName.c_str() ) );
+		const RISE::Cst::NodeRef ownerAfter = RISE::Cst::DocResolveNodeId( d, ownerId );
+		if( !ownerAfter ) return false;
+
+		slotOp.ownerPostText = RISE::Cst::SerializeNode( ownerAfter );
+		if( slotOp.ownerPreText.empty() || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap )
+		{
+			slotOp.ownerPreText.clear();
+			slotOp.ownerPostText.clear();
+		}
+		sl.postAbsent = false;
+		sl.postValue  = RISE::Cst::ParamValueAtOccurrence( ownerAfter, wantSlot, 0 );
+		slotOp.slots.push_back( sl );
+
+		d = RISE::Cst::DocInsertItem( d, at,     sepAI );
+		d = RISE::Cst::DocInsertItem( d, at + 1, copyI );
+		d = RISE::Cst::DocInsertItem( d, at + 2, sepBI );
+
+		char diagBuf[512]; diagBuf[0] = '\0';
+		const int code = mJob.ApplyCstReplaceDocument(
+			d, /*restoreActiveRasterizer=*/true,
+			diagBuf, sizeof( diagBuf ),
+			"fork_reference_slot_painter" );
+		if( code == 2 || code == 3 )
+			RebindEditorToJob();
+		if( code != 2 )
+		{
+			if( code == 3 )
+			{
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+				mEditPending.store( true, std::memory_order_release );
+				lk.unlock();
+				mCV.notify_one();
+			}
+			return false;
+		}
+
+		mEditor.MarkCstHeadDirty( landedName.c_str(), originalKeyword.c_str() );
+		mEditor.MarkCstHeadDirty(
+			ownerCstName.c_str(), ownerKeyword.empty() ? nullptr : ownerKeyword.c_str() );
+		mEditor.BumpSceneLightGenerationForAgentParamEdit(
+			ownerCstName.c_str(), ownerKeyword.empty() ? nullptr : ownerKeyword.c_str() );
+
+		std::vector<CstBatchUndoOp> ops;
+		ops.reserve( 2 );
+		ops.push_back( std::move( insertOp ) );
+		ops.push_back( std::move( slotOp ) );
+		const std::string label = std::string( landedName.c_str() ) + ", " +
+			( ownerCstName.empty() ? ownerKeyword : ownerCstName ) + "." + wantSlot;
+		mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, /*landedRasterizerInsert=*/false );
+
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+		mEditPending.store( true, std::memory_order_release );
+		applied = true;
+		lk.unlock();
+		mCV.notify_one();
+	}
+
+	if( applied && outNewPainterName )
+	{
+		*outNewPainterName = landedName;
+	}
+	mEditor.DrainDirtyNotification();
+	return applied;
 }
 
 // ---------------------------------------------------------------------
@@ -18568,12 +19191,56 @@ bool SceneEditController::SetPropertyInner_(
 			const MaterialSlotRef slot = mat
 				? MaterialIntrospection::GetSlot( *mat, name )
 				: MaterialSlotRef();
+			const RISE::Cst::Document* doc = mJob.GetCstDocument();
+			const RISE::Cst::NodeId matNodeId = doc
+				? RISE::Cst::DocFindByNameAnyRole(
+					*doc, targetName.c_str(), nullptr, "material", /*uniqueFallback=*/false )
+				: 0;
+			const bool hasCst = ( matNodeId != 0 );
+			const RISE::Cst::NodeRef matChunk = hasCst
+				? RISE::Cst::DocResolveNodeId( *doc, matNodeId )
+				: RISE::Cst::NodeRef();
+			// Require the parameter to be explicitly authored (exactly 1 occurrence)
+			// in the CST chunk before taking the SetMaterialProperty fast path: when
+			// a parameter was omitted in the CST chunk (e.g. `ggx_material.rd`
+			// defaulting to the registered `"none"` painter), routing through
+			// ApplyAgentParamEditInner_ records `prevValueWasAbsent = true` on the
+			// Undo entry so Undo removes the added line instead of leaving `rd none`.
+			const bool paramAuthoredInCst = matChunk
+				&& RISE::Cst::ParamOccurrenceCount( matChunk, name.c_str() ) == 1;
+			const bool composed = mJob.IsMaterialComposed( targetName.c_str() );
+
+			auto isRegisteredInPainterMgr = []( IPainterManager* pm, const IPainter* ptr ) -> bool
+			{
+				if( !pm || !ptr ) return false;
+				CollectNamesCallback cb;
+				pm->EnumerateItemNames( cb );
+				for( const String& nm : cb.names )
+				{
+					if( pm->GetItem( nm.c_str() ) == ptr ) return true;
+				}
+				return false;
+			};
+			auto isRegisteredInScalarMgr = []( IScalarPainterManager* spm, const IScalarPainter* ptr ) -> bool
+			{
+				if( !spm || !ptr ) return false;
+				CollectNamesCallback cb;
+				spm->EnumerateItemNames( cb );
+				for( const String& nm : cb.names )
+				{
+					if( spm->GetItem( nm.c_str() ) == ptr ) return true;
+				}
+				return false;
+			};
+
 			if( slot.kind == MaterialSlotRef::Painter ) {
 				IPainterManager* pm = mJob.GetPainters();
-				rebindSlot = pm && pm->GetItem( valueStr.c_str() ) != nullptr;
+				const bool curIsNamed = !hasCst || ( paramAuthoredInCst && isRegisteredInPainterMgr( pm, slot.painter ) );
+				rebindSlot = !composed && curIsNamed && pm && pm->GetItem( valueStr.c_str() ) != nullptr;
 			} else if( slot.kind == MaterialSlotRef::ScalarPainter ) {
 				IScalarPainterManager* spm = mJob.GetScalarPainters();
-				rebindSlot = spm && spm->GetItem( valueStr.c_str() ) != nullptr;
+				const bool curIsNamed = !hasCst || ( paramAuthoredInCst && isRegisteredInScalarMgr( spm, slot.scalarPainter ) );
+				rebindSlot = !composed && curIsNamed && spm && spm->GetItem( valueStr.c_str() ) != nullptr;
 			}
 		}
 		if( !rebindSlot ) {

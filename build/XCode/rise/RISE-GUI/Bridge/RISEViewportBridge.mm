@@ -134,7 +134,11 @@ NSString* NamedViewDisplayName( const char* bytes )
                     hasRange:(BOOL)hasRange
                     rangeMin:(double)rangeMin
                     rangeMax:(double)rangeMax
-                   rangeStep:(double)rangeStep;
+                   rangeStep:(double)rangeStep
+              targetsPainter:(BOOL)targetsPainter
+           inlinePainterKind:(NSInteger)inlinePainterKind
+          inlinePainterValue:(NSString *)inlinePainterValue
+       inlinePainterRefCount:(NSUInteger)inlinePainterRefCount;
 @end
 
 // Class extension: private initializer for RISEViewportPropertyPreset.
@@ -2832,7 +2836,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     NSMutableArray<RISEViewportProperty *> *out = [NSMutableArray arrayWithCapacity:n];
     char nameBuf[128];
     char valBuf[256];
-    char descBuf[512];
+    char descBuf[2048];
     // Preset label/value buffers are sized generously so future
     // descriptors with longer labels (multi-byte UTF-8 for non-ASCII
     // names) can grow without churn.  CopyToBuf NUL-terminates on
@@ -2842,6 +2846,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     char presetLabelBuf[256];
     char presetValueBuf[256];
     char unitLabelBuf[64];
+    char inlinePainterValBuf[256];
     for (unsigned int i = 0; i < n; ++i) {
         RISE_API_SceneEditController_PropertyName(_controller, i, nameBuf, sizeof(nameBuf));
         RISE_API_SceneEditController_PropertyValue(_controller, i, valBuf, sizeof(valBuf));
@@ -2883,9 +2888,18 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         const double rangeMax  = RISE_API_SceneEditController_PropertyRangeMax(_controller, i);
         const double rangeStep = RISE_API_SceneEditController_PropertyRangeStep(_controller, i);
 
-        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf]
-                                                                       value:[NSString stringWithUTF8String:valBuf]
-                                                                  describing:[NSString stringWithUTF8String:descBuf]
+        const BOOL targetsPainter = RISE_API_SceneEditController_PropertyTargetsPainter(_controller, i) ? YES : NO;
+        const NSInteger inlinePainterKind = static_cast<NSInteger>(RISE_API_SceneEditController_PropertyInlinePainterKind(_controller, i));
+        NSString *inlinePainterValue = @"";
+        if (inlinePainterKind != 0 && RISE_API_SceneEditController_PropertyInlinePainterValue(_controller, i, inlinePainterValBuf, sizeof(inlinePainterValBuf))) {
+            NSString *iv = [NSString stringWithUTF8String:inlinePainterValBuf];
+            if (iv) inlinePainterValue = iv;
+        }
+        const NSUInteger inlinePainterRefCount = static_cast<NSUInteger>(RISE_API_SceneEditController_PropertyInlinePainterRefCount(_controller, i));
+
+        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf] ?: @""
+                                                                       value:[NSString stringWithUTF8String:valBuf] ?: @""
+                                                                  describing:[NSString stringWithUTF8String:descBuf] ?: @""
                                                                         kind:kind
                                                                     editable:editable ? YES : NO
                                                                      presets:presets
@@ -2893,7 +2907,11 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                                                                     hasRange:hasRange
                                                                     rangeMin:rangeMin
                                                                     rangeMax:rangeMax
-                                                                   rangeStep:rangeStep];
+                                                                   rangeStep:rangeStep
+                                                              targetsPainter:targetsPainter
+                                                           inlinePainterKind:inlinePainterKind
+                                                          inlinePainterValue:inlinePainterValue
+                                                       inlinePainterRefCount:inlinePainterRefCount];
         [out addObject:p];
     }
     return out;
@@ -2963,6 +2981,34 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     return YES;
 }
 
+- (BOOL)propertyJumpTargetForCategory:(RISEViewportCategory)category
+                              atIndex:(NSUInteger)idx
+                          outCategory:(RISEViewportCategory *)outCategory
+                              outName:(NSString * _Nullable * _Nonnull)outName {
+    if (outName) *outName = nil;
+    if (!_controller || !outCategory || !outName) return NO;
+    int cat = 0;
+    char nameBuf[128] = {0};
+    if (!RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+            _controller, (int)category, (unsigned int)idx, &cat, nameBuf, sizeof(nameBuf))) {
+        return NO;
+    }
+    NSString *n = [NSString stringWithUTF8String:nameBuf];
+    if (!n || n.length == 0) return NO;
+    switch (cat) {
+        case 1:  *outCategory = RISEViewportCategoryCamera;   break;
+        case 3:  *outCategory = RISEViewportCategoryObject;   break;
+        case 4:  *outCategory = RISEViewportCategoryLight;    break;
+        case 6:  *outCategory = RISEViewportCategoryMaterial; break;
+        case 7:  *outCategory = RISEViewportCategoryMedium;   break;
+        case 10: *outCategory = RISEViewportCategoryPainter;  break;
+        case 11: *outCategory = RISEViewportCategoryGeometry; break;
+        default: return NO;
+    }
+    *outName = n;
+    return YES;
+}
+
 - (NSArray<RISEViewportProperty *> *)propertySnapshotFor:(RISEViewportCategory)category {
     if (!_controller) return @[];
     const int cat = (int)category;
@@ -2970,7 +3016,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     NSMutableArray<RISEViewportProperty *> *out = [NSMutableArray arrayWithCapacity:n];
     char nameBuf[128];
     char valBuf[256];
-    char descBuf[512];
+    char descBuf[2048];
     char presetLabelBuf[256];
     char presetValueBuf[256];
     char unitLabelBuf[64];
@@ -3007,9 +3053,21 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         const double rangeMax  = RISE_API_SceneEditController_PropertyRangeMaxFor(_controller, cat, i);
         const double rangeStep = RISE_API_SceneEditController_PropertyRangeStepFor(_controller, cat, i);
 
-        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf]
-                                                                       value:[NSString stringWithUTF8String:valBuf]
-                                                                  describing:[NSString stringWithUTF8String:descBuf]
+        const BOOL targetsPainter = RISE_API_SceneEditController_PropertyTargetsPainterFor(_controller, cat, i) ? YES : NO;
+        const NSInteger inlinePainterKind = RISE_API_SceneEditController_PropertyInlinePainterKindFor(_controller, cat, i);
+        NSString *inlinePainterValue = @"";
+        char inlineValBuf[256];
+        if (inlinePainterKind != 0 &&
+            RISE_API_SceneEditController_PropertyInlinePainterValueFor(_controller, cat, i, inlineValBuf, sizeof(inlineValBuf))) {
+            NSString *iv = [NSString stringWithUTF8String:inlineValBuf];
+            if (iv) inlinePainterValue = iv;
+        }
+        const NSUInteger inlinePainterRefCount =
+            RISE_API_SceneEditController_PropertyInlinePainterRefCountFor(_controller, cat, i);
+
+        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf] ?: @""
+                                                                       value:[NSString stringWithUTF8String:valBuf] ?: @""
+                                                                  describing:[NSString stringWithUTF8String:descBuf] ?: @""
                                                                         kind:kind
                                                                     editable:editable ? YES : NO
                                                                      presets:presets
@@ -3017,7 +3075,11 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                                                                     hasRange:hasRange
                                                                     rangeMin:rangeMin
                                                                     rangeMax:rangeMax
-                                                                   rangeStep:rangeStep];
+                                                                   rangeStep:rangeStep
+                                                              targetsPainter:targetsPainter
+                                                           inlinePainterKind:inlinePainterKind
+                                                          inlinePainterValue:inlinePainterValue
+                                                       inlinePainterRefCount:inlinePainterRefCount];
         [out addObject:p];
     }
     return out;
@@ -3033,6 +3095,29 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         [self refreshProperties];
     }
     return ok;
+}
+
+- (BOOL)setReferenceSlotPainterValueForCategory:(RISEViewportCategory)category
+                                      slotParam:(NSString *)slotParam
+                                          value:(NSString *)value {
+    if (!_controller || !slotParam || !value) return NO;
+    BOOL ok = RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+        _controller, (int)category, [slotParam UTF8String], [value UTF8String]) ? YES : NO;
+    if (ok) {
+        [self refreshProperties];
+    }
+    return ok;
+}
+
+- (nullable NSString *)forkReferenceSlotPainterForCategory:(RISEViewportCategory)category
+                                                 slotParam:(NSString *)slotParam {
+    if (!_controller || !slotParam) return nil;
+    char newNameBuf[256] = {0};
+    BOOL ok = RISE_API_SceneEditController_ForkReferenceSlotPainter(
+        _controller, (int)category, [slotParam UTF8String], newNameBuf, sizeof(newNameBuf)) ? YES : NO;
+    if (!ok || !newNameBuf[0]) return nil;
+    [self refreshProperties];
+    return [NSString stringWithUTF8String:newNameBuf];
 }
 
 #pragma mark - Agent surface (Facet 5 slice 1c-1)
@@ -3450,6 +3535,10 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     double _rangeMin;
     double _rangeMax;
     double _rangeStep;
+    BOOL _targetsPainter;
+    NSInteger _inlinePainterKind;
+    NSString *_inlinePainterValue;
+    NSUInteger _inlinePainterRefCount;
 }
 
 - (instancetype)initWithName:(NSString *)name
@@ -3463,6 +3552,10 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                     rangeMin:(double)rangeMin
                     rangeMax:(double)rangeMax
                    rangeStep:(double)rangeStep
+              targetsPainter:(BOOL)targetsPainter
+           inlinePainterKind:(NSInteger)inlinePainterKind
+          inlinePainterValue:(NSString *)inlinePainterValue
+       inlinePainterRefCount:(NSUInteger)inlinePainterRefCount
 {
     self = [super init];
     if (self) {
@@ -3480,6 +3573,10 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         _rangeMin = rangeMin;
         _rangeMax = rangeMax;
         _rangeStep = rangeStep;
+        _targetsPainter = targetsPainter;
+        _inlinePainterKind = inlinePainterKind;
+        _inlinePainterValue = [inlinePainterValue copy] ?: @"";
+        _inlinePainterRefCount = inlinePainterRefCount;
     }
     return self;
 }
@@ -3495,6 +3592,10 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (double)rangeMin        { return _rangeMin; }
 - (double)rangeMax        { return _rangeMax; }
 - (double)rangeStep       { return _rangeStep; }
+- (BOOL)targetsPainter    { return _targetsPainter; }
+- (NSInteger)inlinePainterKind { return _inlinePainterKind; }
+- (NSString *)inlinePainterValue { return _inlinePainterValue; }
+- (NSUInteger)inlinePainterRefCount { return _inlinePainterRefCount; }
 
 @end
 

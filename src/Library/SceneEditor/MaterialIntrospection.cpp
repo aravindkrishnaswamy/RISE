@@ -228,12 +228,15 @@ CameraProperty MakePainterSlotRow(
 	bool panelEditable, const char* description )
 {
 	CameraProperty p;
-	p.name        = String( slotName );
-	p.value       = binding;
-	p.description = String( description );
-	p.kind        = ValueKind::Reference;   // panel renders as text + presets dropdown
-	p.editable    = panelEditable && nameResolved;
-	p.presets     = presets;
+	p.name           = String( slotName );
+	p.value          = binding;
+	p.description    = String( description );
+	p.kind           = ValueKind::Reference;   // panel renders as text + presets dropdown
+	p.editable       = panelEditable && nameResolved;
+	p.presets        = presets;
+	p.targetsPainter = nameResolved;
+	if( nameResolved )
+		p.referenceCategories.push_back( ChunkCategory::Painter );
 	return p;
 }
 

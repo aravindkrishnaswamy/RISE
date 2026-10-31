@@ -63,11 +63,14 @@ byte-exactly when unedited and minimal-diff when edited.
 
 **Major roadmap slices have shipped on both desktop platforms:** redesigned
 workspaces and start screen, outliner/entity creation, environment editing,
-canonical and named camera views, render modes, N-up panes, and the in-app plus
+canonical and named camera views, render modes, N-up panes, the C1/C2
+material & painter inspector + node-graph canvas ([gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md),
+doc 88 S11–S23), 2D painter/stage/ramp previews (`PainterPreview` on both macOS and Windows),
+`ParameterSemantics` pipe & legality validation (S17), C1 descriptor soft-range sliders and inline painter slot swatches / quick editors / Shared-Fork (C1 Slices 1–3), and the in-app plus
 external agent surface, including editable region rendering and explicit
-region-only final renders. Current gaps include the dedicated material graph,
-spectral-differentiator UX, asset-library workflow, and some
-cross-client orchestration/security hardening. The sections below remain the
+region-only final renders. Current gaps include the 3D shaderball `MaterialPreview` engine, C2 Phase-2 visual polish (pipe-coloured sockets/wires and adapter insertion), C3 MaterialX
+import, spectral-differentiator UX (D1–D3, D5–D7), asset-library workflow, and
+some cross-client orchestration/security hardening. The sections below remain the
 umbrella rationale and backlog; their original phase language is not a
 present-day capability audit.
 
@@ -221,7 +224,7 @@ Every deep-dive spec must include an "Android tier + interaction" note.
 ### 10.5 Net-new shared-library components surfaced by the specs
 The deep-dives converged on a small set of genuinely-new shared-C++ pieces that more than one direction depends on — building these once unblocks several features:
 
-- **A `ParameterSemantics` structure on `ParameterDescriptor`** (not a single overloaded `pipe` enum — the review's correction). The descriptor does **not** currently encode the `IPainter`-vs-`IScalarPainter` distinction — GGX `ior`/`film_ior` are declared identically to true color slots, with routing downstream in `Job::ResolveOrDiagnoseScalar`. The structure carries **separate fields**: pipe (`color`/`scalar`/`either`), cardinality, `requireSingle`, semantic units, colour space, spatial-vs-spectral. Both the material editor (socket coloring, [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md)) and the MCP schema (typing for the LLM, [gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md)) consume it.
+- **A `ParameterSemantics` structure on `ParameterDescriptor` (Core SHIPPED in S17).** Defined in [`ChunkDescriptor.h`](../src/Library/Parsers/ChunkDescriptor.h) (`struct ParameterSemantics`), carrying `pipe` (`ParameterPipe`: `Color`, `Scalar`, `Material`, `Function1D`, `Function2D`, `Geometry`, `Other`), `requireSingle`, `keywordAllowlist`, `colorAlsoAcceptsScalar` (`DL-16`/`DL-17` dual-pipe rotation slots), and `note`. Consumed by [`ConnectionLegality`](../src/Library/SceneEditor/ConnectionLegality.h) and the C2 node-graph canvas ([gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md), [gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md)). Fine-grained `cardinality`, semantic `units`, `colourSpace`, and `spatialVsSpectral` fields remain optional future enrichments.
 - **Side-effect-free `validate(scene_text)` pass.** The parser has no no-op validation mode today (`ParseAndLoadScene` mutates / logs to the global log). Design: parse into an **isolated throwaway real `Job`** + a command policy (a faithful capturing mock would need 217 pure virtuals, and the real accept/reject logic lives in `Job::ResolveOrDiagnoseScalar`); end-state is `parse → IR → validate IR`. Keystone for AI self-correction ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md)); also powers inline editor diagnostics.
 - **Scene-text retention on `Job`.** The `Job` does not retain source text after parse. Buffer-on-parse so the GUI "show me the code" panel, the MCP scene-text resource, and the AI read path share one accessor.
 - **Generated bridge enum mirror** (`tools/gen_bridge_enums.py`). Emit the C-ABI enums (panel mode, category, tool) to Kotlin constants + Obj-C `static_assert` mirrors so the recurring bridge-enum-drift bug (the `case 5:` fall-through) becomes structurally impossible ([gui/CROSS_PLATFORM_ARCHITECTURE.md](gui/CROSS_PLATFORM_ARCHITECTURE.md)).

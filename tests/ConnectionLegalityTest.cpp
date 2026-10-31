@@ -153,10 +153,10 @@ namespace
 		{ "dielectric_material", "tau", "Scalar", false, false, "%s" },
 		{ "dielectric_material", "ior", "Scalar", false, false, "%s" },
 		{ "dielectric_material", "scattering", "Scalar", false, false, "%s" },
-		{ "subsurfacescattering_material", "ior", "Scalar", false, false, "%s" },
+		{ "subsurfacescattering_material", "ior", "Scalar", true, false, "%s" },
 		{ "subsurfacescattering_material", "absorption", "Scalar", false, false, "%s" },
 		{ "subsurfacescattering_material", "scattering", "Scalar", false, false, "%s" },
-		{ "randomwalk_sss_material", "ior", "Scalar", false, false, "%s" },
+		{ "randomwalk_sss_material", "ior", "Scalar", true, false, "%s" },
 		{ "randomwalk_sss_material", "absorption", "Scalar", false, false, "%s" },
 		{ "randomwalk_sss_material", "scattering", "Scalar", false, false, "%s" },
 		{ "lambertian_luminaire_material", "exitance", "Color", false, false, "%s" },
@@ -176,8 +176,8 @@ namespace
 		{ "translucent_material", "ext", "Scalar", false, false, "%s" },
 		{ "translucent_material", "N", "Scalar", false, false, "%s" },
 		{ "translucent_material", "scattering", "Scalar", false, false, "%s" },
-		{ "generic_human_tissue_material", "sca", "Scalar", false, false, "%s" },
-		{ "generic_human_tissue_material", "g", "Scalar", false, false, "%s" },
+		{ "generic_human_tissue_material", "sca", "Scalar", true, false, "%s" },
+		{ "generic_human_tissue_material", "g", "Scalar", true, false, "%s" },
 		{ "composite_material", "top", "Material", false, false, "%s" },
 		{ "composite_material", "bottom", "Material", false, false, "%s" },
 		{ "composite_material", "extinction", "Scalar", false, false, "%s" },
@@ -198,7 +198,7 @@ namespace
 		{ "ggx_material", "film_ior", "Scalar", false, false, "%s" },
 		{ "ggx_material", "film_extinction", "Scalar", false, false, "%s" },
 		{ "ggx_material", "film_thickness", "Scalar", false, false, "%s" },
-		{ "ggx_material", "tangent_rotation", "Color", false, false, "%s" },
+		{ "ggx_material", "tangent_rotation", "Color", true, false, "%s" },
 		{ "pbr_metallic_roughness_material", "base_color", "Color", false, false, "%s" },
 		{ "pbr_metallic_roughness_material", "metallic", "Color", false, false, "%s" },
 		{ "pbr_metallic_roughness_material", "roughness", "Color", false, false, "%s" },
@@ -206,7 +206,7 @@ namespace
 		{ "pbr_metallic_roughness_material", "specular_factor", "Color", false, false, "%s" },
 		{ "pbr_metallic_roughness_material", "specular_color", "Color", false, false, "%s" },
 		{ "pbr_metallic_roughness_material", "anisotropy_factor", "Color", false, false, "%s" },
-		{ "pbr_metallic_roughness_material", "anisotropy_rotation", "Color", false, false, "%s" },
+		{ "pbr_metallic_roughness_material", "anisotropy_rotation", "Color", true, false, "%s" },
 		{ "cooktorrance_material", "rd", "Color", false, false, "%s" },
 		{ "cooktorrance_material", "rs", "Color", false, false, "%s" },
 		{ "cooktorrance_material", "facets", "Scalar", false, false, "%s" },
@@ -458,6 +458,8 @@ int main()
 			for( size_t i = 0; i < d->parameters.size(); ++i ) if( d->parameters[i].name == pn ) pd = &d->parameters[i];
 			Check( pd != nullptr, "PART2: `" + kw + "." + pn + "` is declared on its descriptor" );
 			if( !pd ) continue;
+			Check( pd->semantics.requireSingle == row.requireSingle,
+				"PART2: `" + kw + "." + pn + "` requireSingle matches kRows" );
 
 			// Baseline gate: does this keyword construct at all with the ONE
 			// param under test bound to a KNOWN-LEGAL candidate for its own

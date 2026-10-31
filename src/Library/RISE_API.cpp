@@ -11759,6 +11759,33 @@ namespace RISE
 		return p ? p->PropertyRangeStep( idx ) : 0.0;
 	}
 
+	bool RISE_API_SceneEditController_PropertyTargetsPainter(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyTargetsPainter( idx ) : false;
+	}
+
+	int RISE_API_SceneEditController_PropertyInlinePainterKind(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyInlinePainterKind( idx ) : 0;
+	}
+
+	bool RISE_API_SceneEditController_PropertyInlinePainterValue(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyInlinePainterValue( idx ), buf, bufLen );
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyInlinePainterRefCount(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyInlinePainterRefCount( idx ) : 0u;
+	}
+
 	bool RISE_API_SceneEditController_PropertyJumpTarget(
 		SceneEditController* p, unsigned int idx,
 		int* outCategory, char* nameBuf, unsigned int nameBufLen )
@@ -12851,6 +12878,37 @@ namespace RISE
 			static_cast<SceneEditController::Category>( category ), idx ) : 0.0;
 	}
 
+	bool RISE_API_SceneEditController_PropertyTargetsPainterFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyTargetsPainterFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : false;
+	}
+
+	int RISE_API_SceneEditController_PropertyInlinePainterKindFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyInlinePainterKindFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0;
+	}
+
+	bool RISE_API_SceneEditController_PropertyInlinePainterValueFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyInlinePainterValueFor(
+			static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyInlinePainterRefCountFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyInlinePainterRefCountFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0u;
+	}
+
 	bool RISE_API_SceneEditController_SetPropertyForCategory(
 		SceneEditController* p, int category, const char* name, const char* valueStr )
 	{
@@ -12858,5 +12916,32 @@ namespace RISE
 		return p->SetPropertyForCategory(
 			static_cast<SceneEditController::Category>( category ),
 			String( name ), String( valueStr ) );
+	}
+
+	bool RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+		SceneEditController* p, int category, const char* slotParam, const char* valueStr )
+	{
+		if( !p || !slotParam || !valueStr ) return false;
+		return p->SetReferenceSlotPainterValue(
+			static_cast<SceneEditController::Category>( category ),
+			String( slotParam ), String( valueStr ) );
+	}
+
+	bool RISE_API_SceneEditController_ForkReferenceSlotPainter(
+		SceneEditController* p, int category, const char* slotParam,
+		char* outNewPainterName, unsigned int outNewPainterNameLen )
+	{
+		if( !p || !slotParam ) return false;
+		if( outNewPainterName && outNewPainterNameLen > 0 )
+			outNewPainterName[0] = '\0';
+		String newName;
+		const bool ok = p->ForkReferenceSlotPainter(
+			static_cast<SceneEditController::Category>( category ),
+			String( slotParam ), &newName );
+		if( ok && outNewPainterName && outNewPainterNameLen > 0 )
+		{
+			CopyToBuf( newName, outNewPainterName, outNewPainterNameLen );
+		}
+		return ok;
 	}
 }

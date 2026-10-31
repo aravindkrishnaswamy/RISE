@@ -67,6 +67,10 @@ struct ViewportProperty {
     double  rangeMin = 0.0;
     double  rangeMax = 0.0;
     double  rangeStep = 0.0;
+    bool    targetsPainter = false;
+    int     inlinePainterKind = 0;
+    QString inlinePainterValue;
+    unsigned int inlinePainterRefCount = 0;
 };
 
 /// Tool enum mirroring SceneEditController::Tool and the C-API
@@ -1059,6 +1063,8 @@ public:
     bool propertyJumpTargetFor(Category cat, int index,
                                Category* outCat, QString* outName);
     bool setPropertyForCategory(Category cat, const QString& name, const QString& value);
+    bool setReferenceSlotPainterValue(Category cat, const QString& slotParam, const QString& value);
+    bool forkReferenceSlotPainter(Category cat, const QString& slotParam, QString* outNewPainterName = nullptr);
     /// Per-category selection accessor.  Returns the entity name
     /// picked in `cat`'s section, or empty when nothing is picked.
     /// An Object pick auto-fills the Material section's selection

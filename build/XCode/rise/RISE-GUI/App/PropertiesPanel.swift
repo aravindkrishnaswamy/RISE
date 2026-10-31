@@ -74,6 +74,12 @@ struct PropertyRow: Identifiable {
     let rangeMin: Double
     let rangeMax: Double
     let rangeStep: Double
+    /// Material Editor Slice 3: painter-slot swatch & inline constant painter
+    /// metadata (`0` = None, `1` = UniformColor, `2` = ScalarValue).
+    let targetsPainter: Bool
+    let inlinePainterKind: Int
+    let inlinePainterValue: String
+    let inlinePainterRefCount: Int
     /// Snapshot position -- the C-ABI property index this row was built
     /// from (jump-to-definition queries the core by index).
     let index: Int
@@ -95,6 +101,10 @@ struct PropertyRow: Identifiable {
             rangeMin: src.rangeMin,
             rangeMax: src.rangeMax,
             rangeStep: src.rangeStep,
+            targetsPainter: src.targetsPainter,
+            inlinePainterKind: src.inlinePainterKind,
+            inlinePainterValue: src.inlinePainterValue,
+            inlinePainterRefCount: Int(src.inlinePainterRefCount),
             index: index
         )
     }
@@ -228,13 +238,18 @@ final class PainterThumbnailCache {
         if inFlight.contains(k) { return nil }
         inFlight.insert(k)
         DispatchQueue.global(qos: .userInitiated).async {
-            var wasScalar: ObjCBool = false
-            var rangeMin: Double = 0
-            var rangeMax: Double = 0
-            let data = fetcher.painterPreview(
-                for: painter, defIndex: defIndex,
-                width: UInt(width), height: UInt(height),
-                wasScalar: &wasScalar, rangeMin: &rangeMin, rangeMax: &rangeMax)
+            var data: Data? = nil
+            for attempt in 0..<4 {
+                if attempt > 0 { Thread.sleep(forTimeInterval: 0.025) }
+                var wasScalar: ObjCBool = false
+                var rangeMin: Double = 0
+                var rangeMax: Double = 0
+                data = fetcher.painterPreview(
+                    for: painter, defIndex: defIndex,
+                    width: UInt(width), height: UInt(height),
+                    wasScalar: &wasScalar, rangeMin: &rangeMin, rangeMax: &rangeMax)
+                if data != nil { break }
+            }
             let image = data.flatMap { Self.image(fromRGBA8: $0, width: width, height: height) }
             DispatchQueue.main.async {
                 PainterThumbnailCache.shared.inFlight.remove(k)
@@ -259,7 +274,12 @@ final class PainterThumbnailCache {
         if inFlight.contains(k) { return nil }
         inFlight.insert(k)
         DispatchQueue.global(qos: .userInitiated).async {
-            let data = fetcher.rampStripPreview(for: painter, width: UInt(width), height: UInt(height))
+            var data: Data? = nil
+            for attempt in 0..<4 {
+                if attempt > 0 { Thread.sleep(forTimeInterval: 0.025) }
+                data = fetcher.rampStripPreview(for: painter, width: UInt(width), height: UInt(height))
+                if data != nil { break }
+            }
             let image = data.flatMap { Self.image(fromRGBA8: $0, width: width, height: height) }
             DispatchQueue.main.async {
                 PainterThumbnailCache.shared.inFlight.remove(k)
@@ -308,6 +328,7 @@ struct PainterThumbnailView: View {
     let painterName: String
     let defIndex: Int
     var size: CGFloat = 48
+    var refreshTrigger: String = ""
 
     @State private var image: NSImage? = nil
 
@@ -327,10 +348,13 @@ struct PainterThumbnailView: View {
         .onAppear { refresh() }
         .onChange(of: painterName) { _, _ in image = nil; refresh() }
         .onChange(of: defIndex) { _, _ in image = nil; refresh() }
+        .onChange(of: refreshTrigger) { _, _ in refresh() }
     }
 
     private func refresh() {
         guard let bridge else { return }
+        let expectedName = painterName
+        let expectedDef = defIndex
         var uuid: UInt64 = 0
         var revision: UInt64 = 0
         _ = bridge.getSceneTextVersionUuid(&uuid, revision: &revision)
@@ -342,7 +366,10 @@ struct PainterThumbnailView: View {
         if let cached = PainterThumbnailCache.shared.image(
             fetcher: fetcher, painter: painterName, defIndex: defIndex,
             width: px, height: px, revision: revision,
-            onReady: { img in self.image = img }
+            onReady: { img in
+                guard self.painterName == expectedName, self.defIndex == expectedDef else { return }
+                self.image = img
+            }
         ) {
             image = cached
         }
@@ -366,6 +393,7 @@ struct RampStripThumbnailView: View {
     let painterName: String
     var width: CGFloat = 220
     var height: CGFloat = 20
+    var refreshTrigger: String = ""
 
     @State private var image: NSImage? = nil
 
@@ -383,10 +411,12 @@ struct RampStripThumbnailView: View {
         .frame(width: width, height: height)
         .onAppear { refresh() }
         .onChange(of: painterName) { _, _ in image = nil; refresh() }
+        .onChange(of: refreshTrigger) { _, _ in refresh() }
     }
 
     private func refresh() {
         guard let bridge else { return }
+        let expectedName = painterName
         var uuid: UInt64 = 0
         var revision: UInt64 = 0
         _ = bridge.getSceneTextVersionUuid(&uuid, revision: &revision)
@@ -395,7 +425,10 @@ struct RampStripThumbnailView: View {
         let fetcher = PainterPreviewFetcher(bridge: bridge)
         if let cached = PainterThumbnailCache.shared.rampStrip(
             fetcher: fetcher, painter: painterName, width: pxW, height: pxH, revision: revision,
-            onReady: { img in self.image = img }
+            onReady: { img in
+                guard self.painterName == expectedName else { return }
+                self.image = img
+            }
         ) {
             image = cached
         }
@@ -435,6 +468,7 @@ struct PropertiesPanel: View {
     @State private var rows: [PropertyRow] = []
     @State private var selectionCategory: RISEViewportCategory = .none
     @State private var selectionName: String = ""
+    @State private var sceneRevision: UInt64 = 0
     @State private var showAdvanced: Bool = false
     @State private var lastEntityKey: String = ""
     // doc-88 Phase 3 S15: last-consumed `viewModel.graphDefFocusRequest`
@@ -539,7 +573,13 @@ struct PropertiesPanel: View {
     private var painterThumbnailHeader: some View {
         if selectionCategory == .painter && !selectionName.isEmpty {
             HStack(spacing: 10) {
-                PainterThumbnailView(bridge: bridge, painterName: selectionName, defIndex: -1, size: 56)
+                PainterThumbnailView(
+                    bridge: bridge,
+                    painterName: selectionName,
+                    defIndex: -1,
+                    size: 56,
+                    refreshTrigger: "\(sceneRevision)"
+                )
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Preview").font(Theme.sans(10, .medium)).foregroundColor(Theme.textDim)
                     Text("Evaluated over a synthetic UV/world patch, not a scene render.")
@@ -557,7 +597,11 @@ struct PropertiesPanel: View {
             if isRampPainter {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Gradient").font(Theme.sans(10, .medium)).foregroundColor(Theme.textDim)
-                    RampStripThumbnailView(bridge: bridge, painterName: selectionName)
+                    RampStripThumbnailView(
+                        bridge: bridge,
+                        painterName: selectionName,
+                        refreshTrigger: "\(sceneRevision)"
+                    )
                 }
             }
         }
@@ -609,7 +653,13 @@ struct PropertiesPanel: View {
             // shows the neutral placeholder (see defStageIndex's doc
             // comment), never a wrong value.
             if selectionCategory == .painter, let stageIdx = defStageIndex(rowName: row.name) {
-                PainterThumbnailView(bridge: bridge, painterName: selectionName, defIndex: stageIdx, size: 28)
+                PainterThumbnailView(
+                    bridge: bridge,
+                    painterName: selectionName,
+                    defIndex: stageIdx,
+                    size: 28,
+                    refreshTrigger: "\(sceneRevision)"
+                )
             }
             propertyRowCell(row)
         }
@@ -618,12 +668,28 @@ struct PropertiesPanel: View {
     private func propertyRowCell(_ row: PropertyRow) -> some View {
         PropertyRowView(
             row: row,
+            bridge: bridge,
+            sceneRevision: sceneRevision,
             onCommit: { newValue in
                 guard let bridge else { return false }
                 let accepted = bridge.setProperty(
                     for: selectionCategory, name: row.name, value: newValue)
                 reload()
                 return accepted
+            },
+            onCommitInlinePainter: { newValue in
+                guard let bridge else { return false }
+                let accepted = bridge.setReferenceSlotPainterValue(
+                    for: selectionCategory, slotParam: row.name, value: newValue)
+                reload()
+                return accepted
+            },
+            onForkInlinePainter: {
+                guard let bridge else { return false }
+                let newName = bridge.forkReferenceSlotPainter(
+                    for: selectionCategory, slotParam: row.name)
+                reload()
+                return newName != nil
             },
             onScrubBegin: { bridge?.beginPropertyScrub() },
             onScrubEnd:   { bridge?.endPropertyScrub()   }
@@ -662,7 +728,8 @@ struct PropertiesPanel: View {
             if row.kind == .reference, let bridge {
                 var jumpCat: RISEViewportCategory = .none
                 var jumpName: NSString? = nil
-                if bridge.propertyJumpTarget(atIndex: UInt(row.index),
+                if bridge.propertyJumpTarget(forCategory: selectionCategory,
+                                             atIndex: UInt(row.index),
                                              outCategory: &jumpCat, outName: &jumpName),
                    let name = jumpName as String? {
                     Button {
@@ -978,6 +1045,10 @@ struct PropertiesPanel: View {
     private func reload() {
         guard let bridge else { return }
         bridge.refreshProperties()
+        var uuid: UInt64 = 0
+        var rev: UInt64 = 0
+        _ = bridge.getSceneTextVersionUuid(&uuid, revision: &rev)
+        sceneRevision = rev
         selectionCategory = bridge.selectionCategory
         selectionName = bridge.selectionName
         // Read the per-category snapshot just like the Windows inspector.
@@ -1105,7 +1176,11 @@ private struct AdvancedDisclosure<Content: View>: View {
 /// picked by `row.kind`; all kinds share the same 82pt label column.
 private struct PropertyRowView: View {
     let row: PropertyRow
+    weak var bridge: RISEViewportBridge?
+    let sceneRevision: UInt64
     let onCommit: (String) -> Bool
+    let onCommitInlinePainter: (String) -> Bool
+    let onForkInlinePainter: () -> Bool
     let onScrubBegin: () -> Void
     let onScrubEnd:   () -> Void
 
@@ -1158,7 +1233,16 @@ private struct PropertyRowView: View {
         case .filename:
             FilenameCell(row: row, onCommit: onCommit)
         case .reference:
-            ReferenceChipCell(row: row, onCommit: onCommit)
+            ReferenceChipCell(
+                row: row,
+                bridge: bridge,
+                sceneRevision: sceneRevision,
+                onCommit: onCommit,
+                onCommitInlinePainter: onCommitInlinePainter,
+                onForkInlinePainter: onForkInlinePainter,
+                onScrubBegin: onScrubBegin,
+                onScrubEnd: onScrubEnd
+            )
         case .enumKind:
             EnumChipCell(row: row, onCommit: onCommit)
         case .double, .uint, .string, .doubleVec4, .doubleMat4:
@@ -1189,7 +1273,30 @@ private struct ParamSliderCell: View {
     let onCommit: (String) -> Bool
 
     @State private var value: Double = 0
+    @State private var displayValue: Double = 0
+    @State private var dragStartValue: Double = 0
     @State private var dragging: Bool = false
+    @State private var didMoveDuringDrag: Bool = false
+
+    private var isExpressionParamRow: Bool {
+        row.name == "param" || row.name.hasPrefix("param[")
+    }
+
+    private var formatKind: PropertyKind {
+        row.kind == .uint ? .uint : .double
+    }
+
+    private func syncFromSnapshot(_ text: String) {
+        let parsed = Self.numericToken(text, skipFirstToken: isExpressionParamRow)?.1 ?? row.rangeMin
+        displayValue = parsed
+        if row.rangeMax > row.rangeMin {
+            value = min(max(parsed, row.rangeMin), row.rangeMax)
+        } else {
+            value = parsed
+        }
+        dragStartValue = value
+        didMoveDuringDrag = false
+    }
 
     var body: some View {
         // (S5) `row` is assembled on the GUI bridge from FOUR separate lock
@@ -1206,71 +1313,123 @@ private struct ParamSliderCell: View {
         // invalid range rather than let it construct one.  A dropped frame's
         // worth of missing slider (the value text still renders) is a fine
         // outcome for a one-in-a-million lock race; a crash is not.
-        let hasValidRange = row.rangeMax > row.rangeMin
+        let rMin = row.rangeMin
+        let rMax = row.rangeMax
+        let rStep = row.rangeStep
+        let span = rMax - rMin
+        let hasValidRange = span > 0
+        let hasValidStep = hasValidRange && rStep > 0 && rStep <= span && (span / rStep) <= 100000.0
+        let sliderBinding = Binding<Double>(
+            get: { value },
+            set: { newVal in
+                if abs(newVal - value) > 1e-12 {
+                    didMoveDuringDrag = true
+                }
+                value = newVal
+                displayValue = newVal
+            }
+        )
         return HStack(spacing: 6) {
             if hasValidRange {
-                Slider(
-                    value: $value,
-                    in: row.rangeMin...row.rangeMax,
-                    step: row.rangeStep > 0 ? row.rangeStep : 0.0001,
-                    onEditingChanged: { editing in
-                        dragging = editing
-                        if !editing { commit() }
-                    }
-                )
-                .controlSize(.small)
+                if hasValidStep {
+                    Slider(
+                        value: sliderBinding,
+                        in: rMin...rMax,
+                        step: rStep,
+                        onEditingChanged: { editing in
+                            dragging = editing
+                            if editing {
+                                didMoveDuringDrag = false
+                            } else if didMoveDuringDrag || abs(value - dragStartValue) > 1e-12 {
+                                commit()
+                            } else {
+                                syncFromSnapshot(row.initialValue)
+                            }
+                        }
+                    )
+                    .controlSize(.small)
+                } else {
+                    Slider(
+                        value: sliderBinding,
+                        in: rMin...rMax,
+                        onEditingChanged: { editing in
+                            dragging = editing
+                            if editing {
+                                didMoveDuringDrag = false
+                            } else if didMoveDuringDrag || abs(value - dragStartValue) > 1e-12 {
+                                commit()
+                            } else {
+                                syncFromSnapshot(row.initialValue)
+                            }
+                        }
+                    )
+                    .controlSize(.small)
+                }
             }
-            Text(formatValue(value, kind: .double))
+            Text(formatValue(displayValue, kind: formatKind))
                 .font(Theme.mono(10))
                 .foregroundColor(Theme.textDim)
                 .frame(width: 46, alignment: .trailing)
         }
-        .onAppear { value = Self.numericToken(row.initialValue)?.1 ?? row.rangeMin }
+        .onAppear { syncFromSnapshot(row.initialValue) }
         .onChange(of: row.initialValue) { _, newValue in
             // Don't fight the user's own drag; re-sync from the snapshot
             // once the gesture is over (an Undo, or an edit through the
             // text field, moves the row underneath us).
-            if !dragging { value = Self.numericToken(newValue)?.1 ?? row.rangeMin }
+            if !dragging { syncFromSnapshot(newValue) }
         }
     }
 
     private func commit() {
-        guard let (range, _) = Self.numericToken(row.initialValue) else { return }
+        guard let (range, _) = Self.numericToken(row.initialValue, skipFirstToken: isExpressionParamRow) else {
+            syncFromSnapshot(row.initialValue)
+            return
+        }
+        let formatted = formatValue(value, kind: formatKind)
         var line = row.initialValue
-        line.replaceSubrange(range, with: formatValue(value, kind: .double))
-        _ = onCommit(line)
+        line.replaceSubrange(range, with: formatted)
+        guard line != row.initialValue else {
+            syncFromSnapshot(row.initialValue)
+            return
+        }
+        if onCommit(line) {
+            let committed = Double(formatted) ?? value
+            value = committed
+            dragStartValue = committed
+            displayValue = committed
+            didMoveDuringDrag = false
+        } else {
+            syncFromSnapshot(row.initialValue)
+        }
     }
 
-    /// The first whitespace-delimited token, SKIPPING token 0, that looks and
-    /// parses as a Double, as (its range in `line`, its value).  nil when the
-    /// line has no such token — the slider then has nothing to drive and the
-    /// caller falls back to the range minimum / skips the commit.
+    /// The first whitespace-delimited token (skipping token 0 when `skipFirstToken`
+    /// is true for `param` / `param[i]` rows, or requiring a single bare numeric
+    /// token when `skipFirstToken` is false) that looks and parses as a Double,
+    /// as (its range in `line`, its value).  nil when the line has no such token —
+    /// the slider then has nothing to drive and the caller falls back to the range
+    /// minimum / skips the commit.
     ///
     /// Two deliberate departures from "just try `Double(token)` on every token":
     ///
-    /// 1. Token 0 is SKIPPED.  `hasRange` (the sole gate that puts a row through
-    ///    ParamSliderCell rather than TextWellCell) is set only for an
-    ///    expression painter's `param[i]` rows.  The CST line is
-    ///    `param <paramName> <value> [min ... max ... step ... label ...]`,
+    /// 1. For `param[i]` rows (`skipFirstToken == true`), token 0 is SKIPPED.
+    ///    The CST line is `param <paramName> <value> [min ... max ... step ... label ...]`,
     ///    and `initialValue` here is everything AFTER the `param` role token
     ///    -- so its OWN token 0 is `<paramName>` (the expression parameter's
     ///    own identifier, e.g. `wob` or `ring_scale`), never a value the
-    ///    slider should scrub.  A parameter literally named `4` (or, see
-    ///    point 2, `inf`/`nan`) would otherwise get its name token silently
-    ///    overwritten by the slider.
+    ///    slider should scrub.  For descriptor soft-range rows (`skipFirstToken == false`),
+    ///    the row value is a single bare numeric literal (e.g. `0.15` or `4`).
     ///
-    /// 2. A token must LOOK numeric (optional sign, then a digit or `.`) before
-    ///    `Double(_:)` is even tried.  `Double("inf")`, `Double("nan")`, and
-    ///    `Double("0x1p3")` (C99 hex float) all successfully parse in Swift, so
-    ///    without this guard a param named exactly `inf`/`nan`/`infinity` (rare,
-    ///    but not disallowed by the scene grammar) would still be misread as a
-    ///    numeric value by the naive scan — the token-0 skip above only rules
-    ///    out the FIRST token, not a same-shaped later one on a multi-token
-    ///    value line.
-    private static func numericToken(_ line: String) -> (Range<String.Index>, Double)? {
+    /// 2. A token must LOOK numeric (optional sign, then a digit or `.`, and not
+    ///    C99 `0x`/`0X` hex float) before `Double(_:)` is even tried.  `Double("inf")`,
+    ///    `Double("nan")`, and `Double("0x1p3")` (C99 hex float) all successfully
+    ///    parse in Swift, so without this guard a param named `inf`/`nan`/`0x...`
+    ///    would be misread as a numeric value by the naive scan.
+    private static func numericToken(_ line: String, skipFirstToken: Bool = true) -> (Range<String.Index>, Double)? {
         func looksNumeric(_ s: Substring) -> Bool {
             var s = s
             if let f = s.first, f == "+" || f == "-" { s = s.dropFirst() }
+            if s.hasPrefix("0x") || s.hasPrefix("0X") { return false }
             guard let f = s.first else { return false }
             return f.isNumber || f == "."
         }
@@ -1282,17 +1441,19 @@ private struct ParamSliderCell: View {
             var j = i
             while j < line.endIndex, !line[j].isWhitespace { j = line.index(after: j) }
             let tok = line[i..<j]
-            if tokenIndex > 0, looksNumeric(tok) {
-                // A token that LOOKS numeric (leading sign/digit/`.`) but does not
-                // actually parse (`4.0.1`, a lone `-`, a truncated `1e`) means this
-                // line is not shaped the way this scanner assumes -- bail out with
-                // nil rather than falling through to scan later tokens.  Falling
-                // through would let the scan land on the NEXT numeric-looking
-                // token, which for a `param` line is `min`'s own bound
-                // (`param ring_scale <bad> min 0.5 max 20 ...`) -- so a malformed
-                // value token would silently make the slider scrub and commit
-                // OVER the min bound instead of refusing to drive at all.
-                guard let d = Double(tok) else { return nil }
+            if !skipFirstToken {
+                guard tokenIndex == 0, looksNumeric(tok), let d = Double(tok), d.isFinite else { return nil }
+                var k = j
+                while k < line.endIndex, line[k].isWhitespace { k = line.index(after: k) }
+                guard k == line.endIndex else { return nil }
+                return (i..<j, d)
+            }
+            if tokenIndex == 1 {
+                // Token 1 in `<paramName> <value> [min ...]` is strictly the value
+                // token.  If it does not look or parse as a finite decimal number,
+                // bail out with nil immediately rather than falling through to scan
+                // later tokens (where `min`'s bound token would otherwise match).
+                guard looksNumeric(tok), let d = Double(tok), d.isFinite else { return nil }
                 return (i..<j, d)
             }
             tokenIndex += 1
@@ -1580,60 +1741,432 @@ private struct FilenameCell: View {
     }
 }
 
-// MARK: - Reference (swatch + name chip)
+// MARK: - Reference (swatch + name chip + inline constant-painter editor)
 
 private struct ReferenceChipCell: View {
     let row: PropertyRow
+    weak var bridge: RISEViewportBridge?
+    let sceneRevision: UInt64
     let onCommit: (String) -> Bool
+    let onCommitInlinePainter: (String) -> Bool
+    let onForkInlinePainter: () -> Bool
+    let onScrubBegin: () -> Void
+    let onScrubEnd:   () -> Void
 
     @State private var text: String = ""
     @FocusState private var isFocused: Bool
 
-    var body: some View {
-        HStack(spacing: 8) {
-            // A generic identity dot, not a per-entity color swatch —
-            // the bridge doesn't expose the referenced entity's actual
-            // appearance (material color, etc.), so a swatch that
-            // implied one would be fabricated data.
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Theme.purple.opacity(0.5))
-                .frame(width: 16, height: 16)
+    private var hasBoundPainterPreview: Bool {
+        row.targetsPainter
+            && !row.initialValue.isEmpty
+            && row.initialValue != "none"
+            && !row.initialValue.hasPrefix("(")
+    }
 
-            if row.editable {
-                TextField("", text: $text)
-                    .textFieldStyle(.plain)
-                    .font(Theme.mono(11.5))
-                    .foregroundColor(Theme.textPrimary)
-                    .focused($isFocused)
-                    .onSubmit { _ = commit(text) }
-                    .onChange(of: isFocused) { _, focused in
-                        if !focused && text != row.initialValue { _ = commit(text) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                if hasBoundPainterPreview {
+                    PainterThumbnailView(
+                        bridge: bridge,
+                        painterName: row.initialValue,
+                        defIndex: -1,
+                        size: 18,
+                        refreshTrigger: "\(sceneRevision)|\(row.inlinePainterValue)"
+                    )
+                } else {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Theme.purple.opacity(0.5))
+                        .frame(width: 16, height: 16)
+                }
+
+                if row.editable {
+                    TextField("", text: $text)
+                        .textFieldStyle(.plain)
+                        .font(Theme.mono(11.5))
+                        .foregroundColor(Theme.textPrimary)
+                        .focused($isFocused)
+                        .onSubmit { _ = commit(text) }
+                        .onChange(of: isFocused) { _, focused in
+                            if !focused && text != row.initialValue { _ = commit(text) }
+                        }
+                } else {
+                    Text(text.isEmpty ? row.initialValue : text)
+                        .font(Theme.mono(11.5))
+                        .foregroundColor(Theme.textMuted)
+                }
+                Spacer(minLength: 4)
+                if !row.presets.isEmpty {
+                    PresetMenu(row: row) { value in
+                        text = value
+                        _ = commit(value)
                     }
-            } else {
-                Text(text.isEmpty ? row.initialValue : text)
-                    .font(Theme.mono(11.5))
-                    .foregroundColor(Theme.textMuted)
-            }
-            Spacer(minLength: 4)
-            if !row.presets.isEmpty {
-                PresetMenu(row: row) { value in
-                    text = value
-                    _ = commit(value)
                 }
             }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(wellBackground())
-        .onAppear { text = row.initialValue }
-        .onChange(of: row.initialValue) { _, v in
-            if !isFocused { text = v }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(wellBackground())
+            .onAppear { text = row.initialValue }
+            .onChange(of: row.initialValue) { _, v in
+                if !isFocused { text = v }
+            }
+
+            if row.editable && row.inlinePainterKind != 0 {
+                InlineConstantPainterEditorView(
+                    row: row,
+                    onCommit: onCommitInlinePainter,
+                    onFork: onForkInlinePainter,
+                    onScrubBegin: onScrubBegin,
+                    onScrubEnd: onScrubEnd
+                )
+            }
         }
     }
 
     private func commit(_ value: String) -> Bool {
         let accepted = onCommit(value)
         if !accepted { text = row.initialValue }
+        return accepted
+    }
+}
+
+private struct InlineConstantPainterEditorView: View {
+    let row: PropertyRow
+    let onCommit: (String) -> Bool
+    let onFork: () -> Bool
+    let onScrubBegin: () -> Void
+    let onScrubEnd:   () -> Void
+
+    @State private var c0: String = "0"
+    @State private var c1: String = "0"
+    @State private var c2: String = "0"
+    @State private var showColorPopover: Bool = false
+    @State private var pickerR: Double = 0
+    @State private var pickerG: Double = 0
+    @State private var pickerB: Double = 0
+    @State private var colorSliderDragging: Bool = false
+    @State private var colorSliderDidMove: Bool = false
+    @FocusState private var focusedComp: Int?
+
+    @State private var scalarText: String = "0"
+    @State private var sliderValue: Double = 0
+    @State private var sliderDragging: Bool = false
+    @State private var sliderDidMove: Bool = false
+    @State private var scalarScrubbing: Bool = false
+    @FocusState private var scalarFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if row.inlinePainterRefCount > 1 {
+                HStack(spacing: 6) {
+                    Text("Shared (\(row.inlinePainterRefCount))")
+                        .font(Theme.mono(9.5))
+                        .foregroundColor(Theme.warn)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Theme.warn.opacity(0.14))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Theme.warn.opacity(0.35), lineWidth: 1)
+                        )
+                        .help("This painter is referenced in \(row.inlinePainterRefCount) places. Editing it updates all of them.")
+                    Button {
+                        _ = onFork()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.branch")
+                                .font(.system(size: 8.5, weight: .semibold))
+                            Text("Fork")
+                                .font(Theme.mono(9.5, .medium))
+                        }
+                        .foregroundColor(Theme.accentLight)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Theme.accent.opacity(0.12))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Theme.accent.opacity(0.35), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Fork an independent copy of “\(row.initialValue)” for this slot (1 Undo step).")
+                    Spacer(minLength: 4)
+                }
+            }
+
+            if row.inlinePainterKind == 1 {
+                uniformColorEditor
+            } else if row.inlinePainterKind == 2 {
+                scalarValueEditor
+            }
+        }
+        .onAppear { syncFromSnapshot(row.inlinePainterValue) }
+        .onChange(of: row.inlinePainterValue) { _, v in
+            if focusedComp == nil && !scalarFocused && !sliderDragging && !colorSliderDragging && !scalarScrubbing {
+                syncFromSnapshot(v)
+            }
+        }
+    }
+
+    private var currentPreviewColor: Color {
+        let r = min(max(Double(c0) ?? pickerR, 0.0), 1.0)
+        let g = min(max(Double(c1) ?? pickerG, 0.0), 1.0)
+        let b = min(max(Double(c2) ?? pickerB, 0.0), 1.0)
+        return Color(.sRGB, red: r, green: g, blue: b, opacity: 1.0)
+    }
+
+    private var uniformColorEditor: some View {
+        HStack(spacing: 5) {
+            Button {
+                pickerR = min(max(Double(c0) ?? 0.0, 0.0), 1.0)
+                pickerG = min(max(Double(c1) ?? 0.0, 0.0), 1.0)
+                pickerB = min(max(Double(c2) ?? 0.0, 0.0), 1.0)
+                showColorPopover.toggle()
+            } label: {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(currentPreviewColor)
+                    .frame(width: 22, height: 22)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Theme.borderStrong, lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Click to adjust RGB channels")
+            .popover(isPresented: $showColorPopover, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(row.initialValue) · RGB")
+                        .font(Theme.mono(10.5, .medium))
+                        .foregroundColor(Theme.textSecondary)
+                    colorChannelSlider(label: "R", tint: Theme.error, value: $pickerR, textBinding: $c0)
+                    colorChannelSlider(label: "G", tint: Theme.successLight, value: $pickerG, textBinding: $c1)
+                    colorChannelSlider(label: "B", tint: Theme.accentLight, value: $pickerB, textBinding: $c2)
+                }
+                .padding(10)
+                .frame(width: 210)
+            }
+
+            colorComponentWell(index: 0, label: "R", tint: Theme.error, text: $c0)
+            colorComponentWell(index: 1, label: "G", tint: Theme.successLight, text: $c1)
+            colorComponentWell(index: 2, label: "B", tint: Theme.accentLight, text: $c2)
+        }
+    }
+
+    private func colorChannelSlider(
+        label: String,
+        tint: Color,
+        value: Binding<Double>,
+        textBinding: Binding<String>
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(Theme.mono(10, .medium))
+                .foregroundColor(tint)
+                .frame(width: 12, alignment: .leading)
+            Slider(
+                value: Binding<Double>(
+                    get: { value.wrappedValue },
+                    set: { newVal in
+                        if abs(newVal - value.wrappedValue) > 1e-12 {
+                            colorSliderDidMove = true
+                        }
+                        value.wrappedValue = newVal
+                        textBinding.wrappedValue = String(format: "%.4g", locale: kPosixLocale, newVal)
+                    }
+                ),
+                in: 0.0...1.0,
+                onEditingChanged: { editing in
+                    if editing {
+                        colorSliderDragging = true
+                        colorSliderDidMove = false
+                    } else {
+                        let moved = colorSliderDidMove
+                        colorSliderDragging = false
+                        colorSliderDidMove = false
+                        if moved {
+                            commitColor()
+                        } else {
+                            syncFromSnapshot(row.inlinePainterValue)
+                        }
+                    }
+                }
+            )
+            .controlSize(.small)
+            Text(String(format: "%.3f", locale: kPosixLocale, value.wrappedValue))
+                .font(Theme.mono(9.5))
+                .foregroundColor(Theme.textSecondary)
+                .frame(width: 38, alignment: .trailing)
+        }
+    }
+
+    private func colorComponentWell(
+        index: Int,
+        label: String,
+        tint: Color,
+        text: Binding<String>
+    ) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(Theme.mono(9.5, .medium))
+                .foregroundColor(tint)
+            TextField("", text: text)
+                .textFieldStyle(.plain)
+                .font(Theme.mono(11))
+                .foregroundColor(Theme.textPrimary)
+                .multilineTextAlignment(.trailing)
+                .focused($focusedComp, equals: index)
+                .onSubmit { commitColor() }
+                .onChange(of: focusedComp) { oldFocus, newFocus in
+                    if oldFocus == index && newFocus != index {
+                        commitColor()
+                    }
+                }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity)
+        .background(wellBackground())
+    }
+
+    private var scalarValueEditor: some View {
+        let rMin = row.rangeMin
+        let rMax = row.rangeMax
+        let rStep = row.rangeStep
+        let span = rMax - rMin
+        let hasValidRange = span > 0
+        let hasValidStep = hasValidRange && rStep > 0 && rStep <= span && (span / rStep) <= 100000.0
+        let sliderBinding = Binding<Double>(
+            get: { sliderValue },
+            set: { newVal in
+                sliderValue = newVal
+                scalarText = formatValue(newVal, kind: .double)
+                if sliderDragging { sliderDidMove = true }
+            }
+        )
+
+        return VStack(alignment: .leading, spacing: 4) {
+            if hasValidRange {
+                HStack(spacing: 6) {
+                    if hasValidStep {
+                        Slider(
+                            value: sliderBinding,
+                            in: rMin...rMax,
+                            step: rStep,
+                            onEditingChanged: { editing in handleScalarSliderEditing(editing) }
+                        )
+                        .controlSize(.small)
+                    } else {
+                        Slider(
+                            value: sliderBinding,
+                            in: rMin...rMax,
+                            onEditingChanged: { editing in handleScalarSliderEditing(editing) }
+                        )
+                        .controlSize(.small)
+                    }
+                }
+            }
+
+            HStack(spacing: 4) {
+                ScrubHandle(
+                    text: $scalarText,
+                    name: row.name,
+                    kind: .double,
+                    onScrubBegin: {
+                        scalarScrubbing = true
+                        onScrubBegin()
+                    },
+                    onScrub: { newVal in
+                        if let v = Double(newVal), hasValidRange {
+                            sliderValue = min(max(v, rMin), rMax)
+                        }
+                    },
+                    onScrubEnd: {
+                        scalarScrubbing = false
+                        _ = commitScalar(scalarText)
+                        onScrubEnd()
+                    }
+                )
+                TextField("", text: $scalarText)
+                    .textFieldStyle(.plain)
+                    .font(Theme.mono(11.5))
+                    .foregroundColor(Theme.textPrimary)
+                    .focused($scalarFocused)
+                    .onSubmit { _ = commitScalar(scalarText) }
+                    .onChange(of: scalarFocused) { _, focused in
+                        if !focused && scalarText != row.inlinePainterValue {
+                            _ = commitScalar(scalarText)
+                        }
+                    }
+                if !row.unitLabel.isEmpty {
+                    Text(row.unitLabel)
+                        .font(Theme.mono(10))
+                        .foregroundColor(Theme.textDim)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(wellBackground())
+        }
+    }
+
+    private func handleScalarSliderEditing(_ editing: Bool) {
+        if editing {
+            sliderDragging = true
+            sliderDidMove = false
+        } else {
+            let moved = sliderDidMove
+            sliderDragging = false
+            sliderDidMove = false
+            if moved {
+                let formatted = formatValue(sliderValue, kind: .double)
+                scalarText = formatted
+                _ = commitScalar(formatted)
+            }
+        }
+    }
+
+    private func syncFromSnapshot(_ v: String) {
+        if row.inlinePainterKind == 1 {
+            let parts = v.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+            c0 = parts.count > 0 ? parts[0] : "0"
+            c1 = parts.count > 1 ? parts[1] : "0"
+            c2 = parts.count > 2 ? parts[2] : "0"
+            pickerR = min(max(Double(c0) ?? 0.0, 0.0), 1.0)
+            pickerG = min(max(Double(c1) ?? 0.0, 0.0), 1.0)
+            pickerB = min(max(Double(c2) ?? 0.0, 0.0), 1.0)
+        } else if row.inlinePainterKind == 2 {
+            let trimmed = v.trimmingCharacters(in: .whitespaces)
+            scalarText = trimmed
+            let parsed = Double(trimmed) ?? row.rangeMin
+            if row.rangeMax > row.rangeMin {
+                sliderValue = min(max(parsed, row.rangeMin), row.rangeMax)
+            } else {
+                sliderValue = parsed
+            }
+        }
+    }
+
+    private func commitColor() {
+        let joined = "\(c0.trimmingCharacters(in: .whitespaces)) \(c1.trimmingCharacters(in: .whitespaces)) \(c2.trimmingCharacters(in: .whitespaces))"
+        guard joined != row.inlinePainterValue else { return }
+        if !onCommit(joined) {
+            syncFromSnapshot(row.inlinePainterValue)
+        }
+    }
+
+    private func commitScalar(_ val: String) -> Bool {
+        let trimmed = val.trimmingCharacters(in: .whitespaces)
+        guard trimmed != row.inlinePainterValue else { return true }
+        let accepted = onCommit(trimmed)
+        if !accepted {
+            syncFromSnapshot(row.inlinePainterValue)
+        }
         return accepted
     }
 }
@@ -1840,13 +2373,15 @@ private func scrubRate(name: String, value: Double) -> Double {
 let kPosixLocale = Locale(identifier: "en_US_POSIX")
 
 private func formatValue(_ v: Double, kind: PropertyKind) -> String {
+    guard v.isFinite else { return "0" }
+    let clean = abs(v) < 1e-15 ? 0.0 : v
     switch kind {
     case .uint:
-        let n = max(0, Int(v.rounded()))
-        return String(n)
+        let clamped = min(max(clean.rounded(), 0.0), Double(UInt32.max))
+        return String(UInt32(clamped))
     case .double:
-        return String(format: "%.6g", locale: kPosixLocale, v)
+        return String(format: "%.6g", locale: kPosixLocale, clean)
     default:
-        return String(format: "%g", locale: kPosixLocale, v)
+        return String(format: "%g", locale: kPosixLocale, clean)
     }
 }
