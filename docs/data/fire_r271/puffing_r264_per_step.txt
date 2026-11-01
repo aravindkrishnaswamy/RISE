@@ -1,0 +1,7 @@
+steps 8902 mean kW 32.853469963551746
+capstone method, n = 512 : 2.934 Hz
+capstone method, n = 1024 : 2.869 Hz
+capstone method, n = 4096 : 2.871 Hz
+capstone method, n = 8902 : 2.871 Hz
+Welch on per-step signal, segment 3.4 s: peak 2.669 Hz
+Welch on per-step signal, segment 6.7 s: peak 2.966 Hz

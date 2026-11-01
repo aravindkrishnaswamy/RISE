@@ -1,0 +1,11 @@
+expected 1.5/sqrt(D) = 2.739 Hz (D from case)
+signal        run        capstone-method(Hz)  Welch 4s peak  Welch 8s peak  power share 2-3.5 Hz
+total         FDS r263       2.53              2.75           2.62          0.83
+total         r264           2.93              2.75           2.88          0.61
+total         r270           2.39              2.75           2.88          0.59
+column        FDS r263       2.53              2.75           2.62          0.67
+column        r264           2.93              2.75           2.88          0.43
+column        r270           2.87              2.75           2.88          0.42
+column_base   FDS r263       2.46              2.75           2.50          0.47
+column_base   r264           2.87              2.75           2.88          0.26
+column_base   r270           2.39              2.50           2.50          0.35
