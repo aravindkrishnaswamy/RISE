@@ -3741,6 +3741,13 @@ namespace RISE
 		                          unsigned int w, unsigned int h,
 		                          std::vector<unsigned char>& outRGBA ) const;
 
+		//! Material Editor Slice 5 (MATERIAL_EDITOR.md §4): headless 3D
+		//! shaderball RGBA8 preview of a named material. Same non-blocking
+		//! try_lock + mRenderOwnsScene refusal contract as GetPainterPreview.
+		bool GetMaterialPreview( const String& materialName,
+		                         unsigned int w, unsigned int h,
+		                         std::vector<unsigned char>& outRGBA ) const;
+
 		// (Named animations are a first-class accordion Category —
 		// Category::Animation; the generic CategoryEntityCount/Name,
 		// CategoryActiveName and SetSelection surface lists + activates

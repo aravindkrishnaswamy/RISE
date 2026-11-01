@@ -2008,6 +2008,10 @@
 		FECC0007000000000000FB04 /* PainterPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB02 /* PainterPreview.cpp */; };
 		FECC0007000000000000FB05 /* PainterPreview.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB01 /* PainterPreview.h */; };
 		FECC0007000000000000FB06 /* PainterPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB02 /* PainterPreview.cpp */; };
+		FECC0007000000000000FC03 /* MaterialPreview.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FC01 /* MaterialPreview.h */; };
+		FECC0007000000000000FC04 /* MaterialPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FC02 /* MaterialPreview.cpp */; };
+		FECC0007000000000000FC05 /* MaterialPreview.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FC01 /* MaterialPreview.h */; };
+		FECC0007000000000000FC06 /* MaterialPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FC02 /* MaterialPreview.cpp */; };
 		FECC0008000000000000F803 /* EntityTemplates.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
 		FECC0008000000000000F804 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
 		FECC0008000000000000F805 /* EntityTemplates.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
@@ -3133,6 +3137,8 @@
 		FECC0007000000000000FA02 /* PainterIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PainterIntrospection.cpp; sourceTree = "<group>"; };
 		FECC0007000000000000FB01 /* PainterPreview.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterPreview.h; sourceTree = "<group>"; };
 		FECC0007000000000000FB02 /* PainterPreview.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PainterPreview.cpp; sourceTree = "<group>"; };
+		FECC0007000000000000FC01 /* MaterialPreview.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MaterialPreview.h; sourceTree = "<group>"; };
+		FECC0007000000000000FC02 /* MaterialPreview.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = MaterialPreview.cpp; sourceTree = "<group>"; };
 		FECC0008000000000000F801 /* EntityTemplates.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EntityTemplates.h; sourceTree = "<group>"; };
 		FECC0008000000000000F802 /* EntityTemplates.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EntityTemplates.cpp; sourceTree = "<group>"; };
 		FECC0009000000000000FC01 /* ReferenceGraph.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ReferenceGraph.h; sourceTree = "<group>"; };
@@ -4612,6 +4618,8 @@
 				FECC0009000000000000FE02 /* GraphLayoutSidecar.cpp */,
 				FECC0007000000000000FB01 /* PainterPreview.h */,
 				FECC0007000000000000FB02 /* PainterPreview.cpp */,
+				FECC0007000000000000FC01 /* MaterialPreview.h */,
+				FECC0007000000000000FC02 /* MaterialPreview.cpp */,
 				FECC0008000000000000F801 /* EntityTemplates.h */,
 				FECC0008000000000000F802 /* EntityTemplates.cpp */,
 			);
@@ -5044,6 +5052,7 @@
 				FECC0009000000000000FD05 /* GraphLayout.h in Headers */,
 				FECC0009000000000000FE05 /* GraphLayoutSidecar.h in Headers */,
 				FECC0007000000000000FB05 /* PainterPreview.h in Headers */,
+				FECC0007000000000000FC05 /* MaterialPreview.h in Headers */,
 				FECC0008000000000000F805 /* EntityTemplates.h in Headers */,
 				F2EE003000000000000000C1 /* DisplayTransform.h in Headers */,
 				F2EE003100000000000000C1 /* DisplayTransformWriter.h in Headers */,
@@ -5629,6 +5638,7 @@
 				FECC0009000000000000FD06 /* GraphLayout.cpp in Sources */,
 				FECC0009000000000000FE06 /* GraphLayoutSidecar.cpp in Sources */,
 				FECC0007000000000000FB06 /* PainterPreview.cpp in Sources */,
+				FECC0007000000000000FC06 /* MaterialPreview.cpp in Sources */,
 				FECC0008000000000000F806 /* EntityTemplates.cpp in Sources */,
 				F2EE003200000000000000C1 /* DisplayTransformWriter.cpp in Sources */,
 				F2EE001100000000000000C1 /* InteractivePelRasterizer.cpp in Sources */,
@@ -6359,6 +6369,8 @@
 				FECC0009000000000000FE04 /* GraphLayoutSidecar.cpp in Sources */,
 				FECC0007000000000000FB03 /* PainterPreview.h in Sources */,
 				FECC0007000000000000FB04 /* PainterPreview.cpp in Sources */,
+				FECC0007000000000000FC03 /* MaterialPreview.h in Sources */,
+				FECC0007000000000000FC04 /* MaterialPreview.cpp in Sources */,
 				FECC0008000000000000F803 /* EntityTemplates.h in Sources */,
 				FECC0008000000000000F804 /* EntityTemplates.cpp in Sources */,
 				F2EE003000000000000000B1 /* DisplayTransform.h in Sources */,

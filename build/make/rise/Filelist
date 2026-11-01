@@ -483,6 +483,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/CstIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/PainterIntrospection.cpp			\
 	$(PATHLIBRARY)SceneEditor/PainterPreview.cpp					\
+	$(PATHLIBRARY)SceneEditor/MaterialPreview.cpp					\
 	$(PATHLIBRARY)SceneEditor/EntityTemplates.cpp					\
 	$(PATHLIBRARY)SceneEditor/ReferenceGraph.cpp					\
 	$(PATHLIBRARY)SceneEditor/ConnectionLegality.cpp				\

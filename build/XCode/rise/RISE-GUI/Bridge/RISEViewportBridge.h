@@ -770,6 +770,14 @@ typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
                                    height:(NSUInteger)height
     NS_SWIFT_NAME(rampStripPreview(for:width:height:));
 
+//! Material Editor Slice 5 (MATERIAL_EDITOR.md §4): headless 3D shaderball
+//! RGBA8 preview of a named material. Same NSData/refusal contract as
+//! painterPreviewFor: above.
+- (nullable NSData *)materialPreviewFor:(NSString *)materialName
+                                   width:(NSUInteger)width
+                                  height:(NSUInteger)height
+    NS_SWIFT_NAME(materialPreview(for:width:height:));
+
 // Named animations are surfaced as a first-class accordion Category
 // (RISEViewportCategoryAnimation) — the generic categoryEntities: /
 // activeName: / setSelection:name: surface lists + activates them, so there

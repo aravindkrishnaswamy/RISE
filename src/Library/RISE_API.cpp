@@ -11888,6 +11888,18 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_MaterialPreview(
+		SceneEditController* p, const char* materialName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA )
+	{
+		if( !p || !materialName || !outRGBA ) return false;
+		std::vector<unsigned char> rgba;
+		if( !p->GetMaterialPreview( String( materialName ), w, h, rgba ) ) return false;
+		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, rgba.data(), rgba.size() );
+		return true;
+	}
+
 
 	bool RISE_API_SceneEditController_GetCameraDimensions(
 		SceneEditController* p, unsigned int* outW, unsigned int* outH )

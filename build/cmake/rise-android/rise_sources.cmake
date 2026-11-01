@@ -423,6 +423,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditor/CstIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/PainterIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/PainterPreview.cpp"
+    "${RISE_LIB}/SceneEditor/MaterialPreview.cpp"
     "${RISE_LIB}/SceneEditor/EntityTemplates.cpp"
     "${RISE_LIB}/SceneEditor/ReferenceGraph.cpp"
     "${RISE_LIB}/SceneEditor/ConnectionLegality.cpp"

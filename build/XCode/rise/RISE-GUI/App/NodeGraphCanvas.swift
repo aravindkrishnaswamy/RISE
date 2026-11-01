@@ -718,6 +718,7 @@ struct NodeGraphCanvas: View {
                 GraphNodeBoxView(
                     node: node,
                     bridge: bridge,
+                    refreshTrigger: "\(refreshTrigger)",
                     isSelected: selectedHandle == node.handle,
                     isSpotlit: spotlightHandles.contains(node.handle),
                     isHovered: hoveredHandle == node.handle,
@@ -1639,6 +1640,7 @@ private extension Comparable {
 private struct GraphNodeBoxView: View {
     let node: GraphCanvasNode
     weak var bridge: RISEViewportBridge?
+    var refreshTrigger: String = ""
     let isSelected: Bool
     /// This node is part of the CURRENT object-pick spotlight closure
     /// (`NodeGraphCanvas.spotlightHandles`) -- a visually DISTINCT state
@@ -1817,23 +1819,21 @@ private struct GraphNodeBoxView: View {
         .padding(8)
     }
 
-    /// Materials have no `PainterPreview` evaluation (that engine only
-    /// evaluates IPainter/IScalarPainter chunks) -- attempting a fetch
-    /// for one would just churn the cache toward a permanent refusal, so
-    /// skip it entirely rather than show an always-neutral tile.
+    /// Material nodes (`category == 2`) render their 3D shaderball via
+    /// `MaterialPreview` (`MaterialThumbnailView`), while Painter nodes
+    /// render `RampStripThumbnailView` or `PainterThumbnailView`.
     @ViewBuilder
     private var thumbnail: some View {
         if node.category == 2 {
-            ZStack {
-                RoundedRectangle(cornerRadius: 4).fill(tint.opacity(0.12))
-                Text("◐").font(.system(size: 16)).foregroundColor(tint)
-            }
-            .frame(width: GraphMetrics.thumbnailSize, height: GraphMetrics.thumbnailSize)
+            MaterialThumbnailView(bridge: bridge, materialName: node.name,
+                                   size: GraphMetrics.thumbnailSize, refreshTrigger: refreshTrigger)
         } else if node.isRampPainter {
             RampStripThumbnailView(bridge: bridge, painterName: node.name,
-                                    width: GraphMetrics.thumbnailSize, height: GraphMetrics.thumbnailSize * 0.45)
+                                    width: GraphMetrics.thumbnailSize, height: GraphMetrics.thumbnailSize * 0.45,
+                                    refreshTrigger: refreshTrigger)
         } else {
-            PainterThumbnailView(bridge: bridge, painterName: node.name, defIndex: -1, size: GraphMetrics.thumbnailSize)
+            PainterThumbnailView(bridge: bridge, painterName: node.name, defIndex: -1,
+                                  size: GraphMetrics.thumbnailSize, refreshTrigger: refreshTrigger)
         }
     }
 

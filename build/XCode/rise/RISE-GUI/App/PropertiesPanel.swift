@@ -203,6 +203,10 @@ final class PainterPreviewFetcher: @unchecked Sendable {
     func rampStripPreview(for painter: String, width: UInt, height: UInt) -> Data? {
         bridge?.rampStripPreview(for: painter, width: width, height: height)
     }
+
+    func materialPreview(for material: String, width: UInt, height: UInt) -> Data? {
+        bridge?.materialPreview(for: material, width: width, height: height)
+    }
 }
 
 /// Cache key includes the retained CST Document's HEAD REVISION
@@ -278,6 +282,35 @@ final class PainterThumbnailCache {
             for attempt in 0..<4 {
                 if attempt > 0 { Thread.sleep(forTimeInterval: 0.025) }
                 data = fetcher.rampStripPreview(for: painter, width: UInt(width), height: UInt(height))
+                if data != nil { break }
+            }
+            let image = data.flatMap { Self.image(fromRGBA8: $0, width: width, height: height) }
+            DispatchQueue.main.async {
+                PainterThumbnailCache.shared.inFlight.remove(k)
+                guard let image else { return }
+                PainterThumbnailCache.shared.images[k] = image
+                onReady(image)
+            }
+        }
+        return nil
+    }
+
+    /// Same fetch/cache contract as `image(fetcher:painter:defIndex:...)`
+    /// above, for a material's 3D shaderball preview (`MaterialPreview`,
+    /// MATERIAL_EDITOR.md §4).  Uses the `defIndex == -3` sentinel key so
+    /// a material and a same-named painter or ramp strip never collide.
+    func materialImage(fetcher: PainterPreviewFetcher, material: String,
+                       width: Int, height: Int, revision: UInt64,
+                       onReady: @escaping (NSImage) -> Void) -> NSImage? {
+        let k = key(material, -3, width, height, revision)
+        if let cached = images[k] { return cached }
+        if inFlight.contains(k) { return nil }
+        inFlight.insert(k)
+        DispatchQueue.global(qos: .userInitiated).async {
+            var data: Data? = nil
+            for attempt in 0..<4 {
+                if attempt > 0 { Thread.sleep(forTimeInterval: 0.025) }
+                data = fetcher.materialPreview(for: material, width: UInt(width), height: UInt(height))
                 if data != nil { break }
             }
             let image = data.flatMap { Self.image(fromRGBA8: $0, width: width, height: height) }
@@ -427,6 +460,58 @@ struct RampStripThumbnailView: View {
             fetcher: fetcher, painter: painterName, width: pxW, height: pxH, revision: revision,
             onReady: { img in
                 guard self.painterName == expectedName else { return }
+                self.image = img
+            }
+        ) {
+            image = cached
+        }
+    }
+}
+
+/// Material Editor Slice 5 (MATERIAL_EDITOR.md §4): a material's 3D
+/// shaderball preview swatch, rendered via `MaterialPreview` and cached
+/// under `defIndex == -3` in `PainterThumbnailCache`.  Reused by both
+/// `PropertiesPanel` (top-of-panel 56pt header) and `NodeGraphCanvas`
+/// (`category == 2` node-box thumbnail).
+struct MaterialThumbnailView: View {
+    weak var bridge: RISEViewportBridge?
+    let materialName: String
+    var size: CGFloat = 48
+    var refreshTrigger: String = ""
+
+    @State private var image: NSImage? = nil
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4).fill(Theme.textDim.opacity(0.08))
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .aspectRatio(contentMode: .fill)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.borderHairline, lineWidth: 1))
+        .frame(width: size, height: size)
+        .onAppear { refresh() }
+        .onChange(of: materialName) { _, _ in image = nil; refresh() }
+        .onChange(of: refreshTrigger) { _, _ in refresh() }
+    }
+
+    private func refresh() {
+        guard let bridge else { return }
+        let expectedName = materialName
+        var uuid: UInt64 = 0
+        var revision: UInt64 = 0
+        _ = bridge.getSceneTextVersionUuid(&uuid, revision: &revision)
+        let px = max(8, Int((size * 2).rounded(.up)))
+        let fetcher = PainterPreviewFetcher(bridge: bridge)
+        if let cached = PainterThumbnailCache.shared.materialImage(
+            fetcher: fetcher, material: materialName,
+            width: px, height: px, revision: revision,
+            onReady: { img in
+                guard self.materialName == expectedName else { return }
                 self.image = img
             }
         ) {
@@ -611,6 +696,30 @@ struct PropertiesPanel: View {
         rows.first(where: { $0.name == "chunk_type" })?.initialValue == "ramp_painter"
     }
 
+    /// Material Editor Slice 5 (MATERIAL_EDITOR.md §4): a material's 3D
+    /// shaderball preview swatch at the top of its inspector row group.
+    @ViewBuilder
+    private var materialThumbnailHeader: some View {
+        if selectionCategory == .material && !selectionName.isEmpty {
+            HStack(spacing: 10) {
+                MaterialThumbnailView(
+                    bridge: bridge,
+                    materialName: selectionName,
+                    size: 56,
+                    refreshTrigger: "\(sceneRevision)"
+                )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Shaderball Preview").font(Theme.sans(10, .medium)).foregroundColor(Theme.textDim)
+                    Text("Evaluated over a 3D studio sphere with spectral quadrature and checker backdrop.")
+                        .font(Theme.sans(9))
+                        .foregroundColor(Theme.textDim)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 4)
+            }
+        }
+    }
+
     @ViewBuilder
     private var propertyBody: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -618,6 +727,7 @@ struct PropertiesPanel: View {
                 cameraAffordances
             }
             painterThumbnailHeader
+            materialThumbnailHeader
             if rows.isEmpty {
                 Text(emptyRowsMessage)
                     .font(Theme.sans(11))

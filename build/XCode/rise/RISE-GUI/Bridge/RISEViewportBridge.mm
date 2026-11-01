@@ -1693,6 +1693,20 @@ private:
     return data;
 }
 
+- (NSData *)materialPreviewFor:(NSString *)materialName
+                          width:(NSUInteger)width
+                         height:(NSUInteger)height {
+    if (!_controller || materialName.length == 0 || width == 0 || height == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    if (!RISE_API_SceneEditController_MaterialPreview(
+            _controller, materialName.UTF8String,
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
 #pragma mark - Time scrubber
 
 - (BOOL)scrubTimeBegin {

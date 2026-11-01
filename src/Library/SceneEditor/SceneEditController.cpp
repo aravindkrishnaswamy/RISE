@@ -49,6 +49,7 @@
 #include "CstIntrospection.h"         // Generic descriptor+CST property rows (Painter, Geometry, ...) -- GUI redesign 2026-07-22
 #include "PainterIntrospection.h"     // Painter rows: pipe + repeatable occurrences + ParamSpec metadata -- doc 88 S4
 #include "PainterPreview.h"           // Tier-2 painter/def-stage/ramp-strip preview thumbnails -- doc 88 S10
+#include "MaterialPreview.h"          // Material Editor Slice 5: 3D shaderball material preview thumbnails
 #include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
 #include "ReferenceGraph.h"           // doc-88 Phase 3 S11: SceneReferenceGraph::FindReferencesTo/Edges -- the Painter/Material DAG's edge source
 #include "GraphLayout.h"              // doc-88 Phase 3 S12/S14: GraphLayout::LayoutGraph -- the rank-by-dependency auto-layout fill-in
@@ -7098,6 +7099,22 @@ bool SceneEditController::GetRampStripPreview( const String& painterName,
 
 	const PainterPreview::Result r = PainterPreview::RenderRampStripPreview( mJob, painterName, w, h );
 	if( r.status != PainterPreview::Status::Ok ) return false;
+
+	outRGBA = r.rgba;
+	return true;
+}
+
+bool SceneEditController::GetMaterialPreview( const String& materialName,
+                                              unsigned int w, unsigned int h,
+                                              std::vector<unsigned char>& outRGBA ) const
+{
+	outRGBA.clear();
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+
+	const MaterialPreview::Result r = MaterialPreview::RenderMaterialPreview( mJob, materialName, w, h );
+	if( r.status != MaterialPreview::Status::Ok ) return false;
 
 	outRGBA = r.rgba;
 	return true;

@@ -1222,6 +1222,40 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
         m_basicLayout->addWidget(headerWrap);
     }
 
+    // Material Editor Slice 5 (MATERIAL_EDITOR.md §4): a material's 3D
+    // shaderball preview swatch at the top of its inspector row group --
+    // mirrors PropertiesPanel.swift's materialThumbnailHeader.
+    if (m_currentSelectionCat == Category::Material && !m_currentSelectionName.isEmpty()) {
+        auto* headerWrap = new QWidget;
+        auto* headerCol = new QVBoxLayout(headerWrap);
+        headerCol->setContentsMargins(0, 0, 0, 4);
+        headerCol->setSpacing(6);
+
+        auto* swatchRow = new QWidget;
+        auto* swatchRowLayout = new QHBoxLayout(swatchRow);
+        swatchRowLayout->setContentsMargins(0, 0, 0, 0);
+        swatchRowLayout->setSpacing(10);
+        swatchRowLayout->addWidget(createMaterialSwatchLabel(m_currentSelectionName, 56));
+
+        auto* textCol = new QWidget;
+        auto* textColLayout = new QVBoxLayout(textCol);
+        textColLayout->setContentsMargins(0, 0, 0, 0);
+        textColLayout->setSpacing(2);
+        auto* titleLbl = new QLabel(tr("Shaderball Preview"));
+        titleLbl->setFont(Theme::sans(10, true));
+        titleLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        auto* subLbl = new QLabel(tr("Evaluated over a 3D studio sphere with spectral quadrature and checker backdrop."));
+        subLbl->setFont(Theme::sans(9));
+        subLbl->setWordWrap(true);
+        subLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        textColLayout->addWidget(titleLbl);
+        textColLayout->addWidget(subLbl);
+        swatchRowLayout->addWidget(textCol, 1);
+        headerCol->addWidget(swatchRow);
+
+        m_basicLayout->addWidget(headerWrap);
+    }
+
     if (props.isEmpty()) {
         QString msg;
         switch (m_currentSelectionCat) {
@@ -2237,6 +2271,27 @@ QPixmap ViewportProperties::fetchRampStripThumbnail(const QString& painterName, 
     return pix;
 }
 
+QPixmap ViewportProperties::fetchMaterialThumbnail(const QString& materialName, int sizePt)
+{
+    if (!m_bridge || materialName.isEmpty()) return QPixmap();
+    const int px = std::max(8, sizePt * 2);
+    const QString key = QStringLiteral("%1|-3|%2x%2|%3")
+        .arg(materialName).arg(px).arg(m_lastSceneRevision);
+    const auto it = m_painterThumbCache.constFind(key);
+    if (it != m_painterThumbCache.constEnd()) return it.value();
+
+    QByteArray rgba;
+    if (!m_bridge->materialPreview(materialName, static_cast<unsigned int>(px),
+                                    static_cast<unsigned int>(px), rgba)
+        || rgba.size() != px * px * 4) {
+        return QPixmap();
+    }
+    const QImage img(reinterpret_cast<const uchar*>(rgba.constData()), px, px, px * 4, QImage::Format_RGBA8888);
+    const QPixmap pix = QPixmap::fromImage(img.copy());
+    m_painterThumbCache.insert(key, pix);
+    return pix;
+}
+
 QLabel* ViewportProperties::createPainterSwatchLabel(const QString& painterName, int defIndex, int sizePt, QWidget* parent)
 {
     auto* lbl = new QLabel(parent);
@@ -2245,6 +2300,20 @@ QLabel* ViewportProperties::createPainterSwatchLabel(const QString& painterName,
         "background-color: %1; border: 1px solid %2; border-radius: 4px;")
         .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
     const QPixmap px = fetchPainterThumbnail(painterName, defIndex, sizePt);
+    if (!px.isNull()) {
+        lbl->setPixmap(px.scaled(sizePt, sizePt, Qt::IgnoreAspectRatio, Qt::FastTransformation));
+    }
+    return lbl;
+}
+
+QLabel* ViewportProperties::createMaterialSwatchLabel(const QString& materialName, int sizePt, QWidget* parent)
+{
+    auto* lbl = new QLabel(parent);
+    lbl->setFixedSize(sizePt, sizePt);
+    lbl->setStyleSheet(QStringLiteral(
+        "background-color: %1; border: 1px solid %2; border-radius: 4px;")
+        .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
+    const QPixmap px = fetchMaterialThumbnail(materialName, sizePt);
     if (!px.isNull()) {
         lbl->setPixmap(px.scaled(sizePt, sizePt, Qt::IgnoreAspectRatio, Qt::FastTransformation));
     }

@@ -4833,6 +4833,14 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, const char* painterName,
 		unsigned int w, unsigned int h, unsigned char* outRGBA );
 
+	//! Material Editor Slice 5 (MATERIAL_EDITOR.md §4): headless 3D
+	//! shaderball RGBA8 preview of a named material -- see MaterialPreview.h.
+	//! Same caller-owned `w*h*4` buffer and refusal contract as
+	//! RISE_API_SceneEditController_PainterPreview above.
+	bool RISE_API_SceneEditController_MaterialPreview(
+		SceneEditController* p, const char* materialName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA );
+
 
 	//! Read the scene camera's stable full-resolution dimensions.
 	//! Bridges call this from their pointer-event handlers to convert

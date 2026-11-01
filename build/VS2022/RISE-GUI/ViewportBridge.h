@@ -605,6 +605,13 @@ public:
                             unsigned int w, unsigned int h,
                             QByteArray& outRGBA ) const;
 
+    /// Material Editor Slice 5 (MATERIAL_EDITOR.md §4): headless 3D
+    /// shaderball RGBA8 preview of a named material. Same carry-only
+    /// contract as painterPreview() above.
+    bool materialPreview( const QString& materialName,
+                           unsigned int w, unsigned int h,
+                           QByteArray& outRGBA ) const;
+
     // Named animations are surfaced as a first-class accordion Category
     // (Category::Animation) — the generic categoryEntities() /
     // activeNameForCategory() / setSelection() surface lists + activate

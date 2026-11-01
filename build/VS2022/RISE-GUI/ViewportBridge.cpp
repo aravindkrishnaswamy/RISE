@@ -1180,6 +1180,23 @@ bool ViewportBridge::rampStripPreview( const QString& painterName,
     return true;
 }
 
+bool ViewportBridge::materialPreview( const QString& materialName,
+                                       unsigned int w, unsigned int h,
+                                       QByteArray& outRGBA ) const
+{
+    outRGBA.clear();
+    if (!m_controller || materialName.isEmpty() || w == 0 || h == 0) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    const QByteArray nameUtf8 = materialName.toUtf8();
+    if (!RISE_API_SceneEditController_MaterialPreview(
+            m_controller, nameUtf8.constData(), w, h,
+            reinterpret_cast<unsigned char*>( buf.data() ))) {
+        return false;
+    }
+    outRGBA = buf;
+    return true;
+}
+
 // Named animations are now a first-class accordion Category
 // (Category::Animation) — surfaced via the generic categoryEntities() /
 // activeNameForCategory() / setSelection() methods, which pass the raw

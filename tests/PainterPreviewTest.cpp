@@ -66,6 +66,7 @@
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/SceneEditor/PainterPreview.h"
+#include "../src/Library/SceneEditor/MaterialPreview.h"
 #include "../src/Library/Painters/Painter.h"
 #include "../src/Library/Painters/RampPainter.h"
 #include "../src/Library/Agent/AgentSession.h"
@@ -136,6 +137,18 @@ static const char* kHeadlessScene =
 	"}\n"
 	"ramp_painter\n{\nname strip1\ninput solid\nchannel R\ninterpolation linear\n"
 		"stop 0.0 1 0 0\nstop 1.0 0 0 1\n}\n"
+	"scalar_painter\n{\nname pnt_alpha\nvalue 0.08\n}\n"
+	"scalar_painter\n{\nname pnt_ior\nvalue 1.5\n}\n"
+	"scalar_painter\n{\nname pnt_ext\nvalue 2.2\n}\n"
+	"scalar_painter\n{\nname pnt_film_ior\nvalue 1.38\n}\n"
+	"scalar_painter\n{\nname pnt_thick_380\nvalue 380\n}\n"
+	"scalar_painter\n{\nname pnt_thick_520\nvalue 520\n}\n"
+	"scalar_painter\n{\nname pnt_tau\nvalue 0.9999\n}\n"
+	"scalar_painter\n{\nname pnt_sellmeier\nsellmeier 1.03961212 0.231792344 1.01046945 0.00600069867 0.0200179144 103.560653\n}\n"
+	"lambertian_material\n{\nname mat_lambert\nreflectance solid\n}\n"
+	"ggx_material\n{\nname mat_thinfilm_380\nrd black\nrs white\nalphax pnt_alpha\nalphay pnt_alpha\nfresnel_mode thinfilm\nior pnt_ior\nextinction pnt_ext\nfilm_ior pnt_film_ior\nfilm_thickness pnt_thick_380\n}\n"
+	"ggx_material\n{\nname mat_thinfilm_520\nrd black\nrs white\nalphax pnt_alpha\nalphay pnt_alpha\nfresnel_mode thinfilm\nior pnt_ior\nextinction pnt_ext\nfilm_ior pnt_film_ior\nfilm_thickness pnt_thick_520\n}\n"
+	"dielectric_material\n{\nname mat_glass\ntau pnt_tau\nior pnt_sellmeier\nscattering pnt_alpha\n}\n"
 	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
 	"sphere_geometry\n{\nname s\nradius 1\n}\n"
 	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
@@ -791,6 +804,14 @@ static void TestConcurrencyRefusal()
 			} );
 		Check( stripQuick, "MONEY: GetRampStripPreview() did NOT wedge on mMutex during a render" );
 
+		std::vector<unsigned char> rgbaMatBusy;
+		const bool matQuick = RunWatchdogged(
+			"GetMaterialPreview() while a render owns the scene", 200, [&]{
+				(void)controller.GetMaterialPreview( String( "mat_diffuse" ), 8, 8, rgbaMatBusy );
+			} );
+		Check( matQuick, "MONEY: GetMaterialPreview() did NOT wedge on mMutex during a render" );
+		Check( rgbaMatBusy.empty(), "GetMaterialPreview() REFUSED (empty buffer) while the render owns the scene" );
+
 		const bool completed = session->RenderWait( ar.renderJobId, 5000 );
 		Check( completed, "render completed within the timeout" );
 		Check( !controller.ForTest_RenderOwnsScene(), "render-owns-scene flag CLEARED after the render finished" );
@@ -799,6 +820,11 @@ static void TestConcurrencyRefusal()
 		const bool afterOk = controller.GetPainterPreview( String( "probe" ), -1, 8, 8, rgba3 );
 		Check( afterOk && rgba3.size() == 8u * 8u * 4u,
 		       "GetPainterPreview() SUCCEEDS again once the render has finished" );
+
+		std::vector<unsigned char> rgbaMatAfter;
+		const bool matAfterOk = controller.GetMaterialPreview( String( "mat_diffuse" ), 8, 8, rgbaMatAfter );
+		Check( matAfterOk && rgbaMatAfter.size() == 8u * 8u * 4u,
+		       "GetMaterialPreview() SUCCEEDS again once the render has finished" );
 
 		session->AttachController( nullptr );
 	}
@@ -839,7 +865,100 @@ static void TestCAbiSmoke()
 		&controller, "does_not_exist", -1, W, H, buf.data(), nullptr, nullptr, nullptr );
 	Check( !refused, "C-ABI call refuses an unknown painter name" );
 
+	std::vector<unsigned char> matBuf( (std::size_t)W * H * 4, 0xEE );
+	const bool matOk = RISE_API_SceneEditController_MaterialPreview(
+		&controller, "mat_lambert", W, H, matBuf.data() );
+	Check( matOk, "C-ABI MaterialPreview call succeeds for a real material" );
+	if( matOk ) {
+		Check( matBuf[3] == 255, "C-ABI MaterialPreview writes opaque alpha" );
+	}
+	const bool matRefused = RISE_API_SceneEditController_MaterialPreview(
+		&controller, "does_not_exist_mat", W, H, matBuf.data() );
+	Check( !matRefused, "C-ABI MaterialPreview call refuses an unknown material name" );
+
 	controller.Stop();
+	j->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 9 (Slice 5): MaterialPreview 3D shaderball engine -- Lambertian
+// directional shading, GGX thin-film interference iridescence,
+// Sellmeier dielectric refraction, luminaire emission, refusals, and
+// sample-budget decimation.
+//////////////////////////////////////////////////////////////////////
+static void TestMaterialPreviewShaderball()
+{
+	std::cout << "Test 9: MaterialPreview renders a deterministic 3D shaderball across Lambertian, thin-film GGX, Sellmeier glass, and luminaire materials..." << std::endl;
+	const char* tmp = "materialpreview_shaderball.RISEscene";
+	Job* j = LoadScene( kHeadlessScene, tmp );
+	Check( j != nullptr, "headless fixture scene loads for MaterialPreview" );
+	if( !j ) return;
+
+	const unsigned int W = 32, H = 32;
+
+	// (a) Lambertian 3D shading + determinism
+	const MaterialPreview::Result r1 = MaterialPreview::RenderMaterialPreview( *j, String( "mat_lambert" ), W, H );
+	const MaterialPreview::Result r2 = MaterialPreview::RenderMaterialPreview( *j, String( "mat_lambert" ), W, H );
+	Check( r1.status == MaterialPreview::Status::Ok, "lambertian_material shaderball preview succeeds" );
+	Check( r1.width == W && r1.height == H && r1.rgba.size() == (std::size_t)W * H * 4,
+	       "lambertian_material buffer matches requested W*H*4 dimensions" );
+	Check( r1.rgba == r2.rgba, "MaterialPreview is deterministic across repeated calls" );
+
+	if( r1.status == MaterialPreview::Status::Ok ) {
+		// Compare key-lit upper-left sphere pixel (x=11, y=11) vs lower-right sphere pixel (x=21, y=21).
+		const std::size_t idxKey  = ( (std::size_t)11 * W + 11 ) * 4;
+		const std::size_t idxFill = ( (std::size_t)21 * W + 21 ) * 4;
+		const int lumaKey  = (int)r1.rgba[idxKey]  + (int)r1.rgba[idxKey+1]  + (int)r1.rgba[idxKey+2];
+		const int lumaFill = (int)r1.rgba[idxFill] + (int)r1.rgba[idxFill+1] + (int)r1.rgba[idxFill+2];
+		Check( lumaKey > lumaFill, "3D sphere shading: key-lit upper-left hemisphere is brighter than shadow hemisphere" );
+		// Solid has color (0.2, 0.4, 0.6), so B > G > R on the lit sphere.
+		Check( r1.rgba[idxKey+2] > r1.rgba[idxKey+1] && r1.rgba[idxKey+1] > r1.rgba[idxKey+0],
+		       "lambertian_material preserves the blue-dominant (0.2, 0.4, 0.6) albedo tint on the sphere" );
+	}
+
+	// (b) GGX thin-film interference: spectral quadrature produces chromatic
+	// iridescence even though rs=white and extinction/ior are uniform, and
+	// changing film_thickness from 380nm to 520nm shifts the interference colour.
+	const MaterialPreview::Result tf380 = MaterialPreview::RenderMaterialPreview( *j, String( "mat_thinfilm_380" ), W, H );
+	const MaterialPreview::Result tf520 = MaterialPreview::RenderMaterialPreview( *j, String( "mat_thinfilm_520" ), W, H );
+	Check( tf380.status == MaterialPreview::Status::Ok && tf520.status == MaterialPreview::Status::Ok,
+	       "GGX thin-film materials (380nm and 520nm) both preview cleanly" );
+	if( tf380.status == MaterialPreview::Status::Ok && tf520.status == MaterialPreview::Status::Ok ) {
+		Check( tf380.rgba != tf520.rgba,
+		       "MONEY: spectral quadrature differentiates 380nm vs 520nm thin-film interference thickness" );
+	}
+
+	// (c) Sellmeier dielectric glass refraction
+	const MaterialPreview::Result glass = MaterialPreview::RenderMaterialPreview( *j, String( "mat_glass" ), W, H );
+	Check( glass.status == MaterialPreview::Status::Ok, "dielectric_material with Sellmeier IOR previews cleanly" );
+	if( glass.status == MaterialPreview::Status::Ok && r1.status == MaterialPreview::Status::Ok ) {
+		Check( glass.rgba != r1.rgba, "refractive glass shaderball is distinct from opaque Lambertian shaderball" );
+	}
+
+	// (d) Luminaire emission
+	const MaterialPreview::Result emit = MaterialPreview::RenderMaterialPreview( *j, String( "lum" ), W, H );
+	Check( emit.status == MaterialPreview::Status::Ok, "lambertian_luminaire_material previews cleanly" );
+	if( emit.status == MaterialPreview::Status::Ok ) {
+		const std::size_t centerIdx = ( (std::size_t)( H / 2 ) * W + ( W / 2 ) ) * 4;
+		Check( emit.rgba[centerIdx] > 200 && emit.rgba[centerIdx+1] > 200 && emit.rgba[centerIdx+2] > 200,
+		       "emissive luminaire material renders bright at the sphere center" );
+	}
+
+	// (e) Refusals & sample budget
+	const MaterialPreview::Result badName = MaterialPreview::RenderMaterialPreview( *j, String( "no_such_mat" ), W, H );
+	Check( badName.status == MaterialPreview::Status::Refused && !badName.refusalReason.empty(),
+	       "unknown material returns Status::Refused with a diagnostic reason" );
+	const MaterialPreview::Result nullMat = MaterialPreview::RenderMaterialPreview( *j, String( "none" ), W, H );
+	Check( nullMat.status == MaterialPreview::Status::Refused && !nullMat.refusalReason.empty(),
+	       "the 'none' null material returns Status::Refused" );
+	const MaterialPreview::Result zeroDim = MaterialPreview::RenderMaterialPreview( *j, String( "mat_lambert" ), 0, H );
+	Check( zeroDim.status == MaterialPreview::Status::Refused && !zeroDim.refusalReason.empty(),
+	       "zero width returns Status::Refused" );
+	const MaterialPreview::Result overDim = MaterialPreview::RenderMaterialPreview( *j, String( "mat_lambert" ), MaterialPreview::kMaxDim + 1, H );
+	Check( overDim.status == MaterialPreview::Status::Refused && !overDim.refusalReason.empty(),
+	       "over-cap width returns Status::Refused" );
+
 	j->release();
 	std::remove( tmp );
 }
@@ -860,6 +979,7 @@ int main()
 	TestEvaluationBudgetDecimatesLargeRequests();
 	TestConcurrencyRefusal();
 	TestCAbiSmoke();
+	TestMaterialPreviewShaderball();
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

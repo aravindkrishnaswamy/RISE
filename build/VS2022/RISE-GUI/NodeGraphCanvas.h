@@ -333,10 +333,10 @@ private:
     // ---- add-node palette (S18/S21/S22) ---------------------------------
     void openAddNodeDialog();
 
-    // ---- thumbnails (S10 Qt carry: ViewportBridge::painterPreview /
-    // rampStripPreview) ----------------------------------------------------
+    // ---- thumbnails (S10 Qt carry + Slice 5 MaterialPreview:
+    // ViewportBridge::painterPreview / rampStripPreview / materialPreview) ---
     QImage fetchThumbnail(const GraphNodeData& node) const;
-    const QImage& thumbnailFor(const QString& name) const;
+    const QImage& thumbnailFor(int category, const QString& name) const;
 
     // ---- geometry helpers -------------------------------------------------
     qreal currentScale() const;

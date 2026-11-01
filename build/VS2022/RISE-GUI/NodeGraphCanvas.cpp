@@ -438,25 +438,17 @@ void GraphNodeItem::paintThumbnail(QPainter* painter, const QRectF& rect) const
 {
     const QColor tint = graphCategoryTint(m_data.category);
 
-    // Materials have no PainterPreview evaluation (that engine only
-    // evaluates IPainter/IScalarPainter chunks) -- a neutral placeholder
-    // tile, matching GraphNodeBoxView.thumbnail's own category==2 branch.
-    if (m_data.category == 2) {
-        QPainterPath p; p.addRoundedRect(rect, 4.0, 4.0);
-        QColor fill = tint; fill.setAlphaF(0.12f);
-        painter->fillPath(p, fill);
-        painter->setPen(tint);
-        painter->setFont(Theme::sans(14));
-        painter->drawText(rect, Qt::AlignCenter, QStringLiteral("◐"));
-        return;
-    }
-
     if (!m_canvas) return;
-    const QImage& img = m_canvas->thumbnailFor(m_data.name);
+    const QImage& img = m_canvas->thumbnailFor(m_data.category, m_data.name);
     if (img.isNull()) {
         QPainterPath p; p.addRoundedRect(rect, 4.0, 4.0);
-        QColor fill = tint; fill.setAlphaF(0.10f);
+        QColor fill = tint; fill.setAlphaF(m_data.category == 2 ? 0.12f : 0.10f);
         painter->fillPath(p, fill);
+        if (m_data.category == 2) {
+            painter->setPen(tint);
+            painter->setFont(Theme::sans(14));
+            painter->drawText(rect, Qt::AlignCenter, QStringLiteral("◐"));
+        }
         return;
     }
 
@@ -468,7 +460,12 @@ void GraphNodeItem::paintThumbnail(QPainter* painter, const QRectF& rect) const
         const qreal h = rect.height() * 0.45;
         target = QRectF(rect.left(), rect.top() + (rect.height() - h) / 2.0, rect.width(), h);
     }
+    QPainterPath clipPath;
+    clipPath.addRoundedRect(target, 4.0, 4.0);
+    painter->save();
+    painter->setClipPath(clipPath);
     painter->drawImage(target, img);
+    painter->restore();
 }
 
 void GraphNodeItem::drawPillBadge(QPainter* painter, const QRectF& rect, const QString& text,
@@ -1600,8 +1597,8 @@ void NodeGraphCanvas::prefetchThumbnails()
 {
     if (!m_bridge) return;
     for (const GraphNodeData& d : std::as_const(m_nodes)) {
-        if (d.category == 2) continue;   // Material: no PainterPreview
-        m_thumbnailCache.insert(d.name, fetchThumbnail(d));
+        if (d.category == 1) continue;   // Function: no preview
+        m_thumbnailCache.insert(QStringLiteral("%1:%2").arg(d.category).arg(d.name), fetchThumbnail(d));
     }
 }
 
@@ -2247,8 +2244,15 @@ void NodeGraphCanvas::openAddNodeDialog()
 
 QImage NodeGraphCanvas::fetchThumbnail(const GraphNodeData& node) const
 {
-    if (!m_bridge || node.category == 2) return QImage();
+    if (!m_bridge || node.category == 1) return QImage();
     QByteArray rgba;
+    if (node.category == 2) {
+        const unsigned int w = 40, h = 40;
+        if (!m_bridge->materialPreview(node.name, w, h, rgba)) return QImage();
+        if (static_cast<unsigned int>(rgba.size()) != w * h * 4) return QImage();
+        const QImage img(reinterpret_cast<const uchar*>(rgba.constData()), int(w), int(h), QImage::Format_RGBA8888);
+        return img.copy();
+    }
     if (node.isRampPainter()) {
         const unsigned int w = 40, h = 18;
         if (!m_bridge->rampStripPreview(node.name, w, h, rgba)) return QImage();
@@ -2263,10 +2267,10 @@ QImage NodeGraphCanvas::fetchThumbnail(const GraphNodeData& node) const
     return img.copy();
 }
 
-const QImage& NodeGraphCanvas::thumbnailFor(const QString& name) const
+const QImage& NodeGraphCanvas::thumbnailFor(int category, const QString& name) const
 {
     static const QImage kEmpty;
-    const auto it = m_thumbnailCache.constFind(name);
+    const auto it = m_thumbnailCache.constFind(QStringLiteral("%1:%2").arg(category).arg(name));
     return it != m_thumbnailCache.constEnd() ? it.value() : kEmpty;
 }
 

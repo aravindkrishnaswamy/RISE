@@ -176,7 +176,9 @@ private:
 
     QPixmap fetchPainterThumbnail(const QString& painterName, int defIndex, int sizePt);
     QPixmap fetchRampStripThumbnail(const QString& painterName, int widthPt, int heightPt);
+    QPixmap fetchMaterialThumbnail(const QString& materialName, int sizePt);
     QLabel* createPainterSwatchLabel(const QString& painterName, int defIndex, int sizePt, QWidget* parent = nullptr);
+    QLabel* createMaterialSwatchLabel(const QString& materialName, int sizePt, QWidget* parent = nullptr);
 
     void updateAdvancedToggleLabel(int advancedCount);
     void onAdvancedToggleClicked();
