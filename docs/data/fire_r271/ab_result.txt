@@ -1,0 +1,12 @@
+succeeded 1
+error 
+checkpoint /Volumes/SSD/RISE/fire_production_calibration/r270_floor_radiation/tier8_eps1/checkpoint_history/step_0000009223.checkpoint
+checkpoint_sha256 0947b3acd86c30a8d5e13e54b5cbdc393532f5dd74b1bc63564122b24ab28801
+start_step 9223
+start_time_s 14.984149052936118
+end_time_s 18.985795318847522
+window_s 4
+viscous_stencil r271-compact-mac-v1
+floor_emissivity 1
+case_record_id 10299101357e42cf3da0aaa00ed712876f155fff6305ec783cd8d22b2e5c5db0
+wall_s 16802.013001125

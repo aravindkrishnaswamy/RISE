@@ -161,10 +161,46 @@ Known limits of the A/B, recorded rather than changed:
 
 The patch for owner review is [`compact_stencil.patch`](data/fire_r271/compact_stencil.patch). It is uncommitted in `src/` and `tests/` until approved.
 
+## 8. Compact-stencil A/B: grid noise fixed, flame worse (2026-11-01)
+
+The owner approved the patch (committed as `5cdace134`) and the run.
+
+**Set-up.** One arm, `RISE_FIRE_COMPACT_VISCOUS_STENCIL=1` with the floor on. It resumes r270's retained checkpoint at step 9223 (14.984 s) and runs for 4 s, to 18.986 s: 2,449 accepted steps (9223 → 11672), 4.7 h wall time, peak RSS 1.8 GB.
+- **Harness:** `tools/fire/r271/ab_driver.cpp`, built by `build_ab.py` against the committed production objects. As in r260, only an external copy of the test harness is patched: the 64-step cap on retained-production probes is lifted, and the run stops at a physical-time window.
+- **Baseline:** r270's own frames 73–136.
+- **Restart check:** the same harness with the stencil off, run from the same checkpoint, reproduced r270's frame 73 byte for byte (SHA-256 `fc172809…`). Restart is exact, so any difference is the stencil.
+- **Window-to-window variability:** r270 windows w0 (10.47–14.40 s) and w2 (19.03–22.97 s) show how much a 4 s window varies with no change at all.
+- **Data:** `docs/data/fire_r271/ab_compare.txt` (script `tools/fire/r271/ab_compare.py`).
+
+| | r270 (w0 / w2 / same window) | compact | FDS r263 |
+|---|---|---|---|
+| Grid-scale share of w, 0.29 m | 0.27 / 0.26 / 0.27 | **0.18** | 0.075–0.20 (§5) |
+| Grid-scale share of w, 0.99 m | 0.20 / 0.23 / 0.21 | **0.078** | |
+| Grid-scale share of w, 2.00 m | 0.23 / 0.27 / 0.24 | **0.055** | |
+| Grid-scale share of T, 0.29 m | 0.11 / 0.12 / 0.12 | **0.22** | |
+| Total HRR rms in the 2–3.5 Hz band, % of mean | 3.5 / 3.9 / 3.1 | **2.2** | |
+| Height below which 90% of the heat is released (m) | 0.43 / 0.43 / 0.46 | **0.83** | 0.43 |
+| Height below which 99% of the heat is released (m) | 0.86 / 0.86 / 0.86 | **1.25** | 0.77 |
+| Centre excess temperature θ_c, 0.75 m (K) | 504 / 517 / 533 | **735** | 355 |
+| Upward mass flux, 0.75 m (kg/s) | 0.176 / 0.208 / 0.196 | **0.168** | 0.244 |
+| Plume width b_T, 0.75 m (m) | 0.107 / 0.105 / 0.103 | **0.083** | 0.119 |
+| Upward mass flux, 3.01 m (kg/s) | 0.876 / 0.843 / 0.863 | **1.021** | 1.176 |
+
+**Result.**
+- **Velocity noise is fixed.** The grid-scale share of w falls 2–4×, into FDS's range at every height. This confirms §5's diagnosis of the velocity noise.
+- **The near field gets worse, not better.** The plume is narrower and hotter, and it entrains less air below 1 m. The heat release moves upward: on the 3×3 centre column it rises from 8.8 to 12.0 kW. The 90% and 99% heights grow from 0.43 m to 0.83 m and from 0.86 m to 1.25 m.
+- **Puffing is weaker,** not stronger.
+- **Only the far field improves:** at 3 m the upward mass flux is 1.02 kg/s, against 0.86 for r270 and 1.18 for FDS.
+- **Not a transient.** In 1 s blocks, the 90% height goes 0.64 → 0.83 → 0.89 → 0.89 m, so it settles at the longer flame within about 2 s.
+- **Temperature grid noise doubles** at 0.29–0.50 m, while velocity noise falls.
+
+**Reading.**
+- The undamped grid-scale velocity in r270 was doing some of the near-field mixing. That noise is numerical, not physical. Removing it exposes how little resolved mixing RISE has near the burner.
+- Temperature grid noise rises because the scalars are now under-mixed. Scalar transport is untouched by this patch: heat and species still mix through the old cell-centred SGS diffusivity and MC/FCT advection.
+- So the velocity stencil is not, by itself, the cause of the under-entrainment, and on its own it moves the flame further from FDS.
+- **Decision: not adopted.** The patch stays opt-in and off by default.
+
 ## Next (owner decisions)
 
-1. **The A/B run.** Run one arm with `RISE_FIRE_COMPACT_VISCOUS_STENCIL=1` and the floor on, from an r270 checkpoint near 15 s, for 4 s of simulated time. That is about 2,400 steps, or about 3.7 h.
-   - **Baseline:** r270's own frames over the same window. A switch-off run is byte-identical to r270's physics, so no second arm is needed.
-   - **Compare:** grid-scale w share, puffing strength, entrainment (upward mass flux and side inflow), θ_c and flame height.
-   - **Launch:** the capstone has no resume mode, so this needs a resume harness adapted from r260/r262 (`tools/fire/r262_build_combined.py`).
-2. **Possible follow-up from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor and separate from the A/B.
+1. **Scalar side of the same discretisation.** Check how RISE's turbulent heat and species diffusivity is formed, compared with FDS (μ_t/Sc_t with compact face gradients). If it uses the same cell-centred stencil, extend the compact treatment to scalars and repeat this 4 s A/B: the harness is in place, and each arm takes about 4.7 h. The doubled temperature grid noise in §8 points there.
+2. **Possible follow-up from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor and separate.
