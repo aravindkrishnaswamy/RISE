@@ -2913,6 +2913,15 @@ namespace RISE
 			const std::vector<GraphNodeSeed>& nodeSeeds,
 			const std::vector<GraphEdgeSeed>& edgeSeeds );
 
+		//! Pure legacy dangling-port seeding from cached node identities.
+		//! Expression records are excluded (their typed edges come from the
+		//! reference snapshot). No CST nodes are read. sourceLookups, if
+		//! supplied, counts the one indexed identity probe per remaining record.
+		static std::vector<GraphEdgeSeed> BuildDanglingGraphEdgeSeeds(
+			const std::vector<GraphNodeSeed>& nodes,
+			const std::vector<Cst::UnresolvedReference>& unresolved,
+			size_t* sourceLookups = nullptr );
+
 		//! THE TRANSACTIONAL READ -- mirrors ReadTree exactly: refreshes
 		//! once, then copies the whole published graph out under a single
 		//! hold of the leaf lock.

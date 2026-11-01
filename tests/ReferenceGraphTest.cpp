@@ -2780,16 +2780,33 @@ int main()
     // restarting at the beginning of a long repeatable-def chunk per line.
     for (const size_t defs : {size_t(8), size_t(32), size_t(128)}) {
         std::string text = "RISE ASCII SCENE 7\nscalar_painter\n{\nname many_defs\n";
-        for (size_t i = 0; i < defs; ++i) text += "def d" + std::to_string(i) + " 0.2\n";
+        for (size_t i = 0; i < defs; ++i) text += "def d" + std::to_string(i) + " sample(missing)\n";
         text += "expression sample_scalar(missing)\n}\n";
         const auto doc = Cst::ParseToCst(text);
         const auto snapshot = SceneReferenceGraph::EdgesAndDangling(doc);
-        Check(snapshot.danglingExpressionEdges.size() == 1,
-              "FOLLOWUP: long def fixture retains its one dangling call");
-        // Each `def dN 0.2` has five children (three tokens and two spaces),
+        Check(snapshot.danglingExpressionEdges.size() == defs + 1,
+              "FOLLOWUP: long def fixture retains a dangling call on every def and the final expression");
+        // Each `def dN sample(missing)` has five children (three tokens and two spaces),
         // and `expression sample_scalar(missing)` has three.
         Check(snapshot.expressionValueChildVisits == 5 * defs + 3,
               ("FOLLOWUP: dangling recovery child visits grow linearly with def count " + std::to_string(defs)).c_str());
+        std::vector<NodeSeed> nodes;
+        for (const auto& chunk : SceneReferenceGraph::AllChunks(doc))
+            nodes.push_back(MakeNodeSeed(chunk.id, chunk.name.c_str(), chunk.category, nodes.size()));
+        size_t lookups = 0;
+        const auto legacy = SceneEditController::BuildDanglingGraphEdgeSeeds(nodes, snapshot.unresolved, &lookups);
+        Check(legacy.empty() && lookups == 0,
+              "FOLLOWUP: controller skips every typed expression record before source enrichment");
+        std::vector<Cst::UnresolvedReference> generic;
+        for (size_t i = 0; i < defs; ++i)
+            generic.push_back({nodes.front().id, "scalar_painter", "base", "missing"});
+        const auto genericSeeds = SceneEditController::BuildDanglingGraphEdgeSeeds(nodes, generic, &lookups);
+        Check(genericSeeds.size() == defs && lookups == defs,
+              "FOLLOWUP: controller uses one indexed identity lookup per ordinary dangling record");
+        for (const auto& edge : genericSeeds)
+            Check(edge.fromName == String("many_defs") && edge.toName == String("missing")
+                  && edge.toId == 0 && edge.portPipe == ParameterPipe::Scalar,
+                  "FOLLOWUP: cached dangling identity and descriptor metadata are preserved");
     }
 
 	std::cout << "Passed: " << passCount << ", Failed: " << failCount << std::endl;

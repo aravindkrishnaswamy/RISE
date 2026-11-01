@@ -5140,6 +5140,50 @@ SceneEditController::PainterMaterialGraph SceneEditController::BuildPainterMater
 	return out;
 }
 
+std::vector<SceneEditController::GraphEdgeSeed> SceneEditController::BuildDanglingGraphEdgeSeeds(
+	const std::vector<GraphNodeSeed>& nodes,
+	const std::vector<Cst::UnresolvedReference>& unresolved,
+	size_t* sourceLookups )
+{
+	// Node identities already contain source names. This API deliberately
+	// accepts no CST Document or chunk nodes, so unresolved records cannot
+	// trigger repeated parameter-child scans while recovering that name.
+	if( unresolved.empty() ) return {};
+	std::map<Cst::NodeId, const GraphNodeSeed*> byId;
+	for( const GraphNodeSeed& node : nodes ) byId.emplace( node.id, &node );
+	std::vector<GraphEdgeSeed> out;
+	for( const RISE::Cst::UnresolvedReference& u : unresolved ) {
+		const ChunkDescriptor* desc = DescriptorForKeyword( String( u.chunkKeyword.c_str() ) );
+		if( !desc || ( desc->category != ChunkCategory::Painter && desc->category != ChunkCategory::Material ) ) continue;
+		const ParameterDescriptor* pd = nullptr;
+		for( const ParameterDescriptor& p : desc->parameters ) if( p.name == u.param ) { pd = &p; break; }
+		if( pd && pd->carriesExpressionSampleRefs ) continue; // typed expression edges are emitted separately
+		if( sourceLookups ) ++*sourceLookups;
+		const auto source = byId.find( u.sourceChunkId );
+		if( source == byId.end() ) continue;
+		GraphEdgeSeed s;
+		s.fromId       = u.sourceChunkId;
+		s.fromCategory = desc->category;
+		s.fromName     = source->second->name;
+		s.paramName    = String( u.param.c_str() );
+		// UnresolvedReference (Cst.h) carries no occurrence index -- 0 is the
+		// best-effort default; a dangling value on occurrence > 0 of a
+		// repeatable param therefore surfaces as occurrence 0 until a future
+		// Cst.h change adds one. Documented, not silently assumed.
+		s.occurrence   = 0;
+		if( pd ) {
+			s.portCategories = pd->referenceCategories;
+			s.portPipe = pd->semantics.pipe;
+			s.portColorAlsoAcceptsScalar = pd->semantics.colorAlsoAcceptsScalar;
+		}
+		// s.toId stays 0 (the dangling sentinel -- see GraphEdgeSeed's comment).
+		s.toCategory = ChunkCategory::Painter;   // arbitrary: toId==0 already marks this dangling, toCategory is unused by the assembler in that case
+		s.toName     = String( u.value.c_str() );
+		out.push_back( s );
+	}
+	return out;
+}
+
 void SceneEditController::ExpandFunctionPromotionFrontier(
 	const std::multimap<RISE::Cst::NodeId, const ReferenceEdge*>& edgesByReferrer,
 	std::set<RISE::Cst::NodeId>& promotedFunctionIds,
@@ -5373,41 +5417,10 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 
 	}
 
-	// ---- Dangling ports: a Painter/Material referrer whose reference value
-	// resolves to NO chunk at all.  Fed through the SAME edge-seed shape --
-	// BuildPainterMaterialGraph already turns an edge seed whose `toId` is
-	// 0 into a node-less port, so no separate dangling code path is needed
-	// in the assembler itself. ----
-	for( const RISE::Cst::UnresolvedReference& u : snapshot.unresolved ) {
-		const RISE::Cst::NodeRef item = RISE::Cst::DocResolveNodeId( *doc, u.sourceChunkId );
-		if( !item ) continue;
-		const ChunkDescriptor* desc = DescriptorForKeyword( String( u.chunkKeyword.c_str() ) );
-		if( !desc || ( desc->category != ChunkCategory::Painter && desc->category != ChunkCategory::Material ) ) continue;
-		bool present = false;
-		const std::string nm = RISE::Cst::ParamValueAsParsed( item, "name", &present );
-		GraphEdgeSeed s;
-		s.fromId       = u.sourceChunkId;
-		s.fromCategory = desc->category;
-		s.fromName     = present ? String( nm.c_str() ) : String();
-		s.paramName    = String( u.param.c_str() );
-		// UnresolvedReference (Cst.h) carries no occurrence index -- 0 is the
-		// best-effort default; a dangling value on occurrence > 0 of a
-		// repeatable param therefore surfaces as occurrence 0 until a future
-		// Cst.h change adds one. Documented, not silently assumed.
-		s.occurrence   = 0;
-		const ParameterDescriptor* pd = nullptr;
-		for( const ParameterDescriptor& p : desc->parameters ) if( p.name == u.param ) { pd = &p; break; }
-		if( pd && pd->carriesExpressionSampleRefs ) continue; // emitted above with exact call pipe and occurrence
-		if( pd ) {
-			s.portCategories = pd->referenceCategories;
-			s.portPipe = pd->semantics.pipe;
-			s.portColorAlsoAcceptsScalar = pd->semantics.colorAlsoAcceptsScalar;
-		}
-		// s.toId stays 0 (the dangling sentinel -- see GraphEdgeSeed's comment).
-		s.toCategory = ChunkCategory::Painter;   // arbitrary: toId==0 already marks this dangling, toCategory is unused by the assembler in that case
-		s.toName     = String( u.value.c_str() );
-		outEdges.push_back( s );
-	}
+	// The remaining dangling ports reuse cached source identities. Expression
+	// records were emitted above with their exact call pipes and occurrences.
+	const auto dangling = BuildDanglingGraphEdgeSeeds( outNodes, snapshot.unresolved );
+	outEdges.insert( outEdges.end(), dangling.begin(), dangling.end() );
 }
 
 bool SceneEditController::RefreshPainterMaterialGraphSnapshot_() const
