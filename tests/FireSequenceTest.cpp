@@ -5235,6 +5235,20 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		return policy.Valid();
 	}
 
+	// r270: the radiatively adiabatic floor is opt-in and identity-bearing, so
+	// every derivation of the production case (the run and its manifest) reads
+	// the same option.
+	bool ApplyFloorEmissivityOption(FireCase::AuthoredV1& authored)
+	{
+		const char* floorOption=std::getenv("RISE_FIRE_FLOOR_EMISSIVITY");
+		if(!floorOption)return true;
+		char* end=nullptr;const double emissivity=std::strtod(floorOption,&end);
+		if(end==floorOption||*end!='\0'||!std::isfinite(emissivity)||!(emissivity>0.0)||
+			emissivity>1.0)return false;
+		authored.hasFloorEmissivity=true;authored.floorEmissivity=emissivity;
+		return true;
+	}
+
 	SolverFrameValues RunMethaneFrameProbe( const unsigned int workerCount=1u,
 		const unsigned int minimumStepCount=1u,const double targetTimeS=0.0,
 		const double caseDurationS=1.0,const double caseFramesPerS=4.0,
@@ -5461,16 +5475,10 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		authored.plumeLaw=true;
 		if(persistence.r244LateralDouble)authored.domainStudy=persistence.r246TopDouble?
 			"r246-lateral-double-top-double-v1":"r244-lateral-double-v1";
-		// r270: the radiatively adiabatic floor is opt-in and identity-bearing;
-		// only the canonical source authority implements it.
-		if(const char* floorOption=std::getenv("RISE_FIRE_FLOOR_EMISSIVITY")){
-			char* end=nullptr;const double emissivity=std::strtod(floorOption,&end);
-			if(end==floorOption||*end!='\0'||!std::isfinite(emissivity)||!(emissivity>0.0)||
-				emissivity>1.0){
-				values.structuredError="case_derivation_failure:floor emissivity is invalid";
-				return values;
-			}
-			authored.hasFloorEmissivity=true;authored.floorEmissivity=emissivity;
+		// Only the canonical source authority implements the r270 floor.
+		if(!ApplyFloorEmissivityOption(authored)){
+			values.structuredError="case_derivation_failure:floor emissivity is invalid";
+			return values;
 		}
 		FireCase::RecordV1 caseRecord;
 		const RISECBOR64::Bytes aerosol=AerosolRecord();
@@ -8222,6 +8230,9 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			"r246-lateral-double-top-double-v1":"r244-lateral-double-v1";
 		caseAuthored.hasRadiativeFractionOverride=caseHasRadiativeFractionOverride;
 		caseAuthored.radiativeFractionOverride=caseRadiativeFractionOverride;
+		// The production manifest must carry the run's case, floor included;
+		// non-production callers never derive the floor case.
+		if(prescribedProductionBurner&&!ApplyFloorEmissivityOption(caseAuthored))return {};
 		FireCase::RecordV1 caseRecord;
 		std::vector<std::string> caseReferences={RISECBOR64::SHA256Hex(thermo),RISECBOR64::SHA256Hex(transport),
 			 RISECBOR64::SHA256Hex(opacity),RISECBOR64::SHA256Hex(optics),
@@ -11794,7 +11805,11 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			if(!verified.LoadCanonicalEnvelope(manifest,outputDirectory.string(),error)||
 				verified.CaseRecordId()!=result.caseRecordId||
 				!verified.PreflightAllFrames(error)||
-				(r246TopDouble&&!TemporalManifestDomainMatches(manifest,true,error,true)))return 98;
+				(r246TopDouble&&!TemporalManifestDomainMatches(manifest,true,error,true))){
+				std::fprintf(stderr,"production temporal capstone manifest refused: case=%s run=%s %s\n",
+					verified.CaseRecordId().c_str(),result.caseRecordId.c_str(),error.c_str());
+				return 98;
+			}
 			manifestDigest=DigestFile(manifestPath);
 		}
 		std::ofstream diagnostics(outputDirectory/"monitored_diagnostics.csv");
@@ -11848,6 +11863,74 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 	}
 
 #if defined(RISE_ENABLE_OPENVDB)
+	// r270: rebuilds a finished capstone's sequence manifest from its retained
+	// frames, exactly as the capstone publishes it, and verifies the case
+	// against both the run's sealed launch receipt and the launch case.  It
+	// carries this binary's producer identity, not the run's.  Only the tier-8
+	// standard domain is supported; the output file is separate so a run
+	// directory is never overwritten in place.
+	int RebuildProductionTemporalManifest(const double resolutionTier,const double frameCadenceS,
+		const std::filesystem::path& runDirectory,const std::filesystem::path& outputPath)
+	{
+		if(resolutionTier!=8.0||frameCadenceS!=0.0625||std::filesystem::exists(outputPath)||
+			std::filesystem::is_symlink(runDirectory))return 91;
+		std::string receiptCaseId;
+		{
+			std::ifstream receipt(runDirectory/"window_launch.v1");std::string key,value;
+			while(receipt>>key>>value){
+				if(key=="domain_study")return 91;
+				if(key=="case_record_id")receiptCaseId=value;
+			}
+		}
+		if(receiptCaseId.size()!=64u)return 95;
+		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
+			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,RunPersistenceOptions());
+		ProductionTemporalWindowPlan window;
+		if(!BuildProductionTemporalWindowPlan(beginning,frameCadenceS,false,window))return 93;
+		RunPersistenceOptions persistence;
+		persistence.productionMetal=true;persistence.portedProductionTransport=true;
+		const SolverFrameValues launchCase=RunMethaneFrameProbe(1u,0u,0.0,window.targetTimeS,
+			1.0/frameCadenceS,resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		if(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS)return 93;
+		std::ifstream csv(runDirectory/"frame_times.csv");std::string line;
+		if(!std::getline(csv,line)||line!="frame,simulation_time_s,vdb_sha256")return 95;
+		std::vector<double> frameTimesS;
+		std::vector<std::pair<std::string,std::string> > manifestFrames;
+		while(std::getline(csv,line)){
+			std::istringstream row(line);std::string index,time,digest;
+			if(!std::getline(row,index,',')||!std::getline(row,time,',')||!std::getline(row,digest))return 95;
+			std::ostringstream name;name<<"frames/frame_"<<std::setw(5)<<std::setfill('0')<<
+				manifestFrames.size()<<".vdb";
+			char* indexEnd=nullptr;char* timeEnd=nullptr;
+			const unsigned long long frame=std::strtoull(index.c_str(),&indexEnd,10);
+			const double timeS=std::strtod(time.c_str(),&timeEnd);
+			if(index.empty()||*indexEnd!='\0'||time.empty()||*timeEnd!='\0'||!std::isfinite(timeS)||
+				frame!=manifestFrames.size()||DigestFile(runDirectory/name.str())!=digest)return 95;
+			frameTimesS.push_back(timeS);manifestFrames.push_back({name.str(),digest});
+		}
+		if(manifestFrames.size()<2u)return 95;
+		const std::array<std::uint64_t,3> dimensions={{launchCase.dimensions[0],
+			launchCase.dimensions[1],launchCase.dimensions[2]}};
+		const RISECBOR64::Bytes manifest=ManifestBytes("","","hold",true,true,
+			dimensions,launchCase.cellWidthM,frameTimesS.front(),frameCadenceS,1.0,0.0,
+			true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
+			resolutionTier,true,manifestFrames,window.targetTimeS,1.0/frameCadenceS,true,false,false);
+		FireSequenceManifest verified;std::string error;
+		if(!verified.LoadCanonicalEnvelope(manifest,runDirectory.string(),error)||
+			!verified.PreflightAllFrames(error)){
+			std::fprintf(stderr,"manifest rebuild refused: %s\n",error.c_str());return 98;
+		}
+		std::fprintf(stderr,"MANIFEST_REBUILD case=%s launch_case=%s receipt_case=%s frames=%zu\n",
+			verified.CaseRecordId().c_str(),launchCase.caseRecordId.c_str(),receiptCaseId.c_str(),
+			manifestFrames.size());
+		if(verified.CaseRecordId()!=launchCase.caseRecordId||verified.CaseRecordId()!=receiptCaseId)return 98;
+		std::ofstream output(outputPath,std::ios::binary);
+		output.write(reinterpret_cast<const char*>(manifest.data()),
+			static_cast<std::streamsize>(manifest.size()));
+		output.close();
+		return output?0:98;
+	}
+
 	bool OwnerCostPrefixEnvironmentAccepted()
 	{
 		// Same mutation surface refused by the sealed replay; only the timing
@@ -23531,6 +23614,12 @@ int main(int argc,char** argv)
 		return RunProductionTemporalCapstoneChild(tier,cadence,argv[4],false,tier==8.0);
 	}
 #if defined(RISE_ENABLE_OPENVDB)
+	if(argc==6&&std::strcmp(argv[1],"--fire-production-manifest-rebuild")==0){
+		double tier=0.0,cadence=0.0;
+		if(!ParsePositiveDoubleArgument(argv[2],tier)||
+			!ParsePositiveDoubleArgument(argv[3],cadence))return 91;
+		return RebuildProductionTemporalManifest(tier,cadence,argv[4],argv[5]);
+	}
 	if(argc==2&&std::strcmp(argv[1],"--fire-r224-window-publication-gate")==0)
 		return RunProductionTemporalPublicationREDs();
 #endif

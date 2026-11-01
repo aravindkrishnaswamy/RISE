@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-30, after the r270 floor-radiation implementation (Claude now runs the campaign directly). This page
+Last updated 2026-10-31, after the r270 tier-8 floor-radiation run (Claude now runs the campaign directly). This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -30,7 +30,14 @@ pages are a historical log, not instructions.
   - The floor returns about 0.5 kW to the gas, matching FDS's +0.51 kW.
   - Floor-level air outside the burner warms 2–6 K and is still rising (r264: 0 K).
 - **Build fix:** `FireCase.o` is now built outside LTO, because fast-math under LTO let unrelated edits move case IDs.
-- **Next:** the tier-8 full window with the floor on, which awaits owner approval.
+- **Tier-8 full window with the floor on (2026-10-31):**
+  - The floor-level layer now matches FDS (within 0.6 K), and near-floor inflow is mostly recovered.
+  - The annular updraft is half recovered.
+  - The flame did not shorten: it is slightly longer and hotter.
+  - McCaffrey still fails on every temperature station, and 17 velocity stations now fail too.
+  - The far plume is unchanged.
+  - The floor is therefore not the cause of the long, hot core.
+  - A capstone finalisation bug (manifest case without the floor) is fixed, and the run's manifest is rebuilt.
 
 [r268 step profile](FIRE_SMOKE_STEP_PROFILE_R268.md):
 - **The GPU is busy only 37% of each step.** About 48% is a single GPU-idle block, while the main thread hashes, seals and re-checks source packets and EOS admissibility on the CPU. The rest is command-buffer sync stalls.

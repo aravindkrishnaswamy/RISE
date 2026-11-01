@@ -1,0 +1,130 @@
+{
+  "acceptance": {
+    "scope": "complete_tier8_statistics_window_accepted_R1_flux_and_source_integrals",
+    "accepted_time_s": 25.09104012727039,
+    "statistics_duration_s": 14.62500000011342,
+    "supplied_kg": 0.009647284147716895,
+    "consumed_kg": 0.009600469353098632,
+    "consumed_fraction": 0.995147360241344,
+    "consumed_at_least_95_percent": true,
+    "beginning_inventory_kg": 6.999588162324078e-05,
+    "ending_inventory_kg": 6.859071690452368e-05,
+    "inventory_change_kg": -1.4051647187171047e-06,
+    "outward_methane_kg": 4.821988427661836e-05,
+    "top_outward_methane_kg": 4.8183599460689234e-05,
+    "top_outward_fraction_of_supply": 0.00499452475151696,
+    "balance_residual_kg": -7.506036165474739e-11,
+    "reported_solver_residual_kg": -7.506253633687092e-11,
+    "interstep_change_kg": 0.0,
+    "balance_residual_fraction_of_supply": -7.780465518112786e-09,
+    "mean_hrr_W": 32840.0816633638,
+    "heat_below_1_5m_fraction": 0.9999654745248332,
+    "mean_flame_height_99_percent_input_m": 0.952364346075866,
+    "heskestad_expected_m": 0.6456416432144874,
+    "flame_height_relative_error": 0.47506648012089703,
+    "height_99_percent_realized_heat_m": 0.8434953129931536,
+    "height_definition": "99% of nominal input HRR integrated vertically through the time-averaged plane profile; null if unreached. Intracell interpolation. Realized-heat quantile reported separately.",
+    "flame_height_reference": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=907227 (p.7; nominal-input normalization)",
+    "limitations": [
+      "Statistics initial inventory uses the existing clipped-linear increment, not a saved interior state.",
+      "No new numerical conservation tolerance or near-zero export cutoff is imposed; report residual and export relative to supply.",
+      "This HRR-based flame-height proxy differs from the visual intermittency definition of experimental Heskestad data."
+    ],
+    "artifacts": {
+      "/Volumes/SSD/RISE/fire_production_calibration/r270_floor_radiation/tier8_eps1/budgets/step_015368.csv": "ed77946e5cdc64dc875370f03b4175e42394c1b9756d0355daf40d5f4ef489f1",
+      "/Volumes/SSD/RISE/fire_production_calibration/r270_floor_radiation/tier8_eps1/budgets/heat_release_height.csv": "8908049f6f3d0f0bd6bd842fbec036ccccfb1f826749512adacddab9cf31e322",
+      "/Volumes/SSD/Working/RISE/tools/fire/r250_acceptance.py": "ea3593d1c373eb244de45edbe5716d83e9f98003fd66ece0521481bd0ca52f5f",
+      "/Volumes/SSD/RISE/fire_production_calibration/r270_floor_radiation/tier8_eps1/r270_summary_substitute.txt (substitute for missing production_capstone_summary.txt)": "cb03576243fd976bc808416b3ac066a09b8b30afd1d936df260753472055653c"
+    },
+    "FDS_mean_instantaneous_h99_realized_m": 0.8358218074649277,
+    "FDS_flame_height_relative_error": 0.29455994087305326,
+    "FDS_height_definition": "time mean of per-frame height containing99% realized instantaneous HRR; retained16Hzframes, trapezoidal time quadrature"
+  },
+  "entrainment": [
+    {
+      "z": 32,
+      "height_m": 0.994276272190858,
+      "r270_net_r08_kg_s": 0.2248413731529009,
+      "r270_up_r08_kg_s": 0.24368254535312345,
+      "r270_up_plane_kg_s": 0.26705576797787367,
+      "FDS_no_slip_net_r08_kg_s": 0.28209059072517806,
+      "FDS_no_slip_up_r08_kg_s": 0.28768886625949125,
+      "FDS_no_slip_up_plane_kg_s": 0.31541018289466066,
+      "net_relative_error": -0.20294621463659956
+    },
+    {
+      "z": 65,
+      "height_m": 2.0038491024154212,
+      "r270_net_r08_kg_s": 0.4866681977853698,
+      "r270_up_r08_kg_s": 0.5212691358890136,
+      "r270_up_plane_kg_s": 0.5533625813115394,
+      "FDS_no_slip_net_r08_kg_s": 0.6525194879101092,
+      "FDS_no_slip_up_r08_kg_s": 0.6768991308441084,
+      "FDS_no_slip_up_plane_kg_s": 0.7088941933106436,
+      "net_relative_error": -0.25417063121889005
+    },
+    {
+      "z": 98,
+      "height_m": 3.013421932639985,
+      "r270_net_r08_kg_s": 0.8299977550790281,
+      "r270_up_r08_kg_s": 0.8740738115501342,
+      "r270_up_plane_kg_s": 0.8875797013046303,
+      "FDS_no_slip_net_r08_kg_s": 1.1604841457438617,
+      "FDS_no_slip_up_r08_kg_s": 1.1849998324781785,
+      "FDS_no_slip_up_plane_kg_s": 1.1970434626007056,
+      "net_relative_error": -0.2847832018015156
+    }
+  ],
+  "McCaffrey": {
+    "input": "/Volumes/SSD/Working/RISE/docs/data/fire_r270/tier8_retained_statistics.txt",
+    "input_sha256": "a33779359e8e7d7bd15bc5c9999bc66c25aa158ca567236e5425a958c742a690",
+    "checkpoint_sha256": "cbeadefb54805f30f09c2fe38d2b290ce2b6324f9ebd1f6fed58d69953c3b18d",
+    "duration_s": 14.62500000011342,
+    "cell_width_m": 0.030593116067411014,
+    "station_count": 106,
+    "selected_count": 76,
+    "flame_tip_1percent_peak_plane_m": 0.7189382275841588,
+    "selection_lower_exclusive_m": 0.8099077814591382,
+    "selection_upper_inclusive_m": 3.1204978388759237,
+    "characteristic_diameter_m": 0.2447449285392881,
+    "authored_heat_release_kW": 33,
+    "max_temperature_error_station": {
+      "station": 28,
+      "height_m": 0.8719038079212139,
+      "selected": true,
+      "temperature_rise_K": 505.0834997473746,
+      "mccaffrey_temperature_rise_K": 301.24343443905803,
+      "temperature_relative_error": 0.6766622671391489,
+      "velocity_m_per_s": 4.633849275752164,
+      "mccaffrey_velocity_m_per_s": 3.793967141921611,
+      "velocity_relative_error": 0.22137306476649132,
+      "mean_plane_heat_W": 50.23817077659057
+    },
+    "max_velocity_error_station": {
+      "station": 26,
+      "height_m": 0.8107175757863919,
+      "selected": true,
+      "temperature_rise_K": 570.0279647344975,
+      "mccaffrey_temperature_rise_K": 340.08115511577654,
+      "temperature_relative_error": 0.6761527540108427,
+      "velocity_m_per_s": 4.74994076195909,
+      "mccaffrey_velocity_m_per_s": 3.887107582617906,
+      "velocity_relative_error": 0.2219730637761459,
+      "mean_plane_heat_W": 69.527017357164
+    }
+  },
+  "peak_velocity": {
+    "accepted_step": "858",
+    "time_s": "1.3148877846542746",
+    "dt_s": "0.0011143464362248778",
+    "maximum_velocity_m_per_s": "13.980820655822754",
+    "axis": "2",
+    "face": "183298",
+    "x": "34",
+    "y": "34",
+    "z": "38"
+  },
+  "statistics_start_s": 10.466040127212182,
+  "statistics_end_s": 25.09104012727039,
+  "mass_method": "retained native checkpoint quadrature, centered MAC velocity and cellgasdensity; net and positive upward separately. No-slip FDS same full statistics interval."
+}

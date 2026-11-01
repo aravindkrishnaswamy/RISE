@@ -58,6 +58,8 @@ What did not:
 
 Heskestad gives 0.65 m for the flame height.
 
+**Correction (2026-10-31, r270):** the FDS flame height "0.81 (realized)" above is r264's realized H99. FDS r263 by the same definitions gives 0.72–0.75 m ([r270 §8](FIRE_SMOKE_FLOOR_RADIATION_R270.md)).
+
 - **The flame is longer and its core hotter and faster.** Core mass flux below 1 m is slightly lower than r251's, so less air reaches the flame.
 - **Combustion closure is not the issue:**
   - 99.55% of the fuel was burned;

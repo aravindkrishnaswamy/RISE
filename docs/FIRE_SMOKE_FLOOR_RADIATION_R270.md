@@ -172,11 +172,47 @@ These points differ from §3:
 5. **Cost.** The irradiance sum on the tier-8 grid with every cell emitting (worst case) takes 0.35 s per step on 8 workers, about +6% on r264's 5.45 s/step. The real cost is lower, since only cells above ambient emit. An FFT convolution would bring it to milliseconds if needed.
 6. **Independent reviews** of the physics (against the FDS 6.11 source) and the code found no P1 issues. Their P2 and P3 findings are fixed or recorded here: ε = 1, the near-field solid angle, budget routing, emission-spreading mismatch, binary32 re-representation of the dose, near-tie bracket tolerance, and logging absorbed rather than intercepted power.
 
-## Next (owner approval needed)
+## 8. Tier-8 full window (2026-10-31)
 
-**The tier-8 full window from zero with `RISE_FIRE_FLOOR_EMISSIVITY=1`:** about 23–25 h, the same command as r264. Compare against r263 on:
-- the floor-cell ΔT(r);
-- the r = 0.2–0.5 m annulus updraft;
-- near-floor side inflow;
-- flame height;
-- the McCaffrey stations.
+**Run.** Started 2026-10-30 10:19 with `RISE_FIRE_FLOOR_EMISSIVITY=1`, binary `e0f45bf3e`; finished 2026-10-31 11:28 (about 25.1 h).
+- 15,368 steps to 25.091 s, 235 frames, no retries, peak RSS 2.1 GB. Case `10299101…`.
+- Output: `/Volumes/SSD/RISE/fire_production_calibration/r270_floor_radiation/tier8_eps1` (28 GB, outside git).
+
+**Finalisation bug.**
+- **Cause.** The capstone's closing manifest check rebuilt the case in `ManifestBytes` without the floor option. The case IDs differed, so it returned 98 silently before writing `monitored_diagnostics.csv` and `production_capstone_summary.txt`. Frames, checkpoints and budgets were already complete.
+- **Fixed in `tests/FireSequenceTest.cpp`:**
+  - `ApplyFloorEmissivityOption` now feeds both the run and the production manifest.
+  - A manifest refusal is now printed.
+  - A new `--fire-production-manifest-rebuild 8 0.0625 RUNDIR OUT` mode rebuilds a finished run's manifest. It checks the result against both the run's sealed `window_launch.v1` and the launch case, so a rebuild without the right option is refused (checked).
+- **Checks.** Rebuilt with the floor off, r264's manifest has case `67cc1791` and differs from the original only in the producer build block. A review found no P1s; its two P2s (check against the receipt; tier 8 only) are fixed.
+- **Repairs to the r270 run directory.**
+  - The corrected manifest is installed; the bad one is kept as `sequence_manifest.rise-fire.cbor.floorless_case_invalid`.
+  - `production_capstone_summary.reconstructed.txt` is unsealed. Puffing frequency, integrated HRR and the monitored diagnostics existed only in memory and are not recovered.
+
+**Comparison with FDS r263.** Window 10.466–25.091 s. These are the r264/r266/r269 scripts pointed at r270; r264 re-reduced by the same scripts reproduces its stored results. Scripts are in [`tools/fire/r270/`](../tools/fire/r270/), results in [`data/fire_r270/`](data/fire_r270/).
+
+| Quantity | FDS r263 | r264 | r270 |
+|---|---:|---:|---:|
+| Floor-cell ΔT, r 0.2–0.3 / 0.3–0.4 / 0.5–0.7 / 0.9–1.04 m (K) | 15.1 / 9.8 / 4.6 / 1.9 | 0 / 0 / 0 / 0 | 15.3 / 10.4 / 4.8 / 1.7 |
+| Floor heat convected to gas (kW) | 0.51 | 0 | 0.59 |
+| Inflow through r = 0.5 m below 0.12 m (kg/s) | 0.052 | 0.023 | 0.046 |
+| Side inflow to 0.29 m / all sides (kg/s) | 0.107 / 1.164 | 0.071 / 0.846 | 0.077 / 0.830 |
+| Annulus r 0.2–0.5 updraft at 0.11 / 0.29 / 0.50 m (kg/s) | 0.020 / 0.045 / 0.057 | −0.003 / 0.002 / 0.011 | 0.014 / 0.024 / 0.030 |
+| Flame height H99 of nominal HRR, mean profile (m) | 0.748 | 0.916 | 0.952 |
+| θ_c at 0.50 / 0.99 / 2.00 m (K) | 801 / 249 / 73 | 988 / 352 / 108 | 1036 / 406 / 115 |
+| McCaffrey stations failing 15%, temperature / velocity (of 76) | — | 76 / 0 | 76 / 17 |
+| 2 m: w_rms/w_c, b/z | 0.314, 0.106 | 0.260, 0.085 | 0.230, 0.082 |
+
+**Verdict.**
+- **Floor layer: fixed.** The floor layer now matches FDS within about 0.6 K, and near-floor inflow at r = 0.5 m is mostly recovered.
+- **Annular updraft: half recovered.**
+- **Flame: not shortened.** It is slightly longer and hotter, H99 0.84 against 0.82 m realized. The 3 s block means do not overlap, so this is a real if small change. The missing floor reradiation is therefore not why the r264 flame is too long and hot.
+- **McCaffrey: fails more.** Every station still fails on temperature, and 17 now also fail on velocity (worst +22% at 0.81 m).
+- **Far plume above 1.5 m: unchanged** within block noise.
+
+**Correction to r267.** Its table lists FDS flame height as "0.81 (realized)". That is r264's own realized H99; FDS r263 by the same definitions gives 0.72–0.75 m.
+
+## Next (owner decisions)
+
+- **Keep the floor on?** Recommended: keep ε = 1 for the FDS comparisons from here on. It removes a boundary-condition mismatch and changes the near field the way FDS predicts.
+- **Look at the flame core next.** The remaining gap is the hot, long core, plus the far-plume turbulence deficit (r266). Both lie outside the floor model; r265's reaction structure is the starting point.
