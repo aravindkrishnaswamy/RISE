@@ -612,6 +612,38 @@ public:
                            unsigned int w, unsigned int h,
                            QByteArray& outRGBA ) const;
 
+    /// Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4/§5):
+    /// spectral differentiator widgets (D1 Blackbody & Sellmeier, D2 Measured
+    /// Metals, D3 Thin-Film Iridescence Angle-Sweep Strip).
+    bool thinFilmAngleStrip( const QString& materialName,
+                             unsigned int w, unsigned int h,
+                             QByteArray& outRGBA,
+                             double* outThicknessNm = nullptr,
+                             double* outFilmIor = nullptr ) const;
+
+    bool evaluateThinFilmAtAngle( const QString& materialName,
+                                  double angleDeg,
+                                  unsigned char outRGBA[4],
+                                  double* outThicknessNm = nullptr,
+                                  double* outFilmIor = nullptr ) const;
+
+    bool blackbodyKelvinStrip( unsigned int w, unsigned int h,
+                               double minKelvin, double maxKelvin,
+                               QByteArray& outRGBA ) const;
+
+    bool evaluateBlackbodyKelvin( double kelvin,
+                                  double* outPeakNm,
+                                  unsigned char outRGBA[4] ) const;
+
+    bool evaluateSellmeierMetrics( const QString& sellmeierParamValue,
+                                   double* outNd,
+                                   double* outAbbeVd ) const;
+
+    bool measuredMetalPresetSwatch( const QString& presetId,
+                                    unsigned char outRGBA[4] ) const;
+
+    bool applySpectralPreset( Category cat, const QString& presetId );
+
     // Named animations are surfaced as a first-class accordion Category
     // (Category::Animation) — the generic categoryEntities() /
     // activeNameForCategory() / setSelection() surface lists + activate

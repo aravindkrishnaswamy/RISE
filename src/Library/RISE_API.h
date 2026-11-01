@@ -4841,6 +4841,37 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, const char* materialName,
 		unsigned int w, unsigned int h, unsigned char* outRGBA );
 
+	//! Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4/§5):
+	//! spectral differentiator widgets (D1 Blackbody & Sellmeier, D2 Measured
+	//! Metals, D3 Thin-Film Iridescence Angle-Sweep Strip).
+	bool RISE_API_SceneEditController_ThinFilmAngleStrip(
+		SceneEditController* p, const char* materialName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA,
+		double* outThicknessNm, double* outFilmIor );
+
+	bool RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+		SceneEditController* p, const char* materialName,
+		double angleDeg, unsigned char* outRGBA4,
+		double* outThicknessNm, double* outFilmIor );
+
+	bool RISE_API_SceneEditController_BlackbodyKelvinStrip(
+		unsigned int w, unsigned int h,
+		double minKelvin, double maxKelvin,
+		unsigned char* outRGBA );
+
+	bool RISE_API_SceneEditController_EvaluateBlackbodyKelvin(
+		double kelvin, double* outPeakNm, unsigned char* outRGBA4 );
+
+	bool RISE_API_SceneEditController_EvaluateSellmeierMetrics(
+		const char* sellmeierParamValue,
+		double* outNd, double* outAbbeVd );
+
+	bool RISE_API_SceneEditController_MeasuredMetalPresetSwatch(
+		const char* presetId, unsigned char* outRGBA4 );
+
+	bool RISE_API_SceneEditController_ApplySpectralPreset(
+		SceneEditController* p, int category, const char* presetId );
+
 
 	//! Read the scene camera's stable full-resolution dimensions.
 	//! Bridges call this from their pointer-event handlers to convert

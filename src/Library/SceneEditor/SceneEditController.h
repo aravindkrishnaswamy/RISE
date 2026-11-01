@@ -3748,6 +3748,21 @@ namespace RISE
 		                         unsigned int w, unsigned int h,
 		                         std::vector<unsigned char>& outRGBA ) const;
 
+		//! Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §5 / D3):
+		//! horizontal 0..89 deg thin-film interference reflectance strip
+		//! and single-angle evaluation for a `ggx_material`.
+		bool GetThinFilmAngleStrip( const String& materialName,
+		                            unsigned int w, unsigned int h,
+		                            std::vector<unsigned char>& outRGBA,
+		                            double* outThicknessNm = nullptr,
+		                            double* outFilmIor = nullptr ) const;
+
+		bool EvaluateThinFilmAtAngle( const String& materialName,
+		                              double angleDeg,
+		                              unsigned char outRGBA[4],
+		                              double* outThicknessNm = nullptr,
+		                              double* outFilmIor = nullptr ) const;
+
 		// (Named animations are a first-class accordion Category —
 		// Category::Animation; the generic CategoryEntityCount/Name,
 		// CategoryActiveName and SetSelection surface lists + activates
@@ -4361,6 +4376,25 @@ namespace RISE
 		//! declaration order, and rebind ONLY `slotParam` to the new copy in a
 		//! single atomic whole-document commit (1 Undo step).
 		bool ForkReferenceSlotPainter( Category cat, const String& slotParam, String* outNewPainterName = nullptr );
+
+		//! Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4): apply a
+		//! spectral preset to the active entity in `cat` as a single atomic
+		//! operation-level undo batch (CstBatchUndoOp):
+		//!   - `ggx_material`: measured metal ("Au", "Ag", "Cu", "Al", "Cr", "Ti")
+		//!     inserts `<mat>_<metal>_n` and `<mat>_<metal>_k` `scalar_painter`
+		//!     chunks (file-backed when found via GlobalMediaPathLocator, or
+		//!     4-term polynomial fallback) before the material chunk, binds `ior`
+		//!     and `extinction`, and ensures `fresnel_mode` is `conductor` (unless
+		//!     already `thinfilm`).
+		//!   - `dielectric_material` / `agx_dielectric`: Sellmeier glass ("N-BK7",
+		//!     "SF11", "Diamond", "FusedSilica") inserts `<mat>_<glass>_ior`
+		//!     `scalar_painter` with `sellmeier` coefficients before the material
+		//!     chunk and binds `ior`.
+		//!   - `scalar_painter`: Sellmeier glass preset sets `sellmeier` on the
+		//!     selected `scalar_painter` chunk (removing any competing `value`).
+		//!   - `blackbody_painter`: Kelvin preset ("1800", "2700", "5500", "6500",
+		//!     "9500" or with trailing "K") sets `temperature`.
+		bool ApplySpectralPreset( Category cat, const String& presetId );
 
 		//! Clone the currently-active camera under a new name and
 		//! promote the clone to active. `proposedName` is canonicalized to a

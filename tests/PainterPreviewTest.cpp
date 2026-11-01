@@ -963,6 +963,129 @@ static void TestMaterialPreviewShaderball()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 10 (Slice 6): Spectral Differentiators (D1 Blackbody & Sellmeier,
+// D2 Measured Metal (n,k) presets, D3 Thin-Film Iridescence Angle-Sweep
+// Strip, and atomic ApplySpectralPreset + Undo/Redo).
+//////////////////////////////////////////////////////////////////////
+static void TestSpectralDifferentiatorsSlice6()
+{
+	std::cout << "Test 10: Spectral Differentiators (D1 Blackbody/Sellmeier, D2 Measured Metals, D3 Thin-Film Angle Strip & Preset Undo/Redo)..." << std::endl;
+	const char* tmp = "spectral_diff_slice6.RISEscene";
+	Job* j = LoadScene( kHeadlessScene, tmp );
+	Check( j != nullptr, "headless fixture scene loads for Slice 6" );
+	if( !j ) return;
+
+	SceneEditController controller( *j, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	// (a) D3 Thin-Film Angle-Sweep Strip & single-angle evaluation
+	std::vector<unsigned char> tfStrip380, tfStrip520, tfRefused;
+	double d380 = 0.0, n380 = 0.0;
+	Check( RISE_API_SceneEditController_ThinFilmAngleStrip(
+		&controller, "mat_thinfilm_380", 64, 8,
+		( tfStrip380.resize( 64 * 8 * 4 ), tfStrip380.data() ), &d380, &n380 ),
+		"D3 ThinFilmAngleStrip succeeds for mat_thinfilm_380" );
+	Check( std::fabs( d380 - 380.0 ) < 1e-4 && std::fabs( n380 - 1.38 ) < 1e-4,
+	       "D3 ThinFilmAngleStrip reports live thickness=380nm and film_ior=1.38" );
+
+	double d520 = 0.0, n520 = 0.0;
+	Check( RISE_API_SceneEditController_ThinFilmAngleStrip(
+		&controller, "mat_thinfilm_520", 64, 8,
+		( tfStrip520.resize( 64 * 8 * 4 ), tfStrip520.data() ), &d520, &n520 ),
+		"D3 ThinFilmAngleStrip succeeds for mat_thinfilm_520" );
+	Check( tfStrip380 != tfStrip520,
+	       "D3 ThinFilmAngleStrip differentiates 380nm vs 520nm film thickness" );
+
+	tfRefused.resize( 16 * 4 * 4 );
+	Check( !RISE_API_SceneEditController_ThinFilmAngleStrip(
+		&controller, "mat_lambert", 16, 4, tfRefused.data(), nullptr, nullptr ),
+		"D3 ThinFilmAngleStrip refuses a non-GGX material" );
+
+	unsigned char c0[4] = {0}, c75[4] = {0};
+	Check( RISE_API_SceneEditController_EvaluateThinFilmAtAngle( &controller, "mat_thinfilm_380", 0.0, c0, nullptr, nullptr ) &&
+	       RISE_API_SceneEditController_EvaluateThinFilmAtAngle( &controller, "mat_thinfilm_380", 75.0, c75, nullptr, nullptr ),
+	       "D3 EvaluateThinFilmAtAngle succeeds at 0 deg and 75 deg" );
+	Check( c0[0] != c75[0] || c0[1] != c75[1] || c0[2] != c75[2],
+	       "D3 EvaluateThinFilmAtAngle shifts interference colour between normal (0 deg) and grazing (75 deg) incidence" );
+
+	// (b) D1 Blackbody Kelvin strip & Wien peak wavelength
+	std::vector<unsigned char> bbStrip( 64 * 4 * 4, 0 );
+	Check( RISE_API_SceneEditController_BlackbodyKelvinStrip( 64, 4, 1000.0, 12000.0, bbStrip.data() ),
+	       "D1 BlackbodyKelvinStrip succeeds for 1000..12000 K" );
+	double peak1800 = 0.0, peak5500 = 0.0, peak10000 = 0.0;
+	unsigned char bb1800[4] = {0}, bb10000[4] = {0};
+	Check( RISE_API_SceneEditController_EvaluateBlackbodyKelvin( 1800.0, &peak1800, bb1800 ) &&
+	       RISE_API_SceneEditController_EvaluateBlackbodyKelvin( 5500.0, &peak5500, nullptr ) &&
+	       RISE_API_SceneEditController_EvaluateBlackbodyKelvin( 10000.0, &peak10000, bb10000 ),
+	       "D1 EvaluateBlackbodyKelvin succeeds across 1800K, 5500K, 10000K" );
+	Check( std::fabs( peak5500 - 526.8676 ) < 0.1,
+	       "D1 Wien peak wavelength at 5500K is ~526.9 nm" );
+	Check( bb1800[0] > bb1800[2] && bb10000[2] > bb10000[0],
+	       "D1 Blackbody 1800K is warm (R > B) and 10000K is cool (B > R)" );
+
+	// (c) D1 Sellmeier optical glass presets & n_d / Abbe V_d metrics
+	std::string coeffsNBK7, coeffsSF11;
+	Check( MaterialPreview::LookupSellmeierGlassPreset( String( "N-BK7" ), coeffsNBK7 ) &&
+	       MaterialPreview::LookupSellmeierGlassPreset( String( "SF11" ), coeffsSF11 ),
+	       "D1 LookupSellmeierGlassPreset resolves N-BK7 and SF11" );
+	double ndBK7 = 0.0, vdBK7 = 0.0, ndSF11 = 0.0, vdSF11 = 0.0;
+	Check( RISE_API_SceneEditController_EvaluateSellmeierMetrics( coeffsNBK7.c_str(), &ndBK7, &vdBK7 ) &&
+	       RISE_API_SceneEditController_EvaluateSellmeierMetrics( coeffsSF11.c_str(), &ndSF11, &vdSF11 ),
+	       "D1 EvaluateSellmeierMetrics succeeds for N-BK7 and SF11" );
+	Check( std::fabs( ndBK7 - 1.5168 ) < 0.002 && std::fabs( vdBK7 - 64.17 ) < 0.5,
+	       "D1 N-BK7 Fraunhofer metrics match reference (n_d ~ 1.5168, V_d ~ 64.17)" );
+	Check( std::fabs( ndSF11 - 1.7847 ) < 0.002 && std::fabs( vdSF11 - 25.76 ) < 0.5,
+	       "D1 SF11 Fraunhofer metrics match high-dispersion flint reference (n_d ~ 1.7847, V_d ~ 25.76)" );
+
+	// (d) D2 Measured metal presets & swatches
+	unsigned char swAu[4] = {0}, swAg[4] = {0}, swCu[4] = {0}, swAl[4] = {0}, swCr[4] = {0}, swTi[4] = {0};
+	Check( RISE_API_SceneEditController_MeasuredMetalPresetSwatch( "Au", swAu ) &&
+	       RISE_API_SceneEditController_MeasuredMetalPresetSwatch( "Ag", swAg ) &&
+	       RISE_API_SceneEditController_MeasuredMetalPresetSwatch( "Cu", swCu ) &&
+	       RISE_API_SceneEditController_MeasuredMetalPresetSwatch( "Al", swAl ) &&
+	       RISE_API_SceneEditController_MeasuredMetalPresetSwatch( "Cr", swCr ) &&
+	       RISE_API_SceneEditController_MeasuredMetalPresetSwatch( "Ti", swTi ),
+	       "D2 MeasuredMetalPresetSwatch resolves all 6 curated metals (Au, Ag, Cu, Al, Cr, Ti)" );
+	Check( swAu[0] > swAu[2] && swCu[0] > swCu[1] && swAg[2] > swAu[2],
+	       "D2 physics-integrated conductor Fresnel swatches reflect Gold/Copper warmth and Silver neutrality" );
+
+	// (e) ApplySpectralPreset + Undo/Redo atomic operation-level batching
+	controller.SetSelection( SceneEditController::Category::Material, String( "mat_thinfilm_380" ) );
+	Check( RISE_API_SceneEditController_ApplySpectralPreset(
+		&controller, static_cast<int>( SceneEditController::Category::Material ), "Cu" ),
+		"D2 ApplySpectralPreset('Cu') succeeds on ggx_material" );
+
+	Check( j->GetScalarPainters()->GetItem( "mat_thinfilm_380_cu_n" ) != nullptr &&
+	       j->GetScalarPainters()->GetItem( "mat_thinfilm_380_cu_k" ) != nullptr,
+	       "ApplySpectralPreset('Cu') splices and derives <mat>_cu_n and <mat>_cu_k scalar_painters" );
+
+	Check( controller.Undo(), "Undo of ApplySpectralPreset('Cu') succeeds" );
+	Check( j->GetScalarPainters()->GetItem( "mat_thinfilm_380_cu_n" ) == nullptr &&
+	       j->GetScalarPainters()->GetItem( "mat_thinfilm_380_cu_k" ) == nullptr,
+	       "Undo removes both inserted scalar_painter chunks and restores original ggx_material slots" );
+
+	Check( controller.Redo(), "Redo of ApplySpectralPreset('Cu') succeeds" );
+	Check( j->GetScalarPainters()->GetItem( "mat_thinfilm_380_cu_n" ) != nullptr &&
+	       j->GetScalarPainters()->GetItem( "mat_thinfilm_380_cu_k" ) != nullptr,
+	       "Redo re-inserts both scalar_painter chunks before the material and re-binds ior/extinction" );
+
+	// Also test Dielectric Sellmeier glass preset + Undo
+	controller.SetSelection( SceneEditController::Category::Material, String( "mat_glass" ) );
+	Check( RISE_API_SceneEditController_ApplySpectralPreset(
+		&controller, static_cast<int>( SceneEditController::Category::Material ), "SF11" ),
+		"D1 ApplySpectralPreset('SF11') succeeds on dielectric_material" );
+	Check( j->GetScalarPainters()->GetItem( "mat_glass_sf11_ior" ) != nullptr,
+	       "ApplySpectralPreset('SF11') splices and derives mat_glass_sf11_ior scalar_painter before mat_glass" );
+	Check( controller.Undo(), "Undo of ApplySpectralPreset('SF11') succeeds" );
+	Check( j->GetScalarPainters()->GetItem( "mat_glass_sf11_ior" ) == nullptr,
+	       "Undo removes mat_glass_sf11_ior and restores mat_glass.ior" );
+
+	controller.Stop();
+	j->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== PainterPreviewTest (doc 88 S10) ===" << std::endl;
@@ -980,6 +1103,7 @@ int main()
 	TestConcurrencyRefusal();
 	TestCAbiSmoke();
 	TestMaterialPreviewShaderball();
+	TestSpectralDifferentiatorsSlice6();
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

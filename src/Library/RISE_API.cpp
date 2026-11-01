@@ -10705,6 +10705,7 @@ namespace RISE
 
 #include "RISE_API.h"
 #include "SceneEditor/SceneEditController.h"
+#include "SceneEditor/MaterialPreview.h"
 #include "Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: ViewportRenderModeInfo registry
 #include "Utilities/Transformable.h"
 
@@ -11898,6 +11899,71 @@ namespace RISE
 		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
 		std::memcpy( outRGBA, rgba.data(), rgba.size() );
 		return true;
+	}
+
+	bool RISE_API_SceneEditController_ThinFilmAngleStrip(
+		SceneEditController* p, const char* materialName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA,
+		double* outThicknessNm, double* outFilmIor )
+	{
+		if( !p || !materialName || !outRGBA ) return false;
+		std::vector<unsigned char> rgba;
+		if( !p->GetThinFilmAngleStrip( String( materialName ), w, h, rgba, outThicknessNm, outFilmIor ) )
+			return false;
+		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, rgba.data(), rgba.size() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+		SceneEditController* p, const char* materialName,
+		double angleDeg, unsigned char* outRGBA4,
+		double* outThicknessNm, double* outFilmIor )
+	{
+		if( !p || !materialName || !outRGBA4 ) return false;
+		return p->EvaluateThinFilmAtAngle( String( materialName ), angleDeg, outRGBA4, outThicknessNm, outFilmIor );
+	}
+
+	bool RISE_API_SceneEditController_BlackbodyKelvinStrip(
+		unsigned int w, unsigned int h,
+		double minKelvin, double maxKelvin,
+		unsigned char* outRGBA )
+	{
+		if( !outRGBA ) return false;
+		const MaterialPreview::Result r = MaterialPreview::RenderBlackbodyKelvinStrip( w, h, minKelvin, maxKelvin );
+		if( r.status != MaterialPreview::Status::Ok ) return false;
+		if( r.rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, r.rgba.data(), r.rgba.size() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_EvaluateBlackbodyKelvin(
+		double kelvin, double* outPeakNm, unsigned char* outRGBA4 )
+	{
+		return MaterialPreview::EvaluateBlackbodyKelvin( kelvin, outPeakNm, outRGBA4 );
+	}
+
+	bool RISE_API_SceneEditController_EvaluateSellmeierMetrics(
+		const char* sellmeierParamValue,
+		double* outNd, double* outAbbeVd )
+	{
+		if( !sellmeierParamValue ) return false;
+		return MaterialPreview::EvaluateSellmeierMetrics( String( sellmeierParamValue ), outNd, outAbbeVd );
+	}
+
+	bool RISE_API_SceneEditController_MeasuredMetalPresetSwatch(
+		const char* presetId, unsigned char* outRGBA4 )
+	{
+		if( !presetId || !outRGBA4 ) return false;
+		std::string fileN, fileK, polyN, polyK;
+		return MaterialPreview::LookupMeasuredMetalPreset( String( presetId ), fileN, fileK, polyN, polyK, outRGBA4 );
+	}
+
+	bool RISE_API_SceneEditController_ApplySpectralPreset(
+		SceneEditController* p, int category, const char* presetId )
+	{
+		if( !p || !presetId || !presetId[0] ) return false;
+		return p->ApplySpectralPreset( static_cast<SceneEditController::Category>( category ), String( presetId ) );
 	}
 
 

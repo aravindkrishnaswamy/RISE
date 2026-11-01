@@ -89,12 +89,14 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/MediaPathLocator.h"
 #include <algorithm>      // Model-B F2 slice S2a: std::min for WaitForRenderJob's bounded wait_until slices
 #include <chrono>
 #include <cstdio>
 #include <cstring>        // 87 step 4a: strcmp in TreesEquivalent -- an allocation-free name compare under two locks
 #include <ctime>          // for time() used by CloneActiveCamera dedup fallback
 #include <exception>      // Model-B F2 slice S2a: std::exception_ptr / current_exception / rethrow_exception
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -7118,6 +7120,45 @@ bool SceneEditController::GetMaterialPreview( const String& materialName,
 
 	outRGBA = r.rgba;
 	return true;
+}
+
+bool SceneEditController::GetThinFilmAngleStrip( const String& materialName,
+                                                 unsigned int w, unsigned int h,
+                                                 std::vector<unsigned char>& outRGBA,
+                                                 double* outThicknessNm,
+                                                 double* outFilmIor ) const
+{
+	outRGBA.clear();
+	if( outThicknessNm ) *outThicknessNm = 0.0;
+	if( outFilmIor )     *outFilmIor     = 1.0;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+
+	const MaterialPreview::Result r = MaterialPreview::RenderThinFilmAngleStrip(
+		mJob, materialName, w, h, outThicknessNm, outFilmIor );
+	if( r.status != MaterialPreview::Status::Ok ) return false;
+
+	outRGBA = r.rgba;
+	return true;
+}
+
+bool SceneEditController::EvaluateThinFilmAtAngle( const String& materialName,
+                                                   double angleDeg,
+                                                   unsigned char outRGBA[4],
+                                                   double* outThicknessNm,
+                                                   double* outFilmIor ) const
+{
+	if( outRGBA ) { outRGBA[0] = 0; outRGBA[1] = 0; outRGBA[2] = 0; outRGBA[3] = 255; }
+	if( outThicknessNm ) *outThicknessNm = 0.0;
+	if( outFilmIor )     *outFilmIor     = 1.0;
+	if( !outRGBA ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+
+	return MaterialPreview::EvaluateThinFilmAtAngle(
+		mJob, materialName, angleDeg, outRGBA, outThicknessNm, outFilmIor );
 }
 
 
@@ -18879,6 +18920,504 @@ bool SceneEditController::ForkReferenceSlotPainter(
 	if( applied && outNewPainterName )
 	{
 		*outNewPainterName = landedName;
+	}
+	mEditor.DrainDirtyNotification();
+	return applied;
+}
+
+bool SceneEditController::ApplySpectralPreset( Category cat, const String& presetId )
+{
+	const int catIdx = static_cast<int>( cat );
+	if( catIdx <= 0 || catIdx >= kNumCategories ) return false;
+	if( presetId.size() <= 1 ) return false;
+
+	String delegatedBlackbodyKelvin;
+	bool   applied = false;
+	{
+		auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return false;
+		if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+			return false;
+
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mTxnOpen.load( std::memory_order_acquire )
+		 || mEditor.IsCompositeOpen() )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: apply spectral preset refused while an editor transaction/gesture is open." );
+			return false;
+		}
+		CancelAndParkRender_( lk );
+
+		String ownerName = mSelectionByCategory[catIdx];
+		if( ownerName.size() <= 1 && mSelectionCategory == cat )
+			ownerName = mSelectionName;
+		if( ownerName.size() <= 1 ) return false;
+
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( !doc ) return false;
+
+		const RISE::Cst::NodeId ownerId = ResolveSourceChunkId(
+			*doc, cat, std::string( ownerName.c_str() ), std::string(),
+			mJob.GetActiveCameraName(), mJob.GetObjects() );
+		if( ownerId == 0 ) return false;
+		const RISE::Cst::NodeRef ownerChunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
+		if( !ownerChunk ) return false;
+
+		const std::string ownerKeyword = ownerChunk->role;
+		const std::string ownerNamePath = RISE::Cst::ChunkNamePath( ownerChunk );
+		const std::string ownerCstName = ( ownerNamePath.size() > ownerKeyword.size() )
+			? ownerNamePath.substr( ownerKeyword.size() + 1 )
+			: std::string();
+		if( ownerCstName.empty() ) return false;
+		const RISE::Cst::NodeId resolvedOwnerTarget = RISE::Cst::DocFindByNameAnyRole(
+			*doc, ownerCstName.c_str(), nullptr, ownerKeyword, /*uniqueFallback=*/false );
+		if( resolvedOwnerTarget != ownerId ) return false;
+
+		// Case 1: `blackbody_painter` Kelvin quick-pick preset
+		if( ownerKeyword == "blackbody_painter" )
+		{
+			std::string s( presetId.c_str() );
+			while( !s.empty() && ( s.back() == ' ' || s.back() == 'K' || s.back() == 'k' ) )
+				s.pop_back();
+			char* endp = nullptr;
+			const double kVal = std::strtod( s.c_str(), &endp );
+			if( endp == s.c_str() || !std::isfinite( kVal ) || kVal <= 0.0 )
+				return false;
+			char buf[64];
+			std::snprintf( buf, sizeof( buf ), "%.6g", kVal );
+			delegatedBlackbodyKelvin = String( buf );
+		}
+		// Case 2: `scalar_painter` Sellmeier optical glass preset
+		else if( ownerKeyword == "scalar_painter" )
+		{
+			std::string sellmeierCoeffs;
+			if( !MaterialPreview::LookupSellmeierGlassPreset( presetId, sellmeierCoeffs ) )
+				return false;
+
+			CstBatchUndoOp slotOp;
+			slotOp.isInsert       = false;
+			slotOp.entityName     = ownerCstName;
+			slotOp.entityKind     = ownerKeyword;
+			slotOp.editRole       = "sellmeier";
+			slotOp.postEntityName = ownerCstName;
+			slotOp.occAddressed   = false;
+			slotOp.wholeTransform = false;
+			slotOp.ownerKeyword   = ownerKeyword;
+			slotOp.ownerNamePath  = ownerNamePath;
+			slotOp.ownerPreText   = RISE::Cst::SerializeNode( ownerChunk );
+			if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap )
+				slotOp.ownerPreText.clear();
+
+			RISE::Cst::Document d = *doc;
+			const char* const competingRoles[] = { "value", "file", "polynomial", "texture", "painter" };
+			for( size_t ri = 0; ri < sizeof( competingRoles ) / sizeof( competingRoles[0] ); ++ri )
+			{
+				const std::string role( competingRoles[ri] );
+				if( RISE::Cst::ParamOccurrenceCount( ownerChunk, role ) > 0 )
+				{
+					CstBatchUndoOp::Slot sl;
+					sl.role        = role;
+					sl.occ         = 0;
+					sl.priorAbsent = false;
+					sl.priorValue  = RISE::Cst::ParamValueAtOccurrence( ownerChunk, role, 0 );
+					sl.postAbsent  = true;
+					sl.postValue   = std::string();
+					slotOp.slots.push_back( sl );
+					d = RISE::Cst::DocRemoveParamOcc( d, ownerId, role, 0 );
+				}
+			}
+			{
+				CstBatchUndoOp::Slot sl;
+				sl.role        = "sellmeier";
+				sl.occ         = 0;
+				sl.priorAbsent = ( RISE::Cst::ParamOccurrenceCount( ownerChunk, "sellmeier" ) == 0 );
+				sl.priorValue  = sl.priorAbsent
+					? std::string()
+					: RISE::Cst::ParamValueAtOccurrence( ownerChunk, "sellmeier", 0 );
+				d = RISE::Cst::DocSetOrAddParamValue( d, ownerId, "sellmeier", 0, sellmeierCoeffs );
+				const RISE::Cst::NodeRef ownerAfter = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerAfter ) return false;
+				sl.postAbsent = false;
+				sl.postValue  = RISE::Cst::ParamValueAtOccurrence( ownerAfter, "sellmeier", 0 );
+				slotOp.slots.push_back( sl );
+
+				slotOp.ownerPostText = RISE::Cst::SerializeNode( ownerAfter );
+				if( slotOp.ownerPreText.empty() || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap )
+				{
+					slotOp.ownerPreText.clear();
+					slotOp.ownerPostText.clear();
+				}
+			}
+
+			char diagBuf[512]; diagBuf[0] = '\0';
+			const int code = mJob.ApplyCstReplaceDocument(
+				d, /*restoreActiveRasterizer=*/true,
+				diagBuf, sizeof( diagBuf ),
+				"apply_spectral_preset_scalar" );
+			if( code == 2 || code == 3 )
+				RebindEditorToJob();
+			if( code != 2 )
+			{
+				if( code == 3 )
+				{
+					mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+					mEditPending.store( true, std::memory_order_release );
+					lk.unlock();
+					mCV.notify_one();
+				}
+				return false;
+			}
+
+			mEditor.MarkCstHeadDirty( ownerCstName.c_str(), ownerKeyword.c_str() );
+			std::vector<CstBatchUndoOp> ops;
+			ops.push_back( std::move( slotOp ) );
+			const std::string label = ownerCstName + ".sellmeier (" + std::string( presetId.c_str() ) + ")";
+			mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, /*landedRasterizerInsert=*/false );
+
+			mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			mEditPending.store( true, std::memory_order_release );
+			applied = true;
+			lk.unlock();
+			mCV.notify_one();
+		}
+		// Case 3 & 4: material presets (`dielectric_material`/`agx_dielectric` Sellmeier glass, or `ggx_material` measured metal)
+		else if( ownerKeyword == "dielectric_material"
+		      || ownerKeyword == "agx_dielectric"
+		      || ownerKeyword == "ggx_material" )
+		{
+			std::vector<std::string> inCat;
+			const unsigned int nc = CategoryEntityCountLocked_( Category::Painter );
+			inCat.reserve( nc );
+			for( unsigned int i = 0; i < nc; ++i )
+				inCat.emplace_back( CategoryEntityNameLocked_( Category::Painter, i ).c_str() );
+
+			auto pickUniqueScalarPainterName = [&]( const RISE::Cst::Document& curDoc,
+			                                        const std::string& rawBase,
+			                                        const std::string& extraForbidden ) -> std::string {
+				std::string base( CanonicalCameraName( String( rawBase.c_str() ), "scalar_painter" ).c_str() );
+				if( base.empty() ) base = "scalar_painter";
+				const size_t kMaxPayloadBytes = 255;
+				base = base.substr( 0, kMaxPayloadBytes );
+				auto isFree = [&]( const std::string& cand ) {
+					if( !extraForbidden.empty() && cand == extraForbidden ) return false;
+					if( std::find( inCat.begin(), inCat.end(), cand ) != inCat.end() ) return false;
+					if( AnyNameTakenDocWide( curDoc, std::vector<std::string>{ cand } ) ) return false;
+					return true;
+				};
+				if( isFree( base ) ) return base;
+				for( int i = 2; i < 1000; ++i )
+				{
+					const std::string suffix = "_" + std::to_string( i );
+					const std::string cand = base.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+					if( isFree( cand ) ) return cand;
+				}
+				return std::string();
+			};
+
+			auto spliceChunkBeforeOwner = []( RISE::Cst::Document& curDoc,
+			                                  RISE::Cst::NodeId targetOwnerId,
+			                                  const std::string& chunkText,
+			                                  CstBatchUndoOp& outInsertOp ) -> bool {
+				const int where = RISE::Cst::DocIndexOfNodeId( curDoc, targetOwnerId, nullptr );
+				if( where < 0 ) return false;
+				const RISE::Cst::Document parsed = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeRef chunk;
+				for( int i = 0; i < RISE::Cst::DocItemCount( parsed ); ++i )
+				{
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( parsed, RISE::Cst::DocNodeIdAt( parsed, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunk = it; break; }
+				}
+				if( !chunk ) return false;
+
+				outInsertOp = CstBatchUndoOp();
+				outInsertOp.isInsert      = true;
+				outInsertOp.chunkText     = RISE::Cst::SerializeNode( chunk );
+				outInsertOp.keyword       = chunk->role;
+				outInsertOp.namePath      = RISE::Cst::ChunkNamePath( chunk );
+				outInsertOp.chunkIndex    = where + 1;
+				outInsertOp.appendedAtEnd = ( where >= RISE::Cst::DocItemCount( curDoc ) );
+				int anchorAt = -1;
+				for( int k = where - 1; k >= 0; --k )
+				{
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( curDoc, RISE::Cst::DocNodeIdAt( curDoc, k ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					outInsertOp.hasAnchor      = true;
+					outInsertOp.anchorKeyword  = it->role;
+					outInsertOp.anchorNamePath = RISE::Cst::ChunkNamePath( it );
+					anchorAt = k;
+					break;
+				}
+				for( int k = 0; k < anchorAt; ++k )
+				{
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( curDoc, RISE::Cst::DocNodeIdAt( curDoc, k ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == outInsertOp.anchorKeyword &&
+					    RISE::Cst::ChunkNamePath( it ) == outInsertOp.anchorNamePath )
+					{
+						++outInsertOp.anchorOrdinal;
+					}
+				}
+
+				const RISE::Cst::Document leadDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				const RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+				const RISE::Cst::Document sepDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				const RISE::Cst::NodeRef  sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+				if( !leadItem || !sepItem ) return false;
+				curDoc = RISE::Cst::DocInsertItem( curDoc, where,     leadItem );
+				curDoc = RISE::Cst::DocInsertItem( curDoc, where + 1, chunk );
+				curDoc = RISE::Cst::DocInsertItem( curDoc, where + 2, sepItem );
+				return true;
+			};
+
+			if( ownerKeyword == "dielectric_material" || ownerKeyword == "agx_dielectric" )
+			{
+				std::string sellmeierCoeffs;
+				if( !MaterialPreview::LookupSellmeierGlassPreset( presetId, sellmeierCoeffs ) )
+					return false;
+
+				std::string slug;
+				for( const char* p = presetId.c_str(); *p; ++p )
+				{
+					const char c = *p;
+					if( c >= 'A' && c <= 'Z' ) slug.push_back( static_cast<char>( c - 'A' + 'a' ) );
+					else if( ( c >= 'a' && c <= 'z' ) || ( c >= '0' && c <= '9' ) ) slug.push_back( c );
+				}
+				if( slug.empty() ) slug = "glass";
+
+				const std::string chosenIor = pickUniqueScalarPainterName(
+					*doc, ownerCstName + "_" + slug + "_ior", std::string() );
+				if( chosenIor.empty() ) return false;
+
+				const std::string chunkText =
+					"scalar_painter\n{\n\tname\t\t" + chosenIor + "\n\tsellmeier\t" + sellmeierCoeffs + "\n}";
+
+				RISE::Cst::Document d = *doc;
+				CstBatchUndoOp insertOp;
+				if( !spliceChunkBeforeOwner( d, ownerId, chunkText, insertOp ) )
+					return false;
+
+				const RISE::Cst::NodeRef ownerBefore = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerBefore ) return false;
+
+				CstBatchUndoOp slotOp;
+				slotOp.isInsert       = false;
+				slotOp.entityName     = ownerCstName;
+				slotOp.entityKind     = ownerKeyword;
+				slotOp.editRole       = "ior";
+				slotOp.postEntityName = ownerCstName;
+				slotOp.occAddressed   = false;
+				slotOp.wholeTransform = false;
+				slotOp.ownerKeyword   = ownerKeyword;
+				slotOp.ownerNamePath  = ownerNamePath;
+				slotOp.ownerPreText   = RISE::Cst::SerializeNode( ownerBefore );
+				if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap )
+					slotOp.ownerPreText.clear();
+
+				CstBatchUndoOp::Slot sl;
+				sl.role        = "ior";
+				sl.occ         = 0;
+				sl.priorAbsent = ( RISE::Cst::ParamOccurrenceCount( ownerBefore, "ior" ) == 0 );
+				sl.priorValue  = sl.priorAbsent
+					? std::string()
+					: RISE::Cst::ParamValueAtOccurrence( ownerBefore, "ior", 0 );
+
+				d = RISE::Cst::DocSetOrAddParamValue( d, ownerId, "ior", 0, chosenIor );
+				const RISE::Cst::NodeRef ownerAfter = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerAfter ) return false;
+
+				sl.postAbsent = false;
+				sl.postValue  = RISE::Cst::ParamValueAtOccurrence( ownerAfter, "ior", 0 );
+				slotOp.slots.push_back( sl );
+
+				slotOp.ownerPostText = RISE::Cst::SerializeNode( ownerAfter );
+				if( slotOp.ownerPreText.empty() || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap )
+				{
+					slotOp.ownerPreText.clear();
+					slotOp.ownerPostText.clear();
+				}
+
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob.ApplyCstReplaceDocument(
+					d, /*restoreActiveRasterizer=*/true,
+					diagBuf, sizeof( diagBuf ),
+					"apply_spectral_preset_dielectric" );
+				if( code == 2 || code == 3 )
+					RebindEditorToJob();
+				if( code != 2 )
+				{
+					if( code == 3 )
+					{
+						mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+						mEditPending.store( true, std::memory_order_release );
+						lk.unlock();
+						mCV.notify_one();
+					}
+					return false;
+				}
+
+				mEditor.MarkCstHeadDirty( chosenIor.c_str(), "scalar_painter" );
+				mEditor.MarkCstHeadDirty( ownerCstName.c_str(), ownerKeyword.c_str() );
+				mEditor.BumpSceneLightGenerationForAgentParamEdit( ownerCstName.c_str(), ownerKeyword.c_str() );
+
+				std::vector<CstBatchUndoOp> ops;
+				ops.reserve( 2 );
+				ops.push_back( std::move( insertOp ) );
+				ops.push_back( std::move( slotOp ) );
+				const std::string label = chosenIor + ", " + ownerCstName + ".ior";
+				mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, /*landedRasterizerInsert=*/false );
+
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+				mEditPending.store( true, std::memory_order_release );
+				applied = true;
+				lk.unlock();
+				mCV.notify_one();
+			}
+			else if( ownerKeyword == "ggx_material" )
+			{
+				std::string fileN, fileK, polyN, polyK;
+				unsigned char swatch[4] = { 0, 0, 0, 255 };
+				if( !MaterialPreview::LookupMeasuredMetalPreset( presetId, fileN, fileK, polyN, polyK, swatch ) )
+					return false;
+
+				auto fileReadable = []( const std::string& relPath ) -> bool {
+					if( relPath.empty() ) return false;
+					const String resolved = GlobalMediaPathLocator().Find( relPath.c_str() );
+					std::ifstream f( resolved.c_str() );
+					return f.good();
+				};
+				const bool useFiles = fileReadable( fileN ) && fileReadable( fileK );
+
+				std::string slug;
+				for( const char* p = presetId.c_str(); *p; ++p )
+				{
+					const char c = *p;
+					if( c >= 'A' && c <= 'Z' ) slug.push_back( static_cast<char>( c - 'A' + 'a' ) );
+					else if( ( c >= 'a' && c <= 'z' ) || ( c >= '0' && c <= '9' ) ) slug.push_back( c );
+				}
+				if( slug.empty() ) slug = "metal";
+
+				const std::string chosenN = pickUniqueScalarPainterName(
+					*doc, ownerCstName + "_" + slug + "_n", std::string() );
+				if( chosenN.empty() ) return false;
+				const std::string chosenK = pickUniqueScalarPainterName(
+					*doc, ownerCstName + "_" + slug + "_k", chosenN );
+				if( chosenK.empty() ) return false;
+
+				const std::string chunkTextN = useFiles
+					? ( "scalar_painter\n{\n\tname\t\t" + chosenN + "\n\tfile\t\t" + fileN + "\n}" )
+					: ( "scalar_painter\n{\n\tname\t\t" + chosenN + "\n\tpolynomial\t" + polyN + "\n}" );
+				const std::string chunkTextK = useFiles
+					? ( "scalar_painter\n{\n\tname\t\t" + chosenK + "\n\tfile\t\t" + fileK + "\n}" )
+					: ( "scalar_painter\n{\n\tname\t\t" + chosenK + "\n\tpolynomial\t" + polyK + "\n}" );
+
+				RISE::Cst::Document d = *doc;
+				CstBatchUndoOp insertOpN, insertOpK;
+				if( !spliceChunkBeforeOwner( d, ownerId, chunkTextN, insertOpN ) )
+					return false;
+				if( !spliceChunkBeforeOwner( d, ownerId, chunkTextK, insertOpK ) )
+					return false;
+
+				const RISE::Cst::NodeRef ownerBefore = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerBefore ) return false;
+
+				CstBatchUndoOp slotOp;
+				slotOp.isInsert       = false;
+				slotOp.entityName     = ownerCstName;
+				slotOp.entityKind     = ownerKeyword;
+				slotOp.editRole       = "ior";
+				slotOp.postEntityName = ownerCstName;
+				slotOp.occAddressed   = false;
+				slotOp.wholeTransform = false;
+				slotOp.ownerKeyword   = ownerKeyword;
+				slotOp.ownerNamePath  = ownerNamePath;
+				slotOp.ownerPreText   = RISE::Cst::SerializeNode( ownerBefore );
+				if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap )
+					slotOp.ownerPreText.clear();
+
+				auto applySlot = [&]( const std::string& role, const std::string& newVal ) -> bool {
+					const RISE::Cst::NodeRef cur = RISE::Cst::DocResolveNodeId( d, ownerId );
+					if( !cur ) return false;
+					CstBatchUndoOp::Slot sl;
+					sl.role        = role;
+					sl.occ         = 0;
+					sl.priorAbsent = ( RISE::Cst::ParamOccurrenceCount( cur, role ) == 0 );
+					sl.priorValue  = sl.priorAbsent
+						? std::string()
+						: RISE::Cst::ParamValueAtOccurrence( cur, role, 0 );
+					d = RISE::Cst::DocSetOrAddParamValue( d, ownerId, role, 0, newVal );
+					const RISE::Cst::NodeRef aft = RISE::Cst::DocResolveNodeId( d, ownerId );
+					if( !aft ) return false;
+					sl.postAbsent = false;
+					sl.postValue  = RISE::Cst::ParamValueAtOccurrence( aft, role, 0 );
+					slotOp.slots.push_back( sl );
+					return true;
+				};
+
+				if( !applySlot( "ior", chosenN ) ) return false;
+				if( !applySlot( "extinction", chosenK ) ) return false;
+
+				bool fmPresent = false;
+				const std::string curFm = RISE::Cst::ParamValueAsParsed( ownerBefore, "fresnel_mode", &fmPresent );
+				if( fmPresent && curFm == "schlick_f0" )
+				{
+					if( !applySlot( "fresnel_mode", "conductor" ) ) return false;
+				}
+
+				const RISE::Cst::NodeRef ownerAfter = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerAfter ) return false;
+				slotOp.ownerPostText = RISE::Cst::SerializeNode( ownerAfter );
+				if( slotOp.ownerPreText.empty() || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap )
+				{
+					slotOp.ownerPreText.clear();
+					slotOp.ownerPostText.clear();
+				}
+
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob.ApplyCstReplaceDocument(
+					d, /*restoreActiveRasterizer=*/true,
+					diagBuf, sizeof( diagBuf ),
+					"apply_spectral_preset_metal" );
+				if( code == 2 || code == 3 )
+					RebindEditorToJob();
+				if( code != 2 )
+				{
+					if( code == 3 )
+					{
+						mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+						mEditPending.store( true, std::memory_order_release );
+						lk.unlock();
+						mCV.notify_one();
+					}
+					return false;
+				}
+
+				mEditor.MarkCstHeadDirty( chosenN.c_str(), "scalar_painter" );
+				mEditor.MarkCstHeadDirty( chosenK.c_str(), "scalar_painter" );
+				mEditor.MarkCstHeadDirty( ownerCstName.c_str(), ownerKeyword.c_str() );
+				mEditor.BumpSceneLightGenerationForAgentParamEdit( ownerCstName.c_str(), ownerKeyword.c_str() );
+
+				std::vector<CstBatchUndoOp> ops;
+				ops.reserve( 3 );
+				ops.push_back( std::move( insertOpN ) );
+				ops.push_back( std::move( insertOpK ) );
+				ops.push_back( std::move( slotOp ) );
+				const std::string label = chosenN + ", " + chosenK + ", " + ownerCstName + " (" + std::string( presetId.c_str() ) + ")";
+				mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, /*landedRasterizerInsert=*/false );
+
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+				mEditPending.store( true, std::memory_order_release );
+				applied = true;
+				lk.unlock();
+				mCV.notify_one();
+			}
+		}
+	}
+
+	if( delegatedBlackbodyKelvin.size() > 1 )
+	{
+		return SetPropertyForCategory( cat, String( "temperature" ), delegatedBlackbodyKelvin );
 	}
 	mEditor.DrainDirtyNotification();
 	return applied;

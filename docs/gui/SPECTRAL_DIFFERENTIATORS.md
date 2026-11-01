@@ -1,6 +1,6 @@
 # Direction D — Spectral Differentiators ("don't replicate")
 
-**Status:** DESIGN. No D-feature code. Deep-dive spec spun off from [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8.
+**Status:** PARTIALLY SHIPPED (Slice 6, 2026-10-31: D1 Blackbody Kelvin & Sellmeier Optical Glass inspector cards, D2 Measured-Metal `(n, k)` preset bar + `colors/conductors/` CC0 optical constants, and D3 Thin-Film Iridescence `0°–89°` Angle-Sweep Strip + interactive View Angle slider are shipped across shared C++, C-ABI, macOS SwiftUI, and Windows Qt; D4–D7 remain design). Deep-dive spec spun off from [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8.
 Ground truth for what *backing* actually ships is [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) (it supersedes
 this header where they disagree). Two backing-state caveats the audit pins: **D5's per-pixel probe buffers are
 private** (a net-new additive readback, not a free read — §5.3) and D3's thin-film backing was on an unpushed branch when this

@@ -1197,6 +1197,86 @@ bool ViewportBridge::materialPreview( const QString& materialName,
     return true;
 }
 
+bool ViewportBridge::thinFilmAngleStrip( const QString& materialName,
+                                         unsigned int w, unsigned int h,
+                                         QByteArray& outRGBA,
+                                         double* outThicknessNm,
+                                         double* outFilmIor ) const
+{
+    outRGBA.clear();
+    if (!m_controller || materialName.isEmpty() || w == 0 || h == 0) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    const QByteArray nameUtf8 = materialName.toUtf8();
+    if (!RISE_API_SceneEditController_ThinFilmAngleStrip(
+            m_controller, nameUtf8.constData(), w, h,
+            reinterpret_cast<unsigned char*>( buf.data() ),
+            outThicknessNm, outFilmIor)) {
+        return false;
+    }
+    outRGBA = buf;
+    return true;
+}
+
+bool ViewportBridge::evaluateThinFilmAtAngle( const QString& materialName,
+                                              double angleDeg,
+                                              unsigned char outRGBA[4],
+                                              double* outThicknessNm,
+                                              double* outFilmIor ) const
+{
+    if (!m_controller || materialName.isEmpty() || !outRGBA) return false;
+    const QByteArray nameUtf8 = materialName.toUtf8();
+    return RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+        m_controller, nameUtf8.constData(), angleDeg, outRGBA, outThicknessNm, outFilmIor);
+}
+
+bool ViewportBridge::blackbodyKelvinStrip( unsigned int w, unsigned int h,
+                                           double minKelvin, double maxKelvin,
+                                           QByteArray& outRGBA ) const
+{
+    outRGBA.clear();
+    if (w == 0 || h == 0) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    if (!RISE_API_SceneEditController_BlackbodyKelvinStrip(
+            w, h, minKelvin, maxKelvin,
+            reinterpret_cast<unsigned char*>( buf.data() ))) {
+        return false;
+    }
+    outRGBA = buf;
+    return true;
+}
+
+bool ViewportBridge::evaluateBlackbodyKelvin( double kelvin,
+                                              double* outPeakNm,
+                                              unsigned char outRGBA[4] ) const
+{
+    return RISE_API_SceneEditController_EvaluateBlackbodyKelvin( kelvin, outPeakNm, outRGBA );
+}
+
+bool ViewportBridge::evaluateSellmeierMetrics( const QString& sellmeierParamValue,
+                                               double* outNd,
+                                               double* outAbbeVd ) const
+{
+    if (sellmeierParamValue.isEmpty()) return false;
+    const QByteArray utf8 = sellmeierParamValue.toUtf8();
+    return RISE_API_SceneEditController_EvaluateSellmeierMetrics( utf8.constData(), outNd, outAbbeVd );
+}
+
+bool ViewportBridge::measuredMetalPresetSwatch( const QString& presetId,
+                                                unsigned char outRGBA[4] ) const
+{
+    if (presetId.isEmpty() || !outRGBA) return false;
+    const QByteArray utf8 = presetId.toUtf8();
+    return RISE_API_SceneEditController_MeasuredMetalPresetSwatch( utf8.constData(), outRGBA );
+}
+
+bool ViewportBridge::applySpectralPreset( Category cat, const QString& presetId )
+{
+    if (!m_controller || presetId.isEmpty()) return false;
+    const QByteArray utf8 = presetId.toUtf8();
+    return RISE_API_SceneEditController_ApplySpectralPreset(
+        m_controller, static_cast<int>( cat ), utf8.constData() );
+}
+
 // Named animations are now a first-class accordion Category
 // (Category::Animation) — surfaced via the generic categoryEntities() /
 // activeNameForCategory() / setSelection() methods, which pass the raw

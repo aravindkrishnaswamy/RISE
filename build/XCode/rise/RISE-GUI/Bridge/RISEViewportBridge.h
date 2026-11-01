@@ -778,6 +778,40 @@ typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
                                   height:(NSUInteger)height
     NS_SWIFT_NAME(materialPreview(for:width:height:));
 
+//! Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4/§5):
+//! spectral differentiator widgets (D1 Blackbody & Sellmeier, D2 Measured
+//! Metals, D3 Thin-Film Iridescence Angle-Sweep Strip).
+- (nullable NSData *)thinFilmAngleStripFor:(NSString *)materialName
+                                      width:(NSUInteger)width
+                                     height:(NSUInteger)height
+                                thicknessNm:(nullable double *)outThicknessNm
+                                    filmIor:(nullable double *)outFilmIor
+    NS_SWIFT_NAME(thinFilmAngleStrip(for:width:height:thicknessNm:filmIor:));
+
+- (nullable NSData *)evaluateThinFilmFor:(NSString *)materialName
+                                angleDeg:(double)angleDeg
+                             thicknessNm:(nullable double *)outThicknessNm
+                                 filmIor:(nullable double *)outFilmIor
+    NS_SWIFT_NAME(evaluateThinFilm(for:angleDeg:thicknessNm:filmIor:));
+
+- (nullable NSData *)blackbodyKelvinStripWithWidth:(NSUInteger)width
+                                             height:(NSUInteger)height
+                                          minKelvin:(double)minKelvin
+                                          maxKelvin:(double)maxKelvin
+    NS_SWIFT_NAME(blackbodyKelvinStrip(width:height:minKelvin:maxKelvin:));
+
+- (nullable NSData *)evaluateBlackbodyKelvin:(double)kelvin
+                                      peakNm:(nullable double *)outPeakNm
+    NS_SWIFT_NAME(evaluateBlackbody(kelvin:peakNm:));
+
+- (BOOL)evaluateSellmeierMetrics:(NSString *)sellmeierParamValue
+                              nd:(nullable double *)outNd
+                          abbeVd:(nullable double *)outAbbeVd
+    NS_SWIFT_NAME(evaluateSellmeierMetrics(_:nd:abbeVd:));
+
+- (nullable NSData *)measuredMetalPresetSwatch:(NSString *)presetId
+    NS_SWIFT_NAME(measuredMetalPresetSwatch(_:));
+
 // Named animations are surfaced as a first-class accordion Category
 // (RISEViewportCategoryAnimation) — the generic categoryEntities: /
 // activeName: / setSelection:name: surface lists + activates them, so there
@@ -1060,6 +1094,13 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 - (nullable NSString *)forkReferenceSlotPainterForCategory:(RISEViewportCategory)category
                                                  slotParam:(NSString *)slotParam
     NS_SWIFT_NAME(forkReferenceSlotPainter(for:slotParam:));
+
+/// Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4): apply a
+/// spectral preset (measured metal, Sellmeier glass, or Kelvin temperature)
+/// to the active entity in `category` as a single atomic Undo batch.
+- (BOOL)applySpectralPresetForCategory:(RISEViewportCategory)category
+                              presetId:(NSString *)presetId
+    NS_SWIFT_NAME(applySpectralPreset(forCategory:presetId:));
 
 #pragma mark - Accordion list entries
 

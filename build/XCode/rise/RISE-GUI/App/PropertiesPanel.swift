@@ -331,7 +331,7 @@ final class PainterThumbnailCache {
     /// called from the background-queue fetch closures above -- which
     /// run off the main actor by design (MATERIAL_EDITOR.md §3.3), so
     /// this must not inherit the class's @MainActor isolation.
-    private nonisolated static func image(fromRGBA8 data: Data, width: Int, height: Int) -> NSImage? {
+    fileprivate nonisolated static func image(fromRGBA8 data: Data, width: Int, height: Int) -> NSImage? {
         guard width > 0, height > 0, data.count == width * height * 4 else { return nil }
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
@@ -520,6 +520,312 @@ struct MaterialThumbnailView: View {
     }
 }
 
+// MARK: - Spectral Differentiator Widgets (Material Editor Slice 6, SPECTRAL_DIFFERENTIATORS.md)
+
+/// D1 Blackbody Kelvin card for `blackbody_painter` (`SPECTRAL_DIFFERENTIATORS.md` §3):
+/// 1000..12000 K Planckian locus colour strip, Wien peak wavelength readout, and
+/// 1-click Kelvin quick-pick pills.
+private struct BlackbodyKelvinCardView: View {
+    weak var bridge: RISEViewportBridge?
+    let rows: [PropertyRow]
+    let refreshTrigger: String
+    let onApplyPreset: (String) -> Void
+
+    @State private var stripImage: NSImage? = nil
+
+    private var currentKelvin: Double {
+        let raw = rows.first(where: { $0.name == "temperature" })?.initialValue ?? "6500"
+        return Double(raw.trimmingCharacters(in: .whitespaces)) ?? 6500.0
+    }
+
+    var body: some View {
+        let kelvin = currentKelvin
+        var peakNm: Double = 0.0
+        let chipData = bridge?.evaluateBlackbody(kelvin: kelvin, peakNm: &peakNm)
+        let chipColor: Color = {
+            if let d = chipData, d.count == 4 {
+                return Color(.sRGB,
+                             red: Double(d[0]) / 255.0,
+                             green: Double(d[1]) / 255.0,
+                             blue: Double(d[2]) / 255.0,
+                             opacity: 1.0)
+            }
+            return Theme.textDim
+        }()
+        let bandLabel: String = {
+            if peakNm < 380.0 { return "near-UV" }
+            if peakNm > 780.0 { return "near-IR" }
+            return "visible"
+        }()
+
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(chipColor)
+                    .frame(width: 12, height: 12)
+                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(Theme.borderHairline, lineWidth: 1))
+                Text("Planckian Locus (1000 – 12000 K)")
+                    .font(Theme.sans(10, .medium))
+                    .foregroundColor(Theme.textDim)
+                Spacer(minLength: 4)
+                if peakNm > 0 {
+                    Text(String(format: "λpeak = %.0f nm (%@)", locale: kPosixLocale, peakNm, bandLabel))
+                        .font(Theme.mono(9.5))
+                        .foregroundColor(Theme.textSecondary)
+                }
+            }
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 4).fill(Theme.textDim.opacity(0.08))
+                if let stripImage {
+                    Image(nsImage: stripImage)
+                        .resizable()
+                        .interpolation(.none)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.borderHairline, lineWidth: 1))
+            .frame(height: 16)
+            .onAppear { ensureStrip() }
+
+            HStack(spacing: 4) {
+                ForEach(["1800K", "2700K", "5500K", "6500K", "9500K"], id: \.self) { preset in
+                    Button(preset) {
+                        onApplyPreset(preset)
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(9.5))
+                    .foregroundColor(Theme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.textDim.opacity(0.08)))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.radiusSmall).stroke(Theme.borderHairline, lineWidth: 1))
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.textDim.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderHairline, lineWidth: 1))
+    }
+
+    private func ensureStrip() {
+        guard stripImage == nil, let bridge else { return }
+        let w = 220, h = 16
+        if let data = bridge.blackbodyKelvinStrip(width: UInt(w), height: UInt(h), minKelvin: 1000.0, maxKelvin: 12000.0) {
+            stripImage = PainterThumbnailCache.image(fromRGBA8: data, width: w, height: h)
+        }
+    }
+}
+
+/// D1 Sellmeier Optical Glass card for `scalar_painter` and `dielectric_material` /
+/// `agx_dielectric` (`SPECTRAL_DIFFERENTIATORS.md` §3): 1-click Sellmeier glass presets
+/// (`N-BK7`, `SF11`, `Diamond`, `Fused Silica`) plus live Fraunhofer `n_d` and Abbe `V_d`.
+private struct SellmeierGlassCardView: View {
+    weak var bridge: RISEViewportBridge?
+    let rows: [PropertyRow]
+    let onApplyPreset: (String) -> Void
+
+    private var sellmeierValue: String {
+        rows.first(where: { $0.name == "sellmeier" })?.initialValue.trimmingCharacters(in: .whitespaces) ?? ""
+    }
+
+    var body: some View {
+        var nd: Double = 0.0
+        var abbeVd: Double = 0.0
+        let hasMetrics: Bool = {
+            guard !sellmeierValue.isEmpty, let bridge else { return false }
+            return bridge.evaluateSellmeierMetrics(sellmeierValue, nd: &nd, abbeVd: &abbeVd)
+        }()
+
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text("Sellmeier Optical Glass Presets")
+                    .font(Theme.sans(10, .medium))
+                    .foregroundColor(Theme.textDim)
+                Spacer(minLength: 4)
+                if hasMetrics {
+                    Text(String(format: "nd = %.4f  Vd = %.1f", locale: kPosixLocale, nd, abbeVd))
+                        .font(Theme.mono(9.5))
+                        .foregroundColor(Theme.textSecondary)
+                }
+            }
+            HStack(spacing: 4) {
+                ForEach([("N-BK7", "N-BK7"), ("SF11", "SF11"), ("Diamond", "Diamond"), ("Fused Silica", "FusedSilica")], id: \.0) { item in
+                    Button(item.0) {
+                        onApplyPreset(item.1)
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(9.5))
+                    .foregroundColor(Theme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.textDim.opacity(0.08)))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.radiusSmall).stroke(Theme.borderHairline, lineWidth: 1))
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.textDim.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderHairline, lineWidth: 1))
+    }
+}
+
+/// D2 Measured Metal `(n, k)` Preset Bar for `ggx_material` (`SPECTRAL_DIFFERENTIATORS.md` §4):
+/// 1-click preset pills (`Au`, `Ag`, `Cu`, `Al`, `Cr`, `Ti`) with physics-evaluated
+/// normal-incidence conductor Fresnel swatches.
+private struct MeasuredMetalPresetBarView: View {
+    weak var bridge: RISEViewportBridge?
+    let onApplyPreset: (String) -> Void
+
+    private static let metals: [(id: String, help: String)] = [
+        ("Au", "Gold — Johnson & Christy (1972)"),
+        ("Ag", "Silver — Johnson & Christy (1972)"),
+        ("Cu", "Copper — Johnson & Christy (1972)"),
+        ("Al", "Aluminium — Rakić (1995)"),
+        ("Cr", "Chromium — Johnson & Christy (1974)"),
+        ("Ti", "Titanium — Johnson & Christy (1974)")
+    ]
+
+    private func swatchColor(_ presetId: String) -> Color {
+        guard let bridge, let data = bridge.measuredMetalPresetSwatch(presetId), data.count == 4 else {
+            return Theme.textDim
+        }
+        return Color(.sRGB,
+                     red: Double(data[0]) / 255.0,
+                     green: Double(data[1]) / 255.0,
+                     blue: Double(data[2]) / 255.0,
+                     opacity: 1.0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Measured Metal (n, k) Presets")
+                .font(Theme.sans(10, .medium))
+                .foregroundColor(Theme.textDim)
+            HStack(spacing: 4) {
+                ForEach(Self.metals, id: \.id) { metal in
+                    Button {
+                        onApplyPreset(metal.id)
+                    } label: {
+                        HStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(swatchColor(metal.id))
+                                .frame(width: 9, height: 9)
+                                .overlay(RoundedRectangle(cornerRadius: 2).stroke(Theme.borderHairline, lineWidth: 1))
+                            Text(metal.id)
+                                .font(Theme.mono(9.5))
+                                .foregroundColor(Theme.textSecondary)
+                        }
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.textDim.opacity(0.08)))
+                        .overlay(RoundedRectangle(cornerRadius: Theme.radiusSmall).stroke(Theme.borderHairline, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .help(metal.help)
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.textDim.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderHairline, lineWidth: 1))
+    }
+}
+
+/// D3 Thin-Film Iridescence Card for `ggx_material` when `fresnel_mode == "thinfilm"`
+/// (`SPECTRAL_DIFFERENTIATORS.md` §5): 0..89 deg Airy interference strip, interactive
+/// View Angle slider, and live angle-reactive colour chip + optical readout.
+private struct ThinFilmIridescenceCardView: View {
+    weak var bridge: RISEViewportBridge?
+    let materialName: String
+    let refreshTrigger: String
+
+    @State private var stripImage: NSImage? = nil
+    @State private var viewAngleDeg: Double = 30.0
+    @State private var thicknessNm: Double = 0.0
+    @State private var filmIor: Double = 1.0
+
+    var body: some View {
+        var evalD: Double = thicknessNm
+        var evalN: Double = filmIor
+        let chipData = bridge?.evaluateThinFilm(for: materialName, angleDeg: viewAngleDeg, thicknessNm: &evalD, filmIor: &evalN)
+        let chipColor: Color = {
+            if let d = chipData, d.count == 4 {
+                return Color(.sRGB,
+                             red: Double(d[0]) / 255.0,
+                             green: Double(d[1]) / 255.0,
+                             blue: Double(d[2]) / 255.0,
+                             opacity: 1.0)
+            }
+            return Theme.textDim
+        }()
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Thin-Film Iridescence (0° – 89°)")
+                    .font(Theme.sans(10, .medium))
+                    .foregroundColor(Theme.textDim)
+                Spacer(minLength: 4)
+                Text(String(format: "d = %.0f nm  n = %.2f", locale: kPosixLocale, evalD, evalN))
+                    .font(Theme.mono(9.5))
+                    .foregroundColor(Theme.textSecondary)
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 4).fill(Theme.textDim.opacity(0.08))
+                    if let stripImage {
+                        Image(nsImage: stripImage)
+                            .resizable()
+                            .interpolation(.none)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    let frac = min(max(viewAngleDeg / 89.0, 0.0), 1.0)
+                    Rectangle()
+                        .fill(Color.white.opacity(0.85))
+                        .frame(width: 1.5, height: 18)
+                        .offset(x: max(0, min(geo.size.width - 1.5, CGFloat(frac) * geo.size.width)))
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.borderHairline, lineWidth: 1))
+            .frame(height: 18)
+
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(chipColor)
+                    .frame(width: 14, height: 14)
+                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(Theme.borderHairline, lineWidth: 1))
+                Text("View Angle")
+                    .font(Theme.sans(10))
+                    .foregroundColor(Theme.textDim)
+                Slider(value: $viewAngleDeg, in: 0.0...89.0)
+                    .controlSize(.mini)
+                Text(String(format: "θi = %.0f°", locale: kPosixLocale, viewAngleDeg))
+                    .font(Theme.mono(9.5))
+                    .foregroundColor(Theme.textSecondary)
+                    .frame(width: 48, alignment: .trailing)
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.textDim.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderHairline, lineWidth: 1))
+        .onAppear { refreshStrip() }
+        .onChange(of: materialName) { _, _ in refreshStrip() }
+        .onChange(of: refreshTrigger) { _, _ in refreshStrip() }
+    }
+
+    private func refreshStrip() {
+        guard let bridge, !materialName.isEmpty else { return }
+        let w = 220, h = 18
+        var d: Double = 0.0
+        var n: Double = 1.0
+        if let data = bridge.thinFilmAngleStrip(for: materialName, width: UInt(w), height: UInt(h), thicknessNm: &d, filmIor: &n) {
+            stripImage = PainterThumbnailCache.image(fromRGBA8: data, width: w, height: h)
+            thicknessNm = d
+            filmIor = n
+        }
+    }
+}
+
 /// True iff `rowName` has PainterIntrospection's synthetic occurrence-row
 /// shape for the `def` role specifically ("def[2]") -- mirrors
 /// PainterIntrospection::ParseOccurrenceRowName's contract on the Swift
@@ -689,15 +995,42 @@ struct PropertiesPanel: View {
                     )
                 }
             }
+            if selectedChunkKeyword == "blackbody_painter" {
+                BlackbodyKelvinCardView(
+                    bridge: bridge,
+                    rows: rows,
+                    refreshTrigger: "\(sceneRevision)"
+                ) { preset in
+                    if bridge?.applySpectralPreset(forCategory: selectionCategory, presetId: preset) == true {
+                        reload()
+                    }
+                }
+            }
+            if selectedChunkKeyword == "scalar_painter" {
+                SellmeierGlassCardView(
+                    bridge: bridge,
+                    rows: rows
+                ) { preset in
+                    if bridge?.applySpectralPreset(forCategory: selectionCategory, presetId: preset) == true {
+                        reload()
+                    }
+                }
+            }
         }
     }
 
+    private var selectedChunkKeyword: String {
+        rows.first(where: { $0.name == "chunk_type" })?.initialValue ?? ""
+    }
+
     private var isRampPainter: Bool {
-        rows.first(where: { $0.name == "chunk_type" })?.initialValue == "ramp_painter"
+        selectedChunkKeyword == "ramp_painter"
     }
 
     /// Material Editor Slice 5 (MATERIAL_EDITOR.md §4): a material's 3D
-    /// shaderball preview swatch at the top of its inspector row group.
+    /// shaderball preview swatch at the top of its inspector row group,
+    /// plus Slice 6 spectral differentiator cards (D1 Sellmeier, D2 Measured
+    /// Metals, D3 Thin-Film Iridescence).
     @ViewBuilder
     private var materialThumbnailHeader: some View {
         if selectionCategory == .material && !selectionName.isEmpty {
@@ -716,6 +1049,32 @@ struct PropertiesPanel: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 4)
+            }
+            let kw = selectedChunkKeyword
+            let fresnelMode = rows.first(where: { $0.name == "fresnel_mode" })?.initialValue ?? "conductor"
+            if kw == "ggx_material" && (fresnelMode == "conductor" || fresnelMode == "thinfilm") {
+                MeasuredMetalPresetBarView(bridge: bridge) { preset in
+                    if bridge?.applySpectralPreset(forCategory: selectionCategory, presetId: preset) == true {
+                        reload()
+                    }
+                }
+            }
+            if kw == "ggx_material" && fresnelMode == "thinfilm" {
+                ThinFilmIridescenceCardView(
+                    bridge: bridge,
+                    materialName: selectionName,
+                    refreshTrigger: "\(sceneRevision)"
+                )
+            }
+            if kw == "dielectric_material" || kw == "agx_dielectric" {
+                SellmeierGlassCardView(
+                    bridge: bridge,
+                    rows: rows
+                ) { preset in
+                    if bridge?.applySpectralPreset(forCategory: selectionCategory, presetId: preset) == true {
+                        reload()
+                    }
+                }
             }
         }
     }

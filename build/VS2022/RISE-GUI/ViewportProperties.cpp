@@ -1194,14 +1194,13 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
         swatchRowLayout->addWidget(textCol, 1);
         headerCol->addWidget(swatchRow);
 
-        bool isRamp = false;
+        QString chunkType;
+        QString fresnelMode = QStringLiteral("conductor");
         for (const ViewportProperty& p : props) {
-            if (p.name == QStringLiteral("chunk_type") && p.value == QStringLiteral("ramp_painter")) {
-                isRamp = true;
-                break;
-            }
+            if (p.name == QStringLiteral("chunk_type")) chunkType = p.value;
+            else if (p.name == QStringLiteral("fresnel_mode")) fresnelMode = p.value;
         }
-        if (isRamp) {
+        if (chunkType == QStringLiteral("ramp_painter")) {
             auto* gradLbl = new QLabel(tr("Gradient"));
             gradLbl->setFont(Theme::sans(10, true));
             gradLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
@@ -1218,13 +1217,21 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
             }
             headerCol->addWidget(stripLbl);
         }
+        if (chunkType == QStringLiteral("blackbody_painter")) {
+            headerCol->addWidget(buildBlackbodyKelvinCard(props));
+        }
+        if (chunkType == QStringLiteral("scalar_painter")) {
+            headerCol->addWidget(buildSellmeierGlassCard(props));
+        }
 
         m_basicLayout->addWidget(headerWrap);
     }
 
     // Material Editor Slice 5 (MATERIAL_EDITOR.md §4): a material's 3D
     // shaderball preview swatch at the top of its inspector row group --
-    // mirrors PropertiesPanel.swift's materialThumbnailHeader.
+    // mirrors PropertiesPanel.swift's materialThumbnailHeader, plus
+    // Slice 6 spectral differentiator cards (D1 Sellmeier, D2 Measured
+    // Metals, D3 Thin-Film Iridescence).
     if (m_currentSelectionCat == Category::Material && !m_currentSelectionName.isEmpty()) {
         auto* headerWrap = new QWidget;
         auto* headerCol = new QVBoxLayout(headerWrap);
@@ -1252,6 +1259,23 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
         textColLayout->addWidget(subLbl);
         swatchRowLayout->addWidget(textCol, 1);
         headerCol->addWidget(swatchRow);
+
+        QString chunkType;
+        QString fresnelMode = QStringLiteral("conductor");
+        for (const ViewportProperty& p : props) {
+            if (p.name == QStringLiteral("chunk_type")) chunkType = p.value;
+            else if (p.name == QStringLiteral("fresnel_mode")) fresnelMode = p.value;
+        }
+        if (chunkType == QStringLiteral("ggx_material") &&
+            (fresnelMode == QStringLiteral("conductor") || fresnelMode == QStringLiteral("thinfilm"))) {
+            headerCol->addWidget(buildMeasuredMetalPresetBar());
+        }
+        if (chunkType == QStringLiteral("ggx_material") && fresnelMode == QStringLiteral("thinfilm")) {
+            headerCol->addWidget(buildThinFilmIridescenceCard(m_currentSelectionName));
+        }
+        if (chunkType == QStringLiteral("dielectric_material") || chunkType == QStringLiteral("agx_dielectric")) {
+            headerCol->addWidget(buildSellmeierGlassCard(props));
+        }
 
         m_basicLayout->addWidget(headerWrap);
     }
@@ -2318,6 +2342,339 @@ QLabel* ViewportProperties::createMaterialSwatchLabel(const QString& materialNam
         lbl->setPixmap(px.scaled(sizePt, sizePt, Qt::IgnoreAspectRatio, Qt::FastTransformation));
     }
     return lbl;
+}
+
+QWidget* ViewportProperties::buildBlackbodyKelvinCard(const QVector<ViewportProperty>& props)
+{
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
+    auto* card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+        .arg(Theme::rgba(Theme::textDim, 0.04), Theme::hex(Theme::borderHairline)));
+    auto* col = new QVBoxLayout(card);
+    col->setContentsMargins(8, 8, 8, 8);
+    col->setSpacing(5);
+
+    double kelvin = 6500.0;
+    for (const ViewportProperty& p : props) {
+        if (p.name == QStringLiteral("temperature")) {
+            bool ok = false;
+            const double v = p.value.trimmed().toDouble(&ok);
+            if (ok && v > 0.0) kelvin = v;
+            break;
+        }
+    }
+
+    double peakNm = 0.0;
+    unsigned char rgba[4] = { 128, 128, 128, 255 };
+    if (m_bridge) {
+        m_bridge->evaluateBlackbodyKelvin(kelvin, &peakNm, rgba);
+    }
+    const QString bandLabel = (peakNm < 380.0) ? QStringLiteral("near-UV")
+                            : (peakNm > 780.0) ? QStringLiteral("near-IR")
+                            : QStringLiteral("visible");
+
+    auto* topRow = new QWidget;
+    topRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* topLayout = new QHBoxLayout(topRow);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(6);
+
+    auto* chip = new QLabel;
+    chip->setFixedSize(12, 12);
+    chip->setStyleSheet(QStringLiteral(
+        "background-color: rgb(%1, %2, %3); border: 1px solid %4; border-radius: 3px;")
+        .arg(rgba[0]).arg(rgba[1]).arg(rgba[2]).arg(Theme::hex(Theme::borderHairline)));
+    topLayout->addWidget(chip);
+
+    auto* titleLbl = new QLabel(tr("Planckian Locus (1000 \xE2\x80\x93 12000 K)"));
+    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    topLayout->addWidget(titleLbl);
+    topLayout->addStretch(1);
+
+    if (peakNm > 0.0) {
+        auto* peakLbl = new QLabel(QString::asprintf("\xCE\xBBpeak = %.0f nm (%s)", peakNm, bandLabel.toUtf8().constData()));
+        peakLbl->setFont(Theme::mono(9));
+        peakLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textSecondary)));
+        topLayout->addWidget(peakLbl);
+    }
+    col->addWidget(topRow);
+
+    auto* stripLbl = new QLabel;
+    stripLbl->setFixedSize(220, 16);
+    stripLbl->setStyleSheet(QStringLiteral(
+        "background-color: %1; border: 1px solid %2; border-radius: 4px;")
+        .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
+    if (m_bridge) {
+        QByteArray stripBytes;
+        if (m_bridge->blackbodyKelvinStrip(220, 16, 1000.0, 12000.0, stripBytes) && stripBytes.size() == 220 * 16 * 4) {
+            QImage img(reinterpret_cast<const uchar*>(stripBytes.constData()), 220, 16, 220 * 4, QImage::Format_RGBA8888);
+            stripLbl->setPixmap(QPixmap::fromImage(img.copy()));
+        }
+    }
+    col->addWidget(stripLbl);
+
+    auto* btnRow = new QWidget;
+    btnRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* btnLayout = new QHBoxLayout(btnRow);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnLayout->setSpacing(4);
+    const char* const presets[] = { "1800K", "2700K", "5500K", "6500K", "9500K" };
+    for (const char* preset : presets) {
+        const QString presetStr = QString::fromLatin1(preset);
+        auto* btn = new QToolButton;
+        btn->setText(presetStr);
+        btn->setFont(Theme::mono(9));
+        btn->setStyleSheet(QStringLiteral(
+            "QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 4px; padding: 2px 6px; }")
+            .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderHairline)));
+        connect(btn, &QToolButton::clicked, this, [this, rowAlive, presetStr]() {
+            if (!rowAlive || !*rowAlive || !m_bridge) return;
+            if (m_bridge->applySpectralPreset(m_currentSelectionCat, presetStr)) {
+                refresh();
+            }
+        });
+        btnLayout->addWidget(btn);
+    }
+    btnLayout->addStretch(1);
+    col->addWidget(btnRow);
+    return card;
+}
+
+QWidget* ViewportProperties::buildSellmeierGlassCard(const QVector<ViewportProperty>& props)
+{
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
+    auto* card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+        .arg(Theme::rgba(Theme::textDim, 0.04), Theme::hex(Theme::borderHairline)));
+    auto* col = new QVBoxLayout(card);
+    col->setContentsMargins(8, 8, 8, 8);
+    col->setSpacing(5);
+
+    QString sellmeierVal;
+    for (const ViewportProperty& p : props) {
+        if (p.name == QStringLiteral("sellmeier")) {
+            sellmeierVal = p.value.trimmed();
+            break;
+        }
+    }
+
+    auto* topRow = new QWidget;
+    topRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* topLayout = new QHBoxLayout(topRow);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(6);
+
+    auto* titleLbl = new QLabel(tr("Sellmeier Optical Glass Presets"));
+    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    topLayout->addWidget(titleLbl);
+    topLayout->addStretch(1);
+
+    double nd = 0.0, abbeVd = 0.0;
+    if (!sellmeierVal.isEmpty() && m_bridge && m_bridge->evaluateSellmeierMetrics(sellmeierVal, &nd, &abbeVd)) {
+        auto* metricsLbl = new QLabel(QString::asprintf("nd = %.4f  Vd = %.1f", nd, abbeVd));
+        metricsLbl->setFont(Theme::mono(9));
+        metricsLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textSecondary)));
+        topLayout->addWidget(metricsLbl);
+    }
+    col->addWidget(topRow);
+
+    auto* btnRow = new QWidget;
+    btnRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* btnLayout = new QHBoxLayout(btnRow);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnLayout->setSpacing(4);
+    struct GlassPreset { const char* label; const char* id; };
+    const GlassPreset presets[] = {
+        { "N-BK7",        "N-BK7" },
+        { "SF11",         "SF11" },
+        { "Diamond",      "Diamond" },
+        { "Fused Silica", "FusedSilica" }
+    };
+    for (const GlassPreset& gp : presets) {
+        const QString labelStr = QString::fromLatin1(gp.label);
+        const QString idStr    = QString::fromLatin1(gp.id);
+        auto* btn = new QToolButton;
+        btn->setText(labelStr);
+        btn->setFont(Theme::mono(9));
+        btn->setStyleSheet(QStringLiteral(
+            "QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 4px; padding: 2px 6px; }")
+            .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderHairline)));
+        connect(btn, &QToolButton::clicked, this, [this, rowAlive, idStr]() {
+            if (!rowAlive || !*rowAlive || !m_bridge) return;
+            if (m_bridge->applySpectralPreset(m_currentSelectionCat, idStr)) {
+                refresh();
+            }
+        });
+        btnLayout->addWidget(btn);
+    }
+    btnLayout->addStretch(1);
+    col->addWidget(btnRow);
+    return card;
+}
+
+QWidget* ViewportProperties::buildMeasuredMetalPresetBar()
+{
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
+    auto* card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+        .arg(Theme::rgba(Theme::textDim, 0.04), Theme::hex(Theme::borderHairline)));
+    auto* col = new QVBoxLayout(card);
+    col->setContentsMargins(8, 8, 8, 8);
+    col->setSpacing(5);
+
+    auto* titleLbl = new QLabel(tr("Measured Metal (n, k) Presets"));
+    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    col->addWidget(titleLbl);
+
+    auto* btnRow = new QWidget;
+    btnRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* btnLayout = new QHBoxLayout(btnRow);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnLayout->setSpacing(4);
+    struct MetalItem { const char* id; const char* tooltip; };
+    const MetalItem metals[] = {
+        { "Au", "Gold \xE2\x80\x94 Johnson & Christy (1972)" },
+        { "Ag", "Silver \xE2\x80\x94 Johnson & Christy (1972)" },
+        { "Cu", "Copper \xE2\x80\x94 Johnson & Christy (1972)" },
+        { "Al", "Aluminium \xE2\x80\x94 Raki\xC4\x87 (1995)" },
+        { "Cr", "Chromium \xE2\x80\x94 Johnson & Christy (1974)" },
+        { "Ti", "Titanium \xE2\x80\x94 Johnson & Christy (1974)" }
+    };
+    for (const MetalItem& m : metals) {
+        const QString idStr = QString::fromLatin1(m.id);
+        unsigned char swatch[4] = { 180, 180, 180, 255 };
+        if (m_bridge) {
+            m_bridge->measuredMetalPresetSwatch(idStr, swatch);
+        }
+        auto* btn = new QToolButton;
+        btn->setText(idStr);
+        btn->setToolTip(QString::fromUtf8(m.tooltip));
+        btn->setFont(Theme::mono(9));
+        QPixmap swPx(9, 9);
+        swPx.fill(QColor(swatch[0], swatch[1], swatch[2]));
+        btn->setIcon(QIcon(swPx));
+        btn->setIconSize(QSize(9, 9));
+        btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        btn->setStyleSheet(QStringLiteral(
+            "QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 4px; padding: 2px 5px; }")
+            .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderHairline)));
+        connect(btn, &QToolButton::clicked, this, [this, rowAlive, idStr]() {
+            if (!rowAlive || !*rowAlive || !m_bridge) return;
+            if (m_bridge->applySpectralPreset(m_currentSelectionCat, idStr)) {
+                refresh();
+            }
+        });
+        btnLayout->addWidget(btn);
+    }
+    btnLayout->addStretch(1);
+    col->addWidget(btnRow);
+    return card;
+}
+
+QWidget* ViewportProperties::buildThinFilmIridescenceCard(const QString& materialName)
+{
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
+    auto* card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+        .arg(Theme::rgba(Theme::textDim, 0.04), Theme::hex(Theme::borderHairline)));
+    auto* col = new QVBoxLayout(card);
+    col->setContentsMargins(8, 8, 8, 8);
+    col->setSpacing(6);
+
+    double thicknessNm = 0.0;
+    double filmIor = 1.0;
+    unsigned char chipRGBA[4] = { 128, 128, 128, 255 };
+    if (m_bridge) {
+        m_bridge->evaluateThinFilmAtAngle(materialName, m_thinFilmViewAngleDeg, chipRGBA, &thicknessNm, &filmIor);
+    }
+
+    auto* topRow = new QWidget;
+    topRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* topLayout = new QHBoxLayout(topRow);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(6);
+
+    auto* titleLbl = new QLabel(tr("Thin-Film Iridescence (0\xC2\xB0 \xE2\x80\x93 89\xC2\xB0)"));
+    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    topLayout->addWidget(titleLbl);
+    topLayout->addStretch(1);
+
+    auto* metaLbl = new QLabel(QString::asprintf("d = %.0f nm  n = %.2f", thicknessNm, filmIor));
+    metaLbl->setFont(Theme::mono(9));
+    metaLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textSecondary)));
+    topLayout->addWidget(metaLbl);
+    col->addWidget(topRow);
+
+    auto* stripLbl = new QLabel;
+    stripLbl->setFixedSize(220, 18);
+    stripLbl->setStyleSheet(QStringLiteral(
+        "background-color: %1; border: 1px solid %2; border-radius: 4px;")
+        .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
+    if (m_bridge) {
+        QByteArray stripBytes;
+        if (m_bridge->thinFilmAngleStrip(materialName, 220, 18, stripBytes, &thicknessNm, &filmIor)
+            && stripBytes.size() == 220 * 18 * 4) {
+            QImage img(reinterpret_cast<const uchar*>(stripBytes.constData()), 220, 18, 220 * 4, QImage::Format_RGBA8888);
+            stripLbl->setPixmap(QPixmap::fromImage(img.copy()));
+        }
+    }
+    col->addWidget(stripLbl);
+
+    auto* ctrlRow = new QWidget;
+    ctrlRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* ctrlLayout = new QHBoxLayout(ctrlRow);
+    ctrlLayout->setContentsMargins(0, 0, 0, 0);
+    ctrlLayout->setSpacing(6);
+
+    auto* chipLbl = new QLabel;
+    chipLbl->setFixedSize(14, 14);
+    chipLbl->setStyleSheet(QStringLiteral(
+        "background-color: rgb(%1, %2, %3); border: 1px solid %4; border-radius: 3px;")
+        .arg(chipRGBA[0]).arg(chipRGBA[1]).arg(chipRGBA[2]).arg(Theme::hex(Theme::borderHairline)));
+    ctrlLayout->addWidget(chipLbl);
+
+    auto* viewAngleTitle = new QLabel(tr("View Angle"));
+    viewAngleTitle->setFont(Theme::sans(10));
+    viewAngleTitle->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    ctrlLayout->addWidget(viewAngleTitle);
+
+    auto* slider = new QSlider(Qt::Horizontal);
+    slider->setRange(0, 89);
+    slider->setValue(static_cast<int>(std::round(m_thinFilmViewAngleDeg)));
+    ctrlLayout->addWidget(slider, 1);
+
+    auto* angleReadout = new QLabel(QString::asprintf("\xCE\xB8i = %.0f\xC2\xB0", m_thinFilmViewAngleDeg));
+    angleReadout->setFont(Theme::mono(9));
+    angleReadout->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textSecondary)));
+    angleReadout->setFixedWidth(48);
+    angleReadout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    ctrlLayout->addWidget(angleReadout);
+
+    connect(slider, &QSlider::valueChanged, this,
+            [this, rowAlive, materialName, chipLbl, angleReadout, metaLbl](int val) {
+        if (!rowAlive || !*rowAlive || !m_bridge) return;
+        m_thinFilmViewAngleDeg = static_cast<double>(val);
+        unsigned char c[4] = { 128, 128, 128, 255 };
+        double d = 0.0, n = 1.0;
+        if (m_bridge->evaluateThinFilmAtAngle(materialName, m_thinFilmViewAngleDeg, c, &d, &n)) {
+            chipLbl->setStyleSheet(QStringLiteral(
+                "background-color: rgb(%1, %2, %3); border: 1px solid %4; border-radius: 3px;")
+                .arg(c[0]).arg(c[1]).arg(c[2]).arg(Theme::hex(Theme::borderHairline)));
+            metaLbl->setText(QString::asprintf("d = %.0f nm  n = %.2f", d, n));
+        }
+        angleReadout->setText(QString::asprintf("\xCE\xB8i = %.0f\xC2\xB0", m_thinFilmViewAngleDeg));
+    });
+
+    col->addWidget(ctrlRow);
+    return card;
 }
 
 void ViewportProperties::onLineEditFinished()

@@ -179,6 +179,10 @@ private:
     QPixmap fetchMaterialThumbnail(const QString& materialName, int sizePt);
     QLabel* createPainterSwatchLabel(const QString& painterName, int defIndex, int sizePt, QWidget* parent = nullptr);
     QLabel* createMaterialSwatchLabel(const QString& materialName, int sizePt, QWidget* parent = nullptr);
+    QWidget* buildBlackbodyKelvinCard(const QVector<ViewportProperty>& props);
+    QWidget* buildSellmeierGlassCard(const QVector<ViewportProperty>& props);
+    QWidget* buildMeasuredMetalPresetBar();
+    QWidget* buildThinFilmIridescenceCard(const QString& materialName);
 
     void updateAdvancedToggleLabel(int advancedCount);
     void onAdvancedToggleClicked();
@@ -274,6 +278,7 @@ private:
     // a child of) mid-exec -> UAF.  Same guard shape as m_scrubbing.
     bool m_contextMenuOpen = false;
     quint64 m_lastSceneRevision = 0;
+    double  m_thinFilmViewAngleDeg = 30.0;
     QHash<QString, QPixmap> m_painterThumbCache;
 };
 

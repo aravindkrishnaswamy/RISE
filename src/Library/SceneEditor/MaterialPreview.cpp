@@ -22,10 +22,15 @@
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/IORStack.h"
 #include "../Utilities/Optics.h"
+#include "../Utilities/ThinFilm.h"
+#include "../Materials/GGXMaterial.h"
+#include "../Painters/BlackBodyPainter.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <sstream>
 
 namespace RISE
 {
@@ -564,6 +569,402 @@ MaterialPreview::Result MaterialPreview::RenderMaterialPreview(
 	out.height = h;
 	UpscaleRGBANearest( gridRGBA, gw, gh, out.rgba, w, h );
 	return out;
+}
+
+namespace
+{
+	unsigned char EncodeGamma22UnitChannel( Scalar linear )
+	{
+		Scalar c = ( linear > Scalar( 0 ) && std::isfinite( linear ) ) ? linear : Scalar( 0 );
+		c = ClampScalar( c, Scalar( 0 ), Scalar( 1 ) );
+		const double enc = std::pow( static_cast<double>( c ), 1.0 / 2.2 );
+		int v = static_cast<int>( enc * 255.0 + 0.5 );
+		if( v < 0 ) v = 0;
+		if( v > 255 ) v = 255;
+		return static_cast<unsigned char>( v );
+	}
+
+	RayIntersectionGeometric MakeCenterSphereRI()
+	{
+		const Point3 origin( Scalar( 0 ), Scalar( 0 ), kCameraZ );
+		const Vector3 dir( Scalar( 0 ), Scalar( 0 ), Scalar( -1 ) );
+		RayIntersectionGeometric ri( Ray( origin, dir ), nullRasterizerState );
+		ri.bHit = true;
+		ri.range = kCameraZ - kSphereRadius;
+		ri.ptIntersection = Point3( Scalar( 0 ), Scalar( 0 ), kSphereRadius );
+		ri.ptObjIntersec = ri.ptIntersection;
+		ri.vNormal = Vector3( Scalar( 0 ), Scalar( 0 ), Scalar( 1 ) );
+		ri.ptCoord = Point2( Scalar( 0.5 ), Scalar( 0.5 ) );
+		ri.onb = OrthonormalBasis3D(
+			Vector3( Scalar( 1 ), Scalar( 0 ), Scalar( 0 ) ),
+			Vector3( Scalar( 0 ), Scalar( 1 ), Scalar( 0 ) ),
+			Vector3( Scalar( 0 ), Scalar( 0 ), Scalar( 1 ) ) );
+		return ri;
+	}
+
+	bool EvaluateGGXThinFilmStackAtCosTheta(
+		const Implementation::GGXMaterial& ggx,
+		Scalar cosThetaI,
+		RISEPel& outRGB,
+		double* outThicknessNm,
+		double* outFilmIor )
+	{
+		if( ggx.GetFresnelMode() != eFresnelThinFilmConductor ) {
+			return false;
+		}
+		const IScalarPainter* pFilmIor = ggx.GetFilmIOR();
+		const IScalarPainter* pFilmExt = ggx.GetFilmExtinction();
+		const IScalarPainter* pFilmThick = ggx.GetFilmThickness();
+		if( !pFilmThick ) {
+			return false;
+		}
+		const IScalarPainter& subIor = ggx.GetIOR();
+		const IScalarPainter& subExt = ggx.GetExtinction();
+		const RayIntersectionGeometric ri = MakeCenterSphereRI();
+		const Scalar thicknessNm = std::max( Scalar( 0 ), pFilmThick->GetValuesAt( ri ).v[0] );
+		if( outThicknessNm ) {
+			*outThicknessNm = static_cast<double>( thicknessNm );
+		}
+		if( outFilmIor ) {
+			*outFilmIor = pFilmIor
+				? static_cast<double>( pFilmIor->GetValueAtNM( ri, Scalar( 550.0 ) ) )
+				: 1.5;
+		}
+		outRGB = ThinFilm::ReflectanceConductorRGBSpectral(
+			ClampScalar( cosThetaI, Scalar( 0.001 ), Scalar( 1.0 ) ),
+			thicknessNm,
+			[&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+				n0 = Scalar( 1.0 );
+				k0 = Scalar( 0.0 );
+				n1 = pFilmIor ? pFilmIor->GetValueAtNM( ri, nm ) : Scalar( 1.5 );
+				k1 = pFilmExt ? pFilmExt->GetValueAtNM( ri, nm ) : Scalar( 0.0 );
+				n2 = subIor.GetValueAtNM( ri, nm );
+				k2 = subExt.GetValueAtNM( ri, nm );
+			} );
+		return true;
+	}
+
+	RISEPel EvaluateBlackbodyChromaticityRGB( double temperatureK )
+	{
+		const Scalar T = static_cast<Scalar>( std::max( 100.0, temperatureK ) );
+		const int nSteps = 40;
+		const Scalar loNm = Scalar( 380.0 );
+		const Scalar hiNm = Scalar( 780.0 );
+		const Scalar dNm = ( hiNm - loNm ) / static_cast<Scalar>( nSteps );
+
+		Scalar X = Scalar( 0 ), Y = Scalar( 0 ), Z = Scalar( 0 );
+		for( int i = 0; i < nSteps; ++i ) {
+			const Scalar nm = loNm + ( static_cast<Scalar>( i ) + Scalar( 0.5 ) ) * dNm;
+			XYZPel cmf( 0, 0, 0 );
+			if( !ColorUtils::XYZFromNM( cmf, nm ) ) continue;
+			const Scalar power = Implementation::BlackBodyPainter::SpectralExitance( T, nm * Scalar( 1e-9 ) );
+			if( power > Scalar( 0 ) && std::isfinite( power ) ) {
+				X += power * cmf.X * dNm;
+				Y += power * cmf.Y * dNm;
+				Z += power * cmf.Z * dNm;
+			}
+		}
+		if( !( Y > Scalar( 0 ) ) ) {
+			return RISEPel( 0, 0, 0 );
+		}
+		// Normalize XYZ so Y=1 before converting to Rec.709 RGB, then scale
+		// by max channel so the Planckian chromaticity is full-scale across
+		// 1000 K .. 12000 K.
+		const XYZPel xyzNorm( X / Y, Scalar( 1.0 ), Z / Y );
+		RISEPel rgb = SanitizePel( ColorUtils::XYZtoRec709RGB( xyzNorm ) );
+		const Scalar maxCh = ColorMath::MaxValue( rgb );
+		if( maxCh > Scalar( 1e-6 ) ) {
+			rgb = rgb * ( Scalar( 1.0 ) / maxCh );
+		}
+		return rgb;
+	}
+}
+
+MaterialPreview::Result MaterialPreview::RenderThinFilmAngleStrip(
+	IJobPriv& job,
+	const String& materialName,
+	unsigned int w,
+	unsigned int h,
+	double* outThicknessNm,
+	double* outFilmIor )
+{
+	Result out;
+	if( !ValidDims( w, h, out.refusalReason ) ) return out;
+	if( materialName.size() <= 1 || std::strcmp( materialName.c_str(), "none" ) == 0 ) {
+		out.refusalReason = "materialName is empty or 'none'";
+		return out;
+	}
+	IMaterialManager* pMatMgr = job.GetMaterials();
+	IMaterial* pMat = pMatMgr ? pMatMgr->GetItem( materialName.c_str() ) : nullptr;
+	const Implementation::GGXMaterial* pGGX = dynamic_cast<const Implementation::GGXMaterial*>( pMat );
+	if( !pGGX || pGGX->GetFresnelMode() != eFresnelThinFilmConductor ) {
+		out.refusalReason = "material is not a ggx_material in fresnel_mode thinfilm";
+		return out;
+	}
+
+	out.rgba.resize( static_cast<std::size_t>( w ) * h * 4, 0 );
+	for( unsigned int x = 0; x < w; ++x ) {
+		const double u = ( w > 1 ) ? ( static_cast<double>( x ) / static_cast<double>( w - 1 ) ) : 0.0;
+		const double angleDeg = 89.0 * u;
+		const Scalar cosTheta = static_cast<Scalar>( std::cos( angleDeg * ( PI / 180.0 ) ) );
+		RISEPel rgb( 0, 0, 0 );
+		if( !EvaluateGGXThinFilmStackAtCosTheta(
+				*pGGX, cosTheta, rgb,
+				( x == 0 ) ? outThicknessNm : nullptr,
+				( x == 0 ) ? outFilmIor : nullptr ) ) {
+			out.rgba.clear();
+			out.refusalReason = "thin-film slots are unbound on `" + std::string( materialName.c_str() ) + "`";
+			return out;
+		}
+		const unsigned char r8 = EncodeGamma22UnitChannel( rgb[0] );
+		const unsigned char g8 = EncodeGamma22UnitChannel( rgb[1] );
+		const unsigned char b8 = EncodeGamma22UnitChannel( rgb[2] );
+		for( unsigned int y = 0; y < h; ++y ) {
+			const std::size_t idx = ( static_cast<std::size_t>( y ) * w + x ) * 4;
+			out.rgba[idx + 0] = r8;
+			out.rgba[idx + 1] = g8;
+			out.rgba[idx + 2] = b8;
+			out.rgba[idx + 3] = 255;
+		}
+	}
+
+	out.status = Status::Ok;
+	out.width  = w;
+	out.height = h;
+	return out;
+}
+
+bool MaterialPreview::EvaluateThinFilmAtAngle(
+	IJobPriv& job,
+	const String& materialName,
+	double angleDeg,
+	unsigned char outRGBA[4],
+	double* outThicknessNm,
+	double* outFilmIor )
+{
+	if( !outRGBA || materialName.size() <= 1 || std::strcmp( materialName.c_str(), "none" ) == 0 ) {
+		return false;
+	}
+	IMaterialManager* pMatMgr = job.GetMaterials();
+	IMaterial* pMat = pMatMgr ? pMatMgr->GetItem( materialName.c_str() ) : nullptr;
+	const Implementation::GGXMaterial* pGGX = dynamic_cast<const Implementation::GGXMaterial*>( pMat );
+	if( !pGGX ) return false;
+
+	const double clampedDeg = std::max( 0.0, std::min( 89.0, angleDeg ) );
+	const Scalar cosTheta = static_cast<Scalar>( std::cos( clampedDeg * ( PI / 180.0 ) ) );
+	RISEPel rgb( 0, 0, 0 );
+	if( !EvaluateGGXThinFilmStackAtCosTheta( *pGGX, cosTheta, rgb, outThicknessNm, outFilmIor ) ) {
+		return false;
+	}
+	outRGBA[0] = EncodeGamma22UnitChannel( rgb[0] );
+	outRGBA[1] = EncodeGamma22UnitChannel( rgb[1] );
+	outRGBA[2] = EncodeGamma22UnitChannel( rgb[2] );
+	outRGBA[3] = 255;
+	return true;
+}
+
+MaterialPreview::Result MaterialPreview::RenderBlackbodyKelvinStrip(
+	unsigned int w,
+	unsigned int h,
+	double minK,
+	double maxK )
+{
+	Result out;
+	if( !ValidDims( w, h, out.refusalReason ) ) return out;
+	if( !( minK > 0.0 ) || !( maxK > minK ) || !std::isfinite( minK ) || !std::isfinite( maxK ) ) {
+		out.refusalReason = "invalid Kelvin range";
+		return out;
+	}
+	out.rgba.resize( static_cast<std::size_t>( w ) * h * 4, 0 );
+	for( unsigned int x = 0; x < w; ++x ) {
+		const double u = ( w > 1 ) ? ( static_cast<double>( x ) / static_cast<double>( w - 1 ) ) : 0.0;
+		const double T = minK + ( maxK - minK ) * u;
+		const RISEPel rgb = EvaluateBlackbodyChromaticityRGB( T );
+		const unsigned char r8 = EncodeGamma22UnitChannel( rgb[0] );
+		const unsigned char g8 = EncodeGamma22UnitChannel( rgb[1] );
+		const unsigned char b8 = EncodeGamma22UnitChannel( rgb[2] );
+		for( unsigned int y = 0; y < h; ++y ) {
+			const std::size_t idx = ( static_cast<std::size_t>( y ) * w + x ) * 4;
+			out.rgba[idx + 0] = r8;
+			out.rgba[idx + 1] = g8;
+			out.rgba[idx + 2] = b8;
+			out.rgba[idx + 3] = 255;
+		}
+	}
+	out.status = Status::Ok;
+	out.width  = w;
+	out.height = h;
+	return out;
+}
+
+bool MaterialPreview::EvaluateBlackbodyKelvin(
+	double temperatureK,
+	double* outPeakNm,
+	unsigned char outRGBA[4] )
+{
+	if( !( temperatureK > 0.0 ) || !std::isfinite( temperatureK ) ) {
+		return false;
+	}
+	if( outRGBA ) {
+		const RISEPel rgb = EvaluateBlackbodyChromaticityRGB( temperatureK );
+		outRGBA[0] = EncodeGamma22UnitChannel( rgb[0] );
+		outRGBA[1] = EncodeGamma22UnitChannel( rgb[1] );
+		outRGBA[2] = EncodeGamma22UnitChannel( rgb[2] );
+		outRGBA[3] = 255;
+	}
+	// Wien's displacement law: b = 2.897771955e6 nm*K (matches BlackBodyPainter.cpp)
+	if( outPeakNm ) {
+		*outPeakNm = 2897771.955 / temperatureK;
+	}
+	return true;
+}
+
+bool MaterialPreview::EvaluateSellmeierMetrics(
+	const String& coeffsSixTuple,
+	double* outNd,
+	double* outAbbeVd )
+{
+	std::istringstream iss( coeffsSixTuple.c_str() );
+	double B[3] = { 0, 0, 0 };
+	double C[3] = { 0, 0, 0 };
+	if( !( iss >> B[0] >> B[1] >> B[2] >> C[0] >> C[1] >> C[2] ) ) {
+		return false;
+	}
+	std::string extra;
+	if( iss >> extra ) {
+		return false;
+	}
+	for( int i = 0; i < 3; ++i ) {
+		if( !std::isfinite( B[i] ) || !std::isfinite( C[i] ) ) return false;
+	}
+
+	auto evalN = [&]( double lambdaUm ) -> double {
+		const double l2 = lambdaUm * lambdaUm;
+		double n2 = 1.0;
+		for( int i = 0; i < 3; ++i ) {
+			const double denom = l2 - C[i];
+			if( std::abs( denom ) < 1e-12 ) return -1.0;
+			n2 += ( B[i] * l2 ) / denom;
+		}
+		return ( n2 > 0.0 ) ? std::sqrt( n2 ) : -1.0;
+	};
+
+	// Fraunhofer d (587.5618 nm), F (486.1327 nm), and C (656.2725 nm) lines
+	const double nd = evalN( 0.5875618 );
+	const double nF = evalN( 0.4861327 );
+	const double nC = evalN( 0.6562725 );
+	if( nd <= 1.0 || nF <= 1.0 || nC <= 1.0 || std::abs( nF - nC ) < 1e-9 ) {
+		return false;
+	}
+	const double vd = ( nd - 1.0 ) / ( nF - nC );
+	if( !std::isfinite( nd ) || !std::isfinite( vd ) ) return false;
+	if( outNd ) *outNd = nd;
+	if( outAbbeVd ) *outAbbeVd = vd;
+	return true;
+}
+
+bool MaterialPreview::LookupSellmeierGlassPreset(
+	const String& presetId,
+	std::string& outCoeffs,
+	double* outNd,
+	double* outAbbeVd )
+{
+	struct GlassEntry {
+		const char* id;
+		const char* coeffs;
+	};
+	static const GlassEntry kCatalog[] = {
+		{ "N-BK7",       "1.03961212 0.231792344 1.01046945 0.00600069867 0.0200179144 103.560653" },
+		{ "SF11",        "1.73759695 0.313747346 1.89878101 0.013188707 0.0623068142 155.23629" },
+		{ "Diamond",     "0.3306 4.3356 0.0 0.00030625 0.011236 0.0" },
+		{ "FusedSilica", "0.6961663 0.4079426 0.8974794 0.00467914826 0.0135120631 97.9340025" },
+	};
+	const std::string key( presetId.c_str() );
+	for( const GlassEntry& e : kCatalog ) {
+		if( key == e.id ) {
+			outCoeffs = e.coeffs;
+			return EvaluateSellmeierMetrics( String( outCoeffs.c_str() ), outNd, outAbbeVd );
+		}
+	}
+	return false;
+}
+
+bool MaterialPreview::LookupMeasuredMetalPreset(
+	const String& metalId,
+	std::string& outFileN,
+	std::string& outFileK,
+	std::string& outPolyN,
+	std::string& outPolyK,
+	unsigned char outSwatchRGBA[4] )
+{
+	struct MetalEntry {
+		const char* id;
+		const char* fileN;
+		const char* fileK;
+		// Cubic polynomial fits c0 + c1*nm + c2*nm^2 + c3*nm^3 over [380, 780] nm
+		// used as a self-contained fallback when the media path is not mounted.
+		double polyN[4];
+		double polyK[4];
+	};
+	static const MetalEntry kMetals[] = {
+		{ "Au", "colors/conductors/Au.n", "colors/conductors/Au.k",
+		  {  4.9380, -0.01315,  9.20e-6,  0.0 },
+		  {  3.8200, -0.01480,  2.18e-5,  0.0 } },
+		{ "Ag", "colors/conductors/Ag.n", "colors/conductors/Ag.k",
+		  {  0.0820, -0.00009,  4.50e-8,  0.0 },
+		  { -1.4900,  0.00915,  0.0,      0.0 } },
+		{ "Cu", "colors/conductors/Cu.n", "colors/conductors/Cu.k",
+		  {  1.8800,  0.00060, -5.80e-6,  3.10e-9 },
+		  {  2.6600, -0.00520,  1.05e-5,  0.0 } },
+		{ "Al", "colors/conductors/Al.n", "colors/conductors/Al.k",
+		  {  0.5400, -0.00330,  7.90e-6,  0.0 },
+		  {  0.1200,  0.01240, -1.80e-6,  0.0 } },
+		{ "Cr", "colors/conductors/Cr.n", "colors/conductors/Cr.k",
+		  { -3.8200,  0.02260, -1.82e-5,  0.0 },
+		  {  0.8600,  0.01080, -9.80e-6,  0.0 } },
+		{ "Ti", "colors/thinfilm/substrates/Ti.n", "colors/thinfilm/substrates/Ti.k",
+		  { -1.4100,  0.00790, -2.60e-6,  0.0 },
+		  {  0.1400,  0.00680, -2.50e-6,  0.0 } },
+	};
+
+	const std::string key( metalId.c_str() );
+	const MetalEntry* found = nullptr;
+	for( const MetalEntry& m : kMetals ) {
+		if( key == m.id ) { found = &m; break; }
+	}
+	if( !found ) return false;
+
+	outFileN = found->fileN;
+	outFileK = found->fileK;
+
+	char bufN[160], bufK[160];
+	std::snprintf( bufN, sizeof( bufN ), "%.6g %.6g %.6g %.6g",
+		found->polyN[0], found->polyN[1], found->polyN[2], found->polyN[3] );
+	std::snprintf( bufK, sizeof( bufK ), "%.6g %.6g %.6g %.6g",
+		found->polyK[0], found->polyK[1], found->polyK[2], found->polyK[3] );
+	outPolyN = bufN;
+	outPolyK = bufK;
+
+	if( outSwatchRGBA ) {
+		auto evalPoly = []( const double c[4], double nm ) -> Scalar {
+			const double v = c[0] + nm * ( c[1] + nm * ( c[2] + nm * c[3] ) );
+			return static_cast<Scalar>( std::max( 0.01, v ) );
+		};
+		// Normal-incidence conductor reflectance integrated across [380, 780] nm via ThinFilm helper (0 nm film = bare substrate!)
+		const RISEPel rgb = ThinFilm::ReflectanceConductorRGBSpectral(
+			Scalar( 1.0 ), Scalar( 0.0 ),
+			[&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+				n0 = Scalar( 1.0 ); k0 = Scalar( 0.0 );
+				n1 = Scalar( 1.0 ); k1 = Scalar( 0.0 );
+				n2 = evalPoly( found->polyN, static_cast<double>( nm ) );
+				k2 = evalPoly( found->polyK, static_cast<double>( nm ) );
+			} );
+		outSwatchRGBA[0] = EncodeGamma22UnitChannel( rgb[0] );
+		outSwatchRGBA[1] = EncodeGamma22UnitChannel( rgb[1] );
+		outSwatchRGBA[2] = EncodeGamma22UnitChannel( rgb[2] );
+		outSwatchRGBA[3] = 255;
+	}
+	return true;
 }
 
 } // namespace RISE

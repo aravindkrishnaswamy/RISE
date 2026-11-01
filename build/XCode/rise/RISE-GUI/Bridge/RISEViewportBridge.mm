@@ -1707,6 +1707,88 @@ private:
     return data;
 }
 
+- (NSData *)thinFilmAngleStripFor:(NSString *)materialName
+                             width:(NSUInteger)width
+                            height:(NSUInteger)height
+                       thicknessNm:(double *)outThicknessNm
+                           filmIor:(double *)outFilmIor {
+    if (!_controller || materialName.length == 0 || width == 0 || height == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    if (!RISE_API_SceneEditController_ThinFilmAngleStrip(
+            _controller, materialName.UTF8String,
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            static_cast<unsigned char *>(data.mutableBytes),
+            outThicknessNm, outFilmIor)) {
+        return nil;
+    }
+    return data;
+}
+
+- (NSData *)evaluateThinFilmFor:(NSString *)materialName
+                       angleDeg:(double)angleDeg
+                    thicknessNm:(double *)outThicknessNm
+                        filmIor:(double *)outFilmIor {
+    if (!_controller || materialName.length == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:4];
+    if (!RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+            _controller, materialName.UTF8String, angleDeg,
+            static_cast<unsigned char *>(data.mutableBytes),
+            outThicknessNm, outFilmIor)) {
+        return nil;
+    }
+    return data;
+}
+
+- (NSData *)blackbodyKelvinStripWithWidth:(NSUInteger)width
+                                    height:(NSUInteger)height
+                                 minKelvin:(double)minKelvin
+                                 maxKelvin:(double)maxKelvin {
+    if (width == 0 || height == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    if (!RISE_API_SceneEditController_BlackbodyKelvinStrip(
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            minKelvin, maxKelvin,
+            static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
+- (NSData *)evaluateBlackbodyKelvin:(double)kelvin
+                             peakNm:(double *)outPeakNm {
+    NSMutableData *data = [NSMutableData dataWithLength:4];
+    if (!RISE_API_SceneEditController_EvaluateBlackbodyKelvin(
+            kelvin, outPeakNm, static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
+- (BOOL)evaluateSellmeierMetrics:(NSString *)sellmeierParamValue
+                              nd:(double *)outNd
+                          abbeVd:(double *)outAbbeVd {
+    if (sellmeierParamValue.length == 0) return NO;
+    return RISE_API_SceneEditController_EvaluateSellmeierMetrics(
+        sellmeierParamValue.UTF8String, outNd, outAbbeVd) ? YES : NO;
+}
+
+- (NSData *)measuredMetalPresetSwatch:(NSString *)presetId {
+    if (presetId.length == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:4];
+    if (!RISE_API_SceneEditController_MeasuredMetalPresetSwatch(
+            presetId.UTF8String, static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
+- (BOOL)applySpectralPresetForCategory:(RISEViewportCategory)category
+                              presetId:(NSString *)presetId {
+    if (!_controller || presetId.length == 0) return NO;
+    return RISE_API_SceneEditController_ApplySpectralPreset(
+        _controller, static_cast<int>(category), presetId.UTF8String) ? YES : NO;
+}
+
 #pragma mark - Time scrubber
 
 - (BOOL)scrubTimeBegin {
