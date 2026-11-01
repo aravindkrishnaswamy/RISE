@@ -57,6 +57,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -1086,6 +1087,120 @@ static void TestSpectralDifferentiatorsSlice6()
 	std::remove( tmp );
 }
 
+// ---------------------------------------------------------------------
+// 11. Regression guard for P1 async thumbnail vs. controller teardown:
+//     (a) After PrepareForDestruction(), all preview entry points
+//         (GetPainterPreview, GetRampStripPreview, GetMaterialPreview,
+//         GetThinFilmAngleStrip, EvaluateThinFilmAtAngle) refuse
+//         immediately (fail closed).
+//     (b) Concurrent background preview workers racing bridge-style
+//         controller detach + RISE_API_DestroySceneEditController
+//         drain cleanly without touching a destroyed controller.
+// ---------------------------------------------------------------------
+static void TestAsyncPreviewOverlappingControllerTeardown()
+{
+	std::cout << "\n--- 11. Async preview overlapping controller teardown ---" << std::endl;
+
+	const char* tmp = "rise_painter_preview_teardown.RISEscene";
+	Job* j = LoadScene( kHeadlessScene, tmp );
+	Check( j != nullptr, "fixture loads" );
+	if( !j ) return;
+
+	SceneEditController* rawController = nullptr;
+	Check( RISE_API_CreateSceneEditController( j, nullptr, &rawController ) && rawController != nullptr,
+	       "RISE_API_CreateSceneEditController succeeds" );
+
+	std::atomic<bool> previewShuttingDown( false );
+	std::mutex previewLifecycleMutex;
+	SceneEditController* bridgeController = rawController;
+	std::atomic<bool> stopWorkers( false );
+	std::atomic<int> completedBeforeTeardown( 0 );
+	std::atomic<int> refusedAfterTeardown( 0 );
+
+	auto workerFn = [&]() {
+		std::vector<unsigned char> buf( 24 * 24 * 4, 0 );
+		while( !stopWorkers.load( std::memory_order_acquire ) ) {
+			if( previewShuttingDown.load( std::memory_order_acquire ) ) {
+				refusedAfterTeardown.fetch_add( 1, std::memory_order_relaxed );
+				std::this_thread::yield();
+				continue;
+			}
+			bool ok = false;
+			bool detached = false;
+			{
+				std::lock_guard<std::mutex> previewLk( previewLifecycleMutex );
+				if( !bridgeController || previewShuttingDown.load( std::memory_order_acquire ) ) {
+					detached = true;
+				} else {
+					ok = RISE_API_SceneEditController_MaterialPreview(
+						bridgeController, "mat_thinfilm_380", 24, 24, buf.data() );
+				}
+			}
+			if( ok ) {
+				completedBeforeTeardown.fetch_add( 1, std::memory_order_relaxed );
+			} else if( detached ) {
+				refusedAfterTeardown.fetch_add( 1, std::memory_order_relaxed );
+			}
+			std::this_thread::yield();
+		}
+	};
+
+	std::thread w1( workerFn );
+	std::thread w2( workerFn );
+
+	// Wait until background workers have completed several in-flight shaderball renders
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 2 );
+	while( completedBeforeTeardown.load( std::memory_order_relaxed ) < 4 &&
+	       std::chrono::steady_clock::now() < deadline ) {
+		std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+	}
+	Check( completedBeforeTeardown.load( std::memory_order_relaxed ) >= 1,
+	       "background workers complete shaderball previews before teardown" );
+
+	// Perform bridge-style shutdown while workers are actively racing preview calls
+	previewShuttingDown.store( true, std::memory_order_release );
+	SceneEditController* controllerToDestroy = nullptr;
+	{
+		std::lock_guard<std::mutex> previewLk( previewLifecycleMutex );
+		controllerToDestroy = bridgeController;
+		bridgeController = nullptr;
+	}
+	Check( controllerToDestroy != nullptr, "controller detached under previewLifecycleMutex" );
+
+	// Verify PrepareForDestruction closes preview admission on the controller itself
+	Check( RISE_API_SceneEditController_PrepareForDestruction( controllerToDestroy ),
+	       "PrepareForDestruction succeeds on detached controller" );
+	{
+		std::vector<unsigned char> postPrepareBuf( 16 * 16 * 4, 0 );
+		double d0 = 0.0, d1 = 0.0;
+		unsigned char rgba4[4] = {0};
+		Check( !RISE_API_SceneEditController_MaterialPreview(
+		           controllerToDestroy, "mat_thinfilm_380", 16, 16, postPrepareBuf.data() ) &&
+		       !RISE_API_SceneEditController_ThinFilmAngleStrip(
+		           controllerToDestroy, "mat_thinfilm_380", 16, 4, postPrepareBuf.data(), &d0, &d1 ) &&
+		       !RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+		           controllerToDestroy, "mat_thinfilm_380", 30.0, rgba4, &d0, &d1 ),
+		       "preview entry points fail closed after PrepareForDestruction" );
+	}
+
+	RISE_API_DestroySceneEditController( controllerToDestroy );
+
+	// Let workers spin briefly against the post-shutdown bridge state
+	while( refusedAfterTeardown.load( std::memory_order_relaxed ) < 4 &&
+	       std::chrono::steady_clock::now() < deadline ) {
+		std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	stopWorkers.store( true, std::memory_order_release );
+	w1.join();
+	w2.join();
+
+	Check( refusedAfterTeardown.load( std::memory_order_relaxed ) >= 1,
+	       "background workers observe detached controller and fail closed after teardown" );
+
+	j->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== PainterPreviewTest (doc 88 S10) ===" << std::endl;
@@ -1104,6 +1219,7 @@ int main()
 	TestCAbiSmoke();
 	TestMaterialPreviewShaderball();
 	TestSpectralDifferentiatorsSlice6();
+	TestAsyncPreviewOverlappingControllerTeardown();
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

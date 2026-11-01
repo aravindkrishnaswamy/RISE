@@ -593,6 +593,14 @@ private:
 
 @implementation RISEViewportBridge {
     SceneEditController* _controller;
+    // Serializes off-main preview fetches (painterPreviewFor:, rampStripPreviewFor:,
+    // materialPreviewFor:, thinFilmAngleStripFor:, evaluateThinFilmFor:) against
+    // -shutdown's destruction of `_controller`, preventing a background thumbnail
+    // task from calling into a freed controller across scene reload/teardown.
+    // `_previewShuttingDown` is latched BEFORE `-shutdown` takes the mutex so
+    // queued/retrying background tasks bail out without starving `-shutdown`.
+    std::atomic<bool>    _previewShuttingDown;
+    std::mutex           _previewLifecycleMutex;
     RISEBridge*          _host;          // strong: we share its scene
     BOOL                 _ownsRunning;
 
@@ -695,6 +703,7 @@ private:
     if (!self) return nil;
 
     _host = host;
+    _previewShuttingDown.store(false, std::memory_order_relaxed);
     _ownsRunning = NO;
     _caster = nullptr;
     _polishCaster = nullptr;
@@ -1020,15 +1029,26 @@ private:
     delete _agentToolDispatcherPropose;
     _agentToolDispatcherPropose = nullptr;
 
-    if (_controller) {
+    _previewShuttingDown.store(true, std::memory_order_release);
+    SceneEditController* controllerToDestroy = nullptr;
+    {
+        // Drain any in-flight off-main preview fetch (PainterThumbnailCache
+        // background queue) and publish `_controller = nullptr` atomically
+        // under `_previewLifecycleMutex` BEFORE destroying the controller, so
+        // no background worker can enter or remain inside Get*Preview on a
+        // freed controller.
+        std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+        controllerToDestroy = _controller;
+        _controller = nullptr;
+    }
+    if (controllerToDestroy) {
         // Detach the dirty-changed listener BEFORE destroying the
         // controller so its captured `self` pointer can't fire into
         // a half-dealloc'd instance.  Pair-balances with the
         // setDirtyChangedBlock attach in `[setDirtyChangedBlock:]`.
         RISE_API_SceneEditController_SetDirtyChangedCallback(
-            _controller, nullptr, nullptr);
-        RISE_API_DestroySceneEditController(_controller);
-        _controller = nullptr;
+            controllerToDestroy, nullptr, nullptr);
+        RISE_API_DestroySceneEditController(controllerToDestroy);
     }
     _dirtyChangedBlock = nil;
     [self releaseLivePreview];
@@ -1662,16 +1682,21 @@ private:
                       wasScalar:(BOOL *)wasScalar
                        rangeMin:(double *)rangeMin
                        rangeMax:(double *)rangeMax {
-    if (!_controller || painterName.length == 0 || width == 0 || height == 0) return nil;
+    if (painterName.length == 0 || width == 0 || height == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
     NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
     bool scalar = false;
     double rmin = 0, rmax = 0;
-    if (!RISE_API_SceneEditController_PainterPreview(
-            _controller, painterName.UTF8String, static_cast<int>(defIndex),
-            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
-            static_cast<unsigned char *>(data.mutableBytes),
-            &scalar, &rmin, &rmax)) {
-        return nil;
+    {
+        std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+        if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
+        if (!RISE_API_SceneEditController_PainterPreview(
+                _controller, painterName.UTF8String, static_cast<int>(defIndex),
+                static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+                static_cast<unsigned char *>(data.mutableBytes),
+                &scalar, &rmin, &rmax)) {
+            return nil;
+        }
     }
     if (wasScalar) *wasScalar = scalar ? YES : NO;
     if (rangeMin) *rangeMin = rmin;
@@ -1682,8 +1707,11 @@ private:
 - (NSData *)rampStripPreviewFor:(NSString *)painterName
                             width:(NSUInteger)width
                            height:(NSUInteger)height {
-    if (!_controller || painterName.length == 0 || width == 0 || height == 0) return nil;
+    if (painterName.length == 0 || width == 0 || height == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
     NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+    if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
     if (!RISE_API_SceneEditController_RampStripPreview(
             _controller, painterName.UTF8String,
             static_cast<unsigned int>(width), static_cast<unsigned int>(height),
@@ -1696,8 +1724,11 @@ private:
 - (NSData *)materialPreviewFor:(NSString *)materialName
                           width:(NSUInteger)width
                          height:(NSUInteger)height {
-    if (!_controller || materialName.length == 0 || width == 0 || height == 0) return nil;
+    if (materialName.length == 0 || width == 0 || height == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
     NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+    if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
     if (!RISE_API_SceneEditController_MaterialPreview(
             _controller, materialName.UTF8String,
             static_cast<unsigned int>(width), static_cast<unsigned int>(height),
@@ -1712,8 +1743,11 @@ private:
                             height:(NSUInteger)height
                        thicknessNm:(double *)outThicknessNm
                            filmIor:(double *)outFilmIor {
-    if (!_controller || materialName.length == 0 || width == 0 || height == 0) return nil;
+    if (materialName.length == 0 || width == 0 || height == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
     NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+    if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
     if (!RISE_API_SceneEditController_ThinFilmAngleStrip(
             _controller, materialName.UTF8String,
             static_cast<unsigned int>(width), static_cast<unsigned int>(height),
@@ -1728,8 +1762,11 @@ private:
                        angleDeg:(double)angleDeg
                     thicknessNm:(double *)outThicknessNm
                         filmIor:(double *)outFilmIor {
-    if (!_controller || materialName.length == 0) return nil;
+    if (materialName.length == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
     NSMutableData *data = [NSMutableData dataWithLength:4];
+    std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+    if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
     if (!RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
             _controller, materialName.UTF8String, angleDeg,
             static_cast<unsigned char *>(data.mutableBytes),

@@ -483,16 +483,22 @@ ViewportBridge::~ViewportBridge()
         m_agentToolDispatcherPropose->Session()->AttachController(nullptr);
     }
     m_agentToolDispatcherPropose.reset();
-    if (m_controller) {
+    m_previewShuttingDown.store(true, std::memory_order_release);
+    SceneEditController* controllerToDestroy = nullptr;
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        controllerToDestroy = m_controller;
+        m_controller = nullptr;
+    }
+    if (controllerToDestroy) {
         // Phase 6.5: detach the dirty-changed C callback BEFORE the
         // controller (and its std::function listener) goes away so
         // the trampoline's captured `this` can't fire into a
         // half-deconstructed QObject.  Pair-balances the attach in
         // the constructor.
         RISE_API_SceneEditController_SetDirtyChangedCallback(
-            m_controller, nullptr, nullptr);
-        RISE_API_DestroySceneEditController(m_controller);
-        m_controller = nullptr;
+            controllerToDestroy, nullptr, nullptr);
+        RISE_API_DestroySceneEditController(controllerToDestroy);
     }
     releaseLivePreview();
 }
@@ -1145,16 +1151,21 @@ bool ViewportBridge::painterPreview( const QString& painterName, int defIndex,
                                       bool* outWasScalar, double* outRangeMin, double* outRangeMax ) const
 {
     outRGBA.clear();
-    if (!m_controller || painterName.isEmpty() || w == 0 || h == 0) return false;
+    if (painterName.isEmpty() || w == 0 || h == 0) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
     QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
     const QByteArray nameUtf8 = painterName.toUtf8();
     bool wasScalar = false;
     double rangeMin = 0, rangeMax = 0;
-    if (!RISE_API_SceneEditController_PainterPreview(
-            m_controller, nameUtf8.constData(), defIndex, w, h,
-            reinterpret_cast<unsigned char*>( buf.data() ),
-            &wasScalar, &rangeMin, &rangeMax)) {
-        return false;
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+        if (!RISE_API_SceneEditController_PainterPreview(
+                m_controller, nameUtf8.constData(), defIndex, w, h,
+                reinterpret_cast<unsigned char*>( buf.data() ),
+                &wasScalar, &rangeMin, &rangeMax)) {
+            return false;
+        }
     }
     outRGBA = buf;
     if (outWasScalar) *outWasScalar = wasScalar;
@@ -1168,13 +1179,18 @@ bool ViewportBridge::rampStripPreview( const QString& painterName,
                                         QByteArray& outRGBA ) const
 {
     outRGBA.clear();
-    if (!m_controller || painterName.isEmpty() || w == 0 || h == 0) return false;
+    if (painterName.isEmpty() || w == 0 || h == 0) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
     QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
     const QByteArray nameUtf8 = painterName.toUtf8();
-    if (!RISE_API_SceneEditController_RampStripPreview(
-            m_controller, nameUtf8.constData(), w, h,
-            reinterpret_cast<unsigned char*>( buf.data() ))) {
-        return false;
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+        if (!RISE_API_SceneEditController_RampStripPreview(
+                m_controller, nameUtf8.constData(), w, h,
+                reinterpret_cast<unsigned char*>( buf.data() ))) {
+            return false;
+        }
     }
     outRGBA = buf;
     return true;
@@ -1185,13 +1201,18 @@ bool ViewportBridge::materialPreview( const QString& materialName,
                                        QByteArray& outRGBA ) const
 {
     outRGBA.clear();
-    if (!m_controller || materialName.isEmpty() || w == 0 || h == 0) return false;
+    if (materialName.isEmpty() || w == 0 || h == 0) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
     QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
     const QByteArray nameUtf8 = materialName.toUtf8();
-    if (!RISE_API_SceneEditController_MaterialPreview(
-            m_controller, nameUtf8.constData(), w, h,
-            reinterpret_cast<unsigned char*>( buf.data() ))) {
-        return false;
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+        if (!RISE_API_SceneEditController_MaterialPreview(
+                m_controller, nameUtf8.constData(), w, h,
+                reinterpret_cast<unsigned char*>( buf.data() ))) {
+            return false;
+        }
     }
     outRGBA = buf;
     return true;
@@ -1204,14 +1225,19 @@ bool ViewportBridge::thinFilmAngleStrip( const QString& materialName,
                                          double* outFilmIor ) const
 {
     outRGBA.clear();
-    if (!m_controller || materialName.isEmpty() || w == 0 || h == 0) return false;
+    if (materialName.isEmpty() || w == 0 || h == 0) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
     QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
     const QByteArray nameUtf8 = materialName.toUtf8();
-    if (!RISE_API_SceneEditController_ThinFilmAngleStrip(
-            m_controller, nameUtf8.constData(), w, h,
-            reinterpret_cast<unsigned char*>( buf.data() ),
-            outThicknessNm, outFilmIor)) {
-        return false;
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+        if (!RISE_API_SceneEditController_ThinFilmAngleStrip(
+                m_controller, nameUtf8.constData(), w, h,
+                reinterpret_cast<unsigned char*>( buf.data() ),
+                outThicknessNm, outFilmIor)) {
+            return false;
+        }
     }
     outRGBA = buf;
     return true;
@@ -1223,8 +1249,11 @@ bool ViewportBridge::evaluateThinFilmAtAngle( const QString& materialName,
                                               double* outThicknessNm,
                                               double* outFilmIor ) const
 {
-    if (!m_controller || materialName.isEmpty() || !outRGBA) return false;
+    if (materialName.isEmpty() || !outRGBA) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
     const QByteArray nameUtf8 = materialName.toUtf8();
+    std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+    if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
     return RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
         m_controller, nameUtf8.constData(), angleDeg, outRGBA, outThicknessNm, outFilmIor);
 }

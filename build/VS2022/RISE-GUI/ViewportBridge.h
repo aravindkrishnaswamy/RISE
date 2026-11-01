@@ -19,8 +19,10 @@
 #include <QString>
 #include <QVector>
 #include <QtGlobal>
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 
 class RenderEngine;
@@ -1910,6 +1912,8 @@ private:
     // instead of writing into freed memory.
     QPointer<RenderEngine>    m_engine;
     RISE::SceneEditController* m_controller = nullptr;
+    std::atomic<bool>          m_previewShuttingDown{false};
+    mutable std::mutex         m_previewLifecycleMutex;
     RISE::IRayCaster*          m_caster = nullptr;        // preview caster, max-recursion 1
     RISE::IRayCaster*          m_polishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)
     RISE::IRasterizer*         m_interactiveRasterizer = nullptr;

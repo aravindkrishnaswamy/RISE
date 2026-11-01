@@ -937,11 +937,15 @@ SceneEditController::~SceneEditController()
 	// touching the partially-retired live scene/register state; lock-free getters
 	// continue to return their last coherent snapshot.
 	{
-		// Publish terminal closure under the ordinary mutation-admission mutex.
+		// Publish terminal closure under the ordinary mutation-admission mutex,
+		// and also take mMutex so any try_to_lock preview reader (GetPainterPreview /
+		// GetRampStripPreview / GetMaterialPreview / GetThinFilmAngleStrip /
+		// EvaluateThinFilmAtAngle) that entered before closure is drained first.
 		// The owner is still responsible for quiescing external callers before
 		// beginning C++ object destruction; this barrier serializes admission but
 		// does not replace the language-level lifetime rule.
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		std::lock_guard<std::mutex> drainPreviewLk( mMutex );
 		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
 		mRenderOwnsScene.store( true, std::memory_order_release );
 	}
@@ -1366,11 +1370,14 @@ bool SceneEditController::PrepareForDestructionClaimed_()
 	// Prepared->Destroying fast path would skip.
 	{
 		// Serialize gate publication with the admission phase of ordinary
-		// mutators.  As with every C++ object lifetime boundary, the owner must
-		// already have stopped/joined external callers; some mutation wrappers
-		// intentionally perform a state-only dirty-notification drain after
-		// releasing admission, so this is not a substitute for owner quiescence.
+		// mutators, and also take mMutex to drain any in-flight try_to_lock
+		// preview reader before PrepareForDestruction returns.  As with every
+		// C++ object lifetime boundary, the owner must already have stopped/joined
+		// external callers; some mutation wrappers intentionally perform a
+		// state-only dirty-notification drain after releasing admission, so this
+		// is not a substitute for owner quiescence.
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		std::lock_guard<std::mutex> drainPreviewLk( mMutex );
 		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
 		mRenderOwnsScene.store( true, std::memory_order_release );
 	}
@@ -7073,9 +7080,14 @@ bool SceneEditController::GetPainterPreview( const String& painterName, int defI
 	// heal; the caller (both shells) treats a refusal as "keep the last
 	// cached thumbnail, try again later."
 	outRGBA.clear();
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 
 	const PainterPreview::Result r = ( defIndex < 0 )
 		? PainterPreview::RenderPainterPreview( mJob, painterName, w, h )
@@ -7095,9 +7107,14 @@ bool SceneEditController::GetRampStripPreview( const String& painterName,
 {
 	// Same discipline as GetPainterPreview above.
 	outRGBA.clear();
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 
 	const PainterPreview::Result r = PainterPreview::RenderRampStripPreview( mJob, painterName, w, h );
 	if( r.status != PainterPreview::Status::Ok ) return false;
@@ -7111,9 +7128,14 @@ bool SceneEditController::GetMaterialPreview( const String& materialName,
                                               std::vector<unsigned char>& outRGBA ) const
 {
 	outRGBA.clear();
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 
 	const MaterialPreview::Result r = MaterialPreview::RenderMaterialPreview( mJob, materialName, w, h );
 	if( r.status != MaterialPreview::Status::Ok ) return false;
@@ -7131,9 +7153,14 @@ bool SceneEditController::GetThinFilmAngleStrip( const String& materialName,
 	outRGBA.clear();
 	if( outThicknessNm ) *outThicknessNm = 0.0;
 	if( outFilmIor )     *outFilmIor     = 1.0;
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 
 	const MaterialPreview::Result r = MaterialPreview::RenderThinFilmAngleStrip(
 		mJob, materialName, w, h, outThicknessNm, outFilmIor );
@@ -7153,9 +7180,14 @@ bool SceneEditController::EvaluateThinFilmAtAngle( const String& materialName,
 	if( outThicknessNm ) *outThicknessNm = 0.0;
 	if( outFilmIor )     *outFilmIor     = 1.0;
 	if( !outRGBA ) return false;
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
 
 	return MaterialPreview::EvaluateThinFilmAtAngle(
 		mJob, materialName, angleDeg, outRGBA, outThicknessNm, outFilmIor );
