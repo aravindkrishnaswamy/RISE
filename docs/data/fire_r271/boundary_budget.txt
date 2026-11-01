@@ -1,0 +1,34 @@
+== r270: last step step_015368.csv window 10.46604..25.0910 s (14.6250 s), 8901 steps
+ face set        stats_row_kg  step_sum_kg   mean_kg/s
+ xmin_in                  3.0050      3.0050     0.2055
+ xmin_out                 0.0762      0.0762     0.0052
+ xmax_in                  3.1576      3.1576     0.2159
+ xmax_out                 0.0823      0.0823     0.0056
+ ymin_in                  3.1613      3.1613     0.2162
+ ymin_out                 0.0778      0.0778     0.0053
+ ymax_in                  3.0399      3.0399     0.2079
+ ymax_out                 0.0865      0.0865     0.0059
+ top_in                   1.4948      1.4948     0.1022
+ top_out                 13.5293     13.5293     0.9251
+ bottom_burner_in         0.0096      0.0096     0.0007
+ bottom_nonburner_in      0.0000      0.0000     0.0000
+ bottom_nonburner_out     0.0000      0.0000     0.0000
+ sides: in 0.8454  out 0.0221  net in 0.8233 kg/s ; top: in 0.1022 out 0.9251 net out 0.8229 kg/s ; burner 0.00066 kg/s
+ per-step side inflow rate: mean(dt-weighted) 0.8454  std 0.0828  min 0.6631 max 1.0308 kg/s; side outflow rate std 0.0165
+== r264: last step step_015380.csv window 10.46604..25.0910 s (14.6250 s), 8902 steps
+ face set        stats_row_kg  step_sum_kg   mean_kg/s
+ xmin_in                  3.2037      3.2037     0.2191
+ xmin_out                 0.1023      0.1023     0.0070
+ xmax_in                  3.1465      3.1465     0.2151
+ xmax_out                 0.0860      0.0860     0.0059
+ ymin_in                  3.2340      3.2340     0.2211
+ ymin_out                 0.1004      0.1004     0.0069
+ ymax_in                  3.0457      3.0457     0.2083
+ ymax_out                 0.0688      0.0688     0.0047
+ top_in                   1.4773      1.4773     0.1010
+ top_out                 13.7574     13.7574     0.9407
+ bottom_burner_in         0.0096      0.0096     0.0007
+ bottom_nonburner_in      0.0000      0.0000     0.0000
+ bottom_nonburner_out     0.0000      0.0000     0.0000
+ sides: in 0.8636  out 0.0244  net in 0.8391 kg/s ; top: in 0.1010 out 0.9407 net out 0.8397 kg/s ; burner 0.00066 kg/s
+ per-step side inflow rate: mean(dt-weighted) 0.8636  std 0.0932  min 0.6949 max 1.1285 kg/s; side outflow rate std 0.0178

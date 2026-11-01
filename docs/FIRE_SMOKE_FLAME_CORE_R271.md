@@ -97,7 +97,74 @@ The capstone's 3.62 Hz and r266's 2.75 Hz came from different signals. The same 
   - **Centered momentum (r264) cut the grid-scale share from about 0.40 to about 0.22,** and it was also the change that partly restored entrainment. So the noise does not come from too little advective dissipation, and its level tracks the large-eddy deficit across runs.
 - **What this does and doesn't show.** The FDS discretisation damps 2Δ–4Δ velocity content and RISE's does not, and RISE carries much more of that content. Whether the noise is the cause of the weak puffing and low entrainment is not proven. It could also be a symptom of a grid-scale source, such as the per-cell expansion, which is noisier in RISE (§4).
 
+## 6. Side and top open boundaries do not limit the inflow (owner item c)
+
+Code comparison and data are in [`boundary_code.txt`](data/fire_r271/boundary_code.txt), [`boundary_budget.txt`](data/fire_r271/boundary_budget.txt) and [`boundary_profile.txt`](data/fire_r271/boundary_profile.txt). Scripts are `tools/fire/r271/boundary_*`.
+
+- **Same boundary physics.**
+  - Both codes hold total head at zero on inflow faces: RISE p̃_b = −½ρ∞|u|² and FDS H_b = 0. Both hold static pressure at zero on outflow faces.
+  - Both remove ambient hydrostatics and bring in ambient scalars.
+  - Domain and grid are identical: 69×69×106, dx 0.0306 m, centred.
+- **Second-order differences.**
+  - RISE zeroes tangential velocity on inflow faces where FDS uses free slip. `FIRE_SMOKE_DESIGN.md` §3.6 says zero normal gradient, so the code disagrees with the design.
+  - RISE's boundary-face momentum is not advected or viscously forced before projection.
+  - The inflow/outflow switch differs: RISE uses an active set, FDS the sign of the current velocity.
+- **Measured fluxes.** Face-level budgets, r270, time-mean kg/s: side net 0.823 and top net out 0.825. The outermost-cell estimate is within 1% of these.
+  - Top inflow is the same in both codes: 0.113 against FDS's 0.120.
+  - Only the plume's upward export differs: 0.938 against 1.277.
+  - The side inflow deficit (r270/FDS 0.64–0.81 by height band) is already fully present 0.3 m inside the boundary, with shell ratios 0.796 / 0.710 / 0.696 for z < 1, 1–2 and 2–3.24 m.
+  - 79% of the deficit enters above 1 m.
+- **Bound on any boundary effect.**
+  - RISE's instantaneous side outflow is higher: 4–12% of boundary cells against 0–4%, about 0.02–0.05 kg/s. Even with no outflow at all, its gross inflow of 0.884 kg/s stays far below FDS's 1.172.
+  - The inflow-head difference implied by RISE's larger fluctuations is about 0.001 Pa. The plume's own pressure deficit is 0.07–0.27 Pa.
+- **Verdict.** The boundaries pass what the plume demands; the deficit is plume demand. Zero tangential inflow velocity plausibly explains RISE's weaker vertical flow along the walls and is worth fixing to match the design. It is not the entrainment cause.
+
+## 7. Compact viscous stencil, prepared for A/B (not adopted)
+
+**Change.** The change is uncommitted, in `src/Library/Utilities/FireProductionForceMac.mm` and `tests/FireSequenceTest.cpp`. Setting `RISE_FIRE_COMPACT_VISCOUS_STENCIL=1` selects three new Metal kernels when the force context is built: `build_stress_compact`, `build_stress_fixed_mu_compact` and `build_face_force_compact`. They follow FDS 6.11 `velo.f90`:
+- **Vreman ν_sgs** uses compact face differences on the diagonal gradients and keeps the averaged central differences off the diagonal.
+- **Normal stresses** are computed at cell centres.
+- **Shear stresses** are computed on cell edges, with edge μ the mean of the adjacent cells.
+- **Ghosts:** a wall gives −u (no slip), an open boundary zero gradient, a periodic boundary wraps.
+
+**Unchanged.** The legacy kernels, the pipeline lines checked by `FireProductionSolverTest`, the CPU reference, the scalar SGS diffusivity (still the legacy gradient) and the viscous stability bound. With λ = 24·μ_max·(1/ρ)_max/Δ², the bound still covers the compact operator, whose spectral radius is about 16ν/Δ². The launch receipt records `viscous_stencil r271-compact-mac-v1` when the switch is set. The kernel-set hash is source-based and does not distinguish the two.
+
+**Checks.**
+- **Fourier check** ([`compact_stencil_check.cpp`](../tools/fire/r271/compact_stencil_check.cpp), output in [`compact_stencil_check.txt`](data/fire_r271/compact_stencil_check.txt)). On a periodic 8³ box the production Metal RHS gives:
+
+| Mode | Legacy | Compact | Compact symbol | Continuum |
+|---|---:|---:|---:|---:|
+| Shear, 8Δ wave | 50.0 | 58.58 | 58.58 | 61.7 |
+| Shear, 2Δ checkerboard | **0** | 400.0 | 400.0 | 987 |
+| Normal, 8Δ wave | 66.7 | 78.1 | 78.1 | 82.2 |
+| Normal, 2Δ checkerboard | **0** | 533.3 | 533.3 | 1316 |
+
+  This confirms that the production operator applies no viscous damping at all to a 2Δ checkerboard.
+- **Bounded check.** With uniform u_x, open sides, a no-slip floor and an open top, the compact stencil gives −2/Δ² in the floor layer and 0 elsewhere. Legacy gives −1/Δ² at the floor and a spurious +0.5/Δ² in the second layer.
+- **Switch off.** 25 tier-8 production steps are byte-identical in every budget data row to the r264/r270 binary. Only the identity hashes change, because the kernel source is hashed (`FireProductionAdvectionMac.mm:9432`).
+- **Switch on, floor on.** 25 production steps ran without error. The maximum velocity matches r270 to the fourth digit, as expected from a fluid starting at rest.
+- **`FireProductionSolverTest`** shows the same 12 failures at HEAD (a baseline built from a detached HEAD worktree) and with the change. No new failures.
+
+**Independent review.** No P1 findings. Fixed:
+- On wall edges du_n/dx_t is now zero, as in FDS (`DUIDXJ_USE=0`). Before this, the burner rim added a stress of order μ·w_inlet/Δ on floor edges.
+- The periodic transverse face wraps to 0.
+- The legacy-only velocity-trace qualification now refuses with the switch on, rather than failing a memcmp.
+- The receipt line now comes from the force context's actual selection (`FireProductionForceMetalCompactViscousStencil()`) and is absent when the switch is off, so legacy receipts are byte-unchanged.
+- `--fire-production-manifest-rebuild` refuses a stencil that disagrees with the run's receipt.
+
+Known limits of the A/B, recorded rather than changed:
+- **It is "compact momentum operator only".** The scalar SGS diffusivity still uses the legacy gradient, so effective Pr_t and Sc_t differ from 0.7 where grid-scale content is high.
+- **The wall is no-slip,** as RISE has always had it. FDS's LES default is a log-law wall model.
+- **The normal stress uses the current discrete divergence,** not FDS's constraint divergence.
+- **Stability.** The diffusive step limit dt ≤ Δ²/(8ν) gives dt·λ ≤ 2 against the compact spectral radius of 16ν/Δ², which is the RK2 boundary in the worst case. Production steps are source-limited at 0.00165 s, about 70× below that limit.
+- **CPU and FP64 reference owners stay legacy.** They are qualification-only, so CPU-vs-Metal parity tests would fail if the variable leaked into a test run.
+
+The patch for owner review is [`compact_stencil.patch`](data/fire_r271/compact_stencil.patch). It is uncommitted in `src/` and `tests/` until approved.
+
 ## Next (owner decisions)
 
-1. **A/B test, a production solver change, so for owner review first:** compute the Vreman gradients and the viscous stress divergence on FDS's compact MAC stencil. Then run about 4 s from the r270 state, and compare the grid-scale share, puffing strength, entrainment and θ_c with the current operator.
-2. **Item (c): side open-boundary pressure and inflow,** read-only. It can run before or alongside the A/B.
+1. **The A/B run.** Run one arm with `RISE_FIRE_COMPACT_VISCOUS_STENCIL=1` and the floor on, from an r270 checkpoint near 15 s, for 4 s of simulated time. That is about 2,400 steps, or about 3.7 h.
+   - **Baseline:** r270's own frames over the same window. A switch-off run is byte-identical to r270's physics, so no second arm is needed.
+   - **Compare:** grid-scale w share, puffing strength, entrainment (upward mass flux and side inflow), θ_c and flame height.
+   - **Launch:** the capstone has no resume mode, so this needs a resume harness adapted from r260/r262 (`tools/fire/r262_build_combined.py`).
+2. **Possible follow-up from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor and separate from the A/B.
