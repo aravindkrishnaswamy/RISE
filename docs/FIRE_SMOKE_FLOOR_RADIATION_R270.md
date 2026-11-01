@@ -214,5 +214,5 @@ These points differ from §3:
 
 ## Next (owner decisions)
 
-- **Keep the floor on?** Recommended: keep ε = 1 for the FDS comparisons from here on. It removes a boundary-condition mismatch and changes the near field the way FDS predicts.
+- **Floor stays on (owner decision, 2026-10-31):** ε = 1 for the FDS comparisons from here on (`RISE_FIRE_FLOOR_EMISSIVITY=1`).
 - **Look at the flame core next.** The remaining gap is the hot, long core, plus the far-plume turbulence deficit (r266). Both lie outside the floor model; r265's reaction structure is the starting point.

@@ -37,6 +37,7 @@ pages are a historical log, not instructions.
   - McCaffrey still fails on every temperature station, and 17 velocity stations now fail too.
   - The far plume is unchanged.
   - The floor is therefore not the cause of the long, hot core.
+  - **Owner decision (2026-10-31): keep the floor on** (`RISE_FIRE_FLOOR_EMISSIVITY=1`) for all further FDS comparisons.
   - A capstone finalisation bug (manifest case without the floor) is fixed, and the run's manifest is rebuilt.
 
 [r268 step profile](FIRE_SMOKE_STEP_PROFILE_R268.md):
