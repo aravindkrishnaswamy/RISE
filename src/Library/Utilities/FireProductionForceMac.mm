@@ -303,6 +303,100 @@ kernel void build_stress_fixed_mu(device const float* cellVelocity [[buffer(0)]]
   stress[(3u*c+d)*cells+gid]=dynamicViscosity*(gradient[d][c]+gradient[c][d]-
    (c==d?(2.0f/3.0f)*divergence:0.0f));
 }
+// r271: compact MAC viscous stencil (opt-in A/B), transcribing FDS 6.11 velo.f90.
+// Diagonal gradients are compact face differences; normal stresses live at cell
+// centers and shear stresses on cell edges with the mean mu of adjacent cells.
+inline void compact_gradient(device const float* cellVelocity,device const float* faceVelocity,
+ constant Params& p,uint x,uint y,uint z,thread float (&gradient)[3][3],thread float& divergence){
+ divergence=0.0f;
+ for(uint d=0u;d<3u;++d){for(uint c=0u;c<3u;++c){
+  if(c==d){uint hi[3]={x,y,z};++hi[c];
+   gradient[d][c]=(faceVelocity[face_index(p,c,hi[0],hi[1],hi[2])]-faceVelocity[face_index(p,c,x,y,z)])/p.dx;}
+  else gradient[d][c]=(neighbor_velocity(cellVelocity,p,c,x,y,z,d,1)-
+   neighbor_velocity(cellVelocity,p,c,x,y,z,d,-1))/(2.0f*p.dx);
+ } divergence+=gradient[d][d];}
+}
+kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
+ device const float* cellDensity [[buffer(1)]],device const float* molecularNu [[buffer(2)]],
+ device float* eddy [[buffer(3)]],device float* muOut [[buffer(4)]],
+ device float* stress [[buffer(5)]],constant Params& p [[buffer(6)]],
+ device const float* faceVelocity [[buffer(7)]],device const uchar* burner [[buffer(8)]],
+ uint gid [[thread_position_in_grid]]){
+ uint cells=p.nx*p.ny*p.nz;if(gid>=cells)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
+ float gradient[3][3];float divergence;compact_gradient(cellVelocity,faceVelocity,p,x,y,z,gradient,divergence);
+ float alphaSquared=0.0f,beta[3][3]={{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f}};
+ for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)alphaSquared+=gradient[i][j]*gradient[i][j];
+ float widthSquared=p.dx*p.dx;
+ for(uint m=0u;m<3u;++m)for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)
+  beta[i][j]+=widthSquared*gradient[m][i]*gradient[m][j];
+ float raw=beta[0][0]*beta[1][1]-beta[0][1]*beta[0][1]+
+  beta[0][0]*beta[2][2]-beta[0][2]*beta[0][2]+
+  beta[1][1]*beta[2][2]-beta[1][2]*beta[1][2];
+ float nuEddy=alphaSquared==0.0f?0.0f:p.cv*sqrt(max(0.0f,raw)/alphaSquared);
+ float mu=cellDensity[gid]*(molecularNu[gid]+nuEddy);eddy[gid]=nuEddy;muOut[gid]=mu;
+ for(uint c=0u;c<3u;++c)for(uint d=0u;d<3u;++d)
+  stress[(3u*c+d)*cells+gid]=c==d?mu*(2.0f*gradient[c][c]-(2.0f/3.0f)*divergence):0.0f;
+}
+kernel void build_stress_fixed_mu_compact(device const float* cellVelocity [[buffer(0)]],
+ device const float* mu [[buffer(1)]],device float* stress [[buffer(2)]],
+ constant Params& p [[buffer(3)]],device const float* faceVelocity [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){
+ uint cells=p.nx*p.ny*p.nz;if(gid>=cells)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
+ float gradient[3][3];float divergence;compact_gradient(cellVelocity,faceVelocity,p,x,y,z,gradient,divergence);
+ float dynamicViscosity=mu[gid];
+ for(uint c=0u;c<3u;++c)for(uint d=0u;d<3u;++d)
+  stress[(3u*c+d)*cells+gid]=c==d?dynamicViscosity*(2.0f*gradient[c][c]-(2.0f/3.0f)*divergence):0.0f;
+}
+// Shear stress tau_cd on the edge at d-index e of the c-face whose adjacent cells
+// along c are left[c] and right[c]. Ghosts: wall -u (no slip), open u, periodic wrap.
+// On a wall edge du_d/dx_c is zero, as in FDS (velo.f90 DUIDXJ_USE=0 at walls).
+inline float compact_edge_shear(device const float* faceVelocity,device const float* mu,
+ constant Params& p,uint c,uint d,thread const uint (&right)[3],thread const uint (&left)[3],uint e){
+ uint n=extent(p,d),bLow=p.boundary[2u*d],bHigh=p.boundary[2u*d+1u];
+ uint plusXYZ[3]={right[0],right[1],right[2]},minusXYZ[3]={right[0],right[1],right[2]};
+ bool plusExists=e<n||bHigh==0u,minusExists=e>0u||bLow==0u;
+ plusXYZ[d]=e<n?e:0u;minusXYZ[d]=e>0u?e-1u:n-1u;
+ float plus=plusExists?faceVelocity[face_index(p,c,plusXYZ[0],plusXYZ[1],plusXYZ[2])]:0.0f;
+ float minus=minusExists?faceVelocity[face_index(p,c,minusXYZ[0],minusXYZ[1],minusXYZ[2])]:0.0f;
+ if(!plusExists)plus=bHigh==2u?-minus:minus;
+ if(!minusExists)minus=bLow==2u?-plus:plus;
+ uint rightFace[3]={right[0],right[1],right[2]},leftFace[3]={left[0],left[1],left[2]};
+ uint faceE=e==n&&bHigh==0u?0u:e;rightFace[d]=faceE;leftFace[d]=faceE;
+ bool wallEdge=(e==0u&&bLow==2u)||(e==n&&bHigh==2u);
+ float transverse=wallEdge?0.0f:(faceVelocity[face_index(p,d,rightFace[0],rightFace[1],rightFace[2])]-
+  faceVelocity[face_index(p,d,leftFace[0],leftFace[1],leftFace[2])])/p.dx;
+ float viscosity=0.0f,count=0.0f;
+ if(plusExists){viscosity+=mu[cell_index(p,plusXYZ[0],plusXYZ[1],plusXYZ[2])];
+  uint l[3]={left[0],left[1],left[2]};l[d]=plusXYZ[d];viscosity+=mu[cell_index(p,l[0],l[1],l[2])];count+=2.0f;}
+ if(minusExists){viscosity+=mu[cell_index(p,minusXYZ[0],minusXYZ[1],minusXYZ[2])];
+  uint l[3]={left[0],left[1],left[2]};l[d]=minusXYZ[d];viscosity+=mu[cell_index(p,l[0],l[1],l[2])];count+=2.0f;}
+ return (viscosity/count)*((plus-minus)/p.dx+transverse);
+}
+kernel void build_face_force_compact(device const float* faceDensity [[buffer(0)]],
+ device const float* stress [[buffer(1)]],device float* viscous [[buffer(2)]],
+ device float* gravity [[buffer(3)]],constant Params& p [[buffer(4)]],
+ device const uchar* burner [[buffer(5)]],device const float* faceVelocity [[buffer(6)]],
+ device const float* mu [[buffer(7)]],
+ uint gid [[thread_position_in_grid]]){
+ if(gid>=p.totalFaces)return;uint component=face_axis(p,gid),local=gid-p.faceOffset[component];
+ uint x,y,z;face_coordinate(p,component,local,x,y,z);uint xyz[3]={x,y,z};
+ uint normal=xyz[component],n=extent(p,component);bool periodic=p.boundary[2u*component]==0u;
+ if(periodic&&normal==n)return;bool wall=(normal==0u&&p.boundary[2u*component]==2u)||
+  (normal==n&&p.boundary[2u*component+1u]==2u);
+ bool inlet=p.burnerFaces!=0u&&component==2u&&normal==0u&&burner[y*p.nx+x]!=0u;
+ float gravityValue=wall&&!inlet?0.0f:p.dt*(faceDensity[gid]-p.ambient)*p.gravity[component];gravity[gid]=gravityValue;
+ float value=0.0f;
+ if((normal!=0u||periodic)&&normal!=n){uint leftXYZ[3]={x,y,z};leftXYZ[component]=normal==0u?n-1u:normal-1u;
+  uint left=cell_index(p,leftXYZ[0],leftXYZ[1],leftXYZ[2]),right=cell_index(p,x,y,z),cells=p.nx*p.ny*p.nz;
+  value=(stress[(3u*component+component)*cells+right]-stress[(3u*component+component)*cells+left])/p.dx;
+  for(uint d=0u;d<3u;++d)if(d!=component)
+   value+=(compact_edge_shear(faceVelocity,mu,p,component,d,xyz,leftXYZ,xyz[d]+1u)-
+    compact_edge_shear(faceVelocity,mu,p,component,d,xyz,leftXYZ,xyz[d]))/p.dx;
+ }
+ viscous[gid]=value;
+ if(periodic&&normal==0u){uint highXYZ[3]={x,y,z};highXYZ[component]=n;
+ uint high=face_index(p,component,highXYZ[0],highXYZ[1],highXYZ[2]);viscous[high]=value;gravity[high]=gravityValue;}
+}
 kernel void prepare_max_mu(device const float* mu [[buffer(0)]],device float* scratch [[buffer(1)]],
  constant Params& p [[buffer(2)]],uint gid [[thread_position_in_grid]]){
  uint cells=p.nx*p.ny*p.nz;scratch[gid]=gid<cells?mu[gid]:0.0f;
@@ -363,9 +457,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 			id<MTLComputePipelineState> setupFace,cellVelocity,stress,faceForce,phaseSource,fixedStress,
 				prepareMu,prepareInverseDensity,reduceMax,storeMaximum,buildLambda,
 				updateViscous,addGravity,snapshot;
+			bool compactViscousStencil;
 			std::string error;
 
-			ForceContext() : device(nil)
+			ForceContext() : device(nil),compactViscousStencil(false)
 			{
 				ForceContextConstructionAttempts.fetch_add(1u,std::memory_order_relaxed);
 				device=MTLCreateSystemDefaultDevice();
@@ -396,6 +491,14 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				reduceMax=pipeline("reduce_max_pair");storeMaximum=pipeline("store_maximum");
 				buildLambda=pipeline("build_lambda");updateViscous=pipeline("update_viscous_momentum");
 				addGravity=pipeline("add_gravity_momentum");snapshot=pipeline("snapshot_momentum");
+				// r271 A/B: the opt-in compact MAC stencil replaces the stress and
+				// face-force kernels; the selection is fixed for the process.
+				const char* compactOption=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
+				compactViscousStencil=compactOption&&std::string(compactOption)=="1";
+				if( compactViscousStencil ) {
+					stress=pipeline("build_stress_compact");faceForce=pipeline("build_face_force_compact");
+					fixedStress=pipeline("build_stress_fixed_mu_compact");
+				}
 			}
 			bool Valid() const {return device&&queue&&setupFace&&cellVelocity&&stress&&faceForce&&phaseSource&&
 				fixedStress&&prepareMu&&prepareInverseDensity&&reduceMax&&storeMaximum&&buildLambda&&
@@ -632,11 +735,11 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters,faceRho};
 				const id<MTLBuffer> cellBuffers[]={faceVelocity,cellVelocity,parameters};
 				const id<MTLBuffer> stressBuffers[]={cellVelocity,rho,nu,eddy,mu,stress,parameters,faceVelocity,faceRho};
-				const id<MTLBuffer> forceBuffers[]={faceRho,stress,viscous,gravity,parameters,faceRho};
+				const id<MTLBuffer> forceBuffers[]={faceRho,stress,viscous,gravity,parameters,faceRho,faceVelocity,mu};
 				if( !encode(context.setupFace,setupBuffers,5u,faces)||
 					!encode(context.cellVelocity,cellBuffers,3u,cells)||
 					!encode(context.stress,stressBuffers,9u,cells)||
-					!encode(context.faceForce,forceBuffers,6u,faces) )
+					!encode(context.faceForce,forceBuffers,8u,faces) )
 					return Fail(error,"production frozen-force Metal encoder allocation failed");
 				[command commit];[command waitUntilCompleted];
 				if( InjectedFailure("command")||[command status]!=MTLCommandBufferStatusCompleted ) {
@@ -803,7 +906,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					computed.stressTensorPa,parameters,computed.faceVelocityMPerS,burner};
 				const id<MTLBuffer> forceBuffers[]={input.packedFaceDensityKGPerM3,
 					computed.stressTensorPa,computed.stressMomentumRateKGPerM2S2,
-					computed.buoyancyMomentumRateKGPerM2S2,parameters,burner};
+					computed.buoyancyMomentumRateKGPerM2S2,parameters,burner,
+					computed.faceVelocityMPerS,computed.effectiveDynamicViscosityPaS};
 				const id<MTLBuffer> phaseBuffers[]={input.cellGasPhaseSourceRateKGPerM3S,
 					computed.faceVelocityMPerS,computed.stressMomentumRateKGPerM2S2,
 					computed.buoyancyMomentumRateKGPerM2S2,
@@ -812,7 +916,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				if( !encode(context.setupFace,setupBuffers,5u,faces)||
 					!encode(context.cellVelocity,cellBuffers,3u,cells)||
 					!encode(context.stress,stressBuffers,9u,cells)||
-					!encode(context.faceForce,forceBuffers,6u,faces)||
+					!encode(context.faceForce,forceBuffers,8u,faces)||
 					!encode(context.phaseSource,phaseBuffers,8u,faces) ) return Fail(error,
 						"production resident nonpressure momentum encoder failed");
 				computed.privateAllocationBytes=actual;result=computed;
@@ -1111,7 +1215,12 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		FireProductionNonpressureMomentumRHSResult& result,
 		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
 		FireProductionForceVelocityTrace& trace,std::string* error)
-	{return EvaluateNonpressureMomentumMetalComparator(request,result,diagnostics,error,&trace);}
+	{
+		// The trace clones the legacy stress kernel, so it cannot observe the r271 stencil.
+		if( Context().compactViscousStencil )
+			return Fail(error,"production force velocity trace has no compact viscous stencil clone");
+		return EvaluateNonpressureMomentumMetalComparator(request,result,diagnostics,error,&trace);
+	}
 
 	bool AdvanceFireProductionFrozenForceMetalImpl(
 		const FireProductionFrozenForceRequest& request,
@@ -1353,11 +1462,11 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters,faceRho};
 				const id<MTLBuffer> cellBuffers[]={faceVelocity,cellVelocity,parameters};
 				const id<MTLBuffer> stressBuffers[]={cellVelocity,rho,nu,eddy,mu,stress,parameters,faceVelocity,faceRho};
-				const id<MTLBuffer> forceBuffers[]={faceRho,stress,viscous,gravity,parameters,faceRho};
+				const id<MTLBuffer> forceBuffers[]={faceRho,stress,viscous,gravity,parameters,faceRho,faceVelocity,mu};
 				if( !begin(preflight,context.setupFace,setupBuffers,5u,faces)||
 					!begin(preflight,context.cellVelocity,cellBuffers,3u,cells)||
 					!begin(preflight,context.stress,stressBuffers,9u,cells)||
-					!begin(preflight,context.faceForce,forceBuffers,6u,faces) )
+					!begin(preflight,context.faceForce,forceBuffers,8u,faces) )
 					return Fail(error,"production resident force preflight encoder failed");
 				const std::uint32_t beginningSlot=0u;
 				const id<MTLBuffer> beginningBuffers[]={viscous,beginningViscous,parameters};
@@ -1422,9 +1531,9 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					if( !begin(advance,context.setupFace,setupBuffers,5u,faces)||
 						!begin(advance,context.cellVelocity,cellBuffers,3u,cells) )
 						return Fail(error,"production resident force substep velocity encoder failed");
-					const id<MTLBuffer> fixedStressBuffers[]={cellVelocity,mu,stress,parameters};
-					if( !begin(advance,context.fixedStress,fixedStressBuffers,4u,cells)||
-						!begin(advance,context.faceForce,forceBuffers,6u,faces) )
+					const id<MTLBuffer> fixedStressBuffers[]={cellVelocity,mu,stress,parameters,faceVelocity};
+					if( !begin(advance,context.fixedStress,fixedStressBuffers,5u,cells)||
+						!begin(advance,context.faceForce,forceBuffers,8u,faces) )
 						return Fail(error,"production resident force substep operator encoder failed");
 					const id<MTLBuffer> updateBuffers[]={momentum,viscous,parameters};
 					if( !begin(advance,context.updateViscous,updateBuffers,3u,faces,
@@ -1742,6 +1851,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		FireProductionResidentForceDiagnostics unpublishedDiagnostics;
 		return AdvanceFireProductionFrozenForceMetalImpl(forceRequest,false,&divergenceTargetPerS,
 			&result,0,unpublishedForce,unpublishedDiagnostics,error);
+	}
+	bool FireProductionForceMetalCompactViscousStencil()
+	{
+		ForceContext& context=Context();return context.Valid()&&context.compactViscousStencil;
 	}
 	std::string FireProductionForceMetalKernelSourceSHA256()
 	{

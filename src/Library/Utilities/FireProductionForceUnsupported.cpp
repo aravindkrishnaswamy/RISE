@@ -12,6 +12,8 @@
 
 namespace RISE
 {
+	bool FireProductionForceMetalCompactViscousStencil() { return false; }
+
 	bool BuildFireProductionFrozenForceFieldsMetal(
 		const FireProductionFrozenForceRequest&,
 		FireProductionFrozenForceResult& result,

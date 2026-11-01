@@ -42,6 +42,9 @@ namespace RISEFireProductionFP64
 	//! Identity of the exact source compiled by the resident force library.
 	std::string FireProductionForceMetalKernelSourceSHA256();
 #endif
+	//! r271 A/B: true when this process's force context selected the opt-in
+	//! compact MAC viscous stencil (RISE_FIRE_COMPACT_VISCOUS_STENCIL=1).
+	bool FireProductionForceMetalCompactViscousStencil();
 	//! Shared bound for fail-closed step reductions.  The binary64 trajectory
 	//! owner and the production manifold owner use the same rejection budget.
 	constexpr unsigned int FireStepRejectionRetryCap=20u;

@@ -11725,6 +11725,9 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		if(r246TopDouble)WriteR246WindowIdentity(receipt,launchCase,window);
 		else if(r244LateralDouble)receipt<<"domain_study r244-lateral-double-v1\n";
 		if(r245AcceptedBudget)receipt<<"accepted_stage_budget r245-v1\n";
+		// r271 A/B: the opt-in compact viscous stencil does not change the case or
+		// the kernel-set source identity, so the receipt records the selection.
+		if(FireProductionForceMetalCompactViscousStencil())receipt<<"viscous_stencil r271-compact-mac-v1\n";
 		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
 			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
 			<<"case_record_id "<<launchCase.caseRecordId<<"\nresolution_tier "<<resolutionTier<<'\n'
@@ -11877,10 +11880,14 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		std::string receiptCaseId;
 		{
 			std::ifstream receipt(runDirectory/"window_launch.v1");std::string key,value;
+			bool receiptCompact=false;
 			while(receipt>>key>>value){
 				if(key=="domain_study")return 91;
 				if(key=="case_record_id")receiptCaseId=value;
+				if(key=="viscous_stencil")receiptCompact=value=="r271-compact-mac-v1";
 			}
+			// A rebuild never mixes viscous stencils with the run it describes.
+			if(receiptCompact!=FireProductionForceMetalCompactViscousStencil())return 91;
 		}
 		if(receiptCaseId.size()!=64u)return 95;
 		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
