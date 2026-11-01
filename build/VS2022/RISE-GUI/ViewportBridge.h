@@ -1160,6 +1160,8 @@ public:
     /// produced it (see `SceneTreeNode`'s own header comment for why -- the
     /// same rule applies here for the same reason).
     struct PainterGraphPort {
+        int portPipe = 7;
+        bool portColorAlsoAcceptsScalar = false;
         QString paramName;
         int     occurrence     = 0;
         int     otherNodeIndex = -1;
@@ -1180,6 +1182,7 @@ public:
     /// user last selected" after a re-fetch should hold THIS, never an
     /// `outEdges[i].otherNodeIndex`.
     struct PainterGraphNode {
+        int outputPipe = 7;
         quint64 handle   = 0;
         QString name;
         QString chunkKeyword;   ///< e.g. "ramp_painter" -- always non-blank for a real node
@@ -1209,6 +1212,7 @@ public:
     /// own `outEdges`/`inEdges` (`PainterGraphPort` already carries both
     /// endpoints + the param label, everything needed to draw a wire).
     struct PainterGraph {
+        bool snapshotFresh = true;
         QVector<PainterGraphNode> nodes;
         quint64                   generation = 0;
     };
@@ -1300,14 +1304,11 @@ public:
     /// ambiguous `(category, name)` -- same refusal convention as
     /// ResolveUniqueGraphNodeIndex.
     ///
-    /// `degraded` -- the SAME contract appearanceClosureForObject()
-    /// documents just above: set true ONLY when the Object-category
-    /// case's live object->material resolution could not get a
-    /// non-blocking hold of the commit lock (a render owns the scene);
-    /// false on every other outcome, including a genuinely empty result.
-    /// The non-Object case never degrades this way (a canvas-node lookup
-    /// never touches the live object/material manager). Defaults to
-    /// nullptr.
+    /// `degraded` is true when graph refresh serves cached data under
+    /// render ownership or scene-mutex contention, for ANY category.
+    /// Object focus can also degrade during live material resolution.
+    /// Preserve the displayed graph and retry. Genuinely unknown/ambiguous
+    /// targets are empty, non-degraded results. Defaults to nullptr.
     ///
     /// LAYOUT IS TRANSIENT: this NEVER reads or writes the
     /// .risegraph.json sidecar -- see the C++ method's own comment.
@@ -1345,11 +1346,10 @@ public:
     /// includes `rect_light`/`shape_light` nodes, per `objectGraph()`'s
     /// own comment).
     ///
-    /// `degraded` -- the SAME contract `painterMaterialGraphFocused()`
-    /// documents: set true ONLY when `mRenderOwnsScene` was observed true
-    /// at the top of the C++ call (a render owns the scene right now);
-    /// false on every other outcome, including a genuinely empty result.
-    /// Defaults to nullptr.
+    /// `degraded` is true while render ownership or scene-mutex contention
+    /// prevents a fresh graph read. Preserve the displayed graph and retry.
+    /// Unknown/ambiguous targets are empty, non-degraded results. Defaults
+    /// to nullptr.
     ///
     /// LAYOUT IS TRANSIENT -- same as `objectGraph()` itself (this graph
     /// has no sidecar to read OR write at all, focused or not).
@@ -1576,6 +1576,7 @@ public:
         QString       message;
         RewireClosure closure = RewireClosure::Clean;
         bool          legalityRefused = false;
+        bool          canInsertScalarAdapter = false;
         bool          cycleRefused = false;
         QStringList   sharedChunks;             ///< sect. 3.7a (a)
         QStringList   outOfClosureReferrers;    ///< sect. 3.7a (b)
@@ -1589,6 +1590,13 @@ public:
         QStringList   nowUnreferenced;
     };
 
+    /// Insert an R-channel scalar_painter and bind the target in one undo step.
+    /// A diagnosed result can change the document despite reporting failure;
+    /// the inserted name is still returned, and Undo remains available.
+    bool insertScalarAdapterAndRewire(int targetCategory, const QString& targetName,
+        const QString& param, int occurrence, int sourceCategory, const QString& sourceName,
+        QString* outAdapterName, QString* outMessage = nullptr);
+
     /// Re-point `targetName`.`param` (occurrence `occurrence`, 0 for the
     /// only occurrence) at `newRefName`, as ONE undoable commit.  The
     /// category arguments are `RISE::ChunkCategory` ordinals -- the SAME
@@ -1599,6 +1607,7 @@ public:
     /// `outcome.closure` to decide what to offer (a `SharedTarget`
     /// refusal is the one the Duplicate-node escape hatch unblocks).
     /// Returns `applied`; `outOutcome` (optional) receives the detail.
+
     bool rewireConnection(int targetCategory, const QString& targetName,
                            const QString& param, int occurrence,
                            int newRefCategory, const QString& newRefName,

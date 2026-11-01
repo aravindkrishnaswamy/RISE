@@ -83,6 +83,8 @@ import UniformTypeIdentifiers
 
 /// One reference-param slot, decoded from `RISEGraphPort`.
 private struct GraphCanvasPort {
+    let portPipe: Int
+    let portColorAlsoAcceptsScalar: Bool
     let paramName: String
     let occurrence: Int
     /// -1 for a node-less (dangling, or out-of-modeled-category) port.
@@ -106,6 +108,7 @@ private struct GraphCanvasNode: Identifiable {
     /// (the only three this graph models -- SceneEditController's own
     /// `BuildPainterMaterialGraphSeedsLocked_` comment).
     let category: Int
+    let outputPipe: Int
     let defCount: Int
     /// Top-left anchor in graph space (GraphLayout's rank*columnSpacing /
     /// rowSlot*rowSpacing grid; both always >= 0 by construction). `var`
@@ -242,6 +245,17 @@ private func graphInputPortAnchors(nodePosition: CGPoint, outEdgeCount: Int) -> 
 /// since they're never adjacent nodes on one canvas the way they are
 /// here, where telling a painter box from a material box at a glance is
 /// the whole point).
+/// RISE::ParameterPipe ordinals shared by both desktop bridges.
+private func graphPipeTint(_ pipe: Int, category: Int) -> Color {
+    switch pipe {
+    case 1: return Theme.gold
+    case 2: return Theme.textDim
+    case 3: return Theme.success
+    case 4, 5: return Theme.purple
+    default: return graphCategoryTint(category)
+    }
+}
+
 private func graphCategoryTint(_ category: Int) -> Color {
     switch category {
     case 2: return Theme.catMaterial   // Material
@@ -297,6 +311,7 @@ private struct WireDragState {
 /// escape hatch, made interactive here per S21's brief).
 private struct WireRefusalState: Identifiable {
     let id = UUID()
+    let originBridge: RISEViewportBridge
     let outcome: RISERewireOutcome
     let target: WirePortTarget
     let sourceHandle: UInt64
@@ -313,6 +328,7 @@ private struct WireRefusalPanel: View {
     let state: WireRefusalState
     let onDismiss: () -> Void
     let onDuplicateAndRetry: () -> Void
+    let onInsertScalarAdapter: () -> Void
 
     private var outcome: RISERewireOutcome { state.outcome }
 
@@ -345,6 +361,11 @@ private struct WireRefusalPanel: View {
                     .buttonStyle(.plain)
                     .foregroundColor(Theme.textDim)
                     .padding(.horizontal, 10).padding(.vertical, 5)
+                if outcome.canInsertScalarAdapter {
+                    Button("Insert scalar_painter Adapter & Wire", action: onInsertScalarAdapter)
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                }
                 if outcome.closure == .sharedTarget {
                     Button {
                         onDuplicateAndRetry()
@@ -390,6 +411,8 @@ struct NodeGraphCanvas: View {
     @State private var snapshot = GraphCanvasSnapshot()
     @State private var lastFetchedEpoch: Int = -1
     @State private var reloadWorkItem: DispatchWorkItem?
+    /// Queued work may only update the scene that scheduled it.
+    @State private var sceneGeneration = UUID()
 
     /// User-requested slice: "All" vs "Focused" view-scope toggle -- see
     /// `GraphViewScope`'s own comment (ephemeral, never persisted).
@@ -401,6 +424,7 @@ struct NodeGraphCanvas: View {
     /// spotlight fetch) and serve different purposes, so one must never
     /// cancel the other. See `performFocusedReload`'s own comment.
     @State private var focusedRetryWorkItem: DispatchWorkItem?
+    @State private var graphRetryWorkItem: DispatchWorkItem?
 
     @State private var scale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
@@ -409,6 +433,7 @@ struct NodeGraphCanvas: View {
     @State private var hasCentered = false
 
     @State private var selectedHandle: UInt64? = nil
+    @State private var pendingAdapterSelection: String? = nil
     @State private var hoveredHandle: UInt64? = nil
 
     // -------- Object-pick spotlight (viewport/outliner -> canvas) --------
@@ -496,6 +521,9 @@ struct NodeGraphCanvas: View {
         // call right after would be a full duplicate bridge round-trip on
         // every appearance for no additional effect.
         .onAppear { scheduleReload(debounced: false) }
+        .onChange(of: bridge.map { ObjectIdentifier($0) }) { _, _ in
+            scheduleReload(debounced: false, force: true)
+        }
         .onChange(of: refreshTrigger) { _, _ in
             scheduleReload(debounced: true)
             // LOAD-BEARING, do not remove even though it looks like the
@@ -539,7 +567,8 @@ struct NodeGraphCanvas: View {
                 WireRefusalPanel(
                     state: refusal,
                     onDismiss: { wireRefusal = nil },
-                    onDuplicateAndRetry: { retryWithDuplicate(refusal) }
+                    onDuplicateAndRetry: { retryWithDuplicate(refusal) },
+                    onInsertScalarAdapter: { insertScalarAdapter(refusal) }
                 )
             }
         }
@@ -702,6 +731,19 @@ struct NodeGraphCanvas: View {
                           y: node.position.y + GraphMetrics.nodeHeight / 2)
             }
 
+            ForEach(displayedNodes) { node in
+                let ys = graphInputPortAnchors(nodePosition: node.position, outEdgeCount: node.outEdges.count)
+                ForEach(Array(node.outEdges.enumerated()), id: \.offset) { index, port in
+                    Circle()
+                        .fill(graphPipeTint(port.portPipe, category: node.category))
+                        .overlay(Circle().stroke(port.portColorAlsoAcceptsScalar ? Theme.textDim : Theme.bgWell,
+                                                 lineWidth: port.portColorAlsoAcceptsScalar ? 2.5 : 1))
+                        .frame(width: 9, height: 9)
+                        .position(x: node.position.x, y: ys[index])
+                        .allowsHitTesting(false)
+                }
+            }
+
             // S21 output-handle circles -- SIBLINGS of the node boxes
             // (not children of GraphNodeBoxView) so a wire-drag's own
             // DragGesture never contends with the node body's
@@ -715,7 +757,7 @@ struct NodeGraphCanvas: View {
                 ZStack {
                     Color.clear.frame(width: 24, height: 24)
                     Circle()
-                        .fill(graphCategoryTint(node.category))
+                        .fill(graphPipeTint(node.outputPipe, category: node.category))
                         .overlay(Circle().stroke(Theme.bgWell, lineWidth: 1.5))
                         .frame(width: GraphMetrics.outputHandleRadius * 2, height: GraphMetrics.outputHandleRadius * 2)
                 }
@@ -908,7 +950,11 @@ struct NodeGraphCanvas: View {
             // moment a resolve stops degrading, because that resolve lands
             // in a DIFFERENT branch (nil vs non-nil) which does not
             // re-arm it.
-            let retry = DispatchWorkItem { refreshSpotlight() }
+            let generation = sceneGeneration
+            let retry = DispatchWorkItem {
+                guard sceneGeneration == generation else { return }
+                refreshSpotlight()
+            }
             spotlightRetryWorkItem = retry
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: retry)
             return
@@ -976,7 +1022,11 @@ struct NodeGraphCanvas: View {
             performReload(force: force)
             return
         }
-        let item = DispatchWorkItem { performReload(force: force) }
+        let generation = sceneGeneration
+        let item = DispatchWorkItem {
+            guard sceneGeneration == generation else { return }
+            performReload(force: force)
+        }
         reloadWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
     }
@@ -992,14 +1042,15 @@ struct NodeGraphCanvas: View {
                 name: n.name,
                 chunkKeyword: n.chunkKeyword,
                 category: n.category,
+                outputPipe: n.outputPipe,
                 defCount: n.defCount,
                 position: CGPoint(x: n.x, y: n.y),
                 outEdges: n.outEdges.map {
-                    GraphCanvasPort(paramName: $0.paramName, occurrence: $0.occurrence,
+                    GraphCanvasPort(portPipe: $0.portPipe, portColorAlsoAcceptsScalar: $0.portColorAlsoAcceptsScalar, paramName: $0.paramName, occurrence: $0.occurrence,
                                      otherNodeIndex: $0.otherNodeIndex, otherName: $0.otherName)
                 },
                 inEdges: n.inEdges.map {
-                    GraphCanvasPort(paramName: $0.paramName, occurrence: $0.occurrence,
+                    GraphCanvasPort(portPipe: $0.portPipe, portColorAlsoAcceptsScalar: $0.portColorAlsoAcceptsScalar, paramName: $0.paramName, occurrence: $0.occurrence,
                                      otherNodeIndex: $0.otherNodeIndex, otherName: $0.otherName)
                 }
             )
@@ -1017,6 +1068,10 @@ struct NodeGraphCanvas: View {
         if let sel = selectedHandle, !nodes.contains(where: { $0.handle == sel }) {
             selectedHandle = nil
         }
+        if let name = pendingAdapterSelection, let node = nodes.first(where: { $0.name == name && $0.category == 0 }) {
+            selectedHandle = node.handle
+            pendingAdapterSelection = nil
+        }
         snapshot = GraphCanvasSnapshot(nodes: nodes, generation: generation)
         // A structural refresh can change which nodes exist -- re-derive
         // the spotlight against the fresh snapshot rather than pruning the
@@ -1028,7 +1083,25 @@ struct NodeGraphCanvas: View {
     }
 
     private func performReload(force: Bool) {
-        guard let bridge else { return }
+        guard let bridge else {
+            sceneGeneration = UUID()
+            reloadWorkItem?.cancel()
+            spotlightRetryWorkItem?.cancel()
+            graphRetryWorkItem?.cancel()
+            focusedRetryWorkItem?.cancel()
+            lastFetchedEpoch = -1
+            stickyFocusBridgeID = nil
+            stickyFocusObjectName = nil
+            selectedHandle = nil
+            hasCentered = false
+            snapshot = GraphCanvasSnapshot()
+            wireRefusal = nil
+            wireDrag = nil
+            lastCheckedTarget = nil
+            liveDragOverride = nil
+            pendingAdapterSelection = nil
+            return
+        }
         // MUST run before anything below consults `stickyFocusObjectName`
         // (currentFocusTarget/performFocusedReload) -- see its own comment.
         updateStickyFocusObject(bridge: bridge)
@@ -1039,17 +1112,33 @@ struct NodeGraphCanvas: View {
             // same as refreshSpotlight's own): a pure selection change
             // needs a fresh focused fetch for the NEW selection, and a
             // selection change never bumps sceneEpoch (only a structural
-            // mutation does). `lastFetchedEpoch` is still tracked below so
-            // a LATER switch back to All-view (forced explicitly via
-            // `.onChange(of: viewScope)`) is never confused by it.
-            lastFetchedEpoch = epoch
+            // mutation does). Switching back to All forces a fresh read.
             performFocusedReload(bridge: bridge)
             return
         }
 
+        focusedRetryWorkItem?.cancel()
+        focusedRetryWorkItem = nil
         guard force || epoch != lastFetchedEpoch else { return }
-        lastFetchedEpoch = epoch
+        performAllReload(bridge: bridge, epoch: epoch)
+    }
+
+    /// All-view and both Focused fallbacks share one freshness/retry policy.
+    private func performAllReload(bridge: RISEViewportBridge, epoch: Int) {
+        graphRetryWorkItem?.cancel()
+        graphRetryWorkItem = nil
         let g = bridge.painterMaterialGraph()
+        guard g.snapshotFresh else {
+            let generation = sceneGeneration
+            let retry = DispatchWorkItem {
+                guard sceneGeneration == generation else { return }
+                performReload(force: true)
+            }
+            graphRetryWorkItem = retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: retry)
+            return
+        }
+        lastFetchedEpoch = epoch
         applyFetchedNodes(nodesFrom(g), generation: g.generation)
     }
 
@@ -1110,6 +1199,25 @@ struct NodeGraphCanvas: View {
     private func updateStickyFocusObject(bridge: RISEViewportBridge) {
         let bridgeID = ObjectIdentifier(bridge)
         if stickyFocusBridgeID != bridgeID {
+            sceneGeneration = UUID()
+            reloadWorkItem?.cancel()
+            focusedRetryWorkItem?.cancel()
+            focusedRetryWorkItem = nil
+            spotlightRetryWorkItem?.cancel()
+            spotlightRetryWorkItem = nil
+            spotlightHandles = []
+            lastSpotlightObjectName = nil
+            graphRetryWorkItem?.cancel()
+            graphRetryWorkItem = nil
+            pendingAdapterSelection = nil
+            lastFetchedEpoch = -1
+            hasCentered = false
+            selectedHandle = nil
+            snapshot = GraphCanvasSnapshot()
+            wireRefusal = nil
+            wireDrag = nil
+            lastCheckedTarget = nil
+            liveDragOverride = nil
             stickyFocusBridgeID = bridgeID
             stickyFocusObjectName = nil
         }
@@ -1136,8 +1244,7 @@ struct NodeGraphCanvas: View {
             // NOT fall back -- see that branch's own comment).
             focusedRetryWorkItem?.cancel()
             focusedRetryWorkItem = nil
-            let g = bridge.painterMaterialGraph()
-            applyFetchedNodes(nodesFrom(g), generation: g.generation)
+            performAllReload(bridge: bridge, epoch: Int(bridge.sceneEpoch))
             return
         }
         guard let g = bridge.painterMaterialGraphFocused(category: target.category, name: target.name) else {
@@ -1154,7 +1261,11 @@ struct NodeGraphCanvas: View {
             // resolve says nothing about whether the object still
             // resolves, only that the answer couldn't be obtained yet.
             focusedRetryWorkItem?.cancel()
-            let retry = DispatchWorkItem { performReload(force: true) }
+            let generation = sceneGeneration
+            let retry = DispatchWorkItem {
+                guard sceneGeneration == generation else { return }
+                performReload(force: true)
+            }
             focusedRetryWorkItem = retry
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: retry)
             return
@@ -1172,8 +1283,7 @@ struct NodeGraphCanvas: View {
         // nothing on every later frame.
         if g.nodes.isEmpty {
             stickyFocusObjectName = nil
-            let all = bridge.painterMaterialGraph()
-            applyFetchedNodes(nodesFrom(all), generation: all.generation)
+            performAllReload(bridge: bridge, epoch: Int(bridge.sceneEpoch))
             return
         }
         applyFetchedNodes(nodesFrom(g), generation: g.generation)
@@ -1258,6 +1368,7 @@ struct NodeGraphCanvas: View {
     }
 
     private func handleWireDragChanged(source: GraphCanvasNode, point: CGPoint) {
+        guard let bridge, stickyFocusBridgeID == ObjectIdentifier(bridge) else { wireDrag = nil; return }
         var state = wireDrag ?? WireDragState(sourceHandle: source.handle, sourceName: source.name, sourceCategory: source.category, currentPoint: point)
         state.currentPoint = point
         let target = findPortTarget(near: point)
@@ -1272,11 +1383,9 @@ struct NodeGraphCanvas: View {
         updateWireVerdict(source: source, target: target)
     }
 
-    /// S17 live pre-check -- `-checkConnection` is a fast, lock-free
-    /// descriptor+document read (no commit mutex), so calling it
-    /// synchronously per hovered-port-change (NOT per pixel -- see the
-    /// `lastCheckedTarget` debounce above) is cheap enough for a drag
-    /// gesture's cadence.
+    /// S17 live pre-check reads descriptor/document data under the controller's
+    /// scene mutex. Recheck only when the hovered port changes; the
+    /// `lastCheckedTarget` debounce avoids a query for every drag pixel.
     private func updateWireVerdict(source: GraphCanvasNode, target: WirePortTarget) {
         guard let bridge else { return }
         var outDiag: NSString? = nil
@@ -1295,7 +1404,7 @@ struct NodeGraphCanvas: View {
         let target = wireDrag?.target
         wireDrag = nil
         lastCheckedTarget = nil
-        guard let bridge, let target else { return }
+        guard let bridge, stickyFocusBridgeID == ObjectIdentifier(bridge), let target else { return }
         guard viewModel.isSceneEditableForAgents else { return }
         commitRewire(sourceHandle: source.handle, sourceName: source.name, sourceCategory: source.category, target: target, bridge: bridge)
     }
@@ -1321,8 +1430,28 @@ struct NodeGraphCanvas: View {
             refreshTrigger &+= 1
             scheduleReload(debounced: false, force: true)
         } else {
-            wireRefusal = WireRefusalState(outcome: outcome, target: target, sourceHandle: sourceHandle, sourceName: sourceName, sourceCategory: sourceCategory)
+            wireRefusal = WireRefusalState(originBridge: bridge, outcome: outcome, target: target, sourceHandle: sourceHandle, sourceName: sourceName, sourceCategory: sourceCategory)
         }
+    }
+
+    private func insertScalarAdapter(_ refusal: WireRefusalState) {
+        guard let bridge, refusal.originBridge === bridge else { wireRefusal = nil; return }
+        guard viewModel.isSceneEditableForAgents else { return }
+        let target = refusal.target
+        guard let outcome = bridge.insertScalarAdapterAndRewire(
+            targetCategory: target.nodeCategory, targetName: target.nodeName,
+            param: target.paramName, occurrence: target.occurrence,
+            sourceCategory: refusal.sourceCategory, sourceName: refusal.sourceName) else { return }
+        guard outcome.applied else {
+            presentGraphAlert(title: "Couldn't insert scalar_painter adapter", message: outcome.message)
+            scheduleReload(debounced: false, force: true)
+            return
+        }
+        wireRefusal = nil
+        pendingAdapterSelection = outcome.adapterName
+        _ = bridge.setSelection(.painter, name: outcome.adapterName)
+        refreshTrigger &+= 1
+        scheduleReload(debounced: false, force: true)
     }
 
     /// The SharedTarget escape hatch (S19/S20), made interactive: fork
@@ -1331,7 +1460,7 @@ struct NodeGraphCanvas: View {
     /// solely owns whatever the original shared, so the retry lands
     /// Clean.
     private func retryWithDuplicate(_ refusal: WireRefusalState) {
-        guard let bridge else { return }
+        guard let bridge, refusal.originBridge === bridge else { wireRefusal = nil; return }
         let dup = bridge.duplicateGraphNode(category: refusal.sourceCategory, name: refusal.sourceName)
         guard let dup, dup.applied, !dup.newName.isEmpty else {
             presentGraphAlert(title: "Couldn't duplicate \"\(refusal.sourceName)\"",
@@ -1763,7 +1892,7 @@ private struct GraphWiresLayer: View {
                         let sourcePoint = CGPoint(x: source.position.x + GraphMetrics.nodeWidth,
                                                    y: source.position.y + GraphMetrics.nodeHeight / 2)
                         drawWire(context: context, from: sourcePoint, to: destPoint,
-                                 color: graphCategoryTint(source.category).opacity(0.75))
+                                 color: graphPipeTint(source.outputPipe, category: source.category).opacity(0.75))
                         if showLabels {
                             drawLabel(context: context, text: port.paramName, near: destPoint)
                         }

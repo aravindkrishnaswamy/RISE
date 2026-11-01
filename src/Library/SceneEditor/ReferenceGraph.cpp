@@ -98,7 +98,11 @@ namespace RISE
 						e.paramName        = String( role.c_str() );
 						e.occurrence       = occ;
 						e.repeatable       = pd ? pd->repeatable : false;
-						if( pd ) for( ChunkCategory rc : pd->referenceCategories ) e.portCategories.push_back( rc );
+						if( pd ) {
+						e.portCategories = pd->referenceCategories;
+						e.portPipe = pd->semantics.pipe;
+						e.portColorAlsoAcceptsScalar = pd->semantics.colorAlsoAcceptsScalar;
+					}
 
 						e.targetId = targetId;
 						if( ti != byId.end() ) {

@@ -78,6 +78,8 @@ struct GraphPortData
     int     occurrence     = 0;
     int     otherNodeIndex = -1;   ///< -1 for a node-less (dangling) port
     QString otherName;
+    int portPipe = 7;
+    bool portColorAlsoAcceptsScalar = false;
 };
 
 /// One node, decoded from ViewportBridge::PainterGraphNode + its laid-out
@@ -93,6 +95,7 @@ struct GraphNodeData
     QString name;
     QString chunkKeyword;
     int     category     = -1;     ///< RISE::ChunkCategory ordinal: 0 Painter, 1 Function, 2 Material
+    int     outputPipe   = 7;
     int     defCount     = 0;
     QPointF position;               ///< last-known-good position (seed for the item + revert-on-failure target)
     QVector<GraphPortData> outEdges;
@@ -376,14 +379,20 @@ private:
 
     quint64 m_selectedHandle      = 0;
     bool    m_selectedHandleValid = false;
+    QString m_pendingAdapterSelection;
+    bool m_graphRetryPending = false;
+    quint64 m_graphRetryGeneration = 0;
+    void cancelGraphRetry();
+    void scheduleGraphRetry();
+    bool fetchAllSnapshot(unsigned int epoch);
 
     // ---- view-scope toggle state (user-requested slice) -----------------
     GraphViewScope m_viewScope = GraphViewScope::All;
-    /// Cheap target-identity gate for the Focused fetch -- mirrors
+    /// Cheap target-identity + scene-epoch gate for the Focused fetch -- mirrors
     /// m_lastSpotlightCategory/m_lastSpotlightSelectionName's own
     /// two-tier-gate lesson: this canvas re-derives on EVERY preview
     /// frame, so performFocusedReload must not pay a full applySnapshot
-    /// rebuild when the resolved target hasn't changed. Committed ONLY on
+    /// rebuild when both the resolved target and scene epoch are unchanged. Committed ONLY on
     /// a non-degraded outcome -- see performFocusedReload's own comment.
     bool    m_lastFocusedHasTarget = false;
     int     m_lastFocusedCategory  = -1;

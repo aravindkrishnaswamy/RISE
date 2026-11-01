@@ -2676,6 +2676,7 @@ namespace RISE
 			Cst::NodeId   id = 0;
 			String        name;
 			String        chunkKeyword;
+			ParameterPipe outputPipe = ParameterPipe::Other;
 			ChunkCategory category   = ChunkCategory::Painter;
 			unsigned long long order  = 0;   //!< sibling/display order key, same role as TreeNodeSeed::order
 			unsigned long long serial = 0;   //!< registration identity, same role as TreeNodeSeed::serial
@@ -2710,6 +2711,8 @@ namespace RISE
 			String        paramName;
 			int           occurrence   = 0;
 			std::vector<ChunkCategory> portCategories;
+			ParameterPipe portPipe = ParameterPipe::Other;
+			bool portColorAlsoAcceptsScalar = false;
 			Cst::NodeId   toId = 0;
 			ChunkCategory toCategory   = ChunkCategory::Painter;
 			String        toName;        //!< may name no seed at all -- see BuildPainterMaterialGraph
@@ -2736,6 +2739,8 @@ namespace RISE
 			//! The port's declared TYPE (ParameterDescriptor::referenceCategories)
 			//! -- what kind of chunk this slot accepts.
 			std::vector<ChunkCategory> portCategories;
+			ParameterPipe portPipe = ParameterPipe::Other;
+			bool portColorAlsoAcceptsScalar = false;
 		};
 
 		//! An opaque, GENERATION-TAGGED node handle for a PUBLISHED
@@ -2796,6 +2801,7 @@ namespace RISE
 			GraphNodeHandle handle = kInvalidGraphNode;
 			String        name;
 			String        chunkKeyword;                  //!< e.g. "ramp_painter", "ggx_material"
+			ParameterPipe outputPipe = ParameterPipe::Other;
 			ChunkCategory category    = ChunkCategory::Painter;
 			unsigned long long order  = 0;                //!< presentation-order key, same role as TreeNodeSeed::order
 			unsigned long long serial = 0;                //!< registration identity, same role as TreeNodeSeed::serial
@@ -2828,6 +2834,9 @@ namespace RISE
 		//! fields split apart.
 		struct PainterMaterialGraph
 		{
+			//! Per-read freshness; false when contention/render ownership served the cached graph.
+			//! Not graph content, so excluded from snapshot equivalence.
+			bool snapshotFresh = true;
 			std::vector<GraphNode> nodes;
 			//! Generation this graph was published at; 0 = never published.
 			//! Same process-global counter as AuthoredTree::generation
@@ -3272,6 +3281,9 @@ namespace RISE
 		//! this value at all.  -1 on an unknown or stale handle (never a
 		//! valid `ChunkCategory` ordinal).
 		int PainterGraphNodeCategory( GraphNodeHandle node ) const;
+		int PainterGraphNodeOutputPipe( GraphNodeHandle node ) const;
+		bool PainterGraphNodePortPipe( GraphNodeHandle node, unsigned int portIdx,
+			bool incoming, int& outPipe, bool& outColorAlsoAcceptsScalar ) const;
 
 		//! `node`'s expression-family def-stage count (S10's `ExpressionProgram
 		//! ::DefCount()`; 0 for every non-expression chunk).  -1 on an
@@ -3452,15 +3464,12 @@ namespace RISE
 		//! `(cat, name)` itself ambiguous/not-found -- empty `out.graph`,
 		//! same refusal convention as `ResolveUniqueGraphNodeIndex`.
 		//!
-		//! `outDegraded`: set true ONLY when the Object-category case's
-		//! live object->material resolution could not get a non-blocking
-		//! hold of the commit lock (a render owns the scene) -- see
-		//! `AppearanceClosureForObject`'s own `outDegraded` comment for the
-		//! full contract; identical semantics here. The non-Object case
-		//! never degrades this way (`ReadPainterMaterialGraph` itself never
-		//! blocks; under contention it serves a stale published snapshot,
-		//! not an empty/failed read), so `*outDegraded` is always `false`
-		//! for a Painter/Function/Material `cat`.
+		//! `outDegraded` is true when graph refresh could only serve cached
+		//! data because of render ownership or scene-mutex contention. This
+		//! applies to EVERY category, including Painter/Function/Material.
+		//! Object focus can also degrade during live material resolution.
+		//! Preserve the displayed graph and retry; a genuinely unknown or
+		//! ambiguous target returns an empty graph with outDegraded=false.
 		//!
 		//! LAYOUT IS TRANSIENT (design decision, NOT an oversight): unlike
 		//! `ReadPainterMaterialGraphLaidOut`, this NEVER reads or writes the
@@ -3623,17 +3632,10 @@ namespace RISE
 		//! ancestor). An UNRELATED SIBLING SUBTREE of the target is therefore
 		//! EXCLUDED, even though it shares an ancestor UP discovers.
 		//!
-		//! `outDegraded`: set true ONLY when `mRenderOwnsScene` is observed
-		//! true at the very top of this call (mirrors
-		//! `ResolveObjectMaterialNameLocked_`'s FIRST guard) -- unlike the
-		//! Painter focused read's Object-category case, this method touches
-		//! no live manager and needs no `mMutex` try_to_lock of its own
-		//! (`ReadObjectGraph`'s own refresh already degrades to serving a
-		//! stale published snapshot under `mMutex` contention, silently, the
-		//! same way `ReadPainterMaterialGraph` does) -- the explicit
-		//! `mRenderOwnsScene` check exists so a caller polling during a
-		//! parked render (`RunPreviewRenderParked`) gets an honest signal
-		//! rather than a stale-but-unflagged graph.
+		//! `outDegraded` is true while a render owns the scene or when the
+		//! object graph refresh serves cached data under scene-mutex
+		//! contention. Preserve the displayed graph and retry. A genuinely
+		//! unknown/ambiguous target is an empty, non-degraded result.
 		//!
 		//! LAYOUT IS TRANSIENT -- same reasoning as `ReadObjectGraphLaidOut`'s
 		//! own header comment (this graph has no sidecar to read OR write at
@@ -4760,8 +4762,9 @@ namespace RISE
 		{
 			//! The underlying commit -- `applied` / `status` / `message` /
 			//! `headVersion` / `conflict` / `retriable` all carry the SAME
-			//! meanings `AgentCommitResult` documents, because on the accept
-			//! path this IS ApplyAgentParamEdit's result verbatim.  Every
+			//! meanings `AgentCommitResult` documents. Ordinary rewires return
+			//! ApplyAgentParamEdit's result; adapter insertions map the batch
+			//! document-replacement result to the same statuses. Every
 			//! refusal below is a `status == "rejected"`, non-mutating,
 			//! head-BYTE-IDENTICAL result.
 			AgentCommitResult commit;
@@ -4780,6 +4783,9 @@ namespace RISE
 			//! canvas-rejected wire reads identically to what a hand-edited
 			//! scene file fails on (MATERIAL_EDITOR.md:145).
 			bool legalityRefused = false;
+			//! Color-capable source can be wrapped for a Scalar slot; only
+			//! offered on a legality refusal with a clean ownership closure.
+			bool canInsertScalarAdapter = false;
 
 			//! True when the refusal came from the forward-reachability cycle
 			//! check (`ConnectionLegality::WouldCycle`).
@@ -4877,6 +4883,16 @@ namespace RISE
 			const String& param, int occurrence,
 			ChunkCategory newRefCategory, const String& newRefName,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Insert an R-channel scalar_painter after the source and bind the
+		//! target slot, as one operation-level undo batch. Raster painters
+		//! use `texture`; other Color-capable painters use `painter`.
+		RewireResult InsertScalarAdapterAndRewire(
+			ChunkCategory targetCategory, const String& targetName,
+			const String& param, int occurrence,
+			ChunkCategory sourceCategory, const String& sourceName,
+			String* outAdapterName = nullptr,
+			const Cst::CstHeadVersion* baseVersionOrNull = nullptr );
 
 		// =====================================================================
 		// doc-88 Phase 3 S20 -- cycle / orphan / copy-vs-link enforcement
@@ -5559,6 +5575,13 @@ namespace RISE
 		virtual void ForTest_OnSaveEngineAboutToRun() {}
 
 	private:
+		RewireResult RewireConnectionInner_(
+			ChunkCategory targetCategory, const String& targetName,
+			const String& param, int occurrence,
+			ChunkCategory newRefCategory, const String& newRefName,
+			const Cst::CstHeadVersion* baseVersionOrNull,
+			bool insertScalarAdapter, String* outAdapterName );
+
 		// ---- Node-graph spotlight / focused-view shared helpers --------
 		// See AppearanceClosureForObject and ReadPainterMaterialGraphLaidOutFocused
 		// (both public, above) for the two consumers of these three.
@@ -7203,7 +7226,7 @@ namespace RISE
 		//! the SAME compare-then-publish discipline as RefreshTreeSnapshot_
 		//! (a serve-stale on contention/render-owns-scene, republish only on
 		//! an actual structural change, generation bumped only then).
-		void RefreshPainterMaterialGraphSnapshot_() const;
+		bool RefreshPainterMaterialGraphSnapshot_() const;
 
 		//! Gather BOTH halves of the DAG assembler's input under mMutex, from
 		//! ONE `SceneReferenceGraph::AllChunks` document scan (doc-88 S11
@@ -7231,7 +7254,7 @@ namespace RISE
 		//! republish -- and re-stamp every node's `GraphNodeHandle` from a
 		//! FRESH `NextTreeGeneration()` draw -- only on an actual structural
 		//! change).
-		void RefreshObjectGraphSnapshot_() const;
+		bool RefreshObjectGraphSnapshot_() const;
 
 		//! Object Graph slice: gather both halves of the DAG assembler's
 		//! input under mMutex, from ONE `SceneReferenceGraph::AllChunks`

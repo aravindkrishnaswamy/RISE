@@ -172,12 +172,15 @@ struct ObjectGraphCanvas: View {
     @State private var snapshot = ObjGraphCanvasSnapshot()
     @State private var lastFetchedEpoch: Int = -1
     @State private var reloadWorkItem: DispatchWorkItem?
+    /// Queued work may only update the scene that scheduled it.
+    @State private var sceneGeneration = UUID()
 
     @State private var viewScope: ObjGraphViewScope = .all
     /// Bounded retry for a DEGRADED focused-view fetch (a render owns the
     /// scene) -- same cancel-and-reschedule idiom
     /// NodeGraphCanvas.focusedRetryWorkItem uses.
     @State private var focusedRetryWorkItem: DispatchWorkItem?
+    @State private var graphRetryWorkItem: DispatchWorkItem?
     /// Sticky focus memo -- see this file's own header comment and
     /// NodeGraphCanvas.swift's `stickyFocusObjectName`/`stickyFocusBridgeID`
     /// for the full rationale this ports.
@@ -226,6 +229,9 @@ struct ObjectGraphCanvas: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { scheduleReload(debounced: false) }
+        .onChange(of: bridge.map { ObjectIdentifier($0) }) { _, _ in
+            scheduleReload(debounced: false, force: true)
+        }
         .onChange(of: refreshTrigger) { _, _ in
             scheduleReload(debounced: true)
             // Same immediate-clear reasoning NodeGraphCanvas.swift's own
@@ -386,7 +392,11 @@ struct ObjectGraphCanvas: View {
             performReload(force: force)
             return
         }
-        let item = DispatchWorkItem { performReload(force: force) }
+        let generation = sceneGeneration
+        let item = DispatchWorkItem {
+            guard sceneGeneration == generation else { return }
+            performReload(force: force)
+        }
         reloadWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
     }
@@ -430,7 +440,19 @@ struct ObjectGraphCanvas: View {
     }
 
     private func performReload(force: Bool) {
-        guard let bridge else { return }
+        guard let bridge else {
+            sceneGeneration = UUID()
+            reloadWorkItem?.cancel()
+            graphRetryWorkItem?.cancel()
+            focusedRetryWorkItem?.cancel()
+            lastFetchedEpoch = -1
+            stickyFocusBridgeID = nil
+            stickyFocusObjectName = nil
+            selectedHandle = nil
+            hasCentered = false
+            snapshot = ObjGraphCanvasSnapshot()
+            return
+        }
         // MUST run before anything below consults the sticky focus memo.
         updateStickyFocusObject(bridge: bridge)
         let epoch = Int(bridge.sceneEpoch)
@@ -440,14 +462,32 @@ struct ObjectGraphCanvas: View {
             // needs a fresh focused fetch, and a selection change never
             // bumps sceneEpoch (only a structural mutation does). Same
             // reasoning NodeGraphCanvas.performReload documents.
-            lastFetchedEpoch = epoch
             performFocusedReload(bridge: bridge)
             return
         }
 
+        focusedRetryWorkItem?.cancel()
+        focusedRetryWorkItem = nil
         guard force || epoch != lastFetchedEpoch else { return }
-        lastFetchedEpoch = epoch
+        performAllReload(bridge: bridge, epoch: epoch)
+    }
+
+    /// All-view and both Focused fallbacks share one freshness/retry policy.
+    private func performAllReload(bridge: RISEViewportBridge, epoch: Int) {
+        graphRetryWorkItem?.cancel()
+        graphRetryWorkItem = nil
         let g = bridge.objectGraph()
+        guard g.snapshotFresh else {
+            let generation = sceneGeneration
+            let retry = DispatchWorkItem {
+                guard sceneGeneration == generation else { return }
+                performReload(force: true)
+            }
+            graphRetryWorkItem = retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: retry)
+            return
+        }
+        lastFetchedEpoch = epoch
         applyFetchedNodes(nodesFrom(g), generation: g.generation)
     }
 
@@ -462,6 +502,17 @@ struct ObjectGraphCanvas: View {
     private func updateStickyFocusObject(bridge: RISEViewportBridge) {
         let bridgeID = ObjectIdentifier(bridge)
         if stickyFocusBridgeID != bridgeID {
+            sceneGeneration = UUID()
+            reloadWorkItem?.cancel()
+            focusedRetryWorkItem?.cancel()
+            focusedRetryWorkItem = nil
+            graphRetryWorkItem?.cancel()
+            graphRetryWorkItem = nil
+            lastFetchedEpoch = -1
+            hasCentered = false
+            selectedHandle = nil
+            snapshot = ObjGraphCanvasSnapshot()
+            spotlightHandle = nil
             stickyFocusBridgeID = bridgeID
             stickyFocusObjectName = nil
         }
@@ -491,8 +542,7 @@ struct ObjectGraphCanvas: View {
             // degraded case below, which must NOT fall back).
             focusedRetryWorkItem?.cancel()
             focusedRetryWorkItem = nil
-            let g = bridge.objectGraph()
-            applyFetchedNodes(nodesFrom(g), generation: g.generation)
+            performAllReload(bridge: bridge, epoch: Int(bridge.sceneEpoch))
             return
         }
         guard let g = bridge.objectGraphFocused(forObject: target) else {
@@ -501,7 +551,11 @@ struct ObjectGraphCanvas: View {
             // same bounded cancel-and-reschedule idiom NodeGraphCanvas's
             // own focusedRetryWorkItem uses.
             focusedRetryWorkItem?.cancel()
-            let retry = DispatchWorkItem { performReload(force: true) }
+            let generation = sceneGeneration
+            let retry = DispatchWorkItem {
+                guard sceneGeneration == generation else { return }
+                performReload(force: true)
+            }
             focusedRetryWorkItem = retry
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: retry)
             return
@@ -518,8 +572,7 @@ struct ObjectGraphCanvas: View {
         // empty-result branch documents.
         if g.nodes.isEmpty {
             stickyFocusObjectName = nil
-            let all = bridge.objectGraph()
-            applyFetchedNodes(nodesFrom(all), generation: all.generation)
+            performAllReload(bridge: bridge, epoch: Int(bridge.sceneEpoch))
             return
         }
         applyFetchedNodes(nodesFrom(g), generation: g.generation)

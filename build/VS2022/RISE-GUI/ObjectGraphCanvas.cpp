@@ -487,6 +487,7 @@ ObjectGraphCanvas::ObjectGraphCanvas(QWidget* parent)
 
 void ObjectGraphCanvas::setBridge(ViewportBridge* bridge)
 {
+    cancelGraphRetry();
     m_bridge = bridge;
     m_lastFetchedEpoch = 0;
     m_hasFetchedOnce = false;
@@ -549,6 +550,40 @@ void ObjectGraphCanvas::restyleTheme()
 void ObjectGraphCanvas::refresh()      { performReload(false); }
 void ObjectGraphCanvas::refreshForce() { performReload(true); }
 
+void ObjectGraphCanvas::cancelGraphRetry()
+{
+    ++m_graphRetryGeneration;
+    m_graphRetryPending = false;
+}
+
+void ObjectGraphCanvas::scheduleGraphRetry()
+{
+    if (m_graphRetryPending) return;
+    m_graphRetryPending = true;
+    const quint64 generation = ++m_graphRetryGeneration;
+    QTimer::singleShot(500, this, [this, generation] {
+        if (generation != m_graphRetryGeneration) return;
+        m_graphRetryPending = false;
+        if (m_scene && m_scene->mouseGrabberItem()) { scheduleGraphRetry(); return; }
+        performReload(true);
+    });
+}
+
+bool ObjectGraphCanvas::fetchAllSnapshot(unsigned int epoch)
+{
+    const auto graph = m_bridge->objectGraph();
+    if (!graph.snapshotFresh) {
+        m_hasFetchedOnce = false; // a deferred forced/scope fetch must not hit the old All cache
+        scheduleGraphRetry();
+        return false;
+    }
+    cancelGraphRetry();
+    m_lastFetchedEpoch = epoch;
+    m_hasFetchedOnce = true;
+    applySnapshot(graph);
+    return true;
+}
+
 void ObjectGraphCanvas::performReload(bool force)
 {
     if (!m_bridge) { applySnapshot(ViewportBridge::PainterGraph()); refreshSpotlight(true); return; }
@@ -574,10 +609,10 @@ void ObjectGraphCanvas::performReload(bool force)
     const unsigned int epoch = m_bridge->sceneEpoch();
     bool rebuilt = false;
     if (force || !m_hasFetchedOnce || epoch != m_lastFetchedEpoch) {
-        m_lastFetchedEpoch = epoch;
-        m_hasFetchedOnce = true;
-        applySnapshot(m_bridge->objectGraph());
+        if (!fetchAllSnapshot(epoch)) return;
         rebuilt = true;
+    } else {
+        cancelGraphRetry();
     }
     // Independent of the epoch-gated branch above: a plain Object pick
     // does not bump sceneEpoch, so the spotlight must be re-derived on
@@ -634,18 +669,25 @@ void ObjectGraphCanvas::performFocusedReload(const QString& name, bool force)
     // lockstep-commit discipline NodeGraphCanvas::performFocusedReload's
     // own comment documents in full (the P1 fix that closed the
     // reselect-during-contention wedge).
-    if (!force && m_lastFocusedHasTarget && name == m_lastFocusedName) return;
+    const unsigned int epoch = m_bridge->sceneEpoch();
+    if (!force && epoch == m_lastFetchedEpoch && m_lastFocusedHasTarget && name == m_lastFocusedName) {
+        cancelGraphRetry();
+        refreshSpotlight(false);
+        return;
+    }
 
     bool degraded = false;
     const ViewportBridge::PainterGraph g = m_bridge->objectGraphFocused(name, &degraded);
     if (degraded) {
-        // DEGRADED: leave BOTH gate fields exactly as they were -- the
-        // NEXT imageUpdated frame retries the deep resolve for real (no
-        // explicit timer needed, this canvas already re-derives every
-        // preview frame -- same reasoning NodeGraphCanvas's identical
-        // branch documents).
+        scheduleGraphRetry();
+        m_lastFocusedHasTarget = false;
+        m_lastFocusedName.clear();
+
+        // DEGRADED: invalidate the successful-target gate and retain the
+        // displayed snapshot. A bounded retry also works without a frame.
         return;
     }
+    cancelGraphRetry();
     m_lastFocusedHasTarget = true;
     m_lastFocusedName = name;
     // A genuinely empty result means the sticky object no longer
@@ -655,10 +697,11 @@ void ObjectGraphCanvas::performFocusedReload(const QString& name, bool force)
     if (g.nodes.isEmpty()) {
         m_stickyFocusHasObject = false;
         m_stickyFocusObjectName.clear();
-        applySnapshot(m_bridge->objectGraph());
-        refreshSpotlight(true);
+        if (fetchAllSnapshot(epoch)) refreshSpotlight(true);
         return;
     }
+    m_lastFetchedEpoch = epoch;
+    m_hasFetchedOnce = true;
     applySnapshot(g);
     refreshSpotlight(true);
 }

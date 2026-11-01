@@ -274,6 +274,13 @@ namespace RISE
 		return false;
 	}
 
+	ParameterPipe ConnectionLegality::OutputPipe( const std::string& keyword, ChunkCategory category )
+	{
+		if( category != ChunkCategory::Painter && category != ChunkCategory::Material && category != ChunkCategory::Function )
+			return ParameterPipe::Other;
+		return OwnPipe( keyword, category );
+	}
+
 	bool ConnectionLegality::IsColorCapable( const std::string& candidateKeyword, ChunkCategory candidateCategory )
 	{
 		// `piecewise_linear_function` is a SECOND, easy-to-miss dual-

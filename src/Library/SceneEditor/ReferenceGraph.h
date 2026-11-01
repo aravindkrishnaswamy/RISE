@@ -95,6 +95,8 @@ namespace RISE
 		//! category" -- check `portCategories.empty()` together with
 		//! whether the descriptor lookup is expected to have succeeded.
 		std::vector<ChunkCategory> portCategories;
+		ParameterPipe portPipe = ParameterPipe::Other;
+		bool portColorAlsoAcceptsScalar = false;
 
 		// ---- the REFERENCED side: the chunk the value NAMES ----
 		Cst::NodeId   targetId         = 0;

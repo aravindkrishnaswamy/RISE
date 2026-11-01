@@ -12287,12 +12287,12 @@ namespace RISE
 		}
 	}
 
-	bool RISE_API_SceneEditController_RewireConnection(
+	bool RISE_API_SceneEditController_RewireConnectionEx(
 		SceneEditController* p,
 		int targetCategory, const char* targetName,
 		const char* param, int occurrence,
 		int newRefCategory, const char* newRefName,
-		int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		int* outCanInsertScalarAdapter, int* outClosure, int* outLegalityRefused, int* outCycleRefused,
 		char* outStatus, unsigned int outStatusLen,
 		char* outMessage, unsigned int outMessageLen,
 		char* outShared, unsigned int outSharedLen,
@@ -12300,6 +12300,7 @@ namespace RISE
 		char* outOwners, unsigned int outOwnersLen,
 		char* outNowUnreferenced, unsigned int outNowUnreferencedLen )
 	{
+		if( outCanInsertScalarAdapter ) *outCanInsertScalarAdapter = 0;
 		// Pre-clear every out so a caller that ignores the return value can
 		// never read a stale buffer as this call's answer.
 		if( outClosure )          *outClosure = 0;
@@ -12319,6 +12320,7 @@ namespace RISE
 			static_cast<ChunkCategory>( newRefCategory ), String( newRefName ),
 			nullptr );
 
+		if( outCanInsertScalarAdapter ) *outCanInsertScalarAdapter = r.canInsertScalarAdapter ? 1 : 0;
 		if( outClosure )         *outClosure         = static_cast<int>( r.closure );
 		if( outLegalityRefused ) *outLegalityRefused = r.legalityRefused ? 1 : 0;
 		if( outCycleRefused )    *outCycleRefused    = r.cycleRefused ? 1 : 0;
@@ -12329,6 +12331,62 @@ namespace RISE
 		CopyJoinedToBuf( r.owners,                outOwners,          outOwnersLen );
 		CopyJoinedToBuf( r.nowUnreferenced,       outNowUnreferenced, outNowUnreferencedLen );
 		return r.commit.applied;
+	}
+	bool RISE_API_SceneEditController_RewireConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* param, int occurrence,
+		int newRefCategory, const char* newRefName,
+		int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outShared, unsigned int outSharedLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outOwners, unsigned int outOwnersLen,
+		char* outNowUnreferenced, unsigned int outNowUnreferencedLen )
+	{
+		return RISE_API_SceneEditController_RewireConnectionEx( p, targetCategory, targetName,
+			param, occurrence, newRefCategory, newRefName, nullptr, outClosure, outLegalityRefused,
+			outCycleRefused, outStatus, outStatusLen, outMessage, outMessageLen, outShared, outSharedLen,
+			outReferrers, outReferrersLen, outOwners, outOwnersLen, outNowUnreferenced, outNowUnreferencedLen );
+	}
+
+	bool RISE_API_SceneEditController_InsertScalarAdapterAndRewire(
+		SceneEditController* p, int targetCategory, const char* targetName,
+		const char* param, int occurrence, int sourceCategory, const char* sourceName,
+		char* outAdapterName, unsigned int outAdapterNameLen,
+		char* outStatus, unsigned int outStatusLen, char* outMessage, unsigned int outMessageLen )
+	{
+		if( outAdapterName && outAdapterNameLen ) outAdapterName[0] = '\0';
+		if( outStatus && outStatusLen ) outStatus[0] = '\0';
+		if( outMessage && outMessageLen ) outMessage[0] = '\0';
+		if( !p || !targetName || !param || !sourceName ) return false;
+		String name;
+		const SceneEditController::RewireResult r = p->InsertScalarAdapterAndRewire(
+			static_cast<ChunkCategory>( targetCategory ), String( targetName ), String( param ), occurrence,
+			static_cast<ChunkCategory>( sourceCategory ), String( sourceName ), &name );
+		if( outAdapterName && outAdapterNameLen ) CopyToBuf( name, outAdapterName, outAdapterNameLen );
+		if( outStatus && outStatusLen ) CopyToBuf( r.commit.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen ) CopyToBuf( r.commit.message, outMessage, outMessageLen );
+		return r.commit.applied;
+	}
+
+	int RISE_API_SceneEditController_PainterGraphNodeOutputPipe( SceneEditController* p, unsigned long long node )
+	{
+		return p ? p->PainterGraphNodeOutputPipe( node ) : -1;
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodePortPipe( SceneEditController* p,
+		unsigned long long node, unsigned int portIdx, bool incoming,
+		int* outPipe, int* outColorAlsoAcceptsScalar )
+	{
+		if( outPipe ) *outPipe = -1;
+		if( outColorAlsoAcceptsScalar ) *outColorAlsoAcceptsScalar = 0;
+		if( !p || !outPipe || !outColorAlsoAcceptsScalar ) return false;
+		bool dual = false;
+		const bool ok = p->PainterGraphNodePortPipe( node, portIdx, incoming, *outPipe, dual );
+		*outColorAlsoAcceptsScalar = dual ? 1 : 0;
+		return ok;
 	}
 
 	bool RISE_API_SceneEditController_DeleteGraphNode(

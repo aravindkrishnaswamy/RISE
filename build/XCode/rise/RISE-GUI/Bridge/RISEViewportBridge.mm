@@ -97,7 +97,9 @@ NSString* NamedViewDisplayName( const char* bytes )
 - (instancetype)initWithParamName:(NSString *)paramName
                         occurrence:(NSInteger)occurrence
                     otherNodeIndex:(NSInteger)otherNodeIndex
-                         otherName:(NSString *)otherName;
+                         otherName:(NSString *)otherName
+                          portPipe:(NSInteger)portPipe
+        portColorAlsoAcceptsScalar:(BOOL)portColorAlsoAcceptsScalar;
 @end
 
 @interface RISEGraphNode ()
@@ -105,6 +107,7 @@ NSString* NamedViewDisplayName( const char* bytes )
                            name:(NSString *)name
                    chunkKeyword:(NSString *)chunkKeyword
                        category:(NSInteger)category
+                     outputPipe:(NSInteger)outputPipe
                        defCount:(NSInteger)defCount
                      repeatCount:(NSInteger)repeatCount
                               x:(double)x
@@ -115,7 +118,8 @@ NSString* NamedViewDisplayName( const char* bytes )
 
 @interface RISEPainterMaterialGraph ()
 - (instancetype)initWithNodes:(NSArray<RISEGraphNode *> *)nodes
-                    generation:(unsigned long long)generation;
+                    generation:(unsigned long long)generation
+                 snapshotFresh:(BOOL)snapshotFresh;
 @end
 
 @interface RISEAppearanceClosureEntry ()
@@ -171,6 +175,8 @@ NSString* NamedViewDisplayName( const char* bytes )
                         message:(NSString *)message
                         closure:(RISERewireClosure)closure
                 legalityRefused:(BOOL)legalityRefused
+         canInsertScalarAdapter:(BOOL)canInsertScalarAdapter
+                    adapterName:(NSString *)adapterName
                    cycleRefused:(BOOL)cycleRefused
                    sharedChunks:(NSArray<NSString *> *)sharedChunks
           outOfClosureReferrers:(NSArray<NSString *> *)outOfClosureReferrers
@@ -2044,7 +2050,9 @@ static NSArray<RISEGraphPort *>* ConvertGraphPortsToRISE(const std::vector<RISE:
         [out addObject:[[RISEGraphPort alloc] initWithParamName:paramName
                                                        occurrence:p.occurrence
                                                    otherNodeIndex:otherIdx
-                                                        otherName:otherName]];
+                                                        otherName:otherName
+                                                         portPipe:static_cast<NSInteger>(p.portPipe)
+                                       portColorAlsoAcceptsScalar:p.portColorAlsoAcceptsScalar]];
     }
     return out;
 }
@@ -2071,6 +2079,7 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& 
                                                             name:name
                                                     chunkKeyword:chunkKeyword
                                                         category:static_cast<NSInteger>(gn.category)
+                                                      outputPipe:static_cast<NSInteger>(gn.outputPipe)
                                                         defCount:gn.defCount
                                                      repeatCount:gn.repeatCount
                                                                x:pos.x
@@ -2083,7 +2092,7 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& 
 
 - (RISEPainterMaterialGraph *)painterMaterialGraph {
     if (!_controller) {
-        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0 snapshotFresh:YES];
     }
 
     // ONE TRANSACTIONAL READ, the SAME discipline -categoryTree: documents
@@ -2099,12 +2108,12 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& 
     // exists to avoid.
     SceneEditController::PainterMaterialGraphLaidOut g;
     _controller->ReadPainterMaterialGraphLaidOut(g);
-    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation snapshotFresh:g.graph.snapshotFresh];
 }
 
 - (nullable RISEPainterMaterialGraph *)painterMaterialGraphFocusedForCategory:(NSInteger)category name:(NSString *)name {
     if (!_controller || name.length == 0) {
-        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0 snapshotFresh:YES];
     }
     const char* utf8 = [name UTF8String] ?: "";
     bool degraded = false;
@@ -2115,12 +2124,12 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& 
     // -appearanceClosureForObject: documents (see this method's own
     // header comment). Do NOT collapse this to "return empty either way".
     if (degraded) return nil;
-    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation snapshotFresh:g.graph.snapshotFresh];
 }
 
 - (RISEPainterMaterialGraph *)objectGraph {
     if (!_controller) {
-        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0 snapshotFresh:YES];
     }
     // ONE TRANSACTIONAL READ -- same discipline -painterMaterialGraph
     // documents above; ReadObjectGraphLaidOut composes the object graph
@@ -2128,12 +2137,12 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& 
     // lock hold.
     SceneEditController::ObjectGraphLaidOut g;
     _controller->ReadObjectGraphLaidOut(g);
-    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation snapshotFresh:g.graph.snapshotFresh];
 }
 
 - (nullable RISEPainterMaterialGraph *)objectGraphFocusedForObject:(NSString *)name {
     if (!_controller || name.length == 0) {
-        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0 snapshotFresh:YES];
     }
     const char* utf8 = [name UTF8String] ?: "";
     bool degraded = false;
@@ -2143,7 +2152,7 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& 
     // -painterMaterialGraphFocusedForCategory:name: documents. Do NOT
     // collapse this to "return empty either way".
     if (degraded) return nil;
-    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation snapshotFresh:g.graph.snapshotFresh];
 }
 
 - (nullable NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName {
@@ -2493,6 +2502,23 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     return [s componentsSeparatedByString:@"\n"];
 }
 
+- (nullable RISERewireOutcome *)insertScalarAdapterAndRewireWithTargetCategory:(NSInteger)targetCategory
+    targetName:(NSString *)targetName param:(NSString *)param occurrence:(NSInteger)occurrence
+    sourceCategory:(NSInteger)sourceCategory sourceName:(NSString *)sourceName {
+    if (!_controller) return nil;
+    char name[256] = {0}, status[64] = {0}, message[2048] = {0};
+    const bool applied = RISE_API_SceneEditController_InsertScalarAdapterAndRewire(
+        _controller, (int)targetCategory, targetName.UTF8String, param.UTF8String, (int)occurrence,
+        (int)sourceCategory, sourceName.UTF8String, name, sizeof(name), status, sizeof(status), message, sizeof(message));
+    if (applied || strcmp(status, "diagnosed") == 0) [self refreshProperties];
+    return [[RISERewireOutcome alloc] initWithApplied:applied
+        status:[NSString stringWithUTF8String:status] ?: @""
+        message:[NSString stringWithUTF8String:message] ?: @""
+        closure:RISERewireClosureClean legalityRefused:NO canInsertScalarAdapter:NO
+        adapterName:[NSString stringWithUTF8String:name] ?: @""
+        cycleRefused:NO sharedChunks:@[] outOfClosureReferrers:@[] owners:@[] nowUnreferenced:@[]];
+}
+
 - (nullable RISERewireOutcome *)rewireConnectionWithTargetCategory:(NSInteger)targetCategory
                                                         targetName:(NSString *)targetName
                                                              param:(NSString *)param
@@ -2501,7 +2527,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                                                         newRefName:(NSString *)newRefName {
     if (!_controller || !targetName || !param || !newRefName) return nil;
 
-    int closure = 0, legality = 0, cycle = 0;
+    int closure = 0, legality = 0, cycle = 0, adapter = 0;
     char statusBuf[64] = {0};
     char messageBuf[2048] = {0};
     char sharedBuf[1024] = {0};
@@ -2509,12 +2535,12 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     char ownersBuf[1024] = {0};
     char orphanBuf[1024] = {0};
 
-    const bool applied = RISE_API_SceneEditController_RewireConnection(
+    const bool applied = RISE_API_SceneEditController_RewireConnectionEx(
         _controller,
         (int)targetCategory, [targetName UTF8String],
         [param UTF8String], (int)occurrence,
         (int)newRefCategory, [newRefName UTF8String],
-        &closure, &legality, &cycle,
+        &adapter, &closure, &legality, &cycle,
         statusBuf, sizeof(statusBuf),
         messageBuf, sizeof(messageBuf),
         sharedBuf, sizeof(sharedBuf),
@@ -2537,6 +2563,8 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                 message:[NSString stringWithUTF8String:messageBuf] ?: @""
                 closure:(RISERewireClosure)closure
         legalityRefused:legality != 0
+ canInsertScalarAdapter:adapter != 0
+            adapterName:@""
            cycleRefused:cycle != 0
            sharedChunks:RISESplitJoinedNames(sharedBuf)
   outOfClosureReferrers:RISESplitJoinedNames(referrersBuf)
@@ -3653,6 +3681,8 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 // node-graph canvas.
 
 @implementation RISEGraphPort {
+    NSInteger _portPipe;
+    BOOL _portColorAlsoAcceptsScalar;
     NSString *_paramName;
     NSInteger _occurrence;
     NSInteger _otherNodeIndex;
@@ -3663,10 +3693,14 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                         occurrence:(NSInteger)occurrence
                     otherNodeIndex:(NSInteger)otherNodeIndex
                          otherName:(NSString *)otherName
+                          portPipe:(NSInteger)portPipe
+        portColorAlsoAcceptsScalar:(BOOL)portColorAlsoAcceptsScalar
 {
     self = [super init];
     if (self) {
         _paramName = [paramName copy] ?: @"";
+        _portPipe = portPipe;
+        _portColorAlsoAcceptsScalar = portColorAlsoAcceptsScalar;
         _occurrence = occurrence;
         _otherNodeIndex = otherNodeIndex;
         _otherName = [otherName copy] ?: @"";
@@ -3679,6 +3713,8 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (NSInteger)otherNodeIndex { return _otherNodeIndex; }
 - (NSString *)otherName { return _otherName; }
 
+- (NSInteger)portPipe { return _portPipe; }
+- (BOOL)portColorAlsoAcceptsScalar { return _portColorAlsoAcceptsScalar; }
 @end
 
 @implementation RISEAppearanceClosureEntry {
@@ -3706,6 +3742,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     NSString *_name;
     NSString *_chunkKeyword;
     NSInteger _category;
+    NSInteger _outputPipe;
     NSInteger _defCount;
     NSInteger _repeatCount;
     double _x;
@@ -3718,6 +3755,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                            name:(NSString *)name
                    chunkKeyword:(NSString *)chunkKeyword
                        category:(NSInteger)category
+                     outputPipe:(NSInteger)outputPipe
                        defCount:(NSInteger)defCount
                      repeatCount:(NSInteger)repeatCount
                               x:(double)x
@@ -3731,6 +3769,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         _name = [name copy] ?: @"";
         _chunkKeyword = [chunkKeyword copy] ?: @"";
         _category = category;
+        _outputPipe = outputPipe;
         _defCount = defCount;
         _repeatCount = repeatCount;
         _x = x;
@@ -3752,20 +3791,24 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (NSArray<RISEGraphPort *> *)outEdges { return _outEdges; }
 - (NSArray<RISEGraphPort *> *)inEdges { return _inEdges; }
 
+- (NSInteger)outputPipe { return _outputPipe; }
 @end
 
 @implementation RISEPainterMaterialGraph {
     NSArray<RISEGraphNode *> *_nodes;
     unsigned long long _generation;
+    BOOL _snapshotFresh;
 }
 
 - (instancetype)initWithNodes:(NSArray<RISEGraphNode *> *)nodes
                     generation:(unsigned long long)generation
+                 snapshotFresh:(BOOL)snapshotFresh
 {
     self = [super init];
     if (self) {
         _nodes = [nodes copy] ?: @[];
         _generation = generation;
+        _snapshotFresh = snapshotFresh;
     }
     return self;
 }
@@ -3773,6 +3816,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (NSArray<RISEGraphNode *> *)nodes { return _nodes; }
 - (unsigned long long)generation { return _generation; }
 
+- (BOOL)snapshotFresh { return _snapshotFresh; }
 @end
 
 // doc-88 Phase 3 S19 -- the rewire outcome value object.  Same
@@ -3785,6 +3829,8 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     NSString *_message;
     RISERewireClosure _closure;
     BOOL _legalityRefused;
+    BOOL _canInsertScalarAdapter;
+    NSString *_adapterName;
     BOOL _cycleRefused;
     NSArray<NSString *> *_sharedChunks;
     NSArray<NSString *> *_outOfClosureReferrers;
@@ -3797,6 +3843,8 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                         message:(NSString *)message
                         closure:(RISERewireClosure)closure
                 legalityRefused:(BOOL)legalityRefused
+         canInsertScalarAdapter:(BOOL)canInsertScalarAdapter
+                    adapterName:(NSString *)adapterName
                    cycleRefused:(BOOL)cycleRefused
                    sharedChunks:(NSArray<NSString *> *)sharedChunks
           outOfClosureReferrers:(NSArray<NSString *> *)outOfClosureReferrers
@@ -3810,6 +3858,8 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         _message = [message copy] ?: @"";
         _closure = closure;
         _legalityRefused = legalityRefused;
+        _canInsertScalarAdapter = canInsertScalarAdapter;
+        _adapterName = [adapterName copy] ?: @"";
         _cycleRefused = cycleRefused;
         _sharedChunks = [sharedChunks copy] ?: @[];
         _outOfClosureReferrers = [outOfClosureReferrers copy] ?: @[];
@@ -3830,6 +3880,8 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (NSArray<NSString *> *)owners                { return _owners; }
 - (NSArray<NSString *> *)nowUnreferenced       { return _nowUnreferenced; }
 
+- (BOOL)canInsertScalarAdapter { return _canInsertScalarAdapter; }
+- (NSString *)adapterName { return _adapterName; }
 @end
 
 @implementation RISEDeleteOutcome {

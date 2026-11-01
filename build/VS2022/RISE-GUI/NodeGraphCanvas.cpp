@@ -44,6 +44,7 @@
 #include <QKeySequence>
 #include <QMessageBox>
 #include <QDialog>
+#include <QPointer>
 #include <QStackedWidget>
 #include <QComboBox>
 #include <QLineEdit>
@@ -101,6 +102,19 @@ QColor graphCategoryTint(int category)
     default: return Theme::teal;          // Painter (0), and any unmodeled default
     }
 }
+
+// RISE::ParameterPipe ordinals, shared with the macOS canvas.
+QColor graphPipeTint(int pipe, int category)
+{
+    switch (pipe) {
+    case 1: return Theme::gold;
+    case 2: return Theme::textDim;
+    case 3: return Theme::success;
+    case 4: case 5: return Theme::purple;
+    default: return graphCategoryTint(category);
+    }
+}
+
 
 QString graphCategoryLabel(int category)
 {
@@ -185,7 +199,7 @@ public:
 
     QRectF boundingRect() const override
     {
-        return QRectF(0.0, 0.0, GraphMetrics::nodeWidth, GraphMetrics::nodeHeight);
+        return QRectF(-6.0, 0.0, GraphMetrics::nodeWidth + 6.0, GraphMetrics::nodeHeight);
     }
 
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) override;
@@ -409,6 +423,15 @@ void GraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QW
         painter->drawText(QRectF(textX, textY, textW, 12.0), Qt::AlignLeft | Qt::AlignVCenter,
                            QObject::tr("dangling ref"));
     }
+    const QVector<qreal> ys = graphInputPortAnchors(QPointF(0.0, 0.0), m_data.outEdges.size());
+    for (int i = 0; i < m_data.outEdges.size(); ++i) {
+        const GraphPortData& port = m_data.outEdges[i];
+        painter->setBrush(graphPipeTint(port.portPipe, m_data.category));
+        painter->setPen(QPen(port.portColorAlsoAcceptsScalar ? Theme::textDim : Theme::bgWell,
+                            port.portColorAlsoAcceptsScalar ? 2.5 : 1.0));
+        painter->drawEllipse(QPointF(0.0, ys[i]), 4.5, 4.5);
+    }
+
 }
 
 void GraphNodeItem::paintThumbnail(QPainter* painter, const QRectF& rect) const
@@ -493,7 +516,7 @@ public:
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override
     {
         painter->setRenderHint(QPainter::Antialiasing, true);
-        const QColor tint = graphCategoryTint(m_parentNode->data().category);
+        const QColor tint = graphPipeTint(m_parentNode->data().outputPipe, m_parentNode->data().category);
         painter->setPen(QPen(Theme::bgWell, 1.5));
         painter->setBrush(tint);
         painter->drawEllipse(QRectF(12.0 - GraphMetrics::outputHandleRadius, 12.0 - GraphMetrics::outputHandleRadius,
@@ -572,7 +595,7 @@ void GraphWiresLayerItem::paint(QPainter* painter, const QStyleOptionGraphicsIte
                 GraphNodeItem* srcItem = items[port.otherNodeIndex];
                 const QPointF srcPos = srcItem->pos();
                 const QPointF srcPoint(srcPos.x() + GraphMetrics::nodeWidth, srcPos.y() + GraphMetrics::nodeHeight / 2.0);
-                QColor c = graphCategoryTint(srcItem->data().category);
+                QColor c = graphPipeTint(srcItem->data().outputPipe, srcItem->data().category);
                 c.setAlphaF(0.75f);
                 drawWire(painter, srcPoint, destPoint, c, false);
                 if (showLabels) drawLabel(painter, port.paramName, destPoint, Theme::textFaint);
@@ -1006,7 +1029,7 @@ private:
 class WireRefusalDialog : public QDialog
 {
 public:
-    enum { DuplicateAndRetry = QDialog::Accepted + 1 };
+    enum { DuplicateAndRetry = QDialog::Accepted + 1, InsertScalarAdapter };
 
     WireRefusalDialog(const ViewportBridge::RewireOutcome& outcome, const QString& sourceName,
                        const QString& targetName, const QString& targetParam, QWidget* parent)
@@ -1042,6 +1065,12 @@ public:
             dupBtn->setDefault(true);
             connect(dupBtn, &QPushButton::clicked, this, [this]() { done(DuplicateAndRetry); });
             buttons->addWidget(dupBtn);
+        }
+        if (outcome.canInsertScalarAdapter) {
+            auto* adapterBtn = new QPushButton(tr("Insert scalar_painter Adapter && Wire"), this);
+            adapterBtn->setDefault(true);
+            connect(adapterBtn, &QPushButton::clicked, this, [this]() { done(InsertScalarAdapter); });
+            buttons->addWidget(adapterBtn);
         }
         v->addLayout(buttons);
     }
@@ -1176,11 +1205,13 @@ NodeGraphCanvas::NodeGraphCanvas(QWidget* parent)
 
 void NodeGraphCanvas::setBridge(ViewportBridge* bridge)
 {
+    cancelGraphRetry();
     m_bridge = bridge;
     m_lastFetchedEpoch = 0;
     m_hasFetchedOnce = false;
     m_hasCentered = false;
     m_selectedHandleValid = false;
+    m_pendingAdapterSelection.clear();
     m_wireDragActive = false;
     // User-feedback review round: the sticky focus memo is EXPLICITLY
     // cleared here, unlike every other per-scene reset above which was
@@ -1255,6 +1286,21 @@ void NodeGraphCanvas::restyleTheme()
 void NodeGraphCanvas::refresh()      { performReload(false); }
 void NodeGraphCanvas::refreshForce() { performReload(true); }
 
+bool NodeGraphCanvas::fetchAllSnapshot(unsigned int epoch)
+{
+    const auto graph = m_bridge->painterMaterialGraph();
+    if (!graph.snapshotFresh) {
+        m_hasFetchedOnce = false; // a deferred forced/scope fetch must not hit the old All cache
+        scheduleGraphRetry();
+        return false;
+    }
+    cancelGraphRetry();
+    m_lastFetchedEpoch = epoch;
+    m_hasFetchedOnce = true;
+    applySnapshot(graph);
+    return true;
+}
+
 void NodeGraphCanvas::performReload(bool force)
 {
     if (!m_bridge) { applySnapshot(ViewportBridge::PainterGraph()); refreshSpotlight(true); return; }
@@ -1303,10 +1349,10 @@ void NodeGraphCanvas::performReload(bool force)
     const unsigned int epoch = m_bridge->sceneEpoch();
     bool rebuilt = false;
     if (force || !m_hasFetchedOnce || epoch != m_lastFetchedEpoch) {
-        m_lastFetchedEpoch = epoch;
-        m_hasFetchedOnce = true;
-        applySnapshot(m_bridge->painterMaterialGraph());
+        if (!fetchAllSnapshot(epoch)) return;
         rebuilt = true;   // every GraphNodeItem is BRAND NEW -- none of them carry the prior spotlight state
+    } else {
+        cancelGraphRetry();
     }
     // Independent of the epoch-gated branch above: a plain Object pick
     // does not bump sceneEpoch (see this method's own header comment), so
@@ -1382,33 +1428,27 @@ void NodeGraphCanvas::performFocusedReload(int category, const QString& name, bo
 {
     if (!m_bridge) return;
 
-    // Cheap pre-check (mirrors refreshSpotlight's own two-tier gate,
-    // review-round P2-1 lesson): this canvas re-derives on EVERY preview
-    // frame, not once per gesture -- skip the full applySnapshot rebuild
-    // (tears down and recreates every GraphNodeItem) when the focus
-    // target identity did not change since the last COMMITTED
-    // (non-degraded) outcome. Gated on m_lastFocusedHasTarget too
-    // (review-round P1 fix on 0562b9c4): a degraded resolve below
-    // intentionally leaves ALL THREE gate fields exactly as they were,
-    // INCLUDING hasTarget -- without this check, hasTarget could be true
-    // from a stale prior success while category/name still coincidentally
-    // match a just-reselected target, wrongly skipping the retry forever
-    // (the P1 repro: focus A -> deselect -> reselect A mid-render).
-    if (!force && m_lastFocusedHasTarget && category == m_lastFocusedCategory && name == m_lastFocusedName) return;
+    // Reuse a focused result only for the same target and scene epoch.
+    // A degraded read invalidates all target-gate fields and schedules a
+    // bounded retry, including after a previously successful focused read.
+    const unsigned int epoch = m_bridge->sceneEpoch();
+    if (!force && epoch == m_lastFetchedEpoch && m_lastFocusedHasTarget && category == m_lastFocusedCategory && name == m_lastFocusedName) {
+        cancelGraphRetry();
+        refreshSpotlight(false);
+        return;
+    }
 
     bool degraded = false;
     const ViewportBridge::PainterGraph g = m_bridge->painterMaterialGraphFocused(category, name, &degraded);
     if (degraded) {
-        // DEGRADED (a render owns the scene): leave ALL THREE gate fields
-        // (hasTarget + the identity memo) exactly as they were -- in
-        // particular hasTarget is NOT stamped true here, so the cheap gate
-        // above can never wrongly treat this attempt as committed. The
-        // NEXT imageUpdated frame retries the deep resolve for real -- no
-        // explicit timer needed the way the Mac canvas requires
-        // (NodeGraphCanvas.swift's own spotlightRetryWorkItem/
-        // focusedRetryWorkItem comment explains why THAT platform needs
-        // one and this one does not: this canvas already re-derives every
-        // preview frame). Keep showing whatever is CURRENTLY on screen --
+        m_lastFocusedHasTarget = false;
+        m_lastFocusedCategory = -1;
+        m_lastFocusedName.clear();
+
+        scheduleGraphRetry();
+        // DEGRADED: invalidate the successful-target gate and retain the
+        // displayed snapshot. The bounded retry does not depend on a frame.
+        // Keep showing the current snapshot until the retry succeeds;
         // never flip to All and back, which would flicker every time a
         // render happens to be in flight.
         return;
@@ -1419,6 +1459,7 @@ void NodeGraphCanvas::performFocusedReload(int category, const QString& name, bo
     // coincidentally re-match after an intervening no-target interlude or
     // a degraded attempt. See performReload's no-target branch for the
     // matching paired CLEAR.
+    cancelGraphRetry();
     m_lastFocusedHasTarget = true;
     m_lastFocusedCategory = category;
     m_lastFocusedName = name;
@@ -1437,10 +1478,11 @@ void NodeGraphCanvas::performFocusedReload(int category, const QString& name, bo
     if (g.nodes.isEmpty()) {
         m_stickyFocusHasObject = false;
         m_stickyFocusObjectName.clear();
-        applySnapshot(m_bridge->painterMaterialGraph());
-        refreshSpotlight(true);
+        if (fetchAllSnapshot(epoch)) refreshSpotlight(true);
         return;
     }
+    m_lastFetchedEpoch = epoch;
+    m_hasFetchedOnce = true;
     applySnapshot(g);
     refreshSpotlight(true);
 }
@@ -1458,6 +1500,10 @@ void NodeGraphCanvas::onViewScopeToggled(bool checked)
 
 void NodeGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
 {
+    // A replaced graph invalidates an active wire gesture before deleting its items.
+    m_wireDragActive = false;
+    hideStatusLabel();
+
     for (GraphNodeItem* item : std::as_const(m_nodeItems)) {
         m_scene->removeItem(item);
         delete item;   // also deletes its GraphOutputHandleItem child
@@ -1474,18 +1520,30 @@ void NodeGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
         d.index = i;
         d.name = n.name;
         d.chunkKeyword = n.chunkKeyword;
+        d.outputPipe = n.outputPipe;
         d.category = n.category;
         d.defCount = n.defCount;
         d.position = QPointF(n.x, n.y);
         d.outEdges.reserve(n.outEdges.size());
         for (const ViewportBridge::PainterGraphPort& p : n.outEdges) {
-            d.outEdges.append(GraphPortData{ p.paramName, p.occurrence, p.otherNodeIndex, p.otherName });
+            d.outEdges.append(GraphPortData{ p.paramName, p.occurrence, p.otherNodeIndex, p.otherName, p.portPipe, p.portColorAlsoAcceptsScalar });
         }
         d.inEdges.reserve(n.inEdges.size());
         for (const ViewportBridge::PainterGraphPort& p : n.inEdges) {
-            d.inEdges.append(GraphPortData{ p.paramName, p.occurrence, p.otherNodeIndex, p.otherName });
+            d.inEdges.append(GraphPortData{ p.paramName, p.occurrence, p.otherNodeIndex, p.otherName, p.portPipe, p.portColorAlsoAcceptsScalar });
         }
         m_nodes.append(d);
+    }
+
+    if (!m_pendingAdapterSelection.isEmpty()) {
+        for (const GraphNodeData& node : std::as_const(m_nodes)) {
+            if (node.category == 0 && node.name == m_pendingAdapterSelection) {
+                m_selectedHandle = node.handle;
+                m_selectedHandleValid = true;
+                m_pendingAdapterSelection.clear();
+                break;
+            }
+        }
     }
 
     // A structural refresh can retarget/invalidate an outstanding
@@ -1959,13 +2017,50 @@ void NodeGraphCanvas::commitRewire(quint64 sourceHandle, const QString& sourceNa
     }
 }
 
+void NodeGraphCanvas::cancelGraphRetry()
+{
+    ++m_graphRetryGeneration;
+    m_graphRetryPending = false;
+}
+
+void NodeGraphCanvas::scheduleGraphRetry()
+{
+    if (m_graphRetryPending) return;
+    m_graphRetryPending = true;
+    const quint64 generation = ++m_graphRetryGeneration;
+    QTimer::singleShot(500, this, [this, generation] {
+        if (generation != m_graphRetryGeneration) return;
+        m_graphRetryPending = false;
+        if (m_scene && m_scene->mouseGrabberItem()) { scheduleGraphRetry(); return; }
+        refreshForce();
+    });
+}
+
 void NodeGraphCanvas::showWireRefusal(const ViewportBridge::RewireOutcome& outcome,
                                        quint64 sourceHandle, const QString& sourceName, int sourceCategory,
                                        quint64 targetHandle, const QString& targetName, int targetCategory,
                                        const QString& param, int occurrence)
 {
+    const QPointer<ViewportBridge> originBridge(m_bridge);
     WireRefusalDialog dlg(outcome, sourceName, targetName, param, this);
     const int result = dlg.exec();
+    if (!originBridge || m_bridge != originBridge.data()) return;
+    if (result == WireRefusalDialog::InsertScalarAdapter) {
+        if (!m_bridge || !m_sceneEditable) return;
+        QString name, message;
+        if (m_bridge->insertScalarAdapterAndRewire(targetCategory, targetName, param, occurrence,
+                                                  sourceCategory, sourceName, &name, &message)) {
+            m_bridge->setSelection(ViewportBridge::Category::Painter, name);
+            m_pendingAdapterSelection = name;
+            refreshForce();
+            if (!m_pendingAdapterSelection.isEmpty()) scheduleGraphRetry();
+            emit selectionActivated();
+        } else {
+            QMessageBox::warning(this, tr("Couldn't insert scalar_painter adapter"), message);
+            refreshForce();
+        }
+        return;
+    }
     if (result != WireRefusalDialog::DuplicateAndRetry) return;
     if (!m_bridge || !m_sceneEditable) return;
 
@@ -2220,9 +2315,9 @@ qreal NodeGraphCanvas::currentScale() const
 // | 26 | Category/edge count header ("N nodes, M edges") | `updateHeaderCounts` | Direct port. |
 // | 27 | Node-graph model types (`GraphCanvasNode`/`GraphCanvasPort`) | `GraphNodeData`/`GraphPortData` | Structurally identical MINUS the `position` field's role — see #12; Qt's `GraphNodeData::position` is a "last-known-good" seed/revert value, not the live render position. |
 // | 28 | Object-pick spotlight: viewport/outliner Object selection → gold glow/border on the object's bound material + its full Painter/Function/Material closure, auto-scroll to the material ONLY on an actual selection change, NEVER calls `setSelection` from the spotlight path | `NodeGraphCanvas::refreshSpotlight`/`applySpotlightToItems`, `GraphNodeItem::setNodeSpotlit`, `ViewportBridge::appearanceClosureForObject` | **NOT a direct port on first landing — an external review round caught a real gap, now closed; this row describes the FIXED state.** (a) Mac's `.shadow` glow has no Qt equivalent without a whole-item `QGraphicsEffect`, so `GraphNodeItem::paint` approximates it with two concentric rounded-rect strokes drawn behind the card — same warm-gold (`Theme::gold`) read, different primitive; a genuine cosmetic-only deviation. (b) Mac observes `refreshTrigger`/`sceneEpoch` via SwiftUI `.onChange`, and Mac's own `selectNode` bumps `refreshTrigger` SYNCHRONOUSLY on a canvas click, clearing a live spotlight immediately. Qt has no such push signal for a plain selection change (confirmed: `SceneEditController::SetSelectionInner_`'s UI-only Object/Material path never bumps `mSceneEpoch`), and `NodeGraphCanvas::refresh()` is NOT a true per-frame timer poll — it rides `ViewportBridge::imageUpdated` (MainWindow.cpp), which fires on a RENDERED FRAME, not on a bare selection change. The FIRST landing wired ONLY that connection, so a viewport/outliner Object pick with no render in flight (the common case: browsing the scene graph on an already-converged or static preview) never lit the spotlight at all, and a canvas-node click never cleared one immediately either. Fixed two ways: `MainWindow.cpp`'s `OutlinerWidget::selectionActivated` connect now ALSO calls `NodeGraphCanvas::refresh()` (the same explicit-follow pattern that connection already uses for `ViewportProperties::refresh`), and `NodeGraphCanvas::selectNode` now calls `refreshSpotlight(false)` directly, matching Mac's synchronous clear. `refreshSpotlight` itself runs on every `refresh()`/`performReload()` call (whichever of the two paths triggered it) with a two-tier early-exit: a CHEAP `(selectionCategory(), selectionName())` pre-check before ever paying the O(rows) `selectionRowName()` walk, plus a `forceReapply` flag so a just-rebuilt node set (whose items are all new) always gets the spotlight re-applied even when the selection identity itself did not change — but `forceReapply` does NOT by itself trigger a re-scroll; auto-scroll is gated on the RESOLVED row name actually differing from the last one computed, so a structural edit/rewire while the same object stays selected never yanks the view. Auto-scroll uses `QGraphicsView::ensureVisible` (built-in, already a no-op when the target is fully visible) rather than porting Mac's by-hand screen↔content inversion. |
-// | 29 | View-scope toggle: "All" vs "Focused" (STICKY object-only subgraph) — Focused mode's target is ALWAYS the last externally-selected Object (viewport/outliner), never a canvas-node click; clicking a canvas node still moves the shared selection (properties panel follows it, spotlight clears) but does NOT retarget the focused subgraph; layout is TRANSIENT (never reads/writes the `.risegraph.json` sidecar); no sticky object, a degraded resolve, or the sticky object no longer resolving all have distinct handling (see below); node drags are disabled (snap back) while Focused; create-while-focused never writes the drop-point into the sidecar | `NodeGraphCanvas::performReload`/`updateStickyFocusObject`/`performFocusedReload`/`currentFocusTarget`/`onViewScopeToggled`/`setBridge`, `m_viewScopeBtn`, `m_stickyFocusHasObject`/`m_stickyFocusObjectName`, `ViewportBridge::painterMaterialGraphFocused`, `SceneEditController::ReadPainterMaterialGraphLaidOutFocused` | **Revised by a user-feedback review round after the first two landings (`0562b9c4`, `80032065`) shipped a DIFFERENT design** -- the original shape let a canvas Painter/Function/Material click retarget the focused subgraph to that node's own upstream closure; a real user tried it and reported the surprise directly: "I click a painter and it narrows the view, I don't want that... clicking a painter should still bring up the painter details in the panel." This row now describes the CORRECTED design, not the original one -- the core API `ReadPainterMaterialGraphLaidOutFocused` is UNCHANGED and still accepts a Painter/Function/Material category (kept general for a future explicit "focus on this node" affordance); only this SHELL's policy for what counts as a focus target changed. Direct port of the Mac `GraphViewScope` segmented Picker, same shared-core C++ call so the subgraph selection + transient layout logic is identical bit-for-bit on both platforms -- only the toggle widget and the refetch plumbing differ. Toggle is a checkable `QToolButton` ("Focused") inserted into the header row immediately before the "+" palette button, mirroring the Mac segmented control's position. `updateStickyFocusObject` is the SOLE writer of the sticky memo (`m_stickyFocusHasObject`/`m_stickyFocusObjectName`), called at the top of EVERY `performReload` regardless of `m_viewScope` (so the memo is already current the instant the user toggles INTO Focused mode): it updates the memo ONLY when `m_bridge->selectionCategory() == Object`, and leaves it completely untouched otherwise -- a canvas-node click sets the shared selection to Painter/Material (`selectNode`), which this deliberately ignores, and THAT asymmetry is the entire mechanism that makes the memo "sticky." `currentFocusTarget` was reduced to a single read of that memo -- the PRIOR "or the canvas's own selected node" branch (and the Function-vs-Painter UI-category-collapse workaround it needed) is GONE, not merely dead code, since a canvas-node selection is no longer a focus-target source at all. `performFocusedReload` still carries the cheap `(category, name)` identity gate from the P1 fix (`0562b9c4`/`80032065`, all THREE of `m_lastFocusedHasTarget`/`m_lastFocusedCategory`/`m_lastFocusedName` commit and clear together, unchanged by this round) but `category` is now ALWAYS 8 (Object) in practice. NEW this round: a genuinely empty (non-degraded) focused result -- the sticky object was deleted, renamed, or has no material bound, all indistinguishable from this call site and treated identically -- falls back to showing All AND clears the sticky memo (`m_stickyFocusHasObject = false`), so a dead name can't keep silently re-resolving to nothing on every later frame; a DEGRADED resolve is unaffected by this and still just keeps last-good content, retried on the next `imageUpdated` frame as before. NEW this round: `setBridge()` now EXPLICITLY clears the sticky memo -- this row's ORIGINAL text argued no reset was needed because `m_hasFetchedOnce = false` alone forced a correct re-evaluation; that reasoning covered the (then-general) focus-target gate fields but never actually protected the sticky memo introduced this round (which has no relationship to `m_hasFetchedOnce`), so an explicit clear was added in `setBridge()` -- verified necessary because this canvas is a PERSISTENT widget (built once by `MainWindow`, never recreated per tab-switch) and `rebuildViewportForLoadedScene()` mints a BRAND NEW `ViewportBridge` on every scene load, calling `setBridge()` with it -- the one reliable "a scene just (re)loaded" signal available here. `commitNodeMove`'s Focused-mode drag-disable and `openAddNodeDialog`'s Focused-mode sidecar-write skip (both from the earlier P3-2 fix) are UNCHANGED by this round -- neither depended on how the focus target was chosen. **Follow-up P2 fix (same review pass):** `updateStickyFocusObject` initially called `selectionRowName()` -- an O(rows), per-row-heap-allocating tree walk -- unconditionally whenever the shared selection was an Object, but this method runs on EVERY preview frame (`performReload`'s per-frame `imageUpdated` poll cadence), so an object sitting selected through a long render paid that walk every single frame, regressing the per-frame-efficiency invariant `refreshSpotlight`'s own cheap gate established (round-1 P2-1). Fixed with the SAME two-tier gate: a cheap `(selectionCategory(), selectionName())` pre-check (`m_lastStickyFocusCategory`/`m_lastStickyFocusSelectionName`, cleared alongside the sticky memo in `setBridge()`) skips the expensive walk when neither O(1) read changed since it was last committed. **This gate is Qt-ONLY, deliberately -- the Mac twin (`updateStickyFocusObject(bridge:)`) has NO equivalent, and porting one in either direction would be wrong**: Mac's `performReload` runs only on discrete triggers (`.onAppear`, a `refreshTrigger` bump, a `viewScope` toggle), never on a bare per-frame poll, so there is no steady-state "same object selected through many frames" cost on that platform to guard against; this canvas's `performReload`, by contrast, genuinely fires every rendered preview frame via `ViewportBridge::imageUpdated`. |
+// | 29 | All/Focused view scope, sticky externally selected Object, transient focused layout | `performReload`/`performFocusedReload`/`fetchAllSnapshot` | Shared C++ appearance closure. Both platforms preserve the displayed graph on degraded reads and retry on bounded timers. Qt caches successful focused reads by target identity AND scene epoch; a degraded read invalidates that gate. All-view and empty/no-target fallbacks use the same freshness check. Canvas picks update the property selection without replacing the sticky Object. Focused drags do not write the layout sidecar. |
 //
-// ---- Bridge gaps closed in this slice (build/VS2022/RISE-GUI/ViewportBridge.{h,cpp}) ----
+// ---- Historical S16/S22 bridge carry (2026-08; ViewportBridge.{h,cpp}) ----
 //
 // The S14 Windows bridge carry (2026-08-xx) stopped at the READ-ONLY
 // surface (`painterMaterialGraph()`, `categoryTree()`) plus the S18/S19/
@@ -2245,12 +2340,13 @@ qreal NodeGraphCanvas::currentScale() const
 // passthroughs, written to match RISEViewportBridge.mm's five
 // implementations line-for-line (same argument order, same buffer-size
 // conventions, same "candidateIsPerChannelValues: pass 0, unknown"
-// choice for checkConnectionByKeyword). No C++ library code changed —
-// this is a pure GUI-layer bridge addition, so `make -j8 all` (which
+// choice for checkConnectionByKeyword). That historical S16/S22 carry
+// changed only GUI bridges; Slice 4 also changes the shared graph/controller.
+// For the original carry, `make -j8 all` (which
 // does not build RISE-GUI on this platform) is unaffected and is only
 // a REGRESSION check that the library side stayed byte-identical.
 //
-// | 30 | Object Graph canvas (S3, sibling of the Painter/Material canvas above): read-only object hierarchy down to geometry, All/Focused toggle with the SAME sticky-object policy as row 29, single-node spotlight, click-to-select (Object/Geometry categories), no dragging/editing | `ObjectGraphCanvas` (ObjectGraphCanvas.h/.cpp) -- `performReload`/`updateStickyFocusObject`/`performFocusedReload`/`currentFocusTarget`/`onViewScopeToggled`/`setBridge`/`refreshSpotlight`/`selectNode`, `ViewportBridge::objectGraph`/`objectGraphFocused`, `SceneEditController::ReadObjectGraph{,LaidOut,LaidOutFocused}` | Direct port of `ObjectGraphCanvas.swift` (S2, itself reviewed to ZERO findings), which itself ported the Material canvas's FINAL (post-review) sticky-object shape rather than re-deriving it -- this row is therefore a port of a port, and inherits every fix row 29's own text documents (the P1 lockstep-commit fix, the P2 cheap-gate fix) rather than re-earning them. A canvas-node click updates the sticky memo when (and only when) the clicked node is Object-category -- `updateStickyFocusObject` guards on `selectionCategory() == Object` exactly like row 29's does, and since THIS canvas's own nodes can themselves be Object-category, clicking one legitimately re-focuses (the same gesture as picking it in the outliner), while clicking a Geometry node leaves the memo untouched (sticky). **Review-round P1 fix, corrected from this row's ORIGINAL text**: unlike row 29 (where a canvas click is NEVER Object-category, so the sticky memo's own guard is the whole story), a click here CAN be Object-category, and `updateStickyFocusObject`'s per-frame poll alone is NOT enough to re-center an already-Focused subgraph with no render in flight (the common static-scene browsing case) -- the memo would update on the NEXT `performReload()` call, but nothing else was triggering one. `selectNode` now explicitly forces one for an Object-node click while Focused (a Geometry-node click still does not, matching the sticky policy), deferred via `QTimer::singleShot(0, this, ...)` for the SAME use-after-free reason row 29's own `selectNode` history documents (`performReload` -> `applySnapshot` deletes every `ObjectGraphNodeItem`, including the one whose `mousePressEvent` is still on the call stack). Two DELIBERATE ASYMMETRIES with row 29, both already true of row 29 itself and simply inherited here: (a) **Qt's retry is frame-tick, Mac's is a bounded `DispatchWorkItem`** -- a DEGRADED focused resolve leaves the gate fields uncommitted and does nothing further; the NEXT `imageUpdated` frame (this canvas's `refresh()` rides it, wired in MainWindow.cpp) retries the deep resolve for real, because this canvas re-derives every preview frame already -- Mac's `ObjectGraphCanvas.swift` needs an explicit ~0.5s `DispatchWorkItem` timer for the identical case because its `performReload` runs only on discrete triggers, never a bare per-frame poll. (b) **the cheap gate is Qt-only** -- `updateStickyFocusObject`'s `(selectionCategory(), selectionName())` pre-check exists ONLY on this platform, for the SAME reason row 29's own text gives: an object sitting selected through a long render must not re-pay `selectionRowName()`'s O(rows) walk on every single preview frame, a cost that does not exist on Mac's discrete-trigger cadence. The SPOTLIGHT here is a SINGLE node, not a closure (unlike row 28's appearance-closure spotlight) -- this canvas's "All" view already shows every object, so the spotlight only needs to say "you are looking at THIS one"; it carries its OWN separate cheap gate (`m_lastSpotlightCategory`/`m_lastSpotlightSelectionName`, distinct from the sticky-focus gate) for the identical per-frame reason. No thumbnail (an Object/Geometry node has no `PainterPreview`-style preview to show), no fan-out/orphan badge (this graph's shared-node and unreferenced-node concepts don't map the same way onto an object hierarchy) -- the card shows name/keyword/category label plus a `repeatCount` "×N" badge (shown for `repeatCount >= 1`, including "×1" for a bare `count_u 1` -- presence alone selects the repeated form). NO drag-to-reposition and NO drag-to-wire exist on this canvas at all (unlike row 29's own S22 additions) -- `ObjectGraphNodeItem` sets neither `ItemIsMovable` nor `ItemSendsGeometryChanges`, so panning on a node press falls through to the view's own `ScrollHandDrag` exactly as it would on empty canvas space; this graph's layout is ALWAYS transient (no `.risegraph.json` partition exists to persist a drag into -- see `SceneEditController::ReadObjectGraphLaidOut`'s own header comment), so there is nothing a drag gesture could usefully commit. `setSceneEditable` is wired at the same MainWindow call site as row 29's for lifecycle-wiring consistency, but stores the flag unread -- this phase has no "+", no rewire commit, no delete/duplicate to gate. |
+// | 30 | Read-only Object Graph sibling: hierarchy/geometry, All/Focused scope, single-node spotlight | `ObjectGraphCanvas`, `ViewportBridge::objectGraph{,Focused}` | Same freshness and bounded-retry policy as the Material canvas. Qt focused caches include scene epoch. Object-node picks can change the sticky focus and defer their reload with `QTimer::singleShot(0, ...)` to keep the active item event safe; Geometry picks keep the sticky Object. No thumbnail, fan-out/orphan badges, repositioning or wire editing. Layout remains transient. |
 //
 // ---- MSVC-verification checklist (for the owed Windows build session) ----
 //
@@ -2313,7 +2409,7 @@ qreal NodeGraphCanvas::currentScale() const
 //      own comment).
 //  [ ] SourceHygieneTest and a clean `make -j8 all` both stay green (the
 //      Qt files are not in the make build by design; this is a
-//      regression check that the library side is untouched).
+//      regression check that the library still builds).
 //  [ ] Object-pick spotlight (row 28) -- WHILE NOTHING IS ACTIVELY
 //      RENDERING (the scene has converged / is static, no imageUpdated
 //      frames arriving): pick an object in the OUTLINER whose material has
@@ -2399,12 +2495,12 @@ qreal NodeGraphCanvas::currentScale() const
 //      "×1" specifically (not blank). Toggle Focused with an object
 //      selected; confirm the subgraph narrows to parents/children/
 //      geometry only. THEN (mirrors row 29's own dedicated contention
-//      case, adapted for this canvas's frame-tick retry instead of a
+//      case, adapted for this canvas's bounded snapshot retry alongside its
 //      timer): with a render running, select a different object and
 //      toggle to Focused; confirm the canvas keeps showing its last-good
 //      content (not a flash to All) and resolves to the correct focused
 //      subgraph on its own within a frame or two of the render ending --
-//      no further click needed, proving the frame-tick retry (row 30's
+//      no further click needed, proving the bounded retry (row 30's
 //      own "(a)" asymmetry note) actually self-heals the way Mac's timer
 //      does. Confirm double-clicking a node does nothing (no def-focus,
 //      no dialog) and that no node can be dragged (a press-drag on a

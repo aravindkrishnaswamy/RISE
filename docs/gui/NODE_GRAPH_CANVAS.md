@@ -1,5 +1,21 @@
 # Node-Graph Canvas (doc-88 Phase 3 / MATERIAL_EDITOR C2)
 
+**Material Editor Slice 4 shipped (2026-10-31):** Both desktop graph canvases
+colour input sockets, output handles and connected wires by pipe: Color gold,
+Scalar neutral grey, Material green and Function purple; dual Color/Scalar
+rotation inputs have a grey outer ring. Material sockets use the green success
+tint; category headers retain their existing lavender material tint. Eligible Color → Scalar refusals offer
+**Insert scalar_painter Adapter & Wire**. The shared controller inserts an
+R-channel adapter immediately after its upstream source (`texture` for PNG,
+JPG, HDR, EXR and TIFF; `painter` for other Color-capable painters, including
+`piecewise_linear_function`) and rewires the slot in one operation-level undo
+batch. Declaration order, cycle, ownership, transaction and head-version gates
+apply; Undo/Redo preserves unrelated document edits. Metadata and edits are
+exposed through the C ABI and both bulk desktop bridges. Bulk reads report
+snapshot freshness, so contended reads retry without closing the epoch gate
+or losing pending adapter selection. Windows/MSVC build
+verification remains owed on a Windows host.
+
 **Status: SHIPPED — S11 through S23 all complete (2026-08-20 → 2026-08-21).**
 All six design calls landed as approved: C1 two-level model (defs = internal
 stage strip), C2 sidecar layout, C3 read-only Phase A then editable Phase B
@@ -203,7 +219,7 @@ Why NOT a headless layout core that also owns positioning math shared across she
 2. **Double-click a `def` → its expression row focuses.** Already shipped in substance: the flat panel already renders a def-stage thumbnail inline per `def[i]` row (`PropertiesPanel.swift:569-583`, `defStageIndex(rowName:)`); "double-click def on canvas" therefore only needs to (a) select the owning painter node and (b) scroll/highlight that row — no new introspection.
 3. **Thumbnail on node via `PainterPreview`.** `RenderPainterPreview`/`RenderRampStripPreview` already produce the exact RGBA8 buffer a canvas node's swatch needs (`PainterPreview.h:221-244`), with the caller-held-lock, cancel/refuse, and budget discipline (`kMaxSampleBudget`, `PainterPreview.h:120-178`) already built for exactly this kind of "many small live previews" use — this is *why* S10 shipped painter previews ahead of the canvas (doc 88 §4 P5.4 flagged the canvas as deferred at the time; S10's engine is the prerequisite it was waiting on, now satisfied).
 
-Node header text = the chunk's declared name (never invented); node subtitle = its chunk keyword (`type` row's value, already surfaced — `PropertiesPanel.swift:534`). No node color/shape encodes information the descriptor doesn't already carry (a future `ParameterSemantics.pipe`, once implemented, becomes the color source; until then, `PainterIntrospection::PipesFor`'s live-manager answer is the interim source — see §0 table).
+Node header text = the chunk's declared name (never invented); node subtitle = its chunk keyword (`type` row's value, already surfaced — `PropertiesPanel.swift:534`). Node headers retain their category tint. Slice 4 colours sockets and wires from descriptor `ParameterSemantics.pipe` and the source chunk's keyword/category output pipe; dual Color/Scalar inputs also carry `colorAlsoAcceptsScalar`. These fields travel in both bulk bridge snapshots without live-manager pipe probes.
 
 ---
 

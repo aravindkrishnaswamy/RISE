@@ -147,6 +147,9 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -155,6 +158,7 @@
 #include <vector>
 
 #include "../src/Library/Job.h"
+#include "../src/Library/RISE_API.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Parsers/IAsciiChunkParser.h"
@@ -1719,6 +1723,211 @@ static void Part8_PaletteAdvisoryGapCommitGuard()
 	std::remove( path.c_str() );
 }
 
+// Slice 4: pipe metadata and the atomic Color -> Scalar adapter escape hatch.
+static void Part9_ScalarAdapter()
+{
+    const std::string extra =
+        "png_painter\n{\nname tex_adapter\nfile textures/wood.png\n}\n\n"
+        "perlin2d_painter\n{\nname noise_adapter\n}\n\n"
+        "piecewise_linear_function\n{\nname curve_adapter\ncp 400 0.2\ncp 700 0.8\n}\n\n"
+        "lambertian_material\n{\nname noise_adapter_scalar\nreflectance pnt_white\n}\n\n"
+        "scalar_painter\n{\nname shared_scalar\nbase scal_rough\nscale 1\n}\n\n"
+        "ggx_material\n{\nname mat_ports\nrd pnt_white\nrs pnt_white\nalphax shared_scalar\nalphay scal_rough\nior scal_rough\nextinction scal_rough\ntangent_rotation pnt_white\n}\n\n"
+        "ggx_material\n{\nname mat_ports_two\nalphax shared_scalar\n}\n\n";
+    std::string scene(kGraphScene);
+    scene.insert(scene.find("ggx_material\n"), extra);
+    scene += "uniformcolor_painter\n{\nname late_color\ncolor 0.5 0.5 0.5\n}\n";
+    const std::string path = TempPath("test_rewire_slice4.RISEscene");
+    Job* j = LoadScene(scene, path);
+    Check(j != nullptr, "9: pipe/adapter fixture loads");
+    if (!j) return;
+    {
+        SceneEditController c(*j, nullptr);
+        SceneEditController::PainterMaterialGraph graph;
+        c.ReadPainterMaterialGraph(graph);
+        for (const char* name : {"pnt_white", "tex_adapter", "scal_rough", "mat_ports"}) {
+            const ChunkCategory cat = std::string(name) == "mat_ports" ? ChunkCategory::Material : ChunkCategory::Painter;
+            const int idx = SceneEditController::ResolveUniqueGraphNodeIndex(graph, cat, String(name));
+            Check(idx >= 0, std::string("9: graph contains ") + name);
+            if (idx < 0) continue;
+            const auto& node = graph.nodes[idx];
+            const ParameterPipe expected = cat == ChunkCategory::Material ? ParameterPipe::Material
+                : std::string(name) == "scal_rough" ? ParameterPipe::Scalar : ParameterPipe::Color;
+            Check(node.outputPipe == expected && c.PainterGraphNodeOutputPipe(node.handle) == static_cast<int>(expected),
+                  std::string("9: output pipe snapshot/accessor ") + name);
+            if (cat == ChunkCategory::Material) {
+                Check(node.outEdges.size() == 7, "9: all seven authored GGX reference ports surfaced");
+                for (unsigned int i = 0; i < node.outEdges.size(); ++i) {
+                    const auto& port = node.outEdges[i];
+                    const std::string param(port.paramName.c_str());
+                    const bool dual = param == "tangent_rotation";
+                    const ParameterPipe pipe = param == "rd" || param == "rs" || dual ? ParameterPipe::Color : ParameterPipe::Scalar;
+                    int abiPipe = -1, abiDual = -1;
+                    Check(port.portPipe == pipe && port.portColorAlsoAcceptsScalar == dual,
+                          "9: GGX descriptor pipe and dual flag " + param);
+                    Check(RISE_API_SceneEditController_PainterGraphNodePortPipe(&c, node.handle, i, false, &abiPipe, &abiDual)
+                          && abiPipe == static_cast<int>(pipe) && abiDual == (dual ? 1 : 0), "9: ABI port metadata " + param);
+                }
+            }
+        }
+        Check(c.PainterGraphNodeOutputPipe(SceneEditController::kInvalidGraphNode) == -1, "9: invalid pipe handle refuses");
+        const std::string before = DocText(*j);
+        for (const char* source : {"tex_adapter", "noise_adapter", "pnt_white"}) {
+            const Rewire r = c.RewireConnection(ChunkCategory::Material, String("mat_four"), String("alphax"), 0,
+                ChunkCategory::Painter, String(source), nullptr);
+            Check(r.legalityRefused && r.canInsertScalarAdapter && !r.commit.applied, "9: Color -> Scalar offers adapter");
+        }
+        const Rewire scalarColor = c.RewireConnection(ChunkCategory::Material, String("mat_one"), String("reflectance"), 0,
+            ChunkCategory::Painter, String("scal_rough"), nullptr);
+        Check(scalarColor.legalityRefused && !scalarColor.canInsertScalarAdapter, "9: Scalar -> Color never offers adapter");
+        // Materials are ownership roots in OwnershipClosure. Exercise SharedTarget
+        // on an interior scalar slot, owned by two materials, where it can occur.
+        const Rewire shared = c.RewireConnection(ChunkCategory::Painter, String("shared_scalar"), String("base"), 0,
+            ChunkCategory::Painter, String("pnt_white"), nullptr);
+        Check(shared.legalityRefused && !shared.canInsertScalarAdapter, "9: shared interior target never offers adapter");
+        Check(DocText(*j) == before, "9: all adapter classifications are byte-preserving");
+        auto insert = [&](const char* source, String* name, const Cst::CstHeadVersion* version = nullptr) {
+            return c.InsertScalarAdapterAndRewire(ChunkCategory::Material, String("mat_four"), String("alphax"), 0,
+                std::string(source) == "curve_adapter" ? ChunkCategory::Function : ChunkCategory::Painter, String(source), name, version);
+        };
+        String adapter;
+        for (const char* source : {"scal_rough", "missing_source", "late_color"}) {
+            const auto bad = insert(source, &adapter);
+            Check(!bad.commit.applied && adapter.size() <= 1 && DocText(*j) == before,
+                  "9: invalid source/pipe/declaration-order adapter request preserves bytes");
+        }
+        const auto stale = j->GetCstHeadVersion();
+        Check(c.BeginTransaction(), "9: open transaction for adapter refusal");
+        const auto midTxn = insert("pnt_white", &adapter);
+        Check(!midTxn.commit.applied && midTxn.commit.retriable && adapter.size() <= 1 && DocText(*j) == before,
+              "9: adapter refuses open transaction without mutation");
+        c.RollbackTransaction();
+        const auto epoch = c.SceneEpoch();
+        c.ForTest_ArmFinalRegularPolish();
+        Check(c.ForTest_PaneHasFinalRegularPolish(0), "9: pending gesture polish is armed");
+        const auto texture = insert("tex_adapter", &adapter);
+        Check(!c.ForTest_PaneHasFinalRegularPolish(0), "9: adapter render kick clears stale gesture polish");
+        Check(texture.commit.applied && adapter == String("tex_adapter_scalar"), "9: texture adapter commit and canonical name");
+        Check(c.SceneEpoch() > epoch, "9: adapter bumps canvas epoch");
+        auto chunk = [&](ChunkCategory cat, const char* name) {
+            const Cst::Document& doc = *j->GetCstDocument();
+            return Cst::DocResolveNodeId(doc, SceneReferenceGraph::ResolveChunk(doc, cat, String(name)));
+        };
+        auto value = [&](const Cst::NodeRef& node, const char* param) { return Cst::ParamValueAsParsed(node, param); };
+        Check(value(chunk(ChunkCategory::Painter, "tex_adapter_scalar"), "texture") == "tex_adapter"
+              && value(chunk(ChunkCategory::Painter, "tex_adapter_scalar"), "channel") == "R"
+              && value(chunk(ChunkCategory::Material, "mat_four"), "alphax") == "tex_adapter_scalar", "9: texture form and target binding");
+        const auto chunks = SceneReferenceGraph::AllChunks(*j->GetCstDocument());
+        bool adjacent = false;
+        for (size_t i = 1; i < chunks.size(); ++i)
+            if (chunks[i].name == adapter) adjacent = chunks[i-1].name == String("tex_adapter");
+        Check(adjacent, "9: adapter is next chunk after source");
+        const auto conflict = insert("pnt_white", nullptr, &stale);
+        Check(conflict.commit.conflict && !conflict.commit.applied && conflict.nowUnreferenced.empty(), "9: stale adapter proposal conflicts");
+        Check(c.Undo() && DocText(*j) == before, "9: ONE undo restores texture adapter bytes exactly");
+        Check(c.Redo() && value(chunk(ChunkCategory::Painter, "tex_adapter_scalar"), "texture") == "tex_adapter", "9: ONE redo restores texture adapter");
+        Check(c.Undo() && DocText(*j) == before, "9: redo then undo restores exact baseline");
+        for (const char* source : {"pnt_white", "noise_adapter", "curve_adapter"}) {
+            const auto result = insert(source, &adapter);
+            Check(result.commit.applied, "9: general color painter adapter commits");
+            if (std::string(source) == "noise_adapter")
+                Check(adapter == String("noise_adapter_scalar_2"), "9: name deduplication includes Material-category names");
+            if (std::string(source) == "curve_adapter") {
+                SceneEditController::PainterMaterialGraph current;
+                c.ReadPainterMaterialGraph(current);
+                const int index = SceneEditController::ResolveUniqueGraphNodeIndex(current, ChunkCategory::Function, String(source));
+                Check(index >= 0 && current.nodes[index].outputPipe == ParameterPipe::Function1D, "9: dual-registered Function1D keeps primary output pipe");
+            }
+            Check(value(chunk(ChunkCategory::Painter, adapter.c_str()), "painter") == source
+                  && value(chunk(ChunkCategory::Painter, adapter.c_str()), "texture").empty(), "9: procedural adapter uses painter form");
+            Check(c.Undo() && DocText(*j) == before, "9: procedural adapter undo is byte-exact");
+        }
+        Check(insert("pnt_white", &adapter).commit.applied, "9: undo-isolation adapter commits");
+        // A later edit outside this controller's history must survive adapter Undo.
+        Check(c.SetPropertyForCategory(SceneEditController::Category::Film, String("height"), String("48")), "9: independent non-history film-height edit commits");
+        Check(j->ApplyCstParamEdit("mat_four", "ggx_material", "alphay", 0, "scal_smooth") >= 1, "9: independent edit on target chunk commits");
+        Check(c.ApplyAgentParamEdit(String(""), String("film"), String("width"), String("64"), nullptr).applied, "9: unrelated undoable film-width edit commits");
+        Check(c.Undo(), "9: first Undo reverts film width");
+        Check(c.Undo(), "9: second Undo removes adapter and restores slot");
+        Check(value(chunk(ChunkCategory::Material, "mat_four"), "alphax") == "scal_rough"
+              && !chunk(ChunkCategory::Painter, "pnt_white_scalar"), "9: adapter and binding undone together");
+        Check(value(chunk(ChunkCategory::Material, "mat_four"), "alphay") == "scal_smooth", "9: adapter undo preserves unrelated edit on same target chunk");
+        auto filmValue = [&](const char* param) {
+            for (const auto& dc : SceneReferenceGraph::AllChunks(*j->GetCstDocument()))
+                if (dc.keyword == String("film")) return value(dc.item, param);
+            return std::string();
+        };
+        Check(filmValue("height") == "48" && filmValue("width") == "16", "9: adapter undo preserves independent film state");
+        Check(c.Redo() && value(chunk(ChunkCategory::Material, "mat_four"), "alphax") == "pnt_white_scalar", "9: redo adapter restores binding");
+        Check(value(chunk(ChunkCategory::Material, "mat_four"), "alphay") == "scal_smooth", "9: adapter redo preserves unrelated target slot");
+        Check(c.Redo() && filmValue("width") == "64" && filmValue("height") == "48", "9: redo film edit preserves independent height");
+        Check(insert("pnt_white", &adapter).commit.applied && adapter == String("pnt_white_scalar_2"), "9: adapter name deduplicates document-wide");
+        char abiName[256] = {}, abiStatus[64] = {}, abiMessage[1024] = {};
+        Check(RISE_API_SceneEditController_InsertScalarAdapterAndRewire(&c, static_cast<int>(ChunkCategory::Material), "mat_four", "alphax", 0,
+                  static_cast<int>(ChunkCategory::Painter), "tex_adapter", abiName, sizeof(abiName), abiStatus, sizeof(abiStatus), abiMessage, sizeof(abiMessage))
+              && std::string(abiName) == "tex_adapter_scalar" && std::string(abiStatus) == "applied", "9: C ABI adapter action exposes applied name/status");
+        const std::string beforeDiagnosed = DocText(*j);
+        j->ForTest_InjectNextLiveDeriveDiagnostic("slice4 injected live derive diagnostic");
+        const auto diagnosed = insert("noise_adapter", &adapter);
+        Check(!diagnosed.commit.applied && diagnosed.commit.rawCode == 3
+              && diagnosed.commit.status == String("diagnosed") && !std::string(diagnosed.commit.message.c_str()).empty()
+              && adapter.size() > 1 && DocText(*j) != beforeDiagnosed && diagnosed.nowUnreferenced.empty(),
+              "9: diagnosed mutation reports changed document and adapter identity");
+        Check(c.Undo() && DocText(*j) == beforeDiagnosed, "9: diagnosed insertion remains one-step undoable");
+        Check(c.Redo() && chunk(ChunkCategory::Painter, adapter.c_str()), "9: diagnosed insertion remains redoable");
+        // A fresh flag must survive through both bulk reads. Force a real
+        // render-owned cached read after insertion, then recover without a new edit.
+        SceneEditController::PainterMaterialGraph cached;
+        c.ReadPainterMaterialGraph(cached);
+        Check(cached.snapshotFresh, "9: uncontended graph read is fresh");
+        Check(insert("noise_adapter", &adapter).commit.applied, "9: insert before forced stale snapshot");
+        std::mutex gateMutex;
+        std::condition_variable gateCV;
+        bool entered = false, release = false;
+        std::thread parked([&] {
+            c.RunPreviewRenderParked([&] {
+                std::unique_lock<std::mutex> gateLock(gateMutex);
+                entered = true;
+                gateCV.notify_one();
+                gateCV.wait(gateLock, [&] { return release; });
+            });
+        });
+        bool held = false;
+        {
+            std::unique_lock<std::mutex> gateLock(gateMutex);
+            held = gateCV.wait_for(gateLock, std::chrono::seconds(5), [&] { return entered; });
+        }
+        Check(held, "9: render ownership deterministically held during snapshot read");
+        if (held) {
+            SceneEditController::PainterMaterialGraphLaidOut staleGraph;
+            c.ReadPainterMaterialGraphLaidOut(staleGraph);
+            Check(!staleGraph.graph.snapshotFresh
+                  && SceneEditController::ResolveUniqueGraphNodeIndex(staleGraph.graph, ChunkCategory::Painter, adapter) < 0,
+                  "9: bulk snapshot reports stale and retains old graph while render owns scene");
+            bool degraded = false;
+            c.ReadPainterMaterialGraphLaidOutFocused(ChunkCategory::Material, String("mat_four"), staleGraph, &degraded);
+            Check(degraded, "9: focused snapshot does not accept a cached graph as resolved");
+            SceneEditController::SceneGraphModel objects;
+            c.ReadObjectGraph(objects);
+            Check(!objects.snapshotFresh, "9: sibling object graph reports cached reads honestly");
+        }
+        {
+            std::lock_guard<std::mutex> gateLock(gateMutex);
+            release = true;
+        }
+        gateCV.notify_one();
+        parked.join();
+        SceneEditController::PainterMaterialGraphLaidOut recovered;
+        c.ReadPainterMaterialGraphLaidOut(recovered);
+        Check(recovered.graph.snapshotFresh
+              && SceneEditController::ResolveUniqueGraphNodeIndex(recovered.graph, ChunkCategory::Painter, adapter) >= 0,
+              "9: next fresh read exposes adapter without another scene edit");
+
+    }
+    j->release();
+    std::remove(path.c_str());
+}
+
 int main()
 {
 	std::printf( "RewireConnectionTest -- doc-88 Phase 3 S19 (ownership closure + REFUSE)\n" );
@@ -1731,6 +1940,7 @@ int main()
 	Part6_OccurrenceScopingSweep();
 	Part7_OwnersOfBatchPerf();
 	Part8_PaletteAdvisoryGapCommitGuard();
+	Part9_ScalarAdapter();
 
 	std::printf( "\n==================================================\n" );
 	std::printf( "RewireConnectionTest: %d passed, %d failed\n", g_pass, g_fail );

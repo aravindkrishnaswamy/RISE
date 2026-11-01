@@ -5250,6 +5250,33 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		char* outReferrers, unsigned int outReferrersLen,
 		char* outOwners, unsigned int outOwnersLen,
 		char* outNowUnreferenced, unsigned int outNowUnreferencedLen );
+	//! RewireConnection with the additional adapter-availability result; preserves the original ABI.
+	bool RISE_API_SceneEditController_RewireConnectionEx(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* param, int occurrence,
+		int newRefCategory, const char* newRefName,
+		int* outCanInsertScalarAdapter, int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outShared, unsigned int outSharedLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outOwners, unsigned int outOwnersLen,
+		char* outNowUnreferenced, unsigned int outNowUnreferencedLen );
+
+	bool RISE_API_SceneEditController_InsertScalarAdapterAndRewire(
+		SceneEditController* p, int targetCategory, const char* targetName,
+		const char* param, int occurrence, int sourceCategory, const char* sourceName,
+		char* outAdapterName, unsigned int outAdapterNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+	//! ParameterPipe ordinal (Color=1, Scalar=2, Material=3, Function1D=4, Function2D=5); -1 for invalid handles.
+	int RISE_API_SceneEditController_PainterGraphNodeOutputPipe( SceneEditController* p, unsigned long long node );
+	//! Published port metadata; incoming selects inEdges instead of outEdges. Clears outputs on refusal.
+	bool RISE_API_SceneEditController_PainterGraphNodePortPipe( SceneEditController* p,
+		unsigned long long node, unsigned int portIdx, bool incoming,
+		int* outPipe, int* outColorAlsoAcceptsScalar );
+
 
 	//! doc-88 Phase 3 S20 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): the canvas's
 	//! REFERENCE-SAFE DELETE (`SceneEditController::DeleteGraphNode`, which

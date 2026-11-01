@@ -93,6 +93,8 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 /// see that method's own comment and OwnershipClosure.h for the
 /// MATERIAL_EDITOR.md sect. 3.7a rule these fields report on.
 @interface RISERewireOutcome : NSObject
+@property (nonatomic, readonly) BOOL canInsertScalarAdapter;
+@property (nonatomic, readonly, copy) NSString *adapterName;
 /// True only on a clean commit.
 @property (nonatomic, readonly) BOOL applied;
 /// "applied" / "rejected" / "diagnosed" / "conflict".
@@ -224,6 +226,8 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 /// `RISESceneTreeNode`'s own "nothing here is a handle, so nothing here
 /// expires" comment -- the same rule applies here for the same reason).
 @interface RISEGraphPort : NSObject
+@property (nonatomic, readonly) NSInteger portPipe;
+@property (nonatomic, readonly) BOOL portColorAlsoAcceptsScalar;
 @property (nonatomic, readonly, copy) NSString *paramName;
 @property (nonatomic, readonly) NSInteger occurrence;
 @property (nonatomic, readonly) NSInteger otherNodeIndex;   ///< -1 for a node-less port
@@ -244,6 +248,7 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 /// re-find "the node the user last selected" after a re-fetch should hold
 /// this, never `outEdges[i].otherNodeIndex`.
 @interface RISEGraphNode : NSObject
+@property (nonatomic, readonly) NSInteger outputPipe;
 @property (nonatomic, readonly) unsigned long long handle;
 @property (nonatomic, readonly, copy) NSString *name;
 @property (nonatomic, readonly, copy) NSString *chunkKeyword;   ///< e.g. "ramp_painter" -- always non-blank for a real node
@@ -272,6 +277,7 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 /// (`RISEGraphPort` already carries both endpoints + the param label,
 /// everything needed to draw a wire).
 @interface RISEPainterMaterialGraph : NSObject
+@property (nonatomic, readonly) BOOL snapshotFresh;
 @property (nonatomic, readonly, copy) NSArray<RISEGraphNode *> *nodes;
 @property (nonatomic, readonly) unsigned long long generation;
 @end
@@ -1147,13 +1153,11 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// ambiguous `(category, name)` -- same refusal convention as every other
 /// `ResolveUniqueGraphNodeIndex`-backed lookup on this surface.
 ///
-/// NIL VS EMPTY IS LOAD-BEARING here, the SAME contract
-/// `-appearanceClosureForObject:` documents: nil means the Object case's
-/// live object->material resolution could not get a non-blocking hold of
-/// the commit lock (a render owns the scene) -- retry your next pass, not
-/// "nothing to show". The non-Object case never degrades this way (a
-/// canvas-node lookup never touches the live object/material manager), so
-/// it is always a real, resolved (possibly empty) answer.
+/// NIL VS EMPTY IS LOAD-BEARING: nil means graph refresh could only
+/// serve cached data under render ownership or scene-mutex contention,
+/// for ANY category. Object focus can also degrade during live material
+/// resolution. Preserve the displayed graph and retry. A genuinely
+/// unknown/ambiguous target returns a real, possibly empty graph.
 ///
 /// LAYOUT IS TRANSIENT: this NEVER reads or writes the `.risegraph.json`
 /// sidecar -- see the C++ method's own comment. Toggling back to the
@@ -1189,12 +1193,10 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// an Object-category name (which already includes `rect_light`/
 /// `shape_light` nodes, per `-objectGraph`'s own comment).
 ///
-/// NIL VS EMPTY IS LOAD-BEARING, the SAME contract
-/// `-painterMaterialGraphFocusedForCategory:name:` documents: nil means
-/// `mRenderOwnsScene` was observed true at the top of the C++ call (a
-/// render owns the scene right now) -- retry your next pass, not
-/// "nothing to show". Every other outcome (unknown/ambiguous name, or a
-/// genuinely resolved -- possibly empty -- subgraph) is a real answer.
+/// NIL VS EMPTY IS LOAD-BEARING: nil means a render owns the scene or
+/// graph refresh served cached data under scene-mutex contention. Preserve
+/// the displayed graph and retry. Unknown/ambiguous targets return real,
+/// possibly empty graphs.
 ///
 /// LAYOUT IS TRANSIENT -- same as `-objectGraph` itself (this graph has
 /// no sidecar to read OR write at all, focused or not).
@@ -1423,6 +1425,14 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 // this call returns are declared at FILE SCOPE above (beside
 // RISEEnvironmentInfo), since an @interface cannot nest inside another.
 
+/// Insert an R-channel scalar_painter and bind the target in one undo step.
+/// A diagnosed result can change the document despite reporting failure;
+/// the inserted name is still returned, and Undo remains available.
+- (nullable RISERewireOutcome *)insertScalarAdapterAndRewireWithTargetCategory:(NSInteger)targetCategory
+    targetName:(NSString *)targetName param:(NSString *)param occurrence:(NSInteger)occurrence
+    sourceCategory:(NSInteger)sourceCategory sourceName:(NSString *)sourceName
+    NS_SWIFT_NAME(insertScalarAdapterAndRewire(targetCategory:targetName:param:occurrence:sourceCategory:sourceName:));
+
 /// Re-point `targetName`.`param` (occurrence `occurrence`, 0 for the
 /// only occurrence) at `newRefName`, as ONE undoable commit.  The
 /// category arguments are `RISE::ChunkCategory` ordinals -- the SAME
@@ -1433,6 +1443,8 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// outcome's `closure` to decide what to offer (a `SharedTarget`
 /// refusal is the one the Duplicate-node escape hatch unblocks).
 /// Returns nil only on a missing controller / nil arguments.
+
+
 - (nullable RISERewireOutcome *)rewireConnectionWithTargetCategory:(NSInteger)targetCategory
                                                         targetName:(NSString *)targetName
                                                              param:(NSString *)param

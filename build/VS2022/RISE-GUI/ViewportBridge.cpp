@@ -1644,6 +1644,8 @@ namespace {
             ViewportBridge::PainterGraphPort pp;
             pp.paramName = QString::fromUtf8(p.paramName.c_str());
             pp.occurrence = p.occurrence;
+            pp.portPipe = static_cast<int>(p.portPipe);
+            pp.portColorAlsoAcceptsScalar = p.portColorAlsoAcceptsScalar;
             pp.otherNodeIndex = (p.otherNode == SceneEditController::kInvalidNodeIndex)
                 ? -1 : static_cast<int>(p.otherNode);
             pp.otherName = QString::fromUtf8(p.otherName.c_str());
@@ -1678,6 +1680,7 @@ static ViewportBridge::PainterGraph ConvertLaidOutGraph(const LaidOutGraphT& g)
         const SceneEditController::GraphNodePosition& pos = g.positions[i];
         ViewportBridge::PainterGraphNode& node = out.nodes[static_cast<int>(i)];
         node.handle       = gn.handle;
+        node.outputPipe = static_cast<int>(gn.outputPipe);
         node.name         = QString::fromUtf8(gn.name.c_str());
         node.chunkKeyword = QString::fromUtf8(gn.chunkKeyword.c_str());
         node.category     = static_cast<int>(gn.category);
@@ -1689,6 +1692,7 @@ static ViewportBridge::PainterGraph ConvertLaidOutGraph(const LaidOutGraphT& g)
         node.inEdges  = ConvertGraphPorts(gn.inEdges);
     }
     out.generation = g.graph.generation;
+    out.snapshotFresh = g.graph.snapshotFresh;
     return out;
 }
 
@@ -2079,6 +2083,22 @@ QStringList splitJoinedNames(const char* buf)
 
 }  // namespace
 
+bool ViewportBridge::insertScalarAdapterAndRewire(int targetCategory, const QString& targetName,
+    const QString& param, int occurrence, int sourceCategory, const QString& sourceName,
+    QString* outAdapterName, QString* outMessage)
+{
+    if (outAdapterName) outAdapterName->clear();
+    if (outMessage) outMessage->clear();
+    if (!m_controller) return false;
+    char name[256] = {0}, status[64] = {0}, message[2048] = {0};
+    const bool applied = RISE_API_SceneEditController_InsertScalarAdapterAndRewire(
+        m_controller, targetCategory, targetName.toUtf8().constData(), param.toUtf8().constData(), occurrence,
+        sourceCategory, sourceName.toUtf8().constData(), name, sizeof(name), status, sizeof(status), message, sizeof(message));
+    if (outAdapterName) *outAdapterName = QString::fromUtf8(name);
+    if (outMessage) *outMessage = QString::fromUtf8(message);
+    return applied;
+}
+
 bool ViewportBridge::rewireConnection(int targetCategory, const QString& targetName,
                                        const QString& param, int occurrence,
                                        int newRefCategory, const QString& newRefName,
@@ -2091,7 +2111,7 @@ bool ViewportBridge::rewireConnection(int targetCategory, const QString& targetN
     const QByteArray prm = param.toUtf8();
     const QByteArray ref = newRefName.toUtf8();
 
-    int closure = 0, legality = 0, cycle = 0;
+    int closure = 0, legality = 0, cycle = 0, adapter = 0;
     char statusBuf[64] = {0};
     char messageBuf[2048] = {0};
     char sharedBuf[1024] = {0};
@@ -2099,12 +2119,12 @@ bool ViewportBridge::rewireConnection(int targetCategory, const QString& targetN
     char ownersBuf[1024] = {0};
     char orphanBuf[1024] = {0};
 
-    const bool applied = RISE_API_SceneEditController_RewireConnection(
+    const bool applied = RISE_API_SceneEditController_RewireConnectionEx(
         m_controller,
         targetCategory, tgt.constData(),
         prm.constData(), occurrence,
         newRefCategory, ref.constData(),
-        &closure, &legality, &cycle,
+        &adapter, &closure, &legality, &cycle,
         statusBuf, sizeof(statusBuf),
         messageBuf, sizeof(messageBuf),
         sharedBuf, sizeof(sharedBuf),
@@ -2117,6 +2137,7 @@ bool ViewportBridge::rewireConnection(int targetCategory, const QString& targetN
         outOutcome->status                = QString::fromUtf8(statusBuf);
         outOutcome->message               = QString::fromUtf8(messageBuf);
         outOutcome->closure               = static_cast<RewireClosure>(closure);
+        outOutcome->canInsertScalarAdapter = (adapter != 0);
         outOutcome->legalityRefused       = (legality != 0);
         outOutcome->cycleRefused          = (cycle != 0);
         outOutcome->sharedChunks          = splitJoinedNames(sharedBuf);

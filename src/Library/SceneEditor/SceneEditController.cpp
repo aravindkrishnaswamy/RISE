@@ -4957,6 +4957,7 @@ namespace
 		if( a.occurrence != b.occurrence ) return false;
 		if( a.otherNode  != b.otherNode  ) return false;
 		if( std::strcmp( a.otherName.c_str(), b.otherName.c_str() ) != 0 ) return false;
+		if( a.portPipe != b.portPipe || a.portColorAlsoAcceptsScalar != b.portColorAlsoAcceptsScalar ) return false;
 		if( a.portCategories != b.portCategories ) return false;   // vector<ChunkCategory>: enum operator== is builtin
 		return true;
 	}
@@ -4984,6 +4985,7 @@ namespace
 		if( std::strcmp( a.name.c_str(), b.name.c_str() ) != 0 ) return false;
 		if( std::strcmp( a.chunkKeyword.c_str(), b.chunkKeyword.c_str() ) != 0 ) return false;
 		if( a.category != b.category ) return false;
+		if( a.outputPipe != b.outputPipe ) return false;
 		if( a.serial   != b.serial   ) return false;
 		if( a.defCount != b.defCount ) return false;
 		if( a.repeatCount != b.repeatCount ) return false;   // Object Graph slice: painter nodes always 0 == 0, a no-op there
@@ -5081,6 +5083,7 @@ SceneEditController::PainterMaterialGraph SceneEditController::BuildPainterMater
 		node.name         = s.name;
 		node.chunkKeyword = s.chunkKeyword;
 		node.category     = s.category;
+		node.outputPipe   = s.outputPipe;
 		node.order        = s.order;
 		node.serial       = s.serial;
 		node.defCount     = s.defCount;
@@ -5102,6 +5105,8 @@ SceneEditController::PainterMaterialGraph SceneEditController::BuildPainterMater
 		outPort.paramName      = e.paramName;
 		outPort.occurrence     = e.occurrence;
 		outPort.portCategories = e.portCategories;
+		outPort.portPipe = e.portPipe;
+		outPort.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
 		outPort.otherName      = e.toName;
 
 		const std::map<RISE::Cst::NodeId, unsigned int>::const_iterator toIt =
@@ -5126,6 +5131,8 @@ SceneEditController::PainterMaterialGraph SceneEditController::BuildPainterMater
 		inPort.paramName      = e.paramName;
 		inPort.occurrence     = e.occurrence;
 		inPort.portCategories = e.portCategories;
+		inPort.portPipe = e.portPipe;
+		inPort.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
 		inPort.otherNode      = fromIdx;
 		inPort.otherName      = e.fromName;
 		out.nodes[toIdx].inEdges.push_back( inPort );
@@ -5231,8 +5238,9 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 	// same-name chunks are always seeded), only as a possible EDGE target
 	// for that one ambiguous reference.
 	//
-	// MANAGER LOOKUPS REMAIN, but ONLY as ENRICHMENT (serial, defCount
-	// today; a future pipe-info field) -- never as the node SOURCE. Both
+	// MANAGER LOOKUPS REMAIN, but ONLY as ENRICHMENT (serial, defCount),
+	// never as the node SOURCE. Pipe metadata uses the chunk keyword/category
+	// and the parameter descriptor, without manager probes. Both
 	// probes are BY NAME (colour-manager-then-scalar-manager, the same
 	// order DefCountForPainter uses) and therefore share DefCountForPainter's
 	// own coarseness: when a colour and a scalar chunk share a name, BOTH
@@ -5258,6 +5266,7 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 		} else {
 			s.serial = CategoryEntitySerialLocked_( Category::Material, c.name );
 		}
+		s.outputPipe = ConnectionLegality::OutputPipe( s.chunkKeyword.c_str(), s.category );
 		outNodes.push_back( s );
 	}
 
@@ -5331,6 +5340,7 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 		s.serial   = 0;
 		if( const RISE::Cst::NodeRef item = RISE::Cst::DocResolveNodeId( *doc, pf.first ) )
 			s.chunkKeyword = String( item->role.c_str() );
+		s.outputPipe = ConnectionLegality::OutputPipe( s.chunkKeyword.c_str(), s.category );
 		outNodes.push_back( s );
 	}
 
@@ -5352,6 +5362,8 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 		s.paramName       = e.paramName;
 		s.occurrence      = e.occurrence;
 		s.portCategories  = e.portCategories;
+		s.portPipe = e.portPipe;
+		s.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
 		s.toId            = e.targetId;
 		s.toCategory      = e.targetCategory;
 		s.toName          = e.targetName;
@@ -5382,7 +5394,11 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 		s.occurrence   = 0;
 		const ParameterDescriptor* pd = nullptr;
 		for( const ParameterDescriptor& p : desc->parameters ) if( p.name == u.param ) { pd = &p; break; }
-		if( pd ) for( ChunkCategory rc : pd->referenceCategories ) s.portCategories.push_back( rc );
+		if( pd ) {
+			s.portCategories = pd->referenceCategories;
+			s.portPipe = pd->semantics.pipe;
+			s.portColorAlsoAcceptsScalar = pd->semantics.colorAlsoAcceptsScalar;
+		}
 		// s.toId stays 0 (the dangling sentinel -- see GraphEdgeSeed's comment).
 		s.toCategory = ChunkCategory::Painter;   // arbitrary: toId==0 already marks this dangling, toCategory is unused by the assembler in that case
 		s.toName     = String( u.value.c_str() );
@@ -5390,18 +5406,18 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 	}
 }
 
-void SceneEditController::RefreshPainterMaterialGraphSnapshot_() const
+bool SceneEditController::RefreshPainterMaterialGraphSnapshot_() const
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;   // render owns the scene: serve stale
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;   // render owns the scene: serve stale
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
+	if( !lk.owns_lock() ) return false;                                      // contended (or re-entrant): serve stale
 	std::vector<GraphNodeSeed> nodeSeeds;
 	std::vector<GraphEdgeSeed> edgeSeeds;
 	BuildPainterMaterialGraphSeedsLocked_( nodeSeeds, edgeSeeds );
 	PainterMaterialGraph built = BuildPainterMaterialGraph( nodeSeeds, edgeSeeds );
 	built.rebuildCount = mJob.GetContainerRebuildCount();
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );   // leaf lock: acquired WHILE mMutex is still held, never the reverse (RefreshTreeSnapshot_'s own nesting order)
-	if( PainterMaterialGraphsEquivalent( built, mUi.painterMaterialGraph ) ) return;
+	if( PainterMaterialGraphsEquivalent( built, mUi.painterMaterialGraph ) ) return true;
 	built.generation = NextTreeGeneration().fetch_add( 1, std::memory_order_relaxed );
 	// Stamp every node's HANDLE now that a real generation exists to stamp
 	// it with (doc-88 S11 review round 2 P1) -- reuses the SAME
@@ -5420,14 +5436,16 @@ void SceneEditController::RefreshPainterMaterialGraphSnapshot_() const
 	for( std::size_t i = 0; i < built.nodes.size(); ++i )
 		built.nodes[i].handle = EncodeTreeHandle( built.generation, static_cast<unsigned int>( i ) );
 	mUi.painterMaterialGraph = std::move( built );
+	return true;
 }
 
 void SceneEditController::ReadPainterMaterialGraph( PainterMaterialGraph& out ) const
 {
 	out = PainterMaterialGraph();
-	RefreshPainterMaterialGraphSnapshot_();
+	const bool fresh = RefreshPainterMaterialGraphSnapshot_();
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	out = mUi.painterMaterialGraph;
+	out.snapshotFresh = fresh;
 }
 
 unsigned int SceneEditController::ResolveGraphNodeHandle( const PainterMaterialGraph& g, GraphNodeHandle handle )
@@ -5640,6 +5658,30 @@ int SceneEditController::PainterGraphNodeCategory( GraphNodeHandle node ) const
 	const unsigned int idx = ResolveGraphNodeHandle( g, node );
 	if( idx == kInvalidNodeIndex ) return -1;
 	return static_cast<int>( g.nodes[idx].category );
+}
+
+int SceneEditController::PainterGraphNodeOutputPipe( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	return idx == kInvalidNodeIndex ? -1 : static_cast<int>( g.nodes[idx].outputPipe );
+}
+
+bool SceneEditController::PainterGraphNodePortPipe( GraphNodeHandle node, unsigned int portIdx,
+	bool incoming, int& outPipe, bool& outColorAlsoAcceptsScalar ) const
+{
+	outPipe = -1;
+	outColorAlsoAcceptsScalar = false;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return false;
+	const std::vector<GraphPort>& ports = incoming ? g.nodes[idx].inEdges : g.nodes[idx].outEdges;
+	if( portIdx >= ports.size() ) return false;
+	outPipe = static_cast<int>( ports[portIdx].portPipe );
+	outColorAlsoAcceptsScalar = ports[portIdx].portColorAlsoAcceptsScalar;
+	return true;
 }
 
 int SceneEditController::PainterGraphNodeDefCount( GraphNodeHandle node ) const
@@ -6137,6 +6179,7 @@ SceneEditController::PainterMaterialGraph SceneEditController::FilterPainterMate
 	PainterMaterialGraph out;
 	out.generation   = g.generation;
 	out.rebuildCount = g.rebuildCount;
+	out.snapshotFresh = g.snapshotFresh;
 
 	std::vector<int> remap( g.nodes.size(), -1 );   // old index -> new index, -1 = not kept
 	{
@@ -6275,6 +6318,8 @@ void SceneEditController::ReadPainterMaterialGraphLaidOutFocused(
 
 	PainterMaterialGraph g;
 	ReadPainterMaterialGraph( g );
+	out.graph.snapshotFresh = g.snapshotFresh;
+	if( !g.snapshotFresh ) { if( outDegraded ) *outDegraded = true; return; }
 
 	int startIdx = -1;
 	if( cat == ChunkCategory::Object ) {
@@ -6291,10 +6336,8 @@ void SceneEditController::ReadPainterMaterialGraphLaidOutFocused(
 	} else {
 		// A canvas node itself (Painter/Function/Material): resolve
 		// directly by (category, name) against the already-published
-		// graph -- no live-manager touch, so no separate degrade path here
-		// (ReadPainterMaterialGraph never blocks; it degrades to serving a
-		// stale snapshot under contention, not to an empty/failed read --
-		// see RefreshPainterMaterialGraphSnapshot_'s own comment).
+		// graph. The freshness gate above already refused a cached read,
+		// so an unknown node here is a resolved empty result, not contention.
 		startIdx = ResolveUniqueGraphNodeIndex( g, cat, name );
 	}
 	if( startIdx < 0 ) return;   // unknown or ambiguous -- refuse rather than guess, same convention as ResolveUniqueGraphNodeIndex itself
@@ -6424,6 +6467,7 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 
 		inScopeIds.insert( c.id );
 		nodeCategoryById[ c.id ] = s.category;
+		s.outputPipe = ConnectionLegality::OutputPipe( s.chunkKeyword.c_str(), s.category );
 		outNodes.push_back( s );
 	}
 
@@ -6464,6 +6508,8 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 			s.paramName       = e.paramName;
 			s.occurrence      = e.occurrence;
 			s.portCategories  = e.portCategories;
+			s.portPipe = e.portPipe;
+			s.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
 			s.toId            = e.targetId;
 			s.toCategory      = targetCat;
 			s.toName          = e.targetName;
@@ -6482,6 +6528,8 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 			s.paramName       = e.paramName;
 			s.occurrence      = e.occurrence;
 			s.portCategories  = e.portCategories;
+			s.portPipe = e.portPipe;
+			s.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
 			s.toId            = e.referrerId;   // FLIPPED: the consumer (an object, or another geometry chunk) becomes the "target"
 			s.toCategory      = referrerCat;
 			s.toName          = e.referrerName;
@@ -6494,18 +6542,18 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 	}
 }
 
-void SceneEditController::RefreshObjectGraphSnapshot_() const
+bool SceneEditController::RefreshObjectGraphSnapshot_() const
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;   // render owns the scene: serve stale
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;   // render owns the scene: serve stale
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
+	if( !lk.owns_lock() ) return false;                                      // contended (or re-entrant): serve stale
 	std::vector<GraphNodeSeed> nodeSeeds;
 	std::vector<GraphEdgeSeed> edgeSeeds;
 	BuildObjectGraphSeedsLocked_( nodeSeeds, edgeSeeds );
 	SceneGraphModel built = BuildPainterMaterialGraph( nodeSeeds, edgeSeeds );
 	built.rebuildCount = mJob.GetContainerRebuildCount();
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );   // leaf lock: acquired WHILE mMutex is still held, never the reverse
-	if( PainterMaterialGraphsEquivalent( built, mUi.objectGraph ) ) return;
+	if( PainterMaterialGraphsEquivalent( built, mUi.objectGraph ) ) return true;
 	built.generation = NextTreeGeneration().fetch_add( 1, std::memory_order_relaxed );
 	// Same handle space as the Painter/Material graph (GraphNodeHandle /
 	// EncodeTreeHandle / kInvalidGraphNode) -- see SceneGraphModel's own
@@ -6520,14 +6568,16 @@ void SceneEditController::RefreshObjectGraphSnapshot_() const
 	for( std::size_t i = 0; i < built.nodes.size(); ++i )
 		built.nodes[i].handle = EncodeTreeHandle( built.generation, static_cast<unsigned int>( i ) );
 	mUi.objectGraph = std::move( built );
+	return true;
 }
 
 void SceneEditController::ReadObjectGraph( SceneGraphModel& out ) const
 {
 	out = SceneGraphModel();
-	RefreshObjectGraphSnapshot_();
+	const bool fresh = RefreshObjectGraphSnapshot_();
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	out = mUi.objectGraph;
+	out.snapshotFresh = fresh;
 }
 
 void SceneEditController::ReadObjectGraphLaidOut( ObjectGraphLaidOut& out ) const
@@ -6667,10 +6717,9 @@ void SceneEditController::ReadObjectGraphLaidOutFocused(
 	if( outDegraded ) *outDegraded = false;
 	if( name.size() <= 1 ) return;
 
-	// This method touches no live manager and needs no mMutex try_to_lock
-	// of its own (ReadObjectGraph's own refresh already degrades to
-	// serving a stale published snapshot under contention, silently) --
-	// the explicit mRenderOwnsScene check here mirrors
+	// This method touches no live manager. ReadObjectGraph reports when its
+	// refresh serves a cached graph under contention; propagate that below.
+	// The explicit mRenderOwnsScene check here mirrors
 	// ResolveObjectMaterialNameLocked_'s FIRST guard so a caller polling
 	// during a parked render gets an honest degraded signal rather than a
 	// stale-but-unflagged graph.
@@ -6681,6 +6730,8 @@ void SceneEditController::ReadObjectGraphLaidOutFocused(
 
 	SceneGraphModel g;
 	ReadObjectGraph( g );
+	out.graph.snapshotFresh = g.snapshotFresh;
+	if( !g.snapshotFresh ) { if( outDegraded ) *outDegraded = true; return; }
 
 	const int startIdx = ResolveUniqueGraphNodeIndex( g, ChunkCategory::Object, name );
 	if( startIdx < 0 ) return;   // unknown or ambiguous -- refuse rather than guess
@@ -16615,12 +16666,10 @@ SceneEditController::AgentCommitResult SceneEditController::CreateChunkNode(
 // See the declaration's own comment in SceneEditController.h for the
 // gate order and the scoping; OwnershipClosure.h for sect. 3.7a's rule.
 //
-// Structurally a sibling of CreateChunkNode above: a THIN COMPOSER over
-// shipped machinery (SceneReferenceGraph resolution, ConnectionLegality,
-// OwnershipClosure, ApplyAgentParamEditInner_) with no mutation logic of
-// its own -- which is exactly what makes the byte-identical-on-refusal
-// guarantee cheap: every gate runs BEFORE the single call that can
-// mutate anything.
+// RewireConnection and InsertScalarAdapterAndRewire share endpoint, legality,
+// cycle, occurrence, ownership and edit-addressing validation. Ordinary rewires
+// commit through ApplyAgentParamEditInner_; the adapter path dry-run derives
+// a candidate document and records insertion + slot edit as one operation batch.
 // =====================================================================
 
 // The (ChunkCategory -> UI Category) direction this verb needs -- S17's
@@ -16644,6 +16693,27 @@ SceneEditController::RewireResult SceneEditController::RewireConnection(
 	ChunkCategory newRefCategory, const String& newRefName,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
 {
+	return RewireConnectionInner_( targetCategory, targetName, param, occurrence,
+		newRefCategory, newRefName, baseVersionOrNull, false, nullptr );
+}
+
+SceneEditController::RewireResult SceneEditController::InsertScalarAdapterAndRewire(
+	ChunkCategory targetCategory, const String& targetName, const String& param, int occurrence,
+	ChunkCategory sourceCategory, const String& sourceName, String* outAdapterName,
+	const Cst::CstHeadVersion* baseVersionOrNull )
+{
+	if( outAdapterName ) *outAdapterName = String();
+	return RewireConnectionInner_( targetCategory, targetName, param, occurrence,
+		sourceCategory, sourceName, baseVersionOrNull, true, outAdapterName );
+}
+
+SceneEditController::RewireResult SceneEditController::RewireConnectionInner_(
+	ChunkCategory targetCategory, const String& targetName,
+	const String& param, int occurrence,
+	ChunkCategory newRefCategory, const String& newRefName,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	bool insertScalarAdapter, String* outAdapterName )
+{
 	RewireResult out;
 
 	// Same preamble as CreateChunkNode: defer the dirty notification until
@@ -16652,7 +16722,7 @@ SceneEditController::RewireResult SceneEditController::RewireConnection(
 	// Document-mutating entry point (Undo, Redo, the agent verbs, the GUI
 	// SetProperty path -- all of them take this same recursive mutex).
 	// That is what keeps the pure-read validation below from going stale
-	// before ApplyAgentParamEditInner_ writes: mMutex alone would NOT, since
+	// before either commit path writes: mMutex alone would NOT, since
 	// it is released between the two (see the identical rationale on
 	// SetPropertyInner_'s occurrence-validation block).
 	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
@@ -16724,7 +16794,7 @@ SceneEditController::RewireResult SceneEditController::RewireConnection(
 	// out-of-range occurrence -- resubmitting the identical request can
 	// never succeed.  The only TRANSIENT refusals this verb can produce are
 	// the render-locked gate above and the mid-transaction gate inside
-	// ApplyAgentParamEditInner_, both of which set the flag themselves.
+	// the selected commit path, both of which set the flag themselves.
 	std::string  refusal;                 // non-empty => refuse with this
 	String       entityKind;              // the CST role-kind suffix the edit addresses through
 	{
@@ -16799,6 +16869,32 @@ SceneEditController::RewireResult SceneEditController::RewireConnection(
 				if( !v.legal ) {
 					out.legalityRefused = true;
 					refusal = v.diagnostic;
+					const Cst::NodeRef tc = Cst::DocResolveNodeId( *doc, targetId );
+					const Cst::NodeRef sc = Cst::DocResolveNodeId( *doc, candidateId );
+					const ChunkDescriptor* td = tc ? DescriptorForKeyword( String( tc->role.c_str() ) ) : nullptr;
+					const ParameterDescriptor* pd = nullptr;
+					if( td ) for( const ParameterDescriptor& p : td->parameters )
+						if( p.name == param.c_str() ) { pd = &p; break; }
+					if( pd && pd->kind == ValueKind::Reference && pd->semantics.pipe == ParameterPipe::Scalar
+					 && sc && sc->role != "scalar_painter"
+					 && ConnectionLegality::IsColorCapable( sc->role, newRefCategory )
+					 && ( newRefCategory == ChunkCategory::Painter || newRefCategory == ChunkCategory::Function )
+					 && Cst::DocIndexOfNodeId( *doc, candidateId, nullptr ) < Cst::DocIndexOfNodeId( *doc, targetId, nullptr )
+					 && !ConnectionLegality::WouldCycle( *doc, targetId, candidateId )
+					 && ( occurrence == 0 || ( pd->repeatable && occurrence < Cst::ParamOccurrenceCount( tc, param.c_str() ) ) )
+					 && ConnectionLegality::CheckConnectionByKeyword( tc->role, param.c_str(), "scalar_painter", ChunkCategory::Painter ).legal ) {
+						TopologyEditIntent intent;
+						intent.kind = TopologyEditKind::Rewire;
+						intent.targetChunk = targetId;
+						intent.paramName = param.c_str();
+						intent.occurrence = occurrence;
+						intent.newRefChunk = candidateId;
+						out.canInsertScalarAdapter = OwnershipClosure::Compute( *doc, intent ).Clean();
+					}
+					if( insertScalarAdapter && out.canInsertScalarAdapter ) {
+						out.legalityRefused = false;
+						refusal.clear();
+					}
 				}
 			}
 			if( refusal.empty() && ConnectionLegality::WouldCycle( *doc, targetId, candidateId ) ) {
@@ -16923,6 +17019,132 @@ SceneEditController::RewireResult SceneEditController::RewireConnection(
 	}
 
 	if( !refusal.empty() ) { reject( refusal, /*retriable=*/false ); return out; }
+
+	if( insertScalarAdapter ) {
+		if( !out.canInsertScalarAdapter ) {
+			reject( "this connection does not require a scalar_painter adapter", false );
+			return out;
+		}
+		// The admission lock above keeps validation and this atomic batch on the same head.
+		std::unique_lock<std::mutex> lk( mMutex );
+		out.commit.headVersion = mJob.GetCstHeadVersion();
+		headRead = true;
+		if( mTxnOpen.load( std::memory_order_acquire ) || mEditor.IsCompositeOpen() ) {
+			reject( "editor transaction or gesture in progress -- retry after it completes", true );
+			return out;
+		}
+		CancelAndParkRender_( lk );
+		if( baseVersionOrNull && *baseVersionOrNull != mJob.GetCstHeadVersion() ) {
+			out.commit.status = String( "conflict" );
+			out.commit.conflict = true;
+			out.commit.message = String( "baseHeadVersion does not match the current head -- re-read and re-propose" );
+			out.nowUnreferenced.clear();
+			return out;
+		}
+		const Cst::Document& doc = *mJob.GetCstDocument();
+		const Cst::NodeId sourceId = SceneReferenceGraph::ResolveChunk( doc, newRefCategory, newRefName );
+		const Cst::NodeId targetId = SceneReferenceGraph::ResolveChunk( doc, targetCategory, targetName );
+		const Cst::NodeRef source = Cst::DocResolveNodeId( doc, sourceId );
+		const Cst::NodeRef target = Cst::DocResolveNodeId( doc, targetId );
+		std::string base = CanonicalCameraName( String( ( std::string( newRefName.c_str() ) + "_scalar" ).c_str() ) ).c_str();
+		base = base.substr( 0, 255 );
+		std::string chosen = base;
+		for( unsigned int i = 2; AnyNameTakenDocWide( doc, { chosen } ); ++i ) {
+			const std::string suffix = "_" + std::to_string( i );
+			chosen = base.substr( 0, 255 - suffix.size() ) + suffix;
+		}
+		const bool raster = source->role == "png_painter" || source->role == "jpg_painter"
+			|| source->role == "hdr_painter" || source->role == "exr_painter" || source->role == "tiff_painter";
+		const std::string text = "\nscalar_painter\n{\n    name " + chosen + "\n    "
+			+ ( raster ? "texture " : "painter " ) + newRefName.c_str() + "\n    channel R\n}\n";
+		const Cst::Document parsed = Cst::ParseToCst( text );
+		Cst::NodeRef adapter;
+		for( int i = 0; i < Cst::DocItemCount( parsed ); ++i ) {
+			const Cst::NodeRef item = Cst::DocResolveNodeId( parsed, Cst::DocNodeIdAt( parsed, i ) );
+			if( item && item->kind == Cst::NodeKind::Chunk ) adapter = item;
+		}
+		if( !adapter ) { reject( "could not construct scalar_painter adapter", false ); return out; }
+		int at = Cst::DocIndexOfNodeId( doc, sourceId, nullptr ) + 1;
+		while( at < Cst::DocItemCount( doc ) ) {
+			const Cst::NodeRef item = Cst::DocResolveNodeId( doc, Cst::DocNodeIdAt( doc, at ) );
+			if( item && item->kind == Cst::NodeKind::Chunk ) break;
+			++at;
+		}
+		CstBatchUndoOp insertOp;
+		insertOp.isInsert = true;
+		insertOp.chunkText = Cst::SerializeNode( adapter );
+		insertOp.keyword = "scalar_painter";
+		insertOp.namePath = Cst::ChunkNamePath( adapter );
+		insertOp.chunkIndex = at + 1;
+		insertOp.hasAnchor = true;
+		insertOp.anchorKeyword = source->role;
+		insertOp.anchorNamePath = Cst::ChunkNamePath( source );
+
+		CstBatchUndoOp slotOp;
+		slotOp.entityName = targetName.c_str();
+		slotOp.entityKind = target->role;
+		slotOp.editRole = param.c_str();
+		slotOp.postEntityName = targetName.c_str();
+		slotOp.occAddressed = occurrence > 0;
+		slotOp.ownerKeyword = target->role;
+		slotOp.ownerNamePath = Cst::ChunkNamePath( target );
+		slotOp.ownerPreText = Cst::SerializeNode( target );
+		CstBatchUndoOp::Slot slot;
+		slot.role = param.c_str();
+		slot.occ = occurrence;
+		slot.priorAbsent = Cst::ParamOccurrenceCount( target, param.c_str() ) == 0;
+		slot.priorValue = Cst::ParamValueAtOccurrence( target, param.c_str(), occurrence );
+		slot.postAbsent = false;
+		slot.postValue = chosen;
+		slotOp.slots.push_back( slot );
+		Cst::Document candidate = Cst::DocSetOrAddParamValue( doc, targetId, param.c_str(), occurrence, chosen );
+		slotOp.ownerPostText = Cst::SerializeNode( Cst::DocResolveNodeId( candidate, targetId ) );
+		if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap ) {
+			slotOp.ownerPreText.clear();
+			slotOp.ownerPostText.clear();
+		}
+		const Cst::Document nlA = Cst::ParseToCst( "\n" );
+		const Cst::Document nlB = Cst::ParseToCst( "\n" );
+		candidate = Cst::DocInsertItem( candidate, at, Cst::DocResolveNodeId( nlA, Cst::DocNodeIdAt( nlA, 0 ) ) );
+		candidate = Cst::DocInsertItem( candidate, at + 1, adapter );
+		candidate = Cst::DocInsertItem( candidate, at + 2, Cst::DocResolveNodeId( nlB, Cst::DocNodeIdAt( nlB, 0 ) ) );
+		const Cst::NodeId adapterId = SceneReferenceGraph::ResolveChunk( candidate, ChunkCategory::Painter, String( chosen.c_str() ) );
+		const ConnectionVerdict verdict = ConnectionLegality::CheckConnection( candidate, targetId, param, adapterId );
+		if( !verdict.legal ) { reject( verdict.diagnostic, false ); return out; }
+		char diag[1024] = {0};
+		const int code = mJob.ApplyCstReplaceDocument( candidate, true, diag, sizeof( diag ), "insert_scalar_adapter" );
+		if( code == 2 || code == 3 ) RebindEditorToJob();
+		out.commit.rawCode = code;
+		out.commit.headVersion = mJob.GetCstHeadVersion();
+		out.commit.applied = code == 2;
+		out.commit.status = String( code == 2 ? "applied" : code == 3 ? "diagnosed" : "rejected" );
+		out.commit.message = code == 3
+			? String( "The Document changed, but the live re-derive emitted diagnostics (see log). Undo is available." )
+			: String( diag );
+		out.canInsertScalarAdapter = false;
+		if( code == 2 || code == 3 ) {
+			mEditor.MarkCstHeadDirty( chosen.c_str(), "scalar_painter" );
+			mEditor.MarkCstHeadDirty( targetName.c_str(), target->role.c_str() );
+			mEditor.BumpSceneLightGenerationForAgentParamEdit( targetName.c_str(), target->role.c_str() );
+			std::vector<CstBatchUndoOp> ops;
+			ops.push_back( std::move( insertOp ) );
+			ops.push_back( std::move( slotOp ) );
+			mEditor.PushAgentEditBatchEdit( String( "Insert scalar_painter Adapter & Wire" ), ops, false );
+			if( outAdapterName ) *outAdapterName = String( chosen.c_str() );
+		}
+		if( !out.commit.applied ) out.nowUnreferenced.clear();
+		if( code == 2 || code == 3 ) {
+			mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			// Match KickRender while the commit lock is still held.
+			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+			mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
+			mEditPending.store( true, std::memory_order_release );
+		}
+		lk.unlock();
+		if( code == 2 || code == 3 ) mCV.notify_one();
+		mEditor.DrainDirtyNotification();
+		return out;
+	}
 
 	// -----------------------------------------------------------------
 	// Step 5: THE one mutating call.  Everything the commit discipline

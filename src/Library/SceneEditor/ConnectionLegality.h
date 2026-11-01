@@ -84,6 +84,7 @@ namespace RISE
 	class ConnectionLegality
 	{
 	public:
+		static ParameterPipe OutputPipe( const std::string& keyword, ChunkCategory category );
 		//! The literal spec shape: both chunks already exist in `doc`,
 		//! addressed by their stable `Cst::NodeId` (the same identity
 		//! `SceneReferenceGraph` uses everywhere). `targetChunk` is the

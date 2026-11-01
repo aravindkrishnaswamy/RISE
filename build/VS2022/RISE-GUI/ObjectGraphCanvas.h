@@ -154,6 +154,11 @@ protected:
     void changeEvent(QEvent* e) override;
 
 private:
+    bool m_graphRetryPending = false;
+    quint64 m_graphRetryGeneration = 0;
+    void cancelGraphRetry();
+    void scheduleGraphRetry();
+    bool fetchAllSnapshot(unsigned int epoch);
     friend class ObjectGraphNodeItem;
     friend class ObjectGraphWiresLayerItem;
     // review-round P3 fix: NO `friend class ObjectGraphView` -- unlike
