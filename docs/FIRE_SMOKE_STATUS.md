@@ -20,6 +20,8 @@ pages are a historical log, not instructions.
 - **The far-plume (>1.5 m) entrainment deficit is separate.**
 - **Owner decision (2026-10-30):** make RISE's floor absorb radiation, rather than strip it from FDS. The FDS `EMISSIVITY=0` rerun is now optional.
 
+[r271 flame core](FIRE_SMOKE_FLAME_CORE_R271.md): the core is hot because RISE entrains 23–47% less air from 0.29 m up, carrying the same heat; combustion heights and radiative fraction match FDS. Next: SGS operation, puffing measure, side-boundary pressure (read-only).
+
 [r270 floor radiation](FIRE_SMOKE_FLOOR_RADIATION_R270.md) is implemented and verified up to a short tier-6 run:
 - **The model:** an opt-in gray, radiatively adiabatic floor (`RISE_FIRE_FLOOR_EMISSIVITY=1`; ε = 1 is what FDS's ADIABATIC=T forces).
   - Thin irradiance from the existing emission field.
