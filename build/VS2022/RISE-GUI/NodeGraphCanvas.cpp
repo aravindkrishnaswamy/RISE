@@ -1777,6 +1777,7 @@ void NodeGraphCanvas::applySpotlightToItems()
 
 void NodeGraphCanvas::selectNode(const GraphNodeData& node)
 {
+    m_pendingAdapterSelection.clear();
     if (!m_bridge) return;
     // ChunkCategory::Function(1) has no UI section of its own; the
     // C++ selection-routing convention (UiCategoryForChunkCategory)

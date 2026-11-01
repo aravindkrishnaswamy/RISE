@@ -66,10 +66,9 @@
 
 namespace RISE
 {
-	//! One resolved reference edge between two named chunks in a
-	//! `Cst::Document`.  Both a "forward" (FindReferencesFrom) and a
-	//! "reverse" (FindReferencesTo) query return this same shape --
-	//! only which side the caller already knew differs.
+	//! A reference edge in a `Cst::Document`. Edges/FindReferences queries
+	//! return resolved edges; Snapshot::danglingExpressionEdges uses the same
+	//! shape with targetId == 0 for unresolved expression sample calls.
 	struct ReferenceEdge
 	{
 		// ---- the REFERRING side: the chunk whose param HOLDS the reference ----
@@ -77,23 +76,13 @@ namespace RISE
 		String        referrerKeyword;         //!< e.g. "blend_painter", "ggx_material"
 		ChunkCategory referrerCategory = ChunkCategory::Painter;
 		String        referrerName;            //!< "" for an unnamed chunk (still a valid referrer)
-		String        paramName;               //!< the Reference-kind param's role (e.g. "colora", "alphax")
+		String        paramName;               //!< the reference-bearing param's role (e.g. colora, expr, cp)
 		int           occurrence      = 0;     //!< 0-based occurrence among same-role siblings on this chunk
 		bool          repeatable      = false; //!< the descriptor's own `repeatable` flag for this param
-		//! The port's declared TYPE (`ParameterDescriptor::referenceCategories`)
-		//! -- what KIND of chunk this slot accepts, e.g. {Painter} for
-		//! `alphax`, {Painter,Function} for a domain-warp slot. Empty both
-		//! when the referring param has no registered descriptor entry at
-		//! all (a structurally-resolved edge whose descriptor lookup
-		//! failed -- see Edges()'s header note) AND when the param IS
-		//! registered but declares no reference-typed slot at all -- e.g.
-		//! `piecewise_linear_function2d`'s `cp` (a literal x/y control-point
-		//! pair, not a reference token) can still show up here if a FUTURE
-		//! descriptor change mis-declares it as `ValueKind::Reference`
-		//! without populating `referenceCategories`; an empty vector is not
-		//! by itself proof of "no descriptor", only "no declared target
-		//! category" -- check `portCategories.empty()` together with
-		//! whether the descriptor lookup is expected to have succeeded.
+		//! The descriptor's referenceCategories, e.g. {Painter} for alphax.
+		//! Empty when the descriptor is missing or the parameter has no
+		//! declared category. String-valued embedded references (expression
+		//! samples and Function2D cp rows) can still carry a typed portPipe.
 		std::vector<ChunkCategory> portCategories;
 		ParameterPipe portPipe = ParameterPipe::Other;
 		bool portColorAlsoAcceptsScalar = false;
@@ -229,6 +218,12 @@ namespace RISE
 		{
 			std::vector<ReferenceEdge>            edges;
 			std::vector<Cst::UnresolvedReference>  unresolved;
+			//! Expression-only dangling ports, with recovered call pipe and occurrence.
+			//! targetId remains 0; unresolved retains the original CST records.
+			std::vector<ReferenceEdge> danglingExpressionEdges;
+			//! Work probe: children read by canonical expression-value recovery.
+			//! Excludes CST resolution and the ordinary resolved-edge walk.
+			size_t expressionValueChildVisits = 0;
 		};
 		static Snapshot EdgesAndDangling( const Cst::Document& doc,
 		                                   const std::vector<DocumentChunk>* prescanned = nullptr );

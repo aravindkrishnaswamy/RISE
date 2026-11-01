@@ -827,6 +827,7 @@ struct NodeGraphCanvas: View {
     // MARK: - Selection / def-focus (§5 interaction minimums 1 & 2)
 
     private func selectNode(_ node: GraphCanvasNode) {
+        pendingAdapterSelection = nil
         guard let bridge else { return }
         // ChunkCategory::Function(1) has no UI section of its own; the
         // C++ selection-routing convention (UiCategoryForChunkCategory,

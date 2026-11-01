@@ -619,6 +619,12 @@ namespace RISE
 		std::string ParamValueAsParsed( const NodeRef& chunk, const std::string& role,
 		                                bool* outPresent = nullptr );
 
+		//! Canonical value join for an already-selected Param node. Use this
+		//! inside a chunk's child walk instead of rescanning by occurrence.
+		//! Empty for null/non-Param nodes. O(param children + value bytes);
+		//! childVisits, if supplied, accumulates the actual child visits.
+		std::string ParamValueOfNode( const NodeRef& param, size_t* childVisits = nullptr );
+
 		//! Object Graph slice (SceneEditController.cpp): evaluate a
 		//! `standard_object`'s `count_u`/`count_v` EXACTLY the way the
 		//! derive-time source-instancing expander does (Cst.cpp's own

@@ -190,7 +190,7 @@ namespace RISE
 				}
 				return { true, std::string() };
 			}
-			if( OwnPipe( candidateKeyword, candidateCategory ) == ParameterPipe::Color ) {
+			if( ConnectionLegality::IsColorCapable( candidateKeyword, candidateCategory ) ) {
 				return { false, Fmt( kScalarBoundToIPainterFmt, targetKeyword.c_str(), "<name>",
 					paramName.c_str(), candidateKeyword.c_str() ) };
 			}
@@ -276,8 +276,6 @@ namespace RISE
 
 	ParameterPipe ConnectionLegality::OutputPipe( const std::string& keyword, ChunkCategory category )
 	{
-		if( category != ChunkCategory::Painter && category != ChunkCategory::Material && category != ChunkCategory::Function )
-			return ParameterPipe::Other;
 		return OwnPipe( keyword, category );
 	}
 

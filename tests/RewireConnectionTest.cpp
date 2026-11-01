@@ -1928,6 +1928,112 @@ static void Part9_ScalarAdapter()
     std::remove(path.c_str());
 }
 
+
+// Follow-up regressions: an offered adapter must pass the insertion preflight.
+static void Part10_AdapterAdmission()
+{
+    const std::string resources =
+        "png_painter\n{\nname image_source\nfile textures/wood.png\n}\n"
+        "perlin2d_painter\n{\nname noise_source\n}\n"
+        "piecewise_linear_function\n{\nname curve_source\ncp 400 0.2\ncp 700 0.8\n}\n";
+    auto sceneWith = [&](const std::string& extra) {
+        std::string scene(kGraphScene);
+        scene.insert(scene.find("ggx_material\n"), resources + extra);
+        return scene;
+    };
+    auto exercise = [&](const std::string& extra, ChunkCategory category, const char* target,
+                        const char* param, int occurrence, const char* source, const char* reason) {
+        const std::string path = TempPath("test_adapter_admission.RISEscene");
+        Job* j = LoadScene(sceneWith(extra), path);
+        Check(j != nullptr, std::string("10: fixture loads: ") + reason);
+        if (!j) return;
+        {
+            SceneEditController c(*j, nullptr);
+            const std::string before = DocText(*j);
+            const auto offer = c.RewireConnection(category, String(target), String(param), occurrence,
+                ChunkCategory::Painter, String(source), nullptr);
+            Check(!offer.commit.applied && !offer.canInsertScalarAdapter && DocText(*j) == before,
+                  std::string("10: no false adapter offer: ") + reason);
+            if (std::string(reason) == "shared")
+                Check(offer.legalityRefused && offer.closure == ClosureClassification::Clean
+                      && offer.sharedChunks.empty() && offer.owners.empty() && offer.outOfClosureReferrers.empty(),
+                      "10: ordinary pipe mismatch does not expose an ineffective Duplicate and Retry action");
+            String name("unchanged");
+            const auto result = c.InsertScalarAdapterAndRewire(category, String(target), String(param), occurrence,
+                ChunkCategory::Painter, String(source), &name);
+            Check(!result.commit.applied && !result.canInsertScalarAdapter && name.size() <= 1
+                  && result.nowUnreferenced.empty() && DocText(*j) == before,
+                  std::string("10: ineligible insertion is byte-preserving: ") + reason);
+            if (std::string(reason) == "cycle")
+                Check(result.cycleRefused && !result.legalityRefused && Contains(result.commit.message.c_str(), "cycle"),
+                      "10: direct adapter reports cycle instead of scalar mismatch");
+            if (std::string(reason) == "occurrence")
+                Check(!result.legalityRefused && Contains(result.commit.message.c_str(), "out of range"),
+                      "10: direct adapter reports out-of-range occurrence");
+            if (std::string(reason) == "shared")
+                Check(!result.legalityRefused && result.closure == ClosureClassification::SharedTarget
+                      && !result.sharedChunks.empty() && result.owners.size() == 2
+                      && result.outOfClosureReferrers.size() == 2,
+                      "10: direct adapter reports actual shared ownership and referrers");
+        }
+        j->release();
+        std::remove(path.c_str());
+    };
+    for (const char* form : {
+            "value 0.2", "values 0.2 0.3 0.4", "painter pnt_white\nchannel R",
+            "texture image_source\nchannel R", "expression 0.2", "function1d curve_source",
+            "function2d noise_source", "polynomial 0.2", "sellmeier 1 0 0 0.01 0 0",
+            "multiply scal_rough scal_smooth", "add scal_rough scal_smooth"}) {
+        exercise(std::string("scalar_painter\n{\nname form_target\n") + form + "\nscale 1\n}\n",
+                 ChunkCategory::Painter, "form_target", "base", 0, "pnt_white", form);
+    }
+    const std::string samples = TempPath("test_adapter_form_samples.txt");
+    { std::ofstream file(samples); file << "400 0.2\n700 0.8\n"; }
+    exercise("scalar_painter\n{\nname form_target\nfile " + samples + "\n}\n",
+             ChunkCategory::Painter, "form_target", "base", 0, "pnt_white", "file form");
+    std::remove(samples.c_str());
+    exercise("ggx_material\n{\nname duplicate_target\nalphax scal_rough\nalphax scal_smooth\n}\n",
+             ChunkCategory::Material, "duplicate_target", "alphax", 0, "pnt_white", "duplicate scalar slot");
+    exercise("scalar_painter\n{\nname alias_target\nbase scal_rough\n}\n"
+             "piecewise_linear_function\n{\nname alias_target\ncp 400 0.2\ncp 700 0.8\n}\n",
+             ChunkCategory::Painter, "alias_target", "base", 0, "pnt_white", "cross-category edit ambiguity");
+    exercise("relief_modifier\n{\nname relief_target\nheight scal_rough\n}\n",
+             ChunkCategory::Modifier, "relief_target", "height", 0, "pnt_white", "unsupported edit category");
+    exercise("scalar_painter\n{\nname shared_target\nbase scal_rough\n}\n"
+             "ggx_material\n{\nname owner_a\nalphax shared_target\n}\n"
+             "ggx_material\n{\nname owner_b\nalphax shared_target\n}\n",
+             ChunkCategory::Painter, "shared_target", "base", 0, "pnt_white", "shared");
+    exercise("scalar_painter\n{\nname cycle_target\nvalue 0.2\n}\n"
+             "expression_painter\n{\nname cycle_source\nexpr sample_scalar(cycle_target)\n}\n",
+             ChunkCategory::Painter, "cycle_target", "base", 0, "cycle_source", "cycle");
+    exercise("", ChunkCategory::Material, "mat_four", "alphax", 3, "pnt_white", "occurrence");
+
+    // Scale is a valid companion of the base form, not a competing form.
+    const std::string path = TempPath("test_adapter_valid_base.RISEscene");
+    Job* j = LoadScene(sceneWith("scalar_painter\n{\nname scaled_target\nbase scal_rough\nscale 2\n}\n"), path);
+    Check(j != nullptr, "10: existing base-plus-scale fixture loads");
+    if (j) {
+        {
+            SceneEditController c(*j, nullptr);
+            const auto before = DocText(*j);
+            const auto offer = c.RewireConnection(ChunkCategory::Painter, String("scaled_target"), String("base"), 0,
+                ChunkCategory::Painter, String("pnt_white"), nullptr);
+            String adapter;
+            const auto result = c.InsertScalarAdapterAndRewire(ChunkCategory::Painter, String("scaled_target"), String("base"), 0,
+                ChunkCategory::Painter, String("pnt_white"), &adapter);
+            Check(offer.canInsertScalarAdapter && result.commit.applied, "10: valid base-plus-scale offer actually applies");
+            Check(c.Undo() && DocText(*j) == before, "10: base-plus-scale adapter undo restores exact bytes");
+            Check(c.BeginTransaction(), "10: transaction starts");
+            const auto blocked = c.RewireConnection(ChunkCategory::Painter, String("scaled_target"), String("base"), 0,
+                ChunkCategory::Painter, String("pnt_white"), nullptr);
+            Check(!blocked.canInsertScalarAdapter && DocText(*j) == before, "10: open transaction cannot offer a clean adapter commit");
+            c.RollbackTransaction();
+        }
+        j->release();
+        std::remove(path.c_str());
+    }
+}
+
 int main()
 {
 	std::printf( "RewireConnectionTest -- doc-88 Phase 3 S19 (ownership closure + REFUSE)\n" );
@@ -1941,6 +2047,7 @@ int main()
 	Part7_OwnersOfBatchPerf();
 	Part8_PaletteAdvisoryGapCommitGuard();
 	Part9_ScalarAdapter();
+	Part10_AdapterAdmission();
 
 	std::printf( "\n==================================================\n" );
 	std::printf( "RewireConnectionTest: %d passed, %d failed\n", g_pass, g_fail );

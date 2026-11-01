@@ -169,7 +169,7 @@ Design rules, all from the **Hypershade anti-pattern** (icon-less nodes, synchro
 
 - **Socket color encodes the pipe** (§1): **yellow = `IPainter`**, **grey = `IScalarPainter`**, **green = Material** output (Blender's convention: grey = 1 value, yellow = color/3-value, green = shader — [Blender shader sockets](https://docs.blender.org/manual/en/latest/render/shader_nodes/shader/principled.html)).
 - **Connection legality is enforced from existing metadata, not invented.** A drag from an output to an input is legal iff the input slot's pipe accepts the output's pipe. The truth comes from two existing sources that must be reconciled (§6.4): the descriptor's `referenceCategories` (Painter / Function / Material) *and* the per-slot pipe tag (IPainter vs IScalarPainter). The validation reuses the **same `ResolveOrDiagnoseScalar` logic** that the parser already runs — so the canvas rejects a color-painter-into-scalar-slot drop with the *same* message a hand-edit would get ("bound to `IPainter` chunk … this slot now requires a `scalar_painter`"). One validation authority, three consumers (parser, GUI canvas, MCP `validate`).
-- **The bridge node** is a `scalar_painter` R-channel adapter. Slice 4 offers **Insert scalar_painter Adapter & Wire** for eligible Color → Scalar refusals with a clean ownership closure. Raster-image sources use `texture`; general Color-capable painters use `painter`. Both read scalar data without JH uplift. The user explicitly accepts this channel extraction; it does not reconstruct a spectral physical quantity from RGB.
+- **The bridge node** is a `scalar_painter` R-channel adapter. Slice 4 offers **Insert scalar_painter Adapter & Wire** for eligible Color → Scalar refusals after the shared cycle, occurrence, ownership, edit-addressing, scalar-form, declaration-order, transaction and head-version checks. A competing scalar form prevents a `base` adapter; `base` plus `scale` remains valid. Raster-image sources use `texture`; general Color-capable painters use `painter`. Both read scalar data without JH uplift. The user explicitly accepts this channel extraction; it does not reconstruct a spectral physical quantity from RGB.
 
 ### 3.5 Organization from day one (frames / comments / search)
 
@@ -311,7 +311,9 @@ editor; the runtime parser and Job resolvers remain the final authority.
 | `note` | Explains parameter-specific resolution rules. |
 
 Slice 4 copies `pipe` and `colorAlsoAcceptsScalar` into graph ports and derives
-node output pipes from keyword/category using `ConnectionLegality`. Both desktop
+node output pipes from keyword/category using `ConnectionLegality`. Expression
+`sample`/`sample_scalar` calls carry Color/Scalar input pipes, including dangling
+calls and repeatable `def` occurrences; Function2D `cp` rows carry Function1D. Both desktop
 bridges carry this metadata, so socket colour and adapter availability use the
 same declared constraints as connection validation. The dual rotation sockets
 are yellow with a grey ring; their runtime resolver is `ResolveRotationPainterDual`.

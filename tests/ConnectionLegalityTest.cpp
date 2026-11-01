@@ -532,6 +532,18 @@ int main()
 				"3a: the real parser also rejects a scalar_painter name in `reflectance`" );
 		}
 
+        // Follow-up: PLF1's primary Function1D pipe must not hide its Color capability.
+        {
+            const auto verdict = ConnectionLegality::CheckConnectionByKeyword(
+                "dielectric_material", "ior", "piecewise_linear_function", ChunkCategory::Function);
+            CheckEq(verdict.diagnostic,
+                FmtDiag(kScalarBoundToIPainterFmt, "dielectric_material", "<name>", "ior", "piecewise_linear_function"),
+                "FOLLOWUP: PLF1 scalar refusal uses the Color-capable parser diagnostic");
+            Check(ConnectionLegality::OutputPipe("sphere_geometry", ChunkCategory::Geometry) == ParameterPipe::Geometry
+                  && ConnectionLegality::OutputPipe("standard_object", ChunkCategory::Object) == ParameterPipe::Geometry,
+                  "FOLLOWUP: Geometry and Object expose the Geometry output pipe");
+        }
+
 		// 3b. colour-into-scalar: EXACT diagnostic-text equality against
 		// Job.cpp's ResolveOrDiagnoseScalar branch (b) message.
 		{

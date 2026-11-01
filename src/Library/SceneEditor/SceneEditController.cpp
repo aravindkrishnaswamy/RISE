@@ -5185,9 +5185,9 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 	// scan -- once PER live-manager painter/material NAME, turning an
 	// O(N log N) refresh into O(nodes * N log N) (measured 24s under
 	// mMutex on sombrero.RISEscene, 7442 chunks). This scan plus the ONE
-	// EdgesAndDangling pass below (which reuses it) are now the ONLY
-	// document walks this method performs, so the total cost stays the
-	// same order as SceneReferenceGraph::Edges() itself. ----
+	// EdgesAndDangling call below reuse chunk identities. Reference metadata
+	// is recovered in structural passes, without per-name document queries;
+	// dangling expression recovery reads each parameter node directly. ----
 	const std::vector<SceneReferenceGraph::DocumentChunk> chunks = SceneReferenceGraph::AllChunks( *doc );
 
 	unsigned long long order = 0;
@@ -5350,24 +5350,27 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 	// show up too; the transitive-promotion loop above only walked
 	// `snapshot.edges` to DISCOVER which Function chunks to promote, it did
 	// not emit their edge seeds). ----
-	for( const ReferenceEdge& e : snapshot.edges ) {
-		const bool referrerInScope = e.referrerCategory == ChunkCategory::Painter
-			|| e.referrerCategory == ChunkCategory::Material
-			|| promotedFunctionIds.find( e.referrerId ) != promotedFunctionIds.end();
-		if( !referrerInScope ) continue;
-		GraphEdgeSeed s;
-		s.fromId         = e.referrerId;
-		s.fromCategory    = e.referrerCategory;
-		s.fromName        = e.referrerName;
-		s.paramName       = e.paramName;
-		s.occurrence      = e.occurrence;
-		s.portCategories  = e.portCategories;
-		s.portPipe = e.portPipe;
-		s.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
-		s.toId            = e.targetId;
-		s.toCategory      = e.targetCategory;
-		s.toName          = e.targetName;
-		outEdges.push_back( s );
+	for( const auto* edges : { &snapshot.edges, &snapshot.danglingExpressionEdges } ) {
+		for( const ReferenceEdge& e : *edges ) {
+			const bool referrerInScope = e.referrerCategory == ChunkCategory::Painter
+				|| e.referrerCategory == ChunkCategory::Material
+				|| promotedFunctionIds.find( e.referrerId ) != promotedFunctionIds.end();
+			if( !referrerInScope ) continue;
+			GraphEdgeSeed s;
+			s.fromId         = e.referrerId;
+			s.fromCategory    = e.referrerCategory;
+			s.fromName        = e.referrerName;
+			s.paramName       = e.paramName;
+			s.occurrence      = e.occurrence;
+			s.portCategories  = e.portCategories;
+			s.portPipe = e.portPipe;
+			s.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
+			s.toId            = e.targetId;
+			s.toCategory      = e.targetCategory;
+			s.toName          = e.targetName;
+			outEdges.push_back( s );
+		}
+
 	}
 
 	// ---- Dangling ports: a Painter/Material referrer whose reference value
@@ -5394,6 +5397,7 @@ void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
 		s.occurrence   = 0;
 		const ParameterDescriptor* pd = nullptr;
 		for( const ParameterDescriptor& p : desc->parameters ) if( p.name == u.param ) { pd = &p; break; }
+		if( pd && pd->carriesExpressionSampleRefs ) continue; // emitted above with exact call pipe and occurrence
 		if( pd ) {
 			s.portCategories = pd->referenceCategories;
 			s.portPipe = pd->semantics.pipe;
@@ -16796,6 +16800,8 @@ SceneEditController::RewireResult SceneEditController::RewireConnectionInner_(
 	// the render-locked gate above and the mid-transaction gate inside
 	// the selected commit path, both of which set the flag themselves.
 	std::string  refusal;                 // non-empty => refuse with this
+	std::string  adapterMismatch;         // deferred until all admission checks have run
+	bool adapterValidated = false;
 	String       entityKind;              // the CST role-kind suffix the edit addresses through
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
@@ -16879,26 +16885,17 @@ SceneEditController::RewireResult SceneEditController::RewireConnectionInner_(
 					 && sc && sc->role != "scalar_painter"
 					 && ConnectionLegality::IsColorCapable( sc->role, newRefCategory )
 					 && ( newRefCategory == ChunkCategory::Painter || newRefCategory == ChunkCategory::Function )
-					 && Cst::DocIndexOfNodeId( *doc, candidateId, nullptr ) < Cst::DocIndexOfNodeId( *doc, targetId, nullptr )
-					 && !ConnectionLegality::WouldCycle( *doc, targetId, candidateId )
-					 && ( occurrence == 0 || ( pd->repeatable && occurrence < Cst::ParamOccurrenceCount( tc, param.c_str() ) ) )
 					 && ConnectionLegality::CheckConnectionByKeyword( tc->role, param.c_str(), "scalar_painter", ChunkCategory::Painter ).legal ) {
-						TopologyEditIntent intent;
-						intent.kind = TopologyEditKind::Rewire;
-						intent.targetChunk = targetId;
-						intent.paramName = param.c_str();
-						intent.occurrence = occurrence;
-						intent.newRefChunk = candidateId;
-						out.canInsertScalarAdapter = OwnershipClosure::Compute( *doc, intent ).Clean();
-					}
-					if( insertScalarAdapter && out.canInsertScalarAdapter ) {
-						out.legalityRefused = false;
+						// Recognize the adaptable pipe mismatch independently of
+						// admission. Both verbs must validate the same full path.
+						adapterMismatch = v.diagnostic;
 						refusal.clear();
+						if( insertScalarAdapter ) out.legalityRefused = false;
 					}
 				}
 			}
 			if( refusal.empty() && ConnectionLegality::WouldCycle( *doc, targetId, candidateId ) ) {
-				out.cycleRefused = true;
+				out.cycleRefused = adapterMismatch.empty() || insertScalarAdapter;
 				std::snprintf( buf, sizeof( buf ),
 					"binding `%s` into `%s`.`%s` would create a reference cycle -- `%s` already "
 					"reaches `%s` along existing references, and the renderer walks painter "
@@ -16960,6 +16957,8 @@ SceneEditController::RewireResult SceneEditController::RewireConnectionInner_(
 								"`%s` has %d occurrence(s) on `%s`, so index %d is out of range",
 								param.c_str(), count, targetName.c_str(), occurrence );
 							refusal = buf;
+						} else if( occurrence == 0 && !pDesc->repeatable && count > 1 ) {
+							refusal = "the non-repeatable parameter is authored more than once; editing its first occurrence would leave the live binding unchanged";
 						} else if( occurrence > 0 && !pDesc->repeatable ) {
 							std::snprintf( buf, sizeof( buf ),
 								"`%s` is not a repeatable parameter on `%s`, so it has no occurrence %d",
@@ -16979,11 +16978,17 @@ SceneEditController::RewireResult SceneEditController::RewireConnectionInner_(
 				intent.occurrence  = occurrence;
 				intent.newRefChunk = candidateId;
 				const OwnershipClosureResult cr = OwnershipClosure::Compute( *doc, intent );
-				out.closure                = cr.classification;
-				out.sharedChunks           = cr.sharedChunks;
-				out.outOfClosureReferrers  = cr.outOfClosureReferrers;
-				out.owners                 = cr.owners;
-				out.nowUnreferenced        = cr.nowUnreferenced;
+				// Ordinary pipe refusals keep their original presentation:
+				// publishing SharedTarget would offer Duplicate & Retry,
+				// which cannot resolve a Color-to-Scalar mismatch. Explicit
+				// adapter requests report the underlying closure instead.
+				if( adapterMismatch.empty() || insertScalarAdapter ) {
+					out.closure                = cr.classification;
+					out.sharedChunks           = cr.sharedChunks;
+					out.outOfClosureReferrers  = cr.outOfClosureReferrers;
+					out.owners                 = cr.owners;
+					out.nowUnreferenced        = cr.nowUnreferenced;
+				}
 				if( !cr.Clean() ) refusal = cr.diagnostic;
 			}
 
@@ -17015,13 +17020,36 @@ SceneEditController::RewireResult SceneEditController::RewireConnectionInner_(
 					}
 				}
 			}
+			if( refusal.empty() && !adapterMismatch.empty() ) {
+				if( Cst::DocIndexOfNodeId( *doc, candidateId, nullptr ) >= Cst::DocIndexOfNodeId( *doc, targetId, nullptr ) ) {
+					refusal = "the scalar adapter's source must be declared before its target";
+				} else if( tChunk->role == "scalar_painter" && param == "base" ) {
+					// These are the form selectors counted by ScalarPainter's
+					// Finalize. `scale` is a companion, not a separate form.
+					for( const char* form : { "value", "values", "file", "sellmeier", "polynomial",
+					                         "function1d", "function2d", "multiply", "add", "texture", "expression", "painter" } ) {
+						if( Cst::ParamOccurrenceCount( tChunk, form ) > 0 ) {
+							refusal = "scalar_painter.base conflicts with the existing scalar form `" + std::string( form ) + "`";
+							break;
+						}
+					}
+				}
+				adapterValidated = refusal.empty();
+				out.canInsertScalarAdapter = adapterValidated
+					&& !mTxnOpen.load( std::memory_order_acquire ) && !mEditor.IsCompositeOpen()
+					&& ( !baseVersionOrNull || *baseVersionOrNull == mJob.GetCstHeadVersion() );
+			}
 		}
 	}
 
+	// A normal drop still reports its pipe mismatch, after computing an
+	// honest adapter offer. Explicit insertion reports the underlying gate.
+	if( !insertScalarAdapter && !adapterMismatch.empty() ) refusal = adapterMismatch;
 	if( !refusal.empty() ) { reject( refusal, /*retriable=*/false ); return out; }
 
 	if( insertScalarAdapter ) {
-		if( !out.canInsertScalarAdapter ) {
+		out.canInsertScalarAdapter = false;
+		if( !adapterValidated ) {
 			reject( "this connection does not require a scalar_painter adapter", false );
 			return out;
 		}

@@ -2689,8 +2689,8 @@ namespace RISE
 			int           repeatCount = 0;
 		};
 
-		//! The input to the pure DAG assembler: one record per RESOLVED
-		//! reference edge, already resolved out of the retained Document
+		//! The input to the pure DAG assembler: one record per reference
+		//! edge, resolved or dangling, gathered from the retained Document
 		//! (see SceneReferenceGraph::Edges) -- deliberately the SAME shape
 		//! ReferenceEdge carries (referrer side + target side), so the
 		//! seeds-gathering step is a straight field copy, not a re-derivation.
@@ -2724,7 +2724,7 @@ namespace RISE
 		//! serves both directions, mirroring ReferenceEdge's shape.
 		struct GraphPort
 		{
-			String paramName;                          //!< the Reference-kind param's role
+			String paramName;                          //!< the reference-bearing param's role
 			int    occurrence      = 0;                 //!< 0-based occurrence among same-role siblings
 			//! Index into PainterMaterialGraph::nodes of the OTHER end, or
 			//! kInvalidNodeIndex when this port is a NODE-LESS PORT: the
@@ -4784,7 +4784,9 @@ namespace RISE
 			//! scene file fails on (MATERIAL_EDITOR.md:145).
 			bool legalityRefused = false;
 			//! Color-capable source can be wrapped for a Scalar slot; only
-			//! offered on a legality refusal with a clean ownership closure.
+			//! offered on an ordinary legality refusal only after the shared
+			//! cycle, occurrence, closure, addressing, form, declaration-order,
+			//! transaction and head-version gates admit the adapter edit.
 			bool canInsertScalarAdapter = false;
 
 			//! True when the refusal came from the forward-reachability cycle

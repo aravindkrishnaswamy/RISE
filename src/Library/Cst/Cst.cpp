@@ -184,11 +184,12 @@ namespace
 	//! trivia) joined, i.e. everything from the first pvalue to the end of the
 	//! Param -- so a multi-token value like `1 0 0` reads back as "1 0 0",
 	//! matching the legacy ParamsList line's `pvalue` (split on the first space).
-	std::string ParamNodeValue( const Node* p )
+	std::string ParamNodeValue( const Node* p, size_t* childVisits = nullptr )
 	{
 		std::string v; bool inVal = false;
 		if( p )
 			for( const auto& k : p->kids ) {
+				if( childVisits ) ++*childVisits;
 				if( !inVal && k->kind == NodeKind::Token && k->role == "pvalue" ) inVal = true;
 				if( inVal ) v += k->text;
 			}
@@ -5463,6 +5464,13 @@ std::string ParamValueAsParsed( const NodeRef& chunk, const std::string& role, b
 	const bool found = ParamValue( chunk.get(), role, v );
 	if( outPresent ) *outPresent = found;
 	return found ? v : std::string();
+}
+
+// Direct-node twin for callers already walking parameter children. Delegates
+// to the same join used by derive and both chunk-level readers.
+std::string ParamValueOfNode( const NodeRef& param, size_t* childVisits )
+{
+	return param && param->kind == NodeKind::Param ? ParamNodeValue( param.get(), childVisits ) : std::string();
 }
 
 // The occurrence-addressed read (see the header doc).  Counts Params by `role` from the

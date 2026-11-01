@@ -12,9 +12,13 @@
 #include "pch.h"
 #include "ReferenceGraph.h"
 #include "ChunkDescriptorRegistry.h"
+#include "ConnectionLegality.h"
+#include "../Painters/ExpressionEval.h"
 
 #include <cstring>
 #include <map>
+#include <set>
+#include <tuple>
 #include <utility>
 
 namespace RISE
@@ -108,6 +112,14 @@ namespace RISE
 						if( ti != byId.end() ) {
 							e.targetCategory = ti->second->category;
 							e.targetName     = ti->second->name;
+							if( e.portPipe == ParameterPipe::Unspecified ) {
+								e.portPipe = ConnectionLegality::OutputPipe( ti->second->keyword.c_str(), ti->second->category );
+								// Expression samples use the call's Color/Scalar
+								// namespace, independent of the primary output pipe.
+								// CST already resolved that exact namespace.
+								if( pd && pd->carriesExpressionSampleRefs && e.portPipe != ParameterPipe::Scalar )
+									e.portPipe = ParameterPipe::Color;
+							}
 						} else {
 							// BELT-AND-BRACES: unreachable in practice.  Every
 							// targetId in `graph.edges` came from BuildReferenceGraph's
@@ -127,6 +139,55 @@ namespace RISE
 							// practice fallback rather than trust the category.
 							e.targetCategory = c.category;
 						}
+						out.push_back( e );
+					}
+				}
+			}
+			return out;
+		}
+
+		// Keep CST's unresolved-name decisions authoritative. Recover only
+		// occurrence and call pipe with the same tokenizer CST uses; the
+		// resolved key distinguishes sample(X) from sample_scalar(X) when
+		// only one namespace contains X.
+		std::vector<ReferenceEdge> ExpressionDanglingEdges(
+			const std::vector<DocumentChunk>& chunks,
+			const std::vector<ReferenceEdge>& edges,
+			const std::vector<Cst::UnresolvedReference>& unresolved,
+			size_t& valueChildVisits )
+		{
+			std::vector<ReferenceEdge> out;
+			if( unresolved.empty() ) return out;
+			using MissingKey = std::tuple<Cst::NodeId, std::string, std::string>;
+			using ResolvedKey = std::tuple<Cst::NodeId, std::string, int, std::string, ParameterPipe>;
+			std::set<MissingKey> missing;
+			std::set<ResolvedKey> resolved;
+			for( const auto& u : unresolved ) missing.emplace( u.sourceChunkId, u.param, u.value );
+			for( const auto& e : edges ) resolved.emplace( e.referrerId, e.paramName.c_str(), e.occurrence, e.targetName.c_str(), e.portPipe );
+			for( const DocumentChunk& c : chunks ) {
+				const ChunkDescriptor* desc = c.hasCategory ? DescriptorForKeyword( c.keyword ) : nullptr;
+				if( !desc ) continue;
+				std::map<std::string, int> occurrences;
+				for( const auto& kid : c.item->kids ) {
+					if( kid->kind != Cst::NodeKind::Param ) continue;
+					const int occurrence = occurrences[kid->role]++;
+					const ParameterDescriptor* pd = nullptr;
+					for( const auto& p : desc->parameters ) if( p.name == kid->role ) { pd = &p; break; }
+					if( !pd || !pd->carriesExpressionSampleRefs ) continue;
+					std::vector<Implementation::ExpressionProgram::Builder::SampleRef> refs;
+					Implementation::ExpressionProgram::Builder::ExtractSampleRefs(
+						Cst::ParamValueOfNode( kid, &valueChildVisits ), refs );
+					for( const auto& ref : refs ) {
+						const ParameterPipe pipe = ref.isScalar ? ParameterPipe::Scalar : ParameterPipe::Color;
+						if( missing.count( MissingKey( c.id, kid->role, ref.painterName ) ) == 0
+						 || resolved.count( ResolvedKey( c.id, kid->role, occurrence, ref.painterName, pipe ) ) != 0 ) continue;
+						ReferenceEdge e;
+						e.referrerId = c.id; e.referrerKeyword = c.keyword;
+						e.referrerCategory = c.category; e.referrerName = c.name;
+						e.paramName = String( kid->role.c_str() ); e.occurrence = occurrence;
+						e.repeatable = pd->repeatable; e.portCategories = pd->referenceCategories;
+						e.portPipe = pipe; e.portColorAlsoAcceptsScalar = pd->semantics.colorAlsoAcceptsScalar;
+						e.targetCategory = ChunkCategory::Painter; e.targetName = String( ref.painterName.c_str() );
 						out.push_back( e );
 					}
 				}
@@ -210,9 +271,11 @@ namespace RISE
 		const Cst::ReferenceGraph graph = Cst::BuildReferenceGraph( doc, nullptr, &out.unresolved );
 		if( prescanned ) {
 			out.edges = ComputeEdges( doc, *prescanned, graph );
+			out.danglingExpressionEdges = ExpressionDanglingEdges( *prescanned, out.edges, out.unresolved, out.expressionValueChildVisits );
 		} else {
 			const std::vector<DocumentChunk> chunks = AllChunks( doc );
 			out.edges = ComputeEdges( doc, chunks, graph );
+			out.danglingExpressionEdges = ExpressionDanglingEdges( chunks, out.edges, out.unresolved, out.expressionValueChildVisits );
 		}
 		return out;
 	}

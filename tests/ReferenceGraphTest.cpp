@@ -70,16 +70,11 @@
 //           2-duplicate-seed input producing 3 nodes instead of 1.
 //        M. TRANSITIVE FUNCTION CHAIN at the assembler level (review
 //           round 1 P2-3): a Painter -> Function -> Function chain wires
-//           correctly (two hops, not just one). No CURRENT chunk
-//           descriptor produces a genuine Function->Function reference
-//           edge (audited: every {Function}-typed Reference param lives
-//           on a Painter/Material/Geometry/Medium chunk, never on a
-//           Function-category chunk itself), so this is tested at the
-//           PURE ASSEMBLER level with synthetic seeds -- exactly the
-//           shape BuildPainterMaterialGraphSeedsLocked_'s transitive
-//           promotion walk would produce once such a param exists.
-//           PART 4b covers the REAL one-hop case
-//           (scalar_painter.function1d) end-to-end through a loaded Job.
+//           correctly (two hops, not just one), using synthetic seeds.
+//           PART 4b covers scalar_painter.function1d end to end; the
+//           pipe-metadata regression also covers the real two-hop chain
+//           scalar_painter.function2d -> piecewise_linear_function2d.cp
+//           -> piecewise_linear_function.
 //
 //    PART 3 -- the assembler wired to a REAL loaded scene through
 //      SceneEditController::ReadPainterMaterialGraph: expression_painter
@@ -202,6 +197,7 @@
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <tuple>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2671,6 +2667,130 @@ int main()
 			       "PART15e: a def-body sample() call is traced (dependents(rock) still contains wet)" );
 		}
 	}
+
+    // FOLLOWUP: expression and tuple edges advertise the pipe actually sampled.
+    {
+        const std::string scene =
+            "RISE ASCII SCENE 7\n"
+            "uniformcolor_painter\n{\nname color_source\ncolor 0.2 0.4 0.6\n}\n"
+            "scalar_painter\n{\nname scalar_source\nvalue 0.3\n}\n"
+            "piecewise_linear_function\n{\nname row_source\ncp 0 0.2\ncp 1 0.8\n}\n"
+            "piecewise_linear_function2d\n{\nname rows\ncp 0 row_source\ncp 1 row_source\n}\n"
+            "expression_painter\n{\nname color_expr\ndef c sample(color_source)\ndef s sample_scalar(scalar_source)\nexpr sample(color_source)*sample_scalar(scalar_source)+c*s\n}\n"
+            "scalar_painter\n{\nname scalar_expr\ndef c sample(color_source)\ndef s sample_scalar(scalar_source)\nexpression sample_scalar(scalar_source)+sample(color_source).x+c.x+s\n}\n"
+            "scalar_painter\n{\nname uses_rows\nfunction2d rows\n}\n";
+        const auto doc = Cst::ParseToCst(scene);
+        const auto edges = SceneReferenceGraph::Edges(doc);
+        int expressionEdges = 0, rowEdges = 0;
+        for (const auto& edge : edges) {
+            if (edge.referrerName == String("color_expr") || edge.referrerName == String("scalar_expr")) {
+                ++expressionEdges;
+                const auto expected = edge.targetName == String("scalar_source") ? ParameterPipe::Scalar : ParameterPipe::Color;
+                Check(edge.portPipe == expected, "FOLLOWUP: sample()/sample_scalar() ReferenceEdge pipe matches call");
+            }
+            if (edge.referrerName == String("rows")) {
+                ++rowEdges;
+                Check(edge.portPipe == ParameterPipe::Function1D, "FOLLOWUP: function2d cp ReferenceEdge uses Function1D");
+            }
+        }
+        Check(expressionEdges == 8 && rowEdges == 2, "FOLLOWUP: every expression body/def and cp occurrence is checked");
+        Job* j = LoadFixture("/tmp/rise_reference_pipe_followup.RISEscene", scene);
+        Check(j != nullptr, "FOLLOWUP: expression/tuple pipe scene derives");
+        if (j) {
+            {
+                SceneEditController c(*j, nullptr);
+                Graph g;
+                c.ReadPainterMaterialGraph(g);
+                int checked = 0;
+                for (const auto& node : g.nodes) {
+                    for (const auto& port : node.outEdges) {
+                        if (node.name == String("color_expr") || node.name == String("scalar_expr") || node.name == String("rows")) {
+                            ++checked;
+                            const auto expected = node.name == String("rows") ? ParameterPipe::Function1D
+                                : port.otherName == String("scalar_source") ? ParameterPipe::Scalar : ParameterPipe::Color;
+                            Check(port.portPipe == expected, "FOLLOWUP: PainterMaterialGraph retains expression/cp pipe");
+                        }
+                    }
+                }
+                Check(checked == 10, "FOLLOWUP: graph contains all ten typed expression/cp ports");
+            }
+            j->release();
+        }
+    }
+
+    // An invalid authoring head still needs typed dangling ports. CST owns
+    // name resolution; recover each call's pipe and repeatable def occurrence.
+    {
+        const auto doc = Cst::ParseToCst(
+            "RISE ASCII SCENE 7\n"
+            "uniformcolor_painter\n{\nname color_only\ncolor 1 1 1\n}\n"
+            "scalar_painter\n{\nname scalar_only\nvalue 1\n}\n"
+            "piecewise_linear_function\n{\nname spectral_curve\ncp 400 1\ncp 700 1\n}\n"
+            "expression_painter\n{\nname broken\ndef c sample(color_only)+sample_scalar(color_only)\n"
+            "def s sample(scalar_only)+sample_scalar(scalar_only)\n"
+            "expr sample(missing)+sample_scalar(missing)+sample(missing)+sample(spectral_curve)\n}\n"
+            "scalar_painter\n{\nname broken_scalar\ndef c sample(missing)\ndef s sample_scalar(missing)\n"
+            "expression sample_scalar(missing)+sample(missing).x\n}\n");
+        const auto snapshot = SceneReferenceGraph::EdgesAndDangling(doc);
+        Check(snapshot.edges.size() == 2 && snapshot.unresolved.size() == 10
+              && snapshot.danglingExpressionEdges.size() == 10,
+              "FOLLOWUP: dangling recovery preserves each unresolved call without duplicating resolved namespaces");
+        using Call = std::tuple<std::string, std::string, int, std::string, ParameterPipe>;
+        const std::multiset<Call> expected = {
+            {"broken", "def", 0, "color_only", ParameterPipe::Scalar},
+            {"broken", "def", 1, "scalar_only", ParameterPipe::Color},
+            {"broken", "expr", 0, "missing", ParameterPipe::Color},
+            {"broken", "expr", 0, "missing", ParameterPipe::Color},
+            {"broken", "expr", 0, "missing", ParameterPipe::Scalar},
+            {"broken", "expr", 0, "spectral_curve", ParameterPipe::Color},
+            {"broken_scalar", "def", 0, "missing", ParameterPipe::Color},
+            {"broken_scalar", "def", 1, "missing", ParameterPipe::Scalar},
+            {"broken_scalar", "expression", 0, "missing", ParameterPipe::Color},
+            {"broken_scalar", "expression", 0, "missing", ParameterPipe::Scalar}
+        };
+        std::multiset<Call> actual;
+        std::vector<EdgeSeed> edgeSeeds;
+        for (const auto& edge : snapshot.danglingExpressionEdges) {
+            actual.emplace(edge.referrerName.c_str(), edge.paramName.c_str(), edge.occurrence,
+                           edge.targetName.c_str(), edge.portPipe);
+            Check(edge.targetId == 0 && edge.targetName.size() > 1,
+                  "FOLLOWUP: dangling expression preserves missing name and zero target");
+            auto seed = MakeEdgeSeed(edge.referrerId, edge.referrerCategory, edge.referrerName.c_str(),
+                edge.paramName.c_str(), edge.occurrence, 0, edge.targetCategory, edge.targetName.c_str());
+            seed.portPipe = edge.portPipe;
+            edgeSeeds.push_back(seed);
+        }
+        Check(actual == expected,
+              "FOLLOWUP: exact dangling call multiset includes namespace, pipe, occurrence and duplicate calls");
+        std::vector<NodeSeed> nodes;
+        for (const auto& chunk : SceneReferenceGraph::AllChunks(doc))
+            if (chunk.name == String("broken") || chunk.name == String("broken_scalar"))
+                nodes.push_back(MakeNodeSeed(chunk.id, chunk.name.c_str(), chunk.category, nodes.size()));
+        const auto graph = SceneEditController::BuildPainterMaterialGraph(nodes, edgeSeeds);
+        int dangling = 0;
+        for (const auto& node : graph.nodes) for (const auto& port : node.outEdges) {
+            ++dangling;
+            Check(port.otherNode == SceneEditController::kInvalidNodeIndex && (port.portPipe == ParameterPipe::Color || port.portPipe == ParameterPipe::Scalar),
+                  "FOLLOWUP: assembler retains typed dangling expression ports");
+        }
+        Check(dangling == 10, "FOLLOWUP: all typed dangling calls reach the graph assembler");
+    }
+
+    // Recovery must read each selected Param's children once, rather than
+    // restarting at the beginning of a long repeatable-def chunk per line.
+    for (const size_t defs : {size_t(8), size_t(32), size_t(128)}) {
+        std::string text = "RISE ASCII SCENE 7\nscalar_painter\n{\nname many_defs\n";
+        for (size_t i = 0; i < defs; ++i) text += "def d" + std::to_string(i) + " 0.2\n";
+        text += "expression sample_scalar(missing)\n}\n";
+        const auto doc = Cst::ParseToCst(text);
+        const auto snapshot = SceneReferenceGraph::EdgesAndDangling(doc);
+        Check(snapshot.danglingExpressionEdges.size() == 1,
+              "FOLLOWUP: long def fixture retains its one dangling call");
+        // Each `def dN 0.2` has five children (three tokens and two spaces),
+        // and `expression sample_scalar(missing)` has three.
+        Check(snapshot.expressionValueChildVisits == 5 * defs + 3,
+              ("FOLLOWUP: dangling recovery child visits grow linearly with def count " + std::to_string(defs)).c_str());
+    }
 
 	std::cout << "Passed: " << passCount << ", Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;

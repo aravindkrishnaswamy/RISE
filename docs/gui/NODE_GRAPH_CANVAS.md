@@ -9,11 +9,15 @@ tint; category headers retain their existing lavender material tint. Eligible Co
 R-channel adapter immediately after its upstream source (`texture` for PNG,
 JPG, HDR, EXR and TIFF; `painter` for other Color-capable painters, including
 `piecewise_linear_function`) and rewires the slot in one operation-level undo
-batch. Declaration order, cycle, ownership, transaction and head-version gates
-apply; Undo/Redo preserves unrelated document edits. Metadata and edits are
+batch. Declaration order, cycle, occurrence, ownership, edit-addressing, scalar-form,
+transaction and head-version gates apply to both the offer and insertion;
+Undo/Redo preserves unrelated document edits. Metadata and edits are
 exposed through the C ABI and both bulk desktop bridges. Bulk reads report
 snapshot freshness, so contended reads retry without closing the epoch gate
-or losing pending adapter selection. Windows/MSVC build
+or losing pending adapter selection. A manual node selection cancels that pending
+selection. Expression sample ports carry the call's Color/Scalar pipe (including
+dangling calls); `piecewise_linear_function2d.cp` ports carry Function1D. Windows/MSVC
+build
 verification remains owed on a Windows host.
 
 **Status: SHIPPED — S11 through S23 all complete (2026-08-20 → 2026-08-21).**

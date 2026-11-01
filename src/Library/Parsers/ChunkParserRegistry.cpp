@@ -3493,7 +3493,7 @@ namespace RISE
 					std::vector<double> cp_x;
 					std::vector<String> cp_y;
 
-					// Repeatable per-row entries: "cp <x> <y values...>"
+					// Repeatable per-row entries: "cp <x> <Function1D name>"
 					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
 					for( size_t k = 0; k < cps.size(); ++k ) {
 						double x = 0.0;
@@ -3533,7 +3533,7 @@ namespace RISE
 						cd.description = "2D piecewise-linear function (1D row at each x).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "cp";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Row: x then space-separated y values (repeatable)"; }
+						{ auto& p = P(); p.name = "cp";   p.kind = ValueKind::String; p.repeatable = true; p.semantics.pipe = ParameterPipe::Function1D; p.description = "Row: x then Function1D name (repeatable)"; }
 						return cd;
 					}();
 					return d;
