@@ -2440,13 +2440,12 @@ inline float tr_curve(device const float* transport,uint species,uint field,floa
   (t3-t2)*h*record[slopeOffset+upper];}
 inline float tr_phi(float mui,float muj,float wi,float wj){float numerator=1.0f+
  sqrt(mui/muj)*sqrt(sqrt(wj/wi));return numerator*numerator/sqrt(8.0f*(1.0f+wi/wj));}
-kernel void evaluate_resident_transport(device const float* state [[buffer(0)]],
- device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
- device const float* thermo [[buffer(3)]],device const float* transport [[buffer(4)]],
- device float* output [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
- device atomic_uint* obligations [[buffer(7)]],constant TransportParams& p [[buffer(8)]],
- device const uchar* inflow [[buffer(9)]],
- uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny);
+// r271: compactDiagonal takes du_i/dx_i from the cell's own faces, as the compact
+// momentum stencil does, so heat and species share the momentum nu_t (FDS divg.f90).
+inline void resident_transport_cell(device const float* state,device const float* temperature,
+ device const float* velocity,device const float* thermo,device const float* transport,
+ device float* output,device atomic_uint* failure,device atomic_uint* obligations,
+ constant TransportParams& p,device const uchar* inflow,uint gid,bool compactDiagonal){if(gid>=p.cells)return;uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny);
  float T=temperature[gid];bool valid=isfinite(T);float rho=0.0f,mass[6];
  for(uint species=0u;species<6u;++species){float q=state[(species+1u)*p.cells+gid];
   if(!isfinite(q))valid=false;mass[species]=max(0.0f,q);rho+=mass[species];}
@@ -2474,7 +2473,11 @@ kernel void evaluate_resident_transport(device const float* state [[buffer(0)]],
     if(inlet)atomic_fetch_or_explicit(obligations,1u<<18u,memory_order_relaxed);
     nv=kind==1u?tr_cell_velocity(velocity,p,component,x,y,z):
      2.0f*tr_boundary_velocity(velocity,p,side,component,x,y,z)-tr_cell_velocity(velocity,p,component,x,y,z);}
-   gradient[derivative][component]=(nv-pv)/(2.0f*p.dx);if(!isfinite(gradient[derivative][component]))valid=false;}}
+   gradient[derivative][component]=(nv-pv)/(2.0f*p.dx);
+   if(compactDiagonal&&component==derivative)gradient[derivative][component]=
+    (velocity[tr_face(p,component,x+(component==0u),y+(component==1u),z+(component==2u))]-
+     velocity[tr_face(p,component,x,y,z)])/p.dx;
+   if(!isfinite(gradient[derivative][component]))valid=false;}}
  float alpha2=0.0f,beta[3][3];for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j){
   alpha2+=gradient[i][j]*gradient[i][j];beta[i][j]=0.0f;}float width2=p.dx*p.dx;
  for(uint m=0u;m<3u;++m)for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)
@@ -2500,6 +2503,22 @@ kernel void evaluate_resident_transport(device const float* state [[buffer(0)]],
  if(!(totalDiff>0.0f)||!(effectiveK>0.0f)||!(molecularNu>0.0f)||!isfinite(totalDiff)||!isfinite(effectiveK)||!isfinite(molecularNu))valid=false;
  output[gid]=totalDiff;output[p.cells+gid]=effectiveK;output[2u*p.cells+gid]=molecularNu;
  if(!valid)atomic_fetch_or_explicit(failure,1u,memory_order_relaxed);}
+kernel void evaluate_resident_transport(device const float* state [[buffer(0)]],
+ device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
+ device const float* thermo [[buffer(3)]],device const float* transport [[buffer(4)]],
+ device float* output [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
+ device atomic_uint* obligations [[buffer(7)]],constant TransportParams& p [[buffer(8)]],
+ device const uchar* inflow [[buffer(9)]],
+ uint gid [[thread_position_in_grid]]){resident_transport_cell(state,temperature,velocity,thermo,
+ transport,output,failure,obligations,p,inflow,gid,false);}
+kernel void evaluate_resident_transport_compact(device const float* state [[buffer(0)]],
+ device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
+ device const float* thermo [[buffer(3)]],device const float* transport [[buffer(4)]],
+ device float* output [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
+ device atomic_uint* obligations [[buffer(7)]],constant TransportParams& p [[buffer(8)]],
+ device const uchar* inflow [[buffer(9)]],
+ uint gid [[thread_position_in_grid]]){resident_transport_cell(state,temperature,velocity,thermo,
+ transport,output,failure,obligations,p,inflow,gid,true);}
 kernel void identify_resident_transport(device const float* state [[buffer(0)]],
  device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
  device const float* output [[buffer(3)]],device const float* thermo [[buffer(4)]],
@@ -4027,6 +4046,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						[library newFunctionWithName:[NSString stringWithUTF8String:name]];
 						return function?NameProducerKernel([device newComputePipelineStateWithFunction:function error:&metalError],name):nil;};
 					evaluate=pipeline("evaluate_resident_transport");identify=pipeline("identify_resident_transport");
+					// r271 A/B: heat and species take the compact-stencil nu_t with the momentum.
+					if(FireProductionForceMetalCompactViscousStencil())evaluate=pipeline("evaluate_resident_transport_compact");
 					physicalFlux=pipeline("evaluate_resident_physical_flux");
 					advectivePair=pipeline("evaluate_resident_advective_pair");
 					finalizeAdvective=pipeline("finalize_resident_advective_high");

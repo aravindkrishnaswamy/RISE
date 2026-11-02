@@ -1155,7 +1155,8 @@
 			std::vector<CellTransportEvaluation>& evaluations,
 			std::string* error=0,
 			const unsigned int workerCount=1u,
-			const std::vector<CellMolecularTransportEvaluation>* molecularEvaluations=0
+			const std::vector<CellMolecularTransportEvaluation>* molecularEvaluations=0,
+			const bool compactDiagonal=false
 			)
 		{
 			const std::size_t count=shape.CellCount();
@@ -1228,6 +1229,11 @@
 								cellVelocity[component][cell];}
 						gradient[derivative][component]=(nextValue-previousValue)/
 							(2.0*shape.cellWidthM);
+						// r271: the compact diagonal of the resident transport and force kernels.
+						if(compactDiagonal&&component==derivative)gradient[derivative][component]=(
+							faceVelocity.component[component][OpenUpperFaceForCell3D(shape,cell,component)]-
+							faceVelocity.component[component][OpenLowerFaceForCell3D(shape,cell,component)])/
+							shape.cellWidthM;
 					}
 				}
 				std::string cellError;

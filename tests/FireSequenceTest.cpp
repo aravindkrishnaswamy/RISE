@@ -6049,7 +6049,9 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			advancedOK=BuildOpenStageTransportEvaluations3D(shape,currentConservative,
 				currentTemperature,currentVelocity,config.openBoundary,config.dns,fuel,
 				FireSimulationTransportRecord::OpenV1(),config.transport.producerPrecision,
-				cellTransportEvaluations,&error,workerCount);
+				cellTransportEvaluations,&error,workerCount,0,
+				// r271: mixing time and step control see the same nu_t as the Metal transport.
+				persistence.productionMetal&&FireProductionForceMetalCompactViscousStencil());
 			if(!advancedOK) break;
 			solverPhase="timestep control";
 			profileTransportMS=std::chrono::duration<double,std::milli>(
@@ -11725,9 +11727,11 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		if(r246TopDouble)WriteR246WindowIdentity(receipt,launchCase,window);
 		else if(r244LateralDouble)receipt<<"domain_study r244-lateral-double-v1\n";
 		if(r245AcceptedBudget)receipt<<"accepted_stage_budget r245-v1\n";
-		// r271 A/B: the opt-in compact viscous stencil does not change the case or
-		// the kernel-set source identity, so the receipt records the selection.
-		if(FireProductionForceMetalCompactViscousStencil())receipt<<"viscous_stencil r271-compact-mac-v1\n";
+		// r271 A/B: the opt-in compact viscous stencil does not change the case, and both
+		// settings share one kernel source text, so the receipt records the selection.
+		// v2 adds the compact-diagonal nu_t for heat, species and the combustion mixing
+		// time (v1 was momentum only).
+		if(FireProductionForceMetalCompactViscousStencil())receipt<<"viscous_stencil r271-compact-mac-v2\n";
 		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
 			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
 			<<"case_record_id "<<launchCase.caseRecordId<<"\nresolution_tier "<<resolutionTier<<'\n'
@@ -11884,7 +11888,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			while(receipt>>key>>value){
 				if(key=="domain_study")return 91;
 				if(key=="case_record_id")receiptCaseId=value;
-				if(key=="viscous_stencil")receiptCompact=value=="r271-compact-mac-v1";
+				// A superseded stencil (v1, momentum only) cannot be rebuilt by this build.
+				if(key=="viscous_stencil"){if(value!="r271-compact-mac-v2")return 91;receiptCompact=true;}
 			}
 			// A rebuild never mixes viscous stencils with the run it describes.
 			if(receiptCompact!=FireProductionForceMetalCompactViscousStencil())return 91;
