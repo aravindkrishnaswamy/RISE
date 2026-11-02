@@ -315,8 +315,58 @@ r270's same-window values (frames 73–136) are close to its full-window values:
   - **heat release that is too smooth in time,** which damps puffing.
 - §5's grid-scale noise and this deficit are two symptoms. The noise partly stood in for the missing eddies; fixing the noise alone exposed them.
 
+## 12. Weak forcing, not damping (2026-11-02)
+
+The owner asked for the read-only forcing/damping split, and for the operator test if it pointed at damping.
+
+**Forcing and response at the base** (`tools/fire/r271/forcing_damping.py` on `near_planes.cpp` dumps with heat release; `docs/data/fire_r271/forcing_damping.txt`). On the burner-edge ring r = 0.06–0.12 m:
+
+| | r270 | compact | FDS r263 |
+|---|---|---|---|
+| rms T at 0.05 m (K) | 211 | 139 | 216 |
+| rms heat release at 0.05 m (MW/m³) | 1.37 | 0.80 | 1.21 |
+| rms w at 0.05 m (m/s) | 0.26 | 0.13 | 0.40 |
+| corr(w, T) at 0.11–0.50 m | 0.75–0.79 | 0.83–0.85 | 0.71–0.77 |
+| Growth of peak rms w, 0.05 → 0.50 m | 3.5× | 7.3× | 3.2× |
+| Production/TKE at 0.20–0.50 m (1/s) | 14–16 | 13–19 | 12–14 |
+| Base heat release, 2–3.5 Hz rms (% of mean) | 2.3 | 2.4 | 3.7 |
+
+- In r270 the temperature and heat-release fluctuations at the base match FDS, but the velocity there responds with about 60% of FDS's rms w. Above the base, r270's eddies grow with height at FDS's rate, and the energy removal rate is within 5–17% of FDS's.
+- So the deficit is set within the first few cells above the burner, where heat release should turn into velocity fluctuations. It is not a progressive loss on the way up.
+- The puffing-band part of the base heat release is weaker than FDS's (2.3% against 3.7%).
+- A divergence check (expansion against heat release) was not conclusive: 2Δ differences of cell-centred frames at 0.0625 s are too noisy.
+
+**Operator test.** The removal rate was slightly higher than FDS's, so, as the owner asked, the production momentum operator was tested directly on a decaying Taylor–Green vortex array.
+- **Set-up:**
+  - `tools/fire/r271/tg_driver.cpp`, `build_tg.py`, `run_tg.sh` run the real tier-8 capstone from t = 0. The fire runs as normal.
+  - Only an external copy of the harness is patched (r260 pattern). At t = 0 it superposes a 2D Taylor–Green array, U = 1 m/s, in ambient air at z = 1.6–3.0 m. The array has zero normal flow on the sides and is exactly divergence-free on the MAC grid.
+  - The patched copy can also override C_v.
+- **Arms:** 0.5 s each, 306 steps, all clean:
+  - 8.1-cell wavelength with C_v 0.07;
+  - 8.1-cell wavelength with C_v 0;
+  - 15.3-cell wavelength with C_v 0.07.
+- **Measurement:** `tools/fire/r271/tg_mode.cpp` projects the MAC face velocities of the retained checkpoints onto the mode over z = 1.9–2.7 m. The plume never reached the band (ΔT = 0). Data: `docs/data/fire_r271/tg_decay.txt`.
+
+| arm | measured decay (1/s) | molecular (1/s) | Vreman the field implies (1/s) | excess (1/s) |
+|---|---|---|---|---|
+| 8 cells, C_v 0 | 0.040 | 0.020 | — | 0.020 |
+| 8 cells, C_v 0.07 | 0.644 | 0.020 | 0.594 | 0.030 |
+| 15 cells, C_v 0.07 | 0.140 | 0.006 | 0.118 | 0.016 |
+
+These are first-interval rates (0.06–0.07 s), before the array breaks up. After about 0.2 s, energy moves into other modes (15–27% by the end, with w up to 0.8 m/s): the array becomes unstable, as Taylor–Green arrays do at this Reynolds number.
+
+**Result.**
+- **The production momentum operator adds almost no numerical damping.** At C_v 0 an 8-cell eddy decays at the molecular rate plus 0.02 1/s, an effective numerical viscosity of about 1.6×10⁻⁵ m²/s. That is the same size as air's molecular viscosity, and three orders of magnitude below the eddy removal rates in the plume.
+- **With C_v 0.07 the SGS damping is what the Vreman formula gives** for the field, plus the same small excess. FDS uses the same formula and constant.
+- So damping does not explain the weak eddies. **The deficit is in forcing:** at the burner, the same temperature and heat-release fluctuations produce too little velocity fluctuation, and the puffing-band heat release is weaker.
+- **Limits of the test:** it is non-reacting, at uniform density, with no buoyancy acting on the mode and a low CFL (0.05). It does not test the variable-density projection, or how heat release enters the divergence. Those are exactly where the next step should look.
+
+**Environment note.** Homebrew moved OpenVDB from 13.1 to 14.0 on 2026-11-02 at 06:18. The committed production objects were built against 13.1, and `bin/tests/FireSequenceTest` no longer loads (`libopenvdb.13.1.dylib` not found). The test tools pin the 13.1 copy that is still in the Cellar. The main build needs either a rebuild against 14.0 or 13.1 pinned in homebrew; that is the owner's decision.
+
 ## Next (owner decisions)
 
-1. **Find what damps or under-forces the resolved eddies.** First, read-only on existing r270 frames and FDS slices: fluctuation growth with height in the burner-edge shear layer, and the correlation of density and heat-release fluctuations with w′. That separates weak forcing (low θ′ and q′ at the base) from damping (normal forcing, slow growth).
-2. **If it points at damping:** a small, cheap production-operator test outside the fire case. A decaying Taylor–Green vortex or a temporal shear layer on a small grid, compared with the analytic decay rate. This is a new run, so it needs approval; it would take minutes, not hours.
+1. **Fix the OpenVDB breakage first** (§12): rebuild RISE against OpenVDB 14.0, or pin 13.1 in homebrew. Until then the main test binary does not start, and a `brew cleanup` would remove the 13.1 copy the r271 tools use.
+2. **Look at how heat release drives velocity at the burner.** The candidates are the divergence constraint (how and when the heat-release source enters the projection) and the base flame structure (the burner inflow and the first cells' heat release).
+   - Read-only on retained checkpoints: compare RISE's applied divergence target with ∇·u and with the heat release, cell by cell, at the base. Also compare FDS's `DIVERGENCE` slices with its HRRPUV.
+   - If that shows a lag or smoothing, a small operator test with a pulsed heat source in still air would measure the velocity response directly. That is a new run and needs approval.
 3. **Option, from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.
