@@ -6,8 +6,8 @@ Only an external copy of the test harness is patched (r260 pattern): lift the
 RISE_R271_WINDOW_S. No production source or object is rewritten.
 """
 from pathlib import Path
-import subprocess,shlex,hashlib,json
-ROOT=Path(__file__).resolve().parents[3];OUT=Path('/Volumes/SSD/RISE/fire_production_calibration/r271_compact_stencil/ab_build');OUT.mkdir(parents=True,exist_ok=True)
+import subprocess,shlex,hashlib,json,sys
+ROOT=Path(__file__).resolve().parents[3];OUT=Path('/Volumes/SSD/RISE/fire_production_calibration/r271_compact_stencil')/(sys.argv[1] if len(sys.argv)>1 else 'ab_build');OUT.mkdir(parents=True,exist_ok=True)
 h=(ROOT/'tests/FireSequenceTest.cpp').read_text()
 old='persistence.stopAfterAdditionalAcceptedSteps<=64u&&';assert h.count(old)==1;h=h.replace(old,'persistence.stopAfterAdditionalAcceptedSteps<=8192u&&')
 old='\t\tconst char* solverPhase="initialization";';assert h.count(old)==1

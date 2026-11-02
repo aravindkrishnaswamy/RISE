@@ -232,10 +232,48 @@ The owner approved the patch (committed as `5cdace134`) and the run.
 - So the A/B ran FDS-like momentum mixing with heat and species mixing at about half of FDS. That is consistent with §8: temperature grid noise doubled, and the core was hotter, narrower and longer.
 - The fix that matches FDS is the one FDS uses: **heat and species take the same eddy viscosity as momentum**, from compact gradients.
 
+## 10. Scalars on the compact ν_t: a small step, not the fix (2026-11-01)
+
+The owner approved the change and the run. The change is still uncommitted, pending owner review (`docs/data/fire_r271/scalar_nu_t.patch`, SHA-256 `e0b57430…`).
+
+**Change.** Under the same opt-in switch, heat and species (and the combustion mixing time) use the compact-diagonal ν_t: du_i/dx_i = (u_{i+1/2} − u_{i−1/2})/Δ, off-diagonals unchanged.
+- **GPU:** `evaluate_resident_transport_compact`, selected on the host when `FireProductionForceMetalCompactViscousStencil()` is true.
+- **CPU mixing time:** `BuildOpenStageTransportEvaluations3D(..., compactDiagonal)`.
+- **Checks:** fp64 agreement 3.5×10⁻⁷ of the ν_t change on an r270 state (`tools/fire/r271/scalar_kernel_check.cpp`, `docs/data/fire_r271/scalar_kernel_check.txt`); switch off, the budget data rows are byte-identical over 25 steps; switch-on 25-step smoke clean; build warning-free; independent review (three P3s left open, all outside the A/B path).
+- **Harmonic face mean kept**, so the arm isolates ν_t.
+
+**Run.** Same harness and checkpoint as §8: r270 step 9223 → 4 s to 18.984 s, floor on, 4.5 h wall time, peak RSS 1.9 GB, no errors. The receipt is `r271-compact-mac-v2` (`docs/data/fire_r271/ab_scalar_result.txt`). Note: the driver manifest says `production_changed: false`; that field means the harness rewrote no production source; the production objects it links were built from the working tree, which holds the patch above (`ab_build_v2/patch_sha256.txt`). Data: `docs/data/fire_r271/ab_compare_scalar.txt`.
+
+| | r270 (w0 / w2 / same window) | compact | compact + scalar | FDS r263 |
+|---|---|---|---|---|
+| Grid-scale share of w, 0.29 m | 0.27 / 0.26 / 0.27 | 0.18 | 0.18 | 0.075–0.20 |
+| Grid-scale share of T, 0.29 m | 0.11 / 0.12 / 0.12 | 0.22 | **0.21** | |
+| Grid-scale share of T, 0.50 m | 0.067 / 0.071 / 0.080 | 0.12 | **0.11** | |
+| Total HRR rms, 2–3.5 Hz, % of mean | 3.5 / 3.9 / 3.1 | 2.2 | **2.3** | |
+| 90% heat-release height (m) | 0.43 / 0.43 / 0.46 | 0.83 | **0.80** | 0.43 |
+| 99% heat-release height (m) | 0.86 / 0.86 / 0.86 | 1.25 | **1.22** | 0.77 |
+| θ_c at 0.50 m (K) | 792 / 796 / 825 | 970 | **960** | 631 |
+| θ_c at 0.99 m (K) | 337 / 348 / 345 | 509 | **479** | 228 |
+| Upward mass flux, 0.75 m (kg/s) | 0.176 / 0.208 / 0.196 | 0.168 | **0.171** | 0.244 |
+| Plume width b_T, 0.75 m (m) | 0.107 / 0.105 / 0.103 | 0.083 | **0.084** | 0.119 |
+| Upward mass flux, 3.01 m (kg/s) | 0.876 / 0.843 / 0.863 | 1.021 | **1.038** | 1.176 |
+
+In 1 s blocks the 90% height goes 0.64 → 0.76 → 0.86 → 0.86 m (§8's arm: 0.64 → 0.83 → 0.89 → 0.89).
+
+**Result.**
+- **Every near-field measure moves the right way, but only slightly.** The 90% height recovers 0.03 m of the 0.37 m lost in §8; θ_c at 1 m recovers 30 K of 164 K. Both shifts are about the size of the window-to-window spread in r270.
+- Temperature grid noise falls 4–6%, still well above r270. Velocity noise and puffing are unchanged.
+- The far field improves a little more (3 m mass flux 1.04 kg/s).
+- ν_t from frames (wide formula, `docs/data/fire_r271/frame_nut_scalar_arm.txt`) matches §8's arm within 3% below 1 m (up to 10% in the outer rings at 1.5 m), so the velocity field is statistically the same; the arm differs only in the scalar diffusivity actually applied, which the kernel check confirms rose by the expected 30–80%.
+
+**Reading.**
+- §9's explanation is not borne out. Raising the scalar ν_t by 30–80% is real but small in effect, because below 0.5 m the modelled flux is only 0.1–0.34 kW (§9). The heat that FDS moves out of the core is mostly resolved transport, and smooth RISE velocity does not do it.
+- So the under-entrainment with the compact stencil is a resolved-flow problem: too little resolved radial inflow and turbulent exchange near the burner, once the 2Δ noise that was standing in for it is gone.
+- The scalar change is FDS-consistent and cheap. It is worth keeping inside the opt-in path, but it does not make the compact stencil adoptable.
+
 ## Next (owner decisions)
 
-1. **Make the scalar ν_t match the momentum ν_t** under the same opt-in switch. In `evaluate_resident_transport`, take the diagonal gradients from the face velocities already bound there: (u_{i+1/2} − u_{i−1/2})/Δ, as the compact momentum kernel does. Off-diagonals stay as they are. This is a production solver change, so it needs owner review.
-   - Verify it as before: Fourier/bounded checks, switch-off byte-identical, a 25-step smoke run and an independent review.
-   - Then repeat the 4 s A/B with the existing harness: one arm, about 4.7 h, compared with r270 and with §8's compact arm.
-   - **Option:** also switch the face mean to arithmetic, as FDS does. It is about a 6% effect and could go in the same arm or be left out to keep attribution clean.
-2. **Possible follow-up from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.
+1. **Review the scalar ν_t patch** (§10). Recommendation: commit it under the opt-in switch, since it makes that path match FDS, but keep the switch off by default. Alternatively drop it; production defaults are unaffected either way.
+2. **Find where resolved near-field mixing is lost, read-only.** Compare RISE (r270 and the compact arms) with FDS r263 below 0.5 m: mean and fluctuating radial inflow u_r through r = 0.1–0.3 m, the resolved turbulent heat flux ⟨u_r′θ′⟩, and the burner-edge shear-layer growth. This uses existing frames and FDS slices; no new runs.
+3. **Option:** switch the face mean to arithmetic, as FDS does (§9, about 6% of the modelled flux). Given §10 it is unlikely to matter; not recommended on its own.
+4. **Possible follow-up from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.

@@ -1,0 +1,3 @@
+interior cells 466856
+mean delta nu_t GPU 6.13996e-05 fp64 6.13996e-05
+max |GPU-fp64| 8.16971e-10 (max |delta| 0.00236366, ratio 3.45637e-07)

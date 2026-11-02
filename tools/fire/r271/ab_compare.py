@@ -1,4 +1,4 @@
-# r271 A/B: compact viscous stencil (floor on) vs r270 over the same 64 frames (15.03-18.97 s).
+# r271 A/B: compact viscous stencil (floor on; optional third arm sc_* = compact scalar nu_t too) vs r270 over the same 64 frames (15.03-18.97 s).
 # Run from the scratch dir that holds meander.py/fds_mean3d.npy/fds_hrr_z.npy (tools/fire/r270 copies) and the r270
 # 235-frame extracts; argv[1] is the A/B extract dir (ab_*, r270_*, r270w0_*, r270w2_* from dump/mean3d/dump_hrr).
 # r270 windows 0 (10.47-14.40 s) and 2 (19.03-22.97 s) show how much a 4 s window varies with no change at all.
@@ -10,7 +10,9 @@ Full=np.transpose(np.fromfile('r270_planes.bin',dtype='<f4').reshape(235,8,4,69,
 Hfull=np.fromfile('r270_hrr.bin').reshape(235,109)
 def planes(n):return np.transpose(np.fromfile(f'{W}/{n}_planes.bin',dtype='<f4').reshape(64,8,4,69,69),(0,1,2,4,3))
 P={'r270 w0':Full[0:64],'r270 w2':Full[137:201],'r270':planes('r270'),'compact':planes('ab')}
+if os.path.exists(f'{W}/sc_planes.bin'):P['compact+scalar']=planes('sc')
 H={'r270 w0':Hfull[0:64],'r270 w2':Hfull[137:201],'r270':np.fromfile(f'{W}/r270_hrr.bin').reshape(64,109),'compact':np.fromfile(f'{W}/ab_hrr.bin').reshape(64,109)}
+if 'compact+scalar' in P:H['compact+scalar']=np.fromfile(f'{W}/sc_hrr.bin').reshape(64,109)
 assert np.array_equal(P['r270'],Full[73:137]) and np.array_equal(H['r270'],Hfull[73:137])
 kx=np.fft.fftfreq(69)*2*np.pi;KX,KY=np.meshgrid(kx,kx,indexing='ij');K=np.hypot(KX,KY)
 def share(p):
@@ -38,7 +40,7 @@ print('   FDS r263 (full window)  '+'  '.join(f'{v:.3f}' for v in heights(fds)))
 for n,h in H.items():print(f'   {n:22s}  '+'  '.join(f'{v:.3f}' for v in heights(h[:,3:].mean(0))))
 F=np.load('fds_mean3d.npy')
 M={'FDS (full)':(F[3],F[2],F[8])}
-for n,f in (('r270 w0','r270w0'),('r270 w2','r270w2'),('r270','r270'),('compact','ab')):
+for n,f in (('r270 w0','r270w0'),('r270 w2','r270w2'),('r270','r270'),('compact','ab'),('compact+scalar','sc'))[:5 if 'compact+scalar' in P else 4]:
     Q=np.fromfile(f'{W}/{f}_mean3d.bin').reshape(7,NZ,N,N).transpose(0,1,3,2);M[n]=(Q[0],Q[3],352.6*Q[6])
 print('\n4. Mean plume by height: centre excess T (K), centre w (m/s), upward mass flux (kg/s), temperature width b_T (m)')
 print('   z(m)  '+''.join(f'{n:>27s}' for n in M))

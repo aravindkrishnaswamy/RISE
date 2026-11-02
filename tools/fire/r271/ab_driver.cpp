@@ -27,7 +27,7 @@ int main(int argc,char** argv){
  std::ofstream f(out/"result.txt");f<<std::setprecision(17)<<"succeeded "<<r.succeeded<<"\nerror "<<r.structuredError
   <<"\ncheckpoint "<<checkpoint.string()<<"\ncheckpoint_sha256 "<<p.isolatedExpectedCheckpointDigest
   <<"\nstart_step "<<start.acceptedSteps<<"\nstart_time_s "<<start.simulationTimeS<<"\nend_time_s "<<r.simulatedTimeS
-  <<"\nwindow_s "<<window<<"\nviscous_stencil "<<(compact?"r271-compact-mac-v1":"legacy")
+  <<"\nwindow_s "<<window<<"\nviscous_stencil "<<(compact?"r271-compact-mac-v2":"legacy")
   <<"\nfloor_emissivity "<<(floor?floor:"unset")<<"\ncase_record_id "<<r.caseRecordId
   <<"\nwall_s "<<std::chrono::duration<double>(std::chrono::steady_clock::now()-wall).count()<<'\n';
  return r.succeeded&&r.simulatedTimeS>=start.simulationTimeS+window?0:5;
