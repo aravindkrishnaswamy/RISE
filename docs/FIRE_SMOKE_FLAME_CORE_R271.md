@@ -299,13 +299,13 @@ The owner reviewed §10's patch; it is committed as `7aa9953bf` (opt-in, off by 
 | Core w rms, wavelength > 0.24 m, z = 0.29 m (m/s) | 0.193 | 0.136 | 0.137 | 0.294 |
 | Mean inflow at R = 0.20 m, z = 0.29 m (kg/s per m) | 0.155 | 0.116 | 0.115 | 0.173 |
 
-r270's same-window values (frames 73–136) are within 10% of its full-window values throughout.
+r270's same-window values (frames 73–136) are close to its full-window values: within about 10% for the rms and inflow, and up to 30% for the small turbulent fluxes at R ≥ 0.15 m.
 
 **Result.**
-- **FDS moves heat out of the core by turbulent eddies.** At R = 0.10 m it carries 10–13 kW/m, against 0.1–0.3 kW/m modelled (§9). r270 carries 80–90% of that; the compact arms carry 25–40%, and at R = 0.15–0.20 m only 5–15%. This is the missing near-field mixing. The scalar patch could not touch it.
-- **The eddies are too weak at every scale, from the burner up.** At 0.05 m, the rms w at the burner edge is 0.23 m/s in r270 and 0.13 in the compact arms, against 0.45 in FDS. Large eddies (wavelength over 0.24 m) in the core are 60–65% of FDS's in r270 and 40–50% in the compact arms. So the compact stencil did more than remove grid-scale noise: the whole fluctuation field weakened.
+- **FDS moves heat out of the core by turbulent eddies.** At R = 0.10 m it carries 10–13 kW/m, against 0.1–0.3 kW/m modelled (§9). r270 carries 65–95% of FDS's turbulent flux; the compact arms carry 25–40% at R = 0.10 m and only 5–15% at R = 0.15–0.20 m. This is the missing near-field mixing. The scalar patch could not touch it.
+- **The eddies are too weak at every scale, from the burner up.** At 0.05 m, the rms w at the burner edge is 0.23 m/s in r270 and 0.13 in the compact arms, against 0.45 in FDS. Large eddies (wavelength over 0.24 m) in the core are about two-thirds of FDS's in r270 and 37–50% in the compact arms. So the compact stencil did more than remove grid-scale noise: the whole fluctuation field weakened.
 - **Even r270 is short of FDS here.** Its rms u_r matches FDS, partly through grid noise (§5), but its w fluctuations near the base are only about half. r270's turbulent heat flux looks right because of that noise.
-- **Mean inflow follows.** It is within about 10% of FDS in r270, and 20–35% low in the compact arms at R ≥ 0.15 m.
+- **Mean inflow follows.** It is 10–20% below FDS in r270, and about 30% below in the compact arms at R ≥ 0.15 m.
 
 **Reading.**
 - The flame core's under-entrainment is a fluctuation deficit. The plume leaves the burner too steady, and the eddies that should exchange heat and air grow too slowly.
