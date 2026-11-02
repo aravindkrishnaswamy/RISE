@@ -363,10 +363,45 @@ These are first-interval rates (0.06–0.07 s), before the array breaks up. Afte
 
 **Environment note.** Homebrew moved OpenVDB from 13.1 to 14.0 on 2026-11-02 at 06:18. The committed production objects were built against 13.1, and `bin/tests/FireSequenceTest` no longer loads (`libopenvdb.13.1.dylib` not found). The test tools pin the 13.1 copy that is still in the Cellar. The main build needs either a rebuild against 14.0 or 13.1 pinned in homebrew; that is the owner's decision.
 
+## 13. Heat release becomes expansion correctly; the base heat release is too steady (read-only, 2026-11-02)
+
+**OpenVDB rebuild.** Done before this check, as the owner asked. RISE now builds and links against OpenVDB 14.0.
+- **Source change:** one OpenVDB 14 API change in `src/Library/Utilities/FireSequence.cpp`. `io::Stream(is, delayLoad)` lost its flag, and a stream is always read in full, which is what `false` asked for. The fix is version-guarded, so 13.1 builds still compile.
+- **Rebuilt objects:** only `FireSequence.o` and `tests/FireSequenceTest.o` carried 13.1 symbols. They were rebuilt, and every binary relinked.
+- **Checks:** `make all` and `make tests` are warning-free, and every binary in `bin/` and `bin/tests/` links `libopenvdb.14.0`. The default `FireSequenceTest` suite passes its VDB frame load and preflight gates, with only its one known failure (the r136 gate, listed below).
+
+**Method** (`tools/fire/r271/expansion_cv.py`; `docs/data/fire_r271/expansion_cv.txt`).
+- Control volumes are cylinders r < R from the floor to z_top. The outflow Q(t) is the flux through the top and side, from cell-centred velocities, computed the same way for both codes. It is compared with the heat released inside, S(t).
+- For FDS, the direct integral of its `DIVERGENCE` slice checks the method.
+- Data: r270's 235 frames and FDS r263's slices over the same window.
+
+| R = 0.15 m, z_top (m) | 0.06 | 0.12 | 0.31 | 0.49 |
+|---|---|---|---|---|
+| Mean expansion per watt (10⁻⁶ m³/J): RISE / FDS (DIVERGENCE) | 2.43 / 2.08 | 2.25 / 2.07 | 2.12 / 2.04 | 2.06 / 2.05 |
+| Fluctuation slope dQ/dS (10⁻⁶ m³/J): RISE / FDS (DIVERGENCE) | 2.85 / 2.60 | 2.41 / 2.27 | 1.86 / 1.73 | 1.89 / 1.78 |
+| corr(Q, S) at zero lag: RISE / FDS from velocities / FDS DIVERGENCE | 0.84 / 0.75 / 0.95 | 0.82 / 0.55 / 0.93 | 0.84 / 0.42 / 0.97 | 0.84 / 0.56 / 0.98 |
+| rms of heat release in V, % of mean: RISE / FDS | 2.6 / 3.5 | 2.7 / 3.3 | 3.7 / 5.2 | 4.7 / 7.0 |
+
+R = 0.20 and 0.30 m give the same picture. The ideal-gas value R/(p c_p) is about 2.4×10⁻⁶ m³/J, less what radiation removes.
+
+**Result.**
+- **The heat-release-to-expansion step is right.** RISE's mean and fluctuating expansion per watt match FDS's own divergence within 5–17%. The response is immediate: in both codes the correlation peaks at zero lag, with no smoothing at 0.0625 s.
+- **The heat release itself is too steady on the large scale.** Integrated over the base volumes, RISE's heat release fluctuates 25–35% less than FDS's, although cell by cell its fluctuations match FDS (§12). So RISE's heat-release fluctuations are less coherent: they cancel over the volume instead of pulsing together. This matches the weaker puffing band (§12) and the weaker large eddies (§11).
+- So the chain is: weaker coherent heat-release oscillation at the base, which drives less large-scale velocity, which gives weaker eddies, less entrainment and a hot, long core. The open question is why the heat release does not pulse together.
+
+**A modelling difference that bears on it (code reading).** RISE's mixing time (`ComputeMixingTimeS`, `FireProductionSourceKernel.h`) is not FDS's (`fire.f90:809–821`, FDS r263 source on disk). Both define k_sgs = (ν_t/(0.1Δ))².
+
+| | FDS | RISE |
+|---|---|---|
+| τ_u | 0.4 Δ / √(2/3 k_sgs) | Δ / √(2 k_sgs): **44% longer** |
+| τ_g | √(2Δ/g), full gravity: 0.079 s here | √(2Δ/g′), reduced gravity: shorter in hot gas, longer near ambient density |
+| τ_d | Δ²/D_fuel, molecular | Δ²/(D_mol + D_sgs): shorter |
+| Lower bound | max(τ_chem = 10⁻⁵ s, Δ/100 m/s = 3×10⁻⁴ s) | τ_chem = 10⁻⁴ s |
+
+The design (`FIRE_SMOKE_DESIGN.md` §3.3, line 486) chose these forms on purpose. They change how fast, and where, mixed fuel burns as the flow changes. That makes them the first candidate for the less coherent, steadier heat release. This has not yet been measured.
+
 ## Next (owner decisions)
 
-1. **Fix the OpenVDB breakage first** (§12): rebuild RISE against OpenVDB 14.0, or pin 13.1 in homebrew. Until then the main test binary does not start, and a `brew cleanup` would remove the 13.1 copy the r271 tools use.
-2. **Look at how heat release drives velocity at the burner.** The candidates are the divergence constraint (how and when the heat-release source enters the projection) and the base flame structure (the burner inflow and the first cells' heat release).
-   - Read-only on retained checkpoints: compare RISE's applied divergence target with ∇·u and with the heat release, cell by cell, at the base. Also compare FDS's `DIVERGENCE` slices with its HRRPUV.
-   - If that shows a lag or smoothing, a small operator test with a pulsed heat source in still air would measure the velocity response directly. That is a new run and needs approval.
+1. **Size the mixing-time difference, read-only.** On retained r270 checkpoints, compute τ_mix cell by cell at the base under both RISE's and FDS's formulas. Report which term is active where, and how much faster or slower each formula burns the same mixed state.
+2. **If the difference is large:** an A/B with FDS's mixing-time formula under an opt-in switch, 4 s from r270 as in §§8 and 10. That is a production solver change plus a run, so it needs owner review and approval.
 3. **Option, from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.

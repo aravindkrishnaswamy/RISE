@@ -49,15 +49,10 @@ compile_=compile_.replace(' -c ',f' -I{ROOT}/tests -DR271_HARNESS_SOURCE=\\"{har
 assert str(obj) in compile_
 link=link.replace(' -o ../../../bin/tests/FireSequenceTest ',' -o '+str(drv)+' ').replace(' ../../../tests/FireSequenceTest.o ',' '+str(obj)+' ')
 assert str(obj) in link
-# Homebrew moved openvdb to 14.0 on 2026-11-02; the production objects were built against 13.1, so pin it
-# (headers ahead of the /opt/homebrew/include system dir, which now links openvdb 14; library by path).
-VDB='/opt/homebrew/Cellar/openvdb/13.1.0';assert Path(VDB).is_dir(),'openvdb 13.1 no longer installed'
-compile_=compile_.replace('/opt/homebrew/opt/openvdb',VDB).replace(' -isystem /opt/homebrew/include ',f' -isystem {VDB}/include -isystem /opt/homebrew/include ',1);assert compile_.count(VDB+'/include')>=2;link=link.replace('/opt/homebrew/opt/openvdb',VDB).replace(' -lopenvdb ',f' {VDB}/lib/libopenvdb.13.1.dylib ')
+# (The 2026-11-02 runs pinned openvdb 13.1 here while the production objects still used it; RISE now builds
+# against 14.0, so the make command lines are used as they are.)
 (OUT/f'build_{SRC}.sh').write_text('set -e\ncd '+shlex.quote(str(make))+'\n'+compile_+'\n'+link+'\n')
 with (OUT/f'build_{SRC}.log').open('w') as log:subprocess.run(['sh',str(OUT/f'build_{SRC}.sh')],stdout=log,stderr=subprocess.STDOUT,check=True)
-# The 13.1 dylib's install name points at the moved opt/ link; reference the Cellar copy (caffeinate drops DYLD_*).
-subprocess.run(['install_name_tool','-change','/opt/homebrew/opt/openvdb/lib/libopenvdb.13.1.dylib',VDB+'/lib/libopenvdb.13.1.dylib',str(drv)],check=True,capture_output=True)
-subprocess.run(['codesign','-f','-s','-',str(drv)],check=True,capture_output=True)
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 (OUT/f'build_manifest_{SRC}.json').write_text(json.dumps({'production_sources_rewritten':False,'git_head':subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip(),
  'git_dirty':subprocess.check_output(['git','-C',str(ROOT),'status','--porcelain','--','src','tests'],text=True).strip()!='',
