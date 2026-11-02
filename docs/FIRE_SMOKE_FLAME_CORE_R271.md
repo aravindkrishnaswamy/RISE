@@ -400,8 +400,47 @@ R = 0.20 and 0.30 m give the same picture. The ideal-gas value R/(p c_p) is abou
 
 The design (`FIRE_SMOKE_DESIGN.md` §3.3, line 486) chose these forms on purpose. They change how fast, and where, mixed fuel burns as the flow changes. That makes them the first candidate for the less coherent, steadier heat release. This has not yet been measured.
 
+## 14. Mixing time: RISE burns at the buoyancy rate, FDS at the turbulence rate (2026-11-02)
+
+The owner asked for the read-only sizing, and for the A/B to be prepared if the difference was large.
+
+**Sizing** (`tools/fire/r271/mixing_time.cpp`; `docs/data/fire_r271/mixing_time_r270_states.txt`).
+- **Method:** RISE's τ_mix comes from `ComputeMixingTimeS` on exactly the transport the run used. The tool checks that it reproduces it. FDS's formula (`fire.f90:809–821`) is applied to the same states.
+- **Data:** 8 retained r270 checkpoints, 14.98–18.47 s, all ignition-eligible cells.
+- **Measure:** the reactant-limited extent per step, (1 − e^(−Δt/τ)) min(ρY_F, ρY_O₂/s), the form RISE's source kernel uses.
+
+| band (m) | extent, FDS formula / RISE | RISE: share under τ_u / τ_g | FDS formula: share under τ_u / τ_g | mean τ, RISE / FDS (s) |
+|---|---|---|---|---|
+| 0–0.06 | 1.03 | 0.02 / 0.98 | 0.76 / 0.24 | 0.056 / 0.055 |
+| 0.06–0.12 | 1.03 | 0.03 / 0.97 | 0.91 / 0.09 | 0.047 / 0.046 |
+| 0.12–0.21 | 1.09 | 0.08 / 0.92 | 0.96 / 0.04 | 0.044 / 0.041 |
+| 0.21–0.31 | 1.07 | 0.08 / 0.92 | 0.97 / 0.03 | 0.044 / 0.041 |
+| 0.31–0.49 | 1.21 | 0.21 / 0.79 | 0.99 / 0.01 | 0.044 / 0.037 |
+| 0.49–1.00 | 1.33 | 0.48 / 0.52 | 0.99 / 0.01 | 0.049 / 0.037 |
+
+**Result.**
+- **The mean burning rate is almost the same:** FDS's formula is 3–9% faster below 0.31 m, and 21–33% faster above. That is why RISE's combustion heights match FDS's.
+- **The two formulas are controlled by different terms.** In RISE, 92–98% of the base burning is set by the buoyancy time √(2Δ/g′). That depends only on the local density, not on the turbulence. Under FDS's formula, 76–97% is set by the turbulence time τ_u ∝ Δ²/ν_t, so the burning rate rises and falls with the local eddies.
+- That is a direct mechanism for §13's finding. In FDS the heat release follows the large eddies and reinforces them, so it pulses together. In RISE it mostly ignores them, so it fluctuates cell by cell without pulsing together.
+- The cause is two choices in RISE's design formula: the reduced gravity in τ_g makes it fast in hot gas, and τ_u = Δ/√(2k) without FDS's 0.4/√(2/3) factor makes it 44% slower.
+
+**Prepared change** (uncommitted, awaiting owner review; `docs/data/fire_r271/fds_mixing_time.patch`, SHA-256 `3c1448ef…`).
+- **The switch:** opt-in `RISE_FIRE_FDS_MIXING_TIME=1`, read once. In `ComputeMixingTimeS` it uses FDS's LES formula: molecular τ_d, k_sgs from the total viscosity with C = 0.1, τ_u = 0.4Δ/√(2k/3), τ_g with full gravity, and the lower bound max(τ_chem, Δ/100 m/s). The DNS path is unchanged.
+- **Recording:** the launch receipt records `mixing_time r271-fds-v1`, and the manifest rebuild refuses a mismatch. `ab_driver.cpp` logs and records the setting.
+- **Checks:**
+  - With the switch on, the production function reproduces the independent FDS formula exactly in all 10,960 eligible base cells of the 8 states.
+  - Switch off: 28 steps from r270 step 9223 reproduce r270's frame 73 value for value in every grid (`tools/fire/r271/vdb_compare.cpp`). The file bytes differ only because OpenVDB 14 encodes differently.
+  - Switch on: 28 steps clean.
+  - Builds warning-free. Fire test failures are unchanged (1/1/12/13), and `FireParcelIgnitionTest`, which includes the header, passes.
+- **Independent review:** no P1.
+  - P2, addressed: keep the compact-stencil setting the same in both arms, because the mixing-time ν_t follows it. `run_ab.sh` now takes both switches explicitly.
+  - P3, minor: the switch changes only τ_mix, not FDS's whole combustion scheme; τ_d uses the mixture thermal diffusivity, which is close to methane's and never the active term; and two diagnostic tools do not log the switch.
+  - The reviewer's main caveat: the mean-rate change is small, so the A/B result may sit near the window-to-window spread. The expected effect is in the fluctuations, not the means.
+
 ## Next (owner decisions)
 
-1. **Size the mixing-time difference, read-only.** On retained r270 checkpoints, compute τ_mix cell by cell at the base under both RISE's and FDS's formulas. Report which term is active where, and how much faster or slower each formula burns the same mixed state.
-2. **If the difference is large:** an A/B with FDS's mixing-time formula under an opt-in switch, 4 s from r270 as in §§8 and 10. That is a production solver change plus a run, so it needs owner review and approval.
+1. **Review the FDS mixing-time patch** (§14).
+2. **Run the A/B:** one arm, `run_ab.sh ab_fdsmix_floor_on ab_build_v3 0 1`, with the compact stencil off and FDS mixing on. It runs 4 s from r270 step 9223, about 4.7 h, against r270's own frames 73–136, with windows w0 and w2 for spread.
+   - Judge it first on §13's measure, the coherent base heat-release fluctuation (18–33% short of FDS), and on §12's burner-edge velocity response. Then judge it on the flame measures.
+   - If the result is near the noise, a second 4 s window, or the same switch from a different start, would separate signal from spread.
 3. **Option, from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.
