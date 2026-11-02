@@ -200,7 +200,42 @@ The owner approved the patch (committed as `5cdace134`) and the run.
 - So the velocity stencil is not, by itself, the cause of the under-entrainment, and on its own it moves the flame further from FDS.
 - **Decision: not adopted.** The patch stays opt-in and off by default.
 
+## 9. How RISE mixes heat and species (read-only, 2026-11-01)
+
+**Formulation.** RISE's turbulent heat and species diffusivity comes from the scalar kernel `evaluate_resident_transport` (`FireProductionAdvectionMac.mm`):
+- D = D_mol + ν_t/Sc_t and k = k_mol + ρ c_p ν_t/Pr_t, with Pr_t = Sc_t = 0.7 and Vreman C_v = 0.07. FDS r263 uses the same values (`PR=0.7, SC=0.7, C_VREMAN=0.07`).
+- There are two differences in discretisation:
+  1. **ν_t is recomputed in the scalar kernel** from 2Δ central differences of cell-centred velocity, for every gradient component. FDS reuses the momentum μ_t: `RHO_D_TURB=(MU-MU_DNS)/SC_T`, `KP+=(MU-MU_DNS)*CP/PR_T` (`divg.f90:122`, `:476`). That μ_t comes from compact diagonal gradients. The r271 compact patch changed only the momentum ν_t, so in the A/B the scalars kept the wide-stencil ν_t.
+  2. **Face average.** RISE uses the harmonic mean of the two cells' ρD and k. FDS uses the arithmetic mean (`divg.f90:175`, `:516`).
+
+**Size on r270 states** (`tools/fire/r271/scalar_mix.cpp`, 8 retained checkpoints, 14.98–18.47 s; `docs/data/fire_r271/scalar_mix_r270_states.txt`):
+- The FDS-style compact diagonal raises ν_t by 30–80%.
+- The arithmetic face mean adds only about 6% to the lateral diffusive heat flux. Both together add about 40%.
+- **Below 0.5 m, the modelled diffusion is the only way heat leaves the core.** Through cylinders of r = 0.10–0.15 m, the resolved ρc_p u_r θ is net inward. The SGS + molecular flux is 0.1–0.34 kW outward.
+- **Above 0.7 m, resolved transport dominates:** 0.6–1.4 kW, against 0.1–0.2 kW modelled.
+
+**Compared with FDS's actual ν_t** (FDS `VISCOSITY − MOLECULAR VISCOSITY`, divided by density; `tools/fire/r271/fds_nut.py`) and with RISE's scalar ν_t from frames (`tools/fire/r271/frame_nut.cpp`). The frame method reproduces the checkpoint values within 3%. Units are 10⁻³ m²/s.
+
+| band (m) | ring | FDS r263 | r270 | compact A/B |
+|---|---|---|---|---|
+| 0.06–0.16 | r < 0.1 m | 0.71 | 0.82 | **0.49** |
+| 0.24–0.34 | r < 0.1 m | 0.98 | 0.87 | **0.42** |
+| 0.45–0.55 | r < 0.1 m | 1.22 | 1.00 | **0.59** |
+| 0.70–0.80 | r < 0.1 m | 1.29 | 1.08 | **0.80** |
+| 0.24–0.34 | 0.1–0.2 m | 0.34 | 0.35 | **0.16** |
+| 0.70–0.80 | 0.1–0.2 m | 0.66 | 0.60 | **0.31** |
+| 0.70–0.80 | 0.2–0.3 m | 0.19 | 0.23 | **0.10** |
+
+**Result.**
+- **In r270, RISE's scalar ν_t is about FDS's.** It runs up to 20% higher at the base and in the outer rings, and up to 20% lower on the axis from 0.3 to 1 m. It matches only because the undamped grid-scale velocity inflates the wide-stencil gradients.
+- **In the compact A/B, the velocity is smooth and the wide stencil no longer sees the shear.** The scalar ν_t falls to 40–55% of FDS's in the near field.
+- So the A/B ran FDS-like momentum mixing with heat and species mixing at about half of FDS. That is consistent with §8: temperature grid noise doubled, and the core was hotter, narrower and longer.
+- The fix that matches FDS is the one FDS uses: **heat and species take the same eddy viscosity as momentum**, from compact gradients.
+
 ## Next (owner decisions)
 
-1. **Scalar side of the same discretisation.** Check how RISE's turbulent heat and species diffusivity is formed, compared with FDS (μ_t/Sc_t with compact face gradients). If it uses the same cell-centred stencil, extend the compact treatment to scalars and repeat this 4 s A/B: the harness is in place, and each arm takes about 4.7 h. The doubled temperature grid noise in §8 points there.
-2. **Possible follow-up from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor and separate.
+1. **Make the scalar ν_t match the momentum ν_t** under the same opt-in switch. In `evaluate_resident_transport`, take the diagonal gradients from the face velocities already bound there: (u_{i+1/2} − u_{i−1/2})/Δ, as the compact momentum kernel does. Off-diagonals stay as they are. This is a production solver change, so it needs owner review.
+   - Verify it as before: Fourier/bounded checks, switch-off byte-identical, a 25-step smoke run and an independent review.
+   - Then repeat the 4 s A/B with the existing harness: one arm, about 4.7 h, compared with r270 and with §8's compact arm.
+   - **Option:** also switch the face mean to arithmetic, as FDS does. It is about a 6% effect and could go in the same arm or be left out to keep attribution clean.
+2. **Possible follow-up from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.
