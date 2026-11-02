@@ -385,8 +385,8 @@ These are first-interval rates (0.06–0.07 s), before the array breaks up. Afte
 R = 0.20 and 0.30 m give the same picture. The ideal-gas value R/(p c_p) is about 2.4×10⁻⁶ m³/J, less what radiation removes.
 
 **Result.**
-- **The heat-release-to-expansion step is right.** RISE's mean and fluctuating expansion per watt match FDS's own divergence within 5–17%. The response is immediate: in both codes the correlation peaks at zero lag, with no smoothing at 0.0625 s.
-- **The heat release itself is too steady on the large scale.** Integrated over the base volumes, RISE's heat release fluctuates 25–35% less than FDS's, although cell by cell its fluctuations match FDS (§12). So RISE's heat-release fluctuations are less coherent: they cancel over the volume instead of pulsing together. This matches the weaker puffing band (§12) and the weaker large eddies (§11).
+- **The heat-release-to-expansion step is right.** RISE's mean and fluctuating expansion per watt match FDS's own divergence within 1–17% (17% only in the lowest 6 cm). The response is immediate: in both codes the correlation peaks at zero lag, with no smoothing at 0.0625 s.
+- **The heat release itself is too steady on the large scale.** Integrated over the base volumes, RISE's heat release fluctuates 18–33% less than FDS's, although cell by cell its fluctuations match FDS (§12). So RISE's heat-release fluctuations are less coherent: they cancel over the volume instead of pulsing together. This matches the weaker puffing band (§12) and the weaker large eddies (§11).
 - So the chain is: weaker coherent heat-release oscillation at the base, which drives less large-scale velocity, which gives weaker eddies, less entrainment and a hot, long core. The open question is why the heat release does not pulse together.
 
 **A modelling difference that bears on it (code reading).** RISE's mixing time (`ComputeMixingTimeS`, `FireProductionSourceKernel.h`) is not FDS's (`fire.f90:809–821`, FDS r263 source on disk). Both define k_sgs = (ν_t/(0.1Δ))².
