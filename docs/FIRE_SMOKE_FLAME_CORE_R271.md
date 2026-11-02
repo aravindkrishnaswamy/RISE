@@ -271,9 +271,52 @@ In 1 s blocks the 90% height goes 0.64 → 0.76 → 0.86 → 0.86 m (§8's arm: 
 - So the under-entrainment with the compact stencil is a resolved-flow problem: too little resolved radial inflow and turbulent exchange near the burner, once the 2Δ noise that was standing in for it is gone.
 - The scalar change is FDS-consistent and cheap. It is worth keeping inside the opt-in path, but it does not make the compact stencil adoptable.
 
+## 11. Where the near-field mixing is lost (read-only, 2026-11-02)
+
+The owner reviewed §10's patch; it is committed as `7aa9953bf` (opt-in, off by default).
+
+**Method.** `tools/fire/r271/near_planes.cpp` dumps T, u, v, w on the lowest 18 cell layers (to 0.54 m) of retained frames: r270 (235 frames, 10.47–25.09 s, the FDS window), and frames 73–136 of r270 and both compact arms. `tools/fire/r271/near_field.py` compares them with FDS r263's slices at the same cell-centred heights and the same 0.0625 s cadence (235 samples). On cylinders r = R it gives, per metre of height, the mean inflow −2πR⟨ρu_r⟩, the resolved radial heat flux 2πR c_p⟨ρu_rθ⟩, split into the mean-flow part ⟨ρ⟩⟨u_r⟩⟨θ⟩ and the turbulent rest, and the fluctuation rms. Data: `docs/data/fire_r271/near_field.txt`.
+
+**Turbulent heat flux out of the core** (kW per m of height; the mean-flow part is inward here):
+
+| R (m) | z (m) | r270 | compact | compact + scalar | FDS r263 |
+|---|---|---|---|---|---|
+| 0.10 | 0.11 | 9.8 | 2.9 | 2.9 | 10.3 |
+| 0.10 | 0.29 | 8.6 | 2.9 | 3.0 | 10.7 |
+| 0.10 | 0.50 | 9.6 | 5.3 | 5.5 | 12.9 |
+| 0.15 | 0.29 | 2.6 | 0.29 | 0.25 | 3.3 |
+| 0.15 | 0.50 | 4.7 | 0.82 | 0.73 | 7.4 |
+| 0.20 | 0.50 | 0.96 | 0.091 | 0.074 | 1.41 |
+
+**Fluctuations and inflow:**
+
+| | r270 | compact | compact + scalar | FDS r263 |
+|---|---|---|---|---|
+| rms u_r at R = 0.10 m, z = 0.29 m (m/s) | 0.29 | 0.14 | 0.14 | 0.34 |
+| rms w at R = 0.10 m, z = 0.05 m (m/s) | 0.23 | 0.14 | 0.13 | 0.45 |
+| rms w at R = 0.10 m, z = 0.29 m (m/s) | 0.50 | 0.38 | 0.37 | 0.75 |
+| Core w rms, wavelength > 0.24 m, z = 0.11 m (m/s) | 0.081 | 0.059 | 0.059 | 0.132 |
+| Core w rms, wavelength > 0.24 m, z = 0.29 m (m/s) | 0.193 | 0.136 | 0.137 | 0.294 |
+| Mean inflow at R = 0.20 m, z = 0.29 m (kg/s per m) | 0.155 | 0.116 | 0.115 | 0.173 |
+
+r270's same-window values (frames 73–136) are within 10% of its full-window values throughout.
+
+**Result.**
+- **FDS moves heat out of the core by turbulent eddies.** At R = 0.10 m it carries 10–13 kW/m, against 0.1–0.3 kW/m modelled (§9). r270 carries 80–90% of that; the compact arms carry 25–40%, and at R = 0.15–0.20 m only 5–15%. This is the missing near-field mixing. The scalar patch could not touch it.
+- **The eddies are too weak at every scale, from the burner up.** At 0.05 m, the rms w at the burner edge is 0.23 m/s in r270 and 0.13 in the compact arms, against 0.45 in FDS. Large eddies (wavelength over 0.24 m) in the core are 60–65% of FDS's in r270 and 40–50% in the compact arms. So the compact stencil did more than remove grid-scale noise: the whole fluctuation field weakened.
+- **Even r270 is short of FDS here.** Its rms u_r matches FDS, partly through grid noise (§5), but its w fluctuations near the base are only about half. r270's turbulent heat flux looks right because of that noise.
+- **Mean inflow follows.** It is within about 10% of FDS in r270, and 20–35% low in the compact arms at R ≥ 0.15 m.
+
+**Reading.**
+- The flame core's under-entrainment is a fluctuation deficit. The plume leaves the burner too steady, and the eddies that should exchange heat and air grow too slowly.
+- It is not the SGS model or its stencil (§§8–10), not the boundaries (§6) and not momentum advection, which is centred since r264. The rest of the step is still a candidate:
+  - **damping of resolved velocity** by the projected-Heun step, the projection or the source/forcing split;
+  - **weak forcing:** the burner-edge shear layer and the flame's density gradient seed the instability, and MC/FCT scalar transport smooths the density field that drives it;
+  - **heat release that is too smooth in time,** which damps puffing.
+- §5's grid-scale noise and this deficit are two symptoms. The noise partly stood in for the missing eddies; fixing the noise alone exposed them.
+
 ## Next (owner decisions)
 
-1. **Review the scalar ν_t patch** (§10). Recommendation: commit it under the opt-in switch, since it makes that path match FDS, but keep the switch off by default. Alternatively drop it; production defaults are unaffected either way.
-2. **Find where resolved near-field mixing is lost, read-only.** Compare RISE (r270 and the compact arms) with FDS r263 below 0.5 m: mean and fluctuating radial inflow u_r through r = 0.1–0.3 m, the resolved turbulent heat flux ⟨u_r′θ′⟩, and the burner-edge shear-layer growth. This uses existing frames and FDS slices; no new runs.
-3. **Option:** switch the face mean to arithmetic, as FDS does (§9, about 6% of the modelled flux). Given §10 it is unlikely to matter; not recommended on its own.
-4. **Possible follow-up from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.
+1. **Find what damps or under-forces the resolved eddies.** First, read-only on existing r270 frames and FDS slices: fluctuation growth with height in the burner-edge shear layer, and the correlation of density and heat-release fluctuations with w′. That separates weak forcing (low θ′ and q′ at the base) from damping (normal forcing, slow growth).
+2. **If it points at damping:** a small, cheap production-operator test outside the fire case. A decaying Taylor–Green vortex or a temporal shear layer on a small grid, compared with the analytic decay rate. This is a new run, so it needs approval; it would take minutes, not hours.
+3. **Option, from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.
