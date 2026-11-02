@@ -940,7 +940,12 @@ namespace RISE
 				verifiedInput.clear();
 				verifiedInput.seekg(0,std::ios::beg);
 				if( !verifiedInput ) return Fail(error,"fire sequence verified frame stream is not seekable");
+#if OPENVDB_LIBRARY_MAJOR_VERSION_NUMBER >= 14
+				// OpenVDB 14 dropped the delayLoad flag; a stream is always read in full.
+				openvdb::io::Stream stream(verifiedInput);
+#else
 				openvdb::io::Stream stream(verifiedInput,false);
+#endif
 				openvdb::GridPtrVecPtr grids = stream.getGrids();
 				std::set<std::string> fileNames;
 				std::map<std::string,openvdb::GridBase::Ptr> byName;
