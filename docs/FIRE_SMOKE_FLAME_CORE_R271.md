@@ -424,7 +424,7 @@ The owner asked for the read-only sizing, and for the A/B to be prepared if the 
 - That is a direct mechanism for §13's finding. In FDS the heat release follows the large eddies and reinforces them, so it pulses together. In RISE it mostly ignores them, so it fluctuates cell by cell without pulsing together.
 - The cause is two choices in RISE's design formula: the reduced gravity in τ_g makes it fast in hot gas, and τ_u = Δ/√(2k) without FDS's 0.4/√(2/3) factor makes it 44% slower.
 
-**Prepared change** (uncommitted, awaiting owner review; `docs/data/fire_r271/fds_mixing_time.patch`, SHA-256 `3c1448ef…`).
+**Prepared change** (committed opt-in after owner review, `fa316ab86`; `docs/data/fire_r271/fds_mixing_time.patch`, SHA-256 `3c1448ef…`).
 - **The switch:** opt-in `RISE_FIRE_FDS_MIXING_TIME=1`, read once. In `ComputeMixingTimeS` it uses FDS's LES formula: molecular τ_d, k_sgs from the total viscosity with C = 0.1, τ_u = 0.4Δ/√(2k/3), τ_g with full gravity, and the lower bound max(τ_chem, Δ/100 m/s). The DNS path is unchanged.
 - **Recording:** the launch receipt records `mixing_time r271-fds-v1`, and the manifest rebuild refuses a mismatch. `ab_driver.cpp` logs and records the setting.
 - **Checks:**
@@ -439,8 +439,8 @@ The owner asked for the read-only sizing, and for the A/B to be prepared if the 
 
 ## Next (owner decisions)
 
-1. **Review the FDS mixing-time patch** (§14).
-2. **Run the A/B:** one arm, `run_ab.sh ab_fdsmix_floor_on ab_build_v3 0 1`, with the compact stencil off and FDS mixing on. It runs 4 s from r270 step 9223, about 4.7 h, against r270's own frames 73–136, with windows w0 and w2 for spread.
+1. **FDS mixing-time patch:** reviewed by the owner and committed opt-in (`fa316ab86`, 2026-11-02).
+2. **A/B running** (started 2026-11-03 01:12 UTC): one arm, `run_ab.sh ab_fdsmix_floor_on ab_build_v3 0 1`, with the compact stencil off and FDS mixing on. It runs 4 s from r270 step 9223, about 4.7 h, against r270's own frames 73–136, with windows w0 and w2 for spread.
    - Judge it first on §13's measure, the coherent base heat-release fluctuation (18–33% short of FDS), and on §12's burner-edge velocity response. Then judge it on the flame measures.
    - If the result is near the noise, a second 4 s window, or the same switch from a different start, would separate signal from spread.
 3. **Option, from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.
