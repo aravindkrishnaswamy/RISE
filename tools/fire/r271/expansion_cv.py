@@ -13,7 +13,7 @@ def fds_all():
         q=re.search(r"QUANTITY='([^']+)'",l).group(1);m=re.search(r"PBZ=([0-9.eE+-]+)",l)
         if m:idx.setdefault((q,int(round(float(m.group(1))/DX-.5))),n)
     Q=['U-VELOCITY','V-VELOCITY','W-VELOCITY','HRRPUV','DIVERGENCE']
-    out=[np.stack([read_slice(RUN/f'{P}_1_{idx[(q,k)]}.sf') for k in range(NZ)],1) for q in Q]
+    out=fds_layers(idx,Q)
     out[3]=out[3]*1e3;return out
 a=np.transpose(np.fromfile(W/'r270q.bin',dtype='<f4').reshape(235,NZ,5,N,N),(0,1,2,4,3)).astype(np.float64)
 rise=dict(u=a[:,:,1],v=a[:,:,2],w=a[:,:,3],q=a[:,:,4],div=None);del a

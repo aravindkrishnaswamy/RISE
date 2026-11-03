@@ -22,22 +22,48 @@ def record(f):
     b=f.read(4)
     if not b:return None
     n=struct.unpack('<i',b)[0];d=f.read(n);f.read(4);return d
-def read_slice(p):
+def read_slice(p,full=False):
     with p.open('rb') as f:
         for _ in range(4):record(f)
         ts=[];fs=[]
         while True:
             t=record(f)
             if t is None:break
-            ts.append(struct.unpack('<f',t)[0]);fs.append(np.frombuffer(record(f),dtype='<f4').reshape((70,70),order='F')[1:,1:].copy())
+            a=np.frombuffer(record(f),dtype='<f4').reshape((70,70),order='F');ts.append(struct.unpack('<f',t)[0]);fs.append(a.copy() if full else a[1:,1:].copy())
     t=np.array(ts);s=(t>=START)&(t<=END);return np.array(fs,dtype=np.float64)[s]
+# FDS CELL_CENTERED velocity slices are raw staggered face values (dump.f90 GAS_PHASE_OUTPUT: U on the cell's +x face, V on
+# +y, W on the top face; index 0 of the 70x70 array is the domain's -x/-y boundary face), while RISE frames hold cell
+# averages of two faces. With R271_FDS_CELL_AVERAGE=1, fds_layers returns FDS velocities as the same two-face cell
+# averages. The bottom face of layer 0 is recovered exactly from the DIVERGENCE slice (the face divergence reproduces it
+# to round-off). Default off, so committed outputs reproduce.
+CELL_AVERAGE=__import__('os').environ.get('R271_FDS_CELL_AVERAGE')=='1'
+def fds_layers(idx,Q):
+    if CELL_AVERAGE:print('# FDS velocities converted from face values to cell averages (R271_FDS_CELL_AVERAGE=1)')
+    def get(q,k,full=False):return read_slice(RUN/f'{P}_1_{idx[(q,k)]}.sf',full)
+    out=[]
+    for q in Q:
+        if not CELL_AVERAGE or q not in ('U-VELOCITY','V-VELOCITY','W-VELOCITY'):
+            out.append(np.stack([get(q,k) for k in range(NZ)],1));continue
+        layers=[]
+        for k in range(NZ):
+            if q=='U-VELOCITY':a=get(q,k,True);layers.append(.5*(a[:,1:,1:]+a[:,:-1,1:]))
+            elif q=='V-VELOCITY':a=get(q,k,True);layers.append(.5*(a[:,1:,1:]+a[:,1:,:-1]))
+            else:
+                top=get(q,k)
+                if k:bottom=get(q,k-1)
+                else:
+                    U=get('U-VELOCITY',0,True);Vv=get('V-VELOCITY',0,True)
+                    bottom=top-DX*get('DIVERGENCE',0)+(U[:,1:,1:]-U[:,:-1,1:])+(Vv[:,1:,1:]-Vv[:,1:,:-1])
+                layers.append(.5*(top+bottom))
+        out.append(np.stack(layers,1))
+    return out
 def fds():
     sl=[l for l in (RUN/(P+'.fds')).read_text().splitlines() if l.startswith('&SLCF')];idx={}
     for n,l in enumerate(sl,1):
         q=re.search(r"QUANTITY='([^']+)'",l).group(1);m=re.search(r"PBZ=([0-9.eE+-]+)",l)
         if m:idx.setdefault((q,int(round(float(m.group(1))/DX-.5))),n)
     Q=['TEMPERATURE','U-VELOCITY','V-VELOCITY','W-VELOCITY','DENSITY']
-    out=[np.stack([read_slice(RUN/f'{P}_1_{idx[(q,k)]}.sf') for k in range(NZ)],1) for q in Q]
+    out=fds_layers(idx,Q)
     out[0]=out[0]+273.15;return tuple(out)
 def stats(T,u,v,w,rho):
     th=T-300.;ur=(u*X+v*Y)/np.where(RR>0,RR,1.)

@@ -519,8 +519,66 @@ The differences found are small:
 
 **What it leaves.** The core composition is set by how much rim oxygen survives into the core unburnt. With the burner boundary, the extinction rule and the mixing time ruled out, the remaining difference is the rate at which RISE's rim cells consume the oxygen that reaches them, against what FDS's partially stirred reactor does with the same mixture. FDS mixes only the fraction 1 − e^(−Δt/τ) of the cell each step and burns that fraction to completion, which is the same form as RISE's extent. So the rate difference has to come from the inputs, τ, Δt, or the cell-state history, and the sizing so far does not show it.
 
+## 17. Like-for-like velocities, rim oxygen, and the step back (read-only, 2026-11-03)
+
+The owner asked for §16's next items 1 and 2, then for a step back on what the bigger cause could be.
+
+**1. §11–§13 redone like for like.** `near_field.py`, `forcing_damping.py` and `expansion_cv.py` now read FDS through a shared `fds_layers`. With `R271_FDS_CELL_AVERAGE=1`, it turns FDS's face values into the same two-face cell averages that RISE's frames hold. The layer-0 bottom face is recovered from FDS's DIVERGENCE slice, which the face divergence reproduces exactly (correlation 1.000, zero residual). With the switch off, all three scripts reproduce their committed outputs. Results are in `docs/data/fire_r271/*_cellavg.txt`.
+
+| burner-edge ring 0.06–0.12 m, z (m) | 0.02 | 0.05 | 0.11 | 0.20 | 0.29 | 0.50 |
+|---|---|---|---|---|---|---|
+| rms w, r270 / FDS | 1.13 | 0.82 | 0.74 | 0.73 | 0.73 | 0.75 |
+| TKE, r270 / FDS | 4.9 | 2.0 | 0.92 | 0.71 | 0.66 | 0.64 |
+| corr(w,T), r270 / FDS | 0.15 / 0.45 | 0.51 / 0.78 | 0.75 / 0.80 | 0.77 / 0.80 | 0.77 / 0.81 | 0.79 / 0.82 |
+| buoyancy production g⟨w′T′⟩/T, r270 / FDS | 0.44 | 0.47 | 0.65 | 0.67 | 0.66 | 0.68 |
+
+- **§12 survives, smaller.** The forcing (rms T and q) matches FDS. The velocity response is about 25% weak above 0.1 m, not 40%. Below 0.05 m, RISE's velocity is mostly incoherent: 2–5× FDS's TKE at low correlation with T. The compact stencil removes that noise (§16).
+- **§11 below 0.5 m is only modestly short:**
+  - mean entrainment through r = 0.15–0.20 m: 89–94% of FDS's;
+  - turbulent heat flux out of the core (r = 0.10 m): 74–93%;
+  - rms w: 66–88%;
+  - rms u_r: at or above FDS's.
+- **§13 holds:** FDS's velocity-based expansion gain becomes 2.38 (r270 2.36), and the heat-release fluctuation results are unchanged.
+
+**2. Rim oxygen** (`tools/fire/r271/rim_oxygen.cpp`, 44 r270 states, `rim_oxygen_r270_states.txt`).
+- **The test:** on each retained state, RISE's O₂ consumption rate was set against FDS's reactor applied to the same cell. FDS's reactor mixes 1 − e^(−Δt/τ) of the cell each step and burns it to completion; it uses FDS's τ, its 2.75 ms step, extinction at 1780 K, and treats every fuel-and-oxygen cell as eligible.
+- **Result:** at the rim, below 0.12 m, the ratio FDS/RISE is 0.99–1.03.
+- **The core is the only exception.** FDS's 1780 K extinction makes it 10–45% slower there, but the core carries little burning.
+- **The check:** RISE's computed rim heat release agrees with the frames (5.9 MW/m³ in layer 0).
+- **So the chemistry is not the difference; the state reaching the rim is.**
+
+**3. Step back: the missing air is mostly not at the burner.** Upward mass flux from §8's tables (kg/s), with Heskestad's correlation for 32.8 kW and 80% convective:
+
+| z (m) | 0.29 | 0.50 | 0.75 | 0.99 | 1.51 | 2.00 | 3.01 |
+|---|---|---|---|---|---|---|---|
+| FDS r263 | 0.143 | 0.184 | 0.243 | 0.314 | 0.489 | 0.686 | 1.176 |
+| r270 | 0.127 | 0.152 | 0.196 | 0.251 | 0.383 | 0.527 | 0.863 |
+| RISE / FDS | 0.89 | 0.83 | 0.80 | 0.80 | 0.78 | 0.77 | 0.73 |
+| FDS / Heskestad | | | | 1.28 | 1.08 | 0.98 | 0.87 |
+| RISE / Heskestad | | | | 1.02 | 0.84 | 0.75 | 0.64 |
+
+- **Below 0.3 m, RISE entrains about 90% of FDS's air.** From 0.3 m to 3 m, its entrainment rate dṁ/dz is a steady 63–79% of FDS's, including far above the flame (99% of heat is released below about 0.8 m). At 3 m both codes are near the 3.24 m top boundary.
+- **FDS sits on the empirical far-plume correlation and RISE does not.** RISE has the textbook signature of a low entrainment coefficient: at 2 m the plume is narrower (b_T 0.21 against 0.26 m), hotter on the axis (105 against 72 K) and faster (2.95 against 2.68 m/s), with the same convective heat.
+- **The same grid, domain, SGS model and constants, and matched heat release and expansion:** a deficit this uniform with height, in pure plume, points away from the burner and the chemistry, toward how RISE resolves a turbulent buoyant plume.
+
+**Hypotheses, ranked by the evidence.**
+1. **Velocity energy sits at the wrong scales.**
+   - RISE's momentum advection is centred and energy-conserving by design (FIRE_SMOKE_DESIGN.md, momentum flux). Its default stress stencil cannot damp 2Δ waves (§5), and Vreman's ν_t cannot see them either. Nothing removes grid-scale velocity energy, which the FDS discretisation does.
+   - *For:* RISE carries 2–3× FDS's grid-scale w′ at every height, including 1–2 m, where FDS is 0.075–0.13 and RISE 0.21–0.24 (§5; horizontal spectra, so unaffected by the face/average issue). It carries less in large eddies (0.37 against 0.45 at 0.99 m). The compact-stencil arm (§8) closed about half the far-field gap at 3 m (0.86 → 1.02, FDS 1.18).
+   - *Against or unexplained:* the compact arms made the near field hotter and quieter, with base TKE far below FDS's. The Taylor–Green test shows that resolved 8Δ eddies are not over-damped, so the issue is distribution, not dissipation.
+2. **The plume inherits a wrong structure from the flame zone and does not recover by 3 m.** The core is hot and narrow (§16's rim oxygen), the base perturbations are incoherent, and the far plume carries that forward.
+   - *Test:* whether RISE's turbulence intensity and large-eddy share approach FDS's with height (inherited) or stay low (local).
+3. **A grid-scale source rather than a missing sink:** per-cell expansion noise (§4) injected through the projection.
+   - *Test:* the grid-scale share of the divergence field, RISE against FDS's DIVERGENCE slices.
+4. **Already bounded:**
+   - boundaries (§6);
+   - burner boundary, chemistry, extinction, mixing time (§14–§16);
+   - averaging artifacts (this section; mean mass fluxes are face/average-insensitive to about 1%).
+
 ## Next (owner decisions)
 
-1. **Recheck §11–§12's velocity measures like for like,** using face velocities from the checkpoints, before any further velocity-based conclusion. The heat-release and temperature findings stand.
-2. **Rim oxygen consumption, read-only:** on the same checkpoints, compare RISE's per-step O₂ consumption in rim cells with what FDS's reactor (`fire.f90` FIRE_FORWARD_EULER, with its τ and its 2.75 ms step) would do to the same cell state. This would show whether the rate or the state differs.
-3. **Small fixes to match the design and FDS,** each opt-in and cheap: methane's own critical flame temperature (1780 K); a 300 K convective burner surface; the burner-face density from the design; and the inflow tangential ghost from (c).
+1. **Read-only discriminators for hypotheses 1–3,** on existing frames and FDS slices:
+   - like-for-like far-field turbulence intensity and spectra from 0.5 to 3 m;
+   - the divergence field's grid-scale share.
+2. **The decisive experiment, a non-reacting buoyant plume** on the same grid and domain in both codes. It separates "how RISE resolves a turbulent buoyant plume" from everything fire-specific. If RISE under-entrains it by about 25%, the r271 work should move to the momentum discretisation.
+3. **Small opt-in fixes from §16** (CFT 1780 K, 300 K burner, face density, inflow ghost) remain available but are not the main cause.
