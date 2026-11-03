@@ -317,6 +317,8 @@ r270's same-window values (frames 73–136) are close to its full-window values:
 
 ## 12. Weak forcing, not damping (2026-11-02)
 
+> **Correction (§16, 2026-11-03):** FDS's cell-centred velocity slices are face values, while RISE's frames are cell averages, so the rms w ratios below understate RISE. Measured like for like, RISE's burner-edge rms w is 0.74–0.80 of FDS's from 0.06 to 0.5 m (not about 0.6), and 1.1 at the burner face. The temperature and heat-release comparisons are unaffected.
+
 The owner asked for the read-only forcing/damping split, and for the operator test if it pointed at damping.
 
 **Forcing and response at the base** (`tools/fire/r271/forcing_damping.py` on `near_planes.cpp` dumps with heat release; `docs/data/fire_r271/forcing_damping.txt`). On the burner-edge ring r = 0.06–0.12 m:
@@ -439,6 +441,8 @@ The owner asked for the read-only sizing, and for the A/B to be prepared if the 
 
 ## 15. FDS mixing-time A/B: the switch does not fix the base forcing (2026-11-03)
 
+> **Correction (§16):** the FDS velocity column compares FDS face values with RISE cell averages. The A/B arm-to-arm comparisons are unaffected (RISE against RISE). But the "55–65% of FDS" and "first-cell rms w 0.15 against 0.27" statements are a measurement artifact: like for like, RISE's ring rms w is 0.74–0.80 of FDS's above 0.06 m, and 1.1 at the burner face.
+
 One arm, `ab_fdsmix_floor_on`: `RISE_FIRE_FDS_MIXING_TIME=1`, compact stencil off, floor radiation on, 4 s from r270 step 9223 (`fa316ab86` build, 4.1 h wall, exit 0). It is compared with r270's own frames 73–136, and with r270's windows w0 (frames 0–63) and w2 (137–200) for the spread a 4 s window has with no change at all. Data: `docs/data/fire_r271/fdsmix_ab_compare.txt` (`ab_compare.py … fm 'fds mixing'`) and `fdsmix_near.txt` (`fdsmix_compare.py`). The extraction tools were rebuilt against OpenVDB 14 and reproduce the r270 extracts byte for byte.
 
 | measure | r270 w0 / 73–136 / w2 | FDS mixing | FDS r263 |
@@ -458,7 +462,65 @@ One arm, `ab_fdsmix_floor_on`: `RISE_FIRE_FDS_MIXING_TIME=1`, compact stencil of
 - **The flame does not improve.** The core is 30–50 K hotter at 0.29–0.50 m (further from FDS), the entrained mass flux is unchanged, and total-heat puffing is slightly weaker. Only the 99% heat height moves toward FDS (0.857 → 0.795 m).
 - **Conclusion:** the mixing-time formula is not why RISE's base forcing is weak. The switch stays committed but off, and is not adopted. The deficit is already present in the first cell above the burner (rms w 0.15 against FDS's 0.27 at 0.02 m), where neither the stencil nor the mixing time has had room to act.
 
+## 16. Burner face: the boundary matches; the core holds a third of FDS's oxygen (read-only, 2026-11-03)
+
+The owner asked for a read-only check of where FDS's velocity fluctuation at the burner comes from, and of what RISE's burner boundary imposes there.
+
+**Tools.**
+- `tools/fire/r271/burner_face.py`: radial profiles in the first layers, from the frames and FDS slices (`docs/data/fire_r271/burner_face.txt`).
+- `tools/fire/r271/first_layer.cpp`: checkpoint state on 44 r270 states, 14.98–18.47 s (`first_layer_r270_states.txt`). It reports composition, the radiative loss, the exact MAC divergence and face velocities.
+- `tools/fire/r271/cft_check.cpp`: sizes the extinction difference on the same states (`cft_r270_states.txt`).
+- A read-only code comparison of both boundaries, with file:line citations on each side.
+
+**Measurement correction.** FDS writes `CELL_CENTERED=T` velocity slices as raw staggered face values: U on the cell's +x face, V on +y, W on the top face (`dump.f90` GAS_PHASE_OUTPUT and DUMP_SLCF). RISE's frames hold cell averages of two faces. Two checks confirm it:
+- The first-layer volume budget closes for FDS only when its W is read as the top face.
+- RISE's checkpoint cell averages reproduce the frame values.
+
+So every velocity comparison in §11–§15 set a RISE cell average against an FDS face value half a cell away, and averaging removes grid-scale variance. Like for like, on the burner-edge ring 0.06–0.12 m:
+
+| face height (m) | 0.031 | 0.061 | 0.122 | 0.214 | 0.306 | 0.398 | 0.520 |
+|---|---|---|---|---|---|---|---|
+| RISE rms w, top face | 0.30 | 0.32 | 0.42 | 0.53 | 0.62 | 0.73 | 0.84 |
+| FDS rms w | 0.27 | 0.40 | 0.57 | 0.72 | 0.85 | 0.98 | 1.11 |
+| RISE / FDS | 1.11 | 0.80 | 0.74 | 0.73 | 0.73 | 0.74 | 0.76 |
+
+- **RISE's mean axis w on the first interior face is 0.88 m/s, against FDS's 0.68.** The apparent "half of FDS" was the same artifact.
+- **The velocity deficit is real but about 25%, not 40%, and it is absent at the burner face.** It builds over the first 0.1 m.
+- **Unaffected:** temperature, density, mass fractions, heat release and divergence are true cell values in both codes, as are §13's heat-release and expansion results. Mean mass fluxes higher up (§2) are at most slightly affected, because the plume varies slowly over half a cell.
+
+**The burner boundary itself matches FDS.**
+- Fuel mass flux, injected composition and temperature are the same: about 0.0102 kg/m²s of pure methane at 300 K.
+- The prescribed normal velocity and the pressure condition are the same.
+- The divergence profile in the first layer is the same: rim 14.2 s⁻¹ against 11.6–13.3, core −1.7 to +3.0 against −0.45 to +5.1.
+
+The differences found are small:
+- **FDS's burner is a 300 K isothermal surface; RISE's is adiabatic.** That is about 4–6 kW/m², or roughly 20–35 K in the first cell. FDS's net Q_COND of +0.51 kW includes the floor's return of about 0.5–0.6 kW, so the burner loss is small.
+- **RISE's burner-face density is the mean of the injected and cell densities,** where the design says the gas density. The face velocity is about 0.01 m/s higher, which is negligible.
+- **RISE's default stencil applies about half of FDS's no-slip wall drag.** The compact stencil applies the full drag and removes RISE's 3× horizontal velocity noise near the axis (rms u_r 0.63 → 0.14, against FDS's 0.18), but it does not change the core temperature or w (§8 arm).
+
+**The real difference: oxygen does not reach the core.** Over the burner centre (r < 0.06 m), in layers 0–3 (z = 0.015–0.11 m):
+
+| | RISE r270 | FDS r263 |
+|---|---|---|
+| Y_O₂ | 0.022–0.044 | 0.063–0.072 |
+| Y_CH₄ on the axis, layer 0 → 3 | 0.14 → 0.08 | 0.17 → 0.10 |
+| mean T on the axis, layer 0 | 1382 K | 1095 K |
+| mean molecular weight | 25.1–26.9 | 24.8–27.2 |
+| heat release at the rim, r = 0.09 m, layer 0 | 7.6 MW/m³ | 6.2 MW/m³ |
+
+- **Both codes hold the same fuel-to-rest ratio, but FDS's core holds about three times the unburnt oxygen,** and is 230–290 K cooler and denser.
+- **RISE burns the oxygen at the rim** (about 20% more heat release there), so the core fills with hot products. In FDS, about three times as much oxygen gets past the rim unburnt.
+
+**Ruled out as the cause.**
+- **Extinction formulation:** the two are equivalent. FDS's EXTINCT_2 (`fire.f90:1420-1490`) is called after the step on the mixed parcel (`fire.f90:999`). Its PHI_TILDE is the parcel's burnout fraction, so its test parcel is RISE's stoichiometric parcel (`FireProductionSourceKernel.h:1485`).
+- **Critical flame temperature value:** RISE uses the generic hydrocarbon 1700 K (`tools/generate_fire_simulation_records.py:1510`), and FDS r263 uses methane's 1780 K. Only 1.9% of RISE's burning below 0.49 m, and under 1% at the rim, happens in cells that would fail at 1780 K. That is not enough.
+- **Mixing time** (§15) and **wall drag and stencil** (§8 arm): neither moves the first-layer core temperature (1473–1489 K in all three RISE runs, against FDS's 1252 K over r < 0.065 m).
+- **Radiation distribution:** RISE scales every cell's thin emission by one global β of 0.69. FDS scales only flame cells (`radi.f90:3964-4083`), and its other cells emit κ·4σT⁴ and absorb κG. RISE's core already radiates 0.66–0.90 MW/m³. FDS's rule would add at most about 0.3–0.4 MW/m³ there before absorption, which is a minor contributor.
+
+**What it leaves.** The core composition is set by how much rim oxygen survives into the core unburnt. With the burner boundary, the extinction rule and the mixing time ruled out, the remaining difference is the rate at which RISE's rim cells consume the oxygen that reaches them, against what FDS's partially stirred reactor does with the same mixture. FDS mixes only the fraction 1 − e^(−Δt/τ) of the cell each step and burns that fraction to completion, which is the same form as RISE's extent. So the rate difference has to come from the inputs, τ, Δt, or the cell-state history, and the sizing so far does not show it.
+
 ## Next (owner decisions)
 
-1. **Read-only check of the burner face:** where FDS's velocity fluctuation at 0.02 m comes from, and what RISE's burner inflow boundary imposes there (fuel inflow, tangential ghost, pressure at the face). This is the one place left where the weak forcing starts.
-2. **Option, from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor, and could be folded into 1.
+1. **Recheck §11–§12's velocity measures like for like,** using face velocities from the checkpoints, before any further velocity-based conclusion. The heat-release and temperature findings stand.
+2. **Rim oxygen consumption, read-only:** on the same checkpoints, compare RISE's per-step O₂ consumption in rim cells with what FDS's reactor (`fire.f90` FIRE_FORWARD_EULER, with its τ and its 2.75 ms step) would do to the same cell state. This would show whether the rate or the state differs.
+3. **Small fixes to match the design and FDS,** each opt-in and cheap: methane's own critical flame temperature (1780 K); a 300 K convective burner surface; the burner-face density from the design; and the inflow tangential ghost from (c).
