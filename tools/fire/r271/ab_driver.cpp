@@ -1,5 +1,5 @@
 // r271 A/B: resume a retained r270 checkpoint for a bounded physical window.
-// The viscous stencil is selected by RISE_FIRE_COMPACT_VISCOUS_STENCIL at launch.
+// The viscous stencil is selected by RISE_FIRE_COMPACT_VISCOUS_STENCIL, the mixing time by RISE_FIRE_FDS_MIXING_TIME.
 #define main FireSequenceSuiteMain
 #include R271_HARNESS_SOURCE
 #undef main
@@ -21,14 +21,14 @@ int main(int argc,char** argv){
  const bool compact=FireProductionForceMetalCompactViscousStencil();
  const char* floor=std::getenv("RISE_FIRE_FLOOR_EMISSIVITY");
  std::cerr<<"R271_AB_BEGIN step="<<start.acceptedSteps<<" time="<<std::setprecision(17)<<start.simulationTimeS
-  <<" window_s="<<window<<" compact="<<compact<<" floor="<<(floor?floor:"unset")<<'\n';
+  <<" window_s="<<window<<" compact="<<compact<<" fds_mixing="<<FireFDSMixingTimeSelected()<<" floor="<<(floor?floor:"unset")<<'\n';
  const auto wall=std::chrono::steady_clock::now();
  const auto r=RunMethaneFrameProbe(8u,1u,0.,25.091040127156969,16.,8.,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,p);
  std::ofstream f(out/"result.txt");f<<std::setprecision(17)<<"succeeded "<<r.succeeded<<"\nerror "<<r.structuredError
   <<"\ncheckpoint "<<checkpoint.string()<<"\ncheckpoint_sha256 "<<p.isolatedExpectedCheckpointDigest
   <<"\nstart_step "<<start.acceptedSteps<<"\nstart_time_s "<<start.simulationTimeS<<"\nend_time_s "<<r.simulatedTimeS
   <<"\nwindow_s "<<window<<"\nviscous_stencil "<<(compact?"r271-compact-mac-v2":"legacy")
-  <<"\nfloor_emissivity "<<(floor?floor:"unset")<<"\ncase_record_id "<<r.caseRecordId
+  <<"\nmixing_time "<<(FireFDSMixingTimeSelected()?"r271-fds-v1":"design")<<"\nfloor_emissivity "<<(floor?floor:"unset")<<"\ncase_record_id "<<r.caseRecordId
   <<"\nwall_s "<<std::chrono::duration<double>(std::chrono::steady_clock::now()-wall).count()<<'\n';
  return r.succeeded&&r.simulatedTimeS>=start.simulationTimeS+window?0:5;
 }

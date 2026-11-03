@@ -674,6 +674,17 @@ namespace RISE
 				thermochemistry,transport,state.producerPrecision,result,error);
 		}
 
+		//! r271 opt-in (RISE_FIRE_FDS_MIXING_TIME=1, read once): the FDS 6 LES mixing time
+		//! (fire.f90 COMBUSTION_MODEL, Tech Guide 5.13-5.16) in place of the design's
+		//! section 3.3 form. Off by default.
+		inline bool FireFDSMixingTimeSelected()
+		{
+			static const bool selected=[](){
+				const char* value=std::getenv("RISE_FIRE_FDS_MIXING_TIME");
+				return value&&std::strcmp(value,"1")==0;}();
+			return selected;
+		}
+
 		inline bool ComputeMixingTimeS(
 			const MethaneCellState& state,
 			const CellTransportEvaluation& evaluation,
@@ -693,6 +704,29 @@ namespace RISE
 				!std::isfinite(evaluation.totalDiffusivityM2PerS) ||
 				evaluation.totalDiffusivityM2PerS <= 0.0 ) {
 				return Fail(error,"fire solver mixing-time inputs are outside their domain");
+			}
+			if( !dns && FireFDSMixingTimeSelected() ) {
+				// FDS: tau_d from molecular diffusivity only (here the mixture thermal diffusivity,
+				// close to methane's at Le ~ 1; never the active term at these grids); k_sgs from the total viscosity
+				// with C=0.1 (the record's Cnu); tau_u = 0.4 D/sqrt(2k/3); tau_g with full
+				// gravity; lower bound D/100 m/s (FDS TURBULENT_FLAME_SPEED). The record's
+				// tau_chem stays the absolute floor (FDS uses 1e-5 s; D/100 exceeds both here).
+				const double gasDensity = state.GasDensity();
+				if( !std::isfinite(evaluation.molecularDiffusivityM2PerS) ||
+					evaluation.molecularDiffusivityM2PerS <= 0.0 ||
+					!std::isfinite(evaluation.effectiveViscosityPaS) ||
+					evaluation.effectiveViscosityPaS < 0.0 || !(gasDensity > 0.0) ) {
+					return Fail(error,"fire solver FDS mixing-time inputs are outside their domain");
+				}
+				const double tauD = filterWidthM*filterWidthM/evaluation.molecularDiffusivityM2PerS;
+				const double kSgs = std::pow(evaluation.effectiveViscosityPaS/
+					(gasDensity*transport.VremanCnu()*filterWidthM),2.0);
+				const double tauU = 0.4*filterWidthM/std::sqrt(2.0/3.0*kSgs+1.0e-10);
+				const double tauG = std::sqrt(2.0*filterWidthM/(gravityMagnitudeMPerS2+1.0e-10));
+				result = std::max(std::max(transport.ChemicalTimeS(),filterWidthM/100.0),
+					std::min({tauD,tauU,tauG}));
+				return (result > 0.0 && std::isfinite(result)) ||
+					Fail(error,"fire solver mixing time is invalid");
 			}
 			const double tauDiff = filterWidthM*filterWidthM/evaluation.totalDiffusivityM2PerS;
 			double fastest = tauDiff;
