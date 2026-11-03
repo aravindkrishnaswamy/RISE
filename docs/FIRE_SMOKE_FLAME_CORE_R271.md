@@ -437,10 +437,28 @@ The owner asked for the read-only sizing, and for the A/B to be prepared if the 
   - P3, minor: the switch changes only τ_mix, not FDS's whole combustion scheme; τ_d uses the mixture thermal diffusivity, which is close to methane's and never the active term; and two diagnostic tools do not log the switch.
   - The reviewer's main caveat: the mean-rate change is small, so the A/B result may sit near the window-to-window spread. The expected effect is in the fluctuations, not the means.
 
+## 15. FDS mixing-time A/B: the switch does not fix the base forcing (2026-11-03)
+
+One arm, `ab_fdsmix_floor_on`: `RISE_FIRE_FDS_MIXING_TIME=1`, compact stencil off, floor radiation on, 4 s from r270 step 9223 (`fa316ab86` build, 4.1 h wall, exit 0). It is compared with r270's own frames 73–136, and with r270's windows w0 (frames 0–63) and w2 (137–200) for the spread a 4 s window has with no change at all. Data: `docs/data/fire_r271/fdsmix_ab_compare.txt` (`ab_compare.py … fm 'fds mixing'`) and `fdsmix_near.txt` (`fdsmix_compare.py`). The extraction tools were rebuilt against OpenVDB 14 and reproduce the r270 extracts byte for byte.
+
+| measure | r270 w0 / 73–136 / w2 | FDS mixing | FDS r263 |
+|---|---|---|---|
+| base heat release (z < 0.31 m) rms, % of mean | 3.64 / 3.14 / 3.75 | 3.64 | 5.17 |
+| same, 2–3.5 Hz band % | 2.36 / 1.73 / 2.49 | 1.81 | 3.71 |
+| burner-edge ring rms w at 0.02 / 0.11 / 0.29 m (m/s) | 0.15 / 0.36 / 0.58 (all windows) | 0.15 / 0.38 / 0.58 | 0.27 / 0.57 / 0.85 |
+| corr(w, T) on the ring at 0.02 m | 0.12 / 0.14 / 0.17 | 0.32 | 0.45 |
+| total heat release, 2–3.5 Hz % | 3.5 / 3.1 / 3.9 | 2.6 | 6.3 (§4) |
+| 90% / 99% heat-release height (m) | 0.428–0.459 / 0.857 | 0.428 / 0.795 | 0.428 / 0.765 |
+| centre excess T at 0.29 / 0.50 m (K) | 1080–1101 / 792–825 | 1133 / 877 | 926 / 631 |
+| upward mass flux at 0.50 / 0.99 m (kg/s) | 0.129–0.163 / 0.231–0.265 | 0.152 / 0.250 | 0.184 / 0.314 |
+
+**Result.**
+- **The base heat release is no more coherent.** Its rms and its puffing band sit inside r270's window-to-window spread, still about 30% short of FDS. The burner-edge velocity response is unchanged at 55–65% of FDS's.
+- **The switch does what it was meant to do locally.** At the burner face, heat release now follows the velocity: corr(w, T) rises from 0.12–0.17 to 0.32, toward FDS's 0.45. But it does not feed back into stronger eddies.
+- **The flame does not improve.** The core is 30–50 K hotter at 0.29–0.50 m (further from FDS), the entrained mass flux is unchanged, and total-heat puffing is slightly weaker. Only the 99% heat height moves toward FDS (0.857 → 0.795 m).
+- **Conclusion:** the mixing-time formula is not why RISE's base forcing is weak. The switch stays committed but off, and is not adopted. The deficit is already present in the first cell above the burner (rms w 0.15 against FDS's 0.27 at 0.02 m), where neither the stencil nor the mixing time has had room to act.
+
 ## Next (owner decisions)
 
-1. **FDS mixing-time patch:** reviewed by the owner and committed opt-in (`fa316ab86`, 2026-11-02).
-2. **A/B running** (started 2026-11-03 01:12 UTC): one arm, `run_ab.sh ab_fdsmix_floor_on ab_build_v3 0 1`, with the compact stencil off and FDS mixing on. It runs 4 s from r270 step 9223, about 4.7 h, against r270's own frames 73–136, with windows w0 and w2 for spread.
-   - Judge it first on §13's measure, the coherent base heat-release fluctuation (18–33% short of FDS), and on §12's burner-edge velocity response. Then judge it on the flame measures.
-   - If the result is near the noise, a second 4 s window, or the same switch from a different start, would separate signal from spread.
-3. **Option, from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor.
+1. **Read-only check of the burner face:** where FDS's velocity fluctuation at 0.02 m comes from, and what RISE's burner inflow boundary imposes there (fuel inflow, tangential ghost, pressure at the face). This is the one place left where the weak forcing starts.
+2. **Option, from (c):** make the inflow tangential ghost zero-gradient, as the design says. It is minor, and could be folded into 1.
