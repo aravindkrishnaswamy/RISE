@@ -612,6 +612,51 @@ RISE's expansion field has FDS's magnitude and nearly its grid-scale content, wi
 
 Whether problem 2 is specific to the flame, or holds for any area heat-source plume, is what the non-reacting test (§19) decides.
 
+## 19. Non-reacting plume pair: setup (running, 2026-11-03)
+
+The owner asked for the test. It decides whether §18's too-quiet near-source plume is a flame effect, or holds for any heat-source plume in RISE.
+
+**Physics, identical in both codes.**
+- The case: the production methane case and its domain, grid, burner, floor and boundaries.
+- Methane inflow unchanged: 0.0102 kg/m²s at 300 K.
+- No combustion and no radiation.
+- A frozen volumetric heat source of 26.4 kW, the fire's convective share 0.8 × 33 kW. It is uniform over the 69 burner cells of each layer 0–26 (z 0–0.83 m) and split between layers by FDS r263's time-mean heat release. That carries 99.5% of the fire's heat, 29% of it in layer 0 (`docs/data/fire_r271/inert_source_profile.json`).
+- **Why the heat is spread:** a first design put all of it in layer 0, about 13 MW/m³. That would heat the core to around 10⁴ K, past RISE's 2300 K accepted-state ceiling, so it was abandoned before any long run.
+- **Startup:** a fixed W/m³ source runs away in still air until the plume moves. In 1.25 s smoke runs the peak cell reached 2810 K in FDS (at 0.38 s) and 1993 K in RISE (at 0.31 s). Both then settled, FDS at 1750–2150 K.
+
+**FDS.** `tools/fire/r271/make_inert_fds.py`, from r263's input:
+- `&REAC` becomes `&SPEC METHANE`;
+- the burner SURFs use MASS_FLUX = HRRPUA/HOC;
+- `&RADI RADIATION=F`;
+- 243 `&INIT HRRPUV` boxes;
+- the oxygen slices are dropped.
+
+The generator asserts that RISE's compiled-in table equals the profile file. The run covers 25.09 s, so the statistics window is r263's own.
+
+**RISE.** Opt-in `RISE_FIRE_INERT_PLUME=1`, uncommitted pending owner review (`docs/data/fire_r271/inert_plume.patch`).
+- **The source authority:**
+  - ignition eligibility is forced false and soot oxidation is off;
+  - the pilot setpoint is 0;
+  - `BuildFrozenMethaneSourcePackets` gains a `gasRadiation` flag that skips the exchange;
+  - the dose is added to each packet's energy before the expansion target is derived, as the r270 floor dose is.
+- **Recording:** receipt `inert_plume r271-v1` with a rebuild guard. The ignition-window gate is skipped, and the legacy source path refuses the inert case.
+- **Pilot code:** the pilot arithmetic moved unchanged into an out-of-line helper; its disassembly is identical to HEAD's, all 155 instructions.
+- **Driver:** `tools/fire/r271/inert_driver.cpp` with `build_inert.py`, a harness copy that stops at the window and anchors 16 Hz frames at an origin > 0.
+
+**Checks.**
+- Builds are warning-free and the fp64/trace mirrors are regenerated.
+- Switch off: a resume from r270 step 9223 reproduces its frame 73 value for value in every grid. The fire test failure sets are unchanged; FireProductionSolverTest showed 3 extra timing-allocation failures under load, and the baseline 12 when rerun alone.
+- Switch on: zero reaction everywhere, and the receipt is recorded.
+- **Independent review: no P1.**
+  - Fixed: the frame off-by-one for an origin at the start time; noinline for the new FireCase code; no gas-exchange evaluation when radiation is off.
+  - Documented: the heat source appears in no heat-release diagnostic; the child exits non-zero at the end by design; resume paths do not check the flag.
+
+**Runs** (started 2026-11-03):
+- FDS 25.09 s;
+- RISE `inert_compact` (compact stencil) and `inert_legacy` (default stencil), each 14 s from t = 0 with frames from 2 s.
+
+Statistics will be compared over matching windows, with FDS's long window to check stationarity.
+
 ## Next (owner decisions)
 
 1. **Read-only discriminators for hypotheses 1–3,** on existing frames and FDS slices:
