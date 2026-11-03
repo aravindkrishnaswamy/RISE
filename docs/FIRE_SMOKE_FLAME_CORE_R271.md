@@ -575,6 +575,43 @@ The owner asked for §16's next items 1 and 2, then for a step back on what the 
    - burner boundary, chemistry, extinction, mixing time (§14–§16);
    - averaging artifacts (this section; mean mass fluxes are face/average-insensitive to about 1%).
 
+## 18. Two problems, not one: the far plume is numerics, the near-source plume is too quiet (read-only, 2026-11-03)
+
+The owner asked for §17's read-only discriminators, and for the non-reacting plume test (§19).
+
+**Tools and data.**
+- `tools/fire/r271/far_field.py`: r270 frames and the compact arms (§8, §10), against FDS converted to cell averages.
+- `tools/fire/r271/div_planes.cpp`: exact MAC divergence planes from 44 r270 checkpoints.
+- Output: `docs/data/fire_r271/far_field.txt`.
+
+**Far-plume turbulence, like for like.**
+
+| z (m) | measure | r270 | compact | FDS |
+|---|---|---|---|---|
+| 0.29–0.50 | centre rms w / w_c | 0.20–0.27 | 0.13–0.22 | 0.22–0.34 |
+| 0.29–0.50 | ∫w′² dA / (w_c b_w)² | 0.12–0.17 | 0.06–0.12 | 0.17–0.26 |
+| 0.99 | rms w / w_c; large / grid share of w′ | 0.29; 0.37 / 0.22 | 0.37; 0.40 / 0.08 | 0.37; 0.46 / 0.12 |
+| 2.00 | rms w / w_c; ∫w′²; ⟨u_r′θ′⟩/(w_c θ_c) at r = b_w | 0.26; 0.32; 0.014 | 0.32; 0.39; 0.026 | 0.34; 0.44; 0.025 |
+| 2.00 | large / grid share of w′ | 0.51 / 0.24 | 0.68 / 0.055 | 0.68 / 0.067 |
+
+- **Above 1 m, the deficit is local numerics, and the compact stencil removes it.** In r270, a fixed 20–24% of w′ variance sits at grid scale at every height, and the large eddies, the turbulent intensity and the turbulent heat flux stay low. With the compact stencil, all of them match FDS from 1.5 to 3 m. Its entrainment rate is 0.92 of FDS's from 1.5 to 2 m and 0.98 from 2 to 3 m, against r270's 0.73 and 0.69.
+- **Below 1 m, the compact arm is too quiet.** Its intensity and fluctuation energy are about 60% of FDS's at 0.3–0.5 m, and its core is hot. r270's grid-scale noise had partly stood in for the missing near-source fluctuation. The far plume of the compact arm inherits a narrower, hotter start (b_w 0.248 against 0.279 m at 2 m), so its total mass flux stays short (0.54 against 0.69 kg/s at 2 m) even though its local entrainment rate is right.
+
+**Divergence (hypothesis 3).** The fluctuation about the mean, over r < 0.3 m:
+
+| z (m) | 0.05 | 0.11 | 0.29 | 0.50 | 0.99 | 2.00 |
+|---|---|---|---|---|---|---|
+| rms, r270 / FDS (s⁻¹) | 1.25 / 1.05 | 0.81 / 0.65 | 0.59 / 0.71 | 0.49 / 0.60 | 0.33 / 0.39 | 0.13 / 0.12 |
+| grid-scale share, r270 / FDS | 0.50 / 0.35 | 0.49 / 0.42 | 0.44 / 0.41 | 0.44 / 0.44 | 0.43 / 0.46 | 0.50 / 0.42 |
+
+RISE's expansion field has FDS's magnitude and nearly its grid-scale content, with a modest excess only at the base. A grid-scale expansion source is not the main cause.
+
+**Conclusion: there are two separate problems.**
+1. **Far plume:** RISE's default velocity discretisation keeps grid-scale velocity energy and starves the large eddies, which lowers the entrainment coefficient. The compact stencil fixes it.
+2. **Near source:** with that noise removed, resolved fluctuations develop too weakly over the first metre. This sets the plume's hot, narrow start and most of the total mass deficit.
+
+Whether problem 2 is specific to the flame, or holds for any area heat-source plume, is what the non-reacting test (§19) decides.
+
 ## Next (owner decisions)
 
 1. **Read-only discriminators for hypotheses 1–3,** on existing frames and FDS slices:
