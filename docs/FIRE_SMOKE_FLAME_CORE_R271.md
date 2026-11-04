@@ -657,10 +657,48 @@ The generator asserts that RISE's compiled-in table equals the profile file. The
 
 Statistics will be compared over matching windows, with FDS's long window to check stationarity.
 
+## 20. Non-reacting plume result: RISE's plume does not transition near the source (2026-11-04)
+
+**Runs.**
+- FDS `r271_inert`: 25.09 s in 10,688 s wall, exit 0.
+- RISE `inert_legacy` (default stencil) and `inert_compact` (compact stencil): 14 s each from t = 0, run side by side, 14.6 h and 15.8 h. Each has 193 frames from 2 s.
+- **Exits:** both RISE arms exit 98 by design (§19). Their hottest cells stayed at 1680–1840 K.
+
+**Data and windows.** `tools/fire/r271/inert_compare.py`, like for like (FDS converted to cell averages); results in `docs/data/fire_r271/inert_vs_fds.txt`. Comparisons use matched 6–14 s windows. FDS's own 6–14 s and 10.47–25.09 s windows differ by 8–10% in mass flux at 1–3 m (`inert_fds_windows.txt`), which is the noise yardstick.
+
+| z (m) | quantity | FDS | RISE compact | RISE default |
+|---|---|---|---|---|
+| 0.29 | centre rms w / w_c | 0.079 | 0.013 | 0.141 |
+| 0.50 | centre rms w / w_c | 0.147 | 0.024 | 0.163 |
+| 0.99 | centre rms w / w_c | 0.312 | 0.094 | 0.236 |
+| 2.00 | centre rms w / w_c | 0.318 | 0.282 | 0.235 |
+| 0.29 | mass flux (kg/s) | 0.064 | 0.051 | 0.065 |
+| 0.99 | mass flux (kg/s) | 0.211 | 0.121 | 0.199 |
+| 3.01 | mass flux (kg/s) | 0.922 | 0.454 | 0.737 |
+| 2.00 | centre excess T (K); b_w (m) | 101; 0.224 | 317; 0.131 | 133; 0.203 |
+| 2.00 | w′ grid-scale share | 0.090 | 0.096 | 0.272 |
+| 0.3–1.0 | entrainment rate, RISE / FDS | | 0.45–0.50 | 0.87–0.93 |
+| 1.0–3.0 | entrainment rate, RISE / FDS | | 0.42–0.54 | 0.71–0.84 |
+
+**Result.**
+- **The flame drives most of FDS's near-field turbulence.** FDS's inert plume is much quieter near the source than its fire: rms w/w_c at 0.29 m is 0.08 against 0.22, and the mass flux at 2 m is 0.51 against 0.69 kg/s.
+- **With the compact stencil, RISE's inert plume stays nearly laminar for the first metre** and only transitions by 2–3 m. It is narrow and hot, and entrains about half of FDS's air at every height. FDS's plume, with the same physics, grid and inputs, develops fluctuations from the start (0.08 at 0.29 m, 0.31 by 1 m).
+- **With the default stencil, the near source looks right** (mass flux within 2% to 0.5 m). But its fluctuation is partly grid noise, with a grid share of 0.29–0.37 against 0.21–0.28. The far field under-entrains exactly as in the fire, with 2–4× FDS's grid-scale energy and half the edge turbulent flux.
+
+**What it means.** Combined with §18, there is one underlying cause, which is generic to RISE's hydrodynamics and not to combustion. **Resolved instabilities do not grow in RISE as they do in FDS.**
+- The default stencil hides this near the source by injecting grid noise, which seeds fluctuation but starves the large eddies.
+- The compact stencil removes the noise and exposes a plume that is too stable.
+- In the fire, the flame's fluctuating heat release supplies some forcing, so the compact fire arm was quiet but not laminar (§8, §18).
+
+**Candidates for the over-stability, ranked:**
+1. **SGS eddy viscosity in the thin laminar shear layer near the source.** Vreman's model does not vanish in pure shear, and RISE's ν_t is discretised differently from FDS's (§5, §9). Too much ν_t in the shear layer damps the Kelvin–Helmholtz growth that starts transition.
+2. **Numerical diffusion of the temperature shear layer** by the limited scalar advection (MUSCL-MC FCT, against FDS's CHARM). A thicker layer grows instabilities more slowly.
+3. **Missing seed.** Both codes have the same symmetric inputs. FDS may carry more round-off- or scheme-level perturbation, so its transition is seeded and RISE's is not.
+
 ## Next (owner decisions)
 
-1. **Read-only discriminators for hypotheses 1–3,** on existing frames and FDS slices:
-   - like-for-like far-field turbulence intensity and spectra from 0.5 to 3 m;
-   - the divergence field's grid-scale share.
-2. **The decisive experiment, a non-reacting buoyant plume** on the same grid and domain in both codes. It separates "how RISE resolves a turbulent buoyant plume" from everything fire-specific. If RISE under-entrains it by about 25%, the r271 work should move to the momentum discretisation.
-3. **Small opt-in fixes from §16** (CFT 1780 K, 300 K burner, face density, inflow ghost) remain available but are not the main cause.
+1. **Read-only, cheap:** in the inert near field (0.05–0.5 m), compare:
+   - RISE's resolved ν_t (from frames, as `frame_nut.cpp`) against FDS's VISCOSITY − MOLECULAR VISCOSITY slices (candidate 1);
+   - the mean temperature and velocity shear-layer thickness (candidate 2).
+2. **Run, if 1 is inconclusive:** a seeded compact inert arm, with a small random perturbation of the heat source or inflow (candidate 3). This needs a small opt-in.
+3. The §16 small fixes stay optional.
