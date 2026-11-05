@@ -695,7 +695,7 @@ Statistics will be compared over matching windows, with FDS's long window to che
 2. **Numerical diffusion of the temperature shear layer** by the limited scalar advection (MUSCL-MC FCT, against FDS's CHARM). A thicker layer grows instabilities more slowly.
 3. **Missing seed.** Both codes have the same symmetric inputs. FDS may carry more round-off- or scheme-level perturbation, so its transition is seeded and RISE's is not.
 
-## 21. Not over-damped, not smeared: the plume lacks a seed (2026-11-04)
+## 21. Not over-damped, not smeared; seed test set up (2026-11-04)
 
 The owner asked for §20's next items in order.
 
@@ -724,12 +724,49 @@ The owner asked for §20's next items in order.
 - **The seed:** each burner cell's dose is multiplied by 1 + ε·ξ, with ξ uniform in [−1, 1] from `SplitMix64` of the cell and a 10 ms time bucket. It is renormalised per layer, so the total is exactly 26.4 kW.
 - **Determinism:** Heun stages and retries share the bucket, so they see the same seed.
 - **Recording:** the receipt records `inert_seed`, the rebuild guard checks it, and it enters the source identity hash.
-- **The run:** ε = 0.2, compact stencil, 14 s from t = 0.
+- **The run:** ε = 0.2, compact stencil, 14 s from t = 0. Result in §22: a seed helps but is not the main cause.
+
+## 22. A seed helps by a third; the deficit forms at the floor (2026-11-05)
+
+**Seeded compact arm** (ε = 0.2, compact stencil, 14 s from t = 0, frames from 2 s). Finished at t = 14 s, 193 frames, peak RSS about 2 GB. Exit 98 is the harness's designed stop.
+
+Like for like over 6–14 s (`inert_compare.py`, `docs/data/fire_r271/inert_seed_vs_fds.txt`):
+
+| Measure | FDS | seeded compact | compact | default |
+|---|---|---|---|---|
+| centre rms w/w_c at 0.29 m | 0.079 | 0.022 | 0.013 | 0.141 |
+| centre rms w/w_c at 0.99 m | 0.312 | 0.136 | 0.094 | 0.236 |
+| θ_c at 0.99 m (K) | 339 | 675 | 714 | 363 |
+| mass flux at 3.01 m (kg/s) | 0.922 | 0.608 | 0.454 | 0.737 |
+| entrainment rate / FDS's, 0.3–3 m | 1 | 0.55–0.77 | 0.42–0.54 | 0.71–0.93 |
+
+- **The seed moves every measure the right way,** but it closes only a third of the 3 m mass-flux gap.
+- **The near-source plume stays nearly laminar:** a ±20% cell-by-cell heat-source perturbation raises rms w/w_c at 0.29 m only from 0.013 to 0.022, against FDS's 0.079. That perturbation is far larger than any numerical noise.
+- **The seeded run is statistically steady:** 6–10 s and 10–14 s agree within FDS's own spread, for example 0.601 and 0.620 kg/s at 3 m. The unseeded compact arm was still drifting (0.394 and 0.517).
+- **Shear layers are unchanged** (`docs/data/fire_r271/inert_seed_shear.txt`): same thicknesses, ν_t up by about 20% at 0.3–0.5 m, Re 1100–1260.
+- **Conclusion:** a missing seed is a contributor, not the main cause.
+
+**Read-only follow-ups:**
+- **Puffing is present** (`tools/fire/r271/inert_spectra.py`, `docs/data/fire_r271/inert_spectra.txt`). Every arm's centre w energy sits mostly in the 2–4 Hz band. FDS peaks at 3.0 Hz at 0.29 m, against the 1.5/√D estimate of 2.8 Hz. RISE has the mode at the right frequency, at about a quarter of the amplitude.
+- **The deficit forms at the floor** (`tools/fire/r271/inert_growth.py`, `docs/data/fire_r271/inert_growth.txt`). Rms per near-field layer, 6–14 s:
+
+| z (m) | | FDS | seeded | compact |
+|---|---|---|---|---|
+| 0.015 | burner-edge w′ (m/s) | 0.050 | 0.011 | 0.011 |
+| 0.015 | burner-edge θ′ (K) | 12.6 | 5.6 | 1.9 |
+| 0.015 | centre w′ (m/s) | 0.019 | 0.008 | 0.005 |
+| 0.29 | burner-edge w′ (m/s) | 0.263 | 0.148 | 0.131 |
+| 0.29 | centre w′ (m/s) | 0.303 | 0.090 | 0.055 |
+
+- **Growth is not the problem.** From the first cell to 0.29 m, RISE's burner-edge w′ grows ×12–13 against FDS's ×5. RISE's instabilities amplify at least as fast; they start about 4–5× smaller in the first cell.
+- **The source is fixed in both codes,** frozen heat and fixed fuel inflow. So FDS's first-cell w′ and θ′ have to come from the flow arriving at the burner: the floor inflow flapping with the puffing cycle, or the pressure field feeding the upper plume's unsteadiness back to the base.
+- **Leading hypothesis:** RISE's base does not feel the plume's unsteadiness, through weaker pressure feedback or a damped near-floor inflow. This fits the fire case's burner-edge deficit (§16, §17) and is generic to the hydrodynamics.
 
 ## Next (owner decisions)
 
-1. **Read-only, cheap:** in the inert near field (0.05–0.5 m), compare:
-   - RISE's resolved ν_t (from frames, as `frame_nut.cpp`) against FDS's VISCOSITY − MOLECULAR VISCOSITY slices (candidate 1);
-   - the mean temperature and velocity shear-layer thickness (candidate 2).
-2. **Run, if 1 is inconclusive:** a seeded compact inert arm, with a small random perturbation of the heat source or inflow (candidate 3). This needs a small opt-in.
-3. The §16 small fixes stay optional.
+1. **Read-only, cheap:** FDS has PRESSURE slices at every layer. Measure the floor-level pressure fluctuation and its coherence with the plume at 0.3–1 m, and the radial floor inflow's rms just outside the burner, for FDS and the inert arms. RISE's side needs pressure from checkpoints or a small frame-dump addition; I'll check what the checkpoints already hold before proposing any change.
+2. **Then, depending on 1:**
+   - If FDS's base pressure fluctuates and RISE's does not, review RISE's pressure solve: projection tolerance, any filtering, boundary conditions at the floor and open sides.
+   - If the floor inflow is what differs, review the bed's tangential velocity BC and near-wall ν_t against FDS's no-slip wall treatment.
+3. The seed and inert-plume opt-ins stay uncommitted pending owner review. The seed is diagnostic only and is not proposed for production.
+4. The §16 small fixes stay optional.

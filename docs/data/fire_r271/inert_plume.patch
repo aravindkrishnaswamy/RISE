@@ -1,5 +1,5 @@
 diff --git a/src/Library/Utilities/FireCase.cpp b/src/Library/Utilities/FireCase.cpp
-index 124873185..af0abdf8e 100644
+index 124873185..3983fec86 100644
 --- a/src/Library/Utilities/FireCase.cpp
 +++ b/src/Library/Utilities/FireCase.cpp
 @@ -7,6 +7,7 @@
@@ -46,10 +46,18 @@ index 124873185..af0abdf8e 100644
  	result=0.0;
  	if(!FinitePositive(derived.pilotSetpointTemperatureK) ||
  		!FinitePositive(derived.pilotExpansionVolumeRatioCap) ||
-@@ -244,6 +269,16 @@ bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
+@@ -244,6 +269,24 @@ bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
  	}
  	return true;
  }
++}
++
++__attribute__((noinline)) double RISE::FireCase::InertPlumeSeedAmplitude()
++{
++	static const double amplitude=[](){const char* value=std::getenv("RISE_FIRE_INERT_SEED");if(!value)return 0.0;
++		char* end=nullptr;const double parsed=std::strtod(value,&end);
++		return end!=value&&*end==0&&std::isfinite(parsed)&&parsed>0.0&&parsed<1.0?parsed:-1.0;}();
++	return amplitude;
 +}
 +
 +bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
@@ -64,10 +72,10 @@ index 124873185..af0abdf8e 100644
  double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
  {
 diff --git a/src/Library/Utilities/FireCase.h b/src/Library/Utilities/FireCase.h
-index 920e90ad7..381b6d9ea 100644
+index 920e90ad7..b885f15a6 100644
 --- a/src/Library/Utilities/FireCase.h
 +++ b/src/Library/Utilities/FireCase.h
-@@ -93,6 +93,14 @@ namespace RISE
+@@ -93,6 +93,18 @@ namespace RISE
  			const DerivedV1&,bool maskCell,double beginningTimeS,double endTimeS,
  			double& setpointTemperatureK,
  			std::string& error );
@@ -79,11 +87,15 @@ index 920e90ad7..381b6d9ea 100644
 +		const int InertPlumeLayers=27;
 +		const double InertPlumeHeatW=26400.0;
 +		double InertPlumeFraction(std::size_t layer);
++		//! Optional seed (RISE_FIRE_INERT_SEED=eps, 0 when unset): each burner cell's dose is scaled by 1+eps*xi, xi uniform
++		//! in [-1,1] from a hash of the cell and a 10 ms time bucket, renormalised per layer so the total stays exact.
++		double InertPlumeSeedAmplitude();
++		const double InertPlumeSeedBucketS=0.01;
  		double ScheduleFlowThroughTimeS(const DerivedV1&);
  		double PilotCommandMaximumStepS(const DerivedV1&);
  		bool BuildMethaneV1(
 diff --git a/src/Library/Utilities/FireProductionSource.cpp b/src/Library/Utilities/FireProductionSource.cpp
-index ddf51eb75..06147c4c9 100644
+index ddf51eb75..927c55571 100644
 --- a/src/Library/Utilities/FireProductionSource.cpp
 +++ b/src/Library/Utilities/FireProductionSource.cpp
 @@ -271,6 +271,9 @@ namespace RISE
@@ -114,7 +126,7 @@ index ddf51eb75..06147c4c9 100644
  				// r270: the radiatively adiabatic floor returns its convective flux
  				// to the first gas layer as a frozen energy dose, q/dz, before the
  				// expansion target is derived from the packet.
-@@ -359,6 +362,26 @@ namespace RISE
+@@ -359,6 +362,35 @@ namespace RISE
  							"production canonical source floor dose failed its Binary32 certificate");
  					}
  				}
@@ -127,11 +139,20 @@ index ddf51eb75..06147c4c9 100644
 +						pattern.size()!=floorFaces)return Fail(error,"production canonical source inert plume pattern is invalid");
 +					double masked=0.0;for(const double value:pattern)if(value!=0.0)masked+=1.0;
 +					if(!(masked>0.0))return Fail(error,"production canonical source inert plume has no burner cells");
++					const double seed=FireCase::InertPlumeSeedAmplitude();
++					if(seed<0.0)return Fail(error,"production canonical source inert plume seed is invalid");
++					const std::uint64_t bucket=static_cast<std::uint64_t>(std::floor(request.beginningTimeS/FireCase::InertPlumeSeedBucketS));
++					std::vector<double> weight(cells,1.0);
 +					for(std::size_t z=0u;z<static_cast<std::size_t>(FireCase::InertPlumeLayers)&&z<request.shape.nz;++z){
++						if(seed>0.0){double sum=0.0;
++							for(std::size_t face=0u;face<floorFaces;++face){if(pattern[face]==0.0)continue;
++								const std::uint64_t h=FireCase::SplitMix64(bucket*UINT64_C(0x9E3779B97F4A7C15)^static_cast<std::uint64_t>(z*floorFaces+face));
++								weight[z*floorFaces+face]=1.0+seed*(2.0*static_cast<double>(h>>11)*0x1p-53-1.0);sum+=weight[z*floorFaces+face];}
++							for(std::size_t face=0u;face<floorFaces;++face)if(pattern[face]!=0.0)weight[z*floorFaces+face]*=masked/sum;}
 +						const double heatWPerM3=FireCase::InertPlumeHeatW*FireCase::InertPlumeFraction(z)/(masked*volume);
 +						for(std::size_t face=0u;face<floorFaces;++face){
 +							if(pattern[face]==0.0)continue;MethaneSourcePacket& packet=packets[z*floorFaces+face];
-+							packet.sensibleEnergyDeltaJPerM3+=heatWPerM3*static_cast<double>(request.timeStepS);
++							packet.sensibleEnergyDeltaJPerM3+=weight[z*floorFaces+face]*heatWPerM3*static_cast<double>(request.timeStepS);
 +							RepresentMethaneSourcePacketBinary32(packet);
 +							if(!CertifiedBinary32SourcePacket(packet,fuel))return Fail(error,
 +								"production canonical source inert plume dose failed its Binary32 certificate");
@@ -141,7 +162,7 @@ index ddf51eb75..06147c4c9 100644
  				FireProductionFrozenSourcePacketSeal candidate;
  				candidate.shape_=request.shape;candidate.timeStepS_=request.timeStepS;
  				candidate.beginningTimeS_=request.beginningTimeS;
-@@ -468,6 +491,12 @@ namespace RISE
+@@ -468,6 +500,15 @@ namespace RISE
  					HashByteValues(candidate.sourceInputIdentity_,request.floorAbsorbingFaceMask);
  					HashFloatValues(candidate.sourceInputIdentity_,request.floorTangentialSpeedMPerS);
  				}
@@ -150,6 +171,9 @@ index ddf51eb75..06147c4c9 100644
 +					HashDouble(candidate.sourceInputIdentity_,FireCase::InertPlumeHeatW);
 +					for(std::size_t z=0u;z<static_cast<std::size_t>(FireCase::InertPlumeLayers);++z)
 +						HashDouble(candidate.sourceInputIdentity_,FireCase::InertPlumeFraction(z));
++					if(FireCase::InertPlumeSeedAmplitude()!=0.0){
++						HashDomain(candidate.sourceInputIdentity_,"RISE canonical frozen source r271 inert seed v1");
++						HashDouble(candidate.sourceInputIdentity_,FireCase::InertPlumeSeedAmplitude());}
 +				}
  				candidate.FinalizeIdentities();
  				if(!candidate.Matches(error))return false;
@@ -186,7 +210,7 @@ index b7e7f03e7..bafafa539 100644
  			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
  			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
 diff --git a/tests/FireSequenceTest.cpp b/tests/FireSequenceTest.cpp
-index 8b19926b5..b9d1818ed 100644
+index 8b19926b5..0c88fd8bd 100644
 --- a/tests/FireSequenceTest.cpp
 +++ b/tests/FireSequenceTest.cpp
 @@ -6385,6 +6385,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
@@ -208,20 +232,21 @@ index 8b19926b5..b9d1818ed 100644
  					advancedOK=false;
  					error="pilot_window_expired_without_ignition";
  					break;
-@@ -11734,6 +11737,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
+@@ -11734,6 +11737,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
  		if(FireProductionForceMetalCompactViscousStencil())receipt<<"viscous_stencil r271-compact-mac-v2\n";
  		// r271 A/B: the opt-in FDS mixing time likewise leaves the case unchanged.
  		if(FireFDSMixingTimeSelected())receipt<<"mixing_time r271-fds-v1\n";
 +		if(FireCase::InertPlumeSelected())receipt<<"inert_plume r271-v1\n";
++		if(FireCase::InertPlumeSeedAmplitude()!=0.0)receipt<<"inert_seed "<<std::setprecision(17)<<FireCase::InertPlumeSeedAmplitude()<<"\n";
  		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
  			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
  			<<"case_record_id "<<launchCase.caseRecordId<<"\nresolution_tier "<<resolutionTier<<'\n'
-@@ -11886,17 +11890,18 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
+@@ -11886,17 +11891,20 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
  		std::string receiptCaseId;
  		{
  			std::ifstream receipt(runDirectory/"window_launch.v1");std::string key,value;
 -			bool receiptCompact=false,receiptFDSMixing=false;
-+			bool receiptCompact=false,receiptFDSMixing=false,receiptInert=false;
++			bool receiptCompact=false,receiptFDSMixing=false,receiptInert=false;double receiptSeed=0.0;
  			while(receipt>>key>>value){
  				if(key=="domain_study")return 91;
  				if(key=="case_record_id")receiptCaseId=value;
@@ -229,11 +254,13 @@ index 8b19926b5..b9d1818ed 100644
  				if(key=="viscous_stencil"){if(value!="r271-compact-mac-v2")return 91;receiptCompact=true;}
  				if(key=="mixing_time"){if(value!="r271-fds-v1")return 91;receiptFDSMixing=true;}
 +				if(key=="inert_plume"){if(value!="r271-v1")return 91;receiptInert=true;}
++				if(key=="inert_seed")receiptSeed=std::stod(value);
  			}
  			// A rebuild never mixes viscous stencils with the run it describes.
  			if(receiptCompact!=FireProductionForceMetalCompactViscousStencil()||
 -				receiptFDSMixing!=FireFDSMixingTimeSelected())return 91;
-+				receiptFDSMixing!=FireFDSMixingTimeSelected()||receiptInert!=FireCase::InertPlumeSelected())return 91;
++				receiptFDSMixing!=FireFDSMixingTimeSelected()||receiptInert!=FireCase::InertPlumeSelected()||
++				receiptSeed!=FireCase::InertPlumeSeedAmplitude())return 91;
  		}
  		if(receiptCaseId.size()!=64u)return 95;
  		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
