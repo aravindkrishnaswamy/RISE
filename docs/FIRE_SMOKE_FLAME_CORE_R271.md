@@ -695,6 +695,37 @@ Statistics will be compared over matching windows, with FDS's long window to che
 2. **Numerical diffusion of the temperature shear layer** by the limited scalar advection (MUSCL-MC FCT, against FDS's CHARM). A thicker layer grows instabilities more slowly.
 3. **Missing seed.** Both codes have the same symmetric inputs. FDS may carry more round-off- or scheme-level perturbation, so its transition is seeded and RISE's is not.
 
+## 21. Not over-damped, not smeared: the plume lacks a seed (2026-11-04)
+
+The owner asked for §20's next items in order.
+
+**1. Eddy viscosity and shear layers, read-only** (`tools/fire/r271/inert_shear.py`, `docs/data/fire_r271/inert_shear.txt`).
+- **Data:** inert arms over 6–14 s, against FDS over the same window, converted to cell averages.
+- **Measures:**
+  - shear-layer vorticity and thermal thicknesses from the mean profiles;
+  - Vreman ν_t from each code's resolved velocity by one formula (Cv 0.07, 2Δ gradients, as FDS `velo.f90:244`);
+  - FDS's actual (VISCOSITY − MOLECULAR VISCOSITY)/ρ;
+  - the shear-layer Reynolds number w_c d_w / (ν + ν_t).
+
+| z 0.05 → 0.50 m | FDS | RISE compact | RISE default |
+|---|---|---|---|
+| ν_t, formula (10⁻⁴ m²/s) | 3.1 → 8.1 | 4.5 → 2.3 | 4.2 → 10.1 |
+| ν_t, FDS's actual output | 3.6 → 10.9 | | |
+| vorticity thickness d_w (m) | 0.110–0.123 | 0.094–0.126 | 0.116–0.137 |
+| thermal thickness d_T (m) | 0.087–0.132 | 0.074–0.123 | 0.111–0.123 |
+| shear-layer Re | 495–820 | 340–1380 | 310–640 |
+
+- **The formula reads FDS's actual ν_t 12–25% low,** so it is a fair estimator of the resolved-field eddy viscosity.
+- **Candidate 1, excess SGS viscosity, is ruled out.** Above 0.1 m the compact plume carries less ν_t than FDS and has a higher shear-layer Reynolds number (770–1380 against 600–820).
+- **Candidate 2, smearing, is ruled out.** RISE's shear layers are as thin as FDS's or thinner.
+- A thinner, higher-Re layer should be more unstable, not less. That it stays laminar points to **candidate 3: there is no disturbance for the convective instability to amplify.** RISE's GPU solver is deterministic and its inputs are symmetric. FDS's discretisation evidently carries enough perturbation to trigger transition near the source.
+
+**2. Seeded compact arm** (opt-in `RISE_FIRE_INERT_SEED=ε`, only with `RISE_FIRE_INERT_PLUME=1`; uncommitted with §19's patch).
+- **The seed:** each burner cell's dose is multiplied by 1 + ε·ξ, with ξ uniform in [−1, 1] from `SplitMix64` of the cell and a 10 ms time bucket. It is renormalised per layer, so the total is exactly 26.4 kW.
+- **Determinism:** Heun stages and retries share the bucket, so they see the same seed.
+- **Recording:** the receipt records `inert_seed`, the rebuild guard checks it, and it enters the source identity hash.
+- **The run:** ε = 0.2, compact stencil, 14 s from t = 0.
+
 ## Next (owner decisions)
 
 1. **Read-only, cheap:** in the inert near field (0.05–0.5 m), compare:
