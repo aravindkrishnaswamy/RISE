@@ -762,11 +762,48 @@ Like for like over 6–14 s (`inert_compare.py`, `docs/data/fire_r271/inert_seed
 - **The source is fixed in both codes,** frozen heat and fixed fuel inflow. So FDS's first-cell w′ and θ′ have to come from the flow arriving at the burner: the floor inflow flapping with the puffing cycle, or the pressure field feeding the upper plume's unsteadiness back to the base.
 - **Leading hypothesis:** RISE's base does not feel the plume's unsteadiness, through weaker pressure feedback or a damped near-floor inflow. This fits the fire case's burner-edge deficit (§16, §17) and is generic to the hydrodynamics.
 
+## 23. The missing seed is small-scale convection over the heated base (read-only, 2026-11-05)
+
+The owner approved §22's next item. RISE stores no pressure in frames or checkpoints, so pressure is compared on the FDS side only. Velocity and temperature are compared like for like over 6–14 s.
+
+**1. The base does not respond to the puffing cycle, in FDS either** (`tools/fire/r271/inert_floor.py`, `docs/data/fire_r271/inert_floor.txt`).
+- **Signals:** azimuthal means, so the axisymmetric puffing mode:
+  - the radial floor inflow just outside the burner;
+  - the burner-edge w in the first cell;
+  - FDS's floor pressure.
+- **Comparison:** each against centre w and pressure at 0.5 and 0.99 m, by coherence in the 2–4 Hz band.
+- **FDS's coherences are all at the noise floor** (0.01–0.13, floor about 0.15).
+- **FDS's floor pressure barely moves:** rms 0.0125 Pa, against 0.32 Pa at 0.99 m.
+- **The axisymmetric floor inflow fluctuates about as weakly in FDS as in RISE** (rms 0.004 against 0.002–0.003 m/s).
+- §22's hypothesis is ruled out: neither pressure feedback nor a puffing-driven floor inflow seeds FDS's base.
+
+**2. The disturbance is not brought in by the room** (`tools/fire/r271/inert_ambient.py`, `docs/data/fire_r271/inert_ambient.txt`). Local rms of u, v, w and θ by radial band:
+
+| layer 0 (z 0.015 m) | FDS | seeded | compact | default |
+|---|---|---|---|---|
+| burner interior u′ (m/s) / θ′ (K) | 0.054 / 34 | 0.017 / 19 | 0.009 / 6 | 0.34 / 101 |
+| burner edge w′ / θ′ | 0.047 / 8.4 | 0.010 / 3.6 | 0.010 / 1.3 | 0.071 / 20 |
+| just outside u′ | 0.017 | 0.006 | 0.005 | 0.070 |
+| ambient 0.25–0.45 m u′ | 0.004 | 0.002 | 0.002 | 0.029 |
+| ambient 0.6–1.0 m u′ | 0.001 | 0.000 | 0.000 | 0.002 |
+
+- **FDS's base unsteadiness is largest inside the burner,** over the heat source, and falls off outward. The room is quiet in both codes.
+- **It is small-scale:** in layers 0–3, 55–65% of FDS's θ′ energy is at 2.7–8 cells and only 13–14% at grid scale.
+- **RISE compact has the same spectral shape at 4–6× lower amplitude.** The default stencil's base is grid noise (20–22% grid-scale θ′, with 101 K interior rms).
+
+**Reading.** FDS's seed is local buoyant convection in the heated gas over the burner, at 3–8 cell scales. It is self-sustained, independent of the plume above, and grows into the near-source shear layer. RISE damps it. §12's fire finding, that base heat-release fluctuations produce about 60–75% of FDS's velocity response, is the same effect seen in the flame. A ±20% heat-source seed does not restore it (§22), so RISE's small-scale response to buoyancy is weak, not merely unforced.
+
+**Candidates, in RISE's discretisation at 3–8Δ:**
+1. buoyancy-to-velocity response: cell-to-face buoyancy interpolation and the projection;
+2. temperature advection: RISE's scalar scheme against FDS's CHARM limiter, damping 3–8Δ temperature structure;
+3. the volumetric heat-source coupling to divergence at small scales.
+
+The Taylor–Green test (§12) covers only momentum dissipation of 8Δ eddies, not these.
+
 ## Next (owner decisions)
 
-1. **Read-only, cheap:** FDS has PRESSURE slices at every layer. Measure the floor-level pressure fluctuation and its coherence with the plume at 0.3–1 m, and the radial floor inflow's rms just outside the burner, for FDS and the inert arms. RISE's side needs pressure from checkpoints or a small frame-dump addition; I'll check what the checkpoints already hold before proposing any change.
-2. **Then, depending on 1:**
-   - If FDS's base pressure fluctuates and RISE's does not, review RISE's pressure solve: projection tolerance, any filtering, boundary conditions at the floor and open sides.
-   - If the floor inflow is what differs, review the bed's tangential velocity BC and near-wall ν_t against FDS's no-slip wall treatment.
-3. The seed and inert-plume opt-ins stay uncommitted pending owner review. The seed is diagnostic only and is not proposed for production.
-4. The §16 small fixes stay optional.
+1. **Two small synthetic tests through the real production capstone** (new runs, short; harness copies only, as `tg_driver.cpp`):
+   - **Buoyancy response:** in quiescent ambient air, impose a small sinusoidal temperature perturbation at 3, 4, 6 and 8Δ. Compare the first-interval w growth against the linear analytic rate, g θ′/T · k_h²/(k_h²+k_z²). This tests candidates 1 and 3.
+   - **Scalar advection:** advect a 3–8Δ temperature pattern in uniform flow. Compare its decay per cell crossed against a CHARM reference. This tests candidate 2.
+2. Whichever test fails points to the operator for an owner-reviewed opt-in fix and an inert A/B.
+3. The seed and inert-plume opt-ins stay uncommitted pending owner review. The §16 small fixes stay optional.

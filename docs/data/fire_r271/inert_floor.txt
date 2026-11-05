@@ -1,0 +1,40 @@
+  inert_compact_seed02
+    rms: ur0 0.0024  ur1 0.0021  wE0 0.0015  wc50 0.0374  wc99 0.1760
+    ur0  vs wc50: coherence 0.13  gain  0.0094
+    ur0  vs wc99: coherence 0.10  gain  0.0014
+    ur1  vs wc50: coherence 0.06  gain  0.0093
+    ur1  vs wc99: coherence 0.09  gain  0.0019
+    wE0  vs wc50: coherence 0.03  gain  0.0042
+    wE0  vs wc99: coherence 0.04  gain  0.0008
+  inert_compact
+    rms: ur0 0.0028  ur1 0.0023  wE0 0.0027  wc50 0.0373  wc99 0.1360
+    ur0  vs wc50: coherence 0.33  gain  0.0117
+    ur0  vs wc99: coherence 0.04  gain  0.0012
+    ur1  vs wc50: coherence 0.26  gain  0.0179
+    ur1  vs wc99: coherence 0.02  gain  0.0016
+    wE0  vs wc50: coherence 0.14  gain  0.0059
+    wE0  vs wc99: coherence 0.03  gain  0.0008
+  inert_legacy
+    rms: ur0 0.0078  ur1 0.0097  wE0 0.0103  wc50 0.2282  wc99 0.4087
+    ur0  vs wc50: coherence 0.12  gain  0.0097
+    ur0  vs wc99: coherence 0.01  gain  0.0016
+    ur1  vs wc50: coherence 0.08  gain  0.0100
+    ur1  vs wc99: coherence 0.00  gain  0.0012
+    wE0  vs wc50: coherence 0.04  gain  0.0054
+    wE0  vs wc99: coherence 0.04  gain  0.0027
+# FDS velocities converted from face values to cell averages (R271_FDS_CELL_AVERAGE=1)
+  FDS r271_inert
+    rms: ur0 0.0038  ur1 0.0054  wE0 0.0067  wc50 0.1754  wc99 0.6774  p0 0.0125  p99 0.3231
+    ur0  vs wc50: coherence 0.03  gain  0.0038
+    ur0  vs wc99: coherence 0.11  gain  0.0021
+    ur0  vs p99 : coherence 0.03  gain  0.0020
+    ur1  vs wc50: coherence 0.01  gain  0.0034
+    ur1  vs wc99: coherence 0.12  gain  0.0031
+    ur1  vs p99 : coherence 0.06  gain  0.0043
+    wE0  vs wc50: coherence 0.02  gain  0.0031
+    wE0  vs wc99: coherence 0.05  gain  0.0015
+    wE0  vs p99 : coherence 0.03  gain  0.0022
+    p0   vs wc50: coherence 0.02  gain  0.0176
+    p0   vs wc99: coherence 0.13  gain  0.0110
+    p0   vs p99 : coherence 0.01  gain  0.0067
+  mean ur0 (m/s, negative = inflow): FDS -0.1212
