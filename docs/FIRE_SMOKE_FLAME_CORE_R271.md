@@ -800,10 +800,49 @@ The owner approved §22's next item. RISE stores no pressure in frames or checkp
 
 The Taylor–Green test (§12) covers only momentum dissipation of 8Δ eddies, not these.
 
+## 24. Buoyancy response and scalar advection are not the cause (synthetic tests, 2026-11-05)
+
+The owner approved §23's two tests. Both run through the real tier-8 production capstone (69×69×106, default settings), started from rest at t = 0 with an imposed pattern (harness copy only: `tools/fire/r271/bt_driver.cpp`, `build_bt.py`, `run_bt.sh`; reduction `bt_analyze.py`; checkpoint cross-check `bt_ckpt.cpp`; data `docs/data/fire_r271/bt_buoy_adv.txt`). Temperatures are T = 300 K + A f(z)(1 + φ), so no cell falls below the methane table's 300 K. Densities follow at constant pressure; energy comes from the production EOS. Amplitudes are read over the core z 1.9–2.7 m, cells 10–58.
+
+**1. Buoyancy response matches the ideal MAC grid** (candidate 1 ruled out).
+- **Pattern:** φ = cos kx′ cos ky′ cos kz′, A = 2 K, in quiescent air.
+- **Measure:** R = d(w amplitude)/dt ÷ buoyancy amplitude.
+- **Reference:** the ideal staggered response, (2/3) cos(kΔ/2).
+
+| cells per wavelength | 3 | 4 | 6 | 8 |
+|---|---|---|---|---|
+| R, RISE | 0.337 | 0.477 | 0.583 | 0.622 |
+| ideal MAC | 0.333 | 0.471 | 0.577 | 0.616 |
+| RISE / ideal | 1.010 | 1.011 | 1.010 | 1.010 |
+
+Buoyancy reaches the faces and the projection without loss at every scale. The uniform 1% excess sits within the fit.
+
+**2. Temperature advection is no more dissipative than CHARM where it matters** (candidate 2 ruled out).
+- **Pattern:** φ = cos kx′, A = 1 K (0.9 K at 6 cells), advected by a uniform u = 0.5 m/s for 0.5 s (8 cells crossed).
+- **Fit:** decay per cell crossed, with the molecular share removed, against FDS's CHARM face scheme (predictor-corrector) over the same steps.
+
+| cells per wavelength | 3 | 4 | 6 | 8 |
+|---|---|---|---|---|
+| RISE decay per cell | 1.65 | 0.76 | 0.095 | 0.029 |
+| CHARM decay per cell | 1.35 | 0.72 | 0.235 | 0.097 |
+| RISE / CHARM phase speed | 0.90 | 0.98 | 0.96 | 0.97 |
+
+- **At 3 cells,** RISE is about 20% more dissipative, but both codes erase a 3-cell pattern within about 2 cells crossed.
+- **At 4 cells,** the two are equal.
+- **At 6–8 cells,** where FDS's base convection carries most of its energy (§23), RISE keeps 2.5–3× more amplitude per cell crossed than CHARM.
+
+**Run notes.**
+- The first 6-cell attempt (A = 1 K) stopped at step 1 on a projected-Heun Picard non-convergence: the momentum change was stuck at 0.535 against a tolerance of 5e-4. At A = 0.9 K the run completed. The log is kept as `adv_n6_A1_fail.log`. The production capstone can therefore fail to start from some smooth imposed states. Not pursued.
+- In steps 1–5 the scalar amplitude changes with no phase motion (28% at 3 cells, a few percent elsewhere), then advects normally. Fits start at step 6. This is a start-up adjustment of the imposed state, not transport.
+
+**Reading.** Neither RISE's buoyancy-to-velocity response nor its temperature advection damps 3–8Δ structure more than FDS does. Both tests are linear, single-step-type checks: they do not cover the source term, and they do not cover the growth of an unstable mode over many steps. FDS's base convection is a statically unstable heated layer over the burner. Remaining candidates:
+1. **Heat-source coupling:** how the volumetric source enters the divergence constraint and the temperature at small scales (candidate 3, untested).
+2. **Instability growth over many steps:** the time integration, or the Picard and plateau acceptance, damping a growing mode that the one-interval buoyancy test cannot see.
+3. **The near-floor treatment over the burner:** the no-slip floor and the fuel inflow face, and how RISE's first cell takes heat.
+
 ## Next (owner decisions)
 
-1. **Two small synthetic tests through the real production capstone** (new runs, short; harness copies only, as `tg_driver.cpp`):
-   - **Buoyancy response:** in quiescent ambient air, impose a small sinusoidal temperature perturbation at 3, 4, 6 and 8Δ. Compare the first-interval w growth against the linear analytic rate, g θ′/T · k_h²/(k_h²+k_z²). This tests candidates 1 and 3.
-   - **Scalar advection:** advect a 3–8Δ temperature pattern in uniform flow. Compare its decay per cell crossed against a CHARM reference. This tests candidate 2.
-2. Whichever test fails points to the operator for an owner-reviewed opt-in fix and an inert A/B.
-3. The seed and inert-plume opt-ins stay uncommitted pending owner review. The §16 small fixes stay optional.
+1. **One more pair of synthetic tests through the production capstone** (new runs, short, harness copies only):
+   - **Unstable-layer growth:** a heated layer under cool air, seeded at 4–8Δ, run identically in FDS and RISE. Compare the mode's growth rate over many steps. This tests candidate 2 and, with the layer made by a volumetric source, candidate 1.
+   - **Burner-cell column:** the inert source over the burner without a seed, run for 1 s in both codes. Compare the first-cell θ′ and u′ build-up. This tests candidate 3.
+2. The seed and inert-plume opt-ins stay uncommitted pending owner review. The §16 small fixes stay optional.
