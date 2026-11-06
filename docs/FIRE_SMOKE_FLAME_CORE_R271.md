@@ -840,9 +840,101 @@ Buoyancy reaches the faces and the projection without loss at every scale. The u
 2. **Instability growth over many steps:** the time integration, or the Picard and plateau acceptance, damping a growing mode that the one-interval buoyancy test cannot see.
 3. **The near-floor treatment over the burner:** the no-slip floor and the fuel inflow face, and how RISE's first cell takes heat.
 
+## 25. RISE's coupled near-base dynamics are net-damped; no single operator is responsible (2026-11-05)
+
+The owner approved §24's two tests and further hypotheses, to continue until the cause was found, a full simulation was needed, or ideas ran out. Everything here is a harness copy (`build_bt.py` kinds `fds`/`advmom`, `xp_driver.cpp`), an FDS input variant, or read-only. Tools are in `tools/fire/r271/`; data in `docs/data/fire_r271/`. Bulk dumps are kept outside git in `r271_small_scale/dumps/`.
+
+**1. The base pattern is the same; only its unsteadiness differs** (read-only; `base_split.py`, `base_onset.py`, `base_timing.py`, from `ckpt_layers.cpp` dumps of the inert run's checkpoints).
+- **Mean state over the burner matches FDS:**
+  - w within 1%, θ within 5–40 K, mean divergence within 1–7%.
+  - The base is statically unstable in both codes (θ falls about 2000 K/m).
+- **Steady non-axisymmetric pattern is the same:**
+
+  | layer | 0 | 1 | 3 |
+  |---|---|---|---|
+  | RISE θ′ (K) | 44 | 65 | 70 |
+  | FDS θ′ (K) | 50 | 64 | 69 |
+
+  w′ agrees to 10%.
+- **What differs is the unsteadiness on top:**
+  - At layer 0, FDS's unsteady w is 2× its steady pattern; RISE's is 0.3×.
+  - The two codes are indistinguishable through about 1 s from rest.
+  - After the start-up transient, RISE's base relaxes: k0 rms w goes from 0.115 to 0.004 m/s.
+  - FDS's base never relaxes (0.03–0.06 m/s).
+- **No noise source in FDS:**
+  - single mesh, exact FFT pressure solve (1 iteration, zero velocity error);
+  - `NOISE` only perturbs the initial field.
+
+  So FDS's near field is self-sustaining.
+
+**2. 2×2 transplant: RISE's dynamics damp the unsteadiness, FDS's regenerate it** (`xp_state.py`, `xp_driver.cpp`, `ckpt_state.cpp`, `make_fds_xp.py`, `xp_analyze.py`; `xp_transplant.txt`).
+- **Set-up:**
+  - Each code continues from 9.75 s from either its own instantaneous 3D state or the other code's: temperature, every MAC face velocity, and RISE's methane field.
+  - FDS reads the state through `&CSVF` initial-field files. RISE's state is replaced at step 0 of a fresh capstone.
+  - The floor plane must be written as 0 for FDS; a nonzero value stalls its pressure iteration.
+- **Measure:** unsteady rms w over r < 0.10 m (m/s).
+
+  | dynamics ← state, at about 1 s | k3 | k7 | k16 |
+  |---|---|---|---|
+  | FDS ← FDS | 0.21 | 0.37 | 0.65–0.79 |
+  | FDS ← RISE | 0.10–0.13 | 0.18–0.26 | 0.52–0.55 |
+  | RISE ← FDS | 0.04–0.06, falling | 0.14 | 0.41–0.46 |
+  | RISE ← RISE | 0.02 | 0.05–0.07 | 0.17–0.24 |
+
+- **RISE from FDS's state** decays toward its own level with an e-folding time of about 0.8 s. It first loses the 2.7–4-cell band at layer 3 (to 0.54 of its starting energy by 0.3 s, while FDS's grows to 1.2–1.6; `xp_spectra.txt`).
+- **FDS from RISE's state** rebuilds its base level (k0 0.06 m/s) within the first 0.25 s, and reaches FDS-like levels higher up within about 1.5 s.
+- The RISE transplant was stopped at 1.19 s, once the trend was clear.
+
+**3. Every isolated operator matches FDS at 3–8 cells.**
+
+| test (same initial field in both codes) | RISE | FDS |
+|---|---|---|
+| Taylor–Green decay, 3.0 / 3.9 / 6.0 cells, no SGS (1/s) | 0.12 / 0.12 / 0.05 | 0.13 / 0.13 / 0.06 |
+| Taylor–Green decay, 3.9 cells, production SGS (1/s) | 1.46 | 1.46 |
+| momentum advection, 3 / 4 / 6 cells: decay per cell; c/U (central ideal 0.41 / 0.64 / 0.83) | ≈0; 0.40 / 0.62 / 0.81 | ≈0; 0.41 / 0.63 / 0.81 |
+| Rayleigh–Taylor, 600 K layer, 2-cell edge, 4 / 8 cells: growth (1/s) | 5.58 / 6.49 | 5.83 / 6.47 |
+| buoyancy response, scalar advection | §24: ideal MAC; equal to CHARM at 4 cells | |
+
+Sources: `tg_small_scale.txt`, `momentum_advection.txt`, `rt_growth.txt`.
+- RISE's Rayleigh–Taylor amplitude runs 8–10% below FDS's.
+- RISE's projection could not start from a 900 K layer with a one-cell edge: Picard non-convergence at step 0, as in §24's 6-cell start.
+- The FDS references all start through `&CSVF` from the field the RISE harness imposes (`make_fds_tg.py`, `make_fds_advmom.py`, `rt_state.py`).
+
+**4. FDS ablations from RISE's quiet state** (FDS dynamics with one ingredient changed; `xp_transplant.txt`).
+
+| FDS change | effect on base unsteadiness |
+|---|---|
+| time step locked at RISE's 1.646 ms | unchanged |
+| free-slip floor and burner | slightly higher |
+| baroclinic torque off | similar |
+| `CONSTANT_SPECIFIC_HEAT_RATIO` (drops the advective u·∇ terms from the divergence) | higher |
+| MINMOD / Godunov scalar limiter | unchanged / higher |
+| SGS off | explodes (rms w about 1 m/s at k0–k7 within 0.75 s) |
+
+FDS's base unsteadiness does not depend on the time step, the floor, baroclinic torque, γ or scalar transport. It is a balance between a self-exciting resolved flow and the SGS.
+
+**5. RISE's resolved dynamics are not over-stable.**
+- **RISE from FDS's state with momentum C_v = 0** (harness override `RISE_R271_CV`; scalar SGS stays, since its record coefficient must be positive): the base unsteadiness grows, k3 0.17 → 0.32 m/s in 0.75 s, instead of decaying.
+- **FDS from its own state with all SGS off:** grows faster, 0.22 → 1.09 m/s.
+- Both codes' resolved base flow is unstable. With SGS, FDS's balance is net-positive and RISE's net-negative.
+
+**6. Expansion and EOS.**
+- RISE's base divergence fluctuates 4–6× less than FDS's (`base_divergence.txt`). Every component does (source part and the rest), along with methane fraction (5–8×). This is consistent with weaker turbulence, not a missing term.
+- RISE's projection target restores the EOS only beyond a 2⁻⁴ dead band, and the advective-anomaly target has no callers. The cells nevertheless stay on the EOS to 0.03% rms (largest 0.15%), so no expansion is being withheld.
+
+**Reading.**
+- The near-base flow is marginal: both codes' resolved dynamics are unstable, and the Vreman SGS holds them back.
+- RISE's Vreman is a direct transcription of FDS's (same stencils, C_v, Pr_t = Sc_t = 0.7).
+- Its isolated operators agree with FDS's to within 0–10%. The small deficits all point the same way:
+  - Rayleigh–Taylor growth 0–4% lower, amplitude 8–10% lower;
+  - 3-cell scalar damping 20% higher;
+  - slower growth without momentum SGS, in an arm that still had scalar SGS.
+- In a loop at the edge of self-sustaining, deficits of this size can turn sustained into decaying. No single dominant operator error was found.
+- What remains untested needs a production-source change (owner review): a fully SGS-off RISE arm (momentum and scalar) from FDS's state, to compare resolved growth like for like with FDS's no-SGS arm.
+
 ## Next (owner decisions)
 
-1. **One more pair of synthetic tests through the production capstone** (new runs, short, harness copies only):
-   - **Unstable-layer growth:** a heated layer under cool air, seeded at 4–8Δ, run identically in FDS and RISE. Compare the mode's growth rate over many steps. This tests candidate 2 and, with the layer made by a volumetric source, candidate 1.
-   - **Burner-cell column:** the inert source over the burner without a seed, run for 1 s in both codes. Compare the first-cell θ′ and u′ build-up. This tests candidate 3.
+1. **Owner-reviewed diagnostic opt-in:** let the scalar (heat/species) Vreman coefficient be overridden, so a RISE transplant can run fully SGS-off from FDS's state.
+   - If RISE's resolved growth then matches FDS's no-SGS arm, the problem is the coupled SGS balance near the base. Candidate remedies, each an owner-reviewed modelling choice with an inert A/B: a near-wall or near-source C_v reduction, or a 4–8Δ stochastic forcing or backscatter.
+   - If RISE still grows several times slower, bisect the coupled step further: Picard/plateau acceptance, the stage structure of projected Heun, and the source/divergence coupling.
 2. The seed and inert-plume opt-ins stay uncommitted pending owner review. The §16 small fixes stay optional.

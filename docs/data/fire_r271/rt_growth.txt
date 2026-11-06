@@ -1,0 +1,24 @@
+== n=4: time, w-mode amplitude Aw (m/s), T-mode amplitude ac (K); growth rate of |Aw| fitted where 0.002<|Aw|<0.1 m/s
+  RISE: growth 5.58 1/s over t 0.067-0.382 s
+  FDS: growth 5.83 1/s over t 0.027-0.400 s
+   t=0.02 FDS: Aw   0.0031 ac    2.88
+   t=0.05 FDS: Aw   0.0063 ac    3.00
+   t=0.10 FDS: Aw   0.0107 ac    3.30
+   t=0.15 FDS: Aw   0.0176 ac    3.98
+   t=0.20 FDS: Aw   0.0245 ac    4.80
+   t=0.25 RISE: Aw   0.0287 ac    5.26   FDS: Aw   0.0319 ac    5.66
+   t=0.30 FDS: Aw   0.0390 ac    6.39
+   t=0.35 FDS: Aw   0.0446 ac    6.81
+   t=0.40 FDS: Aw   0.0476 ac    6.91
+== n=8: time, w-mode amplitude Aw (m/s), T-mode amplitude ac (K); growth rate of |Aw| fitted where 0.002<|Aw|<0.1 m/s
+  RISE: growth 6.49 1/s over t 0.067-0.361 s
+  FDS: growth 6.47 1/s over t 0.027-0.400 s
+   t=0.02 FDS: Aw   0.0033 ac    2.88
+   t=0.05 FDS: Aw   0.0067 ac    3.01
+   t=0.10 FDS: Aw   0.0115 ac    3.33
+   t=0.15 FDS: Aw   0.0190 ac    4.06
+   t=0.20 FDS: Aw   0.0282 ac    5.15
+   t=0.25 FDS: Aw   0.0360 ac    6.11
+   t=0.30 RISE: Aw   0.0424 ac    6.75   FDS: Aw   0.0463 ac    7.30
+   t=0.35 FDS: Aw   0.0558 ac    8.36
+   t=0.40 FDS: Aw   0.0642 ac    9.29
