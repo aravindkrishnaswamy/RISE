@@ -126,6 +126,10 @@ old='\t\tif(!BuildProductionTemporalWindowPlan(beginning,frameCadenceS,r246TopDo
 h=h.replace(old,'\t\tif(!beginning.succeeded)std::fprintf(stderr,"R271_BT_PROBE_ERROR %s\\n",beginning.structuredError.c_str());\n\t\tstd::fprintf(stderr,"R271_BT_PROBE ok=%d dims=%zu,%zu,%zu ft=%a mft=%a ss=%a\\n",beginning.succeeded?1:0,beginning.dimensions[0],beginning.dimensions[1],beginning.dimensions[2],beginning.flowThroughTimeS,beginning.matchedScheduleFlowThroughTimeS,beginning.statisticsStartS);\n'+old)
 old='\t\tif(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS||';assert h.count(old)==1
 h=h.replace(old,'\t\tstd::fprintf(stderr,"R271_BT_LAUNCH ok=%d err=%s\\n",launchCase.succeeded?1:0,launchCase.structuredError.c_str());\n'+old)
+old='\t\t\t\t\t(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS);\n\t\t\t\tconst double checkpointElapsedS';assert h.count(old)==1
+# section 26: with RISE_R271_FINAL_AT_WINDOW=1 the window end counts as the end of work, so the harness writes its final
+# checkpoint (production_final.checkpoint) at the stop; used for the one-step operator comparison (xp1_*).
+h=h.replace(old,'\t\t\t\t\t(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)&&\n\t\t\t\t\t(!std::getenv("RISE_R271_FINAL_AT_WINDOW")||simulationTimeS<r271EndTimeS);\n\t\t\t\tconst double checkpointElapsedS')
 old='\t\towner.vremanCoefficient=ordinary.force.vremanCoefficient;';assert h.count(old)==1  # optional momentum C_v override (as build_tg.py)
 h=h.replace(old,'\t\towner.vremanCoefficient=std::getenv("RISE_R271_CV")?std::stof(std::getenv("RISE_R271_CV")):ordinary.force.vremanCoefficient;')
 harness=OUT/'Harness.cpp';harness.write_text(h)

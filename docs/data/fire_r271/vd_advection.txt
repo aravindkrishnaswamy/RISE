@@ -1,0 +1,6 @@
+# r271 section 26: variable-density momentum advection (vd_state.py, vd_analyze.py), n=4, A=0.1, U=0.5, T 300-600 K at 8 cells, SGS off
+n=4: decay per cell crossed and c/U (central reference c/U = 0.637); amplitude at t = 0.1/0.2/0.3 s over A
+  FDS variable density         decay   0.0231  c/U  0.627  over  4.5 cells | amp/A0 1.001 0.979 0.883
+  RISE variable density        decay   0.0232  c/U  0.621  over  4.5 cells | amp/A0 1.002 0.968
+  FDS constant density         decay  -0.0064  c/U  0.639  over  4.5 cells | amp/A0 1.014 1.023 1.022
+  RISE constant density        decay  -0.0006  c/U  0.626  over  4.5 cells | amp/A0 0.997 0.993

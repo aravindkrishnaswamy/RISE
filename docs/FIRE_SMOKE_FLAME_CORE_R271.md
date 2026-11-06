@@ -932,9 +932,71 @@ FDS's base unsteadiness does not depend on the time step, the floor, baroclinic 
 - In a loop at the edge of self-sustaining, deficits of this size can turn sustained into decaying. No single dominant operator error was found.
 - What remains untested needs a production-source change (owner review): a fully SGS-off RISE arm (momentum and scalar) from FDS's state, to compare resolved growth like for like with FDS's no-SGS arm.
 
+## 26. Fully SGS-off RISE, same-state tendencies, and FDS sensitivity (2026-11-05/06)
+
+The owner approved the scalar-SGS opt-in and its experiment. Opt-in `RISE_FIRE_SCALAR_VREMAN_CV=<C_v ≥ 0>` (`FireProductionAdvectionMac.mm`, read once; unset keeps the transport record's C_v; 0 turns scalar SGS off) is uncommitted with §19's patch (`docs/data/fire_r271/scalar_vreman_cv.patch`). The build is warning-free. Harness-only addition: `RISE_R271_FINAL_AT_WINDOW=1` writes the final checkpoint at the window end (`build_bt.py`).
+
+**1. RISE fully SGS-off from FDS's state still grows 2–6× slower than FDS SGS-off** (`xp_sgs_off.txt`).
+
+| arm (from FDS's 9.751 s state) | k0 w rms, first → last bin | k3 |
+|---|---|---|
+| RISE, scalar SGS off only | 0.022 → 0.016 | 0.159 → 0.057 (decays like the baseline) |
+| RISE, all SGS off | 0.034 → 0.342 (1.0–1.25 s) | 0.184 → 0.555 |
+| FDS, all SGS off | 0.062 → 1.09 (0.75–1.0 s) | 0.222 → 1.10 |
+
+- Scalar SGS is not the damper.
+- Initial e-folding rates: k0 2.7 against 7.8 1/s; k3 0.6–2.2 against 3.9 1/s.
+
+**2. Same-state tendencies at a locked dt agree to a few percent** (`step_tendency.txt`; `step1_compare.py`, `step_tbins.py`, `step_flowpart.py`). Both codes run 1–8 steps of RISE's dt (1.646 ms; FDS `LOCK_TIME_STEP`) from the same field. The changes are then compared cell by cell.
+- **RISE start-up:** after an external state, RISE kicks the field in step 1 and reverses it in step 2 (consecutive increments correlate at −0.98). The kick is about 0.007 m/s near the floor. Only steps ≥ 2 are comparable.
+- **FDS output lag:** FDS's T and density slices lag one step (frame 1 equals frame 0).
+- **From rest (T field kept, velocity 0), steps 4→8:** W, U and T changes agree within 1% at every temperature (slope 0.99–1.01, correlation 1.000). Buoyancy, pressure, source and expansion match in hot gas too.
+  - The exception is the floor cell over the burner. RISE heats it at 6223 against 7457 K/s and expands at 8.46 against 8.92 1/s, while k1–k2 match (4592/4594, 2852/2799 K/s).
+- **Full state, steps 2→8:** agreement is 0.91–1.04 everywhere (correlation 0.95–1.00). The flow-driven part (full minus at-rest) is weaker in RISE by 3% in ambient air, rising to 12% above 600 K. The states have drifted apart by then (step-4 max |ΔW| 0.13 m/s at k16), so this is an upper bound.
+
+**3. Variable-density momentum advection matches** (`vd_advection.txt`; `vd_state.py`, `vd_analyze.py`).
+- **Setup:** a 4-cell v pattern carried by u = 0.5 m/s through T = 300–600 K at 8 cells, SGS off, both codes from the same file.
+- **Variable density:** decay per cell 0.0232 against 0.0231, c/U 0.621 against 0.627.
+- **Constant density:** −0.001 against −0.006, c/U 0.626 against 0.639.
+
+**4. The SGS share of the tendency matches above k3** (`sgs_nearwall.txt`; `sgs_tendency.py`, SGS-on minus SGS-off from the same start).
+- **Momentum:** slope 0.94–1.04 from k3 up, but 1.2–1.5× FDS's at k0–k2.
+- **Scalar:** about 0.9× FDS's after the one-step lag correction, but about 3× at k0.
+- **Missing near-wall model:** FDS replaces μ in every wall-adjacent cell by μ_DNS + ρν_WALE (`velo.f90` WALL_LOOP, default `NEAR_WALL_TURBULENCE_MODEL`, C_WALE 0.60), and RISE has no near-wall model.
+  - Recomputing Vreman offline on FDS's own field with FDS's stencil reproduces FDS's ν_t exactly at k1–k2 (ratio 1.00).
+  - At k0, FDS's WALE ν_t is 0.69× Vreman (`nearwall_nut.py`).
+
+**5. FDS sensitivity from RISE's quiet state, 2.5 s** (`fds_sensitivity.txt`; unsteadiness about each arm's own mean, 1.0–2.5 s, `xp_ownmean.py`).
+
+| FDS arm | w rms k0 | k3 | k7 | k16 | core T k0 (K) |
+|---|---|---|---|---|---|
+| RISE own (reference) | 0.005 | 0.022 | 0.060 | 0.213 | 1089 |
+| FDS baseline | 0.043 | 0.119 | 0.267 | 0.598 | 1047 |
+| layer-0 heat × 0.83 (RISE's floor-cell heating) | 0.036 | 0.096 | 0.240 | 0.550 | 920 |
+| layer-0 heat × 0.60 | 0.033 | 0.082 | 0.231 | 0.496 | 751 |
+| near-wall ν_t 6.9e-4 m²/s (Vreman level) | 0.037 | 0.115 | 0.256 | 0.621 | 1088 |
+| near-wall ν_t 1.38e-3 m²/s | 0.032 | 0.135 | 0.263 | 0.522 | 1150 |
+| C_v 0.12 everywhere | 0.016 | 0.050 | 0.133 | 0.349 | 1041 |
+
+- Neither floor-cell difference is the cause. FDS keeps its base unsteadiness with 40% less floor heating or with Vreman-level (2×) floor ν_t.
+- The missing WALE treatment does explain RISE's hotter floor-cell mean: FDS with Vreman-level floor ν_t reaches 1088 K, against RISE's 1089 K.
+- FDS is sensitive to SGS strength in the near field: C_v + 71% cuts it 2–2.5×. RISE at C_v 0.07 is still quieter than FDS at 0.12.
+
+**Reading (revises §25).**
+- FDS is not marginal: its base stays unsteady through every ablation except a much stronger SGS.
+- RISE behaves as if its near-field dissipation were at least about 1.7× FDS's.
+- No operator shows that excess, isolated or as a same-state tendency: buoyancy, pressure, source, expansion, momentum advection (constant and variable density) and the SGS share above k3 all agree within 1–5%.
+- Even without SGS, RISE's resolved growth is 2–6× slower.
+- The deficit therefore arises over many steps of the coupled update, not in any single-step operator.
+- Two genuine but non-causal fidelity gaps were found: no near-wall (WALE) eddy viscosity, and a 17% slower floor-cell heating at the burner face.
+- Not explained: RISE's two-step start-up kick after an external state. It points to step-to-step history in the coupled update (e.g. a carried pressure or projection target) and is the best remaining lead for many-step damping.
+
 ## Next (owner decisions)
 
-1. **Owner-reviewed diagnostic opt-in:** let the scalar (heat/species) Vreman coefficient be overridden, so a RISE transplant can run fully SGS-off from FDS's state.
-   - If RISE's resolved growth then matches FDS's no-SGS arm, the problem is the coupled SGS balance near the base. Candidate remedies, each an owner-reviewed modelling choice with an inert A/B: a near-wall or near-source C_v reduction, or a 4–8Δ stochastic forcing or backscatter.
-   - If RISE still grows several times slower, bisect the coupled step further: Picard/plateau acceptance, the stage structure of projected Heun, and the source/divergence coupling.
-2. The seed and inert-plume opt-ins stay uncommitted pending owner review. The §16 small fixes stay optional.
+1. **Many-step coupled damping (cause still open).** Candidates:
+   - history carried between steps (previous pressure, projection or EOS targets), shown by the start-up kick;
+   - the Picard/plateau acceptance of projected Heun.
+   A harness test that resets or freezes that history, and compares an unstable mode's growth over 50–200 steps against FDS, needs no production change once the carried quantities are identified.
+2. **Calibration route, if the cause stays elusive.** A RISE transplant at C_v ≈ 0.035 from FDS's state (≈ 5 h), then an inert-plume A/B (≈ 15 h). The cv0 arm already grows.
+3. **Fidelity fix, independent of the above:** a WALE near-wall eddy viscosity for wall-adjacent cells (momentum and scalars, as FDS), opt-in with an inert A/B. Expected effect: floor-cell mean temperature toward FDS's. Not expected to restore the base unsteadiness.
+4. The seed, inert-plume and scalar-C_v opt-ins stay uncommitted pending owner review. The §16 small fixes stay optional.
