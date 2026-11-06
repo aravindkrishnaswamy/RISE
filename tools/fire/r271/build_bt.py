@@ -136,16 +136,17 @@ harness=OUT/'Harness.cpp';harness.write_text(h)
 make=ROOT/'build/make/rise';cmds=subprocess.check_output(['make','-C',str(make),'-n','-B','../../../bin/tests/FireSequenceTest'],text=True).splitlines()
 compile_=next(x for x in cmds if x.startswith('c++ ')and' -c 'in x and'tests/FireSequenceTest.cpp'in x)
 link=next(x for x in cmds if x.startswith('c++ ')and' -o ../../../bin/tests/FireSequenceTest 'in x)
-obj=OUT/(SRC+'.o');drv=OUT/SRC
+TAG=sys.argv[2] if len(sys.argv)>2 else SRC  # optional output name, so a rebuild never overwrites a running binary
+obj=OUT/(TAG+'.o');drv=OUT/TAG
 compile_=compile_.replace('../../../tests/FireSequenceTest.cpp',str(ROOT/'tools/fire/r271'/(SRC+'.cpp'))).replace('-o ../../../tests/FireSequenceTest.o','-o '+str(obj))
 compile_=compile_.replace(' -c ',f' -I{ROOT}/tests -DR271_HARNESS_SOURCE=\\"{harness}\\" -c ')
 assert str(obj) in compile_
 link=link.replace(' -o ../../../bin/tests/FireSequenceTest ',' -o '+str(drv)+' ').replace(' ../../../tests/FireSequenceTest.o ',' '+str(obj)+' ')
 assert str(obj) in link
-(OUT/f'build_{SRC}.sh').write_text('set -e\ncd '+shlex.quote(str(make))+'\n'+compile_+'\n'+link+'\n')
-with (OUT/f'build_{SRC}.log').open('w') as log:subprocess.run(['sh',str(OUT/f'build_{SRC}.sh')],stdout=log,stderr=subprocess.STDOUT,check=True)
+(OUT/f'build_{TAG}.sh').write_text('set -e\ncd '+shlex.quote(str(make))+'\n'+compile_+'\n'+link+'\n')
+with (OUT/f'build_{TAG}.log').open('w') as log:subprocess.run(['sh',str(OUT/f'build_{TAG}.sh')],stdout=log,stderr=subprocess.STDOUT,check=True)
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-(OUT/f'build_manifest_{SRC}.json').write_text(json.dumps({'production_sources_rewritten':False,'git_head':subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip(),
+(OUT/f'build_manifest_{TAG}.json').write_text(json.dumps({'production_sources_rewritten':False,'git_head':subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip(),
  'git_dirty':subprocess.check_output(['git','-C',str(ROOT),'status','--porcelain','--','src','tests'],text=True).strip()!='',
  'harness_changes':['stop at start + RISE_R271_WINDOW_S','temperature pattern (and uniform u for adv) at t=0','per-step pattern projections'],
  'sha256':{str(p):sha(p) for p in [ROOT/'tools/fire/r271'/(SRC+'.cpp'),harness,drv]}},indent=2)+'\n')

@@ -1,0 +1,66 @@
+# r271 section 27: probes run 2026-11-06 (tools/fire/r271/*.py named per block)
+
+## kick_corr.py: start-up kick, RISE's own checkpoint state vs FDS's state (1- and 2-step runs, SGS on, C_v 0.07)
+RISE own state (xown1, xown2): rms d1 / rms d2 / corr(d1,d2) by layer band
+  T | k0-0: 0.00953/0.00959 +1.00 | k1-2: 0.0199/0.0199 +1.00 | k3-7: 0.0573/0.0568 +1.00 | k8-16: 0.161/0.161 +0.98 | k17-33: 0.345/0.345 +0.97 | k34-65: 0.565/0.562 +0.97
+  U | k0-0: 3.65e-05/3.7e-05 -0.20 | k1-2: 5.88e-05/5.41e-05 +0.51 | k3-7: 0.000187/0.000189 +0.91 | k8-16: 0.000788/0.000779 +0.97 | k17-33: 0.00192/0.00192 +0.97 | k34-65: 0.00435/0.00431 +0.97
+  V | k0-0: 4.04e-05/3.72e-05 -0.12 | k1-2: 6.53e-05/6.44e-05 +0.61 | k3-7: 0.000177/0.000172 +0.88 | k8-16: 0.000726/0.000726 +0.96 | k17-33: 0.00182/0.00182 +0.97 | k34-65: 0.00452/0.00451 +0.97
+  W | k0-0: 6.01e-08/6.14e-08 +1.00 | k1-2: 3.71e-05/3.55e-05 +0.89 | k3-7: 0.000161/0.000159 +0.91 | k8-16: 0.000682/0.000672 +0.97 | k17-33: 0.00218/0.00216 +0.98 | k34-65: 0.00518/0.00515 +0.98
+FDS state (xp1_sgs, xp2_sgs): rms d1 / rms d2 / corr(d1,d2) by layer band
+  T | k0-0: 0.172/0.168 +0.99 | k1-2: 0.185/0.182 +1.00 | k3-7: 0.318/0.314 +0.99 | k8-16: 0.492/0.49 +0.98 | k17-33: 0.772/0.758 +0.98 | k34-65: 0.51/0.504 +0.98
+  U | k0-0: 0.00348/0.00316 -0.98 | k1-2: 0.00347/0.00314 -0.96 | k3-7: 0.00358/0.00334 -0.90 | k8-16: 0.00452/0.00436 -0.39 | k17-33: 0.00683/0.00674 +0.14 | k34-65: 0.0104/0.0104 +0.19
+  V | k0-0: 0.00346/0.00315 -0.98 | k1-2: 0.00346/0.00313 -0.96 | k3-7: 0.00363/0.0034 -0.83 | k8-16: 0.00473/0.0046 -0.26 | k17-33: 0.00717/0.00706 +0.23 | k34-65: 0.0104/0.0103 +0.20
+  W | k0-0: 0.00225/1.49e-06 +0.15 | k1-2: 0.000473/0.000546 +0.55 | k3-7: 0.0013/0.00144 +0.47 | k8-16: 0.00296/0.00303 +0.80 | k17-33: 0.00732/0.00722 +0.94 | k34-65: 0.0115/0.0114 +0.94
+
+## wale_floor.py: offline Vreman and WALE nu_t, FDS state; RISE 31 steps from it with RISE_FIRE_NEAR_WALL_WALE=1 (xw_smoke) and without (xw_ctrl)
+## FDS's own floor-cell nu_t (sgs_nearwall.txt): 4.757e-4, offline Vreman 6.895e-4, ratio 0.69
+r271_small_scale: core T k0  1034.5 K  k1   993.5 K | k0 nu_t 1e-4: Vreman  6.71 WALE  4.60 (0.68) | k1 nu_t 1e-4: Vreman  5.71 WALE  4.65 (0.81) | k2 nu_t 1e-4: Vreman  5.06 WALE  5.23 (1.03)
+xw_smoke: core T k0  1065.7 K  k1  1015.5 K | k0 nu_t 1e-4: Vreman  6.57 WALE  4.38 (0.67) | k1 nu_t 1e-4: Vreman  5.78 WALE  4.83 (0.84) | k2 nu_t 1e-4: Vreman  5.31 WALE  5.57 (1.05)
+xw_ctrl: core T k0  1067.0 K  k1  1015.3 K | k0 nu_t 1e-4: Vreman  6.46 WALE  4.31 (0.67) | k1 nu_t 1e-4: Vreman  5.79 WALE  4.76 (0.82) | k2 nu_t 1e-4: Vreman  5.33 WALE  5.59 (1.05)
+
+## hot_advection.py: T change against a common advection reference, steps 2->4, SGS off (xp2-4_allsgs0, fds4_nosgs)
+T change over two steps against -2 dt u.grad(T) on the own midpoint state, layers 3-65: slope / corr / n
+  RISE | 300-330 K: 0.923 / 0.860 / 293219 | 330-400 K: 1.015 / 0.918 / 3771 | 400-600 K: 0.982 / 0.909 / 2305 | 600-900 K: 0.778 / 0.890 / 463 | 900-1300 K: 0.754 / 0.853 / 139
+  FDS  | 300-330 K: 0.936 / 0.872 / 63932 | 330-400 K: 1.039 / 0.921 / 3761 | 400-600 K: 1.004 / 0.904 / 2310 | 600-900 K: 0.843 / 0.888 / 461 | 900-1300 K: 0.748 / 0.822 / 141
+
+## hot_wflow.py: W flow part against a common advection reference, steps 2->4, SGS off (rest arms xrest2/4, fds8_rest)
+W flow part (full - rest), steps 2->4, top faces of layers 3-65, against -2 dt (u.grad) w on the own step-3 state
+  per T bin: slope of flow part on reference / corr | rms flow part, rms full change
+  RISE | 300-330: 0.799/0.81 0.0028 0.0028 | 330-400: 0.875/0.91 0.0628 0.0624 | 400-600: 0.918/0.95 0.1651 0.1634 | 600-900: 0.886/0.94 0.1894 0.1846 | 900-1300: 0.852/0.92 0.1879 0.1710
+  FDS  | 300-330: 0.810/0.81 0.0063 0.0062 | 330-400: 0.878/0.92 0.0627 0.0622 | 400-600: 0.933/0.96 0.1705 0.1694 | 600-900: 0.939/0.97 0.2029 0.2024 | 900-1300: 0.879/0.96 0.1913 0.1832
+
+## floor_tflow.py: floor-layer T change split into at-rest and flow parts, steps 4->8, SGS off
+floor layer k0, 4-step T change: mean / rms of full, rest, flow part (full - rest); rms of horizontal and vertical
+advection references; slope and corr of the flow part on (horizontal + vertical)
+  core RISE full    5.67/  7.44  rest   37.71/ 38.03  flow  -32.04/ 33.07  | ref h  37.00 v   3.25  slope 0.945 corr 0.78
+  core FDS  full   12.81/ 14.79  rest   50.76/ 50.79  flow  -37.95/ 38.57  | ref h  36.84 v   3.62  slope 1.132 corr 0.83
+  ring RISE full   -0.20/  1.10  rest    6.22/ 15.96  flow   -6.41/ 16.46  | ref h   9.06 v   0.69  slope 1.808 corr 0.96
+  ring FDS  full    0.21/  1.01  rest    6.47/ 16.79  flow   -6.26/ 16.21  | ref h   9.05 v   0.72  slope 1.794 corr 0.97
+
+## projection trace (RISE_R271_PROJECTION_TRACE=1): first three projections per run
+xtrace2:
+  stage=0 invocation=1 cycles=17 pre_per_s=11.264851570129395 post_per_s=0.0029458333738148212 band_per_s=0.011549203656613827 passed=1
+  stage=0 invocation=2 cycles=17 pre_per_s=11.191095352172852 post_per_s=0.001455351710319519 band_per_s=0.01155778206884861 passed=1
+  stage=0 invocation=3 cycles=17 pre_per_s=11.191095352172852 post_per_s=0.0014649815857410431 band_per_s=0.01155778206884861 passed=1
+xtrace_vd:
+  stage=0 invocation=1 cycles=17 pre_per_s=3.9224519729614258 post_per_s=0.0067524751648306847 band_per_s=0.00078998558456078172 passed=0
+  stage=0 invocation=2 cycles=34 pre_per_s=3.9224519729614258 post_per_s=1.7361106074531563e-05 band_per_s=0.00078998610842972994 passed=1
+  stage=0 invocation=3 cycles=17 pre_per_s=11.516292572021484 post_per_s=0.0064605339430272579 band_per_s=0.00079121405724436045 passed=0
+xtrace_vdm:
+  stage=0 invocation=1 cycles=17 pre_per_s=7.2255673408508301 post_per_s=2.1538667678833008 band_per_s=0.00084404385415837169 passed=0
+  stage=0 invocation=2 cycles=34 pre_per_s=7.2255673408508301 post_per_s=0.77321076393127441 band_per_s=0.00080195924965664744 passed=0
+  stage=0 invocation=3 cycles=64 pre_per_s=7.2255673408508301 post_per_s=0.11688515543937683 band_per_s=0.00080181873636320233 passed=0
+xtrace2 = plume from FDS's state; xtrace_vd = vd_state 300-600 K band, 8 cells, u 0.5 m/s; xtrace_vdm = 300-1000 K, same
+first-projection failures (post/band after 64 cycles): 300-1300 K 8 cells post_per_s=10179.294921875 band_per_s=0.58332502841949463; 300-1300 K 16 cells post_per_s=2813060710400 band_per_s=183082288; 300-1000 K 8 cells post_per_s=0.11688515543937683 band_per_s=0.00080181873636320233
+
+## vd_state.py 4 0.1 0.5 500 8 (T 300-800 K, SGS off): v-pattern amplitude over A0, RISE until its step-38 projection failure
+  RISE 300-800 K: t 0.010 0.9990, 0.030 0.9990, 0.049 0.9990, 0.059 1.0000 (stopped: post 0.00156 > band 0.00153 /s after 64 cycles)
+  FDS  300-800 K: t 0.022 1.0000, 0.039 0.9990, 0.053 0.9980, 0.065 0.9970; decay 0.0700 per cell to 0.3 s (amp 0.993/0.932/0.682 at 0.1/0.2/0.3 s)
+  first projection at 300-800 K: 17 cycles 0.163, 34 cycles 0.0058, 64 cycles 1.5e-5 /s (passed; 300-600 K passes at 34)
+
+## FDS from RISE's 9.757 s state with &PRES BAROCLINIC=.FALSE. (fdsab_nobaro, C_VREMAN 0.07), xp_ownmean.py 1.0-2.5 s
+window 1.0-2.5 s: w rms [theta rms] about own mean, r<0.10 m; then core-mean T (K)
+                                              k0            k3            k7           k16           k32           k49           k65
+RISE own                            0.005[   6]  0.022[  14]  0.060[  23]  0.213[  41]  0.717[  80]  1.139[ 105]  1.136[  81]  T: 1089 910 794
+FDS baseline                        0.043[  28]  0.119[  58]  0.267[  75]  0.598[  99]  1.079[  93]  1.193[  62]  0.994[  41]  T: 1047 892 783
+FDS baroclinic off                  0.047[  24]  0.110[  48]  0.215[  52]  0.395[  60]  0.797[  74]  1.101[  62]  1.033[  44]  T: 1017 871 773
