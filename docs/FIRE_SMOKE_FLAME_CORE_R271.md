@@ -991,12 +991,79 @@ The owner approved the scalar-SGS opt-in and its experiment. Opt-in `RISE_FIRE_S
 - Two genuine but non-causal fidelity gaps were found: no near-wall (WALE) eddy viscosity, and a 17% slower floor-cell heating at the burner face.
 - Not explained: RISE's two-step start-up kick after an external state. It points to step-to-step history in the coupled update (e.g. a carried pressure or projection target) and is the best remaining lead for many-step damping.
 
+## 27. History test, near-wall WALE opt-in, hot-gas probes and the C_v route (2026-11-06)
+
+The owner approved all three §26 next steps. New opt-ins, uncommitted with §19's and §26's (`docs/data/fire_r271/near_wall_wale.patch`):
+- `RISE_FIRE_NEAR_WALL_WALE=1` (with the compact stencil): FDS 6.11's default near-wall model. In every cell with a no-slip wall face, WALE ν_t (C_W 0.60, `turb.f90` WALE_VISCOSITY) replaces Vreman for the momentum stress (`build_stress_compact_wale`) and for heat and species (`evaluate_resident_transport_compact_wale`). The default kernels are unchanged.
+- `RISE_R271_PROJECTION_TRACE=1`: prints the existing per-projection line (V-cycles, pre/post residual, band) outside the refusal scopes.
+- Library, tests and drivers build warning-free; the FP64 and trace mirrors were regenerated.
+- Harness: `build_bt.py <src> [name]` writes the driver under a new name, so a rebuild never replaces a running binary.
+
+Evidence: `s27_probes.txt`; tools `kick_corr.py`, `wale_floor.py`, `hot_advection.py`, `hot_wflow.py`, `floor_tflow.py`.
+
+**1. There is no step-to-step history; the start-up kick is a state artefact.**
+- Code audit: the projected-Heun owner is rebuilt per attempt, pressure levels are zeroed before every projection, the divergence target starts from zero in each Picard loop, and sources, transport and SGS are recomputed from the current state. Only the primary fields (with momentum as its own field), `previousStepS`, the schedule time and the producer precision carry over. A checkpoint holds no pressure, target or tendency.
+- From RISE's own checkpoint state (1- and 2-step runs), consecutive increments are smooth: correlation +0.9 to +1.0 above k3, with no kick.
+- From FDS's state, the horizontal velocity jumps by about 0.0035 m/s at every height up to k16 in step 1, and step 2 undoes it (−0.98 at k0–2, −0.90 at k3–7).
+- So FDS's field is not on RISE's discrete solution set (EOS deviation kept per cell, boundary-face momentum built with the cell density), and RISE relaxes it in two steps. §26's "history" lead is closed.
+
+**2. WALE opt-in: correct, small effect on a short window.**
+- Offline on FDS's state, with RISE's stencil, floor-cell WALE is 4.60 against FDS's own 4.76 ×10⁻⁴ m²/s (0.68 of Vreman, FDS 0.69).
+- 31 steps from FDS's state: floor-core T 1065.7 K with WALE against 1067.0 K without; WALE/Vreman 0.67 on the run's own field.
+- 14 s inert-plume A/B (`inert_compact_wale` against `inert_compact`, 6–14 s; `wale_compare.txt`, `wale_growth.txt`, `wale_floor.txt`). The opt-in makes no difference:
+  - Entrainment dm/dz from 0.29 to 3.01 m: 0.084–0.222 against 0.085–0.231 kg/s/m, where FDS is 0.187–0.427.
+  - Centre excess T at 0.99 m: 714 K for both arms (FDS 339 K).
+  - Centre rms w/w_c at 0.29 m: 0.013 for both arms (FDS 0.079).
+  - Near-field rms per layer differs by at most 10% (FDS is 3–6× larger).
+- The floor-adjacent WALE eddy viscosity matches FDS's model. The near-wall SGS model is not the cause.
+
+**3. Per-step response in hot gas, against a common reference** (steps 2→4, SGS off, each code against −(u·∇) on its own midpoint state).
+- **Scalar advection:** RISE 0.78 / 0.75 against FDS 0.84 / 0.75 in 600–900 / 900–1300 K, and equal below 600 K. That is at most 8%, in one bin.
+- **W flow part (full minus at rest):** RISE 0.886 / 0.852 against FDS 0.939 / 0.879, correlation 0.94 / 0.92 against 0.97 / 0.96. So it is 3–6% weaker in hot gas and equal below 600 K.
+- **Momentum advection at 300–800 K** (§26 test, hotter band): over the 0.06 s RISE completed, RISE kept 0.999–1.000 of the amplitude against FDS's 0.997. RISE does not over-damp advected momentum in hot gas.
+- **Floor layer, steps 4→8** (core): at-rest heating 37.7 against 50.8 K, flow cooling 32.0 against 38.0 K, net 5.7 against 12.8 K. The ring matches.
+
+**4. Projection convergence.**
+- In the plume, every projection passes in 17 V-cycles, leaving at most 0.0015–0.003 /s divergence against 11–14 /s on input (band 0.012 /s).
+- Domain-wide high-contrast synthetic bands converge badly. 300–600 K passes in 34 cycles and 300–800 K in 64. 300–1000 K fails at 64 cycles (0.117 against 0.0008 /s). 300–1300 K fails or diverges, at 8 and 16 cells alike. It is a robustness gap for wide hot regions, not a factor in the r271 plume.
+
+**5. FDS without the baroclinic correction** (FDS from RISE's state, 1.0–2.5 s, `BAROCLINIC=F`). It repeats §25's `nobaro` ablation, with the same answer:
+- w rms at k0 / k3 / k7 / k16: 0.047 / 0.110 / 0.215 / 0.395, against 0.043 / 0.119 / 0.267 / 0.598 for baseline FDS.
+- The base stays unsteady without the term. RISE's lack of a baroclinic split is not the cause.
+
+**6. The C_v route** (RISE dynamics from FDS's 9.751 s state, momentum and scalar Vreman C_v set together, 2.5 s each; `cv_table.txt`, `cv_ownmean.txt`).
+- About each arm's own mean over 1.5–2.5 s, w rms at k0 / k3 / k7 / k16 / k65:
+  - FDS: 0.062 / 0.166 / 0.319 / 0.685 / 0.951;
+  - C_v 0.02: 0.044 / 0.135 / 0.284 / 0.552 / 0.802 (71–89% of FDS);
+  - C_v 0.035: 0.019 / 0.068 / 0.158 / 0.461 / 1.020;
+  - C_v 0.05: 0.010 / 0.043 / 0.114 / 0.386 / 1.086;
+  - RISE own (C_v 0.07): 0.004 / 0.023 / 0.053 / 0.222 / 1.106.
+- C_v 0 overshoots FDS and keeps growing (k3 0.32 by 0.5–0.75 s). C_v 0.05 still decays at 2.5 s, and C_v 0.035 holds a level plateau at about 40% of FDS near the base. C_v 0.02 stays level near FDS throughout the 2.5 s.
+- Core-mean T, three heights: FDS 1044 / 889 / 777 K. C_v 0.02 gives 1071 / 900 / 785 K and RISE own 1090 / 910 / 794 K. The core cools toward FDS but covers only about 40% of the gap in 2.5 s.
+- With C_v 0.02, the floor-layer theta rms is 55 K against FDS's 32 K. The near-base T fluctuation overshoots while w is still short.
+- FDS hardly responds to C_v (§25 cv09 and cv12), and RISE responds strongly. A RISE C_v of about 0.02 against FDS's 0.07 would therefore be a calibration that offsets extra damping elsewhere in RISE's numerics. It does not identify that damping.
+- **14 s inert-plume A/B at C_v 0.02** (owner approved 2026-11-07; `inert_compact_cv02` against `inert_compact`, 6–14 s; `cv02_compare.txt`, `cv02_growth.txt`):
+  - Setup: the momentum override is `RISE_R271_CV` in a new harness build, `inert_build_cv` (`build_inert.py`), and the scalar override is `RISE_FIRE_SCALAR_VREMAN_CV`.
+  - Entrainment dm/dz from 0.29 to 3.01 m: 0.159–0.306 kg/s/m against FDS's 0.187–0.427 (compact 0.085–0.231). That is 85–88% of FDS below 1 m and 71–79% above 1.5 m.
+  - Centre excess T: 959 / 466 / 64 K at 0.29 / 0.99 / 3.01 m, against FDS's 889 / 339 / 48 (compact 1012 / 714 / 110). At 1 m that closes 66% of the gap.
+  - Mass flux at 3.01 m: 0.704 kg/s against 0.922 (compact 0.454), closing 53% of the gap. At 1 m, b_w is 0.123 m against 0.133 m.
+  - Centre rms w/w_c at 0.29 m: 0.105 against FDS's 0.079 (compact 0.013). The plume now leaves the burner unsteady.
+  - Two signs that this is not FDS's mechanism:
+    - It overshoots in the first 0.3 m: centre rms w is 0.06–0.41 m/s against FDS's 0.02–0.30.
+    - Grid-scale w share above 1.5 m is 0.18–0.22, against FDS's 0.06–0.11 (compact 0.06–0.13). The lower C_v lets 2Δ noise back in, as the default stencil's noise did in r270.
+  - So C_v 0.02 closes about half to two-thirds of the inert entrainment gap by trading under-damped near-source and grid-scale noise for the missing eddies. It is a calibration, not FDS's physics.
+
 ## Next (owner decisions)
 
-1. **Many-step coupled damping (cause still open).** Candidates:
-   - history carried between steps (previous pressure, projection or EOS targets), shown by the start-up kick;
-   - the Picard/plateau acceptance of projected Heun.
-   A harness test that resets or freezes that history, and compares an unstable mode's growth over 50–200 steps against FDS, needs no production change once the carried quantities are identified.
-2. **Calibration route, if the cause stays elusive.** A RISE transplant at C_v ≈ 0.035 from FDS's state (≈ 5 h), then an inert-plume A/B (≈ 15 h). The cv0 arm already grows.
-3. **Fidelity fix, independent of the above:** a WALE near-wall eddy viscosity for wall-adjacent cells (momentum and scalars, as FDS), opt-in with an inert A/B. Expected effect: floor-cell mean temperature toward FDS's. Not expected to restore the base unsteadiness.
-4. The seed, inert-plume and scalar-C_v opt-ins stay uncommitted pending owner review. The §16 small fixes stay optional.
+1. **C_v 0.02 as a calibrated option (inert §27.6):** it closes about half to two-thirds of the entrainment gap, but it overshoots near the source and brings back grid-scale noise. Next steps, if pursued:
+   - a reacting A/B, to check heat-release heights, core T and puffing against FDS;
+   - possibly C_v 0.02 combined with a grid-scale-only filter or the compact stencil's 2Δ damping, so the near-source eddies stay without the 2Δ noise.
+2. **The cause of RISE's extra damping is still open.** RISE needs C_v ≈ 0.02 to match FDS at 0.07, while FDS barely responds to C_v. Ruled out so far:
+   - step-to-step history;
+   - the near-wall model;
+   - the baroclinic split;
+   - plume projection convergence;
+   - every isolated operator at 3–8 cells.
+   Remaining candidates are coupled interactions between the eddy-viscosity stencil and the cell-centred velocity operators over many steps.
+3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
+4. The seed, inert-plume, scalar-C_v, near-wall WALE and projection-trace opt-ins stay uncommitted pending owner review, along with the inert harness tools. The §16 small fixes stay optional.
