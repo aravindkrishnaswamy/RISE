@@ -1053,17 +1053,70 @@ Evidence: `s27_probes.txt`; tools `kick_corr.py`, `wale_floor.py`, `hot_advectio
     - Grid-scale w share above 1.5 m is 0.18–0.22, against FDS's 0.06–0.11 (compact 0.06–0.13). The lower C_v lets 2Δ noise back in, as the default stencil's noise did in r270.
   - So C_v 0.02 closes about half to two-thirds of the inert entrainment gap by trading under-damped near-source and grid-scale noise for the missing eddies. It is a calibration, not FDS's physics.
 
+## 28. Reacting C_v 0.02, grid-scale damping, time step and where the damping acts (2026-11-08)
+
+The owner asked for three items in order (a reacting A/B at C_v 0.02, C_v 0.02 with grid-scale-only damping, and the source of the extra damping), continuing until the root cause was found or results were good enough. Evidence: `docs/data/fire_r271/s28_runs.txt`. New opt-ins, uncommitted with the earlier ones (the full uncommitted production diff is `docs/data/fire_r271/s28_optins.patch`):
+- `RISE_FIRE_HYPER_VREMAN=<c_h>` (compact stencil only): adds −c_h·μ·δ⁴u/Δ² to each face force, a biharmonic term scaled by the local molecular + Vreman μ. The viscous stability factor rises from 24 to 24 + 48·c_h.
+- `RISE_FIRE_ADVECTIVE_CFL=<c>` in `FireCase::SelectTimeStepS` (default 0.5).
+- `RISE_FIRE_VREMAN_ZONE=<below|above>:<k>:<scale>` (compact stencil only): scales momentum ν_t in cell layers below or above k.
+- Harness: `RISE_R271_CV` momentum override in `build_ab.py` and `build_inert.py`; `run_xp.sh` takes `RISE_R271_XP_DRIVER`; `xp_gridshare.py` gives w′ spectral shares for the transplants.
+- Library, tests and drivers build warning-free.
+
+**1. Reacting A/B at C_v 0.02 (momentum and scalar), floor radiation on, 4 s from r270 step 9223.**
+
+| measure | FDS r263 | r270 | C_v 0.02 compact | C_v 0.02 default |
+|---|---|---|---|---|
+| total heat release, 2–3.5 Hz % | 6.3 | 3.1 | 4.9 | 3.8 |
+| 90% / 99% heat-release height (m) | 0.428 / 0.765 | 0.459 / 0.857 | 0.581 / 0.979 | 0.275 / 0.673 |
+| centre excess T at 0.29 / 0.50 / 0.99 m (K) | 926 / 631 / 228 | 1101 / 825 / 345 | 1080 / 838 / 342 | 987 / 637 / 285 |
+| mass flux at 0.50 / 3.01 m (kg/s) | 0.184 / 1.176 | 0.152 / 0.863 | 0.147 / 0.966 | 0.176 / 0.869 |
+| grid-scale w share, 0.29–2 m | | 0.20–0.27 | 0.15–0.23 | 0.38–0.44 |
+| burner-ring rms w at 0.02 / 0.05 m (RISE cells; m/s) | | 0.15 / 0.25 | 0.10 / 0.20 | 0.32 / 0.47 |
+| corr(w, T) on the ring at 0.02 / 0.05 m | 0.45 / 0.68 | 0.14 / 0.52 | 0.09 / 0.59 | 0.18 / 0.36 |
+
+- **Compact:** puffing and the 3 m mass flux improve, but the base is no less steady than r270, the core is as hot, and the flame is longer (90% height 0.58 m). In the reacting flame, unlike the inert transplant, C_v 0.02 does not revive the base.
+- **Default:** the near-field T and mass flux land close to FDS, but through grid noise (share 0.38–0.44; w barely correlated with T), and the flame is too short.
+- Neither arm is good enough. (FDS's ring velocities are face values, §16, so only arm-to-arm velocity comparisons are used.)
+
+**2. C_v 0.02 with grid-scale damping (transplants, 2 s).** Taylor–Green: c_h 0.625 adds 0.6–0.7× the Vreman rate at 4–6 cells, so the term is only moderately scale-selective.
+
+| 1.0–2.0 s | grid share k49 / k65 | w rms k0 / k3 / k7 / k16 (m/s) |
+|---|---|---|
+| FDS | 0.142 / 0.114 | 0.066 / 0.183 / 0.345 / 0.660 |
+| C_v 0.02 | 0.209 / 0.214 | 0.044 / 0.120 / 0.258 / 0.574 |
+| + c_h 0.3 | 0.120 / 0.110 | 0.017 / 0.070 / 0.171 / 0.502 |
+| + c_h 0.625 | 0.087 / 0.082 | 0.009 / 0.047 / 0.133 / 0.401 |
+| C_v 0.035 | 0.119 / 0.122 | 0.020 / 0.072 / 0.176 / 0.488 |
+
+- c_h 0.3 brings the grid share aloft to FDS's level but takes the base back to the C_v 0.035 level.
+- Near the base FDS itself keeps 21% of the w′ energy at grid scale (k16): its base eddies are 2–4Δ, so no grid-scale damping can remove RISE's noise and keep them. Rejected.
+
+**3. The time step is not the cause.** Production C_v, `RISE_FIRE_ADVECTIVE_CFL=0.25` (dt 0.62×, so 1.6× the steps per second): k3 w rms by 0.25 s window 0.151 / 0.115 / 0.074 / 0.054 / 0.043, against 0.151 / 0.114 / 0.070 / 0.057 / 0.041 at the production dt. The damping is a rate set by the spatial operators, not time-integration error or a once-per-step filter. (The first launch put the opt-in in `SelectFireProductionStableTimeStep`, which production does not call; it was discarded.)
+
+**4. The sensitivity is in momentum, and it is spread over the near plume.**
+
+| 1.0–2.0 s, w rms k0 / k3 / k7 / k16 | |
+|---|---|
+| FDS | 0.066 / 0.183 / 0.345 / 0.660 |
+| momentum 0.02, scalar 0.07 | 0.041 / 0.109 / 0.239 / 0.533 |
+| momentum 0.07, scalar 0.02 | 0.007 / 0.041 / 0.122 / 0.355 |
+| momentum 0.02 below z = 0.31 m only | 0.017 / 0.070 / 0.174 / 0.472 |
+| momentum 0.02 above z = 0.31 m only | 0.020 / 0.057 / 0.143 / 0.399 |
+| RISE own (0.07) | 0.004 / 0.022 / 0.063 / 0.206 |
+
+- Scalar C_v hardly matters; momentum C_v carries all of RISE's sensitivity.
+- Neither zone alone is enough: each recovers about half. The damping that matters acts on one coupled base-and-plume mode, not at one place.
+- The RISE and FDS Vreman kernels are the same formula and gradient stencil (`velo.f90` VREMAN against `build_stress`/`compact_gradient`). §26 showed that on the same state RISE's per-step momentum SGS force matches FDS's within 6% from k3 up.
+- So RISE is not over-damped. Its near-plume mode is marginal: a matched SGS term wins in RISE, while FDS keeps its base with 70% more C_v (§25 cv12).
+
+**Where this leaves the root cause.**
+- Ruled out across §25–§28: every single operator at 3–8 cells; the time step; step history; the near-wall model; the baroclinic split; projection convergence; and SGS strength per step.
+- The remaining difference is net growth of a coupled mode over many steps. It is the sum of small per-step deficits in hot gas: flow response 3–6% weaker above 600 K (§27.3), Rayleigh–Taylor amplitude 8–10% lower (§25), and momentum SGS 1.2–1.5× at k0–k2 (§26).
+- No single switch closes it. Calibration (C_v 0.02) works for the inert plume, but not for the reacting flame on the compact stencil.
+
 ## Next (owner decisions)
 
-1. **C_v 0.02 as a calibrated option (inert §27.6):** it closes about half to two-thirds of the entrainment gap, but it overshoots near the source and brings back grid-scale noise. Next steps, if pursued:
-   - a reacting A/B, to check heat-release heights, core T and puffing against FDS;
-   - possibly C_v 0.02 combined with a grid-scale-only filter or the compact stencil's 2Δ damping, so the near-source eddies stay without the 2Δ noise.
-2. **The cause of RISE's extra damping is still open.** RISE needs C_v ≈ 0.02 to match FDS at 0.07, while FDS barely responds to C_v. Ruled out so far:
-   - step-to-step history;
-   - the near-wall model;
-   - the baroclinic split;
-   - plume projection convergence;
-   - every isolated operator at 3–8 cells.
-   Remaining candidates are coupled interactions between the eddy-viscosity stencil and the cell-centred velocity operators over many steps.
+1. **Stop the root-cause hunt here, or fund a different method.** The isolated-operator and switch-by-switch methods are exhausted. The remaining route is a linear-stability comparison of the near-plume mode: the growth rate per mode of the same base state in both codes, built from many short paired runs. It is expensive and may still end in "many small deficits".
+2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
-4. The seed, inert-plume, scalar-C_v, near-wall WALE and projection-trace opt-ins stay uncommitted pending owner review, along with the inert harness tools. The §16 small fixes stay optional.
+4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL and Vreman-zone opt-ins stay uncommitted pending owner review, along with the inert harness tools (`s28_optins.patch`). The §16 small fixes stay optional.

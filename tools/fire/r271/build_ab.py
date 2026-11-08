@@ -3,7 +3,8 @@
 
 Only an external copy of the test harness is patched (r260 pattern): lift the
 64-step cap on retained-production probes and stop at a physical window set by
-RISE_R271_WINDOW_S. No production source or object is rewritten.
+RISE_R271_WINDOW_S. Optional momentum Vreman override RISE_R271_CV (as build_tg.py / build_bt.py;
+unset = production). No production source or object is rewritten.
 """
 from pathlib import Path
 import subprocess,shlex,hashlib,json,sys
@@ -14,6 +15,8 @@ old='\t\tconst char* solverPhase="initialization";';assert h.count(old)==1
 h=h.replace(old,old+'\n\t\tconst double r271EndTimeS=simulationTimeS+std::stod(std::getenv("RISE_R271_WINDOW_S"));')
 old='(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)) {';assert h.count(old)==1
 h=h.replace(old,'(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)&&\n\t\t\tsimulationTimeS<r271EndTimeS) {')
+old='\t\towner.vremanCoefficient=ordinary.force.vremanCoefficient;';assert h.count(old)==1
+h=h.replace(old,'\t\towner.vremanCoefficient=std::getenv("RISE_R271_CV")?std::stof(std::getenv("RISE_R271_CV")):ordinary.force.vremanCoefficient;')
 harness=OUT/'Harness.cpp';harness.write_text(h)
 make=ROOT/'build/make/rise';cmds=subprocess.check_output(['make','-C',str(make),'-n','-B','../../../bin/tests/FireSequenceTest'],text=True).splitlines()
 compile_=next(x for x in cmds if x.startswith('c++ ')and' -c 'in x and'tests/FireSequenceTest.cpp'in x)
