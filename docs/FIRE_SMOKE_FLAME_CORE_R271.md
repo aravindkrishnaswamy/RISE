@@ -1229,7 +1229,16 @@ The scalar limiter moves FDS's T growth, but not enough to account for the veloc
 - **Unbounded reconstructions trip the stage validation.** The centred slope fails at step 0, and the wall linear ghost fails at step 48. Up to that point the wall ghost changed layers 0–1 by about 1%.
 - **Superbee leaves layers 0–3 unchanged but lifts every band above them** to 0.74–0.94 of FDS. The scalar limiter is a large lever for the plume above the floor.
 - **Layers 0–1 respond to the SGS** (0.91 with it off) but not to the near-wall WALE model. Layers 2–3 respond to neither the SGS nor the limiter. In both, δT falls behind most (0.38–0.64). The floor-layer mechanism remains unidentified. It is not the FCT, the slope limiter, the wall ghost slope or the near-wall model.
-- Running: `xp_lc_sb`, a 2.5 s production transplant with the limited carrier plus superbee, at C_v 0.07.
+- **Limited carrier plus superbee** (`xp_lc_sb`, 2.5 s production transplant at C_v 0.07, exit 98; window 1.5–2.5 s, rms w about own mean at r < 0.10 m):
+
+| | k0 | k3 | k7 | k16 | k32 | k49 | k65 | grid share k49 / k65 |
+|---|---|---|---|---|---|---|---|---|
+| FDS | 0.063 | 0.176 | 0.315 | 0.634 | 1.055 | 1.056 | 1.000 | 0.148 / 0.113 |
+| limited carrier | 0.006 | 0.055 | 0.178 | 0.435 | 1.010 | 1.205 | 0.985 | 0.126 / 0.114 |
+| limited + superbee | 0.006 | 0.056 | 0.189 | 0.472 | 0.966 | 1.148 | 0.950 | 0.119 / 0.117 |
+
+  - Superbee adds little to the sustained base unsteadiness: k0–k3 unchanged, k7–k16 +6–9%, θ rms at k16 up from 80 to 98 K (FDS 108). Grid share stays FDS-like.
+  - So superbee's lift of the linear growth above the floor (item 9) does not carry into the sustained plume: the quiet floor layers starve everything above them. The floor layers (k0–k3) are the bottleneck, and their mechanism is the open question.
 
 **Where this leaves the root cause.**
 - The deficit is a slower growth of resolved perturbations in the variable-density mixing layer.
@@ -1252,7 +1261,7 @@ The scalar limiter moves FDS's T growth, but not enough to account for the veloc
 
 ## Next (owner decisions)
 
-1. **Review the limited momentum carrier (§29).** It is the first identified numerics contributor: the momentum carrier is made consistent with the limited density flux. It recovers 2–3× base unsteadiness with an FDS-like spectrum aloft. With C_v 0.035 it reaches C_v 0.02's base level, but brings back C_v 0.02's grid noise (§29.7). Running: 14 s inert A/B `r271_inert/inert_compact_lc` (limited carrier alone at C_v 0.07). The floor-layer deficit (§29.8) points at grid-scale scalar transport.
+1. **Review the limited momentum carrier (§29).** It is the first identified numerics contributor: the momentum carrier is made consistent with the limited density flux. It recovers 2–3× base unsteadiness with an FDS-like spectrum aloft. With C_v 0.035 it reaches C_v 0.02's base level, but brings back C_v 0.02's grid noise (§29.7). Running: 14 s inert A/B `r271_inert/inert_compact_lc` (limited carrier alone at C_v 0.07). The floor-layer deficit (§29.8–9) is the bottleneck: neither the limiter (superbee) nor FCT, wall ghost or near-wall WALE moves it, and superbee on top of the carrier adds only 6–9% at k7–k16.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
 4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL, Vreman-zone and limited-momentum-carrier opt-ins stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
