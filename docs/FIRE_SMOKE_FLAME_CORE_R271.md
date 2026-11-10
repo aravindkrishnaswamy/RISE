@@ -1195,11 +1195,24 @@ The scalar limiter moves FDS's T growth, but not enough to account for the veloc
 - Aloft its spectrum matches FDS. The grid-scale w share is 0.126 / 0.114 at k49 / k65, against FDS 0.148 / 0.113. C_v 0.02 has 0.233 / 0.248, the 2Δ noise of §27.6.
 - Core-mean T is 1086 / 916 / 798 K, against FDS 1051 / 892 / 774 and default 1090 / 910 / 794. There is no core cooling yet in 2.5 s.
 
+**8. Floor-focused twin** (perturbation confined to z < 0.15 m, production SGS, 0.2 s; controls reused from items 2 and 6; FDS quarter-amplitude arm agrees within 1–3%, so the response is linear). RISE/FDS δ energy at 0.1 / 0.2 s:
+
+| band | E default | E limited | grid-scale w (< 2.7 dx) default / limited | δT default / limited |
+|---|---|---|---|---|
+| layers 0–1 | 0.78 / 0.70 | 0.78 / 0.60 | 0.72 / 0.53, 0.64 / 0.46 | 0.72 / 0.38, 0.76 / 0.44 |
+| layers 2–3 | 0.91 / 0.65 | 0.86 / 0.68 | 0.88 / 0.31, 0.72 / 0.37 | 0.95 / 0.61, 0.87 / 0.66 |
+| layers 4–9 | 0.99 / 0.64 | 0.92 / 0.69 | 0.95 / 0.57, 0.80 / 0.59 | 1.10 / 0.89, 1.07 / 0.86 |
+
+- At 0.025–0.1 s the large scales (≥ 8 dx) grow at FDS's rate in layers 0–3. The grid-scale velocity grows at 11–13 /s against FDS's 15–16 /s, and δT grows at 7–10 /s against FDS's 10–11 /s.
+- δT (zero at t = 0, made by the perturbation stirring the floor's temperature gradients) falls behind first and furthest at the floor, followed by grid-scale w.
+- The limited carrier does not help at the floor. The floor-layer deficit is a separate mechanism from the momentum carrier.
+- Lead: grid-scale (2–3 cell) temperature fluctuations over the heated floor are damped. §24 tested scalar advection only at 4–8 dx. Item 4 showed FDS's T growth is sensitive to the limiter (CENTRAL 28, CHARM 19, GODUNOV 13.5 /s against RISE's 15). A grid-scale scalar-advection test (the §24 method at 2–3 dx) is the next check.
+
 **Where this leaves the root cause.**
 - The deficit is a slower growth of resolved perturbations in the variable-density mixing layer.
 - The centred-carrier / limited-density inconsistency is one identified, physically motivated contributor: about half with SGS off, and a quarter to a half with production SGS.
 - Unlike C_v 0.02, it does not add grid-scale noise.
-- It does not restore the floor-layer unsteadiness on its own.
+- It does not restore the floor-layer unsteadiness on its own. The floor deficit (item 8) is grid-scale velocity and temperature over the heated floor, a separate mechanism; the lead is grid-scale scalar transport.
 - **Limited carrier plus C_v 0.035** (`xp_lc_cv035`, momentum and scalar C_v 0.035, 2.5 s, same window):
 
 | | k0 | k3 | k7 | k16 | k49 | k65 | grid share k49 / k65 |
@@ -1216,7 +1229,7 @@ The scalar limiter moves FDS's T growth, but not enough to account for the veloc
 
 ## Next (owner decisions)
 
-1. **Review the limited momentum carrier (§29).** It is the first identified numerics contributor: the momentum carrier is made consistent with the limited density flux. It recovers 2–3× base unsteadiness with an FDS-like spectrum aloft. With C_v 0.035 it reaches C_v 0.02's base level, but brings back C_v 0.02's grid noise (§29.7). Candidate next steps are a 14 s inert A/B with the limited carrier alone at C_v 0.07, and a continued hunt for the floor-layer (k0–k3) deficit.
+1. **Review the limited momentum carrier (§29).** It is the first identified numerics contributor: the momentum carrier is made consistent with the limited density flux. It recovers 2–3× base unsteadiness with an FDS-like spectrum aloft. With C_v 0.035 it reaches C_v 0.02's base level, but brings back C_v 0.02's grid noise (§29.7). Running: 14 s inert A/B `r271_inert/inert_compact_lc` (limited carrier alone at C_v 0.07). The floor-layer deficit (§29.8) points at grid-scale scalar transport.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
 4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL, Vreman-zone and limited-momentum-carrier opt-ins stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
