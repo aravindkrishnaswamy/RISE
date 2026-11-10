@@ -1114,9 +1114,97 @@ The owner asked for three items in order (a reacting A/B at C_v 0.02, C_v 0.02 w
 - The remaining difference is net growth of a coupled mode over many steps. It is the sum of small per-step deficits in hot gas: flow response 3–6% weaker above 600 K (§27.3), Rayleigh–Taylor amplitude 8–10% lower (§25), and momentum SGS 1.2–1.5× at k0–k2 (§26).
 - No single switch closes it. Calibration (C_v 0.02) works for the inert plume, but not for the reacting flame on the compact stencil.
 
+## 29. Twin growth-rate comparison: the deficit needs density variation, and the momentum carrier is a real contributor (2026-11-09)
+
+The owner approved the linear-stability route from §28 Next 1. Evidence: `docs/data/fire_r271/s29_runs.txt`. The full uncommitted production diff is `docs/data/fire_r271/s29_optins.patch`. New tools:
+- `gr_perturb.py`: the perturbation.
+- `gr_analyze.py`: growth by band, azimuthal mode and scale.
+- `gr_tbins.py`: growth by control temperature.
+- `gr_div.py`: exact MAC divergence.
+- `kh_state.py`: a closed cold shear layer.
+- `build_bt.py` adds `RISE_R271_CKPT_EVERY` (step-locked checkpoints), and `run_xp.sh` adds `RISE_R271_XP_STATE` / `RISE_R271_XP_CKPT`.
+
+**Method.** Each code runs a control and a perturbed arm from FDS's 9.75 s state, and δ is perturbed minus control.
+- The perturbation is the exact discrete MAC curl of a smoothed random vector potential: 2 mm/s rms near the base, divergence ~1e-16, so neither projection removes it.
+- FDS needs `LOCK_TIME_STEP` to keep frame times equal between arms. With it, FDS is bitwise deterministic.
+- Both codes are linear at this amplitude. A ×4 arm agrees within 10% (FDS, to 0.4 s) and 2–6% (RISE, to 0.6 s).
+
+**1. RISE amplifies the same perturbation less.** Whole column, production SGS, growth rate 0.5 d ln E/dt (1/s):
+
+| window | RISE | FDS |
+|---|---|---|
+| 0.02–0.15 s | 8.5 | 9.4 |
+| 0.15–0.35 s | 4.7 | 7.6 |
+| 0.35–0.6 s | 4.9 | 7.6 |
+
+- RISE/FDS δE is 1.0 at 0.05 s, 0.96 at 0.10 s, 0.34 at 0.29 s and 0.065 at 0.59 s.
+- RISE's mean base strain falls only 3–10% over the window, so this is not a weakening base flow.
+
+**2. It is the resolved numerics, not the SGS.** With SGS off in both codes, RISE/FDS at 0.1 / 0.2 s is 0.74 / 0.10, against 0.96 / 0.53 with production SGS. Turning the SGS off widens the gap.
+
+**3. It is in the mixing layer, and not through the divergence.**
+- By control temperature at 0.1 s (production), RISE/FDS δKE is:
+  - 300–350 K: 0.86;
+  - 350–600 K: 0.73;
+  - 600–900 K: 0.79;
+  - above 900 K: 1.5.
+- Base divergence and δ-divergence per temperature bin agree within ~10%, which rules out the EOS/divergence path.
+
+**4. FDS ablations do not close it** (SGS off, whole column, 0.1–0.2 s):
+
+| arm | growth rate (1/s) |
+|---|---|
+| FDS | 19.1 |
+| FDS, CENTRAL limiter | 42 |
+| FDS, GODUNOV limiter | 17.4 |
+| FDS, no baroclinic | 20.3 |
+| RISE | 8.4 |
+
+The scalar limiter moves FDS's T growth, but not enough to account for the velocity deficit.
+
+**5. Without density variation the codes agree.** Cold, closed tanh shear layer, SGS off: RISE equals FDS to 1–4% in E, every azimuthal mode, and the large and mid scales. Isolated cold tests at 2–2.5 cells (advected mode, Taylor–Green) also match. The deficit needs density variation.
+
+**6. The momentum carrier.**
+- In the production FCT path (`fct_compatible_stage_rate`), momentum is carried by the centred flux ρ_face·v + physical (`fct_centered_momentum_carrier`).
+- Density moves with the FCT-limited flux, low + α·delta.
+- Velocity is momentum / face density, so at density fronts momentum and density see different continuity.
+- New opt-in `RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1` (`FireProductionAdvectionMac.mm` host dispatch) feeds the limited flux to the momentum carrier. The default path stays bitwise identical: 0.0 difference over 5 frames.
+
+| twin, 0.1–0.2 s growth rate (1/s) | default | limited | FDS |
+|---|---|---|---|
+| SGS off, whole column | 8.4 | 14.0 | 19.1 |
+| SGS off, layers 4–9 | 2.6 | 5.7 | 6.8 |
+| SGS off, layers 10–19 | 6.1 | 11.7 | 13.4 |
+| production SGS, whole column | 6.2 | 7.0 | 9.4 |
+| production SGS, layers 4–9 | 1.1 | 1.7 | 2.7 |
+| production SGS, layers 10–19 | 3.7 | 5.4 | 7.2 |
+
+- With SGS off it closes about half the whole-column gap and most of the near-base gap.
+- With production SGS it closes about 25% whole column and 40–50% near the base. Growth over 0.025–0.1 s is unchanged.
+
+**7. Production transplant with the limited carrier** (`xp_lc`: production SGS C_v 0.07, from FDS's state, 2.5 s). About each arm's own mean, 1.5–2.5 s, r < 0.10 m:
+
+| w rms (m/s) | k0 | k3 | k7 | k16 | k32 | k49 | k65 |
+|---|---|---|---|---|---|---|---|
+| FDS | 0.063 | 0.176 | 0.315 | 0.634 | 1.055 | 1.056 | 1.000 |
+| RISE default (§27.6) | 0.004 | 0.023 | 0.053 | 0.222 | — | — | 1.106 |
+| limited carrier | 0.006 | 0.055 | 0.178 | 0.435 | 1.010 | 1.205 | 0.985 |
+| C_v 0.02 (§27.6) | 0.044 | 0.135 | 0.284 | 0.552 | 0.907 | 0.890 | 0.802 |
+
+- Near the base the limited carrier gives 2–3× the default unsteadiness: 56% of FDS at k7 and 69% at k16. The floor layer (k0) stays quiet.
+- Aloft its spectrum matches FDS. The grid-scale w share is 0.126 / 0.114 at k49 / k65, against FDS 0.148 / 0.113. C_v 0.02 has 0.233 / 0.248, the 2Δ noise of §27.6.
+- Core-mean T is 1086 / 916 / 798 K, against FDS 1051 / 892 / 774 and default 1090 / 910 / 794. There is no core cooling yet in 2.5 s.
+
+**Where this leaves the root cause.**
+- The deficit is a slower growth of resolved perturbations in the variable-density mixing layer.
+- The centred-carrier / limited-density inconsistency is one identified, physically motivated contributor: about half with SGS off, and a quarter to a half with production SGS.
+- Unlike C_v 0.02, it does not add grid-scale noise.
+- It does not restore the floor-layer unsteadiness on its own.
+- Running: `xp_lc_cv035`, the limited carrier with C_v 0.035, to test whether it and a moderate C_v combine without the C_v 0.02 noise.
+
 ## Next (owner decisions)
 
-1. **Stop the root-cause hunt here, or fund a different method.** The isolated-operator and switch-by-switch methods are exhausted. The remaining route is a linear-stability comparison of the near-plume mode: the growth rate per mode of the same base state in both codes, built from many short paired runs. It is expensive and may still end in "many small deficits".
+1. **Review the limited momentum carrier (§29).** It is the first identified numerics contributor: the momentum carrier is made consistent with the limited density flux. It recovers 2–3× base unsteadiness with an FDS-like spectrum aloft. Next: the `xp_lc_cv035` result (§29.7), and then a 14 s inert or reacting A/B if it holds.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
-4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL and Vreman-zone opt-ins stay uncommitted pending owner review, along with the inert harness tools (`s28_optins.patch`). The §16 small fixes stay optional.
+4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL, Vreman-zone and limited-momentum-carrier opt-ins stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.

@@ -132,6 +132,10 @@ old='\t\t\t\t\t(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetT
 h=h.replace(old,'\t\t\t\t\t(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)&&\n\t\t\t\t\t(!std::getenv("RISE_R271_FINAL_AT_WINDOW")||simulationTimeS<r271EndTimeS);\n\t\t\t\tconst double checkpointElapsedS')
 old='\t\towner.vremanCoefficient=ordinary.force.vremanCoefficient;';assert h.count(old)==1  # optional momentum C_v override (as build_tg.py)
 h=h.replace(old,'\t\towner.vremanCoefficient=std::getenv("RISE_R271_CV")?std::stof(std::getenv("RISE_R271_CV")):ordinary.force.vremanCoefficient;')
+old='\t\t\t\t\t\t(persistence.checkpointCadenceWallS<=0.0||\n\t\t\t\t\t\t\tcheckpointElapsedS>=persistence.checkpointCadenceWallS));';assert h.count(old)==1
+# section 29: RISE_R271_CKPT_EVERY=N retains a checkpoint every N accepted steps instead of on the wall-clock cadence, so paired
+# runs (control and perturbed, fixed step) retain the same steps
+h=h.replace(old,'\t\t\t\t\t\t(std::getenv("RISE_R271_CKPT_EVERY")?acceptedSteps%std::stoul(std::getenv("RISE_R271_CKPT_EVERY"))==0u:\n\t\t\t\t\t\t(persistence.checkpointCadenceWallS<=0.0||\n\t\t\t\t\t\t\tcheckpointElapsedS>=persistence.checkpointCadenceWallS)));')
 harness=OUT/'Harness.cpp';harness.write_text(h)
 make=ROOT/'build/make/rise';cmds=subprocess.check_output(['make','-C',str(make),'-n','-B','../../../bin/tests/FireSequenceTest'],text=True).splitlines()
 compile_=next(x for x in cmds if x.startswith('c++ ')and' -c 'in x and'tests/FireSequenceTest.cpp'in x)
