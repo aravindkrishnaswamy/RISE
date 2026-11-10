@@ -1200,11 +1200,23 @@ The scalar limiter moves FDS's T growth, but not enough to account for the veloc
 - The centred-carrier / limited-density inconsistency is one identified, physically motivated contributor: about half with SGS off, and a quarter to a half with production SGS.
 - Unlike C_v 0.02, it does not add grid-scale noise.
 - It does not restore the floor-layer unsteadiness on its own.
-- Running: `xp_lc_cv035`, the limited carrier with C_v 0.035, to test whether it and a moderate C_v combine without the C_v 0.02 noise.
+- **Limited carrier plus C_v 0.035** (`xp_lc_cv035`, momentum and scalar C_v 0.035, 2.5 s, same window):
+
+| | k0 | k3 | k7 | k16 | k49 | k65 | grid share k49 / k65 |
+|---|---|---|---|---|---|---|---|
+| FDS | 0.063 | 0.176 | 0.315 | 0.634 | 1.056 | 1.000 | 0.148 / 0.113 |
+| limited carrier | 0.006 | 0.055 | 0.178 | 0.435 | 1.205 | 0.985 | 0.126 / 0.114 |
+| C_v 0.035 alone | 0.019 | 0.068 | 0.158 | 0.461 | 1.119 | 1.020 | — |
+| limited + C_v 0.035 | 0.020 | 0.106 | 0.271 | 0.567 | 0.956 | 0.885 | 0.273 / 0.195 |
+| C_v 0.02 | 0.044 | 0.135 | 0.284 | 0.552 | 0.890 | 0.802 | 0.233 / 0.248 |
+
+  - The two combine. Near the base, the combined run reaches 32 / 60 / 86 / 89% of FDS at k0 / k3 / k7 / k16. That is the same as C_v 0.02 from k7 up, but short at the floor.
+  - Lowering C_v brings the grid-scale noise back whatever the carrier: 1.7–1.8× FDS's share aloft. C_v remains a calibration lever.
+  - The limited carrier alone is the only arm that adds base unsteadiness with an FDS-like spectrum aloft. The floor-layer deficit (k0–k3) still has an unidentified cause.
 
 ## Next (owner decisions)
 
-1. **Review the limited momentum carrier (§29).** It is the first identified numerics contributor: the momentum carrier is made consistent with the limited density flux. It recovers 2–3× base unsteadiness with an FDS-like spectrum aloft. Next: the `xp_lc_cv035` result (§29.7), and then a 14 s inert or reacting A/B if it holds.
+1. **Review the limited momentum carrier (§29).** It is the first identified numerics contributor: the momentum carrier is made consistent with the limited density flux. It recovers 2–3× base unsteadiness with an FDS-like spectrum aloft. With C_v 0.035 it reaches C_v 0.02's base level, but brings back C_v 0.02's grid noise (§29.7). Candidate next steps are a 14 s inert A/B with the limited carrier alone at C_v 0.07, and a continued hunt for the floor-layer (k0–k3) deficit.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
 4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL, Vreman-zone and limited-momentum-carrier opt-ins stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
