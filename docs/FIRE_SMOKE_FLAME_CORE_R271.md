@@ -1208,6 +1208,29 @@ The scalar limiter moves FDS's T growth, but not enough to account for the veloc
 - The limited carrier does not help at the floor. The floor-layer deficit is a separate mechanism from the momentum carrier.
 - Lead: grid-scale (2–3 cell) temperature fluctuations over the heated floor are damped. §24 tested scalar advection only at 4–8 dx. Item 4 showed FDS's T growth is sensitive to the limiter (CENTRAL 28, CHARM 19, GODUNOV 13.5 /s against RISE's 15). A grid-scale scalar-advection test (the §24 method at 2–3 dx) is the next check.
 
+**9. What sets the floor-layer deficit** (the item 8 floor twin, RISE/FDS δ energy at 0.2 s; growth fits and ratios in `s29_runs.txt`). New diagnostic opt-ins are listed below. Each is a runtime substitution in the Metal source and leaves the default source unchanged:
+- `RISE_FIRE_SCALAR_SLOPE=central|superbee`: scalar slope limiter.
+- `RISE_FIRE_FCT_ALPHA_ONE=1|0`: forces the scalar FCT face α.
+- `RISE_FIRE_WALL_SLOPE=linear`: linear-extrapolated scalar ghost at walls.
+
+| arm | layers 0–1 | 2–3 | 4–9 | 10–19 | 20–65 |
+|---|---|---|---|---|---|
+| RISE default (MC) | 0.70 | 0.65 | 0.64 | 0.65 | 0.40 |
+| RISE SGS off / FDS SGS off | 0.91 | 0.66 | 0.44 | 0.23 | — |
+| RISE near-wall WALE | 0.63 | 0.65 | 0.64 | — | — |
+| RISE superbee | 0.60 | 0.67 | 0.82 | 0.94 | 0.74 |
+| RISE FCT α = 1 | = default (bitwise) | | | | |
+| RISE first order (α = 0) | 0.46 | 0.45 | 0.29 | 0.17 | 0.03 |
+| FDS CENTRAL | 1.07 | 1.27 | 1.26 | 1.15 | 0.79 |
+| FDS GODUNOV | 0.71 | 0.63 | 0.57 | 0.58 | 0.51 |
+
+- **FDS is limiter-sensitive at the floor, and RISE's MC sits at FDS's first-order level.** RISE's own first-order limit is lower still. So RISE's scalar transport is more dissipative than FDS's at both orders.
+- **The FCT bounds step never limits here.** Forcing α = 1 is bitwise identical to the default, and α = 0 changes the result, so the switch is live.
+- **Unbounded reconstructions trip the stage validation.** The centred slope fails at step 0, and the wall linear ghost fails at step 48. Up to that point the wall ghost changed layers 0–1 by about 1%.
+- **Superbee leaves layers 0–3 unchanged but lifts every band above them** to 0.74–0.94 of FDS. The scalar limiter is a large lever for the plume above the floor.
+- **Layers 0–1 respond to the SGS** (0.91 with it off) but not to the near-wall WALE model. Layers 2–3 respond to neither the SGS nor the limiter. In both, δT falls behind most (0.38–0.64). The floor-layer mechanism remains unidentified. It is not the FCT, the slope limiter, the wall ghost slope or the near-wall model.
+- Running: `xp_lc_sb`, a 2.5 s production transplant with the limited carrier plus superbee, at C_v 0.07.
+
 **Where this leaves the root cause.**
 - The deficit is a slower growth of resolved perturbations in the variable-density mixing layer.
 - The centred-carrier / limited-density inconsistency is one identified, physically motivated contributor: about half with SGS off, and a quarter to a half with production SGS.

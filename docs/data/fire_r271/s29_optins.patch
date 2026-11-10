@@ -109,7 +109,7 @@ index 920e90ad7..b885f15a6 100644
  		double PilotCommandMaximumStepS(const DerivedV1&);
  		bool BuildMethaneV1(
 diff --git a/src/Library/Utilities/FireProductionAdvectionMac.mm b/src/Library/Utilities/FireProductionAdvectionMac.mm
-index a3f2a1999..d70e79d98 100644
+index a3f2a1999..5b7398c6e 100644
 --- a/src/Library/Utilities/FireProductionAdvectionMac.mm
 +++ b/src/Library/Utilities/FireProductionAdvectionMac.mm
 @@ -647,13 +647,20 @@ bool PackMetalResidentTransport(
@@ -135,7 +135,33 @@ index a3f2a1999..d70e79d98 100644
  		}
  
  		bool PackMetalSingleStageFCTCertificate(
-@@ -2445,7 +2452,7 @@ inline float tr_phi(float mui,float muj,float wi,float wj){float numerator=1.0f+
+@@ -1786,7 +1793,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
+ 			// instantiate this library.
+ 			static const char* SingleStageFCTSource()
+ 		{
+-			return R"METAL(
++			static const std::string source=R"METAL(
+ #include <metal_stdlib>
+ using namespace metal;
+ struct FCTParams {
+@@ -2239,6 +2246,16 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
+  atomic_fetch_max_explicit(maximumScaleBits,as_type<uint>(scale),memory_order_relaxed);
+ }
+ )METAL";
++			// r271 diagnostic (opt-in RISE_FIRE_FCT_ALPHA_ONE=1 or 0): force the scalar FCT face alpha to 1 (full
++			// high-order correction) or 0 (first-order donor cell); the commit still checks positivity and the
++			// enthalpy bounds and fails the step if they break.
++			static const std::string selected=[](){const char* value=std::getenv("RISE_FIRE_FCT_ALPHA_ONE");
++				if(!value||(std::string(value)!="1"&&std::string(value)!="0"))return source;
++				const bool one=std::string(value)=="1";
++				const std::string at="alpha[gid]=clamp(accepted,0.0f,1.0f);";std::string out=source;
++				const std::size_t where=out.find(at);if(where==std::string::npos||out.find(at,where+1u)!=std::string::npos)return source;
++				out.replace(where,at.size(),one?"alpha[gid]=isfinite(accepted)?1.0f:0.0f;":"alpha[gid]=isfinite(accepted)?0.0f:0.0f;");return out;}();
++			return selected.c_str();
+ 		}
+ 
+ 			bool Valid() const
+@@ -2445,7 +2462,7 @@ inline float tr_phi(float mui,float muj,float wi,float wj){float numerator=1.0f+
  inline void resident_transport_cell(device const float* state,device const float* temperature,
   device const float* velocity,device const float* thermo,device const float* transport,
   device float* output,device atomic_uint* failure,device atomic_uint* obligations,
@@ -144,7 +170,7 @@ index a3f2a1999..d70e79d98 100644
   float T=temperature[gid];bool valid=isfinite(T);float rho=0.0f,mass[6];
   for(uint species=0u;species<6u;++species){float q=state[(species+1u)*p.cells+gid];
    if(!isfinite(q))valid=false;mass[species]=max(0.0f,q);rho+=mass[species];}
-@@ -2488,7 +2495,19 @@ inline void resident_transport_cell(device const float* state,device const float
+@@ -2488,7 +2505,19 @@ inline void resident_transport_cell(device const float* state,device const float
   if(abs(rawB)<=32.0f*0x1p-24f*max(1.0f,rawScale))atomic_fetch_or_explicit(obligations,1u<<11u,memory_order_relaxed);
   atomic_fetch_or_explicit(obligations,1u<<(alpha2==0.0f?12u:13u),memory_order_relaxed);
   atomic_fetch_or_explicit(obligations,1u<<(rawB<0.0f?14u:15u),memory_order_relaxed);
@@ -165,7 +191,7 @@ index a3f2a1999..d70e79d98 100644
   float mole[6],mu[6],conductivity[6],moleTotal=0.0f,cp=0.0f;
   for(uint species=0u;species<6u;++species){float fraction=mass[species]/rho;
    float weight=thermo[32u*species];mole[species]=fraction/weight;moleTotal+=mole[species];
-@@ -2519,6 +2538,14 @@ kernel void evaluate_resident_transport_compact(device const float* state [[buff
+@@ -2519,6 +2548,14 @@ kernel void evaluate_resident_transport_compact(device const float* state [[buff
   device const uchar* inflow [[buffer(9)]],
   uint gid [[thread_position_in_grid]]){resident_transport_cell(state,temperature,velocity,thermo,
   transport,output,failure,obligations,p,inflow,gid,true);}
@@ -180,7 +206,45 @@ index a3f2a1999..d70e79d98 100644
  kernel void identify_resident_transport(device const float* state [[buffer(0)]],
   device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
   device const float* output [[buffer(3)]],device const float* thermo [[buffer(4)]],
-@@ -4047,7 +4074,8 @@ explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),que
+@@ -4001,7 +4038,36 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
+  hash^=l2[0];hash*=1099511628211ul;
+  hash^=p.attempt;hash*=1099511628211ul;output[0]=hash==0ul?1ul:hash;}
+ )METAL";
+-				return source.c_str();
++				// r271 diagnostic (opt-in RISE_FIRE_SCALAR_SLOPE=central|superbee): scalar reconstruction uses the
++				// unlimited centred slope, or the more compressive superbee limiter, instead of MC; FCT still
++				// enforces positivity and the enthalpy bounds.
++				static const std::string selected=[](){const char* value=std::getenv("RISE_FIRE_SCALAR_SLOPE");
++					if(!value||(std::string(value)!="central"&&std::string(value)!="superbee"))return source;
++					const bool central=std::string(value)=="central";
++					const std::string mc="inline float pf_mc(float backward,float forward){if(backward*forward<=0.0f)return 0.0f;\n"
++						" float centered=0.5f*(backward+forward),sign=centered<0.0f?-1.0f:1.0f;\n"
++						" return sign*min(abs(centered),2.0f*min(abs(backward),abs(forward)));}";
++					std::string out=source;const std::size_t at=out.find(mc);
++					if(at==std::string::npos||out.find(mc,at+1u)!=std::string::npos)return source;
++					out.replace(at,mc.size(),central?"inline float pf_mc(float backward,float forward){return 0.5f*(backward+forward);}":
++						"inline float pf_mc(float backward,float forward){if(backward*forward<=0.0f)return 0.0f;\n"
++						" float sign=backward<0.0f?-1.0f:1.0f,b=abs(backward),f=abs(forward);\n"
++						" return sign*max(min(2.0f*b,f),min(b,2.0f*f));}");
++					return out;}();
++				// r271 diagnostic (opt-in RISE_FIRE_WALL_SLOPE=linear): at a wall side the scalar ghost value is the
++				// linear extrapolation 2 q_0 - q_1 instead of q_0, so the wall cell's normal slope is its one-sided
++				// interior difference rather than zero (the wall face itself still carries no flux).
++				static const std::string walled=[](){const char* value=std::getenv("RISE_FIRE_WALL_SLOPE");
++					if(!value||std::string(value)!="linear")return selected;
++					const std::string ghost=" float interior=q[component*p.cells+tr_cell(p,x,y,z)];return p.boundary[side]==1u&&";
++					std::string out=selected;const std::size_t at=out.find(ghost);
++					if(at==std::string::npos||out.find(ghost,at+1u)!=std::string::npos)return selected;
++					out.replace(at,ghost.size()," float interior=q[component*p.cells+tr_cell(p,x,y,z)];\n"
++						" if(p.boundary[side]==2u&&extent>1){tr_set(axis,coordinate<0?1u:uint(extent-2),x,y,z);\n"
++						"  return 2.0f*interior-q[component*p.cells+tr_cell(p,x,y,z)];}\n"
++						" return p.boundary[side]==1u&&");
++					return out;}();
++				return walled.c_str();
+ 			}
+ 
+ 			explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),queue(nil),evaluate(nil),identify(nil),
+@@ -4047,7 +4113,8 @@ explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),que
  						return function?NameProducerKernel([device newComputePipelineStateWithFunction:function error:&metalError],name):nil;};
  					evaluate=pipeline("evaluate_resident_transport");identify=pipeline("identify_resident_transport");
  					// r271 A/B: heat and species take the compact-stencil nu_t with the momentum.
@@ -190,7 +254,7 @@ index a3f2a1999..d70e79d98 100644
  					physicalFlux=pipeline("evaluate_resident_physical_flux");
  					advectivePair=pipeline("evaluate_resident_advective_pair");
  					finalizeAdvective=pipeline("finalize_resident_advective_high");
-@@ -8487,7 +8515,8 @@ bool Project(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> momentum
+@@ -8487,7 +8554,8 @@ bool Project(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> momentum
  						output.projectionDiagnostics,error))return false;
  					++projectionInvocations_;deviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
  					projectionDeviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
@@ -200,7 +264,7 @@ index a3f2a1999..d70e79d98 100644
  						const auto& diagnostic=output.projectionDiagnostics;
  						std::fprintf(stderr,"PROJECTION_REFUSAL_TRACE stage=%u invocation=%u cycles=%u "
  							"pre_per_s=%.17g post_per_s=%.17g band_per_s=%.17g passed=%d\n",
-@@ -8926,14 +8955,19 @@ bool BuildStage(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> tempe
+@@ -8926,14 +8994,19 @@ bool BuildStage(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> tempe
  					 output.candidate->faceAlpha,q0_,r0->projection.velocityMPerS[0],
  					 r0->projection.velocityMPerS[1],r0->projection.velocityMPerS[2],
  					 r0->physical->physicalGas,centralR0,zeroR0,fctParameters_[0]},allFaces_)))return false;
