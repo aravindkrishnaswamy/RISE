@@ -1259,9 +1259,54 @@ The scalar limiter moves FDS's T growth, but not enough to account for the veloc
   - Lowering C_v brings the grid-scale noise back whatever the carrier: 1.7–1.8× FDS's share aloft. C_v remains a calibration lever.
   - The limited carrier alone is the only arm that adds base unsteadiness with an FDS-like spectrum aloft. The floor-layer deficit (k0–k3) still has an unidentified cause.
 
+## 30. Floor-layer budget: no extra dissipation term in RISE, and the floor twin is confounded by FDS's re-initialisation transient (2026-11-10)
+
+A bounded closing step on the floor-layer question, after an owner review of the campaign's arc. Tools: `gr_budget.py`, `gr_ctrl_scales.py`, `xp_floor_T.py`. Evidence: `docs/data/fire_r271/s30_runs.txt`.
+
+**1. Budget of the perturbation temperature** (the §29.8 floor twin, default RISE against FDS CHARM). From the frames, dδT/dt = P + A + R, with P = −δu·∇T_ctrl (stirring of the control's gradients), A = −u_ctrl·∇δT and R the rest (sub-grid and numerical diffusion, sources, estimator error). Each term is projected on δT and divided by its variance: a contribution to δT's growth rate, 1/s. Grid scale (< 2.7 dx), RISE / FDS:
+
+| band, window | total | P | A | R |
+|---|---|---|---|---|
+| layers 0–1, 0.025–0.1 s | 9.2 / 12.8 | 12.4 / 18.5 | 4.1 / 7.3 | −7.3 / −13.0 |
+| layers 0–1, 0.1–0.2 s | 1.2 / 5.2 | 9.6 / 14.7 | 6.2 / 11.2 | −14.6 / −20.7 |
+| layers 2–3, 0.025–0.1 s | 9.4 / 10.6 | 16.8 / 18.8 | −2.4 / 1.5 | −5.0 / −9.7 |
+| layers 2–3, 0.1–0.2 s | −0.8 / 4.4 | 11.4 / 14.0 | −1.6 / 4.7 | −10.5 / −14.3 |
+
+- **RISE's residual is smaller in magnitude than FDS's in every row** (also at all scales in layers 0–1 and 2–3 over 0.1–0.2 s). No extra dissipation term shows in RISE's floor layers. That is why no numerics switch in §29.9 moved them.
+- RISE's deficit is in P and A: less stirring of the control's gradients and less transfer to grid scale by the control's flow. Both depend on the control run's own fields.
+
+**2. The two controls diverge at the floor** (same start state; plane rms T by scale in layers 0–1, ≥ 8 dx / 2.7–8 dx):
+
+| t (s) | RISE | FDS |
+|---|---|---|
+| 0 | 66.9 / 18.3 | 66.9 / 18.3 |
+| 0.1 | 71.2 / 20.4 | 79.4 / 25.1 |
+| 0.2 | 73.5 / 21.1 | 81.7 / 28.1 |
+
+- RISE's grid-scale w also decays 15–20% within 0.1 s in layers 0–9 (0.022 → 0.019, 0.026 → 0.021 m/s), while FDS's holds.
+
+**3. FDS's divergence is a re-initialisation transient.** Layer-0 core-mean T (r < 0.10 m):
+
+| t since start (s) | 0 | 0.13 | 0.19 | 0.5 | 1.0 | 2.5 |
+|---|---|---|---|---|---|---|
+| FDS original run (from 9.75 s) | 1034 | 1039 | 1041 | 1046 | 1050 | 1045 |
+| FDS re-initialised from its own state | 1034 | 1199 | 1205 | 1148 | 1089 | 1048 |
+| RISE from FDS's state (default) | 1034 | 1083 (0.09 s) | 1107 | 1091 | 1097 | — |
+
+- FDS started from its own slice-reconstructed state overheats the floor layer by 170 K within 0.13 s and takes 1–2 s to relax. Its original run stays within 1026–1054 K. Every FDS arm of the twin comparisons runs inside this transient.
+- So the **RISE/FDS floor-layer ratios at 0.2 s (§29.8–9: 0.60–0.70) are confounded.** FDS's steepening floor gradients inflate its perturbation production there. Comparisons within one code (RISE arm against RISE arm, FDS limiter against FDS limiter) share the control and remain valid, including the limited carrier and superbee effects.
+- **The long-window deficit is real.** Over 1.5–2.5 s the re-initialised FDS run matches its original (rms w at k0 / k3 / k7 / k16: 0.063 / 0.176 / 0.315 / 0.634 against 0.062 / 0.166 / 0.319 / 0.685), and RISE with the limited carrier carries 0.006 / 0.055 / 0.178 / 0.435, decaying from 0.015 / 0.140 / 0.285 / 0.583 in the first 0.5 s.
+- RISE's floor layer also settles 40–45 K hotter than FDS's (1086–1097 K against 1044–1051 K).
+
+**Where this leaves the floor question.** The twin method cannot resolve RISE against FDS at the floor in the first 0.2 s, and the budget shows no RISE term that over-dissipates there. The sustained floor quietness is a slow (0.5–1 s) decay with no single responsible operator, consistent with §28. The question is closed as cumulative scheme behaviour, and the campaign moves to judging a candidate package against physical targets (Next, item 1).
+
 ## Next (owner decisions)
 
-1. **Review the limited momentum carrier (§29).** It is the first identified numerics contributor: the momentum carrier is made consistent with the limited density flux. It recovers 2–3× base unsteadiness with an FDS-like spectrum aloft. With C_v 0.035 it reaches C_v 0.02's base level, but brings back C_v 0.02's grid noise (§29.7). Running: 14 s inert A/B `r271_inert/inert_compact_lc` (limited carrier alone at C_v 0.07). The floor-layer deficit (§29.8–9) is the bottleneck: neither the limiter (superbee) nor FCT, wall ghost or near-wall WALE moves it, and superbee on top of the carrier adds only 6–9% at k7–k16.
+1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
+   - Running: 14 s inert A/B `r271_inert/inert_compact_lc` (limited carrier alone at C_v 0.07), the decision data for the carrier.
+   - Then: limited carrier plus the §22 heat-source seed, judged on McCaffrey centreline values, Heskestad entrainment and flame height, with FDS as a second reference.
+   - In reserve: a reduced-domain resolution check of both codes, if the package falls short.
+   - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
 4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL, Vreman-zone and limited-momentum-carrier opt-ins stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
